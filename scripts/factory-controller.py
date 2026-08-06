@@ -50,6 +50,13 @@ TERMINAL_ACCOUNTING = {
     "completed", "launch_void", "abandoned_conservative", "cancelled",
     "cancelled_conservative",
 }
+CONTRACT_RESUME_REFUSALS = frozenset({
+    "resume_ancestry_invalid",
+    "resume_commit_content_mismatch",
+    "resume_commit_not_pushed",
+    "resume_directives_ambiguous",
+    "resume_receipt_mismatch",
+})
 INFLIGHT_STATES = frozenset({
     "Ready", "Planning", "Building", "Review", "Awaiting Approval",
     "Approved", "Blocked-Escalated",
@@ -294,6 +301,7 @@ class Controller:
             hashlib.sha256(canonical(self.qualification).encode()).hexdigest()
             if self.qualification else ""
         )
+        self.admission_refusals: dict[str, dict[str, str]] = {}
         self.fallback_lock = Lock()
         # ponytail: cells share one Git common directory; use per-cell refs only if refresh throughput matters.
         self.git_lock = Lock()
@@ -408,6 +416,41 @@ class Controller:
             ):
                 return
         self.event(name, ticket, **details)
+
+    def record_contract_resume_refusal(
+        self, claim: dict[str, Any], reason_code: str, evidence: dict[str, Any]
+    ) -> None:
+        if (
+            reason_code not in CONTRACT_RESUME_REFUSALS
+            or not DIGEST.fullmatch(claim.get("receipt", ""))
+        ):
+            raise ControllerError("contract resume refusal reason is invalid")
+        allowed = {
+            "actual_bytes", "changed_path_count", "expected_bytes",
+            "first_differing_line", "local_head", "remote_head",
+        }
+        if set(evidence) - allowed:
+            raise ControllerError("contract resume refusal evidence is invalid")
+        for key in ("local_head", "remote_head"):
+            if key in evidence and evidence[key] not in {None, ""} and not SHA.fullmatch(
+                evidence[key]
+            ):
+                raise ControllerError("contract resume refusal evidence is invalid")
+        for key in (
+            "actual_bytes", "changed_path_count", "expected_bytes",
+            "first_differing_line",
+        ):
+            if key in evidence and evidence[key] is not None and (
+                isinstance(evidence[key], bool)
+                or not isinstance(evidence[key], int)
+                or evidence[key] < 0
+            ):
+                raise ControllerError("contract resume refusal evidence is invalid")
+        self.event_once(
+            "contract_resume_refused", claim["ticket"],
+            blocked_receipt_sha256=claim["receipt"], reason_code=reason_code,
+            **evidence,
+        )
 
     def adopt_qualification_terminal(self, ticket: str) -> dict[str, Any]:
         if (
@@ -999,6 +1042,9 @@ class Controller:
             "error": str(decoded.get("error", raw))[:4096],
             "reason_code": str(decoded.get("reason_code", "unsafe_state"))[:64],
         }
+        ticket = decoded.get("ticket", "")
+        if isinstance(ticket, str) and TICKET.fullmatch(ticket):
+            evidence["ticket"] = ticket
         digest = hashlib.sha256(canonical(evidence).encode()).hexdigest()
         path = self.state / "admission-incident.json"
         now = time.time_ns()
@@ -1023,16 +1069,46 @@ class Controller:
             value["next_reminder_epoch_ns"] = now + 900_000_000_000
         write(path, value)
         if not same or reminder:
-            self.event(
-                "admission_blocked_reminder" if reminder else "admission_blocked",
+            name = (
+                "admission_blocked_reminder" if reminder else "admission_blocked"
+            )
+            details = dict(
                 error=evidence["error"],
                 existing_claims=sorted(item["ticket"] for item in claims),
                 incident_sha256=digest,
                 reason_code=evidence["reason_code"],
             )
+            if "ticket" in evidence:
+                self.event(name, evidence["ticket"], **details)
+            else:
+                self.event(name, **details)
 
     def clear_admission_failure(self) -> None:
-        (self.state / "admission-incident.json").unlink(missing_ok=True)
+        if not self.admission_refusals:
+            (self.state / "admission-incident.json").unlink(missing_ok=True)
+
+    def record_dispatch_refusal(
+        self, refusal: Any, claims: list[dict[str, Any]]
+    ) -> None:
+        errors = {
+            "initiative_missing": "ticket initiative is missing",
+            "invalid_ticket_contract": "ticket dependencies are invalid",
+        }
+        if (
+            not isinstance(refusal, dict)
+            or set(refusal) != {"error", "reason_code", "ticket"}
+            or errors.get(refusal.get("reason_code")) != refusal.get("error")
+            or not TICKET.fullmatch(refusal.get("ticket", ""))
+        ):
+            raise ControllerError("dispatch admission refusal is malformed")
+        ticket = refusal["ticket"]
+        if ticket in self.admission_refusals:
+            return
+        result = {**refusal, "status": "skipped"}
+        self.admission_refusals[ticket] = result
+        self.record_admission_failure(
+            ControllerError(canonical(refusal)), claims
+        )
 
     def marker(self, name: str, value: dict[str, Any] | None = None) -> bool:
         path = self.state / f"{name}.json"
@@ -1327,6 +1403,8 @@ class Controller:
             for ticket in excluded:
                 arguments.extend(["--exclude-ticket", ticket])
             value = self.json_call(*arguments, "--json")
+            if "admission_refusal" in value:
+                self.record_dispatch_refusal(value["admission_refusal"], claims)
             if value.get("action") == "WAIT":
                 break
             if (
@@ -2381,11 +2459,15 @@ class Controller:
             f"{head}\trefs/heads/{branch}\n"
         )
 
-    def remote_cell_head_valid(self, claim: dict[str, Any]) -> bool:
+    def remote_cell_head_status(
+        self, claim: dict[str, Any]
+    ) -> tuple[str, str, str]:
         head = subprocess.run(
             ["git", "-C", claim["worktree"], "rev-parse", "HEAD"],
-            text=True, capture_output=True, check=True, timeout=120,
+            text=True, capture_output=True, check=False, timeout=120,
         ).stdout.strip()
+        if not SHA.fullmatch(head):
+            return "remote_unavailable", "", ""
         remote = subprocess.run(
             [
                 "git", "-C", claim["worktree"], "ls-remote", "--exit-code",
@@ -2393,9 +2475,55 @@ class Controller:
             ],
             text=True, capture_output=True, check=False, timeout=120,
         )
-        return SHA.fullmatch(head) is not None and remote.returncode == 0 and (
-            remote.stdout == f"{head}\trefs/heads/{claim['branch']}\n"
+        if remote.returncode == 2 and not remote.stdout:
+            return "resume_commit_not_pushed", head, ""
+        match = re.fullmatch(
+            rf"([0-9a-f]{{40}})\trefs/heads/{re.escape(claim['branch'])}\n",
+            remote.stdout,
         )
+        if remote.returncode != 0 or match is None:
+            return "remote_unavailable", head, ""
+        remote_head = match.group(1)
+        if remote_head == head:
+            return "pushed", head, remote_head
+        ancestor = subprocess.run(
+            [
+                "git", "-C", claim["worktree"], "merge-base", "--is-ancestor",
+                remote_head, head,
+            ],
+            text=True, capture_output=True, check=False, timeout=120,
+        )
+        reason = (
+            "resume_commit_not_pushed"
+            if ancestor.returncode == 0
+            else (
+                "resume_ancestry_invalid"
+                if ancestor.returncode == 1
+                else "remote_unavailable"
+            )
+        )
+        return reason, head, remote_head
+
+    def remote_cell_head_valid(self, claim: dict[str, Any]) -> bool:
+        return self.remote_cell_head_status(claim)[0] == "pushed"
+
+    @staticmethod
+    def contract_resume_directive_status(ticket_text: str, receipt: str) -> str:
+        attempts = re.findall(r"^OPERATOR RESUME(?: RECEIPT)?:", ticket_text, re.M)
+        if not attempts:
+            return "waiting"
+        roles = re.findall(
+            r"^OPERATOR RESUME: (planner|spec-linter|test-author|builder)$",
+            ticket_text, re.M,
+        )
+        receipts = re.findall(
+            r"^OPERATOR RESUME RECEIPT: ([0-9a-f]{64})$", ticket_text, re.M,
+        )
+        if len(roles) != 1 or len(receipts) != 1:
+            return "resume_directives_ambiguous"
+        if receipts[0] != receipt:
+            return "resume_receipt_mismatch"
+        return "ready"
 
     def recover_terminal_exports(self, claims: list[dict[str, Any]]) -> None:
         for claim in claims:
@@ -3075,7 +3203,29 @@ class Controller:
                     passport_valid = False
                 if not passport_valid:
                     try:
-                        if not self.remote_cell_head_valid(claim):
+                        head_status, local_head, remote_head = (
+                            self.remote_cell_head_status(claim)
+                        )
+                        if head_status != "pushed":
+                            try:
+                                ticket_text = (
+                                    Path(claim["worktree"]) / "factory" / "tickets"
+                                    / f"{claim['ticket']}.md"
+                                ).read_text(encoding="utf-8")
+                            except (FileNotFoundError, OSError):
+                                ticket_text = ""
+                            if (
+                                head_status in CONTRACT_RESUME_REFUSALS
+                                and self.contract_resume_directive_status(
+                                    ticket_text, claim["receipt"]
+                                ) != "waiting"
+                            ):
+                                self.record_contract_resume_refusal(
+                                    claim, head_status, {
+                                        "local_head": local_head,
+                                        "remote_head": remote_head or None,
+                                    },
+                                )
                             continue
                         self.migrate_passport(claim, "preserve")
                         migrated = True
@@ -3173,18 +3323,48 @@ class Controller:
                     ).read_text(encoding="utf-8")
                 except (FileNotFoundError, OSError):
                     continue
-                receipt_directives = re.findall(
-                    r"^OPERATOR RESUME RECEIPT: ([0-9a-f]{64})$",
-                    ticket_text,
-                    re.M,
+                directive_status = self.contract_resume_directive_status(
+                    ticket_text, claim["receipt"]
                 )
-                if claim["receipt"] not in receipt_directives:
+                if directive_status == "waiting":
+                    continue
+                if directive_status != "ready":
+                    self.record_contract_resume_refusal(
+                        claim, directive_status, {}
+                    )
+                    continue
+                head_status, local_head, remote_head = self.remote_cell_head_status(
+                    claim
+                )
+                if head_status != "pushed":
+                    if head_status in CONTRACT_RESUME_REFUSALS:
+                        self.record_contract_resume_refusal(
+                            claim, head_status, {
+                                "local_head": local_head,
+                                "remote_head": remote_head or None,
+                            },
+                        )
                     continue
                 resumed = self.json_call(
                     "state-machine", "resume", "--ticket", claim["ticket"],
                     "--receipt", claim["receipt"],
                     "--workdir", claim["worktree"], "--json",
+                    allow=(0, 1),
                 )
+                if resumed.get("status") == "error":
+                    reason_code = resumed.get("reason_code")
+                    if reason_code in CONTRACT_RESUME_REFUSALS:
+                        self.record_contract_resume_refusal(
+                            claim, reason_code, {
+                                key: resumed[key]
+                                for key in (
+                                    "actual_bytes", "changed_path_count",
+                                    "expected_bytes", "first_differing_line",
+                                )
+                                if key in resumed
+                            },
+                        )
+                        continue
                 if resumed.get("status") == "waiting":
                     continue
                 if resumed.get("status") != "ready":
@@ -4473,6 +4653,7 @@ class Controller:
                 return result
 
     def reconcile(self) -> dict[str, Any]:
+        self.admission_refusals = {}
         existing = self.load_claims()
         if self.qualification:
             tickets = set(self.qualification["tickets"])
@@ -4727,6 +4908,8 @@ class Controller:
         finally:
             executor.shutdown(wait=True)
         claims = self.load_claims()
+        for ticket, refusal in self.admission_refusals.items():
+            results.setdefault(ticket, refusal)
         ordered = [results[ticket] for ticket in sorted(results)]
         return {
             "active": len(

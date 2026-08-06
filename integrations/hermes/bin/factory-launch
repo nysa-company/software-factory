@@ -1175,6 +1175,17 @@ PY
     require_exact "--json" "$@"
     DOCTOR="$RELEASE_PATH/scripts/factory-doctor.sh"
     require_managed_file "$DOCTOR" "active release doctor"
+    if [[ "$QUALIFICATION_MODE" == "takeover" ]]; then
+      DOCTOR_CONTROLLER_STATE="$TAKEOVER_KITS_ROOT/projects/$PROJECT/controller"
+    elif [[ "$QUALIFICATION_LAUNCHER" == "1" ]]; then
+      DOCTOR_CONTROLLER_STATE="$ACTIVE_CONTROLLER_STATE"
+    else
+      DOCTOR_CONTROLLER_STATE="$KITS_ROOT/projects/$PROJECT/controller"
+    fi
+    if [[ -e "$DOCTOR_CONTROLLER_STATE" ]]; then
+      require_managed_directory "$DOCTOR_CONTROLLER_STATE" "controller state directory"
+      HELPER_ENV+=("FACTORY_CONTROLLER_STATE_DIR=$DOCTOR_CONTROLLER_STATE")
+    fi
     cleanup_runtime
     trap - EXIT HUP INT TERM
     exec_selected_helper "$DOCTOR" --json --project "$PROJECT" \

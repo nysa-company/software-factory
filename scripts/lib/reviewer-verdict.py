@@ -40,16 +40,21 @@ def verdict_signals(raw: str) -> list[str]:
     for line in raw.splitlines():
         stripped = line.strip()
         heading = re.fullmatch(
-            r"#{1,6}\s+(?:Verdict:\s*)?(APPROVE|REQUEST CHANGES)",
+            r"#{1,6}\s+(?:Verdict:\s*)?(APPROVE|REQUEST CHANGES)\.?",
             stripped,
             re.I,
         )
         if heading:
             signals.append(heading.group(1).upper())
-        if re.fullmatch(r"APPROVE|REQUEST CHANGES", stripped, re.I):
-            signals.append(stripped.upper())
+        plain = re.fullmatch(
+            r"(?:Verdict:\s*)?(APPROVE|REQUEST CHANGES)\.?", stripped, re.I
+        )
+        if plain:
+            signals.append(plain.group(1).upper())
         signals.extend(match.upper() for match in re.findall(
-            r"\*\*(APPROVE|REQUEST CHANGES)(?:\.)?\*\*", stripped, re.I
+            r"\*\*(?:Verdict:\s*)?(APPROVE|REQUEST CHANGES)(?:\.)?\*\*(?:\.)?",
+            stripped,
+            re.I,
         ))
     return signals
 
@@ -151,9 +156,17 @@ def canonical_review_detail(raw: str, verdict: str, owner: str) -> str:
     lines = raw.rstrip().splitlines()
     verdict_rows = [
         index for index, line in enumerate(lines)
-        if re.fullmatch(rf"\s*{re.escape(verdict)}\s*", line, re.I)
+        if re.fullmatch(
+            rf"\s*(?:Verdict:\s*)?{re.escape(verdict)}\.?\s*", line, re.I
+        )
         or re.fullmatch(
-            rf"\s*#{{1,6}}\s+(?:Verdict:\s*)?{re.escape(verdict)}\s*",
+            rf"\s*#{{1,6}}\s+(?:Verdict:\s*)?{re.escape(verdict)}\.?\s*",
+            line,
+            re.I,
+        )
+        or re.fullmatch(
+            rf"\s*\*\*(?:Verdict:\s*)?{re.escape(verdict)}\.?"
+            rf"\*\*(?:\.)?\s*",
             line,
             re.I,
         )

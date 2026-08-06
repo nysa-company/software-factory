@@ -26,6 +26,41 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   initialized mapping. It reads only that issue, merges only operator-owned
   fields under the short map lock, survives an overlapping stale full-board
   save, and never advances full-board sync health.
+- Scheduled Linear reconciliation reads one paginated issue inventory and one
+  Project inventory instead of refetching every mapped object. It fetches full
+  comment history only when the latest comment changes inside the approval
+  window. HTTP 400/429 and GraphQL quota responses produce one typed bounded
+  cooldown; no Linear call is made until its persisted expiry.
+- Qualification pre-seal and dispatch both require every selected ticket's Git
+  blob in the sealed control checkout to equal protected `origin/main`.
+  Qualification-only metadata can therefore never validate one contract and
+  dispatch another.
+- Ordinary admission isolates a ticket with malformed dependency syntax and
+  reports its exact ID in controller results, events, and durable incident
+  evidence while eligible siblings continue. A selected qualification ticket
+  with the same defect still refuses the sealed cohort globally.
+- An operator-owned null initiative remains an explicit versioned tombstone,
+  but a Ready ticket made initiative-less is never silently discarded:
+  admission reports its exact ID and `initiative_missing` while healthy
+  siblings continue.
+- Linear Project creation refuses missing mapped Projects, foreign-team
+  mappings, duplicate durable markers, and same-name identity conflicts;
+  Doctor exposes the canonical mapped Project IDs and URLs.
+- A contract-blocked Linear baseline is recorded once per substantive blocker.
+  Exact resume directives and reconciler-authored writes do not advance it;
+  accepted same-blocker decisions survive overlapping saves, while rejected
+  moves stay visible in Linear and typed sync health.
+- An active contract repair with no owner success may follow one exact
+  authenticated forward passport migration after an operator preflight fix.
+  The old signed record is archived, the active record is rebound without
+  incrementing attempts, and any ambiguous lineage fails closed by name.
+- Production certification, activation planning, and activation reject any
+  `factory/QUALIFICATION.json` before receipt or journal mutation. Sealed
+  qualification continues to require its exact manifest.
+- Activation validates protected-main Done or lease-free Canceled truth before
+  considering retained ticket refs. A stale terminal ref is left untouched for
+  lane safety; genuinely nonterminal protected truth still requires the exact
+  branch lease and authorization.
 - Done is projected through one separate exact-ticket Linear mutation only
   after the closeout receipt validates on protected main. The issue is re-read
   as exact Done and one controller event is recorded before lease release;
@@ -224,10 +259,11 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   run, so an already successful and fully charged Narrator may reach bundle
   attestation without another provider reservation; missing or invalid
   evidence still resolves to a provider stage and remains budget-blocked.
-- Reviewer terminalization normalizes exact verdict-only Markdown headings,
-  exact wrapped repair-owner lines, and known Cursor background-callback
-  concatenation only when every verdict and owner signal agrees. Ambiguous,
-  contradictory, and ownerless output remains invalid.
+- Reviewer terminalization normalizes exact verdict-only and `Verdict:` lines
+  with bounded heading, emphasis, and terminal-period variants, exact wrapped
+  repair-owner lines, and known Cursor background-callback concatenation only
+  when every verdict and owner signal agrees. Ambiguous, contradictory,
+  negated, prose-only, and ownerless output remains invalid.
 - Contract 1.8 treats GitHub's exact empty no-required-checks-yet response as
   publication wait. Every other malformed or non-JSON check response remains
   a fail-closed controller error.
@@ -3834,3 +3870,100 @@ row. Reordering and new rows are safe; missing, changed, duplicate, malformed,
 or schema-drifted rows refuse. Closeout projection seeds durable history from
 the exact protected-main worktree instead of a possibly stale runtime checkout,
 preventing a concurrent closeout from deleting already-protected accounting.
+
+## 2026-08-06 — Decision 285: Qualification dispatches protected ticket bytes
+
+Category: Reliability
+
+A qualification candidate may carry control metadata, but every selected
+ticket blob must equal freshly fetched protected main both before seal and
+before claim. No local ticket edit is copied into the execution checkout.
+
+## 2026-08-06 — Decision 286: Reviewer labels tolerate only bounded decoration
+
+Category: State machine
+
+The shared Reviewer parser accepts an exact verdict label with optional heading,
+bold emphasis, and terminal period. It does not infer verdicts from prose,
+negation, or mixed labels.
+
+## 2026-08-06 — Decision 287: Protected terminal truth precedes retained refs
+
+Category: Reliability
+
+Production activation validates protected Done or lease-free Canceled before
+consulting retained ticket refs. Refs remain immutable for lane isolation;
+nonterminal protected truth keeps the existing exact lease checks.
+
+## 2026-08-06 — Decision 288: Qualification metadata is production-invalid
+
+Category: Safety
+
+Production certification, planning, and activation reject a product containing
+`factory/QUALIFICATION.json` before receipt or journal mutation. Qualification
+continues to require the same manifest.
+
+## 2026-08-06 — Decision 289: Linear reconciliation is batched and cooldown-aware
+
+Category: Throughput
+
+Scheduled reconciliation reuses paginated issue and Project inventories and
+loads full comments only for a recent changed comment head. Typed quota
+responses persist a bounded cooldown that is checked before any Linear access.
+
+## 2026-08-06 — Decision 290: Malformed backlog contracts are ticket-local
+
+Category: Reliability
+
+Ordinary admission skips a malformed dependency contract with named durable
+evidence instead of aborting every sibling. Selected qualification contracts
+remain cohort-fatal so a sealed run cannot silently weaken its authorized set.
+
+## 2026-08-06 — Decision 291: Null initiatives are visible admission refusals
+
+Category: Reliability
+
+Linear's null initiative remains an authoritative tombstone rather than
+falling back to Git. A Ready ticket with no effective initiative is reported
+by ID in admission results, events, and incident evidence instead of silently
+disappearing from the candidate set.
+
+## 2026-08-06 — Decision 292: Linear Project identity fails before creation
+
+Category: Reliability
+
+One durable initiative marker and mapped Project ID define canonical identity.
+Missing mappings, foreign-team Projects, duplicate markers, and same-name
+conflicts refuse reconciliation; no heuristic silently creates or adopts a
+replacement. Doctor exposes the canonical mapping for operator cleanup.
+
+## 2026-08-06 — Decision 293: Contract resume intent outranks self-writes
+
+Category: Reliability
+
+The Linear blocked baseline is immutable for one substantive blocker and
+ignores exact receipt-bound resume lines. A decision already validated for that
+same blocker survives a concurrent newer reconciler snapshot. Rejected moves
+remain blocked in authenticated Factory truth but are not overwritten in
+Linear; their typed reason is persisted and deduplicated.
+## 2026-08-06 — Decision 294: Contract-resume refusals are durable and typed
+
+Category: Reliability
+
+Receipt-bound contract recovery keeps its strict authenticated two-line commit.
+The controller records receipt mismatch, ambiguous directives, unpushed heads,
+invalid ancestry, and over-full content as ticket-scoped durable events; Doctor
+folds the latest refusal and recovery event per ticket. Substantive operator
+rulings are pushed and migrated first, followed by a separate exact receipt
+commit, so the security boundary and the operating instructions agree.
+
+## 2026-08-06 — Decision 295: Preflight fixes rebind idle repairs
+
+Category: State machine
+
+An active ordinary contract repair with no successful owner evidence may move
+from its signed head only through one exact authenticated forward passport
+migration. The superseded signed record is archived and the active record is
+re-signed at current HEAD without consuming another attempt. Dependency,
+post-success, cross-Factory, rewritten, missing, or ambiguous lineage remains
+closed with a typed head-moved refusal.

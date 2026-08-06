@@ -92,9 +92,13 @@ block. Only a later Linear update to the declared resume state is operator
 authority; a pre-block state still visible during reconciliation is restored
 to Blocked-Escalated and cannot resume the ticket.
 If that later update names any other state, the reconciler keeps the ticket
-blocked, records the exact decision in `_sync.last_rejected`, and posts one
+blocked in authenticated Factory state, leaves the operator's Linear column
+untouched, records the exact decision in `_sync.last_rejected`, and posts one
 deduplicated comment naming the required `Resume-State` plus the receipt-bound
-Git directive. The narrow transition list is not widened.
+Git directive. The narrow transition list is not widened. The blocked baseline
+is recorded once; exact resume directives and the reconciler's own issue writes
+do not advance it, and an accepted same-blocker decision survives an overlapping
+map save.
 Every later block clears the prior resume overlay and records a new blocked
 baseline even when both blocks share the same coarse state; only an update
 strictly newer than that latest baseline may resume again.
@@ -105,6 +109,13 @@ Their detailed progress remains visible in the issue checklist and log without
 making the board harder to scan.
 
 ## Initiatives and Projects
+
+Each initiative has one canonical Linear Project identified by its durable
+`Software-Factory-Initiative:` marker and mapped ID. A missing mapped Project,
+a foreign-team mapping, duplicate markers, or a same-name identity conflict
+stops reconciliation before a new Project can be created. `doctor --json`
+lists canonical mapped IDs and URLs; cleanup or adoption of an unmarked
+same-name Project remains an explicit operator action.
 
 Each product repo stores initiatives in `factory/initiatives/I-NNN.md`:
 

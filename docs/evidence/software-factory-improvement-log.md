@@ -5550,6 +5550,170 @@ Validation: exact expiry recovers once; live, renewed, malformed, mismatched,
 duplicate, active, and sibling records remain closed or untouched, and restart
 is idempotent.
 
+## FI-20260806-208 — Qualification could dispatch a different ticket contract
+
+Status: Focused qualification and dispatch regressions green; protected CI pending
+Priority: P1 (#341)
+Area: qualification identity
+Owner: Factory
+Impact: the sealed manifest authenticated ticket metadata but not the selected
+ticket blobs, so a control-only checkout could validate one contract and
+dispatch protected main's different contract.
+Smallest repair: require every selected control ticket blob to equal freshly
+fetched protected `origin/main` both before sealing and before claim.
+Validation: mismatches refuse before materialization, lease, or worktree; exact
+blobs continue through both boundaries.
+
+## FI-20260806-209 — Exact Reviewer verdict labels rejected harmless decoration
+
+Status: Focused Reviewer regressions green; protected CI pending
+Priority: P2 (#343)
+Area: Reviewer parsing
+Owner: Factory
+Impact: exact `Verdict:` labels with terminal punctuation or Markdown emphasis
+were treated as malformed, causing avoidable Review laps.
+Smallest repair: normalize only bounded label punctuation and emphasis in the
+shared parser.
+Validation: exact decorated APPROVE and REQUEST CHANGES labels pass; mixed,
+negated, and prose-only verdicts remain invalid.
+
+## FI-20260806-210 — Stale ticket refs shadowed protected terminal truth
+
+Status: Focused activation regression green; protected CI pending
+Priority: P1 (#366)
+Area: production activation
+Owner: Factory
+Impact: a retained qualification ticket ref could block activation after the
+same ticket was already protected Done or lease-free Canceled.
+Smallest repair: validate exact protected terminal truth before selecting a
+ticket ref, without deleting or rewriting any lane's ref.
+Validation: protected Canceled ignores an unchanged stale Planning ref;
+nonterminal protected truth still enforces the existing ref and authorization
+checks.
+
+## FI-20260806-211 — Qualification manifests could enter production ceremony
+
+Status: Focused certification and activation regressions green; protected CI pending
+Priority: P1 (#368)
+Area: production boundary
+Owner: Factory
+Impact: a qualification-only product shape could reach production
+certification or activation, making lane identity ambiguous.
+Smallest repair: reject any `factory/QUALIFICATION.json` before certification
+receipts or activation journals are read or written.
+Validation: stale and current manifests fail certification, plan, and activate
+without creating a receipt or journal.
+
+## FI-20260806-212 — Full Linear reconciliation exhausted request quota
+
+Status: Focused Linear regressions green; protected CI pending
+Priority: P1 (#369)
+Area: Linear reconciliation
+Owner: Factory
+Impact: each scheduled cycle fetched every mapped issue and Project separately,
+then retried quota responses on the next scheduler tick.
+Smallest repair: reuse one paginated issue inventory and one Project inventory,
+fetch comment history only after a recent latest-comment change, and persist a
+typed bounded quota cooldown checked before credentials or API access.
+Validation: a stable one-page cycle uses three reads regardless of mapped ticket
+count; HTTP 400/429 and GraphQL quota shapes share the cooldown, whose active
+window makes zero API calls.
+
+## FI-20260806-213 — One malformed ticket aborted every new admission
+
+Status: Focused dispatcher and controller regressions green; protected CI pending
+Priority: P0 (#371)
+Area: admission isolation
+Owner: Factory
+Impact: invalid dependency syntax in one ordinary backlog ticket aborted the
+whole candidate scan and produced an unnamed incident, blocking unrelated
+eligible siblings.
+Smallest repair: quarantine only that ticket during ordinary enumeration and
+carry its exact typed refusal through dispatch, controller results, events, and
+durable incident evidence. Selected qualification contracts remain globally
+fail-closed.
+Validation: malformed prose, tokens, duplicates, and duplicate fields skip the
+named ticket while a sibling starts; malformed refusal payloads and selected
+qualification contracts still refuse.
+
+## FI-20260806-214 — Null Linear initiative silently removed Ready tickets
+
+Status: Focused dispatcher and controller regressions green; protected CI pending
+Priority: P0 (#372)
+Area: admission visibility
+Owner: Factory
+Impact: an explicit null operator initiative removed the committed field and a
+bare dispatch filter silently omitted an otherwise Ready ticket, making a live
+lane appear healthy and idle.
+Smallest repair: retain the versioned tombstone but carry a named
+`initiative_missing` refusal through dispatch, controller results, events, and
+durable incident evidence.
+Validation: ordinary and qualification scans name the affected ticket while a
+healthy sibling starts; unknown or mismatched refusal payloads remain closed.
+
+## FI-20260806-215 — Linear Project identity could silently duplicate
+
+Status: Focused Linear and Doctor regressions green; protected CI pending
+Priority: P1 (#373)
+Area: Linear Project reconciliation
+Owner: Factory
+Impact: losing one map pointer or marker could create another indistinguishable
+same-name Project, while an existing mapping concealed duplicate markers or a
+Project moved to another team.
+Smallest repair: reuse the paginated Project inventory to require one durable
+identity before creation and expose canonical mapped IDs and URLs in Doctor.
+Validation: marked adoption remains idempotent; unmarked same-name, duplicate
+marker, mapped duplicate, missing, and foreign-team shapes refuse without a
+create mutation.
+
+## FI-20260806-216 — Linear resume intent lost a reconciler write race
+
+Status: Focused Linear regressions green; protected CI pending
+Priority: P0 (#375)
+Area: Linear operator reconciliation
+Owner: Factory
+Impact: a valid contract-blocker move could be silently patched back because
+the reconciler advanced its own freshness baseline and stale-save protection
+then erased the accepted decision.
+Smallest repair: keep one substantive-blocker baseline, ignore exact resume
+directive and self-write changes, preserve a validated same-blocker decision,
+and never patch a rejected operator column back silently.
+Validation: stale and wrong moves remain named refusals; a valid move older than
+a later reconciler write survives, two ticket identities remain isolated, and
+new blocker digests still clear prior authority.
+
+## FI-20260806-217 — Valid contract-resume mistakes looked like an idle lane
+
+Status: Focused state, controller, and Doctor regressions green; protected CI pending
+Priority: P0 (#376)
+Area: contract-block recovery
+Owner: Factory
+Impact: an exact receipt commit left local or a pushed commit containing an
+operator ruling was rejected without an operator-visible reason, making a live
+blocked ticket indistinguishable from an idle lane.
+Smallest repair: retain the strict receipt gate, emit one deduplicated typed
+event with safe evidence, fold unresolved events into Doctor, and document the
+required two-push sequence.
+Validation: over-full, unpushed, wrong-receipt, invalid-ancestry, restart, and
+two-ticket evidence cases are deterministic; a correct pushed commit still
+reopens only its bound role.
+
+## FI-20260806-218 — Operator preflight fixes invalidated active repairs
+
+Status: Focused state-machine regression green; protected CI pending
+Priority: P0 (#377)
+Area: contract-repair lineage
+Owner: Factory
+Impact: the required ticket fix advanced HEAD after repair preparation, causing
+the original resume-commit validator to reject the descendant and strand the
+claim as a controller error before any provider call.
+Smallest repair: rebind only an idle ordinary repair with no owner success
+through the exact authenticated forward passport migration, archiving the old
+signed record and retaining one attempt.
+Validation: the prepared head, operator-fix head, passport edge, rebound signed
+record, superseded archive, and stable attempt count are checked together;
+ambiguous or unauthenticated head movement remains a typed refusal.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

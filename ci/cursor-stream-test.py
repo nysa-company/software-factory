@@ -125,6 +125,34 @@ class CursorStreamTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, "APPROVE\t\n")
 
+    def test_reviewer_normalizes_exact_verdict_label_variants(self) -> None:
+        for terminal in (
+            "Verdict: APPROVE.",
+            "**Verdict: APPROVE.**",
+            "**Verdict: APPROVE**.",
+            "## Verdict: APPROVE.",
+        ):
+            with self.subTest(terminal=terminal):
+                review = f"Checks complete.\n\n{terminal}"
+                result = self.run_verdict([
+                    {"type": "assistant", "message": {"content": review}},
+                    {"type": "result", "subtype": "success", "result": review},
+                ])
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout, "APPROVE\t\n")
+
+        for terminal in (
+            "Verdict: APPROVE.\nREQUEST CHANGES\nFIX-OWNER: builder",
+            "The verdict is not APPROVE.",
+            "I recommend approval.",
+        ):
+            with self.subTest(invalid=terminal):
+                result = self.run_verdict([
+                    {"type": "assistant", "message": {"content": terminal}},
+                    {"type": "result", "subtype": "success", "result": terminal},
+                ])
+                self.assertNotEqual(result.returncode, 0)
+
     def test_reviewer_refuses_multiple_verdict_assistants(self) -> None:
         review = "REQUEST CHANGES\nFIX-OWNER: builder"
         result = self.run_verdict(

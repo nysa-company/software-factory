@@ -147,6 +147,10 @@ class QualificationEnvironmentTest(unittest.TestCase):
         run(self.product, "git", "remote", "add", "origin", "git@example.invalid")
         run(self.product, "git", "add", ".")
         run(self.product, "git", "commit", "-qm", "product")
+        run(
+            self.product, "git", "update-ref", "refs/remotes/origin/main",
+            run(self.product, "git", "rev-parse", "HEAD"),
+        )
 
     def tearDown(self) -> None:
         for base, directories, files in os.walk(self.root, topdown=False):
@@ -304,6 +308,22 @@ class QualificationEnvironmentTest(unittest.TestCase):
                 factory_root=self.factory, product_root=self.product,
                 project="relay", root=self.root,
             ))
+
+    def test_rejects_ticket_blob_that_dispatch_would_not_use(self) -> None:
+        ticket = self.product / "factory/tickets/T-101.md"
+        ticket.write_text(ticket.read_text() + "\n## Log\n\nControl-only edit.\n")
+        run(self.product, "git", "add", str(ticket))
+        run(self.product, "git", "commit", "-qm", "diverge qualification ticket")
+
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError,
+            "T-101: qualification ticket source differs from protected dispatch",
+        ):
+            ENVIRONMENT.prepare(argparse.Namespace(
+                factory_root=self.factory, product_root=self.product,
+                project="relay", root=self.root,
+            ))
+        self.assertFalse((self.root / "marker.json").exists())
 
     def test_rejects_root_too_long_for_cursor_scratch(self) -> None:
         root = Path(tempfile.mkdtemp(

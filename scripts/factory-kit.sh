@@ -1541,6 +1541,12 @@ PY
     die "factory/KIT_PIN must contain exactly one physical lowercase full-SHA line"
 }
 
+require_production_product_shape() {
+  local manifest="$1/factory/QUALIFICATION.json"
+  [[ ! -e "$manifest" && ! -L "$manifest" ]] ||
+    die "production product contains qualification-only factory/QUALIFICATION.json"
+}
+
 product_tree() {
   git -C "$1" rev-parse 'HEAD^{tree}' 2>/dev/null ||
     die "product is not a Git repository"
@@ -2741,15 +2747,32 @@ for ticket_id in sorted(ticket_ids):
     remote_ref = "refs/remotes/origin/" + branch
     local_ref = "refs/heads/" + branch
     remote_tip = remote_tips.get(ticket_id, "")
+    relative = "factory/tickets/%s.md" % ticket_id
+    protected = subprocess.run(
+        ["git", "-C", str(repo), "show", "HEAD:" + relative],
+        text=True, capture_output=True,
+    )
+    protected_states = (
+        re.findall(r"(?mi)^State:\s*(.*?)\s*$", protected.stdout)
+        if protected.returncode == 0 else []
+    )
+    protected_terminal_state = (
+        protected_states[0].strip().lower()
+        if len(protected_states) == 1
+        and protected_states[0].strip().lower() in ("done", "canceled")
+        else ""
+    )
     tracking = subprocess.run(
         ["git", "-C", str(repo), "rev-parse", "--verify", remote_ref],
         text=True, capture_output=True,
     )
     tracking_tip = tracking.stdout.strip() if tracking.returncode == 0 else ""
-    if tracking_tip and remote_tip != tracking_tip:
+    if not protected_terminal_state and tracking_tip and remote_tip != tracking_tip:
         raise SystemExit("%s remote ticket ref is stale or unverified" % ticket_id)
     audit_ref = ""
-    if remote_tip:
+    if protected_terminal_state:
+        source_ref = "HEAD"
+    elif remote_tip:
         if tracking_tip:
             source_ref = remote_ref
         else:
@@ -2775,7 +2798,6 @@ for ticket_id in sorted(ticket_ids):
         raise SystemExit("%s has an unverified local-only ticket branch" % ticket_id)
     else:
         source_ref = "HEAD"
-    relative = "factory/tickets/%s.md" % ticket_id
     content = subprocess.run(
         ["git", "-C", str(repo), "show", source_ref + ":" + relative],
         text=True, capture_output=True,
@@ -3146,6 +3168,7 @@ cmd_certify() {
   remove_symlinked_suite_evidence "$(suite_evidence_file_for "$sha")"
   validate_project_storage "$slug"
   product_top="$(absolute_dir "$product")"
+  require_production_product_shape "$product_top"
   release="$RELEASES_DIR/$sha"
   manifest_values="$(verify_release_from_manifest "$sha")"
   kit_tree="$(printf '%s' "$manifest_values" | awk -F'\t' '{print $1}')"
@@ -3380,6 +3403,7 @@ plan_activation() {
   validate_project_storage "$slug"
   validate_sha "$sha"
   product_top="$(absolute_dir "$product")"
+  require_production_product_shape "$product_top"
   [[ -f "$(maintenance_file_for "$product_top")" &&
      ! -L "$(maintenance_file_for "$product_top")" ]] ||
     die "activation requires MAINTENANCE published by factory-kit pause"
@@ -3475,6 +3499,7 @@ cmd_activate() {
   validate_slug "$slug"
   validate_sha "$sha"
   product_top="$(absolute_dir "$product")"
+  require_production_product_shape "$product_top"
   ensure_managed_directories "$slug"
   project_dir="$PROJECTS_DIR/$slug"
   journal_dir="$(journal_dir_for "$slug")"

@@ -1676,10 +1676,63 @@ class StateMachineTest(unittest.TestCase):
         (self.product / "unexpected").write_text("drift\n", encoding="utf-8")
         run("git", "add", "unexpected", cwd=self.product)
         run("git", "commit", "-qm", "add unrelated drift", cwd=self.product)
-        with self.assertRaisesRegex(
-            STATE.StateError, "operator directive is invalid"
-        ):
+        with self.assertRaises(STATE.ContractResumeError) as raised:
             STATE.operator_resume_role(self.args, passport, "builder")
+        self.assertEqual(raised.exception.reason_code, "resume_ancestry_invalid")
+
+    def test_operator_resume_names_overfull_commit_with_safe_diff(self) -> None:
+        self.args.receipt = "b" * 64
+        path = self.product / "factory/tickets/T-110.md"
+        before = path.read_text(encoding="utf-8")
+        passport = {
+            "branch": "ticket/T-110",
+            "factory_sha": self.args.factory_sha,
+            "head_sha": run("git", "rev-parse", "HEAD", cwd=self.product),
+            "ticket": "T-110",
+        }
+        path.write_text(
+            before.rstrip("\n")
+            + "\n\nOPERATOR RESUME: builder\n"
+            + f"OPERATOR RESUME RECEIPT: {self.args.receipt}\n"
+            + "Operator ruling: preserve the protected test.\n",
+            encoding="utf-8",
+        )
+        run("git", "add", str(path), cwd=self.product)
+        run("git", "commit", "-qm", "overfull contract repair", cwd=self.product)
+
+        with self.assertRaises(STATE.ContractResumeError) as raised:
+            STATE.operator_resume_role(self.args, passport, "builder")
+        error = raised.exception
+        self.assertEqual(error.reason_code, "resume_commit_content_mismatch")
+        self.assertEqual(error.evidence["actual_bytes"], len(path.read_bytes()))
+        self.assertGreater(error.evidence["actual_bytes"], error.evidence["expected_bytes"])
+        self.assertIsInstance(error.evidence["first_differing_line"], int)
+
+    def test_operator_resume_names_ambiguous_directive_pairs(self) -> None:
+        self.args.receipt = "b" * 64
+        path = self.product / "factory/tickets/T-110.md"
+        passport = {
+            "branch": "ticket/T-110",
+            "factory_sha": self.args.factory_sha,
+            "head_sha": run("git", "rev-parse", "HEAD", cwd=self.product),
+            "ticket": "T-110",
+        }
+        path.write_text(
+            path.read_text(encoding="utf-8").rstrip("\n")
+            + "\n\nOPERATOR RESUME: builder\n"
+            + f"OPERATOR RESUME RECEIPT: {self.args.receipt}\n"
+            + "OPERATOR RESUME: planner\n"
+            + f"OPERATOR RESUME RECEIPT: {self.args.receipt}\n",
+            encoding="utf-8",
+        )
+        run("git", "add", str(path), cwd=self.product)
+        run("git", "commit", "-qm", "ambiguous contract repair", cwd=self.product)
+
+        with self.assertRaises(STATE.ContractResumeError) as raised:
+            STATE.operator_resume_role(self.args, passport, "builder")
+        self.assertEqual(
+            raised.exception.reason_code, "resume_directives_ambiguous"
+        )
 
     def test_operator_resume_replaces_one_prior_owner_exactly(self) -> None:
         prior_receipt = "a" * 64
@@ -2221,10 +2274,9 @@ class StateMachineTest(unittest.TestCase):
         ).hexdigest()
         STATE.write_atomic(passports / "T-110.json", passport)
 
-        with self.assertRaisesRegex(
-            STATE.StateError, "receipt-bound operator directive"
-        ):
+        with self.assertRaises(STATE.ContractResumeError) as raised:
             STATE.operator_resume_role(self.args, passport, "test-author")
+        self.assertEqual(raised.exception.reason_code, "resume_receipt_mismatch")
 
         ticket.write_text(
             ticket.read_text(encoding="utf-8")
@@ -2343,6 +2395,107 @@ class StateMachineTest(unittest.TestCase):
                 ("RUN builder", False),
             )
         resolve.assert_called_once_with(self.args)
+
+    def test_active_repair_rebinds_after_operator_preflight_fix(self) -> None:
+        secret = b"k" * 32
+        (self.state_dir / "passport.key").write_bytes(secret)
+        os.chmod(self.state_dir / "passport.key", 0o600)
+        passports = self.state_dir / "passports"
+        passports.mkdir(mode=0o700)
+        ticket = self.product / "factory/tickets/T-110.md"
+        ticket.write_text(
+            ticket.read_text(encoding="utf-8").rstrip()
+            + "\n\nProduct-Decisions: not frozen\n"
+            + "OPERATOR RESUME: planner\n"
+            + f"OPERATOR RESUME RECEIPT: {'b' * 64}\n",
+            encoding="utf-8",
+        )
+        run("git", "add", str(ticket), cwd=self.product)
+        run("git", "commit", "-qm", "resume blocked planner", cwd=self.product)
+        repair_head = run("git", "rev-parse", "HEAD", cwd=self.product)
+        body = {
+            "branch": "ticket/T-110",
+            "factory_sha": self.args.factory_sha,
+            "head_sha": repair_head,
+            "migration_history": [],
+            "schema": STATE.PASSPORT_SCHEMA,
+            "ticket": "T-110",
+        }
+        passport = dict(body)
+        passport["authentication_sha256"] = hmac.new(
+            secret, STATE.canonical(body), hashlib.sha256
+        ).hexdigest()
+        passport["passport_sha256"] = hashlib.sha256(
+            STATE.canonical(passport)
+        ).hexdigest()
+        STATE.write_atomic(passports / "T-110.json", passport)
+        record = STATE.signed_repair({
+            "blocked_receipt": "b" * 64,
+            "blocked_role": "planner",
+            "branch": "ticket/T-110",
+            "factory_sha": self.args.factory_sha,
+            "head_sha": repair_head,
+            "head_tree": run(
+                "git", "rev-parse", "HEAD^{tree}", cwd=self.product
+            ),
+            "passport_sha256": passport["passport_sha256"],
+            "repair_role": "planner",
+            "schema": STATE.REPAIR_SCHEMA,
+            "ticket": "T-110",
+        }, secret)
+        STATE.write_atomic(STATE.repair_path(self.args), record)
+        attempts = STATE.contract_repair_attempt(self.args)
+
+        ticket.write_text(
+            ticket.read_text(encoding="utf-8").replace(
+                "Product-Decisions: not frozen", "Product-Decisions: frozen"
+            ),
+            encoding="utf-8",
+        )
+        run("git", "add", str(ticket), cwd=self.product)
+        run("git", "commit", "-qm", "apply operator preflight ruling", cwd=self.product)
+        fixed_head = run("git", "rev-parse", "HEAD", cwd=self.product)
+
+        def migrate(_args):
+            migrated_body = {
+                **body,
+                "head_sha": fixed_head,
+                "migration_history": [{
+                    "from_factory_sha": self.args.factory_sha,
+                    "from_head_sha": repair_head,
+                    "from_passport_sha256": passport["passport_sha256"],
+                    "schema": STATE.PASSPORT_MIGRATION_SCHEMA,
+                    "to_factory_sha": self.args.factory_sha,
+                    "to_head_sha": fixed_head,
+                }],
+                "parent_digest": passport["passport_sha256"],
+            }
+            migrated = dict(migrated_body)
+            migrated["authentication_sha256"] = hmac.new(
+                secret, STATE.canonical(migrated_body), hashlib.sha256
+            ).hexdigest()
+            migrated["passport_sha256"] = hashlib.sha256(
+                STATE.canonical(migrated)
+            ).hexdigest()
+            STATE.write_atomic(passports / "T-110.json", migrated)
+
+        with mock.patch.object(STATE, "migrate_passport", side_effect=migrate):
+            self.assertEqual(
+                STATE.contract_repair_stage(self.args), ("FIX planner", True)
+            )
+
+        rebound_passport, _ = STATE.authenticated_passport(self.args)
+        rebound = STATE.load_repair(self.args, secret)
+        self.assertEqual(rebound["head_sha"], fixed_head)
+        self.assertEqual(
+            rebound["passport_sha256"], rebound_passport["passport_sha256"]
+        )
+        archived = (
+            STATE.repair_path(self.args).parent / "superseded"
+            / f"T-110-{record['repair_sha256']}.json"
+        )
+        self.assertEqual(json.loads(archived.read_text()), record)
+        self.assertEqual(STATE.contract_repair_attempt(self.args), attempts)
 
     def test_dependency_conflict_routes_exactly_one_new_test_author(self) -> None:
         secret = b"k" * 32
