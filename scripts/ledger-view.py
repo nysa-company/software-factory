@@ -525,7 +525,9 @@ def main():
     validate_projection_target(workdir)
     with projection_locks(root):
         ensure_projectable(root)
-        rows = effective_rows(root)
+        rows = effective_rows(
+            root, durable=workdir / "factory" / "ledger.csv",
+        )
         ensure_projectable(root, rows)
         content = csv_bytes(rows)
         # Recheck immediately before the atomic write while launch and

@@ -115,6 +115,39 @@ def run(repo, *args, input_text=None, check=True):
     return result
 
 
+def ledger_contains_snapshot(current, snapshot):
+    """Accept reordered/new rows while preserving every attested run exactly."""
+    if not current.endswith("\n") or not snapshot.endswith("\n"):
+        return False
+    try:
+        expected = list(csv.reader(io.StringIO(snapshot), strict=True))
+        observed = list(csv.reader(io.StringIO(current), strict=True))
+    except csv.Error:
+        return False
+    if not expected or not observed or expected[0] != observed[0]:
+        return False
+    header = expected[0]
+    if header.count("run_id") != 1:
+        return False
+    run_id = header.index("run_id")
+
+    def indexed(rows):
+        result = {}
+        for row in rows[1:]:
+            if len(row) != len(header) or not row[run_id] or row[run_id] in result:
+                return None
+            result[row[run_id]] = row
+        return result
+
+    expected_rows = indexed(expected)
+    observed_rows = indexed(observed)
+    return (
+        expected_rows is not None
+        and observed_rows is not None
+        and all(observed_rows.get(key) == row for key, row in expected_rows.items())
+    )
+
+
 def exact(value, keys, label):
     if not isinstance(value, dict) or set(value) != keys:
         raise ValidationError(f"{label} has unknown or missing fields")
@@ -420,10 +453,10 @@ def _emergency_terminal(repo, ticket, ref, done):
         ledger_text is None
         or not ledger_text.endswith("\n")
         or hashlib.sha256(ledger_text.encode()).hexdigest() != ledger["sha256"]
-        or current_ledger is None
-        or not current_ledger.startswith(ledger_text)
     ):
         raise ValidationError("emergency closeout ledger does not match")
+    if current_ledger is None or not ledger_contains_snapshot(current_ledger, ledger_text):
+        raise ValidationError("emergency closeout ledger snapshot is not contained")
     return {
         "basis": "attested-emergency-closeout", "ticket": ticket,
         "text": ticket_text,
@@ -554,10 +587,13 @@ def _normal_terminal(repo, ticket, ref):
         or not ledger_text.endswith("\n")
         or hashlib.sha256(ledger_text.encode()).hexdigest()
         != done["ledger"]["sha256"]
-        or current_ledger_text is None
-        or not current_ledger_text.startswith(ledger_text)
     ):
         raise ValidationError("normal protected-main blobs or digests do not match")
+    if (
+        current_ledger_text is None
+        or not ledger_contains_snapshot(current_ledger_text, ledger_text)
+    ):
+        raise ValidationError("normal closeout ledger snapshot is not contained")
     return {"basis": "attested-done", "ticket": ticket, "text": ticket_text}
 
 

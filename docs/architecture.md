@@ -1007,8 +1007,11 @@ tracked bytes; a prior concurrent closeout may already have projected the same
 terminal run set. Ticket and Done-attestation files remain mandatory in every
 closeout commit, and no other paths are allowed. Protected terminal validation
 checks that hash at the immutable closeout commit and requires the current
-ledger to retain those bytes as an unchanged prefix, allowing only later rows
-to be appended.
+ledger to retain every attested run ID with the exact same row. New or
+reordered rows are allowed; missing, changed, duplicate, malformed, or
+header-incompatible rows fail closed. Projection seeds durable history from
+the exact protected-main closeout worktree, never a possibly stale runtime
+checkout, then adds the authoritative settled manifests.
 
 Contract 1.8 exposes `emergency-admit` for one otherwise unchanged pre-provider
 role receipt. Its read-only plan binds an open Factory issue, non-automatic
@@ -1041,7 +1044,7 @@ an explicitly passportless basis only when protected main says it was built
 outside the Factory and controller claim/passport records are both absent.
 Retries accept only the already-committed receipt and original approval hash;
 the terminal reader independently revalidates commit topology, authorized
-paths, source ticket blob, receipt digest, timestamps, and ledger prefix. A
+paths, source ticket blob, receipt digest, timestamps, and ledger containment. A
 merged emergency closeout uses the same protected-terminal-first exact Linear
 Done projection as ordinary closeout.
 Successor qualification reconciles that terminal against the unchanged

@@ -653,6 +653,10 @@ class LedgerViewTest(unittest.TestCase):
         worktree = Path(self.temp.name) / "closeout"
         git(self.root, "worktree", "add", "-q", "-b", "chore/t123-closeout", str(worktree), "origin/main")
 
+        # The runtime root may lag protected main; projection must seed from
+        # the exact closeout worktree so a stale checkout cannot delete history.
+        (self.root / "factory" / "ledger.csv").write_text(HEADER)
+
         path = self.root / "factory" / "runs" / "run-1.meta"
         manifest(
             path, state="completed", go="1", cost="0.40", status="0",
@@ -683,13 +687,13 @@ class LedgerViewTest(unittest.TestCase):
                 durable.mkdir()
             elif replacement == "symlink":
                 durable.symlink_to(saved)
-            refused = run(
+            projected = run(
                 "project", "--factory-root", self.root, "--workdir", worktree,
-                "--ticket", "T-123", check=False,
+                "--ticket", "T-123",
             )
-            self.assertNotEqual(refused.returncode, 0, replacement)
-            self.assertIn("durable ledger", refused.stderr)
-            self.assertEqual((worktree / "factory" / "ledger.csv").read_bytes(), before)
+            self.assertEqual(json.loads(projected.stdout)["sha256"], payload["sha256"])
+            self.assertEqual((worktree / "factory" / "ledger.csv").read_bytes(), content)
+            git(worktree, "checkout", "--", "factory/ledger.csv")
         durable.unlink()
         saved.rename(durable)
 
