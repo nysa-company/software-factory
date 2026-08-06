@@ -3823,3 +3823,14 @@ Factory-generated profile. Filesystem restrictions remain common, denied phases
 retain no external network, and only a reviewed optional or required phase uses
 the network-enabled profile. Missing or malformed profile bindings fail before
 any phase starts.
+
+## 2026-08-06 — Decision 284: Terminal ledgers preserve rows, not byte position
+
+Category: Reliability
+
+Normal and emergency Done receipts bind their immutable closeout ledger, while
+current protected truth must retain every attested run ID with the exact same
+row. Reordering and new rows are safe; missing, changed, duplicate, malformed,
+or schema-drifted rows refuse. Closeout projection seeds durable history from
+the exact protected-main worktree instead of a possibly stale runtime checkout,
+preventing a concurrent closeout from deleting already-protected accounting.

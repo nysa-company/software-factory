@@ -32,6 +32,27 @@ def command(*args, cwd=None, env=None, check=True):
 
 
 class LegacyCloseoutTests(unittest.TestCase):
+    def test_ledger_snapshot_containment_allows_reordering_but_not_tampering(self):
+        header = "date,ticket,run_id\n"
+        snapshot = header + "2026-08-01,T-100,run-1\n2026-08-02,T-101,run-2\n"
+        reordered = (
+            header
+            + "2026-07-01,T-099,run-0\n"
+            + "2026-08-02,T-101,run-2\n"
+            + "2026-08-01,T-100,run-1\n"
+            + "2026-08-03,T-102,run-3\n"
+        )
+        self.assertTrue(legacy_closeout.ledger_contains_snapshot(reordered, snapshot))
+        self.assertFalse(legacy_closeout.ledger_contains_snapshot(
+            reordered.replace("T-100,run-1", "T-100,forged"), snapshot,
+        ))
+        self.assertFalse(legacy_closeout.ledger_contains_snapshot(
+            reordered.replace("2026-08-01,T-100,run-1\n", ""), snapshot,
+        ))
+        self.assertFalse(legacy_closeout.ledger_contains_snapshot(
+            reordered + "2026-08-04,T-100,run-1\n", snapshot,
+        ))
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="legacy-closeout-test.")
         root = Path(self.temp.name)
