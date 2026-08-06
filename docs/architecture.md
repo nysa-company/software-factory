@@ -1040,7 +1040,9 @@ authenticated source passport and its exact signed idle pause; it does not
 fabricate an Approved/merged passport. The reducer retains historical roles
 and spend, attributes no provider spend to the successor, and excludes only
 that ticket from publication replay. Evidence drift or duplication fails
-closed.
+closed. The emergency receipt may name the current candidate or an earlier
+candidate in the active qualification environment's content-addressed receipt
+chain; arbitrary historical Factory identities remain invalid.
 
 A control-plane release may close an already-approved ticket from its older
 ticket-pinned release. Done validates the protected bundle and approval against

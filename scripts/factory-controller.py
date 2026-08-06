@@ -650,6 +650,53 @@ class Controller:
             "terminal_basis": terminal["basis"],
         }
 
+    def qualification_release_receipts(self) -> dict[str, str]:
+        root = safe_directory(self.release_path.parent.parent)
+        if self.release_path.parent.name != "releases":
+            raise ControllerError("qualification release path is invalid")
+        projects = safe_directory(root / "projects")
+        active = read(safe_directory(projects / self.project) / "active.json")
+        receipts = safe_directory(root / "receipts")
+        receipt_id = active.get("receipt_id")
+        if (
+            active.get("project") != self.project
+            or active.get("kit_sha") != self.release_path.name
+            or active.get("release_path") != str(self.release_path)
+            or not DIGEST.fullmatch(receipt_id or "")
+        ):
+            raise ControllerError("qualification release receipt is invalid")
+        result: dict[str, str] = {}
+        seen: set[str] = set()
+        while receipt_id:
+            if receipt_id in seen or len(seen) >= 128:
+                raise ControllerError("qualification release receipt is invalid")
+            seen.add(receipt_id)
+            receipt = read(receipts / f"{receipt_id}.json")
+            unsigned = dict(receipt)
+            embedded = unsigned.pop("receipt_id", "")
+            previous = receipt.get("previous_receipt_id")
+            kit_sha = receipt.get("kit_sha")
+            if (
+                embedded != receipt_id
+                or receipt_id
+                != hashlib.sha256((canonical(unsigned) + "\n").encode()).hexdigest()
+                or receipt.get("project") != self.project
+                or receipt.get("contract_version") != "1.8.0"
+                or receipt.get("qualification_mode") != "isolated"
+                or receipt.get("product_path") != str(self.product)
+                or receipt.get("status") != "pass"
+                or not SHA.fullmatch(kit_sha or "")
+                or not SHA.fullmatch(receipt.get("kit_tree") or "")
+                or not DIGEST.fullmatch(receipt.get("provider_policy_sha256") or "")
+                or (previous is not None and not DIGEST.fullmatch(previous or ""))
+            ):
+                raise ControllerError("qualification release receipt is invalid")
+            result.setdefault(kit_sha, receipt_id)
+            receipt_id = previous
+        if self.release_path.name not in result:
+            raise ControllerError("qualification release receipt is invalid")
+        return result
+
     def qualification_emergency_terminal(self, ticket: str) -> dict[str, Any]:
         if (
             not self.qualification
@@ -678,13 +725,16 @@ class Controller:
                 "factory_sha", "head_sha",
             )
         }
+        release_receipts = self.qualification_release_receipts()
+        terminal_factory_sha = done.get("kit_sha")
         if (
             terminal.get("terminal_basis") != "attested-emergency-closeout"
             or done.get("schema")
             != "nysa.software-factory.ticket-emergency-done/v1"
-            or done.get("kit_sha") != self.release_path.name
+            or not SHA.fullmatch(terminal_factory_sha or "")
+            or terminal_factory_sha not in release_receipts
             or not isinstance(plan, dict)
-            or plan.get("kit_sha") != self.release_path.name
+            or plan.get("kit_sha") != terminal_factory_sha
             or plan.get("execution_basis") != "authenticated-passport"
             or passport_basis != expected_passport
             or passport.get("factory_sha")
@@ -728,6 +778,8 @@ class Controller:
             "source_head_sha": passport["head_sha"],
             "source_passport_sha256": passport["passport_sha256"],
             "source_publication_state": passport["publication_state"],
+            "terminal_factory_sha": terminal_factory_sha,
+            "terminal_release_receipt_id": release_receipts[terminal_factory_sha],
         }
 
     def record_qualification_done_targets(self) -> None:
@@ -832,7 +884,8 @@ class Controller:
                     "reconciliation_schema", "source_current_state",
                     "source_factory_sha", "source_head_sha",
                     "source_passport_sha256", "source_publication_state",
-                    "terminal_basis",
+                    "terminal_basis", "terminal_factory_sha",
+                    "terminal_release_receipt_id",
                 }
                 if matching_emergency and any(
                     matching_emergency[0].get(name) != reconciliation[name]

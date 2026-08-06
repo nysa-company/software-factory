@@ -447,7 +447,8 @@ def verify(
                 "qualification_manifest_sha256", "reconciliation_schema",
                 "schema", "source_current_state", "source_factory_sha",
                 "source_head_sha", "source_passport_sha256",
-                "source_publication_state", "terminal_basis", "ticket",
+                "source_publication_state", "terminal_basis",
+                "terminal_factory_sha", "terminal_release_receipt_id", "ticket",
             }
             required = allowed - {
                 "event_sha256", "qualification_generation",
@@ -461,6 +462,10 @@ def verify(
                 != EMERGENCY_TERMINAL_RECONCILIATION_SCHEMA
                 or emergency.get("terminal_basis")
                 != "attested-emergency-closeout"
+                or not SHA.fullmatch(emergency.get("terminal_factory_sha", ""))
+                or not DIGEST.fullmatch(
+                    emergency.get("terminal_release_receipt_id", "")
+                )
                 or emergency.get("qualification_charge_micro_usd") != 0
                 or emergency.get("source_factory_sha") != source_factory_sha
                 or emergency.get("source_factory_sha") != passport.get("factory_sha")
@@ -479,9 +484,9 @@ def verify(
                 or done.get("schema")
                 != "nysa.software-factory.ticket-emergency-done/v1"
                 or done.get("ticket") != ticket
-                or done.get("kit_sha") != factory_sha
+                or done.get("kit_sha") != emergency.get("terminal_factory_sha")
                 or not isinstance(plan, dict)
-                or plan.get("kit_sha") != factory_sha
+                or plan.get("kit_sha") != emergency.get("terminal_factory_sha")
                 or plan.get("execution_basis") != "authenticated-passport"
                 or passport_basis != {
                     name: passport.get(name)
