@@ -5681,6 +5681,21 @@ and never patch a rejected operator column back silently.
 Validation: stale and wrong moves remain named refusals; a valid move older than
 a later reconciler write survives, two ticket identities remain isolated, and
 new blocker digests still clear prior authority.
+## FI-20260806-217 — Valid contract-resume mistakes looked like an idle lane
+
+Status: Focused state, controller, and Doctor regressions green; protected CI pending
+Priority: P0 (#376)
+Area: contract-block recovery
+Owner: Factory
+Impact: an exact receipt commit left local or a pushed commit containing an
+operator ruling was rejected without an operator-visible reason, making a live
+blocked ticket indistinguishable from an idle lane.
+Smallest repair: retain the strict receipt gate, emit one deduplicated typed
+event with safe evidence, fold unresolved events into Doctor, and document the
+required two-push sequence.
+Validation: over-full, unpushed, wrong-receipt, invalid-ancestry, restart, and
+two-ticket evidence cases are deterministic; a correct pushed commit still
+reopens only its bound role.
 
 ## Maintenance rule
 

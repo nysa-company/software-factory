@@ -1676,10 +1676,63 @@ class StateMachineTest(unittest.TestCase):
         (self.product / "unexpected").write_text("drift\n", encoding="utf-8")
         run("git", "add", "unexpected", cwd=self.product)
         run("git", "commit", "-qm", "add unrelated drift", cwd=self.product)
-        with self.assertRaisesRegex(
-            STATE.StateError, "operator directive is invalid"
-        ):
+        with self.assertRaises(STATE.ContractResumeError) as raised:
             STATE.operator_resume_role(self.args, passport, "builder")
+        self.assertEqual(raised.exception.reason_code, "resume_ancestry_invalid")
+
+    def test_operator_resume_names_overfull_commit_with_safe_diff(self) -> None:
+        self.args.receipt = "b" * 64
+        path = self.product / "factory/tickets/T-110.md"
+        before = path.read_text(encoding="utf-8")
+        passport = {
+            "branch": "ticket/T-110",
+            "factory_sha": self.args.factory_sha,
+            "head_sha": run("git", "rev-parse", "HEAD", cwd=self.product),
+            "ticket": "T-110",
+        }
+        path.write_text(
+            before.rstrip("\n")
+            + "\n\nOPERATOR RESUME: builder\n"
+            + f"OPERATOR RESUME RECEIPT: {self.args.receipt}\n"
+            + "Operator ruling: preserve the protected test.\n",
+            encoding="utf-8",
+        )
+        run("git", "add", str(path), cwd=self.product)
+        run("git", "commit", "-qm", "overfull contract repair", cwd=self.product)
+
+        with self.assertRaises(STATE.ContractResumeError) as raised:
+            STATE.operator_resume_role(self.args, passport, "builder")
+        error = raised.exception
+        self.assertEqual(error.reason_code, "resume_commit_content_mismatch")
+        self.assertEqual(error.evidence["actual_bytes"], len(path.read_bytes()))
+        self.assertGreater(error.evidence["actual_bytes"], error.evidence["expected_bytes"])
+        self.assertIsInstance(error.evidence["first_differing_line"], int)
+
+    def test_operator_resume_names_ambiguous_directive_pairs(self) -> None:
+        self.args.receipt = "b" * 64
+        path = self.product / "factory/tickets/T-110.md"
+        passport = {
+            "branch": "ticket/T-110",
+            "factory_sha": self.args.factory_sha,
+            "head_sha": run("git", "rev-parse", "HEAD", cwd=self.product),
+            "ticket": "T-110",
+        }
+        path.write_text(
+            path.read_text(encoding="utf-8").rstrip("\n")
+            + "\n\nOPERATOR RESUME: builder\n"
+            + f"OPERATOR RESUME RECEIPT: {self.args.receipt}\n"
+            + "OPERATOR RESUME: planner\n"
+            + f"OPERATOR RESUME RECEIPT: {self.args.receipt}\n",
+            encoding="utf-8",
+        )
+        run("git", "add", str(path), cwd=self.product)
+        run("git", "commit", "-qm", "ambiguous contract repair", cwd=self.product)
+
+        with self.assertRaises(STATE.ContractResumeError) as raised:
+            STATE.operator_resume_role(self.args, passport, "builder")
+        self.assertEqual(
+            raised.exception.reason_code, "resume_directives_ambiguous"
+        )
 
     def test_operator_resume_replaces_one_prior_owner_exactly(self) -> None:
         prior_receipt = "a" * 64
@@ -2221,10 +2274,9 @@ class StateMachineTest(unittest.TestCase):
         ).hexdigest()
         STATE.write_atomic(passports / "T-110.json", passport)
 
-        with self.assertRaisesRegex(
-            STATE.StateError, "receipt-bound operator directive"
-        ):
+        with self.assertRaises(STATE.ContractResumeError) as raised:
             STATE.operator_resume_role(self.args, passport, "test-author")
+        self.assertEqual(raised.exception.reason_code, "resume_receipt_mismatch")
 
         ticket.write_text(
             ticket.read_text(encoding="utf-8")

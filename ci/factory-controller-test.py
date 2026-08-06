@@ -77,6 +77,70 @@ class FactoryControllerTest(unittest.TestCase):
         ]
         self.assertEqual(len(matching), 1)
 
+    def test_contract_resume_refusal_is_restart_safe_and_ticket_scoped(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        claim = {"receipt": "c" * 64, "ticket": "T-110"}
+        evidence = {
+            "local_head": "b" * 40,
+            "remote_head": "a" * 40,
+        }
+        controller.record_contract_resume_refusal(
+            claim, "resume_commit_not_pushed", evidence
+        )
+        CONTROL.Controller(self.args).record_contract_resume_refusal(
+            claim, "resume_commit_not_pushed", evidence
+        )
+        claim["receipt"] = "d" * 64
+        controller.record_contract_resume_refusal(
+            claim, "resume_commit_not_pushed", evidence
+        )
+        controller.record_contract_resume_refusal(
+            {"receipt": "e" * 64, "ticket": "T-111"},
+            "resume_commit_not_pushed", evidence,
+        )
+        refusals = [
+            CONTROL.read(path) for path in controller.events.glob("*.json")
+            if CONTROL.read(path).get("event") == "contract_resume_refused"
+        ]
+        self.assertEqual(
+            sorted(item["ticket"] for item in refusals),
+            ["T-110", "T-110", "T-111"],
+        )
+
+    def test_remote_cell_head_status_distinguishes_unpushed_from_diverged(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        claim = {
+            "branch": "ticket/T-110",
+            "ticket": "T-110",
+            "worktree": str(self.root / "cell-1"),
+        }
+        local = "b" * 40
+        remote = "a" * 40
+        responses = [
+            CONTROL.subprocess.CompletedProcess([], 0, local + "\n", ""),
+            CONTROL.subprocess.CompletedProcess(
+                [], 0, f"{remote}\trefs/heads/{claim['branch']}\n", ""
+            ),
+            CONTROL.subprocess.CompletedProcess([], 0, "", ""),
+        ]
+        with patch.object(CONTROL.subprocess, "run", side_effect=responses):
+            self.assertEqual(
+                controller.remote_cell_head_status(claim),
+                ("resume_commit_not_pushed", local, remote),
+            )
+        responses[-1] = CONTROL.subprocess.CompletedProcess([], 1, "", "")
+        with patch.object(CONTROL.subprocess, "run", side_effect=responses):
+            self.assertEqual(
+                controller.remote_cell_head_status(claim),
+                ("resume_ancestry_invalid", local, remote),
+            )
+        responses[-1] = CONTROL.subprocess.CompletedProcess([], 128, "", "")
+        with patch.object(CONTROL.subprocess, "run", side_effect=responses):
+            self.assertEqual(
+                controller.remote_cell_head_status(claim),
+                ("remote_unavailable", local, remote),
+            )
+
     def test_qualification_events_bind_the_exact_manifest_generation(self) -> None:
         manifest = {
             "budget_usd": "100.000000",
@@ -2595,6 +2659,14 @@ class FactoryControllerTest(unittest.TestCase):
             if args[:2] == ("state-machine", "block"):
                 return {"status": "blocked"}
             if args[:2] == ("state-machine", "resume"):
+                if resume_status == "error":
+                    return {
+                        "actual_bytes": 120,
+                        "expected_bytes": 80,
+                        "first_differing_line": 5,
+                        "reason_code": "resume_commit_content_mismatch",
+                        "status": "error",
+                    }
                 return {"status": resume_status}
             if args[:2] == ("passport", "validate"):
                 return {"passport": passport_digest, "status": "ok"}
@@ -2623,13 +2695,34 @@ class FactoryControllerTest(unittest.TestCase):
         )
 
         ticket.write_text(
-            f"# T-110\n\nOPERATOR RESUME RECEIPT: {receipt}\n",
+            f"# T-110\n\nOPERATOR RESUME: planner\n"
+            f"OPERATOR RESUME RECEIPT: {receipt}\n",
             encoding="utf-8",
+        )
+        cell_status = "resume_commit_not_pushed"
+        controller.remote_cell_head_status = lambda _claim: (
+            cell_status, head, "a" * 40
         )
         calls.clear()
         with patch.object(CONTROL.subprocess, "run", return_value=remote):
             controller.recover_repaired_failures([claim])
+        self.assertIn(("contract_resume_refused",), calls)
+        self.assertNotIn(
+            ("state-machine", "resume"), [call[:2] for call in calls]
+        )
+
+        calls.clear()
+        cell_status = "pushed"
+        with patch.object(CONTROL.subprocess, "run", return_value=remote):
+            controller.recover_repaired_failures([claim])
         self.assertIn(("state-machine", "resume"), [call[:2] for call in calls])
+
+        calls.clear()
+        resume_status = "error"
+        with patch.object(CONTROL.subprocess, "run", return_value=remote):
+            controller.recover_repaired_failures([claim])
+        self.assertIn(("contract_resume_refused",), calls)
+        self.assertEqual(claim["status"], "blocked")
 
         calls.clear()
         resume_status = "ready"
@@ -4974,9 +5067,13 @@ class FactoryControllerTest(unittest.TestCase):
         )
         calls = []
         validations = iter((False, False, True, True))
-        remote_heads = iter((False, True))
         controller.remote_passport_valid = lambda _claim: next(validations)
-        controller.remote_cell_head_valid = lambda _claim: next(remote_heads)
+        remote_heads = iter((
+            ("remote_unavailable", "", ""),
+            ("pushed", "c" * 40, "c" * 40),
+            ("pushed", "c" * 40, "c" * 40),
+        ))
+        controller.remote_cell_head_status = lambda _claim: next(remote_heads)
         controller.ensure_lease = lambda *_args: calls.append(("ensure-lease",))
 
         def migrate(_claim, publication):

@@ -495,9 +495,54 @@ echo "gh version test https://cli-user:$CLI_SECRET@example.invalid/version"
 EOF
 chmod +x "$STUB_BIN/hermes" "$STUB_BIN/claude" "$STUB_BIN/codex" "$STUB_BIN/agent" "$STUB_BIN/gh"
 
+CONTROLLER_STATE="$TMP/controller-state"
+mkdir -m 700 "$CONTROLLER_STATE" "$CONTROLLER_STATE/events"
+python3 - "$CONTROLLER_STATE/events" "$KIT_SHA" <<'PY'
+import hashlib
+import json
+import os
+from pathlib import Path
+import sys
+
+events, factory_sha = Path(sys.argv[1]), sys.argv[2]
+
+def write(name, ticket, observed, **details):
+    value = {
+        "event": name,
+        "factory_sha": factory_sha,
+        "observed_at_epoch_ns": observed,
+        "schema": "nysa.software-factory.controller-event/v1",
+        "ticket": ticket,
+        **details,
+    }
+    canonical = json.dumps(
+        value, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+    ).encode()
+    value["event_sha256"] = hashlib.sha256(canonical).hexdigest()
+    path = events / f"{observed}-{ticket}.json"
+    path.write_text(json.dumps(value, sort_keys=True) + "\n", encoding="utf-8")
+    os.chmod(path, 0o600)
+
+write(
+    "contract_resume_refused", "T-110", 1,
+    actual_bytes=120, expected_bytes=80, first_differing_line=5,
+    blocked_receipt_sha256="b" * 64,
+    reason_code="resume_commit_content_mismatch",
+)
+write(
+    "contract_resume_refused", "T-111", 2,
+    blocked_receipt_sha256="c" * 64,
+    local_head="b" * 40, reason_code="resume_commit_not_pushed",
+    remote_head="a" * 40,
+)
+write("contract_blocker_recovered", "T-111", 3)
+PY
+
 HOME="$TEST_HOME" PATH="$STUB_BIN:$PATH" FACTORY_LINEAR_FRESH_SECONDS=600 \
+  FACTORY_CONTROLLER_STATE_DIR="$CONTROLLER_STATE" \
   bash "$DOCTOR" --json --project relay > "$JSON_OUT"
 HOME="$TEST_HOME" PATH="$STUB_BIN:$PATH" FACTORY_LINEAR_FRESH_SECONDS=600 \
+  FACTORY_CONTROLLER_STATE_DIR="$CONTROLLER_STATE" \
   bash "$DOCTOR" --project relay > "$HUMAN_OUT"
 
 assert_no_secret() {
@@ -572,6 +617,18 @@ assert checks["linear_sync"]["projects"] == [{
     "project_id": "project-canonical",
     "project_url": "https://linear.app/test/project/project-canonical",
 }]
+assert checks["contract_resume"] == {
+    "incidents": [{
+        "actual_bytes": 120,
+        "blocked_receipt_sha256": "b" * 64,
+        "expected_bytes": 80,
+        "first_differing_line": 5,
+        "observed_at_epoch_ns": 1,
+        "reason_code": "resume_commit_content_mismatch",
+        "ticket": "T-110",
+    }],
+    "status": "warning",
+}
 allowed = {"ok", "warning", "error", "unknown"}
 assert data["overall_status"] in allowed
 assert all(check["status"] in allowed for check in checks.values())
@@ -905,7 +962,11 @@ if compgen -G "$TMP/launcher-tmp/factory-launch-tree.*" >/dev/null; then
   fail "signal cleanup retained the raw wrapper workspace"
 fi
 
-run_launcher launchtest doctor --json > "$TMP/launcher-doctor.json"
+mkdir -m 700 -p "$KITS_ROOT/projects/launchtest/controller/events"
+if ! run_launcher launchtest doctor --json > "$TMP/launcher-doctor.json"; then
+  cat "$TMP/launcher-doctor.json" >&2
+  fail "launcher doctor rejected controller-state diagnostics"
+fi
 python3 - "$TMP/launcher-doctor.json" "$SHA_A" "$RELEASE_A" "$LAUNCH_PRODUCT" <<'PY'
 import json
 import os
@@ -923,6 +984,9 @@ assert_no_secret "$TMP/launcher-doctor.json"
 DOCTOR_HELPER_ENV="$LAUNCH_PRODUCT/factory/doctor-helper.env"
 assert_release_metadata "$DOCTOR_HELPER_ENV" "$SHA_A" "$TREE_A" "$RELEASE_A"
 assert_helper_confinement "$DOCTOR_HELPER_ENV"
+EXPECTED_CONTROLLER_STATE="$(cd "$KITS_ROOT/projects/launchtest/controller" && pwd -P)"
+grep -Fx "FACTORY_CONTROLLER_STATE_DIR=$EXPECTED_CONTROLLER_STATE" \
+  "$DOCTOR_HELPER_ENV" >/dev/null || fail "doctor did not receive controller state"
 
 # The upgraded standalone launcher must continue selecting an inherited 1.1
 # release without rewriting its public contract.

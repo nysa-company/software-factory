@@ -63,6 +63,26 @@ class StateError(ValueError):
     pass
 
 
+class ContractResumeError(StateError):
+    def __init__(self, reason_code: str, message: str, **evidence: Any) -> None:
+        super().__init__(message)
+        self.reason_code = reason_code
+        self.evidence = evidence
+
+
+def first_differing_line(expected: str, actual: str) -> int | None:
+    expected_lines = expected.splitlines(keepends=True)
+    actual_lines = actual.splitlines(keepends=True)
+    for index in range(max(len(expected_lines), len(actual_lines))):
+        if (
+            index >= len(expected_lines)
+            or index >= len(actual_lines)
+            or expected_lines[index] != actual_lines[index]
+        ):
+            return index + 1
+    return None
+
+
 def canonical(value: Any) -> bytes:
     return (
         json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
@@ -823,11 +843,16 @@ def operator_resume_role(
         current,
         re.M,
     )
-    if (
-        len(directives) != 1
-        or receipt_directives != [args.receipt]
-    ):
-        raise StateError("contract repair requires a receipt-bound operator directive")
+    if len(directives) != 1 or len(receipt_directives) != 1:
+        raise ContractResumeError(
+            "resume_directives_ambiguous",
+            "contract repair requires exactly one receipt-bound operator directive",
+        )
+    if receipt_directives[0] != args.receipt:
+        raise ContractResumeError(
+            "resume_receipt_mismatch",
+            "contract repair requires a receipt-bound operator directive: receipt mismatch",
+        )
     repair_role = directives[0]
     directive = f"OPERATOR RESUME: {repair_role}"
     receipt_directive = f"OPERATOR RESUME RECEIPT: {args.receipt}"
@@ -889,7 +914,10 @@ def operator_resume_role(
             continue
         candidates.append((candidate, ancestry[1]))
     if len(candidates) != 1:
-        raise StateError("contract repair operator directive is invalid")
+        raise ContractResumeError(
+            "resume_ancestry_invalid",
+            "contract repair operator directive is invalid: ancestry",
+        )
     commit, parent = candidates[0]
     before = git(args.workdir, "show", f"{parent}:{relative}") + "\n"
     after = git(args.workdir, "show", f"{commit}:{relative}") + "\n"
@@ -932,16 +960,26 @@ def operator_resume_role(
             flags=re.M,
         )
     else:
-        raise StateError("contract repair operator directive is invalid")
+        raise ContractResumeError(
+            "resume_directives_ambiguous",
+            "contract repair operator directive is invalid: prior directives are ambiguous",
+        )
     changed = git(args.workdir, "diff", "--name-only", f"{parent}..{commit}").splitlines()
     current_head = git(args.workdir, "rev-parse", "HEAD")
-    if (
-        len(directives) != 1
-        or after != expected
-        or changed != [relative]
-        or current_head not in {commit, prior_head}
-    ):
-        raise StateError("contract repair operator directive is invalid")
+    if after != expected or changed != [relative]:
+        raise ContractResumeError(
+            "resume_commit_content_mismatch",
+            "contract repair operator directive is invalid: commit must contain only the exact directives",
+            actual_bytes=len(after.encode()),
+            changed_path_count=len(changed),
+            expected_bytes=len(expected.encode()),
+            first_differing_line=first_differing_line(expected, after),
+        )
+    if current_head not in {commit, prior_head}:
+        raise ContractResumeError(
+            "resume_ancestry_invalid",
+            "contract repair operator directive is invalid: ancestry",
+        )
     return repair_role
 
 
@@ -3424,10 +3462,13 @@ def main() -> None:
         subprocess.SubprocessError,
         UnicodeError,
     ) as error:
-        print(json.dumps({
+        failure = {
             "error": str(error), "schema": SCHEMA, "status": "error",
             "ticket": args.ticket,
-        }, sort_keys=True))
+        }
+        if isinstance(error, ContractResumeError):
+            failure.update(reason_code=error.reason_code, **error.evidence)
+        print(json.dumps(failure, sort_keys=True))
         raise SystemExit(1)
 
 

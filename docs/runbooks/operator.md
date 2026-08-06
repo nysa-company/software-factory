@@ -609,16 +609,19 @@ These run in your interactive session — never inside the loop. The factory's o
 - Assign an issue to a different initiative by changing its Linear Project. The next successful pull updates the ignored operator overlay; trusted materialization updates `Initiative:` on the ticket branch. Removing all Project membership clears the effective initiative and makes preflight ineligible until the issue is assigned again.
 - Prioritize by setting priority and moving Backlog → Ready. Wait for sync health to advance before dispatching.
 - Contract 1.2 stops in Review. Under contract 1.3, wait for trusted bundle attestation to create Awaiting Approval, then make the one business decision by moving it to Approved in Linear. Do not click a separate GitHub approval or bypass protection; the trusted approval attestation requests auto-merge. Done appears only after the protected closeout commit merges.
-- Resume an escalated contract blocker by committing exactly
-  `OPERATOR RESUME: <role>` and
-  `OPERATOR RESUME RECEIPT: <current-blocked-receipt-sha256>` to its ticket
-  file, replacing the one prior pair when present and changing no other path.
-  Then move the Linear issue out of Blocked-Escalated to the ticket's
-  `Resume-State:`. A missing, stale, mismatched, partial, or otherwise illegal
-  decision is rejected and reported in sync health; an earlier decision never
-  authorizes a later blocker. The exact ticket-only commit may be the direct
-  child of the current authenticated passport head; block recovery validates
-  that boundary and migrates the passport through it before resuming.
+- Resume an escalated contract blocker in two pushed commits when a substantive
+  ruling is needed. First record and push only the ruling or requested
+  `Protected-Test-Conflicts` context, leave Linear blocked, and wait for
+  `contract_block_passport_migrated`. Then make and push a ticket-only commit
+  containing exactly `OPERATOR RESUME: <role>` and
+  `OPERATOR RESUME RECEIPT: <current-blocked-receipt-sha256>`, replacing the one
+  prior pair when present and changing nothing else. Do not combine the ruling
+  and receipt pair in one commit, and do not leave the receipt commit local.
+  Finally move Linear from Blocked-Escalated to the ticket's `Resume-State:`.
+  A missing, stale, mismatched, partial, unpushed, over-full, or otherwise
+  illegal decision is rejected; `doctor --json` reports it under
+  `checks.contract_resume.incidents` with a typed reason. An earlier decision
+  never authorizes a later blocker.
 - Treat receipt-bound `OPERATOR RESUME` as the contract-block recovery and
   hash-approved `emergency-admit` as the one-use pre-provider control-plane
   fallback. Neither grants a lifecycle transition or skips any downstream

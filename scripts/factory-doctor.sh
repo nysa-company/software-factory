@@ -100,9 +100,11 @@ trap cleanup EXIT HUP INT TERM
 CLI_FILE="$TMP/clis.tsv"
 RUN_FILE="$TMP/runs.tsv"
 LEASE_FILE="$TMP/leases.tsv"
+CONTRACT_RESUME_FILE="$TMP/contract-resume.json"
 : > "$CLI_FILE"
 : > "$RUN_FILE"
 : > "$LEASE_FILE"
+printf '[]\n' > "$CONTRACT_RESUME_FILE"
 
 sanitize() {
   "$PYTHON_BIN" -c '
@@ -420,6 +422,122 @@ fi
 [[ "$MALFORMED_DISPATCH_LEASES" -eq 0 ]] || RUNTIME_STATUS="error"
 [[ "$PROVIDER_LOCK_STATE" != "malformed" ]] || RUNTIME_STATUS="error"
 
+CONTRACT_RESUME_STATUS="ok"
+if [[ -n "${FACTORY_CONTROLLER_STATE_DIR:-}" ]]; then
+  if ! "$PYTHON_BIN" -I -S - "$FACTORY_CONTROLLER_STATE_DIR" \
+      > "$CONTRACT_RESUME_FILE" <<'PY'
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import stat
+import sys
+
+root = Path(sys.argv[1]).resolve()
+reasons = {
+    "resume_ancestry_invalid",
+    "resume_commit_content_mismatch",
+    "resume_commit_not_pushed",
+    "resume_directives_ambiguous",
+    "resume_receipt_mismatch",
+}
+resolved = {"contract_blocker_recovered", "recorded_contract_repair_prepared"}
+
+def secure(path, *, directory=False):
+    info = path.lstat()
+    kind = stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode)
+    if (not path.is_absolute() or path.resolve() != path or path.is_symlink()
+            or not kind or info.st_uid != os.geteuid()
+            or (not directory and info.st_nlink != 1)
+            or info.st_mode & (0o022 if directory else 0o077)):
+        raise ValueError
+
+try:
+    secure(root, directory=True)
+    events = root / "events"
+    if not events.exists():
+        print("[]")
+        raise SystemExit(0)
+    secure(events, directory=True)
+    latest = {}
+    for path in sorted(events.iterdir()):
+        if path.suffix != ".json":
+            continue
+        secure(path)
+        if path.stat().st_size > 1_048_576:
+            raise ValueError
+        value = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(value, dict):
+            raise ValueError
+        digest = value.pop("event_sha256", "")
+        canonical = json.dumps(
+            value, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+        ).encode()
+        if (digest != hashlib.sha256(canonical).hexdigest()
+                or value.get("schema") != "nysa.software-factory.controller-event/v1"
+                or not isinstance(value.get("observed_at_epoch_ns"), int)
+                or isinstance(value.get("observed_at_epoch_ns"), bool)
+                or value["observed_at_epoch_ns"] < 0):
+            raise ValueError
+        event = value.get("event")
+        if event != "contract_resume_refused" and event not in resolved:
+            continue
+        ticket = value.get("ticket")
+        if not isinstance(ticket, str) or not re.fullmatch(r"T-[0-9]+", ticket):
+            raise ValueError
+        if event == "contract_resume_refused":
+            if (value.get("reason_code") not in reasons
+                    or not re.fullmatch(
+                        r"[0-9a-f]{64}", value.get("blocked_receipt_sha256", "")
+                    )):
+                raise ValueError
+            incident = {
+                key: value[key]
+                for key in (
+                    "actual_bytes", "blocked_receipt_sha256",
+                    "changed_path_count", "expected_bytes", "first_differing_line",
+                    "local_head", "observed_at_epoch_ns", "reason_code",
+                    "remote_head", "ticket",
+                )
+                if key in value
+            }
+            for key in (
+                "actual_bytes", "changed_path_count", "expected_bytes",
+                "first_differing_line",
+            ):
+                if key in incident and incident[key] is not None and (
+                    isinstance(incident[key], bool)
+                    or not isinstance(incident[key], int)
+                    or incident[key] < 0
+                ):
+                    raise ValueError
+            for key in ("local_head", "remote_head"):
+                if key in incident and incident[key] is not None and not re.fullmatch(
+                    r"[0-9a-f]{40}", incident[key]
+                ):
+                    raise ValueError
+        else:
+            incident = None
+        observed = value["observed_at_epoch_ns"]
+        if ticket not in latest or observed > latest[ticket][0]:
+            latest[ticket] = (observed, incident)
+    print(json.dumps([
+        incident
+        for _, incident in sorted(latest.values(), key=lambda item: item[0])
+        if incident is not None
+    ], sort_keys=True))
+except (FileNotFoundError, json.JSONDecodeError, OSError, UnicodeError, ValueError):
+    raise SystemExit(1)
+PY
+  then
+    CONTRACT_RESUME_STATUS="error"
+    printf '[]\n' > "$CONTRACT_RESUME_FILE"
+  elif [[ "$(tr -d '[:space:]' < "$CONTRACT_RESUME_FILE")" != "[]" ]]; then
+    CONTRACT_RESUME_STATUS="warning"
+  fi
+fi
+
 HERMES_PATH="$(command -v hermes 2>/dev/null || true)"
 HERMES_VERSION=""
 HERMES_STATUS="unknown"
@@ -735,7 +853,7 @@ fi
 OVERALL_STATUS="ok"
 for check_status in "$REGISTRY_STATUS" "$KIT_STATUS" "$PIN_STATUS" "$RUNTIME_STATUS" \
                     "$HERMES_STATUS" "$CLI_STATUS" "$CREDENTIAL_STATUS" "$LINEAR_STATUS" \
-                    "$PROVIDER_RUNTIME_STATUS"; do
+                    "$PROVIDER_RUNTIME_STATUS" "$CONTRACT_RESUME_STATUS"; do
   if [[ "$check_status" == "error" ]]; then
     OVERALL_STATUS="error"
     break
@@ -768,7 +886,7 @@ export PROVIDER_RUNTIME_STATUS PROVIDER_ACTIVATED PROVIDER_ACTIVE_ATTEMPTS
 export PROVIDER_EXECUTION_MODE
 export PROVIDER_ACTIVE_TOKENS PROVIDER_UNKNOWN_WORKERS PROVIDER_LEGACY_INTERVALS
 export PROVIDER_CONCURRENCY_REQUIRED PROVIDER_CONCURRENCY_READY
-export OVERALL_STATUS RUN_FILE
+export CONTRACT_RESUME_STATUS CONTRACT_RESUME_FILE OVERALL_STATUS RUN_FILE
 
 if [[ "$JSON_MODE" -eq 1 ]]; then
   "$PYTHON_BIN" <<'PY'
@@ -808,6 +926,9 @@ with open(os.environ["LEASE_FILE"], encoding="utf-8") as handle:
     for line in handle:
         ticket, state = line.rstrip("\n").split("\t", 1)
         leases.append({"ticket": ticket, "state": state})
+
+with open(os.environ["CONTRACT_RESUME_FILE"], encoding="utf-8") as handle:
+    contract_resume_incidents = json.load(handle)
 
 document = {
     "schema": os.environ["DOCTOR_SCHEMA"],
@@ -882,6 +1003,10 @@ document = {
             "last_error": optional("LINEAR_LAST_ERROR"),
             "projects": json.loads(os.environ["LINEAR_PROJECTS_JSON"]),
         },
+        "contract_resume": {
+            "status": os.environ["CONTRACT_RESUME_STATUS"],
+            "incidents": contract_resume_incidents,
+        },
         "isolated_provider": {
             "status": os.environ["PROVIDER_RUNTIME_STATUS"],
             "activated": boolean("PROVIDER_ACTIVATED"),
@@ -913,6 +1038,7 @@ else
   echo "Credentials [$CREDENTIAL_STATUS]: github=$GH_PRESENT linear=$LINEAR_PRESENT (presence only; authentication not validated)"
   echo "Isolated provider [$PROVIDER_RUNTIME_STATUS]: activated=$PROVIDER_ACTIVATED concurrency_required=$PROVIDER_CONCURRENCY_REQUIRED concurrency_ready=$PROVIDER_CONCURRENCY_READY mode=${PROVIDER_EXECUTION_MODE:-none} attempts=$PROVIDER_ACTIVE_ATTEMPTS tokens=$PROVIDER_ACTIVE_TOKENS unknown_workers=$PROVIDER_UNKNOWN_WORKERS legacy=$PROVIDER_LEGACY_INTERVALS"
   echo "Linear sync [$LINEAR_STATUS]: age_seconds=${LINEAR_AGE:-unknown} last_success=${LINEAR_LAST_SUCCESS:-unknown}"
+  echo "Contract resume [$CONTRACT_RESUME_STATUS]: incidents=$("$PYTHON_BIN" -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$CONTRACT_RESUME_FILE")"
   [[ -z "$LINEAR_LAST_ERROR" ]] || echo "Linear last error: $LINEAR_LAST_ERROR"
 fi
 

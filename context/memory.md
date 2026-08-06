@@ -3942,3 +3942,13 @@ ignores exact receipt-bound resume lines. A decision already validated for that
 same blocker survives a concurrent newer reconciler snapshot. Rejected moves
 remain blocked in authenticated Factory truth but are not overwritten in
 Linear; their typed reason is persisted and deduplicated.
+## 2026-08-06 — Decision 294: Contract-resume refusals are durable and typed
+
+Category: Reliability
+
+Receipt-bound contract recovery keeps its strict authenticated two-line commit.
+The controller records receipt mismatch, ambiguous directives, unpushed heads,
+invalid ancestry, and over-full content as ticket-scoped durable events; Doctor
+folds the latest refusal and recovery event per ticket. Substantive operator
+rulings are pushed and migrated first, followed by a separate exact receipt
+commit, so the security boundary and the operating instructions agree.
