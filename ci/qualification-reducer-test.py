@@ -302,6 +302,146 @@ class QualificationReducerTest(unittest.TestCase):
                         product, "T-110", event, current, done,
                     )
 
+    def test_successor_emergency_terminal_retains_exact_passport_evidence(self):
+        evidence = list(self.evidence())
+        manifest, passports, events, terminals, prs, caps = evidence
+        removed = manifest["tickets"].pop()
+        source = "b" * 40
+        candidate = manifest["factory_sha"]
+        manifest.update({
+            "budget_usd": "300.000000",
+            "capacity": 3,
+            "mode": "successor",
+            "per_run_budget_usd": "10.000000",
+            "per_ticket_budget_usd": "100.000000",
+            "source_factory_sha": source,
+            "target_done": 3,
+        })
+        for values in (passports, terminals, prs, caps):
+            del values[removed]
+        for event in events:
+            if event.get("event") in {"restart_boundary", "controller_recovered"}:
+                event["tickets"] = manifest["tickets"]
+        events[:] = [item for item in events if item.get("ticket") != removed]
+        for passport in passports.values():
+            passport["factory_release_history"].insert(0, {
+                "contract_version": "1.8.0", "factory_sha": source,
+            })
+            passport["migration_history"] = [{
+                "from_factory_sha": source,
+                "schema": REDUCER.PASSPORT_MIGRATION_SCHEMA,
+                "to_factory_sha": candidate,
+            }]
+
+        ticket = manifest["tickets"][0]
+        passport = passports[ticket]
+        passport_sha = "d" * 64
+        for name in ("charge_records", "completed_role_evidence"):
+            for item in passport[name]:
+                item["factory_sha"] = source
+        passport.update({
+            "current_state": "Review",
+            "factory_release_history": [{
+                "contract_version": "1.8.0", "factory_sha": source,
+            }],
+            "factory_sha": source,
+            "migration_history": [],
+            "passport_sha256": passport_sha,
+            "publication_state": "validating",
+        })
+        pr_head = passport["head_sha"]
+        merge = terminals[ticket]["merge_commit"]
+        pause_file = "e" * 64
+        pause_receipt = "f" * 64
+        terminals[ticket] = {
+            "kit_sha": candidate,
+            "merge_commit": merge,
+            "plan": {
+                "claim": {
+                    "blocked_reason": "factory-issue-pause",
+                    "parked": True,
+                    "receipt": pause_receipt,
+                    "role": "factory-paused",
+                    "sha256": pause_file,
+                    "status": "blocked",
+                },
+                "execution_basis": "authenticated-passport",
+                "kit_sha": candidate,
+                "passport": {
+                    "current_state": "Review",
+                    "factory_sha": source,
+                    "head_sha": pr_head,
+                    "passport_sha256": passport_sha,
+                    "publication_state": "validating",
+                },
+            },
+            "pr_head": pr_head,
+            "pr_number": prs[ticket]["number"],
+            "required_checks": ["ci"],
+            "schema": "nysa.software-factory.ticket-emergency-done/v1",
+            "successful_checks": ["ci"],
+            "ticket": ticket,
+        }
+        events[:] = [
+            item for item in events
+            if not (
+                item.get("ticket") == ticket
+                and item.get("event") in {"publication_acquired", "publication_released"}
+            )
+        ]
+        events.append({
+            "done_sha256": hashlib.sha256(
+                REDUCER.canonical(terminals[ticket]).encode()
+            ).hexdigest(),
+            "event": "emergency_terminal_reconciled",
+            "factory_sha": candidate,
+            "pause_file_sha256": pause_file,
+            "pause_receipt_sha256": pause_receipt,
+            "protected_main_sha": "1" * 40,
+            "protected_main_tree": "2" * 40,
+            "protected_ticket_blob": "3" * 40,
+            "qualification_charge_micro_usd": 0,
+            "reconciliation_schema": (
+                REDUCER.EMERGENCY_TERMINAL_RECONCILIATION_SCHEMA
+            ),
+            "source_current_state": "Review",
+            "source_factory_sha": source,
+            "source_head_sha": pr_head,
+            "source_passport_sha256": passport_sha,
+            "source_publication_state": "validating",
+            "terminal_basis": "attested-emergency-closeout",
+            "ticket": ticket,
+        })
+        for epoch, event in enumerate(events, 1):
+            event["observed_at_epoch_ns"] = epoch
+
+        report = REDUCER.verify(*evidence)
+        retained = next(item for item in report["tickets"] if item["ticket"] == ticket)
+        self.assertEqual(retained["evidence_mode"], "passport-emergency-closeout")
+        self.assertEqual(retained["roles"], 6)
+        self.assertEqual(retained["charge_micro_usd"], 6_000_000)
+        self.assertEqual(retained["qualification_charge_micro_usd"], 0)
+
+        drifted = copy.deepcopy(evidence)
+        drifted[3][ticket]["plan"]["passport"]["head_sha"] = "4" * 40
+        with self.assertRaisesRegex(
+            REDUCER.QualificationError, "emergency terminal reconciliation is invalid",
+        ):
+            REDUCER.verify(*drifted)
+
+        duplicated = copy.deepcopy(evidence)
+        duplicated[2].append({
+            **next(
+                item for item in duplicated[2]
+                if item.get("event") == "emergency_terminal_reconciled"
+            ),
+            "observed_at_epoch_ns": len(duplicated[2]) + 1,
+        })
+        with self.assertRaisesRegex(
+            REDUCER.QualificationError, "reconciliation is duplicated",
+        ):
+            REDUCER.verify(*duplicated)
+
     def test_three_ticket_successor_accepts_authenticated_history_and_cap(self):
         evidence = list(self.evidence())
         manifest, passports, events, terminals, prs, caps = evidence

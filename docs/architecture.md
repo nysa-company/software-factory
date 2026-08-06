@@ -1035,6 +1035,12 @@ the terminal reader independently revalidates commit topology, authorized
 paths, source ticket blob, receipt digest, timestamps, and ledger prefix. A
 merged emergency closeout uses the same protected-terminal-first exact Linear
 Done projection as ordinary closeout.
+Successor qualification reconciles that terminal against the unchanged
+authenticated source passport and its exact signed idle pause; it does not
+fabricate an Approved/merged passport. The reducer retains historical roles
+and spend, attributes no provider spend to the successor, and excludes only
+that ticket from publication replay. Evidence drift or duplication fails
+closed.
 
 A control-plane release may close an already-approved ticket from its older
 ticket-pinned release. Done validates the protected bundle and approval against

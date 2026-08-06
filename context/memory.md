@@ -16,6 +16,10 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   A controller-signed pause may retain only idle claimed, waiting, blocked, or
   budget status; budget pauses bind the exact budget digest, and nonblocked
   lifecycle states may retain an allowed existing Resume-State overlay.
+  Successor qualification binds an emergency Done receipt to that unchanged
+  authenticated source passport and signed pause, retaining its roles and
+  spend with zero successor provider spend rather than synthesizing an
+  Approved/merged passport.
 - Linear supports a fail-closed exact-ticket operator pull for an already
   initialized mapping. It reads only that issue, merges only operator-owned
   fields under the short map lock, survives an overlapping stale full-board
@@ -3748,3 +3752,13 @@ Emergency attestation accepts the idle `blocked`, `claimed`, `waiting`, and
 exact signed budget digest. A nonblocked lifecycle pause may retain only an
 allowed Resume-State overlay. Active or unknown statuses, malformed budgets,
 and invalid lifecycle overlays remain closed.
+
+## 2026-08-06 — Decision 279: Emergency terminals preserve qualification truth
+
+Category: Reliability
+
+A successor qualification reconciles an emergency Done receipt against the
+unchanged authenticated source passport and exact signed idle pause. It keeps
+the historical role and spend evidence, assigns no new provider spend, and
+never fabricates Approved/merged history; drift and duplicate reconciliation
+remain fatal.
