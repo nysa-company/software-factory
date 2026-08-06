@@ -122,13 +122,16 @@ args = sys.argv[1:]
 with trace.open('a') as handle: handle.write(' '.join(args) + '\\n')
 prs = json.loads(state.read_text()) if state.exists() else []
 if args[:2] == ['pr', 'list']:
-    print(json.dumps(prs))
+    requested = args[args.index('--state') + 1]
+    print(json.dumps(prs if requested == 'all' else [
+        pr for pr in prs if pr.get('state', '').lower() == requested
+    ]))
 elif args[:2] == ['pr', 'create']:
-    prs = [{
+    prs.append({
         'number': 7, 'headRefName': 'ticket/T-100', 'baseRefName': 'main',
         'headRefOid': os.environ['FAKE_PR_HEAD'], 'url': 'https://example.invalid/pr/7',
         'state': 'OPEN',
-    }]
+    })
     state.write_text(json.dumps(prs))
 elif args[:2] == ['pr', 'checks']:
     bucket = os.environ.get('FAKE_CHECK_BUCKET', 'pass')
@@ -635,6 +638,63 @@ print(json.dumps([{
         self.write_ledger(("planner", "spec-linter", "test-author"))
         refused = self.command(expected=2)
         self.assertIn("reviewer or narrator stage", refused["error"])
+
+    def test_historical_pr_does_not_ambiguous_the_exact_open_successor(self):
+        head = subprocess.run(
+            ["git", "-C", self.product, "rev-parse", "HEAD"],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+        self.state.write_text(json.dumps([
+            {
+                "number": 6, "headRefName": "ticket/T-100",
+                "baseRefName": "main", "headRefOid": "b" * 40,
+                "url": "https://example.invalid/pr/6", "state": "MERGED",
+            },
+            {
+                "number": 7, "headRefName": "ticket/T-100",
+                "baseRefName": "main", "headRefOid": head,
+                "url": "https://example.invalid/pr/7", "state": "OPEN",
+            },
+        ]))
+
+        result = self.command()
+
+        self.assertEqual(result["pr_number"], 7)
+        self.assertIn("--state open", self.trace.read_text())
+
+    def test_only_historical_pr_creates_one_current_open_successor(self):
+        self.state.write_text(json.dumps([{
+            "number": 6, "headRefName": "ticket/T-100",
+            "baseRefName": "main", "headRefOid": "b" * 40,
+            "url": "https://example.invalid/pr/6", "state": "MERGED",
+        }]))
+
+        result = self.command()
+
+        self.assertEqual(result["pr_number"], 7)
+        self.assertEqual(self.trace.read_text().count("pr create"), 1)
+        self.assertEqual(
+            {pr["number"] for pr in json.loads(self.state.read_text())},
+            {6, 7},
+        )
+
+    def test_multiple_open_successors_remain_ambiguous(self):
+        head = subprocess.run(
+            ["git", "-C", self.product, "rev-parse", "HEAD"],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+        current = {
+            "headRefName": "ticket/T-100", "baseRefName": "main",
+            "headRefOid": head, "url": "https://example.invalid/pr/current",
+            "state": "OPEN",
+        }
+        self.state.write_text(json.dumps([
+            {**current, "number": 7}, {**current, "number": 8},
+        ]))
+
+        refused = self.command(expected=2)
+
+        self.assertIn("expected exactly one PR", refused["error"])
 
     def test_required_checks_gate_reviewer_and_narrator(self):
         unreported = self.command(bucket="unreported")

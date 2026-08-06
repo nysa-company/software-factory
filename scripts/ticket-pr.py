@@ -688,7 +688,7 @@ def main() -> None:
 
         def candidates() -> list[dict]:
             value = json.loads(run([
-                "gh", "pr", "list", "--repo", repo, "--state", "all",
+                "gh", "pr", "list", "--repo", repo, "--state", "open",
                 "--head", branch, "--base", "main", "--json", fields,
             ]).stdout)
             if not isinstance(value, list):

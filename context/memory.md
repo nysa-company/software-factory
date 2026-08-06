@@ -30,6 +30,11 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   after the closeout receipt validates on protected main. The issue is re-read
   as exact Done and one controller event is recorded before lease release;
   missing mapping, API failure, or changed terminal truth remains retryable.
+- A fixed ticket branch may retain any number of historical closed or merged
+  PRs. Publication selects exactly one current open PR, while merge detection
+  and Done select the exact PR number sealed in the approval attestation;
+  multiple open candidates, a missing bound PR, or branch/base/head drift
+  remains fail-closed.
 - Production helpers run only from installed sealed releases whose SHA is on
   Factory `origin/main` with exact successful protected CI. Qualification may
   seal a clean local SHA/tree without that reachability; trusted launchers label
@@ -3766,3 +3771,15 @@ never fabricates Approved/merged history; drift and duplicate reconciliation
 remain fatal. A terminal emitted before the consumer repair is admissible only
 when its exact Kit-SHA appears in the active qualification environment's
 content-addressed receipt chain.
+
+## 2026-08-06 — Decision 280: PR identity follows lifecycle evidence, not branch history
+
+Category: Reliability
+
+Fixed ticket branches retain immutable historical PRs across protected-base
+refreshes and qualification migration. The active boundary selects exactly one
+open PR; merge detection and Done use the PR number sealed into the approval
+attestation and revalidate its branch, base, head, merge, checks, and protected
+ancestry. Historical PRs remain auditable without making the current lifecycle
+ambiguous, while multiple current candidates or bound-identity drift still
+refuse.

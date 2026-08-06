@@ -638,6 +638,57 @@ class FactoryControllerTest(unittest.TestCase):
             controller.recover_terminal_requests([unrelated])
         self.assertEqual(unrelated["status"], "blocked")
 
+    def test_ticket_merge_uses_the_approval_bound_pr_amid_branch_history(self) -> None:
+        (self.product / "factory/PROJECT.env").write_text(
+            "GH_REPO=example/product\nMAX_CONCURRENT_TICKETS=4\n",
+            encoding="utf-8",
+        )
+        worktree = self.root / "parked/T-182"
+        approval = worktree / "factory/attestations/T-182/approval.json"
+        approval.parent.mkdir(parents=True)
+        approval.write_text(json.dumps({
+            "schema": "nysa.software-factory.ticket-approval/v1",
+            "ticket": "T-182",
+            "repository": "example/product",
+            "branch": "ticket/T-182",
+            "pr_number": 359,
+        }), encoding="utf-8")
+        claim = {
+            "branch": "ticket/T-182", "ticket": "T-182",
+            "worktree": str(worktree),
+        }
+        evidence = {
+            "number": 359,
+            "headRefName": "ticket/T-182",
+            "baseRefName": "main",
+            "headRefOid": "b" * 40,
+            "mergeCommit": {"oid": "c" * 40},
+            "state": "MERGED",
+            "mergedAt": "2026-08-06T09:21:00Z",
+        }
+        calls = []
+
+        def execute(arguments, **_kwargs):
+            calls.append(arguments)
+            return subprocess.CompletedProcess(
+                arguments, 0, json.dumps(evidence), "",
+            )
+
+        controller = CONTROL.Controller(self.args)
+        with patch.object(CONTROL.subprocess, "run", side_effect=execute):
+            self.assertTrue(controller.ticket_merged(claim))
+
+        self.assertEqual(calls[0][0:4], ["gh", "pr", "view", "359"])
+
+        evidence["headRefName"] = "ticket/T-legacy"
+        with (
+            patch.object(CONTROL.subprocess, "run", side_effect=execute),
+            self.assertRaisesRegex(
+                CONTROL.ControllerError, "merged PR identity is malformed",
+            ),
+        ):
+            controller.ticket_merged(claim)
+
     def test_terminal_request_allows_only_unrelated_protected_main_advance(self) -> None:
         controller = CONTROL.Controller(self.args)
         (self.product / "factory/PROJECT.env").write_text(
@@ -678,7 +729,8 @@ class FactoryControllerTest(unittest.TestCase):
         subprocess.run(
             ["git", "-C", self.product, "push", "-q", "origin", "main"], check=True,
         )
-        controller.merged_pr_identity = lambda branch: {
+        controller.approval_pr_number = lambda _claim: 1
+        controller.merged_pr_identity = lambda branch, number=None: {
             "head": "a" * 40,
             "merge_commit": terminal,
             "number": 2 if "closeout" in branch else 1,

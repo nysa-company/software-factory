@@ -788,6 +788,23 @@ def exact_pr(repo, branch, state):
     return pr
 
 
+def exact_pr_number(repo, branch, number):
+    if isinstance(number, bool) or not isinstance(number, int) or number <= 0:
+        raise Refusal("approval attestation lacks an exact PR number")
+    fields = "number,headRefName,baseRefName,headRefOid,url,state,isDraft,mergedAt,mergeCommit"
+    pr = json.loads(gh(
+        "pr", "view", str(number), "--repo", repo, "--json", fields,
+    ).stdout)
+    if (
+        not isinstance(pr, dict)
+        or pr.get("number") != number
+        or pr.get("headRefName") != branch
+        or pr.get("baseRefName") != "main"
+    ):
+        raise Refusal("approval-bound PR identity is invalid")
+    return pr
+
+
 def emergency_pr(repo, branch, ticket, number, workdir, protected):
     if number is None:
         return exact_pr(repo, branch, "all")
@@ -2810,7 +2827,19 @@ def done(args, product, workdir, repo, prefix, remote, checks, kit_sha, method):
     if not retry and done_path.is_file():
         raise Refusal("Done is already present on protected main; use terminal sequencing")
     ticket_branch = f"{prefix}{args.ticket}"
-    pr = exact_pr(repo, ticket_branch, "all")
+    approval_path = (
+        workdir / "factory" / "attestations" / args.ticket / "approval.json"
+    )
+    if not approval_path.is_file():
+        raise Refusal("protected main lacks bundle or approval attestation")
+    try:
+        approval_value = json.loads(approval_path.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        raise Refusal("protected approval evidence is malformed") from error
+    pr = exact_pr_number(
+        repo, ticket_branch,
+        approval_value.get("pr_number") if isinstance(approval_value, dict) else None,
+    )
     if pr.get("state") != "MERGED" or not pr.get("mergedAt"):
         raise Refusal("ticket PR is not merged")
     merge = (pr.get("mergeCommit") or {}).get("oid", "")
