@@ -134,7 +134,8 @@ case "${1:-}" in
   --help) printf '%s\n' --print --output-format --workspace --model --force --trust --sandbox ;;
   status) printf '{"authenticated":true}\n' ;;
   models) printf '%s\n' \
-    gpt-5.6-sol-high claude-fable-5-thinking-medium claude-sonnet-5-thinking-high ;;
+    gpt-5.6-sol-high claude-fable-5-thinking-medium \
+    claude-opus-5-thinking-medium claude-sonnet-5-thinking-high ;;
   *) printf '%s\n' "$@" >"$(dirname "$0")/cursor-args"; exit 42 ;;
 esac
 EOF
@@ -238,10 +239,14 @@ grep -Fq 'physical "$(dirname "$claude_token_source")"' <<<"$create_lane_source"
   fail "Claude token source was resolved as a directory instead of a file"
 grep -Fq 'claude_subscription_ready "$root"' <<<"$subscription_run_source" ||
   fail "subscription canary lacks Claude readiness"
-grep -Fq 'if [[ "$selected" == claude ]]; then' <<<"$subscription_run_source" ||
-  fail "Codex canary still expands the Bash-3.2-empty Claude runtime array"
+grep -Fq '"$attempt_root/home/.codex"' <<<"$subscription_run_source" &&
+  grep -Fq 'FACTORY_CLI_ATTEMPT_ID="$attempt"' <<<"$subscription_run_source" ||
+  fail "Codex canary does not use an isolated attempt runtime"
 grep -Fq 'CLAUDE_CODE_TMPDIR="$attempt_root/tmp"' <<<"$subscription_run_source" ||
   fail "Claude canary does not isolate the CLI hard-coded temp root"
+grep -Fq 'subscription canary CLI runtime cleanup failed' \
+  <<<"$subscription_run_source" ||
+  fail "subscription canary does not clean both native CLI runtimes"
 lane_env_source="$(sed -n '/^lane_env()/,/^lane_cursor_env()/p' "$LANE")"
 grep -Fq 'FACTORY_CLI_LANE_ROOT="$root"' <<<"$lane_env_source" ||
   fail "trusted product helpers lost the checkpoint lane-root binding"
@@ -698,7 +703,7 @@ sed -n '/^product_probe_and_plan()/,/^}/p' "$LANE" |
   grep -F 'GLOBAL_DAILY_CAP_USD=%s' >/dev/null ||
   fail "fresh product planning does not derive the machine cap from its isolated envelope"
 sed -n '/^product_probe_and_plan()/,/^}/p' "$LANE" |
-  grep -F 'profile=cursor-balanced-v2' >/dev/null ||
+  grep -F 'profile=cursor-opus-v1' >/dev/null ||
   fail "product planning does not use the approved Cursor-first profile"
 grep -Fq 'physical /private/tmp' "$LANE" &&
   grep -Fq 'tmp_parent="$(lane_tmp_parent)"' "$LANE" ||

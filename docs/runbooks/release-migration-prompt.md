@@ -21,7 +21,7 @@ Nysa Agents plugin: {{NYSA_AGENTS_PLUGIN_VERSION}}
 Codex CLI: {{CODEX_CLI_VERSION}}
 Claude Code CLI: {{CLAUDE_CODE_CLI_VERSION}}
 Cursor Agent CLI: {{CURSOR_AGENT_VERSION}}
-Model profile: {{MODEL_PROFILE_ID}} (use cursor-balanced-v2 for Nysa)
+Model profile: {{MODEL_PROFILE_ID}} (use cursor-opus-v1 for Nysa)
 Per-ticket budget: USD {{PER_TICKET_BUDGET_USD}} (use 100.00 for Nysa)
 
 Follow docs/runbooks/operator.md § "Preparing and activating a release" in

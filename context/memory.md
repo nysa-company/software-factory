@@ -3967,3 +3967,13 @@ migration. The superseded signed record is archived and the active record is
 re-signed at current HEAD without consuming another attempt. Dependency,
 post-success, cross-Factory, rewritten, missing, or ambiguous lineage remains
 closed with a typed head-moved refusal.
+
+## 2026-08-06 — Decision 296: Opus is a new default profile, not rewritten history
+
+Category: Model policy
+
+New no-record routing uses `cursor-opus-v1`, selecting exact Cursor Opus 5
+medium-thinking routes for Spec-linter and Test-author with native Claude Fable
+as the same-family fallback. `cursor-balanced-v2` and its Fable route remain
+unchanged so existing activations and pinned ticket plans retain their exact
+catalog, profile, and route identity.

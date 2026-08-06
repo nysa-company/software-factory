@@ -173,7 +173,7 @@ review as quoted ticket evidence before its canonical verdict and repair
 owner. Repair roles must address that latest block exactly, and round 2 must
 verify every listed item rather than reconstructing the earlier request.
 
-Product lanes activate `cursor-balanced-v2`: authenticated Cursor routes are
+Product lanes activate `cursor-opus-v1`: authenticated Cursor routes are
 first for every role, with direct Codex and Claude routes used only when the
 matching Cursor route is unavailable. Planning rejects any resolved route set
 that violates that priority.

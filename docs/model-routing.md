@@ -6,15 +6,15 @@ role, what “fallback” means, and when the factory must stop.
 ## Default model order
 
 If the operator has not activated another profile, the factory uses
-`cursor-balanced-v2`. Its primary and secondary routes are:
+`cursor-opus-v1`. Its primary and secondary routes are:
 
 | Role | Lane | Primary route | Secondary route | Effort |
 |---|---|---|---|---|
 | Planner | Production | Cursor CLI — GPT-5.6 Sol High | Codex CLI — GPT-5.6 Sol | High |
 | Builder | Production | Cursor CLI — GPT-5.6 Sol High | Codex CLI — GPT-5.6 Terra | High |
 | Narrator | Production | Cursor CLI — GPT-5.6 Sol High | Codex CLI — GPT-5.6 Terra | High |
-| Spec-linter | Checking | Cursor CLI — Claude Fable 5 Thinking Medium | Claude CLI — Fable 5 | Medium |
-| Test-author | Checking | Cursor CLI — Claude Fable 5 Thinking Medium | Claude CLI — Fable 5 | Medium |
+| Spec-linter | Checking | Cursor CLI — Claude Opus 5 Thinking Medium | Claude CLI — Fable 5 | Medium |
+| Test-author | Checking | Cursor CLI — Claude Opus 5 Thinking Medium | Claude CLI — Fable 5 | Medium |
 | Reviewer | Checking | Cursor CLI — Claude Sonnet 5 Thinking High | Claude CLI — Sonnet 5 | High |
 
 “Secondary” is a same-family transport/account alternative, not an independent

@@ -67,6 +67,7 @@ class ModelRouterTest(unittest.TestCase):
                 "claude-sonnet",
                 "cursor-gpt-5.6-sol-high",
                 "cursor-claude-fable-5-thinking-medium",
+                "cursor-claude-opus-5-thinking-medium",
                 "cursor-claude-sonnet-5-thinking-high",
                 "claude-kimi-moonshotai-kimi-k2.6",
             },
@@ -87,6 +88,13 @@ class ModelRouterTest(unittest.TestCase):
             "Fable 5 300K Medium",
         )
         self.assertTrue(cursor_fable["enabled"])
+        cursor_opus = self.routes["cursor-claude-opus-5-thinking-medium"]
+        self.assertEqual(cursor_opus["selection_id"], "claude-opus-5-thinking-medium")
+        self.assertEqual(
+            cursor_opus["expected_reported_identity"],
+            "Opus 5 1M Medium Thinking",
+        )
+        self.assertTrue(cursor_opus["enabled"])
         serialized = ROUTER.canonical_json(self.catalog)
         self.assertEqual(ROUTER.DEFAULT_CATALOG.read_text().strip(), serialized)
 
@@ -165,6 +173,31 @@ class ModelRouterTest(unittest.TestCase):
             {role: fallback[role]["route_id"] for role in ROUTER.ROLES},
             {role: self.resolve("balanced-v2")["selections"][role]["route_id"] for role in ROUTER.ROLES},
         )
+
+    def test_cursor_opus_default_preserves_legacy_profile_and_native_fallback(self):
+        legacy = self.profile_map["cursor-balanced-v2"]["portfolios"][0]
+        opus = self.profile_map["cursor-opus-v1"]["portfolios"][0]
+        for role in ("planner", "builder", "narrator", "reviewer"):
+            self.assertEqual(opus["roles"][role], legacy["roles"][role])
+        for role in ("spec-linter", "test-author"):
+            self.assertEqual(
+                opus["roles"][role]["candidates"],
+                ["cursor-claude-opus-5-thinking-medium", "claude-fable"],
+            )
+            self.assertEqual(opus["roles"][role]["effort"], "medium")
+
+        selected = self.resolve("cursor-opus-v1")["selections"]
+        for role in ("spec-linter", "test-author"):
+            self.assertEqual(
+                selected[role]["route_id"],
+                "cursor-claude-opus-5-thinking-medium",
+            )
+
+        readiness = self.readiness()
+        readiness["cursor-claude-opus-5-thinking-medium"]["state"] = "UNAVAILABLE"
+        fallback = self.resolve("cursor-opus-v1", readiness)["selections"]
+        for role in ("spec-linter", "test-author"):
+            self.assertEqual(fallback[role]["route_id"], "claude-fable")
 
     def test_hashes_and_resolution_are_deterministic(self):
         profile = self.profile_map["legacy-balanced-v1"]

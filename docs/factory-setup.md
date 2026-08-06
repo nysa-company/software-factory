@@ -232,7 +232,7 @@ keeps provider admission closed until a later successful reconciliation.
 - Review model policy through the sealed launcher. Run `models profiles --json`,
   preview the intended profile with `models plan [--profile <id>] --json`, and
   activate only with that profile's exact returned hash and an operator ID.
-  `cursor-balanced-v2` is the no-record default.
+  `cursor-opus-v1` is the no-record default.
 
 - Create a separate sandbox product and Hermes canary profile. Do not copy the
   production `.env`, secret files, registry, ledger, board mapping, or
@@ -262,7 +262,7 @@ All boxes checked = the factory may start. Any box unchecked = it may not.
 - [ ] Exact-SHA release exists under `~/.factory/kits/releases/`, is sealed read-only, and has a current, unexpired tuple-bound receipt
 - [ ] The active contract 1.2/1.3/1.4 receipt remains owner-only mode `0600`; its certified product origin matches the single configured push destination
 - [ ] `~/.factory/bin/factory-launch`, the product-plan Node/npm/npx pins, and any required version-pinned provider CLI links are installed; `contract --json` returns the expected version, `contract-test.sh --routes` passes, and `doctor --json` has no error category
-- [ ] `models profiles --json` and `models plan --json` were reviewed; the operator approved the exact profile hash, or explicitly retained default `cursor-balanced-v2`
+- [ ] `models profiles --json` and `models plan --json` were reviewed; the operator approved the exact profile hash, or explicitly retained default `cursor-opus-v1`
 - [ ] A clean sample ticket passed `models pin --ticket <T-NNN> --workdir <exact-worktree> --json`, creating one pushed commit containing both `Kit-SHA` and the exact six-role route plan
 - [ ] Kimi remains disabled and absent from every profile; no live/billed-pilot claim is recorded, and credential rotation plus broker/OS isolation are prerequisites to a pilot
 - [ ] Factory Hermes profile, project registry, and factory gateway LaunchAgent are separate from the dashboard and primary Hermes profile
