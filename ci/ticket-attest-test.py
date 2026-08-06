@@ -1819,8 +1819,13 @@ else:
         path = self.controller_state / "pause-T-700.json"
         pause = json.loads(path.read_text())
 
-        def validate(state, resume_state, passport=None):
-            pause.update(current_state=state, resume_state=resume_state)
+        def validate(
+            state, resume_state, passport=None, *, status="blocked", budget=None,
+        ):
+            pause.update(
+                current_state=state, resume_state=resume_state,
+                status=status, budget_sha256=budget,
+            )
             signed = dict(pause)
             signed.pop("pause_sha256", None)
             pause["pause_sha256"] = hashlib.sha256(json.dumps(
@@ -1849,12 +1854,29 @@ else:
             validate("Blocked-Escalated", "Planning")["role"],
             "factory-paused",
         )
+        for state, resume_state in (("Review", "Review"), ("Building", "Planning")):
+            with self.subTest(state=state, resume_state=resume_state):
+                self.assertEqual(
+                    validate(state, resume_state)["role"], "factory-paused",
+                )
+        for status in ("blocked", "claimed", "waiting"):
+            with self.subTest(status=status):
+                self.assertEqual(
+                    validate("Review", "Review", status=status)["role"],
+                    "factory-paused",
+                )
+        self.assertEqual(
+            validate(
+                "Review", "Review", status="budget", budget="a" * 64,
+            )["role"],
+            "factory-paused",
+        )
         for state, resume_state in (
             ("Blocked-Escalated", None),
             ("Blocked-Escalated", ""),
-            ("Review", "Review"),
             ("Review", ""),
             ("Review", 1),
+            ("Review", "Done"),
         ):
             with self.subTest(state=state, resume_state=resume_state):
                 with self.assertRaisesRegex(
@@ -1862,6 +1884,18 @@ else:
                     "paused emergency checkpoint is invalid",
                 ):
                     validate(state, resume_state)
+        for status, budget in (
+            ("budget", None),
+            ("budget", "a" * 63),
+            ("running", None),
+            ("unknown", None),
+        ):
+            with self.subTest(status=status, budget=budget):
+                with self.assertRaisesRegex(
+                    TICKET_ATTEST.Refusal,
+                    "paused emergency checkpoint is invalid",
+                ):
+                    validate("Review", "Review", status=status, budget=budget)
         for passport in (
             {
                 "current_state": "Review", "head_sha": "e" * 40,

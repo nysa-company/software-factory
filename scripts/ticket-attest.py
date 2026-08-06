@@ -1197,13 +1197,17 @@ def paused_claim_basis(path, ticket, branch, state, passport, issue):
     signed = dict(value)
     pause_digest = signed.pop("pause_sha256", "")
     budget = value.get("budget_sha256")
+    resume_state = value.get("resume_state")
+    paused_status = value.get("status")
+    resume_states = {"Backlog", "Ready", "Planning", "Building", "Review"}
     if (
         set(value) != EMERGENCY_PAUSE_KEYS
         or value.get("schema") != "nysa.software-factory.ticket-pause/v2"
         or value.get("blocking_issue") != issue
         or value.get("ticket") != ticket
         or value.get("branch") != branch
-        or value.get("status") != "blocked"
+        or paused_status not in {"blocked", "budget", "claimed", "waiting"}
+        or (paused_status == "budget" and not re.fullmatch(r"[0-9a-f]{64}", budget or ""))
         or value.get("current_state") != state
         or value.get("current_state") != passport.get("current_state")
         or value.get("head_sha") != passport.get("head_sha")
@@ -1217,14 +1221,12 @@ def paused_claim_basis(path, ticket, branch, state, passport, issue):
         or not value["current_stage"]
         or (
             state == "Blocked-Escalated"
-            and (
-                not isinstance(value.get("resume_state"), str)
-                or not value["resume_state"]
-            )
+            and resume_state not in resume_states
         )
         or (
             state != "Blocked-Escalated"
-            and value.get("resume_state") is not None
+            and resume_state is not None
+            and resume_state not in resume_states
         )
         or not isinstance(value.get("worktree"), str)
         or not Path(value["worktree"]).is_absolute()
