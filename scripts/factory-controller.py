@@ -65,6 +65,9 @@ TERMINAL_ADOPTION_SCHEMA = (
 PROTECTED_TERMINAL_RECONCILIATION_SCHEMA = (
     "nysa.software-factory.qualification-protected-terminal-reconciliation/v1"
 )
+EMERGENCY_TERMINAL_RECONCILIATION_SCHEMA = (
+    "nysa.software-factory.qualification-emergency-terminal-reconciliation/v1"
+)
 
 
 class ControllerError(ValueError):
@@ -647,6 +650,86 @@ class Controller:
             "terminal_basis": terminal["basis"],
         }
 
+    def qualification_emergency_terminal(self, ticket: str) -> dict[str, Any]:
+        if (
+            not self.qualification
+            or self.qualification.get("mode") != "successor"
+        ):
+            raise ControllerError(
+                "emergency terminal reconciliation requires successor qualification"
+            )
+        terminal = self.qualification_protected_terminal(ticket)
+        done = json.loads((
+            self.product / "factory/attestations" / ticket / "done.json"
+        ).read_text(encoding="utf-8"))
+        plan = done.get("plan") if isinstance(done, dict) else None
+        passport_basis = plan.get("passport") if isinstance(plan, dict) else None
+        claim_basis = plan.get("claim") if isinstance(plan, dict) else None
+        passport = read(self.state / "passports" / f"{ticket}.json")
+        pause_path = self.state / f"pause-{ticket}.json"
+        pause = read(pause_path)
+        pause_raw = (canonical(pause) + "\n").encode()
+        signed_pause = dict(pause)
+        pause_receipt = signed_pause.pop("pause_sha256", "")
+        expected_passport = {
+            name: passport.get(name)
+            for name in (
+                "passport_sha256", "current_state", "publication_state",
+                "factory_sha", "head_sha",
+            )
+        }
+        if (
+            terminal.get("terminal_basis") != "attested-emergency-closeout"
+            or done.get("schema")
+            != "nysa.software-factory.ticket-emergency-done/v1"
+            or done.get("kit_sha") != self.release_path.name
+            or not isinstance(plan, dict)
+            or plan.get("kit_sha") != self.release_path.name
+            or plan.get("execution_basis") != "authenticated-passport"
+            or passport_basis != expected_passport
+            or passport.get("factory_sha")
+            != self.qualification.get("source_factory_sha")
+            or not isinstance(claim_basis, dict)
+            or claim_basis.get("status") != "blocked"
+            or claim_basis.get("role") != "factory-paused"
+            or claim_basis.get("blocked_reason") != "factory-issue-pause"
+            or claim_basis.get("parked") is not True
+            or claim_basis.get("sha256")
+            != hashlib.sha256(pause_raw).hexdigest()
+            or claim_basis.get("receipt") != pause_receipt
+            or (self.state / "claims" / f"{ticket}.json").exists()
+            or pause.get("schema") != "nysa.software-factory.ticket-pause/v2"
+            or pause.get("ticket") != ticket
+            or pause.get("branch") != passport.get("branch")
+            or pause.get("head_sha") != passport.get("head_sha")
+            or pause.get("passport_sha256") != passport.get("passport_sha256")
+            or pause.get("passport_factory_sha") != passport.get("factory_sha")
+            or pause.get("current_state") != passport.get("current_state")
+            or pause_receipt != hashlib.sha256(
+                canonical(signed_pause).encode()
+            ).hexdigest()
+            or not DIGEST.fullmatch(pause_receipt)
+            or (
+                pause.get("status") == "budget"
+                and not DIGEST.fullmatch(pause.get("budget_sha256") or "")
+            )
+            or pause.get("status") not in {"blocked", "budget", "claimed", "waiting"}
+        ):
+            raise ControllerError(
+                "qualification emergency terminal evidence is invalid"
+            )
+        return {
+            **terminal,
+            "pause_file_sha256": claim_basis["sha256"],
+            "pause_receipt_sha256": pause_receipt,
+            "reconciliation_schema": EMERGENCY_TERMINAL_RECONCILIATION_SCHEMA,
+            "source_current_state": passport["current_state"],
+            "source_factory_sha": passport["factory_sha"],
+            "source_head_sha": passport["head_sha"],
+            "source_passport_sha256": passport["passport_sha256"],
+            "source_publication_state": passport["publication_state"],
+        }
+
     def record_qualification_done_targets(self) -> None:
         if not self.qualification:
             return
@@ -685,10 +768,17 @@ class Controller:
                 and item.get("event") == "protected_terminal_reconciled"
                 and item.get("ticket") == ticket
             ]
+            matching_emergency = [
+                item for item in records
+                if item.get("factory_sha") == self.release_path.name
+                and item.get("event") == "emergency_terminal_reconciled"
+                and item.get("ticket") == ticket
+            ]
             if (
                 len(matching_complete) > 1
                 or len(matching_adoption) > 1
                 or len(matching_reconciliation) > 1
+                or len(matching_emergency) > 1
             ):
                 raise ControllerError("qualification terminal evidence was duplicated")
             passport_path = self.state / "passports" / f"{ticket}.json"
@@ -723,6 +813,45 @@ class Controller:
             if matching_reconciliation:
                 raise ControllerError(
                     "qualification passport conflicts with protected terminal reconciliation"
+                )
+            try:
+                done = json.loads((
+                    self.product / "factory/attestations" / ticket / "done.json"
+                ).read_text(encoding="utf-8"))
+            except FileNotFoundError:
+                done = {}
+            except (json.JSONDecodeError, OSError) as error:
+                raise ControllerError(
+                    "qualification terminal adoption is incomplete"
+                ) from error
+            if done.get("schema") == "nysa.software-factory.ticket-emergency-done/v1":
+                reconciliation = self.qualification_emergency_terminal(ticket)
+                stable = {
+                    "done_sha256", "pause_file_sha256", "pause_receipt_sha256",
+                    "protected_ticket_blob", "qualification_charge_micro_usd",
+                    "reconciliation_schema", "source_current_state",
+                    "source_factory_sha", "source_head_sha",
+                    "source_passport_sha256", "source_publication_state",
+                    "terminal_basis",
+                }
+                if matching_emergency and any(
+                    matching_emergency[0].get(name) != reconciliation[name]
+                    for name in stable
+                ):
+                    raise ControllerError(
+                        "qualification emergency terminal evidence changed"
+                    )
+                if not matching_emergency:
+                    self.event(
+                        "emergency_terminal_reconciled", ticket,
+                        **reconciliation,
+                    )
+                if not matching_complete:
+                    self.event_once("ticket_complete", ticket)
+                continue
+            if matching_emergency:
+                raise ControllerError(
+                    "qualification emergency terminal reconciliation is unexpected"
                 )
             adoption = None
             if self.qualification.get("mode") == "successor":

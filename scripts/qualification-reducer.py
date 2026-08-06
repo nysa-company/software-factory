@@ -37,6 +37,9 @@ TERMINAL_ADOPTION_SCHEMA = (
 PROTECTED_TERMINAL_RECONCILIATION_SCHEMA = (
     "nysa.software-factory.qualification-protected-terminal-reconciliation/v1"
 )
+EMERGENCY_TERMINAL_RECONCILIATION_SCHEMA = (
+    "nysa.software-factory.qualification-emergency-terminal-reconciliation/v1"
+)
 PASSPORT_MIGRATION_SCHEMA = (
     "nysa.software-factory.ticket-passport-migration/v2"
 )
@@ -195,6 +198,20 @@ def protected_reconciliations(
     return result
 
 
+def emergency_terminal_reconciliations(
+    events: list[dict[str, Any]], factory_sha: str,
+) -> dict[str, dict[str, Any]]:
+    records = [
+        item for item in events
+        if item.get("event") == "emergency_terminal_reconciled"
+        and item.get("factory_sha") == factory_sha
+    ]
+    result = {item.get("ticket"): item for item in records}
+    if len(result) != len(records):
+        raise QualificationError("emergency terminal reconciliation is duplicated")
+    return result
+
+
 def verify(
     manifest: dict[str, Any],
     passports: dict[str, dict[str, Any]],
@@ -210,6 +227,10 @@ def verify(
     source_factory_sha = manifest.get("source_factory_sha")
     reconciliations = protected_reconciliations(events, factory_sha)
     reconciled = set(reconciliations)
+    emergency_reconciliations = emergency_terminal_reconciliations(
+        events, factory_sha,
+    )
+    emergency_reconciled = set(emergency_reconciliations)
     manifest_keys = {
         "budget_usd", "capacity", "contract_version", "factory_sha",
         "generation", "per_run_budget_usd", "per_ticket_budget_usd",
@@ -253,8 +274,10 @@ def verify(
         or len(set(tickets)) != target_done
         or any(not TICKET.fullmatch(ticket) for ticket in tickets)
         or bool(set(passports) & reconciled)
+        or bool(reconciled & emergency_reconciled)
         or set(passports) | reconciled != set(tickets)
         or not reconciled.issubset(set(tickets))
+        or not emergency_reconciled.issubset(set(passports))
         or set(terminals) != set(tickets)
         or set(pull_requests) != set(tickets)
         or set(ticket_caps) != set(tickets)
@@ -336,6 +359,7 @@ def verify(
             })
             continue
         passport = passports[ticket]
+        emergency = emergency_reconciliations.get(ticket)
         charges = passport.get("charge_records")
         completed = passport.get("completed_role_evidence")
         history = passport.get("factory_release_history")
@@ -348,19 +372,20 @@ def verify(
         }
         if (
             passport.get("ticket") != ticket
-            or passport.get("factory_sha") != factory_sha
+            or passport.get("factory_sha")
+            != (source_factory_sha if emergency else factory_sha)
             or passport.get("contract_version") != "1.8.0"
-            or passport.get("publication_state") != "merged"
+            or (not emergency and passport.get("publication_state") != "merged")
             or not isinstance(history, list)
             or len(history_shas) != len(history)
-            or factory_sha not in history_shas
+            or (not emergency and factory_sha not in history_shas)
             or (successor and source_factory_sha not in history_shas)
             or not isinstance(charges, list)
             or not isinstance(completed, list)
             or (successor and not isinstance(migrations, list))
         ):
             raise QualificationError(f"{ticket} passport is not terminal")
-        if successor and not successor_release_lineage(
+        if successor and not emergency and not successor_release_lineage(
             history, migrations, source_factory_sha, factory_sha
         ):
             raise QualificationError(f"{ticket} successor migration is missing")
@@ -409,7 +434,93 @@ def verify(
             )
         ):
             raise QualificationError(f"{ticket} role evidence was replayed or is incomplete")
-        if (
+        if emergency:
+            plan = done.get("plan") if isinstance(done, dict) else None
+            passport_basis = plan.get("passport") if isinstance(plan, dict) else None
+            claim_basis = plan.get("claim") if isinstance(plan, dict) else None
+            allowed = {
+                "done_sha256", "event", "event_sha256", "factory_sha",
+                "observed_at_epoch_ns", "pause_file_sha256",
+                "pause_receipt_sha256", "protected_main_sha",
+                "protected_main_tree", "protected_ticket_blob",
+                "qualification_charge_micro_usd", "qualification_generation",
+                "qualification_manifest_sha256", "reconciliation_schema",
+                "schema", "source_current_state", "source_factory_sha",
+                "source_head_sha", "source_passport_sha256",
+                "source_publication_state", "terminal_basis", "ticket",
+            }
+            required = allowed - {
+                "event_sha256", "qualification_generation",
+                "qualification_manifest_sha256", "schema",
+            }
+            if (
+                not successor
+                or not required.issubset(emergency)
+                or not set(emergency).issubset(allowed)
+                or emergency.get("reconciliation_schema")
+                != EMERGENCY_TERMINAL_RECONCILIATION_SCHEMA
+                or emergency.get("terminal_basis")
+                != "attested-emergency-closeout"
+                or emergency.get("qualification_charge_micro_usd") != 0
+                or emergency.get("source_factory_sha") != source_factory_sha
+                or emergency.get("source_factory_sha") != passport.get("factory_sha")
+                or emergency.get("source_current_state")
+                != passport.get("current_state")
+                or emergency.get("source_publication_state")
+                != passport.get("publication_state")
+                or emergency.get("source_head_sha") != passport.get("head_sha")
+                or emergency.get("source_passport_sha256")
+                != passport.get("passport_sha256")
+                or not SHA.fullmatch(emergency.get("protected_main_sha", ""))
+                or not SHA.fullmatch(emergency.get("protected_main_tree", ""))
+                or not SHA.fullmatch(emergency.get("protected_ticket_blob", ""))
+                or not DIGEST.fullmatch(emergency.get("pause_file_sha256", ""))
+                or not DIGEST.fullmatch(emergency.get("pause_receipt_sha256", ""))
+                or done.get("schema")
+                != "nysa.software-factory.ticket-emergency-done/v1"
+                or done.get("ticket") != ticket
+                or done.get("kit_sha") != factory_sha
+                or not isinstance(plan, dict)
+                or plan.get("kit_sha") != factory_sha
+                or plan.get("execution_basis") != "authenticated-passport"
+                or passport_basis != {
+                    name: passport.get(name)
+                    for name in (
+                        "passport_sha256", "current_state", "publication_state",
+                        "factory_sha", "head_sha",
+                    )
+                }
+                or not isinstance(claim_basis, dict)
+                or claim_basis.get("status") != "blocked"
+                or claim_basis.get("role") != "factory-paused"
+                or claim_basis.get("blocked_reason") != "factory-issue-pause"
+                or claim_basis.get("parked") is not True
+                or emergency.get("pause_file_sha256") != claim_basis.get("sha256")
+                or emergency.get("pause_receipt_sha256") != claim_basis.get("receipt")
+                or emergency.get("done_sha256")
+                != hashlib.sha256(canonical(done).encode()).hexdigest()
+                or done.get("required_checks") != done.get("successful_checks")
+                or not done.get("required_checks")
+                or pr.get("number") != done.get("pr_number")
+                or pr.get("headRefName") != passport.get("branch")
+                or pr.get("headRefOid") != done.get("pr_head")
+                or pr.get("headRefOid") != passport.get("head_sha")
+                or pr.get("baseRefName") != "main"
+                or pr.get("state") != "MERGED"
+                or merge != done.get("merge_commit")
+                or not SHA.fullmatch(merge or "")
+                or factory_sha in history_shas
+                or any(
+                    item.get("factory_sha") == factory_sha
+                    for values in (charges, completed)
+                    for item in values
+                    if isinstance(item, dict)
+                )
+            ):
+                raise QualificationError(
+                    f"{ticket} emergency terminal reconciliation is invalid"
+                )
+        elif (
             done.get("schema") != "nysa.software-factory.ticket-done/v1"
             or done.get("ticket") != ticket
             or done.get("kit_sha") not in history_shas
@@ -431,7 +542,9 @@ def verify(
         qualification_total += qualification_charge
         ticket_reports.append({
             "charge_micro_usd": charge,
-            "evidence_mode": "passport",
+            "evidence_mode": (
+                "passport-emergency-closeout" if emergency else "passport"
+            ),
             "qualification_charge_micro_usd": qualification_charge,
             "merge_commit": merge,
             "pr_head": pr["headRefOid"],
@@ -579,7 +692,7 @@ def verify(
             released.add(holder)
             holder = None
             release_count += 1
-    publication_targets = set(tickets) - adopted - reconciled
+    publication_targets = set(tickets) - adopted - reconciled - emergency_reconciled
     if (
         holder is not None
         or acquired != publication_targets

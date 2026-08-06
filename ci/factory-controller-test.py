@@ -164,6 +164,137 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertFalse((self.state / "passports").exists())
         self.assertEqual(list(controller.claims.iterdir()), [])
 
+    def test_qualification_reconciles_exact_emergency_terminal_with_passport(self) -> None:
+        ticket = "T-110"
+        source = "b" * 40
+        head = "c" * 40
+        passport_sha = "d" * 64
+        (self.product / "factory/PROJECT.env").write_text(
+            "MAX_CONCURRENT_TICKETS=3\n", encoding="utf-8",
+        )
+        (self.product / "factory/QUALIFICATION.json").write_text(json.dumps({
+            "budget_usd": "300.000000",
+            "capacity": 3,
+            "contract_version": "1.8.0",
+            "factory_sha": "a" * 40,
+            "generation": 2,
+            "mode": "successor",
+            "per_run_budget_usd": "10.000000",
+            "per_ticket_budget_usd": "100.000000",
+            "schema": CONTROL.QUALIFICATION_SCHEMA,
+            "source_factory_sha": source,
+            "target_done": 3,
+            "tickets": ["T-110", "T-111", "T-112"],
+        }), encoding="utf-8")
+        ticket_path = self.product / f"factory/tickets/{ticket}.md"
+        ticket_path.parent.mkdir()
+        ticket_path.write_text("State: Done\n", encoding="utf-8")
+        passport_path = self.state / f"passports/{ticket}.json"
+        passport_path.parent.mkdir(mode=0o700)
+        passport = {
+            "branch": f"ticket/{ticket}",
+            "current_state": "Review",
+            "factory_sha": source,
+            "head_sha": head,
+            "passport_sha256": passport_sha,
+            "publication_state": "validating",
+            "ticket": ticket,
+        }
+        CONTROL.write(passport_path, passport)
+        pause = {
+            "branch": f"ticket/{ticket}",
+            "budget_sha256": "1" * 64,
+            "current_state": "Review",
+            "head_sha": head,
+            "passport_factory_sha": source,
+            "passport_sha256": passport_sha,
+            "schema": "nysa.software-factory.ticket-pause/v2",
+            "status": "budget",
+            "ticket": ticket,
+        }
+        pause["pause_sha256"] = hashlib.sha256(
+            CONTROL.canonical(pause).encode()
+        ).hexdigest()
+        pause_path = self.state / f"pause-{ticket}.json"
+        CONTROL.write(pause_path, pause)
+        pause_file = hashlib.sha256(
+            (CONTROL.canonical(pause) + "\n").encode()
+        ).hexdigest()
+        done_path = self.product / f"factory/attestations/{ticket}/done.json"
+        done_path.parent.mkdir(parents=True)
+        done = {
+            "kit_sha": "a" * 40,
+            "plan": {
+                "claim": {
+                    "blocked_reason": "factory-issue-pause",
+                    "parked": True,
+                    "receipt": pause["pause_sha256"],
+                    "role": "factory-paused",
+                    "sha256": pause_file,
+                    "status": "blocked",
+                },
+                "execution_basis": "authenticated-passport",
+                "kit_sha": "a" * 40,
+                "passport": {
+                    name: passport[name]
+                    for name in (
+                        "passport_sha256", "current_state", "publication_state",
+                        "factory_sha", "head_sha",
+                    )
+                },
+            },
+            "schema": "nysa.software-factory.ticket-emergency-done/v1",
+        }
+        done_path.write_text(json.dumps(done), encoding="utf-8")
+        protected = {
+            "done_sha256": hashlib.sha256(
+                CONTROL.canonical(done).encode()
+            ).hexdigest(),
+            "protected_main_sha": "2" * 40,
+            "protected_main_tree": "3" * 40,
+            "protected_ticket_blob": "4" * 40,
+            "qualification_charge_micro_usd": 0,
+            "reconciliation_schema": (
+                CONTROL.PROTECTED_TERMINAL_RECONCILIATION_SCHEMA
+            ),
+            "terminal_basis": "attested-emergency-closeout",
+        }
+        controller = CONTROL.Controller(self.args)
+        controller.qualification_protected_terminal = lambda _ticket: protected
+
+        result = controller.qualification_emergency_terminal(ticket)
+        self.assertEqual(
+            result["reconciliation_schema"],
+            CONTROL.EMERGENCY_TERMINAL_RECONCILIATION_SCHEMA,
+        )
+        self.assertEqual(result["source_passport_sha256"], passport_sha)
+        changed = copy.deepcopy(pause)
+        changed["budget_sha256"] = "short"
+        changed["pause_sha256"] = hashlib.sha256(
+            CONTROL.canonical({
+                name: value for name, value in changed.items()
+                if name != "pause_sha256"
+            }).encode()
+        ).hexdigest()
+        CONTROL.write(pause_path, changed)
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "emergency terminal evidence is invalid",
+        ):
+            controller.qualification_emergency_terminal(ticket)
+        CONTROL.write(pause_path, pause)
+
+        controller.product_ticket_done = lambda selected: selected == ticket
+        controller.record_qualification_done_targets()
+        controller.record_qualification_done_targets()
+        records = [CONTROL.read(path) for path in controller.events.glob("*.json")]
+        self.assertEqual(sum(
+            item.get("event") == "emergency_terminal_reconciled"
+            for item in records
+        ), 1)
+        self.assertEqual(sum(
+            item.get("event") == "ticket_complete" for item in records
+        ), 1)
+
     def test_qualification_plain_done_without_protected_terminal_refuses(self) -> None:
         tickets = [f"T-{number}" for number in range(110, 114)]
         (self.product / "factory/QUALIFICATION.json").write_text(json.dumps({
