@@ -4085,3 +4085,14 @@ The sealed launcher admits the controller-only
 `passport verify-model-identity-success` grammar with exact ticket, receipt,
 run, worktree, and JSON arguments. Missing or reordered evidence remains
 refused before the passport helper runs.
+
+## 2026-08-07 — Decision 306: Model-identity recovery replays an exact ticket delta
+
+Category: Reliability
+
+A completed Spec-linter output need not be append-only. Successor recovery
+authenticates its ticket-only output and exact revert, then requires a
+conflict-free three-way replay of that same delta across the route-migration
+tail. Active selection resolves from the newest journal revision that carries
+resolution data because unchanged release revisions may omit it. Conflicts,
+changed replay content, extra commits, and ambiguous topology remain blocked.

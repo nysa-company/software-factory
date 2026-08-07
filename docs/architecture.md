@@ -1170,16 +1170,19 @@ because its exact reported model identity changed. Successor recovery is
 limited to the authenticated old-plan mismatch whose owner-only output names
 the current catalog identity, contains one terminal success and the exact
 identity-rejection diagnostic, and whose progress journal independently ends
-in one success. The local history must be exactly receipt input, one append-only
-ticket output commit, its exact revert, a bounded contiguous chain of one or
-more authenticated ticket-and-route migrations ending at the current kit, and
-optionally the controller's ticket-only
-revert-of-revert. Recovery first requires the passport and remote to converge
-on the migration tail. The controller then restores the exact append on top
+in one success. The local history must be exactly receipt input, one
+ticket-only output commit, its exact revert, a bounded contiguous chain of one
+or more authenticated ticket-and-route migrations ending at the current kit,
+and optionally the controller's ticket-only revert-of-revert. The active route
+selection is resolved across that journal because an unchanged release
+migration intentionally carries only its prior-resolution digest. Recovery
+first requires the passport and remote to converge on the migration tail. The
+controller then restores the exact conflict-free three-way ticket delta on top
 without force, preserving the migrated Kit-SHA and route bytes, exports the
-failed charge once, and records the HMAC-signed completion correction. Any
-extra path, commit, model, result, route, remote movement, or same-release
-failure remains blocked and never enters provider fallback.
+failed charge once, and records the HMAC-signed completion correction. A merge
+conflict, changed replay, extra path or commit, different model, result, route,
+remote movement, or same-release failure remains blocked and never enters
+provider fallback.
 The state machine never migrates a passport for a `REFUSE` transition; the
 controller blocks the claim first so the next one-shot owns that boundary and
 its durable pending marker.
