@@ -295,7 +295,7 @@ factory_probe_adapter() {
       if [[ -z "$installed" ]]; then
         PROBE_STATE="UNAVAILABLE"; PROBE_REASON="version_probe_failed"; return 0
       fi
-      if [[ "$installed" != *"${CLAUDE_CODE_PINNED:-2.1.207}"* ]]; then
+      if [[ "${installed%% *}" != "${CLAUDE_CODE_PINNED:-2.1.223}" ]]; then
         PROBE_STATE="INVALID"; PROBE_REASON="version_mismatch"; return 0
       fi
       if ! help="$(timeout "$probe_timeout" claude --help 2>/dev/null)"; then

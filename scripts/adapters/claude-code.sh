@@ -8,7 +8,7 @@
 # print agent output, and print a final line: "turns=N cost_usd=X".
 set -euo pipefail
 
-PINNED_VERSION="${CLAUDE_CODE_PINNED:-2.1.207}"  # pinned at shakedown 2026-07-11
+PINNED_VERSION="${CLAUDE_CODE_PINNED:-2.1.223}"  # certified 2026-08-06
 
 BUDGET="" MAX_TURNS="" TIMEOUT_MIN="" PROMPT_FILE="" WORKDIR="$PWD" MODEL="" EFFORT=""
 while [[ $# -gt 0 ]]; do
@@ -37,10 +37,10 @@ run_with_timeout() {
 
 command -v claude >/dev/null || { echo "claude CLI not installed" >&2; exit 6; }
 INSTALLED="$(claude --version 2>/dev/null | head -n1 || true)"
-case "$INSTALLED" in
-  *"$PINNED_VERSION"*) : ;;
-  *) echo "installed Claude Code does not match the approved version" >&2; exit 6 ;;
-esac
+[[ "${INSTALLED%% *}" == "$PINNED_VERSION" ]] || {
+  echo "installed Claude Code does not match the approved version" >&2
+  exit 6
+}
 
 if [[ "${FACTORY_CLI_INTERNAL_SANDBOX:-0}" == 1 ]]; then
   [[ "${FACTORY_CLAUDE_SETTINGS:-}" == /* && -f "$FACTORY_CLAUDE_SETTINGS" &&
@@ -95,7 +95,7 @@ PY
     --no-session-persistence --disable-slash-commands)
 fi
 
-# Shakedown finding (2026-07-11, Claude Code 2.1.207): --max-turns is gone from
+# Claude Code 2.1.223 retains the shakedown contract: --max-turns is absent from
 # the CLI; --max-budget-usd exists and is a HARD in-run dollar stop — strictly
 # better enforcement than the old post-hoc check. Turns remain logged from the
 # JSON result; timeout guards the wall clock.
