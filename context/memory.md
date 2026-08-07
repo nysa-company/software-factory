@@ -4096,3 +4096,12 @@ conflict-free three-way replay of that same delta across the route-migration
 tail. Active selection resolves from the newest journal revision that carries
 resolution data because unchanged release revisions may omit it. Conflicts,
 changed replay content, extra commits, and ambiguous topology remain blocked.
+
+## 2026-08-07 — Decision 307: Release normalization preserves typed recovery
+
+Category: Reliability
+
+Typed old-release terminal recovery accepts both blocked claims and the idle
+claimed form produced by release-upgrade normalization. It still requires the
+same exact receipt, terminal, passport, Git, and remote evidence before clearing
+the pending role; ordinary provider fallback cannot consume that preserved run.
