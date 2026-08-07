@@ -4184,3 +4184,15 @@ Protected terminal validation keys modern ledger rows by their unique run ID
 and retains historical empty-run-ID rows as an exact-row multiset. Reordering
 and new rows remain safe; mutation, deletion, duplicate loss, modern duplicate
 IDs, and schema drift remain refused.
+
+## 2026-08-07 — Decision 314: Closeout recovery is serialized and exact
+
+Category: Reliability
+
+The controller serializes concurrent Done closeouts and defers a sibling while
+an exact earlier Done receipt remains absent from protected main. If protected
+main advances and leaves a clean attested closeout PR behind, the attester
+retires that exact open PR and regenerates from current main with an exact
+force-with-lease; dirty, divergent, ambiguous, or repeatedly stale shapes fail
+closed. A preserved bundle-refresh marker remains reclaimable after another
+sealed release upgrade instead of stranding the claim.

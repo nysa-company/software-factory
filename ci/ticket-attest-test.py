@@ -435,6 +435,7 @@ Merge-Policy: manual
             "check_runs": {},
             "closeout_pr": "absent", "closeout_duplicate": False,
             "closeout_wrong": False, "closeout_head": None,
+            "closeout_merge_state": "BLOCKED",
             "create_fail": False, "closeout_merge_fail": False,
             "closeout_auto_merge": True,
             "historical_head_ref": None,
@@ -467,9 +468,11 @@ if a[:2] == ["pr", "list"]:
                     "baseRefName": "develop" if s["closeout_wrong"] else "main",
                     "headRefOid": ("c" * 40 if s["closeout_wrong"] else (s.get("closeout_head") or head)),
                     "url": "https://example.invalid/pr/14",
-                    "state": "MERGED" if s["closeout_pr"] == "merged" else "OPEN",
+                    "state": ("MERGED" if s["closeout_pr"] == "merged" else
+                              "CLOSED" if s["closeout_pr"] == "closed" else "OPEN"),
                     "mergedAt": "2026-07-17T19:00:00Z" if s["closeout_pr"] == "merged" else None,
-                    "mergeCommit": {"oid": "e" * 40} if s["closeout_pr"] == "merged" else None}
+                    "mergeCommit": {"oid": "e" * 40} if s["closeout_pr"] == "merged" else None,
+                    "mergeStateStatus": s["closeout_merge_state"]}
             print(json.dumps([item, dict(item, number=15)] if s["closeout_duplicate"] else [item]))
     else:
         if state == "open":
@@ -499,11 +502,19 @@ elif a[:2] == ["pr", "merge"]:
         print("draft pull request", file=sys.stderr); raise SystemExit(1)
     if (closeout and s["closeout_merge_fail"]) or (not closeout and s["merge_fail"]):
         print("auto-merge unavailable", file=sys.stderr); raise SystemExit(1)
-    if not closeout and "--disable-auto" in a:
+    if closeout and "--disable-auto" in a:
+        s["closeout_auto_merge"] = False
+    elif not closeout and "--disable-auto" in a:
         s["auto_merge"] = False
     elif not closeout:
         s["auto_merge"] = s["auto_merge_confirm"]
     s["closeout_merge_argv" if closeout else "merge_argv"] = a
+    Path(os.environ["FAKE_GH_STATE"]).write_text(json.dumps(s))
+elif a[:2] == ["pr", "close"]:
+    s["closeout_pr"] = "closed"
+    s["closeout_merge_state"] = "BLOCKED"
+    s["closeout_auto_merge"] = True
+    s["closeout_close_argv"] = a
     Path(os.environ["FAKE_GH_STATE"]).write_text(json.dumps(s))
 elif a[:2] == ["pr", "ready"]:
     s["draft"] = "--undo" in a
@@ -513,8 +524,10 @@ elif a[:2] == ["pr", "view"]:
     if closeout:
         print(json.dumps({"number": 14, "headRefName": "chore/t700-closeout",
                           "baseRefName": "main", "headRefOid": s.get("closeout_head") or head,
-                          "state": "MERGED" if s["closeout_pr"] == "merged" else "OPEN",
+                          "state": ("MERGED" if s["closeout_pr"] == "merged" else
+                                    "CLOSED" if s["closeout_pr"] == "closed" else "OPEN"),
                           "mergedAt": "2026-07-17T19:00:00Z" if s["closeout_pr"] == "merged" else None,
+                          "mergeStateStatus": s["closeout_merge_state"],
                           "autoMergeRequest": {"mergeMethod": "SQUASH"} if s["closeout_auto_merge"] else None}))
     else:
         print(json.dumps({"number": 7,
@@ -2154,6 +2167,45 @@ else:
         retried = self.attest("done")
         self.assertEqual(retried.returncode, 0, retried.stderr)
         self.assertEqual(self.head_at(self.workdir), closeout_head)
+
+    def test_done_regenerates_exact_closeout_when_protected_main_advances(self):
+        self.prepare_done(create_fail=True)
+        self.assertIn("did not create", self.attest("done").stderr)
+        stale_head = self.head_at(self.workdir)
+        updater = self.temp / "concurrent-closeout-main-update"
+        command(
+            "git", "clone", "-q", "--branch", "main", str(self.remote),
+            str(updater),
+        )
+        (updater / "concurrent.txt").write_text("sibling closeout\n")
+        command("git", "add", ".", cwd=updater)
+        command(
+            "git", "-c", "user.name=test", "-c",
+            "user.email=test@example.com", "commit", "-qm",
+            "merge sibling closeout", cwd=updater,
+        )
+        command("git", "push", "-q", "origin", "main", cwd=updater)
+        command("git", "fetch", "-q", "origin", "main", cwd=self.workdir)
+        protected = command(
+            "git", "rev-parse", "origin/main", cwd=self.workdir,
+        ).stdout.strip()
+        self.update_state(
+            create_fail=False, closeout_merge_state="BEHIND",
+        )
+
+        retried = self.attest("done")
+
+        self.assertEqual(retried.returncode, 0, retried.stderr)
+        result = json.loads(retried.stdout)
+        state = json.loads(self.state.read_text())
+        receipt = json.loads(
+            (self.workdir / "factory/attestations/T-700/done.json").read_text()
+        )
+        self.assertEqual(result["retired_closeout_pr_number"], 14)
+        self.assertEqual(state["create_count"], 2)
+        self.assertEqual(state["closeout_close_argv"][:3], ["pr", "close", "14"])
+        self.assertNotEqual(self.head_at(self.workdir), stale_head)
+        self.assertEqual(receipt["closeout_parent"], protected)
 
     def test_done_retry_refuses_modified_closeout_head(self):
         self.prepare_done(create_fail=True)
