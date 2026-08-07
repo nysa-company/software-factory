@@ -23,7 +23,13 @@ class ProviderCoordinatorTest(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name).resolve()
         self.db = self.root / "state-v2.sqlite3"
+        self.account_db = self.root / "cursor-account.sqlite3"
         self.policy = self.root / "policy.json"
+        self.owner_pid = os.getpid()
+        self.owner_pgid = os.getpgrp()
+        self.owner_start = " ".join(subprocess.check_output(
+            ["ps", "-o", "lstart=", "-p", str(self.owner_pid)], text=True
+        ).split())
         self.write_policy()
 
     def tearDown(self):
@@ -31,7 +37,7 @@ class ProviderCoordinatorTest(unittest.TestCase):
 
     def write_policy(
         self, coupled=6, global_concurrent=6, global_starts=20,
-        family_concurrent=6, account_concurrent=6, window=60,
+        family_concurrent=6, account_concurrent=6, account_starts=20, window=60,
     ):
         value = {
             "schema": "factory-provider-concurrency-policy/v1",
@@ -56,12 +62,12 @@ class ProviderCoordinatorTest(unittest.TestCase):
             "account_routes": {
                 "account-a": {
                     "max_concurrent": account_concurrent,
-                    "max_starts": 20,
+                    "max_starts": account_starts,
                     "window_seconds": window,
                 },
                 "account-b": {
                     "max_concurrent": account_concurrent,
-                    "max_starts": 20,
+                    "max_starts": account_starts,
                     "window_seconds": window,
                 },
             },
@@ -84,6 +90,67 @@ class ProviderCoordinatorTest(unittest.TestCase):
 
     def json_command(self, *arguments, **kwargs):
         return json.loads(self.command(*arguments, **kwargs).stdout)
+
+    def account_command(self, *arguments, check=True, db=None, account_db=None):
+        return self.json_command(
+            "--account-db", account_db or self.account_db, *arguments,
+            check=check, db=db,
+        )
+
+    def account_acquire(
+        self, lease, account="account-a", scope="qualification-candidate",
+        wait=1, owner_pid=None, owner_pgid=None, owner_start=None, check=True,
+        db=None,
+    ):
+        return self.account_command(
+            "account-acquire", "--lease-id", lease,
+            "--account-route", account, "--trust-scope", scope,
+            "--owner-pid", owner_pid or self.owner_pid,
+            "--owner-pgid", owner_pgid or self.owner_pgid,
+            "--owner-start", owner_start or self.owner_start,
+            "--policy", self.policy, "--wait-seconds", wait,
+            check=check, db=db,
+        )
+
+    def account_release(
+        self, lease, owner_pid=None, owner_pgid=None, owner_start=None,
+    ):
+        return self.account_command(
+            "account-release", "--lease-id", lease,
+            "--owner-pid", owner_pid or self.owner_pid,
+            "--owner-pgid", owner_pgid or self.owner_pgid,
+            "--owner-start", owner_start or self.owner_start,
+        )
+
+    def account_bind_runtime(
+        self, lease, runtime_pid, runtime_start, owner_pid=None,
+        owner_pgid=None, owner_start=None,
+    ):
+        return self.account_command(
+            "account-bind-runtime", "--lease-id", lease,
+            "--owner-pid", owner_pid or self.owner_pid,
+            "--owner-pgid", owner_pgid or self.owner_pgid,
+            "--owner-start", owner_start or self.owner_start,
+            "--runtime-pid", runtime_pid, "--runtime-pgid", runtime_pid,
+            "--runtime-start", runtime_start,
+        )
+
+    def account_validate(
+        self, lease, runtime_pid, runtime_start, policy_sha256,
+        account="account-a", scope="qualification-candidate", owner_pid=None,
+        owner_pgid=None, owner_start=None,
+    ):
+        return self.account_command(
+            "account-validate", "--lease-id", lease,
+            "--account-route", account, "--trust-scope", scope,
+            "--owner-pid", owner_pid or self.owner_pid,
+            "--owner-pgid", owner_pgid or self.owner_pgid,
+            "--owner-start", owner_start or self.owner_start,
+            "--runtime-pid", runtime_pid, "--runtime-pgid", runtime_pid,
+            "--runtime-start", runtime_start,
+            "--expected-policy-sha256", policy_sha256,
+            "--policy", self.policy,
+        )
 
     def reserve(
         self, attempt, operation=None, now=1000, family="openai",
@@ -518,6 +585,483 @@ class ProviderCoordinatorTest(unittest.TestCase):
             "bad-policy", operation="bad-policy", check=False
         )
         self.assertEqual(rejected["status"], "error")
+
+    def test_cursor_account_admission_is_shared_by_route_not_lane(self):
+        self.write_policy(account_concurrent=1)
+        lane_two = self.root / "lane-two.sqlite3"
+        first = self.account_acquire(
+            "lane-one", scope="production-certified", db=self.db
+        )
+        self.assertTrue(first["admitted"])
+        blocked = self.account_acquire("lane-two", wait=1, db=lane_two)
+        self.assertFalse(blocked["admitted"])
+        self.assertTrue(blocked["timed_out"])
+        independent = self.account_acquire(
+            "other-account", account="account-b", db=lane_two
+        )
+        self.assertTrue(independent["admitted"])
+        status = self.account_command("account-status")
+        self.assertEqual(
+            {(item["lease_id"], item["account_route"]) for item in status["leases"]},
+            {("lane-one", "account-a"), ("other-account", "account-b")},
+        )
+        self.assertTrue(self.account_release("lane-one")["released"])
+        self.assertTrue(self.account_release("other-account")["released"])
+
+    def test_production_waiter_wins_the_final_cursor_slot(self):
+        self.write_policy(account_concurrent=1)
+        self.assertTrue(self.account_acquire("holder")["admitted"])
+
+        def command(lease, scope):
+            return [
+                "python3", str(COORDINATOR), "--db", str(self.db),
+                "--account-db", str(self.account_db), "account-acquire",
+                "--lease-id", lease, "--account-route", "account-a",
+                "--trust-scope", scope, "--owner-pid", str(self.owner_pid),
+                "--owner-pgid", str(self.owner_pgid),
+                "--owner-start", self.owner_start, "--policy", str(self.policy),
+                "--wait-seconds", "4",
+            ]
+
+        qualification = subprocess.Popen(
+            command("qualification", "qualification-candidate"),
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        time.sleep(0.1)
+        production = subprocess.Popen(
+            command("production", "production-certified"),
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            leases = self.account_command("account-status")["leases"]
+            if {item["lease_id"] for item in leases} == {
+                "holder", "qualification", "production",
+            }:
+                break
+            time.sleep(0.05)
+        self.assertTrue(self.account_release("holder")["released"])
+        production_stdout, production_stderr = production.communicate(timeout=3)
+        self.assertEqual(production.returncode, 0, production_stderr)
+        self.assertTrue(json.loads(production_stdout)["admitted"])
+        self.assertIsNone(qualification.poll())
+        self.assertTrue(self.account_release("production")["released"])
+        qualification_stdout, qualification_stderr = qualification.communicate(
+            timeout=3
+        )
+        self.assertEqual(qualification.returncode, 0, qualification_stderr)
+        self.assertTrue(json.loads(qualification_stdout)["admitted"])
+        self.assertTrue(self.account_release("qualification")["released"])
+
+    def test_cursor_account_stale_owner_cleanup_is_process_group_safe(self):
+        self.write_policy(account_concurrent=1)
+        owner = subprocess.Popen(
+            ["python3", "-c", "import time; time.sleep(30)"],
+            start_new_session=True,
+        )
+        owner_start = " ".join(subprocess.check_output(
+            ["ps", "-o", "lstart=", "-p", str(owner.pid)], text=True
+        ).split())
+        try:
+            self.assertTrue(self.account_acquire(
+                "crashed", owner_pid=owner.pid, owner_pgid=owner.pid,
+                owner_start=owner_start,
+            )["admitted"])
+        finally:
+            owner.terminate()
+            owner.wait(timeout=3)
+        restarted = self.account_acquire("restart")
+        self.assertTrue(restarted["admitted"])
+        self.assertIn("crashed", restarted["stale_releases"])
+        self.assertTrue(self.account_release("restart")["released"])
+
+    def test_cursor_account_release_is_bound_and_policy_mismatch_refuses(self):
+        self.write_policy(account_concurrent=1)
+        first = self.account_acquire("account-a")
+        self.assertTrue(first["admitted"])
+        runtime = subprocess.Popen(
+            ["python3", "-c", "import time; time.sleep(30)"],
+            start_new_session=True,
+        )
+        runtime_start = " ".join(subprocess.check_output(
+            ["ps", "-o", "lstart=", "-p", str(runtime.pid)], text=True
+        ).split())
+        self.assertTrue(self.account_bind_runtime(
+            "account-a", runtime.pid, runtime_start
+        )["bound"])
+        validated = self.account_validate(
+            "account-a", runtime.pid, runtime_start,
+            first["lease"]["policy_sha256"],
+        )
+        self.assertTrue(validated["valid"])
+        self.assertTrue(validated["lease"]["started"])
+        self.assertTrue(self.account_acquire(
+            "account-b", account="account-b"
+        )["admitted"])
+        runtime.terminate()
+        runtime.wait(timeout=3)
+        self.assertTrue(self.account_release("account-a")["released"])
+        remaining = self.account_command("account-status")["leases"]
+        self.assertEqual([item["lease_id"] for item in remaining], ["account-b"])
+
+        self.write_policy(global_concurrent=5, account_concurrent=1)
+        unrelated = self.account_acquire("unrelated-policy-change")
+        self.assertTrue(unrelated["admitted"])
+        next_runtime = subprocess.Popen(
+            ["python3", "-c", "import time; time.sleep(30)"],
+            start_new_session=True,
+        )
+        next_runtime_start = " ".join(subprocess.check_output(
+            ["ps", "-o", "lstart=", "-p", str(next_runtime.pid)], text=True
+        ).split())
+        try:
+            self.assertTrue(self.account_bind_runtime(
+                "unrelated-policy-change", next_runtime.pid, next_runtime_start
+            )["bound"])
+            self.assertTrue(self.account_validate(
+                "unrelated-policy-change", next_runtime.pid, next_runtime_start,
+                unrelated["lease"]["policy_sha256"],
+            )["valid"])
+        finally:
+            next_runtime.terminate()
+            next_runtime.wait(timeout=3)
+        self.assertTrue(
+            self.account_release("unrelated-policy-change")["released"]
+        )
+
+        self.write_policy(global_concurrent=5, account_concurrent=2)
+        sequential = self.account_acquire(
+            "sequential-mismatch", account="account-a", check=False
+        )
+        self.assertEqual(sequential["status"], "error")
+        self.assertIn("start-window policies disagree", sequential["error"])
+        mismatch = self.account_acquire(
+            "mismatch", account="account-b", check=False
+        )
+        self.assertEqual(mismatch["status"], "error")
+        self.assertIn("policies disagree across lanes", mismatch["error"])
+        self.assertTrue(self.account_release("account-b")["released"])
+
+    def test_cursor_account_state_is_owner_only_and_secret_free(self):
+        self.assertTrue(self.account_acquire("secret-free")["admitted"])
+        self.assertEqual(self.account_db.stat().st_mode & 0o777, 0o600)
+        raw = self.account_db.read_bytes()
+        self.assertNotIn(b"credential", raw.lower())
+        self.assertNotIn(b"auth.json", raw)
+        with sqlite3.connect(self.account_db) as connection:
+            columns = {
+                row[1]
+                for row in connection.execute("PRAGMA table_info(account_leases)")
+            }
+        self.assertNotIn("credential", columns)
+        self.assertNotIn("model", columns)
+        self.assertNotIn("product_id", columns)
+        self.assertNotIn("ticket_id", columns)
+        self.assertEqual(self.account_command("account-status")["starts"], [])
+        self.assertTrue(self.account_release("secret-free")["released"])
+
+    def test_cursor_account_database_security_refusals(self):
+        def status(path):
+            return self.account_command(
+                "account-status", account_db=path, check=False
+            )
+
+        insecure_parent = self.root / "insecure-parent"
+        insecure_parent.mkdir(mode=0o755)
+        self.assertEqual(
+            status(insecure_parent / "account.sqlite3")["status"], "error"
+        )
+
+        mode_db = self.root / "mode.sqlite3"
+        self.assertEqual(status(mode_db)["schema"], "factory-cursor-account-admission/v1")
+        mode_db.chmod(0o644)
+        self.assertEqual(status(mode_db)["status"], "error")
+
+        hardlink_db = self.root / "hardlink-source.sqlite3"
+        self.assertIn("leases", status(hardlink_db))
+        os.link(hardlink_db, self.root / "hardlink.sqlite3")
+        self.assertEqual(status(hardlink_db)["status"], "error")
+
+        symlink_target = self.root / "symlink-target.sqlite3"
+        self.assertIn("leases", status(symlink_target))
+        symlink_db = self.root / "symlink.sqlite3"
+        symlink_db.symlink_to(symlink_target.name)
+        self.assertEqual(status(symlink_db)["status"], "error")
+
+        wrong_app = self.root / "wrong-app.sqlite3"
+        with sqlite3.connect(wrong_app) as connection:
+            connection.execute("PRAGMA application_id=123")
+            connection.execute("CREATE TABLE marker(value TEXT)")
+        wrong_app.chmod(0o600)
+        self.assertEqual(status(wrong_app)["status"], "error")
+
+        wrong_version = self.root / "wrong-version.sqlite3"
+        with sqlite3.connect(wrong_version) as connection:
+            connection.execute("PRAGMA application_id=1314472769")
+            connection.execute("PRAGMA user_version=2")
+            connection.execute("CREATE TABLE marker(value TEXT)")
+        wrong_version.chmod(0o600)
+        self.assertEqual(status(wrong_version)["status"], "error")
+
+        wrong_schema = self.root / "wrong-schema.sqlite3"
+        self.assertIn("leases", status(wrong_schema))
+        with sqlite3.connect(wrong_schema) as connection:
+            connection.execute(
+                "UPDATE metadata SET value='wrong' WHERE key='schema'"
+            )
+        self.assertEqual(status(wrong_schema)["status"], "error")
+
+    def test_cursor_account_start_window_is_shared_and_expires(self):
+        self.write_policy(account_starts=1, window=60)
+        first = self.account_acquire("first-start")
+        runtime = subprocess.Popen(
+            ["python3", "-c", "import time; time.sleep(30)"],
+            start_new_session=True,
+        )
+        runtime_start = " ".join(subprocess.check_output(
+            ["ps", "-o", "lstart=", "-p", str(runtime.pid)], text=True
+        ).split())
+        try:
+            self.assertTrue(self.account_bind_runtime(
+                "first-start", runtime.pid, runtime_start
+            )["bound"])
+            self.assertTrue(self.account_validate(
+                "first-start", runtime.pid, runtime_start,
+                first["lease"]["policy_sha256"],
+            )["valid"])
+        finally:
+            runtime.terminate()
+            runtime.wait(timeout=3)
+        self.assertTrue(self.account_release("first-start")["released"])
+        blocked = self.account_acquire("within-window", wait=1)
+        self.assertFalse(blocked["admitted"])
+        self.assertTrue(blocked["timed_out"])
+        with sqlite3.connect(self.account_db) as connection:
+            connection.execute(
+                "UPDATE account_starts SET started_at=started_at-window_seconds-1"
+            )
+        after_window = self.account_acquire("after-window")
+        self.assertTrue(after_window["admitted"])
+        self.assertTrue(self.account_release("after-window")["released"])
+
+    def test_many_account_waiters_do_not_starve_the_shared_database(self):
+        self.write_policy(account_concurrent=1)
+        self.assertTrue(self.account_acquire("holder")["admitted"])
+
+        def arguments(number):
+            return [
+                "python3", str(COORDINATOR), "--db", str(self.db),
+                "--account-db", str(self.account_db), "account-acquire",
+                "--lease-id", f"waiter-{number}", "--account-route", "account-a",
+                "--trust-scope", "qualification-candidate",
+                "--owner-pid", str(self.owner_pid),
+                "--owner-pgid", str(self.owner_pgid),
+                "--owner-start", self.owner_start, "--policy", str(self.policy),
+                "--wait-seconds", "1",
+            ]
+
+        waiters = [
+            subprocess.Popen(
+                arguments(number), text=True, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            for number in range(8)
+        ]
+        results = [waiter.communicate(timeout=5) for waiter in waiters]
+        self.assertTrue(all(waiter.returncode == 0 for waiter in waiters), results)
+        outputs = [json.loads(stdout) for stdout, _stderr in results]
+        self.assertTrue(all(item["timed_out"] for item in outputs))
+        self.assertNotIn("locked", "".join(stderr for _stdout, stderr in results).lower())
+        self.assertTrue(self.account_release("holder")["released"])
+
+    def test_waiting_owner_death_cannot_reinsert_or_admit_its_lease(self):
+        self.write_policy(account_concurrent=1)
+        self.assertTrue(self.account_acquire("holder")["admitted"])
+        owner = subprocess.Popen(
+            ["python3", "-c", "import time; time.sleep(30)"],
+            start_new_session=True,
+        )
+        owner_start = " ".join(subprocess.check_output(
+            ["ps", "-o", "lstart=", "-p", str(owner.pid)], text=True
+        ).split())
+        waiter = subprocess.Popen([
+            "python3", str(COORDINATOR), "--db", str(self.db),
+            "--account-db", str(self.account_db), "account-acquire",
+            "--lease-id", "dead-waiter", "--account-route", "account-a",
+            "--trust-scope", "qualification-candidate",
+            "--owner-pid", str(owner.pid), "--owner-pgid", str(owner.pid),
+            "--owner-start", owner_start, "--policy", str(self.policy),
+            "--wait-seconds", "5",
+        ], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            leases = self.account_command("account-status")["leases"]
+            if any(item["lease_id"] == "dead-waiter" for item in leases):
+                break
+            time.sleep(0.05)
+        owner.kill()
+        owner.wait(timeout=3)
+        stdout, stderr = waiter.communicate(timeout=3)
+        self.assertEqual(waiter.returncode, 0, stderr)
+        result = json.loads(stdout)
+        self.assertFalse(result["admitted"])
+        self.assertEqual(result["owner_unavailable"], "dead")
+        self.assertNotIn(
+            "dead-waiter",
+            {item["lease_id"] for item in self.account_command("account-status")["leases"]},
+        )
+        self.assertTrue(self.account_release("holder")["released"])
+        successor = self.account_acquire("live-successor")
+        self.assertTrue(successor["admitted"])
+        self.assertTrue(self.account_release("live-successor")["released"])
+
+    def test_cursor_account_wait_stops_on_pre_go_maintenance(self):
+        self.write_policy(account_concurrent=1)
+        self.assertTrue(self.account_acquire("holder")["admitted"])
+        maintenance = self.root / "MAINTENANCE"
+        waiting = subprocess.Popen([
+            "python3", str(COORDINATOR), "--db", str(self.db),
+            "--account-db", str(self.account_db), "account-acquire",
+            "--lease-id", "stopped", "--account-route", "account-a",
+            "--trust-scope", "qualification-candidate",
+            "--owner-pid", str(self.owner_pid),
+            "--owner-pgid", str(self.owner_pgid),
+            "--owner-start", self.owner_start, "--policy", str(self.policy),
+            "--wait-seconds", "10", "--cancel-path", str(maintenance),
+        ], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            leases = self.account_command("account-status")["leases"]
+            if any(item["lease_id"] == "stopped" for item in leases):
+                break
+            time.sleep(0.05)
+        started = time.monotonic()
+        maintenance.touch()
+        stdout, stderr = waiting.communicate(timeout=3)
+        self.assertEqual(waiting.returncode, 0, stderr)
+        result = json.loads(stdout)
+        self.assertFalse(result["admitted"])
+        self.assertEqual(result["stopped_by"], str(maintenance))
+        self.assertLess(time.monotonic() - started, 1)
+        leases = self.account_command("account-status")["leases"]
+        self.assertEqual([item["lease_id"] for item in leases], ["holder"])
+        self.assertTrue(self.account_release("holder")["released"])
+
+    def test_active_runtime_is_retained_when_retry_sees_maintenance(self):
+        self.write_policy(account_concurrent=1)
+        runtime = subprocess.Popen(
+            ["python3", "-c", "import time; time.sleep(30)"],
+            start_new_session=True,
+        )
+        runtime_start = " ".join(subprocess.check_output(
+            ["ps", "-o", "lstart=", "-p", str(runtime.pid)], text=True
+        ).split())
+        try:
+            self.assertTrue(self.account_acquire("active-runtime")["admitted"])
+            self.assertTrue(self.account_bind_runtime(
+                "active-runtime", runtime.pid, runtime_start
+            )["bound"])
+            maintenance = self.root / "MAINTENANCE"
+            maintenance.touch()
+            retry = self.account_command(
+                "account-acquire", "--lease-id", "active-runtime",
+                "--account-route", "account-a", "--trust-scope",
+                "qualification-candidate", "--owner-pid", self.owner_pid,
+                "--owner-pgid", self.owner_pgid,
+                "--owner-start", self.owner_start, "--policy", self.policy,
+                "--wait-seconds", 1, "--cancel-path", maintenance,
+            )
+            self.assertFalse(retry["admitted"])
+            self.assertEqual(retry["stopped_by"], str(maintenance))
+            leases = self.account_command("account-status")["leases"]
+            self.assertEqual([item["lease_id"] for item in leases], ["active-runtime"])
+            competitor = self.account_acquire("competitor", wait=1)
+            self.assertFalse(competitor["admitted"])
+            self.assertTrue(competitor["timed_out"])
+        finally:
+            runtime.terminate()
+            runtime.wait(timeout=3)
+        self.assertTrue(self.account_release("active-runtime")["released"])
+
+    def test_account_start_rejects_policy_changed_after_admission(self):
+        admission = self.account_acquire("stale-policy")
+        runtime = subprocess.Popen(
+            ["python3", "-c", "import time; time.sleep(30)"],
+            start_new_session=True,
+        )
+        runtime_start = " ".join(subprocess.check_output(
+            ["ps", "-o", "lstart=", "-p", str(runtime.pid)], text=True
+        ).split())
+        try:
+            self.assertTrue(self.account_bind_runtime(
+                "stale-policy", runtime.pid, runtime_start
+            )["bound"])
+            self.write_policy(global_concurrent=5)
+            refused = self.account_command(
+                "account-validate", "--lease-id", "stale-policy",
+                "--account-route", "account-a", "--trust-scope",
+                "qualification-candidate", "--owner-pid", self.owner_pid,
+                "--owner-pgid", self.owner_pgid,
+                "--owner-start", self.owner_start,
+                "--runtime-pid", runtime.pid, "--runtime-pgid", runtime.pid,
+                "--runtime-start", runtime_start,
+                "--expected-policy-sha256",
+                admission["lease"]["policy_sha256"],
+                "--policy", self.policy, check=False,
+            )
+            self.assertEqual(refused["status"], "error")
+            self.assertIn("policy changed before account start", refused["error"])
+            self.assertEqual(self.account_command("account-status")["starts"], [])
+        finally:
+            runtime.terminate()
+            runtime.wait(timeout=3)
+        self.assertTrue(self.account_release("stale-policy")["released"])
+
+    def test_dead_requester_shared_pgid_retains_live_provider_group(self):
+        self.write_policy(account_concurrent=1)
+        requester = subprocess.Popen(
+            ["python3", "-c", "import time; time.sleep(30)"]
+        )
+        requester_start = " ".join(subprocess.check_output(
+            ["ps", "-o", "lstart=", "-p", str(requester.pid)], text=True
+        ).split())
+        runtime = subprocess.Popen(
+            ["python3", "-c", "import time; time.sleep(30)"],
+            start_new_session=True,
+        )
+        runtime_start = " ".join(subprocess.check_output(
+            ["ps", "-o", "lstart=", "-p", str(runtime.pid)], text=True
+        ).split())
+        try:
+            self.assertTrue(self.account_acquire(
+                "topology", owner_pid=requester.pid,
+                owner_pgid=self.owner_pgid, owner_start=requester_start,
+            )["admitted"])
+            self.assertTrue(self.account_bind_runtime(
+                "topology", runtime.pid, runtime_start,
+                owner_pid=requester.pid, owner_pgid=self.owner_pgid,
+                owner_start=requester_start,
+            )["bound"])
+            requester.terminate()
+            requester.wait(timeout=3)
+            blocked = self.account_acquire("replacement", wait=1)
+            self.assertFalse(blocked["admitted"])
+            self.assertTrue(blocked["timed_out"])
+            runtime.terminate()
+            runtime.wait(timeout=3)
+            replacement = self.account_acquire("replacement-after-drain")
+            self.assertTrue(replacement["admitted"])
+            self.assertIn("topology", replacement["stale_releases"])
+            self.assertTrue(
+                self.account_release("replacement-after-drain")["released"]
+            )
+        finally:
+            if requester.poll() is None:
+                requester.terminate()
+                requester.wait(timeout=3)
+            if runtime.poll() is None:
+                runtime.terminate()
+                runtime.wait(timeout=3)
 
 
 if __name__ == "__main__":

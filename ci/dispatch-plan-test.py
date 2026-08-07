@@ -541,6 +541,26 @@ class DispatchPlanTest(unittest.TestCase):
             run("git", "log", "-1", "--format=%s", cwd=worktree),
         )
 
+    def test_authorized_reset_does_not_adopt_an_outside_worktree(self):
+        self.write_contract_18_qualification()
+        run("git", "add", ".", cwd=self.product)
+        run("git", "commit", "-qm", "prepare qualification", cwd=self.product)
+        run("git", "push", "-q", "origin", "main", cwd=self.product)
+        old_head = self.stale_preprovider_branch()
+        outside = self.root / "predecessor-cell"
+        run(
+            "git", "worktree", "add", "-q", str(outside), "ticket/T-110",
+            cwd=self.product,
+        )
+        self.authorize_preprovider_reset(old_head)
+
+        value = self.command("claim", expected=2)
+
+        self.assertIn("outside a trusted cell", value["error"])
+        self.assertFalse(any(
+            path.name.startswith("cell-") for path in self.worktrees.iterdir()
+        ))
+
     def test_authorized_materialize_lineage_rejoins_current_main(self):
         self.write_contract_18_qualification()
         ticket = self.product / "factory/tickets/T-110.md"

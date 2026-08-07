@@ -49,6 +49,7 @@ cleanup() {
     kill "$child" 2>/dev/null || true
   done
   wait 2>/dev/null || true
+  [[ -z "${CURSOR_PROVIDER_ROOT:-}" ]] || rm -rf "$CURSOR_PROVIDER_ROOT"
   rm -rf "$TMP"
 }
 trap cleanup EXIT
@@ -209,6 +210,8 @@ while [[ $# -gt 0 ]]; do
 done
 case "$MODEL" in
   gpt-5.6-sol-high) REPORTED_MODEL="GPT-5.6 Sol 272K High" ;;
+  claude-fable-5-thinking-medium) REPORTED_MODEL="Fable 5 300K Medium" ;;
+  claude-opus-5-thinking-medium) REPORTED_MODEL="Opus 5 300K Medium" ;;
   claude-sonnet-5-thinking-high) REPORTED_MODEL="Sonnet 5 300K High" ;;
   *) REPORTED_MODEL="$MODEL" ;;
 esac
@@ -902,6 +905,117 @@ if [[ "$SEALED_STAGE" == "RUN planner" &&
 else
   fail "sealed release runs real sequencer and mock agent" \
     "before=$SEALED_STAGE transition=$SEALED_TRANSITION run=$SEALED_RUN_STATUS after=$SEALED_AFTER"
+fi
+
+# A provider-free Cursor stub drives the complete shared-account boundary:
+# account acquire, isolated-wrapper READY, runtime binding, GO/start validation,
+# process-group drainage, and lease release. All credentials and accounting are
+# fixture-local; no ambient subscription CLI is invoked.
+CURSOR_RESOLUTION="$TMP/sealed-cursor-resolution.json"
+CURSOR_MODEL_STATE="$SEALED_STATE/model-state"
+CURSOR_GLOBAL="$TMP/sealed-cursor-global/global.env"
+CURSOR_HOME="$TMP/sealed-cursor-home"
+CURSOR_ACCOUNT_ROOT="$TMP/sealed-cursor-account"
+CURSOR_PROVIDER_ROOT="$(mktemp -d /private/tmp/sfc380.XXXXXX)"
+CURSOR_PROVIDER_ROOT="$(cd "$CURSOR_PROVIDER_ROOT" && pwd -P)"
+mkdir -m 700 "$CURSOR_HOME" "$CURSOR_HOME/.cursor" "$CURSOR_ACCOUNT_ROOT"
+printf '%s\n' '{"cursor":"fixture"}' > "$CURSOR_HOME/.cursor/auth.json"
+printf '%s\n' '{"version":1}' > "$CURSOR_HOME/.cursor/cli-config.json"
+chmod 600 "$CURSOR_HOME/.cursor/auth.json" "$CURSOR_HOME/.cursor/cli-config.json"
+CURSOR_AGENT_WRAPPER="$STUB_BIN/fable-agent"
+cat > "$CURSOR_AGENT_WRAPPER" <<EOF
+#!/usr/bin/env bash
+export STUB_CURSOR_MODELS='gpt-5.6-sol-high claude-fable-5-thinking-medium claude-opus-5-thinking-medium claude-sonnet-5-thinking-high'
+exec "$STUB_BIN/agent" "\$@"
+EOF
+chmod 700 "$CURSOR_AGENT_WRAPPER"
+write_backend_global "$CURSOR_GLOBAL" \
+  "export FACTORY_PROBE_CURSOR_ANTHROPIC=READY:test
+export CURSOR_AGENT_BIN=$CURSOR_AGENT_WRAPPER"
+PATH="$STUB_BIN:$PATH" FACTORY_CURSOR_FALLBACK_ENABLED=1 \
+  CURSOR_AGENT_VERSION=2026.07.test \
+  FACTORY_PROBE_CODEX=READY:test FACTORY_PROBE_CLAUDE_CODE=READY:test \
+  FACTORY_PROBE_CURSOR_OPENAI=READY:test \
+  FACTORY_PROBE_CURSOR_ANTHROPIC=READY:test \
+  bash -c 'source "$1"; factory_resolve_model_profile cursor-balanced-v2 "$2"' \
+    _ "$SEALED_RELEASE/scripts/lib/backend-policy.sh" "$CURSOR_RESOLUTION"
+mkdir -p "$SEALED_PRODUCT/factory/route-plans"
+python3 "$SEALED_RELEASE/scripts/model-manager.py" pin \
+  --state-root "$CURSOR_MODEL_STATE" --project sealed --ticket T-190 \
+  --kit-sha "$KIT_SHA" --resolution-file "$CURSOR_RESOLUTION" \
+  --output "$SEALED_PRODUCT/factory/route-plans/T-190.json" >/dev/null
+CURSOR_PROVIDER_PLAN="$TMP/sealed-cursor-provider-plan.json"
+python3 "$SEALED_RELEASE/scripts/provider-concurrency-config.py" \
+  --release "$SEALED_RELEASE" --root "$CURSOR_PROVIDER_ROOT" --capacity 2 plan \
+  > "$CURSOR_PROVIDER_PLAN"
+CURSOR_PROVIDER_APPROVAL="$(python3 -c \
+  'import json,sys; print(json.load(open(sys.argv[1]))["approval_sha256"])' \
+  "$CURSOR_PROVIDER_PLAN")"
+python3 "$SEALED_RELEASE/scripts/provider-concurrency-config.py" \
+  --release "$SEALED_RELEASE" --root "$CURSOR_PROVIDER_ROOT" --capacity 2 apply \
+  --approve-hash "$CURSOR_PROVIDER_APPROVAL" >/dev/null
+CURSOR_TRANSITION="$(env \
+  FACTORY_CERTIFIED_PRODUCT_ORIGIN="$SEALED_ORIGIN" \
+  FACTORY_RELEASE_SHA="$KIT_SHA" FACTORY_RELEASE_TREE="$SEALED_TREE" \
+  FACTORY_RELEASE_PATH="$SEALED_RELEASE" \
+  FACTORY_RELEASE_CONTRACT_VERSION=1.8.0 \
+  python3 "$SEALED_RELEASE/scripts/state-machine.py" next \
+    --factory-root "$SEALED_PRODUCT" --workdir "$SEALED_PRODUCT" \
+    --kit-dir "$SEALED_RELEASE" --state-dir "$SEALED_STATE" \
+    --ticket T-190 --contract-version 1.8.0 --factory-sha "$KIT_SHA" \
+    --project sealed)"
+CURSOR_RECEIPT="$(python3 -c \
+  'import json,sys; print(json.load(sys.stdin)["receipt"])' \
+  <<<"$CURSOR_TRANSITION")"
+env FACTORY_CERTIFIED_PRODUCT_ORIGIN="$SEALED_ORIGIN" \
+  python3 "$SEALED_RELEASE/scripts/state-machine.py" consume \
+    --factory-root "$SEALED_PRODUCT" --workdir "$SEALED_PRODUCT" \
+    --kit-dir "$SEALED_RELEASE" --state-dir "$SEALED_STATE" \
+    --ticket T-190 --contract-version 1.8.0 --factory-sha "$KIT_SHA" \
+    --project sealed --receipt "$CURSOR_RECEIPT" --role spec-linter >/dev/null
+CURSOR_RUN_STATUS=0
+CURSOR_RUN_OUTPUT="$TMP/sealed-cursor-run.out"
+env \
+  HOME="$CURSOR_HOME" PATH="$STUB_BIN:$PATH" \
+  FACTORY_ROOT="$SEALED_PRODUCT" \
+  FACTORY_CERTIFIED_PRODUCT_ORIGIN="$SEALED_ORIGIN" \
+  FACTORY_PROJECT=sealed FACTORY_MODEL_STATE_ROOT="$CURSOR_MODEL_STATE" \
+  FACTORY_TRANSITION_RECEIPT_SHA256="$CURSOR_RECEIPT" \
+  FACTORY_TRANSITION_STATE_DIR="$SEALED_STATE" \
+  FACTORY_GLOBAL_ENV="$CURSOR_GLOBAL" \
+  FACTORY_PROVIDER_ACTIVATION="$CURSOR_PROVIDER_ROOT/isolated-v1.enabled" \
+  FACTORY_PROVIDER_DB="$CURSOR_PROVIDER_ROOT/accounting/state-v2.sqlite3" \
+  FACTORY_PROVIDER_POLICY="$CURSOR_PROVIDER_ROOT/provider-policy.json" \
+  FACTORY_PROVIDER_CONFIGURATION_LOCK="$CURSOR_PROVIDER_ROOT/provider-configuration.lock" \
+  FACTORY_CLI_RUNTIME_ROOT="$CURSOR_PROVIDER_ROOT/cli-runtimes" \
+  FACTORY_CURSOR_ACCOUNT_DB="$CURSOR_ACCOUNT_ROOT/admission.sqlite3" \
+  FACTORY_CURSOR_SESSION_HOME="$CURSOR_HOME" \
+  FACTORY_KIT_TRUST_SCOPE=qualification-candidate \
+  FACTORY_RELEASE_SHA="$KIT_SHA" FACTORY_RELEASE_TREE="$SEALED_TREE" \
+  FACTORY_RELEASE_PATH="$SEALED_RELEASE" \
+  FACTORY_RELEASE_CONTRACT_VERSION=1.8.0 \
+  FACTORY_CURSOR_FALLBACK_ENABLED=1 CURSOR_AGENT_VERSION=2026.07.test \
+  CURSOR_AGENT_BIN="$CURSOR_AGENT_WRAPPER" \
+  FACTORY_PROBE_CURSOR_ANTHROPIC=READY:test \
+  "$SEALED_RELEASE/scripts/run-agent.sh" \
+    --role spec-linter --ticket T-190 -- "sealed Cursor account run" \
+    >"$CURSOR_RUN_OUTPUT" 2>&1 || CURSOR_RUN_STATUS=$?
+CURSOR_ACCOUNT_STATUS="$(python3 "$SEALED_RELEASE/scripts/provider-coordinator.py" \
+  --db "$CURSOR_PROVIDER_ROOT/accounting/state-v2.sqlite3" \
+  --account-db "$CURSOR_ACCOUNT_ROOT/admission.sqlite3" account-status)"
+if [[ "$CURSOR_RUN_STATUS" -eq 0 ]] &&
+   python3 - "$CURSOR_ACCOUNT_STATUS" <<'PY'
+import json, sys
+value = json.loads(sys.argv[1])
+assert value["leases"] == []
+assert len(value["starts"]) == 1
+assert value["starts"][0]["account_route"] == "cursor"
+PY
+then
+  pass "sealed Cursor run binds and releases shared account admission"
+else
+  fail "sealed Cursor run binds and releases shared account admission" \
+    "run=$CURSOR_RUN_STATUS status=$CURSOR_ACCOUNT_STATUS output=$(tail -n 5 "$CURSOR_RUN_OUTPUT" | tr '\n' ' ')"
 fi
 
 FORGED_STAGE_STATUS=0

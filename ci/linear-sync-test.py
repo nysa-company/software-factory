@@ -1242,6 +1242,31 @@ class LinearSyncTest(unittest.TestCase):
         ):
             LINEAR.operator_map_path(self.factory)
 
+    def test_external_operator_state_keeps_cycle_lock_and_ledger_lane_local(self):
+        operator = self.root / "qualification/operator"
+        operator.mkdir(parents=True)
+        map_path = operator / "linear-map.json"
+        runtime = operator / "runtime-ledger.csv"
+        durable = self.factory / "ledger.csv"
+        environment = {
+            "FACTORY_OPERATOR_MAP": str(map_path),
+            "FACTORY_LEDGER": str(runtime),
+            "FACTORY_DURABLE_LEDGER": str(durable),
+        }
+        completed = subprocess.CompletedProcess([], 0, "", "")
+        with (
+            patch.dict(os.environ, environment),
+            patch.object(LINEAR.subprocess, "run", return_value=completed) as invoked,
+        ):
+            self.assertEqual(LINEAR.effective_ledger(self.factory), runtime)
+        arguments = invoked.call_args.args[0]
+        self.assertIn(str(runtime), arguments)
+        self.assertIn(str(durable), arguments)
+        with LINEAR.sync_lock(map_path.parent):
+            self.assertTrue((operator / ".linear-sync-cycle.lock").is_file())
+        self.assertFalse((self.factory / ".linear-sync-cycle.lock").exists())
+        self.assertFalse((self.factory / "runtime-ledger.csv").exists())
+
     def test_failed_terminal_update_leaves_map_unchanged(self):
         self.reconcile()
         before = self.map_path.read_bytes()

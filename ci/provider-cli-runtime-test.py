@@ -25,6 +25,7 @@ class ProviderCliRuntimeTest(unittest.TestCase):
         self.root = Path(self.temporary.name).resolve()
         os.chmod(self.root, 0o700)
         self.db = self.root / "provider.sqlite3"
+        self.account_db = self.root / "cursor-account.sqlite3"
         self.policy = self.root / "policy.json"
         limit = {"max_concurrent": 4, "max_starts": 20, "window_seconds": 60}
         account_limit = {"max_concurrent": 4, "max_starts": 20, "window_seconds": 60}
@@ -35,6 +36,9 @@ class ProviderCliRuntimeTest(unittest.TestCase):
             "provider_families": {"openai": limit},
             "account_routes": {"codex": account_limit, "claude": account_limit},
         }, sort_keys=True, separators=(",", ":")) + "\n")
+        self.owner_start = " ".join(subprocess.check_output(
+            ["ps", "-o", "lstart=", "-p", str(os.getpid())], text=True
+        ).split())
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -47,6 +51,7 @@ class ProviderCliRuntimeTest(unittest.TestCase):
             "--coordinator", str(COORDINATOR),
             "--db", str(self.db),
             "--policy", str(self.policy),
+            "--adapter", "codex",
             "--attempt-id", attempt,
             "--provider-family", "openai",
             "--account-route", "codex",
@@ -64,6 +69,34 @@ class ProviderCliRuntimeTest(unittest.TestCase):
         result = subprocess.run(
             [sys.executable, str(COORDINATOR), "--db", str(self.db), "status"],
             text=True, capture_output=True, check=True,
+        )
+        return json.loads(result.stdout)
+
+    def account(self, action: str, lease: str) -> dict:
+        arguments = [
+            sys.executable, str(COORDINATOR), "--db", str(self.db),
+            "--account-db", str(self.account_db), f"account-{action}",
+            "--lease-id", lease, "--owner-pid", str(os.getpid()),
+            "--owner-pgid", str(os.getpgrp()),
+            "--owner-start", self.owner_start,
+        ]
+        if action == "acquire":
+            arguments.extend([
+                "--account-route", "codex", "--trust-scope",
+                "production-certified", "--policy", str(self.policy),
+                "--wait-seconds", "2",
+            ])
+        elif action == "bind-runtime":
+            runtime = os.getpgrp()
+            runtime_start = " ".join(subprocess.check_output(
+                ["ps", "-o", "lstart=", "-p", str(runtime)], text=True
+            ).split())
+            arguments.extend([
+                "--runtime-pid", str(runtime), "--runtime-pgid", str(runtime),
+                "--runtime-start", runtime_start,
+            ])
+        result = subprocess.run(
+            arguments, text=True, capture_output=True, check=True, timeout=10
         )
         return json.loads(result.stdout)
 
@@ -125,7 +158,8 @@ class ProviderCliRuntimeTest(unittest.TestCase):
             subprocess.Popen([
                 sys.executable, str(RUNTIME),
                 "--coordinator", str(COORDINATOR), "--db", str(self.db),
-                "--policy", str(self.policy), "--attempt-id", f"overlap-{index}",
+                "--policy", str(self.policy), "--adapter", "codex",
+                "--attempt-id", f"overlap-{index}",
                 "--provider-family", "openai", "--account-route",
                 "codex",
                 "--reserve-micro-usd", "1000000", "--product-id", "product",
@@ -141,6 +175,48 @@ class ProviderCliRuntimeTest(unittest.TestCase):
         self.assertTrue(all(process.returncode == 0 for process in processes), results)
         self.assertLess(elapsed, 1.8)
         self.assertEqual(self.status()["counts"], {"submitted": 4})
+
+    def test_cursor_command_requires_and_revalidates_host_account_lease(self) -> None:
+        marker = self.root / "cursor-command"
+        missing = subprocess.run([
+            sys.executable, str(RUNTIME), "--coordinator", str(COORDINATOR),
+            "--db", str(self.db), "--policy", str(self.policy),
+            "--adapter", "cursor-openai", "--attempt-id", "cursor-missing",
+            "--provider-family", "openai", "--account-route", "codex",
+            "--reserve-micro-usd", "1", "--product-id", "product",
+            "--ticket-id", "T-cursor-missing", "--budget-day", "2026-07-23",
+            "--product-cap-micro-usd", "100", "--ticket-cap-micro-usd", "100",
+            "--machine-cap-micro-usd", "100", "--", sys.executable, "-c",
+            f"open({str(marker)!r}, 'w').close()",
+        ], text=True, capture_output=True, check=False, timeout=10)
+        self.assertEqual(missing.returncode, 2)
+        self.assertIn("account admission lease is required", missing.stderr)
+        self.assertFalse(marker.exists())
+
+        lease = "cursor-valid-account"
+        admission = self.account("acquire", lease)
+        self.assertTrue(admission["admitted"])
+        self.assertTrue(self.account("bind-runtime", lease)["bound"])
+        policy_hash = admission["lease"]["policy_sha256"]
+        valid = subprocess.run([
+            sys.executable, str(RUNTIME), "--coordinator", str(COORDINATOR),
+            "--db", str(self.db), "--policy", str(self.policy),
+            "--adapter", "cursor-openai", "--account-db", str(self.account_db),
+            "--account-lease-id", lease,
+            "--account-owner-pid", str(os.getpid()),
+            "--account-owner-pgid", str(os.getpgrp()),
+            "--account-owner-start", self.owner_start,
+            "--account-policy-sha256", policy_hash,
+            "--trust-scope", "production-certified",
+            "--attempt-id", "cursor-valid", "--provider-family", "openai",
+            "--account-route", "codex", "--reserve-micro-usd", "1",
+            "--product-id", "product", "--ticket-id", "T-cursor-valid",
+            "--budget-day", "2026-07-23", "--product-cap-micro-usd", "100",
+            "--ticket-cap-micro-usd", "100", "--machine-cap-micro-usd", "100",
+            "--", sys.executable, "-c", f"open({str(marker)!r}, 'w').close()",
+        ], text=True, capture_output=True, check=False, timeout=10)
+        self.assertEqual(valid.returncode, 0, valid.stderr)
+        self.assertTrue(marker.exists())
 
     def test_authorized_sibling_manifests_are_preserved(self) -> None:
         runs = self.root / "runs"

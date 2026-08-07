@@ -2626,6 +2626,108 @@ class Controller:
             and leases == [self.release_path.name]
         )
 
+    def exact_passportless_planner_receipt(
+        self, claim: dict[str, Any], receipt: dict[str, Any]
+    ) -> bool:
+        worktree = Path(claim["worktree"])
+        route_path = self.route_path(claim)
+        ticket_path = (
+            worktree / "factory" / "tickets" / f"{claim['ticket']}.md"
+        )
+        try:
+            route_info = route_path.lstat()
+            ticket_info = ticket_path.lstat()
+            if any(
+                not stat.S_ISREG(info.st_mode)
+                or info.st_uid != os.geteuid()
+                or info.st_nlink != 1
+                or stat.S_IMODE(info.st_mode) & 0o022
+                or info.st_size > 1_000_000
+                for info in (route_info, ticket_info)
+            ):
+                return False
+            route_raw = route_path.read_bytes()
+            route = json.loads(route_raw)
+            if not isinstance(route, dict):
+                return False
+            ticket = ticket_path.read_text(encoding="utf-8")
+            head = subprocess.run(
+                ["git", "-C", str(worktree), "rev-parse", "HEAD"],
+                text=True, capture_output=True, check=True, timeout=120,
+            ).stdout.strip()
+            tree = subprocess.run(
+                ["git", "-C", str(worktree), "rev-parse", "HEAD^{tree}"],
+                text=True, capture_output=True, check=True, timeout=120,
+            ).stdout.strip()
+            ticket_blob = subprocess.run(
+                [
+                    "git", "-C", str(worktree), "rev-parse",
+                    f"HEAD:factory/tickets/{claim['ticket']}.md",
+                ],
+                text=True, capture_output=True, check=True, timeout=120,
+            ).stdout.strip()
+            product_common = subprocess.run(
+                [
+                    "git", "-C", str(self.product), "rev-parse",
+                    "--path-format=absolute", "--git-common-dir",
+                ],
+                text=True, capture_output=True, check=True, timeout=120,
+            ).stdout.strip()
+            worktree_common = subprocess.run(
+                [
+                    "git", "-C", str(worktree), "rev-parse",
+                    "--path-format=absolute", "--git-common-dir",
+                ],
+                text=True, capture_output=True, check=True, timeout=120,
+            ).stdout.strip()
+            origins = subprocess.run(
+                [
+                    "git", "-C", str(self.product), "remote", "get-url",
+                    "--push", "--all", "origin",
+                ],
+                text=True, capture_output=True, check=True, timeout=120,
+            ).stdout.splitlines()
+        except (
+            FileNotFoundError, json.JSONDecodeError, OSError,
+            subprocess.SubprocessError,
+        ):
+            return False
+        digest = receipt.get("receipt_sha256", "")
+        immutable = {
+            key: value for key, value in receipt.items()
+            if key not in {
+                "consumed", "consumed_at_epoch", "receipt_sha256",
+            }
+        }
+        states = re.findall(r"^State:\s*(.*?)\s*$", ticket, re.I | re.M)
+        kit_shas = re.findall(r"^Kit-SHA:\s*(.*?)\s*$", ticket, re.M)
+        return not any((
+            hashlib.sha256(canonical(immutable).encode()).hexdigest() != digest,
+            receipt.get("contract_version") != "1.8.0",
+            receipt.get("factory_sha") != self.release_path.name,
+            receipt.get("head_sha") != head,
+            receipt.get("head_tree") != tree,
+            receipt.get("lease_sha256")
+            != hashlib.sha256(claim["lease"].encode()).hexdigest(),
+            receipt.get("passport_sha256") is not None,
+            receipt.get("project") != self.project,
+            receipt.get("product_origin_sha256")
+            != (
+                hashlib.sha256(origins[0].encode()).hexdigest()
+                if len(origins) == 1 and origins[0] else ""
+            ),
+            receipt.get("route_plan_sha256")
+            != hashlib.sha256(route_raw).hexdigest(),
+            receipt.get("ticket_blob") != ticket_blob,
+            not product_common or not worktree_common
+            or Path(product_common).resolve() != Path(worktree_common).resolve(),
+            route.get("schema") != "ticket-model-route-plan/v1",
+            route.get("ticket") != claim["ticket"],
+            route.get("kit_sha") != self.release_path.name,
+            states != ["Planning"],
+            kit_shas != [self.release_path.name],
+        ))
+
     def release_bundle_refreshable(
         self, claim: dict[str, Any], passport: dict[str, Any]
     ) -> bool:
@@ -3125,17 +3227,25 @@ class Controller:
         for claim in claims:
             receipt_path = self.state / f"{claim['ticket']}.json"
             passport_path = self.state / "passports" / f"{claim['ticket']}.json"
+            worker_error = claim.get("blocked_reason") == "worker-error"
             if (
                 (
                     self.qualification is not None
                     and claim["ticket"] not in self.qualification["tickets"]
                 )
                 or claim["status"] != "blocked"
-                or claim.get("blocked_reason") != "preflight"
+                or claim.get("blocked_reason") not in {"preflight", "worker-error"}
                 or claim.get("receipt")
                 or claim.get("role")
                 or claim.get("publication_lease")
-                or claim.get("lease_released") is not True
+                or (
+                    worker_error
+                    and not DIGEST.fullmatch(claim.get("lease", ""))
+                )
+                or (
+                    not worker_error
+                    and claim.get("lease_released") is not True
+                )
                 or self.role_active(claim)
                 or passport_path.exists()
                 or passport_path.is_symlink()
@@ -3153,6 +3263,8 @@ class Controller:
                 or receipt.get("role") != "planner"
                 or receipt.get("consumed") is not False
                 or not DIGEST.fullmatch(receipt.get("receipt_sha256", ""))
+                or worker_error
+                and not self.exact_passportless_planner_receipt(claim, receipt)
                 or any(
                     fields(path).get("ticket") == claim["ticket"]
                     for path in (self.product / "factory/runs").glob("*.meta")
@@ -3218,12 +3330,19 @@ class Controller:
                     transition_receipt_sha256=transition["receipt"],
                 )
                 self.release_ticket_lease(claim)
+                if worker_error:
+                    claim["blocked_reason"] = "preflight"
+                    self.save_claim(claim)
                 continue
             claim.update(receipt="", role="", status="claimed")
             claim.pop("blocked_reason", None)
             self.save_claim(claim)
             self.event(
-                "preflight_retry_recovered", claim["ticket"],
+                (
+                    "preflight_worker_error_recovered"
+                    if worker_error else "preflight_retry_recovered"
+                ),
+                claim["ticket"],
                 transition_receipt_sha256=transition["receipt"],
             )
 

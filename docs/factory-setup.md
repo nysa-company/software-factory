@@ -71,7 +71,13 @@ Fresh-map recovery adopts only Projects with one durable initiative identity and
 fails on ambiguity or an unidentified same-name Project. For a new selected
 ticket after setup, use `scripts/linear-sync.py --factory-root <product-repo>
 --ticket T-NNN --initialize`; qualification preparation invokes that bounded
-path for selected unmapped tickets when the canonical map is present. A Linear
+path for every selected ticket against its bound lane-local map. Fresh isolated
+preparation requires `--operator-map-seed <absolute-owner-only-linear-map.json>`
+(or `FACTORY_QUALIFICATION_OPERATOR_MAP_SEED`) and fails closed if the seed is
+absent, ambiguous, unsafe, malformed, or contains secret-bearing fields. It
+copies the validated seed into owner-only qualification authority, where the
+mutable map, locks, clear intents, and runtime ledger remain outside the sealed
+product checkout. A Linear
 rate limit is persisted as `linear_rate_limited retry_after_seconds=N` and
 keeps provider admission closed until a later successful reconciliation.
 
@@ -128,13 +134,36 @@ keeps provider admission closed until a later successful reconciliation.
   A fresh isolated worktree may omit ignored runtime directories; the preparer
   alone creates physical owner-only `factory/runs/`. It rejects noncanonical
   selected-ticket freeze metadata and any selected dependency pair before
-  sealing, so the restart barrier cannot wait forever.
+  sealing, so the restart barrier cannot wait forever. Supply its canonical
+  owner-local Linear map with `--operator-map-seed`; the preparer binds a
+  lane-local copy and runtime ledger, initializes only the selected cohort,
+  and proves the product is still clean before it publishes the environment.
   It also provisions the exact historical run artifacts named by those
   passports from its owner-only retained closure; any absent or altered
   manifest, output, or progress journal stops preparation before a paid role.
   The preparer also fails before admission when the chosen root is too long for Cursor's
   isolated attempt scratch. `--upgrade` is limited to a fresh isolated
   qualification; a takeover binds one frozen candidate.
+  If a failed isolated predecessor stopped after issuing Planner receipts but
+  before preflight, commit and protect the successor manifest, candidate pin,
+  and exact `preprovider-branch-resets.json`; prepare that unchanged successor
+  product; then run the candidate helper once:
+
+  ```bash
+  python3 scripts/qualification-environment.py \
+    --factory-root "<clean-successor-factory-checkout>" \
+    --product-root "<prepared-successor-product-checkout>" \
+    --project "<successor-project>" \
+    --root "/private/tmp/nysa-sf-qualification.<successor>" \
+    --preprovider-source-project "<predecessor-project>" \
+    --preprovider-source-root "/private/tmp/nysa-sf-qualification.<predecessor>"
+  ```
+
+  Both controllers and provider state must be drained. The executing helper
+  must be byte-identical to the sealed successor copy. A completed or partial
+  digest journal in the successor's durable controller is the only restart
+  authority; do not remove it, edit claims, delete branches, or move worktrees
+  by hand.
 - Add `~/.hermes/profiles/factory/projects/<project>.env` with
   `PRODUCT_ROOT=<absolute-product-path>`. The stable launcher ignores `KIT_DIR`
   from legacy registry files and resolves the active release itself. Registry

@@ -2578,7 +2578,7 @@ assert contract["launcher"]["helper_environment"] == {
     "FACTORY_RELEASE_CONTRACT_VERSION": "active record contract_version",
     "FACTORY_MODEL_STATE_ROOT": "resolved production kits projects directory",
     "FACTORY_PROJECT": "validated launcher project slug",
-    "FACTORY_OPERATOR_MAP": "canonical live operator overlay path supplied only by a sealed production-successor takeover",
+    "FACTORY_OPERATOR_MAP": "sealed qualification operator overlay path: owner-local lane state for isolated qualification or the canonical live map for takeover",
     "FACTORY_CERTIFIED_PRODUCT_ORIGIN": "contract 1.2+ certification receipt product_origin; consumed by trusted write helpers and never exposed to adapters",
     "FACTORY_DISPATCH_LEASE_ID": "validated optional ticket lease supplied by the dispatcher",
     "FACTORY_TRANSITION_RECEIPT_SHA256": "Contract 1.8 consumed one-use state-machine receipt",
@@ -2594,6 +2594,7 @@ assert contract["launcher"]["helper_environment"] == {
     "FACTORY_PROVIDER_CONFIGURATION_LOCK": "fixed Contract 1.8 owner-local provider-configuration lock",
     "FACTORY_PROVIDER_ACTIVATION": "fixed owner-local activation gate: Contract 1.6 API-only v1; Contract 1.7/1.8 API v1 or subscription-CLI v2",
     "FACTORY_CLI_RUNTIME_ROOT": "fixed Contract 1.7+ owner-local per-attempt subscription CLI runtime directory",
+    "FACTORY_CURSOR_ACCOUNT_DB": "fixed machine-local owner-only Cursor account-route admission database shared by production and qualification",
     "FACTORY_PROVIDER_BROKER_URL": "fixed Contract 1.6 loopback TLS broker endpoint",
     "FACTORY_PROVIDER_BROKER_CA": "fixed Contract 1.6 broker trust anchor",
 }
@@ -2624,6 +2625,7 @@ assert contract["launcher"]["helper_environment_allowlist"] == [
     "FACTORY_PROVIDER_CONFIGURATION_LOCK",
     "FACTORY_PROVIDER_ACTIVATION",
     "FACTORY_CLI_RUNTIME_ROOT",
+    "FACTORY_CURSOR_ACCOUNT_DB",
     "FACTORY_PROVIDER_BROKER_URL",
     "FACTORY_PROVIDER_BROKER_CA",
     "GH_TOKEN",
@@ -2710,16 +2712,18 @@ launcher_text = open(
     encoding="utf-8",
 ).read()
 assert "/private/tmp/nysa-sf-qualification" in launcher_text
-assert 'optional = ("", "", "", "", "", "", "", "")' in launcher_text
+assert 'optional = ("", "", "", "", "", "", "", "", "")' in launcher_text
 assert 'WORKTREE_PARENT="$KITS_ROOT/worktrees"' in launcher_text
 assert '"FACTORY_CLI_LANE_ROOT=$QUALIFICATION_ROOT"' in launcher_text
 assert 'KIT_TRUST_SCOPE="qualification-candidate"' in launcher_text
 assert '"FACTORY_KIT_TRUST_SCOPE=$KIT_TRUST_SCOPE"' in launcher_text
-assert '"FACTORY_LEDGER=$PRODUCT_ROOT/factory/runtime-ledger.csv"' in launcher_text
+assert '"FACTORY_LEDGER=$ACTIVE_RUNTIME_LEDGER"' in launcher_text
 assert '"FACTORY_DURABLE_LEDGER=$PRODUCT_ROOT/factory/ledger.csv"' in launcher_text
 assert '"FACTORY_REFRESH_RUNTIME_LEDGER=1"' in launcher_text
 assert 'CLI_RUNTIME_ROOT="$QUALIFICATION_ROOT"' in launcher_text
 assert '"FACTORY_CLI_RUNTIME_ROOT=$CLI_RUNTIME_ROOT"' in launcher_text
+assert 'CURSOR_ACCOUNT_DB="$HOME/.factory/accounting/cursor-account-admission-v1.sqlite3"' in launcher_text
+assert '"FACTORY_CURSOR_ACCOUNT_DB=$CURSOR_ACCOUNT_DB"' in launcher_text
 assert '"FACTORY_ADAPTER_OVERRIDE=mock"' in launcher_text
 assert 'if ! transition_receipt consume "$RUN_ROLE"; then' in launcher_text
 assert '"$EMERGENCY_HELPER" consume' in launcher_text

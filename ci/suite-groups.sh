@@ -8,7 +8,7 @@ suite_shard_for() {
     factory-scripts|provider-executor|provider-activation|provider-artifact-controller)
       printf 'factory\n'
       ;;
-    emergency-admit|hermes-contract|preflight|ticket-attest|provider-coordinator|provider-credential-broker|provider-recovery)
+    emergency-admit|hermes-contract|preflight|ticket-attest|provider-cli-runtime|provider-coordinator|provider-credential-broker|provider-recovery)
       printf 'hermes\n'
       ;;
     *)
@@ -22,7 +22,7 @@ suite_group_for() {
     factory-scripts|model-fallback)
       printf '1\n'
       ;;
-    emergency-admit|hermes-contract|preflight|ticket-attest|provider-coordinator|provider-credential-broker|provider-recovery|provider-executor)
+    emergency-admit|hermes-contract|preflight|ticket-attest|provider-cli-runtime|provider-coordinator|provider-credential-broker|provider-recovery|provider-executor)
       printf '2\n'
       ;;
     factory-kit|ticket-pr|terminal-backfill|protected-merge-reconciliation|provider-activation)

@@ -309,6 +309,14 @@ ticket- and execution-cell-neutral state; concurrent Codex, Claude Code, and
 Cursor processes never share writable CLI homes. Contract 1.6
 and non-activated 1.7 routes keep the
 serialized path unchanged.
+Production and qualification retain separate provider lifecycle and financial
+databases. A task-bearing Cursor role additionally acquires one owner-only
+machine-local account-route lease before durable GO and holds it until its
+process group drains. Lanes sharing an account route must present identical
+concurrency and start-window limits; disagreement refuses, distinct account
+routes remain independent, and production waiters precede qualification for
+the final slot. Readiness probes and route planning never enter this admission
+path or write the shared database.
 For an active product with a certified Node/npm tuple, each isolated CLI home
 also carries a final zsh login hook. It restores the launcher's exact task PATH
 after macOS `path_helper` runs and exits before the requested product command
@@ -465,8 +473,9 @@ evidence blocks before a provider starts.
 A sealed qualification scopes provider product- and ticket-budget admission to
 the exact project and frozen candidate SHA. Different qualification roots for
 that same candidate share the scope, while predecessor-candidate charges stay
-outside its allowance. The provider coordinator's machine-day cap remains
-global, so candidate isolation cannot evade aggregate machine accounting.
+outside its allowance. Provider lifecycle and financial accounting stay
+lane-local; task-bearing Cursor runs alone also obey the machine-local
+account-route concurrency and start-window admission described above.
 Its release and CLI scratch remain disposable under `/private/tmp`, but signed
 passports, controller events, provider accounting, paused worktrees, and HMAC
 authority live under the owner-only `~/.factory/qualification/<project>` root.
@@ -481,9 +490,20 @@ owner-controlled physical `factory/` descriptor at mode 0700; a file, symlink,
 foreign owner, or permissive runtime directory refuses. Every selected
 unfinished ticket must also use exact `Product-Decisions: frozen` metadata.
 A cohort containing one selected ticket that depends on another is rejected in
-favor of sequential generations. When a canonical Linear map exists,
-preparation initializes only selected unmapped issues; historical tickets are
-not reconciled.
+favor of sequential generations. Fresh isolated preparation requires one
+explicit owner-only canonical Linear map seed. It authenticates the seed's
+path, mode, structure, and digest, rejects secret-bearing fields, and copies it
+once to `~/.factory/qualification/<project>/operator/linear-map.json` before
+initializing exactly the selected tickets. The mutable map, reconciliation
+locks and clear intents, and runtime ledger stay under that operator directory;
+the receipt and active record bind their exact paths, and the sealed launcher
+exports them on every qualification command. Preparation rechecks the product
+worktree after initialization and publishes no usable environment if it is
+dirty. An owner-only bootstrap receipt lets a retry reuse a partially
+initialized lane map even if the original seed later changes or disappears,
+so exact-ticket adoption cannot create duplicates. Historical tickets are not
+reconciled. Production-successor takeover continues to bind the canonical live
+map instead of copying it.
 
 After a successful Reviewer publication commit, passport migration precedes
 cell parking so the expected validating-head change remains a waiting boundary.
@@ -659,6 +679,17 @@ qualification, the same preparer upgrades that root only while reconciliation an
 are drained. It seals the successor, verifies unchanged provider policy,
 atomically advances the activation record, and preserves the controller
 directory, passport key, passports, claims, and cumulative provider ledger.
+If the defect instead requires a fresh successor root after an unconsumed
+Planner receipt but before any passport or provider run, the predecessor cell
+is handed off rather than recreated. Both lane activations, owner authorities,
+cohort manifests, controller and dispatch locks, old claim and lease, receipt,
+route, pushed head, origin, and protected successor reset authorization must
+agree exactly. An owner-only digest journal in the successor controller binds
+both roots and records a prefix of `git worktree move` operations. A restart
+accepts only the journaled destination prefix, at most one move completed just
+before its journal update, and the untouched source suffix. Reverse moves,
+both/neither paths, target runtime, source publication or run evidence, and
+ordinary outside-root dispatch all fail closed.
 After the ticket route migrates, a blocked claim may recover only when its
 authenticated passport names the prior release. The controller binds a fresh
 exact-ticket lease, migrates that passport in place, and returns the claim to
@@ -827,6 +858,13 @@ bounded event. Malformed or oversized refusal output creates a distinct
 fail-closed evidence block. Only a pass reopens ordinary Planner
 reconciliation. Passport, terminal, submitted, dirty, drifted, unlisted, and
 stale-route claims remain closed.
+The same provider-free retry accepts a controller `worker-error` only at that
+exact preflight boundary. It additionally verifies the prior receipt digest,
+lease digest, ticket blob, head/tree, route bytes, current Factory SHA, single
+certified push origin, and shared product Git directory. A retained exact lease
+may be renewed and an explicitly released exact lease may be reacquired; a
+cross-release, cross-ticket, foreign-repository, or otherwise inexact claim is
+not reclassified as preflight work.
 During a protected qualification, the development scheduler authenticates a
 durable Contract 1.7 Planner, Test-author, or Builder contract-blocked result
 against the exact qualification kit SHA before returning only that ticket to

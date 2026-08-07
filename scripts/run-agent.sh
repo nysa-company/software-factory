@@ -263,6 +263,11 @@ LEASE_HEARTBEAT_PID=""
 LEASE_HEARTBEAT_FAILED=0
 CLI_ATTEMPT_ID=""
 CLI_ATTEMPT_ACTIVE=0
+CURSOR_ACCOUNT_LEASE_ID=""
+CURSOR_ACCOUNT_LEASE_ACTIVE=0
+CURSOR_ACCOUNT_OWNER_PID=""
+CURSOR_ACCOUNT_OWNER_PGID=""
+CURSOR_ACCOUNT_OWNER_START=""
 CLI_RUNTIME_ROOT=""
 CLI_PROVIDER_HOME=""
 CLI_PROVIDER_TMPDIR=""
@@ -1100,6 +1105,41 @@ print(attempts[0]["version"])
   CLI_ATTEMPT_ACTIVE=0
 }
 
+release_cursor_account_lease() {
+  [[ "$CURSOR_ACCOUNT_LEASE_ACTIVE" -eq 1 ]] || return 0
+  local output
+  output="$(python3 "$KIT_DIR/scripts/provider-coordinator.py" \
+    --db "$FACTORY_PROVIDER_DB" \
+    --account-db "$FACTORY_CURSOR_ACCOUNT_DB" account-release \
+    --lease-id "$CURSOR_ACCOUNT_LEASE_ID" \
+    --owner-pid "$CURSOR_ACCOUNT_OWNER_PID" \
+    --owner-pgid "$CURSOR_ACCOUNT_OWNER_PGID" \
+    --owner-start "$CURSOR_ACCOUNT_OWNER_START" 2>/dev/null)" || return 1
+  printf '%s' "$output" | python3 -c '
+import json, sys
+raise SystemExit(0 if json.load(sys.stdin).get("released") is True else 1)
+' || return 1
+  CURSOR_ACCOUNT_LEASE_ACTIVE=0
+}
+
+bind_cursor_account_runtime() {
+  [[ "$CURSOR_ACCOUNT_LEASE_ACTIVE" -eq 1 ]] || return 0
+  local output
+  output="$(python3 "$KIT_DIR/scripts/provider-coordinator.py" \
+    --db "$FACTORY_PROVIDER_DB" \
+    --account-db "$FACTORY_CURSOR_ACCOUNT_DB" account-bind-runtime \
+    --lease-id "$CURSOR_ACCOUNT_LEASE_ID" \
+    --owner-pid "$CURSOR_ACCOUNT_OWNER_PID" \
+    --owner-pgid "$CURSOR_ACCOUNT_OWNER_PGID" \
+    --owner-start "$CURSOR_ACCOUNT_OWNER_START" \
+    --runtime-pid "$RUN_PID" --runtime-pgid "$RUN_PGID" \
+    --runtime-start "$RUN_START_ID" 2>/dev/null)" || return 1
+  printf '%s' "$output" | python3 -c '
+import json, sys
+raise SystemExit(0 if json.load(sys.stdin).get("bound") is True else 1)
+'
+}
+
 copy_cli_credential() {
   python3 - "$1" "$2" <<'PY'
 import os
@@ -1342,6 +1382,8 @@ cleanup() {
   stop_lease_heartbeat || true
   terminate_run_group || true
   if [[ "$RUN_GROUP_TERMINATED" -eq 1 ]]; then
+    release_cursor_account_lease ||
+      echo "WARNING: Cursor account admission lease retained for operator reconciliation" >&2
     reconcile_cli_attempt "$([[ "$status" -eq 130 || "$status" -eq 143 ]] && printf cancelled || printf failed)" ||
       echo "WARNING: CLI provider reservation retained for operator reconciliation" >&2
   elif [[ "$CLI_ATTEMPT_ACTIVE" -eq 1 ]]; then
@@ -1763,6 +1805,13 @@ if [[ "$ISOLATED_RUN" -eq 1 ]]; then
 elif [[ "$CLI_CONCURRENT_RUN" -eq 1 ]]; then
   PROVIDER_EXECUTION_MODE="cli-concurrent-v1"
 fi
+if [[ "$CLI_CONCURRENT_RUN" -eq 1 && "$ADAPTER" == cursor-* ]]; then
+  [[ "${FACTORY_CURSOR_ACCOUNT_DB:-}" == /* &&
+     "${FACTORY_KIT_TRUST_SCOPE:-}" =~ ^(production-certified|qualification-candidate)$ ]] || {
+    echo "Cursor account admission authority is unavailable; no task was submitted" >&2
+    exit 3
+  }
+fi
 
 # Serialize claim creation with kill-switch publication. Claims are mkdir
 # locks and are never reclaimed automatically; operator recovery must inspect
@@ -2018,6 +2067,116 @@ raise SystemExit(0 if json.load(sys.stdin).get("admitted") is True else 1)
     exit 8
   fi
   CLI_ATTEMPT_ACTIVE=1
+fi
+if [[ "$CLI_CONCURRENT_RUN" -eq 1 && "$ADAPTER" == cursor-* ]]; then
+  CURSOR_ACCOUNT_LEASE_ID="$CLI_ATTEMPT_ID-account"
+  CURSOR_ACCOUNT_OWNER_PID="$$"
+  CURSOR_ACCOUNT_OWNER_PGID="$(ps -o pgid= -p "$$" 2>/dev/null | awk '{$1=$1; print; exit}')"
+  CURSOR_ACCOUNT_OWNER_START="$CLAIM_START"
+  [[ "$CURSOR_ACCOUNT_OWNER_PGID" =~ ^[1-9][0-9]*$ ]] || {
+    echo "Cursor account admission owner identity is unavailable; no task was submitted" >&2
+    exit 8
+  }
+  CURSOR_ACCOUNT_ENVELOPE_BINDING="$RESERVED_USD|$DAILY_CAP_USD|$PER_TICKET_BUDGET_USD|${GLOBAL_DAILY_CAP_USD:-1000000000}"
+  rmdir "$LAUNCH_LOCK"
+  HELD_LAUNCH_LOCK=0
+  if CURSOR_ACCOUNT_RESERVATION="$(python3 "$KIT_DIR/scripts/provider-coordinator.py" \
+      --db "$FACTORY_PROVIDER_DB" \
+      --account-db "$FACTORY_CURSOR_ACCOUNT_DB" account-acquire \
+      --lease-id "$CURSOR_ACCOUNT_LEASE_ID" \
+      --account-route "$SELECTED_ACCOUNT_ROUTE_ID" \
+      --trust-scope "$FACTORY_KIT_TRUST_SCOPE" \
+      --owner-pid "$CURSOR_ACCOUNT_OWNER_PID" \
+      --owner-pgid "$CURSOR_ACCOUNT_OWNER_PGID" \
+      --owner-start "$CURSOR_ACCOUNT_OWNER_START" \
+      --policy "$FACTORY_PROVIDER_POLICY" \
+      "${CLI_CONFIGURATION_LOCK_ARGS[@]}" \
+      --expected-policy-sha256 "$ACTIVATED_POLICY_HASH" \
+      --wait-seconds 900 \
+      --cancel-path "$FACTORY_DIR/KILL" \
+      --cancel-path "$FACTORY_DIR/MAINTENANCE" \
+      --cancel-path "$CANCEL_REQUEST_FILE" 2>&1)"; then
+    CURSOR_ACCOUNT_RESERVATION_STATUS=0
+  else
+    CURSOR_ACCOUNT_RESERVATION_STATUS=$?
+  fi
+  for i in $(seq 1 "$LOCK_ATTEMPTS"); do
+    mkdir "$LAUNCH_LOCK" 2>/dev/null && { HELD_LAUNCH_LOCK=1; break; }
+    sleep 0.1
+  done
+  [[ "$HELD_LAUNCH_LOCK" -eq 1 ]] || {
+    echo "launch lock stuck after Cursor account wait; no task was submitted" >&2
+    exit 8
+  }
+  if [[ "$CURSOR_ACCOUNT_RESERVATION_STATUS" -ne 0 ]]; then
+    CURSOR_ACCOUNT_ERROR="$(printf '%s' "$CURSOR_ACCOUNT_RESERVATION" | python3 -c '
+import json, sys
+try:
+    value = json.load(sys.stdin).get("error", "")
+except Exception:
+    value = ""
+print(value if value in {
+    "live account admission policies disagree across lanes",
+    "active account start-window policies disagree across lanes",
+} else "")
+' 2>/dev/null || true)"
+    if [[ -n "$CURSOR_ACCOUNT_ERROR" ]]; then
+      echo "Cursor account admission failed: $CURSOR_ACCOUNT_ERROR" >&2
+    else
+      echo "Cursor account admission failed; no task was submitted" >&2
+    fi
+    exit 8
+  fi
+  if ! printf '%s' "$CURSOR_ACCOUNT_RESERVATION" | python3 -c '
+import json, sys
+raise SystemExit(0 if json.load(sys.stdin).get("admitted") is True else 1)
+'; then
+    CURSOR_ACCOUNT_STOPPED="$(printf '%s' "$CURSOR_ACCOUNT_RESERVATION" | python3 -c '
+import json, sys
+print("yes" if json.load(sys.stdin).get("stopped_by") else "")
+' 2>/dev/null || true)"
+    if [[ -n "$CURSOR_ACCOUNT_STOPPED" ]]; then
+      echo "Cursor account admission stopped before GO; no task was submitted" >&2
+    else
+      echo "Cursor account admission timed out; no task was submitted" >&2
+    fi
+    exit 8
+  fi
+  CURSOR_ACCOUNT_LEASE_ACTIVE=1
+  load_effective_envelope || {
+    echo "effective envelope changed during Cursor account wait; no task was submitted" >&2
+    exit 3
+  }
+  [[ "$CURSOR_ACCOUNT_ENVELOPE_BINDING" == \
+    "$PER_RUN_BUDGET_USD|$DAILY_CAP_USD|$PER_TICKET_BUDGET_USD|${GLOBAL_DAILY_CAP_USD:-1000000000}" ]] || {
+    echo "effective envelope changed during Cursor account wait; no task was submitted" >&2
+    exit 3
+  }
+  POST_ACCOUNT_ACTIVATION_OUTPUT="$(python3 "$KIT_DIR/scripts/provider-activation.py" \
+    "${ACTIVATION_ARGS[@]}" --route-id "$SELECTED_ROUTE_ID" 2>/dev/null)" || {
+      echo "CLI concurrency activation changed during Cursor account wait; no task was submitted" >&2
+      exit 3
+    }
+  [[ "$POST_ACCOUNT_ACTIVATION_OUTPUT" == "$ACTIVATION_OUTPUT" ]] || {
+    echo "CLI concurrency activation changed during Cursor account wait; no task was submitted" >&2
+    exit 3
+  }
+  [[ ! -f "$FACTORY_DIR/KILL" ]] || {
+    echo "KILL file appeared during Cursor account wait; no task was submitted" >&2
+    exit 4
+  }
+  [[ ! -f "$FACTORY_DIR/MAINTENANCE" ]] || {
+    echo "MAINTENANCE file appeared during Cursor account wait; no task was submitted" >&2
+    exit 4
+  }
+  [[ ! -e "$CANCEL_REQUEST_FILE" && ! -L "$CANCEL_REQUEST_FILE" ]] || {
+    echo "targeted cancellation appeared during Cursor account wait; no task was submitted" >&2
+    exit 130
+  }
+  factory_dispatch_require_lease "$REPO_ROOT" "$TICKET" "$DISPATCH_LEASE_ID" || {
+    echo "$FACTORY_DISPATCH_LEASE_ERROR after Cursor account wait; no task was submitted" >&2
+    exit 7
+  }
 fi
 if [[ "$PARALLEL_PROVIDER_RUN" -eq 0 &&
       ( "$PROVIDER_CONTRACT_VERSION" == "1.6.0" ||
@@ -2358,6 +2517,18 @@ if [[ "$ISOLATED_RUN" -eq 1 ]]; then
     fi
   fi
 elif [[ "$CLI_CONCURRENT_RUN" -eq 1 ]]; then
+  CLI_RUNTIME_ADAPTER_ARGS=(--adapter "$ADAPTER")
+  if [[ "$ADAPTER" == cursor-* ]]; then
+    CLI_RUNTIME_ADAPTER_ARGS+=(
+      --account-db "$FACTORY_CURSOR_ACCOUNT_DB"
+      --account-lease-id "$CURSOR_ACCOUNT_LEASE_ID"
+      --account-owner-pid "$CURSOR_ACCOUNT_OWNER_PID"
+      --account-owner-pgid "$CURSOR_ACCOUNT_OWNER_PGID"
+      --account-owner-start "$CURSOR_ACCOUNT_OWNER_START"
+      --trust-scope "$FACTORY_KIT_TRUST_SCOPE"
+      --account-policy-sha256 "$ACTIVATED_POLICY_HASH"
+    )
+  fi
   TASK_COMMAND=(
     /usr/bin/env -u GH_TOKEN -u OPENAI_API_KEY -u ANTHROPIC_API_KEY
     python3 "$KIT_DIR/scripts/provider-cli-runtime.py"
@@ -2365,6 +2536,7 @@ elif [[ "$CLI_CONCURRENT_RUN" -eq 1 ]]; then
       --db "$FACTORY_PROVIDER_DB"
       --policy "$FACTORY_PROVIDER_POLICY"
       "${CLI_CONFIGURATION_LOCK_ARGS[@]}"
+      "${CLI_RUNTIME_ADAPTER_ARGS[@]}"
       --attempt-id "$CLI_ATTEMPT_ID"
       --provider-family "$SELECTED_FAMILY"
       --account-route "$SELECTED_ACCOUNT_ROUTE_ID"
@@ -2504,6 +2676,11 @@ else
       terminate_run_group
       wait "$RUN_PID" 2>/dev/null
       STATUS=11
+    elif ! bind_cursor_account_runtime; then
+      echo "could not bind Cursor account admission to provider runtime; no task was submitted" >&2
+      terminate_run_group
+      wait "$RUN_PID" 2>/dev/null
+      STATUS=125
     else
       GO_ISSUED=1
       if ! write_manifest "spawned"; then
@@ -2613,8 +2790,13 @@ terminate_run_group || true
 if [[ "$RUN_GROUP_TERMINATED" -eq 1 ]]; then
   rm -f "$RUN_PID_FILE"
   RUN_PID_FILE=""
+  if ! release_cursor_account_lease; then
+    echo "role_exit_control_plane_mutation: Cursor account admission lease could not be released" >&2
+    CONTROL_PLANE_MUTATION=1
+    STATUS=11
+  fi
 else
-  echo "WARNING: process group $RUN_PGID survived; PID record retained for kill-switch" >&2
+  echo "WARNING: process group $RUN_PGID survived; PID and Cursor account lease records retained for kill-switch" >&2
 fi
 rm -f "$RUN_READY_FILE" "$RUN_GO_FILE" "$RUN_GATE_FILE" "$RUN_SUBMITTED_FILE"
 RUN_READY_FILE=""

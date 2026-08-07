@@ -35,6 +35,12 @@ from qualification_manifest import (  # noqa: E402
 
 SCHEMA = "nysa.software-factory.qualification-environment/v1"
 AUTHORITY_SCHEMA = "nysa.software-factory.qualification-authority/v1"
+OPERATOR_BOOTSTRAP_SCHEMA = "nysa.software-factory.qualification-operator-bootstrap/v1"
+PREPROVIDER_HANDOFF_SCHEMA = (
+    "nysa.software-factory.qualification-preprovider-handoff/v1"
+)
+PREPROVIDER_RESET_SCHEMA = "nysa.software-factory.preprovider-branch-resets/v1"
+TRANSITION_RECEIPT_SCHEMA = "nysa.software-factory.transition-receipt/v1"
 ACTIVATION_SCHEMA = "nysa.software-factory.provider-activation/v2"
 POLICY_SCHEMA = "factory-provider-concurrency-policy/v1"
 SHA = re.compile(r"^[0-9a-f]{40}$")
@@ -80,6 +86,18 @@ def safe_directory(path: Path, create: bool = False) -> Path:
         or stat.S_IMODE(info.st_mode) != 0o700
     ):
         raise EnvironmentError("qualification root is unsafe")
+    return path
+
+
+def sealed_directory(path: Path) -> Path:
+    info = path.lstat()
+    if (
+        path.resolve(strict=True) != path
+        or not stat.S_ISDIR(info.st_mode)
+        or info.st_uid != os.geteuid()
+        or stat.S_IMODE(info.st_mode) != 0o555
+    ):
+        raise EnvironmentError("sealed qualification release is unsafe")
     return path
 
 
@@ -183,6 +201,7 @@ def read(path: Path) -> dict[str, Any]:
         if (
             not stat.S_ISREG(metadata.st_mode)
             or metadata.st_uid != os.geteuid()
+            or metadata.st_nlink != 1
             or stat.S_IMODE(metadata.st_mode) != 0o600
             or metadata.st_size > 131_072
         ):
@@ -196,6 +215,370 @@ def read(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise EnvironmentError("qualification state file is malformed")
     return value
+
+
+def transition_receipt(path: Path) -> dict[str, Any]:
+    value = read(path)
+    immutable = {
+        key: item for key, item in value.items()
+        if key not in {"consumed", "consumed_at_epoch", "receipt_sha256"}
+    }
+    if (
+        value.get("schema") != TRANSITION_RECEIPT_SCHEMA
+        or value.get("receipt_sha256")
+        != hashlib.sha256(canonical(immutable)).hexdigest()
+        or value.get("consumed") is not False
+    ):
+        raise EnvironmentError("pre-provider transition receipt is invalid")
+    return value
+
+
+def worktree_records(product: Path) -> list[dict[str, str]]:
+    result: list[dict[str, str]] = []
+    current: dict[str, str] = {}
+    output = command("git", "-C", str(product), "worktree", "list", "--porcelain")
+    for line in output.splitlines() + [""]:
+        if line:
+            name, _, item = line.partition(" ")
+            current[name] = item
+        elif current:
+            result.append(current)
+            current = {}
+    return result
+
+
+def qualification_lane(root_value: Path, project: str) -> dict[str, Any]:
+    root = Path(os.path.realpath(root_value))
+    if not ROOT.fullmatch(str(root)):
+        raise EnvironmentError("qualification root must be under /private/tmp")
+    safe_directory(root)
+    if read(root / "marker.json") != {"mode": "qualification", "schema": SCHEMA}:
+        raise EnvironmentError("qualification marker is invalid")
+    project_root = safe_directory(safe_directory(root / "projects") / project)
+    active = read(project_root / "active.json")
+    receipt_id = active.get("receipt_id", "")
+    if not re.fullmatch(r"[0-9a-f]{64}", receipt_id):
+        raise EnvironmentError("qualification activation receipt is invalid")
+    receipt = read(safe_directory(root / "receipts") / f"{receipt_id}.json")
+    unsigned = dict(receipt)
+    if (
+        unsigned.pop("receipt_id", "") != receipt_id
+        or hashlib.sha256(canonical(unsigned)).hexdigest() != receipt_id
+    ):
+        raise EnvironmentError("qualification activation receipt is invalid")
+    shared = (
+        "contract_version", "kit_sha", "kit_tree", "product_path",
+        "product_sha", "product_tree", "project", "provider_policy_sha256",
+        "qualification_mode", "operator_map_path", "controller_state_path",
+        "provider_state_path", "runtime_ledger_path",
+    )
+    if (
+        active.get("project") != project
+        or active.get("contract_version") != "1.8.0"
+        or active.get("qualification_mode") != "isolated"
+        or receipt.get("status") != "pass"
+        or receipt.get("product_origin") is None
+        or any(
+            key not in active or key not in receipt or active[key] != receipt[key]
+            for key in shared
+        )
+        or ("runtime_tuple" in active) != ("runtime_tuple" in receipt)
+        or active.get("runtime_tuple") != receipt.get("runtime_tuple")
+    ):
+        raise EnvironmentError("qualification activation is inconsistent")
+    kit_sha = active.get("kit_sha", "")
+    kit_tree = active.get("kit_tree", "")
+    product_path = active.get("product_path", "")
+    if (
+        not SHA.fullmatch(kit_sha)
+        or not SHA.fullmatch(kit_tree)
+        or not isinstance(product_path, str)
+        or not Path(product_path).is_absolute()
+    ):
+        raise EnvironmentError("qualification activation identity is invalid")
+    product = Path(product_path)
+    if product.resolve(strict=True) != product:
+        raise EnvironmentError("qualification product path is unsafe")
+    release = sealed_directory(safe_directory(root / "releases") / kit_sha)
+    authority = authority_root(project)
+    controller = safe_directory(authority / "controller")
+    provider = safe_directory(authority / "provider")
+    if (
+        active.get("release_path") != str(release)
+        or active.get("controller_state_path") != str(controller)
+        or active.get("provider_state_path") != str(provider)
+        or command("git", "-C", str(product), "rev-parse", "HEAD")
+        != active.get("product_sha")
+        or command("git", "-C", str(product), "rev-parse", "HEAD^{tree}")
+        != active.get("product_tree")
+        or product_origin(product) != receipt.get("product_origin")
+        or git_tree(release) != kit_tree
+        or command(
+            "git", "-C", str(product), "status", "--porcelain",
+            "--untracked-files=all",
+        )
+    ):
+        raise EnvironmentError("qualification activation content changed")
+    manifest = qualification_manifest(product, kit_sha)
+    operator_map = authority / "operator/linear-map.json"
+    runtime_ledger = authority / "operator/runtime-ledger.csv"
+    if (
+        active.get("operator_map_path") != str(operator_map)
+        or active.get("runtime_ledger_path") != str(runtime_ledger)
+    ):
+        raise EnvironmentError("qualification operator authority path changed")
+    identity = authority_identity(
+        project, kit_sha, kit_tree, product, active["product_sha"],
+        active["product_tree"], receipt["product_origin"],
+        active.get("runtime_tuple"), str(operator_map), str(runtime_ledger),
+    )
+    if read(authority / "authority.json") != identity:
+        raise EnvironmentError("qualification authority does not match activation")
+    resumed_map, resumed_ledger = resume_operator_state(
+        authority, identity, manifest["tickets"],
+    )
+    if resumed_map != operator_map or resumed_ledger != runtime_ledger:
+        raise EnvironmentError("qualification operator authority path changed")
+    validate_runtime_ledger(runtime_ledger)
+    return {
+        "active": active,
+        "authority": authority,
+        "controller": controller,
+        "manifest": manifest,
+        "product": product,
+        "provider": provider,
+        "receipt": receipt,
+        "release": release,
+        "root": root,
+    }
+
+
+def preprovider_reset_authorizations(
+    product: Path, factory_sha: str, tickets: list[str],
+) -> dict[str, str]:
+    path = product / "factory/qualification/preprovider-branch-resets.json"
+    try:
+        info = path.lstat()
+        if (
+            path.is_symlink()
+            or not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or info.st_mode & 0o022
+        ):
+            raise EnvironmentError(
+                "successor pre-provider reset authorization is unsafe"
+            )
+        relative = "factory/qualification/preprovider-branch-resets.json"
+        tree_entry = command(
+            "git", "-C", str(product), "ls-tree", "HEAD", "--", relative
+        ).split(None, 3)
+        if len(tree_entry) != 4 or tree_entry[:2] != ["100644", "blob"]:
+            raise EnvironmentError(
+                "successor pre-provider reset authorization is not a sealed file"
+            )
+        sealed = subprocess.run(
+            ["git", "-C", str(product), "show", f"HEAD:{relative}"],
+            capture_output=True, check=True, timeout=120,
+        ).stdout
+        if path.read_bytes() != sealed:
+            raise EnvironmentError(
+                "successor pre-provider reset authorization differs from sealed HEAD"
+            )
+        value = json.loads(sealed)
+    except (FileNotFoundError, json.JSONDecodeError) as error:
+        raise EnvironmentError(
+            "successor pre-provider branch reset authorization is unavailable"
+        ) from error
+    resets = value.get("resets")
+    if (
+        value.get("schema") != PREPROVIDER_RESET_SCHEMA
+        or set(value) != {"factory_sha", "resets", "schema"}
+        or value.get("factory_sha") != factory_sha
+        or not isinstance(resets, list)
+    ):
+        raise EnvironmentError("successor pre-provider reset authorization is invalid")
+    result: dict[str, str] = {}
+    for item in resets:
+        if not isinstance(item, dict):
+            raise EnvironmentError("successor pre-provider reset entry is invalid")
+        ticket = item.get("ticket")
+        head = item.get("head")
+        if (
+            set(item) != {"branch", "head", "ticket"}
+            or ticket not in tickets
+            or item.get("branch") != f"ticket/{ticket}"
+            or not isinstance(head, str)
+            or not SHA.fullmatch(head)
+            or ticket in result
+        ):
+            raise EnvironmentError("successor pre-provider reset entry is invalid")
+        result[ticket] = head
+    if set(result) != set(tickets):
+        raise EnvironmentError("successor pre-provider reset cohort is incomplete")
+    return result
+
+
+def lock_controllers(*controllers: Path) -> list[int]:
+    descriptors: list[int] = []
+    try:
+        for controller in sorted(set(controllers), key=str):
+            path = controller / "reconcile.lock"
+            descriptor = os.open(
+                path,
+                os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+            )
+            info = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_uid != os.geteuid()
+                or info.st_nlink != 1
+                or stat.S_IMODE(info.st_mode) != 0o600
+            ):
+                os.close(descriptor)
+                raise EnvironmentError("qualification controller lock is unsafe")
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as error:
+                os.close(descriptor)
+                raise EnvironmentError("qualification controller is active") from error
+            descriptors.append(descriptor)
+        return descriptors
+    except Exception:
+        for descriptor in descriptors:
+            os.close(descriptor)
+        raise
+
+
+def handoff_worktree_root(lane: dict[str, Any], *, create: bool) -> Path:
+    parent = lane["root"] / "worktrees"
+    project = parent / lane["active"]["project"]
+    for path in (parent, project):
+        if path.exists() or path.is_symlink():
+            safe_directory(path)
+        elif create:
+            path.mkdir(mode=0o700)
+        else:
+            raise EnvironmentError("pre-provider trusted worktree root is unavailable")
+    return project
+
+
+def lock_dispatch_boundaries(
+    source: dict[str, Any], target: dict[str, Any],
+) -> tuple[list[int], list[Path]]:
+    descriptors: list[int] = []
+    directories: list[Path] = []
+    try:
+        admission_paths = sorted({
+            handoff_worktree_root(source, create=False) / ".dispatch-admission.lock",
+            handoff_worktree_root(target, create=True) / ".dispatch-admission.lock",
+        }, key=str)
+        for path in admission_paths:
+            descriptor = os.open(
+                path,
+                os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+            )
+            info = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_uid != os.geteuid()
+                or info.st_nlink != 1
+                or stat.S_IMODE(info.st_mode) != 0o600
+            ):
+                os.close(descriptor)
+                raise EnvironmentError("pre-provider admission lock is unsafe")
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as error:
+                os.close(descriptor)
+                raise EnvironmentError("pre-provider dispatch admission is active") from error
+            descriptors.append(descriptor)
+        products = sorted({source["product"], target["product"]}, key=str)
+        for name in (".launch.lock", ".dispatch-leases.lock"):
+            for product in products:
+                path = product / "factory" / name
+                try:
+                    path.mkdir(mode=0o700)
+                except FileExistsError as error:
+                    raise EnvironmentError("pre-provider dispatch boundary is active") from error
+                directories.append(path)
+        return descriptors, directories
+    except Exception:
+        for path in reversed(directories):
+            path.rmdir()
+        for descriptor in descriptors:
+            os.close(descriptor)
+        raise
+
+
+def unlock_dispatch_boundaries(
+    descriptors: list[int], directories: list[Path],
+) -> None:
+    for path in reversed(directories):
+        path.rmdir()
+    for descriptor in descriptors:
+        os.close(descriptor)
+
+
+def provider_drained(lane: dict[str, Any]) -> None:
+    product = lane["product"]
+    active_runs = product / "factory/.active-runs"
+    runs = product / "factory/runs"
+    for path in (active_runs, runs):
+        if path.exists() or path.is_symlink():
+            info = path.lstat()
+            if (
+                path.is_symlink()
+                or not stat.S_ISDIR(info.st_mode)
+                or info.st_uid != os.geteuid()
+                or info.st_mode & 0o022
+            ):
+                raise EnvironmentError("qualification provider runtime is unsafe")
+    if (
+        active_runs.is_dir() and any(active_runs.iterdir())
+        or runs.is_dir() and any(runs.glob("*.pid"))
+    ):
+        raise EnvironmentError("qualification has an active provider run")
+    validate_provider(
+        lane["release"], lane["authority"], lane["manifest"]["capacity"]
+    )
+
+
+def journal_value(value: dict[str, Any]) -> dict[str, Any]:
+    if (
+        set(value) != {
+            "authorization_sha256", "entries", "journal_sha256", "moved",
+            "schema", "source_factory_sha", "source_project",
+            "source_receipt_id", "source_root", "status",
+            "target_factory_sha", "target_project", "target_receipt_id",
+            "target_root",
+        }
+        or value.get("schema") != PREPROVIDER_HANDOFF_SCHEMA
+    ):
+        raise EnvironmentError("pre-provider handoff journal is invalid")
+    unsigned = dict(value)
+    digest = unsigned.pop("journal_sha256", "")
+    if digest != hashlib.sha256(canonical(unsigned)).hexdigest():
+        raise EnvironmentError("pre-provider handoff journal digest is invalid")
+    immutable = {
+        key: item for key, item in unsigned.items() if key not in {"moved", "status"}
+    }
+    if unsigned.get("authorization_sha256") != hashlib.sha256(
+        canonical({
+            key: item for key, item in immutable.items()
+            if key != "authorization_sha256"
+        })
+    ).hexdigest():
+        raise EnvironmentError("pre-provider handoff authorization is invalid")
+    return value
+
+
+def seal_journal(value: dict[str, Any]) -> dict[str, Any]:
+    result = dict(value)
+    result.pop("journal_sha256", None)
+    result["journal_sha256"] = hashlib.sha256(canonical(result)).hexdigest()
+    return result
 
 
 def authority_root(project: str, create: bool = False) -> Path:
@@ -215,6 +598,27 @@ def authority_root(project: str, create: bool = False) -> Path:
     return root
 
 
+def partial_authority_root(project: str) -> Path:
+    """Create or resume only the pre-publication operator bootstrap boundary."""
+    factory = Path.home().resolve(strict=True) / ".factory"
+    safe_directory(factory)
+    base = factory / "qualification"
+    if not base.exists():
+        base.mkdir(mode=0o700)
+    safe_directory(base)
+    root = base / project
+    if not root.exists() and not root.is_symlink():
+        safe_directory(root, create=True)
+        return root
+    safe_directory(root)
+    if (root / "authority.json").exists() or (root / "authority.json").is_symlink():
+        raise EnvironmentError("qualification environment already exists")
+    allowed = {"operator", "operator-bootstrap.json"}
+    if any(path.name not in allowed for path in root.iterdir()):
+        raise EnvironmentError("partial qualification authority is invalid")
+    return root
+
+
 def authority_identity(
     project: str,
     factory_sha: str,
@@ -224,6 +628,8 @@ def authority_identity(
     product_tree: str,
     product_origin_value: str,
     runtime_tuple: dict[str, str] | None,
+    operator_map_path: str = "",
+    runtime_ledger_path: str = "",
 ) -> dict[str, Any]:
     manifest = product / "factory/QUALIFICATION.json"
     value = {
@@ -247,6 +653,9 @@ def authority_identity(
         "runtime_tuple": runtime_tuple or {},
         "schema": AUTHORITY_SCHEMA,
     }
+    if operator_map_path:
+        value["operator_map_path"] = operator_map_path
+        value["runtime_ledger_path"] = runtime_ledger_path
     value["authority_sha256"] = hashlib.sha256(canonical(value)).hexdigest()
     return value
 
@@ -450,19 +859,163 @@ def validate_selected_contracts(
             )
 
 
-def initialize_selected_linear(factory: Path, product: Path) -> None:
-    map_path = Path(os.environ.get(
-        "FACTORY_OPERATOR_MAP", product / "factory/linear-map.json",
-    ))
-    if not map_path.is_file() or map_path.is_symlink():
-        return
+def validate_operator_map(value: dict[str, Any]) -> None:
+    if set(value) != {"_config", "_sync", "initiatives", "tickets"} or any(
+        not isinstance(value[key], dict)
+        for key in ("_config", "_sync", "initiatives", "tickets")
+    ):
+        raise EnvironmentError("qualification Linear map is malformed")
+    sensitive = re.compile(r"(?:token|secret|password|api[_-]?key|authorization)", re.I)
+
+    def reject_secrets(item: Any) -> None:
+        if isinstance(item, dict):
+            for key, child in item.items():
+                if sensitive.search(str(key)):
+                    raise EnvironmentError("qualification Linear map contains secret material")
+                reject_secrets(child)
+        elif isinstance(item, list):
+            for child in item:
+                reject_secrets(child)
+
+    reject_secrets(value)
+
+
+def operator_seed(args: argparse.Namespace) -> tuple[Path, dict[str, Any], str]:
+    argument = getattr(args, "operator_map_seed", None)
+    configured = os.environ.get("FACTORY_QUALIFICATION_OPERATOR_MAP_SEED", "").strip()
+    if argument and configured and Path(argument).expanduser() != Path(configured).expanduser():
+        raise EnvironmentError("qualification operator map seed is ambiguous")
+    raw = argument or configured
+    if not raw:
+        raise EnvironmentError("qualification operator map seed is required")
+    source = Path(raw).expanduser()
+    if not source.is_absolute():
+        raise EnvironmentError("qualification operator map seed must be absolute")
     try:
-        mapping = json.loads(map_path.read_text(encoding="utf-8"))
+        if source.is_symlink():
+            raise EnvironmentError("qualification operator map seed is unsafe")
+        source = source.resolve(strict=True)
+        metadata = source.lstat()
+        if metadata.st_nlink != 1:
+            raise EnvironmentError("qualification operator map seed is unsafe")
+        value = read(source)
+        validate_operator_map(value)
+    except (FileNotFoundError, OSError, json.JSONDecodeError) as error:
+        raise EnvironmentError("qualification operator map seed is unsafe") from error
+    digest = hashlib.sha256(canonical(value)).hexdigest()
+    return source, value, digest
+
+
+def validate_runtime_ledger(path: Path) -> None:
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except OSError as error:
+        raise EnvironmentError("qualification runtime ledger is unsafe") from error
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or metadata.st_nlink != 1
+            or stat.S_IMODE(metadata.st_mode) != 0o600
+        ):
+            raise EnvironmentError("qualification runtime ledger is unsafe")
+    finally:
+        os.close(descriptor)
+
+
+def operator_authority_sha256(
+    identity: dict[str, Any], selected: list[str],
+) -> str:
+    return hashlib.sha256(canonical({
+        "operator_map_path": identity["operator_map_path"],
+        "product_origin": identity["product_origin"],
+        "product_path": identity["product_path"],
+        "project": identity["project"],
+        "runtime_ledger_path": identity["runtime_ledger_path"],
+        "selected_tickets": selected,
+    })).hexdigest()
+
+
+def prepare_operator_state(
+    authority: Path,
+    identity: dict[str, Any],
+    selected: list[str],
+    seed: tuple[Path, dict[str, Any], str],
+) -> tuple[Path, Path]:
+    source, value, source_sha256 = seed
+    operator = authority / "operator"
+    if operator.exists() or operator.is_symlink():
+        safe_directory(operator)
+    else:
+        operator.mkdir(mode=0o700)
+    map_path = operator / "linear-map.json"
+    ledger_path = operator / "runtime-ledger.csv"
+    bootstrap = authority / "operator-bootstrap.json"
+    expected = {
+        "operator_authority_sha256": operator_authority_sha256(identity, selected),
+        "operator_map_path": str(map_path),
+        "runtime_ledger_path": str(ledger_path),
+        "schema": OPERATOR_BOOTSTRAP_SCHEMA,
+        "selected_tickets": selected,
+        "source_path": str(source),
+        "source_sha256": source_sha256,
+    }
+    if bootstrap.exists() or bootstrap.is_symlink():
+        if read(bootstrap) != expected:
+            raise EnvironmentError("qualification operator bootstrap changed")
+        validate_operator_map(read(map_path))
+        return map_path, ledger_path
+    if map_path.exists() or map_path.is_symlink():
+        if read(map_path) != value:
+            raise EnvironmentError("partial qualification operator map is invalid")
+    else:
+        write(map_path, value)
+    write(bootstrap, expected)
+    return map_path, ledger_path
+
+
+def resume_operator_state(
+    authority: Path, identity: dict[str, Any], selected: list[str],
+) -> tuple[Path, Path]:
+    map_path = authority / "operator/linear-map.json"
+    ledger_path = authority / "operator/runtime-ledger.csv"
+    value = read(authority / "operator-bootstrap.json")
+    if (
+        value.get("schema") != OPERATOR_BOOTSTRAP_SCHEMA
+        or value.get("operator_authority_sha256")
+        != operator_authority_sha256(identity, selected)
+        or value.get("selected_tickets") != selected
+        or value.get("operator_map_path") != str(map_path)
+        or value.get("runtime_ledger_path") != str(ledger_path)
+        or not isinstance(value.get("source_path"), str)
+        or not Path(value["source_path"]).is_absolute()
+        or any(character in value["source_path"] for character in "\r\n\t")
+        or not re.fullmatch(r"[0-9a-f]{64}", value.get("source_sha256", ""))
+    ):
+        raise EnvironmentError("qualification operator bootstrap changed")
+    safe_directory(authority / "operator")
+    validate_operator_map(read(map_path))
+    return map_path, ledger_path
+
+
+def initialize_selected_linear(
+    factory: Path, product: Path, map_path: Path, ledger_path: Path,
+) -> None:
+    try:
+        mapping = read(map_path)
+        validate_operator_map(mapping)
         selected = json.loads(
             (product / "factory/QUALIFICATION.json").read_text(encoding="utf-8")
         )["tickets"]
     except (KeyError, OSError, json.JSONDecodeError) as error:
         raise EnvironmentError("qualification Linear map is malformed") from error
+    environment = {
+        **os.environ,
+        "FACTORY_OPERATOR_MAP": str(map_path),
+        "FACTORY_LEDGER": str(ledger_path),
+        "FACTORY_DURABLE_LEDGER": str(product / "factory/ledger.csv"),
+    }
     for ticket in selected:
         result = subprocess.run(
             [
@@ -470,11 +1023,25 @@ def initialize_selected_linear(factory: Path, product: Path) -> None:
                 "--factory-root", str(product), "--ticket", ticket, "--initialize",
             ],
             text=True, capture_output=True, check=False, timeout=120,
+            env=environment,
         )
         if result.returncode:
             raise EnvironmentError(
                 f"{ticket}: selected-ticket Linear initialization failed: "
                 f"{result.stdout.strip() or result.stderr.strip()}"
+            )
+        mapping = read(map_path)
+        validate_operator_map(mapping)
+        entry = mapping["tickets"].get(ticket)
+        initialized = mapping["_sync"].get("selected_ticket_success_at", {})
+        if (
+            not isinstance(entry, dict)
+            or not entry.get("issue_id")
+            or not isinstance(initialized, dict)
+            or not isinstance(initialized.get(ticket), str)
+        ):
+            raise EnvironmentError(
+                f"{ticket}: selected-ticket Linear initialization was not durable"
             )
 
 
@@ -1023,6 +1590,522 @@ def takeover_source(
     }
 
 
+def claim_for_handoff(
+    controller: Path, entry: dict[str, Any], authorization: str,
+) -> dict[str, Any]:
+    claim = read(controller / f"claims/{entry['ticket']}.json")
+    original = dict(claim)
+    original.pop("handoff_sha256", None)
+    original.pop("handoff_target_worktree", None)
+    if not entry["source_lease_released"] and original.get("lease_released") is True:
+        original.pop("lease_released")
+    if claim.get("blocked_reason") == "preprovider-handoff":
+        original["blocked_reason"] = "worker-error"
+        original["worktree"] = entry["source_worktree"]
+        if (
+            claim.get("handoff_sha256") != authorization
+            or claim.get("handoff_target_worktree") != entry["target_worktree"]
+        ):
+            raise EnvironmentError("pre-provider handoff claim changed")
+    if hashlib.sha256(canonical(original)).hexdigest() != entry["claim_sha256"]:
+        raise EnvironmentError("pre-provider source claim changed")
+    if (
+        original.get("schema") != "nysa.software-factory.controller-claim/v1"
+        or original.get("ticket") != entry["ticket"]
+        or original.get("branch") != entry["branch"]
+        or original.get("status") != "blocked"
+        or original.get("blocked_reason") != "worker-error"
+        or original.get("receipt") != ""
+        or original.get("role") != ""
+        or original.get("publication_lease") != ""
+        or original.get("parked") is not None
+        or bool(original.get("lease_released") is True)
+        != entry["source_lease_released"]
+        or original.get("worktree") != entry["source_worktree"]
+        or not re.fullmatch(r"[0-9a-f]{64}", original.get("lease", ""))
+        or hashlib.sha256(original["lease"].encode()).hexdigest()
+        != entry["lease_sha256"]
+    ):
+        raise EnvironmentError("pre-provider source claim is not recoverable")
+    return claim
+
+
+def validate_handoff_lease(
+    source: dict[str, Any], entry: dict[str, Any], claim: dict[str, Any],
+) -> Path:
+    path = source["product"] / f"factory/.dispatch-leases/{entry['ticket']}.json"
+    if not (path.exists() or path.is_symlink()):
+        return path
+    parent = path.parent
+    info = parent.lstat()
+    value = read(path)
+    if (
+        parent.is_symlink()
+        or not stat.S_ISDIR(info.st_mode)
+        or info.st_uid != os.geteuid()
+        or info.st_mode & 0o022
+        or entry["source_lease_released"]
+        or value.get("schema_version") != 1
+        or value.get("ticket") != entry["ticket"]
+        or value.get("lease_id") != claim.get("lease")
+    ):
+        raise EnvironmentError("pre-provider dispatcher lease changed")
+    return path
+
+
+def no_ticket_runtime(
+    lane: dict[str, Any], ticket: str, *, allow_dispatch_lease: bool = False,
+) -> None:
+    controller = lane["controller"]
+    product = lane["product"]
+    absent = [
+        controller / f"passports/{ticket}.json",
+        controller / f"publication/queue/{ticket}.json",
+    ]
+    if not allow_dispatch_lease:
+        absent.append(product / f"factory/.dispatch-leases/{ticket}.json")
+    if any(path.exists() or path.is_symlink() for path in absent):
+        raise EnvironmentError("pre-provider source has runtime or publication evidence")
+    publication = controller / "publication/active.json"
+    if publication.exists() or publication.is_symlink():
+        if read(publication).get("ticket") == ticket:
+            raise EnvironmentError("pre-provider source has publication evidence")
+    runs = product / "factory/runs"
+    if runs.is_dir():
+        for path in runs.glob("*.meta"):
+            if path.is_symlink() or not path.is_file():
+                raise EnvironmentError("pre-provider run evidence is unsafe")
+            fields = dict(
+                line.split("=", 1)
+                for line in path.read_text(encoding="utf-8").splitlines()
+                if "=" in line
+            )
+            if fields.get("ticket") == ticket:
+                raise EnvironmentError("pre-provider source has terminal run evidence")
+
+
+def release_handoff_lease(
+    source: dict[str, Any], entry: dict[str, Any], claim: dict[str, Any],
+) -> dict[str, Any]:
+    ticket = entry["ticket"]
+    path = validate_handoff_lease(source, entry, claim)
+    if path.exists() or path.is_symlink():
+        parent = path.parent
+        path.unlink()
+        directory = os.open(parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    if path.exists() or path.is_symlink():
+        raise EnvironmentError("pre-provider dispatcher lease remains active")
+    if claim.get("lease_released") is not True:
+        claim["lease_released"] = True
+        replace(source["controller"] / f"claims/{ticket}.json", claim)
+    return claim
+
+
+def validate_handoff_entry(
+    source: dict[str, Any], target: dict[str, Any], entry: dict[str, Any],
+    authorization: str,
+) -> tuple[dict[str, Any], Path]:
+    ticket = entry.get("ticket", "")
+    if (
+        set(entry) != {
+            "branch", "claim_sha256", "head_sha", "head_tree", "lease_sha256",
+            "route_plan_sha256", "source_worktree", "target_worktree", "ticket",
+            "ticket_blob", "transition_receipt_sha256", "source_lease_released",
+        }
+        or not re.fullmatch(r"T-[0-9]+", ticket)
+        or not isinstance(entry.get("source_lease_released"), bool)
+        or entry.get("branch") != f"ticket/{ticket}"
+        or any(
+            not re.fullmatch(r"[0-9a-f]{64}", entry.get(key, ""))
+            for key in (
+                "claim_sha256", "lease_sha256", "route_plan_sha256",
+                "transition_receipt_sha256",
+            )
+        )
+        or any(
+            not SHA.fullmatch(entry.get(key, ""))
+            for key in ("head_sha", "head_tree", "ticket_blob")
+        )
+    ):
+        raise EnvironmentError("pre-provider handoff entry is invalid")
+    source_cell = Path(entry["source_worktree"])
+    target_cell = Path(entry["target_worktree"])
+    if (
+        source_cell.parent
+        != source["root"] / f"worktrees/{source['active']['project']}"
+        or target_cell.parent
+        != target["root"] / f"worktrees/{target['active']['project']}"
+        or not re.fullmatch(r"cell-[1-6]", source_cell.name)
+        or not re.fullmatch(r"cell-[1-6]", target_cell.name)
+    ):
+        raise EnvironmentError("pre-provider handoff cell is outside its trusted root")
+    claim = claim_for_handoff(source["controller"], entry, authorization)
+    receipt = transition_receipt(source["controller"] / f"{ticket}.json")
+    route = None
+    registrations = [
+        item for item in worktree_records(source["product"])
+        if item.get("branch") == f"refs/heads/{entry['branch']}"
+    ]
+    if len(registrations) != 1:
+        raise EnvironmentError("pre-provider branch registration is ambiguous")
+    registered = Path(registrations[0].get("worktree", ""))
+    if registered not in {source_cell, target_cell}:
+        raise EnvironmentError("pre-provider branch is outside the handoff cells")
+    if registered.resolve(strict=True) != registered:
+        raise EnvironmentError("pre-provider handoff cell is unsafe")
+    safe_directory(registered)
+    route = registered / f"factory/route-plans/{ticket}.json"
+    route_info = route.lstat()
+    if (
+        route.is_symlink()
+        or not stat.S_ISREG(route_info.st_mode)
+        or route_info.st_uid != os.geteuid()
+        or route_info.st_nlink != 1
+        or route_info.st_mode & 0o022
+    ):
+        raise EnvironmentError("pre-provider route plan is unavailable")
+    remote = command(
+        "git", "-C", str(source["product"]), "ls-remote", "--heads", "origin",
+        f"refs/heads/{entry['branch']}",
+    ).split()
+    if (
+        command("git", "-C", str(registered), "status", "--porcelain=v1", "-z")
+        or command("git", "-C", str(registered), "symbolic-ref", "--short", "HEAD")
+        != entry["branch"]
+        or command("git", "-C", str(registered), "rev-parse", "HEAD")
+        != entry["head_sha"]
+        or command("git", "-C", str(registered), "rev-parse", "HEAD^{tree}")
+        != entry["head_tree"]
+        or command(
+            "git", "-C", str(registered), "rev-parse",
+            f"HEAD:factory/tickets/{ticket}.md",
+        ) != entry["ticket_blob"]
+        or hashlib.sha256(route.read_bytes()).hexdigest()
+        != entry["route_plan_sha256"]
+        or remote != [entry["head_sha"], f"refs/heads/{entry['branch']}"]
+        or receipt.get("ticket") != ticket
+        or receipt.get("branch") != entry["branch"]
+        or receipt.get("project") != source["active"]["project"]
+        or receipt.get("factory_sha") != source["active"]["kit_sha"]
+        or receipt.get("contract_version") != "1.8.0"
+        or receipt.get("stage") != "RUN planner"
+        or receipt.get("role") != "planner"
+        or receipt.get("loop") is not None
+        or "parent_digest" in receipt
+        or receipt.get("head_sha") != entry["head_sha"]
+        or receipt.get("head_tree") != entry["head_tree"]
+        or receipt.get("ticket_blob") != entry["ticket_blob"]
+        or receipt.get("route_plan_sha256") != entry["route_plan_sha256"]
+        or receipt.get("lease_sha256") != entry["lease_sha256"]
+        or receipt.get("passport_sha256") is not None
+        or receipt.get("product_origin_sha256")
+        != hashlib.sha256(product_origin(source["product"]).encode()).hexdigest()
+        or receipt.get("receipt_sha256") != entry["transition_receipt_sha256"]
+    ):
+        raise EnvironmentError("pre-provider source evidence changed")
+    spec = importlib.util.spec_from_file_location(
+        "qualification_handoff_dispatch",
+        target["release"] / "scripts/dispatch-plan.py",
+    )
+    if not spec or not spec.loader:
+        raise EnvironmentError("sealed pre-provider validator is unavailable")
+    dispatch = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(dispatch)
+    protected = command(
+        "git", "-C", str(target["product"]), "rev-parse",
+        "refs/remotes/origin/main",
+    )
+    if subprocess.run(
+        [
+            "git", "-C", str(target["product"]), "merge-base", "--is-ancestor",
+            protected, entry["head_sha"],
+        ],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+        timeout=120,
+    ).returncode == 0:
+        raise EnvironmentError("pre-provider branch does not require successor reset")
+    try:
+        dispatch.validate_preprovider_branch(
+            target["product"], registered, ticket, entry["branch"], "origin",
+            protected,
+            entry["head_sha"],
+        )
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        raise EnvironmentError(f"pre-provider reset is unusable: {error}") from error
+    no_ticket_runtime(source, ticket, allow_dispatch_lease=True)
+    validate_handoff_lease(source, entry, claim)
+    target_controller = target["controller"]
+    if any(
+        path.exists() or path.is_symlink()
+        for path in (
+            target_controller / f"claims/{ticket}.json",
+            target_controller / f"passports/{ticket}.json",
+            target_controller / f"{ticket}.json",
+        )
+    ):
+        raise EnvironmentError("successor already has ticket runtime state")
+    no_ticket_runtime(target, ticket)
+    return claim, registered
+
+
+def build_handoff_journal(
+    source: dict[str, Any], target: dict[str, Any], resets: dict[str, str],
+) -> dict[str, Any]:
+    source_worktrees = handoff_worktree_root(source, create=False)
+    target_worktrees = handoff_worktree_root(target, create=True)
+    occupied = {
+        Path(item["worktree"])
+        for item in worktree_records(target["product"])
+        if item.get("worktree")
+    }
+    available = [
+        target_worktrees / f"cell-{number}" for number in range(1, 7)
+        if target_worktrees / f"cell-{number}" not in occupied
+        and not (target_worktrees / f"cell-{number}").exists()
+        and not (target_worktrees / f"cell-{number}").is_symlink()
+    ]
+    if len(available) < len(resets):
+        raise EnvironmentError("successor has no trusted cells for pre-provider handoff")
+    records = worktree_records(source["product"])
+    entries = []
+    for ticket, target_cell in zip(sorted(resets), available):
+        branch = f"ticket/{ticket}"
+        matching = [
+            item for item in records
+            if item.get("branch") == f"refs/heads/{branch}"
+        ]
+        if len(matching) != 1:
+            raise EnvironmentError("pre-provider source branch is unavailable")
+        source_cell = Path(matching[0].get("worktree", ""))
+        if (
+            source_cell.parent != source_worktrees
+            or not re.fullmatch(r"cell-[1-6]", source_cell.name)
+            or source_cell.resolve(strict=True) != source_cell
+        ):
+            raise EnvironmentError("pre-provider source branch is outside its trusted root")
+        claim = read(source["controller"] / f"claims/{ticket}.json")
+        receipt = transition_receipt(source["controller"] / f"{ticket}.json")
+        route = source_cell / f"factory/route-plans/{ticket}.json"
+        if not route.is_file() or route.is_symlink():
+            raise EnvironmentError("pre-provider route plan is unavailable")
+        entry = {
+            "branch": branch,
+            "claim_sha256": hashlib.sha256(canonical(claim)).hexdigest(),
+            "head_sha": command("git", "-C", str(source_cell), "rev-parse", "HEAD"),
+            "head_tree": command(
+                "git", "-C", str(source_cell), "rev-parse", "HEAD^{tree}"
+            ),
+            "lease_sha256": hashlib.sha256(claim.get("lease", "").encode()).hexdigest(),
+            "route_plan_sha256": hashlib.sha256(route.read_bytes()).hexdigest(),
+            "source_lease_released": claim.get("lease_released") is True,
+            "source_worktree": str(source_cell),
+            "target_worktree": str(target_cell),
+            "ticket": ticket,
+            "ticket_blob": command(
+                "git", "-C", str(source_cell), "rev-parse",
+                f"HEAD:factory/tickets/{ticket}.md",
+            ),
+            "transition_receipt_sha256": receipt.get("receipt_sha256", ""),
+        }
+        entries.append(entry)
+    value = {
+        "entries": entries,
+        "moved": [],
+        "schema": PREPROVIDER_HANDOFF_SCHEMA,
+        "source_factory_sha": source["active"]["kit_sha"],
+        "source_project": source["active"]["project"],
+        "source_receipt_id": source["active"]["receipt_id"],
+        "source_root": str(source["root"]),
+        "status": "prepared",
+        "target_factory_sha": target["active"]["kit_sha"],
+        "target_project": target["active"]["project"],
+        "target_receipt_id": target["active"]["receipt_id"],
+        "target_root": str(target["root"]),
+    }
+    value["authorization_sha256"] = hashlib.sha256(canonical({
+        key: item for key, item in value.items() if key not in {"moved", "status"}
+    })).hexdigest()
+    return seal_journal(value)
+
+
+def handoff_preprovider(args: argparse.Namespace) -> dict[str, Any]:
+    source_project = args.preprovider_source_project
+    if (
+        not PROJECT.fullmatch(source_project)
+        or source_project == args.project
+        or args.upgrade or args.restore or args.takeover_project
+    ):
+        raise EnvironmentError("pre-provider handoff arguments are invalid")
+    source = qualification_lane(args.preprovider_source_root, source_project)
+    target = qualification_lane(args.root, args.project)
+    factory = args.factory_root.resolve(strict=True)
+    product = args.product_root.resolve(strict=True)
+    sealed_helper = target["release"] / "scripts/qualification-environment.py"
+    if (
+        target["product"] != product
+        or command(
+            "git", "-C", str(factory), "status", "--porcelain",
+            "--untracked-files=all",
+        )
+        or command("git", "-C", str(factory), "rev-parse", "HEAD")
+        != target["active"]["kit_sha"]
+        or command("git", "-C", str(factory), "rev-parse", "HEAD^{tree}")
+        != target["active"]["kit_tree"]
+        or command(
+            "git", "-C", str(source["product"]), "rev-parse",
+            "--path-format=absolute", "--git-common-dir",
+        ) != command(
+            "git", "-C", str(target["product"]), "rev-parse",
+            "--path-format=absolute", "--git-common-dir",
+        )
+        or product_origin(source["product"]) != product_origin(target["product"])
+        or not sealed_helper.is_file()
+        or sealed_helper.is_symlink()
+        or Path(__file__).resolve().read_bytes() != sealed_helper.read_bytes()
+    ):
+        raise EnvironmentError("pre-provider handoff repositories do not match")
+    manifest = target["manifest"]
+    if (
+        manifest.get("mode") != "successor"
+        or manifest.get("source_factory_sha") != source["active"]["kit_sha"]
+        or source["manifest"].get("tickets") != manifest.get("tickets")
+    ):
+        raise EnvironmentError("pre-provider handoff requires the exact successor")
+    tickets = manifest["tickets"]
+    resets = preprovider_reset_authorizations(
+        target["product"], target["active"]["kit_sha"], tickets
+    )
+    locks = lock_controllers(source["controller"], target["controller"])
+    dispatch_locks: tuple[list[int], list[Path]] | None = None
+    try:
+        locked_source = qualification_lane(
+            args.preprovider_source_root, source_project
+        )
+        locked_target = qualification_lane(args.root, args.project)
+        if locked_source != source or locked_target != target:
+            raise EnvironmentError("qualification activation changed before handoff lock")
+        source, target = locked_source, locked_target
+        resets = preprovider_reset_authorizations(
+            target["product"], target["active"]["kit_sha"], tickets
+        )
+        dispatch_locks = lock_dispatch_boundaries(source, target)
+        provider_drained(source)
+        provider_drained(target)
+        command(
+            "git", "-C", str(target["product"]), "fetch", "--quiet", "origin",
+            "+main:refs/remotes/origin/main",
+        )
+        journal_path = target["controller"] / "preprovider-handoff.json"
+        new_journal = not (journal_path.exists() or journal_path.is_symlink())
+        if not new_journal:
+            journal = journal_value(read(journal_path))
+        else:
+            journal = build_handoff_journal(source, target, resets)
+        expected_context = {
+            "source_factory_sha": source["active"]["kit_sha"],
+            "source_project": source_project,
+            "source_receipt_id": source["active"]["receipt_id"],
+            "source_root": str(source["root"]),
+            "target_factory_sha": target["active"]["kit_sha"],
+            "target_project": args.project,
+            "target_receipt_id": target["active"]["receipt_id"],
+            "target_root": str(target["root"]),
+        }
+        entries = journal.get("entries")
+        moved = journal.get("moved")
+        if (
+            any(journal.get(key) != value for key, value in expected_context.items())
+            or not isinstance(entries, list)
+            or [item.get("ticket") for item in entries] != sorted(tickets)
+            or not isinstance(moved, list)
+            or moved != [item["ticket"] for item in entries[:len(moved)]]
+            or journal.get("status") not in {"prepared", "completed"}
+            or (journal.get("status") == "completed") != (len(moved) == len(entries))
+            or any(resets.get(item.get("ticket")) != item.get("head_sha") for item in entries)
+        ):
+            raise EnvironmentError("pre-provider handoff journal conflicts")
+        authorization = journal["authorization_sha256"]
+        claims = []
+        for entry in entries:
+            claim, registered = validate_handoff_entry(
+                source, target, entry, authorization
+            )
+            claims.append((entry, claim, registered))
+        moved_count = len(journal["moved"])
+        for index, (entry, _, registered) in enumerate(claims):
+            expected_source = Path(entry["source_worktree"])
+            expected_target = Path(entry["target_worktree"])
+            if (
+                index < moved_count and registered != expected_target
+                or index == moved_count and registered not in {
+                    expected_source, expected_target,
+                }
+                or index > moved_count and registered != expected_source
+            ):
+                raise EnvironmentError("pre-provider handoff physical state conflicts")
+        if new_journal:
+            write(journal_path, journal)
+        claims = [
+            (entry, release_handoff_lease(source, entry, claim))
+            for entry, claim, _ in claims
+        ]
+        for entry, _ in claims:
+            no_ticket_runtime(source, entry["ticket"])
+        for entry, claim in claims:
+            if claim.get("blocked_reason") != "preprovider-handoff":
+                claim.update({
+                    "blocked_reason": "preprovider-handoff",
+                    "handoff_sha256": authorization,
+                    "handoff_target_worktree": entry["target_worktree"],
+                    "status": "blocked",
+                })
+                replace(source["controller"] / f"claims/{entry['ticket']}.json", claim)
+        for index, entry in enumerate(entries):
+            claim, registered = validate_handoff_entry(
+                source, target, entry, authorization
+            )
+            source_cell = Path(entry["source_worktree"])
+            target_cell = Path(entry["target_worktree"])
+            if registered == source_cell:
+                if target_cell.exists() or target_cell.is_symlink():
+                    raise EnvironmentError("pre-provider handoff destination is occupied")
+                command(
+                    "git", "-C", str(target["product"]), "worktree", "move",
+                    str(source_cell), str(target_cell),
+                )
+                target_cell.chmod(0o700)
+            elif source_cell.exists() or source_cell.is_symlink():
+                raise EnvironmentError("pre-provider handoff source still exists")
+            claim["worktree"] = str(target_cell)
+            replace(source["controller"] / f"claims/{entry['ticket']}.json", claim)
+            if index >= len(journal["moved"]):
+                journal["moved"].append(entry["ticket"])
+                journal = seal_journal(journal)
+                replace(journal_path, journal)
+        if journal["status"] != "completed":
+            journal["status"] = "completed"
+            journal = seal_journal(journal)
+            replace(journal_path, journal)
+        return {
+            "factory_sha": target["active"]["kit_sha"],
+            "handoff_sha256": authorization,
+            "project": args.project,
+            "schema": SCHEMA,
+            "source_project": source_project,
+            "status": "preprovider-handed-off",
+            "tickets": tickets,
+        }
+    finally:
+        if dispatch_locks is not None:
+            unlock_dispatch_boundaries(*dispatch_locks)
+        for descriptor in locks:
+            os.close(descriptor)
+
+
 def git_tree(path: Path) -> str:
     with tempfile.TemporaryDirectory(prefix="qualification-tree.") as raw:
         repository = Path(raw) / "repo.git"
@@ -1110,7 +2193,8 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
     capacity = manifest["capacity"]
     validate_selected_contracts(product, manifest)
     prepare_product_runtime(product)
-    initialize_selected_linear(factory, product)
+    if command("git", "-C", str(product), "status", "--porcelain", "--untracked-files=all"):
+        raise EnvironmentError("qualification product runtime contract is not ignored")
     product_tree = command("git", "-C", str(product), "rev-parse", "HEAD^{tree}")
     product_sha = command("git", "-C", str(product), "rev-parse", "HEAD")
     runtime_tuple = certification_preflight(
@@ -1124,15 +2208,49 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
     )
     if restoring and takeover:
         raise EnvironmentError("takeover qualification cannot restore isolated authority")
-    identity = authority_identity(
-        args.project, sha, tree, product, product_sha, product_tree, origin,
-        runtime_tuple,
-    )
     authority: Path | None = None
     controller_state_path = ""
     provider_state_path = ""
+    operator_map_path = ""
+    runtime_ledger_path = ""
+    if takeover:
+        operator_map_path = takeover["operator_map_path"]
+    else:
+        qualification = Path.home().resolve(strict=True) / ".factory/qualification"
+        operator_map_path = str(qualification / args.project / "operator/linear-map.json")
+        runtime_ledger_path = str(qualification / args.project / "operator/runtime-ledger.csv")
+    identity = authority_identity(
+        args.project, sha, tree, product, product_sha, product_tree, origin,
+        runtime_tuple, operator_map_path, runtime_ledger_path,
+    )
     if not takeover:
-        authority = authority_root(args.project, create=not restoring)
+        expected_authority = Path.home().resolve(strict=True) / (
+            f".factory/qualification/{args.project}"
+        )
+        bootstrap_exists = (
+            (expected_authority / "operator-bootstrap.json").exists()
+            or (expected_authority / "operator-bootstrap.json").is_symlink()
+        )
+        if restoring or bootstrap_exists:
+            authority = authority_root(args.project)
+            if not restoring and (authority / "authority.json").exists():
+                raise EnvironmentError("qualification environment already exists")
+            map_path, ledger_path = resume_operator_state(
+                authority, identity, manifest["tickets"],
+            )
+        else:
+            seed = operator_seed(args)
+            authority = partial_authority_root(args.project)
+            map_path, ledger_path = prepare_operator_state(
+                authority, identity, manifest["tickets"], seed,
+            )
+        initialize_selected_linear(factory, product, map_path, ledger_path)
+        validate_runtime_ledger(ledger_path)
+        if command(
+            "git", "-C", str(product), "status", "--porcelain",
+            "--untracked-files=all",
+        ):
+            raise EnvironmentError("qualification Linear initialization dirtied product")
         controller = authority / "controller"
         if restoring:
             if read(authority / "authority.json") != identity:
@@ -1197,10 +2315,12 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
         "project": args.project,
         "provider_policy_sha256": provider_policy_sha256,
         "qualification_mode": qualification_mode,
+        "operator_map_path": operator_map_path,
         "status": "pass",
     }, runtime_tuple)
+    if runtime_ledger_path:
+        receipt_value["runtime_ledger_path"] = runtime_ledger_path
     if takeover:
-        receipt_value["operator_map_path"] = takeover["operator_map_path"]
         receipt_value["takeover_kits_root"] = takeover["takeover_kits_root"]
     else:
         receipt_value["controller_state_path"] = controller_state_path
@@ -1219,11 +2339,13 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
         "project": args.project,
         "provider_policy_sha256": provider_policy_sha256,
         "qualification_mode": qualification_mode,
+        "operator_map_path": operator_map_path,
         "receipt_id": receipt_id,
         "release_path": str(release),
     }, runtime_tuple)
+    if runtime_ledger_path:
+        active_value["runtime_ledger_path"] = runtime_ledger_path
     if takeover:
-        active_value["operator_map_path"] = takeover["operator_map_path"]
         active_value["takeover_kits_root"] = takeover["takeover_kits_root"]
     else:
         active_value["controller_state_path"] = controller_state_path
@@ -1299,7 +2421,8 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
                 "normal in-place upgrade refused"
             )
     prepare_product_runtime(product)
-    initialize_selected_linear(factory, product)
+    if command("git", "-C", str(product), "status", "--porcelain", "--untracked-files=all"):
+        raise EnvironmentError("qualification product runtime contract is not ignored")
     product_sha = command("git", "-C", str(product), "rev-parse", "HEAD")
     product_tree = command("git", "-C", str(product), "rev-parse", "HEAD^{tree}")
     runtime_tuple = certification_preflight(
@@ -1307,11 +2430,6 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
     )
     historical_objects = historical_pr_objects(product)
     origin = product_origin(product)
-    identity = authority_identity(
-        args.project, sha, tree, product, product_sha, product_tree, origin,
-        runtime_tuple,
-    )
-
     marker = read(root / "marker.json")
     qualification_mode = active.get("qualification_mode")
     if (
@@ -1332,11 +2450,27 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
     authority = authority_root(args.project)
     controller = safe_directory(Path(active.get("controller_state_path", "")))
     provider = safe_directory(Path(active.get("provider_state_path", "")))
+    operator_map_value = active.get("operator_map_path", "")
+    runtime_ledger_value = active.get("runtime_ledger_path", "")
+    if not isinstance(operator_map_value, str) or not isinstance(
+        runtime_ledger_value, str
+    ):
+        raise EnvironmentError("durable qualification authority path changed")
+    operator_map_path = Path(operator_map_value)
+    runtime_ledger_path = Path(runtime_ledger_value)
     if (
         controller != authority / "controller"
         or provider != authority / "provider"
+        or operator_map_path != authority / "operator/linear-map.json"
+        or runtime_ledger_path != authority / "operator/runtime-ledger.csv"
     ):
         raise EnvironmentError("durable qualification authority path changed")
+    validate_operator_map(read(operator_map_path))
+    identity = authority_identity(
+        args.project, sha, tree, product, product_sha, product_tree, origin,
+        runtime_tuple, str(operator_map_path), str(runtime_ledger_path),
+    )
+    resume_operator_state(authority, identity, manifest["tickets"])
     lock = os.open(
         controller / "reconcile.lock",
         os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
@@ -1351,6 +2485,15 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
             (product / "factory/runs").glob("*.pid")
         ):
             raise EnvironmentError("qualification has an active provider run")
+        initialize_selected_linear(
+            factory, product, operator_map_path, runtime_ledger_path,
+        )
+        validate_runtime_ledger(runtime_ledger_path)
+        if command(
+            "git", "-C", str(product), "status", "--porcelain",
+            "--untracked-files=all",
+        ):
+            raise EnvironmentError("qualification Linear initialization dirtied product")
 
         releases = safe_directory(root / "releases")
         release = releases / sha
@@ -1389,7 +2532,9 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
             "provider_policy_sha256": policy_hash,
             "controller_state_path": str(controller),
             "provider_state_path": str(provider),
+            "operator_map_path": str(operator_map_path),
             "qualification_mode": qualification_mode,
+            "runtime_ledger_path": str(runtime_ledger_path),
             "status": "pass",
         }, runtime_tuple)
         receipt_id = hashlib.sha256(canonical(receipt_value)).hexdigest()
@@ -1413,9 +2558,11 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
             "provider_policy_sha256": policy_hash,
             "controller_state_path": str(controller),
             "provider_state_path": str(provider),
+            "operator_map_path": str(operator_map_path),
             "qualification_mode": qualification_mode,
             "receipt_id": receipt_id,
             "release_path": str(release),
+            "runtime_ledger_path": str(runtime_ledger_path),
         }, runtime_tuple)
         replace(active_path, next_active)
         replace(authority / "authority.json", identity)
@@ -1446,7 +2593,10 @@ def main() -> None:
     parser.add_argument("--project", required=True)
     parser.add_argument("--root", required=True, type=Path)
     parser.add_argument("--global-env", type=Path)
+    parser.add_argument("--operator-map-seed", type=Path)
     parser.add_argument("--takeover-project")
+    parser.add_argument("--preprovider-source-root", type=Path)
+    parser.add_argument("--preprovider-source-project")
     parser.add_argument("--upgrade", action="store_true")
     parser.add_argument("--restore", action="store_true")
     args = parser.parse_args()
@@ -1455,7 +2605,20 @@ def main() -> None:
             raise EnvironmentError("invalid qualification project")
         if args.upgrade and args.restore:
             raise EnvironmentError("qualification restore and upgrade are exclusive")
-        print(json.dumps(upgrade(args) if args.upgrade else prepare(args), sort_keys=True))
+        handoff = (
+            args.preprovider_source_root is not None
+            or args.preprovider_source_project is not None
+        )
+        if handoff and (
+            args.preprovider_source_root is None
+            or args.preprovider_source_project is None
+        ):
+            raise EnvironmentError("pre-provider handoff source is incomplete")
+        result = (
+            handoff_preprovider(args) if handoff else
+            upgrade(args) if args.upgrade else prepare(args)
+        )
+        print(json.dumps(result, sort_keys=True))
     except (
         FileNotFoundError, json.JSONDecodeError, OSError, EnvironmentError,
         subprocess.SubprocessError, tarfile.TarError,
