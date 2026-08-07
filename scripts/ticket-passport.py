@@ -1682,57 +1682,91 @@ def commit_parent(workdir: Path, revision: str) -> str:
     return values[1]
 
 
+def git_blob(workdir: Path, revision: str, path: str) -> bytes:
+    result = subprocess.run(
+        ["git", "-C", str(workdir), "show", f"{revision}:{path}"],
+        capture_output=True, check=False, timeout=120,
+    )
+    if result.returncode:
+        raise PassportError("model identity recovery topology is invalid")
+    return result.stdout
+
+
 def model_identity_recovery_topology(
     args: argparse.Namespace, consumed: dict[str, Any], current: dict[str, Any]
 ) -> dict[str, str]:
     input_head = consumed.get("head_sha", "")
     current_head = current["head_sha"]
     ticket_path = f"factory/tickets/{args.ticket}.md"
+    route_path = f"factory/route-plans/{args.ticket}.json"
 
     def tree(revision: str) -> str:
         return git(args.workdir, "rev-parse", f"{revision}^{{tree}}")
 
-    def one_ticket_change(revision: str) -> bool:
+    def changed(revision: str) -> list[str]:
         return git(
             args.workdir, "diff-tree", "--no-commit-id", "--name-only",
             "--no-renames", "-r", revision,
-        ).splitlines() == [ticket_path]
+        ).splitlines()
 
     candidates = []
     try:
-        output_head = commit_parent(args.workdir, current_head)
+        migration_head = current_head
+        revert_head = commit_parent(args.workdir, migration_head)
+        output_head = commit_parent(args.workdir, revert_head)
         if commit_parent(args.workdir, output_head) == input_head:
-            candidates.append(("restore-required", current_head, output_head, ""))
+            candidates.append((
+                "restore-required", migration_head, revert_head, output_head, "",
+            ))
     except PassportError:
         pass
     try:
-        revert_head = commit_parent(args.workdir, current_head)
+        restore_head = current_head
+        migration_head = commit_parent(args.workdir, restore_head)
+        revert_head = commit_parent(args.workdir, migration_head)
         output_head = commit_parent(args.workdir, revert_head)
         if commit_parent(args.workdir, output_head) == input_head:
-            candidates.append(("restored", revert_head, output_head, current_head))
+            candidates.append((
+                "restored", migration_head, revert_head, output_head, restore_head,
+            ))
     except PassportError:
         pass
 
     valid = []
-    for status, revert_head, output_head, restore_head in candidates:
+    for status, migration_head, revert_head, output_head, restore_head in candidates:
         try:
+            input_ticket = git_blob(args.workdir, input_head, ticket_path)
+            output_ticket = git_blob(args.workdir, output_head, ticket_path)
+            migration_ticket = git_blob(
+                args.workdir, migration_head, ticket_path
+            )
+            suffix = output_ticket[len(input_ticket):]
             if (
                 tree(revert_head) == tree(input_head)
                 and tree(output_head) != tree(input_head)
-                and one_ticket_change(output_head)
-                and one_ticket_change(revert_head)
+                and output_ticket.startswith(input_ticket)
+                and suffix
+                and not migration_ticket.endswith(suffix)
+                and changed(output_head) == [ticket_path]
+                and changed(revert_head) == [ticket_path]
+                and changed(migration_head) == [route_path, ticket_path]
+                and git_blob(args.workdir, migration_head, route_path)
+                != git_blob(args.workdir, revert_head, route_path)
                 and (
                     status == "restore-required"
                     or (
-                        tree(restore_head) == tree(output_head)
-                        and one_ticket_change(restore_head)
+                        changed(restore_head) == [ticket_path]
+                        and git_blob(args.workdir, restore_head, ticket_path)
+                        == migration_ticket + suffix
                     )
                 )
             ):
                 valid.append({
+                    "migration_head": migration_head,
                     "input_head": input_head,
                     "output_head": output_head,
                     "output_tree": tree(output_head),
+                    "recovery_base_head": migration_head,
                     "restore_head": restore_head,
                     "revert_head": revert_head,
                     "status": status,
@@ -1754,12 +1788,19 @@ def model_identity_success_evidence(
         manifest.with_suffix(".progress.jsonl")
     )
     topology = model_identity_recovery_topology(args, consumed, current)
+    route_path = f"factory/route-plans/{args.ticket}.json"
     try:
-        plan = json.loads(
+        current_plan = json.loads(
             read_regular(
-                args.workdir / "factory/route-plans" / f"{args.ticket}.json"
+                args.workdir / route_path
             ),
             object_pairs_hook=unique_object,
+        )
+        source_plan_raw = git_blob(
+            args.workdir, topology["revert_head"], route_path
+        )
+        source_plan = json.loads(
+            source_plan_raw, object_pairs_hook=unique_object
         )
         catalog = json.loads(
             read_regular(
@@ -1767,7 +1808,13 @@ def model_identity_success_evidence(
             ),
             object_pairs_hook=unique_object,
         )
-        selection = plan["resolution"]["selections"]["spec-linter"]
+        source_selection = source_plan["resolution"]["selections"][
+            "spec-linter"
+        ]
+        current_revision = current_plan["revisions"][-1]["body"]
+        current_selection = current_revision["new_resolution"]["selections"][
+            "spec-linter"
+        ]
         routes = [
             item for item in catalog["routes"]
             if isinstance(item, dict)
@@ -1778,7 +1825,7 @@ def model_identity_success_evidence(
     if len(routes) != 1:
         raise PassportError("model identity recovery route evidence is invalid")
     route = routes[0]
-    planned_identity = selection.get("reported_identity")
+    planned_identity = source_selection.get("reported_identity")
 
     raw = read_regular(output_path, maximum=8 * 1024 * 1024)
     models = []
@@ -1820,12 +1867,19 @@ def model_identity_success_evidence(
         or terminal.get("route_plan_sha256")
         != consumed.get("route_plan_sha256")
         or terminal.get("route_plan_sha256")
-        != route_digest(args.workdir, args.ticket)
+        != hashlib.sha256(source_plan_raw).hexdigest()
         or route.get("enabled") is not True
         or route.get("adapter") != terminal.get("adapter")
-        or selection.get("route_id") != terminal.get("route_id")
-        or selection.get("adapter") != terminal.get("adapter")
-        or plan.get("kit_sha") != terminal.get("kit_sha")
+        or source_selection.get("route_id") != terminal.get("route_id")
+        or source_selection.get("adapter") != terminal.get("adapter")
+        or source_plan.get("kit_sha") != terminal.get("kit_sha")
+        or current_plan.get("schema") != "ticket-model-route-journal/v2"
+        or current_plan.get("kit_sha") != args.factory_sha
+        or current_revision.get("kind") != "release-migration"
+        or current_revision.get("new_kit_sha") != args.factory_sha
+        or current_selection.get("route_id") != terminal.get("route_id")
+        or current_selection.get("adapter") != terminal.get("adapter")
+        or current_selection.get("reported_identity") != expected_identity
         or not isinstance(expected_identity, str)
         or not expected_identity
         or not isinstance(planned_identity, str)
@@ -1882,7 +1936,7 @@ def verify_model_identity_success(
         or previous.get("product_origin_sha256")
         != current["product_origin_sha256"]
         or previous.get("head_sha") not in {
-            topology["revert_head"], current["head_sha"],
+            topology["recovery_base_head"], current["head_sha"],
         }
         or previous.get("route_plan_sha256") != route_digest(args.workdir, args.ticket)
         or previous.get("current_state") != ticket_state(args.workdir, args.ticket)
