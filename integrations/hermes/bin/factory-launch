@@ -1445,7 +1445,8 @@ PY
         die "invalid transition receipt"
       [[ "$PASSPORT_PUBLICATION" =~ ^(none|validating|ready|merge-pending|merged|repair)$ ]] ||
         die "invalid publication state"
-    elif [[ "$PASSPORT_ACTION" == "correct-converged-success" && $# -eq 10 &&
+    elif [[ ( "$PASSPORT_ACTION" == "correct-converged-success" ||
+              "$PASSPORT_ACTION" == "verify-model-identity-success" ) && $# -eq 10 &&
             "$2" == "--ticket" && "$4" == "--receipt" &&
             "$6" == "--run-id" && "$8" == "--workdir" &&
             "${10}" == "--json" ]]; then
@@ -1485,7 +1486,8 @@ PY
       --factory-sha "$KIT_SHA"
       --project "$PROJECT"
     )
-    if [[ "$PASSPORT_ACTION" == "correct-converged-success" ]]; then
+    if [[ "$PASSPORT_ACTION" == "correct-converged-success" ||
+          "$PASSPORT_ACTION" == "verify-model-identity-success" ]]; then
       PASSPORT_ARGS+=(
         --receipt "$PASSPORT_RECEIPT"
         --run-id "$PASSPORT_RUN_ID"
