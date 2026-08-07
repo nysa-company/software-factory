@@ -4101,7 +4101,8 @@ changed replay content, extra commits, and ambiguous topology remain blocked.
 
 Category: Reliability
 
-Typed old-release terminal recovery accepts both blocked claims and the idle
-claimed form produced by release-upgrade normalization. It still requires the
-same exact receipt, terminal, passport, Git, and remote evidence before clearing
-the pending role; ordinary provider fallback cannot consume that preserved run.
+Typed old-release terminal recovery accepts blocked claims and the idle claimed
+or running forms produced by release-upgrade normalization. An active role is
+never recovered. The same exact receipt, terminal, passport, Git, and remote
+evidence remains required before clearing the pending role; ordinary provider
+fallback cannot consume that preserved run.

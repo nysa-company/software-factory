@@ -1182,9 +1182,10 @@ without force, preserving the migrated Kit-SHA and route bytes, exports the
 failed charge once, and records the HMAC-signed completion correction. A merge
 conflict, changed replay, extra path or commit, different model, result, route,
 remote movement, or same-release failure remains blocked and never enters
-provider fallback. This recovery accepts either the original blocked claim or
-the idle claimed form produced by release-upgrade normalization; all receipt,
-terminal, passport, and remote proofs remain identical.
+provider fallback. This recovery accepts the original blocked claim and the
+idle claimed or running forms produced by release-upgrade normalization; an
+active role is never recovered, and all receipt, terminal, passport, and remote
+proofs remain identical.
 The state machine never migrates a passport for a `REFUSE` transition; the
 controller blocks the claim first so the next one-shot owns that boundary and
 its durable pending marker.
