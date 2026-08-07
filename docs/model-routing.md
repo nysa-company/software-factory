@@ -33,6 +33,11 @@ workflow.
 Cursor model evidence is exact: the Opus selection currently reports
 `Opus 5 300K Medium`. A different context-window or effort label is rejected,
 and native Claude fallback defaults to the certified CLI version `2.1.223`.
+Native Claude readiness runs version, help, OAuth, and authenticated-status
+checks through one disposable owner-only configuration containing only a
+validated credential copy. Ambient Claude settings and hooks therefore cannot
+change route readiness, and the disposable credential is removed after every
+probe result.
 Qualification preparation snapshots the owner-only global model configuration
 into the isolated lane. Later production-config edits cannot change its pins;
 only a drained qualification upgrade with `--global-env` replaces the snapshot.

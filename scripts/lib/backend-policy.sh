@@ -164,6 +164,57 @@ else:
 PY
 }
 
+factory_prepare_claude_probe_config() {
+  python3 - "$1/.credentials.json" "$2/.credentials.json" <<'PY'
+import os
+import pathlib
+import stat
+import sys
+
+source, destination = map(pathlib.Path, sys.argv[1:])
+try:
+    source_info = source.lstat()
+    destination_root_info = destination.parent.lstat()
+except OSError:
+    raise SystemExit(1)
+if (
+    source.is_symlink()
+    or not stat.S_ISREG(source_info.st_mode)
+    or source_info.st_uid != os.geteuid()
+    or source_info.st_nlink != 1
+    or stat.S_IMODE(source_info.st_mode) & 0o077
+    or source_info.st_size > 1_000_000
+    or not stat.S_ISDIR(destination_root_info.st_mode)
+    or destination_root_info.st_uid != os.geteuid()
+    or stat.S_IMODE(destination_root_info.st_mode) & 0o077
+):
+    raise SystemExit(1)
+source_fd = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+try:
+    opened = os.fstat(source_fd)
+    if (
+        (opened.st_dev, opened.st_ino) != (source_info.st_dev, source_info.st_ino)
+        or not stat.S_ISREG(opened.st_mode)
+        or opened.st_nlink != 1
+    ):
+        raise SystemExit(1)
+    data = os.read(source_fd, 1_000_001)
+finally:
+    os.close(source_fd)
+if len(data) > 1_000_000:
+    raise SystemExit(1)
+destination_fd = os.open(
+    destination,
+    os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+    0o600,
+)
+with os.fdopen(destination_fd, "wb") as stream:
+    stream.write(data)
+    stream.flush()
+    os.fsync(stream.fileno())
+PY
+}
+
 factory_prepare_cursor_probe_home() {
   local source_home="$1" probe_home="$2"
   mkdir -m 700 "$probe_home/.cursor" || return 1
@@ -233,6 +284,7 @@ factory_probe_adapter() {
   local adapter="$1" explicit_model="${2:-}"
   local installed installed_version="" help model expected_family actual_family
   local claude_bin secret_file minimal_path required_flag
+  local claude_config_dir claude_probe_config claude_oauth_state
   local cursor_bin="${CURSOR_AGENT_BIN:-agent}" auth_ready model_ready attempt
   local credential_reason
   local cursor_source_home="${FACTORY_CURSOR_SESSION_HOME:-$HOME}"
@@ -290,37 +342,55 @@ factory_probe_adapter() {
       if ! command -v claude >/dev/null 2>&1; then
         PROBE_STATE="UNAVAILABLE"; PROBE_REASON="executable_missing"; return 0
       fi
-      installed="$(timeout "$probe_timeout" claude --version 2>/dev/null | awk 'NR==1 {print; exit}' || true)"
+      claude_config_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+      claude_probe_config="$(mktemp -d "${TMPDIR:-/tmp}/factory-claude-probe.XXXXXX")" || {
+        PROBE_STATE="INVALID"; PROBE_REASON="probe_isolation_unavailable"; return 0
+      }
+      chmod 700 "$claude_probe_config"
+      installed="$(CLAUDE_CONFIG_DIR="$claude_probe_config" \
+        timeout "$probe_timeout" claude --version 2>/dev/null | \
+        awk 'NR==1 {print; exit}' || true)"
       PROBE_VERSION="$installed"
       if [[ -z "$installed" ]]; then
-        PROBE_STATE="UNAVAILABLE"; PROBE_REASON="version_probe_failed"; return 0
+        PROBE_STATE="UNAVAILABLE"; PROBE_REASON="version_probe_failed"
+      elif [[ "${installed%% *}" != "${CLAUDE_CODE_PINNED:-2.1.223}" ]]; then
+        PROBE_STATE="INVALID"; PROBE_REASON="version_mismatch"
+      elif ! help="$(CLAUDE_CONFIG_DIR="$claude_probe_config" \
+          timeout "$probe_timeout" claude --help 2>/dev/null)"; then
+        PROBE_STATE="UNAVAILABLE"; PROBE_REASON="help_probe_failed"
+      else
+        for required_flag in --max-budget-usd --output-format \
+          --append-system-prompt --model --effort; do
+          if [[ "$help" != *"$required_flag"* ]]; then
+            PROBE_STATE="INVALID"
+            PROBE_REASON="contract_mismatch_missing_${required_flag#--}"
+            break
+          fi
+        done
       fi
-      if [[ "${installed%% *}" != "${CLAUDE_CODE_PINNED:-2.1.223}" ]]; then
-        PROBE_STATE="INVALID"; PROBE_REASON="version_mismatch"; return 0
-      fi
-      if ! help="$(timeout "$probe_timeout" claude --help 2>/dev/null)"; then
-        PROBE_STATE="UNAVAILABLE"; PROBE_REASON="help_probe_failed"; return 0
-      fi
-      for required_flag in --max-budget-usd --output-format \
-        --append-system-prompt --model --effort; do
-        if [[ "$help" != *"$required_flag"* ]]; then
-          PROBE_STATE="INVALID"
-          PROBE_REASON="contract_mismatch_missing_${required_flag#--}"
-          return 0
+      if [[ "$PROBE_REASON" == "unclassified" ]]; then
+        if ! factory_prepare_claude_probe_config \
+            "$claude_config_dir" "$claude_probe_config"; then
+          PROBE_STATE="INVALID"; PROBE_REASON="credential_invalid"
+        elif ! CLAUDE_CONFIG_DIR="$claude_probe_config" \
+            timeout "$probe_timeout" claude auth status >/dev/null 2>&1; then
+          PROBE_STATE="UNAVAILABLE"; PROBE_REASON="authentication_unavailable"
+        else
+          claude_oauth_state="$(CLAUDE_CONFIG_DIR="$claude_probe_config" \
+            factory_claude_oauth_readiness 2>/dev/null || true)"
+          case "$claude_oauth_state" in
+            READY:*) ;;
+            UNAVAILABLE:*)
+              PROBE_STATE="UNAVAILABLE"; PROBE_REASON="${claude_oauth_state#*:}" ;;
+            *)
+              PROBE_STATE="INVALID"; PROBE_REASON="credential_invalid" ;;
+          esac
         fi
-      done
-      installed="$(factory_claude_oauth_readiness 2>/dev/null || true)"
-      case "$installed" in
-        READY:*) ;;
-        UNAVAILABLE:*)
-          PROBE_STATE="UNAVAILABLE"; PROBE_REASON="${installed#*:}"; return 0 ;;
-        *)
-          PROBE_STATE="INVALID"; PROBE_REASON="credential_invalid"; return 0 ;;
-      esac
-      if ! timeout "$probe_timeout" claude auth status >/dev/null 2>&1; then
-        PROBE_STATE="UNAVAILABLE"; PROBE_REASON="authentication_unavailable"; return 0
       fi
-      PROBE_STATE="READY"; PROBE_REASON="local_contract_ready"
+      if [[ "$PROBE_REASON" == "unclassified" ]]; then
+        PROBE_STATE="READY"; PROBE_REASON="local_contract_ready"
+      fi
+      rm -rf "$claude_probe_config"
       ;;
     claude-kimi)
       PROBE_MODEL="${explicit_model:-moonshotai/kimi-k2.6}"

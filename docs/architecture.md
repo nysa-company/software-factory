@@ -1165,6 +1165,18 @@ The correction remains authenticated audit evidence on later exports; it is
 not a generic lifecycle override. Emergency override authority remains
 separate and requires explicit owner authorization bound to its target plus a
 linked GitHub issue before use.
+An older Cursor catalog may likewise reject a completed Spec-linter run solely
+because its exact reported model identity changed. Successor recovery is
+limited to the authenticated old-plan mismatch whose owner-only output names
+the current catalog identity, contains one terminal success and the exact
+identity-rejection diagnostic, and whose progress journal independently ends
+in one success. The local history must be exactly receipt input, one ticket-only
+output commit, its exact revert, and optionally the controller's exact
+revert-of-revert. The remote must still equal the receipt input. The controller
+restores and pushes that tree without force, migrates and exports the failed
+charge once, then records the HMAC-signed completion correction. Any extra path,
+commit, model, result, route, remote movement, or same-release failure remains
+blocked and never enters provider fallback.
 The state machine never migrates a passport for a `REFUSE` transition; the
 controller blocks the claim first so the next one-shot owns that boundary and
 its durable pending marker.

@@ -236,6 +236,81 @@ class TicketPassportTest(unittest.TestCase):
             encoding="utf-8",
         )
 
+    def model_identity_success_terminal(
+        self, run_id: str, receipt: str, head_before: str,
+    ) -> None:
+        output_path = self.product / f"factory/runs/{run_id}.out"
+        output_digest = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "scripts/lib/role_output.py"),
+                "publish",
+                str(output_path),
+            ],
+            input=(
+                b'{"model":"Opus 5 300K Medium","subtype":"init",'
+                b'"type":"system"}\n'
+                b'{"subtype":"success","type":"result"}\n'
+                b'cursor reported unapproved model: Opus 5 300K Medium\n'
+                b'Cursor output validation/redaction failed\n'
+            ),
+            capture_output=True,
+            check=True,
+        ).stdout.decode().strip()
+        progress = self.product / f"factory/runs/{run_id}.progress.jsonl"
+        records = [
+            {
+                "event_sha256": "1" * 64,
+                "observed_monotonic_ns": 1,
+                "sequence": 1,
+                "subtype": "init",
+                "type": "system",
+            },
+            {
+                "event_sha256": "2" * 64,
+                "observed_monotonic_ns": 2,
+                "sequence": 2,
+                "subtype": "success",
+                "type": "result",
+            },
+        ]
+        progress.write_text(
+            "".join(
+                json.dumps(item, sort_keys=True, separators=(",", ":")) + "\n"
+                for item in records
+            ),
+            encoding="utf-8",
+        )
+        os.chmod(progress, 0o600)
+        (self.product / f"factory/runs/{run_id}.meta").write_text(
+            f"run_id={run_id}\n"
+            "phase=completed\n"
+            "accounting_state=abandoned_conservative\n"
+            "reserved_usd=2.00\n"
+            "go_issued=1\n"
+            "task_submitted=1\n"
+            "turns=3\n"
+            "effective_cost=2.00\n"
+            "exit_status=9\n"
+            "cost_basis=conservative_reservation\n"
+            "ticket=T-110\n"
+            "role=spec-linter\n"
+            "adapter=cursor-anthropic\n"
+            "route_id=cursor-claude-opus-5-thinking-medium\n"
+            f"route_plan_sha256={hashlib.sha256((self.product / 'factory/route-plans/T-110.json').read_bytes()).hexdigest()}\n"
+            "provider_attempt_id=attempt-identity\n"
+            "role_exit=provider_failed\n"
+            "role_branch_before=ticket/T-110\n"
+            f"role_head_before={head_before}\n"
+            f"kit_sha={'a' * 40}\n"
+            "contract_version=1.8.0\n"
+            f"transition_receipt_sha256={receipt}\n"
+            f"output_sha256={output_digest}\n"
+            "progress_events=2\n"
+            f"progress_journal_sha256={hashlib.sha256(progress.read_bytes()).hexdigest()}\n"
+            "terminal_reason_code=\n",
+            encoding="utf-8",
+        )
     def test_role_output_uses_one_streaming_eight_mib_bound(self) -> None:
         existing_size = 5_662_048
         self.terminal(
@@ -500,6 +575,104 @@ class TicketPassportTest(unittest.TestCase):
             [item["factory_sha"] for item in upgraded["factory_release_history"]],
             ["a" * 40, "b" * 40],
         )
+
+    def test_reverted_model_identity_success_is_restored_without_replay(
+        self,
+    ) -> None:
+        route = {
+            "kit_sha": "a" * 40,
+            "resolution": {"selections": {"spec-linter": {
+                "adapter": "cursor-anthropic",
+                "reported_identity": "Opus 5 1M Medium Thinking",
+                "route_id": "cursor-claude-opus-5-thinking-medium",
+            }}},
+            "schema": "ticket-model-route-plan/v1",
+            "ticket": "T-110",
+        }
+        (self.product / "factory/route-plans/T-110.json").write_text(
+            json.dumps(route, sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+        run("git", "add", ".", cwd=self.product)
+        run("git", "commit", "-qm", "pin old route", cwd=self.product)
+        secret = PASSPORT.key(self.state_dir)
+        planner = STATE.issue(self.state_args, "RUN planner")
+        self.state_args.receipt = planner["receipt_sha256"]
+        STATE.verify(self.state_args, consume=True)
+        self.terminal("run-planner", "planner", planner["receipt_sha256"], "a" * 40)
+        self.passport_args.receipt = planner["receipt_sha256"]
+        PASSPORT.export(self.passport_args, secret)
+
+        self.state_args.role = "spec-linter"
+        lint = STATE.issue(self.state_args, "RUN spec-linter")
+        self.state_args.receipt = lint["receipt_sha256"]
+        STATE.verify(self.state_args, consume=True)
+        input_head = run("git", "rev-parse", "HEAD", cwd=self.product)
+        ticket = self.product / "factory/tickets/T-110.md"
+        ticket.write_text(
+            ticket.read_text(encoding="utf-8") + "\nSPEC-LINT: PASS\n",
+            encoding="utf-8",
+        )
+        run("git", "add", str(ticket), cwd=self.product)
+        run("git", "commit", "-qm", "spec lint output", cwd=self.product)
+        output_head = run("git", "rev-parse", "HEAD", cwd=self.product)
+        run("git", "revert", "--no-edit", output_head, cwd=self.product)
+        revert_head = run("git", "rev-parse", "HEAD", cwd=self.product)
+        run_id = "run-model-identity-success"
+        self.model_identity_success_terminal(
+            run_id, lint["receipt_sha256"], input_head
+        )
+
+        self.passport_args.factory_sha = "b" * 40
+        self.passport_args.receipt = lint["receipt_sha256"]
+        PASSPORT.migrate(self.passport_args, secret)
+        self.passport_args.run_id = run_id
+        preflight = PASSPORT.verify_model_identity_success(
+            self.passport_args, secret
+        )
+        self.assertEqual(preflight["recovery_status"], "restore-required")
+        self.assertEqual(preflight["output_head"], output_head)
+        self.assertEqual(preflight["revert_head"], revert_head)
+
+        run("git", "revert", "--no-edit", revert_head, cwd=self.product)
+        restored = PASSPORT.verify_model_identity_success(
+            self.passport_args, secret
+        )
+        self.assertEqual(restored["recovery_status"], "restored")
+        PASSPORT.migrate(self.passport_args, secret)
+        failed = PASSPORT.export(self.passport_args, secret)
+        self.assertFalse(any(
+            item["run_id"] == run_id
+            for item in failed["completed_role_evidence"]
+        ))
+        corrected = PASSPORT.correct_converged_success(
+            self.passport_args, secret
+        )
+        matching = [
+            item for item in corrected["completed_role_evidence"]
+            if item["run_id"] == run_id
+        ]
+        self.assertEqual([item["role"] for item in matching], ["spec-linter"])
+        self.assertEqual(
+            corrected["completed_role_corrections"][-1]["issue"],
+            PASSPORT.MODEL_IDENTITY_CORRECTION_ISSUE,
+        )
+        replayed = PASSPORT.correct_converged_success(
+            self.passport_args, secret
+        )
+        self.assertEqual(replayed["passport_sha256"], corrected["passport_sha256"])
+
+        (self.product / "unrelated").write_text("extra\n", encoding="utf-8")
+        run("git", "add", "unrelated", cwd=self.product)
+        run("git", "commit", "-qm", "unrelated descendant", cwd=self.product)
+        with self.assertRaisesRegex(PASSPORT.PassportError, "topology"):
+            PASSPORT.model_identity_recovery_topology(
+                self.passport_args,
+                PASSPORT.receipt(
+                    self.state_dir, "T-110", lint["receipt_sha256"]
+                ),
+                PASSPORT.identity(self.passport_args),
+            )
 
     def test_exact_converged_success_correction_is_authenticated_and_idempotent(
         self,
