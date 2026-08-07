@@ -940,7 +940,7 @@ PATH="$STUB_BIN:$PATH" FACTORY_CURSOR_FALLBACK_ENABLED=1 \
   bash -c 'source "$1"; factory_resolve_model_profile cursor-balanced-v2 "$2"' \
     _ "$SEALED_RELEASE/scripts/lib/backend-policy.sh" "$CURSOR_RESOLUTION"
 mkdir -p "$SEALED_PRODUCT/factory/route-plans"
-python3 "$SEALED_RELEASE/scripts/model-manager.py" pin \
+python3 -B "$SEALED_RELEASE/scripts/model-manager.py" pin \
   --state-root "$CURSOR_MODEL_STATE" --project sealed --ticket T-190 \
   --kit-sha "$KIT_SHA" --resolution-file "$CURSOR_RESOLUTION" \
   --output "$SEALED_PRODUCT/factory/route-plans/T-190.json" >/dev/null
