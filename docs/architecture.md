@@ -473,8 +473,9 @@ evidence blocks before a provider starts.
 A sealed qualification scopes provider product- and ticket-budget admission to
 the exact project and frozen candidate SHA. Different qualification roots for
 that same candidate share the scope, while predecessor-candidate charges stay
-outside its allowance. The provider coordinator's machine-day cap remains
-global, so candidate isolation cannot evade aggregate machine accounting.
+outside its allowance. Provider lifecycle and financial accounting stay
+lane-local; task-bearing Cursor runs alone also obey the machine-local
+account-route concurrency and start-window admission described above.
 Its release and CLI scratch remain disposable under `/private/tmp`, but signed
 passports, controller events, provider accounting, paused worktrees, and HMAC
 authority live under the owner-only `~/.factory/qualification/<project>` root.
