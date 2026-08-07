@@ -16,10 +16,20 @@ from typing import Any, Iterable
 SCHEMA = "nysa.software-factory.qualification-artifact-retention/v1"
 PASSPORT_SCHEMA = "nysa.software-factory.ticket-passport/v1"
 DIGEST = re.compile(r"[0-9a-f]{64}\Z")
+SHA = re.compile(r"[0-9a-f]{40}\Z")
 RUN_ID = re.compile(r"[A-Za-z0-9._-]{1,200}\Z")
 TICKET = re.compile(r"T-[0-9]+\Z")
 ROLE = re.compile(r"(?:planner|spec-linter|test-author|builder|reviewer|narrator)\Z")
 LIMITS = {"meta": 131_072, "out": 8 * 1024 * 1024, "progress.jsonl": 10_000_000}
+CORRECTION_SCHEMA = "nysa.software-factory.completed-role-correction/v1"
+CORRECTION_TYPES = {
+    "https://github.com/nysa-company/software-factory/issues/218": (
+        "builder", "128", "",
+    ),
+    "https://github.com/nysa-company/software-factory/issues/390": (
+        "spec-linter", "9", "provider_failed",
+    ),
+}
 
 
 class ArtifactError(ValueError):
@@ -145,10 +155,13 @@ def _manifest(raw: bytes) -> dict[str, str]:
 
 def _requirements(passport: dict[str, Any], ticket: str) -> list[dict[str, Any]]:
     evidence = passport.get("completed_role_evidence")
+    corrections = passport.get("completed_role_corrections", [])
     if (
         passport.get("ticket") != ticket
         or not isinstance(evidence, list)
         or any(not isinstance(item, dict) for item in evidence)
+        or not isinstance(corrections, list)
+        or any(not isinstance(item, dict) for item in corrections)
     ):
         raise ArtifactError(f"{ticket} passport role evidence is invalid")
     result = []
@@ -175,7 +188,55 @@ def _requirements(passport: dict[str, Any], ticket: str) -> list[dict[str, Any]]
             raise ArtifactError(f"{ticket} passport role evidence is invalid")
         seen.add(run_id)
         result.append(item)
-    return result
+    expected = {
+        "failed_factory_sha", "issue", "output_head_sha", "progress_events",
+        "progress_journal_sha256", "receipt_parent_file_sha256",
+        "recovery_factory_sha", "run_id", "schema",
+        "transition_receipt_sha256",
+    }
+    correction_map = {}
+    for item in corrections:
+        run_id = item.get("run_id", "")
+        receipt = item.get("transition_receipt_sha256", "")
+        correction_type = CORRECTION_TYPES.get(item.get("issue"))
+        matches = [
+            evidence_item for evidence_item in result
+            if correction_type is not None
+            and evidence_item["run_id"] == run_id
+            and evidence_item["transition_receipt_sha256"] == receipt
+            and evidence_item["role"] == correction_type[0]
+            and evidence_item["factory_sha"] == item.get("failed_factory_sha")
+        ]
+        identity = (run_id, receipt)
+        if (
+            set(item) != expected
+            or item.get("schema") != CORRECTION_SCHEMA
+            or correction_type is None
+            or len(matches) != 1
+            or identity in correction_map
+            or not RUN_ID.fullmatch(run_id)
+            or not DIGEST.fullmatch(receipt)
+            or not SHA.fullmatch(item.get("failed_factory_sha", ""))
+            or not SHA.fullmatch(item.get("recovery_factory_sha", ""))
+            or item["failed_factory_sha"] == item["recovery_factory_sha"]
+            or not SHA.fullmatch(item.get("output_head_sha", ""))
+            or not DIGEST.fullmatch(item.get("progress_journal_sha256", ""))
+            or not DIGEST.fullmatch(item.get("receipt_parent_file_sha256", ""))
+            or isinstance(item.get("progress_events"), bool)
+            or not isinstance(item.get("progress_events"), int)
+            or item["progress_events"] <= 0
+        ):
+            raise ArtifactError(f"{ticket} passport correction evidence is invalid")
+        correction_map[identity] = item
+    return [
+        {
+            **item,
+            "_correction": correction_map.get(
+                (item["run_id"], item["transition_receipt_sha256"])
+            ),
+        }
+        for item in result
+    ]
 
 
 def _candidate(
@@ -257,6 +318,12 @@ def ensure_ticket(
         if meta_raw is None:
             raise ArtifactError(f"{ticket} {run_id} {role} missing meta")
         manifest = _manifest(meta_raw)
+        correction = item["_correction"]
+        terminal = (
+            ("0", "ok")
+            if correction is None
+            else CORRECTION_TYPES[correction["issue"]][1:]
+        )
         if any((
             manifest.get("run_id") != run_id,
             manifest.get("ticket") != ticket,
@@ -266,8 +333,8 @@ def ensure_ticket(
             manifest.get("role_head_before") != item.get("head_before"),
             manifest.get("transition_receipt_sha256")
             != item.get("transition_receipt_sha256"),
-            manifest.get("exit_status") != "0",
-            manifest.get("role_exit") != "ok",
+            manifest.get("exit_status") != terminal[0],
+            manifest.get("role_exit") != terminal[1],
             manifest.get("output_sha256") != item.get("output_sha256"),
         )):
             raise ArtifactError(f"{ticket} {run_id} {role} manifest identity mismatch")
@@ -275,8 +342,24 @@ def ensure_ticket(
             "meta": item["manifest_sha256"],
             "out": item["output_sha256"],
         }
-        progress = manifest.get("progress_journal_sha256", "")
-        events = manifest.get("progress_events", "")
+        progress = (
+            correction["progress_journal_sha256"]
+            if correction is not None
+            else manifest.get("progress_journal_sha256", "")
+        )
+        events = (
+            str(correction["progress_events"])
+            if correction is not None
+            else manifest.get("progress_events", "")
+        )
+        if correction is not None and (
+            manifest.get("progress_journal_sha256", "")
+            or manifest.get("progress_events", "")
+        ) and (
+            manifest.get("progress_journal_sha256") != progress
+            or manifest.get("progress_events") != events
+        ):
+            raise ArtifactError(f"{ticket} {run_id} {role} progress identity mismatch")
         if progress or events:
             if (
                 not DIGEST.fullmatch(progress)

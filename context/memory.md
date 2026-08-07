@@ -4106,3 +4106,13 @@ or running forms produced by release-upgrade normalization. An active role is
 never recovered. The same exact receipt, terminal, passport, Git, and remote
 evidence remains required before clearing the pending role; ordinary provider
 fallback cannot consume that preserved run.
+
+## 2026-08-07 — Decision 308: Corrected completions retain immutable artifacts
+
+Category: Reliability
+
+Qualification artifact closure binds each authenticated completion correction
+one-to-one to its completed evidence. It preserves the original failed terminal
+bytes, accepts only the correction type's exact terminal status, and retains the
+signed progress identity. Uncorrected or mismatched failed manifests remain
+ineligible for stage sequencing.
