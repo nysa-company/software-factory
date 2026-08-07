@@ -131,7 +131,8 @@ STUB
 #!/usr/bin/env bash
 case "${1:-}" in
   --version)
-    [[ "${STUB_CLAUDE_VERSION_EMPTY:-0}" == "1" ]] || echo "2.1.207 (Claude Code)"
+    [[ "${STUB_CLAUDE_VERSION_EMPTY:-0}" == "1" ]] ||
+      echo "${STUB_CLAUDE_VERSION:-2.1.207} (Claude Code)"
     exit "${STUB_CLAUDE_VERSION_STATUS:-0}"
     ;;
   --help)
@@ -468,7 +469,27 @@ with open(sys.argv[1], "w", encoding="utf-8") as handle:
     handle.write("\n")
 os.chmod(sys.argv[1], 0o600)
 PY
-CONTRACT_PROFILE="$(PATH="$STUB_BIN:$PATH" \
+DEFAULT_CLAUDE_PROBE="$(PATH="$STUB_BIN:$PATH" STUB_CLAUDE_VERSION=2.1.223 \
+  CLAUDE_CONFIG_DIR="$CLAUDE_AUTH_ROOT" \
+  bash -c 'set -euo pipefail; source "$1"; factory_probe_adapter claude-code; echo "$PROBE_STATE:$PROBE_REASON"' \
+  _ "$ROOT/scripts/lib/backend-policy.sh")"
+STALE_DEFAULT_CLAUDE_PROBE="$(PATH="$STUB_BIN:$PATH" STUB_CLAUDE_VERSION=2.1.207 \
+  CLAUDE_CONFIG_DIR="$CLAUDE_AUTH_ROOT" \
+  bash -c 'set -euo pipefail; source "$1"; factory_probe_adapter claude-code; echo "$PROBE_STATE:$PROBE_REASON"' \
+  _ "$ROOT/scripts/lib/backend-policy.sh")"
+SUBSTRING_DEFAULT_CLAUDE_PROBE="$(PATH="$STUB_BIN:$PATH" STUB_CLAUDE_VERSION=12.1.223 \
+  CLAUDE_CONFIG_DIR="$CLAUDE_AUTH_ROOT" \
+  bash -c 'set -euo pipefail; source "$1"; factory_probe_adapter claude-code; echo "$PROBE_STATE:$PROBE_REASON"' \
+  _ "$ROOT/scripts/lib/backend-policy.sh")"
+if [[ "$DEFAULT_CLAUDE_PROBE" == "READY:local_contract_ready" &&
+      "$STALE_DEFAULT_CLAUDE_PROBE" == "INVALID:version_mismatch" &&
+      "$SUBSTRING_DEFAULT_CLAUDE_PROBE" == "INVALID:version_mismatch" ]]; then
+  pass "default Claude route accepts only the certified 2.1.223 pin"
+else
+  fail "default Claude route accepts only the certified 2.1.223 pin" \
+    "current=$DEFAULT_CLAUDE_PROBE stale=$STALE_DEFAULT_CLAUDE_PROBE substring=$SUBSTRING_DEFAULT_CLAUDE_PROBE"
+fi
+CONTRACT_PROFILE="$(PATH="$STUB_BIN:$PATH" STUB_CLAUDE_VERSION=2.1.223 \
   FACTORY_GLOBAL_ENV="$TMP/no-global.env" FACTORY_CURSOR_FALLBACK_ENABLED=1 \
   CLAUDE_CONFIG_DIR="$CLAUDE_AUTH_ROOT" \
   FACTORY_PROBE_CODEX=READY:test FACTORY_PROBE_CLAUDE_CODE=READY:test \

@@ -30,6 +30,10 @@ Kimi K2.6 is a disabled experimental Moonshot-family route through Claude CLI
 and OpenRouter. It is not in any profile and is never selected by the current
 workflow.
 
+Cursor model evidence is exact: the Opus selection currently reports
+`Opus 5 300K Medium`. A different context-window or effort label is rejected,
+and native Claude fallback defaults to the certified CLI version `2.1.223`.
+
 ## Selection before a ticket starts
 
 `models pin` probes the ordered candidates without sending ticket content:

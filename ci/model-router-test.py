@@ -92,7 +92,7 @@ class ModelRouterTest(unittest.TestCase):
         self.assertEqual(cursor_opus["selection_id"], "claude-opus-5-thinking-medium")
         self.assertEqual(
             cursor_opus["expected_reported_identity"],
-            "Opus 5 1M Medium Thinking",
+            "Opus 5 300K Medium",
         )
         self.assertTrue(cursor_opus["enabled"])
         serialized = ROUTER.canonical_json(self.catalog)

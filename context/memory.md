@@ -4026,3 +4026,12 @@ Category: Reliability
 Selected tickets pass the existing ticket-readiness validator before a sealed
 lane is created. Invalid product-decision, dependency, fixture, authentication,
 or protected-test declarations fail before any mutable runtime or provider work.
+
+## 2026-08-06 — Decision 301: Provider identities stay exact and current
+
+Category: Model policy
+
+The Cursor Opus route binds the observed `Opus 5 300K Medium` identity rather
+than the obsolete 1M display label. Native Claude fallback defaults to its
+certified 2.1.223 CLI. Different model labels and version drift still fail
+closed; no fuzzy aliases or version ranges are accepted.
