@@ -4035,3 +4035,12 @@ The Cursor Opus route binds the observed `Opus 5 300K Medium` identity rather
 than the obsolete 1M display label. Native Claude fallback defaults to its
 certified 2.1.223 CLI. Different model labels and version drift still fail
 closed; no fuzzy aliases or version ranges are accepted.
+
+## 2026-08-06 — Decision 302: Qualification owns its model configuration
+
+Category: Safety
+
+Qualification preparation snapshots an owner-only global model configuration
+under the isolated root, and its sealed launcher passes only that path to
+helpers. Production configuration changes cannot drift an active qualification
+lane; replacement is allowed only through a drained upgrade boundary.

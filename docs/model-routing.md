@@ -33,6 +33,9 @@ workflow.
 Cursor model evidence is exact: the Opus selection currently reports
 `Opus 5 300K Medium`. A different context-window or effort label is rejected,
 and native Claude fallback defaults to the certified CLI version `2.1.223`.
+Qualification preparation snapshots the owner-only global model configuration
+into the isolated lane. Later production-config edits cannot change its pins;
+only a drained qualification upgrade with `--global-env` replaces the snapshot.
 
 ## Selection before a ticket starts
 

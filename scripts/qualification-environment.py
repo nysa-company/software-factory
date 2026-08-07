@@ -112,6 +112,66 @@ def replace(path: Path, value: dict[str, Any]) -> None:
         Path(temporary).unlink(missing_ok=True)
 
 
+def config_bytes(path: Path) -> bytes:
+    if not path.is_absolute() or path.resolve(strict=True) != path:
+        raise EnvironmentError("qualification global config is unsafe")
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or metadata.st_nlink != 1
+            or stat.S_IMODE(metadata.st_mode) != 0o600
+            or metadata.st_size > 131_072
+        ):
+            raise EnvironmentError("qualification global config is unsafe")
+        with os.fdopen(descriptor, "rb") as stream:
+            descriptor = -1
+            return stream.read()
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def install_config(path: Path, raw: bytes) -> None:
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "wb") as stream:
+            descriptor = -1
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        Path(temporary).unlink(missing_ok=True)
+
+
+def snapshot_global_config(args: argparse.Namespace, root: Path) -> None:
+    target = root / "global.env"
+    supplied = getattr(args, "global_env", None)
+    if supplied is None and (target.exists() or target.is_symlink()):
+        config_bytes(target)
+        return
+    if supplied is not None and not supplied.is_absolute():
+        raise EnvironmentError("qualification global config must be absolute")
+    source = (
+        supplied
+        if supplied is not None
+        else Path.home().resolve(strict=True) / ".factory/global.env"
+    )
+    raw = config_bytes(source) if source.exists() or source.is_symlink() else b""
+    install_config(target, raw)
+
+
 def read(path: Path) -> dict[str, Any]:
     descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     try:
@@ -1114,6 +1174,7 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
         safe_directory(project)
     else:
         project.mkdir(mode=0o700)
+    snapshot_global_config(args, root)
     release = releases / sha
     active = project / "active.json"
     if release.exists() or active.exists():
@@ -1306,6 +1367,7 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
             or read(provider / "provider-activation.json") != activation
         ):
             raise EnvironmentError("successor changes the active provider policy")
+        snapshot_global_config(args, root)
 
         origins = command(
             "git", "-C", str(product), "remote", "get-url", "--push", "--all", "origin"
@@ -1381,6 +1443,7 @@ def main() -> None:
     parser.add_argument("--product-root", required=True, type=Path)
     parser.add_argument("--project", required=True)
     parser.add_argument("--root", required=True, type=Path)
+    parser.add_argument("--global-env", type=Path)
     parser.add_argument("--takeover-project")
     parser.add_argument("--upgrade", action="store_true")
     parser.add_argument("--restore", action="store_true")
