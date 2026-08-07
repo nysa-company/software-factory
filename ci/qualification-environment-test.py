@@ -365,6 +365,59 @@ ledger.chmod(0o600)
         ):
             ENVIRONMENT.prepare(args)
 
+    def test_lane_refuses_digest_valid_foreign_operator_paths_without_mutation(self):
+        args = argparse.Namespace(
+            factory_root=self.factory,
+            product_root=self.product,
+            project="relay",
+            root=self.root,
+        )
+        value = ENVIRONMENT.prepare(args)
+        authority = Path(value["authority_root"])
+        active_path = self.root / "projects/relay/active.json"
+        active = ENVIRONMENT.read(active_path)
+        receipt = ENVIRONMENT.read(
+            self.root / "receipts" / f"{active['receipt_id']}.json"
+        )
+        foreign = self.home / ".factory/qualification/foreign/operator"
+        foreign.mkdir(parents=True, mode=0o700)
+        foreign_map = foreign / "linear-map.json"
+        foreign_ledger = foreign / "runtime-ledger.csv"
+        shutil.copyfile(authority / "operator/linear-map.json", foreign_map)
+        shutil.copyfile(authority / "operator/runtime-ledger.csv", foreign_ledger)
+        foreign_map.chmod(0o600)
+        foreign_ledger.chmod(0o600)
+        for value_to_change in (active, receipt):
+            value_to_change["operator_map_path"] = str(foreign_map)
+            value_to_change["runtime_ledger_path"] = str(foreign_ledger)
+        receipt.pop("receipt_id")
+        receipt_id = hashlib.sha256(ENVIRONMENT.canonical(receipt)).hexdigest()
+        receipt["receipt_id"] = receipt_id
+        ENVIRONMENT.write(self.root / f"receipts/{receipt_id}.json", receipt)
+        active["receipt_id"] = receipt_id
+        ENVIRONMENT.replace(active_path, active)
+        journal = authority / "controller/preprovider-handoff.json"
+        claims = authority / "controller/claims"
+        before_claims = sorted(path.name for path in claims.glob("T-*.json"))
+        before_worktrees = sorted(
+            path.name for path in (self.root / "worktrees").glob("*")
+        )
+
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError, "operator authority path changed"
+        ):
+            ENVIRONMENT.qualification_lane(self.root, "relay")
+
+        self.assertFalse(journal.exists())
+        self.assertEqual(
+            sorted(path.name for path in claims.glob("T-*.json")), before_claims,
+        )
+        self.assertEqual(
+            sorted(path.name for path in (self.root / "worktrees").glob("*")),
+            before_worktrees,
+        )
+        self.assertEqual(run(self.product, "git", "status", "--porcelain"), "")
+
     def test_operator_seed_fails_closed_when_absent_unsafe_or_malformed(self) -> None:
         os.environ.pop("FACTORY_QUALIFICATION_OPERATOR_MAP_SEED")
         args = argparse.Namespace(

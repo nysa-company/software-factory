@@ -217,14 +217,6 @@ def read(path: Path) -> dict[str, Any]:
     return value
 
 
-def digested(value: dict[str, Any], field: str) -> dict[str, Any]:
-    unsigned = dict(value)
-    digest = unsigned.pop(field, "")
-    if digest != hashlib.sha256(canonical(unsigned)).hexdigest():
-        raise EnvironmentError("qualification state digest is invalid")
-    return value
-
-
 def transition_receipt(path: Path) -> dict[str, Any]:
     value = read(path)
     immutable = {
@@ -328,19 +320,26 @@ def qualification_lane(root_value: Path, project: str) -> dict[str, Any]:
     ):
         raise EnvironmentError("qualification activation content changed")
     manifest = qualification_manifest(product, kit_sha)
-    authority_value = digested(read(authority / "authority.json"), "authority_sha256")
+    operator_map = authority / "operator/linear-map.json"
+    runtime_ledger = authority / "operator/runtime-ledger.csv"
     if (
-        authority_value.get("project") != project
-        or authority_value.get("factory_sha") != kit_sha
-        or authority_value.get("factory_tree") != kit_tree
-        or authority_value.get("product_path") != str(product)
-        or authority_value.get("product_sha") != active.get("product_sha")
-        or authority_value.get("product_tree") != active.get("product_tree")
-        or authority_value.get("product_origin") != receipt.get("product_origin")
-        or authority_value.get("controller_state_path") != str(controller)
-        or authority_value.get("provider_state_path") != str(provider)
+        active.get("operator_map_path") != str(operator_map)
+        or active.get("runtime_ledger_path") != str(runtime_ledger)
     ):
+        raise EnvironmentError("qualification operator authority path changed")
+    identity = authority_identity(
+        project, kit_sha, kit_tree, product, active["product_sha"],
+        active["product_tree"], receipt["product_origin"],
+        active.get("runtime_tuple"), str(operator_map), str(runtime_ledger),
+    )
+    if read(authority / "authority.json") != identity:
         raise EnvironmentError("qualification authority does not match activation")
+    resumed_map, resumed_ledger = resume_operator_state(
+        authority, identity, manifest["tickets"],
+    )
+    if resumed_map != operator_map or resumed_ledger != runtime_ledger:
+        raise EnvironmentError("qualification operator authority path changed")
+    validate_runtime_ledger(runtime_ledger)
     return {
         "active": active,
         "authority": authority,
