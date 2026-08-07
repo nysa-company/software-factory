@@ -556,6 +556,139 @@ class FactoryControllerTest(unittest.TestCase):
             ["git", "init", "-q", "-b", branch, str(cell)], check=True,
         )
 
+    def initialize_passportless_planner_claims(
+        self, tickets: list[str]
+    ) -> tuple[CONTROL.Controller, list[dict]]:
+        subprocess.run(
+            ["git", "init", "-q", "-b", "main", str(self.product)], check=True,
+        )
+        for key, value in (
+            ("user.name", "Software Factory"),
+            ("user.email", "factory@local"),
+        ):
+            subprocess.run(
+                ["git", "-C", str(self.product), "config", key, value], check=True,
+            )
+        ticket_dir = self.product / "factory/tickets"
+        ticket_dir.mkdir()
+        for ticket in tickets:
+            (ticket_dir / f"{ticket}.md").write_text(
+                f"# {ticket}\n\nState: Ready\n", encoding="utf-8",
+            )
+        subprocess.run(
+            ["git", "-C", str(self.product), "add", "factory"], check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.product), "commit", "-qm", "baseline"],
+            check=True,
+        )
+        remote = self.root / "origin.git"
+        subprocess.run(["git", "init", "--bare", "-q", str(remote)], check=True)
+        subprocess.run(
+            ["git", "-C", str(self.product), "remote", "add", "origin", str(remote)],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.product), "push", "-q", "origin", "main"],
+            check=True,
+        )
+        claims = []
+        for number, ticket in enumerate(tickets, 1):
+            worktree = self.root / f"cell-{number}"
+            branch = f"ticket/{ticket}"
+            subprocess.run(
+                [
+                    "git", "-C", str(self.product), "worktree", "add", "-q",
+                    "-b", branch, str(worktree), "main",
+                ],
+                check=True,
+            )
+            ticket_path = worktree / f"factory/tickets/{ticket}.md"
+            ticket_path.write_text(
+                f"# {ticket}\n\nState: Planning\nKit-SHA: {self.release.name}\n",
+                encoding="utf-8",
+            )
+            route_path = worktree / f"factory/route-plans/{ticket}.json"
+            route_path.parent.mkdir()
+            route_path.write_text(json.dumps({
+                "kit_sha": self.release.name,
+                "schema": "ticket-model-route-plan/v1",
+                "ticket": ticket,
+            }, sort_keys=True) + "\n", encoding="utf-8")
+            subprocess.run(
+                ["git", "-C", str(worktree), "add", "factory"], check=True,
+            )
+            subprocess.run(
+                [
+                    "git", "-C", str(worktree), "commit", "-qm",
+                    f"{ticket}: pre-provider controls",
+                ],
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(worktree), "push", "-qu", "origin", branch],
+                check=True,
+            )
+            head = subprocess.run(
+                ["git", "-C", str(worktree), "rev-parse", "HEAD"],
+                text=True, capture_output=True, check=True,
+            ).stdout.strip()
+            tree = subprocess.run(
+                ["git", "-C", str(worktree), "rev-parse", "HEAD^{tree}"],
+                text=True, capture_output=True, check=True,
+            ).stdout.strip()
+            ticket_blob = subprocess.run(
+                [
+                    "git", "-C", str(worktree), "rev-parse",
+                    f"HEAD:factory/tickets/{ticket}.md",
+                ],
+                text=True, capture_output=True, check=True,
+            ).stdout.strip()
+            lease = hashlib.sha256(f"lease-{ticket}".encode()).hexdigest()
+            route_raw = route_path.read_bytes()
+            receipt = {
+                "branch": branch,
+                "consumed": False,
+                "contract_version": "1.8.0",
+                "factory_sha": self.release.name,
+                "head_sha": head,
+                "head_tree": tree,
+                "lease_sha256": hashlib.sha256(lease.encode()).hexdigest(),
+                "passport_sha256": None,
+                "product_origin_sha256": hashlib.sha256(
+                    str(remote).encode()
+                ).hexdigest(),
+                "project": "relay",
+                "role": "planner",
+                "route_plan_sha256": hashlib.sha256(route_raw).hexdigest(),
+                "schema": "nysa.software-factory.transition-receipt/v1",
+                "stage": "RUN planner",
+                "ticket": ticket,
+                "ticket_blob": ticket_blob,
+            }
+            receipt["receipt_sha256"] = hashlib.sha256(CONTROL.canonical({
+                key: value for key, value in receipt.items()
+                if key not in {"consumed", "receipt_sha256"}
+            }).encode()).hexdigest()
+            CONTROL.write(self.state / f"{ticket}.json", receipt)
+            claim = {
+                "blocked_reason": "worker-error",
+                "branch": branch,
+                "lease": lease,
+                "priority": "normal",
+                "publication_lease": "",
+                "receipt": "",
+                "role": "",
+                "schema": CONTROL.CLAIM_SCHEMA,
+                "status": "blocked",
+                "ticket": ticket,
+                "worktree": str(worktree),
+            }
+            if number == len(tickets):
+                claim["lease_released"] = True
+            claims.append(claim)
+        return CONTROL.Controller(self.args), claims
+
     def test_claims_four_cells_and_recovers_terminal_receipt(self) -> None:
         controller = CONTROL.Controller(self.args)
         values = [
@@ -1909,6 +2042,132 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(claim["status"], "blocked")
         self.assertEqual(claim["blocked_reason"], "preflight")
         self.assertTrue(claim["lease_released"])
+
+    def test_three_passportless_worker_errors_retry_preflight_once(self) -> None:
+        tickets = ["T-170", "T-171", "T-172"]
+        controller, claims = self.initialize_passportless_planner_claims(tickets)
+        controller.capacity = 3
+        recovered = []
+
+        def ensure_lease(claim, label):
+            recovered.append((claim["ticket"], label))
+            if claim.get("lease_released") is True:
+                claim["lease"] = hashlib.sha256(
+                    f"replacement-{claim['ticket']}".encode()
+                ).hexdigest()
+                claim.pop("lease_released")
+
+        def json_call(*args, **_kwargs):
+            ticket = args[args.index("--ticket") + 1]
+            if args[0] == "state-machine":
+                return state_transition(
+                    "RUN planner", hashlib.sha256(ticket.encode()).hexdigest(), ticket,
+                )
+            if args[0] == "preflight":
+                return {"exit_code": 0, "status": "ok"}
+            raise AssertionError(args)
+
+        controller.ensure_lease = ensure_lease
+        controller.json_call = json_call
+        controller.recover_each(
+            claims, controller.recover_preflight_blocks,
+            "preflight-retry", concurrent=True,
+        )
+        controller.recover_each(
+            claims, controller.recover_preflight_blocks,
+            "preflight-retry", concurrent=True,
+        )
+
+        self.assertEqual(
+            sorted(recovered),
+            [(ticket, "preflight-retry") for ticket in tickets],
+        )
+        self.assertEqual([claim["status"] for claim in claims], ["claimed"] * 3)
+        self.assertTrue(all("blocked_reason" not in claim for claim in claims))
+        events = [
+            CONTROL.read(path) for path in controller.events.glob("*.json")
+            if CONTROL.read(path).get("event")
+            == "preflight_worker_error_recovered"
+        ]
+        self.assertEqual(sorted(item["ticket"] for item in events), tickets)
+
+    def test_passportless_worker_error_rejects_identity_and_runtime_drift(self) -> None:
+        controller, claims = self.initialize_passportless_planner_claims(["T-170"])
+        claim = claims[0]
+        receipt_path = self.state / "T-170.json"
+        original = CONTROL.read(receipt_path)
+        calls = []
+        controller.ensure_lease = lambda *_args: calls.append("lease")
+        controller.ticket_release_current = lambda _claim: True
+        controller.remote_cell_head_valid = lambda _claim: True
+
+        def attempt(receipt=None):
+            CONTROL.write(receipt_path, receipt or original)
+            controller.recover_preflight_blocks([claim])
+            self.assertEqual(claim["status"], "blocked")
+            self.assertEqual(calls, [])
+
+        for field, value in (
+            ("consumed", True),
+            ("ticket", "T-171"),
+            ("factory_sha", "b" * 40),
+            ("head_sha", "b" * 40),
+            ("lease_sha256", "b" * 64),
+            ("product_origin_sha256", "b" * 64),
+            ("route_plan_sha256", "b" * 64),
+        ):
+            with self.subTest(field=field):
+                changed = {**original, field: value}
+                immutable = {
+                    key: item for key, item in changed.items()
+                    if key not in {
+                        "consumed", "consumed_at_epoch", "receipt_sha256",
+                    }
+                }
+                changed["receipt_sha256"] = hashlib.sha256(
+                    CONTROL.canonical(immutable).encode()
+                ).hexdigest()
+                attempt(changed)
+
+        passport = self.state / "passports/T-170.json"
+        passport.parent.mkdir(mode=0o700)
+        CONTROL.write(passport, {})
+        attempt()
+        passport.unlink()
+
+        controller.role_active = lambda _claim: True
+        attempt()
+        controller.role_active = lambda _claim: False
+
+        run = self.product / "factory/runs/pre-provider.meta"
+        run.write_text("ticket=T-170\n", encoding="utf-8")
+        attempt()
+        run.unlink()
+
+        controller.remote_cell_head_valid = lambda _claim: False
+        attempt()
+        controller.remote_cell_head_valid = lambda _claim: True
+
+        dirty = Path(claim["worktree"]) / "dirty"
+        dirty.write_text("dirty\n", encoding="utf-8")
+        attempt()
+        dirty.unlink()
+
+        foreign = self.root / "foreign"
+        subprocess.run(["git", "clone", "-q", str(self.root / "origin.git"), str(foreign)], check=True)
+        subprocess.run(
+            ["git", "-C", str(foreign), "checkout", "-q", "ticket/T-170"],
+            check=True,
+        )
+        foreign_claim = {**claim, "worktree": str(foreign)}
+        self.assertFalse(
+            controller.exact_passportless_planner_receipt(foreign_claim, original)
+        )
+        route = controller.route_path(claim)
+        route.write_text("[]\n", encoding="utf-8")
+        self.assertFalse(
+            controller.exact_passportless_planner_receipt(claim, original)
+        )
 
     def test_passportless_preflight_retry_rejects_unsafe_boundaries(self) -> None:
         tickets = ["T-110", "T-111", "T-112"]

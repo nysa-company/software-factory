@@ -847,6 +847,13 @@ bounded event. Malformed or oversized refusal output creates a distinct
 fail-closed evidence block. Only a pass reopens ordinary Planner
 reconciliation. Passport, terminal, submitted, dirty, drifted, unlisted, and
 stale-route claims remain closed.
+The same provider-free retry accepts a controller `worker-error` only at that
+exact preflight boundary. It additionally verifies the prior receipt digest,
+lease digest, ticket blob, head/tree, route bytes, current Factory SHA, single
+certified push origin, and shared product Git directory. A retained exact lease
+may be renewed and an explicitly released exact lease may be reacquired; a
+cross-release, cross-ticket, foreign-repository, or otherwise inexact claim is
+not reclassified as preflight work.
 During a protected qualification, the development scheduler authenticates a
 durable Contract 1.7 Planner, Test-author, or Builder contract-blocked result
 against the exact qualification kit SHA before returning only that ticket to
