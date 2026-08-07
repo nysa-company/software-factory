@@ -309,6 +309,14 @@ ticket- and execution-cell-neutral state; concurrent Codex, Claude Code, and
 Cursor processes never share writable CLI homes. Contract 1.6
 and non-activated 1.7 routes keep the
 serialized path unchanged.
+Production and qualification retain separate provider lifecycle and financial
+databases. A task-bearing Cursor role additionally acquires one owner-only
+machine-local account-route lease before durable GO and holds it until its
+process group drains. Lanes sharing an account route must present identical
+concurrency and start-window limits; disagreement refuses, distinct account
+routes remain independent, and production waiters precede qualification for
+the final slot. Readiness probes and route planning never enter this admission
+path or write the shared database.
 For an active product with a certified Node/npm tuple, each isolated CLI home
 also carries a final zsh login hook. It restores the launcher's exact task PATH
 after macOS `path_helper` runs and exits before the requested product command

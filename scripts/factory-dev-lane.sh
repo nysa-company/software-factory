@@ -3642,6 +3642,7 @@ run_mock_concurrency_internal() {
         --coordinator "$root/kit/scripts/provider-coordinator.py" \
         --db "$root/runtime/provider-state.sqlite3" \
         --policy "$root/runtime/provider-policy.json" \
+        --adapter mock \
         --attempt-id "$attempt" \
         --provider-family mock --account-route "$account" \
         --reserve-micro-usd 1000000 --product-id "factory-dev-lane-$(basename "$root")" \
@@ -3852,6 +3853,7 @@ run_subscription_internal() {
       --coordinator "$root/kit/scripts/provider-coordinator.py" \
       --db "$root/runtime/provider-state.sqlite3" \
       --policy "$root/runtime/provider-policy.json" \
+      --adapter "$adapter" \
       --attempt-id "$attempt" --provider-family "$family" --account-route "$account" \
       --reserve-micro-usd 250000 --product-id "factory-dev-lane-$(basename "$root")" \
       --ticket-id "$ticket" --budget-day "$day" \
@@ -3875,6 +3877,7 @@ run_subscription_internal() {
       --coordinator "$root/kit/scripts/provider-coordinator.py" \
       --db "$root/runtime/provider-state.sqlite3" \
       --policy "$root/runtime/provider-policy.json" \
+      --adapter "$adapter" \
       --attempt-id "$attempt" --provider-family "$family" --account-route "$account" \
       --reserve-micro-usd 250000 --product-id "factory-dev-lane-$(basename "$root")" \
       --ticket-id "$ticket" --budget-day "$day" \

@@ -2594,6 +2594,7 @@ assert contract["launcher"]["helper_environment"] == {
     "FACTORY_PROVIDER_CONFIGURATION_LOCK": "fixed Contract 1.8 owner-local provider-configuration lock",
     "FACTORY_PROVIDER_ACTIVATION": "fixed owner-local activation gate: Contract 1.6 API-only v1; Contract 1.7/1.8 API v1 or subscription-CLI v2",
     "FACTORY_CLI_RUNTIME_ROOT": "fixed Contract 1.7+ owner-local per-attempt subscription CLI runtime directory",
+    "FACTORY_CURSOR_ACCOUNT_DB": "fixed machine-local owner-only Cursor account-route admission database shared by production and qualification",
     "FACTORY_PROVIDER_BROKER_URL": "fixed Contract 1.6 loopback TLS broker endpoint",
     "FACTORY_PROVIDER_BROKER_CA": "fixed Contract 1.6 broker trust anchor",
 }
@@ -2624,6 +2625,7 @@ assert contract["launcher"]["helper_environment_allowlist"] == [
     "FACTORY_PROVIDER_CONFIGURATION_LOCK",
     "FACTORY_PROVIDER_ACTIVATION",
     "FACTORY_CLI_RUNTIME_ROOT",
+    "FACTORY_CURSOR_ACCOUNT_DB",
     "FACTORY_PROVIDER_BROKER_URL",
     "FACTORY_PROVIDER_BROKER_CA",
     "GH_TOKEN",
@@ -2720,6 +2722,8 @@ assert '"FACTORY_DURABLE_LEDGER=$PRODUCT_ROOT/factory/ledger.csv"' in launcher_t
 assert '"FACTORY_REFRESH_RUNTIME_LEDGER=1"' in launcher_text
 assert 'CLI_RUNTIME_ROOT="$QUALIFICATION_ROOT"' in launcher_text
 assert '"FACTORY_CLI_RUNTIME_ROOT=$CLI_RUNTIME_ROOT"' in launcher_text
+assert 'CURSOR_ACCOUNT_DB="$HOME/.factory/accounting/cursor-account-admission-v1.sqlite3"' in launcher_text
+assert '"FACTORY_CURSOR_ACCOUNT_DB=$CURSOR_ACCOUNT_DB"' in launcher_text
 assert '"FACTORY_ADAPTER_OVERRIDE=mock"' in launcher_text
 assert 'if ! transition_receipt consume "$RUN_ROLE"; then' in launcher_text
 assert '"$EMERGENCY_HELPER" consume' in launcher_text

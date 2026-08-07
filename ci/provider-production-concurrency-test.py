@@ -36,6 +36,9 @@ class ProductionConcurrencyTest(unittest.TestCase):
         self.state.mkdir(mode=0o700)
         self.home = self.root / "home"
         self.home.mkdir(mode=0o700)
+        self.owner_start = " ".join(subprocess.check_output(
+            ["ps", "-o", "lstart=", "-p", str(os.getpid())], text=True
+        ).split())
         credentials = {
             self.home / ".claude/.credentials.json": b'{"claude":"credential"}\n',
             self.home / ".codex/auth.json": b'{"codex":"credential"}\n',
@@ -136,6 +139,38 @@ class ProductionConcurrencyTest(unittest.TestCase):
             "--charge-micro-usd",
             "0",
         )
+
+    def cursor_account(self, action: str, lease: str) -> dict:
+        arguments = [
+            "--account-db", str(self.state / "accounting/cursor-account.sqlite3"),
+            f"account-{action}", "--lease-id", lease,
+            "--owner-pid", str(os.getpid()),
+            "--owner-pgid", str(os.getpgrp()),
+            "--owner-start", self.owner_start,
+        ]
+        if action == "acquire":
+            activation = json.loads(
+                (self.state / "isolated-v1.enabled").read_text(encoding="utf-8")
+            )
+            arguments.extend([
+                "--account-route", "cursor",
+                "--trust-scope", "production-certified",
+                "--policy", str(self.state / "provider-policy.json"),
+                "--configuration-lock",
+                str(self.state / "provider-configuration.lock"),
+                "--expected-policy-sha256", activation["policy_sha256"],
+                "--wait-seconds", "2",
+            ])
+        elif action == "bind-runtime":
+            runtime = os.getpgrp()
+            runtime_start = " ".join(subprocess.check_output(
+                ["ps", "-o", "lstart=", "-p", str(runtime)], text=True
+            ).split())
+            arguments.extend([
+                "--runtime-pid", str(runtime), "--runtime-pgid", str(runtime),
+                "--runtime-start", runtime_start,
+            ])
+        return self.coordinator(*arguments)
 
     def prepare_runtime(self, adapter: str, attempt: str) -> Path:
         script = f"""
@@ -495,6 +530,9 @@ esac
             "FACTORY_CURSOR_FALLBACK_ENABLED": "1",
             "CURSOR_AGENT_VERSION": "2026.07.test",
             "CURSOR_OPENAI_MODEL": "gpt-5.6-sol-high",
+            "FACTORY_CURSOR_ACCOUNT_DB": str(
+                self.state / "accounting/probe-must-not-create.sqlite3"
+            ),
         }
         command = (
             f"source '{BACKEND_POLICY}'; "
@@ -513,6 +551,7 @@ esac
         source_config = self.home / ".cursor/cli-config.json"
         self.assertEqual(source_config.read_text(), '{"version":1}\n')
         self.assertEqual(stat.S_IMODE(source_config.stat().st_mode), 0o600)
+        self.assertFalse(Path(environment["FACTORY_CURSOR_ACCOUNT_DB"]).exists())
         probe_homes = trace.read_text().splitlines()
         self.assertTrue(probe_homes)
         self.assertEqual(len(set(probe_homes)), 1)
@@ -593,8 +632,7 @@ esac
                 "HOME": str(runtime / "home"),
                 "TMPDIR": str(runtime / "tmp"),
             }
-            processes[attempt] = subprocess.Popen(
-                [
+            arguments = [
                     sys.executable,
                     str(CLI_RUNTIME),
                     "--coordinator",
@@ -603,6 +641,8 @@ esac
                     str(self.state / "accounting/state-v2.sqlite3"),
                     "--policy",
                     str(self.state / "provider-policy.json"),
+                    "--adapter",
+                    adapter,
                     "--configuration-lock",
                     str(self.state / "provider-configuration.lock"),
                     "--attempt-id",
@@ -625,12 +665,38 @@ esac
                     "1",
                     "--machine-cap-micro-usd",
                     "3",
+            ]
+            if adapter.startswith("cursor-"):
+                lease = f"{attempt}-account"
+                admission = self.cursor_account("acquire", lease)
+                self.assertTrue(admission["admitted"])
+                self.assertTrue(
+                    self.cursor_account("bind-runtime", lease)["bound"]
+                )
+                activation = json.loads(
+                    (self.state / "isolated-v1.enabled").read_text(
+                        encoding="utf-8"
+                    )
+                )
+                arguments.extend([
+                    "--account-db",
+                    str(self.state / "accounting/cursor-account.sqlite3"),
+                    "--account-lease-id", lease,
+                    "--account-owner-pid", str(os.getpid()),
+                    "--account-owner-pgid", str(os.getpgrp()),
+                    "--account-owner-start", self.owner_start,
+                    "--account-policy-sha256", activation["policy_sha256"],
+                    "--trust-scope", "production-certified",
+                ])
+            arguments.extend([
                     "--",
                     sys.executable,
                     "-c",
                     command,
                     str(markers / f"ready-{attempt}"),
-                ],
+            ])
+            processes[attempt] = subprocess.Popen(
+                arguments,
                 text=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,

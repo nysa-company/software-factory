@@ -14,13 +14,17 @@ from pathlib import Path
 import re
 import sqlite3
 import stat
+import subprocess
 import time
 
 
 SCHEMA = "factory-provider-state/v2"
 POLICY_SCHEMA = "factory-provider-concurrency-policy/v1"
 OUTPUT_SCHEMA = "factory-provider-coordinator/v1"
+ACCOUNT_SCHEMA = "factory-cursor-account-admission/v1"
+ACCOUNT_OUTPUT_SCHEMA = "factory-cursor-account-admission/v1"
 APPLICATION_ID = 0x4E595343
+ACCOUNT_APPLICATION_ID = 0x4E594341
 ACTIVE_STATES = ("reserved", "GO", "submitted")
 TERMINAL_RESULTS = frozenset(
     ("succeeded", "cancelled", "failed_pre_go", "failed", "capacity_denied")
@@ -31,6 +35,13 @@ MAX_MONEY = 10**15
 MAX_WINDOW = 7 * 24 * 60 * 60
 MAX_JSON = 1_000_000
 MAX_WAIT_SECONDS = 15 * 60
+NON_PRODUCTION_GRACE_MILLISECONDS = 100
+ACCOUNT_COMMANDS = frozenset(
+    (
+        "account-acquire", "account-bind-runtime", "account-validate",
+        "account-release", "account-status",
+    )
+)
 
 
 class CoordinatorError(Exception):
@@ -113,6 +124,25 @@ def secure_directory(path):
         or info.st_mode & 0o022
     ):
         raise CoordinatorError("database directory is unsafe")
+    return path
+
+
+def secure_owner_directory(path, label):
+    if not path.is_absolute():
+        raise CoordinatorError(f"{label} path must be absolute")
+    try:
+        resolved = path.resolve(strict=True)
+        info = path.lstat()
+    except FileNotFoundError as exc:
+        raise CoordinatorError(f"{label} is missing") from exc
+    if (
+        resolved != path
+        or path.is_symlink()
+        or not stat.S_ISDIR(info.st_mode)
+        or info.st_uid != os.geteuid()
+        or stat.S_IMODE(info.st_mode) & 0o077
+    ):
+        raise CoordinatorError(f"{label} is unsafe")
     return path
 
 
@@ -337,6 +367,117 @@ def database(path):
     finally:
         connection.close()
         secure_regular(path, "database", owner_only=True)
+
+
+ACCOUNT_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS metadata (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+) STRICT;
+CREATE TABLE IF NOT EXISTS account_leases (
+  sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+  lease_id TEXT NOT NULL UNIQUE,
+  account_route TEXT NOT NULL,
+  trust_scope TEXT NOT NULL
+    CHECK(trust_scope IN ('production-certified','qualification-candidate')),
+  owner_pid INTEGER NOT NULL CHECK(owner_pid > 0),
+  owner_pgid INTEGER NOT NULL CHECK(owner_pgid > 0),
+  owner_start TEXT NOT NULL,
+  runtime_pid INTEGER,
+  runtime_pgid INTEGER,
+  runtime_start TEXT,
+  state TEXT NOT NULL CHECK(state IN ('waiting','active')),
+  policy_sha256 TEXT NOT NULL,
+  max_concurrent INTEGER NOT NULL CHECK(max_concurrent BETWEEN 1 AND 6),
+  max_starts INTEGER NOT NULL CHECK(max_starts BETWEEN 1 AND 1000000),
+  window_seconds INTEGER NOT NULL CHECK(window_seconds BETWEEN 1 AND 604800),
+  requested_at_ms INTEGER NOT NULL,
+  admitted_at INTEGER,
+  started_at INTEGER,
+  CHECK((runtime_pid IS NULL) = (runtime_pgid IS NULL)),
+  CHECK((runtime_pid IS NULL) = (runtime_start IS NULL))
+) STRICT;
+CREATE INDEX IF NOT EXISTS account_leases_route
+  ON account_leases(account_route,state,trust_scope,sequence);
+CREATE TABLE IF NOT EXISTS account_starts (
+  lease_id TEXT PRIMARY KEY,
+  account_route TEXT NOT NULL,
+  started_at INTEGER NOT NULL,
+  policy_sha256 TEXT NOT NULL,
+  max_concurrent INTEGER NOT NULL CHECK(max_concurrent BETWEEN 1 AND 6),
+  max_starts INTEGER NOT NULL CHECK(max_starts BETWEEN 1 AND 1000000),
+  window_seconds INTEGER NOT NULL CHECK(window_seconds BETWEEN 1 AND 604800)
+) STRICT;
+CREATE INDEX IF NOT EXISTS account_starts_route
+  ON account_starts(account_route,started_at);
+"""
+
+
+def create_account_database(path):
+    secure_owner_directory(path.parent, "account admission database directory")
+    if path.exists() or path.is_symlink():
+        secure_regular(path, "account admission database", owner_only=True)
+        return
+    try:
+        descriptor = os.open(
+            path,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+    except FileExistsError:
+        secure_regular(path, "account admission database", owner_only=True)
+        return
+    os.close(descriptor)
+    secure_regular(path, "account admission database", owner_only=True)
+
+
+def initialize_account_database(connection):
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        application_id = connection.execute("PRAGMA application_id").fetchone()[0]
+        user_version = connection.execute("PRAGMA user_version").fetchone()[0]
+        objects = connection.execute(
+            "SELECT count(*) FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'"
+        ).fetchone()[0]
+        if application_id not in (0, ACCOUNT_APPLICATION_ID) or user_version not in (0, 1):
+            raise CoordinatorError("account admission database identity is unsupported")
+        if objects and (application_id != ACCOUNT_APPLICATION_ID or user_version != 1):
+            raise CoordinatorError("non-empty database is not account admission state-v1")
+        for statement in ACCOUNT_SCHEMA_SQL.split(";"):
+            if statement.strip():
+                connection.execute(statement)
+        connection.execute(
+            "INSERT OR IGNORE INTO metadata(key,value) VALUES('schema',?)",
+            (ACCOUNT_SCHEMA,),
+        )
+        stored = connection.execute(
+            "SELECT value FROM metadata WHERE key='schema'"
+        ).fetchone()
+        if stored is None or stored[0] != ACCOUNT_SCHEMA:
+            raise CoordinatorError("account admission schema marker is invalid")
+        connection.execute(f"PRAGMA application_id={ACCOUNT_APPLICATION_ID}")
+        connection.execute("PRAGMA user_version=1")
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+
+
+@contextmanager
+def account_database(path):
+    create_account_database(path)
+    connection = sqlite3.connect(str(path), timeout=10, isolation_level=None)
+    connection.row_factory = sqlite3.Row
+    try:
+        connection.execute("PRAGMA journal_mode=DELETE")
+        connection.execute("PRAGMA synchronous=FULL")
+        connection.execute("PRAGMA trusted_schema=OFF")
+        initialize_account_database(connection)
+        secure_regular(path, "account admission database", owner_only=True)
+        yield connection
+    finally:
+        connection.close()
+        secure_regular(path, "account admission database", owner_only=True)
 
 
 def row_result(row):
@@ -1014,9 +1155,695 @@ def reconcile_command(connection, args):
     return mutate(connection, args.operation_id, "reconcile", request, reconcile)
 
 
+def validate_owner_start(value):
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > 199
+        or "\n" in value
+        or "\r" in value
+    ):
+        raise CoordinatorError("owner process start identity is invalid")
+    return value
+
+
+def process_snapshot():
+    try:
+        result = subprocess.run(
+            ["ps", "-axo", "pid=,pgid=,lstart="],
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode:
+        return None
+    snapshot = {}
+    for line in result.stdout.splitlines():
+        fields = line.split(None, 2)
+        if len(fields) != 3 or not fields[0].isdigit() or not fields[1].isdigit():
+            continue
+        snapshot[int(fields[0])] = (int(fields[1]), " ".join(fields[2].split()))
+    return snapshot
+
+
+def owner_state(pid, pgid, started, snapshot):
+    if snapshot is None:
+        return "unknown"
+    observed = snapshot.get(pid)
+    if observed is None:
+        return "dead"
+    observed_pgid, observed_start = observed
+    if observed_pgid != pgid:
+        return "dead"
+    if not observed_start or observed_start != started:
+        return "dead"
+    return "alive"
+
+
+def process_group_state(pgid, snapshot):
+    if snapshot is None:
+        return "unknown"
+    return "alive" if any(value[0] == pgid for value in snapshot.values()) else "dead"
+
+
+def account_stale_candidates(connection, snapshot=None):
+    if connection.in_transaction:
+        raise CoordinatorError(
+            "account liveness snapshot cannot run inside a writer transaction"
+        )
+    if snapshot is None:
+        snapshot = process_snapshot()
+    candidates = {}
+    for row in connection.execute(
+        """SELECT lease_id,state,owner_pid,owner_pgid,owner_start,
+                  runtime_pid,runtime_pgid,runtime_start
+           FROM account_leases"""
+    ).fetchall():
+        state = owner_state(
+            row["owner_pid"], row["owner_pgid"], row["owner_start"], snapshot
+        )
+        if state != "dead":
+            continue
+        if row["runtime_pid"] is not None:
+            runtime_state = owner_state(
+                row["runtime_pid"], row["runtime_pgid"], row["runtime_start"],
+                snapshot,
+            )
+            if (
+                runtime_state != "dead"
+                or process_group_state(row["runtime_pgid"], snapshot) != "dead"
+            ):
+                continue
+        candidates[row["lease_id"]] = (
+            row["owner_pid"], row["owner_pgid"], row["owner_start"],
+            row["runtime_pid"], row["runtime_pgid"], row["runtime_start"],
+        )
+    return candidates
+
+
+def cleanup_stale_account_leases(connection, candidates):
+    removed = []
+    for lease_id, identity in candidates.items():
+        row = connection.execute(
+            """SELECT owner_pid,owner_pgid,owner_start,
+                      runtime_pid,runtime_pgid,runtime_start
+               FROM account_leases WHERE lease_id=?""",
+            (lease_id,),
+        ).fetchone()
+        if row is None or tuple(row) != identity:
+            continue
+        connection.execute(
+            "DELETE FROM account_leases WHERE lease_id=?", (lease_id,)
+        )
+        removed.append(lease_id)
+    return removed
+
+
+def account_limits(policy, account_route):
+    try:
+        return policy["account_routes"][account_route]
+    except KeyError as exc:
+        raise CoordinatorError("account route has no concurrency policy") from exc
+
+
+def account_lease_result(row):
+    return {
+        "account_route": row["account_route"],
+        "lease_id": row["lease_id"],
+        "max_concurrent": row["max_concurrent"],
+        "max_starts": row["max_starts"],
+        "policy_sha256": row["policy_sha256"],
+        "runtime_bound": row["runtime_pid"] is not None,
+        "started": row["started_at"] is not None,
+        "state": row["state"],
+        "trust_scope": row["trust_scope"],
+        "window_seconds": row["window_seconds"],
+    }
+
+
+def account_acquire_command(connection, args):
+    lease_id = validate_id(args.lease_id, "lease_id")
+    account_route = validate_id(args.account_route, "account_route")
+    owner_start = validate_owner_start(args.owner_start)
+    if args.owner_pid <= 0 or args.owner_pgid <= 0:
+        raise CoordinatorError("account admission owner identity is invalid")
+    liveness_snapshot = process_snapshot()
+    requester_state = owner_state(
+        args.owner_pid, args.owner_pgid, owner_start, liveness_snapshot
+    )
+    if requester_state != "alive":
+        raise CoordinatorError("account admission owner is not live")
+    if not 1 <= args.wait_seconds <= MAX_WAIT_SECONDS:
+        raise CoordinatorError("--wait-seconds is out of range")
+    cancel_paths = [Path(value) for value in args.cancel_path]
+    if any(not value.is_absolute() for value in cancel_paths):
+        raise CoordinatorError("--cancel-path must be absolute")
+    if args.expected_policy_sha256 is not None and args.configuration_lock is None:
+        raise CoordinatorError(
+            "activated policy account admission requires the configuration lock"
+        )
+    with configuration_guard(args.configuration_lock):
+        policy, policy_hash = load_policy(Path(args.policy))
+    if (
+        args.expected_policy_sha256 is not None
+        and args.expected_policy_sha256 != policy_hash
+    ):
+        raise CoordinatorError("provider policy does not match the activated digest")
+    limits = account_limits(policy, account_route)
+    requested_at_ms = int(time.time() * 1000)
+    deadline = time.monotonic() + args.wait_seconds
+    stale_releases = []
+    stale_candidates = account_stale_candidates(connection, liveness_snapshot)
+    next_stale_check = time.monotonic() + 1
+    liveness_fresh = True
+    refresh_before_admission = False
+    while True:
+        if refresh_before_admission or time.monotonic() >= next_stale_check:
+            liveness_snapshot = process_snapshot()
+            requester_state = owner_state(
+                args.owner_pid, args.owner_pgid, owner_start, liveness_snapshot
+            )
+            stale_candidates = account_stale_candidates(
+                connection, liveness_snapshot
+            )
+            next_stale_check = time.monotonic() + 1
+            liveness_fresh = True
+            refresh_before_admission = False
+        with configuration_guard(args.configuration_lock):
+            current_policy, current_hash = load_policy(Path(args.policy))
+            if current_hash != policy_hash:
+                raise CoordinatorError("provider policy changed during account admission")
+            if account_limits(current_policy, account_route) != limits:
+                raise CoordinatorError("account route policy changed during admission")
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                stale = cleanup_stale_account_leases(connection, stale_candidates)
+                stale_candidates = {}
+                stale_releases.extend(
+                    item for item in stale if item not in stale_releases
+                )
+                existing = connection.execute(
+                    "SELECT * FROM account_leases WHERE lease_id=?", (lease_id,)
+                ).fetchone()
+                if requester_state != "alive":
+                    connection.execute(
+                        """DELETE FROM account_leases
+                           WHERE lease_id=? AND state='waiting'
+                             AND owner_pid=? AND owner_pgid=? AND owner_start=?""",
+                        (
+                            lease_id, args.owner_pid, args.owner_pgid, owner_start,
+                        ),
+                    )
+                    connection.commit()
+                    return {
+                        "admitted": False,
+                        "owner_unavailable": requester_state,
+                        "schema": ACCOUNT_OUTPUT_SCHEMA,
+                        "stale_releases": stale_releases,
+                        "timed_out": False,
+                    }
+                if existing is None and not liveness_fresh:
+                    connection.commit()
+                    refresh_before_admission = True
+                    continue
+                expected = (
+                    account_route,
+                    args.trust_scope,
+                    args.owner_pid,
+                    args.owner_pgid,
+                    owner_start,
+                    policy_hash,
+                    limits["max_concurrent"],
+                    limits["max_starts"],
+                    limits["window_seconds"],
+                )
+                if existing is None:
+                    connection.execute(
+                        """INSERT INTO account_leases(
+                             lease_id,account_route,trust_scope,owner_pid,
+                             owner_pgid,owner_start,state,policy_sha256,
+                             max_concurrent,max_starts,window_seconds,
+                             requested_at_ms)
+                           VALUES(?,?,?,?,?,?,'waiting',?,?,?,?,?)""",
+                        (lease_id, *expected, requested_at_ms),
+                    )
+                    existing = connection.execute(
+                        "SELECT * FROM account_leases WHERE lease_id=?", (lease_id,)
+                    ).fetchone()
+                else:
+                    actual = (
+                        existing["account_route"],
+                        existing["trust_scope"],
+                        existing["owner_pid"],
+                        existing["owner_pgid"],
+                        existing["owner_start"],
+                        existing["policy_sha256"],
+                        existing["max_concurrent"],
+                        existing["max_starts"],
+                        existing["window_seconds"],
+                    )
+                    if actual != expected:
+                        raise CoordinatorError("lease_id conflicts with account admission")
+                if existing["state"] == "active":
+                    stopped = next(
+                        (
+                            str(value)
+                            for value in cancel_paths
+                            if value.exists() or value.is_symlink()
+                        ),
+                        None,
+                    )
+                    if stopped is not None:
+                        if existing["runtime_pid"] is None:
+                            connection.execute(
+                                "DELETE FROM account_leases WHERE lease_id=?",
+                                (lease_id,),
+                            )
+                        connection.commit()
+                        return {
+                            "admitted": False,
+                            "lease": account_lease_result(existing),
+                            "schema": ACCOUNT_OUTPUT_SCHEMA,
+                            "stale_releases": stale_releases,
+                            "stopped_by": stopped,
+                            "timed_out": False,
+                        }
+                    connection.commit()
+                    return {
+                        "admitted": True,
+                        "lease": account_lease_result(existing),
+                        "schema": ACCOUNT_OUTPUT_SCHEMA,
+                        "stale_releases": stale_releases,
+                        "timed_out": False,
+                    }
+                incompatible = connection.execute(
+                    """SELECT 1 FROM account_leases
+                       WHERE account_route=? AND lease_id!=?
+                         AND (max_concurrent!=? OR max_starts!=?
+                              OR window_seconds!=?) LIMIT 1""",
+                    (
+                        account_route,
+                        lease_id,
+                        limits["max_concurrent"],
+                        limits["max_starts"],
+                        limits["window_seconds"],
+                    ),
+                ).fetchone()
+                if incompatible is not None:
+                    raise CoordinatorError(
+                        "live account admission policies disagree across lanes"
+                    )
+                now = int(time.time())
+                connection.execute(
+                    "DELETE FROM account_starts WHERE started_at + window_seconds <= ?",
+                    (now,),
+                )
+                incompatible_history = connection.execute(
+                    """SELECT 1 FROM account_starts
+                       WHERE account_route=?
+                         AND (max_concurrent!=? OR max_starts!=?
+                              OR window_seconds!=?) LIMIT 1""",
+                    (
+                        account_route,
+                        limits["max_concurrent"],
+                        limits["max_starts"],
+                        limits["window_seconds"],
+                    ),
+                ).fetchone()
+                if incompatible_history is not None:
+                    raise CoordinatorError(
+                        "active account start-window policies disagree across lanes"
+                    )
+                stopped = next(
+                    (
+                        str(value)
+                        for value in cancel_paths
+                        if value.exists() or value.is_symlink()
+                    ),
+                    None,
+                )
+                if stopped is not None:
+                    connection.execute(
+                        "DELETE FROM account_leases WHERE lease_id=? AND state='waiting'",
+                        (lease_id,),
+                    )
+                    connection.commit()
+                    return {
+                        "admitted": False,
+                        "lease": account_lease_result(existing),
+                        "schema": ACCOUNT_OUTPUT_SCHEMA,
+                        "stale_releases": stale_releases,
+                        "stopped_by": stopped,
+                        "timed_out": False,
+                    }
+                active = connection.execute(
+                    """SELECT count(*) FROM account_leases
+                       WHERE account_route=? AND state='active'""",
+                    (account_route,),
+                ).fetchone()[0]
+                starts = connection.execute(
+                    """SELECT count(*) FROM account_starts
+                       WHERE account_route=? AND started_at>?""",
+                    (account_route, now - limits["window_seconds"]),
+                ).fetchone()[0]
+                pending_starts = connection.execute(
+                    """SELECT count(*) FROM account_leases
+                       WHERE account_route=? AND state='active'
+                         AND started_at IS NULL""",
+                    (account_route,),
+                ).fetchone()[0]
+                first = connection.execute(
+                    """SELECT lease_id FROM account_leases
+                       WHERE account_route=? AND state='waiting'
+                       ORDER BY CASE trust_scope
+                                  WHEN 'production-certified' THEN 0 ELSE 1 END,
+                                sequence LIMIT 1""",
+                    (account_route,),
+                ).fetchone()
+                grace_elapsed = (
+                    args.trust_scope == "production-certified"
+                    or active < limits["max_concurrent"] - 1
+                    or int(time.time() * 1000) - existing["requested_at_ms"]
+                    >= NON_PRODUCTION_GRACE_MILLISECONDS
+                )
+                if (
+                    active < limits["max_concurrent"]
+                    and starts + pending_starts < limits["max_starts"]
+                    and first is not None
+                    and first["lease_id"] == lease_id
+                    and grace_elapsed
+                ):
+                    if not liveness_fresh:
+                        connection.commit()
+                        refresh_before_admission = True
+                        continue
+                    changed = connection.execute(
+                        """UPDATE account_leases
+                           SET state='active',admitted_at=?
+                           WHERE lease_id=? AND state='waiting'""",
+                        (now, lease_id),
+                    ).rowcount
+                    if changed != 1:
+                        raise CoordinatorError("account lease changed during admission")
+                    admitted = connection.execute(
+                        "SELECT * FROM account_leases WHERE lease_id=?", (lease_id,)
+                    ).fetchone()
+                    connection.commit()
+                    return {
+                        "admitted": True,
+                        "lease": account_lease_result(admitted),
+                        "schema": ACCOUNT_OUTPUT_SCHEMA,
+                        "stale_releases": stale_releases,
+                        "timed_out": False,
+                    }
+                timed_out = time.monotonic() >= deadline
+                if timed_out:
+                    connection.execute(
+                        "DELETE FROM account_leases WHERE lease_id=? AND state='waiting'",
+                        (lease_id,),
+                    )
+                    connection.commit()
+                    return {
+                        "admitted": False,
+                        "lease": account_lease_result(existing),
+                        "schema": ACCOUNT_OUTPUT_SCHEMA,
+                        "stale_releases": stale_releases,
+                        "timed_out": True,
+                    }
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+        time.sleep(0.05)
+        liveness_fresh = False
+
+
+def account_release_command(connection, args):
+    lease_id = validate_id(args.lease_id, "lease_id")
+    owner_start = validate_owner_start(args.owner_start)
+    observed = connection.execute(
+        "SELECT * FROM account_leases WHERE lease_id=?", (lease_id,)
+    ).fetchone()
+    if observed is None:
+        return {
+            "lease_id": lease_id,
+            "released": False,
+            "schema": ACCOUNT_OUTPUT_SCHEMA,
+        }
+    if (
+        observed["owner_pid"] != args.owner_pid
+        or observed["owner_pgid"] != args.owner_pgid
+        or observed["owner_start"] != owner_start
+    ):
+        raise CoordinatorError("account lease ownership changed")
+    snapshot = process_snapshot()
+    if observed["runtime_pid"] is not None and (
+        owner_state(
+            observed["runtime_pid"], observed["runtime_pgid"],
+            observed["runtime_start"], snapshot,
+        )
+        != "dead"
+        or process_group_state(observed["runtime_pgid"], snapshot) != "dead"
+    ):
+        raise CoordinatorError(
+            "account lease cannot release before its runtime group drains"
+        )
+    observed_identity = tuple(observed)
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        row = connection.execute(
+            "SELECT * FROM account_leases WHERE lease_id=?", (lease_id,)
+        ).fetchone()
+        if row is None:
+            connection.commit()
+            return {
+                "lease_id": lease_id,
+                "released": False,
+                "schema": ACCOUNT_OUTPUT_SCHEMA,
+            }
+        if tuple(row) != observed_identity:
+            raise CoordinatorError("account lease changed before release")
+        connection.execute("DELETE FROM account_leases WHERE lease_id=?", (lease_id,))
+        connection.commit()
+        return {
+            "lease_id": lease_id,
+            "released": True,
+            "schema": ACCOUNT_OUTPUT_SCHEMA,
+        }
+    except Exception:
+        connection.rollback()
+        raise
+
+
+def account_bind_runtime_command(connection, args):
+    lease_id = validate_id(args.lease_id, "lease_id")
+    owner_start = validate_owner_start(args.owner_start)
+    runtime_start = validate_owner_start(args.runtime_start)
+    snapshot = process_snapshot()
+    if (
+        args.runtime_pid <= 0
+        or args.runtime_pgid <= 0
+        or args.runtime_pid != args.runtime_pgid
+        or owner_state(
+            args.runtime_pid, args.runtime_pgid, runtime_start, snapshot
+        ) != "alive"
+        or owner_state(
+            args.owner_pid, args.owner_pgid, owner_start, snapshot
+        ) != "alive"
+    ):
+        raise CoordinatorError("account admission runtime identity is invalid")
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        row = connection.execute(
+            "SELECT * FROM account_leases WHERE lease_id=?", (lease_id,)
+        ).fetchone()
+        if (
+            row is None
+            or row["state"] != "active"
+            or row["owner_pid"] != args.owner_pid
+            or row["owner_pgid"] != args.owner_pgid
+            or row["owner_start"] != owner_start
+        ):
+            raise CoordinatorError("active account admission lease is invalid")
+        existing = (
+            row["runtime_pid"], row["runtime_pgid"], row["runtime_start"]
+        )
+        expected = (args.runtime_pid, args.runtime_pgid, runtime_start)
+        if existing == (None, None, None):
+            connection.execute(
+                """UPDATE account_leases
+                   SET runtime_pid=?,runtime_pgid=?,runtime_start=?
+                   WHERE lease_id=? AND runtime_pid IS NULL""",
+                (*expected, lease_id),
+            )
+        elif existing != expected:
+            raise CoordinatorError("account admission runtime binding changed")
+        bound = connection.execute(
+            "SELECT * FROM account_leases WHERE lease_id=?", (lease_id,)
+        ).fetchone()
+        connection.commit()
+        return {
+            "bound": True,
+            "lease": account_lease_result(bound),
+            "schema": ACCOUNT_OUTPUT_SCHEMA,
+        }
+    except Exception:
+        connection.rollback()
+        raise
+
+
+def account_validate_command(connection, args):
+    lease_id = validate_id(args.lease_id, "lease_id")
+    account_route = validate_id(args.account_route, "account_route")
+    owner_start = validate_owner_start(args.owner_start)
+    runtime_start = validate_owner_start(args.runtime_start)
+    snapshot = process_snapshot()
+    if (
+        owner_state(args.owner_pid, args.owner_pgid, owner_start, snapshot)
+        != "alive"
+        or owner_state(
+            args.runtime_pid, args.runtime_pgid, runtime_start, snapshot
+        )
+        != "alive"
+    ):
+        raise CoordinatorError("active account admission lease is invalid")
+    with configuration_guard(args.configuration_lock):
+        policy, policy_hash = load_policy(Path(args.policy))
+        if policy_hash != args.expected_policy_sha256:
+            raise CoordinatorError("provider policy changed before account start")
+        limits = account_limits(policy, account_route)
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            row = connection.execute(
+                "SELECT * FROM account_leases WHERE lease_id=?", (lease_id,)
+            ).fetchone()
+            if (
+                row is None
+                or row["state"] != "active"
+                or row["account_route"] != account_route
+                or row["trust_scope"] != args.trust_scope
+                or row["owner_pid"] != args.owner_pid
+                or row["owner_pgid"] != args.owner_pgid
+                or row["owner_start"] != owner_start
+                or row["runtime_pid"] != args.runtime_pid
+                or row["runtime_pgid"] != args.runtime_pgid
+                or row["runtime_start"] != runtime_start
+                or row["policy_sha256"] != policy_hash
+                or limits["max_concurrent"] != row["max_concurrent"]
+                or limits["max_starts"] != row["max_starts"]
+                or limits["window_seconds"] != row["window_seconds"]
+            ):
+                raise CoordinatorError("active account admission lease is invalid")
+
+            now = int(time.time())
+            connection.execute(
+                "DELETE FROM account_starts WHERE started_at + window_seconds <= ?",
+                (now,),
+            )
+            incompatible_history = connection.execute(
+                """SELECT 1 FROM account_starts
+                   WHERE account_route=?
+                     AND (max_concurrent!=? OR max_starts!=?
+                          OR window_seconds!=?) LIMIT 1""",
+                (
+                    account_route,
+                    row["max_concurrent"],
+                    row["max_starts"],
+                    row["window_seconds"],
+                ),
+            ).fetchone()
+            if incompatible_history is not None:
+                raise CoordinatorError(
+                    "active account start-window policies disagree across lanes"
+                )
+            starts = connection.execute(
+                "SELECT count(*) FROM account_starts WHERE account_route=?",
+                (account_route,),
+            ).fetchone()[0]
+            pending = connection.execute(
+                """SELECT count(*) FROM account_leases
+                   WHERE account_route=? AND state='active' AND started_at IS NULL""",
+                (account_route,),
+            ).fetchone()[0]
+            if starts + pending > row["max_starts"]:
+                raise CoordinatorError("account start reservation capacity is invalid")
+
+            prior_start = connection.execute(
+                "SELECT * FROM account_starts WHERE lease_id=?", (lease_id,)
+            ).fetchone()
+            if row["started_at"] is None:
+                if prior_start is not None:
+                    raise CoordinatorError("account start history is inconsistent")
+                connection.execute(
+                    """INSERT INTO account_starts(
+                         lease_id,account_route,started_at,policy_sha256,
+                         max_concurrent,max_starts,window_seconds)
+                       VALUES(?,?,?,?,?,?,?)""",
+                    (
+                        lease_id,
+                        account_route,
+                        now,
+                        row["policy_sha256"],
+                        row["max_concurrent"],
+                        row["max_starts"],
+                        row["window_seconds"],
+                    ),
+                )
+                connection.execute(
+                    "UPDATE account_leases SET started_at=? WHERE lease_id=?",
+                    (now, lease_id),
+                )
+            elif (
+                prior_start is None
+                or prior_start["account_route"] != account_route
+                or prior_start["started_at"] != row["started_at"]
+                or prior_start["policy_sha256"] != row["policy_sha256"]
+                or prior_start["max_concurrent"] != row["max_concurrent"]
+                or prior_start["max_starts"] != row["max_starts"]
+                or prior_start["window_seconds"] != row["window_seconds"]
+            ):
+                raise CoordinatorError("account start history is inconsistent")
+            started = connection.execute(
+                "SELECT * FROM account_leases WHERE lease_id=?", (lease_id,)
+            ).fetchone()
+            connection.commit()
+            return {
+                "lease": account_lease_result(started),
+                "schema": ACCOUNT_OUTPUT_SCHEMA,
+                "valid": True,
+            }
+        except Exception:
+            connection.rollback()
+            raise
+
+
+def account_status_command(connection, _args):
+    return {
+        "leases": [
+            account_lease_result(row)
+            for row in connection.execute(
+                "SELECT * FROM account_leases ORDER BY account_route,sequence"
+            ).fetchall()
+        ],
+        "schema": ACCOUNT_OUTPUT_SCHEMA,
+        "starts": [
+            dict(row)
+            for row in connection.execute(
+                "SELECT lease_id,account_route,started_at,window_seconds "
+                "     ,policy_sha256,max_concurrent,max_starts "
+                "FROM account_starts ORDER BY account_route,started_at,lease_id"
+            ).fetchall()
+        ],
+    }
+
+
 def parser():
     result = argparse.ArgumentParser()
     result.add_argument("--db", required=True)
+    result.add_argument("--account-db")
     commands = result.add_subparsers(dest="command", required=True)
 
     def mutation(name):
@@ -1106,14 +1933,71 @@ def parser():
     reconcile = mutation("reconcile")
     reconcile.add_argument("--input", required=True)
     reconcile.set_defaults(handler=reconcile_command)
+
+    def account_owner(command):
+        command.add_argument("--lease-id", required=True)
+        command.add_argument("--owner-pid", required=True, type=int)
+        command.add_argument("--owner-pgid", required=True, type=int)
+        command.add_argument("--owner-start", required=True)
+
+    def account_runtime(command):
+        command.add_argument("--runtime-pid", required=True, type=int)
+        command.add_argument("--runtime-pgid", required=True, type=int)
+        command.add_argument("--runtime-start", required=True)
+
+    account_acquire = commands.add_parser("account-acquire")
+    account_owner(account_acquire)
+    account_acquire.add_argument("--account-route", required=True)
+    account_acquire.add_argument(
+        "--trust-scope",
+        required=True,
+        choices=("production-certified", "qualification-candidate"),
+    )
+    account_acquire.add_argument("--policy", required=True)
+    account_acquire.add_argument("--configuration-lock")
+    account_acquire.add_argument("--expected-policy-sha256")
+    account_acquire.add_argument("--wait-seconds", required=True, type=int)
+    account_acquire.add_argument("--cancel-path", action="append", default=[])
+    account_acquire.set_defaults(handler=account_acquire_command)
+
+    account_bind = commands.add_parser("account-bind-runtime")
+    account_owner(account_bind)
+    account_runtime(account_bind)
+    account_bind.set_defaults(handler=account_bind_runtime_command)
+
+    account_validate = commands.add_parser("account-validate")
+    account_owner(account_validate)
+    account_runtime(account_validate)
+    account_validate.add_argument("--account-route", required=True)
+    account_validate.add_argument("--expected-policy-sha256", required=True)
+    account_validate.add_argument("--policy", required=True)
+    account_validate.add_argument("--configuration-lock")
+    account_validate.add_argument(
+        "--trust-scope",
+        required=True,
+        choices=("production-certified", "qualification-candidate"),
+    )
+    account_validate.set_defaults(handler=account_validate_command)
+
+    account_release = commands.add_parser("account-release")
+    account_owner(account_release)
+    account_release.set_defaults(handler=account_release_command)
+
+    account_status = commands.add_parser("account-status")
+    account_status.set_defaults(handler=account_status_command)
     return result
 
 
 def main():
     try:
         args = parser().parse_args()
-        path = Path(args.db)
-        with database(path) as connection:
+        if args.command in ACCOUNT_COMMANDS:
+            if args.account_db is None:
+                raise CoordinatorError("account admission database is required")
+            selected_database = account_database(Path(args.account_db))
+        else:
+            selected_database = database(Path(args.db))
+        with selected_database as connection:
             output = args.handler(connection, args)
         print(canonical(output))
     except (

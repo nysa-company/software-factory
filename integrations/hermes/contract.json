@@ -583,6 +583,7 @@
       "FACTORY_PROVIDER_CONFIGURATION_LOCK": "fixed Contract 1.8 owner-local provider-configuration lock",
       "FACTORY_PROVIDER_ACTIVATION": "fixed owner-local activation gate: Contract 1.6 API-only v1; Contract 1.7/1.8 API v1 or subscription-CLI v2",
       "FACTORY_CLI_RUNTIME_ROOT": "fixed Contract 1.7+ owner-local per-attempt subscription CLI runtime directory",
+      "FACTORY_CURSOR_ACCOUNT_DB": "fixed machine-local owner-only Cursor account-route admission database shared by production and qualification",
       "FACTORY_PROVIDER_BROKER_URL": "fixed Contract 1.6 loopback TLS broker endpoint",
       "FACTORY_PROVIDER_BROKER_CA": "fixed Contract 1.6 broker trust anchor"
     },
@@ -613,6 +614,7 @@
       "FACTORY_PROVIDER_CONFIGURATION_LOCK",
       "FACTORY_PROVIDER_ACTIVATION",
       "FACTORY_CLI_RUNTIME_ROOT",
+      "FACTORY_CURSOR_ACCOUNT_DB",
       "FACTORY_PROVIDER_BROKER_URL",
       "FACTORY_PROVIDER_BROKER_CA",
       "GH_TOKEN"
@@ -764,8 +766,8 @@
         "cursor-anthropic"
       ],
       "identity_binding": "activation adapter, model, provider family, and account route must exactly match the frozen selected route; activation policy_sha256 must equal the canonical provider policy digest",
-      "admission": "reuse the Contract 1.6 transactional coordinator; capacity and budget limits live only in the owner-local provider policy",
-      "account_limits": "Contract 1.8 production policy covers every enabled Cursor, Claude Code, and Codex account route at ticket capacity after owner-only per-attempt runtime isolation; all limits remain policy-owned",
+      "admission": "reuse the Contract 1.6 transactional coordinator; lane lifecycle and accounting remain isolated, while task-bearing Cursor starts additionally hold one machine-local account-route lease before GO through process-group drainage",
+      "account_limits": "Contract 1.8 policy covers every enabled Cursor, Claude Code, and Codex account route at ticket capacity; Cursor production and qualification lanes sharing an account route must agree on limits and share aggregate concurrency/start admission, with production priority for the final slot",
       "runtime_root": "~/.factory/cli-runtimes contains owner-only attempt homes and is independent of tickets, cells, and qualification lanes",
       "certification_binding": "receipt and activation journal bind the policy digest, ticket capacity, covered routes and adapters, Factory SHA/tree, and runtime-root identity",
       "git_authority": "provider roles may commit locally but cannot push; the trusted host wrapper validates remote durability and owns every push"
