@@ -5521,6 +5521,73 @@ class FactoryControllerTest(unittest.TestCase):
             "model_identity_success_recovered_by_release_upgrade", calls
         )
 
+    def test_model_identity_restore_preserves_pushed_route_migration(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        base = "4" * 40
+        restored = "5" * 40
+        reverted = "6" * 40
+        run_id = "identity-run"
+        claim = {
+            "branch": "ticket/T-110",
+            "lease": "7" * 64,
+            "receipt": "8" * 64,
+            "ticket": "T-110",
+            "worktree": str(self.root / "cell-route-migrated"),
+        }
+        Path(claim["worktree"]).mkdir()
+        passports = self.state / "passports"
+        passports.mkdir(mode=0o700)
+        CONTROL.write(passports / "T-110.json", {"publication_state": "none"})
+
+        def evidence(status: str) -> dict[str, str]:
+            return {
+                "input_head": "1" * 40,
+                "migration_head": base,
+                "output_head": "2" * 40,
+                "output_tree": "3" * 40,
+                "recovery_base_head": base,
+                "recovery_status": status,
+                "restore_head": restored if status == "restored" else "",
+                "revert_head": reverted,
+                "run_id": run_id,
+                "schema": CONTROL.SCHEMA,
+                "status": "ok",
+                "ticket": "T-110",
+            }
+
+        responses = [evidence("restore-required"), evidence("restored")]
+        controller.json_call = lambda *_args, **_kwargs: responses.pop(0)
+        controller.ensure_lease = lambda *_args: None
+        remote = iter([
+            ("pushed", base, base),
+            ("resume_commit_not_pushed", restored, base),
+        ])
+        controller.remote_cell_head_status = lambda _claim: next(remote)
+        controller.remote_cell_head_valid = lambda _claim: True
+        controller.migrate_passport = lambda *_args: {"status": "ok"}
+        controller.terminal_already_exported = lambda *_args: True
+        corrected = []
+        controller.correct_converged_success = (
+            lambda *_args: corrected.append(run_id)
+        )
+        commands = []
+
+        def execute(command, **_kwargs):
+            commands.append(command)
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        with patch.object(CONTROL.subprocess, "run", side_effect=execute):
+            controller.restore_model_identity_success(
+                claim, {"run_id": run_id}
+            )
+
+        self.assertEqual(corrected, [run_id])
+        self.assertEqual(commands[0][-3:], ["revert", "--no-edit", reverted])
+        self.assertEqual(
+            commands[1][-2:],
+            ["origin", f"{restored}:refs/heads/ticket/T-110"],
+        )
+
     def test_history_rewrite_retries_only_after_release_upgrade(self) -> None:
         controller = CONTROL.Controller(self.args)
         cell = self.root / "cell-history-rewrite"

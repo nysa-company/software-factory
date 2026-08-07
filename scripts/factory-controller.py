@@ -2447,8 +2447,9 @@ class Controller:
         )
         expected = {
             name: evidence.get(name) for name in (
-                "input_head", "output_head", "output_tree", "restore_head",
-                "revert_head", "recovery_status",
+                "input_head", "migration_head", "output_head", "output_tree",
+                "recovery_base_head", "restore_head", "revert_head",
+                "recovery_status",
             )
         }
         if (
@@ -2458,10 +2459,12 @@ class Controller:
             or evidence.get("status") != "ok"
             or evidence.get("recovery_status")
             not in {"restore-required", "restored"}
+            or expected["migration_head"] != expected["recovery_base_head"]
             or any(
                 not SHA.fullmatch(expected[name] or "")
                 for name in (
-                    "input_head", "output_head", "output_tree", "revert_head",
+                    "input_head", "migration_head", "output_head", "output_tree",
+                    "recovery_base_head", "revert_head",
                 )
             )
             or (
@@ -2479,9 +2482,9 @@ class Controller:
         head_status, local_head, remote_head = self.remote_cell_head_status(claim)
         if evidence["recovery_status"] == "restore-required":
             if (
-                local_head != evidence["revert_head"]
-                or remote_head != evidence["input_head"]
-                or head_status != "resume_commit_not_pushed"
+                local_head != evidence["recovery_base_head"]
+                or remote_head != evidence["recovery_base_head"]
+                or head_status != "pushed"
             ):
                 raise ControllerError("model identity recovery remote moved")
             with self.git_lock:
@@ -2519,7 +2522,7 @@ class Controller:
         head_status, local_head, remote_head = self.remote_cell_head_status(claim)
         if local_head != evidence.get("restore_head"):
             raise ControllerError("model identity recovery head changed")
-        if remote_head == evidence.get("input_head"):
+        if remote_head == evidence.get("recovery_base_head"):
             if head_status != "resume_commit_not_pushed":
                 raise ControllerError("model identity recovery ancestry is invalid")
             pushed = subprocess.run(
