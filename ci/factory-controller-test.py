@@ -5521,15 +5521,27 @@ class FactoryControllerTest(unittest.TestCase):
             "model_identity_success_recovered_by_release_upgrade", calls
         )
 
-        claim.update(receipt=receipt, role="spec-linter", status="claimed")
+        for status in ("claimed", "running"):
+            with self.subTest(status=status):
+                claim.update(
+                    receipt=receipt, role="spec-linter", status=status
+                )
+                calls.clear()
+                controller.recover_repaired_failures([claim])
+                self.assertEqual(claim["receipt"], "")
+                self.assertNotIn("fallback", calls)
+                self.assertIn(("restore", run_id), calls)
+                self.assertIn(
+                    "model_identity_success_recovered_by_release_upgrade",
+                    calls,
+                )
+
+        claim.update(receipt=receipt, role="spec-linter", status="running")
+        controller.role_active = lambda _claim: True
         calls.clear()
         controller.recover_repaired_failures([claim])
-        self.assertEqual(claim["receipt"], "")
-        self.assertNotIn("fallback", calls)
-        self.assertIn(("restore", run_id), calls)
-        self.assertIn(
-            "model_identity_success_recovered_by_release_upgrade", calls
-        )
+        self.assertEqual(claim["receipt"], receipt)
+        self.assertNotIn(("restore", run_id), calls)
 
     def test_model_identity_restore_preserves_pushed_route_migration(self) -> None:
         controller = CONTROL.Controller(self.args)
