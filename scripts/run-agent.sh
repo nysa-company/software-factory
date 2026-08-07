@@ -2735,7 +2735,13 @@ elif [[ "$ROLE_EXIT_ENFORCED" -eq 1 ]]; then
     elif [[ "$ROLE_PROTECTED_AFTER" == "__invalid__" ]] ||
          ! ticket_evidence_is_legal "$ROLE_PROTECTED_BEFORE" \
            "$ROLE_PROTECTED_AFTER" "$ROLE"; then
-      ROLE_EXIT_STATUS="role_exit_protected_ticket_mutation"
+      if [[ "$ROLE" == "test-author" || "$ROLE" == "reviewer" ]]; then
+        ROLE_EXIT_STATUS="role_exit_protected_ticket_mutation"
+      elif quarantine_rewritten_role_history; then
+        ROLE_EXIT_STATUS="role_exit_protected_ticket_mutation"
+      else
+        ROLE_EXIT_STATUS="role_exit_control_plane_mutation"
+      fi
     elif ! factory_product_remote_matches "$REPO_ROOT" "$PRODUCT_REMOTE"; then
       ROLE_EXIT_STATUS="role_exit_remote_mismatch"
     elif [[ "$ROLE" == "reviewer" &&

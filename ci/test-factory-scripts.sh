@@ -3873,15 +3873,20 @@ MOCK_PROTECTED_TICKET_MUTATION=1 FACTORY_ROOT="$ROLE_EXIT_ROOT" \
 ROLE_PROTECTED_LOCAL="$(git -C "$ROLE_EXIT_WORKTREE" rev-parse HEAD)"
 ROLE_PROTECTED_REMOTE="$(git --git-dir="$ROLE_EXIT_REMOTE" rev-parse refs/heads/ticket/T-610)"
 ROLE_PROTECTED_META="$(ls "$ROLE_EXIT_ROOT/factory/runs/"*.meta)"
-ROLE_PROTECTED_STAGE="$(FACTORY_ROOT="$ROLE_EXIT_ROOT" \
-  "$NEXT_STAGE" --ticket T-610 --workdir "$ROLE_EXIT_WORKTREE")"
+ROLE_PROTECTED_RUN="$(awk -F= '$1=="run_id" {print $2}' "$ROLE_PROTECTED_META")"
+ROLE_PROTECTED_DIAGNOSTIC="$(git -C "$ROLE_EXIT_WORKTREE" rev-parse \
+  "refs/factory/failed-role/T-610/$ROLE_PROTECTED_RUN")"
 if [[ "$ROLE_PROTECTED_STATUS" -eq 11 &&
-      "$ROLE_PROTECTED_LOCAL" != "$ROLE_PROTECTED_BEFORE" &&
+      "$ROLE_PROTECTED_LOCAL" == "$ROLE_PROTECTED_BEFORE" &&
       "$ROLE_PROTECTED_REMOTE" == "$ROLE_PROTECTED_BEFORE" &&
-      "$ROLE_PROTECTED_STAGE" == \
-        "REFUSE contract 1.2 has no trusted bundle-attestation path for approval" ]] &&
-   grep -q '^State: Done$' "$ROLE_EXIT_WORKTREE/factory/tickets/T-610.md" &&
-   grep -q '^Operator-Approval: Linear$' "$ROLE_EXIT_WORKTREE/factory/tickets/T-610.md" &&
+      "$ROLE_PROTECTED_DIAGNOSTIC" != "$ROLE_PROTECTED_BEFORE" &&
+      -z "$(git -C "$ROLE_EXIT_WORKTREE" status --porcelain)" ]] &&
+   git -C "$ROLE_EXIT_WORKTREE" show \
+     "$ROLE_PROTECTED_DIAGNOSTIC:factory/tickets/T-610.md" |
+     grep -q '^State: Done$' &&
+   git -C "$ROLE_EXIT_WORKTREE" show \
+     "$ROLE_PROTECTED_DIAGNOSTIC:factory/tickets/T-610.md" |
+     grep -q '^Operator-Approval: Linear$' &&
    grep -q 'role_exit_protected_ticket_mutation' "$TMP/role-protected.out" &&
    grep -q '^role_exit=role_exit_protected_ticket_mutation$' "$ROLE_PROTECTED_META" &&
    grep -q '^effective_cost=0.42$' "$ROLE_PROTECTED_META" &&
@@ -3891,7 +3896,7 @@ if [[ "$ROLE_PROTECTED_STATUS" -eq 11 &&
   pass "role exit preserves protected-field mutation without push or advancement"
 else
   fail "role exit preserves protected-field mutation without push or advancement" \
-    "status=$ROLE_PROTECTED_STATUS stage=$ROLE_PROTECTED_STAGE"
+    "status=$ROLE_PROTECTED_STATUS local=$ROLE_PROTECTED_LOCAL"
 fi
 
 setup_role_exit_fixture T-611

@@ -552,6 +552,11 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   lane construction. Frozen product decisions, one canonical dependency field,
   fixture/authentication seams, and protected-test declarations fail closed
   before claim, lease, worktree, or provider activity.
+- A clean non-Test-author role that changes protected ticket evidence is
+  charged but never published. The wrapper retains its rejected head under a
+  failed-role ref and restores the exact input. Only a successor may retry the
+  same role after the passport proves one charge and no completion; a legacy
+  un-restored occurrence also requires protected in-flight rewrite authority.
 
 ## Log
 
@@ -4116,3 +4121,15 @@ one-to-one to its completed evidence. It preserves the original failed terminal
 bytes, accepts only the correction type's exact terminal status, and retains the
 signed progress identity. Uncorrected or mismatched failed manifests remain
 ineligible for stage sequencing.
+
+## 2026-08-07 — Decision 309: Protected role refusals are recoverable, not accepted
+
+Category: Reliability
+
+A protected ticket-field mutation remains an exit-11 failure and is never
+pushed. Clean Planner, Spec-linter, Builder, and Narrator outputs are preserved
+under a diagnostic ref while the exact remote input is restored; only a
+successor with one authenticated failed charge and no completion may retry the
+role. Legacy occurrences that exported a passport at the rejected head first
+use the existing protected in-flight rewrite authorization to return to the
+unchanged remote input.

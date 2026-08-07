@@ -3027,6 +3027,134 @@ class Controller:
                 transition_receipt_sha256=transition["receipt"],
             )
 
+    def quarantine_legacy_protected_mutation(
+        self, claim: dict[str, Any], terminal: dict[str, str]
+    ) -> bool:
+        if (
+            terminal.get("role_exit") != "role_exit_protected_ticket_mutation"
+            or terminal.get("kit_sha") == self.release_path.name
+        ):
+            return False
+        passport = read(
+            self.state / "passports" / f"{claim['ticket']}.json"
+        )
+        input_head = terminal.get("role_head_before", "")
+        output_head = passport.get("head_sha", "")
+        expected = (
+            terminal.get("run_id"), claim.get("role"), claim.get("receipt"),
+        )
+        completed = [
+            (
+                item.get("run_id"), item.get("role"),
+                item.get("transition_receipt_sha256"),
+            )
+            for item in passport.get("completed_role_evidence", [])
+        ]
+        if output_head == input_head:
+            return False
+        if (
+            claim.get("status") != "blocked"
+            or claim.get("role") not in {
+                "planner", "spec-linter", "builder", "narrator",
+            }
+            or terminal.get("role") != claim.get("role")
+            or terminal.get("phase") != "completed"
+            or terminal.get("accounting_state") != "abandoned_conservative"
+            or terminal.get("go_issued") != "1"
+            or terminal.get("task_submitted") != "1"
+            or terminal.get("exit_status") != "11"
+            or terminal.get("cost_basis") != "conservative_reservation"
+            or terminal.get("effective_cost") != terminal.get("reserved_usd")
+            or terminal.get("role_branch_before") != claim.get("branch")
+            or terminal.get("role_remote_before") != input_head
+            or passport.get("ticket") != claim.get("ticket")
+            or passport.get("branch") != claim.get("branch")
+            or passport.get("factory_sha") != terminal.get("kit_sha")
+            or not SHA.fullmatch(input_head)
+            or not SHA.fullmatch(output_head)
+            or not re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}",
+                terminal.get("run_id", ""),
+            )
+            or completed.count(expected) != 0
+            or not self.terminal_already_exported(claim, terminal)
+        ):
+            raise ControllerError(
+                "protected ticket mutation recovery evidence is invalid"
+            )
+        worktree = claim["worktree"]
+        diagnostic = (
+            f"refs/factory/failed-role/{claim['ticket']}/{terminal['run_id']}"
+        )
+
+        def git(*arguments: str, check: bool = True) -> subprocess.CompletedProcess:
+            return subprocess.run(
+                ["git", "-C", worktree, *arguments], text=True,
+                capture_output=True, check=check, timeout=120,
+            )
+
+        with self.git_lock:
+            branch = git(
+                "symbolic-ref", "--quiet", "--short", "HEAD"
+            ).stdout.strip()
+            head = git("rev-parse", "HEAD").stdout.strip()
+            remote = git(
+                "ls-remote", "--exit-code", "origin",
+                f"refs/heads/{claim['branch']}", check=False,
+            )
+            ancestor = git(
+                "merge-base", "--is-ancestor", input_head, output_head,
+                check=False,
+            )
+            existing = git("rev-parse", diagnostic, check=False)
+            if (
+                branch != claim["branch"]
+                or head != output_head
+                or git("status", "--porcelain=v1", "-z").stdout
+                or remote.returncode != 0
+                or remote.stdout
+                != f"{input_head}\trefs/heads/{claim['branch']}\n"
+                or ancestor.returncode != 0
+                or existing.returncode not in {0, 128}
+                or (
+                    existing.returncode == 0
+                    and existing.stdout.strip() != output_head
+                )
+            ):
+                raise ControllerError(
+                    "protected ticket mutation recovery topology is invalid"
+                )
+            if existing.returncode == 128:
+                git("update-ref", diagnostic, output_head, "0" * 40)
+            git(
+                "update-ref", f"refs/heads/{claim['branch']}",
+                input_head, output_head,
+            )
+            git(
+                "restore", "--source", input_head, "--staged", "--worktree",
+                "--", ".",
+            )
+            remote = git(
+                "ls-remote", "--exit-code", "origin",
+                f"refs/heads/{claim['branch']}", check=False,
+            )
+            if (
+                git("rev-parse", "HEAD").stdout.strip() != input_head
+                or git("rev-parse", diagnostic).stdout.strip() != output_head
+                or git("status", "--porcelain=v1", "-z").stdout
+                or remote.returncode != 0
+                or remote.stdout
+                != f"{input_head}\trefs/heads/{claim['branch']}\n"
+            ):
+                raise ControllerError(
+                    "protected ticket mutation recovery could not restore the input"
+                )
+        self.event(
+            "protected_ticket_mutation_quarantined", claim["ticket"],
+            failed_run_id=terminal["run_id"],
+        )
+        return True
+
     def recover_upgraded_claims(self, claims: list[dict[str, Any]]) -> None:
         for claim in claims:
             successor_budget = (
@@ -3042,6 +3170,13 @@ class Controller:
             path = self.state / "passports" / f"{claim['ticket']}.json"
             if not path.exists():
                 continue
+            terminal = (
+                self.terminal_for_receipt(claim["ticket"], claim["receipt"])
+                if claim.get("receipt")
+                else None
+            )
+            if terminal is not None:
+                self.quarantine_legacy_protected_mutation(claim, terminal)
             prior = read(path).get("factory_sha", "")
             if not SHA.fullmatch(prior):
                 raise ControllerError("blocked ticket passport has an invalid release")
@@ -3335,14 +3470,17 @@ class Controller:
                 terminal is not None
                 and terminal.get("role_exit") == "role_exit_push_failed"
             )
-            history_rewrite = (
+            quarantined_role_failure = (
                 terminal is not None
                 and terminal.get("phase") == "completed"
                 and terminal.get("accounting_state") == "abandoned_conservative"
                 and terminal.get("go_issued") == "1"
                 and terminal.get("task_submitted") == "1"
                 and terminal.get("exit_status") == "11"
-                and terminal.get("role_exit") == "role_exit_history_rewritten"
+                and terminal.get("role_exit") in {
+                    "role_exit_history_rewritten",
+                    "role_exit_protected_ticket_mutation",
+                }
                 and terminal.get("role") == claim.get("role")
                 and claim.get("role") in {
                     "planner", "spec-linter", "builder", "narrator",
@@ -3358,6 +3496,15 @@ class Controller:
                 and SHA.fullmatch(terminal.get("role_head_before", ""))
                 and SHA.fullmatch(terminal.get("kit_sha", ""))
                 and terminal["kit_sha"] != self.release_path.name
+            )
+            history_rewrite = (
+                quarantined_role_failure
+                and terminal.get("role_exit") == "role_exit_history_rewritten"
+            )
+            protected_mutation = (
+                quarantined_role_failure
+                and terminal.get("role_exit")
+                == "role_exit_protected_ticket_mutation"
             )
             interrupted_before_submission = (
                 terminal is not None
@@ -3436,7 +3583,8 @@ class Controller:
             if not (
                 push_failure or interrupted_before_submission or contract_blocked
                 or submission_unconfirmed or history_rewrite
-                or converged_success or model_identity_success
+                or protected_mutation or converged_success
+                or model_identity_success
             ):
                 continue
             passport_path = self.state / "passports" / f"{claim['ticket']}.json"
@@ -3511,13 +3659,14 @@ class Controller:
             if (
                 push_failure or interrupted_before_submission
                 or submission_unconfirmed or history_rewrite
+                or protected_mutation
             ):
                 try:
                     if not self.terminal_already_exported(claim, terminal):
                         continue
                 except ControllerError:
                     continue
-            if history_rewrite:
+            if history_rewrite or protected_mutation:
                 try:
                     passport = read(passport_path)
                 except (ControllerError, json.JSONDecodeError, OSError):
@@ -3661,12 +3810,16 @@ class Controller:
                                 "history_rewrite_recovered_by_release_upgrade"
                                 if history_rewrite
                                 else (
-                                    "model_identity_success_recovered_by_release_upgrade"
-                                    if model_identity_success
+                                    "protected_ticket_mutation_recovered_by_release_upgrade"
+                                    if protected_mutation
                                     else (
-                                        "converged_success_recovered_by_release_upgrade"
-                                        if converged_success
-                                        else "interrupted_role_recovered"
+                                        "model_identity_success_recovered_by_release_upgrade"
+                                        if model_identity_success
+                                        else (
+                                            "converged_success_recovered_by_release_upgrade"
+                                            if converged_success
+                                            else "interrupted_role_recovered"
+                                        )
                                     )
                                 )
                             )
