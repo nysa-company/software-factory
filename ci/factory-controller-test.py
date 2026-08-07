@@ -5561,10 +5561,21 @@ class FactoryControllerTest(unittest.TestCase):
                 "restore_head": restored if status == "restored" else "",
                 "revert_head": reverted,
                 "run_id": run_id,
-                "schema": CONTROL.SCHEMA,
+                "schema": "nysa.software-factory.ticket-passport/v1",
                 "status": "ok",
                 "ticket": "T-110",
             }
+
+        wrong_schema = evidence("restore-required")
+        wrong_schema["schema"] = CONTROL.SCHEMA
+        controller.json_call = lambda *_args, **_kwargs: wrong_schema
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError,
+            "model identity recovery evidence is invalid",
+        ):
+            controller.restore_model_identity_success(
+                claim, {"run_id": run_id}
+            )
 
         responses = [evidence("restore-required"), evidence("restored")]
         controller.json_call = lambda *_args, **_kwargs: responses.pop(0)
