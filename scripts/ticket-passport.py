@@ -1710,30 +1710,36 @@ def model_identity_recovery_topology(
         ).splitlines()
 
     candidates = []
-    try:
-        migration_head = current_head
-        revert_head = commit_parent(args.workdir, migration_head)
-        output_head = commit_parent(args.workdir, revert_head)
-        if commit_parent(args.workdir, output_head) == input_head:
-            candidates.append((
-                "restore-required", migration_head, revert_head, output_head, "",
-            ))
-    except PassportError:
-        pass
-    try:
-        restore_head = current_head
-        migration_head = commit_parent(args.workdir, restore_head)
-        revert_head = commit_parent(args.workdir, migration_head)
-        output_head = commit_parent(args.workdir, revert_head)
-        if commit_parent(args.workdir, output_head) == input_head:
-            candidates.append((
-                "restored", migration_head, revert_head, output_head, restore_head,
-            ))
-    except PassportError:
-        pass
+    for status, migration_head, restore_head in (
+        ("restore-required", current_head, ""),
+        ("restored", commit_parent(args.workdir, current_head), current_head),
+    ):
+        try:
+            migration_count = 0
+            revert_head = migration_head
+            while (
+                migration_count < 32
+                and changed(revert_head) == [route_path, ticket_path]
+            ):
+                migration_count += 1
+                revert_head = commit_parent(args.workdir, revert_head)
+            output_head = commit_parent(args.workdir, revert_head)
+            if (
+                migration_count
+                and commit_parent(args.workdir, output_head) == input_head
+            ):
+                candidates.append((
+                    status, migration_head, migration_count, revert_head,
+                    output_head, restore_head,
+                ))
+        except PassportError:
+            pass
 
     valid = []
-    for status, migration_head, revert_head, output_head, restore_head in candidates:
+    for (
+        status, migration_head, migration_count, revert_head, output_head,
+        restore_head,
+    ) in candidates:
         try:
             input_ticket = git_blob(args.workdir, input_head, ticket_path)
             output_ticket = git_blob(args.workdir, output_head, ticket_path)
@@ -1763,6 +1769,7 @@ def model_identity_recovery_topology(
             ):
                 valid.append({
                     "migration_head": migration_head,
+                    "migration_count": migration_count,
                     "input_head": input_head,
                     "output_head": output_head,
                     "output_tree": tree(output_head),

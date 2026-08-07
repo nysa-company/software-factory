@@ -662,6 +662,30 @@ class TicketPassportTest(unittest.TestCase):
         run("git", "add", "factory/route-plans/T-110.json", cwd=self.product)
         run("git", "add", "factory/tickets/T-110.md", cwd=self.product)
         run("git", "commit", "-qm", "migrate route", cwd=self.product)
+        PASSPORT.migrate(self.passport_args, secret)
+        self.passport_args.factory_sha = "c" * 40
+        PASSPORT.migrate(self.passport_args, secret)
+        journal["kit_sha"] = "c" * 40
+        journal["revisions"].append({"body": {
+            "kind": "release-migration",
+            "new_kit_sha": "c" * 40,
+            "new_resolution": {
+                "selections": {"spec-linter": current_selection}
+            },
+        }})
+        (self.product / "factory/route-plans/T-110.json").write_text(
+            json.dumps(journal, sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+        ticket.write_text(
+            ticket.read_text(encoding="utf-8").replace(
+                "b" * 40, "c" * 40
+            ),
+            encoding="utf-8",
+        )
+        run("git", "add", "factory/route-plans/T-110.json", cwd=self.product)
+        run("git", "add", "factory/tickets/T-110.md", cwd=self.product)
+        run("git", "commit", "-qm", "migrate route again", cwd=self.product)
         migration_head = run("git", "rev-parse", "HEAD", cwd=self.product)
         PASSPORT.migrate(self.passport_args, secret)
         self.passport_args.run_id = run_id
@@ -672,6 +696,7 @@ class TicketPassportTest(unittest.TestCase):
         self.assertEqual(preflight["output_head"], output_head)
         self.assertEqual(preflight["revert_head"], revert_head)
         self.assertEqual(preflight["migration_head"], migration_head)
+        self.assertEqual(preflight["migration_count"], 2)
 
         run("git", "revert", "--no-edit", revert_head, cwd=self.product)
         restored = PASSPORT.verify_model_identity_success(

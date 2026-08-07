@@ -2447,8 +2447,8 @@ class Controller:
         )
         expected = {
             name: evidence.get(name) for name in (
-                "input_head", "migration_head", "output_head", "output_tree",
-                "recovery_base_head", "restore_head", "revert_head",
+                "input_head", "migration_count", "migration_head", "output_head",
+                "output_tree", "recovery_base_head", "restore_head", "revert_head",
                 "recovery_status",
             )
         }
@@ -2459,6 +2459,9 @@ class Controller:
             or evidence.get("status") != "ok"
             or evidence.get("recovery_status")
             not in {"restore-required", "restored"}
+            or isinstance(expected["migration_count"], bool)
+            or not isinstance(expected["migration_count"], int)
+            or not 1 <= expected["migration_count"] <= 32
             or expected["migration_head"] != expected["recovery_base_head"]
             or any(
                 not SHA.fullmatch(expected[name] or "")
