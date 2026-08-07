@@ -5622,6 +5622,128 @@ class FactoryControllerTest(unittest.TestCase):
             ["origin", f"{restored}:refs/heads/ticket/T-110"],
         )
 
+    def test_successor_quarantines_legacy_protected_mutation(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "cell-protected-mutation"
+        remote = self.root / "protected-mutation.git"
+        subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+        subprocess.run(["git", "init", "-q", str(cell)], check=True)
+        for key, value in (
+            ("user.email", "test@nysa.dev"), ("user.name", "Test"),
+        ):
+            subprocess.run(
+                ["git", "-C", str(cell), "config", key, value], check=True,
+            )
+        ticket = cell / "factory/tickets/T-110.md"
+        ticket.parent.mkdir(parents=True)
+        ticket.write_text("# T-110\n\nState: Planning\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(cell), "add", "."], check=True)
+        subprocess.run(
+            ["git", "-C", str(cell), "commit", "-qm", "input"], check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(cell), "branch", "-M", "ticket/T-110"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(cell), "remote", "add", "origin", str(remote)],
+            check=True,
+        )
+        subprocess.run(
+            [
+                "git", "-C", str(cell), "push", "-q", "-u", "origin",
+                "ticket/T-110",
+            ],
+            check=True,
+        )
+        input_head = subprocess.run(
+            ["git", "-C", str(cell), "rev-parse", "HEAD"], text=True,
+            capture_output=True, check=True,
+        ).stdout.strip()
+        ticket.write_text(
+            "# T-110\n\nState: Planning\n\nKit-SHA: stale\n",
+            encoding="utf-8",
+        )
+        subprocess.run(["git", "-C", str(cell), "add", "."], check=True)
+        subprocess.run(
+            ["git", "-C", str(cell), "commit", "-qm", "bad output"],
+            check=True,
+        )
+        output_head = subprocess.run(
+            ["git", "-C", str(cell), "rev-parse", "HEAD"], text=True,
+            capture_output=True, check=True,
+        ).stdout.strip()
+        receipt = "b" * 64
+        run_id = "protected-mutation"
+        predecessor = "e" * 40
+        claim = {
+            "branch": "ticket/T-110",
+            "receipt": receipt,
+            "role": "planner",
+            "status": "blocked",
+            "ticket": "T-110",
+            "worktree": str(cell),
+        }
+        (self.state / "passports").mkdir(mode=0o700)
+        CONTROL.write(self.state / "passports/T-110.json", {
+            "branch": claim["branch"],
+            "charge_records": [{
+                "role": "planner", "run_id": run_id,
+                "transition_receipt_sha256": receipt,
+            }],
+            "completed_role_evidence": [],
+            "factory_sha": predecessor,
+            "head_sha": output_head,
+            "ticket": "T-110",
+            "transition_receipt_sha256": receipt,
+        })
+        terminal = {
+            "accounting_state": "abandoned_conservative",
+            "cost_basis": "conservative_reservation",
+            "effective_cost": "2.00",
+            "exit_status": "11",
+            "go_issued": "1",
+            "kit_sha": predecessor,
+            "phase": "completed",
+            "reserved_usd": "2.00",
+            "role": "planner",
+            "role_branch_before": claim["branch"],
+            "role_exit": "role_exit_protected_ticket_mutation",
+            "role_head_before": input_head,
+            "role_remote_before": input_head,
+            "run_id": run_id,
+            "task_submitted": "1",
+        }
+
+        same_release = dict(terminal, kit_sha=self.release.name)
+        self.assertFalse(
+            controller.quarantine_legacy_protected_mutation(claim, same_release)
+        )
+        self.assertTrue(
+            controller.quarantine_legacy_protected_mutation(claim, terminal)
+        )
+        self.assertEqual(
+            subprocess.run(
+                ["git", "-C", str(cell), "rev-parse", "HEAD"], text=True,
+                capture_output=True, check=True,
+            ).stdout.strip(),
+            input_head,
+        )
+        self.assertEqual(
+            subprocess.run(
+                [
+                    "git", "-C", str(cell), "rev-parse",
+                    f"refs/factory/failed-role/T-110/{run_id}",
+                ],
+                text=True, capture_output=True, check=True,
+            ).stdout.strip(),
+            output_head,
+        )
+        self.assertFalse(subprocess.run(
+            ["git", "-C", str(cell), "status", "--porcelain=v1", "-z"],
+            capture_output=True, check=True,
+        ).stdout)
+
     def test_history_rewrite_retries_only_after_release_upgrade(self) -> None:
         controller = CONTROL.Controller(self.args)
         cell = self.root / "cell-history-rewrite"
@@ -5660,7 +5782,9 @@ class FactoryControllerTest(unittest.TestCase):
         )
         manifest = self.product / f"factory/runs/{run_id}.meta"
 
-        def write_manifest(kit_sha: str) -> None:
+        def write_manifest(
+            kit_sha: str, role_exit: str = "role_exit_history_rewritten"
+        ) -> None:
             manifest.write_text(
                 f"run_id={run_id}\n"
                 "phase=completed\n"
@@ -5674,7 +5798,7 @@ class FactoryControllerTest(unittest.TestCase):
                 "exit_status=11\n"
                 "cost_basis=conservative_reservation\n"
                 f"kit_sha={kit_sha}\n"
-                "role_exit=role_exit_history_rewritten\n"
+                f"role_exit={role_exit}\n"
                 f"role_head_before={input_head}\n"
                 f"transition_receipt_sha256={receipt}\n",
                 encoding="utf-8",
@@ -5699,19 +5823,32 @@ class FactoryControllerTest(unittest.TestCase):
         predecessor = "e" * 40
         if predecessor == self.release.name:
             predecessor = "f" * 40
-        write_manifest(predecessor)
-        controller.recover_repaired_failures([claim])
-        self.assertEqual(claim["status"], "claimed")
-        self.assertEqual(claim["receipt"], "")
-        self.assertEqual(claim["role"], "")
-        self.assertEqual(leases, ["repaired-role"])
-        self.assertEqual(
-            events,
-            [(
+        for role_exit, event in (
+            (
+                "role_exit_history_rewritten",
                 "history_rewrite_recovered_by_release_upgrade",
-                {"failed_run_id": run_id},
-            )],
-        )
+            ),
+            (
+                "role_exit_protected_ticket_mutation",
+                "protected_ticket_mutation_recovered_by_release_upgrade",
+            ),
+        ):
+            with self.subTest(role_exit=role_exit):
+                claim.update(
+                    receipt=receipt, role="builder", status="blocked",
+                )
+                events.clear()
+                leases.clear()
+                write_manifest(predecessor, role_exit)
+                controller.recover_repaired_failures([claim])
+                self.assertEqual(claim["status"], "claimed")
+                self.assertEqual(claim["receipt"], "")
+                self.assertEqual(claim["role"], "")
+                self.assertEqual(leases, ["repaired-role"])
+                self.assertEqual(
+                    events,
+                    [(event, {"failed_run_id": run_id})],
+                )
 
     def test_exact_refresh_topology_refusal_runs_attested_refresh(self) -> None:
         controller = CONTROL.Controller(self.args)

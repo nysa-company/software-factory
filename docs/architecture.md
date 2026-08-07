@@ -909,6 +909,15 @@ failed charge was exported exactly once with no completed-role evidence, and
 every terminal field matches the typed post-GO failure. Test-author's separate
 operator-authorized protected rewrite flow remains the sole ancestry-rewrite
 exception; the controller never force-pushes either path.
+The same quarantine boundary applies when a clean Planner, Spec-linter,
+Builder, or Narrator commit changes protected ticket evidence. The wrapper
+preserves the rejected head under the failed-role ref and restores the exact
+unchanged remote input. A successor may reopen only that role after the signed
+passport contains the failed charge once and no completion. Legacy releases
+that left the rejected head checked out additionally require the existing
+protected in-flight rewrite authorization before passport migration can move
+back to the unchanged remote input. Same-release retry and acceptance of the
+protected mutation remain forbidden.
 See [hermes-integration.md](hermes-integration.md) for the schemas and commands.
 
 Ticket content is read from the launcher's validated ticket worktree, while
