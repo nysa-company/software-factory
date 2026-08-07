@@ -305,6 +305,8 @@ class Controller:
         self.fallback_lock = Lock()
         # ponytail: cells share one Git common directory; use per-cell refs only if refresh throughput matters.
         self.git_lock = Lock()
+        # ponytail: closeouts are rare; serialize them until throughput requires a queue.
+        self.closeout_lock = Lock()
 
     def read_qualification(self) -> dict[str, Any] | None:
         path = self.product / "factory/QUALIFICATION.json"
@@ -3260,15 +3262,16 @@ class Controller:
                         and validation.get("passport")
                         == passport.get("passport_sha256")
                     )
-                elif claim.get("release_refresh_required") is True:
-                    if self.release_bundle_refreshable(claim, passport):
-                        continue
-                    claim.pop("release_refresh_required", None)
-                    self.save_claim(claim)
                 else:
                     bundle_refresh = self.release_bundle_refreshable(
                         claim, passport
                     )
+                    if (
+                        claim.get("release_refresh_required") is True
+                        and not bundle_refresh
+                    ):
+                        claim.pop("release_refresh_required", None)
+                        self.save_claim(claim)
             if (
                 not self.ticket_release_current(claim)
                 and not merged_closeout
@@ -4578,7 +4581,28 @@ class Controller:
         ) is not None
 
     def closeout(self, claim: dict[str, Any]) -> bool:
+        with self.closeout_lock:
+            return self.closeout_serialized(claim)
+
+    def closeout_serialized(self, claim: dict[str, Any]) -> bool:
         ticket = claim["ticket"]
+        root = Path(claim["worktree"]).parent
+        for sibling in sorted(root.glob("closeout-T-*")):
+            sibling_ticket = sibling.name.removeprefix("closeout-")
+            if (
+                sibling_ticket != ticket
+                and re.fullmatch(r"T-\d+", sibling_ticket)
+                and (
+                    sibling / "factory" / "attestations" / sibling_ticket
+                    / "done.json"
+                ).is_file()
+                and not self.product_ticket_done(sibling_ticket)
+            ):
+                self.event_once(
+                    "closeout_deferred_pending_closeout", ticket,
+                    pending_ticket=sibling_ticket,
+                )
+                return False
         active_claims = sorted(
             (self.product / "factory/.active-runs").glob("*")
         )
@@ -4589,7 +4613,6 @@ class Controller:
             )
             return False
         branch = f"chore/{ticket.lower().replace('-', '')}-closeout"
-        root = Path(claim["worktree"]).parent
         worktree = root / f"closeout-{ticket}"
         with self.git_lock:
             subprocess.run(

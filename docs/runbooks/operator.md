@@ -492,9 +492,13 @@ merged skips provider routing and resumes ordinary closeout. The refresh may
 start from the expected new-kit `Kit-SHA` refusal; the sealed launcher remains
 the authority that accepts only a non-dependency `REFUSE` or `AWAIT` receipt.
 A clean, correctly named, un-attested closeout retry is fast-forwarded to the
-current protected main, while an attested retry is preserved. Current-base
-bundles, dirty or divergent closeouts, invalid passports, and unproven merges
-remain blocked.
+current protected main. Closeouts are serialized; a sibling waits while an
+earlier exact Done closeout remains unmerged. If protected main advances and
+leaves that clean, attested closeout PR behind, the attester closes the exact
+stale PR and regenerates the receipt from current main with an exact
+force-with-lease. Current-base bundles, dirty or divergent closeouts, invalid
+passports, ambiguous PRs, and unproven merges remain blocked. A preserved
+release-refresh marker remains reclaimable across later sealed upgrades.
 
 Protected terminal validation treats pre-`run_id` ledger rows as exact legacy
 row occurrences. Their order may change and new rows may be added, but every

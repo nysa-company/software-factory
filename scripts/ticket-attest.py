@@ -833,7 +833,10 @@ def emergency_pr(repo, branch, ticket, number, workdir, protected):
 
 
 def ensure_closeout_pr(repo, ticket, branch, head, method):
-    fields = "number,headRefName,baseRefName,headRefOid,url,state,mergedAt,mergeCommit"
+    fields = (
+        "number,headRefName,baseRefName,headRefOid,url,state,mergedAt,"
+        "mergeCommit,mergeStateStatus"
+    )
 
     def candidates():
         value = json.loads(gh(
@@ -842,7 +845,7 @@ def ensure_closeout_pr(repo, ticket, branch, head, method):
         ).stdout)
         if not isinstance(value, list):
             raise Refusal("GitHub returned invalid closeout PR evidence")
-        return value
+        return [pr for pr in value if pr.get("state") in {"OPEN", "MERGED"}]
 
     prs = candidates()
     if not prs:
@@ -879,7 +882,10 @@ def ensure_closeout_pr(repo, ticket, branch, head, method):
     )
     view = json.loads(gh(
         "pr", "view", str(pr["number"]), "--repo", repo,
-        "--json", "number,headRefName,baseRefName,headRefOid,autoMergeRequest,state,mergedAt",
+        "--json", (
+            "number,headRefName,baseRefName,headRefOid,autoMergeRequest,state,"
+            "mergedAt,mergeStateStatus"
+        ),
     ).stdout)
     request = view.get("autoMergeRequest") or {}
     if (
@@ -894,6 +900,69 @@ def ensure_closeout_pr(repo, ticket, branch, head, method):
     ):
         raise Refusal("GitHub did not confirm auto-merge for the exact closeout head")
     return view
+
+
+def restart_stale_closeout(
+    product, workdir, repo, remote, branch, head, done_att, pr,
+):
+    parent = done_att.get("closeout_parent", "")
+    main = git(workdir, "rev-parse", "origin/main").stdout.strip()
+    if (
+        pr.get("state") != "OPEN"
+        or pr.get("mergeStateStatus") != "BEHIND"
+        or pr.get("headRefName") != branch
+        or pr.get("baseRefName") != "main"
+        or pr.get("headRefOid") != head
+        or not isinstance(pr.get("number"), int)
+        or parent == main
+        or git(
+            workdir, "merge-base", "--is-ancestor", parent, main, check=False,
+        ).returncode
+    ):
+        raise Refusal("stale closeout is not safe to regenerate")
+    if pr.get("autoMergeRequest"):
+        gh("pr", "merge", str(pr["number"]), "--repo", repo, "--disable-auto")
+    gh("pr", "close", str(pr["number"]), "--repo", repo)
+    closed = json.loads(gh(
+        "pr", "view", str(pr["number"]), "--repo", repo,
+        "--json", "number,headRefName,baseRefName,headRefOid,state",
+    ).stdout)
+    if (
+        closed.get("number") != pr["number"]
+        or closed.get("headRefName") != branch
+        or closed.get("baseRefName") != "main"
+        or closed.get("headRefOid") != head
+        or closed.get("state") != "CLOSED"
+    ):
+        raise Refusal("GitHub did not close the exact stale closeout PR")
+    configured = git(
+        product, "remote", "get-url", "--push", "--all", "origin",
+    ).stdout.splitlines()
+    if configured != [remote]:
+        raise Refusal("configured origin no longer matches the certified product origin")
+    git(workdir, "update-ref", f"refs/heads/{branch}", main, head)
+    git(workdir, "restore", "--source", main, "--staged", "--worktree", "--", ".")
+    pushed = git(
+        workdir, "push", f"--force-with-lease=refs/heads/{branch}:{head}",
+        "--", remote, f"{main}:refs/heads/{branch}", check=False,
+    )
+    observed = git(
+        workdir, "ls-remote", "--heads", "--", remote, f"refs/heads/{branch}",
+    ).stdout.split()
+    if observed[:1] != [main]:
+        if observed[:1] == [head]:
+            git(workdir, "update-ref", f"refs/heads/{branch}", head, main)
+            git(workdir, "restore", "--source", head, "--staged", "--worktree", "--", ".")
+        raise Refusal(
+            pushed.stderr.strip() or "remote did not confirm regenerated closeout branch"
+        )
+    git(workdir, "update-ref", f"refs/remotes/origin/{branch}", main)
+    if (
+        git(workdir, "rev-parse", "HEAD").stdout.strip() != main
+        or git(workdir, "status", "--porcelain", "--untracked-files=all").stdout
+    ):
+        raise Refusal("regenerated closeout worktree is not exact and clean")
+    return main
 
 
 def ensure_clean_branch(product, workdir, expected, *, based_on_main=False, require_remote=True):
@@ -2804,7 +2873,10 @@ def emergency_done(
     }
 
 
-def done(args, product, workdir, repo, prefix, remote, checks, kit_sha, method):
+def done(
+    args, product, workdir, repo, prefix, remote, checks, kit_sha, method,
+    allow_restart=True,
+):
     branch = f"chore/{args.ticket.lower().replace('-', '')}-closeout"
     head = ensure_clean_branch(product, workdir, branch, require_remote=False)
     main_head = git(workdir, "rev-parse", "origin/main").stdout.strip()
@@ -2922,6 +2994,23 @@ def done(args, product, workdir, repo, prefix, remote, checks, kit_sha, method):
     closeout_pr = ensure_closeout_pr(
         repo, args.ticket, branch, head, method,
     )
+    if (
+        retry
+        and closeout_pr.get("state") == "OPEN"
+        and closeout_pr.get("mergeStateStatus") == "BEHIND"
+    ):
+        if not allow_restart:
+            raise Refusal("closeout became stale again during regeneration")
+        retired = closeout_pr["number"]
+        restart_stale_closeout(
+            product, workdir, repo, remote, branch, head, done_att, closeout_pr,
+        )
+        result = done(
+            args, product, workdir, repo, prefix, remote, checks, kit_sha,
+            method, False,
+        )
+        result["retired_closeout_pr_number"] = retired
+        return result
     finalized = (
         finalize_terminal(product, workdir, remote, args.ticket, "attested-done")
         if closeout_pr["state"] == "MERGED" else None

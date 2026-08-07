@@ -4396,6 +4396,44 @@ class FactoryControllerTest(unittest.TestCase):
         passport["publication_state"] = "merged"
         self.assertFalse(controller.release_bundle_refreshable(claim, passport))
 
+    def test_release_upgrade_reclaims_preserved_bundle_refresh(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "parked/T-110"
+        cell.mkdir(parents=True)
+        claim = {
+            "branch": "ticket/T-110", "lease": "a" * 64,
+            "priority": "normal", "publication_lease": "", "receipt": "",
+            "release_refresh_required": True, "role": "",
+            "schema": CONTROL.CLAIM_SCHEMA, "status": "blocked",
+            "blocked_reason": "route-migration-required", "ticket": "T-110",
+            "worktree": str(cell),
+        }
+        passports = self.state / "passports"
+        passports.mkdir(mode=0o700)
+        CONTROL.write(passports / "T-110.json", {
+            "factory_sha": self.release.name,
+        })
+        controller.marker(
+            f"passport-route-migration-pending-T-110-{self.release.name}",
+            {
+                "factory_sha": self.release.name,
+                "schema": CONTROL.EVENT_SCHEMA,
+                "ticket": "T-110",
+            },
+        )
+        events = []
+        controller.release_bundle_refreshable = lambda *_args: True
+        controller.ticket_release_current = lambda _claim: False
+        controller.renew = lambda _claim: None
+        controller.event = lambda name, *_args, **_kwargs: events.append(name)
+
+        controller.recover_upgraded_claims([claim])
+
+        self.assertEqual(claim["status"], "claimed")
+        self.assertTrue(claim["release_refresh_required"])
+        self.assertNotIn("blocked_reason", claim)
+        self.assertIn("upgraded_bundle_refresh_recovered", events)
+
     def test_release_bundle_refresh_returns_to_route_migration_gate(self) -> None:
         controller = CONTROL.Controller(self.args)
         cell = self.root / "parked/T-110"
@@ -8276,6 +8314,28 @@ class FactoryControllerTest(unittest.TestCase):
         }))
         self.assertEqual(events, [(('closeout_deferred_active_claim', 'T-175'), {
             "active_claim": "T-174.reviewer.lock",
+        })])
+
+    def test_closeout_defers_behind_unmerged_sibling_closeout(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        root = self.root / "cells"
+        done = root / "closeout-T-174/factory/attestations/T-174/done.json"
+        done.parent.mkdir(parents=True)
+        done.write_text("{}\n", encoding="utf-8")
+        events = []
+        controller.product_ticket_done = lambda ticket: False
+        controller.event_once = lambda *args, **kwargs: events.append((args, kwargs))
+        controller.json_call = lambda *_args, **_kwargs: (
+            (_ for _ in ()).throw(AssertionError("concurrent closeout ran"))
+        )
+
+        self.assertFalse(controller.closeout({
+            "lease": "a" * 64,
+            "ticket": "T-175",
+            "worktree": str(root / "cell-1"),
+        }))
+        self.assertEqual(events, [(('closeout_deferred_pending_closeout', 'T-175'), {
+            "pending_ticket": "T-174",
         })])
 
     def test_closeout_records_exact_terminal_linear_evidence_once(self) -> None:
