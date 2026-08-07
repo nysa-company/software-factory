@@ -115,7 +115,7 @@ class TicketPrTest(unittest.TestCase):
         self.trace = self.root / "trace"
         (self.bin / "gh").write_text(
             """#!/usr/bin/env python3
-import json, os, pathlib, sys
+import base64, json, os, pathlib, sys
 state = pathlib.Path(os.environ['FAKE_PR_STATE'])
 trace = pathlib.Path(os.environ['FAKE_PR_TRACE'])
 args = sys.argv[1:]
@@ -141,12 +141,16 @@ elif args[:2] == ['pr', 'checks']:
     print(json.dumps([{'name': 'ci', 'state': bucket, 'bucket': bucket}]))
     raise SystemExit(8 if bucket == 'pending' else 1 if bucket != 'pass' else 0)
 elif args[:2] == ['pr', 'view']:
-    print(json.dumps({'comments': [{
+    comments = [] if os.environ.get('FAKE_PREVIEW_REPORTED') == '0' else [{
         'author': {'login': 'railway-app'},
         'body': '<!-- railway-bot-comment-version=2 -->\\n'
                 '| api | ✅ Success ([View Logs](https://railway.com/project/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/service/11111111-1111-1111-1111-111111111111?id=33333333-3333-3333-3333-333333333333&environmentId=bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb)) | [Web](https://api-example-pr-7.up.railway.app) | now |\\n'
                 '| web | ✅ Success ([View Logs](https://railway.com/project/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/service/22222222-2222-2222-2222-222222222222?id=44444444-4444-4444-4444-444444444444&environmentId=bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb)) | [Web](https://web-example-pr-7.up.railway.app) | now |',
-    }]}))
+    }]
+    print(json.dumps({'comments': comments}))
+elif args[:1] == ['api']:
+    for item in json.loads(os.environ['FAKE_PR_FILES']):
+        print(base64.b64encode(json.dumps(item).encode()).decode())
 else:
     raise SystemExit(2)
 """
@@ -220,6 +224,23 @@ print(json.dumps([{
             check=True,
         )
 
+    def configure_nonvisual_paths(self, value="app/tools/,app/tests/"):
+        project = self.product / "factory/PROJECT.env"
+        project.write_text(
+            project.read_text(encoding="utf-8")
+            + f"NONVISUAL_PATHS={value}\n",
+            encoding="utf-8",
+        )
+        subprocess.run(["git", "-C", self.product, "add", "factory"], check=True)
+        subprocess.run(
+            ["git", "-C", self.product, "commit", "-qm", "configure nonvisual paths"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", self.product, "push", "-q", "origin", "ticket/T-100"],
+            check=True,
+        )
+
     def test_exact_remote_head_retries_once(self):
         failed = subprocess.CompletedProcess(
             ["git"], 128, stdout="", stderr="transport unavailable"
@@ -241,6 +262,7 @@ print(json.dumps([{
     def command(
         self, expected=0, bucket="pass", lease_id=LEASE_ID,
         contract="", stage="", receipt="", deployed_sha=None,
+        preview_reported=True, pr_files=None,
     ):
         head = subprocess.run(
             ["git", "-C", self.product, "rev-parse", "HEAD"],
@@ -261,6 +283,13 @@ print(json.dumps([{
                 "FAKE_PR_HEAD": head,
                 "FAKE_CHECK_BUCKET": bucket,
                 "FAKE_DEPLOYED_SHA": deployed_sha or head,
+                "FAKE_PREVIEW_REPORTED": "1" if preview_reported else "0",
+                "FAKE_PR_FILES": json.dumps(pr_files or [
+                    {"filename": "app/tools/offline.js", "status": "added"},
+                    {"filename": "app/tests/offline.test.js", "status": "added"},
+                    {"filename": "factory/route-plans/T-100.json", "status": "added"},
+                    {"filename": "factory/tickets/T-100.md", "status": "modified"},
+                ]),
         }
         if contract:
             environment.update({
@@ -792,6 +821,80 @@ print(json.dumps([{
         ready = self.command()
         self.assertEqual(ready["status"], "ready")
         self.assertEqual(ready["preview_preflight"]["status"], "pass")
+
+    def test_explicit_nonvisual_paths_admit_without_a_preview(self):
+        self.configure_nonvisual_paths()
+        self.prepare_narrator()
+
+        ready = self.command(preview_reported=False)
+
+        self.assertEqual(ready["status"], "ready")
+        self.assertEqual(ready["publication_mode"], "nonvisual")
+        self.assertEqual(ready["preview_urls"], [])
+        self.assertEqual(ready["preview_identity"]["status"], "pass")
+        self.assertEqual(
+            ready["preview_identity"]["observed"][0]["policy"],
+            "nonvisual_paths",
+        )
+        self.assertNotIn("pr view", self.trace.read_text())
+
+    def test_nonvisual_paths_keep_mixed_and_renamed_diffs_on_the_preview_gate(self):
+        self.configure_nonvisual_paths()
+        self.prepare_narrator()
+        metadata = [
+            {"filename": "factory/route-plans/T-100.json", "status": "added"},
+            {"filename": "factory/tickets/T-100.md", "status": "modified"},
+        ]
+        for files in (
+            [
+                {"filename": "app/tools/offline.js", "status": "added"},
+                {"filename": "app/server.js", "status": "modified"},
+                *metadata,
+            ],
+            [
+                {
+                    "filename": "app/tools/offline.js",
+                    "previous_filename": "app/server.js",
+                    "status": "renamed",
+                },
+                *metadata,
+            ],
+            [
+                {"filename": "app/tools/offline.js", "status": "added"},
+                {"filename": "factory/PROJECT.env", "status": "modified"},
+                *metadata,
+            ],
+        ):
+            with self.subTest(files=files):
+                waiting = self.command(
+                    preview_reported=False, pr_files=files,
+                )
+                self.assertEqual(waiting["status"], "wait")
+                self.assertEqual(waiting["publication_mode"], "railway")
+                self.assertEqual(
+                    waiting["checks"], ["preview identity not_reported"],
+                )
+
+    def test_nonvisual_path_policy_rejects_malformed_or_empty_file_evidence(self):
+        self.configure_nonvisual_paths("app/tools")
+        self.prepare_narrator()
+        malformed = self.command(expected=2, preview_reported=False)
+        self.assertIn("NONVISUAL_PATHS is invalid", malformed["error"])
+
+        project = self.product / "factory/PROJECT.env"
+        project.write_text(
+            project.read_text(encoding="utf-8").replace(
+                "NONVISUAL_PATHS=app/tools", "NONVISUAL_PATHS=app/tools/",
+            ),
+            encoding="utf-8",
+        )
+        empty = subprocess.CompletedProcess(["gh"], 0, stdout="", stderr="")
+        with patch.object(TICKET_PR, "run", return_value=empty):
+            with self.assertRaisesRegex(TICKET_PR.Refusal, "empty or excessive"):
+                TICKET_PR.nonvisual_preview_evidence(
+                    self.product / "factory", "example/product", 7,
+                    "T-100", "a" * 40,
+                )
 
     def test_narrator_recovery_creates_pr_only_after_valid_review_lineage(self):
         self.prepare_narrator(accounting_state="abandoned_conservative")

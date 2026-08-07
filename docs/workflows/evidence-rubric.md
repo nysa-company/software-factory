@@ -16,6 +16,9 @@ What the operator must see in the Narrator's bundle before approving, by risk cl
 - Failed criteria are shown first, never buried.
 - External-send tickets are risk-sorted first whenever the operator reviews a batch.
 - Screenshots show the actual preview deploy, never mockups. Where a design reference exists (e.g. a prototype page), include the side-by-side.
+- A trusted `FACTORY_PR_NONVISUAL_EVIDENCE_V1` bundle may mark Preview and
+  Screenshots `Not applicable — nonvisual PR`; the exact PR head, required
+  checks, Reviewer evidence, and product-declared path policy remain mandatory.
 - In a trusted `FACTORY_DEV_PRLESS_EVIDENCE_V1` development proof, when the
   frozen contract explicitly has no browser, HTTP, or deployable surface, the
   Preview and Screenshots sections say `Not applicable — backend-only

@@ -13,7 +13,7 @@ The kit is installed as immutable exact-SHA releases and shared by every product
 - **Kit:** scripts, adapters and version pins, role contracts, workflows, runbooks, and CI templates. Fixes land through reviewed PRs, but a merge does not activate them.
 - **Product repository:** `factory/` state (including initiatives and tickets), product documentation, instantiated CI, GitHub rules, and deploy credentials. All products share the Software Factory Linear team; each initiative gets a Linear Project.
 - **`factory/KIT_PIN`:** exactly one lowercase, full 40-character kit SHA. Production requires a protected-main, successful-CI installed release; a sealed qualification may instead bind one clean local candidate SHA/tree. External products fail closed when the pin is missing, malformed, or different from the physical release.
-- **`factory/PROJECT.env`:** product name, exact `GH_REPO`, protected test paths, worktree location, ticket branch prefix, contract-1.3 `DONE_REQUIRED_CHECKS` (a unique comma-separated list of exact post-merge status/check names), required `AUTO_MERGE_METHOD` (`squash`, `merge`, or `rebase`), and optional repository-contained `PREVIEW_PREFLIGHT_SCRIPT`.
+- **`factory/PROJECT.env`:** product name, exact `GH_REPO`, protected test paths, worktree location, ticket branch prefix, contract-1.3 `DONE_REQUIRED_CHECKS` (a unique comma-separated list of exact post-merge status/check names), required `AUTO_MERGE_METHOD` (`squash`, `merge`, or `rebase`), optional repository-contained `PREVIEW_PREFLIGHT_SCRIPT`, and optional fail-closed `NONVISUAL_PATHS` directory prefixes.
 
 Per-product limits live in each product's `ENVELOPE.env`; the machine limit in `~/.factory/global.env` caps aggregate spend.
 
@@ -494,7 +494,15 @@ and becomes one typed timeout. A product-configured preview preflight runs only
 after that identity passes. Its bounded JSON result must bind the same head;
 `wait` remains uncharged, `fail` blocks before Narrator, and missing, unsafe, or
 malformed evidence refuses. Products without the optional hook retain exact-SHA
-deployment admission without an invented topology policy. A merged terminal
+deployment admission without an invented topology policy. The only no-deploy
+path is an explicit certified `NONVISUAL_PATHS` policy whose complete GitHub PR
+file inventory contains added or modified semantic files solely under those
+non-overlapping directory prefixes and otherwise only exact current-ticket
+Factory metadata. The helper binds that decision to the reviewed head and file
+set digest, and Narrator still produces the ordinary approval bundle with
+Preview and Screenshots explicitly not applicable. Absence of the policy,
+mixed or empty semantics, unknown Factory paths, removals, renames, copies, or
+malformed GitHub evidence retains the Railway requirement or refuses. A merged terminal
 closeout persists one exact passport/PR/protected-main/ticket-blob request
 before the idempotent Done action. Only that request may reopen a clean parked
 `controller-error`; unrelated errors remain blocked. Later protected-main

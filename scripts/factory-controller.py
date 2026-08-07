@@ -4596,6 +4596,8 @@ class Controller:
             if publication is None:
                 raise ControllerError("Narrator publication evidence is missing")
             preview_urls = publication.get("preview_urls")
+            publication_mode = publication.get("publication_mode")
+            preview_identity = publication.get("preview_identity")
             pr_number = publication.get("pr_number")
             pr_url = publication.get("url")
             head = publication.get("head")
@@ -4608,32 +4610,65 @@ class Controller:
                 or not SHA.fullmatch(head or "")
                 or publication.get("checks") != []
                 or not isinstance(preview_urls, list)
-                or not preview_urls
+                or publication_mode not in {"nonvisual", "railway"}
             ):
                 raise ControllerError("Narrator publication evidence is invalid")
-            for preview_url in preview_urls:
-                parsed = urlsplit(preview_url) if isinstance(preview_url, str) else None
+            if publication_mode == "nonvisual":
+                observed = (
+                    preview_identity.get("observed")
+                    if isinstance(preview_identity, dict) else None
+                )
                 if (
-                    parsed is None
-                    or parsed.scheme != "https"
-                    or not parsed.hostname
-                    or not parsed.hostname.endswith(".up.railway.app")
-                    or parsed.username is not None
-                    or parsed.password is not None
-                    or parsed.port is not None
-                    or parsed.query
-                    or parsed.fragment
-                    or parsed.path not in ("", "/")
+                    preview_urls
+                    or not isinstance(preview_identity, dict)
+                    or preview_identity.get("expected") != head
+                    or preview_identity.get("status") != "pass"
+                    or preview_identity.get("reason") is not None
+                    or not isinstance(observed, list)
+                    or len(observed) != 1
+                    or not isinstance(observed[0], dict)
+                    or set(observed[0]) != {"paths_sha256", "policy"}
+                    or observed[0].get("policy") != "nonvisual_paths"
+                    or not isinstance(observed[0].get("paths_sha256"), str)
+                    or not DIGEST.fullmatch(observed[0].get("paths_sha256", ""))
                 ):
+                    raise ControllerError("Narrator nonvisual evidence is invalid")
+                task += (
+                    f" Trusted publication evidence: PR #{pr_number} is {pr_url} at exact "
+                    f"head {head}; every configured required GitHub check passed. "
+                    "Trusted host marker: FACTORY_PR_NONVISUAL_EVIDENCE_V1. The complete "
+                    "PR semantic diff is confined to the product's protected nonvisual "
+                    "path policy. Mark Preview and Screenshots not applicable and explain "
+                    "the offline behavior verified by the existing Reviewer and protected-CI "
+                    "evidence. Do not run tests, builds, repo-check, secret-scan, or any "
+                    "broad verification suite."
+                )
+            else:
+                if not preview_urls:
                     raise ControllerError("Narrator preview evidence is invalid")
-            task += (
-                f" Trusted publication evidence: PR #{pr_number} is {pr_url} at exact "
-                f"head {head}; every configured required GitHub check passed. Trusted "
-                f"preview endpoints: {', '.join(preview_urls)}. Verify the deployed head "
-                "and exercise the frozen preview behavior, then capture the required "
-                "screenshots. Use the existing Reviewer and protected-CI evidence. Do not "
-                "run tests, builds, repo-check, secret-scan, or any broad verification suite."
-            )
+                for preview_url in preview_urls:
+                    parsed = urlsplit(preview_url) if isinstance(preview_url, str) else None
+                    if (
+                        parsed is None
+                        or parsed.scheme != "https"
+                        or not parsed.hostname
+                        or not parsed.hostname.endswith(".up.railway.app")
+                        or parsed.username is not None
+                        or parsed.password is not None
+                        or parsed.port is not None
+                        or parsed.query
+                        or parsed.fragment
+                        or parsed.path not in ("", "/")
+                    ):
+                        raise ControllerError("Narrator preview evidence is invalid")
+                task += (
+                    f" Trusted publication evidence: PR #{pr_number} is {pr_url} at exact "
+                    f"head {head}; every configured required GitHub check passed. Trusted "
+                    f"preview endpoints: {', '.join(preview_urls)}. Verify the deployed head "
+                    "and exercise the frozen preview behavior, then capture the required "
+                    "screenshots. Use the existing Reviewer and protected-CI evidence. Do not "
+                    "run tests, builds, repo-check, secret-scan, or any broad verification suite."
+                )
         command = [
             str(self.launcher), self.project, "run",
             "--role", role, "--ticket", claim["ticket"],
