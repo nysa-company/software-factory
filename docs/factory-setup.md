@@ -71,7 +71,13 @@ Fresh-map recovery adopts only Projects with one durable initiative identity and
 fails on ambiguity or an unidentified same-name Project. For a new selected
 ticket after setup, use `scripts/linear-sync.py --factory-root <product-repo>
 --ticket T-NNN --initialize`; qualification preparation invokes that bounded
-path for selected unmapped tickets when the canonical map is present. A Linear
+path for every selected ticket against its bound lane-local map. Fresh isolated
+preparation requires `--operator-map-seed <absolute-owner-only-linear-map.json>`
+(or `FACTORY_QUALIFICATION_OPERATOR_MAP_SEED`) and fails closed if the seed is
+absent, ambiguous, unsafe, malformed, or contains secret-bearing fields. It
+copies the validated seed into owner-only qualification authority, where the
+mutable map, locks, clear intents, and runtime ledger remain outside the sealed
+product checkout. A Linear
 rate limit is persisted as `linear_rate_limited retry_after_seconds=N` and
 keeps provider admission closed until a later successful reconciliation.
 
@@ -128,7 +134,10 @@ keeps provider admission closed until a later successful reconciliation.
   A fresh isolated worktree may omit ignored runtime directories; the preparer
   alone creates physical owner-only `factory/runs/`. It rejects noncanonical
   selected-ticket freeze metadata and any selected dependency pair before
-  sealing, so the restart barrier cannot wait forever.
+  sealing, so the restart barrier cannot wait forever. Supply its canonical
+  owner-local Linear map with `--operator-map-seed`; the preparer binds a
+  lane-local copy and runtime ledger, initializes only the selected cohort,
+  and proves the product is still clean before it publishes the environment.
   It also provisions the exact historical run artifacts named by those
   passports from its owner-only retained closure; any absent or altered
   manifest, output, or progress journal stops preparation before a paid role.

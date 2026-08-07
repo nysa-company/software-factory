@@ -38,6 +38,9 @@ class QualificationEnvironmentTest(unittest.TestCase):
             self.skipTest("qualification trust root is macOS-only")
         self.workspace = Path(tempfile.mkdtemp(prefix="qualification-test."))
         self.original_home = os.environ.get("HOME")
+        self.original_operator_seed = os.environ.get(
+            "FACTORY_QUALIFICATION_OPERATOR_MAP_SEED"
+        )
         self.home = self.workspace / "home"
         self.home.mkdir(mode=0o700)
         (self.home / ".factory").mkdir(mode=0o700)
@@ -72,6 +75,32 @@ class QualificationEnvironmentTest(unittest.TestCase):
             ROOT / "scripts/ticket-passport.py",
             self.factory / "scripts/ticket-passport.py",
         )
+        linear_sync = self.factory / "scripts/linear-sync.py"
+        linear_sync.write_text("""#!/usr/bin/env python3
+import argparse, json, os
+from pathlib import Path
+parser = argparse.ArgumentParser()
+parser.add_argument('--factory-root')
+parser.add_argument('--ticket')
+parser.add_argument('--initialize', action='store_true')
+args = parser.parse_args()
+mapping_path = Path(os.environ['FACTORY_OPERATOR_MAP'])
+mapping = json.loads(mapping_path.read_text())
+entry = mapping['tickets'].setdefault(args.ticket, {})
+entry.setdefault('issue_id', 'issue-' + args.ticket)
+entry.setdefault('identifier', 'SF-' + args.ticket.split('-')[1])
+selected = mapping['_sync'].setdefault('selected_ticket_success_at', {})
+selected[args.ticket] = '2026-08-07T00:00:00+00:00'
+mapping_path.write_text(json.dumps(mapping, sort_keys=True) + '\\n')
+mapping_path.chmod(0o600)
+lock = mapping_path.parent / '.linear-sync-cycle.lock'
+lock.touch(mode=0o600, exist_ok=True)
+lock.chmod(0o600)
+ledger = Path(os.environ['FACTORY_LEDGER'])
+ledger.write_text('ticket,role,cost_usd,exit_status\\n')
+ledger.chmod(0o600)
+""", encoding="utf-8")
+        linear_sync.chmod(0o755)
         (self.factory / "scripts/lib").mkdir()
         shutil.copy2(
             ROOT / "scripts/certification-preflight.py",
@@ -132,6 +161,7 @@ class QualificationEnvironmentTest(unittest.TestCase):
         for ticket in ("T-101", "T-102", "T-103"):
             (self.product / f"factory/tickets/{ticket}.md").write_text(
                 f"# {ticket}\n\nState: Ready\nProduct-Decisions: frozen\n"
+                "Initiative: I-001\n"
                 "Depends-On: none\nFixture-Seams: none\n"
                 "Authentication-Seams: none\nProtected-Test-Conflicts: none\n",
                 encoding="utf-8",
@@ -163,6 +193,19 @@ class QualificationEnvironmentTest(unittest.TestCase):
             self.product, "git", "update-ref", "refs/remotes/origin/main",
             run(self.product, "git", "rev-parse", "HEAD"),
         )
+        self.operator_seed = self.workspace / "linear-map-seed.json"
+        ENVIRONMENT.write(self.operator_seed, {
+            "_config": {
+                "labels": {}, "states": {}, "team_id": "team-id",
+                "team_key": "SF", "template_id": "template-id",
+            },
+            "_sync": {},
+            "initiatives": {"I-001": {"project_id": "project-id"}},
+            "tickets": {},
+        })
+        os.environ["FACTORY_QUALIFICATION_OPERATOR_MAP_SEED"] = str(
+            self.operator_seed
+        )
 
     def tearDown(self) -> None:
         for base, directories, files in os.walk(self.root, topdown=False):
@@ -175,6 +218,12 @@ class QualificationEnvironmentTest(unittest.TestCase):
             os.environ.pop("HOME", None)
         else:
             os.environ["HOME"] = self.original_home
+        if self.original_operator_seed is None:
+            os.environ.pop("FACTORY_QUALIFICATION_OPERATOR_MAP_SEED", None)
+        else:
+            os.environ["FACTORY_QUALIFICATION_OPERATOR_MAP_SEED"] = (
+                self.original_operator_seed
+            )
         shutil.rmtree(self.workspace)
 
     def test_prepares_exact_read_only_candidate_once(self) -> None:
@@ -188,6 +237,27 @@ class QualificationEnvironmentTest(unittest.TestCase):
         release = Path(value["launcher"]).parents[3]
         authority = Path(value["authority_root"])
         self.assertEqual(value["factory_sha"], self.sha)
+        active = ENVIRONMENT.read(self.root / "projects/relay/active.json")
+        receipt = ENVIRONMENT.read(
+            self.root / "receipts" / f"{active['receipt_id']}.json"
+        )
+        operator_map = authority / "operator/linear-map.json"
+        runtime_ledger = authority / "operator/runtime-ledger.csv"
+        self.assertEqual(active["operator_map_path"], str(operator_map))
+        self.assertEqual(active["runtime_ledger_path"], str(runtime_ledger))
+        self.assertEqual(receipt["operator_map_path"], str(operator_map))
+        self.assertEqual(receipt["runtime_ledger_path"], str(runtime_ledger))
+        self.assertEqual(
+            set(ENVIRONMENT.read(operator_map)["tickets"]),
+            {"T-101", "T-102", "T-103"},
+        )
+        self.assertTrue(runtime_ledger.is_file())
+        self.assertEqual(run(self.product, "git", "status", "--porcelain"), "")
+        for relative in (
+            "linear-map.json", ".linear-sync-cycle.lock",
+            ".linear-sync.lock", ".linear-operator-clears", "runtime-ledger.csv",
+        ):
+            self.assertFalse((self.product / "factory" / relative).exists())
         runs = self.product / "factory/runs"
         self.assertTrue(runs.is_dir())
         self.assertEqual(runs.stat().st_mode & 0o777, 0o700)
@@ -292,6 +362,166 @@ class QualificationEnvironmentTest(unittest.TestCase):
         ):
             ENVIRONMENT.prepare(args)
 
+    def test_operator_seed_fails_closed_when_absent_unsafe_or_malformed(self) -> None:
+        os.environ.pop("FACTORY_QUALIFICATION_OPERATOR_MAP_SEED")
+        args = argparse.Namespace(
+            factory_root=self.factory, product_root=self.product,
+            project="relay", root=self.root,
+        )
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError, "operator map seed is required",
+        ):
+            ENVIRONMENT.prepare(args)
+        self.assertFalse(self.home.joinpath(".factory/qualification/relay").exists())
+        self.assertFalse((self.root / "marker.json").exists())
+
+        unsafe = self.workspace / "unsafe-map.json"
+        unsafe.write_bytes(self.operator_seed.read_bytes())
+        unsafe.chmod(0o644)
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError, "unsafe",
+        ):
+            ENVIRONMENT.prepare(argparse.Namespace(
+                **vars(args), operator_map_seed=unsafe,
+            ))
+
+        symlink = self.workspace / "linked-map.json"
+        symlink.symlink_to(self.operator_seed)
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError, "unsafe",
+        ):
+            ENVIRONMENT.prepare(argparse.Namespace(
+                **vars(args), operator_map_seed=symlink,
+            ))
+
+        malformed = self.workspace / "malformed-map.json"
+        ENVIRONMENT.write(malformed, {"tickets": {}})
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError, "Linear map is malformed",
+        ):
+            ENVIRONMENT.prepare(argparse.Namespace(
+                **vars(args), operator_map_seed=malformed,
+            ))
+
+        secret = self.workspace / "secret-map.json"
+        value = ENVIRONMENT.read(self.operator_seed)
+        value["_config"]["api_token"] = "do-not-copy"
+        ENVIRONMENT.write(secret, value)
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError, "contains secret material",
+        ):
+            ENVIRONMENT.prepare(argparse.Namespace(
+                **vars(args), operator_map_seed=secret,
+            ))
+
+        alternate = self.workspace / "alternate-map.json"
+        ENVIRONMENT.write(alternate, ENVIRONMENT.read(self.operator_seed))
+        os.environ["FACTORY_QUALIFICATION_OPERATOR_MAP_SEED"] = str(
+            self.operator_seed
+        )
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError, "operator map seed is ambiguous",
+        ):
+            ENVIRONMENT.prepare(argparse.Namespace(
+                **vars(args), operator_map_seed=alternate,
+            ))
+        self.assertFalse((self.root / "marker.json").exists())
+
+    def test_partial_selected_initialization_restarts_without_duplication(self) -> None:
+        args = argparse.Namespace(
+            factory_root=self.factory, product_root=self.product,
+            project="relay", root=self.root,
+        )
+        authority = self.home / ".factory/qualification/relay"
+
+        def interrupt(_factory, _product, map_path, _ledger_path):
+            mapping = ENVIRONMENT.read(map_path)
+            mapping["tickets"]["T-101"] = {
+                "identifier": "SF-101", "issue_id": "issue-T-101",
+            }
+            mapping["_sync"]["selected_ticket_success_at"] = {
+                "T-101": "2026-08-07T00:00:00+00:00",
+            }
+            ENVIRONMENT.replace(map_path, mapping)
+            raise ENVIRONMENT.EnvironmentError("T-102: simulated interruption")
+
+        with (
+            mock.patch.object(
+                ENVIRONMENT, "initialize_selected_linear", side_effect=interrupt,
+            ),
+            mock.patch.object(ENVIRONMENT, "prepare_provider") as provider,
+            self.assertRaisesRegex(
+                ENVIRONMENT.EnvironmentError, "simulated interruption",
+            ),
+        ):
+            ENVIRONMENT.prepare(args)
+        provider.assert_not_called()
+        self.assertFalse((self.root / "marker.json").exists())
+        self.assertTrue((authority / "operator-bootstrap.json").is_file())
+        self.assertEqual(
+            ENVIRONMENT.read(authority / "operator/linear-map.json")["tickets"]
+            ["T-101"]["issue_id"],
+            "issue-T-101",
+        )
+
+        self.operator_seed.unlink()
+        value = ENVIRONMENT.prepare(args)
+        mapping = ENVIRONMENT.read(authority / "operator/linear-map.json")
+        self.assertEqual(value["status"], "prepared")
+        self.assertEqual(mapping["tickets"]["T-101"]["issue_id"], "issue-T-101")
+        self.assertEqual(len(mapping["tickets"]), 3)
+        self.assertEqual(run(self.product, "git", "status", "--porcelain"), "")
+
+    def test_partial_bootstrap_ignores_later_seed_change(self) -> None:
+        args = argparse.Namespace(
+            factory_root=self.factory, product_root=self.product,
+            project="relay", root=self.root,
+        )
+
+        def interrupt(_factory, _product, map_path, _ledger_path):
+            mapping = ENVIRONMENT.read(map_path)
+            mapping["tickets"]["T-101"] = {
+                "identifier": "SF-101", "issue_id": "issue-T-101",
+            }
+            mapping["_sync"]["selected_ticket_success_at"] = {
+                "T-101": "2026-08-07T00:00:00+00:00",
+            }
+            ENVIRONMENT.replace(map_path, mapping)
+            raise ENVIRONMENT.EnvironmentError("simulated interruption")
+
+        with (
+            mock.patch.object(
+                ENVIRONMENT, "initialize_selected_linear", side_effect=interrupt,
+            ),
+            self.assertRaisesRegex(ENVIRONMENT.EnvironmentError, "interruption"),
+        ):
+            ENVIRONMENT.prepare(args)
+        changed = ENVIRONMENT.read(self.operator_seed)
+        changed["_sync"]["last_success_at"] = "2026-08-07T01:00:00+00:00"
+        ENVIRONMENT.replace(self.operator_seed, changed)
+
+        ENVIRONMENT.prepare(args)
+        lane_map = ENVIRONMENT.read(
+            self.home / ".factory/qualification/relay/operator/linear-map.json"
+        )
+        self.assertNotIn("last_success_at", lane_map["_sync"])
+        self.assertEqual(lane_map["tickets"]["T-101"]["issue_id"], "issue-T-101")
+
+    def test_second_operator_cycle_remains_outside_product(self) -> None:
+        value = ENVIRONMENT.prepare(argparse.Namespace(
+            factory_root=self.factory, product_root=self.product,
+            project="relay", root=self.root,
+        ))
+        operator = Path(value["authority_root"]) / "operator"
+        mapping = ENVIRONMENT.read(operator / "linear-map.json")
+        mapping["_sync"]["last_success_at"] = "2026-08-07T00:01:00+00:00"
+        ENVIRONMENT.replace(operator / "linear-map.json", mapping)
+        clears = operator / ".linear-operator-clears"
+        clears.mkdir(mode=0o700)
+        ENVIRONMENT.write(clears / "T-101.json", {"ticket": "T-101"})
+        self.assertTrue((operator / ".linear-sync-cycle.lock").is_file())
+        self.assertEqual(run(self.product, "git", "status", "--porcelain"), "")
+
     def test_rejects_unsafe_runtime_root_and_noncanonical_contracts(self) -> None:
         runs = self.product / "factory/runs"
         runs.symlink_to(self.workspace)
@@ -395,24 +625,39 @@ class QualificationEnvironmentTest(unittest.TestCase):
         path.write_text(json.dumps(original) + "\n")
 
     def test_selected_linear_refreshes_already_initialized_cohort(self) -> None:
-        mapping = self.product / "factory/linear-map.json"
-        mapping.write_text(json.dumps({
+        mapping = self.workspace / "selected-linear-map.json"
+        ENVIRONMENT.write(mapping, {
+            "_config": {}, "_sync": {}, "initiatives": {},
             "tickets": {
-                ticket: {"operator_fields_initialized": True}
+                ticket: {"operator_fields_initialized": True, "issue_id": ticket}
                 for ticket in ("T-101", "T-102", "T-103")
             },
-        }) + "\n")
+        })
+        ledger = self.workspace / "selected-runtime-ledger.csv"
         completed = subprocess.CompletedProcess([], 0, "", "")
+        def refresh(*_args, **_kwargs):
+            value = ENVIRONMENT.read(mapping)
+            ticket = _args[0][-2]
+            value["_sync"].setdefault("selected_ticket_success_at", {})[ticket] = (
+                "2026-08-07T00:00:00+00:00"
+            )
+            ENVIRONMENT.replace(mapping, value)
+            return completed
         with mock.patch.object(
-            ENVIRONMENT.subprocess, "run", return_value=completed,
+            ENVIRONMENT.subprocess, "run", side_effect=refresh,
         ) as invoked:
-            ENVIRONMENT.initialize_selected_linear(self.factory, self.product)
+            ENVIRONMENT.initialize_selected_linear(
+                self.factory, self.product, mapping, ledger,
+            )
         self.assertEqual(invoked.call_count, 3)
         self.assertEqual(
             [call.args[0][-2:] for call in invoked.call_args_list],
             [["T-101", "--initialize"], ["T-102", "--initialize"],
              ["T-103", "--initialize"]],
         )
+        for call in invoked.call_args_list:
+            self.assertEqual(call.kwargs["env"]["FACTORY_OPERATOR_MAP"], str(mapping))
+            self.assertEqual(call.kwargs["env"]["FACTORY_LEDGER"], str(ledger))
 
     def test_rejects_ticket_blob_that_dispatch_would_not_use(self) -> None:
         ticket = self.product / "factory/tickets/T-101.md"

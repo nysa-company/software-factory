@@ -769,15 +769,24 @@ def effective_ledger(factory_dir, dry=False):
         ensure_runs_root(factory_dir)
     helper = Path(__file__).resolve().parent / "ledger-view.py"
     command = "print" if dry else "refresh"
+    runtime = os.environ.get("FACTORY_LEDGER", "").strip()
+    durable = os.environ.get("FACTORY_DURABLE_LEDGER", "").strip()
+    arguments = [
+        sys.executable, str(helper), command, "--factory-root", str(factory_dir.parent),
+    ]
+    if runtime:
+        arguments.extend(("--runtime-ledger", runtime))
+    if durable:
+        arguments.extend(("--durable-ledger", durable))
     result = subprocess.run(
-        [sys.executable, str(helper), command, "--factory-root", str(factory_dir.parent)],
+        arguments,
         check=True,
         stdout=subprocess.PIPE if dry else subprocess.DEVNULL,
         text=True,
     )
     if dry:
         return result.stdout.splitlines()
-    return factory_dir / "runtime-ledger.csv"
+    return Path(runtime) if runtime else factory_dir / "runtime-ledger.csv"
 
 
 def ensure_runs_root(factory_dir):
@@ -2156,7 +2165,7 @@ def main():
     if args.ticket:
         try:
             if args.initialize:
-                with sync_lock(factory_dir, args.dry_run):
+                with sync_lock(map_path.parent, args.dry_run):
                     initialize_ticket(
                         key, factory_dir, map_path, args.ticket, args.dry_run,
                     )
@@ -2180,7 +2189,7 @@ def main():
         return 0
 
     try:
-        with sync_lock(factory_dir, args.dry_run):
+        with sync_lock(map_path.parent, args.dry_run):
             mapping = load_map(map_path)
             try:
                 reconcile(key, factory_dir, mapping, map_path, args.setup, args.dry_run)

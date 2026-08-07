@@ -50,6 +50,13 @@ everything the Factory actually enforces lives here.
   blob in the sealed control checkout to equal protected `origin/main`.
   Qualification-only metadata can therefore never validate one contract and
   dispatch another.
+- Fresh isolated qualification requires one explicit safe canonical Linear map
+  seed, copies it into owner-only lane authority, and binds the mutable map and
+  runtime ledger in its receipt and activation. Selected-only initialization,
+  reconciliation locks, and operator clear intents remain outside the clean
+  product; a durable bootstrap reuses partial initialization without duplicate
+  issues even if the source seed later changes or disappears. Takeover retains
+  its canonical live-map and product-ledger behavior.
 - Ordinary admission isolates a ticket with malformed dependency syntax and
   reports its exact ID in controller results, events, and durable incident
   evidence while eligible siblings continue. A selected qualification ticket
@@ -4218,3 +4225,18 @@ retires that exact open PR and regenerates from current main with an exact
 force-with-lease; dirty, divergent, ambiguous, or repeatedly stale shapes fail
 closed. A preserved bundle-refresh marker remains reclaimable after another
 sealed release upgrade instead of stranding the claim.
+
+## 2026-08-07 — Decision 315: Qualification operator state is lane-local
+
+Category: Reliability
+
+Fresh isolated qualification authenticates one explicit owner-only canonical
+Linear map seed, copies it once beneath the durable qualification authority,
+and binds that mutable map and its runtime ledger into the receipt and active
+record. Exact selected-ticket initialization, later reconciliation locks, and
+operator-clear intents therefore never dirty the sealed product. Preparation
+rechecks product cleanliness before publication. A digest-bound bootstrap
+receipt makes partial initialization restartable from the durable copy even if
+the source seed changes or disappears; unsafe, malformed, secret-bearing, or
+ambiguous fresh seeds fail before a usable environment exists. Takeover keeps
+using its authenticated canonical live map.

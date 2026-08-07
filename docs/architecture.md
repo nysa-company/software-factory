@@ -481,9 +481,20 @@ owner-controlled physical `factory/` descriptor at mode 0700; a file, symlink,
 foreign owner, or permissive runtime directory refuses. Every selected
 unfinished ticket must also use exact `Product-Decisions: frozen` metadata.
 A cohort containing one selected ticket that depends on another is rejected in
-favor of sequential generations. When a canonical Linear map exists,
-preparation initializes only selected unmapped issues; historical tickets are
-not reconciled.
+favor of sequential generations. Fresh isolated preparation requires one
+explicit owner-only canonical Linear map seed. It authenticates the seed's
+path, mode, structure, and digest, rejects secret-bearing fields, and copies it
+once to `~/.factory/qualification/<project>/operator/linear-map.json` before
+initializing exactly the selected tickets. The mutable map, reconciliation
+locks and clear intents, and runtime ledger stay under that operator directory;
+the receipt and active record bind their exact paths, and the sealed launcher
+exports them on every qualification command. Preparation rechecks the product
+worktree after initialization and publishes no usable environment if it is
+dirty. An owner-only bootstrap receipt lets a retry reuse a partially
+initialized lane map even if the original seed later changes or disappears,
+so exact-ticket adoption cannot create duplicates. Historical tickets are not
+reconciled. Production-successor takeover continues to bind the canonical live
+map instead of copying it.
 
 After a successful Reviewer publication commit, passport migration precedes
 cell parking so the expected validating-head change remains a waiting boundary.

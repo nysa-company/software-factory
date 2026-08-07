@@ -35,6 +35,7 @@ from qualification_manifest import (  # noqa: E402
 
 SCHEMA = "nysa.software-factory.qualification-environment/v1"
 AUTHORITY_SCHEMA = "nysa.software-factory.qualification-authority/v1"
+OPERATOR_BOOTSTRAP_SCHEMA = "nysa.software-factory.qualification-operator-bootstrap/v1"
 ACTIVATION_SCHEMA = "nysa.software-factory.provider-activation/v2"
 POLICY_SCHEMA = "factory-provider-concurrency-policy/v1"
 SHA = re.compile(r"^[0-9a-f]{40}$")
@@ -183,6 +184,7 @@ def read(path: Path) -> dict[str, Any]:
         if (
             not stat.S_ISREG(metadata.st_mode)
             or metadata.st_uid != os.geteuid()
+            or metadata.st_nlink != 1
             or stat.S_IMODE(metadata.st_mode) != 0o600
             or metadata.st_size > 131_072
         ):
@@ -215,6 +217,27 @@ def authority_root(project: str, create: bool = False) -> Path:
     return root
 
 
+def partial_authority_root(project: str) -> Path:
+    """Create or resume only the pre-publication operator bootstrap boundary."""
+    factory = Path.home().resolve(strict=True) / ".factory"
+    safe_directory(factory)
+    base = factory / "qualification"
+    if not base.exists():
+        base.mkdir(mode=0o700)
+    safe_directory(base)
+    root = base / project
+    if not root.exists() and not root.is_symlink():
+        safe_directory(root, create=True)
+        return root
+    safe_directory(root)
+    if (root / "authority.json").exists() or (root / "authority.json").is_symlink():
+        raise EnvironmentError("qualification environment already exists")
+    allowed = {"operator", "operator-bootstrap.json"}
+    if any(path.name not in allowed for path in root.iterdir()):
+        raise EnvironmentError("partial qualification authority is invalid")
+    return root
+
+
 def authority_identity(
     project: str,
     factory_sha: str,
@@ -224,6 +247,8 @@ def authority_identity(
     product_tree: str,
     product_origin_value: str,
     runtime_tuple: dict[str, str] | None,
+    operator_map_path: str = "",
+    runtime_ledger_path: str = "",
 ) -> dict[str, Any]:
     manifest = product / "factory/QUALIFICATION.json"
     value = {
@@ -247,6 +272,9 @@ def authority_identity(
         "runtime_tuple": runtime_tuple or {},
         "schema": AUTHORITY_SCHEMA,
     }
+    if operator_map_path:
+        value["operator_map_path"] = operator_map_path
+        value["runtime_ledger_path"] = runtime_ledger_path
     value["authority_sha256"] = hashlib.sha256(canonical(value)).hexdigest()
     return value
 
@@ -450,19 +478,163 @@ def validate_selected_contracts(
             )
 
 
-def initialize_selected_linear(factory: Path, product: Path) -> None:
-    map_path = Path(os.environ.get(
-        "FACTORY_OPERATOR_MAP", product / "factory/linear-map.json",
-    ))
-    if not map_path.is_file() or map_path.is_symlink():
-        return
+def validate_operator_map(value: dict[str, Any]) -> None:
+    if set(value) != {"_config", "_sync", "initiatives", "tickets"} or any(
+        not isinstance(value[key], dict)
+        for key in ("_config", "_sync", "initiatives", "tickets")
+    ):
+        raise EnvironmentError("qualification Linear map is malformed")
+    sensitive = re.compile(r"(?:token|secret|password|api[_-]?key|authorization)", re.I)
+
+    def reject_secrets(item: Any) -> None:
+        if isinstance(item, dict):
+            for key, child in item.items():
+                if sensitive.search(str(key)):
+                    raise EnvironmentError("qualification Linear map contains secret material")
+                reject_secrets(child)
+        elif isinstance(item, list):
+            for child in item:
+                reject_secrets(child)
+
+    reject_secrets(value)
+
+
+def operator_seed(args: argparse.Namespace) -> tuple[Path, dict[str, Any], str]:
+    argument = getattr(args, "operator_map_seed", None)
+    configured = os.environ.get("FACTORY_QUALIFICATION_OPERATOR_MAP_SEED", "").strip()
+    if argument and configured and Path(argument).expanduser() != Path(configured).expanduser():
+        raise EnvironmentError("qualification operator map seed is ambiguous")
+    raw = argument or configured
+    if not raw:
+        raise EnvironmentError("qualification operator map seed is required")
+    source = Path(raw).expanduser()
+    if not source.is_absolute():
+        raise EnvironmentError("qualification operator map seed must be absolute")
     try:
-        mapping = json.loads(map_path.read_text(encoding="utf-8"))
+        if source.is_symlink():
+            raise EnvironmentError("qualification operator map seed is unsafe")
+        source = source.resolve(strict=True)
+        metadata = source.lstat()
+        if metadata.st_nlink != 1:
+            raise EnvironmentError("qualification operator map seed is unsafe")
+        value = read(source)
+        validate_operator_map(value)
+    except (FileNotFoundError, OSError, json.JSONDecodeError) as error:
+        raise EnvironmentError("qualification operator map seed is unsafe") from error
+    digest = hashlib.sha256(canonical(value)).hexdigest()
+    return source, value, digest
+
+
+def validate_runtime_ledger(path: Path) -> None:
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except OSError as error:
+        raise EnvironmentError("qualification runtime ledger is unsafe") from error
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or metadata.st_nlink != 1
+            or stat.S_IMODE(metadata.st_mode) != 0o600
+        ):
+            raise EnvironmentError("qualification runtime ledger is unsafe")
+    finally:
+        os.close(descriptor)
+
+
+def operator_authority_sha256(
+    identity: dict[str, Any], selected: list[str],
+) -> str:
+    return hashlib.sha256(canonical({
+        "operator_map_path": identity["operator_map_path"],
+        "product_origin": identity["product_origin"],
+        "product_path": identity["product_path"],
+        "project": identity["project"],
+        "runtime_ledger_path": identity["runtime_ledger_path"],
+        "selected_tickets": selected,
+    })).hexdigest()
+
+
+def prepare_operator_state(
+    authority: Path,
+    identity: dict[str, Any],
+    selected: list[str],
+    seed: tuple[Path, dict[str, Any], str],
+) -> tuple[Path, Path]:
+    source, value, source_sha256 = seed
+    operator = authority / "operator"
+    if operator.exists() or operator.is_symlink():
+        safe_directory(operator)
+    else:
+        operator.mkdir(mode=0o700)
+    map_path = operator / "linear-map.json"
+    ledger_path = operator / "runtime-ledger.csv"
+    bootstrap = authority / "operator-bootstrap.json"
+    expected = {
+        "operator_authority_sha256": operator_authority_sha256(identity, selected),
+        "operator_map_path": str(map_path),
+        "runtime_ledger_path": str(ledger_path),
+        "schema": OPERATOR_BOOTSTRAP_SCHEMA,
+        "selected_tickets": selected,
+        "source_path": str(source),
+        "source_sha256": source_sha256,
+    }
+    if bootstrap.exists() or bootstrap.is_symlink():
+        if read(bootstrap) != expected:
+            raise EnvironmentError("qualification operator bootstrap changed")
+        validate_operator_map(read(map_path))
+        return map_path, ledger_path
+    if map_path.exists() or map_path.is_symlink():
+        if read(map_path) != value:
+            raise EnvironmentError("partial qualification operator map is invalid")
+    else:
+        write(map_path, value)
+    write(bootstrap, expected)
+    return map_path, ledger_path
+
+
+def resume_operator_state(
+    authority: Path, identity: dict[str, Any], selected: list[str],
+) -> tuple[Path, Path]:
+    map_path = authority / "operator/linear-map.json"
+    ledger_path = authority / "operator/runtime-ledger.csv"
+    value = read(authority / "operator-bootstrap.json")
+    if (
+        value.get("schema") != OPERATOR_BOOTSTRAP_SCHEMA
+        or value.get("operator_authority_sha256")
+        != operator_authority_sha256(identity, selected)
+        or value.get("selected_tickets") != selected
+        or value.get("operator_map_path") != str(map_path)
+        or value.get("runtime_ledger_path") != str(ledger_path)
+        or not isinstance(value.get("source_path"), str)
+        or not Path(value["source_path"]).is_absolute()
+        or any(character in value["source_path"] for character in "\r\n\t")
+        or not re.fullmatch(r"[0-9a-f]{64}", value.get("source_sha256", ""))
+    ):
+        raise EnvironmentError("qualification operator bootstrap changed")
+    safe_directory(authority / "operator")
+    validate_operator_map(read(map_path))
+    return map_path, ledger_path
+
+
+def initialize_selected_linear(
+    factory: Path, product: Path, map_path: Path, ledger_path: Path,
+) -> None:
+    try:
+        mapping = read(map_path)
+        validate_operator_map(mapping)
         selected = json.loads(
             (product / "factory/QUALIFICATION.json").read_text(encoding="utf-8")
         )["tickets"]
     except (KeyError, OSError, json.JSONDecodeError) as error:
         raise EnvironmentError("qualification Linear map is malformed") from error
+    environment = {
+        **os.environ,
+        "FACTORY_OPERATOR_MAP": str(map_path),
+        "FACTORY_LEDGER": str(ledger_path),
+        "FACTORY_DURABLE_LEDGER": str(product / "factory/ledger.csv"),
+    }
     for ticket in selected:
         result = subprocess.run(
             [
@@ -470,11 +642,25 @@ def initialize_selected_linear(factory: Path, product: Path) -> None:
                 "--factory-root", str(product), "--ticket", ticket, "--initialize",
             ],
             text=True, capture_output=True, check=False, timeout=120,
+            env=environment,
         )
         if result.returncode:
             raise EnvironmentError(
                 f"{ticket}: selected-ticket Linear initialization failed: "
                 f"{result.stdout.strip() or result.stderr.strip()}"
+            )
+        mapping = read(map_path)
+        validate_operator_map(mapping)
+        entry = mapping["tickets"].get(ticket)
+        initialized = mapping["_sync"].get("selected_ticket_success_at", {})
+        if (
+            not isinstance(entry, dict)
+            or not entry.get("issue_id")
+            or not isinstance(initialized, dict)
+            or not isinstance(initialized.get(ticket), str)
+        ):
+            raise EnvironmentError(
+                f"{ticket}: selected-ticket Linear initialization was not durable"
             )
 
 
@@ -1110,7 +1296,8 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
     capacity = manifest["capacity"]
     validate_selected_contracts(product, manifest)
     prepare_product_runtime(product)
-    initialize_selected_linear(factory, product)
+    if command("git", "-C", str(product), "status", "--porcelain", "--untracked-files=all"):
+        raise EnvironmentError("qualification product runtime contract is not ignored")
     product_tree = command("git", "-C", str(product), "rev-parse", "HEAD^{tree}")
     product_sha = command("git", "-C", str(product), "rev-parse", "HEAD")
     runtime_tuple = certification_preflight(
@@ -1124,15 +1311,49 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
     )
     if restoring and takeover:
         raise EnvironmentError("takeover qualification cannot restore isolated authority")
-    identity = authority_identity(
-        args.project, sha, tree, product, product_sha, product_tree, origin,
-        runtime_tuple,
-    )
     authority: Path | None = None
     controller_state_path = ""
     provider_state_path = ""
+    operator_map_path = ""
+    runtime_ledger_path = ""
+    if takeover:
+        operator_map_path = takeover["operator_map_path"]
+    else:
+        qualification = Path.home().resolve(strict=True) / ".factory/qualification"
+        operator_map_path = str(qualification / args.project / "operator/linear-map.json")
+        runtime_ledger_path = str(qualification / args.project / "operator/runtime-ledger.csv")
+    identity = authority_identity(
+        args.project, sha, tree, product, product_sha, product_tree, origin,
+        runtime_tuple, operator_map_path, runtime_ledger_path,
+    )
     if not takeover:
-        authority = authority_root(args.project, create=not restoring)
+        expected_authority = Path.home().resolve(strict=True) / (
+            f".factory/qualification/{args.project}"
+        )
+        bootstrap_exists = (
+            (expected_authority / "operator-bootstrap.json").exists()
+            or (expected_authority / "operator-bootstrap.json").is_symlink()
+        )
+        if restoring or bootstrap_exists:
+            authority = authority_root(args.project)
+            if not restoring and (authority / "authority.json").exists():
+                raise EnvironmentError("qualification environment already exists")
+            map_path, ledger_path = resume_operator_state(
+                authority, identity, manifest["tickets"],
+            )
+        else:
+            seed = operator_seed(args)
+            authority = partial_authority_root(args.project)
+            map_path, ledger_path = prepare_operator_state(
+                authority, identity, manifest["tickets"], seed,
+            )
+        initialize_selected_linear(factory, product, map_path, ledger_path)
+        validate_runtime_ledger(ledger_path)
+        if command(
+            "git", "-C", str(product), "status", "--porcelain",
+            "--untracked-files=all",
+        ):
+            raise EnvironmentError("qualification Linear initialization dirtied product")
         controller = authority / "controller"
         if restoring:
             if read(authority / "authority.json") != identity:
@@ -1197,10 +1418,12 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
         "project": args.project,
         "provider_policy_sha256": provider_policy_sha256,
         "qualification_mode": qualification_mode,
+        "operator_map_path": operator_map_path,
         "status": "pass",
     }, runtime_tuple)
+    if runtime_ledger_path:
+        receipt_value["runtime_ledger_path"] = runtime_ledger_path
     if takeover:
-        receipt_value["operator_map_path"] = takeover["operator_map_path"]
         receipt_value["takeover_kits_root"] = takeover["takeover_kits_root"]
     else:
         receipt_value["controller_state_path"] = controller_state_path
@@ -1219,11 +1442,13 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
         "project": args.project,
         "provider_policy_sha256": provider_policy_sha256,
         "qualification_mode": qualification_mode,
+        "operator_map_path": operator_map_path,
         "receipt_id": receipt_id,
         "release_path": str(release),
     }, runtime_tuple)
+    if runtime_ledger_path:
+        active_value["runtime_ledger_path"] = runtime_ledger_path
     if takeover:
-        active_value["operator_map_path"] = takeover["operator_map_path"]
         active_value["takeover_kits_root"] = takeover["takeover_kits_root"]
     else:
         active_value["controller_state_path"] = controller_state_path
@@ -1299,7 +1524,8 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
                 "normal in-place upgrade refused"
             )
     prepare_product_runtime(product)
-    initialize_selected_linear(factory, product)
+    if command("git", "-C", str(product), "status", "--porcelain", "--untracked-files=all"):
+        raise EnvironmentError("qualification product runtime contract is not ignored")
     product_sha = command("git", "-C", str(product), "rev-parse", "HEAD")
     product_tree = command("git", "-C", str(product), "rev-parse", "HEAD^{tree}")
     runtime_tuple = certification_preflight(
@@ -1307,11 +1533,6 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
     )
     historical_objects = historical_pr_objects(product)
     origin = product_origin(product)
-    identity = authority_identity(
-        args.project, sha, tree, product, product_sha, product_tree, origin,
-        runtime_tuple,
-    )
-
     marker = read(root / "marker.json")
     qualification_mode = active.get("qualification_mode")
     if (
@@ -1332,11 +1553,27 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
     authority = authority_root(args.project)
     controller = safe_directory(Path(active.get("controller_state_path", "")))
     provider = safe_directory(Path(active.get("provider_state_path", "")))
+    operator_map_value = active.get("operator_map_path", "")
+    runtime_ledger_value = active.get("runtime_ledger_path", "")
+    if not isinstance(operator_map_value, str) or not isinstance(
+        runtime_ledger_value, str
+    ):
+        raise EnvironmentError("durable qualification authority path changed")
+    operator_map_path = Path(operator_map_value)
+    runtime_ledger_path = Path(runtime_ledger_value)
     if (
         controller != authority / "controller"
         or provider != authority / "provider"
+        or operator_map_path != authority / "operator/linear-map.json"
+        or runtime_ledger_path != authority / "operator/runtime-ledger.csv"
     ):
         raise EnvironmentError("durable qualification authority path changed")
+    validate_operator_map(read(operator_map_path))
+    identity = authority_identity(
+        args.project, sha, tree, product, product_sha, product_tree, origin,
+        runtime_tuple, str(operator_map_path), str(runtime_ledger_path),
+    )
+    resume_operator_state(authority, identity, manifest["tickets"])
     lock = os.open(
         controller / "reconcile.lock",
         os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
@@ -1351,6 +1588,15 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
             (product / "factory/runs").glob("*.pid")
         ):
             raise EnvironmentError("qualification has an active provider run")
+        initialize_selected_linear(
+            factory, product, operator_map_path, runtime_ledger_path,
+        )
+        validate_runtime_ledger(runtime_ledger_path)
+        if command(
+            "git", "-C", str(product), "status", "--porcelain",
+            "--untracked-files=all",
+        ):
+            raise EnvironmentError("qualification Linear initialization dirtied product")
 
         releases = safe_directory(root / "releases")
         release = releases / sha
@@ -1389,7 +1635,9 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
             "provider_policy_sha256": policy_hash,
             "controller_state_path": str(controller),
             "provider_state_path": str(provider),
+            "operator_map_path": str(operator_map_path),
             "qualification_mode": qualification_mode,
+            "runtime_ledger_path": str(runtime_ledger_path),
             "status": "pass",
         }, runtime_tuple)
         receipt_id = hashlib.sha256(canonical(receipt_value)).hexdigest()
@@ -1413,9 +1661,11 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
             "provider_policy_sha256": policy_hash,
             "controller_state_path": str(controller),
             "provider_state_path": str(provider),
+            "operator_map_path": str(operator_map_path),
             "qualification_mode": qualification_mode,
             "receipt_id": receipt_id,
             "release_path": str(release),
+            "runtime_ledger_path": str(runtime_ledger_path),
         }, runtime_tuple)
         replace(active_path, next_active)
         replace(authority / "authority.json", identity)
@@ -1446,6 +1696,7 @@ def main() -> None:
     parser.add_argument("--project", required=True)
     parser.add_argument("--root", required=True, type=Path)
     parser.add_argument("--global-env", type=Path)
+    parser.add_argument("--operator-map-seed", type=Path)
     parser.add_argument("--takeover-project")
     parser.add_argument("--upgrade", action="store_true")
     parser.add_argument("--restore", action="store_true")
