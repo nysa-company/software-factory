@@ -4,6 +4,21 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 
 ## Current truth
 
+- Product-agnostic factory kit; product repositories carry only their factory state and CI integration.
+- Durable decisions use repository-local numbering beginning at Decision 1.
+- Stable operating truth lives in `docs/`; prompts, templates, and evidence stay colocated with consumers.
+- Nysa Agents baseline v3 as a toolkit; `bash ci/test-all.sh` is the unconditional full command.
+- Live products resolve sealed exact-SHA releases under `~/.factory/kits` via `~/.factory/bin/factory-launch`.
+- Model routing is portfolio policy; routes pin at the ticket boundary and change only via the Contract 1.4 journal flow.
+- The only emergency recovery is the receipt-bound `OPERATOR RESUME` ticket commit. No generic lifecycle bypass is approved.
+- **Contract rules below in Operating contract are authoritative**; this summary is only what the session hook can inject.
+
+## Operating contract
+
+The enforced contract state, authoritative over the summary above. The Current truth
+section carries only what the SessionStart hook injects (8 lines, 1200 characters);
+everything the Factory actually enforces lives here.
+
 - Contract 1.8 emergency closeout is a narrow plan/apply authority for one
   exact already-merged ticket. It binds an open GitHub issue, explicit owner,
   bounded request window, protected-main tree/ticket state, exact PR and green
@@ -571,6 +586,13 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   un-restored occurrence also requires protected in-flight rewrite authority.
 
 ## Log
+
+## 2026-08-07 — Current truth split into an injected summary and Operating contract
+
+Category: System change
+
+The SessionStart hook injects at most 8 lines and 1200 characters of `## Current truth`; this section held 160 hard-wrapped bullets across 563 lines, so the first bullet alone consumed the whole line budget and roughly 99% never reached a session. `## Current truth` is now eight one-line orienting pointers and every original line moved verbatim to `## Operating contract`, which stays authoritative for enforced contract rules.
+
 
 ## 2026-07-31 — Decision 173: Qualification preflight binds the sealed product tree
 
