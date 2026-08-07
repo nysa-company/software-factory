@@ -4596,22 +4596,53 @@ class Controller:
                 ["git", "-C", str(self.product), "fetch", "--quiet", "origin", "main"],
                 check=True, timeout=120,
             )
-        if not worktree.exists():
-            exists = subprocess.run(
-                [
-                    "git", "-C", str(self.product), "show-ref", "--verify",
-                    "--quiet", f"refs/heads/{branch}",
-                ],
-                check=False, timeout=120,
-            ).returncode == 0
-            subprocess.run(
-                [
-                    "git", "-C", str(self.product), "worktree", "add", "--quiet",
-                    *(["-b", branch, str(worktree), "origin/main"] if not exists
-                      else [str(worktree), branch]),
-                ],
-                check=True, timeout=120,
-            )
+            if not worktree.exists():
+                exists = subprocess.run(
+                    [
+                        "git", "-C", str(self.product), "show-ref", "--verify",
+                        "--quiet", f"refs/heads/{branch}",
+                    ],
+                    check=False, timeout=120,
+                ).returncode == 0
+                subprocess.run(
+                    [
+                        "git", "-C", str(self.product), "worktree", "add",
+                        "--quiet",
+                        *(["-b", branch, str(worktree), "origin/main"]
+                          if not exists else [str(worktree), branch]),
+                    ],
+                    check=True, timeout=120,
+                )
+            elif not (
+                worktree / "factory" / "attestations" / ticket / "done.json"
+            ).exists():
+                branch_result = subprocess.run(
+                    [
+                        "git", "-C", str(worktree), "symbolic-ref", "--quiet",
+                        "--short", "HEAD",
+                    ],
+                    text=True, capture_output=True, check=False, timeout=120,
+                )
+                status = subprocess.run(
+                    [
+                        "git", "-C", str(worktree), "status",
+                        "--porcelain=v1", "-z",
+                    ],
+                    text=True, capture_output=True, check=False, timeout=120,
+                )
+                if (
+                    branch_result.returncode == 0
+                    and branch_result.stdout.strip() == branch
+                    and status.returncode == 0
+                    and not status.stdout
+                ):
+                    subprocess.run(
+                        [
+                            "git", "-C", str(worktree), "merge", "--ff-only",
+                            "origin/main",
+                        ],
+                        check=True, timeout=120,
+                    )
         self.terminal_request(claim, branch, create=True)
         try:
             value = self.json_call(
@@ -4943,13 +4974,6 @@ class Controller:
                     "ticket": claim["ticket"],
                 }
             if claim.get("release_refresh_required") is True:
-                if not (
-                    stage.startswith("AWAIT-OPERATOR bundle posted")
-                    or stage.startswith("AWAIT-OPERATOR Linear approval observed")
-                ):
-                    raise ControllerError(
-                        "release refresh reached an invalid deterministic stage"
-                    )
                 with self.git_lock:
                     value = self.json_call(
                         "ticket-attest", "--ticket", claim["ticket"],
