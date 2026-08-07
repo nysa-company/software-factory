@@ -2517,9 +2517,9 @@ if [[ "$ISOLATED_RUN" -eq 1 ]]; then
     fi
   fi
 elif [[ "$CLI_CONCURRENT_RUN" -eq 1 ]]; then
-  CLI_CURSOR_ACCOUNT_RUNTIME_ARGS=()
+  CLI_RUNTIME_ADAPTER_ARGS=(--adapter "$ADAPTER")
   if [[ "$ADAPTER" == cursor-* ]]; then
-    CLI_CURSOR_ACCOUNT_RUNTIME_ARGS=(
+    CLI_RUNTIME_ADAPTER_ARGS+=(
       --account-db "$FACTORY_CURSOR_ACCOUNT_DB"
       --account-lease-id "$CURSOR_ACCOUNT_LEASE_ID"
       --account-owner-pid "$CURSOR_ACCOUNT_OWNER_PID"
@@ -2536,8 +2536,7 @@ elif [[ "$CLI_CONCURRENT_RUN" -eq 1 ]]; then
       --db "$FACTORY_PROVIDER_DB"
       --policy "$FACTORY_PROVIDER_POLICY"
       "${CLI_CONFIGURATION_LOCK_ARGS[@]}"
-      --adapter "$ADAPTER"
-      "${CLI_CURSOR_ACCOUNT_RUNTIME_ARGS[@]}"
+      "${CLI_RUNTIME_ADAPTER_ARGS[@]}"
       --attempt-id "$CLI_ATTEMPT_ID"
       --provider-family "$SELECTED_FAMILY"
       --account-route "$SELECTED_ACCOUNT_ROUTE_ID"
