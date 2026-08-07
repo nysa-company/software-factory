@@ -1788,6 +1788,11 @@ class Controller:
         self.ensure_lease(claim, "paused-ticket-resume")
         if not self.ticket_release_current(claim):
             claim["status"] = "blocked"
+        elif (
+            claim["status"] == "blocked"
+            and current_state != "Blocked-Escalated"
+        ):
+            claim["status"] = "claimed"
         self.save_claim(claim)
         if legacy:
             path.unlink()
@@ -4478,6 +4483,15 @@ class Controller:
 
     def closeout(self, claim: dict[str, Any]) -> bool:
         ticket = claim["ticket"]
+        active_claims = sorted(
+            (self.product / "factory/.active-runs").glob("*")
+        )
+        if active_claims:
+            self.event_once(
+                "closeout_deferred_active_claim", ticket,
+                active_claim=active_claims[0].name,
+            )
+            return False
         branch = f"chore/{ticket.lower().replace('-', '')}-closeout"
         root = Path(claim["worktree"]).parent
         worktree = root / f"closeout-{ticket}"

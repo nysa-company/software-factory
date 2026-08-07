@@ -6361,6 +6361,13 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(
             CONTROL.read(controller.claim_path(ticket))["status"], "blocked"
         )
+
+        controller.pause_ticket(ticket, FACTORY_ISSUE)
+        controller.ticket_release_current = lambda _claim: True
+        controller.resume_ticket(ticket, self.release.name)
+        self.assertEqual(
+            CONTROL.read(controller.claim_path(ticket))["status"], "claimed"
+        )
         controller.active_run = lambda _ticket: {"run_id": "active"}
         with self.assertRaisesRegex(CONTROL.ControllerError, "idle passport"):
             controller.pause_ticket(ticket, FACTORY_ISSUE)
@@ -8017,6 +8024,26 @@ class FactoryControllerTest(unittest.TestCase):
                 "worktree": str(cell),
             }))
         self.assertEqual(calls, ["git-lock", "fetch", "git-unlock", "done"])
+
+    def test_closeout_defers_while_sibling_claim_is_active(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        active = self.product / "factory/.active-runs/T-174.reviewer.lock"
+        active.parent.mkdir(parents=True)
+        active.mkdir()
+        events = []
+        controller.event_once = lambda *args, **kwargs: events.append((args, kwargs))
+        controller.json_call = lambda *_args, **_kwargs: (
+            (_ for _ in ()).throw(AssertionError("closeout ran with active claim"))
+        )
+
+        self.assertFalse(controller.closeout({
+            "lease": "a" * 64,
+            "ticket": "T-175",
+            "worktree": str(self.root / "cells/cell-1"),
+        }))
+        self.assertEqual(events, [(('closeout_deferred_active_claim', 'T-175'), {
+            "active_claim": "T-174.reviewer.lock",
+        })])
 
     def test_closeout_records_exact_terminal_linear_evidence_once(self) -> None:
         controller = CONTROL.Controller(self.args)
