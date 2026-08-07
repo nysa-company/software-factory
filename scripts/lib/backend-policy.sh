@@ -172,24 +172,44 @@ import stat
 import sys
 
 source, destination = map(pathlib.Path, sys.argv[1:])
+
+def refuse(reason):
+    print(reason)
+    raise SystemExit(1)
+
 try:
     source_info = source.lstat()
+except FileNotFoundError:
+    refuse("claude_credential_missing")
+except OSError:
+    refuse("claude_credential_unreadable")
+try:
     destination_root_info = destination.parent.lstat()
 except OSError:
-    raise SystemExit(1)
+    refuse("claude_probe_config_unsafe")
+mode = stat.S_IMODE(source_info.st_mode)
+if source.is_symlink():
+    refuse("claude_credential_symlink")
+if not stat.S_ISREG(source_info.st_mode):
+    refuse("claude_credential_nonregular")
+if source_info.st_uid != os.geteuid():
+    refuse("claude_credential_foreign_owner")
+if source_info.st_nlink != 1:
+    refuse("claude_credential_hardlinked")
+if mode & 0o077:
+    refuse(f"claude_credential_mode_{mode:04o}")
+if source_info.st_size > 1_000_000:
+    refuse("claude_credential_oversized")
 if (
-    source.is_symlink()
-    or not stat.S_ISREG(source_info.st_mode)
-    or source_info.st_uid != os.geteuid()
-    or source_info.st_nlink != 1
-    or stat.S_IMODE(source_info.st_mode) & 0o077
-    or source_info.st_size > 1_000_000
-    or not stat.S_ISDIR(destination_root_info.st_mode)
+    not stat.S_ISDIR(destination_root_info.st_mode)
     or destination_root_info.st_uid != os.geteuid()
     or stat.S_IMODE(destination_root_info.st_mode) & 0o077
 ):
-    raise SystemExit(1)
-source_fd = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    refuse("claude_probe_config_unsafe")
+try:
+    source_fd = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+except OSError:
+    refuse("claude_credential_changed")
 try:
     opened = os.fstat(source_fd)
     if (
@@ -197,12 +217,12 @@ try:
         or not stat.S_ISREG(opened.st_mode)
         or opened.st_nlink != 1
     ):
-        raise SystemExit(1)
+        refuse("claude_credential_changed")
     data = os.read(source_fd, 1_000_001)
 finally:
     os.close(source_fd)
 if len(data) > 1_000_000:
-    raise SystemExit(1)
+    refuse("claude_credential_oversized")
 destination_fd = os.open(
     destination,
     os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
@@ -369,9 +389,10 @@ factory_probe_adapter() {
         done
       fi
       if [[ "$PROBE_REASON" == "unclassified" ]]; then
-        if ! factory_prepare_claude_probe_config \
-            "$claude_config_dir" "$claude_probe_config"; then
-          PROBE_STATE="INVALID"; PROBE_REASON="credential_invalid"
+        if ! credential_reason="$(factory_prepare_claude_probe_config \
+            "$claude_config_dir" "$claude_probe_config")"; then
+          PROBE_STATE="INVALID"
+          PROBE_REASON="${credential_reason:-credential_invalid}"
         elif ! CLAUDE_CONFIG_DIR="$claude_probe_config" \
             timeout "$probe_timeout" claude auth status >/dev/null 2>&1; then
           PROBE_STATE="UNAVAILABLE"; PROBE_REASON="authentication_unavailable"

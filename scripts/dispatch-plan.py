@@ -368,7 +368,24 @@ def preprovider_reset_authorizations(
     return result
 
 
-def fresh_mapping(path: Path, maximum_age: int) -> dict[str, Any]:
+def fresh_linear_timestamp(value: Any, maximum_age: int, label: str) -> dt.datetime:
+    if not isinstance(value, str):
+        raise DispatchError(f"{label} timestamp is missing")
+    try:
+        observed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise DispatchError(f"{label} timestamp is invalid") from exc
+    if observed.tzinfo is None:
+        observed = observed.replace(tzinfo=dt.timezone.utc)
+    age = (dt.datetime.now(dt.timezone.utc) - observed).total_seconds()
+    if age < -60 or age > maximum_age:
+        raise DispatchError(f"{label} is stale")
+    return observed
+
+
+def fresh_mapping(
+    path: Path, maximum_age: int, selected_tickets: list[str] | None = None,
+) -> dict[str, Any]:
     raw = safe_file(path, "Linear operator map")
     value = json.loads(raw)
     if not isinstance(value, dict):
@@ -376,23 +393,39 @@ def fresh_mapping(path: Path, maximum_age: int) -> dict[str, Any]:
     sync = value.get("_sync")
     if not isinstance(sync, dict):
         raise DispatchError("Linear reconciliation metadata is missing")
+    if selected_tickets:
+        selected = sync.get("selected_ticket_success_at")
+        tickets = value.get("tickets")
+        if not isinstance(selected, dict) or not isinstance(tickets, dict):
+            raise DispatchError("selected-ticket Linear reconciliation is missing")
+        for ticket in selected_tickets:
+            entry = tickets.get(ticket)
+            operator = entry.get("operator") if isinstance(entry, dict) else None
+            if (
+                not isinstance(entry, dict)
+                or entry.get("operator_fields_initialized") is not True
+                or not isinstance(operator, dict)
+            ):
+                raise DispatchError(
+                    f"selected-ticket Linear reconciliation is missing: {ticket}"
+                )
+            fresh_linear_timestamp(
+                selected.get(ticket), maximum_age,
+                f"selected-ticket Linear reconciliation for {ticket}",
+            )
+            fresh_linear_timestamp(
+                operator.get("observed_at"), maximum_age,
+                f"selected-ticket Linear observation for {ticket}",
+            )
+        return value
     error = sync.get("_last_error") or sync.get("last_error")
     if error:
         if str(error).startswith("linear_rate_limited retry_after_seconds="):
             raise DispatchError(str(error))
         raise DispatchError("Linear reconciliation reports an error")
-    timestamp = sync.get("last_success_at")
-    if not isinstance(timestamp, str):
-        raise DispatchError("Linear reconciliation timestamp is missing")
-    try:
-        observed = dt.datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
-    except ValueError as exc:
-        raise DispatchError("Linear reconciliation timestamp is invalid") from exc
-    if observed.tzinfo is None:
-        observed = observed.replace(tzinfo=dt.timezone.utc)
-    age = (dt.datetime.now(dt.timezone.utc) - observed).total_seconds()
-    if age < -60 or age > maximum_age:
-        raise DispatchError("Linear reconciliation is stale")
+    fresh_linear_timestamp(
+        sync.get("last_success_at"), maximum_age, "Linear reconciliation"
+    )
     return value
 
 
@@ -592,6 +625,7 @@ def reconcile_preprovider_branch(
     ):
         raise DispatchError("pre-provider branch commits are not canonical")
     pin = f"{ticket}: pin kit and model route plan"
+    materialize = f"{ticket}: materialize ticket state"
     transition = f"{ticket}: transition ticket state"
     supersede = f"{ticket}: supersede pre-provider control state"
     index = 0
@@ -599,6 +633,32 @@ def reconcile_preprovider_branch(
         if commits[index][4] != pin:
             raise DispatchError("pre-provider branch commits are not canonical")
         index += 1
+        if index < len(commits) and commits[index][4] == materialize:
+            commit = commits[index]
+            parents = commit[1].split()
+            changed_paths = git(
+                product, "diff-tree", "--no-commit-id", "--name-only",
+                "-r", commit[0],
+            ).splitlines()
+            before = (
+                git(product, "show", f"{parents[0]}:{ticket_path}")
+                if len(parents) == 1 else ""
+            )
+            states = re.findall(r"^State:\s*(.*?)\s*$", before, re.I | re.M)
+            expected = re.sub(
+                r"^State:\s*Backlog\s*$", "State: Ready", before,
+                count=1, flags=re.I | re.M,
+            )
+            if (
+                len(parents) != 1
+                or parents[0] != commits[index - 1][0]
+                or changed_paths != [ticket_path]
+                or len(states) != 1
+                or states[0].lower() != "backlog"
+                or git(product, "show", f"{commit[0]}:{ticket_path}") != expected
+            ):
+                raise DispatchError("pre-provider materialize commit is not canonical")
+            index += 1
         if index < len(commits) and commits[index][4] == transition:
             index += 1
         if index == len(commits):
@@ -944,7 +1004,12 @@ def main() -> None:
             )
             launch_lock.rmdir()
             held_launch = False
-        mapping = fresh_mapping(mapping_path, args.max_linear_age)
+        selected_tickets = (
+            qualification_state["tickets"] if qualification_state else None
+        )
+        mapping = fresh_mapping(
+            mapping_path, args.max_linear_age, selected_tickets,
+        )
         if qualification_state is not None:
             maximum = qualification_state["capacity"]
             if qualification_state["done"] == qualification_state["target_done"]:
@@ -1002,7 +1067,9 @@ def main() -> None:
             raise DispatchError("factory control blocks dispatch")
         if git(product, "status", "--porcelain=v1", "-z"):
             raise DispatchError("registered product checkout changed during selection")
-        if fresh_mapping(mapping_path, args.max_linear_age) != mapping:
+        if fresh_mapping(
+            mapping_path, args.max_linear_age, selected_tickets,
+        ) != mapping:
             raise DispatchError("Linear reconciliation changed during selection")
         lease_dir.mkdir(mode=0o700, exist_ok=True)
         safe_directory(lease_dir, "dispatcher lease directory")

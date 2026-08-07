@@ -458,6 +458,8 @@ if [[ -n "${FACTORY_KIT_SANDBOX_DENY_HOME:-}" ]] &&
   exit 46
 fi
 [[ "${FACTORY_FIXTURE_DIRTY:-0}" != "1" ]] || printf 'mutated by smoke\n' > payload.txt
+[[ "${FACTORY_KIT_TEST_SUITE_SLEEP_SECONDS:-0}" == "0" ]] ||
+  sleep "$FACTORY_KIT_TEST_SUITE_SLEEP_SECONDS"
 [[ "${FACTORY_KIT_TEST_SUITE_FAIL:-0}" == "0" ]] || exit 47
 EOF
 cat > "$KIT_REPO/scripts/secret-scan" <<'EOF'
@@ -867,7 +869,9 @@ export FACTORY_KIT_TEST_INSTALLED_LAUNCHER="$MISMATCHED_LAUNCHER"
 expect_failure "certification rejects an installed launcher from another release" \
   certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A"
 unset FACTORY_KIT_TEST_INSTALLED_LAUNCHER
-if [[ "$LAST_OUTPUT" == *"installed factory-launch does not match the sealed candidate"* ]]; then
+if [[ "$LAST_OUTPUT" == *"installed factory-launch does not match the sealed candidate"* &&
+      "$LAST_OUTPUT" == *"docs/factory-setup.md"* &&
+      "$LAST_OUTPUT" == *"rollback copy"* ]]; then
   pass "launcher drift fails before product certification"
 else
   fail "launcher drift reports its exact activation boundary" "$LAST_OUTPUT"
@@ -1091,6 +1095,8 @@ for _ in $(seq 1 40); do
   [[ -f "$STATE/.install.lock/owner" ]] && break
   sleep 0.05
 done
+[[ -f "$STATE/.install.lock/owner" ]] ||
+  fail "concurrent certification fixture observes the held install lock"
 run_kit certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A" \
   > "$TMP/concurrent-certify-two.out" 2>&1 &
 CONCURRENT_TWO=$!
@@ -1546,6 +1552,9 @@ path.write_text(json.dumps({
 PY
 expect_failure "pause refuses an undrained dispatcher lease" \
   pause --project alpha --product "$PRODUCT_ONE"
+[[ "$LAST_OUTPUT" == *"MAINTENANCE remains published"* &&
+   "$LAST_OUTPUT" == *"recover-lease"* ]] ||
+  fail "pause lease refusal names the supported recovery sequence" "$LAST_OUTPUT"
 expect_success "operator recovers stale lease only under maintenance" \
   recover-lease --project alpha --product "$PRODUCT_ONE" --ticket T-004
 [[ ! -e "$PRODUCT_ONE/factory/.dispatch-leases/T-004.json" ]] &&

@@ -154,6 +154,15 @@ keeps provider admission closed until a later successful reconciliation.
   Certification and activation now refuse any byte mismatch; never patch the
   installed launcher independently.
 
+- For a release migration, land `factory/KIT_PIN` and the complete canonical
+  `factory/migrations/inflight-release/<target-sha>.json` authorization before
+  certification. Then install the sealed release and launcher, certify the
+  now-final protected product tree, publish maintenance, recover any named
+  stale dispatcher leases, drain, and activate. Any later product commit
+  invalidates the certification and requires recertification. SSH host aliases
+  are not a trusted kit origin; use a clean checkout whose remote canonicalizes
+  to `github.com/nysa-company/software-factory`.
+
 - Before certifying a Contract 1.8 product with
   `MAX_CONCURRENT_TICKETS` above one, enter maintenance and drain every role,
   lease, provider attempt, and legacy interval. Preview the credential-free

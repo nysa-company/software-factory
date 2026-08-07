@@ -765,6 +765,7 @@ def resolve_fallback_policy(
             raise RouterError("no ready fallback candidate for %s" % role)
 
     ordered_future = [role for role in ROLES if role in future]
+    eliminated = set()
 
     def assign(index):
         if index == len(ordered_future):
@@ -780,6 +781,7 @@ def resolve_fallback_policy(
                 "reported_identity": "",
             })
             if state["state"] == "UNAVAILABLE":
+                eliminated.add((role, route_id, state["reason"]))
                 continue
             if state["state"] in ("INVALID", "UNKNOWN"):
                 raise RouterError(
@@ -799,8 +801,14 @@ def resolve_fallback_policy(
 
     effective_contributors = assign(0)
     if effective_contributors is None:
+        diagnostic = ""
+        if eliminated:
+            diagnostic = "; eliminated unavailable candidates: " + ", ".join(
+                "%s %s: %s" % item for item in sorted(eliminated)
+            )
         raise RouterError(
             "no complete fallback assignment satisfies contributor-family boundaries"
+            + diagnostic
         )
 
     catalog_digest = content_hash(catalog)

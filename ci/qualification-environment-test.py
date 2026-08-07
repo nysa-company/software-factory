@@ -112,7 +112,13 @@ class QualificationEnvironmentTest(unittest.TestCase):
         )
         (self.product / "factory/QUALIFICATION.json").write_text(
             json.dumps({
+                "budget_usd": "100.000000",
                 "capacity": 3,
+                "contract_version": "1.8.0",
+                "factory_sha": self.sha,
+                "generation": 1,
+                "per_run_budget_usd": "2.000000",
+                "per_ticket_budget_usd": "25.000000",
                 "schema": "nysa.software-factory.qualification/v2",
                 "target_done": 3,
                 "tickets": ["T-101", "T-102", "T-103"],
@@ -362,6 +368,51 @@ class QualificationEnvironmentTest(unittest.TestCase):
             ENVIRONMENT.EnvironmentError, "READINESS BLOCKED.*missing.test.ts",
         ):
             ENVIRONMENT.validate_selected_contracts(self.product)
+
+    def test_qualification_manifest_validation_is_strict(self) -> None:
+        path = self.product / "factory/QUALIFICATION.json"
+        original = json.loads(path.read_text())
+        cases = {
+            "unexpected": lambda value: value.update(unexpected=True),
+            "contract": lambda value: value.update(contract_version="1.7.0"),
+            "capacity": lambda value: value.update(capacity=2),
+            "budget": lambda value: value.update(budget_usd="101.000000"),
+            "duplicate": lambda value: value.update(
+                tickets=["T-101", "T-101", "T-103"]
+            ),
+            "count": lambda value: value.update(tickets=["T-101", "T-102"]),
+        }
+        for label, mutate in cases.items():
+            with self.subTest(label=label):
+                value = dict(original)
+                mutate(value)
+                path.write_text(json.dumps(value) + "\n")
+                with self.assertRaisesRegex(
+                    ENVIRONMENT.EnvironmentError,
+                    "Contract 1.8 qualification manifest is invalid",
+                ):
+                    ENVIRONMENT.qualification_manifest(self.product, self.sha)
+        path.write_text(json.dumps(original) + "\n")
+
+    def test_selected_linear_refreshes_already_initialized_cohort(self) -> None:
+        mapping = self.product / "factory/linear-map.json"
+        mapping.write_text(json.dumps({
+            "tickets": {
+                ticket: {"operator_fields_initialized": True}
+                for ticket in ("T-101", "T-102", "T-103")
+            },
+        }) + "\n")
+        completed = subprocess.CompletedProcess([], 0, "", "")
+        with mock.patch.object(
+            ENVIRONMENT.subprocess, "run", return_value=completed,
+        ) as invoked:
+            ENVIRONMENT.initialize_selected_linear(self.factory, self.product)
+        self.assertEqual(invoked.call_count, 3)
+        self.assertEqual(
+            [call.args[0][-2:] for call in invoked.call_args_list],
+            [["T-101", "--initialize"], ["T-102", "--initialize"],
+             ["T-103", "--initialize"]],
+        )
 
     def test_rejects_ticket_blob_that_dispatch_would_not_use(self) -> None:
         ticket = self.product / "factory/tickets/T-101.md"
@@ -786,6 +837,44 @@ class QualificationEnvironmentTest(unittest.TestCase):
         replacement = replacement.resolve(strict=True)
         replacement.chmod(0o600)
 
+        before = {
+            "active": active_path.read_bytes(),
+            "environment": (self.root / "environment.json").read_bytes(),
+            "releases": sorted(path.name for path in (self.root / "releases").iterdir()),
+            "receipts": sorted(path.name for path in (self.root / "receipts").iterdir()),
+            "authority": (Path(first["authority_root"]) / "authority.json").read_bytes(),
+        }
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError,
+            "Contract 1.8 qualification manifest is invalid",
+        ):
+            ENVIRONMENT.upgrade(argparse.Namespace(
+                **vars(args), global_env=replacement,
+            ))
+        self.assertEqual(active_path.read_bytes(), before["active"])
+        self.assertEqual(
+            (self.root / "environment.json").read_bytes(), before["environment"]
+        )
+        self.assertEqual(
+            sorted(path.name for path in (self.root / "releases").iterdir()),
+            before["releases"],
+        )
+        self.assertEqual(
+            sorted(path.name for path in (self.root / "receipts").iterdir()),
+            before["receipts"],
+        )
+        self.assertEqual(
+            (Path(first["authority_root"]) / "authority.json").read_bytes(),
+            before["authority"],
+        )
+
+        manifest_path = self.product / "factory/QUALIFICATION.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["factory_sha"] = successor
+        manifest_path.write_text(json.dumps(manifest) + "\n")
+        run(self.product, "git", "add", "factory/QUALIFICATION.json")
+        run(self.product, "git", "commit", "-qm", "authorize successor")
+
         second = ENVIRONMENT.upgrade(argparse.Namespace(
             **vars(args), global_env=replacement,
         ))
@@ -802,6 +891,56 @@ class QualificationEnvironmentTest(unittest.TestCase):
         self.assertEqual(key.read_bytes(), b"p" * 32)
         self.assertTrue((self.root / f"releases/{self.sha}").is_dir())
         self.assertTrue((self.root / f"releases/{successor}").is_dir())
+
+    def test_normal_upgrade_refuses_terminal_target_before_any_mutation(self) -> None:
+        args = argparse.Namespace(
+            factory_root=self.factory,
+            product_root=self.product,
+            project="relay",
+            root=self.root,
+        )
+        ENVIRONMENT.prepare(args)
+        (self.factory / "successor.txt").write_text("successor\n", encoding="utf-8")
+        run(self.factory, "git", "add", "successor.txt")
+        run(self.factory, "git", "commit", "-qm", "successor")
+        successor = run(self.factory, "git", "rev-parse", "HEAD")
+        (self.product / "factory/KIT_PIN").write_text(successor + "\n")
+        manifest_path = self.product / "factory/QUALIFICATION.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["factory_sha"] = successor
+        manifest_path.write_text(json.dumps(manifest) + "\n")
+        run(
+            self.product, "git", "add", "factory/KIT_PIN",
+            "factory/QUALIFICATION.json",
+        )
+        run(self.product, "git", "commit", "-qm", "authorize successor")
+        before = {
+            path.relative_to(self.root): path.read_bytes()
+            for path in self.root.rglob("*") if path.is_file()
+        }
+
+        with (
+            mock.patch.object(
+                ENVIRONMENT, "protected_terminal",
+                return_value={"ticket": "T-110"},
+            ),
+            mock.patch.object(
+                ENVIRONMENT, "initialize_selected_linear",
+                side_effect=AssertionError("Linear must not run"),
+            ),
+            self.assertRaisesRegex(
+                ENVIRONMENT.EnvironmentError,
+                "terminal qualification target requires a successor lane",
+            ),
+        ):
+            ENVIRONMENT.upgrade(args)
+
+        after = {
+            path.relative_to(self.root): path.read_bytes()
+            for path in self.root.rglob("*") if path.is_file()
+        }
+        self.assertEqual(after, before)
+        self.assertFalse((self.root / f"releases/{successor}").exists())
 
     def test_restores_signed_safe_pause_after_disposable_root_is_removed(self) -> None:
         args = argparse.Namespace(

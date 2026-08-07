@@ -339,7 +339,7 @@ verify_installed_launcher_binding() {
   reject_symlink_path_components "$installed" ||
     die "installed factory-launch path contains a symlink"
   [[ "$(file_hash "$installed")" == "$(file_hash "$expected")" ]] ||
-    die "installed factory-launch does not match the sealed candidate"
+    die "installed factory-launch does not match the sealed candidate; drain the lane and follow docs/factory-setup.md to atomically install the sealed launcher with a rollback copy"
 }
 
 verify_restrictive_regular_file() {
@@ -404,7 +404,7 @@ verify_origin() {
     die "--origin does not match the repository origin"
   expected="$(expected_origin_identity)"
   [[ "$(canonical_origin_identity "$actual")" == "$expected" ]] ||
-    die "wrong kit origin: expected $expected"
+    die "wrong kit origin: expected $expected; SSH host aliases are not trusted—use a clean checkout with the canonical github.com remote"
   printf '%s\n' "$actual"
 }
 
@@ -2208,7 +2208,7 @@ validate_receipt_snapshot() {
   receipt_product_sha="$(json_get "$receipt" product_sha)"
   if [[ -n "$receipt_product_sha" ]]; then
     [[ "$product_git_sha" == "$receipt_product_sha" ]] ||
-      die "product Git commit drifted since certification"
+      die "product Git commit drifted since certification; land all migration controls, then recertify against current protected main"
   fi
   product_git_tree="$(product_tree "$product_top")"
   [[ "$product_git_tree" == "$(json_get "$receipt" product_tree)" ]] ||
@@ -2435,7 +2435,7 @@ has_active_runs() {
 
 require_dispatch_drained() {
   factory_dispatch_has_leases "$1" &&
-    die "product has dispatcher leases; release them before maintenance operations"
+    die "product has dispatcher leases; MAINTENANCE remains published—run recover-lease for each stale ticket, then retry"
   return 0
 }
 
@@ -2613,7 +2613,18 @@ def authorize_inflight(ticket_id, branch, remote_tip, source_ref, state, lease):
         or item["head"] != remote_tip
         or item["state"] != state
     ):
-        raise SystemExit("nonterminal ticket does not match its exact in-flight release authorization")
+        expected = item or {
+            "branch": branch, "head": remote_tip, "state": state,
+        }
+        raise SystemExit(
+            "%s does not match its exact in-flight release authorization; "
+            "expected branch=%s head=%s state=%s source_kit_sha=%s"
+            % (
+                ticket_id, expected.get("branch", ""),
+                expected.get("head", ""), expected.get("state", ""),
+                authorization["source_kit_sha"],
+            )
+        )
     plan_path = "factory/route-plans/%s.json" % ticket_id
     result = subprocess.run(
         ["git", "-C", str(repo), "show", remote_tip + ":" + plan_path],

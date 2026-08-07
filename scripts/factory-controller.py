@@ -30,6 +30,10 @@ from qualification_artifacts import (  # noqa: E402
     ArtifactError as QualificationArtifactError,
     ensure_ticket as ensure_qualification_artifacts,
 )
+from qualification_manifest import (  # noqa: E402
+    ManifestError as QualificationManifestError,
+    validate as validate_qualification_manifest,
+)
 from legacy_closeout import (  # noqa: E402
     ValidationError as ProtectedTerminalError,
     protected_terminal,
@@ -55,6 +59,7 @@ CONTRACT_RESUME_REFUSALS = frozenset({
     "resume_commit_content_mismatch",
     "resume_commit_not_pushed",
     "resume_directives_ambiguous",
+    "resume_parent_not_migrated",
     "resume_receipt_mismatch",
 })
 INFLIGHT_STATES = frozenset({
@@ -83,6 +88,54 @@ class ControllerError(ValueError):
 
 def canonical(value: Any) -> str:
     return json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+
+
+def safe_error(error: BaseException) -> str:
+    detail = str(error).replace("\x00", "")
+    detail = re.sub(
+        r"(?im)(authorization\s*:\s*)(?:bearer|basic|token)?\s*[^\r\n]*",
+        lambda match: match.group(1) + "[redacted]",
+        detail,
+    )
+    detail = re.sub(
+        r"(?i)\b[A-Za-z][A-Za-z0-9+.-]*://\S+", "[redacted-url]", detail,
+    )
+    sensitive = (
+        r"[A-Za-z0-9_.-]*(?:key|token|secret|password|url|dsn|conn|auth)"
+        r"[A-Za-z0-9_.-]*"
+    )
+    quoted = re.compile(
+        rf"(?is)(?P<prefix>['\"]?{sensitive}['\"]?\s*[:=]\s*)"
+        rf"(?P<quote>['\"])(?:\\.|(?!(?P=quote)).)*(?P=quote)"
+    )
+    detail = quoted.sub(
+        lambda match: match.group("prefix") + "[redacted]", detail,
+    )
+    key_line = re.compile(
+        rf"(?i)^(?P<prefix>.*?['\"]?{sensitive}['\"]?\s*[:=]\s*)"
+        r"(?P<value>.*)$"
+    )
+    redacted: list[str] = []
+    continuation_indent: int | None = None
+    for line in detail.splitlines(keepends=True):
+        content = line.rstrip("\r\n")
+        ending = line[len(content):]
+        indent = len(content) - len(content.lstrip(" \t"))
+        if continuation_indent is not None:
+            if not content.strip() or indent > continuation_indent:
+                redacted.append(content[:indent] + "[redacted]" + ending)
+                continue
+            continuation_indent = None
+        match = key_line.match(content)
+        if match:
+            value = match.group("value").strip()
+            redacted.append(match.group("prefix") + "[redacted]" + ending)
+            if value in {"", "|", ">", "|-", ">-"}:
+                continuation_indent = indent
+            continue
+        redacted.append(line)
+    detail = "".join(redacted)
+    return " ".join(detail.split())[:500] or "recovery refused"
 
 
 def valid_transition_evidence(value: dict[str, Any], ticket: str) -> bool:
@@ -315,54 +368,12 @@ class Controller:
         value = json.loads(path.read_text(encoding="utf-8"))
         if value.get("schema") != QUALIFICATION_SCHEMA:
             return None
-        successor = value.get("mode") == "successor"
-        tickets = value.get("tickets")
-        target_done = value.get("target_done")
-        if (
-            set(value) != {
-                "budget_usd", "capacity", "contract_version", "factory_sha",
-                "generation", "per_run_budget_usd", "per_ticket_budget_usd",
-                "schema", "target_done", "tickets",
-            } | ({"mode", "source_factory_sha"} if successor else set())
-            or value.get("contract_version") != "1.8.0"
-            or value.get("capacity") not in (3, 4)
-            or value.get("capacity") != self.capacity
-            or target_done not in (3, 4)
-            or target_done > value.get("capacity")
-            or value.get("factory_sha") != self.release_path.name
-            or (
-                successor
-                and (
-                    target_done != 3
-                    or value.get("capacity") != 3
-                    or not SHA.fullmatch(value.get("source_factory_sha", ""))
-                    or value["source_factory_sha"] == self.release_path.name
-                    or value.get("budget_usd") != "300.000000"
-                    or value.get("per_ticket_budget_usd") != "100.000000"
-                    or value.get("per_run_budget_usd") != "10.000000"
-                )
+        try:
+            return validate_qualification_manifest(
+                value, self.release_path.name, self.capacity,
             )
-            or (
-                not successor
-                and (
-                    value.get("budget_usd") != "100.000000"
-                    or value.get("per_ticket_budget_usd") != "25.000000"
-                    or value.get("per_run_budget_usd") != "2.000000"
-                )
-            )
-            or not isinstance(value.get("generation"), int)
-            or isinstance(value.get("generation"), bool)
-            or value["generation"] < 1
-            or not isinstance(tickets, list)
-            or len(tickets) != target_done
-            or len(tickets) != len(set(tickets))
-            or any(
-                not isinstance(ticket, str) or not TICKET.fullmatch(ticket)
-                for ticket in tickets
-            )
-        ):
-            raise ControllerError("Contract 1.8 qualification manifest is invalid")
-        return value
+        except QualificationManifestError as error:
+            raise ControllerError(str(error)) from error
 
     def event(self, name: str, ticket: str = "", **details: Any) -> None:
         value = {
@@ -429,11 +440,12 @@ class Controller:
             raise ControllerError("contract resume refusal reason is invalid")
         allowed = {
             "actual_bytes", "changed_path_count", "expected_bytes",
-            "first_differing_line", "local_head", "remote_head",
+            "first_differing_line", "local_head", "offending_parent",
+            "remote_head",
         }
         if set(evidence) - allowed:
             raise ControllerError("contract resume refusal evidence is invalid")
-        for key in ("local_head", "remote_head"):
+        for key in ("local_head", "offending_parent", "remote_head"):
             if key in evidence and evidence[key] not in {None, ""} and not SHA.fullmatch(
                 evidence[key]
             ):
@@ -2792,6 +2804,128 @@ class Controller:
     def reconciliation_marker(self, ticket: str) -> Path:
         return self.state / f"reconciling-{ticket}.json"
 
+    def prepublication_retry_path(self, ticket: str) -> Path:
+        return self.state / f"prepublication-retry-{ticket}.json"
+
+    @staticmethod
+    def bundle_sha256(claim: dict[str, Any]) -> str:
+        path = (
+            Path(claim["worktree"]) / "factory" / "attestations"
+            / claim["ticket"] / "bundle.json"
+        )
+        info = path.lstat()
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or path.is_symlink()
+            or info.st_uid != os.geteuid()
+            or info.st_nlink != 1
+            or stat.S_IMODE(info.st_mode) & 0o022
+            or info.st_size > 1_000_000
+        ):
+            raise ControllerError("prepublication bundle is unsafe")
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+
+    def mark_prepublication_retry(
+        self, claim: dict[str, Any], pr: dict[str, Any]
+    ) -> None:
+        passport = read(self.state / "passports" / f"{claim['ticket']}.json")
+        if (
+            pr.get("status") != "ready"
+            or not SHA.fullmatch(pr.get("head", ""))
+            or isinstance(pr.get("pr_number"), bool)
+            or not isinstance(pr.get("pr_number"), int)
+            or pr["pr_number"] <= 0
+            or passport.get("ticket") != claim["ticket"]
+            or passport.get("branch") != claim["branch"]
+            or passport.get("factory_sha") != self.release_path.name
+            or not SHA.fullmatch(passport.get("head_sha", ""))
+            or not DIGEST.fullmatch(passport.get("passport_sha256", ""))
+        ):
+            raise ControllerError("prepublication retry boundary is invalid")
+        value = {
+            "branch": claim["branch"],
+            "bundle_sha256": self.bundle_sha256(claim),
+            "factory_sha": self.release_path.name,
+            "head_sha": passport["head_sha"],
+            "passport_sha256": passport["passport_sha256"],
+            "pr_number": pr["pr_number"],
+            "reviewed_head": pr["head"],
+            "run_snapshot_sha256": self.ticket_run_snapshot(claim["ticket"]),
+            "schema": "nysa.software-factory.prepublication-retry/v1",
+            "ticket": claim["ticket"],
+        }
+        path = self.prepublication_retry_path(claim["ticket"])
+        if path.exists() and read(path) != value:
+            raise ControllerError("prepublication retry boundary conflicts")
+        if not path.exists():
+            write(path, value)
+
+    def recover_prepublication_attestations(
+        self, claims: list[dict[str, Any]]
+    ) -> None:
+        for claim in claims:
+            marker_path = self.prepublication_retry_path(claim["ticket"])
+            passport_path = self.state / "passports" / f"{claim['ticket']}.json"
+            if (
+                claim.get("status") != "blocked"
+                or claim.get("blocked_reason") != "controller-error"
+                or claim.get("receipt")
+                or claim.get("role")
+                or claim.get("publication_lease")
+                or claim.get("parked") is not True
+                or self.role_active(claim)
+                or not marker_path.exists()
+                or not passport_path.exists()
+                or not self.ticket_release_current(claim)
+            ):
+                continue
+            marker = read(marker_path)
+            passport = read(passport_path)
+            expected = {
+                "branch": claim["branch"],
+                "bundle_sha256": self.bundle_sha256(claim),
+                "factory_sha": self.release_path.name,
+                "head_sha": passport.get("head_sha"),
+                "passport_sha256": passport.get("passport_sha256"),
+                "pr_number": marker.get("pr_number"),
+                "reviewed_head": marker.get("reviewed_head"),
+                "run_snapshot_sha256": self.ticket_run_snapshot(claim["ticket"]),
+                "schema": "nysa.software-factory.prepublication-retry/v1",
+                "ticket": claim["ticket"],
+            }
+            worktree = Path(claim["worktree"])
+            head = subprocess.run(
+                ["git", "-C", str(worktree), "rev-parse", "HEAD"],
+                text=True, capture_output=True, check=False, timeout=120,
+            )
+            status = subprocess.run(
+                ["git", "-C", str(worktree), "status", "--porcelain=v1", "-z"],
+                text=True, capture_output=True, check=False, timeout=120,
+            )
+            if (
+                marker != expected
+                or passport.get("ticket") != claim["ticket"]
+                or passport.get("branch") != claim["branch"]
+                or passport.get("factory_sha") != self.release_path.name
+                or passport.get("publication_state") != "validating"
+                or not SHA.fullmatch(marker.get("reviewed_head", ""))
+                or isinstance(marker.get("pr_number"), bool)
+                or not isinstance(marker.get("pr_number"), int)
+                or marker["pr_number"] <= 0
+                or head.returncode != 0
+                or head.stdout.strip() != marker["reviewed_head"]
+                or status.returncode != 0
+                or status.stdout
+                or not self.remote_passport_valid(claim)
+            ):
+                continue
+            self.ensure_lease(claim, "prepublication-attestation")
+            claim.update(receipt="", role="", status="claimed")
+            claim.pop("blocked_reason", None)
+            self.save_claim(claim)
+            marker_path.unlink()
+            self.event_once("prepublication_attestation_recovered", claim["ticket"])
+
     def mark_reconciling(self, claim: dict[str, Any]) -> None:
         passport_path = self.state / "passports" / f"{claim['ticket']}.json"
         if claim.get("receipt") or claim.get("role") or not passport_path.exists():
@@ -2814,13 +2948,15 @@ class Controller:
 
     def recover_interrupted_claims(self, claims: list[dict[str, Any]]) -> None:
         for claim in claims:
+            worker_error = claim.get("blocked_reason") == "worker-error"
             marker_path = self.reconciliation_marker(claim["ticket"])
             passport_path = self.state / "passports" / f"{claim['ticket']}.json"
             if (
                 claim["status"] != "blocked"
                 or claim.get("receipt")
                 or claim.get("role")
-                or claim.get("blocked_reason")
+                or claim.get("blocked_reason") not in {None, "worker-error"}
+                or worker_error and claim.get("parked") is not True
                 or self.pause_path(claim["ticket"]).exists()
                 or self.role_active(claim)
                 or not marker_path.exists()
@@ -2856,7 +2992,11 @@ class Controller:
             claim.pop("blocked_reason", None)
             self.save_claim(claim)
             marker_path.unlink()
-            self.event("interrupted_claim_recovered", claim["ticket"])
+            self.event_once(
+                "worker_error_recovered" if worker_error
+                else "interrupted_claim_recovered",
+                claim["ticket"],
+            )
 
     def recover_missing_terminals(self, claims: list[dict[str, Any]]) -> None:
         for claim in claims:
@@ -2938,6 +3078,8 @@ class Controller:
         concurrent: bool = False,
     ) -> None:
         def recover(claim: dict[str, Any]) -> None:
+            before_lease = claim.get("lease", "")
+            before_released = claim.get("lease_released") is True
             try:
                 recovery([claim])
             except (
@@ -2949,12 +3091,26 @@ class Controller:
                 claim["status"] = "blocked"
                 claim["blocked_reason"] = f"recovery:{name}"
                 self.save_claim(claim)
-                self.event(
+                self.event_once(
                     "ticket_recovery_failed",
                     claim["ticket"],
-                    error=str(error),
+                    error=safe_error(error),
                     recovery=name,
                 )
+            acquired = (
+                DIGEST.fullmatch(claim.get("lease", ""))
+                and claim.get("lease_released") is not True
+                and (
+                    before_released
+                    or claim.get("lease") != before_lease
+                )
+            )
+            if (
+                acquired
+                and not self.role_active(claim)
+                and claim.get("status") in {"blocked", "budget", "waiting"}
+            ):
+                self.release_ticket_lease(claim)
 
         if concurrent and len(claims) > 1:
             with ThreadPoolExecutor(
@@ -3214,6 +3370,29 @@ class Controller:
             path = self.state / "passports" / f"{claim['ticket']}.json"
             if not path.exists():
                 continue
+            if claim.get("parked") is True:
+                branch = subprocess.run(
+                    [
+                        "git", "-C", claim["worktree"], "symbolic-ref",
+                        "--quiet", "--short", "HEAD",
+                    ],
+                    text=True, capture_output=True, check=False, timeout=120,
+                )
+                if branch.returncode != 0 or branch.stdout.strip() != claim["branch"]:
+                    if (
+                        DIGEST.fullmatch(claim.get("lease", ""))
+                        and claim.get("lease_released") is not True
+                        and not self.role_active(claim)
+                    ):
+                        self.release_ticket_lease(claim)
+                    self.event_once(
+                        "release_upgrade_waiting", claim["ticket"],
+                        reason=(
+                            "detached_worktree"
+                            if branch.returncode == 1 else "worktree_branch_invalid"
+                        ),
+                    )
+                    continue
             terminal = (
                 self.terminal_for_receipt(claim["ticket"], claim["receipt"])
                 if claim.get("receipt")
@@ -3233,11 +3412,18 @@ class Controller:
                 f"passport-route-migration-complete-{claim['ticket']}-"
                 f"{self.release_path.name}"
             )
+            migration_complete = (
+                prior == self.release_path.name and self.marker(completed)
+            )
             if (
                 prior == self.release_path.name
                 and (
                     not self.marker(pending)
-                    or self.marker(completed)
+                    or migration_complete
+                    and (
+                        claim.get("blocked_reason") != "route-migration-required"
+                        or not self.ticket_release_current(claim)
+                    )
                 )
             ):
                 continue
@@ -3322,11 +3508,14 @@ class Controller:
             self.save_claim(claim)
             if merged_closeout:
                 claim.update(receipt="", role="", status="claimed")
-                claim.pop("blocked_reason", None)
+                if claim.get("blocked_reason") == "route-migration-required":
+                    claim.pop("blocked_reason")
                 self.save_claim(claim)
                 self.event(
                     "upgraded_merged_claim_recovered", claim["ticket"],
                 )
+                if migration_complete:
+                    self.event_once("route_migration_cleared", claim["ticket"])
                 self.marker(completed, {
                     "factory_sha": self.release_path.name,
                     "schema": EVENT_SCHEMA,
@@ -3343,20 +3532,27 @@ class Controller:
                 self.event(
                     "upgraded_bundle_refresh_recovered", claim["ticket"],
                 )
+                if migration_complete:
+                    self.event_once("route_migration_cleared", claim["ticket"])
                 continue
-            try:
-                self.migrate_passport(claim, "preserve")
-            except ControllerError:
-                self.release_ticket_lease(claim)
-                raise
+            if not migration_complete:
+                try:
+                    self.migrate_passport(claim, "preserve")
+                except ControllerError:
+                    self.release_ticket_lease(claim)
+                    raise
             if (
                 not claim.get("receipt")
                 and self.restore_contract_blocker(claim)
             ):
+                claim.pop("blocked_reason", None)
+                self.save_claim(claim)
                 self.event(
                     "upgraded_claim_recovered", claim["ticket"],
                     from_factory_sha=prior,
                 )
+                if migration_complete:
+                    self.event_once("route_migration_cleared", claim["ticket"])
                 self.marker(completed, {
                     "factory_sha": self.release_path.name,
                     "schema": EVENT_SCHEMA,
@@ -3389,11 +3585,15 @@ class Controller:
             else:
                 claim.update(receipt="", role="", status="claimed")
                 claim.pop("budget_sha256", None)
+            if claim.get("blocked_reason") == "route-migration-required":
+                claim.pop("blocked_reason")
             self.save_claim(claim)
             self.event(
                 "upgraded_claim_recovered", claim["ticket"],
                 from_factory_sha=prior,
             )
+            if migration_complete:
+                self.event_once("route_migration_cleared", claim["ticket"])
             self.marker(completed, {
                 "factory_sha": self.release_path.name,
                 "schema": EVENT_SCHEMA,
@@ -3559,6 +3759,14 @@ class Controller:
                     r"[A-Za-z0-9._-]{1,200}", terminal.get("run_id", ""),
                 )
             )
+            model_recovery_block = (
+                "model-identity-recovery-refused:" + self.release_path.name
+            )
+            if (
+                model_identity_success
+                and claim.get("blocked_reason") == model_recovery_block
+            ):
+                continue
             if (
                 self.qualification
                 and terminal is not None
@@ -3801,7 +4009,15 @@ class Controller:
                 except (
                     ControllerError, json.JSONDecodeError, OSError,
                     subprocess.SubprocessError,
-                ):
+                ) as error:
+                    detail = safe_error(error)
+                    self.block(claim, model_recovery_block)
+                    self.event_once(
+                        "typed_recovery_refused", claim["ticket"],
+                        failed_run_id=terminal["run_id"],
+                        reason=detail,
+                        recovery_kind="model_identity_success",
+                    )
                     continue
             if converged_success:
                 try:
@@ -3873,6 +4089,7 @@ class Controller:
                                 for key in (
                                     "actual_bytes", "changed_path_count",
                                     "expected_bytes", "first_differing_line",
+                                    "offending_parent",
                                 )
                                 if key in resumed
                             },
@@ -4279,25 +4496,36 @@ class Controller:
             check=False, timeout=120,
         ).returncode == 0
 
+    def refresh_stale_protected_base(
+        self, claim: dict[str, Any], receipt: str, head: str,
+        event: str,
+    ) -> bool:
+        if not SHA.fullmatch(head):
+            raise ControllerError("protected-base head is invalid")
+        with self.git_lock:
+            if self.protected_base_current(claim, head):
+                return False
+            self.withdraw_publication(claim)
+            value = self.json_call(
+                "ticket-attest", "--ticket", claim["ticket"],
+                "--lease", claim["lease"], "--receipt", receipt,
+                "--workdir", claim["worktree"], "--action", "refresh", "--json",
+            )
+            if value.get("action") != "refresh" or not SHA.fullmatch(
+                value.get("head", "")
+            ):
+                raise ControllerError("protected-base refresh was not materialized")
+            self.migrate_passport(claim, "validating")
+            self.event(event, claim["ticket"], head_sha=value["head"])
+            return True
+
     def publication_ready(
         self, claim: dict[str, Any], receipt: str, head: str
     ) -> bool:
-        with self.git_lock:
-            if not self.protected_base_current(claim, head):
-                self.withdraw_publication(claim)
-                value = self.json_call(
-                    "ticket-attest", "--ticket", claim["ticket"],
-                    "--lease", claim["lease"], "--receipt", receipt,
-                    "--workdir", claim["worktree"], "--action", "refresh", "--json",
-                )
-                if value.get("action") != "refresh":
-                    raise ControllerError("protected-base refresh was not materialized")
-                self.migrate_passport(claim, "validating")
-                self.event(
-                    "protected_base_refreshed", claim["ticket"],
-                    head_sha=value.get("head"),
-                )
-                return False
+        if self.refresh_stale_protected_base(
+            claim, receipt, head, "protected_base_refreshed"
+        ):
+            return False
         prior = claim.get("publication_lease", "")
         self.json_call(
             "publication", "ready", "--ticket", claim["ticket"],
@@ -4943,6 +5171,16 @@ class Controller:
                 failed_checks: list[str] = []
                 if role in {"reviewer", "narrator"}:
                     pr = self.ticket_pr(claim, receipt)
+                    if (
+                        pr.get("status") in {"failed", "prepared", "ready"}
+                        and self.refresh_stale_protected_base(
+                            claim, receipt, pr.get("head", ""),
+                            "protected_base_refreshed_before_evidence",
+                        )
+                    ):
+                        return {
+                            "status": "progressed", "ticket": claim["ticket"]
+                        }
                     if pr.get("status") == "wait":
                         if (
                             role == "narrator"
@@ -5050,12 +5288,19 @@ class Controller:
                     return {"status": "waiting", "ticket": claim["ticket"]}
                 if pr.get("status") != "ready":
                     return {"status": "waiting", "ticket": claim["ticket"]}
-                attested = self.json_call(
-                    "ticket-attest", "--ticket", claim["ticket"],
-                    "--lease", claim["lease"], "--receipt", receipt,
-                    "--workdir", claim["worktree"], "--action", "approval",
-                    "--attest-only", "--json",
-                )
+                try:
+                    attested = self.json_call(
+                        "ticket-attest", "--ticket", claim["ticket"],
+                        "--lease", claim["lease"], "--receipt", receipt,
+                        "--workdir", claim["worktree"], "--action", "approval",
+                        "--attest-only", "--json",
+                    )
+                except ControllerError as error:
+                    if str(error).startswith(
+                        "ticket-attest: stale_linear_approval:"
+                    ):
+                        self.mark_prepublication_retry(claim, pr)
+                    raise
                 if (
                     attested.get("action") != "approval-attested"
                     or attested.get("auto_merge") is not False
@@ -5440,6 +5685,10 @@ class Controller:
                 self.recover_missing_passport_claims(claims)
                 self.recover_terminal_requests(idle)
                 self.recover_each(
+                    idle, self.recover_prepublication_attestations,
+                    "prepublication-attestation",
+                )
+                self.recover_each(
                     idle, self.recover_interrupted_claims,
                     "interrupted-reconciliation",
                 )
@@ -5514,9 +5763,11 @@ class Controller:
                     continue
                 for future in done:
                     claim = futures.pop(future)
+                    worker_failed = False
                     try:
                         item = future.result()
                     except Exception as error:
+                        worker_failed = True
                         claim["status"] = "blocked"
                         claim["blocked_reason"] = "worker-error"
                         self.save_claim(claim)
@@ -5530,9 +5781,10 @@ class Controller:
                             "status": "error",
                             "ticket": claim["ticket"],
                         }
-                    self.reconciliation_marker(claim["ticket"]).unlink(
-                        missing_ok=True
-                    )
+                    if not worker_failed:
+                        self.reconciliation_marker(claim["ticket"]).unlink(
+                            missing_ok=True
+                        )
                     results[claim["ticket"]] = item
                     if (
                         item.get("status") == "waiting"

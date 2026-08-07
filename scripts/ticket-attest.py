@@ -2475,7 +2475,10 @@ def approval(args, product, workdir, repo, prefix, remote, kit_sha, method):
         updated = timestamp(operator.get("linear_updated_at"), "Linear approval update")
         attested = timestamp(bundle_att.get("attested_at"), "bundle attestation")
         if observed <= attested or updated <= attested:
-            raise Refusal("Linear approval is not newer than the bundle attestation")
+            raise Refusal(
+                "stale_linear_approval: Linear approval is not newer than "
+                "the bundle attestation"
+            )
         version = hashlib.sha256(json.dumps(
             {
                 key: operator[key]

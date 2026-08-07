@@ -604,6 +604,7 @@ LINEAR_LAST_SUCCESS=""
 LINEAR_AGE=""
 LINEAR_LAST_ERROR=""
 LINEAR_PROJECTS_JSON="[]"
+LINEAR_PROJECT_CONFLICT_JSON="null"
 LINEAR_MAP=""
 if [[ -n "$FACTORY_DIR" ]]; then
   LINEAR_MAP="${FACTORY_OPERATOR_MAP:-$FACTORY_DIR/linear-map.json}"
@@ -666,6 +667,52 @@ try:
             "project_id": project_id,
             "project_url": project_url,
         })
+    conflict = sync.get("project_identity_conflict")
+    if conflict is not None:
+        if (
+            not isinstance(conflict, dict)
+            or conflict.get("schema") != "nysa.software-factory.linear-project-identity-conflict/v1"
+            or not re.fullmatch(r"I-[0-9]+", str(conflict.get("initiative") or ""))
+            or conflict.get("reason") not in {
+                "conflicting_project_identity",
+                "durable_project_foreign_team",
+                "mapped_project_foreign_team",
+                "mapped_project_unavailable",
+                "multiple_durable_identities",
+                "unmarked_same_name_project",
+            }
+            or not isinstance(conflict.get("candidates"), list)
+            or len(conflict["candidates"]) > 250
+        ):
+            raise ValueError
+        candidates = []
+        for candidate in conflict["candidates"]:
+            if not isinstance(candidate, dict):
+                raise ValueError
+            project_id = candidate.get("project_id")
+            project_url = candidate.get("project_url")
+            if not isinstance(project_id, str) or not re.fullmatch(
+                r"[A-Za-z0-9-]{1,200}", project_id
+            ):
+                raise ValueError
+            if (
+                project_url is not None
+                and (
+                    not isinstance(project_url, str)
+                    or not re.fullmatch(
+                        r"https://linear\.app/[^\s\x00-\x1f\x7f]+", project_url
+                    )
+                )
+            ):
+                raise ValueError
+            candidates.append({"project_id": project_id, "project_url": project_url})
+        conflict = {
+            "schema": conflict["schema"],
+            "initiative": conflict["initiative"],
+            "reason": conflict["reason"],
+            "candidates": sorted(candidates, key=lambda item: item["project_id"]),
+            "observed_at": str(conflict.get("observed_at") or ""),
+        }
     age = ""
     status = "warning" if error else "unknown"
     if success:
@@ -679,12 +726,14 @@ try:
     print(age)
     print(error)
     print(json.dumps(projects, sort_keys=True, separators=(",", ":")))
+    print(json.dumps(conflict, sort_keys=True, separators=(",", ":")))
 except Exception:
     print("error")
     print("")
     print("")
     print("invalid Linear sync metadata")
     print("[]")
+    print("null")
 PY
 )"
   LINEAR_STATUS="$(printf '%s\n' "$LINEAR_DATA" | awk 'NR == 1 { print; exit }')"
@@ -692,6 +741,7 @@ PY
   LINEAR_AGE="$(printf '%s\n' "$LINEAR_DATA" | awk 'NR == 3 { print; exit }')"
   LINEAR_LAST_ERROR="$(printf '%s\n' "$LINEAR_DATA" | awk 'NR == 4 { print; exit }' | sanitize)"
   LINEAR_PROJECTS_JSON="$(printf '%s\n' "$LINEAR_DATA" | awk 'NR == 5 { print; exit }')"
+  LINEAR_PROJECT_CONFLICT_JSON="$(printf '%s\n' "$LINEAR_DATA" | awk 'NR == 6 { print; exit }')"
 fi
 
 PROVIDER_RUNTIME_STATUS="ok"
@@ -882,6 +932,7 @@ export HERMES_STATUS HERMES_PATH HERMES_VERSION CLI_STATUS CLI_FILE
 export CREDENTIAL_STATUS GH_PRESENT LINEAR_PRESENT
 export LINEAR_STATUS OUTPUT_LINEAR_MAP LINEAR_LAST_SUCCESS LINEAR_AGE LINEAR_LAST_ERROR
 export LINEAR_PROJECTS_JSON
+export LINEAR_PROJECT_CONFLICT_JSON
 export PROVIDER_RUNTIME_STATUS PROVIDER_ACTIVATED PROVIDER_ACTIVE_ATTEMPTS
 export PROVIDER_EXECUTION_MODE
 export PROVIDER_ACTIVE_TOKENS PROVIDER_UNKNOWN_WORKERS PROVIDER_LEGACY_INTERVALS
@@ -1002,6 +1053,9 @@ document = {
             "age_seconds": number("LINEAR_AGE"),
             "last_error": optional("LINEAR_LAST_ERROR"),
             "projects": json.loads(os.environ["LINEAR_PROJECTS_JSON"]),
+            "project_identity_conflict": json.loads(
+                os.environ["LINEAR_PROJECT_CONFLICT_JSON"]
+            ),
         },
         "contract_resume": {
             "status": os.environ["CONTRACT_RESUME_STATUS"],

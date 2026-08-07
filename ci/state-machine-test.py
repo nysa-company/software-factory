@@ -1680,6 +1680,132 @@ class StateMachineTest(unittest.TestCase):
             STATE.operator_resume_role(self.args, passport, "builder")
         self.assertEqual(raised.exception.reason_code, "resume_ancestry_invalid")
 
+    def test_operator_resume_accepts_only_one_safe_unmigrated_context_commit(self) -> None:
+        self.args.receipt = "b" * 64
+        ticket = self.product / "factory/tickets/T-110.md"
+        ticket.write_text(
+            "# T-110\n\nState: Planning\n"
+            "Protected-Test-Conflicts: none\n",
+            encoding="utf-8",
+        )
+        rulings = self.product / "factory/rulings.md"
+        rulings.write_text("# Rulings\n\nT-100: preserve prior ruling.\n")
+        run("git", "add", str(ticket), str(rulings), cwd=self.product)
+        run("git", "commit", "-qm", "add operator fields", cwd=self.product)
+        base = run("git", "rev-parse", "HEAD", cwd=self.product)
+        passport = {
+            "branch": "ticket/T-110",
+            "factory_sha": self.args.factory_sha,
+            "head_sha": base,
+            "ticket": "T-110",
+        }
+        entry = "apps/api/tests/example.test.ts => expected-literal"
+
+        def commit_resume() -> str:
+            ticket.write_text(
+                ticket.read_text(encoding="utf-8").rstrip()
+                + "\n\nOPERATOR RESUME: test-author\n"
+                + f"OPERATOR RESUME RECEIPT: {self.args.receipt}\n",
+                encoding="utf-8",
+            )
+            run("git", "add", str(ticket), cwd=self.product)
+            run("git", "commit", "-qm", "resume after operator context", cwd=self.product)
+            return run("git", "rev-parse", "HEAD", cwd=self.product)
+
+        ticket.write_text(
+            ticket.read_text().replace(
+                "Protected-Test-Conflicts: none",
+                f"Protected-Test-Conflicts: {entry}",
+            )
+        )
+        run("git", "add", str(ticket), cwd=self.product)
+        run("git", "commit", "-qm", "record operator context", cwd=self.product)
+        commit_resume()
+        self.assertEqual(
+            STATE.operator_resume_role(self.args, passport, "builder"),
+            "test-author",
+        )
+        self.assertEqual(
+            STATE.operator_resume_role(self.args, passport, "builder"),
+            "test-author",
+        )
+
+        def assert_refused(label: str, extra_path: str | None = None,
+                           change_state: bool = False, two_commits: bool = False,
+                           ruling_change: str | None = None) -> None:
+            run("git", "reset", "--hard", base, cwd=self.product)
+            ticket.write_text(
+                ticket.read_text().replace(
+                    "Protected-Test-Conflicts: none",
+                    f"Protected-Test-Conflicts: {entry}",
+                ).replace(
+                    "State: Planning",
+                    "State: Building" if change_state else "State: Planning",
+                )
+            )
+            run("git", "add", str(ticket), cwd=self.product)
+            if extra_path:
+                path = self.product / extra_path
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("unapproved context\n")
+                run("git", "add", extra_path, cwd=self.product)
+            if ruling_change == "rewrite":
+                rulings.write_text("# Rulings\n\nT-110: replace every ruling.\n")
+                run("git", "add", str(rulings), cwd=self.product)
+            elif ruling_change == "delete":
+                rulings.unlink()
+                run("git", "add", "-u", str(rulings), cwd=self.product)
+            run("git", "commit", "-qm", f"{label} context", cwd=self.product)
+            if two_commits:
+                (self.product / "factory/rulings.md").write_text("late ruling\n")
+                run("git", "add", "factory/rulings.md", cwd=self.product)
+                run("git", "commit", "-qm", "second context", cwd=self.product)
+            parent = run("git", "rev-parse", "HEAD", cwd=self.product)
+            commit_resume()
+            with self.assertRaises(STATE.ContractResumeError) as raised:
+                STATE.operator_resume_role(self.args, passport, "builder")
+            self.assertEqual(
+                raised.exception.reason_code, "resume_parent_not_migrated"
+            )
+            self.assertEqual(raised.exception.evidence["offending_parent"], parent)
+
+        for label, extra_path, change_state, two_commits, ruling_change in (
+            ("application", "app.js", False, False, None),
+            ("other-control", "factory/other.md", False, False, None),
+            ("sibling", "factory/tickets/T-111.md", False, False, None),
+            ("protected-field", None, True, False, None),
+            ("rulings-rewrite", None, False, False, "rewrite"),
+            ("rulings-delete", None, False, False, "delete"),
+            ("two-intermediates", None, False, True, None),
+        ):
+            with self.subTest(label=label):
+                assert_refused(
+                    label, extra_path, change_state, two_commits, ruling_change,
+                )
+
+        run("git", "reset", "--hard", base, cwd=self.product)
+        run("git", "checkout", "-qb", "operator-context-side", cwd=self.product)
+        ticket.write_text(ticket.read_text().replace(
+            "Protected-Test-Conflicts: none",
+            f"Protected-Test-Conflicts: {entry}",
+        ))
+        run("git", "add", str(ticket), cwd=self.product)
+        run("git", "commit", "-qm", "side context", cwd=self.product)
+        run("git", "checkout", "-q", "ticket/T-110", cwd=self.product)
+        (self.product / "factory/rulings.md").write_text("parallel ruling\n")
+        run("git", "add", "factory/rulings.md", cwd=self.product)
+        run("git", "commit", "-qm", "parallel ruling", cwd=self.product)
+        run(
+            "git", "merge", "-q", "--no-ff", "operator-context-side",
+            "-m", "merge operator context", cwd=self.product,
+        )
+        merge_parent = run("git", "rev-parse", "HEAD", cwd=self.product)
+        commit_resume()
+        with self.assertRaises(STATE.ContractResumeError) as raised:
+            STATE.operator_resume_role(self.args, passport, "builder")
+        self.assertEqual(raised.exception.reason_code, "resume_parent_not_migrated")
+        self.assertEqual(raised.exception.evidence["offending_parent"], merge_parent)
+
     def test_operator_resume_names_overfull_commit_with_safe_diff(self) -> None:
         self.args.receipt = "b" * 64
         path = self.product / "factory/tickets/T-110.md"
@@ -1850,10 +1976,11 @@ class StateMachineTest(unittest.TestCase):
         run("git", "add", str(path), cwd=self.product)
         run("git", "commit", "-qm", "add unrelated directive drift", cwd=self.product)
         passport["head_sha"] = run("git", "rev-parse", "HEAD", cwd=self.product)
-        with self.assertRaisesRegex(
-            STATE.StateError, "operator directive is invalid"
-        ):
+        with self.assertRaises(STATE.ContractResumeError) as raised:
             STATE.operator_resume_role(self.args, passport, "test-author")
+        self.assertEqual(
+            raised.exception.reason_code, "resume_parent_not_migrated"
+        )
 
     def test_operator_resume_uses_current_passport_repair_window(self) -> None:
         historical_receipt = "a" * 64

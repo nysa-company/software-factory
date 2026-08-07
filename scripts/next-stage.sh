@@ -1330,7 +1330,7 @@ diff = subprocess.run(
 ).stdout.splitlines()
 headers = [
     int(match.group(1)) for line in diff if line.startswith("+")
-    if (match := re.fullmatch(r"## Frozen contract — version ([1-9][0-9]*)", line[1:]))
+    if (match := re.fullmatch(r"#{2,3} Frozen contract — version ([1-9][0-9]*)", line[1:]))
 ]
 passes = [
     int(match.group(1)) for line in diff if line.startswith("+")
@@ -1345,7 +1345,7 @@ prior = subprocess.run(
 ).stdout.splitlines()
 versions = [
     int(match.group(1)) for line in prior
-    if (match := re.fullmatch(r"## Frozen contract — version ([1-9][0-9]*)", line))
+    if (match := re.fullmatch(r"#{2,3} Frozen contract — version ([1-9][0-9]*)", line))
 ]
 if len(headers) != 1 or headers != passes or headers[0] <= max(versions, default=0):
     raise SystemExit(1)

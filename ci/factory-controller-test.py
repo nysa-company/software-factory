@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import argparse
 import copy
+from contextlib import redirect_stdout
 import hashlib
 import hmac
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -66,6 +68,37 @@ class FactoryControllerTest(unittest.TestCase):
             job = plistlib.load(handle)
         self.assertEqual(job["ProcessType"], "Interactive")
 
+    def test_busy_is_byte_identical_before_controller_construction(self) -> None:
+        for directory in ("claims", "passports", ".dispatch-leases"):
+            (self.state / directory).mkdir(mode=0o700)
+            (self.state / directory / "T-110.json").write_text(
+                '{"ticket":"T-110"}\n', encoding="utf-8"
+            )
+        (self.state / "reconcile.lock").touch(mode=0o600)
+        before = {
+            path.relative_to(self.state): path.read_bytes()
+            for path in self.state.rglob("*") if path.is_file()
+        }
+        arguments = [
+            "factory-controller.py", "--launcher", str(self.launcher),
+            "--project", "relay", "--product-root", str(self.product),
+            "--release-path", str(self.release), "--state-dir", str(self.state),
+        ]
+        output = io.StringIO()
+        with (
+            patch.object(CONTROL.sys, "argv", arguments),
+            patch.object(CONTROL.fcntl, "flock", side_effect=BlockingIOError),
+            patch.object(CONTROL, "Controller", side_effect=AssertionError),
+            redirect_stdout(output),
+        ):
+            CONTROL.main()
+        after = {
+            path.relative_to(self.state): path.read_bytes()
+            for path in self.state.rglob("*") if path.is_file()
+        }
+        self.assertEqual(json.loads(output.getvalue())["status"], "busy")
+        self.assertEqual(after, before)
+
     def test_terminal_event_is_idempotent_across_restart(self) -> None:
         controller = CONTROL.Controller(self.args)
         details = {"protected_main": "b" * 40, "terminal_basis": "attested-done"}
@@ -98,13 +131,17 @@ class FactoryControllerTest(unittest.TestCase):
             {"receipt": "e" * 64, "ticket": "T-111"},
             "resume_commit_not_pushed", evidence,
         )
+        controller.record_contract_resume_refusal(
+            {"receipt": "f" * 64, "ticket": "T-112"},
+            "resume_parent_not_migrated", {"offending_parent": "9" * 40},
+        )
         refusals = [
             CONTROL.read(path) for path in controller.events.glob("*.json")
             if CONTROL.read(path).get("event") == "contract_resume_refused"
         ]
         self.assertEqual(
             sorted(item["ticket"] for item in refusals),
-            ["T-110", "T-110", "T-111"],
+            ["T-110", "T-110", "T-111", "T-112"],
         )
 
     def test_remote_cell_head_status_distinguishes_unpushed_from_diverged(self) -> None:
@@ -511,6 +548,13 @@ class FactoryControllerTest(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
+
+    @staticmethod
+    def initialize_parked_branch(cell: Path, branch: str) -> None:
+        cell.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["git", "init", "-q", "-b", branch, str(cell)], check=True,
+        )
 
     def test_claims_four_cells_and_recovers_terminal_receipt(self) -> None:
         controller = CONTROL.Controller(self.args)
@@ -1605,7 +1649,7 @@ class FactoryControllerTest(unittest.TestCase):
         passports.mkdir(mode=0o700)
         for number, ticket in enumerate(tickets, 1):
             cell = self.root / "parked" / ticket
-            cell.mkdir(parents=True)
+            self.initialize_parked_branch(cell, f"ticket/{ticket}")
             controller.save_claim({
                 "branch": f"ticket/{ticket}",
                 "lease": f"{number:064x}",
@@ -4312,7 +4356,7 @@ class FactoryControllerTest(unittest.TestCase):
     ) -> None:
         controller = CONTROL.Controller(self.args)
         cell = self.root / "parked/T-110"
-        cell.mkdir(parents=True)
+        self.initialize_parked_branch(cell, "ticket/T-110")
         claim = {
             "branch": "ticket/T-110", "lease": "", "parked": True,
             "priority": "normal", "publication_lease": "", "receipt": "",
@@ -4365,6 +4409,59 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertTrue(controller.marker(
             f"passport-route-migration-complete-T-110-{self.release.name}"
         ))
+
+    def test_completed_route_migration_clears_block_without_replaying_migration(
+        self,
+    ) -> None:
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "parked/T-110"
+        route = cell / "factory/route-plans/T-110.json"
+        ticket = cell / "factory/tickets/T-110.md"
+        route.parent.mkdir(parents=True)
+        ticket.parent.mkdir(parents=True)
+        route.write_text(json.dumps({
+            "kit_sha": self.release.name, "ticket": "T-110",
+        }) + "\n", encoding="utf-8")
+        ticket.write_text(
+            f"# T-110\n\nState: Review\nKit-SHA: {self.release.name}\n",
+            encoding="utf-8",
+        )
+        self.initialize_parked_branch(cell, "ticket/T-110")
+        claim = {
+            "blocked_reason": "route-migration-required",
+            "branch": "ticket/T-110", "lease": "a" * 64,
+            "parked": True, "publication_lease": "", "receipt": "",
+            "role": "", "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "blocked", "ticket": "T-110", "worktree": str(cell),
+        }
+        (self.state / "passports").mkdir(mode=0o700)
+        CONTROL.write(self.state / "passports/T-110.json", {
+            "factory_sha": self.release.name,
+        })
+        for prefix in (
+            "passport-route-migration-pending",
+            "passport-route-migration-complete",
+        ):
+            controller.marker(
+                f"{prefix}-T-110-{self.release.name}",
+                {"factory_sha": self.release.name,
+                 "schema": CONTROL.EVENT_SCHEMA, "ticket": "T-110"},
+            )
+        calls = []
+        controller.renew = lambda _claim: calls.append("renew")
+        controller.migrate_passport = lambda *_args: calls.append("migrate")
+        controller.restore_contract_blocker = lambda _claim: False
+        controller.event = lambda name, *_args, **_kwargs: calls.append(name)
+        controller.event_once = lambda name, *_args, **_kwargs: calls.append(name)
+
+        controller.recover_upgraded_claims([claim])
+        controller.recover_upgraded_claims([claim])
+
+        self.assertEqual(claim["status"], "claimed")
+        self.assertNotIn("blocked_reason", claim)
+        self.assertEqual(calls.count("renew"), 1)
+        self.assertNotIn("migrate", calls)
+        self.assertEqual(calls.count("route_migration_cleared"), 1)
 
     def test_release_bundle_refresh_requires_stale_protected_base(self) -> None:
         controller = CONTROL.Controller(self.args)
@@ -4495,13 +4592,117 @@ class FactoryControllerTest(unittest.TestCase):
             claims, recovery, "release-upgrade", concurrent=True
         )
 
+    def test_recovery_failures_dedupe_and_release_new_nonlive_lease(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        claim = {
+            "lease": "", "lease_released": True, "parked": True,
+            "status": "blocked", "ticket": "T-110",
+        }
+        released = []
+        controller.role_active = lambda _claim: False
+        controller.release_ticket_lease = lambda item: (
+            released.append(item["lease"]), item.update(lease_released=True)
+        )[-1]
+
+        def fail(message):
+            def recovery(items):
+                items[0].update(lease="f" * 64)
+                items[0].pop("lease_released", None)
+                raise CONTROL.ControllerError(message)
+            controller.recover_each([claim], recovery, "release-upgrade")
+
+        fail("token=never-print\nrecovery kind detached")
+        fail("token=never-print\nrecovery kind detached")
+        fail("token=never-print\nrecovery kind changed")
+
+        events = [
+            CONTROL.read(path) for path in controller.events.glob("*.json")
+            if CONTROL.read(path).get("event") == "ticket_recovery_failed"
+        ]
+        self.assertEqual(len(events), 2)
+        self.assertTrue(all("never-print" not in item["error"] for item in events))
+        self.assertEqual(len(released), 3)
+
+    def test_recovery_error_redaction_covers_structured_secrets(self) -> None:
+        error = CONTROL.ControllerError(
+            "Authorization: Bearer SUPERSECRET\n"
+            "auth=\"two word secret\"\n"
+            "password: |\n  continued secret\n"
+            "endpoint=https://user:pass@example.invalid/path\n"
+            "recovery kind detached"
+        )
+        detail = CONTROL.safe_error(error)
+        for secret in (
+            "SUPERSECRET", "two word secret", "continued secret",
+            "user:pass@example.invalid",
+        ):
+            self.assertNotIn(secret, detail)
+        self.assertIn("recovery kind detached", detail)
+
+    def test_successful_parked_recovery_retains_new_lease(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        claim = {
+            "lease": "", "lease_released": True, "parked": True,
+            "status": "blocked", "ticket": "T-110",
+        }
+        released = []
+        controller.role_active = lambda _claim: False
+        controller.release_ticket_lease = lambda item: released.append(item)
+
+        def recovery(items):
+            items[0].update(lease="f" * 64, status="claimed")
+            items[0].pop("lease_released", None)
+
+        controller.recover_each([claim], recovery, "release-upgrade")
+
+        self.assertEqual(released, [])
+        self.assertEqual(claim["lease"], "f" * 64)
+        self.assertNotIn("lease_released", claim)
+
+    def test_detached_parked_upgrade_waits_once_without_holding_lease(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "parked/T-110"
+        cell.parent.mkdir()
+        subprocess.run(["git", "init", "-q", str(cell)], check=True)
+        (cell / "tracked").write_text("value\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(cell), "add", "tracked"], check=True)
+        subprocess.run([
+            "git", "-C", str(cell), "-c", "user.name=Factory",
+            "-c", "user.email=factory@example.invalid", "commit", "-qm", "base",
+        ], check=True)
+        subprocess.run(["git", "-C", str(cell), "checkout", "-q", "--detach"], check=True)
+        (self.state / "passports").mkdir(mode=0o700)
+        CONTROL.write(self.state / "passports/T-110.json", {
+            "factory_sha": self.release.name,
+        })
+        claim = {
+            "branch": "ticket/T-110", "lease": "d" * 64,
+            "parked": True, "receipt": "", "role": "", "status": "blocked",
+            "ticket": "T-110", "worktree": str(cell),
+        }
+        controller.role_active = lambda _claim: False
+        controller.release_ticket_lease = lambda item: item.update(
+            lease_released=True
+        )
+
+        controller.recover_upgraded_claims([claim])
+        controller.recover_upgraded_claims([claim])
+
+        self.assertTrue(claim["lease_released"])
+        events = [
+            CONTROL.read(path) for path in controller.events.glob("*.json")
+            if CONTROL.read(path).get("event") == "release_upgrade_waiting"
+        ]
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["reason"], "detached_worktree")
+
     def test_successor_recovers_only_exact_expired_parked_lease(self) -> None:
         controller = CONTROL.Controller(self.args)
         controller.qualification = {
             "generation": 1, "mode": "successor", "tickets": ["T-110"],
         }
         cell = self.root / "parked/T-110"
-        cell.mkdir(parents=True)
+        self.initialize_parked_branch(cell, "ticket/T-110")
         claim = {
             "branch": "ticket/T-110",
             "lease": "",
@@ -4839,7 +5040,7 @@ class FactoryControllerTest(unittest.TestCase):
             "mode": "successor", "tickets": ["T-110"],
         }
         cell = self.root / "parked/T-110"
-        cell.mkdir(parents=True)
+        self.initialize_parked_branch(cell, "ticket/T-110")
         claim = {
             "branch": "ticket/T-110",
             "budget_sha256": "b" * 64,
@@ -4913,6 +5114,7 @@ class FactoryControllerTest(unittest.TestCase):
             f"# T-110\n\nState: Building\nKit-SHA: {'b' * 40}\n",
             encoding="utf-8",
         )
+        self.initialize_parked_branch(cell, "ticket/T-110")
         claim = {
             "branch": "ticket/T-110",
             "lease": "",
@@ -5772,6 +5974,49 @@ class FactoryControllerTest(unittest.TestCase):
         controller.recover_repaired_failures([claim])
         self.assertEqual(claim["receipt"], receipt)
         self.assertNotIn(("restore", run_id), calls)
+
+        controller.role_active = lambda _claim: False
+        controller.release_path = self.root / ("f" * 40)
+        claim.update(receipt=receipt, role="spec-linter", status="blocked")
+        claim.pop("blocked_reason", None)
+        calls.clear()
+        typed = []
+
+        def refuse_restore(_claim, _terminal):
+            calls.append("refused-restore")
+            raise CONTROL.ControllerError(
+                "token=supersecret https://user:pass@example.com"
+            )
+
+        controller.restore_model_identity_success = refuse_restore
+        controller.block = lambda item, reason: item.update(
+            status="blocked", blocked_reason=reason
+        )
+        controller.event_once = (
+            lambda name, ticket, **details: typed.append((name, ticket, details))
+        )
+        controller.recover_repaired_failures([claim])
+        self.assertEqual(calls.count("refused-restore"), 1)
+        self.assertEqual(
+            claim["blocked_reason"],
+            "model-identity-recovery-refused:" + "f" * 40,
+        )
+        self.assertEqual(typed[0][0:2], ("typed_recovery_refused", "T-110"))
+        self.assertEqual(typed[0][2]["recovery_kind"], "model_identity_success")
+        self.assertNotIn("supersecret", typed[0][2]["reason"])
+        self.assertNotIn("user:pass", typed[0][2]["reason"])
+
+        controller.recover_repaired_failures([claim])
+        self.assertEqual(calls.count("refused-restore"), 1)
+        self.assertEqual(len(typed), 1)
+
+        controller.release_path = self.root / ("d" * 40)
+        controller.restore_model_identity_success = (
+            lambda _claim, terminal: calls.append(("successor-restore", terminal["run_id"]))
+        )
+        controller.recover_repaired_failures([claim])
+        self.assertIn(("successor-restore", run_id), calls)
+        self.assertEqual(claim["status"], "claimed")
 
     def test_model_identity_restore_preserves_pushed_route_migration(self) -> None:
         controller = CONTROL.Controller(self.args)
@@ -6877,6 +7122,48 @@ class FactoryControllerTest(unittest.TestCase):
         controller.recover_interrupted_claims([claim])
         self.assertEqual(claim["status"], "claimed")
 
+    def test_worker_error_recovers_from_exact_reconciliation_boundary(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        ticket = "T-110"
+        cell = self.root / "parked/T-110"
+        cell.parent.mkdir()
+        subprocess.run(["git", "init", "-q", str(cell)], check=True)
+        passport = {
+            "branch": f"ticket/{ticket}",
+            "factory_sha": self.release.name,
+            "head_sha": "b" * 40,
+            "passport_sha256": "c" * 64,
+            "ticket": ticket,
+        }
+        (self.state / "passports").mkdir(mode=0o700)
+        CONTROL.write(self.state / f"passports/{ticket}.json", passport)
+        claim = {
+            "branch": f"ticket/{ticket}", "lease": "d" * 64,
+            "parked": True, "priority": "normal", "publication_lease": "",
+            "receipt": "", "role": "", "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "claimed", "ticket": ticket, "worktree": str(cell),
+        }
+        controller.mark_reconciling(claim)
+        claim.update(status="blocked", blocked_reason="worker-error")
+        controller.save_claim(claim)
+        controller.ticket_release_current = lambda _claim: True
+        controller.remote_passport_valid = lambda _claim: True
+        leases = []
+        controller.ensure_lease = lambda item, label: leases.append(label)
+
+        controller.recover_interrupted_claims([claim])
+        controller.recover_interrupted_claims([claim])
+
+        self.assertEqual(claim["status"], "claimed")
+        self.assertNotIn("blocked_reason", claim)
+        self.assertEqual(leases, ["interrupted-reconciliation"])
+        self.assertFalse(controller.reconciliation_marker(ticket).exists())
+        events = [
+            CONTROL.read(path) for path in controller.events.glob("*.json")
+            if CONTROL.read(path).get("event") == "worker_error_recovered"
+        ]
+        self.assertEqual(len(events), 1)
+
     def test_interrupted_two_ticket_recovery_is_independent(self) -> None:
         controller = CONTROL.Controller(self.args)
         passports = self.state / "passports"
@@ -7440,6 +7727,87 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(calls[2], ("publication", "e" * 40))
         self.assertNotIn("--attest-only", calls[3])
         self.assertEqual(claim["publication_lease"], "f" * 64)
+
+    def test_stale_approval_recovers_only_from_exact_prepublication_boundary(
+        self,
+    ) -> None:
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "parked/T-110"
+        (cell / "factory/route-plans").mkdir(parents=True)
+        (cell / "factory/route-plans/T-110.json").write_text(
+            "{}\n", encoding="utf-8"
+        )
+        bundle = cell / "factory/attestations/T-110/bundle.json"
+        bundle.parent.mkdir(parents=True)
+        bundle.write_text('{"schema":"bundle"}\n', encoding="utf-8")
+        subprocess.run(["git", "init", "-q", str(cell)], check=True)
+        subprocess.run(["git", "-C", str(cell), "add", "."], check=True)
+        subprocess.run([
+            "git", "-C", str(cell), "-c", "user.name=Factory",
+            "-c", "user.email=factory@example.invalid", "commit", "-qm", "bundle",
+        ], check=True)
+        head = subprocess.run(
+            ["git", "-C", str(cell), "rev-parse", "HEAD"],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+        (self.state / "passports").mkdir(mode=0o700)
+        CONTROL.write(self.state / "passports/T-110.json", {
+            "branch": "ticket/T-110", "factory_sha": self.release.name,
+            "head_sha": head, "passport_sha256": "c" * 64,
+            "publication_state": "validating", "ticket": "T-110",
+        })
+        claim = {
+            "branch": "ticket/T-110", "lease": "a" * 64,
+            "parked": True, "priority": "normal", "publication_lease": "",
+            "receipt": "", "role": "", "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "claimed", "ticket": "T-110", "worktree": str(cell),
+        }
+        controller.renew = lambda _claim: None
+        controller.finish_pending_run = lambda _claim: True
+        controller.refresh_dependency_tracking = lambda _claim: True
+        controller.withdraw_publication = lambda *_args: None
+        controller.release_ticket_lease = lambda item: item.update(
+            lease_released=True
+        )
+        controller.role_active = lambda _claim: False
+
+        def json_call(*arguments, **_kwargs):
+            if arguments[0] == "state-machine":
+                return state_transition(
+                    "AWAIT-OPERATOR Linear approval observed", "b" * 64
+                )
+            if arguments[0] == "ticket-pr":
+                return {"head": head, "pr_number": 24, "status": "ready"}
+            if arguments[0] == "ticket-attest":
+                raise CONTROL.ControllerError(
+                    "ticket-attest: stale_linear_approval: Linear approval "
+                    "is not newer than the bundle attestation"
+                )
+            raise AssertionError(arguments)
+
+        controller.json_call = json_call
+        self.assertEqual(controller.reconcile_ticket(claim)["status"], "error")
+        marker = controller.prepublication_retry_path("T-110")
+        self.assertTrue(marker.exists())
+        self.assertEqual(claim["blocked_reason"], "controller-error")
+
+        controller.ticket_release_current = lambda _claim: True
+        controller.remote_passport_valid = lambda _claim: True
+        leases = []
+        controller.ensure_lease = lambda _claim, label: leases.append(label)
+        controller.recover_prepublication_attestations([claim])
+        controller.recover_prepublication_attestations([claim])
+
+        self.assertEqual(claim["status"], "claimed")
+        self.assertNotIn("blocked_reason", claim)
+        self.assertFalse(marker.exists())
+        self.assertEqual(leases, ["prepublication-attestation"])
+        events = [
+            CONTROL.read(path) for path in controller.events.glob("*.json")
+            if CONTROL.read(path).get("event")
+            == "prepublication_attestation_recovered"
+        ]
+        self.assertEqual(len(events), 1)
 
     def test_projected_approval_stage_still_requests_exact_auto_merge(self) -> None:
         controller = CONTROL.Controller(self.args)
@@ -8166,6 +8534,55 @@ class FactoryControllerTest(unittest.TestCase):
                 "git-unlock",
             ],
         )
+
+    def test_stale_base_refreshes_before_reviewer_without_provider_run(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "cell-1"
+        route = cell / "factory/route-plans/T-110.json"
+        route.parent.mkdir(parents=True)
+        route.write_text("{}\n", encoding="utf-8")
+        claim = {
+            "branch": "ticket/T-110", "lease": "a" * 64,
+            "priority": "normal", "publication_lease": "", "receipt": "",
+            "role": "", "schema": CONTROL.CLAIM_SCHEMA, "status": "claimed",
+            "ticket": "T-110", "worktree": str(cell),
+        }
+        calls = []
+        controller.renew = lambda _claim: None
+        controller.finish_pending_run = lambda _claim: True
+        controller.refresh_dependency_tracking = lambda _claim: True
+        controller.ticket_merged = lambda _claim: False
+        controller.protected_base_current = lambda *_args: (
+            calls.append("base") or False
+        )
+        controller.withdraw_publication = lambda *_args: calls.append("withdraw")
+        controller.migrate_passport = lambda *_args: calls.append("passport")
+        controller.event = lambda name, *_args, **_kwargs: calls.append(name)
+        controller.run_role = lambda *_args, **_kwargs: calls.append("provider")
+
+        def json_call(*arguments, **_kwargs):
+            if arguments[0] == "state-machine":
+                return state_transition("RUN reviewer", "b" * 64)
+            if arguments[0] == "ticket-pr":
+                return {"head": "d" * 40, "pr_number": 24, "status": "prepared"}
+            if arguments[0] == "ticket-attest":
+                calls.append("refresh")
+                return {"action": "refresh", "head": "e" * 40}
+            raise AssertionError(arguments)
+
+        controller.json_call = json_call
+        self.assertEqual(
+            controller.reconcile_ticket(claim),
+            {"status": "progressed", "ticket": "T-110"},
+        )
+        self.assertNotIn("provider", calls)
+        self.assertEqual(calls.count("refresh"), 1)
+        self.assertIn("protected_base_refreshed_before_evidence", calls)
+
+        calls.clear()
+        controller.protected_base_current = lambda *_args: True
+        controller.reconcile_ticket(claim)
+        self.assertEqual(calls, ["withdraw", "provider"])
 
     def test_closeout_fetch_uses_shared_git_lock(self) -> None:
         controller = CONTROL.Controller(self.args)

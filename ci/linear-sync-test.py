@@ -1339,12 +1339,30 @@ class LinearSyncTest(unittest.TestCase):
 
         with self.assertRaisesRegex(
             RuntimeError, "I-001: conflicting Linear Project identity"
-        ):
+        ) as raised:
             self.reconcile()
+
+        LINEAR.record_failure(self.map_path, self.mapping, raised.exception)
+        conflict = LINEAR.load_map(self.map_path)["_sync"][
+            "project_identity_conflict"
+        ]
+        self.assertEqual(conflict["schema"], LINEAR.PROJECT_IDENTITY_SCHEMA)
+        self.assertEqual(conflict["initiative"], "I-001")
+        self.assertEqual(conflict["reason"], "conflicting_project_identity")
+        self.assertEqual(
+            [item["project_id"] for item in conflict["candidates"]],
+            ["project-1", "project-duplicate"],
+        )
 
         self.assertEqual(
             len([query for query, _variables in self.fake.calls if "projectCreate" in query]),
             1,
+        )
+
+        self.fake.projects.pop("project-duplicate")
+        self.reconcile()
+        self.assertNotIn(
+            "project_identity_conflict", LINEAR.load_map(self.map_path)["_sync"]
         )
 
     def test_mapped_project_refuses_duplicate_marker_and_foreign_team(self):
@@ -1408,6 +1426,10 @@ class LinearSyncTest(unittest.TestCase):
 
     def test_exact_ticket_initialization_does_not_reconcile_history(self):
         self.reconcile()
+        stale = "2026-07-13T12:00:00+00:00"
+        mapping = LINEAR.load_map(self.map_path)
+        mapping["_sync"] = {"last_success_at": stale, "last_error": "history failed"}
+        LINEAR.save_map(self.map_path, mapping)
         second = self.factory / "tickets/T-002.md"
         second.write_text((self.factory / "tickets/T-001.md").read_text().replace(
             "# T-001 — first ticket", "# T-002 — second ticket",
@@ -1419,6 +1441,11 @@ class LinearSyncTest(unittest.TestCase):
             )
         saved = LINEAR.load_map(self.map_path)
         self.assertTrue(saved["tickets"]["T-002"]["operator_fields_initialized"])
+        self.assertEqual(saved["_sync"]["last_success_at"], stale)
+        self.assertEqual(saved["_sync"]["last_error"], "history failed")
+        self.assertIsNotNone(LINEAR.parsed_timestamp(
+            saved["_sync"]["selected_ticket_success_at"]["T-002"]
+        ))
         self.assertEqual(
             len([query for query, _variables in self.fake.calls if "issueCreate" in query]),
             1,
@@ -1427,6 +1454,50 @@ class LinearSyncTest(unittest.TestCase):
             variables.get("id") == saved["tickets"]["T-001"]["issue_id"]
             for query, variables in self.fake.calls if "issue(id:" in query
         ))
+
+        self.fake.calls.clear()
+        with patch.object(LINEAR, "gql", self.fake):
+            LINEAR.initialize_ticket(
+                "key", self.factory, self.map_path, "T-002", dry=False,
+            )
+        self.assertFalse(any(
+            "issueCreate" in query for query, _variables in self.fake.calls
+        ))
+        self.assertEqual(
+            LINEAR.load_map(self.map_path)["_sync"]["last_success_at"], stale
+        )
+
+    def test_failed_exact_initialization_records_no_selected_success(self):
+        self.reconcile()
+        with patch.object(
+            LINEAR, "sync_tickets", side_effect=RuntimeError("quota exhausted"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "quota exhausted"):
+                LINEAR.initialize_ticket(
+                    "key", self.factory, self.map_path, "T-001", dry=False,
+                )
+        self.assertNotIn(
+            "selected_ticket_success_at",
+            LINEAR.load_map(self.map_path)["_sync"],
+        )
+
+    def test_overlapping_full_save_preserves_newer_selected_success(self):
+        self.reconcile()
+        incoming = LINEAR.load_map(self.map_path)
+        current = copy.deepcopy(incoming)
+        current["_sync"]["selected_ticket_success_at"] = {
+            "T-001": "2026-08-07T12:00:00+00:00",
+        }
+        self.map_path.write_text(json.dumps(current) + "\n")
+
+        LINEAR.save_map(self.map_path, incoming)
+
+        self.assertEqual(
+            LINEAR.load_map(self.map_path)["_sync"][
+                "selected_ticket_success_at"
+            ]["T-001"],
+            "2026-08-07T12:00:00+00:00",
+        )
 
     def test_legacy_map_is_migrated_in_memory(self):
         self.map_path.write_text('{"_config": null, "tickets": {}}\n')
@@ -1532,10 +1603,19 @@ class LinearSyncTest(unittest.TestCase):
         self.assertEqual(source, "refs/remotes/origin/ticket/T-001")
 
     def test_failure_health_preserves_last_success(self):
-        self.mapping["_sync"] = {"last_success_at": "2026-07-13T12:00:00+00:00"}
+        self.mapping["_sync"] = {
+            "last_success_at": "2026-07-13T12:00:00+00:00",
+            "selected_ticket_success_at": {
+                "T-001": "2026-08-07T12:00:00+00:00",
+            },
+        }
         LINEAR.record_failure(self.map_path, self.mapping, RuntimeError("offline"))
         saved = json.loads(self.map_path.read_text())
         self.assertEqual(saved["_sync"]["last_success_at"], "2026-07-13T12:00:00+00:00")
+        self.assertEqual(
+            saved["_sync"]["selected_ticket_success_at"]["T-001"],
+            "2026-08-07T12:00:00+00:00",
+        )
         self.assertEqual(saved["_sync"]["last_error"], "offline")
         self.assertIn("failed_at", saved["_sync"])
 

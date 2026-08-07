@@ -1676,7 +1676,7 @@ PY
     MODEL_ACTION="$1"
     MODEL_MUTATION=0
     case "$MODEL_ACTION" in
-      profiles|status)
+      profiles|status|inventory)
         [[ $# -eq 2 && "$2" == "--json" ]] || usage
         MODEL_ARGS=("$MODEL_ACTION")
         ;;

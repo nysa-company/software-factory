@@ -27,6 +27,10 @@ from qualification_artifacts import (  # noqa: E402
     ArtifactError as QualificationArtifactError,
     ensure_ticket as ensure_qualification_artifacts,
 )
+from qualification_manifest import (  # noqa: E402
+    ManifestError as QualificationManifestError,
+    validate as validate_qualification_manifest,
+)
 
 
 SCHEMA = "nysa.software-factory.qualification-environment/v1"
@@ -317,26 +321,13 @@ def validate_paused_authority(
             raise EnvironmentError("qualification safe-pause evidence changed")
 
 
-def qualification_capacity(product: Path) -> int:
+def qualification_manifest(product: Path, factory_sha: str) -> dict[str, Any]:
     path = product / "factory/QUALIFICATION.json"
-    if not path.exists():
-        return 4
-    value = json.loads(path.read_text(encoding="utf-8"))
-    capacity = value.get("capacity")
-    tickets = value.get("tickets")
-    target = value.get("target_done")
-    if (
-        value.get("schema") != "nysa.software-factory.qualification/v2"
-        or capacity not in (3, 4)
-        or target not in (3, 4)
-        or not isinstance(tickets, list)
-        or len(tickets) != target
-        or target > capacity
-    ):
-        raise EnvironmentError("qualification capacity is invalid")
-    return capacity
-
-
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        return validate_qualification_manifest(value, factory_sha)
+    except (OSError, json.JSONDecodeError, QualificationManifestError) as error:
+        raise EnvironmentError(str(error)) from error
 def prepare_product_runtime(product: Path, create: bool = True) -> None:
     """Create the one ignored runtime root a clean worktree cannot contain."""
     flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
@@ -368,11 +359,14 @@ def prepare_product_runtime(product: Path, create: bool = True) -> None:
         os.close(factory)
 
 
-def validate_selected_contracts(product: Path) -> None:
+def validate_selected_contracts(
+    product: Path, manifest: dict[str, Any] | None = None,
+) -> None:
     """Reject non-canonical metadata and dependent qualification cohorts early."""
-    manifest = json.loads(
-        (product / "factory/QUALIFICATION.json").read_text(encoding="utf-8")
-    )
+    if manifest is None:
+        manifest = json.loads(
+            (product / "factory/QUALIFICATION.json").read_text(encoding="utf-8")
+        )
     selected = manifest.get("tickets")
     if not isinstance(selected, list) or any(
         not isinstance(ticket, str) or not re.fullmatch(r"T-[0-9]+", ticket)
@@ -469,13 +463,7 @@ def initialize_selected_linear(factory: Path, product: Path) -> None:
         )["tickets"]
     except (KeyError, OSError, json.JSONDecodeError) as error:
         raise EnvironmentError("qualification Linear map is malformed") from error
-    tickets = mapping.get("tickets", {}) if isinstance(mapping, dict) else {}
-    missing = [
-        ticket for ticket in selected
-        if not isinstance(tickets.get(ticket), dict)
-        or tickets[ticket].get("operator_fields_initialized") is not True
-    ]
-    for ticket in missing:
+    for ticket in selected:
         result = subprocess.run(
             [
                 sys.executable, str(factory / "scripts/linear-sync.py"),
@@ -1107,9 +1095,6 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
         raise EnvironmentError("Factory candidate must be clean")
     if command("git", "-C", str(product), "status", "--porcelain", "--untracked-files=all"):
         raise EnvironmentError("qualification product must be clean")
-    validate_selected_contracts(product)
-    prepare_product_runtime(product)
-    initialize_selected_linear(factory, product)
     sha = command("git", "-C", str(factory), "rev-parse", "HEAD")
     tree = command("git", "-C", str(factory), "rev-parse", "HEAD^{tree}")
     if not SHA.fullmatch(sha) or not SHA.fullmatch(tree):
@@ -1121,6 +1106,11 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
     ).get("contract_version")
     if contract != "1.8.0":
         raise EnvironmentError("qualification requires Contract 1.8.0")
+    manifest = qualification_manifest(product, sha)
+    capacity = manifest["capacity"]
+    validate_selected_contracts(product, manifest)
+    prepare_product_runtime(product)
+    initialize_selected_linear(factory, product)
     product_tree = command("git", "-C", str(product), "rev-parse", "HEAD^{tree}")
     product_sha = command("git", "-C", str(product), "rev-parse", "HEAD")
     runtime_tuple = certification_preflight(
@@ -1189,9 +1179,9 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
     provider_policy_sha256 = (
         takeover["provider_policy_sha256"]
         if takeover else (
-            validate_provider(release, authority, qualification_capacity(product))
+            validate_provider(release, authority, capacity)
             if restoring else
-            prepare_provider(release, authority, qualification_capacity(product))
+            prepare_provider(release, authority, capacity)
         )
     )
     qualification_mode = takeover["mode"] if takeover else "isolated"
@@ -1282,9 +1272,6 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
         raise EnvironmentError("Factory candidate must be clean")
     if command("git", "-C", str(product), "status", "--porcelain", "--untracked-files=all"):
         raise EnvironmentError("qualification product must be clean")
-    validate_selected_contracts(product)
-    prepare_product_runtime(product)
-    initialize_selected_linear(factory, product)
     sha = command("git", "-C", str(factory), "rev-parse", "HEAD")
     tree = command("git", "-C", str(factory), "rev-parse", "HEAD^{tree}")
     if not SHA.fullmatch(sha) or not SHA.fullmatch(tree):
@@ -1296,6 +1283,23 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
     ).get("contract_version")
     if contract != "1.8.0":
         raise EnvironmentError("qualification requires Contract 1.8.0")
+    manifest = qualification_manifest(product, sha)
+    capacity = manifest["capacity"]
+    validate_selected_contracts(product, manifest)
+    active_path = root / f"projects/{args.project}/active.json"
+    active = read(active_path)
+    if active.get("kit_sha") != sha and manifest.get("mode") != "successor":
+        for ticket in manifest["tickets"]:
+            try:
+                protected_terminal(product, ticket)
+            except TerminalError:
+                continue
+            raise EnvironmentError(
+                f"{ticket}: terminal qualification target requires a successor lane; "
+                "normal in-place upgrade refused"
+            )
+    prepare_product_runtime(product)
+    initialize_selected_linear(factory, product)
     product_sha = command("git", "-C", str(product), "rev-parse", "HEAD")
     product_tree = command("git", "-C", str(product), "rev-parse", "HEAD^{tree}")
     runtime_tuple = certification_preflight(
@@ -1309,8 +1313,6 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
     )
 
     marker = read(root / "marker.json")
-    active_path = root / f"projects/{args.project}/active.json"
-    active = read(active_path)
     qualification_mode = active.get("qualification_mode")
     if (
         marker != {"mode": "qualification", "schema": SCHEMA}
@@ -1360,7 +1362,7 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
         if git_tree(release) != tree:
             raise EnvironmentError("sealed qualification tree does not match the candidate")
         policy, activation, policy_hash = provider_configuration(
-            release, qualification_capacity(product)
+            release, capacity
         )
         if (
             read(provider / "provider-policy.json") != policy
