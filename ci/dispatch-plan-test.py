@@ -105,6 +105,19 @@ class DispatchPlanTest(unittest.TestCase):
             + "\n"
         )
 
+    def write_qualification_mapping(self, tickets, age=0):
+        self.write_mapping(
+            age=age, states={ticket: "Ready" for ticket in tickets}
+        )
+        mapping = json.loads(self.mapping.read_text())
+        observed = mapping["_sync"]["last_success_at"]
+        mapping["_sync"]["selected_ticket_success_at"] = {
+            ticket: observed for ticket in tickets
+        }
+        for ticket in tickets:
+            mapping["tickets"][ticket]["operator_fields_initialized"] = True
+        self.mapping.write_text(json.dumps(mapping) + "\n")
+
     def write_qualification(self, dependencies=None):
         tickets = [f"T-{number}" for number in range(100, 110)]
         for ticket in tickets:
@@ -163,9 +176,10 @@ class DispatchPlanTest(unittest.TestCase):
         (self.product / "factory/QUALIFICATION.json").write_text(
             json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n"
         )
+        self.write_qualification_mapping(tickets)
         return tickets
 
-    def stale_preprovider_branch(self, change_spec=False):
+    def stale_preprovider_branch(self, change_spec=False, materialize=False):
         ticket = "T-110"
         branch = f"ticket/{ticket}"
         run("git", "switch", "-qc", branch, cwd=self.product)
@@ -184,6 +198,16 @@ class DispatchPlanTest(unittest.TestCase):
             "-c", "user.email=factory@local", "commit", "-qm",
             f"{ticket}: pin kit and model route plan", cwd=self.product,
         )
+        if materialize:
+            ticket_path.write_text(
+                ticket_path.read_text().replace("State: Backlog", "State: Ready")
+            )
+            run("git", "add", str(ticket_path), cwd=self.product)
+            run(
+                "git", "-c", "user.name=Software Factory",
+                "-c", "user.email=factory@local", "commit", "-qm",
+                f"{ticket}: materialize ticket state", cwd=self.product,
+            )
         text = ticket_path.read_text().replace("State: Ready", "State: Planning")
         if change_spec:
             text += "\nProvider-authored specification drift.\n"
@@ -328,7 +352,6 @@ class DispatchPlanTest(unittest.TestCase):
         run("git", "add", ".", cwd=self.product)
         run("git", "commit", "-qm", "add qualification", cwd=self.product)
         run("git", "push", "-q", "origin", "main", cwd=self.product)
-        self.write_mapping(states={"T-110": "Ready"})
         mapping = json.loads(self.mapping.read_text())
         mapping["tickets"]["T-110"]["operator"]["initiative"] = None
         self.mapping.write_text(json.dumps(mapping) + "\n")
@@ -518,8 +541,36 @@ class DispatchPlanTest(unittest.TestCase):
             run("git", "log", "-1", "--format=%s", cwd=worktree),
         )
 
-    def test_stale_linear_map_cannot_deadlock_authorized_control_reset(self):
+    def test_authorized_materialize_lineage_rejoins_current_main(self):
         self.write_contract_18_qualification()
+        ticket = self.product / "factory/tickets/T-110.md"
+        ticket.write_text(ticket.read_text().replace("State: Ready", "State: Backlog"))
+        run("git", "add", ".", cwd=self.product)
+        run("git", "commit", "-qm", "prepare backlog qualification", cwd=self.product)
+        run("git", "push", "-q", "origin", "main", cwd=self.product)
+        old_head = self.stale_preprovider_branch(materialize=True)
+        ticket.write_text(ticket.read_text().replace("State: Backlog", "State: Ready"))
+        run("git", "add", str(ticket), cwd=self.product)
+        run("git", "commit", "-qm", "materialize protected ticket", cwd=self.product)
+        run("git", "push", "-q", "origin", "main", cwd=self.product)
+        self.authorize_preprovider_reset(old_head)
+
+        value = self.command("claim")
+
+        worktree = Path(value["worktree"])
+        self.assertEqual(value["preprovider_reset_head"], old_head)
+        self.assertIn(
+            "State: Ready",
+            (worktree / "factory/tickets/T-110.md").read_text(),
+        )
+        subjects = run(
+            "git", "log", "--format=%s", f"{old_head}~3..{old_head}",
+            cwd=self.product,
+        ).splitlines()
+        self.assertIn("T-110: materialize ticket state", subjects)
+
+    def test_stale_linear_map_cannot_deadlock_authorized_control_reset(self):
+        tickets = self.write_contract_18_qualification()
         ticket = self.product / "factory/tickets/T-110.md"
         ticket.write_text(ticket.read_text() + "Merge-Policy: auto\n")
         run("git", "add", ".", cwd=self.product)
@@ -533,19 +584,79 @@ class DispatchPlanTest(unittest.TestCase):
         run("git", "commit", "-qm", "correct protected merge policy", cwd=self.product)
         run("git", "push", "-q", "origin", "main", cwd=self.product)
         self.authorize_preprovider_reset(old_head)
-        self.write_mapping(age=1000)
+        self.write_qualification_mapping(tickets, age=1000)
 
         stale = self.command("claim", expected=2)
 
-        self.assertIn("Linear reconciliation is stale", stale["error"])
+        self.assertEqual(
+            stale["error"],
+            "selected-ticket Linear reconciliation for T-110 is stale",
+        )
         remote_head = run(
             "git", "ls-remote", "--heads", str(self.remote), "ticket/T-110"
         ).split()[0]
         self.assertNotEqual(remote_head, old_head)
         self.assertFalse((self.product / "factory/.dispatch-leases/T-110.json").exists())
-        self.write_mapping()
+        self.write_qualification_mapping(tickets)
         value = self.command("claim")
         self.assertEqual(value["ticket"], "T-110")
+
+    def test_qualification_uses_fresh_exact_ticket_sync_without_history_sweep(self):
+        tickets = self.write_contract_18_qualification()
+        run("git", "add", ".", cwd=self.product)
+        run("git", "commit", "-qm", "prepare exact-sync qualification", cwd=self.product)
+        run("git", "push", "-q", "origin", "main", cwd=self.product)
+        self.write_mapping(
+            age=1000, states={ticket: "Ready" for ticket in tickets},
+        )
+        mapping = json.loads(self.mapping.read_text())
+        now = dt.datetime.now(dt.timezone.utc).isoformat()
+        mapping["_sync"].update({
+            "last_error": "linear_rate_limited retry_after_seconds=900",
+            "selected_ticket_success_at": {ticket: now for ticket in tickets},
+        })
+        for ticket in tickets:
+            mapping["tickets"][ticket]["operator_fields_initialized"] = True
+            mapping["tickets"][ticket]["operator"]["observed_at"] = now
+        self.mapping.write_text(json.dumps(mapping) + "\n")
+
+        value = self.command("shadow")
+
+        self.assertIn(value["ticket"], tickets)
+        self.assertEqual(value["status"], "SHADOW")
+
+        cases = {
+            "missing": lambda item: item["_sync"][
+                "selected_ticket_success_at"
+            ].pop(tickets[-1]),
+            "malformed": lambda item: item["_sync"][
+                "selected_ticket_success_at"
+            ].update({tickets[-1]: "not-a-time"}),
+            "stale": lambda item: item["_sync"][
+                "selected_ticket_success_at"
+            ].update({
+                tickets[-1]: (
+                    dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=1000)
+                ).isoformat(),
+            }),
+            "stale-observation": lambda item: item["tickets"][tickets[-1]][
+                "operator"
+            ].update({
+                "observed_at": (
+                    dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=1000)
+                ).isoformat(),
+            }),
+            "uninitialized": lambda item: item["tickets"][tickets[-1]].update(
+                operator_fields_initialized=False
+            ),
+        }
+        for label, mutate in cases.items():
+            with self.subTest(label=label):
+                unhealthy = json.loads(json.dumps(mapping))
+                mutate(unhealthy)
+                self.mapping.write_text(json.dumps(unhealthy) + "\n")
+                refused = self.command("shadow", expected=2)
+                self.assertIn("selected-ticket Linear", refused["error"])
 
     def test_authorized_reset_rejects_non_control_ticket_drift(self):
         self.write_contract_18_qualification()

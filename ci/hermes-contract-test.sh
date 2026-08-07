@@ -465,6 +465,22 @@ document = {
             f"password: |\n  doctor-multiline-never-print\n"
             f"sync failed at https://user:{password}@example.invalid/path?token=also-secret"
         ),
+        "project_identity_conflict": {
+            "schema": "nysa.software-factory.linear-project-identity-conflict/v1",
+            "initiative": "I-001",
+            "reason": "conflicting_project_identity",
+            "candidates": [
+                {
+                    "project_id": "project-canonical",
+                    "project_url": "https://linear.app/test/project/project-canonical",
+                },
+                {
+                    "project_id": "project-duplicate",
+                    "project_url": "https://linear.app/test/project/project-duplicate",
+                },
+            ],
+            "observed_at": dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat(),
+        },
     },
     "initiatives": {
         "I-001": {
@@ -623,6 +639,11 @@ assert checks["linear_sync"]["projects"] == [{
     "project_id": "project-canonical",
     "project_url": "https://linear.app/test/project/project-canonical",
 }]
+assert checks["linear_sync"]["project_identity_conflict"]["reason"] == "conflicting_project_identity"
+assert [
+    item["project_id"]
+    for item in checks["linear_sync"]["project_identity_conflict"]["candidates"]
+] == ["project-canonical", "project-duplicate"]
 assert checks["contract_resume"] == {
     "incidents": [{
         "actual_bytes": 120,
@@ -1466,6 +1487,9 @@ rm -f "$TEST_HOME/.factory/global.env"
 printf '%s\n' "$SHA_FALLBACK" > "$LAUNCH_PRODUCT/factory/KIT_PIN"
 write_active "$SHA_FALLBACK" "$TREE_FALLBACK" "$RELEASE_FALLBACK"
 touch "$LAUNCH_PRODUCT/factory/test-model-args-only"
+run_launcher launchtest models inventory --json > "$TMP/models-inventory.out"
+grep -qFx 'ARG=inventory' "$TMP/models-inventory.out" ||
+  fail "sealed model inventory did not reach the selected helper"
 run_launcher launchtest models fallback-plan \
   --ticket T-123 --failed-run failed-run-1 --workdir "$RUN_WORKTREE_PHYS" \
   --reason provider_unavailable --json > "$TMP/models-fallback-no-exception.out"
@@ -2363,6 +2387,7 @@ assert commands["models"]["helper"] == "scripts/model-control.sh"
 assert commands["models"]["grammars"] == [
     "profiles --json",
     "status --json",
+    "inventory --json",
     "policy-candidates --json",
     "policy-preview --policy <canonical-json> --json",
     "policy-apply --policy <canonical-json> --expected-current-hash <lowercase-sha256> --approve-hash <lowercase-sha256> --json",
@@ -2381,6 +2406,7 @@ assert commands["models"]["grammars"] == [
     "fallback-auto --ticket <T-NNN> --failed-run <safe-run-id> --workdir <exact-ticket-worktree> --reason <credits_exhausted|provider_unavailable> --json",
     "fallback --ticket <T-NNN> --failed-run <safe-run-id> --workdir <exact-ticket-worktree> --reason <credits_exhausted|provider_unavailable> [--allow-reviewer-family <safe-id>] --json",
 ]
+assert commands["models"]["output_schemas"]["inventory"] == "factory-cursor-model-inventory/v1"
 assert commands["models"]["state"] == {
     "root": "$FACTORY_KITS_ROOT/projects",
     "project": "<project>",
@@ -2398,7 +2424,7 @@ assert commands["models"]["pin_transaction"]["result_fields"] == [
 ]
 assert commands["models"]["maintenance"] == {
     "allowed": [
-        "profiles", "status", "policy-candidates", "policy-preview",
+        "profiles", "status", "inventory", "policy-candidates", "policy-preview",
         "reviewer-exception-contract", "ticket-status", "plan",
         "migrate-plan", "fallback-plan",
     ],
@@ -2669,6 +2695,7 @@ for surface in [
     "scripts/lib/legacy_closeout.py",
     "scripts/lib/terminal_backfill.py",
     "scripts/lib/protected_merge_reconciliation.py",
+    "scripts/lib/qualification_manifest.py",
     "scripts/legacy-closeout.py",
     "scripts/protected-merge-reconciliation.py",
     "scripts/terminal-backfill.py",

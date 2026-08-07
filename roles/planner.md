@@ -1,4 +1,4 @@
-Version: 13
+Version: 14
 
 # Role: Planner
 
@@ -14,10 +14,12 @@ The local ticket record after the operator's Linear Backlog → Ready transition
 2. **Acceptance criteria**: numbered, each one mechanically checkable (a test can assert it) or demo-checkable (the operator can see it in a screenshot).
 3. **Frozen contract**: the exact interface both the test-author and the builder code against — endpoint paths and shapes, UI selectors, fixture data, file locations. Once posted, the contract does not change; if it proves wrong, the ticket goes back to Ready and you re-plan it as a new version, noted on the ticket.
 
-Every new numbered frozen contract includes exactly one single-line marker:
+Every new numbered frozen contract starts with the exact H2 heading
+`## Frozen contract — version N` and includes exactly one single-line marker:
 `- **Freeze result:** PASS. Contract version N is frozen.` Use the actual
 version number in place of `N`; any explanation follows on later lines. Add
-the new version without editing or removing prior frozen versions.
+the new version without editing or removing prior frozen versions. Do not
+change the heading to H1, H3, or any deeper level.
 
 ## Criteria checklist — run before freezing the contract
 
@@ -54,6 +56,7 @@ Contract excerpt: `GET /api/receipts?taskId=` returns `[{id, taskId, summary, at
 
 ## Changelog
 
+- v14: requires the canonical H2 contract-epoch heading while the deterministic consumers retain H3 recovery compatibility.
 - v13: detects static global-shell text collisions in protected tests before freeze.
 - v12: validates protected-test conflict proposals with the readiness parser before escalation.
 - v11: detects protected-test source-boundary conflicts before contract freeze.

@@ -45,24 +45,29 @@ contract_epoch_reset() { # commit -> 0 only for one authenticated frozen-contrac
   diff="$(git diff --no-ext-diff --unified=0 "$commit^" "$commit" -- "$ticket")" ||
     return 1
   versions="$(printf '%s\n' "$diff" | sed -n \
-    's/^+## Frozen contract — version \([1-9][0-9]*\)$/\1/p')"
+    's/^+###\{0,1\} Frozen contract — version \([1-9][0-9]*\)$/\1/p')"
   passes="$(printf '%s\n' "$diff" | sed -n \
     -e 's/^+- \*\*Freeze result — PASS\.\*\* Contract version \([1-9][0-9]*\) is frozen\.$/\1/p' \
     -e 's/^+- \*\*Freeze result:\*\* PASS\. Contract version \([1-9][0-9]*\) is frozen\([.;].*\)\{0,1\}$/\1/p' \
     -e 's/^+- \*\*Freeze result:\*\* PASS\. Contract version \([1-9][0-9]*\) supersedes \(contract \)\{0,1\}versions\{0,1\} [1-9][0-9]*.*$/\1/p')"
   removed_versions="$(printf '%s\n' "$diff" | sed -n \
-    's/^-## Frozen contract — version \([1-9][0-9]*\)$/\1/p')"
+    's/^-###\{0,1\} Frozen contract — version \([1-9][0-9]*\)$/\1/p')"
   removed_passes="$(printf '%s\n' "$diff" | sed -n \
     -e 's/^-- \*\*Freeze result — PASS\.\*\* Contract version \([1-9][0-9]*\) is frozen\.$/\1/p' \
     -e 's/^-- \*\*Freeze result:\*\* PASS\. Contract version \([1-9][0-9]*\) is frozen\([.;].*\)\{0,1\}$/\1/p' \
     -e 's/^-- \*\*Freeze result:\*\* PASS\. Contract version \([1-9][0-9]*\) supersedes \(contract \)\{0,1\}versions\{0,1\} [1-9][0-9]*.*$/\1/p')"
-  [[ "$(printf '%s\n' "$versions" | sed '/^$/d' | wc -l | tr -d ' ')" == 1 &&
-     "$(printf '%s\n' "$passes" | sed '/^$/d' | wc -l | tr -d ' ')" == 1 ]] ||
+  if [[ "$(printf '%s\n' "$versions" | sed '/^$/d' | wc -l | tr -d ' ')" != 1 ||
+        "$(printf '%s\n' "$passes" | sed '/^$/d' | wc -l | tr -d ' ')" != 1 ]]; then
+    if [[ -z "$versions" && -n "$passes" ]]; then
+      echo "FAIL (contract epoch): $commit has a PASS marker without exactly one ##/### Frozen contract heading" >&2
+      FAIL=1
+    fi
     return 1
+  fi
   version="$versions"; pass="$passes"
   [[ "$version" == "$pass" ]] || return 1
   prior_max="$(git show "$commit^:$ticket" 2>/dev/null | sed -n \
-    's/^## Frozen contract — version \([1-9][0-9]*\)$/\1/p' | sort -n | tail -1)"
+    's/^###\{0,1\} Frozen contract — version \([1-9][0-9]*\)$/\1/p' | sort -n | tail -1)"
   prior_max="${prior_max:-0}"
   if [[ -n "$removed_versions" || -n "$removed_passes" ]]; then
     [[ "$(printf '%s\n' "$removed_versions" | sed '/^$/d' | wc -l | tr -d ' ')" == 1 &&

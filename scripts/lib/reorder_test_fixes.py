@@ -107,7 +107,7 @@ def diff_tree_files(repo, sha, pathspecs=None):
     return [line for line in out.splitlines() if line]
 
 
-FROZEN = re.compile(r"^## Frozen contract — version ([1-9][0-9]*)$")
+FROZEN = re.compile(r"^#{2,3} Frozen contract — version ([1-9][0-9]*)$")
 FROZEN_PASSES = tuple(map(re.compile, (
     r"^- \*\*Freeze result — PASS\.\*\* "
     r"Contract version ([1-9][0-9]*) is frozen\.$",

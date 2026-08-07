@@ -645,8 +645,13 @@ class ModelRouterTest(unittest.TestCase):
                         {"P": ["openai"], "T": [], "B": []},
                     )
         readiness = self.readiness()
-        readiness["cursor-gpt-5.6-sol-high"]["state"] = "UNAVAILABLE"
-        with self.assertRaisesRegex(ROUTER.RouterError, "no complete fallback"):
+        readiness["cursor-gpt-5.6-sol-high"].update({
+            "state": "UNAVAILABLE", "reason": "cursor_cli_config_mode_0644",
+        })
+        with self.assertRaisesRegex(
+            ROUTER.RouterError,
+            "planner cursor-gpt-5.6-sol-high: cursor_cli_config_mode_0644",
+        ):
             ROUTER.resolve_fallback_policy(
                 self.catalog,
                 self.routes,

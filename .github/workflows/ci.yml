@@ -103,8 +103,15 @@ jobs:
           package-manager-cache: false
       - name: install GNU timeout
         env:
+          HOMEBREW_ALLOWED_TAPS: homebrew/core
           HOMEBREW_NO_AUTO_UPDATE: "1"
-        run: brew install coreutils
+        run: |
+          if ! command -v timeout >/dev/null 2>&1; then
+            if ! brew install --formula coreutils >"$RUNNER_TEMP/brew-coreutils.log" 2>&1; then
+              cat "$RUNNER_TEMP/brew-coreutils.log"
+              exit 1
+            fi
+          fi
       - name: targeted or deferred pull-request verification under system Bash
         if: github.event_name == 'pull_request'
         env:

@@ -151,6 +151,43 @@ BANNER = (
     "projected from the product repo."
 )
 PROJECT_MARKER = "Software-Factory-Initiative:"
+PROJECT_IDENTITY_SCHEMA = "nysa.software-factory.linear-project-identity-conflict/v1"
+
+
+class ProjectIdentityError(RuntimeError):
+    def __init__(self, message, initiative, reason, projects=(), project_ids=()):
+        candidates = {}
+        for project in projects:
+            project_id = project.get("id") if isinstance(project, dict) else None
+            if not isinstance(project_id, str) or not re.fullmatch(
+                r"[A-Za-z0-9-]{1,200}", project_id
+            ):
+                continue
+            project_url = project.get("url")
+            if not isinstance(project_url, str) or not re.fullmatch(
+                r"https://linear\.app/[^\s\x00-\x1f\x7f]+", project_url
+            ):
+                project_url = None
+            candidates[project_id] = {
+                "project_id": project_id,
+                "project_url": project_url,
+            }
+        for project_id in project_ids:
+            if isinstance(project_id, str) and re.fullmatch(
+                r"[A-Za-z0-9-]{1,200}", project_id
+            ):
+                candidates.setdefault(project_id, {
+                    "project_id": project_id,
+                    "project_url": None,
+                })
+        self.conflict = {
+            "schema": PROJECT_IDENTITY_SCHEMA,
+            "initiative": initiative,
+            "reason": reason,
+            "candidates": [candidates[key] for key in sorted(candidates)],
+            "observed_at": utc_now(),
+        }
+        super().__init__(message)
 
 
 def log(message):
@@ -553,7 +590,7 @@ def operator_freshness(entry):
     )
 
 
-def preserve_newer_operator_pull(path, mapping):
+def preserve_newer_operator_pull(path, mapping, preserve_project_conflict=True):
     if not path.is_file():
         return
     current = load_map(path)
@@ -624,17 +661,57 @@ def preserve_newer_operator_pull(path, mapping):
         )
     ):
         mapping["_sync"]["last_rejected"] = copy.deepcopy(current_rejection)
+    current_selected = current.get("_sync", {}).get(
+        "selected_ticket_success_at", {}
+    )
+    incoming_selected = mapping.get("_sync", {}).get(
+        "selected_ticket_success_at", {}
+    )
+    selected = dict(incoming_selected) if isinstance(incoming_selected, dict) else {}
+    if isinstance(current_selected, dict):
+        for ticket_id, observed_at in current_selected.items():
+            if (
+                re.fullmatch(r"T-[0-9]+", ticket_id)
+                and parsed_timestamp(observed_at)
+                and (
+                    not parsed_timestamp(selected.get(ticket_id))
+                    or parsed_timestamp(observed_at)
+                    > parsed_timestamp(selected[ticket_id])
+                )
+            ):
+                selected[ticket_id] = observed_at
+    if selected:
+        mapping["_sync"]["selected_ticket_success_at"] = selected
+    current_conflict = current.get("_sync", {}).get("project_identity_conflict")
+    incoming_conflict = mapping.get("_sync", {}).get("project_identity_conflict")
+    if (
+        preserve_project_conflict
+        and isinstance(current_conflict, dict)
+        and current_conflict.get("observed_at", "")
+        > (
+            incoming_conflict.get("observed_at", "")
+            if isinstance(incoming_conflict, dict) else ""
+        )
+    ):
+        mapping["_sync"]["project_identity_conflict"] = copy.deepcopy(
+            current_conflict
+        )
 
 
-def save_map(path, mapping):
+def save_map(path, mapping, preserve_project_conflict=True):
     with map_lock(path):
-        preserve_newer_operator_pull(path, mapping)
+        preserve_newer_operator_pull(path, mapping, preserve_project_conflict)
         apply_operator_clears(path, mapping)
         atomic_write(path, json.dumps(mapping, indent=2, sort_keys=True) + "\n")
 
 
 def record_failure(map_path, mapping, error):
     health = mapping.get("_sync", {})
+    conflict = (
+        error.conflict
+        if isinstance(error, ProjectIdentityError)
+        else health.get("project_identity_conflict")
+    )
     mapping["_sync"] = {
         "last_success_at": health.get("last_success_at"),
         "last_error": str(error),
@@ -642,6 +719,14 @@ def record_failure(map_path, mapping, error):
         **(
             {"last_rejected": health["last_rejected"]}
             if isinstance(health.get("last_rejected"), dict) else {}
+        ),
+        **(
+            {"selected_ticket_success_at": health["selected_ticket_success_at"]}
+            if isinstance(health.get("selected_ticket_success_at"), dict) else {}
+        ),
+        **(
+            {"project_identity_conflict": conflict}
+            if isinstance(conflict, dict) else {}
         ),
     }
     save_map(map_path, mapping)
@@ -967,16 +1052,22 @@ def ensure_projects(key, factory_dir, mapping, map_path, dry):
                 if identities.get(project_id) == {initiative_id}
             ]
             if len(matches) > 1:
-                raise RuntimeError(
-                    f"{initiative_id}: multiple durable Linear Project identities"
+                raise ProjectIdentityError(
+                    f"{initiative_id}: multiple durable Linear Project identities",
+                    initiative_id,
+                    "multiple_durable_identities",
+                    matches,
                 )
             if matches:
                 if config["team_id"] not in {
                     team.get("id")
                     for team in matches[0].get("teams", {}).get("nodes", [])
                 }:
-                    raise RuntimeError(
-                        f"{initiative_id}: durable Linear Project belongs to another team"
+                    raise ProjectIdentityError(
+                        f"{initiative_id}: durable Linear Project belongs to another team",
+                        initiative_id,
+                        "durable_project_foreign_team",
+                        matches,
                     )
                 candidates[initiative_id] = matches[0]
     for initiative_id, initiative in initiatives.items():
@@ -990,8 +1081,11 @@ def ensure_projects(key, factory_dir, mapping, map_path, dry):
             if identities.get(project_id) == {initiative_id}
         ]
         if len(durable_matches) > 1:
-            raise RuntimeError(
-                f"{initiative_id}: multiple durable Linear Project identities"
+            raise ProjectIdentityError(
+                f"{initiative_id}: multiple durable Linear Project identities",
+                initiative_id,
+                "multiple_durable_identities",
+                durable_matches,
             )
         same_name = [
             item for item in projects.values()
@@ -1004,23 +1098,32 @@ def ensure_projects(key, factory_dir, mapping, map_path, dry):
         if entry.get("project_id"):
             project = projects.get(entry["project_id"])
             if project is None:
-                raise RuntimeError(
-                    f"{initiative_id}: mapped Linear Project is unavailable"
+                raise ProjectIdentityError(
+                    f"{initiative_id}: mapped Linear Project is unavailable",
+                    initiative_id,
+                    "mapped_project_unavailable",
+                    project_ids=[entry["project_id"]],
                 )
             if config["team_id"] not in {
                 team.get("id")
                 for team in project.get("teams", {}).get("nodes", [])
             }:
-                raise RuntimeError(
-                    f"{initiative_id}: mapped Linear Project belongs to another team"
+                raise ProjectIdentityError(
+                    f"{initiative_id}: mapped Linear Project belongs to another team",
+                    initiative_id,
+                    "mapped_project_foreign_team",
+                    [project],
                 )
             if (
                 any(item.get("id") != project.get("id") for item in same_name)
                 or durable_matches
                 and durable_matches[0].get("id") != project.get("id")
             ):
-                raise RuntimeError(
-                    f"{initiative_id}: conflicting Linear Project identity"
+                raise ProjectIdentityError(
+                    f"{initiative_id}: conflicting Linear Project identity",
+                    initiative_id,
+                    "conflicting_project_identity",
+                    [project, *same_name, *durable_matches],
                 )
             if project.get("url") and entry.get("project_url") != project["url"] and not dry:
                 entry["project_url"] = project["url"]
@@ -1039,8 +1142,11 @@ def ensure_projects(key, factory_dir, mapping, map_path, dry):
         if initiative_id in candidates:
             project = candidates[initiative_id]
             if any(item.get("id") != project.get("id") for item in same_name):
-                raise RuntimeError(
-                    f"{initiative_id}: conflicting Linear Project identity"
+                raise ProjectIdentityError(
+                    f"{initiative_id}: conflicting Linear Project identity",
+                    initiative_id,
+                    "conflicting_project_identity",
+                    [project, *same_name],
                 )
             if dry:
                 log(f"{initiative_id}: DRY would adopt Linear Project {project['name']}")
@@ -1052,8 +1158,11 @@ def ensure_projects(key, factory_dir, mapping, map_path, dry):
             log(f"{initiative_id}: adopted Project {project['name']}")
             continue
         if same_name:
-            raise RuntimeError(
-                f"{initiative_id}: existing same-name Project lacks durable identity"
+            raise ProjectIdentityError(
+                f"{initiative_id}: existing same-name Project lacks durable identity",
+                initiative_id,
+                "unmarked_same_name_project",
+                same_name,
             )
         if dry:
             log(f"{initiative_id}: DRY would create Linear Project")
@@ -1972,12 +2081,11 @@ def initialize_ticket(key, factory_dir, map_path, ticket_id, dry=False):
     sync_tickets(key, factory_dir, mapping, map_path, dry, {ticket_id})
     if not dry:
         previous = mapping.get("_sync", {})
+        selected = dict(previous.get("selected_ticket_success_at", {}))
+        selected[ticket_id] = utc_now()
         mapping["_sync"] = {
-            "last_success_at": utc_now(), "last_error": None,
-            **(
-                {"last_rejected": previous["last_rejected"]}
-                if isinstance(previous.get("last_rejected"), dict) else {}
-            ),
+            **previous,
+            "selected_ticket_success_at": selected,
         }
         save_map(map_path, mapping)
 
@@ -1999,7 +2107,7 @@ def reconcile(key, factory_dir, mapping, map_path, setup_only=False, dry=False):
                 if isinstance(previous_health.get("last_rejected"), dict) else {}
             ),
         }
-        save_map(map_path, mapping)
+        save_map(map_path, mapping, preserve_project_conflict=False)
         retire_operator_clears(map_path)
 
 

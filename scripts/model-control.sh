@@ -22,11 +22,13 @@ PIN_TICKET_RELATIVE=""
 PIN_PLAN_RELATIVE=""
 PIN_PLAN_EXISTED=0
 TEMPORARY_FILE=""
+TEMPORARY_DIR=""
 FALLBACK_LAUNCH_LOCK=""
 
 cleanup() {
   local rc=$?
   [[ -z "$TEMPORARY_FILE" ]] || rm -f "$TEMPORARY_FILE"
+  [[ -z "$TEMPORARY_DIR" ]] || rm -rf "$TEMPORARY_DIR"
   [[ -z "$FALLBACK_LAUNCH_LOCK" ]] || rmdir "$FALLBACK_LAUNCH_LOCK" 2>/dev/null || true
   if [[ "$PIN_PRECOMMIT" -eq 1 && -n "$PIN_WORKDIR" ]]; then
     git -C "$PIN_WORKDIR" restore --staged --worktree -- \
@@ -169,6 +171,62 @@ command_name="${1:-}"
 shift
 
 case "$command_name" in
+  inventory)
+    [[ $# -eq 0 ]] || json_error "inventory accepts no arguments"
+    load_machine_config
+    cursor_source_home="${FACTORY_CURSOR_SESSION_HOME:-$HOME}"
+    cursor_bin="${CURSOR_AGENT_BIN:-agent}"
+    probe_timeout="${FACTORY_PROBE_TIMEOUT_SEC:-30}"
+    command -v timeout >/dev/null 2>&1 ||
+      json_error "cursor model inventory requires timeout"
+    command -v "$cursor_bin" >/dev/null 2>&1 ||
+      json_error "cursor model inventory executable is unavailable"
+    TEMPORARY_DIR="$(mktemp -d "${TMPDIR:-/tmp}/factory-model-inventory.XXXXXX")" ||
+      json_error "could not allocate isolated cursor model inventory"
+    chmod 700 "$TEMPORARY_DIR"
+    credential_reason=""
+    if ! credential_reason="$(factory_prepare_cursor_probe_home \
+        "$cursor_source_home" "$TEMPORARY_DIR")"; then
+      json_error "cursor model inventory refused: ${credential_reason:-credential_invalid}"
+    fi
+    inventory_output="$TEMPORARY_DIR/models.txt"
+    HOME="$TEMPORARY_DIR" timeout "$probe_timeout" "$cursor_bin" models \
+      >"$inventory_output" 2>/dev/null ||
+      json_error "cursor model inventory probe failed"
+    python3 - "$inventory_output" <<'PY' ||
+import json
+import pathlib
+import re
+import sys
+
+raw = pathlib.Path(sys.argv[1]).read_bytes()
+if len(raw) > 1_000_000:
+    raise SystemExit(1)
+text = raw.decode("utf-8", errors="strict")
+ansi = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+safe = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._:/()+-]{0,199}")
+models = []
+for value in text.splitlines():
+    value = ansi.sub("", value).strip()
+    if not value:
+        continue
+    if not safe.fullmatch(value) or re.search(
+        r"(?i)https?://|authorization|api[_-]?key|token|secret|password", value
+    ):
+        raise SystemExit(1)
+    models.append(value)
+if not models or len(models) > 500:
+    raise SystemExit(1)
+models = sorted(set(models))
+print(json.dumps({
+    "count": len(models),
+    "models": models,
+    "schema": "factory-cursor-model-inventory/v1",
+    "status": "ok",
+}, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+PY
+      json_error "cursor model inventory returned unsafe or invalid output"
+    ;;
   profiles|status|policy-candidates|reviewer-exception-contract)
     manager "$command_name" "$@" || json_error "$command_name failed"
     ;;

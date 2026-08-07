@@ -114,8 +114,9 @@ Each initiative has one canonical Linear Project identified by its durable
 `Software-Factory-Initiative:` marker and mapped ID. A missing mapped Project,
 a foreign-team mapping, duplicate markers, or a same-name identity conflict
 stops reconciliation before a new Project can be created. `doctor --json`
-lists canonical mapped IDs and URLs; cleanup or adoption of an unmarked
-same-name Project remains an explicit operator action.
+lists canonical mapped IDs and URLs plus the typed conflict and safe candidate
+IDs/URLs. Cleanup or adoption of an unmarked same-name Project remains an
+explicit operator action; names alone never authorize automatic adoption.
 
 Each product repo stores initiatives in `factory/initiatives/I-NNN.md`:
 

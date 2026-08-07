@@ -880,6 +880,7 @@ def operator_resume_role(
         relative,
     ).splitlines()
     candidates: list[tuple[str, str]] = []
+    unmigrated_parents: list[str] = []
     for candidate in commits:
         if not SHA.fullmatch(candidate):
             continue
@@ -906,7 +907,6 @@ def operator_resume_role(
         if (
             len(ancestry) != 2
             or ancestry[0] != candidate
-            or ancestry[1] not in known_heads
             or subprocess.run(
                 [
                     "git", "-C", str(args.workdir),
@@ -919,8 +919,78 @@ def operator_resume_role(
             ).returncode != 0
         ):
             continue
+        if ancestry[1] not in known_heads:
+            parent_ancestry = git(
+                args.workdir, "rev-list", "--parents", "-n", "1", ancestry[1]
+            ).split()
+            changed = git(
+                args.workdir, "diff", "--name-only",
+                f"{parent_ancestry[1]}..{ancestry[1]}",
+            ).splitlines() if (
+                len(parent_ancestry) == 2
+                and parent_ancestry[0] == ancestry[1]
+                and parent_ancestry[1] in known_heads
+            ) else []
+            before_context = (
+                git(args.workdir, "show", f"{parent_ancestry[1]}:{relative}") + "\n"
+                if changed == [relative] else ""
+            )
+            after_context = (
+                git(args.workdir, "show", f"{ancestry[1]}:{relative}") + "\n"
+                if before_context else ""
+            )
+            pattern = re.compile(
+                r"^Protected-Test-Conflicts: ([^\r\n]+)$", re.M
+            )
+            before_fields = pattern.findall(before_context)
+            after_fields = pattern.findall(after_context)
+            before_entries = (
+                [] if before_fields == ["none"] else
+                [item.strip() for item in before_fields[0].split(",")]
+                if len(before_fields) == 1 else []
+            )
+            after_entries = (
+                [item.strip() for item in after_fields[0].split(",")]
+                if len(after_fields) == 1 else []
+            )
+            added = (
+                after_entries[-1]
+                if after_entries[:-1] == before_entries
+                and len(after_entries) == len(before_entries) + 1
+                and len(after_entries) == len(set(after_entries))
+                else ""
+            )
+            expected_context = (
+                pattern.sub(
+                    f"Protected-Test-Conflicts: {after_fields[0]}",
+                    before_context,
+                    count=1,
+                ) if added else ""
+            )
+            readiness = subprocess.run(
+                [
+                    sys.executable, "-B",
+                    str(Path(__file__).with_name("ticket-readiness.py")),
+                    "--conflict-entry", added,
+                ],
+                text=True, capture_output=True, check=False, timeout=120,
+            ) if added else None
+            if (
+                after_context != expected_context
+                or readiness is None
+                or readiness.returncode != 0
+                or readiness.stdout.strip() != "CONFLICT DECLARATION PASS"
+            ):
+                unmigrated_parents.append(ancestry[1])
+                continue
         candidates.append((candidate, ancestry[1]))
     if len(candidates) != 1:
+        if not candidates and len(set(unmigrated_parents)) == 1:
+            raise ContractResumeError(
+                "resume_parent_not_migrated",
+                "contract repair operator context is not one safe direct commit",
+                offending_parent=unmigrated_parents[0],
+            )
         raise ContractResumeError(
             "resume_ancestry_invalid",
             "contract repair operator directive is invalid: ancestry",

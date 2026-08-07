@@ -464,7 +464,7 @@ scenario_contract_epoch() {
   commit_all "$repo" "impl: version 3"
 
   write_file "$repo" conformance/factory/tickets/T-EPOCH.md \
-    "## Frozen contract — version 4" \
+    "### Frozen contract — version 4" \
     "- **Freeze result:** PASS. Contract version 4 supersedes version 3 because its fixtures changed."
   commit_all "$repo" "plan: replace contract version 3 with version 4"
   write_file "$repo" conformance/app/tests/epoch.test.js "test('v4', () => {});"
@@ -498,7 +498,7 @@ scenario_contract_epoch() {
 # not reopen test ownership. The gate and repair helper must classify every
 # case alike.
 invalid_contract_epoch_case() { # name -> 0 when the invalid marker stays closed
-  local mode="$1" repo base rc
+  local mode="$1" repo base rc hashes
   repo="$(new_repo)"
   write_file "$repo" conformance/app/server.js "server v0"
   write_file "$repo" conformance/factory/tickets/T-EPOCH.md \
@@ -551,6 +551,13 @@ invalid_contract_epoch_case() { # name -> 0 when the invalid marker stays closed
         "## Frozen contract — version 2" \
         "- **Freeze result:** PASS. Contract version 2 supersedes prior prose."
       ;;
+    h1|h4)
+      hashes="#"
+      [ "$mode" = h1 ] || hashes="####"
+      append_file "$repo" conformance/factory/tickets/T-EPOCH.md \
+        "$hashes Frozen contract — version 2" \
+        "- **Freeze result:** PASS. Contract version 2 is frozen."
+      ;;
     *) return 1 ;;
   esac
   commit_all "$repo" "log: invalid $mode freeze evidence"
@@ -560,7 +567,20 @@ invalid_contract_epoch_case() { # name -> 0 when the invalid marker stays closed
     echo "  [invalid-epoch:$mode] invalid evidence reopened the gate"
     return 1
   fi
+  if { [ "$mode" = h1 ] || [ "$mode" = h4 ]; } &&
+     ! grep -q "PASS marker without exactly one ##/### Frozen contract heading" \
+       "$(gate_log "$repo")"; then
+    echo "  [invalid-epoch:$mode] missing named heading diagnostic"
+    return 1
+  fi
   run_reorder "$repo" "$base"; rc=$?
+  if [ "$mode" = h1 ] || [ "$mode" = h4 ]; then
+    if [ "$rc" -ne 0 ] || run_gate "$repo" "$base"; then
+      echo "  [invalid-epoch:$mode] invalid heading became accepted"
+      return 1
+    fi
+    return 0
+  fi
   if [ "$rc" -ne 0 ] || ! run_gate "$repo" "$base"; then
     echo "  [invalid-epoch:$mode] repair helper disagreed with the gate"
     cat "$(reorder_log "$repo")"
@@ -571,7 +591,7 @@ invalid_contract_epoch_case() { # name -> 0 when the invalid marker stays closed
 
 scenario_invalid_contract_epoch() {
   local mode
-  for mode in incomplete repeated removed mixed nested mismatched ambiguous malformed-supersedes; do
+  for mode in incomplete repeated removed mixed nested mismatched ambiguous malformed-supersedes h1 h4; do
     invalid_contract_epoch_case "$mode" || return 1
   done
 }

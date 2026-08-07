@@ -11,7 +11,11 @@ WORKFLOW="$ROOT/.github/workflows/ci.yml"
 [[ "$(grep -Fc 'actions/checkout@v5' "$WORKFLOW")" -eq 4 &&
     "$(grep -Fc 'actions/setup-node@v5' "$WORKFLOW")" -eq 2 &&
     "$(grep -Fc 'actions/setup-python@v6' "$WORKFLOW")" -eq 1 &&
-    "$(grep -Fc 'HOMEBREW_NO_AUTO_UPDATE: "1"' "$WORKFLOW")" -eq 1 ]] || {
+    "$(grep -Fc 'HOMEBREW_NO_AUTO_UPDATE: "1"' "$WORKFLOW")" -eq 1 &&
+    "$(grep -Fc 'HOMEBREW_ALLOWED_TAPS: homebrew/core' "$WORKFLOW")" -eq 1 &&
+    "$(grep -Fc 'command -v timeout' "$WORKFLOW")" -eq 1 &&
+    "$(grep -Fc 'brew install --formula coreutils >"$RUNNER_TEMP/brew-coreutils.log" 2>&1' "$WORKFLOW")" -eq 1 &&
+    "$(grep -Ec 'HOMEBREW_NO_REQUIRE_TAP_TRUST|brew (trust|untap)' "$WORKFLOW")" -eq 0 ]] || {
   echo "FAIL: CI actions must use Node 24 runtimes and macOS install must avoid tap updates" >&2
   exit 1
 }

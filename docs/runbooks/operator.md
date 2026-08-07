@@ -161,6 +161,7 @@ Use only the selected release through the sealed launcher:
 
 ```bash
 ~/.factory/bin/factory-launch <project> models profiles --json
+~/.factory/bin/factory-launch <project> models inventory --json
 ~/.factory/bin/factory-launch <project> models plan --profile openai-priority-v1 --json
 ~/.factory/bin/factory-launch <project> models activate --profile openai-priority-v1 --approve-hash <preview-profile-hash> --approved-by <operator-id> --json
 ~/.factory/bin/factory-launch <project> models disable --scope-type account-route --scope-id codex-native --reason credits_exhausted --ttl-seconds 3600 --operator-id <operator-id> --json
@@ -171,6 +172,12 @@ Use only the selected release through the sealed launcher:
 ~/.factory/bin/factory-launch <project> models fallback-plan --ticket T-123 --failed-run <run-id> --workdir /absolute/ticket-worktree --reason credits_exhausted --json
 ~/.factory/bin/factory-launch <project> models fallback --ticket T-123 --failed-run <run-id> --workdir /absolute/ticket-worktree --reason credits_exhausted --json
 ```
+
+Use the sealed `models inventory` command for Cursor model discovery. It copies
+owner-only credentials into a disposable owner-only home, removes that copy on
+exit, and never writes the source `~/.cursor` files. Do not run ambient
+`agent models` or `agent status` while another lane is active because those
+commands may rewrite shared Cursor configuration permissions.
 
 `models plan --json` previews the active profile, or default
 `cursor-opus-v1` when none is active. Activation accepts only the exact
@@ -642,6 +649,10 @@ These run in your interactive session — never inside the loop. The factory's o
   `OPERATOR RESUME RECEIPT: <current-blocked-receipt-sha256>`, replacing the one
   prior pair when present and changing nothing else. Do not combine the ruling
   and receipt pair in one commit, and do not leave the receipt commit local.
+  If both commits are pushed before that migration event, recovery accepts only
+  one direct non-merge context commit that adds one parser-valid
+  `Protected-Test-Conflicts` entry to the selected ticket and changes no other
+  path; every broader or longer chain stops as `resume_parent_not_migrated`.
   Finally move Linear from Blocked-Escalated to the ticket's `Resume-State:`.
   A missing, stale, mismatched, partial, unpushed, over-full, or otherwise
   illegal decision is rejected; `doctor --json` reports it under

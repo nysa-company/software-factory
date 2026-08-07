@@ -153,6 +153,67 @@ class ModelControlTest(unittest.TestCase):
         self.assertEqual(selected["profile_id"], "claude-priority-v1")
         self.assertEqual(selected["selections"]["planner"]["adapter"], "claude-code")
 
+    def test_cursor_inventory_uses_disposable_credentials_and_refuses_unsafe_source(self):
+        source = self.base / "cursor-home"
+        cursor = source / ".cursor"
+        cursor.mkdir(parents=True)
+        auth = cursor / "auth.json"
+        config = cursor / "cli-config.json"
+        auth.write_text('{"token":"fixture"}\n')
+        config.write_text('{"model":"fixture"}\n')
+        auth.chmod(0o600)
+        config.chmod(0o600)
+        tools = self.base / "bin"
+        tools.mkdir()
+        trace = self.base / "inventory.trace"
+        agent = tools / "agent"
+        agent.write_text(
+            "#!/bin/sh\n"
+            "printf '%s\\n' \"$HOME\" >> \"$MODEL_INVENTORY_TRACE\"\n"
+            "printf '%s\\n' changed > \"$HOME/.cursor/cli-config.json\"\n"
+            "printf '%s\\n' 'Opus 5 300K Medium' 'GPT-5.6 Sol 272K High'\n"
+        )
+        agent.chmod(0o755)
+        timeout = tools / "timeout"
+        timeout.write_text("#!/bin/sh\nshift\nexec \"$@\"\n")
+        timeout.chmod(0o755)
+        with self.global_env.open("a") as stream:
+            stream.write(f"CURSOR_AGENT_BIN={agent}\n")
+        self.environment.update(
+            FACTORY_CURSOR_SESSION_HOME=str(source),
+            MODEL_INVENTORY_TRACE=str(trace),
+            PATH=f"{tools}:{self.environment['PATH']}",
+        )
+        before = {
+            path: (path.read_bytes(), path.stat().st_ino, path.stat().st_mode,
+                   path.stat().st_mtime_ns)
+            for path in (auth, config)
+        }
+
+        value = json.loads(self.command("inventory").stdout)
+
+        self.assertEqual(value, {
+            "count": 2,
+            "models": ["GPT-5.6 Sol 272K High", "Opus 5 300K Medium"],
+            "schema": "factory-cursor-model-inventory/v1",
+            "status": "ok",
+        })
+        probe_home = Path(trace.read_text().strip())
+        self.assertNotEqual(probe_home, source)
+        self.assertFalse(probe_home.exists())
+        for path, expected in before.items():
+            self.assertEqual(
+                (path.read_bytes(), path.stat().st_ino, path.stat().st_mode,
+                 path.stat().st_mtime_ns),
+                expected,
+            )
+
+        config.chmod(0o644)
+        refused = self.command("inventory", check=False)
+        self.assertEqual(refused.returncode, 2)
+        self.assertIn("cursor_cli_config_mode_0644", refused.stdout)
+        self.assertEqual(len(trace.read_text().splitlines()), 1)
+
     def test_policy_candidates_preview_cas_apply_and_ticket_status_api(self):
         candidates = json.loads(self.command("policy-candidates").stdout)
         self.assertTrue(candidates["reviewer_exception"]["supported"])

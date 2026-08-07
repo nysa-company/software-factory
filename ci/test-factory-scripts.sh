@@ -131,6 +131,10 @@ STUB
 #!/usr/bin/env bash
 [[ -z "${STUB_CLAUDE_CONFIG_TRACE:-}" ]] ||
   printf '%s|%s\n' "${1:-}" "${CLAUDE_CONFIG_DIR:-}" >> "$STUB_CLAUDE_CONFIG_TRACE"
+if [[ -n "${STUB_CLAUDE_REFUSE_AMBIENT_DIR:-}" &&
+      "${CLAUDE_CONFIG_DIR:-}" == "$STUB_CLAUDE_REFUSE_AMBIENT_DIR" ]]; then
+  exit 124
+fi
 case "${1:-}" in
   --version)
     [[ "${STUB_CLAUDE_VERSION_EMPTY:-0}" == "1" ]] ||
@@ -525,10 +529,83 @@ CLAUDE_UNSAFE_PROBE="$(PATH="$STUB_BIN:$PATH" STUB_CLAUDE_VERSION=2.1.223 \
   CLAUDE_CODE_PINNED=2.1.223 CLAUDE_CONFIG_DIR="$CLAUDE_UNSAFE_ROOT" \
   bash -c 'set -euo pipefail; source "$1"; factory_probe_adapter claude-code; echo "$PROBE_STATE:$PROBE_REASON"' \
   _ "$ROOT/scripts/lib/backend-policy.sh")"
-if [[ "$CLAUDE_UNSAFE_PROBE" == "INVALID:credential_invalid" ]]; then
+if [[ "$CLAUDE_UNSAFE_PROBE" == "INVALID:claude_credential_hardlinked" ]]; then
   pass "Claude readiness rejects a multiply linked credential"
 else
   fail "Claude readiness rejects a multiply linked credential" "$CLAUDE_UNSAFE_PROBE"
+fi
+
+CLAUDE_MISSING_ROOT="$TMP/claude-missing-readiness"
+CLAUDE_SYMLINK_ROOT="$TMP/claude-symlink-readiness"
+CLAUDE_MODE_ROOT="$TMP/claude-mode-readiness"
+mkdir -p "$CLAUDE_MISSING_ROOT" "$CLAUDE_SYMLINK_ROOT" "$CLAUDE_MODE_ROOT"
+chmod 700 "$CLAUDE_MISSING_ROOT" "$CLAUDE_SYMLINK_ROOT" "$CLAUDE_MODE_ROOT"
+ln -s "$CLAUDE_AUTH_ROOT/.credentials.json" \
+  "$CLAUDE_SYMLINK_ROOT/.credentials.json"
+cp "$CLAUDE_AUTH_ROOT/.credentials.json" "$CLAUDE_MODE_ROOT/.credentials.json"
+chmod 644 "$CLAUDE_MODE_ROOT/.credentials.json"
+for case_data in \
+  "$CLAUDE_MISSING_ROOT|claude_credential_missing" \
+  "$CLAUDE_SYMLINK_ROOT|claude_credential_symlink" \
+  "$CLAUDE_MODE_ROOT|claude_credential_mode_0644"; do
+  case_root="${case_data%%|*}"
+  case_reason="${case_data#*|}"
+  case_result="$(PATH="$STUB_BIN:$PATH" STUB_CLAUDE_VERSION=2.1.223 \
+    CLAUDE_CODE_PINNED=2.1.223 CLAUDE_CONFIG_DIR="$case_root" \
+    bash -c 'set -euo pipefail; source "$1"; factory_probe_adapter claude-code; echo "$PROBE_STATE:$PROBE_REASON"' \
+    _ "$ROOT/scripts/lib/backend-policy.sh")"
+  if [[ "$case_result" == "INVALID:$case_reason" ]]; then
+    pass "Claude readiness reports $case_reason"
+  else
+    fail "Claude readiness reports $case_reason" "$case_result"
+  fi
+done
+if grep -qF 'source_info.st_uid != os.geteuid()' \
+    "$ROOT/scripts/lib/backend-policy.sh"; then
+  pass "Claude readiness retains foreign-owner refusal"
+else
+  fail "Claude readiness retains foreign-owner refusal"
+fi
+
+CLAUDE_AMBIENT_TRACE="$TMP/claude-ambient-isolation.trace"
+CLAUDE_AMBIENT_PROBE="$(PATH="$STUB_BIN:$PATH" STUB_CLAUDE_VERSION=2.1.223 \
+  STUB_CLAUDE_CONFIG_TRACE="$CLAUDE_AMBIENT_TRACE" \
+  STUB_CLAUDE_REFUSE_AMBIENT_DIR="$CLAUDE_AUTH_ROOT" \
+  CLAUDE_CODE_PINNED=2.1.223 CLAUDE_CONFIG_DIR="$CLAUDE_AUTH_ROOT" \
+  bash -c 'set -euo pipefail; source "$1"; factory_probe_adapter claude-code; echo "$PROBE_STATE:$PROBE_REASON"' \
+  _ "$ROOT/scripts/lib/backend-policy.sh")"
+if [[ "$CLAUDE_AMBIENT_PROBE" == "READY:local_contract_ready" ]] &&
+   ! grep -qF "|$CLAUDE_AUTH_ROOT" "$CLAUDE_AMBIENT_TRACE"; then
+  pass "Claude readiness succeeds when only the ambient CLI contract hangs"
+else
+  fail "Claude readiness succeeds when only the ambient CLI contract hangs" \
+    "$CLAUDE_AMBIENT_PROBE"
+fi
+
+CLAUDE_CONCURRENT_TRACE="$TMP/claude-concurrent-isolation.trace"
+for worker in 1 2; do
+  PATH="$STUB_BIN:$PATH" STUB_CLAUDE_VERSION=2.1.223 \
+    STUB_CLAUDE_CONFIG_TRACE="$CLAUDE_CONCURRENT_TRACE" \
+    CLAUDE_CODE_PINNED=2.1.223 CLAUDE_CONFIG_DIR="$CLAUDE_AUTH_ROOT" \
+    bash -c 'set -euo pipefail; source "$1"; factory_probe_adapter claude-code; echo "$PROBE_STATE:$PROBE_REASON"' \
+    _ "$ROOT/scripts/lib/backend-policy.sh" > "$TMP/claude-concurrent-$worker.out" &
+done
+wait
+CLAUDE_CONCURRENT_DIRS="$(cut -d'|' -f2 "$CLAUDE_CONCURRENT_TRACE" | sort -u)"
+CLAUDE_CONCURRENT_COUNT="$(printf '%s\n' "$CLAUDE_CONCURRENT_DIRS" | sed '/^$/d' | wc -l | tr -d ' ')"
+CLAUDE_CONCURRENT_LEFT=0
+while IFS= read -r probe_dir; do
+  [[ -z "$probe_dir" || ! -e "$probe_dir" ]] || CLAUDE_CONCURRENT_LEFT=1
+done <<EOF
+$CLAUDE_CONCURRENT_DIRS
+EOF
+if [[ "$CLAUDE_CONCURRENT_COUNT" == "2" && "$CLAUDE_CONCURRENT_LEFT" == "0" &&
+      "$(cat "$TMP/claude-concurrent-1.out")" == "READY:local_contract_ready" &&
+      "$(cat "$TMP/claude-concurrent-2.out")" == "READY:local_contract_ready" ]]; then
+  pass "concurrent Claude probes use distinct disposable configurations"
+else
+  fail "concurrent Claude probes use distinct disposable configurations" \
+    "directories=$CLAUDE_CONCURRENT_COUNT left=$CLAUDE_CONCURRENT_LEFT"
 fi
 CONTRACT_PROFILE="$(PATH="$STUB_BIN:$PATH" STUB_CLAUDE_VERSION=2.1.223 \
   FACTORY_GLOBAL_ENV="$TMP/no-global.env" FACTORY_CURSOR_FALLBACK_ENABLED=1 \
@@ -2424,7 +2501,7 @@ if TEST_CONTRACT_VERSION=1.8.0 expect_stage "FIX planner" "$OWNED_FIX_18" T-302;
     "$OWNED_FIX_18" T-302 &&
     pass "contract 1.8 refuses late Test-author work without a new epoch"
   printf '%s\n' \
-    '## Frozen contract — version 1' \
+    '### Frozen contract — version 1' \
     '- **Freeze result:** PASS. Contract version 1 is frozen.' >> \
     "$OWNED_FIX_18/factory/tickets/T-302.md"
   git -C "$OWNED_FIX_18" add factory/tickets/T-302.md
