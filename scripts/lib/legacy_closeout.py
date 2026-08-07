@@ -7,6 +7,7 @@ import io
 import json
 import re
 import subprocess
+from collections import Counter
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
@@ -133,18 +134,28 @@ def ledger_contains_snapshot(current, snapshot):
 
     def indexed(rows):
         result = {}
+        legacy = Counter()
         for row in rows[1:]:
-            if len(row) != len(header) or not row[run_id] or row[run_id] in result:
+            if len(row) != len(header):
                 return None
-            result[row[run_id]] = row
-        return result
+            if not row[run_id]:
+                legacy[tuple(row)] += 1
+            elif row[run_id] in result:
+                return None
+            else:
+                result[row[run_id]] = row
+        return result, legacy
 
     expected_rows = indexed(expected)
     observed_rows = indexed(observed)
     return (
         expected_rows is not None
         and observed_rows is not None
-        and all(observed_rows.get(key) == row for key, row in expected_rows.items())
+        and all(
+            observed_rows[0].get(key) == row
+            for key, row in expected_rows[0].items()
+        )
+        and not expected_rows[1] - observed_rows[1]
     )
 
 

@@ -4175,3 +4175,12 @@ authorizes a recovered bundle refresh, including the expected new-kit
 `Kit-SHA` refusal. A clean, correctly named closeout worktree without a Done
 attestation fast-forwards to current protected main before retry; attested,
 dirty, divergent, or wrong-branch worktrees are never rewritten.
+
+## 2026-08-07 — Decision 313: Ledger containment preserves pre-run-id history
+
+Category: Reliability
+
+Protected terminal validation keys modern ledger rows by their unique run ID
+and retains historical empty-run-ID rows as an exact-row multiset. Reordering
+and new rows remain safe; mutation, deletion, duplicate loss, modern duplicate
+IDs, and schema drift remain refused.

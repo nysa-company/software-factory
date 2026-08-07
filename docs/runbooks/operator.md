@@ -496,6 +496,11 @@ current protected main, while an attested retry is preserved. Current-base
 bundles, dirty or divergent closeouts, invalid passports, and unproven merges
 remain blocked.
 
+Protected terminal validation treats pre-`run_id` ledger rows as exact legacy
+row occurrences. Their order may change and new rows may be added, but every
+attested occurrence must remain byte-for-byte present; modern rows continue to
+require one unique non-empty `run_id`.
+
 The run wrapper checks maintenance before taking the launch lock, after taking
 it, and before GO. Never enable the replacement while the old host can still
 dispatch.

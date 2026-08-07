@@ -53,6 +53,22 @@ class LegacyCloseoutTests(unittest.TestCase):
             reordered + "2026-08-04,T-100,run-1\n", snapshot,
         ))
 
+    def test_ledger_snapshot_containment_preserves_legacy_empty_run_ids(self):
+        header = "date,ticket,run_id\n"
+        legacy = "2026-07-01,T-099,\n"
+        snapshot = header + legacy + legacy + "2026-08-01,T-100,run-1\n"
+        current = (
+            header + "2026-08-01,T-100,run-1\n" + legacy + legacy
+            + "2026-08-02,T-101,\n"
+        )
+        self.assertTrue(legacy_closeout.ledger_contains_snapshot(current, snapshot))
+        self.assertFalse(legacy_closeout.ledger_contains_snapshot(
+            current.replace(legacy, "", 1), snapshot,
+        ))
+        self.assertFalse(legacy_closeout.ledger_contains_snapshot(
+            current.replace("T-099", "T-998", 1), snapshot,
+        ))
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="legacy-closeout-test.")
         root = Path(self.temp.name)
