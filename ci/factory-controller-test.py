@@ -5542,6 +5542,7 @@ class FactoryControllerTest(unittest.TestCase):
         def evidence(status: str) -> dict[str, str]:
             return {
                 "input_head": "1" * 40,
+                "migration_count": 2,
                 "migration_head": base,
                 "output_head": "2" * 40,
                 "output_tree": "3" * 40,

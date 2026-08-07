@@ -235,7 +235,8 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   unsafe credentials or cleanup failures remain fail-closed.
 - A successor may preserve one old-catalog Cursor Spec-linter success only when
   the authenticated output, progress journal, route mismatch, charge, exact
-  ticket-only output/revert, and authenticated route-migration commit converge.
+  ticket-only output/revert, and bounded authenticated route-migration chain
+  converge.
   It reapplies the exact append on top of the migrated Kit-SHA/route without
   force; provider replay is forbidden.
 - Contract 1.8 role execution retains the validated project in a non-exported
@@ -4069,8 +4070,9 @@ Category: Reliability
 
 When an old Cursor catalog rejects a completed Spec-linter only because its
 reported model label now matches the successor catalog, recovery authenticates
-the single terminal success, exact ticket-only output/revert history, and the
-one current-kit route-migration commit. The controller reapplies only the exact
-ticket append on top of that migration, exports one charge and one completion
+the single terminal success, exact ticket-only output/revert history, and a
+bounded contiguous route-migration chain ending at the current kit. The
+controller reapplies only the exact ticket append on top of that chain, exports
+one charge and one completion
 record, and never replays the provider. Any broader history or evidence shape
 stays blocked.
