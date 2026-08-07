@@ -585,7 +585,7 @@ def ticket_without_control(text: str) -> str:
     ).strip()
 
 
-def reconcile_preprovider_branch(
+def validate_preprovider_branch(
     product: Path,
     worktree: Path,
     ticket: str,
@@ -698,6 +698,23 @@ def reconcile_preprovider_branch(
         or git_succeeds(product, "cat-file", "-e", f"{main}:{plan_path}")
     ):
         raise DispatchError("pre-provider branch control state is invalid")
+    return remote_head
+
+
+def reconcile_preprovider_branch(
+    product: Path,
+    worktree: Path,
+    ticket: str,
+    branch: str,
+    remote: str,
+    main: str,
+    authorized_head: str,
+) -> str:
+    remote_head = validate_preprovider_branch(
+        product, worktree, ticket, branch, remote, main, authorized_head,
+    )
+    ticket_path = f"factory/tickets/{ticket}.md"
+    plan_path = f"factory/route-plans/{ticket}.json"
     git(
         worktree,
         "-c", "user.name=Software Factory",

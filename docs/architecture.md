@@ -679,6 +679,17 @@ qualification, the same preparer upgrades that root only while reconciliation an
 are drained. It seals the successor, verifies unchanged provider policy,
 atomically advances the activation record, and preserves the controller
 directory, passport key, passports, claims, and cumulative provider ledger.
+If the defect instead requires a fresh successor root after an unconsumed
+Planner receipt but before any passport or provider run, the predecessor cell
+is handed off rather than recreated. Both lane activations, owner authorities,
+cohort manifests, controller and dispatch locks, old claim and lease, receipt,
+route, pushed head, origin, and protected successor reset authorization must
+agree exactly. An owner-only digest journal in the successor controller binds
+both roots and records a prefix of `git worktree move` operations. A restart
+accepts only the journaled destination prefix, at most one move completed just
+before its journal update, and the untouched source suffix. Reverse moves,
+both/neither paths, target runtime, source publication or run evidence, and
+ordinary outside-root dispatch all fail closed.
 After the ticket route migrates, a blocked claim may recover only when its
 authenticated passport names the prior release. The controller binds a fresh
 exact-ticket lease, migrates that passport in place, and returns the claim to

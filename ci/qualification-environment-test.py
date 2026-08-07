@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import hmac
 import importlib.util
@@ -237,6 +238,8 @@ ledger.chmod(0o600)
         release = Path(value["launcher"]).parents[3]
         authority = Path(value["authority_root"])
         self.assertEqual(value["factory_sha"], self.sha)
+        lane = ENVIRONMENT.qualification_lane(self.root, "relay")
+        self.assertEqual(lane["active"]["kit_sha"], self.sha)
         active = ENVIRONMENT.read(self.root / "projects/relay/active.json")
         receipt = ENVIRONMENT.read(
             self.root / "receipts" / f"{active['receipt_id']}.json"
@@ -1269,6 +1272,396 @@ ledger.chmod(0o600)
         self.assertEqual(active["provider_state_path"], str(authority / "provider"))
         self.assertEqual(key.read_bytes(), secret)
         self.assertEqual(run(parked, "git", "rev-parse", "HEAD"), head)
+
+    def handoff_fixture(
+        self, *, released: bool = False, noncontrol: bool = False,
+    ):
+        remote = self.workspace / "handoff-remote.git"
+        run(self.workspace, "git", "init", "--bare", "-q", str(remote))
+        run(self.product, "git", "remote", "set-url", "origin", str(remote))
+        (self.product / "factory/PROJECT.env").write_text(
+            "MAX_CONCURRENT_TICKETS=3\n", encoding="utf-8",
+        )
+        with (self.product / ".gitignore").open("a", encoding="utf-8") as stream:
+            stream.write("factory/.dispatch-leases/\nfactory/.active-runs/\n")
+        run(self.product, "git", "add", ".")
+        run(self.product, "git", "commit", "-qm", "handoff base")
+        run(self.product, "git", "push", "-qu", "origin", "main")
+
+        source_root = Path(tempfile.mkdtemp(
+            prefix="nysa-sf-qualification.source-", dir="/private/tmp",
+        )).resolve()
+        target_root = Path(tempfile.mkdtemp(
+            prefix="nysa-sf-qualification.target-", dir="/private/tmp",
+        )).resolve()
+        os.chmod(source_root, 0o700)
+        os.chmod(target_root, 0o700)
+        self.addCleanup(shutil.rmtree, source_root, True)
+        self.addCleanup(shutil.rmtree, target_root, True)
+        source_cells = source_root / "worktrees/source"
+        source_cells.mkdir(mode=0o700, parents=True)
+        source_cells.parent.chmod(0o700)
+        target_product = self.workspace / "target-product"
+        run(
+            self.product, "git", "worktree", "add", "-qb", "qualification-target",
+            str(target_product), "main",
+        )
+        target_product = target_product.resolve()
+        tickets = ["T-101", "T-102", "T-103"]
+        entries = []
+        source_controller = self.home / ".factory/qualification/source/controller"
+        target_controller = self.home / ".factory/qualification/target/controller"
+        for path in (
+            source_controller / "claims", target_controller / "claims",
+        ):
+            path.mkdir(mode=0o700, parents=True)
+            path.parent.chmod(0o700)
+        source_sha = "b" * 40
+        for index, ticket in enumerate(tickets, 1):
+            cell = source_cells / f"cell-{index}"
+            run(
+                self.product, "git", "worktree", "add", "-qb", f"ticket/{ticket}",
+                str(cell), "main",
+            )
+            cell.chmod(0o700)
+            ticket_path = cell / f"factory/tickets/{ticket}.md"
+            ticket_path.write_text(
+                ticket_path.read_text() + f"\nKit-SHA: {source_sha}\n",
+                encoding="utf-8",
+            )
+            route = cell / f"factory/route-plans/{ticket}.json"
+            route.parent.mkdir(exist_ok=True)
+            route.write_text(json.dumps({
+                "kit_sha": source_sha,
+                "schema": "ticket-model-route-plan/v1",
+                "ticket": ticket,
+            }) + "\n", encoding="utf-8")
+            if noncontrol and index == 1:
+                unsafe = cell / "apps/unsafe.txt"
+                unsafe.parent.mkdir()
+                unsafe.write_text("not control state\n", encoding="utf-8")
+            run(cell, "git", "add", ".")
+            run(
+                cell, "git", "-c", "user.name=Software Factory", "-c",
+                "user.email=factory@local", "commit", "-qm",
+                f"{ticket}: pin kit and model route plan",
+            )
+            ticket_path.write_text(
+                ticket_path.read_text().replace("State: Ready", "State: Planning"),
+                encoding="utf-8",
+            )
+            run(cell, "git", "add", str(ticket_path))
+            run(
+                cell, "git", "-c", "user.name=Software Factory", "-c",
+                "user.email=factory@local", "commit", "-qm",
+                f"{ticket}: transition ticket state",
+            )
+            run(cell, "git", "push", "-qu", "origin", f"ticket/{ticket}")
+            head = run(cell, "git", "rev-parse", "HEAD")
+            lease = hashlib.sha256(f"lease-{ticket}".encode()).hexdigest()
+            claim = {
+                "blocked_reason": "worker-error",
+                "branch": f"ticket/{ticket}",
+                "lease": lease,
+                "priority": "normal",
+                "publication_lease": "",
+                "receipt": "",
+                "role": "",
+                "schema": "nysa.software-factory.controller-claim/v1",
+                "status": "blocked",
+                "ticket": ticket,
+                "worktree": str(cell),
+            }
+            if released:
+                claim["lease_released"] = True
+            ENVIRONMENT.write(source_controller / f"claims/{ticket}.json", claim)
+            lease_dir = self.product / "factory/.dispatch-leases"
+            lease_dir.mkdir(mode=0o700, exist_ok=True)
+            if not released:
+                ENVIRONMENT.write(lease_dir / f"{ticket}.json", {
+                    "claimed_epoch": 1,
+                    "expires_epoch": 9999999999,
+                    "lease_id": lease,
+                    "schema_version": 1,
+                    "ticket": ticket,
+                })
+            receipt = {
+                "branch": f"ticket/{ticket}",
+                "contract_version": "1.8.0",
+                "evidence_sha256": "1" * 64,
+                "factory_sha": source_sha,
+                "head_sha": head,
+                "head_tree": run(cell, "git", "rev-parse", "HEAD^{tree}"),
+                "lease_sha256": hashlib.sha256(lease.encode()).hexdigest(),
+                "loop": None,
+                "nonce": f"{index:032x}",
+                "passport_sha256": None,
+                "product_origin_sha256": hashlib.sha256(str(remote).encode()).hexdigest(),
+                "project": "source",
+                "role": "planner",
+                "route_plan_sha256": hashlib.sha256(route.read_bytes()).hexdigest(),
+                "schema": ENVIRONMENT.TRANSITION_RECEIPT_SCHEMA,
+                "stage": "RUN planner",
+                "ticket": ticket,
+                "ticket_blob": run(
+                    cell, "git", "rev-parse", f"HEAD:factory/tickets/{ticket}.md",
+                ),
+            }
+            receipt["receipt_sha256"] = hashlib.sha256(
+                ENVIRONMENT.canonical(receipt)
+            ).hexdigest()
+            receipt["consumed"] = False
+            ENVIRONMENT.write(source_controller / f"{ticket}.json", receipt)
+            entries.append((ticket, head, cell))
+
+        run(self.factory, "git", "commit", "--allow-empty", "-qm", "target kit")
+        target_kit = run(self.factory, "git", "rev-parse", "HEAD")
+        target_kit_tree = run(self.factory, "git", "rev-parse", "HEAD^{tree}")
+        reset = target_product / "factory/qualification/preprovider-branch-resets.json"
+        reset.parent.mkdir(exist_ok=True)
+        reset.write_text(json.dumps({
+            "factory_sha": target_kit,
+            "resets": [
+                {"branch": f"ticket/{ticket}", "head": head, "ticket": ticket}
+                for ticket, head, _ in entries
+            ],
+            "schema": ENVIRONMENT.PREPROVIDER_RESET_SCHEMA,
+        }, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+        run(target_product, "git", "add", str(reset))
+        run(target_product, "git", "commit", "-qm", "authorize handoff")
+        run(
+            target_product, "git", "push", "-q", "origin",
+            "qualification-target:main",
+        )
+        target_sha = run(target_product, "git", "rev-parse", "HEAD")
+        target_tree = run(target_product, "git", "rev-parse", "HEAD^{tree}")
+        manifest = {"capacity": 3, "tickets": tickets}
+        source = {
+            "active": {
+                "kit_sha": source_sha, "project": "source", "receipt_id": "2" * 64,
+            },
+            "authority": source_controller.parent,
+            "controller": source_controller,
+            "manifest": manifest,
+            "product": self.product,
+            "release": ROOT,
+            "root": source_root,
+        }
+        target = {
+            "active": {
+                "kit_sha": target_kit, "kit_tree": target_kit_tree,
+                "product_sha": target_sha, "product_tree": target_tree,
+                "project": "target", "receipt_id": "3" * 64,
+            },
+            "authority": target_controller.parent,
+            "controller": target_controller,
+            "manifest": {
+                **manifest, "mode": "successor", "source_factory_sha": source_sha,
+            },
+            "product": target_product,
+            "release": ROOT,
+            "root": target_root,
+        }
+        args = argparse.Namespace(
+            factory_root=self.factory,
+            preprovider_source_project="source",
+            preprovider_source_root=source_root,
+            product_root=target_product,
+            project="target",
+            restore=False,
+            root=target_root,
+            takeover_project=None,
+            upgrade=False,
+        )
+        return args, source, target, entries
+
+    def test_handoff_moves_active_leases_once_and_recovers_move_before_journal(self):
+        args, source, target, entries = self.handoff_fixture()
+        lanes = {source["root"]: source, target["root"]: target}
+        with (
+            mock.patch.object(
+                ENVIRONMENT, "qualification_lane",
+                side_effect=lambda root, project: lanes[Path(root)],
+            ),
+            mock.patch.object(ENVIRONMENT, "provider_drained"),
+        ):
+            first = ENVIRONMENT.handoff_preprovider(args)
+            self.assertEqual(first["status"], "preprovider-handed-off")
+            for ticket, _, source_cell in entries:
+                claim = ENVIRONMENT.read(source["controller"] / f"claims/{ticket}.json")
+                self.assertTrue(claim["lease_released"])
+                self.assertEqual(claim["blocked_reason"], "preprovider-handoff")
+                self.assertFalse(source_cell.exists())
+                self.assertTrue(Path(claim["worktree"]).is_dir())
+                self.assertFalse(
+                    (source["product"] / f"factory/.dispatch-leases/{ticket}.json").exists()
+                )
+            journal_path = target["controller"] / "preprovider-handoff.json"
+            journal = ENVIRONMENT.read(journal_path)
+            journal["status"] = "prepared"
+            journal["moved"] = journal["moved"][:-1]
+            ENVIRONMENT.replace(journal_path, ENVIRONMENT.seal_journal(journal))
+            repeated = ENVIRONMENT.handoff_preprovider(args)
+            self.assertEqual(repeated["handoff_sha256"], first["handoff_sha256"])
+            self.assertEqual(
+                ENVIRONMENT.read(journal_path)["status"], "completed"
+            )
+
+    def test_handoff_accepts_already_released_lease_and_refuses_reverse_move(self):
+        args, source, target, entries = self.handoff_fixture(released=True)
+        lanes = {source["root"]: source, target["root"]: target}
+        with (
+            mock.patch.object(
+                ENVIRONMENT, "qualification_lane",
+                side_effect=lambda root, project: lanes[Path(root)],
+            ),
+            mock.patch.object(ENVIRONMENT, "provider_drained"),
+        ):
+            ENVIRONMENT.handoff_preprovider(args)
+            claim = ENVIRONMENT.read(
+                source["controller"] / f"claims/{entries[0][0]}.json"
+            )
+            run(
+                target["product"], "git", "worktree", "move",
+                claim["worktree"], str(entries[0][2]),
+            )
+            with self.assertRaisesRegex(
+                ENVIRONMENT.EnvironmentError, "physical state conflicts"
+            ):
+                ENVIRONMENT.handoff_preprovider(args)
+
+    def test_handoff_transient_refusal_does_not_publish_a_journal(self):
+        args, source, target, entries = self.handoff_fixture()
+        lanes = {source["root"]: source, target["root"]: target}
+        dirty = entries[0][2] / "untracked.txt"
+        dirty.write_text("transient\n", encoding="utf-8")
+        journal = target["controller"] / "preprovider-handoff.json"
+        with (
+            mock.patch.object(
+                ENVIRONMENT, "qualification_lane",
+                side_effect=lambda root, project: lanes[Path(root)],
+            ),
+            mock.patch.object(ENVIRONMENT, "provider_drained"),
+        ):
+            with self.assertRaisesRegex(
+                ENVIRONMENT.EnvironmentError, "source evidence changed"
+            ):
+                ENVIRONMENT.handoff_preprovider(args)
+            self.assertFalse(journal.exists())
+            dirty.unlink()
+            self.assertEqual(
+                ENVIRONMENT.handoff_preprovider(args)["status"],
+                "preprovider-handed-off",
+            )
+
+    def test_sealed_reset_authorization_refuses_worktree_mutation(self):
+        _, _, target, _ = self.handoff_fixture(released=True)
+        path = target["product"] / (
+            "factory/qualification/preprovider-branch-resets.json"
+        )
+        path.write_text(path.read_text() + " ", encoding="utf-8")
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError, "differs from sealed HEAD"
+        ):
+            ENVIRONMENT.preprovider_reset_authorizations(
+                target["product"], target["active"]["kit_sha"],
+                target["manifest"]["tickets"],
+            )
+
+    def test_handoff_refuses_busy_dispatch_admission_before_mutation(self):
+        args, source, target, _ = self.handoff_fixture(released=True)
+        lanes = {source["root"]: source, target["root"]: target}
+        path = source["root"] / "worktrees/source/.dispatch-admission.lock"
+        descriptor = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            with (
+                mock.patch.object(
+                    ENVIRONMENT, "qualification_lane",
+                    side_effect=lambda root, project: lanes[Path(root)],
+                ),
+                mock.patch.object(ENVIRONMENT, "provider_drained"),
+                self.assertRaisesRegex(
+                    ENVIRONMENT.EnvironmentError, "dispatch admission is active"
+                ),
+            ):
+                ENVIRONMENT.handoff_preprovider(args)
+        finally:
+            os.close(descriptor)
+        self.assertFalse(
+            (target["controller"] / "preprovider-handoff.json").exists()
+        )
+
+    def test_handoff_refuses_target_runtime_before_journal(self):
+        args, source, target, _ = self.handoff_fixture(released=True)
+        lanes = {source["root"]: source, target["root"]: target}
+        leases = target["product"] / "factory/.dispatch-leases"
+        leases.mkdir(mode=0o700)
+        ENVIRONMENT.write(leases / "T-101.json", {
+            "claimed_epoch": 1,
+            "expires_epoch": 9999999999,
+            "lease_id": "9" * 64,
+            "schema_version": 1,
+            "ticket": "T-101",
+        })
+        with (
+            mock.patch.object(
+                ENVIRONMENT, "qualification_lane",
+                side_effect=lambda root, project: lanes[Path(root)],
+            ),
+            mock.patch.object(ENVIRONMENT, "provider_drained"),
+            self.assertRaisesRegex(
+                ENVIRONMENT.EnvironmentError, "runtime or publication evidence"
+            ),
+        ):
+            ENVIRONMENT.handoff_preprovider(args)
+        self.assertFalse(
+            (target["controller"] / "preprovider-handoff.json").exists()
+        )
+
+    def test_handoff_refuses_authorized_noncontrol_head_before_journal(self):
+        args, source, target, _ = self.handoff_fixture(
+            released=True, noncontrol=True,
+        )
+        lanes = {source["root"]: source, target["root"]: target}
+        with (
+            mock.patch.object(
+                ENVIRONMENT, "qualification_lane",
+                side_effect=lambda root, project: lanes[Path(root)],
+            ),
+            mock.patch.object(ENVIRONMENT, "provider_drained"),
+            self.assertRaisesRegex(
+                ENVIRONMENT.EnvironmentError, "not control-only"
+            ),
+        ):
+            ENVIRONMENT.handoff_preprovider(args)
+        self.assertFalse(
+            (target["controller"] / "preprovider-handoff.json").exists()
+        )
+        for ticket in target["manifest"]["tickets"]:
+            claim = ENVIRONMENT.read(source["controller"] / f"claims/{ticket}.json")
+            self.assertEqual(claim["blocked_reason"], "worker-error")
+
+    def test_handoff_refuses_activation_change_before_locked_revalidation(self):
+        args, source, target, _ = self.handoff_fixture(released=True)
+        changed = {
+            **source,
+            "active": {**source["active"], "receipt_id": "8" * 64},
+        }
+        with (
+            mock.patch.object(
+                ENVIRONMENT, "qualification_lane",
+                side_effect=[source, target, changed, target],
+            ),
+            mock.patch.object(ENVIRONMENT, "provider_drained"),
+            self.assertRaisesRegex(
+                ENVIRONMENT.EnvironmentError, "activation changed before handoff lock"
+            ),
+        ):
+            ENVIRONMENT.handoff_preprovider(args)
+        self.assertFalse(
+            (target["controller"] / "preprovider-handoff.json").exists()
+        )
 
 
 if __name__ == "__main__":

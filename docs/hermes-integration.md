@@ -195,6 +195,20 @@ non-force merges current protected main, records the superseded head, and
 removes the obsolete pin before normal repinning. It refuses provider-authored,
 unlisted, ambiguous, or rewritten history.
 
+When those branches are still checked out in a failed isolated predecessor,
+the prepared successor can adopt them only through the qualification
+pre-provider handoff. Invoke the exact candidate helper with both
+`--preprovider-source-root` and `--preprovider-source-project`; the target
+`--root`, `--project`, Factory checkout, and product checkout continue to name
+the already prepared successor. The helper authenticates both sealed lane
+receipts and authorities, the protected reset record, each exact unconsumed
+Planner receipt and worker-error claim, and the clean pushed route/head before
+retiring the old lease. It holds both controllers and both dispatch boundaries,
+moves the registered worktrees with `git worktree move`, and journals progress
+under the durable successor controller. It never deletes or resets a branch,
+and ordinary dispatch continues to refuse any checkout outside its own trusted
+root.
+
 For Contracts 1.6 and 1.7, the `factory-supervisor` skill is a one-shot adapter over `dispatch-plan`: one
 wakeup claims at most one ticket and starts at most one ephemeral dispatcher
 child. Autonomous claims require `MAX_CONCURRENT_TICKETS` above one so an opaque

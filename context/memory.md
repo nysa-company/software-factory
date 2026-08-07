@@ -4252,3 +4252,18 @@ product repository's exact Git common directory. No passport, run record,
 active process, dirty cell, or remote divergence may exist. A retained lease is
 renewed and an explicitly released lease is reacquired; foreign, cross-ticket,
 or cross-release evidence remains blocked without provider work.
+
+## 2026-08-07 — Decision 317: Pre-provider successor handoff moves exact cells
+
+Category: Reliability
+
+A fresh isolated successor may preserve a predecessor's unconsumed Planner
+receipt only when the prior worker-error occurred before preflight, passport,
+provider run, terminal, or publication. The helper authenticates both sealed
+lanes, the identical cohort, exact protected reset heads, source claims,
+released or exactly releasable leases, routes, remote heads, and origins while
+holding controller plus admission/launch/lease boundaries. It quarantines the
+old claims and uses only `git worktree move`. A digest journal under the durable
+successor controller makes the move prefix restart-safe; no branch deletion,
+claim edit, arbitrary checkout adoption, or dispatch trust relaxation is
+permitted.

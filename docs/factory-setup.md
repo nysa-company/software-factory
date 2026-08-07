@@ -144,6 +144,26 @@ keeps provider admission closed until a later successful reconciliation.
   The preparer also fails before admission when the chosen root is too long for Cursor's
   isolated attempt scratch. `--upgrade` is limited to a fresh isolated
   qualification; a takeover binds one frozen candidate.
+  If a failed isolated predecessor stopped after issuing Planner receipts but
+  before preflight, commit and protect the successor manifest, candidate pin,
+  and exact `preprovider-branch-resets.json`; prepare that unchanged successor
+  product; then run the candidate helper once:
+
+  ```bash
+  python3 scripts/qualification-environment.py \
+    --factory-root "<clean-successor-factory-checkout>" \
+    --product-root "<prepared-successor-product-checkout>" \
+    --project "<successor-project>" \
+    --root "/private/tmp/nysa-sf-qualification.<successor>" \
+    --preprovider-source-project "<predecessor-project>" \
+    --preprovider-source-root "/private/tmp/nysa-sf-qualification.<predecessor>"
+  ```
+
+  Both controllers and provider state must be drained. The executing helper
+  must be byte-identical to the sealed successor copy. A completed or partial
+  digest journal in the successor's durable controller is the only restart
+  authority; do not remove it, edit claims, delete branches, or move worktrees
+  by hand.
 - Add `~/.hermes/profiles/factory/projects/<project>.env` with
   `PRODUCT_ROOT=<absolute-product-path>`. The stable launcher ignores `KIT_DIR`
   from legacy registry files and resolves the active release itself. Registry
