@@ -1539,6 +1539,30 @@ class Controller:
             claimed.add(ticket)
             self.event("missing_claim_recovered", ticket)
 
+    def settled_contract_blocker(
+        self, claim: dict[str, Any]
+    ) -> dict[str, str] | None:
+        receipt = claim.get("receipt", "")
+        role = claim.get("role", "")
+        if (
+            claim.get("status") != "blocked"
+            or not DIGEST.fullmatch(receipt)
+            or role not in {"planner", "spec-linter", "test-author", "builder"}
+            or claim.get("publication_lease")
+            or self.role_active(claim)
+        ):
+            return None
+        terminal = self.terminal_for_receipt(claim["ticket"], receipt)
+        if (
+            terminal is None
+            or terminal.get("role") != role
+            or terminal.get("role_exit") != "role_exit_contract_blocked"
+            or terminal.get("exit_status") != "12"
+            or terminal.get("task_submitted") != "1"
+        ):
+            return None
+        return terminal
+
     def pause_ticket(self, ticket: str, blocking_issue: str) -> dict[str, Any]:
         if not TICKET.fullmatch(ticket) or not FACTORY_ISSUE.fullmatch(blocking_issue):
             raise ControllerError("ticket pause requires a Software Factory issue URL")
@@ -1547,7 +1571,12 @@ class Controller:
             raise ControllerError("ticket pause requires an idle passport")
         claims = {item["ticket"]: item for item in self.load_claims()}
         claim = claims.get(ticket)
-        if claim and (claim.get("receipt") or claim.get("role")):
+        settled_blocker = self.settled_contract_blocker(claim) if claim else None
+        if (
+            claim
+            and (claim.get("receipt") or claim.get("role"))
+            and settled_blocker is None
+        ):
             raise ControllerError("ticket pause requires a pre-provider boundary")
         passport = read(path)
         current_state = passport.get("current_state")
@@ -1588,7 +1617,32 @@ class Controller:
             "branch": branch, "ticket": ticket, "worktree": worktree,
         }
         if not self.remote_passport_valid(probe):
-            raise ControllerError("ticket pause passport is not portable")
+            if settled_blocker is None:
+                raise ControllerError("ticket pause passport is not portable")
+            self.migrate_passport(claim, "preserve")
+            passport = read(path)
+            current_state = passport.get("current_state")
+            branch = passport.get("branch", "")
+            worktrees = self.worktrees_by_branch().get(
+                f"refs/heads/{branch}", []
+            )
+            if (
+                current_state not in INFLIGHT_STATES
+                or passport.get("publication_state") == "merged"
+                or self.product_ticket_done(ticket)
+                or passport.get("ticket") != ticket
+                or branch != f"ticket/{ticket}"
+                or not SHA.fullmatch(passport.get("head_sha", ""))
+                or not DIGEST.fullmatch(passport.get("passport_sha256", ""))
+                or len(worktrees) != 1
+            ):
+                raise ControllerError("ticket pause passport is not portable")
+            worktree = claim["worktree"]
+            probe = {
+                "branch": branch, "ticket": ticket, "worktree": worktree,
+            }
+            if not self.remote_passport_valid(probe):
+                raise ControllerError("ticket pause passport is not portable")
         if claim:
             if claim.get("publication_lease"):
                 self.withdraw_publication(claim)
@@ -2638,6 +2692,36 @@ class Controller:
             marker_path.unlink()
             self.event("interrupted_claim_recovered", claim["ticket"])
 
+    def recover_missing_terminals(self, claims: list[dict[str, Any]]) -> None:
+        for claim in claims:
+            if (
+                claim.get("status") != "blocked"
+                or claim.get("blocked_reason") != "missing-terminal"
+                or not DIGEST.fullmatch(claim.get("receipt", ""))
+                or claim.get("role") not in {
+                    "planner", "spec-linter", "test-author", "builder",
+                    "reviewer", "narrator",
+                }
+                or claim.get("lease_released") is not True
+                or self.role_active(claim)
+            ):
+                continue
+            receipt = claim["receipt"]
+            terminal = self.terminal_for_receipt(claim["ticket"], receipt)
+            if (
+                terminal is None
+                or terminal.get("role") != claim["role"]
+                or terminal.get("kit_sha") != self.release_path.name
+            ):
+                continue
+            self.ensure_lease(claim, "missing-terminal")
+            self.finish_pending_run(claim)
+            self.event(
+                "missing_terminal_recovered", claim["ticket"],
+                run_id=terminal.get("run_id"),
+                transition_receipt_sha256=receipt,
+            )
+
     def recover_terminal_requests(self, claims: list[dict[str, Any]]) -> None:
         for claim in claims:
             passport_path = self.state / "passports" / f"{claim['ticket']}.json"
@@ -2716,13 +2800,14 @@ class Controller:
                 recover(claim)
 
     def recover_preflight_blocks(self, claims: list[dict[str, Any]]) -> None:
-        if not self.qualification:
-            return
         for claim in claims:
             receipt_path = self.state / f"{claim['ticket']}.json"
             passport_path = self.state / "passports" / f"{claim['ticket']}.json"
             if (
-                claim["ticket"] not in self.qualification["tickets"]
+                (
+                    self.qualification is not None
+                    and claim["ticket"] not in self.qualification["tickets"]
+                )
                 or claim["status"] != "blocked"
                 or claim.get("blocked_reason") != "preflight"
                 or claim.get("receipt")
@@ -2764,9 +2849,10 @@ class Controller:
             self.ensure_lease(claim, "preflight-retry")
             try:
                 try:
-                    ensure_qualification_artifacts(
-                        self.product, self.state, claim["ticket"]
-                    )
+                    if self.qualification:
+                        ensure_qualification_artifacts(
+                            self.product, self.state, claim["ticket"]
+                        )
                 except QualificationArtifactError as error:
                     raise ControllerError(str(error)) from error
                 transition = self.json_call(
@@ -2977,7 +3063,7 @@ class Controller:
             or receipt.get("branch") != claim["branch"]
             or not receipt.get("consumed")
             or not DIGEST.fullmatch(receipt_digest)
-            or role not in {"planner", "test-author", "builder"}
+            or role not in {"planner", "spec-linter", "test-author", "builder"}
             or passport.get("ticket") != claim["ticket"]
             or passport.get("branch") != claim["branch"]
             or passport.get("factory_sha") != self.release_path.name
@@ -4676,6 +4762,9 @@ class Controller:
             existing, self.recover_interrupted_claims, "interrupted-reconciliation",
         )
         self.recover_each(
+            existing, self.recover_missing_terminals, "missing-terminal",
+        )
+        self.recover_each(
             existing, self.recover_preflight_blocks, "preflight-retry",
             concurrent=True,
         )
@@ -4803,6 +4892,9 @@ class Controller:
                 self.recover_each(
                     idle, self.recover_interrupted_claims,
                     "interrupted-reconciliation",
+                )
+                self.recover_each(
+                    idle, self.recover_missing_terminals, "missing-terminal",
                 )
                 self.recover_each(
                     idle, self.recover_preflight_blocks, "preflight-retry",

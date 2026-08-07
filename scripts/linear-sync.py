@@ -55,6 +55,7 @@ TARGETED_OPERATOR_FIELDS = (
     "blocked_remote_updated_at",
     "operator_state_source_sha256",
 )
+LINEAR_COOLDOWN_SCHEMA = "nysa.software-factory.linear-account-cooldown/v1"
 
 # Ticket State: values map 1:1 onto board columns (docs/workflows/linear.md).
 # The second element is the Linear workflow-state *type* used when the
@@ -462,7 +463,7 @@ def parsed_timestamp(value):
 
 
 def rate_limit_cooldown(mapping, now=None):
-    health = mapping.get("_sync") if isinstance(mapping, dict) else None
+    health = mapping.get("_sync", mapping) if isinstance(mapping, dict) else None
     health = health if isinstance(health, dict) else {}
     match = re.fullmatch(
         r"linear_rate_limited retry_after_seconds=([0-9]+)",
@@ -475,6 +476,71 @@ def rate_limit_cooldown(mapping, now=None):
     now = now or dt.datetime.now(dt.timezone.utc)
     remaining = (failed_at + dt.timedelta(seconds=wait) - now).total_seconds()
     return max(0, int(remaining + 0.999))
+
+
+def account_cooldown_path(key):
+    root = Path(os.environ.get(
+        "FACTORY_LINEAR_COOLDOWN_DIR",
+        Path.home() / ".factory" / "linear-cooldowns",
+    )).expanduser()
+    if not root.is_absolute():
+        raise RuntimeError("Linear cooldown directory must be absolute")
+    return root / f"{hashlib.sha256(key.encode()).hexdigest()}.json"
+
+
+def load_account_cooldown(path):
+    if not path.exists() and not path.is_symlink():
+        return {}
+    info = path.lstat()
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or path.is_symlink()
+        or info.st_uid != os.geteuid()
+        or stat.S_IMODE(info.st_mode) != 0o600
+        or info.st_size > 4096
+    ):
+        raise RuntimeError("Linear account cooldown is unsafe")
+    value = json.loads(path.read_text())
+    if not isinstance(value, dict) or value.get("schema") != LINEAR_COOLDOWN_SCHEMA:
+        raise RuntimeError("Linear account cooldown is invalid")
+    return value
+
+
+def record_account_cooldown(path, error):
+    if re.fullmatch(
+        r"linear_rate_limited retry_after_seconds=([0-9]+)", str(error)
+    ) is None:
+        return False
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    parent = path.parent.lstat()
+    if (
+        not stat.S_ISDIR(parent.st_mode)
+        or path.parent.is_symlink()
+        or parent.st_uid != os.geteuid()
+        or stat.S_IMODE(parent.st_mode) != 0o700
+    ):
+        raise RuntimeError("Linear cooldown directory is unsafe")
+    value = {
+        "failed_at": utc_now(),
+        "last_error": str(error),
+        "schema": LINEAR_COOLDOWN_SCHEMA,
+    }
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=f".{path.name}.", dir=path.parent
+    )
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w") as handle:
+            descriptor = -1
+            handle.write(json.dumps(value, sort_keys=True) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        Path(temporary).unlink(missing_ok=True)
+    return True
 
 
 def operator_freshness(entry):
@@ -1962,16 +2028,21 @@ def main():
     except RuntimeError as error:
         log(str(error))
         return 1
-    try:
-        cooldown = rate_limit_cooldown(load_map(map_path))
-    except (OSError, ValueError, json.JSONDecodeError):
-        cooldown = 0
-    if cooldown:
-        log(f"Linear quota cooldown active; retry_after_seconds={cooldown}")
-        return 1 if args.ticket else 0
     key = api_key()
     if not key:
         log(f"no API key (set LINEAR_API_KEY or create {KEY_FILE}) — skipping cycle")
+        return 1 if args.ticket else 0
+    cooldown_path = account_cooldown_path(key)
+    try:
+        cooldown = max(
+            rate_limit_cooldown(load_map(map_path)),
+            rate_limit_cooldown(load_account_cooldown(cooldown_path)),
+        )
+    except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as error:
+        log(f"Linear quota cooldown unavailable: {error}")
+        return 1 if args.ticket else 0
+    if cooldown:
+        log(f"Linear quota cooldown active; retry_after_seconds={cooldown}")
         return 1 if args.ticket else 0
 
     if args.ticket:
@@ -1987,6 +2058,10 @@ def main():
             else:
                 sync_ticket_operator(key, factory_dir, map_path, args.ticket, args.dry_run)
         except Exception as error:
+            try:
+                record_account_cooldown(cooldown_path, error)
+            except (OSError, RuntimeError):
+                pass
             if args.initialize and not args.dry_run:
                 try:
                     record_failure(map_path, load_map(map_path), error)
@@ -2005,8 +2080,9 @@ def main():
                 log(f"sync error (will retry next cycle): {error}")
                 if not args.dry_run:
                     try:
+                        record_account_cooldown(cooldown_path, error)
                         record_failure(map_path, mapping, error)
-                    except OSError:
+                    except (OSError, RuntimeError):
                         pass
     except Exception as error:
         log(f"sync error (will retry next cycle): {error}")

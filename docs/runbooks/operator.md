@@ -461,10 +461,13 @@ same-UID token exposure remains until a broker or OS isolation is used.
    different `Kit-SHA`. Activation scans committed local, tracking, and live
    remote ticket sources; a Done claim also requires a valid normal attestation
    chain or protected-main legacy closeout.
-10. Open the already-certified product commit as a protected PR and stop for
-    operator approval. Include only the exact complete migration evidence
-    required by step 3. After merge, require canonical protected main's tracked
-    tree to match the certification receipt exactly.
+10. Before merging any protected product PR while a production generation is
+    active, publish maintenance and drain its runs and leases; a protected-main
+    merge changes the product tree bound to that generation. Open the
+    already-certified product commit as a protected PR and stop for operator
+    approval. Include only the exact complete migration evidence required by
+    step 3. After merge, require canonical protected main's tracked tree to
+    match the certification receipt exactly.
 11. At replacement-host cutover, publish maintenance on the old host and wait
    for its runs and leases to drain. Confirm the old dispatcher is stopped;
    if that cannot be proven, revoke its execution access before proceeding.

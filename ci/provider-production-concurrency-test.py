@@ -529,8 +529,37 @@ esac
             env=environment,
             timeout=30,
         )
-        self.assertEqual(refused.stdout, "INVALID:credential_invalid\n")
+        self.assertEqual(
+            refused.stdout, "INVALID:cursor_cli_config_mode_0644\n"
+        )
         self.assertEqual(trace.read_text(), before)
+
+        source_config.chmod(0o600)
+        source_auth = self.home / ".cursor/auth.json"
+        source_auth.chmod(0o644)
+        refused = subprocess.run(
+            ["/bin/bash", "-c", command],
+            text=True,
+            capture_output=True,
+            check=True,
+            env=environment,
+            timeout=30,
+        )
+        self.assertEqual(refused.stdout, "INVALID:cursor_auth_mode_0644\n")
+
+        source_auth.chmod(0o600)
+        source_config.unlink()
+        refused = subprocess.run(
+            ["/bin/bash", "-c", command],
+            text=True,
+            capture_output=True,
+            check=True,
+            env=environment,
+            timeout=30,
+        )
+        self.assertEqual(
+            refused.stdout, "INVALID:cursor_credential_pair_incomplete\n"
+        )
 
     def test_three_distinct_cli_routes_overlap_then_drain_independently(self) -> None:
         self.apply()

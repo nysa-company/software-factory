@@ -175,21 +175,29 @@ import sys
 
 source_root, destination_root = map(pathlib.Path, sys.argv[1:])
 sources = [source_root / name for name in ("auth.json", "cli-config.json")]
+
+def refuse(reason):
+    print(reason)
+    raise SystemExit(1)
+
 if not any(path.exists() or path.is_symlink() for path in sources):
     raise SystemExit(0)
 if not all(path.exists() and not path.is_symlink() for path in sources):
-    raise SystemExit(1)
+    refuse("cursor_credential_pair_incomplete")
 
 for source in sources:
     info = source.lstat()
+    mode = stat.S_IMODE(info.st_mode)
+    label = source.stem.replace("-", "_")
+    if mode & 0o077:
+        refuse(f"cursor_{label}_mode_{mode:04o}")
     if (
         not stat.S_ISREG(info.st_mode)
         or info.st_uid != os.geteuid()
         or info.st_nlink != 1
-        or stat.S_IMODE(info.st_mode) & 0o077
         or info.st_size > 1_000_000
     ):
-        raise SystemExit(1)
+        refuse(f"cursor_{label}_unsafe")
     source_fd = os.open(
         source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     )
@@ -200,12 +208,12 @@ for source in sources:
             or not stat.S_ISREG(opened.st_mode)
             or opened.st_nlink != 1
         ):
-            raise SystemExit(1)
+            refuse(f"cursor_{label}_changed")
         data = os.read(source_fd, 1_000_001)
     finally:
         os.close(source_fd)
     if len(data) > 1_000_000:
-        raise SystemExit(1)
+        refuse(f"cursor_{label}_oversized")
     destination_fd = os.open(
         destination_root / source.name,
         os.O_WRONLY
@@ -226,6 +234,7 @@ factory_probe_adapter() {
   local installed installed_version="" help model expected_family actual_family
   local claude_bin secret_file minimal_path required_flag
   local cursor_bin="${CURSOR_AGENT_BIN:-agent}" auth_ready model_ready attempt
+  local credential_reason
   local cursor_source_home="${FACTORY_CURSOR_SESSION_HOME:-$HOME}"
   local cursor_home=""
   local probe_timeout="${FACTORY_PROBE_TIMEOUT_SEC:-30}"
@@ -381,10 +390,12 @@ factory_probe_adapter() {
         PROBE_STATE="INVALID"; PROBE_REASON="probe_isolation_unavailable"; return 0
       }
       chmod 700 "$cursor_home"
-      if ! factory_prepare_cursor_probe_home \
-          "$cursor_source_home" "$cursor_home"; then
+      if ! credential_reason="$(factory_prepare_cursor_probe_home \
+          "$cursor_source_home" "$cursor_home")"; then
         rm -rf "$cursor_home"
-        PROBE_STATE="INVALID"; PROBE_REASON="credential_invalid"; return 0
+        PROBE_STATE="INVALID"
+        PROBE_REASON="${credential_reason:-credential_invalid}"
+        return 0
       fi
       installed="$(HOME="$cursor_home" timeout "$probe_timeout" "$cursor_bin" --version 2>/dev/null | awk 'NR==1 {print; exit}' || true)"
       PROBE_VERSION="$installed"

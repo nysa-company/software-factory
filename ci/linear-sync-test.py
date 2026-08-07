@@ -8,6 +8,7 @@ import io
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -1731,14 +1732,18 @@ class LinearSyncTest(unittest.TestCase):
         }
         LINEAR.save_map(self.map_path, self.mapping)
         with (
+            patch.dict(
+                os.environ,
+                {"FACTORY_LINEAR_COOLDOWN_DIR": str(self.root / "cooldowns")},
+            ),
             patch.object(
                 sys, "argv", ["linear-sync.py", "--factory-root", str(self.root)]
             ),
-            patch.object(LINEAR, "api_key") as key,
+            patch.object(LINEAR, "api_key", return_value="shared-key") as key,
             patch.object(LINEAR, "gql") as gql,
         ):
             self.assertEqual(LINEAR.main(), 0)
-        key.assert_not_called()
+        key.assert_called_once_with()
         gql.assert_not_called()
 
         expired = LINEAR.dt.datetime.now(
@@ -1746,6 +1751,28 @@ class LinearSyncTest(unittest.TestCase):
         ) - LINEAR.dt.timedelta(hours=2)
         self.mapping["_sync"]["failed_at"] = expired.isoformat()
         self.assertEqual(LINEAR.rate_limit_cooldown(self.mapping), 0)
+
+    def test_quota_cooldown_is_shared_by_credential_not_project(self):
+        root = self.root / "cooldowns"
+        with patch.dict(
+            os.environ, {"FACTORY_LINEAR_COOLDOWN_DIR": str(root)}
+        ):
+            shared = LINEAR.account_cooldown_path("shared-key")
+            other = LINEAR.account_cooldown_path("other-key")
+            self.assertTrue(LINEAR.record_account_cooldown(
+                shared,
+                RuntimeError("linear_rate_limited retry_after_seconds=3600"),
+            ))
+            self.assertGreater(
+                LINEAR.rate_limit_cooldown(
+                    LINEAR.load_account_cooldown(shared)
+                ),
+                0,
+            )
+            self.assertEqual(LINEAR.load_account_cooldown(other), {})
+            self.assertEqual(stat.S_IMODE(shared.stat().st_mode), 0o600)
+            self.assertNotIn("shared-key", str(shared))
+            self.assertNotIn("shared-key", shared.read_text())
 
     def test_graphql_retries_transient_server_failure(self):
         unavailable = urllib.error.HTTPError(

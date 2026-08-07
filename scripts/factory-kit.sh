@@ -3831,7 +3831,7 @@ cmd_status() {
       [[ "$(strict_product_pin "$product_top")" == "$(json_get "$active" kit_sha)" ]] ||
         die "active runtime tuple has a mismatched product pin"
       [[ "$(product_tree "$product_top")" == "$(json_get "$active" product_tree)" ]] ||
-        die "active runtime tuple has a mismatched product tree"
+        die "active runtime tuple has a mismatched product tree; keep MAINTENANCE published and drain before protected product merges, then recertify the exact tree"
     fi
   fi
   if [[ "$json" == "1" ]]; then

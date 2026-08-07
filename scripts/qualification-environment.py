@@ -340,7 +340,36 @@ def validate_selected_contracts(product: Path) -> None:
         decisions = values("Product-Decisions")
         if decisions != ["frozen"]:
             raise EnvironmentError(f"{path}: Product-Decisions must be exactly frozen")
-        dependencies = set(re.findall(r"T-[0-9]+", " ".join(values("Depends-On"))))
+        dependency_fields = values("Depends-On")
+        dependency_items = (
+            [] if dependency_fields == ["none"] else
+            [item.strip() for item in dependency_fields[0].split(",")]
+            if len(dependency_fields) == 1 else []
+        )
+        if (
+            len(dependency_fields) != 1
+            or dependency_fields != ["none"]
+            and (
+                not dependency_items
+                or len(dependency_items) != len(set(dependency_items))
+                or any(not re.fullmatch(r"T-[0-9]+", item) for item in dependency_items)
+            )
+        ):
+            raise EnvironmentError(f"{path}: Depends-On is invalid")
+        readiness = subprocess.run(
+            [
+                sys.executable, "-B",
+                str(Path(__file__).with_name("ticket-readiness.py")),
+                "--ticket", ticket, "--workdir", str(product),
+            ],
+            text=True, capture_output=True, check=False, timeout=120,
+        )
+        if readiness.returncode:
+            detail = readiness.stdout.strip().splitlines()
+            raise EnvironmentError(
+                f"{path}: {detail[-1] if detail else 'ticket readiness failed'}"
+            )
+        dependencies = set(dependency_items)
         internal = sorted(dependencies & cohort)
         if internal:
             raise EnvironmentError(
