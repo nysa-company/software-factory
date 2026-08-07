@@ -3276,7 +3276,7 @@ class Controller:
                 continue
             self.restore_contract_blocker(claim)
             if (
-                claim["status"] != "blocked"
+                claim["status"] not in {"blocked", "claimed"}
                 or not claim.get("receipt")
                 or self.role_active(claim)
             ):
