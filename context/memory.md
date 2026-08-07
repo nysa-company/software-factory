@@ -355,6 +355,12 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   reviewed bundle for deletions). Unreferenced, nested, sibling, executable,
   malformed, and excessive evidence remains implementation drift at both
   boundaries.
+- Railway preview identity remains the normal PR publication gate. A product
+  may opt exact directory prefixes into `NONVISUAL_PATHS`; only an exact-head
+  GitHub file inventory containing added or modified semantic files wholly
+  under those prefixes plus current-ticket Factory metadata receives the
+  trusted nonvisual Narrator marker. Mixed, empty, removed, renamed, copied,
+  malformed, unknown, or undeclared shapes keep the preview gate closed.
 - Contract 1.8 evidence bundles are scoped to the latest effective, non-void
   Reviewer generation. Only successful Narrators after that Reviewer may
   decide the bundle boundary: an unchanged generation preserves an explicit
@@ -4133,3 +4139,13 @@ successor with one authenticated failed charge and no completion may retry the
 role. Legacy occurrences that exported a passport at the rejected head first
 use the existing protected in-flight rewrite authorization to return to the
 unchanged remote input.
+
+## 2026-08-07 — Decision 310: Nonvisual publication is explicit and path-bound
+
+Category: Reliability
+
+Railway remains mandatory unless protected product configuration names exact
+nonvisual directory prefixes and GitHub's complete PR file inventory is wholly
+confined to them plus current-ticket Factory metadata. The decision binds the
+reviewed head and semantic-path digest; every ambiguous or mixed shape fails
+closed, while Narrator still produces the ordinary approval bundle.

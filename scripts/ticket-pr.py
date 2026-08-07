@@ -6,9 +6,10 @@ from __future__ import annotations
 import argparse
 import base64
 import csv
+import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import stat
 import subprocess
@@ -125,6 +126,138 @@ def project_script(factory: Path, name: str) -> Path | None:
     ):
         raise Refusal(f"{name} is unsafe")
     return candidate
+
+
+def project_nonvisual_paths(factory: Path) -> tuple[str, ...]:
+    declarations = []
+    for raw in (factory / "PROJECT.env").read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        match = re.fullmatch(r"(?:export\s+)?NONVISUAL_PATHS\s*=\s*(\S+)", line)
+        if not re.match(r"(?:export\s+)?NONVISUAL_PATHS\s*=", line):
+            continue
+        if not match:
+            raise Refusal("NONVISUAL_PATHS is invalid")
+        value = match.group(1)
+        if value[:1] in {"'", '"'}:
+            if len(value) < 2 or value[-1] != value[0]:
+                raise Refusal("NONVISUAL_PATHS is invalid")
+            value = value[1:-1]
+        if not re.fullmatch(r"[A-Za-z0-9._/-]+(?:,[A-Za-z0-9._/-]+)*", value):
+            raise Refusal("NONVISUAL_PATHS is invalid")
+        declarations.append(value)
+    if not declarations:
+        return ()
+    if len(declarations) != 1:
+        raise Refusal("NONVISUAL_PATHS is ambiguous")
+    values = tuple(declarations[0].split(","))
+    if (
+        len(values) != len(set(values))
+        or any(
+            not value.endswith("/")
+            or value.startswith("/")
+            or "//" in value
+            or any(part in {"", ".", ".."} for part in PurePosixPath(value).parts)
+            for value in values
+        )
+        or any(
+            left != right and right.startswith(left)
+            for left in values for right in values
+        )
+    ):
+        raise Refusal("NONVISUAL_PATHS is invalid")
+    return tuple(sorted(values))
+
+
+def safe_repo_path(value: object) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value.encode("utf-8")) > 4096
+        or value.startswith("/")
+        or "\\" in value
+        or "\x00" in value
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+        or any(part in {"", ".", ".."} for part in PurePosixPath(value).parts)
+    ):
+        raise Refusal("GitHub returned an unsafe PR path")
+    return value
+
+
+def pull_request_files(repo: str, number: int) -> list[dict[str, object]]:
+    result = run([
+        "gh", "api", "--paginate", f"repos/{repo}/pulls/{number}/files",
+        "--jq", ".[] | {filename,status,previous_filename} | @base64",
+    ])
+    files = []
+    for line in result.stdout.splitlines():
+        try:
+            value = json.loads(base64.b64decode(line, validate=True))
+        except (ValueError, json.JSONDecodeError) as error:
+            raise Refusal("GitHub returned malformed PR file evidence") from error
+        if not isinstance(value, dict):
+            raise Refusal("GitHub returned malformed PR file evidence")
+        status = value.get("status")
+        if status not in {"added", "modified", "removed", "renamed", "copied", "changed"}:
+            raise Refusal("GitHub returned unknown PR file status")
+        filename = safe_repo_path(value.get("filename"))
+        previous = value.get("previous_filename")
+        if status in {"renamed", "copied"}:
+            previous = safe_repo_path(previous)
+        elif previous is not None:
+            raise Refusal("GitHub returned malformed PR file evidence")
+        files.append({"filename": filename, "previous_filename": previous, "status": status})
+    if not files or len(files) >= 3000:
+        raise Refusal("GitHub returned empty or excessive PR file evidence")
+    if len({item["filename"] for item in files}) != len(files):
+        raise Refusal("GitHub returned duplicate PR file evidence")
+    return files
+
+
+def ticket_metadata_path(path: str, ticket: str) -> bool:
+    exact = {
+        f"factory/route-plans/{ticket}.json",
+        f"factory/tickets/{ticket}.md",
+        f"factory/tickets/{ticket}-bundle.md",
+        f"factory/attestations/{ticket}/approval.json",
+        f"factory/attestations/{ticket}/bundle.json",
+        f"factory/attestations/{ticket}/refresh.json",
+    }
+    return path in exact or bool(re.fullmatch(
+        rf"factory/tickets/{re.escape(ticket)}-evidence/"
+        r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}[.]png",
+        path,
+    ))
+
+
+def nonvisual_preview_evidence(
+    factory: Path, repo: str, number: int, ticket: str, head: str,
+) -> dict[str, object] | None:
+    prefixes = project_nonvisual_paths(factory)
+    if not prefixes:
+        return None
+    files = pull_request_files(repo, number)
+    if any(item["status"] not in {"added", "modified"} for item in files):
+        return None
+    semantic = sorted(
+        str(item["filename"])
+        for item in files
+        if not ticket_metadata_path(str(item["filename"]), ticket)
+    )
+    if (
+        not semantic
+        or any(path.startswith("factory/") for path in semantic)
+        or any(not any(path.startswith(prefix) for prefix in prefixes) for path in semantic)
+    ):
+        return None
+    digest = hashlib.sha256(
+        json.dumps(semantic, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return {
+        "expected": head,
+        "observed": [{"paths_sha256": digest, "policy": "nonvisual_paths"}],
+        "reason": None,
+        "status": "pass",
+    }
 
 
 def latest_reviewer_head(product: Path, workdir: Path, ticket: str) -> str:
@@ -719,28 +852,37 @@ def main() -> None:
         preview_urls = []
         preview_identity: dict[str, object] | None = None
         preview_gate: dict[str, object] | None = None
+        publication_mode: str | None = None
         if (
             boundary in {"narrator", "publication"}
             and check_status == "pass"
         ):
-            preview_urls, preview_identity = railway_preview_evidence(
-                repo, pr["number"], branch, head,
+            preview_identity = nonvisual_preview_evidence(
+                factory, repo, pr["number"], args.ticket, head,
             )
-            if preview_identity["status"] != "pass":
-                check_status = "wait"
-                checks = [f"preview identity {preview_identity['reason']}"]
+            if preview_identity is not None:
+                publication_mode = "nonvisual"
             else:
-                preview_gate = preview_preflight(
-                    factory, args.ticket, head, preview_identity,
+                publication_mode = "railway"
+                preview_urls, preview_identity = railway_preview_evidence(
+                    repo, pr["number"], branch, head,
                 )
-                if preview_gate and preview_gate["status"] != "pass":
-                    check_status = (
-                        "failed" if preview_gate["status"] == "fail" else "wait"
+                if preview_identity["status"] != "pass":
+                    check_status = "wait"
+                    checks = [f"preview identity {preview_identity['reason']}"]
+                else:
+                    preview_gate = preview_preflight(
+                        factory, args.ticket, head, preview_identity,
                     )
-                    checks = [f"preview preflight {preview_gate['reason']}"]
+                    if preview_gate and preview_gate["status"] != "pass":
+                        check_status = (
+                            "failed" if preview_gate["status"] == "fail" else "wait"
+                        )
+                        checks = [f"preview preflight {preview_gate['reason']}"]
         if (
             boundary in {"narrator", "publication"}
             and check_status == "pass"
+            and publication_mode != "nonvisual"
             and not preview_urls
         ):
             check_status = "wait"
@@ -756,6 +898,7 @@ def main() -> None:
             "checks": checks,
             "head": head,
             "pr_number": pr["number"],
+            "publication_mode": publication_mode,
             "preview_urls": preview_urls,
             "preview_identity": preview_identity,
             "preview_preflight": preview_gate,

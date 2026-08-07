@@ -1975,6 +1975,7 @@ class FactoryControllerTest(unittest.TestCase):
             "checks": [],
             "head": "b" * 40,
             "pr_number": 7,
+            "publication_mode": "railway",
             "preview_urls": [
                 "https://api-example-pr-7.up.railway.app",
                 "https://web-example-pr-7.up.railway.app",
@@ -1990,6 +1991,62 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertIn("PR #7", task)
         self.assertIn("web-example-pr-7.up.railway.app", task)
         self.assertIn("Do not run tests", task)
+
+    def test_narrator_receives_trusted_nonvisual_publication_context(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "cell-nonvisual"
+        cell.mkdir()
+        claim = {
+            "branch": "ticket/T-110",
+            "lease": "a" * 64,
+            "priority": "normal",
+            "publication_lease": "",
+            "receipt": "",
+            "role": "",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "claimed",
+            "ticket": "T-110",
+            "worktree": str(cell),
+        }
+        captured = []
+
+        class CompletedProcess:
+            def __init__(self, command, **_kwargs):
+                captured.append(command)
+
+            @staticmethod
+            def wait(timeout=None):
+                return 0
+
+        controller.ensure_execution_cell = lambda _claim: None
+        controller.terminal_for_receipt = lambda *_args: {}
+        controller.finish_pending_run = lambda _claim: True
+        publication = {
+            "checks": [],
+            "head": "b" * 40,
+            "pr_number": 7,
+            "publication_mode": "nonvisual",
+            "preview_identity": {
+                "expected": "b" * 40,
+                "observed": [{
+                    "paths_sha256": "d" * 64,
+                    "policy": "nonvisual_paths",
+                }],
+                "reason": None,
+                "status": "pass",
+            },
+            "preview_urls": [],
+            "status": "ready",
+            "url": "https://github.com/example/product/pull/7",
+        }
+        with patch.object(CONTROL.subprocess, "Popen", CompletedProcess):
+            controller.run_role(
+                claim, "narrator", "c" * 64, [], publication,
+            )
+        task = captured[0][-1]
+        self.assertIn("FACTORY_PR_NONVISUAL_EVIDENCE_V1", task)
+        self.assertIn("Mark Preview and Screenshots not applicable", task)
+        self.assertNotIn("up.railway.app", task)
 
     def test_role_launch_without_terminal_blocks_once(self) -> None:
         controller = CONTROL.Controller(self.args)

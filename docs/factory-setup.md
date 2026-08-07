@@ -17,6 +17,14 @@ Read [architecture.md](architecture.md) first. It defines the kit/product bounda
 - Set exact `GH_REPO=owner/repository`. For contract 1.3, also set nonempty `DONE_REQUIRED_CHECKS=name-one,name-two` to the unique exact GitHub status/check names that must succeed on the merge commit; commas delimit names and surrounding whitespace is invalid. Set `AUTO_MERGE_METHOD=squash`, `merge`, or `rebase` to the repository's protected merge strategy.
 - If live preview topology needs a product-specific deterministic check, set `PREVIEW_PREFLIGHT_SCRIPT` to one executable repository-contained path. It receives bounded JSON only after every deployment reports the exact reviewed SHA and must return head-bound pass/wait/fail JSON; omit it when exact deployment identity is sufficient.
   Input is `{"schema":"nysa.software-factory.preview-preflight-input/v1","ticket":"T-NNN","head":"<sha>","previews":[...]}`. Output contains exactly `schema` (`nysa.software-factory.preview-preflight/v1`), the same `head`, `status` (`pass`, `wait`, or `fail`), `reason` (`null` only for pass), and a non-secret `evidence` object.
+- Products with repository paths that can never affect a deployable or visual
+  surface may set `NONVISUAL_PATHS` to a comma-separated list of distinct,
+  non-overlapping directory prefixes ending in `/`. Railway remains required
+  by default. The exemption applies only when GitHub reports every semantic PR
+  file under those prefixes and every other file is exact current-ticket
+  Factory metadata; removed, renamed, copied, mixed, empty, malformed, and
+  unknown diffs fail closed. Do not use this for backend, HTTP, UI, shared, or
+  otherwise deployable code.
 - Leave `MAX_CONCURRENT_TICKETS` absent to use the contract default. Contracts
   1.1 through 1.5 default to `1` and accept integers through `4`; Contracts
   1.6 and 1.7 default to `4` and accept `1` through `6`; Contract 1.8 defaults
