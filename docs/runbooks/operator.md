@@ -483,6 +483,14 @@ same-UID token exposure remains until a broker or OS isolation is used.
    in-flight tickets, remove maintenance only after every acceptance check
    passes.
 
+If a named ticket already has a prior-kit bundle, the successor still refuses
+route migration until that evidence is retired. An unmerged ticket whose
+protected base is stale is resumed only far enough to run the ordinary
+receipt-bound base refresh, then returns to `route-migration-required` before
+another role can run. An authenticated ticket whose implementation is already
+merged skips provider routing and resumes ordinary closeout. Current-base
+bundles, invalid passports, and unproven merges remain blocked.
+
 The run wrapper checks maintenance before taking the launch lock, after taking
 it, and before GO. Never enable the replacement while the old host can still
 dispatch.

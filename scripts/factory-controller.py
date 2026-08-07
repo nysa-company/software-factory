@@ -2612,6 +2612,43 @@ class Controller:
             and leases == [self.release_path.name]
         )
 
+    def release_bundle_refreshable(
+        self, claim: dict[str, Any], passport: dict[str, Any]
+    ) -> bool:
+        bundle = (
+            Path(claim["worktree"]) / "factory" / "attestations"
+            / claim["ticket"] / "bundle.json"
+        )
+        try:
+            info = bundle.lstat()
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_nlink != 1
+                or info.st_size > 1_000_000
+            ):
+                return False
+            value = json.loads(bundle.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return False
+        history = {
+            item.get("factory_sha")
+            for item in passport.get("factory_release_history", [])
+            if isinstance(item, dict)
+        }
+        return (
+            passport.get("factory_sha") == self.release_path.name
+            and passport.get("current_state") in {"Awaiting Approval", "Approved"}
+            and passport.get("publication_state") != "merged"
+            and value.get("kit_sha") in history
+            and value.get("kit_sha") != self.release_path.name
+            and not claim.get("receipt")
+            and not claim.get("role")
+            and not claim.get("publication_lease")
+            and not self.role_active(claim)
+            and self.remote_passport_valid(claim)
+            and not self.protected_base_current(claim, passport.get("head_sha", ""))
+        )
+
     def remote_passport_valid(self, claim: dict[str, Any]) -> bool:
         validation = self.json_call(
             "passport", "validate", "--ticket", claim["ticket"],
@@ -3182,7 +3219,8 @@ class Controller:
             )
             if terminal is not None:
                 self.quarantine_legacy_protected_mutation(claim, terminal)
-            prior = read(path).get("factory_sha", "")
+            passport = read(path)
+            prior = passport.get("factory_sha", "")
             if not SHA.fullmatch(prior):
                 raise ControllerError("blocked ticket passport has an invalid release")
             pending = (
@@ -3201,7 +3239,41 @@ class Controller:
                 )
             ):
                 continue
-            if not self.ticket_release_current(claim):
+            merged_closeout = False
+            bundle_refresh = False
+            if prior == self.release_path.name:
+                if (
+                    passport.get("current_state") == "Approved"
+                    and passport.get("publication_state") == "merged"
+                    and not claim.get("receipt")
+                    and not claim.get("role")
+                    and not claim.get("publication_lease")
+                    and not self.role_active(claim)
+                    and self.ticket_merged(claim)
+                ):
+                    validation = self.json_call(
+                        "passport", "validate", "--ticket", claim["ticket"],
+                        "--workdir", claim["worktree"], "--json",
+                    )
+                    merged_closeout = (
+                        validation.get("status") == "ok"
+                        and validation.get("passport")
+                        == passport.get("passport_sha256")
+                    )
+                elif claim.get("release_refresh_required") is True:
+                    if self.release_bundle_refreshable(claim, passport):
+                        continue
+                    claim.pop("release_refresh_required", None)
+                    self.save_claim(claim)
+                else:
+                    bundle_refresh = self.release_bundle_refreshable(
+                        claim, passport
+                    )
+            if (
+                not self.ticket_release_current(claim)
+                and not merged_closeout
+                and not bundle_refresh
+            ):
                 if prior != self.release_path.name:
                     created = self.marker(pending, {
                         "factory_sha": self.release_path.name,
@@ -3245,6 +3317,30 @@ class Controller:
                 claim["lease"] = lease["lease_id"]
             claim.pop("lease_released", None)
             self.save_claim(claim)
+            if merged_closeout:
+                claim.update(receipt="", role="", status="claimed")
+                claim.pop("blocked_reason", None)
+                self.save_claim(claim)
+                self.event(
+                    "upgraded_merged_claim_recovered", claim["ticket"],
+                )
+                self.marker(completed, {
+                    "factory_sha": self.release_path.name,
+                    "schema": EVENT_SCHEMA,
+                    "ticket": claim["ticket"],
+                })
+                continue
+            if bundle_refresh:
+                claim.update(
+                    receipt="", role="", status="claimed",
+                    release_refresh_required=True,
+                )
+                claim.pop("blocked_reason", None)
+                self.save_claim(claim)
+                self.event(
+                    "upgraded_bundle_refresh_recovered", claim["ticket"],
+                )
+                continue
             try:
                 self.migrate_passport(claim, "preserve")
             except ControllerError:
@@ -4846,6 +4942,33 @@ class Controller:
                     ),
                     "ticket": claim["ticket"],
                 }
+            if claim.get("release_refresh_required") is True:
+                if not (
+                    stage.startswith("AWAIT-OPERATOR bundle posted")
+                    or stage.startswith("AWAIT-OPERATOR Linear approval observed")
+                ):
+                    raise ControllerError(
+                        "release refresh reached an invalid deterministic stage"
+                    )
+                with self.git_lock:
+                    value = self.json_call(
+                        "ticket-attest", "--ticket", claim["ticket"],
+                        "--lease", claim["lease"], "--receipt", receipt,
+                        "--workdir", claim["worktree"],
+                        "--action", "refresh", "--json",
+                    )
+                    if value.get("action") != "refresh":
+                        raise ControllerError(
+                            "release refresh was not materialized"
+                        )
+                    self.migrate_passport(claim, "validating")
+                claim.pop("release_refresh_required", None)
+                self.block(claim, "route-migration-required")
+                self.event(
+                    "upgraded_bundle_refreshed", claim["ticket"],
+                    head_sha=value.get("head"),
+                )
+                return {"status": "blocked", "ticket": claim["ticket"]}
             if stage.startswith("AWAIT-OPERATOR bundle posted"):
                 pr = self.ticket_pr(claim, receipt)
                 if pr.get("status") == "failed" and self.retry_ci(

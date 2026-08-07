@@ -4307,6 +4307,142 @@ class FactoryControllerTest(unittest.TestCase):
         controller.ensure_lease(claim, "reconciliation")
         self.assertEqual(calls, [("renew-existing",)])
 
+    def test_release_upgrade_recovers_merged_ticket_without_route_migration(
+        self,
+    ) -> None:
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "parked/T-110"
+        cell.mkdir(parents=True)
+        claim = {
+            "branch": "ticket/T-110", "lease": "", "parked": True,
+            "priority": "normal", "publication_lease": "", "receipt": "",
+            "role": "", "schema": CONTROL.CLAIM_SCHEMA, "status": "blocked",
+            "blocked_reason": "route-migration-required", "ticket": "T-110",
+            "worktree": str(cell),
+        }
+        passports = self.state / "passports"
+        passports.mkdir(mode=0o700)
+        passport = {
+            "current_state": "Approved",
+            "factory_sha": self.release.name,
+            "passport_sha256": "b" * 64,
+            "publication_state": "merged",
+        }
+        CONTROL.write(passports / "T-110.json", passport)
+        controller.marker(
+            f"passport-route-migration-pending-T-110-{self.release.name}",
+            {
+                "factory_sha": self.release.name,
+                "schema": CONTROL.EVENT_SCHEMA,
+                "ticket": "T-110",
+            },
+        )
+        calls = []
+
+        def json_call(*args, **_kwargs):
+            calls.append(args)
+            if args[0] == "renew":
+                raise CONTROL.ControllerError("old lease is absent")
+            if args[0] == "claim":
+                return {
+                    "lease_id": "c" * 64,
+                    "schema_version": 1,
+                    "ticket": "T-110",
+                }
+            if args[:2] == ("passport", "validate"):
+                return {"passport": "b" * 64, "status": "ok"}
+            return {}
+
+        controller.json_call = json_call
+        controller.ticket_merged = lambda _claim: True
+        controller.event = lambda name, *_args, **_kwargs: calls.append((name,))
+        controller.recover_upgraded_claims([claim])
+
+        self.assertEqual(claim["status"], "claimed")
+        self.assertEqual(claim["lease"], "c" * 64)
+        self.assertNotIn("blocked_reason", claim)
+        self.assertIn(("upgraded_merged_claim_recovered",), calls)
+        self.assertTrue(controller.marker(
+            f"passport-route-migration-complete-T-110-{self.release.name}"
+        ))
+
+    def test_release_bundle_refresh_requires_stale_protected_base(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "parked/T-110"
+        bundle = cell / "factory/attestations/T-110/bundle.json"
+        bundle.parent.mkdir(parents=True)
+        bundle.write_text(json.dumps({"kit_sha": "b" * 40}), encoding="utf-8")
+        claim = {
+            "branch": "ticket/T-110", "lease": "c" * 64,
+            "priority": "normal", "publication_lease": "", "receipt": "",
+            "role": "", "schema": CONTROL.CLAIM_SCHEMA, "status": "blocked",
+            "ticket": "T-110", "worktree": str(cell),
+        }
+        passport = {
+            "current_state": "Awaiting Approval",
+            "factory_release_history": [
+                {"factory_sha": "b" * 40},
+                {"factory_sha": self.release.name},
+            ],
+            "factory_sha": self.release.name,
+            "head_sha": "d" * 40,
+            "publication_state": "validating",
+        }
+        controller.remote_passport_valid = lambda _claim: True
+        controller.protected_base_current = lambda *_args: True
+        self.assertFalse(controller.release_bundle_refreshable(claim, passport))
+        controller.protected_base_current = lambda *_args: False
+        self.assertTrue(controller.release_bundle_refreshable(claim, passport))
+        passport["publication_state"] = "merged"
+        self.assertFalse(controller.release_bundle_refreshable(claim, passport))
+
+    def test_release_bundle_refresh_returns_to_route_migration_gate(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "parked/T-110"
+        route = cell / "factory/route-plans/T-110.json"
+        route.parent.mkdir(parents=True)
+        route.write_text("{}\n", encoding="utf-8")
+        claim = {
+            "branch": "ticket/T-110", "lease": "a" * 64,
+            "priority": "normal", "publication_lease": "", "receipt": "",
+            "release_refresh_required": True, "role": "",
+            "schema": CONTROL.CLAIM_SCHEMA, "status": "claimed",
+            "ticket": "T-110", "worktree": str(cell),
+        }
+        controller.save_claim(claim)
+        calls = []
+
+        def json_call(*args, **_kwargs):
+            calls.append(args)
+            if args[0] == "state-machine":
+                return state_transition(
+                    "AWAIT-OPERATOR Linear approval observed; "
+                    "trusted approval attestation is required"
+                )
+            if args[0] == "ticket-attest":
+                return {"action": "refresh", "head": "d" * 40}
+            if args[:2] == ("publication", "withdraw"):
+                return {"status": "absent"}
+            return {}
+
+        controller.json_call = json_call
+        controller.finish_pending_run = lambda _claim: True
+        controller.refresh_dependency_tracking = lambda _claim: True
+        controller.ticket_merged = lambda _claim: False
+        controller.migrate_passport = lambda *_args: calls.append(("passport",))
+
+        self.assertEqual(
+            controller.reconcile_ticket(claim),
+            {"status": "blocked", "ticket": "T-110"},
+        )
+        self.assertEqual(claim["status"], "blocked")
+        self.assertEqual(claim["blocked_reason"], "route-migration-required")
+        self.assertNotIn("release_refresh_required", claim)
+        self.assertIn(("passport",), calls)
+        self.assertEqual(
+            sum(call[0] == "ticket-attest" for call in calls if call), 1
+        )
+
     def test_release_upgrade_recovery_overlaps_independent_tickets(self) -> None:
         import threading
 
