@@ -41,6 +41,11 @@ class QualificationEnvironmentTest(unittest.TestCase):
         self.home = self.workspace / "home"
         self.home.mkdir(mode=0o700)
         (self.home / ".factory").mkdir(mode=0o700)
+        self.global_env = self.home / ".factory/global.env"
+        self.global_env.write_text(
+            "CLAUDE_CODE_PINNED=2.1.223\n", encoding="utf-8",
+        )
+        self.global_env.chmod(0o600)
         os.environ["HOME"] = str(self.home)
         self.root = Path(tempfile.mkdtemp(
             prefix="nysa-sf-qualification.q-", dir="/private/tmp",
@@ -191,6 +196,11 @@ class QualificationEnvironmentTest(unittest.TestCase):
             f"PRODUCT_ROOT={self.product.resolve()}\n",
         )
         self.assertEqual(
+            (self.root / "global.env").read_bytes(),
+            self.global_env.read_bytes(),
+        )
+        self.assertEqual((self.root / "global.env").stat().st_mode & 0o777, 0o600)
+        self.assertEqual(
             json.loads((self.root / "marker.json").read_text()),
             {
                 "mode": "qualification",
@@ -253,6 +263,10 @@ class QualificationEnvironmentTest(unittest.TestCase):
         )
         self.assertIn('CLI_RUNTIME_ROOT="$QUALIFICATION_ROOT"', launcher_text)
         self.assertIn(
+            'GLOBAL_ENV_PATH="$QUALIFICATION_ROOT/global.env"', launcher_text,
+        )
+        self.assertIn('"FACTORY_GLOBAL_ENV=$GLOBAL_ENV_PATH"', launcher_text)
+        self.assertIn(
             '--cli-root "${FACTORY_CLI_RUNTIME_ROOT:-}"', runner_text,
         )
         for relative in (
@@ -296,6 +310,26 @@ class QualificationEnvironmentTest(unittest.TestCase):
                 factory_root=self.factory, product_root=self.product,
                 project="relay", root=self.root,
             ))
+
+    def test_rejects_unsafe_global_config_sources(self) -> None:
+        unsafe = self.workspace / "unsafe-global.env"
+        unsafe.write_text("CLAUDE_CODE_PINNED=2.1.223\n", encoding="utf-8")
+        unsafe.chmod(0o644)
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError, "global config is unsafe",
+        ):
+            ENVIRONMENT.snapshot_global_config(
+                argparse.Namespace(global_env=unsafe), self.root,
+            )
+        unsafe.chmod(0o600)
+        link = self.workspace / "linked-global.env"
+        link.symlink_to(unsafe)
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError, "global config is unsafe",
+        ):
+            ENVIRONMENT.snapshot_global_config(
+                argparse.Namespace(global_env=link), self.root,
+            )
 
     def test_rejects_internal_qualification_dependency(self) -> None:
         ticket = self.product / "factory/tickets/T-103.md"
@@ -739,7 +773,22 @@ class QualificationEnvironmentTest(unittest.TestCase):
         run(self.product, "git", "add", "factory/KIT_PIN")
         run(self.product, "git", "commit", "-qm", "pin successor")
 
-        second = ENVIRONMENT.upgrade(args)
+        original_global = (self.root / "global.env").read_bytes()
+        self.global_env.write_text(
+            "CLAUDE_CODE_PINNED=9.9.9\n", encoding="utf-8",
+        )
+        ENVIRONMENT.snapshot_global_config(args, self.root)
+        self.assertEqual((self.root / "global.env").read_bytes(), original_global)
+        replacement = self.workspace / "qualification-global.env"
+        replacement.write_text(
+            "CLAUDE_CODE_PINNED=2.1.224\n", encoding="utf-8",
+        )
+        replacement = replacement.resolve(strict=True)
+        replacement.chmod(0o600)
+
+        second = ENVIRONMENT.upgrade(argparse.Namespace(
+            **vars(args), global_env=replacement,
+        ))
         active = json.loads(active_path.read_text())
         self.assertEqual(first["status"], "prepared")
         self.assertEqual(second["status"], "upgraded")
@@ -747,6 +796,9 @@ class QualificationEnvironmentTest(unittest.TestCase):
         self.assertEqual(active["generation"], 2)
         self.assertEqual(active["product_sha"], second["product_sha"])
         self.assertEqual(active["runtime_tuple"], second["runtime_tuple"])
+        self.assertEqual(
+            (self.root / "global.env").read_bytes(), replacement.read_bytes(),
+        )
         self.assertEqual(key.read_bytes(), b"p" * 32)
         self.assertTrue((self.root / f"releases/{self.sha}").is_dir())
         self.assertTrue((self.root / f"releases/{successor}").is_dir())
