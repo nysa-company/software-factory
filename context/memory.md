@@ -4165,3 +4165,13 @@ stale-base ticket may use the ordinary authenticated refresh and must stop
 again for route migration before any role runs; an authenticated protected
 implementation merge may resume only the existing closeout path because no
 provider route remains. Every other prior-kit bundle shape stays blocked.
+
+## 2026-08-07 — Decision 312: Release recovery reuses sealed refresh and closeout retries
+
+Category: Reliability
+
+The sealed launcher's receipt policy, not a narrower controller stage list,
+authorizes a recovered bundle refresh, including the expected new-kit
+`Kit-SHA` refusal. A clean, correctly named closeout worktree without a Done
+attestation fast-forwards to current protected main before retry; attested,
+dirty, divergent, or wrong-branch worktrees are never rewritten.

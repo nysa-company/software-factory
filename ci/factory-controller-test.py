@@ -4416,8 +4416,7 @@ class FactoryControllerTest(unittest.TestCase):
             calls.append(args)
             if args[0] == "state-machine":
                 return state_transition(
-                    "AWAIT-OPERATOR Linear approval observed; "
-                    "trusted approval attestation is required"
+                    "REFUSE ticket Kit-SHA lease does not match the selected kit SHA"
                 )
             if args[0] == "ticket-attest":
                 return {"action": "refresh", "head": "d" * 40}
@@ -8134,7 +8133,9 @@ class FactoryControllerTest(unittest.TestCase):
         controller = CONTROL.Controller(self.args)
         cell = self.root / "cells/cell-1"
         cell.mkdir(parents=True)
-        (cell.parent / "closeout-T-110").mkdir()
+        done = cell.parent / "closeout-T-110/factory/attestations/T-110/done.json"
+        done.parent.mkdir(parents=True)
+        done.write_text("{}\n", encoding="utf-8")
         calls = []
 
         class RecordingLock:
@@ -8160,6 +8161,102 @@ class FactoryControllerTest(unittest.TestCase):
                 "worktree": str(cell),
             }))
         self.assertEqual(calls, ["git-lock", "fetch", "git-unlock", "done"])
+
+    def test_closeout_fast_forwards_clean_unattested_retry(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "cells/cell-1"
+        cell.mkdir(parents=True)
+        worktree = cell.parent / "closeout-T-110"
+        worktree.mkdir()
+        commands = []
+        controller.terminal_request = lambda *_args, **_kwargs: None
+        controller.json_call = lambda *_args, **_kwargs: {
+            "closeout_pr_state": "OPEN"
+        }
+
+        def run(command, **_kwargs):
+            commands.append(command)
+            output = "chore/t110-closeout\n" if "symbolic-ref" in command else ""
+            return CONTROL.subprocess.CompletedProcess(command, 0, output, "")
+
+        with patch.object(CONTROL.subprocess, "run", side_effect=run):
+            self.assertFalse(controller.closeout({
+                "lease": "a" * 64,
+                "ticket": "T-110",
+                "worktree": str(cell),
+            }))
+        self.assertIn(
+            [
+                "git", "-C", str(worktree), "merge", "--ff-only",
+                "origin/main",
+            ],
+            commands,
+        )
+
+    def test_closeout_preserves_attested_retry(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "cells/cell-1"
+        cell.mkdir(parents=True)
+        worktree = cell.parent / "closeout-T-110"
+        done = worktree / "factory/attestations/T-110/done.json"
+        done.parent.mkdir(parents=True)
+        done.write_text("{}\n", encoding="utf-8")
+        commands = []
+        controller.terminal_request = lambda *_args, **_kwargs: None
+        controller.json_call = lambda *_args, **_kwargs: {
+            "closeout_pr_state": "OPEN"
+        }
+
+        def run(command, **_kwargs):
+            commands.append(command)
+            return CONTROL.subprocess.CompletedProcess(command, 0, "", "")
+
+        with patch.object(CONTROL.subprocess, "run", side_effect=run):
+            self.assertFalse(controller.closeout({
+                "lease": "a" * 64,
+                "ticket": "T-110",
+                "worktree": str(cell),
+            }))
+        self.assertFalse(any("merge" in command for command in commands))
+
+    def test_closeout_dirty_retry_remains_fail_closed(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "cells/cell-1"
+        cell.mkdir(parents=True)
+        worktree = cell.parent / "closeout-T-110"
+        worktree.mkdir()
+        commands = []
+        controller.terminal_request = lambda *_args, **_kwargs: None
+
+        def json_call(*_args, **_kwargs):
+            raise CONTROL.ControllerError(
+                "ticket-attest: done worktree must be clean"
+            )
+
+        controller.json_call = json_call
+
+        def run(command, **_kwargs):
+            commands.append(command)
+            if "symbolic-ref" in command:
+                output = "chore/t110-closeout\n"
+            elif "status" in command:
+                output = " M factory/LEDGER.csv\n"
+            else:
+                output = ""
+            return CONTROL.subprocess.CompletedProcess(command, 0, output, "")
+
+        with (
+            patch.object(CONTROL.subprocess, "run", side_effect=run),
+            self.assertRaisesRegex(
+                CONTROL.ControllerError, "done worktree must be clean"
+            ),
+        ):
+            controller.closeout({
+                "lease": "a" * 64,
+                "ticket": "T-110",
+                "worktree": str(cell),
+            })
+        self.assertFalse(any("merge" in command for command in commands))
 
     def test_closeout_defers_while_sibling_claim_is_active(self) -> None:
         controller = CONTROL.Controller(self.args)
