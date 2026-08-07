@@ -31,7 +31,7 @@ chmod 600 "$TEST_HOME/.claude/.credentials.json"
 
 # --- stub CLIs that satisfy contract-test.sh and version-pin checks ---
 write_stub_claude() {
-  local ver="${1:-2.1.207}"
+  local ver="${1:-2.1.223}"
   cat > "$STUB_BIN/claude" <<STUB
 #!/usr/bin/env bash
 [[ -z "\${FACTORY_TEST_PROBE_TRACE:-}" ]] || echo "claude:\${1:-}" >> "\$FACTORY_TEST_PROBE_TRACE"
@@ -238,13 +238,13 @@ assert_preflight() {
   echo "PASS: $name"
 }
 
-write_stub_claude "2.1.207"
+write_stub_claude "2.1.223"
 write_stub_codex "0.144.1"
 write_stub_cursor "2026.07.test" "0"
 write_stub_timeout
 cat > "$TMP/default-global.env" <<'ENV'
 GLOBAL_DAILY_CAP_USD=50.00
-CLAUDE_CODE_PINNED=2.1.207
+CLAUDE_CODE_PINNED=2.1.223
 CODEX_PINNED=0.144.1
 FACTORY_CURSOR_FALLBACK_ENABLED=0
 ENV
@@ -260,7 +260,7 @@ GLOBAL_LEDGER="$TMP/allpass-global/global-ledger.csv"
 mkdir -p "$TMP/allpass-global"
 cat > "$GLOBAL_ENV" <<ENV
 GLOBAL_DAILY_CAP_USD=15.00
-CLAUDE_CODE_PINNED=2.1.207
+CLAUDE_CODE_PINNED=2.1.223
 CODEX_PINNED=0.144.1
 ENV
 echo "date,time,repo,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status" > "$GLOBAL_LEDGER"
@@ -359,7 +359,7 @@ RELATIVE_LEDGER_ENV="$TMP/relative-ledger-global.env"
 cat > "$RELATIVE_LEDGER_ENV" <<'ENV'
 GLOBAL_DAILY_CAP_USD=50.00
 GLOBAL_LEDGER=relative-ledger.csv
-CLAUDE_CODE_PINNED=2.1.207
+CLAUDE_CODE_PINNED=2.1.223
 CODEX_PINNED=0.144.1
 FACTORY_CURSOR_FALLBACK_ENABLED=0
 ENV
@@ -387,7 +387,7 @@ CONTRACT_CONFIG_MARKER="$TMP/contract-config-credential"
 CONTRACT_CONFIG_TRACE="$TMP/contract-config-probes"
 cat > "$CONTRACT_CONFIG" <<'ENV'
 GLOBAL_DAILY_CAP_USD=50.00
-CLAUDE_CODE_PINNED=2.1.207
+CLAUDE_CODE_PINNED=2.1.223
 CODEX_PINNED=0.144.1
 FACTORY_CURSOR_FALLBACK_ENABLED=0
 ENV
@@ -539,7 +539,7 @@ write_ready_ticket "$PINFAIL" "T-002"
 init_git_repo "$PINFAIL"
 write_stub_claude "9.9.999"
 assert_preflight "version-pin fail" 1 "primary_version_mismatch" "$PINFAIL" "T-002"
-write_stub_claude "2.1.207"
+write_stub_claude "2.1.223"
 
 # --- primary ready; optional Cursor fallback unavailable warns but passes ---
 FALLBACK_WARN="$TMP/fallback-warn"
@@ -552,7 +552,7 @@ FALLBACK_WARN_ENV="$TMP/fallback-warn-global/global.env"
 mkdir -p "$(dirname "$FALLBACK_WARN_ENV")"
 cat > "$FALLBACK_WARN_ENV" <<'ENV'
 GLOBAL_DAILY_CAP_USD=50.00
-CLAUDE_CODE_PINNED=2.1.207
+CLAUDE_CODE_PINNED=2.1.223
 CODEX_PINNED=0.144.1
 FACTORY_CURSOR_FALLBACK_ENABLED=1
 CURSOR_AGENT_VERSION=2026.07.test
@@ -573,7 +573,7 @@ FALLBACK_READY_ENV="$TMP/fallback-ready-global/global.env"
 mkdir -p "$(dirname "$FALLBACK_READY_ENV")"
 cat > "$FALLBACK_READY_ENV" <<'ENV'
 GLOBAL_DAILY_CAP_USD=50.00
-CLAUDE_CODE_PINNED=2.1.207
+CLAUDE_CODE_PINNED=2.1.223
 CODEX_PINNED=0.144.1
 FACTORY_CURSOR_FALLBACK_ENABLED=1
 CURSOR_AGENT_VERSION=2026.07.test
@@ -594,7 +594,7 @@ NO_ROUTE_ENV="$TMP/no-route-global/global.env"
 mkdir -p "$(dirname "$NO_ROUTE_ENV")"
 cat > "$NO_ROUTE_ENV" <<'ENV'
 GLOBAL_DAILY_CAP_USD=50.00
-CLAUDE_CODE_PINNED=2.1.207
+CLAUDE_CODE_PINNED=2.1.223
 CODEX_PINNED=0.144.1
 FACTORY_CURSOR_FALLBACK_ENABLED=0
 FACTORY_PROBE_CODEX=UNAVAILABLE:test_primary_down
