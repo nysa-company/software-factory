@@ -288,6 +288,12 @@ PY
   cp "$ROOT/scripts/lib/plain-config.sh" "$release/scripts/lib/plain-config.sh"
   cp "$ROOT/scripts/lib/product-remote.sh" "$release/scripts/lib/product-remote.sh"
   cp "$ROOT/scripts/lib/process-identity.py" "$release/scripts/lib/process-identity.py"
+  cat > "$release/scripts/ticket-passport.py" <<'PY'
+import json
+import sys
+
+print(json.dumps({"arguments": sys.argv[1:]}))
+PY
   for role in planner spec-linter test-author builder reviewer narrator; do
     printf '# %s prompt\n' "$role" > "$release/roles/$role.md"
   done
@@ -1365,6 +1371,29 @@ assert second["commit_created"] is False, second
 assert second["commit_sha"] == first["commit_sha"], (first, second)
 assert second["pin_hash"] == first["pin_hash"], (first, second)
 PY
+
+run_launcher launchtest passport verify-model-identity-success \
+  --ticket T-123 \
+  --receipt aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  --run-id failed-run-1 --workdir "$RUN_WORKTREE_PHYS" --json \
+  > "$TMP/passport-model-identity.json"
+python3 - "$TMP/passport-model-identity.json" <<'PY'
+import json
+import sys
+
+arguments = json.load(open(sys.argv[1], encoding="utf-8"))["arguments"]
+assert arguments[0] == "verify-model-identity-success", arguments
+assert arguments[arguments.index("--receipt") + 1] == "a" * 64, arguments
+assert arguments[arguments.index("--run-id") + 1] == "failed-run-1", arguments
+PY
+BAD_PASSPORT_IDENTITY_RC=0
+run_launcher launchtest passport verify-model-identity-success \
+  --ticket T-123 \
+  --receipt aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  --workdir "$RUN_WORKTREE_PHYS" --json \
+  > "$TMP/bad-passport-model-identity.out" 2>&1 || BAD_PASSPORT_IDENTITY_RC=$?
+[[ "$BAD_PASSPORT_IDENTITY_RC" -eq 2 ]] ||
+  fail "model-identity passport verification accepted a missing run identifier"
 
 expect_bad_model() {
   local label="$1" rc=0

@@ -4076,3 +4076,12 @@ controller reapplies only the exact ticket append on top of that chain, exports
 one charge and one completion
 record, and never replays the provider. Any broader history or evidence shape
 stays blocked.
+
+## 2026-08-07 — Decision 305: Typed recovery is reachable through the sealed launcher
+
+Category: Reliability
+
+The sealed launcher admits the controller-only
+`passport verify-model-identity-success` grammar with exact ticket, receipt,
+run, worktree, and JSON arguments. Missing or reordered evidence remains
+refused before the passport helper runs.
