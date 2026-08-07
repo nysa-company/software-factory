@@ -229,6 +229,14 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   home/config/tmp root with a private authentication copy. Doctor,
   certification, activation, and role pre-admission refuse missing or drifted
   configuration instead of silently selecting the legacy provider lock.
+- Native Claude readiness uses one disposable owner-only configuration with a
+  securely copied credential for version, help, OAuth, and authenticated-status
+  checks. Ambient Claude settings and hooks cannot alter route readiness, and
+  unsafe credentials or cleanup failures remain fail-closed.
+- A successor may preserve one old-catalog Cursor Spec-linter success only when
+  the authenticated output, progress journal, route mismatch, charge, and exact
+  ticket-only commit/revert topology all converge. It restores by reverting the
+  exact revert and pushing forward without force; provider replay is forbidden.
 - Contract 1.8 role execution retains the validated project in a non-exported
   host binding for every receipt recheck while keeping project model-state
   controls out of provider environments.
@@ -4044,3 +4052,23 @@ Qualification preparation snapshots an owner-only global model configuration
 under the isolated root, and its sealed launcher passes only that path to
 helpers. Production configuration changes cannot drift an active qualification
 lane; replacement is allowed only through a drained upgrade boundary.
+
+## 2026-08-06 — Decision 303: Native Claude readiness matches isolated execution
+
+Category: Safety
+
+Native Claude version, help, OAuth, and authenticated-status probes run through
+one disposable owner-only configuration populated from a securely validated
+credential copy. Ambient Claude hooks and settings cannot strand fallback, and
+the probe removes its credential copy on every outcome.
+
+## 2026-08-06 — Decision 304: Exact model-identity success is preserved
+
+Category: Reliability
+
+When an old Cursor catalog rejects a completed Spec-linter only because its
+reported model label now matches the successor catalog, recovery authenticates
+the single terminal success and exact ticket-only output/revert history. The
+controller restores the output as a forward commit, exports one charge and one
+completion record, and never replays the provider. Any broader history or
+evidence shape stays blocked.

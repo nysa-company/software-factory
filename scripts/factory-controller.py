@@ -2436,12 +2436,128 @@ class Controller:
         if result.get("status") != "ok":
             raise ControllerError("passport completion correction failed")
 
+    def restore_model_identity_success(
+        self, claim: dict[str, Any], terminal: dict[str, str]
+    ) -> None:
+        evidence = self.json_call(
+            "passport", "verify-model-identity-success",
+            "--ticket", claim["ticket"], "--receipt", claim["receipt"],
+            "--run-id", terminal["run_id"],
+            "--workdir", claim["worktree"], "--json",
+        )
+        expected = {
+            name: evidence.get(name) for name in (
+                "input_head", "output_head", "output_tree", "restore_head",
+                "revert_head", "recovery_status",
+            )
+        }
+        if (
+            evidence.get("schema") != SCHEMA
+            or evidence.get("ticket") != claim["ticket"]
+            or evidence.get("run_id") != terminal.get("run_id")
+            or evidence.get("status") != "ok"
+            or evidence.get("recovery_status")
+            not in {"restore-required", "restored"}
+            or any(
+                not SHA.fullmatch(expected[name] or "")
+                for name in (
+                    "input_head", "output_head", "output_tree", "revert_head",
+                )
+            )
+            or (
+                evidence["recovery_status"] == "restored"
+                and not SHA.fullmatch(expected["restore_head"] or "")
+            )
+            or (
+                evidence["recovery_status"] == "restore-required"
+                and expected["restore_head"] != ""
+            )
+        ):
+            raise ControllerError("model identity recovery evidence is invalid")
+
+        self.ensure_lease(claim, "model-identity-success-recovery")
+        head_status, local_head, remote_head = self.remote_cell_head_status(claim)
+        if evidence["recovery_status"] == "restore-required":
+            if (
+                local_head != evidence["revert_head"]
+                or remote_head != evidence["input_head"]
+                or head_status != "resume_commit_not_pushed"
+            ):
+                raise ControllerError("model identity recovery remote moved")
+            with self.git_lock:
+                restored = subprocess.run(
+                    [
+                        "git", "-C", claim["worktree"],
+                        "-c", "user.name=Factory Controller",
+                        "-c", "user.email=factory-controller@local",
+                        "revert", "--no-edit", evidence["revert_head"],
+                    ],
+                    text=True, capture_output=True, check=False, timeout=120,
+                )
+                if restored.returncode:
+                    subprocess.run(
+                        ["git", "-C", claim["worktree"], "revert", "--abort"],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                        check=False, timeout=120,
+                    )
+                    raise ControllerError(
+                        restored.stderr.strip()
+                        or "model identity output restore failed"
+                    )
+            evidence = self.json_call(
+                "passport", "verify-model-identity-success",
+                "--ticket", claim["ticket"], "--receipt", claim["receipt"],
+                "--run-id", terminal["run_id"],
+                "--workdir", claim["worktree"], "--json",
+            )
+            if (
+                evidence.get("status") != "ok"
+                or evidence.get("recovery_status") != "restored"
+            ):
+                raise ControllerError("model identity output restore is invalid")
+
+        head_status, local_head, remote_head = self.remote_cell_head_status(claim)
+        if local_head != evidence.get("restore_head"):
+            raise ControllerError("model identity recovery head changed")
+        if remote_head == evidence.get("input_head"):
+            if head_status != "resume_commit_not_pushed":
+                raise ControllerError("model identity recovery ancestry is invalid")
+            pushed = subprocess.run(
+                [
+                    "git", "-C", claim["worktree"], "push", "--no-force", "--",
+                    "origin", f"{local_head}:refs/heads/{claim['branch']}",
+                ],
+                text=True, capture_output=True, check=False, timeout=120,
+            )
+            if pushed.returncode:
+                raise ControllerError(
+                    pushed.stderr.strip() or "model identity output push failed"
+                )
+        elif remote_head != local_head or head_status != "pushed":
+            raise ControllerError("model identity recovery remote moved")
+        if not self.remote_cell_head_valid(claim):
+            raise ControllerError("model identity recovery push is unverified")
+
+        publication = read(
+            self.state / "passports" / f"{claim['ticket']}.json"
+        ).get("publication_state", "")
+        if publication not in {
+            "none", "validating", "ready", "merge-pending", "merged", "repair",
+        }:
+            raise ControllerError("model identity recovery publication is invalid")
+        migrated = self.migrate_passport(claim, "preserve")
+        if migrated.get("status") != "ok":
+            raise ControllerError("model identity recovery migration failed")
+        if not self.terminal_already_exported(claim, terminal):
+            self.passport(claim, publication)
+        self.correct_converged_success(claim, terminal)
+
     def converged_success_exported(
         self, claim: dict[str, Any], terminal: dict[str, str]
     ) -> bool:
         value = read(self.state / "passports" / f"{claim['ticket']}.json")
         expected = (
-            terminal.get("run_id"), "builder", claim.get("receipt"),
+            terminal.get("run_id"), claim.get("role"), claim.get("receipt"),
         )
         completed = [
             (
@@ -3160,12 +3276,51 @@ class Controller:
             ):
                 continue
             terminal = self.terminal_for_receipt(claim["ticket"], claim["receipt"])
+            model_identity_success = (
+                terminal is not None
+                and claim.get("role") == "spec-linter"
+                and terminal.get("role") == "spec-linter"
+                and terminal.get("phase") == "completed"
+                and terminal.get("accounting_state") == "abandoned_conservative"
+                and terminal.get("go_issued") == "1"
+                and terminal.get("task_submitted") == "1"
+                and terminal.get("exit_status") == "9"
+                and terminal.get("role_exit") == "provider_failed"
+                and terminal.get("terminal_reason_code", "") == ""
+                and terminal.get("adapter") == "cursor-anthropic"
+                and terminal.get("route_id", "").startswith("cursor-")
+                and terminal.get("role_branch_before") == claim.get("branch")
+                and terminal.get("cost_basis") == "conservative_reservation"
+                and terminal.get("effective_cost") == terminal.get("reserved_usd")
+                and re.fullmatch(
+                    r"(?:0|[1-9][0-9]{0,6})(?:\.[0-9]{1,18})?",
+                    terminal.get("reserved_usd", ""),
+                )
+                and int(terminal["reserved_usd"].replace(".", "")) > 0
+                and SHA.fullmatch(terminal.get("role_head_before", ""))
+                and SHA.fullmatch(terminal.get("kit_sha", ""))
+                and terminal["kit_sha"] != self.release_path.name
+                and DIGEST.fullmatch(terminal.get("output_sha256", ""))
+                and terminal.get("progress_events", "").isdigit()
+                and int(terminal["progress_events"]) > 0
+                and DIGEST.fullmatch(
+                    terminal.get("progress_journal_sha256", "")
+                )
+                and re.fullmatch(
+                    r"[A-Za-z0-9._:-]{1,200}",
+                    terminal.get("provider_attempt_id", ""),
+                )
+                and re.fullmatch(
+                    r"[A-Za-z0-9._-]{1,200}", terminal.get("run_id", ""),
+                )
+            )
             if (
                 self.qualification
                 and terminal is not None
                 and terminal.get("task_submitted") == "1"
                 and terminal.get("role_exit") == "provider_failed"
                 and terminal.get("route_id", "").startswith("cursor-")
+                and not model_identity_success
             ):
                 self.ensure_lease(claim, "provider-fallback-recovery")
                 self.finish_pending_run(claim)
@@ -3275,7 +3430,7 @@ class Controller:
             if not (
                 push_failure or interrupted_before_submission or contract_blocked
                 or submission_unconfirmed or history_rewrite
-                or converged_success
+                or converged_success or model_identity_success
             ):
                 continue
             passport_path = self.state / "passports" / f"{claim['ticket']}.json"
@@ -3374,6 +3529,19 @@ class Controller:
                 if (
                     passport.get("head_sha") != terminal.get("role_head_before")
                     or completed.count(expected) != 0
+                ):
+                    continue
+            if model_identity_success:
+                try:
+                    self.restore_model_identity_success(claim, terminal)
+                    if (
+                        not self.remote_passport_valid(claim)
+                        or not self.converged_success_exported(claim, terminal)
+                    ):
+                        continue
+                except (
+                    ControllerError, json.JSONDecodeError, OSError,
+                    subprocess.SubprocessError,
                 ):
                     continue
             if converged_success:
@@ -3487,9 +3655,13 @@ class Controller:
                                 "history_rewrite_recovered_by_release_upgrade"
                                 if history_rewrite
                                 else (
-                                    "converged_success_recovered_by_release_upgrade"
-                                    if converged_success
-                                    else "interrupted_role_recovered"
+                                    "model_identity_success_recovered_by_release_upgrade"
+                                    if model_identity_success
+                                    else (
+                                        "converged_success_recovered_by_release_upgrade"
+                                        if converged_success
+                                        else "interrupted_role_recovered"
+                                    )
                                 )
                             )
                         )

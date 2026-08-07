@@ -5447,6 +5447,80 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(claim["status"], "claimed")
         self.assertEqual(corrections, [run_id, run_id])
 
+    def test_model_identity_success_recovers_before_provider_fallback(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        controller.qualification = {"tickets": ["T-110"]}
+        cell = self.root / "cell-model-identity-success"
+        cell.mkdir()
+        receipt = "9" * 64
+        run_id = "model-identity-success"
+        claim = {
+            "branch": "ticket/T-110",
+            "lease": "8" * 64,
+            "priority": "normal",
+            "publication_lease": "",
+            "receipt": receipt,
+            "role": "spec-linter",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "blocked",
+            "ticket": "T-110",
+            "worktree": str(cell),
+        }
+        controller.save_claim(claim)
+        passports = self.state / "passports"
+        passports.mkdir(mode=0o700)
+        CONTROL.write(passports / "T-110.json", {})
+        predecessor = "e" * 40
+        manifest = self.product / f"factory/runs/{run_id}.meta"
+        manifest.write_text(
+            f"run_id={run_id}\n"
+            "phase=completed\n"
+            "ticket=T-110\n"
+            "role=spec-linter\n"
+            "adapter=cursor-anthropic\n"
+            "route_id=cursor-claude-opus-5-thinking-medium\n"
+            "provider_attempt_id=attempt-identity\n"
+            "accounting_state=abandoned_conservative\n"
+            "reserved_usd=2.00\n"
+            "go_issued=1\n"
+            "task_submitted=1\n"
+            "effective_cost=2.00\n"
+            "exit_status=9\n"
+            "cost_basis=conservative_reservation\n"
+            f"kit_sha={predecessor}\n"
+            "role_exit=provider_failed\n"
+            "role_branch_before=ticket/T-110\n"
+            f"role_head_before={'7' * 40}\n"
+            f"output_sha256={'6' * 64}\n"
+            "progress_events=2\n"
+            f"progress_journal_sha256={'5' * 64}\n"
+            "terminal_reason_code=\n"
+            f"transition_receipt_sha256={receipt}\n",
+            encoding="utf-8",
+        )
+        calls = []
+        controller.restore_recorded_contract_repair = lambda _claim: False
+        controller.restore_contract_blocker = lambda _claim: False
+        controller.role_active = lambda _claim: False
+        controller.restore_model_identity_success = (
+            lambda _claim, terminal: calls.append(("restore", terminal["run_id"]))
+        )
+        controller.finish_pending_run = lambda _claim: calls.append("fallback")
+        controller.remote_passport_valid = lambda _claim: True
+        controller.converged_success_exported = lambda *_args: True
+        controller.ensure_lease = lambda _claim, label: calls.append(label)
+        controller.event = (
+            lambda name, *_args, **_details: calls.append(name)
+        )
+
+        controller.recover_repaired_failures([claim])
+        self.assertEqual(claim["status"], "claimed")
+        self.assertNotIn("fallback", calls)
+        self.assertIn(("restore", run_id), calls)
+        self.assertIn(
+            "model_identity_success_recovered_by_release_upgrade", calls
+        )
+
     def test_history_rewrite_retries_only_after_release_upgrade(self) -> None:
         controller = CONTROL.Controller(self.args)
         cell = self.root / "cell-history-rewrite"

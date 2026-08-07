@@ -129,6 +129,8 @@ STUB
 
   cat > "$STUB_BIN/claude" <<'STUB'
 #!/usr/bin/env bash
+[[ -z "${STUB_CLAUDE_CONFIG_TRACE:-}" ]] ||
+  printf '%s|%s\n' "${1:-}" "${CLAUDE_CONFIG_DIR:-}" >> "$STUB_CLAUDE_CONFIG_TRACE"
 case "${1:-}" in
   --version)
     [[ "${STUB_CLAUDE_VERSION_EMPTY:-0}" == "1" ]] ||
@@ -141,7 +143,13 @@ case "${1:-}" in
       [[ "${STUB_CLAUDE_MISSING_EFFORT:-0}" == "1" ]] || printf '%s\n' --effort
     fi
     exit "${STUB_CLAUDE_HELP_STATUS:-0}" ;;
-  auth) [[ "${2:-}" == "status" ]] && exit 0 ;;
+  auth)
+    if [[ "${2:-}" == "status" &&
+          "${STUB_CLAUDE_REQUIRE_CREDENTIAL:-0}" == "1" ]]; then
+      [[ -f "${CLAUDE_CONFIG_DIR:-}/.credentials.json" &&
+         ! -L "${CLAUDE_CONFIG_DIR:-}/.credentials.json" ]] || exit 9
+    fi
+    [[ "${2:-}" == "status" ]] && exit 0 ;;
   -p)
     [[ -z "${FACTORY_TEST_TRACE:-}" ]] || echo "claude-task" >> "$FACTORY_TEST_TRACE"
     echo '{"type":"result","num_turns":2,"total_cost_usd":0.10}'
@@ -488,6 +496,39 @@ if [[ "$DEFAULT_CLAUDE_PROBE" == "READY:local_contract_ready" &&
 else
   fail "default Claude route accepts only the certified 2.1.223 pin" \
     "current=$DEFAULT_CLAUDE_PROBE stale=$STALE_DEFAULT_CLAUDE_PROBE substring=$SUBSTRING_DEFAULT_CLAUDE_PROBE"
+fi
+CLAUDE_ISOLATION_TRACE="$TMP/claude-probe-isolation.trace"
+CLAUDE_ISOLATION_PROBE="$(PATH="$STUB_BIN:$PATH" STUB_CLAUDE_VERSION=2.1.223 \
+  STUB_CLAUDE_CONFIG_TRACE="$CLAUDE_ISOLATION_TRACE" \
+  STUB_CLAUDE_REQUIRE_CREDENTIAL=1 CLAUDE_CODE_PINNED=2.1.223 \
+  CLAUDE_CONFIG_DIR="$CLAUDE_AUTH_ROOT" \
+  bash -c 'set -euo pipefail; source "$1"; factory_probe_adapter claude-code; echo "$PROBE_STATE:$PROBE_REASON"' \
+  _ "$ROOT/scripts/lib/backend-policy.sh")"
+CLAUDE_ISOLATED_CONFIG="$(awk -F'|' 'NR == 1 {print $2}' "$CLAUDE_ISOLATION_TRACE")"
+if [[ "$CLAUDE_ISOLATION_PROBE" == "READY:local_contract_ready" &&
+      -n "$CLAUDE_ISOLATED_CONFIG" &&
+      "$CLAUDE_ISOLATED_CONFIG" != "$CLAUDE_AUTH_ROOT" &&
+      "$(awk -F'|' '{print $2}' "$CLAUDE_ISOLATION_TRACE" | sort -u | wc -l | tr -d ' ')" == "1" &&
+      ! -e "$CLAUDE_ISOLATED_CONFIG" ]]; then
+  pass "Claude readiness uses one disposable credential configuration"
+else
+  fail "Claude readiness uses one disposable credential configuration" \
+    "result=$CLAUDE_ISOLATION_PROBE config=$CLAUDE_ISOLATED_CONFIG"
+fi
+
+CLAUDE_UNSAFE_ROOT="$TMP/claude-unsafe-readiness"
+mkdir -p "$CLAUDE_UNSAFE_ROOT"
+cp "$CLAUDE_AUTH_ROOT/.credentials.json" "$CLAUDE_UNSAFE_ROOT/.credentials.json"
+chmod 600 "$CLAUDE_UNSAFE_ROOT/.credentials.json"
+ln "$CLAUDE_UNSAFE_ROOT/.credentials.json" "$CLAUDE_UNSAFE_ROOT/credential-hardlink"
+CLAUDE_UNSAFE_PROBE="$(PATH="$STUB_BIN:$PATH" STUB_CLAUDE_VERSION=2.1.223 \
+  CLAUDE_CODE_PINNED=2.1.223 CLAUDE_CONFIG_DIR="$CLAUDE_UNSAFE_ROOT" \
+  bash -c 'set -euo pipefail; source "$1"; factory_probe_adapter claude-code; echo "$PROBE_STATE:$PROBE_REASON"' \
+  _ "$ROOT/scripts/lib/backend-policy.sh")"
+if [[ "$CLAUDE_UNSAFE_PROBE" == "INVALID:credential_invalid" ]]; then
+  pass "Claude readiness rejects a multiply linked credential"
+else
+  fail "Claude readiness rejects a multiply linked credential" "$CLAUDE_UNSAFE_PROBE"
 fi
 CONTRACT_PROFILE="$(PATH="$STUB_BIN:$PATH" STUB_CLAUDE_VERSION=2.1.223 \
   FACTORY_GLOBAL_ENV="$TMP/no-global.env" FACTORY_CURSOR_FALLBACK_ENABLED=1 \
