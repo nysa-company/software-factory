@@ -616,7 +616,10 @@ class TicketPassportTest(unittest.TestCase):
         input_head = run("git", "rev-parse", "HEAD", cwd=self.product)
         ticket = self.product / "factory/tickets/T-110.md"
         ticket.write_text(
-            ticket.read_text(encoding="utf-8") + "\nSPEC-LINT: PASS\n",
+            ticket.read_text(encoding="utf-8").replace(
+                "## Log",
+                "SPEC-LINT: PASS\n\n## Log",
+            ),
             encoding="utf-8",
         )
         run("git", "add", str(ticket), cwd=self.product)
@@ -669,9 +672,6 @@ class TicketPassportTest(unittest.TestCase):
         journal["revisions"].append({"body": {
             "kind": "release-migration",
             "new_kit_sha": "c" * 40,
-            "new_resolution": {
-                "selections": {"spec-linter": current_selection}
-            },
         }})
         (self.product / "factory/route-plans/T-110.json").write_text(
             json.dumps(journal, sort_keys=True, separators=(",", ":")) + "\n",
@@ -703,6 +703,16 @@ class TicketPassportTest(unittest.TestCase):
             self.passport_args, secret
         )
         self.assertEqual(restored["recovery_status"], "restored")
+        restored_head = run("git", "rev-parse", "HEAD", cwd=self.product)
+        ticket.write_text(
+            ticket.read_text(encoding="utf-8") + "\nTAMPERED\n",
+            encoding="utf-8",
+        )
+        run("git", "add", str(ticket), cwd=self.product)
+        run("git", "commit", "-qm", "tamper with restored output", cwd=self.product)
+        with self.assertRaisesRegex(PASSPORT.PassportError, "topology"):
+            PASSPORT.verify_model_identity_success(self.passport_args, secret)
+        run("git", "reset", "--hard", restored_head, cwd=self.product)
         PASSPORT.migrate(self.passport_args, secret)
         failed = PASSPORT.export(self.passport_args, secret)
         self.assertFalse(any(
@@ -736,6 +746,24 @@ class TicketPassportTest(unittest.TestCase):
                     self.state_dir, "T-110", lint["receipt_sha256"]
                 ),
                 PASSPORT.identity(self.passport_args),
+            )
+
+    def test_model_identity_recovery_rejects_conflicting_ticket_delta(self) -> None:
+        ticket = self.product / "factory/tickets/T-110.md"
+        base = run("git", "rev-parse", "HEAD", cwd=self.product)
+        ticket.write_text("# T-110\n\nState: Current\n", encoding="utf-8")
+        run("git", "add", str(ticket), cwd=self.product)
+        run("git", "commit", "-qm", "current ticket change", cwd=self.product)
+        current = run("git", "rev-parse", "HEAD", cwd=self.product)
+        run("git", "reset", "--hard", base, cwd=self.product)
+        ticket.write_text("# T-110\n\nState: Other\n", encoding="utf-8")
+        run("git", "add", str(ticket), cwd=self.product)
+        run("git", "commit", "-qm", "other ticket change", cwd=self.product)
+        other = run("git", "rev-parse", "HEAD", cwd=self.product)
+        with self.assertRaisesRegex(PASSPORT.PassportError, "topology"):
+            PASSPORT.merged_ticket_blob(
+                self.product, base, current, other,
+                "factory/tickets/T-110.md",
             )
 
     def test_exact_converged_success_correction_is_authenticated_and_idempotent(

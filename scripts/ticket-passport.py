@@ -1692,6 +1692,36 @@ def git_blob(workdir: Path, revision: str, path: str) -> bytes:
     return result.stdout
 
 
+def merged_ticket_blob(
+    workdir: Path, base: str, current: str, other: str, path: str
+) -> bytes:
+    with tempfile.TemporaryDirectory(prefix="factory-passport-merge-") as root:
+        files = []
+        for name, revision in (("current", current), ("base", base), ("other", other)):
+            destination = Path(root) / name
+            destination.write_bytes(git_blob(workdir, revision, path))
+            files.append(str(destination))
+        result = subprocess.run(
+            ["git", "merge-file", "-p", *files],
+            capture_output=True, check=False, timeout=120,
+        )
+    if result.returncode:
+        raise PassportError("model identity recovery topology is invalid")
+    return result.stdout
+
+
+def active_journal_selection(journal: dict[str, Any], role: str) -> dict[str, Any]:
+    for revision in reversed(journal["revisions"]):
+        body = revision["body"]
+        if "new_resolution" in body:
+            return body["new_resolution"]["selections"][role]
+        if "prior_resolution" in body:
+            return body["prior_resolution"]["selections"][role]
+        if body.get("kind") == "migration":
+            return body["historical_selections"][role]
+    raise KeyError(role)
+
+
 def model_identity_recovery_topology(
     args: argparse.Namespace, consumed: dict[str, Any], current: dict[str, Any]
 ) -> dict[str, str]:
@@ -1746,13 +1776,15 @@ def model_identity_recovery_topology(
             migration_ticket = git_blob(
                 args.workdir, migration_head, ticket_path
             )
-            suffix = output_ticket[len(input_ticket):]
+            restored_ticket = merged_ticket_blob(
+                args.workdir, input_head, migration_head, output_head,
+                ticket_path,
+            )
             if (
                 tree(revert_head) == tree(input_head)
                 and tree(output_head) != tree(input_head)
-                and output_ticket.startswith(input_ticket)
-                and suffix
-                and not migration_ticket.endswith(suffix)
+                and output_ticket != input_ticket
+                and restored_ticket != migration_ticket
                 and changed(output_head) == [ticket_path]
                 and changed(revert_head) == [ticket_path]
                 and changed(migration_head) == [route_path, ticket_path]
@@ -1763,7 +1795,7 @@ def model_identity_recovery_topology(
                     or (
                         changed(restore_head) == [ticket_path]
                         and git_blob(args.workdir, restore_head, ticket_path)
-                        == migration_ticket + suffix
+                        == restored_ticket
                     )
                 )
             ):
@@ -1819,9 +1851,7 @@ def model_identity_success_evidence(
             "spec-linter"
         ]
         current_revision = current_plan["revisions"][-1]["body"]
-        current_selection = current_revision["new_resolution"]["selections"][
-            "spec-linter"
-        ]
+        current_selection = active_journal_selection(current_plan, "spec-linter")
         routes = [
             item for item in catalog["routes"]
             if isinstance(item, dict)
