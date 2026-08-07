@@ -2453,7 +2453,7 @@ class Controller:
             )
         }
         if (
-            evidence.get("schema") != SCHEMA
+            evidence.get("schema") != "nysa.software-factory.ticket-passport/v1"
             or evidence.get("ticket") != claim["ticket"]
             or evidence.get("run_id") != terminal.get("run_id")
             or evidence.get("status") != "ok"
