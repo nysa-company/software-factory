@@ -92,6 +92,12 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
   diagnostic path. Apply performs one fresh readiness round and requires the
   exact preview readiness digest; it does not repeat identical probes inside
   the same command.
+- A successor never route-migrates a prior-kit bundle in place. An exact
+  unmerged ticket with a stale protected base may run only the existing
+  receipt-bound base refresh, then returns to the route-migration gate before
+  another role. An authenticated implementation already merged to protected
+  main resumes ordinary closeout without another provider route; current-base
+  bundles, invalid passports, and unproven merges remain blocked.
 - Every route-journal consumer accepts both legacy inline release migrations
   and compact migrations whose canonical prior-resolution digest matches the
   active history. A mismatched digest remains fail-closed before attestation.
@@ -4149,3 +4155,13 @@ nonvisual directory prefixes and GitHub's complete PR file inventory is wholly
 confined to them plus current-ticket Factory metadata. The decision binds the
 reviewed head and semantic-path digest; every ambiguous or mixed shape fails
 closed, while Narrator still produces the ordinary approval bundle.
+
+## 2026-08-07 — Decision 311: Published release migrations reuse terminal boundaries
+
+Category: Reliability
+
+A prior-kit bundle is never silently rebound to a successor. An unmerged
+stale-base ticket may use the ordinary authenticated refresh and must stop
+again for route migration before any role runs; an authenticated protected
+implementation merge may resume only the existing closeout path because no
+provider route remains. Every other prior-kit bundle shape stays blocked.
