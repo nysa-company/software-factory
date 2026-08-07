@@ -121,7 +121,8 @@ class QualificationEnvironmentTest(unittest.TestCase):
         for ticket in ("T-101", "T-102", "T-103"):
             (self.product / f"factory/tickets/{ticket}.md").write_text(
                 f"# {ticket}\n\nState: Ready\nProduct-Decisions: frozen\n"
-                "Depends-On: none\n",
+                "Depends-On: none\nFixture-Seams: none\n"
+                "Authentication-Seams: none\nProtected-Test-Conflicts: none\n",
                 encoding="utf-8",
             )
         (self.product / "factory/certification-plan.json").write_text(
@@ -309,6 +310,25 @@ class QualificationEnvironmentTest(unittest.TestCase):
                 project="relay", root=self.root,
             ))
 
+    def test_selected_ticket_authoring_fields_fail_before_lane_creation(self) -> None:
+        ticket = self.product / "factory/tickets/T-101.md"
+        original = ticket.read_text()
+        ticket.write_text(original.replace(
+            "Depends-On: none", "Depends-On: none — rationale",
+        ))
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError, "Depends-On is invalid",
+        ):
+            ENVIRONMENT.validate_selected_contracts(self.product)
+
+        ticket.write_text(original.replace(
+            "Fixture-Seams: none", "Fixture-Seams: missing.test.ts",
+        ))
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError, "READINESS BLOCKED.*missing.test.ts",
+        ):
+            ENVIRONMENT.validate_selected_contracts(self.product)
+
     def test_rejects_ticket_blob_that_dispatch_would_not_use(self) -> None:
         ticket = self.product / "factory/tickets/T-101.md"
         ticket.write_text(ticket.read_text() + "\n## Log\n\nControl-only edit.\n")
@@ -447,7 +467,8 @@ class QualificationEnvironmentTest(unittest.TestCase):
         for ticket in tickets:
             (self.product / f"factory/tickets/{ticket}.md").write_text(
                 f"# {ticket}\n\nState: Ready\nProduct-Decisions: frozen\n"
-                "Depends-On: none\n",
+                "Depends-On: none\nFixture-Seams: none\n"
+                "Authentication-Seams: none\nProtected-Test-Conflicts: none\n",
                 encoding="utf-8",
             )
         run(

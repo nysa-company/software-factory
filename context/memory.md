@@ -526,6 +526,22 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Isolated broker-stage cancellation and deterministic failure release capacity only after token revocation and upstream-request drain are both proven; otherwise the conservative full reservation remains active. Executor success is not durable until bound-container removal succeeds.
 - Contract 1.7 concurrent adapters keep timeout and provider descendants in one Factory-owned process group with a kernel-derived start identity. Completed development tickets emit owner-only readiness records and may export independently after only their own attempts, lease, claim, head, and evidence drain. Spec-linter reserves FAIL for material ambiguity or trust/data/external-effect risk and records non-blocking exhaustive coverage as `SPEC-WARN`.
 - Cursor Reviewer reconciliation normalizes only exact, matching background-check callback restatements, including the bold `REQUEST CHANGES — FIX-OWNER` form. Missing summaries, conflicting owners or verdicts, and multiple verdict-bearing assistants still fail closed.
+- An idle `missing-terminal` controller claim is recoverable only when its
+  exact current-kit terminal appears after role exit. Recovery reacquires the
+  lease and uses ordinary terminal reduction once; it never relaunches or
+  recharges the provider while evidence is absent or mismatched.
+- Passportless Planner-preflight recovery is available in both production and
+  qualification. Qualification retains its selected-ticket and sealed-artifact
+  checks; every lane still requires the exact idle claim, clean remote-equal
+  cell, current route, released lease, and absence of run evidence.
+- Linear quota cooldowns are shared by the hash of the resolved credential,
+  not by product map. Reconcilers using one account make zero API calls until
+  the common cooldown expires; legacy releases must remain unloaded or use a
+  separate credential until upgraded.
+- A selected qualification ticket must pass strict authoring readiness before
+  lane construction. Frozen product decisions, one canonical dependency field,
+  fixture/authentication seams, and protected-test declarations fail closed
+  before claim, lease, worktree, or provider activity.
 
 ## Log
 
@@ -3977,3 +3993,36 @@ medium-thinking routes for Spec-linter and Test-author with native Claude Fable
 as the same-family fallback. `cursor-balanced-v2` and its Fable route remain
 unchanged so existing activations and pinned ticket plans retain their exact
 catalog, profile, and route identity.
+
+## 2026-08-06 — Decision 297: Delayed terminals are reduced, never replayed
+
+Category: Reliability
+
+An idle `missing-terminal` claim may recover only its exact current-kit,
+role-matching terminal through ordinary reduction. Missing or mismatched
+evidence remains blocked without another provider launch or charge.
+
+## 2026-08-06 — Decision 298: Preflight recovery is lane-neutral
+
+Category: State machine
+
+The safe passportless Planner-preflight recovery contract applies in
+production and qualification. Qualification adds its sealed selection checks;
+the authenticated clean-cell, current-route, no-run, and lease invariants are
+shared.
+
+## 2026-08-06 — Decision 299: Linear cooldown follows credential identity
+
+Category: Throughput
+
+Rate-limit state is stored in an owner-only credential-hash namespace so all
+new reconcilers sharing one account stop before API access. Per-project health
+remains for diagnostics, and older reconcilers must stay unloaded or isolated.
+
+## 2026-08-06 — Decision 300: Qualification validates strict contracts before admission
+
+Category: Reliability
+
+Selected tickets pass the existing ticket-readiness validator before a sealed
+lane is created. Invalid product-decision, dependency, fixture, authentication,
+or protected-test declarations fail before any mutable runtime or provider work.
