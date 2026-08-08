@@ -140,10 +140,12 @@ existing Factory-managed issues establish the initiative identity; multiple
 identities or a same-name Project without durable identity fails before
 creating anything. `--ticket T-NNN --initialize` creates or adopts only that
 committed ticket after canonical team, workflow, and Project bindings exist.
-It uses a bounded exact-title lookup, confirms the exact issue and operator
-observation before recording success, and consumes only that ticket's matching
-one-use clear. It never inventories historical issues or consumes a sibling's
-clear.
+It uses a bounded exact-title lookup and persists a bound create intent before
+the mutation. A returned issue identity is durable before observation; an
+uncertain result can only adopt one exact Factory issue and never issues a
+second create. It confirms the exact issue and operator observation before
+recording success, and consumes only that ticket's matching one-use clear. It
+never inventories historical issues or consumes a sibling's clear.
 `View: factory` also creates a shared Project-filtered Factory Pipeline view
 and stores its UUID with the initiative mapping.
 Project status, target date, and issue membership may be edited in Linear and

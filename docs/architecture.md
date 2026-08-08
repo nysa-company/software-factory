@@ -546,10 +546,14 @@ worktree after initialization and publishes no usable environment if it is
 dirty. An owner-only bootstrap receipt lets a retry reuse a partially
 initialized lane map even if the original seed later changes or disappears,
 so exact-ticket adoption cannot create duplicates. Initial create or adoption
-uses one bounded exact-title query, then reads the exact issue and persists its
-operator observation before recording selected-ticket success. A matching
+uses one bounded exact-title query. Before creation it records a ticket-, team-,
+Project-, and title-bound uncertain intent; a returned ID is persisted before
+observation. Restart therefore fetches that exact ID or waits to adopt one exact
+Factory issue and never repeats an uncertain create. Only the exact observed
+issue clears the intent and records selected-ticket success. A matching
 one-use clear is consumed for that ticket only; sibling issues and clears are
-not read or changed. Historical tickets are not reconciled.
+not read or changed. The create mutation itself never retries an ambiguous
+transport or quota response. Historical tickets are not reconciled.
 Production-successor takeover continues to bind the canonical live map instead
 of copying it.
 

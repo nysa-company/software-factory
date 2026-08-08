@@ -57,6 +57,7 @@ TARGETED_OPERATOR_FIELDS = (
     "operator_state_source_sha256",
 )
 LINEAR_COOLDOWN_SCHEMA = "nysa.software-factory.linear-account-cooldown/v1"
+LINEAR_CREATE_INTENT_SCHEMA = "nysa.software-factory.linear-create-intent/v1"
 RATE_LIMIT_REFUSAL = re.compile(
     r"linear_rate_limited retry_after_seconds=([0-9]{1,10})(?![0-9])"
 )
@@ -230,7 +231,7 @@ def operator_map_path(factory_dir):
     return path
 
 
-def gql(key, query, variables=None):
+def gql(key, query, variables=None, retry_transient=True):
     body = json.dumps({"query": query, "variables": variables or {}}).encode()
     request = urllib.request.Request(
         API_URL,
@@ -244,7 +245,7 @@ def gql(key, query, variables=None):
             if data.get("errors"):
                 wait = rate_limit_seconds(detail=data["errors"])
                 if wait is not None:
-                    if attempt < 2:
+                    if retry_transient and attempt < 2:
                         delay = min(2 ** attempt, 30)
                         log(f"Linear quota exhausted, backing off {delay}s")
                         time.sleep(delay)
@@ -261,7 +262,7 @@ def gql(key, query, variables=None):
             )
             quota_wait = rate_limit_seconds(error.headers, detail)
             if quota_wait is not None:
-                if attempt < 2:
+                if retry_transient and attempt < 2:
                     raw_wait = error.headers.get("Retry-After")
                     try:
                         wait = int(raw_wait) if raw_wait is not None else 2 ** attempt
@@ -274,7 +275,11 @@ def gql(key, query, variables=None):
                 raise RuntimeError(
                     f"linear_rate_limited retry_after_seconds={quota_wait}"
                 ) from error
-            if error.code in {500, 502, 503, 504} and attempt < 2:
+            if (
+                retry_transient
+                and error.code in {500, 502, 503, 504}
+                and attempt < 2
+            ):
                 raw_wait = error.headers.get("Retry-After")
                 try:
                     wait = int(raw_wait) if raw_wait is not None else 2 ** attempt
@@ -1329,7 +1334,7 @@ def fetch_issue(key, issue_id):
         key,
         """query($id: String!) { issue(id: $id) {
              id identifier title description priority updatedAt
-             state { id name } project { id } labels { nodes { id name } }
+             state { id name type } project { id } labels { nodes { id name } }
              assignee { id }
              comments(last: 100) {
                nodes { id body createdAt updatedAt user { id name } }
@@ -1459,6 +1464,76 @@ def factory_issue_candidates(key, team_id, title):
         and (issue.get("description") or "").startswith(BANNER)
         and issue.get("state", {}).get("type") != "canceled"
     ]
+
+
+def create_intent(ticket, team_id, project_id, status, issue=None):
+    value = {
+        "project_id": project_id,
+        "schema": LINEAR_CREATE_INTENT_SCHEMA,
+        "status": status,
+        "team_id": team_id,
+        "title_sha256": hashlib.sha256(ticket["title"].encode()).hexdigest(),
+    }
+    if status == "identified":
+        value.update({
+            "identifier": issue.get("identifier") if isinstance(issue, dict) else None,
+            "issue_id": issue.get("id") if isinstance(issue, dict) else None,
+        })
+    return value
+
+
+def validate_create_intent(value, ticket, team_id, project_id):
+    if not isinstance(value, dict):
+        raise RuntimeError(f"{ticket['id']}: Linear create intent is invalid")
+    status = value.get("status")
+    expected_keys = {"project_id", "schema", "status", "team_id", "title_sha256"}
+    if status == "identified":
+        expected_keys.update(("identifier", "issue_id"))
+    expected = create_intent(ticket, team_id, project_id, status)
+    if (
+        status not in {"uncertain", "identified"}
+        or set(value) != expected_keys
+        or value.get("schema") != LINEAR_CREATE_INTENT_SCHEMA
+        or not isinstance(team_id, str)
+        or not re.fullmatch(r"[A-Za-z0-9_-]{1,200}", team_id)
+        or (
+            project_id is not None
+            and (
+                not isinstance(project_id, str)
+                or not re.fullmatch(r"[A-Za-z0-9_-]{1,200}", project_id)
+            )
+        )
+        or value.get("team_id") != expected["team_id"]
+        or value.get("project_id") != expected["project_id"]
+        or value.get("title_sha256") != expected["title_sha256"]
+        or (
+            status == "identified"
+            and (
+                not isinstance(value.get("issue_id"), str)
+                or not re.fullmatch(r"[A-Za-z0-9_-]{1,200}", value["issue_id"])
+                or not isinstance(value.get("identifier"), str)
+                or not re.fullmatch(r"[A-Za-z0-9-]{1,100}", value["identifier"])
+            )
+        )
+    ):
+        raise RuntimeError(f"{ticket['id']}: Linear create intent is invalid")
+    return value
+
+
+def validate_created_issue(ticket, actual, issue_id=None, identifier=None):
+    if (
+        not isinstance(actual, dict)
+        or (issue_id is not None and actual.get("id") != issue_id)
+        or (identifier is not None and actual.get("identifier") != identifier)
+        or actual.get("title") != ticket["title"]
+        or not (actual.get("description") or "").startswith(BANNER)
+        or (actual.get("state") or {}).get("type") == "canceled"
+        or normalize_state((actual.get("state") or {}).get("name", "")) == "canceled"
+    ):
+        raise RuntimeError(
+            f"{ticket['id']}: Linear did not confirm the created issue"
+        )
+    return actual
 
 
 def comment_head(issue):
@@ -2041,20 +2116,38 @@ def sync_tickets(key, factory_dir, mapping, map_path, dry, only=None):
             project_id = project_ids.get(ticket["initiative"])
             desired_state_id = config["states"].get(ticket["state"])
         else:
-            candidates = (
-                existing_issues.get(ticket["title"], [])
-                if only is None else factory_issue_candidates(
-                    key, config["team_id"], ticket["title"]
+            pending = entry.get("pending_issue_create")
+            if pending is not None:
+                pending = validate_create_intent(
+                    pending, ticket, config["team_id"], project_id,
                 )
-            )
-            if len(candidates) > 1:
-                raise RuntimeError(
-                    f"{ticket['id']}: multiple active Factory issues require reconciliation"
+            if pending and pending["status"] == "identified":
+                actual = validate_created_issue(
+                    ticket,
+                    fetch_issue(key, pending["issue_id"]),
+                    pending["issue_id"],
+                    pending["identifier"],
                 )
-            actual = (
-                fetch_recent_comments(key, candidates[0], entry, dry)
-                if candidates else None
-            )
+            else:
+                candidates = (
+                    existing_issues.get(ticket["title"], [])
+                    if only is None else factory_issue_candidates(
+                        key, config["team_id"], ticket["title"]
+                    )
+                )
+                if len(candidates) > 1:
+                    raise RuntimeError(
+                        f"{ticket['id']}: multiple active Factory issues require reconciliation"
+                    )
+                actual = (
+                    fetch_recent_comments(key, candidates[0], entry, dry)
+                    if candidates else None
+                )
+                if pending and actual is None:
+                    raise RuntimeError(
+                        f"{ticket['id']}: Linear create outcome is uncertain; "
+                        "exact adoption is required"
+                    )
             if actual is not None:
                 entry.update({
                     "issue_id": actual["id"],
@@ -2062,6 +2155,7 @@ def sync_tickets(key, factory_dir, mapping, map_path, dry, only=None):
                     "operator_fields_initialized": True,
                     "source_ref": source_ref,
                 })
+                entry.pop("pending_issue_create", None)
                 ticket = ingest_operator_fields(
                     key, ticket, actual, mapping, entry, dry
                 )
@@ -2082,7 +2176,15 @@ def sync_tickets(key, factory_dir, mapping, map_path, dry, only=None):
             if dry:
                 log(f"{ticket['id']}: DRY would create issue in Project {ticket['initiative'] or 'none'}")
                 continue
-            issue = gql(
+            pending = create_intent(
+                ticket, config["team_id"], project_id, "uncertain",
+            )
+            validate_create_intent(
+                pending, ticket, config["team_id"], project_id,
+            )
+            entry["pending_issue_create"] = pending
+            save_map(map_path, mapping, clear_tickets=clear_tickets)
+            result = gql(
                 key,
                 "mutation($input: IssueCreateInput!) { issueCreate(input: $input) { issue { id identifier } } }",
                 {"input": {
@@ -2094,15 +2196,21 @@ def sync_tickets(key, factory_dir, mapping, map_path, dry, only=None):
                     **({"projectId": project_id} if project_id else {}),
                     **({"labelIds": label_ids} if label_ids else {}),
                 }},
-            )["issueCreate"]["issue"]
-            actual = fetch_issue(key, issue["id"])
-            if (
-                actual.get("id") != issue.get("id")
-                or actual.get("identifier") != issue.get("identifier")
-            ):
-                raise RuntimeError(
-                    f"{ticket['id']}: Linear did not confirm the created issue"
-                )
+                retry_transient=False,
+            )
+            issue = (result.get("issueCreate") or {}).get("issue")
+            identified = create_intent(
+                ticket, config["team_id"], project_id, "identified", issue,
+            )
+            validate_create_intent(
+                identified, ticket, config["team_id"], project_id,
+            )
+            entry["pending_issue_create"] = identified
+            save_map(map_path, mapping, clear_tickets=clear_tickets)
+            actual = validate_created_issue(
+                ticket, fetch_issue(key, issue["id"]),
+                issue["id"], issue["identifier"],
+            )
             ingest_fallback_approval(actual, entry, dry)
             digest, _created_at = comment_head({
                 "comments": {
@@ -2116,6 +2224,7 @@ def sync_tickets(key, factory_dir, mapping, map_path, dry, only=None):
                 "linear_comment_head_sha256": digest,
                 "source_ref": source_ref,
             })
+            entry.pop("pending_issue_create", None)
             ticket = ingest_operator_fields(
                 key, ticket, actual, mapping, entry, dry
             )

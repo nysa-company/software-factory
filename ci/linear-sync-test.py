@@ -37,7 +37,7 @@ class FakeLinear:
         self.issue_update_success = True
         self.comment_create_success = True
 
-    def __call__(self, _key, query, variables=None):
+    def __call__(self, _key, query, variables=None, retry_transient=True):
         variables = variables or {}
         self.calls.append((query, variables))
         if "viewer {" in query:
@@ -1607,7 +1607,11 @@ class LinearSyncTest(unittest.TestCase):
                 "key", self.factory, self.map_path, "T-002", dry=False,
             )
         saved = LINEAR.load_map(self.map_path)
-        self.assertNotIn("T-002", saved["tickets"])
+        self.assertEqual(
+            saved["tickets"]["T-002"]["pending_issue_create"]["status"],
+            "identified",
+        )
+        self.assertIsNone(saved["tickets"]["T-002"]["issue_id"])
         self.assertNotIn(
             "T-002", saved["_sync"].get("selected_ticket_success_at", {})
         )
@@ -1625,6 +1629,122 @@ class LinearSyncTest(unittest.TestCase):
         self.assertIn("operator", saved["tickets"]["T-002"])
         self.assertIn(
             "T-002", saved["_sync"]["selected_ticket_success_at"]
+        )
+        self.assertNotIn(
+            "pending_issue_create", saved["tickets"]["T-002"]
+        )
+
+    def test_uncertain_create_never_repeats_while_exact_issue_is_invisible(self):
+        self.reconcile()
+        second = self.factory / "tickets/T-002.md"
+        second.write_text((self.factory / "tickets/T-001.md").read_text().replace(
+            "# T-001 — first ticket", "# T-002 — second ticket",
+        ))
+
+        def lose_create_response(
+            _key, query, variables=None, retry_transient=True,
+        ):
+            result = self.fake(
+                _key, query, variables, retry_transient=retry_transient,
+            )
+            if "issueCreate" in query:
+                raise TimeoutError("created but response was lost")
+            return result
+
+        with (
+            patch.object(LINEAR, "gql", side_effect=lose_create_response),
+            self.assertRaisesRegex(TimeoutError, "response was lost"),
+        ):
+            LINEAR.initialize_ticket(
+                "key", self.factory, self.map_path, "T-002", dry=False,
+            )
+        created = len(self.fake.issues)
+        saved = LINEAR.load_map(self.map_path)
+        self.assertEqual(
+            saved["tickets"]["T-002"]["pending_issue_create"]["status"],
+            "uncertain",
+        )
+        self.assertNotIn(
+            "T-002", saved["_sync"].get("selected_ticket_success_at", {})
+        )
+
+        self.fake.calls.clear()
+        with (
+            patch.object(LINEAR, "gql", self.fake),
+            patch.object(LINEAR, "factory_issue_candidates", return_value=[]),
+            self.assertRaisesRegex(RuntimeError, "create outcome is uncertain"),
+        ):
+            LINEAR.initialize_ticket(
+                "key", self.factory, self.map_path, "T-002", dry=False,
+            )
+        self.assertEqual(len(self.fake.issues), created)
+        self.assertFalse(any(
+            "issueCreate" in query for query, _variables in self.fake.calls
+        ))
+
+        self.fake.calls.clear()
+        with patch.object(LINEAR, "gql", self.fake):
+            LINEAR.initialize_ticket(
+                "key", self.factory, self.map_path, "T-002", dry=False,
+            )
+        self.assertEqual(len(self.fake.issues), created)
+        saved = LINEAR.load_map(self.map_path)
+        self.assertNotIn(
+            "pending_issue_create", saved["tickets"]["T-002"]
+        )
+        self.assertIn("T-002", saved["_sync"]["selected_ticket_success_at"])
+
+    def test_matching_clear_retries_after_map_commit_before_unlink(self):
+        self.reconcile()
+        second = self.factory / "tickets/T-002.md"
+        second.write_text((self.factory / "tickets/T-001.md").read_text().replace(
+            "# T-001 — first ticket", "# T-002 — second ticket",
+        ))
+        clears = self.factory / ".linear-operator-clears"
+        clears.mkdir(mode=0o700)
+        selected_version = LINEAR.operator_version({
+            "initiative": "I-001", "priority": "none",
+        })
+        selected_clear = clears / f"T-002-{selected_version}.json"
+        selected_clear.write_text(json.dumps({
+            "operator_version": selected_version,
+            "schema": "linear-operator-clear/v1",
+            "ticket": "T-002",
+        }))
+        original_consume = LINEAR.consume_operator_clears
+        interrupted = False
+
+        def interrupt_once(map_path, mapping, tickets):
+            nonlocal interrupted
+            if tickets == {"T-002"} and not interrupted:
+                interrupted = True
+                raise OSError("simulated interruption before clear unlink")
+            return original_consume(map_path, mapping, tickets)
+
+        with (
+            patch.object(LINEAR, "gql", self.fake),
+            patch.object(
+                LINEAR, "consume_operator_clears", side_effect=interrupt_once,
+            ),
+            self.assertRaisesRegex(OSError, "before clear unlink"),
+        ):
+            LINEAR.initialize_ticket(
+                "key", self.factory, self.map_path, "T-002", dry=False,
+            )
+        created = len(self.fake.issues)
+        saved = LINEAR.load_map(self.map_path)
+        self.assertIn("operator", saved["tickets"]["T-002"])
+        self.assertIn("T-002", saved["_sync"]["selected_ticket_success_at"])
+        self.assertTrue(selected_clear.exists())
+
+        with patch.object(LINEAR, "gql", self.fake):
+            LINEAR.initialize_ticket(
+                "key", self.factory, self.map_path, "T-002", dry=False,
+            )
+        self.assertEqual(len(self.fake.issues), created)
+        self.assertFalse(selected_clear.exists())
+        self.assertIn(
+            "operator", LINEAR.load_map(self.map_path)["tickets"]["T-002"]
         )
 
     def test_exact_initialization_refuses_ambiguous_title_without_creation(self):
@@ -1695,6 +1815,22 @@ class LinearSyncTest(unittest.TestCase):
                     LINEAR.factory_issue_candidates(
                         "key", "team-1", "T-002 — second ticket"
                     )
+
+    def test_identified_create_refuses_canceled_state_type(self):
+        ticket = {"id": "T-002", "title": "T-002 — second ticket"}
+        actual = {
+            "description": LINEAR.BANNER,
+            "id": "issue-2",
+            "identifier": "SF-2",
+            "state": {"id": "state-duplicate", "name": "Duplicate", "type": "canceled"},
+            "title": ticket["title"],
+        }
+        with self.assertRaisesRegex(
+            RuntimeError, "did not confirm the created issue",
+        ):
+            LINEAR.validate_created_issue(
+                ticket, actual, "issue-2", "SF-2",
+            )
 
     def test_overlapping_full_save_preserves_newer_selected_success(self):
         self.reconcile()
@@ -2146,6 +2282,30 @@ class LinearSyncTest(unittest.TestCase):
             self.assertEqual(LINEAR.gql("key", "{ ok }"), {"ok": True})
         self.assertEqual(request.call_count, 2)
         sleep.assert_called_once_with(1)
+
+    def test_graphql_does_not_retry_uncertain_create_failure(self):
+        unavailable = urllib.error.HTTPError(
+            LINEAR.API_URL,
+            503,
+            "service unavailable after create",
+            {},
+            None,
+        )
+        with (
+            patch.object(
+                LINEAR.urllib.request,
+                "urlopen",
+                side_effect=[unavailable, FakeResponse()],
+            ) as request,
+            patch.object(LINEAR.time, "sleep") as sleep,
+            self.assertRaisesRegex(RuntimeError, "Linear HTTP 503"),
+        ):
+            LINEAR.gql(
+                "key", "mutation { issueCreate { success } }",
+                retry_transient=False,
+            )
+        request.assert_called_once()
+        sleep.assert_not_called()
 
     def test_graphql_uses_bounded_backoff_for_malformed_retry_after(self):
         for value, expected in (

@@ -89,9 +89,11 @@ preparation requires `--operator-map-seed <absolute-owner-only-linear-map.json>`
 absent, ambiguous, unsafe, malformed, or contains secret-bearing fields. It
 copies the validated seed into owner-only qualification authority, where the
 mutable map, locks, clear intents, and runtime ledger remain outside the sealed
-product checkout. Each selected initialization confirms and persists the exact
-issue's operator observation before success, consumes only its matching one-use
-clear, and does not inventory historical issues. A Linear rate limit is
+product checkout. Each selected initialization records a bounded create intent
+before mutation, persists a returned issue identity before observation, and
+never repeats an uncertain create. It confirms and persists the exact issue's
+operator observation before success, consumes only its matching one-use clear,
+and does not inventory historical issues. A Linear rate limit is
 persisted canonically as `linear_rate_limited retry_after_seconds=N`, shared by
 credential identity, and keeps provider admission closed without API calls
 until expiry.

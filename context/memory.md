@@ -58,10 +58,11 @@ everything the Factory actually enforces lives here.
   product; a durable bootstrap reuses partial initialization without duplicate
   issues even if the source seed later changes or disappears. Takeover retains
   its canonical live-map and product-ledger behavior.
-- Selected-only Linear initialization uses one bounded exact-title query,
-  confirms the exact created or adopted issue, and persists its operator
-  observation before success. It consumes only a matching clear for that
-  ticket; historical issues and sibling clears remain untouched.
+- Selected-only Linear initialization uses one bounded exact-title query and a
+  ticket-, team-, Project-, and title-bound create intent. It persists a
+  returned issue identity before observation and never repeats an uncertain
+  create. Only the exact observed issue records success and consumes the
+  matching ticket clear; historical issues and sibling clears remain untouched.
 - Qualification fallback reads the strict manifest at the receipt-bound
   protected product commit. Ordinary lanes authorize only their active Factory;
   a successor additionally authorizes its exact source Factory. A changed
@@ -4448,3 +4449,15 @@ from the installed exact-pin release and preserves validator refusal as a hard
 readiness failure. Manifest-only changes avoid broad application
 tests only behind this mandatory check; malformed, cross-mode, or cross-pin
 authority is rejected before protected main moves.
+
+## 2026-08-08 — Decision 330: Linear create outcomes are never guessed
+
+Category: Reliability
+
+Selected-ticket initialization persists a bound uncertain intent before a
+Linear create and the returned issue identity before observation. A restart
+fetches that identity or adopts one exact visible Factory issue; it never
+repeats an uncertain mutation, including inside the GraphQL transport helper.
+Operator evidence and selected success become
+durable only with the exact observed issue, while a post-map clear interruption
+retries the same matching one-use clear without touching siblings.
