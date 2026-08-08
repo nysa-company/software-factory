@@ -1717,6 +1717,12 @@ release and still retires; malformed lease evidence or a failed publication or
 lease cleanup remains ticket-local and cannot stop sibling reconciliation.
 Malformed parked lease evidence is loaded only into the existing invalid-ticket
 quarantine and cannot enter recovery, admission, or scheduling.
+New admission checks the clean registered product ticket's base State before
+applying any Linear operator overlay. Done and Canceled tickets therefore stay
+inert after claim retirement even when a stale resume overlay or retained
+ticket branch still exists. A refusal after candidate selection reports that
+exact ticket; failures before selection remain lane-scoped. Parked worktrees
+and retained branches are neither trusted nor rewritten by this rule.
 Qualification continues to require Done for every selected
 target and does not count Canceled as completion.
 

@@ -135,6 +135,11 @@ everything the Factory actually enforces lives here.
   after an absent withdrawal proves no ticket publication state remains.
   Qualification still requires Done and never counts Canceled as a successful
   target.
+- Dispatch reads the clean registered ticket's base State before applying the
+  Linear overlay. Done and Canceled remain inert after claim retirement even
+  with a stale resume overlay or retained branch; post-selection unsafe-state
+  evidence names the selected ticket without trusting or rewriting parked
+  worktrees.
 - Done is projected through one separate exact-ticket Linear mutation only
   after the closeout receipt validates on protected main. The issue is re-read
   as exact Done and one controller event is recorded before lease release;
@@ -4804,3 +4809,15 @@ type-specific evidence. This keeps digest or envelope tampering fail-closed
 while allowing authenticated historical operational events with a legacy null
 Factory identity to remain outside those two reports. A null or malformed
 identity on a relevant event remains an error and never becomes an incident.
+
+## 2026-08-08 — Decision 349: Terminal base state outranks admission overlays
+
+Category: Trust boundary
+
+Dispatch evaluates the clean registered product ticket's committed base State
+before applying Linear-owned operator fields. Exact Done or Canceled base state
+is never a candidate, so claim retirement cannot be undone by a stale
+Blocked-Escalated resume overlay, retained branch, or parked worktree. The
+Factory does not broaden Linear cancellation, delete retained Git evidence, or
+trust parked paths. Once a candidate is selected, an unsafe-state refusal names
+that exact ticket; genuinely lane-scoped failures remain unscoped.

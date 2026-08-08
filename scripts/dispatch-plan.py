@@ -497,6 +497,8 @@ def candidates(
         ):
             continue
         text = safe_file(path, f"ticket {path.stem}")
+        if field(text, "State").casefold() in {"canceled", "done"}:
+            continue
         try:
             ticket_dependencies = dependencies(text)
         except DispatchError:
@@ -981,6 +983,7 @@ def main() -> None:
     created_worktree: Path | None = None
     created_branch = ""
     lease_created = False
+    selected_ticket = ""
     preprovider_resets: dict[str, str] = {}
     try:
         product = args.factory_root.resolve(strict=True)
@@ -1070,6 +1073,7 @@ def main() -> None:
             }))
             return
         ticket = selected[0]
+        selected_ticket = ticket["ticket"]
         if args.action == "shadow":
             print(canonical({
                 **ticket, "action": "SHADOW", "schema": SCHEMA,
@@ -1151,10 +1155,13 @@ def main() -> None:
                     capture_output=True,
                     check=False,
                 )
-        print(canonical({
+        failure = {
             "action": "ESCALATE", "error": str(error),
             "reason_code": "unsafe_state", "schema": SCHEMA, "status": "error",
-        }))
+        }
+        if selected_ticket:
+            failure["ticket"] = selected_ticket
+        print(canonical(failure))
         raise SystemExit(2)
     finally:
         if held_lease:
