@@ -367,6 +367,36 @@ class FallbackTest(unittest.TestCase):
         )
 
     def test_qualification_apply_uses_direct_cli_once(self):
+        qualification = self.product / "factory/QUALIFICATION.json"
+        qualification.write_text(json.dumps({
+            "budget_usd": "100.000000",
+            "capacity": 3,
+            "contract_version": "1.8.0",
+            "factory_sha": "a" * 40,
+            "generation": 1,
+            "per_run_budget_usd": "2.000000",
+            "per_ticket_budget_usd": "25.000000",
+            "schema": "nysa.software-factory.qualification/v2",
+            "target_done": 3,
+            "tickets": ["T-1", "T-2", "T-3"],
+        }))
+        git(self.product, "init", "-q", "-b", "main")
+        git(self.product, "config", "user.name", "Test")
+        git(self.product, "config", "user.email", "test@example.test")
+        git(self.product, "add", ".")
+        git(self.product, "commit", "-m", "ordinary qualification authority")
+        environment = {
+            "FACTORY_KIT_TRUST_SCOPE": "qualification-candidate",
+            "FACTORY_QUALIFICATION_MANIFEST": str(qualification),
+            "FACTORY_QUALIFICATION_PRODUCT_SHA": git(
+                self.product, "rev-parse", "HEAD"
+            ),
+            "FACTORY_QUALIFICATION_PRODUCT_TREE": git(
+                self.product, "rev-parse", "HEAD^{tree}"
+            ),
+            "FACTORY_RELEASE_SHA": "a" * 40,
+            "FACTORY_ROOT": str(self.product),
+        }
         initial = json.loads(
             (self.repo / "factory/route-plans/T-1.json").read_text()
         )
@@ -380,7 +410,7 @@ class FallbackTest(unittest.TestCase):
         })
         self.readiness.write_text(ROUTER.canonical_json(readiness) + "\n")
 
-        applied = self.command("qualification-apply")
+        applied = self.command("qualification-apply", environment=environment)
         journal = json.loads(
             git(self.repo, "show", "HEAD:factory/route-plans/T-1.json")
         )
@@ -391,7 +421,7 @@ class FallbackTest(unittest.TestCase):
             resolution["selections"]["reviewer"]["route_id"], reviewer_route
         )
         self.assertEqual(git(self.repo, "rev-parse", "HEAD"), applied["commit_sha"])
-        recovered = self.command("qualification-apply")
+        recovered = self.command("qualification-apply", environment=environment)
         self.assertTrue(recovered["recovered"])
         self.assertEqual(recovered["commit_sha"], applied["commit_sha"])
 
@@ -535,24 +565,48 @@ class FallbackTest(unittest.TestCase):
 
         qualification = self.product / "factory/QUALIFICATION.json"
         qualification.write_text(json.dumps({
+            "budget_usd": "300.000000",
+            "capacity": 3,
+            "contract_version": "1.8.0",
             "factory_sha": "f" * 40,
             "generation": 1,
             "mode": "successor",
+            "per_run_budget_usd": "10.000000",
+            "per_ticket_budget_usd": "100.000000",
             "schema": "nysa.software-factory.qualification/v2",
-            "source_factory_sha": "b" * 40,
-            "tickets": ["T-1"],
+            "source_factory_sha": "a" * 40,
+            "target_done": 3,
+            "tickets": ["T-1", "T-2", "T-3"],
         }))
         git(self.product, "init", "-q", "-b", "main")
         git(self.product, "config", "user.name", "Test")
         git(self.product, "config", "user.email", "test@example.test")
-        git(self.product, "add", "factory/QUALIFICATION.json")
+        git(self.product, "add", ".")
         git(self.product, "commit", "-m", "local qualification authority")
-
-        applied = self.command("qualification-apply", environment={
+        environment = {
+            "FACTORY_KIT_TRUST_SCOPE": "qualification-candidate",
             "FACTORY_QUALIFICATION_MANIFEST": str(qualification),
+            "FACTORY_QUALIFICATION_PRODUCT_SHA": git(
+                self.product, "rev-parse", "HEAD"
+            ),
+            "FACTORY_QUALIFICATION_PRODUCT_TREE": git(
+                self.product, "rev-parse", "HEAD^{tree}"
+            ),
             "FACTORY_RELEASE_SHA": "f" * 40,
             "FACTORY_ROOT": str(self.product),
-        })
+        }
+        foreign_manifest = self.product.parent / "qualification-link.json"
+        foreign_manifest.symlink_to(qualification)
+        refused = self.command(
+            "qualification-apply", check=False,
+            environment={
+                **environment,
+                "FACTORY_QUALIFICATION_MANIFEST": str(foreign_manifest),
+            },
+        )
+        self.assertIn("sealed qualification authority is invalid", refused.stderr)
+
+        applied = self.command("qualification-apply", environment=environment)
         self.assertEqual(git(self.repo, "rev-parse", "HEAD"), applied["commit_sha"])
 
         route = self.repo / "factory/route-plans/T-1.json"
@@ -574,13 +628,69 @@ class FallbackTest(unittest.TestCase):
         git(self.repo, "commit", "-m", "migrate fallback route")
         git(self.repo, "push", "origin", "ticket/T-1")
 
-        recovered = self.command("qualification-apply", environment={
+        recovered = self.command("qualification-apply", environment=environment)
+        self.assertTrue(recovered["recovered"])
+        self.assertEqual(recovered["commit_sha"], git(self.repo, "rev-parse", "HEAD"))
+
+        (self.product / "qualification-rotation.txt").write_text("new receipt\n")
+        git(self.product, "add", "qualification-rotation.txt")
+        git(self.product, "commit", "-m", "rotate product authority")
+        rotated = {
+            **environment,
+            "FACTORY_QUALIFICATION_PRODUCT_SHA": git(
+                self.product, "rev-parse", "HEAD"
+            ),
+            "FACTORY_QUALIFICATION_PRODUCT_TREE": git(
+                self.product, "rev-parse", "HEAD^{tree}"
+            ),
+        }
+        refused = self.command(
+            "qualification-apply", check=False, environment=rotated,
+        )
+        self.assertIn("qualification fallback authority changed", refused.stderr)
+
+    def test_sealed_successor_refuses_unbound_source_factory(self):
+        qualification = self.product / "factory/QUALIFICATION.json"
+        qualification.write_text(json.dumps({
+            "budget_usd": "300.000000",
+            "capacity": 3,
+            "contract_version": "1.8.0",
+            "factory_sha": "f" * 40,
+            "generation": 1,
+            "mode": "successor",
+            "per_run_budget_usd": "10.000000",
+            "per_ticket_budget_usd": "100.000000",
+            "schema": "nysa.software-factory.qualification/v2",
+            "source_factory_sha": "b" * 40,
+            "target_done": 3,
+            "tickets": ["T-1", "T-2", "T-3"],
+        }))
+        git(self.product, "init", "-q", "-b", "main")
+        git(self.product, "config", "user.name", "Test")
+        git(self.product, "config", "user.email", "test@example.test")
+        git(self.product, "add", ".")
+        git(self.product, "commit", "-m", "mismatched successor authority")
+        before = git(self.repo, "rev-parse", "HEAD")
+
+        result = self.command("qualification-apply", check=False, environment={
+            "FACTORY_KIT_TRUST_SCOPE": "qualification-candidate",
             "FACTORY_QUALIFICATION_MANIFEST": str(qualification),
+            "FACTORY_QUALIFICATION_PRODUCT_SHA": git(
+                self.product, "rev-parse", "HEAD"
+            ),
+            "FACTORY_QUALIFICATION_PRODUCT_TREE": git(
+                self.product, "rev-parse", "HEAD^{tree}"
+            ),
             "FACTORY_RELEASE_SHA": "f" * 40,
             "FACTORY_ROOT": str(self.product),
         })
-        self.assertTrue(recovered["recovered"])
-        self.assertEqual(recovered["commit_sha"], git(self.repo, "rev-parse", "HEAD"))
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "sealed qualification manifest does not authorize fallback",
+            result.stderr,
+        )
+        self.assertEqual(git(self.repo, "rev-parse", "HEAD"), before)
 
     def test_qualification_apply_migrates_initial_v1_plan(self):
         path = self.repo / "factory/route-plans/T-1.json"

@@ -119,6 +119,8 @@ assert_helper_confinement() {
     FACTORY_ENVELOPE FACTORY_LEDGER FACTORY_GLOBAL_ENV \
     FACTORY_MODEL_MANAGER FACTORY_MODEL_CATALOG FACTORY_MODEL_PROFILES \
     FACTORY_DISPATCH_LEASE_ID \
+    FACTORY_QUALIFICATION_MANIFEST FACTORY_QUALIFICATION_PRODUCT_SHA \
+    FACTORY_QUALIFICATION_PRODUCT_TREE \
     FACTORY_PROBE_CODEX FACTORY_PROBE_CLAUDE_CODE \
     FACTORY_CURSOR_FALLBACK_ENABLED CURSOR_AGENT_BIN CODEX_PINNED MOCK_STATUS \
     PROJECTED_TICKET_USD PYTHONHOME PYTHONPATH PYTHONWARNINGS GIT_DIR GIT_WORK_TREE \
@@ -233,6 +235,9 @@ run_launcher() {
     FACTORY_PROBE_CLAUDE_CODE=INVALID:bypass \
     FACTORY_CURSOR_FALLBACK_ENABLED=1 CURSOR_AGENT_BIN="$TMP/agent-bypass" \
     FACTORY_CERTIFIED_PRODUCT_ORIGIN="$TMP/caller-origin-bypass.git" \
+    FACTORY_QUALIFICATION_MANIFEST="$TMP/caller-qualification-bypass.json" \
+    FACTORY_QUALIFICATION_PRODUCT_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+    FACTORY_QUALIFICATION_PRODUCT_TREE=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
     FACTORY_MODEL_STATE_ROOT="$TMP/caller-model-state-bypass" \
     FACTORY_PROJECT=caller-model-project \
     FACTORY_MODEL_MANAGER="$TMP/caller-model-manager.py" \
@@ -2603,6 +2608,9 @@ assert contract["launcher"]["helper_environment"] == {
     "FACTORY_MODEL_STATE_ROOT": "resolved production kits projects directory",
     "FACTORY_PROJECT": "validated launcher project slug",
     "FACTORY_OPERATOR_MAP": "sealed qualification operator overlay path: owner-local lane state for isolated qualification or the canonical live map for takeover",
+    "FACTORY_QUALIFICATION_MANIFEST": "sealed qualification manifest path supplied only by a qualification launcher",
+    "FACTORY_QUALIFICATION_PRODUCT_SHA": "qualification receipt-bound protected product commit",
+    "FACTORY_QUALIFICATION_PRODUCT_TREE": "qualification receipt-bound protected product tree",
     "FACTORY_CERTIFIED_PRODUCT_ORIGIN": "contract 1.2+ certification receipt product_origin; consumed by trusted write helpers and never exposed to adapters",
     "FACTORY_DISPATCH_LEASE_ID": "validated optional ticket lease supplied by the dispatcher",
     "FACTORY_TRANSITION_RECEIPT_SHA256": "Contract 1.8 consumed one-use state-machine receipt",
@@ -2634,6 +2642,9 @@ assert contract["launcher"]["helper_environment_allowlist"] == [
     "FACTORY_MODEL_STATE_ROOT",
     "FACTORY_PROJECT",
     "FACTORY_OPERATOR_MAP",
+    "FACTORY_QUALIFICATION_MANIFEST",
+    "FACTORY_QUALIFICATION_PRODUCT_SHA",
+    "FACTORY_QUALIFICATION_PRODUCT_TREE",
     "FACTORY_CERTIFIED_PRODUCT_ORIGIN",
     "FACTORY_DISPATCH_LEASE_ID",
     "FACTORY_TRANSITION_RECEIPT_SHA256",
@@ -2741,6 +2752,9 @@ assert 'WORKTREE_PARENT="$KITS_ROOT/worktrees"' in launcher_text
 assert '"FACTORY_CLI_LANE_ROOT=$QUALIFICATION_ROOT"' in launcher_text
 assert 'KIT_TRUST_SCOPE="qualification-candidate"' in launcher_text
 assert '"FACTORY_KIT_TRUST_SCOPE=$KIT_TRUST_SCOPE"' in launcher_text
+assert '"FACTORY_QUALIFICATION_MANIFEST=$PRODUCT_ROOT/factory/QUALIFICATION.json"' in launcher_text
+assert '"FACTORY_QUALIFICATION_PRODUCT_SHA=$ACTIVE_PRODUCT_SHA"' in launcher_text
+assert '"FACTORY_QUALIFICATION_PRODUCT_TREE=$ACTIVE_PRODUCT_TREE"' in launcher_text
 assert '"FACTORY_LEDGER=$ACTIVE_RUNTIME_LEDGER"' in launcher_text
 assert '"FACTORY_DURABLE_LEDGER=$PRODUCT_ROOT/factory/ledger.csv"' in launcher_text
 assert '"FACTORY_REFRESH_RUNTIME_LEDGER=1"' in launcher_text

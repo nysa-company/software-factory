@@ -38,6 +38,10 @@ def load_module(name, path):
 MANAGER = load_module("model_manager", ROOT / "scripts/model-manager.py")
 ROUTER = load_module("model_router_fallback", ROOT / "scripts/model-router.py")
 LEDGER = load_module("ledger_view_fallback", ROOT / "scripts/ledger-view.py")
+QUALIFICATION = load_module(
+    "qualification_manifest_fallback",
+    ROOT / "scripts/lib/qualification_manifest.py",
+)
 ROLE_ORDER = ("planner", "spec-linter", "test-author", "builder", "reviewer", "narrator")
 PRODUCER_BOUNDARY = {"planner": "P", "test-author": "T", "builder": "B"}
 REASONS = frozenset((
@@ -374,6 +378,53 @@ def preview(args):
     }
 
 
+def qualification_authority(journal_kit):
+    if os.environ.get("FACTORY_KIT_TRUST_SCOPE") != "qualification-candidate":
+        return None
+    product = Path(os.environ.get("FACTORY_ROOT", ""))
+    manifest_path = os.environ.get("FACTORY_QUALIFICATION_MANIFEST", "")
+    product_sha = os.environ.get("FACTORY_QUALIFICATION_PRODUCT_SHA", "")
+    product_tree = os.environ.get("FACTORY_QUALIFICATION_PRODUCT_TREE", "")
+    release_sha = os.environ.get("FACTORY_RELEASE_SHA", "")
+    expected = product / "factory/QUALIFICATION.json"
+    if (
+        not product.is_absolute()
+        or product.is_symlink()
+        or manifest_path != str(expected)
+        or expected.is_symlink()
+        or not re.fullmatch(r"[0-9a-f]{40}", product_sha)
+        or not re.fullmatch(r"[0-9a-f]{40}", product_tree)
+    ):
+        raise FallbackError("sealed qualification authority is invalid")
+    if (
+        git(product, "rev-parse", "HEAD").decode().strip() != product_sha
+        or git(product, "rev-parse", "HEAD^{tree}").decode().strip() != product_tree
+        or git(product, "status", "--porcelain", "--untracked-files=all")
+    ):
+        raise FallbackError("sealed qualification product changed")
+    raw = git(product, "show", f"{product_sha}:factory/QUALIFICATION.json")
+    try:
+        manifest = QUALIFICATION.validate(json.loads(raw), release_sha)
+    except (json.JSONDecodeError, QUALIFICATION.ManifestError) as error:
+        raise FallbackError(
+            "sealed qualification manifest does not authorize fallback"
+        ) from error
+    allowed_kits = {release_sha}
+    if manifest.get("mode") == "successor":
+        allowed_kits.add(manifest["source_factory_sha"])
+    if journal_kit not in allowed_kits:
+        raise FallbackError("sealed qualification manifest does not authorize fallback")
+    return {
+        "generation": manifest["generation"],
+        "manifest": manifest,
+        "manifest_digest": digest(raw),
+        "product_sha": product_sha,
+        "product_tree": product_tree,
+        "raw": raw,
+        "release_sha": release_sha,
+    }
+
+
 def recover_applied(args, approval):
     repo = Path(args.workdir)
     relative = f"factory/route-plans/{args.ticket}.json"
@@ -390,6 +441,21 @@ def recover_applied(args, approval):
     MANAGER.validate_journal(
         journal, catalog, routes, profile_map, allow_historical_active=True
     )
+    if (
+        approval.get("schema") == "ticket-model-fallback-qualification/v1"
+        and (
+            "product_sha" in approval
+            or os.environ.get("FACTORY_KIT_TRUST_SCOPE") == "qualification-candidate"
+        )
+    ):
+        authority = qualification_authority(journal["kit_sha"])
+        if authority is None or any(
+            approval.get(key) != authority[key]
+            for key in (
+                "generation", "manifest_digest", "product_sha", "product_tree",
+            )
+        ):
+            raise FallbackError("qualification fallback authority changed")
     matches = [
         (index, revision)
         for index, revision in enumerate(journal["revisions"])
@@ -562,6 +628,7 @@ def qualification_apply(args):
         )
     except (FallbackError, KeyError, IndexError, json.JSONDecodeError):
         journal = {}
+    authority = qualification_authority(journal.get("kit_sha"))
     for revision in reversed(journal.get("revisions", [])):
         approval = revision.get("body", {}).get("approval_receipt")
         if isinstance(approval, dict):
@@ -596,21 +663,9 @@ def qualification_apply(args):
             )
     if attempts != 1:
         raise FallbackError("qualification fallback is allowed only after the first role attempt")
-    manifest_path = os.environ.get("FACTORY_QUALIFICATION_MANIFEST")
-    if manifest_path:
-        product = Path(os.environ.get("FACTORY_ROOT", ""))
-        expected = product / "factory/QUALIFICATION.json"
-        try:
-            if (
-                not product.is_absolute()
-                or Path(manifest_path).resolve(strict=True)
-                != expected.resolve(strict=True)
-                or expected.is_symlink()
-            ):
-                raise FallbackError("sealed qualification manifest path is invalid")
-        except OSError as error:
-            raise FallbackError("sealed qualification manifest path is invalid") from error
-        raw = git(product, "show", "HEAD:factory/QUALIFICATION.json")
+    if authority is not None:
+        qualification = authority["manifest"]
+        raw = authority["raw"]
     else:
         raw = git(
             Path(args.workdir), "show",
@@ -620,34 +675,32 @@ def qualification_apply(args):
         qualification = json.loads(raw)
     except json.JSONDecodeError as error:
         raise FallbackError("protected qualification manifest is malformed") from error
-    release_sha = os.environ.get("FACTORY_RELEASE_SHA", "")
     authorized_factory_sha = (
-        release_sha if manifest_path else result["journal"]["kit_sha"]
+        authority["release_sha"] if authority is not None
+        else result["journal"]["kit_sha"]
     )
     if (
-        qualification.get("schema") not in {
-            "nysa.software-factory.qualification/v1",
-            "nysa.software-factory.qualification/v2",
-        }
+        authority is None
+        and qualification.get("schema") not in {
+             "nysa.software-factory.qualification/v1",
+             "nysa.software-factory.qualification/v2",
+         }
         or qualification.get("factory_sha") != authorized_factory_sha
         or args.ticket not in qualification.get("tickets", [])
         or not isinstance(qualification.get("generation"), int)
         or qualification["generation"] < 1
     ):
         raise FallbackError("protected qualification manifest does not authorize fallback")
-    if manifest_path and (
-        not re.fullmatch(r"[0-9a-f]{40}", release_sha)
-        or qualification.get("schema") != "nysa.software-factory.qualification/v2"
-        or qualification.get("mode") != "successor"
-        or not re.fullmatch(r"[0-9a-f]{40}", qualification.get("source_factory_sha", ""))
-    ):
-        raise FallbackError("sealed successor manifest does not authorize fallback")
     approval = {
         "approval_hash": result["approval_hash"],
         "failed_run_id": args.failed_run,
         "generation": qualification["generation"],
         "manifest_digest": digest(raw),
         "nonce": result["nonce"],
+        **({
+            "product_sha": authority["product_sha"],
+            "product_tree": authority["product_tree"],
+        } if authority is not None else {}),
         "schema": "ticket-model-fallback-qualification/v1",
     }
     return apply_result(args, approval, result)
