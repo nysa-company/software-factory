@@ -282,35 +282,88 @@ case "$command_name" in
         "$cursor_source_home" "$TEMPORARY_DIR")"; then
       json_error "cursor model inventory refused: ${credential_reason:-credential_invalid}"
     fi
+    installed="$(HOME="$TEMPORARY_DIR" timeout "$probe_timeout" \
+      "$cursor_bin" --version 2>/dev/null | awk 'NR==1 {print $NF; exit}' || true)"
+    [[ -n "${CURSOR_AGENT_VERSION:-}" && "$installed" == "$CURSOR_AGENT_VERSION" ]] ||
+      json_error "cursor model inventory version is not approved"
     inventory_output="$TEMPORARY_DIR/models.txt"
     HOME="$TEMPORARY_DIR" timeout "$probe_timeout" "$cursor_bin" models \
       >"$inventory_output" 2>/dev/null ||
       json_error "cursor model inventory probe failed"
     python3 - "$inventory_output" <<'PY' ||
 import json
+import os
 import pathlib
 import re
+import stat
 import sys
 
-raw = pathlib.Path(sys.argv[1]).read_bytes()
+path = pathlib.Path(sys.argv[1])
+try:
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    info = os.fstat(descriptor)
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or info.st_uid != os.geteuid()
+        or info.st_nlink != 1
+    ):
+        raise OSError
+    with os.fdopen(descriptor, "rb") as stream:
+        descriptor = -1
+        raw = stream.read(1_000_001)
+except OSError:
+    raise SystemExit(1)
+finally:
+    if "descriptor" in locals() and descriptor >= 0:
+        os.close(descriptor)
 if len(raw) > 1_000_000:
     raise SystemExit(1)
-text = raw.decode("utf-8", errors="strict")
+try:
+    text = raw.decode("utf-8", errors="strict")
+except UnicodeError:
+    raise SystemExit(1)
 ansi = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
-safe = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._:/()+-]{0,199}")
+lines = [ansi.sub("", value) for value in text.splitlines()]
+normalized = "\n".join(lines)
+tip = (
+    "Tip: use --model <id> (or /model <id> in interactive mode) to switch. "
+    "Parameterized models also accept quoted overrides, e.g. --model "
+    "'claude-opus-4-8[context=1m,effort=high,fast=false]'."
+)
+if (
+    not text.endswith("\n")
+    or len(lines) < 5
+    or lines[:2] != ["Available models", ""]
+    or lines[-2:] != ["", tip]
+    or re.search(
+        r"(?i)https?://|authorization|api[_-]?key|token|secret|password",
+        normalized,
+    )
+):
+    raise SystemExit(1)
+model_id = re.compile(r"[a-z0-9][a-z0-9._:/+-]{0,127}")
+label = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._:/()+-]{0,199}")
 models = []
-for value in text.splitlines():
-    value = ansi.sub("", value).strip()
-    if not value:
-        continue
-    if not safe.fullmatch(value) or re.search(
-        r"(?i)https?://|authorization|api[_-]?key|token|secret|password", value
+for line in lines[2:-2]:
+    if not line or line != line.strip():
+        raise SystemExit(1)
+    for suffix in (" (current, default)", " (current)", " (default)"):
+        if line.endswith(suffix):
+            line = line[:-len(suffix)]
+            break
+    if re.search(r" \([^)]*\)$", line):
+        raise SystemExit(1)
+    fields = line.split(" - ", 1)
+    if (
+        not model_id.fullmatch(fields[0])
+        or len(fields) > 1 and not label.fullmatch(fields[1])
+        or fields[0] in models
     ):
         raise SystemExit(1)
-    models.append(value)
+    models.append(fields[0])
 if not models or len(models) > 500:
     raise SystemExit(1)
-models = sorted(set(models))
+models.sort()
 print(json.dumps({
     "count": len(models),
     "models": models,

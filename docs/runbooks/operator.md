@@ -198,9 +198,13 @@ Use only the selected release through the sealed launcher:
 
 Use the sealed `models inventory` command for Cursor model discovery. It copies
 owner-only credentials into a disposable owner-only home, removes that copy on
-exit, and never writes the source `~/.cursor` files. Do not run ambient
-`agent models` or `agent status` while another lane is active because those
-commands may rewrite shared Cursor configuration permissions.
+exit, and never writes the source `~/.cursor` files. The command requires the
+configured Cursor CLI version and returns exact selection IDs from the
+certified `Available models` response; headers, display labels, current/default
+markers, and the usage footer are presentation only. An unknown response shape
+fails closed—do not parse it manually against the ambient account. Do not run
+ambient `agent models` or `agent status` while another lane is active because
+those commands may rewrite shared Cursor configuration permissions.
 
 `models plan --json` previews the active profile, or default
 `cursor-opus-v1` when none is active. Activation accepts only the exact

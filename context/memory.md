@@ -9,7 +9,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Stable operating truth lives in `docs/`; prompts, templates, and evidence stay colocated with consumers.
 - Nysa Agents baseline v3 as a toolkit; `bash ci/test-all.sh` is the unconditional full command.
 - Live products resolve sealed exact-SHA releases under `~/.factory/kits` via `~/.factory/bin/factory-launch`.
-- Model routing is portfolio policy; routes pin at the ticket boundary and change only via the Contract 1.4 journal flow.
+- Model routing is portfolio policy; routes pin at the ticket boundary and change only via the Contract 1.4 journal flow. Sealed Cursor inventory accepts only the configured CLI version's exact bounded structure from a disposable owner-only home.
 - The only emergency recovery is the receipt-bound `OPERATOR RESUME` ticket commit. No generic lifecycle bypass is approved.
 - **Contract rules below in Operating contract are authoritative**; this summary is only what the session hook can inject.
 
@@ -4396,3 +4396,15 @@ capability. `none` requires a strict nonempty nonvisual path policy, while each
 ready ticket declares exact Builder-owned files. Qualification compares those
 files with the certified policy before publishing lane state; missing,
 ambiguous, broad, or visual/deployable work fails before claims or provider use.
+
+## 2026-08-08 — Decision 327: Cursor inventory parses one certified structure
+
+Category: Security
+
+The sealed model inventory first matches the configured Cursor CLI version,
+then accepts only its bounded `Available models` header, unique selection-ID
+rows with optional safe display labels and known current/default markers, and
+exact usage footer. It returns sorted selection IDs. Unknown, malformed,
+oversized, duplicate, or secret-like output fails closed; source session files
+remain immutable and every disposable probe home is removed after success or
+failure.

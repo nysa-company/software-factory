@@ -205,6 +205,12 @@ Calibrate a route only after its task-free identity/readiness probe, adapter
 contract, and conformance smokes pass. Cursor readiness runs in a disposable
 owner-only home populated from validated owner-only source files; Cursor never
 receives the source home, and the disposable home is removed after the probe.
+The sealed Cursor inventory uses that same disposable-home boundary and first
+requires the configured CLI version. It accepts only the certified `Available
+models` envelope, known current/default flags, bounded safe display labels, and
+unique selection IDs, returning the IDs rather than terminal presentation
+text. Unknown structure, malformed or oversized output, and secret-like values
+fail closed without exposing the captured bytes.
 Cursor output is redacted while streaming; the redacted `.out` artifact
 remains local and ignored, while the manifest and ledger carry durable
 provenance. Mutating Factory Cursor roles stay in the default agent execution
