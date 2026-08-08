@@ -4533,7 +4533,13 @@ Category: Reliability
 
 An exact dependency-refresh receipt may reuse the ordinary publication refresh
 after bundle or approval, invalidating those bound blobs and returning the
-ticket to Review for fresh evidence. If a prior-kit bundle-only artifact has
-already reached protected main, emergency closeout v2 binds and deletes only
-that exact stale path in its protected PR; current-kit or malformed partial
-chains still fail closed.
+ticket to Review for fresh evidence. A pushed refresh receipt is replayable
+after controller interruption only when its old head, merge, protected base,
+draft PR, remote tip, retired blobs, and reset ticket are exact. The sealed
+replay uses the exact dispatcher lease and committed receipt rather
+than reusing the consumed transition receipt. If a prior-kit bundle-only
+artifact has already reached protected main, emergency closeout v2
+requires its exact authenticated v2 release lineage and deletes only that stale
+path. Its signed controller-state journal records each intended blob before
+mutation, so restart either restores exact Factory bytes or refuses foreign
+same-path edits; current-kit or malformed partial chains still fail closed.

@@ -288,6 +288,7 @@ PY
   cp "$ROOT/scripts/attempt-cancel.py" "$release/scripts/attempt-cancel.py"
   cp "$ROOT/scripts/operator-state.py" "$release/scripts/operator-state.py"
   cp "$ROOT/scripts/operator-event-watch.py" "$release/scripts/operator-event-watch.py"
+  cp "$ROOT/scripts/ticket-attest.sh" "$release/scripts/ticket-attest.sh"
   cp -R "$ROOT/scripts/model-routing" "$release/scripts/model-routing"
   cp "$ROOT/scripts/lib/backend-policy.sh" "$release/scripts/lib/backend-policy.sh"
   cp "$ROOT/scripts/lib/cursor-model-families.txt" \
@@ -301,6 +302,13 @@ import json
 import sys
 
 print(json.dumps({"arguments": sys.argv[1:]}))
+PY
+  cat > "$release/scripts/ticket-attest.py" <<'PY'
+import json
+import sys
+
+action = sys.argv[sys.argv.index("--action") + 1]
+print(json.dumps({"action": action, "status": "ok"}))
 PY
   for role in planner spec-linter test-author builder reviewer narrator; do
     printf '# %s prompt\n' "$role" > "$release/roles/$role.md"
@@ -418,6 +426,7 @@ EOF
     "$release/scripts/reorder-test-fixes.sh" "$release/scripts/model-control.sh" \
     "$release/scripts/model-control-real.sh" \
     "$release/scripts/dispatch-lease.sh" "$release/scripts/operator-event-watch.py"
+  chmod +x "$release/scripts/ticket-attest.sh"
 }
 
 mkdir -p "$PROFILE/projects" "$TEST_HOME/.hermes/secrets" "$TEST_HOME/.factory/.ledger.lock"
@@ -1568,6 +1577,46 @@ PIN_REMOTE_HEAD="$(git -C "$RUN_WORKTREE_PHYS" ls-remote --heads \
   "$LAUNCH_PRODUCT_REMOTE" refs/heads/ticket/T-123 | awk 'NR==1 {print $1; exit}')"
 [[ "$PIN_REMOTE_HEAD" == "$(git -C "$RUN_WORKTREE_PHYS" rev-parse HEAD)" ]] ||
   fail "model pin did not push the exact ticket branch"
+
+# A post-push dependency replay is capability-bound by the exact dispatcher
+# lease and does not reopen the already-consumed transition receipt grammar.
+printf '%s\n' 'TICKET_BRANCH_PREFIX=ticket/' 'MAX_CONCURRENT_TICKETS=4' > \
+  "$LAUNCH_PRODUCT/factory/PROJECT.env"
+git -C "$LAUNCH_PRODUCT" add factory/PROJECT.env
+git -C "$LAUNCH_PRODUCT" commit -qm "enable replay lease fixture"
+git -C "$LAUNCH_PRODUCT" push -q origin main
+write_active "$SHA_MODELS_V18" "$TREE_MODELS_V18" "$RELEASE_MODELS_V18"
+run_launcher launchtest claim --ticket T-123 > "$TMP/replay-claim.json"
+REPLAY_LEASE="$(python3 -c \
+  'import json,sys; print(json.load(open(sys.argv[1]))["lease_id"])' \
+  "$TMP/replay-claim.json")"
+run_launcher launchtest ticket-attest --ticket T-123 --lease "$REPLAY_LEASE" \
+  --workdir "$RUN_WORKTREE_PHYS" --action dependency-refresh-replay --json \
+  > "$TMP/dependency-replay.json"
+python3 - "$TMP/dependency-replay.json" <<'PY'
+import json, sys
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+assert value == {"action": "dependency-refresh-replay", "status": "ok"}, value
+PY
+REPLAY_MISSING_RC=0
+run_launcher launchtest ticket-attest --ticket T-123 \
+  --workdir "$RUN_WORKTREE_PHYS" --action dependency-refresh-replay --json \
+  > "$TMP/dependency-replay-missing.out" 2>&1 || REPLAY_MISSING_RC=$?
+[[ "$REPLAY_MISSING_RC" -eq 1 ]] || fail "receipt replay accepted no dispatcher lease"
+REPLAY_WRONG_RC=0
+run_launcher launchtest ticket-attest --ticket T-123 --lease \
+  "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff" \
+  --workdir "$RUN_WORKTREE_PHYS" --action dependency-refresh-replay --json \
+  > "$TMP/dependency-replay-wrong.out" 2>&1 || REPLAY_WRONG_RC=$?
+[[ "$REPLAY_WRONG_RC" -eq 1 ]] || fail "receipt replay accepted the wrong dispatcher lease"
+ORDINARY_NO_RECEIPT_RC=0
+run_launcher launchtest ticket-attest --ticket T-123 --lease "$REPLAY_LEASE" \
+  --workdir "$RUN_WORKTREE_PHYS" --action dependency-refresh --json \
+  > "$TMP/dependency-refresh-no-receipt.out" 2>&1 || ORDINARY_NO_RECEIPT_RC=$?
+[[ "$ORDINARY_NO_RECEIPT_RC" -eq 1 ]] ||
+  fail "ordinary dependency refresh stopped requiring its one-use receipt"
+run_launcher launchtest release --ticket T-123 --lease "$REPLAY_LEASE" \
+  > "$TMP/replay-release.json"
 assert_helper_confinement "$MODEL_HELPER_ENV" absent present
 assert_no_secret "$TMP/models-pin.json"
 if ! run_launcher launchtest models pin --ticket T-123 --workdir "$RUN_WORKTREE_PHYS" \
@@ -2669,13 +2718,15 @@ assert commands["ticket-state"]["transition_states"] == [
 ]
 assert commands["ticket-attest"]["arguments"] == [
     "--ticket", "<T-NNN>", "[--lease <opaque-lease-id>]",
-    "[--receipt <lowercase-sha256> (required for Contract 1.8 non-done actions)]",
+    "[--receipt <lowercase-sha256> (required for Contract 1.8 non-done, non-dependency-refresh-replay actions)]",
     "--workdir", "<absolute-worktree>",
-    "--action", "<bundle|approval|dependency-refresh|refresh|done|emergency-plan|emergency-apply>",
+    "--action", "<bundle|approval|dependency-refresh|dependency-refresh-replay|refresh|done|emergency-plan|emergency-apply>",
     "[--request <absolute-owner-request.json> --approve-hash <lowercase-sha256> (emergency only)]",
     "--json"
 ]
 assert any("fresh review" in item and "stale bundle" in item
+           for item in commands["ticket-attest"]["validation"])
+assert any("dependency-refresh-replay" in item and "exact dispatcher lease" in item
            for item in commands["ticket-attest"]["validation"])
 assert any("closeout PR" in item and "protected auto-merge" in item
            for item in commands["ticket-attest"]["validation"])
@@ -2956,6 +3007,7 @@ assert 'CURSOR_ACCOUNT_DB="$HOME/.factory/accounting/cursor-account-admission-v1
 assert '"FACTORY_CURSOR_ACCOUNT_DB=$CURSOR_ACCOUNT_DB"' in launcher_text
 assert '"FACTORY_ADAPTER_OVERRIDE=mock"' in launcher_text
 assert 'if ! transition_receipt consume "$RUN_ROLE"; then' in launcher_text
+assert '"$ATTEST_ACTION" != "dependency-refresh-replay" ||' in launcher_text
 assert '"$EMERGENCY_HELPER" consume' in launcher_text
 runner_text = open(
     os.path.join(root, "scripts", "run-agent.sh"), encoding="utf-8"

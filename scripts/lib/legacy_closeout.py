@@ -12,6 +12,12 @@ from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 
+from approval_evidence import (
+    ApprovalEvidenceError,
+    validate_bundle_attestation,
+    validate_bundle_commit,
+)
+
 
 class ValidationError(ValueError):
     pass
@@ -322,34 +328,52 @@ def stale_bundle_invalidation(repo, ticket, ref, current_kit):
         raise ValidationError(
             "emergency stale-evidence repair requires one bundle-only partial chain"
         )
-    exact(bundle, NORMAL_BUNDLE_KEYS, "stale bundle attestation")
     repository = repository_from_project(repo, ref)
     branch_head = oid(bundle.get("branch_head"), "stale bundle branch head")
-    bundle_blob = oid(bundle.get("bundle_blob"), "stale bundle payload blob")
-    route_blob = oid(bundle.get("route_plan_blob"), "stale bundle route-plan blob")
     stale_kit = oid(bundle.get("kit_sha"), "stale bundle kit SHA")
-    digest(bundle.get("policy_hash"), "stale bundle policy hash")
-    digest(bundle.get("route_plan_sha256"), "stale bundle route-plan sha256")
-    timestamp(bundle.get("attested_at"), "stale bundle attested_at")
     route_path = f"factory/route-plans/{ticket}.json"
-    payload_path = f"factory/tickets/{ticket}-bundle.md"
     route_text = text_at(repo, branch_head, route_path)
-    payload_text = text_at(repo, branch_head, payload_path)
+    try:
+        validate_bundle_attestation(
+            bundle, ticket, repository, f"ticket/{ticket}", stale_kit, repo,
+        )
+        bundle_commit = run(
+            repo, "log", "-1", "--format=%H", ref, "--", bundle_path,
+        ).stdout.strip()
+        oid(bundle_commit, "stale bundle commit")
+        validate_bundle_commit(repo, ticket, bundle, bundle_commit)
+    except ApprovalEvidenceError as error:
+        raise ValidationError(
+            "stale bundle attestation is not exact prior-kit evidence"
+        ) from error
+    if route_text is None or len(route_text.encode("utf-8")) > 1_000_000:
+        raise ValidationError("stale bundle route plan is missing or too large")
+    try:
+        route = json.loads(route_text, object_pairs_hook=_unique_json_object)
+    except (json.JSONDecodeError, ValueError) as error:
+        raise ValidationError("stale bundle route plan is not strict JSON") from error
+    route_schema = route.get("schema") if isinstance(route, dict) else None
+    if route_schema == "ticket-model-route-plan/v1":
+        route_shape = (
+            set(route) == {"schema", "ticket", "kit_sha", "created_at", "resolution"}
+            and isinstance(route.get("resolution"), dict)
+        )
+        if route_shape:
+            timestamp(route.get("created_at"), "stale bundle route created_at")
+    elif route_schema == "ticket-model-route-journal/v2":
+        revisions = route.get("revisions")
+        route_shape = (
+            set(route) == {"schema", "ticket", "kit_sha", "revisions"}
+            and isinstance(revisions, list)
+            and bool(revisions)
+        )
+    else:
+        route_shape = False
     if (
-        bundle.get("schema") != "nysa.software-factory.ticket-bundle/v1"
-        or bundle.get("ticket") != ticket
-        or bundle.get("repository") != repository
-        or bundle.get("branch") != f"ticket/{ticket}"
-        or bundle.get("route_plan_path") != route_path
-        or bundle.get("bundle_path") != payload_path
-        or stale_kit == current_kit
-        or blob_at(repo, branch_head, route_path) != route_blob
-        or blob_at(repo, branch_head, payload_path) != bundle_blob
-        or route_text is None
-        or hashlib.sha256(route_text.encode()).hexdigest()
-        != bundle["route_plan_sha256"]
-        or payload_text is None
-        or hash_text(repo, payload_text) != bundle_blob
+        stale_kit == current_kit
+        or not route_shape
+        or route.get("ticket") != ticket
+        or route.get("kit_sha") != stale_kit
     ):
         raise ValidationError("stale bundle attestation is not exact prior-kit evidence")
     return {
@@ -357,6 +381,15 @@ def stale_bundle_invalidation(repo, ticket, ref, current_kit):
         "blob": oid(blob_at(repo, ref, bundle_path), "stale bundle attestation blob"),
         "kit_sha": stale_kit,
     }
+
+
+def _unique_json_object(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("duplicate key")
+        value[key] = item
+    return value
 
 
 def _emergency_terminal(repo, ticket, ref, done):

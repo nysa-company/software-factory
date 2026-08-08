@@ -541,8 +541,15 @@ drafts the PR, retires the stale bundle/approval, and returns the ticket to
 Review for fresh Reviewer and Narrator evidence. If a prior-kit bundle-only
 artifact has already reached protected main, only an explicitly approved
 emergency plan v2 may bind and delete that exact blob in its protected closeout
-PR. Current-kit or malformed partial evidence still requires repair and must
-not be waived.
+PR. The plan requires a complete authenticated stale-to-current release
+lineage. If apply is interrupted, rerun the same hash-approved apply: its
+owner-only signed journal restores only exact write-ahead ledger, ticket,
+bundle, and Done bytes, and refuses any foreign edit. Current-kit or malformed
+partial evidence still requires repair and must not be waived.
+A controller restart after an exact publication refresh push uses the sealed,
+lease-bound `dependency-refresh-replay` action. It authenticates the committed
+refresh receipt and completes the post-push tail; it never reuses the consumed
+transition receipt or creates a second merge or push.
 A clean, correctly named, un-attested closeout retry is fast-forwarded to the
 current protected main. Closeouts are serialized; a sibling waits while an
 earlier exact Done closeout remains unmerged. If protected main advances and

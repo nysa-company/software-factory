@@ -682,6 +682,12 @@ makes the exact PR draft, retires the bound bundle and approval blobs, resets
 the ticket to Review, and records the existing `ticket-refresh/v1` receipt.
 Reviewer and Narrator must establish fresh evidence over the changed semantic
 base. A moved protected tip returns to waiting without changing PR or evidence.
+A controller restart after the refresh push recognizes only the exact committed
+refresh receipt, retired evidence diff, remote branch, and draft PR, then
+continues the same post-push reduction without another merge or push. The
+sealed `dependency-refresh-replay` action requires the ticket's exact dispatcher
+lease; the committed refresh receipt replaces, rather than reuses, the consumed
+transition receipt as replay authority.
 That atomic introduction may also contain the exact in-flight release
 authorization for the same target Factory SHA. No other migration,
 application, test, contract, or CI path is admitted.

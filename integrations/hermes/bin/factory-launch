@@ -2313,6 +2313,12 @@ PY
       ATTEST_ONLY=1
       [[ "$ATTEST_LEASE" =~ ^[0-9a-f]{64}$ ]] || die "invalid dispatcher lease"
     elif [[ "$CONTRACT_VERSION" == "1.8.0" && $# -eq 9 &&
+            "$1" == "--ticket" && "$3" == "--lease" &&
+            "$5" == "--workdir" && "$7" == "--action" &&
+            "$8" == "dependency-refresh-replay" && "$9" == "--json" ]]; then
+      ATTEST_LEASE="$4" ATTEST_WORKDIR="$6" ATTEST_ACTION="$8"
+      [[ "$ATTEST_LEASE" =~ ^[0-9a-f]{64}$ ]] || die "invalid dispatcher lease"
+    elif [[ "$CONTRACT_VERSION" == "1.8.0" && $# -eq 9 &&
           "$1" == "--ticket" && "$3" == "--receipt" &&
           "$5" == "--workdir" && "$7" == "--action" && "$9" == "--json" ]]; then
       ATTEST_RECEIPT="$4" ATTEST_WORKDIR="$6" ATTEST_ACTION="$8"
@@ -2337,11 +2343,16 @@ PY
     [[ "$ATTEST_TICKET" =~ ^T-[0-9]+$ ]] || die "invalid ticket identifier"
     [[ "$ATTEST_ACTION" == "bundle" || "$ATTEST_ACTION" == "approval" ||
        "$ATTEST_ACTION" == "dependency-refresh" ||
+       "$ATTEST_ACTION" == "dependency-refresh-replay" ||
        "$ATTEST_ACTION" == "refresh" || "$ATTEST_ACTION" == "done" ||
        "$ATTEST_ACTION" == "emergency-plan" ||
        "$ATTEST_ACTION" == "emergency-apply" ]] ||
       die "invalid ticket-attest action"
+    [[ "$ATTEST_ACTION" != "dependency-refresh-replay" ||
+       "$CONTRACT_VERSION" == "1.8.0" ]] ||
+      die "dependency refresh replay requires contract 1.8.0"
     if [[ "$CONTRACT_VERSION" == "1.8.0" && "$ATTEST_ACTION" != "done" &&
+          "$ATTEST_ACTION" != "dependency-refresh-replay" &&
           "$ATTEST_EMERGENCY" -eq 0 ]]; then
       [[ "$ATTEST_RECEIPT" =~ ^[0-9a-f]{64}$ ]] ||
         die "invalid transition receipt"
@@ -2351,8 +2362,10 @@ PY
       ATTEST_BRANCH="chore/$(printf '%s' "$ATTEST_TICKET" | tr '[:upper:]' '[:lower:]' | tr -d '-')-closeout"
       [[ "$(git -C "$RESOLVED_WORKDIR" symbolic-ref --quiet --short HEAD 2>/dev/null)" == "$ATTEST_BRANCH" ]] ||
         die "done worktree branch must be $ATTEST_BRANCH"
-      [[ -z "$(git -C "$RESOLVED_WORKDIR" status --porcelain --untracked-files=all)" ]] ||
-        die "done worktree must be clean"
+      if [[ "$ATTEST_ACTION" != "emergency-apply" ]]; then
+        [[ -z "$(git -C "$RESOLVED_WORKDIR" status --porcelain --untracked-files=all)" ]] ||
+          die "done worktree must be clean"
+      fi
       if [[ "$(git -C "$RESOLVED_WORKDIR" rev-parse HEAD)" != \
             "$(git -C "$RESOLVED_WORKDIR" rev-parse origin/main)" ]]; then
         [[ -f "$RESOLVED_WORKDIR/factory/attestations/$ATTEST_TICKET/done.json" ]] ||
@@ -2387,7 +2400,8 @@ PY
         "$RELEASE_PATH/scripts/ticket-attest.py" "${EMERGENCY_ARGS[@]}"
     fi
     add_dispatch_lease_env "$ATTEST_LEASE"
-    if [[ "$CONTRACT_VERSION" == "1.8.0" && "$ATTEST_ACTION" != "done" ]]; then
+    if [[ "$CONTRACT_VERSION" == "1.8.0" && "$ATTEST_ACTION" != "done" &&
+          "$ATTEST_ACTION" != "dependency-refresh-replay" ]]; then
       TICKET="$ATTEST_TICKET" LEASE_ID="$ATTEST_LEASE"
       TRANSITION_RECEIPT="$ATTEST_RECEIPT"
       transition_receipt verify ||

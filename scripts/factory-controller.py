@@ -560,6 +560,93 @@ class Controller:
             raise ControllerError("operator transition evidence is invalid")
         return value
 
+    def dependency_publication_replay_transition(
+        self, claim: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Recognize only the exact post-push dependency refresh boundary."""
+        refresh_path = (
+            Path(claim["worktree"]) / "factory" / "attestations"
+            / claim["ticket"] / "refresh.json"
+        )
+        try:
+            if not stat.S_ISREG(refresh_path.lstat().st_mode):
+                return None
+            candidate = read(self.state / f"{claim['ticket']}.json")
+        except (ControllerError, OSError, json.JSONDecodeError, UnicodeError):
+            return None
+        stage = candidate.get("stage", "")
+        if not (
+            candidate.get("schema")
+            == "nysa.software-factory.transition-receipt/v1"
+            and candidate.get("consumed") is True
+            and re.fullmatch(
+                r"REFUSE dependency refresh required; "
+                r"dependencies=T-[0-9]+(?:,T-[0-9]+)*; "
+                r"protected-main=[0-9a-f]{40}",
+                stage,
+            ) is not None
+            and SHA.fullmatch(candidate.get("head_sha", ""))
+        ):
+            return None
+        current = subprocess.run(
+            ["git", "-C", claim["worktree"], "rev-parse", "HEAD"],
+            text=True, capture_output=True, check=False, timeout=120,
+        )
+        refresh_commit = subprocess.run(
+            [
+                "git", "-C", claim["worktree"], "log", "-1",
+                "--format=%H", "HEAD", "--",
+                f"factory/attestations/{claim['ticket']}/refresh.json",
+            ],
+            text=True, capture_output=True, check=False, timeout=120,
+        )
+        current_head = current.stdout.strip()
+        if (
+            current.returncode
+            or refresh_commit.returncode
+            or not SHA.fullmatch(current_head)
+            or refresh_commit.stdout.strip() != current_head
+            or candidate["head_sha"] == current_head
+        ):
+            return None
+        passport = self.authenticated_operator_passport(claim["ticket"])
+        if (
+            passport is None
+            or passport.get("branch") != claim["branch"]
+            or passport.get("factory_sha") != self.release_path.name
+        ):
+            raise ControllerError(
+                "dependency refresh replay passport is invalid"
+            )
+        passport_head = passport.get("head_sha", "") if passport else ""
+        if passport_head == current_head:
+            return None
+        if passport_head != candidate["head_sha"]:
+            raise ControllerError(
+                "dependency refresh replay passport is invalid"
+            )
+        transition = self.operator_transition(claim)
+        if (
+            transition is None
+            or transition.get("stage") != stage
+            or transition.get("consumed") is not True
+            or transition.get("head_sha") != candidate["head_sha"]
+        ):
+            raise ControllerError(
+                "dependency refresh replay transition changed"
+            )
+        return {
+            "action": stage.partition(" ")[0],
+            "detail": stage.partition(" ")[2] or None,
+            "loop": transition.get("loop"),
+            "receipt": transition["receipt_sha256"],
+            "role": transition.get("role"),
+            "schema": "nysa.software-factory.state-machine/v1",
+            "stage": stage,
+            "status": "ok",
+            "ticket": claim["ticket"],
+        }
+
     def recover_operator_action_events(
         self, claims: list[dict[str, Any]],
     ) -> None:
@@ -6203,11 +6290,17 @@ class Controller:
                 claim["status"] = "waiting"
                 self.save_claim(claim)
                 return {"status": "waiting", "ticket": claim["ticket"]}
-            transition = self.json_call(
-                "state-machine", "--ticket", claim["ticket"],
-                "--lease", claim["lease"], "--workdir", claim["worktree"],
-                "--json",
-                timeout=None,
+            replay_transition = (
+                self.dependency_publication_replay_transition(claim)
+            )
+            transition = (
+                replay_transition
+                if replay_transition is not None else self.json_call(
+                    "state-machine", "--ticket", claim["ticket"],
+                    "--lease", claim["lease"],
+                    "--workdir", claim["worktree"], "--json",
+                    timeout=None,
+                )
             )
             maintenance = (self.product / "factory/MAINTENANCE").exists()
             if not valid_transition_evidence(transition, claim["ticket"]):
@@ -6512,23 +6605,34 @@ class Controller:
             )
             if dependency_refresh:
                 receipt_record = read(self.state / f"{claim['ticket']}.json")
+                current_head = subprocess.run(
+                    ["git", "-C", claim["worktree"], "rev-parse", "HEAD"],
+                    text=True, capture_output=True, check=True, timeout=120,
+                ).stdout.strip()
+                recorded_head = receipt_record.get("head_sha", "")
                 if (
                     receipt_record.get("receipt_sha256") != receipt
-                    or receipt_record.get("head_sha")
-                    != subprocess.run(
-                        ["git", "-C", claim["worktree"], "rev-parse", "HEAD"],
-                        text=True, capture_output=True, check=True, timeout=120,
-                    ).stdout.strip()
+                    or not SHA.fullmatch(recorded_head)
+                    or not SHA.fullmatch(current_head)
                 ):
                     raise ControllerError(
                         "dependency refresh receipt does not bind the old head"
                     )
-                value = self.json_call(
-                    "ticket-attest", "--ticket", claim["ticket"],
-                    "--lease", claim["lease"], "--receipt", receipt,
-                    "--workdir", claim["worktree"],
-                    "--action", "dependency-refresh", "--json",
-                )
+                if current_head != recorded_head:
+                    attest_arguments = [
+                        "ticket-attest", "--ticket", claim["ticket"],
+                        "--lease", claim["lease"],
+                        "--workdir", claim["worktree"], "--action",
+                        "dependency-refresh-replay", "--json",
+                    ]
+                else:
+                    attest_arguments = [
+                        "ticket-attest", "--ticket", claim["ticket"],
+                        "--lease", claim["lease"], "--receipt", receipt,
+                        "--workdir", claim["worktree"],
+                        "--action", "dependency-refresh", "--json",
+                    ]
+                value = self.json_call(*attest_arguments)
                 if value.get("action") == "dependency-wait":
                     claim["status"] = "waiting"
                     self.save_claim(claim)
@@ -6543,6 +6647,7 @@ class Controller:
                 publication_refresh = (
                     value.get("action") == "dependency-publication-refresh"
                 )
+                replay = current_head != recorded_head
                 dependency_tickets = dependency_refresh[1].split(",")
                 terminal_receipts = value.get("dependency_terminals")
                 if (
@@ -6581,6 +6686,10 @@ class Controller:
                         )
                     )
                     or not SHA.fullmatch(refreshed)
+                    or (
+                        replay
+                        and (not publication_refresh or refreshed != current_head)
+                    )
                     or subprocess.run(
                         [
                             "git", "-C", claim["worktree"], "merge-base",

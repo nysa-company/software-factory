@@ -208,23 +208,26 @@ class FactoryControllerTest(unittest.TestCase):
 
     def operator_passport(
         self, ticket: str, current_state: str, publication_state: str,
-        transition_receipt_sha256: str = "",
+        transition_receipt_sha256: str = "", head_sha: str | None = None,
+        branch: str | None = None, factory_sha: str | None = None,
     ) -> str:
         key_path = self.state / "passport.key"
         if not key_path.exists():
             key_path.write_bytes(b"k" * 32)
             key_path.chmod(0o600)
         body = {
-            "branch": f"ticket/{ticket}",
+            "branch": branch or f"ticket/{ticket}",
             "contract_version": "1.8.0",
             "current_state": current_state,
-            "factory_sha": self.release.name,
+            "factory_sha": factory_sha or self.release.name,
             "project": "relay",
             "publication_state": publication_state,
             "schema": "nysa.software-factory.ticket-passport/v1",
             "ticket": ticket,
             "transition_receipt_sha256": transition_receipt_sha256,
         }
+        if head_sha is not None:
+            body["head_sha"] = head_sha
         body["authentication_sha256"] = hmac.new(
             key_path.read_bytes(), CONTROL.canonical(body).encode(), hashlib.sha256,
         ).hexdigest()
@@ -9113,10 +9116,9 @@ class FactoryControllerTest(unittest.TestCase):
             "# T-110\n\nState: Building\nDepends-On: T-094\n",
             encoding="utf-8",
         )
-        old = "d" * 40
+        old = "b" * 40
         protected = "e" * 40
         refreshed = "f" * 40
-        receipt = "b" * 64
         stage = (
             "REFUSE dependency refresh required; "
             f"dependencies=T-094; protected-main={protected}"
@@ -9133,23 +9135,12 @@ class FactoryControllerTest(unittest.TestCase):
             "ticket": "T-110",
             "worktree": str(cell),
         }
-        CONTROL.write(self.state / "T-110.json", {
-            "head_sha": old,
-            "receipt_sha256": receipt,
-        })
+        receipt = self.operator_transition("T-110", stage)
         results = iter((
             {
                 "action": "dependency-wait",
                 "expected_protected_head": protected,
                 "observed_protected_head": "1" * 40,
-            },
-            {
-                "action": "dependency-refresh",
-                "attestation": {
-                    "old_head": old,
-                    "protected_head": protected,
-                },
-                "head": refreshed,
             },
             {
                 "action": "dependency-publication-refresh",
@@ -9170,24 +9161,64 @@ class FactoryControllerTest(unittest.TestCase):
         controller.finish_pending_run = lambda _claim: True
         controller.refresh_dependency_tracking = lambda _claim: True
         controller.withdraw_publication = lambda _claim: None
-        controller.migrate_passport = lambda *_args: migrations.append("passport")
+        def migrate_passport(*_args):
+            migrations.append("passport")
+            self.operator_passport(
+                "T-110", "Review", "validating", head_sha=refreshed,
+            )
+
+        controller.migrate_passport = migrate_passport
         controller.event = lambda name, *_args, **kwargs: events.append(
             (name, kwargs)
         )
 
+        state_machine_calls = 0
+        ticket_attest_calls = 0
+
         def json_call(*arguments, **_kwargs):
+            nonlocal state_machine_calls, ticket_attest_calls
             if arguments[0] == "state-machine":
-                return state_transition(stage, receipt)
+                state_machine_calls += 1
+                if state_machine_calls == 1:
+                    return state_transition(stage, receipt)
+                if state_machine_calls == 2:
+                    return state_transition(
+                        "AWAIT_DEPENDENCY T-094", "c" * 64,
+                    )
+                raise AssertionError("unexpected extra stage resolution")
             if arguments[0] == "ticket-attest":
-                self.assertIn("dependency-refresh", arguments)
+                ticket_attest_calls += 1
+                self.assertEqual(
+                    arguments[arguments.index("--action") + 1],
+                    (
+                        "dependency-refresh-replay"
+                        if ticket_attest_calls >= 2
+                        else "dependency-refresh"
+                    ),
+                )
+                self.assertEqual(
+                    "--receipt" in arguments, ticket_attest_calls == 1,
+                )
+                if ticket_attest_calls == 2:
+                    raise SystemExit(
+                        "simulated crash after replay helper"
+                    )
                 return next(results)
             raise AssertionError(arguments)
 
         controller.json_call = json_call
 
+        observed_heads = iter((old, *([refreshed] * 7)))
+
         def run(command, **_kwargs):
+            if "log" in command:
+                return CONTROL.subprocess.CompletedProcess(
+                    command, 0, refreshed + "\n", "",
+                )
             if "rev-parse" in command:
-                return CONTROL.subprocess.CompletedProcess(command, 0, old + "\n", "")
+                return CONTROL.subprocess.CompletedProcess(
+                    command, 0, next(observed_heads) + "\n", "",
+                )
             if "merge-base" in command:
                 return CONTROL.subprocess.CompletedProcess(command, 0, "", "")
             raise AssertionError(command)
@@ -9197,15 +9228,56 @@ class FactoryControllerTest(unittest.TestCase):
                 controller.reconcile_ticket(claim)["status"], "waiting"
             )
             self.assertEqual(migrations, [])
+            refresh = cell / "factory/attestations/T-110/refresh.json"
+            refresh.parent.mkdir(parents=True)
+            refresh.write_text("{}\n", encoding="utf-8")
+            receipt = self.operator_transition("T-110", stage, consumed=True)
+            self.operator_passport(
+                "T-110", "Review", "validating", head_sha=old,
+            )
+            self.operator_passport(
+                "T-110", "Review", "validating", head_sha=old,
+                factory_sha="9" * 40,
+            )
+            with self.assertRaisesRegex(
+                CONTROL.ControllerError, "replay passport is invalid",
+            ):
+                controller.dependency_publication_replay_transition(claim)
+            self.operator_passport(
+                "T-110", "Review", "validating", head_sha=old,
+                branch="ticket/T-999",
+            )
+            with self.assertRaisesRegex(
+                CONTROL.ControllerError, "replay passport is invalid",
+            ):
+                controller.dependency_publication_replay_transition(claim)
+            self.operator_passport(
+                "T-110", "Review", "validating", head_sha=old,
+            )
+            claim["status"] = "claimed"
+            with self.assertRaisesRegex(
+                SystemExit, "crash after replay helper",
+            ):
+                controller.reconcile_ticket(claim)
+            self.assertEqual(migrations, [])
             claim["status"] = "claimed"
             self.assertEqual(
                 controller.reconcile_ticket(claim)["status"], "progressed"
             )
+            claim["status"] = "claimed"
             self.assertEqual(
-                controller.reconcile_ticket(claim)["status"], "progressed"
+                controller.reconcile_ticket(claim)["status"], "waiting"
             )
-        self.assertEqual(migrations, ["passport", "passport"])
-        self.assertEqual(events[-1][0], "dependency_publication_evidence_retired")
+        self.assertEqual(state_machine_calls, 2)
+        self.assertEqual(ticket_attest_calls, 3)
+        self.assertEqual(migrations, ["passport"])
+        self.assertEqual(
+            sum(
+                name == "dependency_publication_evidence_retired"
+                for name, _details in events
+            ),
+            1,
+        )
 
     def test_dependency_test_conflict_routes_without_generic_block(self) -> None:
         controller = CONTROL.Controller(self.args)
