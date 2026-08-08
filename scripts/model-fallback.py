@@ -19,9 +19,11 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts/lib"))
 from failed_attempt_handoff import (  # noqa: E402
+    GitHubHTTPSCredential,
     HandoffError,
     RoleBoundaryPolicy,
     build_handoff_commit,
+    github_https_remote,
     preview_handoff,
 )
 
@@ -56,21 +58,31 @@ def digest(raw):
     return hashlib.sha256(raw).hexdigest()
 
 
-def git(repo, *args, input_bytes=None, extra_env=None):
+def git(repo, *args, input_bytes=None, extra_env=None, git_auth=None):
     environment = {
         **os.environ,
         "GIT_CONFIG_NOSYSTEM": "1",
         "GIT_CONFIG_GLOBAL": os.devnull,
         "GIT_TERMINAL_PROMPT": "0",
     }
+    environment.pop("GH_TOKEN", None)
     if extra_env:
         environment.update(extra_env)
+    credential_args = []
+    if git_auth is not None:
+        credential_args = [
+            "-c",
+            "credential.https://github.com.helper="
+            f"!{git_auth.helper} auth git-credential",
+        ]
+        environment["GH_TOKEN"] = git_auth.token
     result = subprocess.run(
         [
             "git", "-C", str(repo),
             "-c", "core.hooksPath=/dev/null",
             "-c", "core.fsmonitor=false",
             "-c", "credential.helper=",
+            *credential_args,
             "-c", "diff.external=",
             *args,
         ],
@@ -80,6 +92,8 @@ def git(repo, *args, input_bytes=None, extra_env=None):
         env=environment,
     )
     if result.returncode:
+        if git_auth is not None:
+            raise FallbackError("github_https_authentication_failed")
         raise FallbackError(result.stderr.decode("utf-8", "replace").strip() or "Git failed")
     return result.stdout
 
@@ -259,6 +273,7 @@ def calculate(args, nonce, migrate_legacy=False, failed_role_only=False):
     remote_head = git(
         repo, "ls-remote", "--heads", "--", args.remote,
         f"refs/heads/{branch}",
+        git_auth=args.git_auth,
     ).decode().split()[0]
     if (
         failed.get("role_remote_before") != remote_head
@@ -278,6 +293,7 @@ def calculate(args, nonce, migrate_legacy=False, failed_role_only=False):
         expected_remote_head=remote_head,
         remote_destination=args.remote,
         provider_scan_base=role_head_before,
+        git_auth=args.git_auth,
     )
     readiness = json.loads(Path(args.readiness).read_text())
     contributors = contributors_from(journal, manifests)
@@ -508,6 +524,7 @@ def apply_result(args, approval, result):
         commit_timestamp=str(int(dt.datetime.now().timestamp())) + " +0000",
         journal_content=journal_raw,
         subject=f"{args.ticket}: preserve failed attempt and revise model route",
+        git_auth=args.git_auth,
     )
     repo = Path(args.workdir)
     ref = "refs/heads/" + result["handoff"].branch
@@ -649,6 +666,8 @@ def parser():
     value.add_argument("--readiness", required=True)
     value.add_argument("--remote", required=True)
     value.add_argument("--approval")
+    value.add_argument("--github-token-stdin", action="store_true")
+    value.add_argument("--github-helper")
     value.add_argument(
         "--catalog", default=str(ROOT / "scripts/model-routing/catalog-v1.json")
     )
@@ -664,6 +683,24 @@ def parser():
 
 def main():
     args = parser().parse_args()
+    args.git_auth = None
+    if args.github_token_stdin != bool(args.github_helper):
+        raise FallbackError("github credential inputs are incomplete")
+    if github_https_remote(args.remote):
+        if not args.github_token_stdin:
+            raise FallbackError("github_credential_unavailable")
+        token = sys.stdin.buffer.read(65537)
+        if len(token) > 65536:
+            raise FallbackError("github credential is oversized")
+        try:
+            args.git_auth = GitHubHTTPSCredential(
+                helper=args.github_helper,
+                token=token.decode("utf-8", "strict"),
+            )
+        except UnicodeDecodeError as error:
+            raise FallbackError("github credential is invalid") from error
+    elif args.github_token_stdin:
+        raise FallbackError("github credential supplied for a non-GitHub remote")
     if args.action == "apply" and not args.approval:
         raise FallbackError("apply requires a Linear approval")
     if args.action == "preview":

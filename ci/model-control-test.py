@@ -368,6 +368,15 @@ class ModelControlTest(unittest.TestCase):
         shutil.copytree(ROOT / "scripts", release / "scripts")
         backend = release / "scripts" / "lib" / "backend-policy.sh"
         backend.write_text(backend.read_text().replace(
+            "factory_resolve_model_profile() {\n",
+            '''factory_resolve_model_profile() {
+  if [[ ${GH_TOKEN+x} == x ]] || /bin/bash -c ': <&9' 2>/dev/null; then
+    FACTORY_RESOLVE_ERROR="github_credential_leaked_to_readiness"
+    return 2
+  fi
+''',
+            1,
+        ).replace(
             '  if [[ -n "$readiness_output" ]]; then\n',
             '''  if [[ -n "${FACTORY_TEST_MIGRATION_READINESS_COUNTER:-}" ]]; then
     count="$(awk 'NR==1 {print; exit}' "$FACTORY_TEST_MIGRATION_READINESS_COUNTER" 2>/dev/null || true)"
@@ -402,28 +411,75 @@ PY
             text=True,
         ).strip()
         trace = self.base / "migration-probes.trace"
+        network_trace = self.base / "migration-network.trace"
+        network_url = "https://github.com/nysa-company/model-control-test.git"
+        subprocess.run(
+            [
+                "git", "-C", str(self.workdir), "config",
+                "remote.origin.pushurl", network_url,
+            ],
+            check=True,
+        )
+        tools = self.base / "migration-tools"
+        tools.mkdir()
+        git_wrapper = tools / "git"
+        git_wrapper.write_text(
+            "#!/usr/bin/env python3\n"
+            "import os, sys\n"
+            "args = sys.argv[1:]\n"
+            "url = os.environ['TEST_GITHUB_URL']\n"
+            "network = url in args and ('push' in args or 'ls-remote' in args)\n"
+            "if network:\n"
+            "    assert os.environ.get('GH_TOKEN') == 'fixture-token'\n"
+            "    assert any('credential.https://github.com.helper=!' in x for x in args)\n"
+            "    args = [os.environ['TEST_LOCAL_REMOTE'] if x == url else x for x in args]\n"
+            "    with open(os.environ['TEST_GIT_TRACE'], 'a') as handle:\n"
+            "        handle.write('authenticated-git-network\\n')\n"
+            "else:\n"
+            "    assert 'GH_TOKEN' not in os.environ\n"
+            "os.execv('/usr/bin/git', ['/usr/bin/git', *args])\n"
+        )
+        git_wrapper.chmod(0o700)
         environment = {
             **self.environment,
+            "FACTORY_CERTIFIED_PRODUCT_ORIGIN": network_url,
             "FACTORY_PROBE_TRACE": str(trace),
             "FACTORY_RELEASE_CONTRACT_VERSION": "1.8.0",
             "FACTORY_RELEASE_PATH": str(release),
             "FACTORY_RELEASE_SHA": self.kit_sha,
             "FACTORY_RELEASE_TREE": release_tree,
+            "PATH": f"{tools}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
+            "TEST_GITHUB_URL": network_url,
+            "TEST_GIT_TRACE": str(network_trace),
+            "TEST_LOCAL_REMOTE": str(self.remote),
         }
 
-        def migrate(*args):
+        def migrate(*args, run_environment=None, check=True):
+            run_environment = run_environment or environment
+            command = [str(release / "scripts" / "model-control.sh"), *args]
+            input_text = None
+            if args[0] == "migrate":
+                command = [
+                    "/bin/bash", "-c", 'exec 9<&0; exec "$@"', "_", *command,
+                ]
+                input_text = "fixture-token\n"
+                run_environment = {
+                    **run_environment,
+                    "FACTORY_GITHUB_TOKEN_FD": "9",
+                }
             result = subprocess.run(
-                [str(release / "scripts" / "model-control.sh"), *args],
-                env=environment,
+                command,
+                env=run_environment,
                 text=True,
+                input=input_text,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
             )
-            if result.returncode:
+            if result.returncode and check:
                 self.fail("sealed model-control failed: %s %s" % (
                     result.stdout, result.stderr
                 ))
-            return json.loads(result.stdout)
+            return json.loads(result.stdout) if not result.returncode else result
 
         preview = migrate(
             "migrate-plan", "--ticket", "T-901", "--workdir", str(self.workdir)
@@ -442,18 +498,13 @@ PY
                 self.base / "migration-readiness-counter"
             ),
         }
-        drift = subprocess.run(
-            [
-                str(release / "scripts" / "model-control.sh"), "migrate",
-                "--ticket", "T-901", "--workdir", str(self.workdir),
-                "--approve-hash", preview["preview_hash"],
-                "--readiness-hash", preview["readiness_sha256"],
-                "--approved-by", "tester",
-            ],
-            env=drift_environment,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+        drift = migrate(
+            "migrate", "--ticket", "T-901", "--workdir", str(self.workdir),
+            "--approve-hash", preview["preview_hash"],
+            "--readiness-hash", preview["readiness_sha256"],
+            "--approved-by", "tester",
+            run_environment=drift_environment,
+            check=False,
         )
         self.assertEqual(drift.returncode, 2)
         self.assertIn("readiness changed after approval", drift.stdout)
@@ -490,6 +541,10 @@ PY
             len(preview_probes),
         )
         self.assertEqual(applied["preview_hash"], preview["preview_hash"])
+        self.assertEqual(
+            network_trace.read_text().splitlines(),
+            ["authenticated-git-network", "authenticated-git-network"],
+        )
         self.assertEqual(
             json.loads(
                 route_plan.read_text()

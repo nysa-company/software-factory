@@ -378,10 +378,17 @@ ENV_OUT="$FACTORY_ROOT/factory/model-helper.env"
 if [[ -z "${FACTORY_INTERNAL_BATCH_RESOLUTION:-}" ]]; then
   env | awk -F= '$1 != "GH_TOKEN"' | LC_ALL=C sort > "$ENV_OUT"
   if [[ ${GH_TOKEN+x} == x ]]; then
-    printf 'GH_TOKEN_PRESENT=true\n' >> "$ENV_OUT"
+    printf 'GH_TOKEN_PRESENT=true\nGH_TOKEN_CKSUM=%s\n' \
+      "$(printf '%s' "$GH_TOKEN" | cksum)" >> "$ENV_OUT"
   fi
 fi
 if [[ -e "$FACTORY_ROOT/factory/test-model-args-only" ]]; then
+  if [[ "${FACTORY_GITHUB_TOKEN_FD:-}" == "9" ]]; then
+    IFS= read -r PROFILE_TOKEN <&9
+    printf 'GITHUB_TOKEN_FD_PRESENT=true\nGITHUB_TOKEN_FD_CKSUM=%s\n' \
+      "$(printf '%s' "$PROFILE_TOKEN" | cksum)" >> "$ENV_OUT"
+    unset PROFILE_TOKEN
+  fi
   printf 'ARG=%s\n' "$@"
   exit 0
 fi
@@ -1490,6 +1497,18 @@ touch "$LAUNCH_PRODUCT/factory/test-model-args-only"
 run_launcher launchtest models inventory --json > "$TMP/models-inventory.out"
 grep -qFx 'ARG=inventory' "$TMP/models-inventory.out" ||
   fail "sealed model inventory did not reach the selected helper"
+run_launcher launchtest models migrate \
+  --ticket T-123 --workdir "$RUN_WORKTREE_PHYS" \
+  --approve-hash aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  --readiness-hash bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+  --approved-by tester --json > "$TMP/models-migrate-auth.out"
+grep -qFx 'ARG=migrate' "$TMP/models-migrate-auth.out" ||
+  fail "sealed route migration did not reach the selected helper"
+grep -qFx 'GITHUB_TOKEN_FD_PRESENT=true' "$MODEL_HELPER_ENV" ||
+  fail "route migration did not receive the profile credential pipe"
+grep -qFx "GITHUB_TOKEN_FD_CKSUM=$(printf '%s' "$GH_SECRET" | cksum)" "$MODEL_HELPER_ENV" ||
+  fail "route migration received a caller credential instead of the profile credential"
+assert_no_secret "$MODEL_HELPER_ENV"
 run_launcher launchtest models fallback-plan \
   --ticket T-123 --failed-run failed-run-1 --workdir "$RUN_WORKTREE_PHYS" \
   --reason provider_unavailable --json > "$TMP/models-fallback-no-exception.out"
@@ -1499,6 +1518,11 @@ for expected in fallback-plan T-123 failed-run-1 "$RUN_WORKTREE_PHYS" provider_u
 done
 ! grep -qF 'allow-reviewer-family' "$TMP/models-fallback-no-exception.out" ||
   fail "fallback without Reviewer exception invented one"
+grep -qFx 'GITHUB_TOKEN_FD_PRESENT=true' "$MODEL_HELPER_ENV" ||
+  fail "fallback did not receive the profile credential pipe"
+grep -qFx "GITHUB_TOKEN_FD_CKSUM=$(printf '%s' "$GH_SECRET" | cksum)" "$MODEL_HELPER_ENV" ||
+  fail "fallback received a caller credential instead of the profile credential"
+assert_no_secret "$MODEL_HELPER_ENV"
 rm -f "$LAUNCH_PRODUCT/factory/test-model-args-only"
 
 # Compatibility smoke: the new launcher can still run a mock role selected

@@ -165,7 +165,7 @@ class FallbackTest(unittest.TestCase):
 
     def command(
         self, action, *extra, check=True, reason="credits_exhausted", environment=None,
-        failed_run="run-failed-1",
+        failed_run="run-failed-1", input_text=None,
     ):
         result = subprocess.run(
             [
@@ -181,6 +181,7 @@ class FallbackTest(unittest.TestCase):
                 *extra,
             ],
             text=True,
+            input=input_text,
             capture_output=True,
             env={**os.environ, **(environment or {})},
         )
@@ -208,6 +209,110 @@ class FallbackTest(unittest.TestCase):
         preview = self.command("preview", reason="budget_exhausted")
         self.assertEqual(preview["reason"], "budget_exhausted")
         self.assertEqual(preview["failed_run_id"], "run-failed-1")
+
+    def test_github_https_fallback_refuses_without_explicit_credential(self):
+        before_head = git(self.repo, "rev-parse", "HEAD")
+        before_status = git(self.repo, "status", "--porcelain")
+        result = self.command(
+            "preview",
+            "--remote",
+            "https://github.com/nysa-company/relay-factory.git",
+            check=False,
+            environment={"GH_TOKEN": "ambient-token-must-be-ignored"},
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("github_credential_unavailable", result.stderr)
+        self.assertNotIn("ambient-token-must-be-ignored", result.stderr)
+        self.assertEqual(git(self.repo, "rev-parse", "HEAD"), before_head)
+        self.assertEqual(git(self.repo, "status", "--porcelain"), before_status)
+
+    def test_github_https_preview_scopes_credential_to_remote_reads(self):
+        base = self.repo.parent
+        tools = base / "tools"
+        tools.mkdir()
+        trace = base / "git-network.trace"
+        helper = (tools / "gh").resolve()
+        helper.write_text("#!/bin/sh\nexit 0\n")
+        helper.chmod(0o700)
+        wrapper = tools / "git"
+        wrapper.write_text(
+            "#!/usr/bin/env python3\n"
+            "import os, sys\n"
+            "args = sys.argv[1:]\n"
+            "url = os.environ['TEST_GITHUB_URL']\n"
+            "ssh = os.environ['TEST_GITHUB_SSH']\n"
+            "network = 'ls-remote' in args and (url in args or ssh in args)\n"
+            "if url in args and network:\n"
+            "    assert os.environ.get('GH_TOKEN') == 'fixture-token'\n"
+            "    assert any('credential.https://github.com.helper=!' in x for x in args)\n"
+            "    args = [os.environ['TEST_LOCAL_REMOTE'] if x == url else x for x in args]\n"
+            "    with open(os.environ['TEST_GIT_TRACE'], 'a') as handle:\n"
+            "        handle.write('authenticated-remote-read\\n')\n"
+            "elif ssh in args and network:\n"
+            "    assert 'GH_TOKEN' not in os.environ\n"
+            "    args = [os.environ['TEST_LOCAL_REMOTE'] if x == ssh else x for x in args]\n"
+            "    with open(os.environ['TEST_GIT_TRACE'], 'a') as handle:\n"
+            "        handle.write('credential-free-ssh-read\\n')\n"
+            "else:\n"
+            "    assert 'GH_TOKEN' not in os.environ\n"
+            "os.execv('/usr/bin/git', ['/usr/bin/git', *args])\n"
+        )
+        wrapper.chmod(0o700)
+        url = "https://github.com/nysa-company/relay-factory.git"
+        ssh_url = "git@github.com:nysa-company/relay-factory.git"
+        environment = {
+            "PATH": f"{tools}:/usr/bin:/bin",
+            "TEST_GITHUB_URL": url,
+            "TEST_GITHUB_SSH": ssh_url,
+            "TEST_LOCAL_REMOTE": str(self.remote),
+            "TEST_GIT_TRACE": str(trace),
+        }
+        value = self.command(
+            "preview",
+            "--remote",
+            url,
+            "--github-token-stdin",
+            "--github-helper",
+            str(helper),
+            input_text="fixture-token",
+            environment=environment,
+        )
+        self.assertEqual(value["schema"], "ticket-model-fallback-preview/v1")
+        self.assertEqual(
+            trace.read_text().splitlines(),
+            ["authenticated-remote-read", "authenticated-remote-read"],
+        )
+        self.assertNotIn("fixture-token", json.dumps(value))
+
+        before_head = git(self.repo, "rev-parse", "HEAD")
+        refused = self.command(
+            "preview",
+            "--remote",
+            url,
+            "--github-token-stdin",
+            "--github-helper",
+            str(helper),
+            input_text="invalid-token",
+            environment=environment,
+            check=False,
+        )
+        self.assertIn("github_https_authentication_failed", refused.stderr)
+        self.assertNotIn("invalid-token", refused.stderr)
+        self.assertEqual(git(self.repo, "rev-parse", "HEAD"), before_head)
+
+        ssh_value = self.command(
+            "preview", "--remote", ssh_url, environment=environment
+        )
+        self.assertEqual(ssh_value["schema"], "ticket-model-fallback-preview/v1")
+        self.assertEqual(
+            trace.read_text().splitlines(),
+            [
+                "authenticated-remote-read",
+                "authenticated-remote-read",
+                "credential-free-ssh-read",
+                "credential-free-ssh-read",
+            ],
+        )
 
     def test_preview_then_apply_commits_partial_work_and_journal_once(self):
         preview = self.command("preview")

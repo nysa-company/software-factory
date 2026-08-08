@@ -2,6 +2,18 @@
 # Task-free model routing control for the sealed launcher.
 set -euo pipefail
 
+CONTROL_GITHUB_TOKEN=""
+CONTROL_GITHUB_TOKEN_ERROR=""
+if [[ -n "${FACTORY_GITHUB_TOKEN_FD:-}" ]]; then
+  if [[ "$FACTORY_GITHUB_TOKEN_FD" != "9" ]]; then
+    CONTROL_GITHUB_TOKEN_ERROR="github credential descriptor is invalid"
+  elif ! IFS= read -r CONTROL_GITHUB_TOKEN <&9; then
+    CONTROL_GITHUB_TOKEN_ERROR="github credential descriptor is unreadable"
+  fi
+  exec 9<&- 2>/dev/null || true
+fi
+unset FACTORY_GITHUB_TOKEN_FD GH_TOKEN
+
 KIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 # shellcheck disable=SC1091
 source "$KIT_DIR/scripts/lib/plain-config.sh"
@@ -24,6 +36,7 @@ PIN_PLAN_EXISTED=0
 TEMPORARY_FILE=""
 TEMPORARY_DIR=""
 FALLBACK_LAUNCH_LOCK=""
+CONTROL_GITHUB_HELPER=""
 
 cleanup() {
   local rc=$?
@@ -55,6 +68,8 @@ print(json.dumps({"error": sys.argv[1], "status": "error"},
 PY
   exit 2
 }
+
+[[ -z "$CONTROL_GITHUB_TOKEN_ERROR" ]] || json_error "$CONTROL_GITHUB_TOKEN_ERROR"
 
 [[ "${FACTORY_MODEL_STATE_ROOT:-}" == /* ]] ||
   json_error "FACTORY_MODEL_STATE_ROOT must be an absolute path"
@@ -148,6 +163,68 @@ EOF
     json_error "${FACTORY_PRODUCT_REMOTE_ERROR:-certified origin validation failed}"
 }
 
+prepare_github_git_auth() {
+  [[ "$CONTROL_REMOTE" == https://github.com/* ]] || return 0
+  [[ -n "$CONTROL_GITHUB_TOKEN" ]] || json_error "github_credential_unavailable"
+  local candidate
+  candidate=""
+  for candidate_path in /opt/homebrew/bin/gh /usr/local/bin/gh /usr/bin/gh; do
+    if [[ -x "$candidate_path" ]]; then
+      candidate="$candidate_path"
+      break
+    fi
+  done
+  [[ -n "$candidate" ]] || json_error "github credential helper is unavailable"
+  CONTROL_GITHUB_HELPER="$(python3 -I -S - "$candidate" <<'PY'
+import os, re, stat, sys
+path = os.path.realpath(sys.argv[1])
+try:
+    metadata = os.stat(path)
+except OSError:
+    raise SystemExit(1)
+if (
+    not path.startswith("/")
+    or not re.fullmatch(r"/[A-Za-z0-9_./+-]+", path)
+    or not stat.S_ISREG(metadata.st_mode)
+    or metadata.st_uid not in {0, os.geteuid()}
+    or stat.S_IMODE(metadata.st_mode) & 0o022
+    or not os.access(path, os.X_OK)
+):
+    raise SystemExit(1)
+print(path)
+PY
+)" || json_error "github credential helper is unsafe"
+}
+
+fallback_python() {
+  if [[ -n "$CONTROL_GITHUB_HELPER" ]]; then
+    printf '%s' "$CONTROL_GITHUB_TOKEN" |
+      python3 -B "$KIT_DIR/scripts/model-fallback.py" "$@" \
+        --github-token-stdin --github-helper "$CONTROL_GITHUB_HELPER"
+  else
+    python3 -B "$KIT_DIR/scripts/model-fallback.py" "$@"
+  fi
+}
+
+control_git() {
+  local workdir="$1"
+  shift
+  if [[ -n "$CONTROL_GITHUB_HELPER" ]]; then
+    GH_TOKEN="$CONTROL_GITHUB_TOKEN" git -C "$workdir" \
+      -c credential.helper= \
+      -c "credential.https://github.com.helper=!$CONTROL_GITHUB_HELPER auth git-credential" \
+      "$@"
+  else
+    git -C "$workdir" "$@"
+  fi
+}
+
+git_network_error() {
+  local ordinary="$1"
+  [[ -z "$CONTROL_GITHUB_HELPER" ]] || json_error "github_https_authentication_failed"
+  json_error "$ordinary"
+}
+
 push_exact_head() {
   local workdir="$1" branch="$2" remote="$3" expected_old="$4"
   local head tracking actual
@@ -155,12 +232,12 @@ push_exact_head() {
   tracking="$(factory_remote_tracking_tip "$workdir" "$branch")"
   [[ "$tracking" == "$expected_old" ]] ||
     json_error "remote tracking state changed before push"
-  git -C "$workdir" push --no-force \
+  control_git "$workdir" push --no-force \
     "$remote" "$head:refs/heads/$branch" >/dev/null 2>&1 ||
-    json_error "could not push exact model-control commit"
-  actual="$(git -C "$workdir" ls-remote --heads -- "$remote" \
+    git_network_error "could not push exact model-control commit"
+  actual="$(control_git "$workdir" ls-remote --heads -- "$remote" \
     "refs/heads/$branch" 2>/dev/null | awk 'NR==1 {print $1; exit}')"
-  [[ "$actual" == "$head" ]] || json_error "remote verification failed"
+  [[ "$actual" == "$head" ]] || git_network_error "remote verification failed"
   factory_update_tracking_ref "$workdir" "$branch" "$head" "$tracking" ||
     json_error "remote tracking update failed"
   printf '%s\n' "$head"
@@ -322,6 +399,7 @@ PY
         json_error "--include-journal is valid only for migration preview"
     fi
     validate_control_workdir "$ticket" "$workdir" 0
+    [[ "$command_name" != "migrate" ]] || prepare_github_git_auth
     [[ -f "$CONTROL_PLAN_FILE" && ! -L "$CONTROL_PLAN_FILE" ]] ||
       json_error "ticket route document is missing or unsafe"
     factory_validate_kit_pin "$KIT_DIR" "$FACTORY_ROOT" ||
@@ -521,6 +599,7 @@ PY
     [[ -z "$allow_reviewer_family" ]] ||
       fallback_exception_args+=(--allow-reviewer-family "$allow_reviewer_family")
     validate_control_workdir "$ticket" "$workdir" 1
+    prepare_github_git_auth
     [[ -f "$CONTROL_PLAN_FILE" && ! -L "$CONTROL_PLAN_FILE" ]] ||
       json_error "ticket route document is missing or unsafe"
     profile_id="$(python3 - "$CONTROL_PLAN_FILE" "$command_name" <<'PY'
@@ -561,7 +640,7 @@ PY
     if [[ "$command_name" == "fallback-plan" ]]; then
       preview_file="$(mktemp "$FACTORY_MODEL_STATE_ROOT/.model-fallback-preview.XXXXXX")" ||
         json_error "could not allocate fallback preview"
-      if ! python3 -B "$KIT_DIR/scripts/model-fallback.py" preview \
+      if ! fallback_python preview \
         "${fallback_exception_args[@]}" \
         --readiness "$readiness" --remote "$CONTROL_REMOTE" > "$preview_file"; then
         rm -f "$preview_file"
@@ -585,7 +664,7 @@ PY
         json_error "remote tracking state is unavailable"
       apply_file="$(mktemp "$FACTORY_MODEL_STATE_ROOT/.model-fallback-apply.XXXXXX")" ||
         json_error "could not allocate fallback result"
-      if ! python3 -B "$KIT_DIR/scripts/model-fallback.py" qualification-apply \
+      if ! fallback_python qualification-apply \
         --workdir "$workdir" --factory-root "$FACTORY_ROOT" \
         --project "$FACTORY_PROJECT" --ticket "$ticket" \
         --failed-run "$failed_run" --reason "$reason" \
@@ -642,7 +721,7 @@ PY
     if [[ "$approval_available" -eq 0 ]]; then
       recovery_file="$(mktemp "$FACTORY_MODEL_STATE_ROOT/.model-fallback-recovery.XXXXXX")" ||
         json_error "could not allocate fallback recovery result"
-      if ! python3 -B "$KIT_DIR/scripts/model-fallback.py" recover \
+      if ! fallback_python recover \
         --workdir "$workdir" --factory-root "$FACTORY_ROOT" \
         --project "$FACTORY_PROJECT" --ticket "$ticket" \
         --failed-run "$failed_run" --reason "$reason" \
@@ -692,7 +771,7 @@ PY
     fi
     apply_file="$(mktemp "$FACTORY_MODEL_STATE_ROOT/.model-fallback-apply.XXXXXX")" ||
       json_error "could not allocate fallback result"
-    if ! python3 -B "$KIT_DIR/scripts/model-fallback.py" apply \
+    if ! fallback_python apply \
       "${fallback_exception_args[@]}" \
       --readiness "$readiness" --remote "$CONTROL_REMOTE" \
       --approval "$approval_file" > "$apply_file"; then

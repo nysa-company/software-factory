@@ -1907,11 +1907,20 @@ PY
     fi
     MODEL_HELPER="$RELEASE_PATH/scripts/model-control.sh"
     require_managed_file "$MODEL_HELPER" "active release model-control helper"
-    # Model control is task-free and needs no profile credential.
+    # Only fallback Git network operations receive the trusted profile token;
+    # pass it through an inherited pipe so it never appears in env(1) argv.
     MODEL_HELPER_ENV=()
     for MODEL_ENV_ITEM in "${HELPER_ENV[@]}"; do
       [[ "$MODEL_ENV_ITEM" == GH_TOKEN=* ]] || MODEL_HELPER_ENV+=("$MODEL_ENV_ITEM")
     done
+    if [[ -n "$PROFILE_GH_TOKEN" &&
+          ( "$MODEL_ACTION" == "migrate" ||
+            "$MODEL_ACTION" == "fallback-plan" ||
+            "$MODEL_ACTION" == "fallback" ||
+            "$MODEL_ACTION" == "fallback-auto" ) ]]; then
+      exec 9<<<"$PROFILE_GH_TOKEN"
+      MODEL_HELPER_ENV+=("FACTORY_GITHUB_TOKEN_FD=9")
+    fi
     cleanup_runtime
     trap - EXIT HUP INT TERM
     exec "${MODEL_HELPER_ENV[@]}" /bin/bash "$MODEL_HELPER" "${MODEL_ARGS[@]}"

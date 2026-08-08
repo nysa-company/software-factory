@@ -24,6 +24,7 @@ suite_registry() {
   "$callback" state-machine "deterministic state-machine suite" python3 "$ROOT/ci/state-machine-test.py"
   "$callback" emergency-admit "one-use emergency role admission suite" python3 "$ROOT/ci/emergency-admit-test.py"
   "$callback" progress-timeout "authenticated progress timeout suite" python3 "$ROOT/ci/progress-timeout-test.py"
+  "$callback" cursor-stream "Cursor stream validation suite" python3 "$ROOT/ci/cursor-stream-test.py"
   "$callback" ticket-passport "authenticated ticket passport suite" python3 "$ROOT/ci/ticket-passport-test.py"
   "$callback" publication-lease "serialized publication lease suite" python3 "$ROOT/ci/publication-lease-test.py"
   "$callback" publication-conflict-policy "fail-closed publication conflict suite" python3 "$ROOT/ci/publication-conflict-policy-test.py"
