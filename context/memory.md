@@ -4715,3 +4715,18 @@ immutable history, reopens Test-author ownership, and reruns the required
 Planner, Spec-linter, Test-author, and Builder prefix against the new version.
 Issue #258's same-version mechanism is therefore rejected; any future
 optimization must retain that higher-epoch trust boundary.
+
+## 2026-08-08 — Decision 345: Coordination repairs stay boundary-specific
+
+Category: Reliability
+
+The proposed omnibus port in #295 is rejected. Its four cited incidents already
+have narrower authenticated repairs and regressions: exact fallback rearm,
+complete qualification-target restart accounting, atomic passport-key
+publication, and a merged-state recheck into ordinary idempotent closeout. The
+older calibration F1/F2 findings are also resolved by ignored immutable run
+manifests with closeout-only tracked projection and owner-controlled disposable
+ticket cells. A generic request/outcome layer would duplicate receipt,
+passport, compare-and-swap, and recovery evidence without a reproduced missing
+boundary. Future coordination work starts from one current failure and repairs
+its shared path; no upstream invariant is ported without that evidence.
