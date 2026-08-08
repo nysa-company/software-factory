@@ -1216,6 +1216,7 @@ class FactoryControllerTest(unittest.TestCase):
     def test_qualification_claim_rechecks_fallback_readiness(self) -> None:
         controller = CONTROL.Controller(self.args)
         controller.qualification = {"tickets": ["T-110"]}
+        controller.qualification_fallback_readiness_sha256 = "f" * 64
         calls = []
 
         def ready(*args, **_kwargs):
@@ -1235,6 +1236,15 @@ class FactoryControllerTest(unittest.TestCase):
             "readiness_sha256": "f" * 64,
             "schema": "nysa.software-factory.qualification-fallback-readiness/v1",
             "status": "invalid",
+        }
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "fallback readiness drifted",
+        ):
+            controller.claim_new([])
+        controller.json_call = lambda *_args, **_kwargs: {
+            "readiness_sha256": "e" * 64,
+            "schema": "nysa.software-factory.qualification-fallback-readiness/v1",
+            "status": "ready",
         }
         with self.assertRaisesRegex(
             CONTROL.ControllerError, "fallback readiness drifted",

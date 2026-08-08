@@ -314,6 +314,7 @@ def qualification_lane(root_value: Path, project: str) -> dict[str, Any]:
     shared = (
         "contract_version", "kit_sha", "kit_tree", "product_path",
         "product_sha", "product_tree", "project", "provider_policy_sha256",
+        "fallback_readiness_sha256",
         "qualification_mode", "operator_map_path", "controller_state_path",
         "provider_state_path", "runtime_ledger_path",
     )
@@ -2417,6 +2418,7 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
         "product_tree": product_tree,
         "project": args.project,
         "provider_policy_sha256": provider_policy_sha256,
+        "fallback_readiness_sha256": fallback_readiness_sha256,
         "qualification_mode": qualification_mode,
         "operator_map_path": operator_map_path,
         "receipt_id": receipt_id,
@@ -2640,6 +2642,7 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
             "product_tree": product_tree,
             "project": args.project,
             "provider_policy_sha256": policy_hash,
+            "fallback_readiness_sha256": fallback_readiness_sha256,
             "controller_state_path": str(controller),
             "provider_state_path": str(provider),
             "operator_map_path": str(operator_map_path),

@@ -189,6 +189,8 @@ class ModelControlTest(unittest.TestCase):
             ("route_policy", "provider identities are invalid token=DO-NOT-LEAK"),
             ("handoff", "ticket content is not UTF-8 token=DO-NOT-LEAK"),
             ("handoff", "existing fallback has a non-migration suffix token=DO-NOT-LEAK"),
+            ("handoff", "role forbidden exceptions must be an object token=DO-NOT-LEAK"),
+            ("handoff", "role forbidden exceptions reference an unknown role token=DO-NOT-LEAK"),
         )
         for expected, detail in cases:
             with self.subTest(expected=expected):

@@ -243,7 +243,8 @@ Only `credits_exhausted` and `provider_unavailable` are eligible reasons.
 
 For qualification, run `doctor --json` before starting reconciliation and
 inspect `checks.fallback_readiness`. A version mismatch names the exact native
-fallback route plus expected and installed versions. Do not replay a completed
+fallback route plus expected and installed versions. Admission also requires
+the fresh report digest to match the sealed qualification receipt. Do not replay a completed
 Cursor role or edit its claim/passport: exact identity-only success is recovered
 without another provider call, while a typed `qualification-fallback-refused`
 claim remains parked until a successor release contains the repair.

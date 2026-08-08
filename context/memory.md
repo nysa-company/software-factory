@@ -4373,9 +4373,9 @@ Category: Reliability
 
 Every selected Cursor role in qualification must have a ready same-family
 native fallback at the exact pinned CLI version. Preparation persists the
-bounded report, Doctor preserves route plus expected and installed versions,
-and claim admission probes again so post-prepare CLI drift fails before a lease
-or provider call.
+bounded report and digest in the activation receipt, Doctor preserves route
+plus expected and installed versions, and claim admission requires a fresh
+probe to match that digest before a lease or provider call.
 
 ## 2026-08-08 — Decision 325: Fallback refusal and migration are exact
 

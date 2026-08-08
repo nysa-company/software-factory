@@ -375,6 +375,9 @@ class Controller:
             hashlib.sha256(canonical(self.qualification).encode()).hexdigest()
             if self.qualification else ""
         )
+        self.qualification_fallback_readiness_sha256 = os.environ.get(
+            "FACTORY_QUALIFICATION_FALLBACK_READINESS_SHA256", ""
+        )
         self.admission_refusals: dict[str, dict[str, str]] = {}
         self.fallback_lock = Lock()
         # ponytail: cells share one Git common directory; use per-cell refs only if refresh throughput matters.
@@ -1796,6 +1799,11 @@ class Controller:
                 != "nysa.software-factory.qualification-fallback-readiness/v1"
                 or readiness.get("status") != "ready"
                 or not DIGEST.fullmatch(readiness.get("readiness_sha256", ""))
+                or (
+                    self.qualification_fallback_readiness_sha256
+                    and readiness.get("readiness_sha256")
+                    != self.qualification_fallback_readiness_sha256
+                )
             ):
                 raise ControllerError("qualification fallback readiness drifted")
         excluded = sorted(

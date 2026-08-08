@@ -266,6 +266,7 @@ ledger.chmod(0o600)
         self.assertEqual(receipt["operator_map_path"], str(operator_map))
         self.assertEqual(receipt["runtime_ledger_path"], str(runtime_ledger))
         self.assertEqual(receipt["fallback_readiness_sha256"], "a" * 64)
+        self.assertEqual(active["fallback_readiness_sha256"], "a" * 64)
         self.assertEqual(
             set(ENVIRONMENT.read(operator_map)["tickets"]),
             {"T-101", "T-102", "T-103"},
@@ -361,6 +362,10 @@ ledger.chmod(0o600)
         )
         self.assertIn(
             '"FACTORY_QUALIFICATION_PRODUCT_TREE=$ACTIVE_PRODUCT_TREE"',
+            launcher_text,
+        )
+        self.assertIn(
+            '"FACTORY_QUALIFICATION_FALLBACK_READINESS_SHA256=$ACTIVE_FALLBACK_READINESS_SHA256"',
             launcher_text,
         )
         self.assertIn(
