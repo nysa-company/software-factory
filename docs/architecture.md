@@ -384,6 +384,16 @@ submission, the controller records the unconsumed receipt, settles the ticket
 for that invocation, parks its clean checkpoint, and releases its lease. The
 next invocation issues an ordinary descendant receipt; no provider call,
 charge, or successful-role replay is created by the interruption.
+Cached transition receipts are never re-stamped during that migration. Their
+digest and stable identity are checked first; only an exact current-release
+receipt is returned as transition authority. A valid prior-release receipt or
+an invalid receipt yields no authority, emits one ticket-scoped typed event,
+and is excluded from ordinary recovery, admission, and scheduling for that
+sweep. An inactive invalid claim releases its lease without rewriting the
+receipt; a live role is untouched. Existing typed release-upgrade, terminal,
+and contract-blocker recovery may still use a digest-valid prior receipt under
+their stricter bindings. Done and Canceled claims retire before this check,
+while Doctor reports the latest unresolved receipt incident per ticket.
 The role runner retains the validated project only in a non-exported host
 binding for its receipt rechecks; provider processes never inherit the
 project's model-state controls. Its trusted exact-head remote observation

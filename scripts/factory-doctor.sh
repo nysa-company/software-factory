@@ -101,10 +101,12 @@ CLI_FILE="$TMP/clis.tsv"
 RUN_FILE="$TMP/runs.tsv"
 LEASE_FILE="$TMP/leases.tsv"
 CONTRACT_RESUME_FILE="$TMP/contract-resume.json"
+TRANSITION_RECEIPT_FILE="$TMP/transition-receipts.json"
 : > "$CLI_FILE"
 : > "$RUN_FILE"
 : > "$LEASE_FILE"
 printf '[]\n' > "$CONTRACT_RESUME_FILE"
+printf '[]\n' > "$TRANSITION_RECEIPT_FILE"
 
 sanitize() {
   "$PYTHON_BIN" -c '
@@ -423,8 +425,10 @@ fi
 [[ "$PROVIDER_LOCK_STATE" != "malformed" ]] || RUNTIME_STATUS="error"
 
 CONTRACT_RESUME_STATUS="ok"
+TRANSITION_RECEIPT_STATUS="ok"
 if [[ -n "${FACTORY_CONTROLLER_STATE_DIR:-}" ]]; then
   if ! "$PYTHON_BIN" -I -S - "$FACTORY_CONTROLLER_STATE_DIR" \
+      "$TRANSITION_RECEIPT_FILE" \
       > "$CONTRACT_RESUME_FILE" <<'PY'
 import hashlib
 import json
@@ -435,7 +439,15 @@ import stat
 import sys
 
 root = Path(sys.argv[1]).resolve()
+transition_file = Path(sys.argv[2])
 resolved = {"contract_blocker_recovered", "recorded_contract_repair_prepared"}
+transition_terminal = {"ticket_complete", "ticket_released", "ticket_retired"}
+transition_prior_migrated = {
+    "passportless_route_migration_recovered", "route_migration_cleared",
+    "upgraded_bundle_refresh_recovered", "upgraded_claim_recovered",
+    "upgraded_merged_claim_recovered",
+}
+transition_resolved = transition_terminal | transition_prior_migrated
 
 def secure(path, *, directory=False):
     info = path.lstat()
@@ -448,12 +460,19 @@ def secure(path, *, directory=False):
 
 try:
     secure(root, directory=True)
+    claims = root / "claims"
+    if claims.exists() or claims.is_symlink():
+        secure(claims, directory=True)
     events = root / "events"
     if not events.exists():
+        transition_file.write_text("[]\n", encoding="utf-8")
         print("[]")
         raise SystemExit(0)
     secure(events, directory=True)
     latest = {}
+    transition_latest = {}
+    transition_terminal_epoch = {}
+    transition_migration_epoch = {}
     for path in sorted(events.iterdir()):
         if path.suffix != ".json":
             continue
@@ -469,12 +488,21 @@ try:
         ).encode()
         if (digest != hashlib.sha256(canonical).hexdigest()
                 or value.get("schema") != "nysa.software-factory.controller-event/v1"
+                or not re.fullmatch(r"[0-9a-f]{40}", value.get("factory_sha", ""))
                 or not isinstance(value.get("observed_at_epoch_ns"), int)
                 or isinstance(value.get("observed_at_epoch_ns"), bool)
                 or value["observed_at_epoch_ns"] < 0):
             raise ValueError
         event = value.get("event")
-        if event != "contract_resume_refused" and event not in resolved:
+        if (
+            event != "contract_resume_refused"
+            and event not in resolved
+            and event not in {
+                "prior_kit_transition_receipt_observed",
+                "transition_receipt_invalid",
+            }
+            and event not in transition_resolved
+        ):
             continue
         ticket = value.get("ticket")
         if not isinstance(ticket, str) or not re.fullmatch(r"T-[0-9]+", ticket):
@@ -511,11 +539,102 @@ try:
                 if (key in incident and incident[key] not in {None, ""}
                         and not re.fullmatch(r"[0-9a-f]{40}", incident[key])):
                     raise ValueError
-        else:
+        elif event in resolved:
             incident = None
+        elif event == "prior_kit_transition_receipt_observed":
+            active = value.get("active_factory_sha")
+            prior = value.get("receipt_factory_sha")
+            receipt = value.get("transition_receipt_sha256")
+            if (
+                not isinstance(active, str)
+                or not re.fullmatch(r"[0-9a-f]{40}", active)
+                or active != value.get("factory_sha")
+                or not isinstance(prior, str)
+                or not re.fullmatch(r"[0-9a-f]{40}", prior)
+                or prior == active
+                or not isinstance(receipt, str)
+                or not re.fullmatch(r"[0-9a-f]{64}", receipt)
+            ):
+                raise ValueError
+            transition_incident = {
+                "active_factory_sha": active,
+                "observed_at_epoch_ns": value["observed_at_epoch_ns"],
+                "reason_code": "prior_kit_receipt",
+                "receipt_factory_sha": prior,
+                "ticket": ticket,
+                "transition_receipt_sha256": receipt,
+            }
+        elif event == "transition_receipt_invalid":
+            reason = value.get("reason_code")
+            if reason not in {
+                "receipt_digest_invalid", "receipt_identity_invalid",
+                "receipt_unreadable",
+            }:
+                raise ValueError
+            transition_incident = {
+                "observed_at_epoch_ns": value["observed_at_epoch_ns"],
+                "reason_code": reason,
+                "ticket": ticket,
+            }
+        elif event == "passportless_route_migration_recovered":
+            if not re.fullmatch(
+                r"[0-9a-f]{64}", value.get("refused_receipt_sha256", "")
+            ):
+                raise ValueError
+        elif event == "upgraded_claim_recovered":
+            prior = value.get("from_factory_sha", "")
+            if (
+                not re.fullmatch(r"[0-9a-f]{40}", prior)
+                or prior == value["factory_sha"]
+            ):
+                raise ValueError
         observed = value["observed_at_epoch_ns"]
-        if ticket not in latest or observed > latest[ticket][0]:
-            latest[ticket] = (observed, incident)
+        if event == "contract_resume_refused" or event in resolved:
+            if ticket not in latest or observed > latest[ticket][0]:
+                latest[ticket] = (observed, incident)
+        if (
+            event in {
+                "prior_kit_transition_receipt_observed",
+                "transition_receipt_invalid",
+            }
+        ) and (
+            ticket not in transition_latest
+            or observed > transition_latest[ticket][0]
+        ):
+            transition_latest[ticket] = (observed, transition_incident)
+        if event in transition_terminal:
+            transition_terminal_epoch[ticket] = max(
+                observed, transition_terminal_epoch.get(ticket, -1)
+            )
+        if event in transition_prior_migrated:
+            previous = transition_migration_epoch.get(ticket, (-1, ""))
+            if observed > previous[0]:
+                transition_migration_epoch[ticket] = (
+                    observed, value["factory_sha"]
+                )
+    def terminally_resolved(ticket, observed):
+        claim = claims / f"{ticket}.json"
+        return (
+            transition_terminal_epoch.get(ticket, -1) > observed
+            and not claim.exists()
+            and not claim.is_symlink()
+        )
+
+    transition_file.write_text(json.dumps([
+        incident
+        for observed, incident in sorted(
+            transition_latest.values(), key=lambda item: item[0]
+        )
+        if not terminally_resolved(incident["ticket"], observed)
+        and (
+            incident["reason_code"] != "prior_kit_receipt"
+            or transition_migration_epoch.get(
+                incident["ticket"], (-1, "")
+            )[0] <= observed
+            or transition_migration_epoch[incident["ticket"]][1]
+            != incident["active_factory_sha"]
+        )
+    ], sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps([
         incident
         for _, incident in sorted(latest.values(), key=lambda item: item[0])
@@ -526,9 +645,15 @@ except (FileNotFoundError, json.JSONDecodeError, OSError, UnicodeError, ValueErr
 PY
   then
     CONTRACT_RESUME_STATUS="error"
+    TRANSITION_RECEIPT_STATUS="error"
     printf '[]\n' > "$CONTRACT_RESUME_FILE"
+    printf '[]\n' > "$TRANSITION_RECEIPT_FILE"
   elif [[ "$(tr -d '[:space:]' < "$CONTRACT_RESUME_FILE")" != "[]" ]]; then
     CONTRACT_RESUME_STATUS="warning"
+  fi
+  if [[ "$TRANSITION_RECEIPT_STATUS" != "error" ]] &&
+     [[ "$(tr -d '[:space:]' < "$TRANSITION_RECEIPT_FILE")" != "[]" ]]; then
+    TRANSITION_RECEIPT_STATUS="warning"
   fi
 fi
 
@@ -922,6 +1047,7 @@ OVERALL_STATUS="ok"
 for check_status in "$REGISTRY_STATUS" "$KIT_STATUS" "$PIN_STATUS" "$RUNTIME_STATUS" \
                     "$HERMES_STATUS" "$CLI_STATUS" "$CREDENTIAL_STATUS" "$LINEAR_STATUS" \
                     "$PROVIDER_RUNTIME_STATUS" "$CONTRACT_RESUME_STATUS" \
+                    "$TRANSITION_RECEIPT_STATUS" \
                     "$FALLBACK_READINESS_STATUS"; do
   if [[ "$check_status" == "error" ]]; then
     OVERALL_STATUS="error"
@@ -957,6 +1083,7 @@ export PROVIDER_EXECUTION_MODE
 export PROVIDER_ACTIVE_TOKENS PROVIDER_UNKNOWN_WORKERS PROVIDER_LEGACY_INTERVALS
 export PROVIDER_CONCURRENCY_REQUIRED PROVIDER_CONCURRENCY_READY
 export CONTRACT_RESUME_STATUS CONTRACT_RESUME_FILE OVERALL_STATUS RUN_FILE
+export TRANSITION_RECEIPT_STATUS TRANSITION_RECEIPT_FILE
 export FALLBACK_READINESS_STATUS FALLBACK_READINESS_JSON
 
 if [[ "$JSON_MODE" -eq 1 ]]; then
@@ -1000,6 +1127,8 @@ with open(os.environ["LEASE_FILE"], encoding="utf-8") as handle:
 
 with open(os.environ["CONTRACT_RESUME_FILE"], encoding="utf-8") as handle:
     contract_resume_incidents = json.load(handle)
+with open(os.environ["TRANSITION_RECEIPT_FILE"], encoding="utf-8") as handle:
+    transition_receipt_incidents = json.load(handle)
 
 document = {
     "schema": os.environ["DOCTOR_SCHEMA"],
@@ -1085,6 +1214,10 @@ document = {
             "status": os.environ["CONTRACT_RESUME_STATUS"],
             "incidents": contract_resume_incidents,
         },
+        "transition_receipts": {
+            "status": os.environ["TRANSITION_RECEIPT_STATUS"],
+            "incidents": transition_receipt_incidents,
+        },
         "isolated_provider": {
             "status": os.environ["PROVIDER_RUNTIME_STATUS"],
             "activated": boolean("PROVIDER_ACTIVATED"),
@@ -1117,6 +1250,7 @@ else
   echo "Isolated provider [$PROVIDER_RUNTIME_STATUS]: activated=$PROVIDER_ACTIVATED concurrency_required=$PROVIDER_CONCURRENCY_REQUIRED concurrency_ready=$PROVIDER_CONCURRENCY_READY mode=${PROVIDER_EXECUTION_MODE:-none} attempts=$PROVIDER_ACTIVE_ATTEMPTS tokens=$PROVIDER_ACTIVE_TOKENS unknown_workers=$PROVIDER_UNKNOWN_WORKERS legacy=$PROVIDER_LEGACY_INTERVALS"
   echo "Linear sync [$LINEAR_STATUS]: age_seconds=${LINEAR_AGE:-unknown} last_success=${LINEAR_LAST_SUCCESS:-unknown}"
   echo "Contract resume [$CONTRACT_RESUME_STATUS]: incidents=$("$PYTHON_BIN" -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$CONTRACT_RESUME_FILE")"
+  echo "Transition receipts [$TRANSITION_RECEIPT_STATUS]: incidents=$("$PYTHON_BIN" -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$TRANSITION_RECEIPT_FILE")"
   [[ -z "$LINEAR_LAST_ERROR" ]] || echo "Linear last error: $LINEAR_LAST_ERROR"
 fi
 

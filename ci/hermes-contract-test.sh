@@ -552,7 +552,8 @@ EOF
 chmod +x "$STUB_BIN/hermes" "$STUB_BIN/claude" "$STUB_BIN/codex" "$STUB_BIN/agent" "$STUB_BIN/gh"
 
 CONTROLLER_STATE="$TMP/controller-state"
-mkdir -m 700 "$CONTROLLER_STATE" "$CONTROLLER_STATE/events"
+mkdir -m 700 "$CONTROLLER_STATE" "$CONTROLLER_STATE/events" \
+  "$CONTROLLER_STATE/claims"
 python3 - "$CONTROLLER_STATE/events" "$KIT_SHA" <<'PY'
 import hashlib
 import json
@@ -575,7 +576,7 @@ def write(name, ticket, observed, **details):
         value, ensure_ascii=True, sort_keys=True, separators=(",", ":")
     ).encode()
     value["event_sha256"] = hashlib.sha256(canonical).hexdigest()
-    path = events / f"{observed}-{ticket}.json"
+    path = events / f"{observed}-{ticket}-{name}.json"
     path.write_text(json.dumps(value, sort_keys=True) + "\n", encoding="utf-8")
     os.chmod(path, 0o600)
 
@@ -604,6 +605,44 @@ write(
     blocked_receipt_sha256="e" * 64,
     reason_code="resume_future_contract_guard",
 )
+write(
+    "prior_kit_transition_receipt_observed", "T-114", 6,
+    active_factory_sha=factory_sha,
+    receipt_factory_sha="9" * 40,
+    transition_receipt_sha256="f" * 64,
+)
+write(
+    "transition_receipt_invalid", "T-115", 7,
+    reason_code="receipt_digest_invalid",
+)
+write("upgraded_claim_recovered", "T-115", 10, from_factory_sha="7" * 40)
+write(
+    "prior_kit_transition_receipt_observed", "T-116", 8,
+    active_factory_sha=factory_sha,
+    receipt_factory_sha="8" * 40,
+    transition_receipt_sha256="a" * 64,
+)
+write("upgraded_claim_recovered", "T-116", 9, from_factory_sha="8" * 40)
+write(
+    "transition_receipt_invalid", "T-117", 11,
+    reason_code="receipt_identity_invalid",
+)
+write("ticket_retired", "T-117", 12)
+claim = events.parent / "claims/T-117.json"
+claim.write_text("{}\n", encoding="utf-8")
+os.chmod(claim, 0o600)
+write(
+    "transition_receipt_invalid", "T-118", 13,
+    reason_code="receipt_unreadable",
+)
+write("ticket_retired", "T-118", 14)
+write(
+    "prior_kit_transition_receipt_observed", "T-119", 15,
+    active_factory_sha=factory_sha,
+    receipt_factory_sha="7" * 40,
+    transition_receipt_sha256="b" * 64,
+)
+write("upgraded_claim_recovered", "T-119", 15, from_factory_sha="7" * 40)
 PY
 
 HOME="$TEST_HOME" PATH="$STUB_BIN:$PATH" FACTORY_LINEAR_FRESH_SECONDS=600 \
@@ -713,6 +752,32 @@ assert checks["contract_resume"] == {
     }],
     "status": "warning",
 }
+assert checks["transition_receipts"] == {
+    "incidents": [{
+        "active_factory_sha": sha,
+        "observed_at_epoch_ns": 6,
+        "reason_code": "prior_kit_receipt",
+        "receipt_factory_sha": "9" * 40,
+        "ticket": "T-114",
+        "transition_receipt_sha256": "f" * 64,
+    }, {
+        "observed_at_epoch_ns": 7,
+        "reason_code": "receipt_digest_invalid",
+        "ticket": "T-115",
+    }, {
+        "observed_at_epoch_ns": 11,
+        "reason_code": "receipt_identity_invalid",
+        "ticket": "T-117",
+    }, {
+        "active_factory_sha": sha,
+        "observed_at_epoch_ns": 15,
+        "reason_code": "prior_kit_receipt",
+        "receipt_factory_sha": "7" * 40,
+        "ticket": "T-119",
+        "transition_receipt_sha256": "b" * 64,
+    }],
+    "status": "warning",
+}
 allowed = {"ok", "warning", "error", "unknown"}
 assert data["overall_status"] in allowed
 assert all(
@@ -759,8 +824,52 @@ import sys
 data = json.load(open(sys.argv[1], encoding="utf-8"))
 assert data["overall_status"] == "error"
 assert data["checks"]["contract_resume"] == {"incidents": [], "status": "error"}
+assert data["checks"]["transition_receipts"] == {
+    "incidents": [], "status": "error",
+}
 PY
 rm "$INVALID_RESUME_EVENT"
+
+INVALID_MIGRATION_EVENT="$CONTROLLER_STATE/events/16-invalid.json"
+python3 - "$INVALID_MIGRATION_EVENT" "$KIT_SHA" <<'PY'
+import hashlib
+import json
+import os
+from pathlib import Path
+import sys
+
+path, factory_sha = Path(sys.argv[1]), sys.argv[2]
+value = {
+    "event": "upgraded_claim_recovered",
+    "factory_sha": factory_sha,
+    "observed_at_epoch_ns": 16,
+    "schema": "nysa.software-factory.controller-event/v1",
+    "ticket": "T-120",
+}
+canonical = json.dumps(
+    value, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+).encode()
+value["event_sha256"] = hashlib.sha256(canonical).hexdigest()
+path.write_text(json.dumps(value, sort_keys=True) + "\n", encoding="utf-8")
+os.chmod(path, 0o600)
+PY
+INVALID_MIGRATION_RC=0
+HOME="$TEST_HOME" PATH="$STUB_BIN:$PATH" FACTORY_LINEAR_FRESH_SECONDS=600 \
+  FACTORY_CONTROLLER_STATE_DIR="$CONTROLLER_STATE" \
+  bash "$DOCTOR" --json --project relay > "$TMP/doctor-invalid-migration.json" || \
+  INVALID_MIGRATION_RC=$?
+[[ "$INVALID_MIGRATION_RC" -eq 1 ]] || fail "doctor accepted invalid migration event state"
+python3 - "$TMP/doctor-invalid-migration.json" <<'PY'
+import json
+import sys
+
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+assert data["overall_status"] == "error"
+assert data["checks"]["transition_receipts"] == {
+    "incidents": [], "status": "error",
+}
+PY
+rm "$INVALID_MIGRATION_EVENT"
 
 PROVIDER_TEST_ROOT="$(cd "$TMP" && pwd -P)/provider-v2"
 mkdir -m 700 "$PROVIDER_TEST_ROOT" "$PROVIDER_TEST_ROOT/attempts" \
