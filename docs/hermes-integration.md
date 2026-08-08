@@ -255,6 +255,11 @@ direct Codex or Claude Code route for the second and final role attempt. When
 the ticket still has its initial v1 route plan, that same handoff commit first
 preserves it as revision zero of a same-release v2 journal; successful roles
 and the failed attempt are not replayed.
+The sealed launcher supplies the receipt-bound protected product commit, tree,
+and canonical qualification manifest to that transaction. Ordinary lanes
+authorize only the current Factory journal; successor lanes additionally
+authorize exactly their declared source Factory. Restart recovery refuses if
+the protected product or manifest authority changed.
 
 Contract 1.6 defines `scripts/provider-runtime.py` as the coupling boundary for
 the owner-only SQLite coordinator and ephemeral container executor. Admission

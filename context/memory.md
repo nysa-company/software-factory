@@ -57,6 +57,10 @@ everything the Factory actually enforces lives here.
   product; a durable bootstrap reuses partial initialization without duplicate
   issues even if the source seed later changes or disappears. Takeover retains
   its canonical live-map and product-ledger behavior.
+- Qualification fallback reads the strict manifest at the receipt-bound
+  protected product commit. Ordinary lanes authorize only their active Factory;
+  a successor additionally authorizes its exact source Factory. A changed
+  product commit, tree, or manifest digest invalidates restart recovery.
 - Ordinary admission isolates a ticket with malformed dependency syntax and
   reports its exact ID in controller results, events, and durable incident
   evidence while eligible siblings continue. A selected qualification ticket
@@ -4279,3 +4283,14 @@ helper. The token is removed before model readiness, is never accepted from the
 caller, and never enters a URL, argument, repository configuration, provider
 environment, or durable fallback evidence. Other model-control actions and SSH
 or local remotes retain their credential-free behavior.
+
+## 2026-08-07 — Decision 319: Qualification fallback binds successor authority
+
+Category: Reliability
+
+Every sealed qualification launcher passes the canonical manifest plus the
+receipt-bound protected product commit and tree. Fallback strictly validates
+that ordinary journals use the active Factory and successor journals use only
+the active or declared source Factory. Recovery rechecks the same product and
+manifest digests before reusing a committed fallback; production receives no
+qualification authority.
