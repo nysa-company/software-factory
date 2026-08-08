@@ -78,9 +78,12 @@ preparation requires `--operator-map-seed <absolute-owner-only-linear-map.json>`
 absent, ambiguous, unsafe, malformed, or contains secret-bearing fields. It
 copies the validated seed into owner-only qualification authority, where the
 mutable map, locks, clear intents, and runtime ledger remain outside the sealed
-product checkout. A Linear
-rate limit is persisted as `linear_rate_limited retry_after_seconds=N` and
-keeps provider admission closed until a later successful reconciliation.
+product checkout. Each selected initialization confirms and persists the exact
+issue's operator observation before success, consumes only its matching one-use
+clear, and does not inventory historical issues. A Linear rate limit is
+persisted canonically as `linear_rate_limited retry_after_seconds=N`, shared by
+credential identity, and keeps provider admission closed without API calls
+until expiry.
 
 ## Step 5 — Hermes release boundary
 

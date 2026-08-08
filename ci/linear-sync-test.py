@@ -75,6 +75,8 @@ class FakeLinear:
                         "updatedAt": issue["updatedAt"],
                     }
                     for issue in self.issues.values()
+                    if "filter:" not in query
+                    or issue["title"] == variables.get("title")
                 ],
                 "pageInfo": {"endCursor": None, "hasNextPage": False},
             }}}
@@ -1191,7 +1193,10 @@ class LinearSyncTest(unittest.TestCase):
         ), 1)
         saved = LINEAR.load_map(self.map_path)["tickets"]["T-001"]
         self.assertEqual(saved["source_ref"], "refs/remotes/origin/main")
-        self.assertNotIn("operator", saved)
+        self.assertEqual(saved["operator"]["priority"], "none")
+        self.assertEqual(saved["operator"]["initiative"], "I-001")
+        self.assertNotIn("state", saved["operator"])
+        self.assertNotIn("approval", saved["operator"])
 
     def test_terminal_sync_refuses_before_protected_truth_without_network(self):
         self.reconcile()
@@ -1410,6 +1415,40 @@ class LinearSyncTest(unittest.TestCase):
         ):
             self.reconcile()
 
+    def test_mapped_project_refuses_removed_or_changed_marker(self):
+        self.reconcile()
+        canonical = next(iter(self.fake.projects.values()))
+        for content in (
+            "Marker removed by an operator.",
+            f"{LINEAR.PROJECT_MARKER} I-999",
+            f"{LINEAR.PROJECT_MARKER} I-001\n{LINEAR.PROJECT_MARKER} I-001",
+        ):
+            with self.subTest(content=content):
+                canonical["content"] = content
+                with self.assertRaisesRegex(
+                    RuntimeError, "I-001: mapped Linear Project marker is invalid"
+                ) as raised:
+                    self.reconcile()
+                self.assertEqual(
+                    raised.exception.conflict["reason"],
+                    "mapped_project_marker_invalid",
+                )
+                self.assertEqual(
+                    raised.exception.conflict["candidates"][0]["project_id"],
+                    canonical["id"],
+                )
+        self.assertEqual(
+            len([
+                query for query, _variables in self.fake.calls
+                if "projectCreate" in query
+            ]),
+            1,
+        )
+        self.assertIn(
+            '"mapped_project_marker_invalid"',
+            (ROOT / "scripts/factory-doctor.sh").read_text(),
+        )
+
     def test_unmarked_same_name_project_is_never_duplicated(self):
         self.fake.projects["project-unmarked"] = {
             "content": "No durable identity.",
@@ -1466,11 +1505,16 @@ class LinearSyncTest(unittest.TestCase):
             )
         saved = LINEAR.load_map(self.map_path)
         self.assertTrue(saved["tickets"]["T-002"]["operator_fields_initialized"])
+        self.assertIsInstance(saved["tickets"]["T-002"]["operator"], dict)
+        self.assertIsNotNone(LINEAR.parsed_timestamp(
+            saved["tickets"]["T-002"]["operator"]["observed_at"]
+        ))
         self.assertEqual(saved["_sync"]["last_success_at"], stale)
         self.assertEqual(saved["_sync"]["last_error"], "history failed")
-        self.assertIsNotNone(LINEAR.parsed_timestamp(
-            saved["_sync"]["selected_ticket_success_at"]["T-002"]
-        ))
+        self.assertEqual(
+            saved["_sync"]["selected_ticket_success_at"]["T-002"],
+            saved["tickets"]["T-002"]["operator"]["observed_at"],
+        )
         self.assertEqual(
             len([query for query, _variables in self.fake.calls if "issueCreate" in query]),
             1,
@@ -1478,6 +1522,14 @@ class LinearSyncTest(unittest.TestCase):
         self.assertFalse(any(
             variables.get("id") == saved["tickets"]["T-001"]["issue_id"]
             for query, variables in self.fake.calls if "issue(id:" in query
+        ))
+        self.assertTrue(any(
+            "issues(first: 3, filter:" in query
+            and variables.get("title") == "T-002 — second ticket"
+            for query, variables in self.fake.calls
+        ))
+        self.assertFalse(any(
+            "issues(first: 100" in query for query, _variables in self.fake.calls
         ))
 
         self.fake.calls.clear()
@@ -1490,6 +1542,124 @@ class LinearSyncTest(unittest.TestCase):
         ))
         self.assertEqual(
             LINEAR.load_map(self.map_path)["_sync"]["last_success_at"], stale
+        )
+
+    def test_exact_initialization_consumes_only_matching_ticket_clear(self):
+        self.reconcile()
+        second = self.factory / "tickets/T-002.md"
+        second.write_text((self.factory / "tickets/T-001.md").read_text().replace(
+            "# T-001 — first ticket", "# T-002 — second ticket",
+        ))
+        clears = self.factory / ".linear-operator-clears"
+        clears.mkdir(mode=0o700)
+        selected_version = LINEAR.operator_version({
+            "initiative": "I-001", "priority": "none",
+        })
+        selected_clear = clears / f"T-002-{selected_version}.json"
+        selected_clear.write_text(json.dumps({
+            "operator_version": selected_version,
+            "schema": "linear-operator-clear/v1",
+            "ticket": "T-002",
+        }))
+        sibling = LINEAR.load_map(self.map_path)["tickets"]["T-001"]
+        sibling_version = LINEAR.operator_version(sibling["operator"])
+        sibling_clear = clears / f"T-001-{sibling_version}.json"
+        sibling_clear.write_text(json.dumps({
+            "operator_version": sibling_version,
+            "schema": "linear-operator-clear/v1",
+            "ticket": "T-001",
+        }))
+
+        self.fake.calls.clear()
+        with patch.object(LINEAR, "gql", self.fake):
+            LINEAR.initialize_ticket(
+                "key", self.factory, self.map_path, "T-002", dry=False,
+            )
+
+        saved = LINEAR.load_map(self.map_path)
+        self.assertIn("operator", saved["tickets"]["T-002"])
+        self.assertFalse(selected_clear.exists())
+        self.assertTrue(sibling_clear.exists())
+        self.assertIn("operator", saved["tickets"]["T-001"])
+        self.assertFalse(any(
+            "issues(first: 100" in query for query, _variables in self.fake.calls
+        ))
+        self.assertFalse(any(
+            variables.get("id") == sibling["issue_id"]
+            for query, variables in self.fake.calls if "issue(id:" in query
+        ))
+
+    def test_created_ticket_observation_failure_is_retryable_without_duplicate(self):
+        self.reconcile()
+        second = self.factory / "tickets/T-002.md"
+        second.write_text((self.factory / "tickets/T-001.md").read_text().replace(
+            "# T-001 — first ticket", "# T-002 — second ticket",
+        ))
+        original_fetch = LINEAR.fetch_issue
+        with (
+            patch.object(LINEAR, "gql", self.fake),
+            patch.object(
+                LINEAR, "fetch_issue", side_effect=RuntimeError("fetch failed"),
+            ),
+            self.assertRaisesRegex(RuntimeError, "fetch failed"),
+        ):
+            LINEAR.initialize_ticket(
+                "key", self.factory, self.map_path, "T-002", dry=False,
+            )
+        saved = LINEAR.load_map(self.map_path)
+        self.assertNotIn("T-002", saved["tickets"])
+        self.assertNotIn(
+            "T-002", saved["_sync"].get("selected_ticket_success_at", {})
+        )
+        created = len(self.fake.issues)
+
+        with (
+            patch.object(LINEAR, "gql", self.fake),
+            patch.object(LINEAR, "fetch_issue", side_effect=original_fetch),
+        ):
+            LINEAR.initialize_ticket(
+                "key", self.factory, self.map_path, "T-002", dry=False,
+            )
+        self.assertEqual(len(self.fake.issues), created)
+        saved = LINEAR.load_map(self.map_path)
+        self.assertIn("operator", saved["tickets"]["T-002"])
+        self.assertIn(
+            "T-002", saved["_sync"]["selected_ticket_success_at"]
+        )
+
+    def test_exact_initialization_refuses_ambiguous_title_without_creation(self):
+        self.reconcile()
+        second = self.factory / "tickets/T-002.md"
+        second.write_text((self.factory / "tickets/T-001.md").read_text().replace(
+            "# T-001 — first ticket", "# T-002 — second ticket",
+        ))
+        prototype = next(iter(self.fake.issues.values()))
+        for suffix in ("a", "b"):
+            issue = copy.deepcopy(prototype)
+            issue.update({
+                "id": f"issue-{suffix}",
+                "identifier": f"SF-{suffix}",
+                "title": "T-002 — second ticket",
+            })
+            self.fake.issues[issue["id"]] = issue
+        self.fake.calls.clear()
+
+        with (
+            patch.object(LINEAR, "gql", self.fake),
+            self.assertRaisesRegex(RuntimeError, "multiple active Factory issues"),
+        ):
+            LINEAR.initialize_ticket(
+                "key", self.factory, self.map_path, "T-002", dry=False,
+            )
+
+        self.assertFalse(any(
+            "issueCreate" in query for query, _variables in self.fake.calls
+        ))
+        self.assertNotIn(
+            "T-002",
+            LINEAR.load_map(self.map_path)["_sync"].get(
+                "selected_ticket_success_at", {}
+            ),
         )
 
     def test_failed_exact_initialization_records_no_selected_success(self):
@@ -1505,6 +1675,26 @@ class LinearSyncTest(unittest.TestCase):
             "selected_ticket_success_at",
             LINEAR.load_map(self.map_path)["_sync"],
         )
+
+    def test_exact_title_candidates_require_complete_response_shape(self):
+        for page in (
+            None,
+            {},
+            {"nodes": [], "pageInfo": {}},
+            {"nodes": [], "pageInfo": {"hasNextPage": None}},
+            {"nodes": {}, "pageInfo": {"hasNextPage": False}},
+        ):
+            with self.subTest(page=page):
+                with (
+                    patch.object(
+                        LINEAR, "gql",
+                        return_value={"team": {"issues": page}},
+                    ),
+                    self.assertRaisesRegex(RuntimeError, "query is incomplete"),
+                ):
+                    LINEAR.factory_issue_candidates(
+                        "key", "team-1", "T-002 — second ticket"
+                    )
 
     def test_overlapping_full_save_preserves_newer_selected_success(self):
         self.reconcile()
@@ -1786,6 +1976,15 @@ class LinearSyncTest(unittest.TestCase):
             self.assertEqual(LINEAR.gql("key", "{ ok }"), {"ok": True})
         self.assertEqual(request.call_count, 2)
 
+    def test_viewer_lookup_propagates_typed_rate_limit_only(self):
+        error = RuntimeError("linear_rate_limited retry_after_seconds=60")
+        with (
+            patch.object(LINEAR, "gql", side_effect=error),
+            self.assertRaisesRegex(RuntimeError, "retry_after_seconds=60"),
+        ):
+            LINEAR.fetch_viewer_id("rate-limited-key")
+        self.assertNotIn("rate-limited-key", LINEAR._VIEWER_ID_CACHE)
+
     def test_graphql_persists_bounded_rate_limit_wait_after_retries(self):
         limited = urllib.error.HTTPError(
             LINEAR.API_URL, 429, "rate limited", {"Retry-After": "7200"}, None,
@@ -1803,7 +2002,11 @@ class LinearSyncTest(unittest.TestCase):
             LINEAR.gql("key", "{ ok }")
 
     def test_graphql_normalizes_http_400_and_graphql_quota_errors(self):
-        body = b'{"errors":[{"message":"Rate limit exceeded"}]}'
+        body = (
+            b'{"errors":[{"message":"Rate limit exceeded",'
+            b'"extensions":{"meta":{"rateLimitResult":'
+            b'{"duration":60000}}}}]}'
+        )
         limited = [
             urllib.error.HTTPError(
                 LINEAR.API_URL, 400, "bad request", {}, io.BytesIO(body),
@@ -1816,7 +2019,10 @@ class LinearSyncTest(unittest.TestCase):
                 "extensions": {"code": "RATELIMITED"},
             }]
         })
-        for failures in (limited, [graphql, graphql, graphql]):
+        for failures, expected in (
+            (limited, 60),
+            ([graphql, graphql, graphql], 3600),
+        ):
             with self.subTest(kind=type(failures[0]).__name__):
                 with (
                     patch.object(
@@ -1825,10 +2031,52 @@ class LinearSyncTest(unittest.TestCase):
                     patch.object(LINEAR.time, "sleep"),
                     self.assertRaisesRegex(
                         RuntimeError,
-                        r"linear_rate_limited retry_after_seconds=3600",
+                        rf"linear_rate_limited retry_after_seconds={expected}",
                     ),
                 ):
                     LINEAR.gql("key", "{ ok }")
+
+    def test_wrapped_rate_limit_is_canonicalized_and_observable(self):
+        path = self.root / "cooldowns/account.json"
+        error = RuntimeError(
+            "request failed: linear_rate_limited retry_after_seconds=7200"
+        )
+        self.assertTrue(LINEAR.record_account_cooldown(path, error))
+        saved = LINEAR.load_account_cooldown(path)
+        self.assertEqual(
+            saved["last_error"],
+            "linear_rate_limited retry_after_seconds=3600",
+        )
+        self.assertGreater(LINEAR.rate_limit_cooldown(saved), 0)
+
+        with patch.object(LINEAR, "log") as log:
+            self.assertFalse(LINEAR.observe_account_cooldown(
+                path, RuntimeError("not quota related")
+            ))
+        log.assert_called_once_with(
+            "Linear failure was not a typed rate-limit refusal; cooldown not recorded"
+        )
+        self.assertIsNone(LINEAR.typed_rate_limit_seconds(
+            "linear_rate_limited retry_after_seconds=99999999999"
+        ))
+        self.assertEqual(LINEAR.rate_limit_seconds(
+            detail={
+                "message": "rate limited",
+                "rateLimitResult": {"duration": float("inf")},
+            }
+        ), 3600)
+        self.assertEqual(LINEAR.rate_limit_seconds(
+            detail={
+                "message": "rate limited",
+                "rateLimitResult": {"duration": 10 ** 1000},
+            }
+        ), 3600)
+        self.assertEqual(LINEAR.rate_limit_seconds(
+            detail={
+                "message": "rate limited",
+                "rateLimitResult": {"duration": 1000.1},
+            }
+        ), 2)
 
     def test_persisted_quota_cooldown_makes_zero_api_calls_until_expiry(self):
         self.mapping["_sync"] = {

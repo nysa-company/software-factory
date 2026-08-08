@@ -112,11 +112,12 @@ making the board harder to scan.
 
 Each initiative has one canonical Linear Project identified by its durable
 `Software-Factory-Initiative:` marker and mapped ID. A missing mapped Project,
-a foreign-team mapping, duplicate markers, or a same-name identity conflict
-stops reconciliation before a new Project can be created. `doctor --json`
-lists canonical mapped IDs and URLs plus the typed conflict and safe candidate
-IDs/URLs. Cleanup or adoption of an unmarked same-name Project remains an
-explicit operator action; names alone never authorize automatic adoption.
+a removed or changed mapped marker, a foreign-team mapping, duplicate markers,
+or a same-name identity conflict stops reconciliation before a new Project can
+be created. `doctor --json` lists canonical mapped IDs and URLs plus the typed
+conflict and safe candidate IDs/URLs. Cleanup or adoption of an unmarked
+same-name Project remains an explicit operator action; names alone never
+authorize automatic adoption.
 
 Each product repo stores initiatives in `factory/initiatives/I-NNN.md`:
 
@@ -139,6 +140,10 @@ existing Factory-managed issues establish the initiative identity; multiple
 identities or a same-name Project without durable identity fails before
 creating anything. `--ticket T-NNN --initialize` creates or adopts only that
 committed ticket after canonical team, workflow, and Project bindings exist.
+It uses a bounded exact-title lookup, confirms the exact issue and operator
+observation before recording success, and consumes only that ticket's matching
+one-use clear. It never inventories historical issues or consumes a sibling's
+clear.
 `View: factory` also creates a shared Project-filtered Factory Pipeline view
 and stores its UUID with the initiative mapping.
 Project status, target date, and issue membership may be edited in Linear and

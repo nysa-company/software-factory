@@ -45,7 +45,8 @@ everything the Factory actually enforces lives here.
   Project inventory instead of refetching every mapped object. It fetches full
   comment history only when the latest comment changes inside the approval
   window. HTTP 400/429 and GraphQL quota responses produce one typed bounded
-  cooldown; no Linear call is made until its persisted expiry.
+  credential-shared cooldown, including Linear's nested duration; no Linear
+  call is made until its persisted expiry.
 - Qualification pre-seal and dispatch both require every selected ticket's Git
   blob in the sealed control checkout to equal protected `origin/main`.
   Qualification-only metadata can therefore never validate one contract and
@@ -57,6 +58,10 @@ everything the Factory actually enforces lives here.
   product; a durable bootstrap reuses partial initialization without duplicate
   issues even if the source seed later changes or disappears. Takeover retains
   its canonical live-map and product-ledger behavior.
+- Selected-only Linear initialization uses one bounded exact-title query,
+  confirms the exact created or adopted issue, and persists its operator
+  observation before success. It consumes only a matching clear for that
+  ticket; historical issues and sibling clears remain untouched.
 - Qualification fallback reads the strict manifest at the receipt-bound
   protected product commit. Ordinary lanes authorize only their active Factory;
   a successor additionally authorizes its exact source Factory. A changed
@@ -70,8 +75,9 @@ everything the Factory actually enforces lives here.
   admission reports its exact ID and `initiative_missing` while healthy
   siblings continue.
 - Linear Project creation refuses missing mapped Projects, foreign-team
-  mappings, duplicate durable markers, and same-name identity conflicts;
-  Doctor exposes the canonical mapped Project IDs and URLs.
+  mappings, removed or changed mapped markers, duplicate durable markers, and
+  same-name identity conflicts; Doctor exposes the canonical mapped Project IDs
+  and URLs.
 - A contract-blocked Linear baseline is recorded once per substantive blocker.
   Exact resume directives and reconciler-authored writes do not advance it;
   accepted same-blocker decisions survive overlapping saves, while rejected
@@ -4408,3 +4414,17 @@ exact usage footer. It returns sorted selection IDs. Unknown, malformed,
 oversized, duplicate, or secret-like output fails closed; source session files
 remain immutable and every disposable probe home is removed after success or
 failure.
+
+## 2026-08-08 — Decision 328: Linear admission is exact and account-aware
+
+Category: Reliability
+
+Selected-ticket initialization uses a bounded exact-title lookup and confirms
+the exact created or adopted issue before persisting an operator observation
+and selected success. A matching one-use clear is consumed only for that ticket;
+sibling issues, clears, and historical inventory remain untouched. Project
+identity drift, including a removed or changed mapped marker, refuses with
+typed candidate evidence before creation. HTTP 400/429 and GraphQL quota
+responses share one bounded structural parser and one owner-only
+credential-identity cooldown; every entry point stops before further API calls
+until expiry.

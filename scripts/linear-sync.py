@@ -15,6 +15,7 @@ import datetime as dt
 import fcntl
 import hashlib
 import json
+import math
 import os
 import re
 import stat
@@ -56,6 +57,9 @@ TARGETED_OPERATOR_FIELDS = (
     "operator_state_source_sha256",
 )
 LINEAR_COOLDOWN_SCHEMA = "nysa.software-factory.linear-account-cooldown/v1"
+RATE_LIMIT_REFUSAL = re.compile(
+    r"linear_rate_limited retry_after_seconds=([0-9]{1,10})(?![0-9])"
+)
 
 # Ticket State: values map 1:1 onto board columns (docs/workflows/linear.md).
 # The second element is the Linear workflow-state *type* used when the
@@ -285,21 +289,53 @@ def gql(key, query, variables=None):
 
 
 def rate_limit_seconds(headers=None, detail=None):
+    structured = detail
     try:
         encoded = (
             json.dumps(detail, sort_keys=True)
             if not isinstance(detail, str) else detail
         )
+        if isinstance(detail, str):
+            structured = json.loads(detail)
     except (TypeError, ValueError):
         encoded = str(detail)
     if "rate limit" not in encoded.lower() and "ratelimited" not in encoded.lower():
         return None
     raw = headers.get("Retry-After") if headers is not None else None
+    if raw is None:
+        pending = [structured]
+        for _visited in range(1000):
+            if not pending:
+                break
+            value = pending.pop()
+            if isinstance(value, dict):
+                result = value.get("rateLimitResult")
+                duration = result.get("duration") if isinstance(result, dict) else None
+                if (
+                    isinstance(duration, int)
+                    and not isinstance(duration, bool)
+                    and duration >= 0
+                ):
+                    return min((duration + 999) // 1000, 3600)
+                if (
+                    isinstance(duration, float)
+                    and math.isfinite(duration)
+                    and duration >= 0
+                ):
+                    return min(math.ceil(duration / 1000), 3600)
+                pending.extend(value.values())
+            elif isinstance(value, list):
+                pending.extend(value)
     try:
         wait = int(raw) if raw is not None else 3600
     except (TypeError, ValueError):
         wait = 3600
     return min(max(wait, 0), 3600)
+
+
+def typed_rate_limit_seconds(error):
+    match = RATE_LIMIT_REFUSAL.search(str(error))
+    return min(int(match.group(1)), 3600) if match is not None else None
 
 
 def normalize_state(value):
@@ -442,12 +478,21 @@ def map_lock(map_path):
         yield
 
 
-def operator_clear_intents(map_path):
+def operator_clear_intents(map_path, tickets=None):
     directory = map_path.parent / ".linear-operator-clears"
     if not directory.is_dir() or directory.is_symlink():
         return []
     result = []
-    for path in sorted(directory.glob("T-*.json")):
+    paths = (
+        directory.glob("T-*.json")
+        if tickets is None
+        else (
+            path
+            for ticket in sorted(tickets)
+            for path in directory.glob(f"{ticket}-*.json")
+        )
+    )
+    for path in sorted(paths):
         value = json.loads(path.read_text())
         if (
             set(value) != {"operator_version", "schema", "ticket"}
@@ -461,11 +506,18 @@ def operator_clear_intents(map_path):
     return result
 
 
-def apply_operator_clears(map_path, mapping):
-    for _path, intent in operator_clear_intents(map_path):
+def apply_operator_clears(map_path, mapping, tickets=None):
+    for _path, intent in operator_clear_intents(map_path, tickets):
         entry = mapping.get("tickets", {}).get(intent["ticket"], {})
         if operator_version(entry.get("operator") or {}) == intent["operator_version"]:
             entry.pop("operator", None)
+
+
+def consume_operator_clears(map_path, mapping, tickets):
+    for path, intent in operator_clear_intents(map_path, tickets):
+        entry = mapping.get("tickets", {}).get(intent["ticket"], {})
+        if operator_version(entry.get("operator") or {}) == intent["operator_version"]:
+            path.unlink()
 
 
 def retire_operator_clears(map_path):
@@ -502,14 +554,10 @@ def parsed_timestamp(value):
 def rate_limit_cooldown(mapping, now=None):
     health = mapping.get("_sync", mapping) if isinstance(mapping, dict) else None
     health = health if isinstance(health, dict) else {}
-    match = re.fullmatch(
-        r"linear_rate_limited retry_after_seconds=([0-9]+)",
-        str(health.get("last_error") or ""),
-    )
+    wait = typed_rate_limit_seconds(health.get("last_error") or "")
     failed_at = parsed_timestamp(health.get("failed_at"))
-    if match is None or failed_at is None:
+    if wait is None or failed_at is None:
         return 0
-    wait = min(int(match.group(1)), 3600)
     now = now or dt.datetime.now(dt.timezone.utc)
     remaining = (failed_at + dt.timedelta(seconds=wait) - now).total_seconds()
     return max(0, int(remaining + 0.999))
@@ -544,10 +592,10 @@ def load_account_cooldown(path):
 
 
 def record_account_cooldown(path, error):
-    if re.fullmatch(
-        r"linear_rate_limited retry_after_seconds=([0-9]+)", str(error)
-    ) is None:
+    wait = typed_rate_limit_seconds(error)
+    if wait is None:
         return False
+    canonical = f"linear_rate_limited retry_after_seconds={wait}"
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     parent = path.parent.lstat()
     if (
@@ -559,7 +607,7 @@ def record_account_cooldown(path, error):
         raise RuntimeError("Linear cooldown directory is unsafe")
     value = {
         "failed_at": utc_now(),
-        "last_error": str(error),
+        "last_error": canonical,
         "schema": LINEAR_COOLDOWN_SCHEMA,
     }
     descriptor, temporary = tempfile.mkstemp(
@@ -578,6 +626,17 @@ def record_account_cooldown(path, error):
             os.close(descriptor)
         Path(temporary).unlink(missing_ok=True)
     return True
+
+
+def observe_account_cooldown(path, error):
+    try:
+        recorded = record_account_cooldown(path, error)
+    except (OSError, RuntimeError) as cooldown_error:
+        log(f"Linear account cooldown persistence failed: {cooldown_error}")
+        return False
+    if not recorded:
+        log("Linear failure was not a typed rate-limit refusal; cooldown not recorded")
+    return recorded
 
 
 def operator_freshness(entry):
@@ -698,14 +757,18 @@ def preserve_newer_operator_pull(path, mapping, preserve_project_conflict=True):
         )
 
 
-def save_map(path, mapping, preserve_project_conflict=True):
+def save_map(
+    path, mapping, preserve_project_conflict=True, clear_tickets=None,
+    consume_clear_tickets=(),
+):
     with map_lock(path):
         preserve_newer_operator_pull(path, mapping, preserve_project_conflict)
-        apply_operator_clears(path, mapping)
+        apply_operator_clears(path, mapping, clear_tickets)
         atomic_write(path, json.dumps(mapping, indent=2, sort_keys=True) + "\n")
+        consume_operator_clears(path, mapping, consume_clear_tickets)
 
 
-def record_failure(map_path, mapping, error):
+def record_failure(map_path, mapping, error, clear_tickets=None):
     health = mapping.get("_sync", {})
     conflict = (
         error.conflict
@@ -729,7 +792,7 @@ def record_failure(map_path, mapping, error):
             if isinstance(conflict, dict) else {}
         ),
     }
-    save_map(map_path, mapping)
+    save_map(map_path, mapping, clear_tickets=clear_tickets)
 
 
 def ledger_stats(path):
@@ -1123,6 +1186,13 @@ def ensure_projects(key, factory_dir, mapping, map_path, dry):
                     "mapped_project_foreign_team",
                     [project],
                 )
+            if identities.get(project["id"]) != {initiative_id}:
+                raise ProjectIdentityError(
+                    f"{initiative_id}: mapped Linear Project marker is invalid",
+                    initiative_id,
+                    "mapped_project_marker_invalid",
+                    [project],
+                )
             if (
                 any(item.get("id") != project.get("id") for item in same_name)
                 or durable_matches
@@ -1360,6 +1430,37 @@ def factory_issue_index(key, team_id):
             raise RuntimeError("Linear issue history is incomplete")
 
 
+def factory_issue_candidates(key, team_id, title):
+    page = gql(
+        key,
+        """query($id: String!, $title: String!) { team(id: $id) {
+             issues(first: 3, filter: { title: { eq: $title } }) {
+               nodes { id identifier title description priority updatedAt
+                       state { id name type } project { id }
+                       labels { nodes { id name } } assignee { id }
+                       comments(last: 1) {
+                         nodes { id createdAt updatedAt }
+                       } }
+               pageInfo { hasNextPage }
+             }
+           } }""",
+        {"id": team_id, "title": title},
+    )["team"]["issues"]
+    if (
+        not isinstance(page, dict)
+        or not isinstance(page.get("nodes"), list)
+        or not isinstance(page.get("pageInfo"), dict)
+        or page["pageInfo"].get("hasNextPage") is not False
+    ):
+        raise RuntimeError("Linear exact-title candidate query is incomplete")
+    return [
+        issue for issue in page.get("nodes", [])
+        if issue.get("title") == title
+        and (issue.get("description") or "").startswith(BANNER)
+        and issue.get("state", {}).get("type") != "canceled"
+    ]
+
+
 def comment_head(issue):
     nodes = (issue.get("comments") or {}).get("nodes")
     if not isinstance(nodes, list) or len(nodes) > 1:
@@ -1460,7 +1561,9 @@ def fetch_viewer_id(key):
         return _VIEWER_ID_CACHE[key]
     try:
         viewer_id = gql(key, "{ viewer { id } }")["viewer"]["id"]
-    except Exception as error:  # noqa: BLE001 - must never fail the sync cycle
+    except Exception as error:  # noqa: BLE001 - optional except for account quota
+        if typed_rate_limit_seconds(error) is not None:
+            raise
         log(f"could not fetch viewer id, skipping escalation assignment: {error}")
         viewer_id = None
     _VIEWER_ID_CACHE[key] = viewer_id
@@ -1871,7 +1974,11 @@ def sync_ticket_terminal(key, factory_dir, map_path, ticket_id):
 def sync_tickets(key, factory_dir, mapping, map_path, dry, only=None):
     config = mapping["_config"]
     viewer_id = fetch_viewer_id(key)
-    existing_issues, issues_by_id = factory_issue_index(key, config["team_id"])
+    existing_issues, issues_by_id = (
+        factory_issue_index(key, config["team_id"])
+        if only is None else ({}, {})
+    )
+    clear_tickets = None if only is None else ()
     stats = ledger_stats(effective_ledger(factory_dir, dry))
     project_ids = {
         initiative_id: entry.get("project_id")
@@ -1922,7 +2029,7 @@ def sync_tickets(key, factory_dir, mapping, map_path, dry, only=None):
                 actual = fetch_recent_comments(key, actual, entry, dry)
             if not entry.get("identifier") and actual.get("identifier") and not dry:
                 entry["identifier"] = actual["identifier"]
-                save_map(map_path, mapping)
+                save_map(map_path, mapping, clear_tickets=clear_tickets)
             if entry.get("operator_fields_initialized"):
                 ticket = ingest_operator_fields(
                     key, ticket, actual, mapping, entry, dry
@@ -1934,7 +2041,12 @@ def sync_tickets(key, factory_dir, mapping, map_path, dry, only=None):
             project_id = project_ids.get(ticket["initiative"])
             desired_state_id = config["states"].get(ticket["state"])
         else:
-            candidates = existing_issues.get(ticket["title"], [])
+            candidates = (
+                existing_issues.get(ticket["title"], [])
+                if only is None else factory_issue_candidates(
+                    key, config["team_id"], ticket["title"]
+                )
+            )
             if len(candidates) > 1:
                 raise RuntimeError(
                     f"{ticket['id']}: multiple active Factory issues require reconciliation"
@@ -1956,7 +2068,7 @@ def sync_tickets(key, factory_dir, mapping, map_path, dry, only=None):
                 project_id = project_ids.get(ticket["initiative"])
                 desired_state_id = config["states"].get(ticket["state"])
                 if not dry:
-                    save_map(map_path, mapping)
+                    save_map(map_path, mapping, clear_tickets=clear_tickets)
                     log(f"{ticket['id']}: adopted existing issue {actual['identifier']}")
         if ticket["state"] == "awaiting approval" and ticket["merge_policy"] == "auto":
             if protected_merge_policy(factory_dir, ticket["id"]) == "auto":
@@ -1983,12 +2095,31 @@ def sync_tickets(key, factory_dir, mapping, map_path, dry, only=None):
                     **({"labelIds": label_ids} if label_ids else {}),
                 }},
             )["issueCreate"]["issue"]
+            actual = fetch_issue(key, issue["id"])
+            if (
+                actual.get("id") != issue.get("id")
+                or actual.get("identifier") != issue.get("identifier")
+            ):
+                raise RuntimeError(
+                    f"{ticket['id']}: Linear did not confirm the created issue"
+                )
+            ingest_fallback_approval(actual, entry, dry)
+            digest, _created_at = comment_head({
+                "comments": {
+                    "nodes": (actual.get("comments") or {}).get("nodes", [])[-1:]
+                }
+            })
             entry.update({
                 "issue_id": issue["id"],
                 "identifier": issue["identifier"],
                 "operator_fields_initialized": True,
+                "linear_comment_head_sha256": digest,
+                "source_ref": source_ref,
             })
-            save_map(map_path, mapping)
+            ticket = ingest_operator_fields(
+                key, ticket, actual, mapping, entry, dry
+            )
+            save_map(map_path, mapping, clear_tickets=clear_tickets)
             log(f"{ticket['id']}: created issue {issue['identifier']}")
         else:
             patch = {}
@@ -2034,14 +2165,14 @@ def sync_tickets(key, factory_dir, mapping, map_path, dry, only=None):
                     log(f"{ticket['id']}: patched {sorted(patch)}")
             if not dry and not entry.get("operator_fields_initialized"):
                 entry["operator_fields_initialized"] = True
-                save_map(map_path, mapping)
+                save_map(map_path, mapping, clear_tickets=clear_tickets)
 
         new_lines = ticket["log_lines"][entry.get("log_cursor", 0):]
         if new_lines and entry.get("issue_id"):
             post_comment(key, entry["issue_id"], "**Ticket log**\n\n" + "\n".join(new_lines), dry)
             if not dry:
                 entry["log_cursor"] = len(ticket["log_lines"])
-                save_map(map_path, mapping)
+                save_map(map_path, mapping, clear_tickets=clear_tickets)
 
         bundle = factory_dir / "tickets" / f"{ticket['id']}-bundle.md"
         bundle_text, _bundle_ref = committed_factory_file(
@@ -2067,7 +2198,7 @@ def sync_tickets(key, factory_dir, mapping, map_path, dry, only=None):
             if not dry:
                 entry["bundle_digest"] = bundle_digest
                 entry.pop("bundle_posted", None)
-                save_map(map_path, mapping)
+                save_map(map_path, mapping, clear_tickets=clear_tickets)
 
 
 def initialize_ticket(key, factory_dir, map_path, ticket_id, dry=False):
@@ -2089,14 +2220,27 @@ def initialize_ticket(key, factory_dir, map_path, ticket_id, dry=False):
         )
     sync_tickets(key, factory_dir, mapping, map_path, dry, {ticket_id})
     if not dry:
+        entry = mapping["tickets"].get(ticket_id, {})
+        observed_at = (entry.get("operator") or {}).get("observed_at")
+        if (
+            entry.get("operator_fields_initialized") is not True
+            or not entry.get("issue_id")
+            or parsed_timestamp(observed_at) is None
+        ):
+            raise RuntimeError(
+                f"{ticket_id}: selected-ticket Linear observation is incomplete"
+            )
         previous = mapping.get("_sync", {})
         selected = dict(previous.get("selected_ticket_success_at", {}))
-        selected[ticket_id] = utc_now()
+        selected[ticket_id] = observed_at
         mapping["_sync"] = {
             **previous,
             "selected_ticket_success_at": selected,
         }
-        save_map(map_path, mapping)
+        save_map(
+            map_path, mapping, clear_tickets=(),
+            consume_clear_tickets={ticket_id},
+        )
 
 
 def reconcile(key, factory_dir, mapping, map_path, setup_only=False, dry=False):
@@ -2175,13 +2319,12 @@ def main():
             else:
                 sync_ticket_operator(key, factory_dir, map_path, args.ticket, args.dry_run)
         except Exception as error:
-            try:
-                record_account_cooldown(cooldown_path, error)
-            except (OSError, RuntimeError):
-                pass
+            observe_account_cooldown(cooldown_path, error)
             if args.initialize and not args.dry_run:
                 try:
-                    record_failure(map_path, load_map(map_path), error)
+                    record_failure(
+                        map_path, load_map(map_path), error, clear_tickets=(),
+                    )
                 except OSError:
                     pass
             log(f"exact-ticket sync error: {error}")
@@ -2197,10 +2340,10 @@ def main():
                 log(f"sync error (will retry next cycle): {error}")
                 if not args.dry_run:
                     try:
-                        record_account_cooldown(cooldown_path, error)
+                        observe_account_cooldown(cooldown_path, error)
                         record_failure(map_path, mapping, error)
-                    except (OSError, RuntimeError):
-                        pass
+                    except OSError:
+                        log("Linear reconciliation failure could not be persisted")
     except Exception as error:
         log(f"sync error (will retry next cycle): {error}")
     return 0

@@ -423,9 +423,11 @@ the lease before provider or publication work.
 Linear reconciliation retries transient server responses and quota responses
 reported as HTTP `400`/`429` or GraphQL errors at most twice. Short retry
 delays are clamped to 0 through 30 seconds. Exhaustion persists one typed
-cooldown of at most one hour, and every scheduled or exact-ticket entry point
-makes zero Linear calls until it expires. Other semantic GraphQL errors remain
-fail-closed for the next reconciliation cycle.
+cooldown of at most one hour, deriving Linear's nested millisecond duration
+when present. The canonical owner-only record is keyed by credential identity,
+and every scheduled or exact-ticket entry point makes zero Linear calls until
+it expires. Other semantic GraphQL errors remain fail-closed for the next
+reconciliation cycle.
 Description projection compares a narrow canonical Markdown form that covers
 Linear's ordered-list indentation, continuation, renumbering, inline-code, and
 fence-boundary round trips. Nested-list structure, fenced content, and unknown
@@ -447,10 +449,10 @@ cohort. A null operator initiative remains authoritative, but if it removes a
 Ready ticket's effective initiative, admission emits a named
 `initiative_missing` refusal while eligible siblings continue. Linear Project
 reconciliation adopts one exact durable initiative marker and refuses missing
-mapped Projects, foreign-team mappings, duplicate markers, and same-name
-identity conflicts before creating or updating anything. Doctor lists the
-canonical mapped Project IDs and URLs; reconciliation failures remain visible
-in its Linear health output.
+mapped Projects, changed or removed mapped markers, foreign-team mappings,
+duplicate markers, and same-name identity conflicts before creating or updating
+anything. Doctor lists the canonical mapped Project IDs and URLs;
+reconciliation failures remain visible in its Linear health output.
 Planner preflight validates the complete pinned route contract without
 repeating machine probes; the role runner re-verifies only its selected route
 immediately before provider admission.
@@ -529,9 +531,13 @@ exports them on every qualification command. Preparation rechecks the product
 worktree after initialization and publishes no usable environment if it is
 dirty. An owner-only bootstrap receipt lets a retry reuse a partially
 initialized lane map even if the original seed later changes or disappears,
-so exact-ticket adoption cannot create duplicates. Historical tickets are not
-reconciled. Production-successor takeover continues to bind the canonical live
-map instead of copying it.
+so exact-ticket adoption cannot create duplicates. Initial create or adoption
+uses one bounded exact-title query, then reads the exact issue and persists its
+operator observation before recording selected-ticket success. A matching
+one-use clear is consumed for that ticket only; sibling issues and clears are
+not read or changed. Historical tickets are not reconciled.
+Production-successor takeover continues to bind the canonical live map instead
+of copying it.
 
 After a successful Reviewer publication commit, passport migration precedes
 cell parking so the expected validating-head change remains a waiting boundary.
