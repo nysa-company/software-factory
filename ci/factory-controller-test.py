@@ -953,6 +953,26 @@ class FactoryControllerTest(unittest.TestCase):
             ["git", "init", "-q", "-b", branch, str(cell)], check=True,
         )
 
+    def recovery_claim(self, ticket: str = "T-110") -> dict:
+        cell = self.root / f"parked/{ticket}"
+        self.initialize_parked_branch(cell, f"ticket/{ticket}")
+        (cell / "tracked").write_text("base\n", encoding="utf-8")
+        ticket_path = cell / "factory/tickets" / f"{ticket}.md"
+        ticket_path.parent.mkdir(parents=True)
+        ticket_path.write_text("State: Ready\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(cell), "add", "."], check=True)
+        subprocess.run([
+            "git", "-C", str(cell), "-c", "user.name=Factory",
+            "-c", "user.email=factory@example.invalid", "commit", "-qm", "base",
+        ], check=True)
+        return {
+            "branch": f"ticket/{ticket}", "blocked_reason": "retryable",
+            "lease": ticket[-1] * 64, "parked": True, "priority": "normal",
+            "publication_lease": "", "receipt": "", "role": "",
+            "schema": CONTROL.CLAIM_SCHEMA, "status": "blocked",
+            "ticket": ticket, "worktree": str(cell),
+        }
+
     def initialize_passportless_planner_claims(
         self, tickets: list[str]
     ) -> tuple[CONTROL.Controller, list[dict]]:
@@ -2402,6 +2422,9 @@ class FactoryControllerTest(unittest.TestCase):
         controller.recover_missing_passport_claims = lambda _claims: None
         controller.ticket_release_current = lambda _claim: True
         controller.renew = lambda _claim: None
+        controller.release_ticket_lease = lambda claim: (
+            claim.update(lease_released=True), controller.save_claim(claim)
+        )[-1]
         controller.migrate_passport = migrate
         controller.restore_contract_blocker = lambda _claim: False
         controller.claim_new = lambda claims: claims
@@ -5741,6 +5764,592 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(claim["lease"], "f" * 64)
         self.assertNotIn("lease_released", claim)
 
+    def test_identical_recovery_failure_abandons_once_and_survives_restart(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        claim = self.recovery_claim()
+        claim["lease_released"] = True
+        controller.save_claim(claim)
+        calls = []
+
+        def fail(items):
+            calls.append(items[0]["ticket"])
+            raise CONTROL.ControllerError("same invariant")
+
+        controller.withdraw_publication = lambda _claim: None
+        for _ in range(CONTROL.RECOVERY_ATTEMPT_LIMIT):
+            controller.recover_each([claim], fail, "release-upgrade")
+
+        self.assertEqual(len(calls), CONTROL.RECOVERY_ATTEMPT_LIMIT)
+        self.assertEqual(
+            claim["blocked_reason"], "recovery-abandoned:release-upgrade"
+        )
+        self.assertTrue(claim["lease_released"])
+        restarted = CONTROL.Controller(self.args)
+        persisted = restarted.load_claims()[0]
+        cleanup = []
+        restarted.withdraw_publication = lambda _claim: cleanup.append("withdraw")
+        hashes = []
+        recovery_input_sha256 = restarted.recovery_input_sha256
+        restarted.recovery_input_sha256 = lambda item, name: (
+            hashes.append(name) or recovery_input_sha256(item, name)
+        )
+        event_count = len(list(restarted.events.glob("*.json")))
+        selectors = (
+            "interrupted-reconciliation", "missing-terminal",
+            "passportless-route-migration", "preflight-retry",
+            "release-upgrade", "terminal-export", "targeted-repair",
+            "prepublication-attestation",
+        )
+        for _ in range(2):
+            for selector in selectors:
+                restarted.recover_each([persisted], fail, selector)
+        events = [
+            CONTROL.read(path) for path in restarted.events.glob("*.json")
+            if CONTROL.read(path).get("event") == "ticket_recovery_abandoned"
+        ]
+        self.assertEqual(len(calls), CONTROL.RECOVERY_ATTEMPT_LIMIT)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["attempts"], CONTROL.RECOVERY_ATTEMPT_LIMIT)
+        self.assertEqual(len(list(restarted.events.glob("*.json"))), event_count)
+        self.assertEqual(cleanup, [])
+        self.assertEqual(hashes, ["release-upgrade", "release-upgrade"])
+
+    def test_abandonment_restart_finishes_after_lease_release_save(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        claim = self.recovery_claim()
+        controller.save_claim(claim)
+        controller.withdraw_publication = lambda _claim: None
+
+        def fail(_items):
+            raise CONTROL.ControllerError("same invariant")
+
+        controller.recover_each([claim], fail, "release-upgrade")
+        controller.recover_each([claim], fail, "release-upgrade")
+        controller.json_call = lambda *_args, **_kwargs: {"absent": True}
+        original_release = controller.release_ticket_lease
+
+        def release_then_crash(item):
+            original_release(item)
+            raise RuntimeError("crash after lease release save")
+
+        controller.release_ticket_lease = release_then_crash
+        with self.assertRaisesRegex(RuntimeError, "crash after lease release save"):
+            controller.recover_each([claim], fail, "release-upgrade")
+        persisted = CONTROL.read(controller.claim_path("T-110"))
+        self.assertEqual(
+            persisted["blocked_reason"], "recovery-abandoned:release-upgrade"
+        )
+        self.assertTrue(persisted["lease_released"])
+        restarted = CONTROL.Controller(self.args)
+        cleanup = []
+        restarted.withdraw_publication = lambda _claim: cleanup.append("withdraw")
+        restarted.recover_each([persisted], fail, "release-upgrade")
+        restarted.recover_each([persisted], fail, "targeted-repair")
+        events = [
+            CONTROL.read(path) for path in restarted.events.glob("*.json")
+            if CONTROL.read(path).get("event") == "ticket_recovery_abandoned"
+        ]
+        self.assertEqual(len(events), 1)
+        self.assertEqual(cleanup, ["withdraw"])
+
+    def test_abandonment_persists_before_no_lease_publication_refusal(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        claim = self.recovery_claim()
+        claim["lease_released"] = True
+        controller.save_claim(claim)
+        attempts = []
+
+        def fail(_items):
+            attempts.append("attempt")
+            raise CONTROL.ControllerError("same invariant")
+
+        controller.withdraw_publication = lambda _claim: (_ for _ in ()).throw(
+            CONTROL.ControllerError("publication unavailable")
+        )
+        for _ in range(CONTROL.RECOVERY_ATTEMPT_LIMIT):
+            controller.recover_each([claim], fail, "release-upgrade")
+        persisted = CONTROL.read(controller.claim_path("T-110"))
+        self.assertEqual(
+            persisted["blocked_reason"], "recovery-abandoned:release-upgrade"
+        )
+        self.assertEqual(persisted["recovery_attempt"]["phase"], "abandoning")
+
+        restarted = CONTROL.Controller(self.args)
+        cleanup = []
+
+        def cleanup_fails(_claim):
+            cleanup.append("withdraw")
+            raise CONTROL.ControllerError("still unavailable")
+
+        restarted.withdraw_publication = cleanup_fails
+        selectors = (
+            "interrupted-reconciliation", "missing-terminal",
+            "passportless-route-migration", "preflight-retry",
+            "release-upgrade", "terminal-export", "targeted-repair",
+            "prepublication-attestation",
+        )
+        for _ in range(2):
+            for selector in selectors:
+                restarted.recover_each([persisted], fail, selector)
+        self.assertEqual(cleanup, ["withdraw", "withdraw"])
+        restarted.withdraw_publication = lambda _claim: cleanup.append("withdraw")
+        restarted.recover_each([persisted], fail, "release-upgrade")
+        restarted.recover_each([persisted], fail, "targeted-repair")
+        events = [
+            CONTROL.read(path) for path in restarted.events.glob("*.json")
+            if CONTROL.read(path).get("event") == "ticket_recovery_abandoned"
+        ]
+        self.assertEqual(len(attempts), CONTROL.RECOVERY_ATTEMPT_LIMIT)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(cleanup, ["withdraw", "withdraw", "withdraw"])
+
+    def test_apparent_recovery_round_trip_is_bounded(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        claim = self.recovery_claim()
+        claim["lease_released"] = True
+        controller.save_claim(claim)
+        controller.withdraw_publication = lambda _claim: None
+        controller.park_claim = lambda _claim: True
+
+        def recover(items):
+            items[0].update(status="claimed")
+            items[0].pop("blocked_reason", None)
+            controller.save_claim(items[0])
+
+        def round_trip(item):
+            item.update(status="blocked", blocked_reason="retryable")
+            controller.save_claim(item)
+            return {"status": "blocked", "ticket": item["ticket"]}
+
+        controller.reconcile_ticket = round_trip
+        for _ in range(CONTROL.RECOVERY_ATTEMPT_LIMIT):
+            controller.recover_each([claim], recover, "targeted-repair")
+            controller.reconcile_ticket_until_wait(claim)
+
+        self.assertEqual(
+            claim["blocked_reason"], "recovery-abandoned:targeted-repair"
+        )
+        self.assertEqual(claim["recovery_attempt"]["count"], 3)
+
+    def test_recovery_limit_resets_on_error_and_authenticated_head_change(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        claim = self.recovery_claim()
+        claim["lease_released"] = True
+        controller.save_claim(claim)
+
+        def fail(message):
+            controller.recover_each(
+                [claim],
+                lambda _items: (_ for _ in ()).throw(
+                    CONTROL.ControllerError(message)
+                ),
+                "release-upgrade",
+            )
+
+        fail("first")
+        fail("second")
+        self.assertEqual(claim["recovery_attempt"]["count"], 1)
+        fail("second")
+        self.assertEqual(claim["recovery_attempt"]["count"], 2)
+        cell = Path(claim["worktree"])
+        (cell / "tracked").write_text("operator repair\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(cell), "add", "tracked"], check=True)
+        subprocess.run([
+            "git", "-C", str(cell), "-c", "user.name=Operator",
+            "-c", "user.email=operator@example.invalid", "commit", "-qm", "repair",
+        ], check=True)
+        fail("second")
+        self.assertEqual(claim["recovery_attempt"]["count"], 1)
+
+    def test_recovery_limit_resets_on_receipt_and_exact_ticket_bytes(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        claim = self.recovery_claim()
+        claim["lease_released"] = True
+
+        def fail():
+            controller.recover_each(
+                [claim],
+                lambda _items: (_ for _ in ()).throw(
+                    CONTROL.ControllerError("same invariant")
+                ),
+                "release-upgrade",
+            )
+
+        fail()
+        fail()
+        claim["receipt"] = "c" * 64
+        fail()
+        self.assertEqual(claim["recovery_attempt"]["count"], 1)
+        fail()
+        ticket_path = (
+            Path(claim["worktree"]) / "factory/tickets/T-110.md"
+        )
+        ticket_path.write_text("State: Ready\nDetail: first\n", encoding="utf-8")
+        fail()
+        self.assertEqual(claim["recovery_attempt"]["count"], 1)
+        fail()
+        ticket_path.write_text("State: Ready\nDetail: other\n", encoding="utf-8")
+        fail()
+        self.assertEqual(claim["recovery_attempt"]["count"], 1)
+
+    def test_changed_receipt_readmits_real_release_upgrade_selector(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        claim = self.recovery_claim()
+        claim.update(
+            blocked_reason="route-migration-required", lease_released=True,
+        )
+        passports = self.state / "passports"
+        passports.mkdir(mode=0o700)
+        CONTROL.write(passports / "T-110.json", {
+            "factory_sha": self.release.name,
+        })
+        for prefix in (
+            "passport-route-migration-pending",
+            "passport-route-migration-complete",
+        ):
+            controller.marker(
+                f"{prefix}-T-110-{self.release.name}",
+                {"factory_sha": self.release.name,
+                 "schema": CONTROL.EVENT_SCHEMA, "ticket": "T-110"},
+            )
+        controller.withdraw_publication = lambda _claim: None
+        for _ in range(CONTROL.RECOVERY_ATTEMPT_LIMIT):
+            controller.recover_each(
+                [claim],
+                lambda _items: (_ for _ in ()).throw(
+                    CONTROL.ControllerError("same invariant")
+                ),
+                "release-upgrade",
+            )
+        self.assertEqual(
+            claim["blocked_reason"], "recovery-abandoned:release-upgrade"
+        )
+
+        claim["receipt"] = "d" * 64
+        controller.ticket_release_current = lambda _claim: True
+        controller.release_bundle_refreshable = lambda *_args: False
+        controller.terminal_for_receipt = lambda *_args: None
+        controller.renew = lambda _claim: None
+        controller.event = lambda *_args, **_kwargs: None
+        controller.recover_each(
+            [claim], controller.recover_upgraded_claims, "release-upgrade",
+        )
+        self.assertEqual(claim["status"], "claimed")
+        self.assertNotIn("blocked_reason", claim)
+        self.assertEqual(claim["recovery_attempt"]["phase"], "pending")
+
+    def test_successor_release_resets_before_reading_old_malformed_evidence(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        claim = self.recovery_claim()
+        claim.update(blocked_reason="route-migration-required", lease_released=True)
+        controller.withdraw_publication = lambda _claim: None
+        for _ in range(CONTROL.RECOVERY_ATTEMPT_LIMIT):
+            controller.recover_each(
+                [claim],
+                lambda _items: (_ for _ in ()).throw(
+                    CONTROL.ControllerError("same invariant")
+                ),
+                "release-upgrade",
+            )
+        passports = self.state / "passports"
+        passports.mkdir(mode=0o700)
+        (passports / "T-110.json").write_text("not-json\n", encoding="utf-8")
+        (passports / "T-110.json").chmod(0o600)
+        successor = self.root / ("b" * 40)
+        successor.mkdir()
+        controller.release_path = successor
+
+        self.assertFalse(controller.recovery_blocked(claim, "release-upgrade"))
+        self.assertNotIn("recovery_attempt", claim)
+        self.assertEqual(claim["blocked_reason"], "route-migration-required")
+
+    def test_claimed_recovery_restores_exact_status_after_evidence_change(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        claim = self.recovery_claim()
+        claim.update(status="claimed", lease_released=True)
+        claim.pop("blocked_reason")
+        controller.withdraw_publication = lambda _claim: None
+        for _ in range(CONTROL.RECOVERY_ATTEMPT_LIMIT):
+            controller.recover_each(
+                [claim],
+                lambda _items: (_ for _ in ()).throw(
+                    CONTROL.ControllerError("same invariant")
+                ),
+                "interrupted-reconciliation",
+            )
+        claim["receipt"] = "d" * 64
+        self.assertFalse(controller.recovery_blocked(
+            claim, "interrupted-reconciliation"
+        ))
+        self.assertEqual(claim["status"], "claimed")
+        self.assertNotIn("blocked_reason", claim)
+
+    def test_pending_recovery_restart_settles_before_retry(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        claim = self.recovery_claim()
+        claim["lease_released"] = True
+        controller.save_claim(claim)
+
+        def recover(items):
+            items[0].update(status="claimed")
+            items[0].pop("blocked_reason", None)
+            controller.save_claim(items[0])
+
+        controller.recover_each([claim], recover, "targeted-repair")
+        self.assertEqual(claim["recovery_attempt"]["phase"], "pending")
+        restarted = CONTROL.Controller(self.args)
+        persisted = restarted.load_claims()[0]
+        persisted.update(status="blocked", blocked_reason="retryable")
+        restarted.save_claim(persisted)
+        calls = []
+        restarted.recover_each(
+            [persisted], lambda _items: calls.append("retried"),
+            "interrupted-reconciliation",
+        )
+        self.assertEqual(calls, [])
+        self.assertEqual(persisted["recovery_attempt"]["count"], 0)
+        restarted.recover_each(
+            [persisted], lambda _items: calls.append("retried"),
+            "targeted-repair",
+        )
+        self.assertEqual(calls, ["retried"])
+        self.assertEqual(persisted["recovery_attempt"]["count"], 1)
+
+    def test_malformed_recovery_evidence_does_not_block_sibling(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        claims = [self.recovery_claim("T-110"), self.recovery_claim("T-111")]
+        passports = self.state / "passports"
+        passports.mkdir(mode=0o700)
+        (passports / "T-110.json").write_text("not-json\n", encoding="utf-8")
+        (passports / "T-110.json").chmod(0o600)
+        ran = []
+        controller.recover_each(
+            claims, lambda items: ran.append(items[0]["ticket"]),
+            "release-upgrade",
+        )
+        self.assertEqual(ran, ["T-111"])
+        self.assertEqual(claims[0]["blocked_reason"], "recovery:release-upgrade")
+
+    def test_invalid_utf8_recovery_evidence_does_not_block_sibling(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        claims = [self.recovery_claim("T-110"), self.recovery_claim("T-111")]
+        passports = self.state / "passports"
+        passports.mkdir(mode=0o700)
+        (passports / "T-110.json").write_bytes(b"\xff")
+        (passports / "T-110.json").chmod(0o600)
+        ran = []
+        controller.recover_each(
+            claims, lambda items: ran.append(items[0]["ticket"]),
+            "release-upgrade",
+        )
+        self.assertEqual(ran, ["T-111"])
+        self.assertEqual(claims[0]["blocked_reason"], "recovery:release-upgrade")
+
+    def test_invalid_evidence_during_settlement_does_not_block_sibling(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        claims = [self.recovery_claim("T-110"), self.recovery_claim("T-111")]
+        passports = self.state / "passports"
+        passports.mkdir(mode=0o700)
+        ran = []
+
+        def recovery(items):
+            claim = items[0]
+            ran.append(claim["ticket"])
+            if claim["ticket"] == "T-110":
+                (passports / "T-110.json").write_bytes(b"\xff")
+                (passports / "T-110.json").chmod(0o600)
+                controller.save_claim(claim)
+
+        controller.recover_each(claims, recovery, "release-upgrade")
+        waiting = [
+            CONTROL.read(path) for path in controller.events.glob("*.json")
+            if CONTROL.read(path).get("event")
+            == "ticket_recovery_settlement_waiting"
+        ]
+        self.assertEqual(ran, ["T-110", "T-111"])
+        self.assertEqual(claims[0]["recovery_attempt"]["phase"], "pending")
+        self.assertEqual(len(waiting), 1)
+
+    def test_acquired_lease_release_refusal_does_not_block_sibling(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        claims = [self.recovery_claim("T-110"), self.recovery_claim("T-111")]
+        for claim in claims:
+            claim["lease_released"] = True
+        ran = []
+        released = []
+
+        def recovery(items):
+            claim = items[0]
+            ran.append(claim["ticket"])
+            claim["lease"] = "f" * 64
+            claim.pop("lease_released", None)
+            controller.save_claim(claim)
+
+        def release(claim):
+            if claim["ticket"] == "T-110":
+                raise CONTROL.ControllerError("lease unavailable")
+            released.append(claim["ticket"])
+            claim["lease_released"] = True
+
+        controller.release_ticket_lease = release
+        controller.recover_each(claims, recovery, "release-upgrade")
+        waiting = [
+            CONTROL.read(path) for path in controller.events.glob("*.json")
+            if CONTROL.read(path).get("event")
+            == "ticket_recovery_lease_release_waiting"
+        ]
+        self.assertEqual(ran, ["T-110", "T-111"])
+        self.assertEqual(released, ["T-111"])
+        self.assertEqual(len(waiting), 1)
+
+    def test_malformed_recovery_attempt_is_typed_claim_refusal(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        claim = self.recovery_claim()
+        claim["recovery_attempt"] = {
+            "count": 1, "factory_sha": None, "input_sha256": "a" * 64,
+            "outcome_sha256": "b" * 64, "phase": "settled",
+            "recovery": "release-upgrade", "retry_reason": "retryable",
+            "retry_status": "blocked",
+        }
+        controller.save_claim(claim)
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "controller claim is malformed"
+        ):
+            controller.load_claims()
+
+    def test_recovery_attempt_phase_count_outcome_matrix(self) -> None:
+        base = {
+            "count": 0, "factory_sha": self.release.name,
+            "input_sha256": "a" * 64, "outcome_sha256": "",
+            "phase": "pending", "recovery": "release-upgrade",
+            "retry_reason": "retryable", "retry_status": "blocked",
+        }
+        valid = (
+            (0, "", "pending"),
+            (1, "b" * 64, "pending"),
+            (1, "b" * 64, "settled"),
+            (3, "b" * 64, "abandoning"),
+            (3, "b" * 64, "abandoned"),
+        )
+        invalid = (
+            (1, "", "settled"),
+            (3, "", "abandoning"),
+            (3, "", "abandoned"),
+            (0, "b" * 64, "pending"),
+        )
+        for count, outcome, phase in valid:
+            with self.subTest(valid=(count, outcome, phase)):
+                self.assertTrue(CONTROL.Controller.valid_recovery_attempt({
+                    **base, "count": count, "outcome_sha256": outcome,
+                    "phase": phase,
+                }))
+        for count, outcome, phase in invalid:
+            with self.subTest(invalid=(count, outcome, phase)):
+                self.assertFalse(CONTROL.Controller.valid_recovery_attempt({
+                    **base, "count": count, "outcome_sha256": outcome,
+                    "phase": phase,
+                }))
+
+    def test_qualification_generation_change_resets_recovery_limit(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        claim = self.recovery_claim()
+        claim["lease_released"] = True
+        controller.qualification_manifest_sha256 = "a" * 64
+
+        def fail(_items):
+            raise CONTROL.ControllerError("same invariant")
+
+        controller.recover_each([claim], fail, "release-upgrade")
+        controller.recover_each([claim], fail, "release-upgrade")
+        self.assertEqual(claim["recovery_attempt"]["count"], 2)
+        controller.qualification_manifest_sha256 = "b" * 64
+        controller.recover_each([claim], fail, "release-upgrade")
+        self.assertEqual(claim["recovery_attempt"]["count"], 1)
+
+    def test_abandoned_recoveries_do_not_reduce_live_capacity_or_cross_tickets(self) -> None:
+        (self.product / "factory/PROJECT.env").write_text(
+            "MAX_CONCURRENT_TICKETS=3\n", encoding="utf-8",
+        )
+        controller = CONTROL.Controller(self.args)
+        claims = [self.recovery_claim(f"T-{number}") for number in range(110, 114)]
+        for claim in claims[:2]:
+            claim.update(
+                blocked_reason="recovery-abandoned:release-upgrade",
+                lease_released=True,
+            )
+            claim["recovery_attempt"] = {
+                "count": 3,
+                "factory_sha": self.release.name,
+                "input_sha256": controller.recovery_input_sha256(
+                    claim, "release-upgrade"
+                ),
+                "outcome_sha256": "b" * 64,
+                "phase": "abandoned",
+                "recovery": "release-upgrade",
+                "retry_reason": "retryable",
+                "retry_status": "blocked",
+            }
+        for claim in claims[2:]:
+            claim.update(parked=False, status="running")
+        ran = []
+        controller.recover_each(
+            claims, lambda items: ran.append(items[0]["ticket"]),
+            "release-upgrade",
+        )
+        self.assertEqual(ran, ["T-112", "T-113"])
+        self.assertEqual(sum(map(controller.consumes_capacity, claims)), 2)
+        self.assertEqual(controller.capacity, 3)
+
+    def test_inactive_lease_cleanup_preserves_active_role(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        claims = [self.recovery_claim("T-110"), self.recovery_claim("T-111")]
+        active = {"T-111"}
+        controller.role_active = lambda claim: claim["ticket"] in active
+        released = []
+        controller.release_ticket_lease = lambda claim: (
+            released.append(claim["ticket"]), claim.update(lease_released=True)
+        )[-1]
+        controller.release_inactive_ticket_leases(claims)
+        self.assertEqual(released, ["T-110"])
+        self.assertNotIn("lease_released", claims[1])
+        active.clear()
+        controller.release_inactive_ticket_leases(claims)
+        self.assertEqual(released, ["T-110", "T-111"])
+
+    def test_inactive_lease_refusal_does_not_block_sibling_cleanup(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        claims = [self.recovery_claim("T-110"), self.recovery_claim("T-111")]
+        released = []
+
+        def release(claim):
+            if claim["ticket"] == "T-110":
+                raise CONTROL.ControllerError("lease unavailable")
+            released.append(claim["ticket"])
+            claim["lease_released"] = True
+
+        controller.release_ticket_lease = release
+        controller.release_inactive_ticket_leases(claims)
+        controller.release_inactive_ticket_leases(claims)
+        waiting = [
+            CONTROL.read(path) for path in controller.events.glob("*.json")
+            if CONTROL.read(path).get("event")
+            == "inactive_ticket_lease_release_waiting"
+        ]
+        self.assertEqual(released, ["T-111"])
+        self.assertEqual(len(waiting), 1)
+
+    def test_active_role_is_never_counted_as_recovery_attempt(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        claim = self.recovery_claim()
+        controller.role_active = lambda _claim: True
+        calls = []
+        controller.recover_each(
+            [claim], lambda _items: calls.append("recovered"),
+            "release-upgrade",
+        )
+        self.assertEqual(calls, [])
+        self.assertNotIn("recovery_attempt", claim)
+
     def test_detached_parked_upgrade_waits_once_without_holding_lease(self) -> None:
         controller = CONTROL.Controller(self.args)
         cell = self.root / "parked/T-110"
@@ -5777,6 +6386,46 @@ class FactoryControllerTest(unittest.TestCase):
         ]
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0]["reason"], "detached_worktree")
+
+    def test_detached_parked_upgrade_recovers_after_exact_branch_reattach(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        claim = self.recovery_claim()
+        claim["blocked_reason"] = "route-migration-required"
+        cell = Path(claim["worktree"])
+        (self.state / "passports").mkdir(mode=0o700)
+        CONTROL.write(self.state / "passports/T-110.json", {
+            "factory_sha": self.release.name,
+        })
+        controller.marker(
+            f"passport-route-migration-pending-T-110-{self.release.name}",
+            {"factory_sha": self.release.name, "schema": CONTROL.EVENT_SCHEMA,
+             "ticket": "T-110"},
+        )
+        controller.marker(
+            f"passport-route-migration-complete-T-110-{self.release.name}",
+            {"factory_sha": self.release.name, "schema": CONTROL.EVENT_SCHEMA,
+             "ticket": "T-110"},
+        )
+        subprocess.run(["git", "-C", str(cell), "checkout", "-q", "--detach"], check=True)
+        controller.role_active = lambda _claim: False
+        controller.release_ticket_lease = lambda item: item.update(
+            lease_released=True
+        )
+        controller.recover_upgraded_claims([claim])
+        self.assertTrue(claim["lease_released"])
+
+        subprocess.run([
+            "git", "-C", str(cell), "checkout", "-q", claim["branch"],
+        ], check=True)
+        controller.renew = lambda _claim: None
+        controller.ticket_release_current = lambda _claim: True
+        controller.restore_contract_blocker = lambda item: (
+            item.update(status="claimed") or True
+        )
+        controller.event = lambda *_args, **_kwargs: None
+        controller.recover_upgraded_claims([claim])
+        self.assertEqual(claim["status"], "claimed")
+        self.assertNotIn("blocked_reason", claim)
 
     def test_successor_recovers_only_exact_expired_parked_lease(self) -> None:
         controller = CONTROL.Controller(self.args)
