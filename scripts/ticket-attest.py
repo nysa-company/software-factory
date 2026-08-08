@@ -635,6 +635,60 @@ REFRESH_RECEIPT_KEYS = {
     "prior_request_changes_verdicts", "prior_narrator_runs",
     "prior_bundle_blob", "prior_approval_blob", "refreshed_at",
 }
+REFRESH_REVALIDATION_KEYS = {
+    "revalidation_budget_micro_usd", "revalidation_factory_sha",
+    "revalidation_generation",
+}
+REFRESH_REVALIDATION_BUDGET_MICRO_USD = 20_000_000
+
+
+def refresh_receipt_version(receipt, ticket):
+    if not isinstance(receipt, dict):
+        return 0
+    counts = [receipt.get(name) for name in (
+        "prior_reviewer_runs", "prior_approve_verdicts",
+        "prior_request_changes_verdicts", "prior_narrator_runs",
+    )]
+    generation = receipt.get("generation")
+    if (
+        receipt.get("ticket") != ticket
+        or isinstance(generation, bool)
+        or not isinstance(generation, int)
+        or generation < 1
+        or any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+            for value in counts
+        )
+        or counts[0] != counts[1] + counts[2]
+        or not all(valid_oid(receipt.get(name)) for name in (
+            "old_head", "base_head", "merge_head",
+        ))
+        or any(
+            value is not None and not valid_oid(value)
+            for value in (
+                receipt.get("prior_bundle_blob"),
+                receipt.get("prior_approval_blob"),
+            )
+        )
+    ):
+        return 0
+    if (
+        receipt.get("schema") == "nysa.software-factory.ticket-refresh/v1"
+        and set(receipt) == REFRESH_RECEIPT_KEYS
+    ):
+        return 1
+    if (
+        receipt.get("schema") == "nysa.software-factory.ticket-refresh/v2"
+        and set(receipt) == REFRESH_RECEIPT_KEYS | REFRESH_REVALIDATION_KEYS
+        and receipt.get("revalidation_budget_micro_usd")
+        == REFRESH_REVALIDATION_BUDGET_MICRO_USD
+        and valid_oid(receipt.get("revalidation_factory_sha"))
+        and isinstance(receipt.get("revalidation_generation"), int)
+        and not isinstance(receipt.get("revalidation_generation"), bool)
+        and 1 <= receipt["revalidation_generation"] <= generation
+    ):
+        return 2
+    return 0
 
 
 def publication_refresh_replay(workdir, ticket, branch, remote, expected_base):
@@ -717,28 +771,7 @@ def load_refresh_receipt(workdir, ticket):
         )
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
         raise Refusal("refresh receipt is malformed") from error
-    counts = [receipt.get(name) for name in (
-        "prior_reviewer_runs", "prior_approve_verdicts",
-        "prior_request_changes_verdicts", "prior_narrator_runs",
-    )] if isinstance(receipt, dict) else []
-    generation = receipt.get("generation") if isinstance(receipt, dict) else None
-    if (
-        not isinstance(receipt, dict)
-        or set(receipt) != REFRESH_RECEIPT_KEYS
-        or receipt.get("schema") != "nysa.software-factory.ticket-refresh/v1"
-        or receipt.get("ticket") != ticket
-        or isinstance(generation, bool)
-        or not isinstance(generation, int)
-        or generation < 1
-        or any(
-            isinstance(value, bool) or not isinstance(value, int) or value < 0
-            for value in counts
-        )
-        or counts[0] != counts[1] + counts[2]
-        or not all(valid_oid(receipt.get(name)) for name in (
-            "old_head", "base_head", "merge_head",
-        ))
-    ):
+    if not refresh_receipt_version(receipt, ticket):
         raise Refusal("refresh receipt identity or baselines are invalid")
     timestamp(receipt.get("refreshed_at"), "refresh receipt")
     receipt_commit = git(
@@ -760,29 +793,35 @@ def load_refresh_receipt(workdir, ticket):
         workdir, "show", f"{receipt['old_head']}:{relative}", check=False,
     )
     expected_generation = 1
+    prior = None
     if previous.returncode == 0:
         try:
             prior = json.loads(previous.stdout, object_pairs_hook=unique_json_object)
         except (json.JSONDecodeError, ValueError) as error:
             raise Refusal("prior refresh receipt is malformed") from error
-        prior_generation = prior.get("generation") if isinstance(prior, dict) else None
-        if (
-            not isinstance(prior, dict)
-            or set(prior) != REFRESH_RECEIPT_KEYS
-            or prior.get("schema") != "nysa.software-factory.ticket-refresh/v1"
-            or prior.get("ticket") != ticket
-            or isinstance(prior_generation, bool)
-            or not isinstance(prior_generation, int)
-            or prior_generation < 1
-        ):
+        if not refresh_receipt_version(prior, ticket):
             raise Refusal("prior refresh receipt is malformed")
-        expected_generation = prior_generation + 1
+        expected_generation = prior["generation"] + 1
     elif git(
         workdir, "log", "-1", "--format=%H", receipt["old_head"], "--", relative,
     ).stdout.strip():
         raise Refusal("prior refresh receipt is missing from the recorded old head")
-    if generation != expected_generation:
+    if receipt["generation"] != expected_generation:
         raise Refusal("refresh generation is not continuous")
+    if refresh_receipt_version(receipt, ticket) == 2:
+        expected_reservation_generation = receipt["generation"]
+        if (
+            prior is not None
+            and refresh_receipt_version(prior, ticket) == 2
+            and prior["revalidation_factory_sha"]
+            == receipt["revalidation_factory_sha"]
+        ):
+            expected_reservation_generation = prior["revalidation_generation"]
+        if (
+            receipt["revalidation_generation"]
+            != expected_reservation_generation
+        ):
+            raise Refusal("refresh revalidation generation is not continuous")
     return receipt, receipt_commit
 
 
@@ -2187,7 +2226,9 @@ def refresh_baselines(text, manifests):
     return reviewer_count, approvals, requests, len(narrators)
 
 
-def refresh(args, product, workdir, repo, prefix, remote, *, expected_base=None):
+def refresh(
+    args, product, workdir, repo, prefix, remote, kit_sha, *, expected_base=None,
+):
     branch = f"{prefix}{args.ticket}"
     old_head = ensure_clean_branch(product, workdir, branch)
     ticket_path = workdir / "factory" / "tickets" / f"{args.ticket}.md"
@@ -2295,6 +2336,7 @@ def refresh(args, product, workdir, repo, prefix, remote, *, expected_base=None)
     prior_approval = blob_id(workdir, approval_path) if had_approval else None
     previous_path = bundle_path.with_name("refresh.json")
     generation = 1
+    revalidation_generation = 1
     had_previous = safe_optional_attestation(previous_path)
     prior_refresh = blob_id(workdir, previous_path) if had_previous else None
     if not had_previous and git(
@@ -2311,17 +2353,17 @@ def refresh(args, product, workdir, repo, prefix, remote, *, expected_base=None)
             raise Refusal("existing refresh receipt is malformed")
         if not isinstance(previous, dict):
             raise Refusal("existing refresh receipt is malformed")
-        previous_generation = previous.get("generation")
-        if (
-            set(previous) != REFRESH_RECEIPT_KEYS
-            or previous.get("schema") != "nysa.software-factory.ticket-refresh/v1"
-            or previous.get("ticket") != args.ticket
-            or isinstance(previous_generation, bool)
-            or not isinstance(previous_generation, int)
-            or previous_generation < 1
-        ):
+        if not refresh_receipt_version(previous, args.ticket):
             raise Refusal("existing refresh receipt is malformed")
-        generation = previous_generation + 1
+        generation = previous["generation"] + 1
+        if (
+            previous.get("revalidation_factory_sha") == kit_sha
+            and previous.get("revalidation_budget_micro_usd")
+            == REFRESH_REVALIDATION_BUDGET_MICRO_USD
+        ):
+            revalidation_generation = previous["revalidation_generation"]
+        else:
+            revalidation_generation = generation
 
     merged = git(
         workdir, "-c", "user.name=Software Factory", "-c",
@@ -2366,7 +2408,7 @@ def refresh(args, product, workdir, repo, prefix, remote, *, expected_base=None)
         if stale.exists():
             stale.unlink()
     receipt = {
-        "schema": "nysa.software-factory.ticket-refresh/v1",
+        "schema": "nysa.software-factory.ticket-refresh/v2",
         "ticket": args.ticket,
         "generation": generation,
         "old_head": old_head,
@@ -2378,6 +2420,11 @@ def refresh(args, product, workdir, repo, prefix, remote, *, expected_base=None)
         "prior_narrator_runs": narrators,
         "prior_bundle_blob": prior_bundle,
         "prior_approval_blob": prior_approval,
+        "revalidation_budget_micro_usd": (
+            REFRESH_REVALIDATION_BUDGET_MICRO_USD
+        ),
+        "revalidation_factory_sha": kit_sha,
+        "revalidation_generation": revalidation_generation,
         "refreshed_at": now(),
     }
     write_json(previous_path, receipt)
@@ -2554,7 +2601,7 @@ def dependency_refresh_generation(receipt_path, ticket):
     return previous_generation + 1
 
 
-def dependency_refresh(args, product, workdir, prefix, remote):
+def dependency_refresh(args, product, workdir, prefix, remote, kit_sha):
     stage = os.environ.get("FACTORY_TRANSITION_STAGE", "")
     match = re.fullmatch(
         r"REFUSE dependency refresh required; "
@@ -2666,6 +2713,7 @@ def dependency_refresh(args, product, workdir, prefix, remote):
         else:
             result = refresh(
                 args, product, workdir, repo, prefix, remote,
+                kit_sha,
                 expected_base=expected_base,
             )
         if result.get("action") == "dependency-wait":
@@ -3862,10 +3910,10 @@ def main():
             args, product, workdir, repo, prefix, remote, kit_sha, method,
         )
     elif args.action == "refresh":
-        result = refresh(args, product, workdir, repo, prefix, remote)
+        result = refresh(args, product, workdir, repo, prefix, remote, kit_sha)
     elif args.action == "dependency-refresh":
         result = dependency_refresh(
-            args, product, workdir, prefix, remote,
+            args, product, workdir, prefix, remote, kit_sha,
         )
     elif args.action == "dependency-refresh-replay":
         result = dependency_publication_replay(

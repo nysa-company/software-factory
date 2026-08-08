@@ -344,7 +344,7 @@ print(json.dumps([{
         refresh = self.product / "factory/attestations/T-100/refresh.json"
         refresh.parent.mkdir(parents=True)
         refresh.write_text(json.dumps({
-            "schema": "nysa.software-factory.ticket-refresh/v1",
+            "schema": "nysa.software-factory.ticket-refresh/v2",
             "ticket": "T-100",
             "generation": 1,
             "old_head": old_head,
@@ -356,6 +356,9 @@ print(json.dumps([{
             "prior_narrator_runs": 0,
             "prior_bundle_blob": None,
             "prior_approval_blob": None,
+            "revalidation_budget_micro_usd": 20_000_000,
+            "revalidation_factory_sha": "a" * 40,
+            "revalidation_generation": 1,
             "refreshed_at": "2026-07-20T00:02:00Z",
         }, sort_keys=True) + "\n")
         subprocess.run(["git", "-C", self.product, "add", "."], check=True)

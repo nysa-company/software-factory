@@ -429,6 +429,17 @@ its predecessor immutable and names that exact record in its preview-bound
 hash. It is effective only for the same scope, target, base-envelope identity,
 and setting-key set, with a later issue time and no shorter lifetime; missing,
 ambiguous, or malformed supersession lineage refuses reduction.
+Contract 1.8 successor qualification keeps its sealed $100 ticket cap and
+reserves the final two $10 run slots for exact-current-head Reviewer and
+Narrator revalidation after a semantic protected-base refresh. The committed
+refresh v2 receipt binds the candidate Factory and carries one reservation
+generation across later refresh generations of that same candidate. Ordinary
+roles stop prospectively at $80, refresh Reviewer at $90, and refresh Narrator
+at $100; a failed Reviewer therefore cannot consume the Narrator slot through
+a second paid retry. Legacy, malformed, foreign-Factory, or absent receipts
+cannot spend the reserve, and ordinary envelope overrides do not change it. A
+successor Factory receives a fresh fixed allowance because its authenticated
+accounting is candidate-scoped.
 Six-role model-plan pinning relies on its individually bounded readiness
 probes and has no aggregate controller timeout; slow successful probes cannot
 become a wall-clock delivery stop before the first provider call.
@@ -1306,6 +1317,16 @@ either a v1 ticket route plan or a v2 route journal whose ticket and Kit-SHA
 match the authorization and whose complete history passes the candidate's
 migration validator. The normal maintenance, zero-active-run, and
 zero-dispatcher-lease barriers still apply.
+Activation and mutating model-route migration use the same strict authorization
+parser. Migration revalidates current protected main, the selected remote ticket
+head, repository, source and target kit, branch, and state before changing Git.
+The first application starts at the exact authorized head. An interrupted
+idempotent retry may start only at its one direct child when that commit changes
+only the selected ticket's Kit-SHA and its exact append-only release-migration
+journal, with both paths committed as regular `100644` blobs; sibling entries
+remain neither consumed nor reinterpreted. Every other
+head, state, path, or route-history change requires a new protected
+authorization.
 Qualification upgrades bind liveness to the non-overlapping controller lock
 and active-run markers. A terminal orphaned `running` claim remains portable
 state for the successor controller rather than an upgrade deadlock.
@@ -1651,6 +1672,11 @@ phase output, npm debug logs, result evidence, and their digests survive a
 failed product-certification workspace. Before source preparation, an existing
 active product must match its exact committed activation generation, canonical
 path, and origin; a fresh project remains certifiable without an active record.
+Certification failure receipts also bind the driver and final exit statuses,
+the setup, product, phase, or post-driver cache boundary, and separate evidence
+and output digests. A pre-product driver failure retains a
+bounded redacted diagnostic and a nonempty fixed reason even when no product
+result exists; raw setup output is never persisted.
 On macOS the protected product wrapper only coordinates its disposable tree;
 each declared phase enters exactly one Factory-generated Seatbelt profile.
 Production requires both the external-network-denied and reviewed-network
@@ -1680,7 +1706,12 @@ withdraws publication, releases only that claim's exact lease, emits one
 retirement event, and removes the claim before recovery; it never reacquires a
 lease or replays role evidence. A crash after publication release is recovered
 only when a capability-bound retry plus withdrawal proves that ticket has no
-publication state. Qualification continues to require Done for every selected
+publication state. A retained claim with an exact empty lease has nothing to
+release and still retires; malformed lease evidence or a failed publication or
+lease cleanup remains ticket-local and cannot stop sibling reconciliation.
+Malformed parked lease evidence is loaded only into the existing invalid-ticket
+quarantine and cannot enter recovery, admission, or scheduling.
+Qualification continues to require Done for every selected
 target and does not count Canceled as completion.
 
 The activation journal advances through `prepared`,

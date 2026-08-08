@@ -232,7 +232,8 @@ push_exact_head() {
   tracking="$(factory_remote_tracking_tip "$workdir" "$branch")"
   [[ "$tracking" == "$expected_old" ]] ||
     json_error "remote tracking state changed before push"
-  control_git "$workdir" push --no-force \
+  control_git "$workdir" push \
+    "--force-with-lease=refs/heads/$branch:$expected_old" \
     "$remote" "$head:refs/heads/$branch" >/dev/null 2>&1 ||
     git_network_error "could not push exact model-control commit"
   actual="$(control_git "$workdir" ls-remote --heads -- "$remote" \
@@ -241,6 +242,102 @@ push_exact_head() {
   factory_update_tracking_ref "$workdir" "$branch" "$head" "$tracking" ||
     json_error "remote tracking update failed"
   printf '%s\n' "$head"
+}
+
+remote_branch_head() {
+  local branch="$1" lines
+  lines="$(control_git "$CONTROL_WORKDIR" ls-remote --heads -- "$CONTROL_REMOTE" \
+    "refs/heads/$branch" 2>/dev/null)" || return 1
+  python3 - "$branch" "$lines" <<'PY'
+import re, sys
+branch, raw = sys.argv[1:]
+lines = raw.splitlines()
+if len(lines) != 1:
+    raise SystemExit(1)
+fields = lines[0].split()
+if len(fields) != 2 or not re.fullmatch(r"[0-9a-f]{40}", fields[0]):
+    raise SystemExit(1)
+if fields[1] != "refs/heads/" + branch:
+    raise SystemExit(1)
+print(fields[0])
+PY
+}
+
+validate_inflight_migration_authority() {
+  local current_head tracking_ticket tracking_main actual_ticket expected_parent
+  current_head="$(git -C "$CONTROL_WORKDIR" rev-parse HEAD)" ||
+    json_error "cannot resolve ticket head"
+  tracking_ticket="$(factory_remote_tracking_tip \
+    "$CONTROL_WORKDIR" "$CONTROL_BRANCH")"
+  actual_ticket="$(remote_branch_head "$CONTROL_BRANCH")" ||
+    git_network_error "remote ticket head lookup failed"
+  CONTROL_PROTECTED_MAIN="$(remote_branch_head main)" ||
+    git_network_error "protected main head lookup failed"
+  tracking_main="$(factory_remote_tracking_tip "$CONTROL_WORKDIR" main)"
+  [[ "$tracking_main" == "$CONTROL_PROTECTED_MAIN" ]] ||
+    json_error "protected main tracking state is stale"
+  CONTROL_AUTHORIZATION_MODE="$(python3 -B \
+    "$KIT_DIR/scripts/lib/inflight_release.py" \
+    --repo "$CONTROL_WORKDIR" --protected "$CONTROL_PROTECTED_MAIN" \
+    --target "$FACTORY_KIT_SHA" --ticket "$ticket" \
+    --branch "$CONTROL_BRANCH" --head "$current_head")" ||
+    json_error "ticket does not match its exact protected in-flight release authorization"
+  [[ "$CONTROL_AUTHORIZATION_MODE" == "exact" ||
+     "$CONTROL_AUTHORIZATION_MODE" == "replay" ]] ||
+    json_error "in-flight release authorization result is invalid"
+  CONTROL_AUTHORIZED_LOCAL_HEAD="$current_head"
+  if [[ "$CONTROL_AUTHORIZATION_MODE" == "exact" ]]; then
+    [[ "$tracking_ticket" == "$current_head" &&
+       "$actual_ticket" == "$current_head" ]] ||
+      json_error "ticket head is not current on its certified remote"
+    CONTROL_EXPECTED_REMOTE_HEAD="$current_head"
+  else
+    expected_parent="$(git -C "$CONTROL_WORKDIR" rev-parse "$current_head^")" ||
+      json_error "authorized migration parent is unavailable"
+    if [[ "$tracking_ticket" == "$expected_parent" &&
+          "$actual_ticket" == "$expected_parent" ]]; then
+      CONTROL_EXPECTED_REMOTE_HEAD="$expected_parent"
+    elif [[ "$tracking_ticket" == "$current_head" &&
+            "$actual_ticket" == "$current_head" ]]; then
+      CONTROL_EXPECTED_REMOTE_HEAD="$current_head"
+    else
+      json_error "authorized migration child is not current on its certified remote"
+    fi
+  fi
+}
+
+recheck_inflight_migration_authority() {
+  local current_head tracking_ticket tracking_main actual_ticket protected authority
+  local worktree_status
+  current_head="$(git -C "$CONTROL_WORKDIR" rev-parse HEAD)" ||
+    json_error "cannot resolve ticket head"
+  tracking_ticket="$(factory_remote_tracking_tip \
+    "$CONTROL_WORKDIR" "$CONTROL_BRANCH")"
+  tracking_main="$(factory_remote_tracking_tip "$CONTROL_WORKDIR" main)"
+  actual_ticket="$(remote_branch_head "$CONTROL_BRANCH")" ||
+    git_network_error "remote ticket head lookup failed"
+  protected="$(remote_branch_head main)" ||
+    git_network_error "protected main head lookup failed"
+  [[ "$current_head" == "$CONTROL_AUTHORIZED_LOCAL_HEAD" &&
+     "$tracking_ticket" == "$CONTROL_EXPECTED_REMOTE_HEAD" &&
+     "$actual_ticket" == "$CONTROL_EXPECTED_REMOTE_HEAD" ]] ||
+    json_error "ticket authorization changed before migration"
+  [[ "$protected" == "$CONTROL_PROTECTED_MAIN" ]] ||
+    json_error "protected in-flight release authorization changed before migration"
+  [[ "$tracking_main" == "$CONTROL_PROTECTED_MAIN" ]] ||
+    json_error "protected main tracking state changed before migration"
+  authority="$(python3 -B "$KIT_DIR/scripts/lib/inflight_release.py" \
+    --repo "$CONTROL_WORKDIR" --protected "$CONTROL_PROTECTED_MAIN" \
+    --target "$FACTORY_KIT_SHA" --ticket "$ticket" \
+    --branch "$CONTROL_BRANCH" --head "$current_head")" ||
+    json_error "ticket authorization evidence changed before migration"
+  [[ "$authority" == "$CONTROL_AUTHORIZATION_MODE" ]] ||
+    json_error "ticket authorization evidence changed before migration"
+  worktree_status="$(git -C "$CONTROL_WORKDIR" status --porcelain \
+    --untracked-files=all --ignore-submodules=none)" ||
+    json_error "ticket worktree status is unavailable"
+  [[ -z "$worktree_status" ]] ||
+    json_error "ticket worktree changed during migration readiness"
 }
 
 command_name="${1:-}"
@@ -543,6 +640,9 @@ PY
       json_error "ticket route document is missing or unsafe"
     factory_validate_kit_pin "$KIT_DIR" "$FACTORY_ROOT" ||
       json_error "$FACTORY_KIT_PIN_ERROR"
+    if [[ "$command_name" == "migrate" ]]; then
+      validate_inflight_migration_authority
+    fi
     bundle="$workdir/factory/attestations/$ticket/bundle.json"
     if [[ -e "$bundle" || -L "$bundle" ]]; then
       [[ -f "$bundle" && ! -L "$bundle" ]] ||
@@ -638,9 +738,8 @@ PY
       json_error "migration approval hash does not match preview"
     [[ "$readiness_hash" == "$preview_readiness_hash" ]] ||
       json_error "model migration readiness changed after approval"
-    expected_remote_head="$(factory_remote_tracking_tip "$workdir" "$CONTROL_BRANCH")"
-    [[ "$expected_remote_head" =~ ^[0-9a-f]{40}$ ]] ||
-      json_error "remote tracking state is unavailable"
+    expected_remote_head="$CONTROL_EXPECTED_REMOTE_HEAD"
+    recheck_inflight_migration_authority
     PIN_PRECOMMIT=1
     PIN_WORKDIR="$workdir"
     PIN_TICKET_RELATIVE="factory/tickets/$ticket.md"

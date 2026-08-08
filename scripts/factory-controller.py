@@ -2016,15 +2016,16 @@ class Controller:
         result = []
         for path in sorted(self.claims.glob("T-*.json")):
             value = read(path)
+            lease = value.get("lease")
             if (
                 value.get("schema") != CLAIM_SCHEMA
                 or path.name != f"{value.get('ticket')}.json"
                 or not TICKET.fullmatch(value.get("ticket", ""))
                 or (
-                    not DIGEST.fullmatch(value.get("lease", ""))
-                    and not (
-                        value.get("lease") == ""
-                        and value.get("parked") is True
+                    not isinstance(lease, str)
+                    or (
+                        DIGEST.fullmatch(lease) is None
+                        and value.get("parked") is not True
                     )
                 )
                 or not Path(value.get("worktree", "")).is_absolute()
@@ -2047,6 +2048,12 @@ class Controller:
                 )
             ):
                 raise ControllerError("controller claim is malformed")
+            if lease and DIGEST.fullmatch(lease) is None:
+                self.invalid_transition_tickets.add(value["ticket"])
+                self.event_once(
+                    "controller_claim_invalid", value["ticket"],
+                    reason_code="lease_invalid",
+                )
             if value["status"] == "budget":
                 if not DIGEST.fullmatch(value.get("budget_sha256", "")):
                     raise ControllerError("budget wait claim is malformed")
@@ -2263,11 +2270,41 @@ class Controller:
             ):
                 retained.append(claim)
                 continue
-            self.withdraw_publication(claim)
+            try:
+                self.withdraw_publication(claim)
+            except (
+                ControllerError, json.JSONDecodeError, OSError,
+                subprocess.SubprocessError, UnicodeError,
+            ):
+                self.event_once(
+                    "canceled_ticket_retirement_waiting", claim["ticket"],
+                    reason_code="publication_withdraw_refused",
+                )
+                retained.append(claim)
+                continue
             if claim.get("lease_released") is not True:
-                if not DIGEST.fullmatch(claim.get("lease", "")):
-                    raise ControllerError("canceled ticket claim lease is invalid")
-                self.release_ticket_lease(claim)
+                lease = claim.get("lease")
+                if lease != "":
+                    if not isinstance(lease, str) or not DIGEST.fullmatch(lease):
+                        self.event_once(
+                            "canceled_ticket_retirement_waiting",
+                            claim["ticket"], reason_code="lease_invalid",
+                        )
+                        retained.append(claim)
+                        continue
+                    try:
+                        self.release_ticket_lease(claim)
+                    except (
+                        ControllerError, json.JSONDecodeError, OSError,
+                        subprocess.SubprocessError, UnicodeError,
+                    ):
+                        self.event_once(
+                            "canceled_ticket_retirement_waiting",
+                            claim["ticket"],
+                            reason_code="lease_release_refused",
+                        )
+                        retained.append(claim)
+                        continue
             self.event_once(
                 "ticket_retired", claim["ticket"], reason="canceled",
             )
@@ -7211,8 +7248,10 @@ class Controller:
                     self.withdraw_publication(claim)
             existing = [claim for claim in existing if claim["ticket"] in tickets]
         existing = self.retire_canceled_claims(existing, protected_main)
+        self.quarantine_invalid_transition_claims(existing)
         completed = [
             claim for claim in existing
+            if claim["ticket"] not in self.invalid_transition_tickets
             if self.product_ticket_done(claim["ticket"])
         ]
         for claim in completed:
@@ -7220,10 +7259,14 @@ class Controller:
             self.release(claim)
         existing = [claim for claim in existing if claim not in completed]
         for claim in existing:
-            self.operator_transition(claim)
+            if claim["ticket"] not in self.invalid_transition_tickets:
+                self.operator_transition(claim)
         self.quarantine_invalid_transition_claims(existing)
         self.release_inactive_ticket_leases(existing)
-        self.recover_operator_action_events(existing)
+        self.recover_operator_action_events([
+            claim for claim in existing
+            if claim["ticket"] not in self.invalid_transition_tickets
+        ])
         self.record_qualification_done_targets()
         self.recover_missing_passport_claims(existing)
         self.recover_terminal_requests([

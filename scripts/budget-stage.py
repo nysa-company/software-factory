@@ -15,6 +15,11 @@ import sys
 QUALIFICATION_SCHEMA = "nysa.software-factory.qualification/v2"
 SHA = re.compile(r"^[0-9a-f]{40}$")
 TICKET = re.compile(r"^T-[0-9]+$")
+PAID_STAGE = re.compile(
+    r"^(?:RUN (?:planner|spec-linter|test-author|builder|reviewer|narrator)"
+    r"|FIX (?:planner|spec-linter|test-author|builder|builder-or-test-author))$"
+)
+REFRESH_REVALIDATION_ROLES = {"RUN reviewer", "RUN narrator"}
 
 
 def module(name: str, path: Path):
@@ -27,7 +32,13 @@ def module(name: str, path: Path):
 
 
 def resolve(
-    kit: Path, product: Path, ticket: str, factory_sha: str | None = None
+    kit: Path,
+    product: Path,
+    ticket: str,
+    factory_sha: str | None = None,
+    stage: str | None = None,
+    refresh_factory_sha: str = "",
+    refresh_budget_micro_usd: int = 0,
 ) -> str:
     if not TICKET.fullmatch(ticket):
         raise ValueError("invalid ticket")
@@ -77,6 +88,7 @@ def resolve(
         ):
             raise ValueError("successor qualification budget is invalid")
         cap = 100_000_000
+        run_cap = 10_000_000
     else:
         _, changes = envelope.load_override_records(
             envelope.secure_directory(product / "factory"),
@@ -95,6 +107,29 @@ def resolve(
         item["charge_micro_usd"] for item in charges
         if not successor or item.get("factory_sha") == current
     )
+    if successor:
+        if not isinstance(stage, str) or not PAID_STAGE.fullmatch(stage):
+            raise ValueError("successor qualification budget stage is invalid")
+        reserve = run_cap * 2
+        revalidation = (
+            stage in REFRESH_REVALIDATION_ROLES
+            and refresh_factory_sha == current
+            and refresh_budget_micro_usd == reserve
+        )
+        available = (
+            cap - run_cap
+            if revalidation and stage == "RUN reviewer"
+            else cap
+            if revalidation
+            else cap - reserve
+        )
+        if spent + run_cap > available:
+            return (
+                "AWAIT_BUDGET protected-base revalidation budget reserved "
+                f"({spent}/{available} micro-USD)"
+                if spent < cap else
+                f"AWAIT_BUDGET ticket budget exhausted ({spent}/{cap} micro-USD)"
+            )
     return (
         f"AWAIT_BUDGET ticket budget exhausted ({spent}/{cap} micro-USD)"
         if spent >= cap else "AVAILABLE"
@@ -108,6 +143,9 @@ if __name__ == "__main__":
             Path(sys.argv[1]).resolve(strict=True),
             sys.argv[2],
             sys.argv[3],
+            sys.argv[4],
+            sys.argv[5],
+            int(sys.argv[6]),
         ))
     except (IndexError, OSError, ValueError) as error:
         print(f"REFUSE {error}")

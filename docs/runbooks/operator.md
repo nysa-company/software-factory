@@ -471,9 +471,12 @@ same-UID token exposure remains until a broker or OS isolation is used.
 
 ## Preparing and activating a release
 
-1. Confirm the candidate full SHA is the current `origin/main` and its exact
-   authenticated push run has all four Linux groups, all four macOS groups,
-   the three stable evidence aliases per platform, aggregate `ci`, and
+1. Use a clean kit checkout whose remote is the canonical
+   `github.com/nysa-company/software-factory` identity. SSH host aliases are
+   intentionally not trusted and `--origin` does not override a mismatched
+   checkout. Confirm the candidate full SHA is the current `origin/main` and
+   its exact authenticated push run has all four Linux groups, all four macOS
+   groups, the three stable evidence aliases per platform, aggregate `ci`, and
    `test-immutability` successful.
 2. Install that exact sealed candidate. Reuse only the protected-main evidence
    from step 1 and run the local sandboxed host smoke; never substitute a local
@@ -481,10 +484,21 @@ same-UID token exposure remains until a broker or OS isolation is used.
 3. Inventory every nonterminal ticket and its committed `Kit-SHA`. Finish it
    on its current release or prepare the applicable exact protected-main
    migration evidence. Do not migrate its pin or route journal yet.
-4. For an active execution computer, publish managed maintenance, stop new
-   dispatch, and drain every run and dispatcher lease before changing
-   user-scoped tools. For an inactive replacement computer, keep its
-   dispatcher, reconciler, and LaunchAgent disabled.
+4. For an active execution computer, run `factory-kit.sh pause`. It publishes
+   managed maintenance before checking the drain. If it refuses on a stale
+   lease, leave maintenance published, prove no role run is active, run
+   `factory-kit.sh recover-lease` once for each named ticket, and retry
+   `factory-kit.sh pause`; never delete a lease by hand. After pause succeeds,
+   keep dispatch stopped and prove every remaining provider attempt and
+   reservation is drained. Only then install the exact sealed `factory-launch`
+   with the fail-fast, rollback-preserving native command block in
+   `docs/factory-setup.md` before changing other user-scoped tools. For an
+   inactive replacement computer, keep its
+   dispatcher, reconciler, and LaunchAgent disabled and install the sealed
+   launcher before certification. Before the protected merge in step 7, also
+   publish maintenance on the old active host, pause and recover its stale
+   leases through the same supported sequence, prove its controller and
+   provider work are drained, and keep it stopped through cutover.
 5. From current product `origin/main`, prepare one clean canonical product
    checkout and commit the candidate `KIT_PIN`, operator-approved envelope
    values, and complete migration evidence on one migration branch. The tree
@@ -496,12 +510,21 @@ same-UID token exposure remains until a broker or OS isolation is used.
    Claude, restart agent sessions, and plan the repository baseline before
    certification. A baseline diff is a separate product change, not migration
    drift.
-7. Verify Node 22 and any product certification dependency, including the
+7. After every required `KIT_PIN`, in-flight authorization, and migration
+   control is committed, open and merge the protected product PR while
+   maintenance and the controller/provider drain remain in force. Fetch
+   canonical `origin/main`, require the merged commit and tracked tree to be
+   exactly the intended final product tuple, and make the canonical product
+   path a clean `HEAD == origin/main` checkout at that commit. Then verify Node
+   22 and any product certification dependency, including the
    product's configured local PostgreSQL endpoint. For Contract 1.8 capacity
    above one, preview and apply the exact owner-local provider configuration
    only after maintenance and complete provider/lease drain, as described in
-   `docs/factory-setup.md`. Then certify the exact committed canonical product
-   path and tree. Record the receipt ID and expiry.
+   `docs/factory-setup.md`. Then certify that exact protected-main SHA and tree
+   from the clean canonical product path. Record the receipt ID and expiry.
+   Any later product commit or protected-main tree drift invalidates that
+   receipt; land the complete final tree and recertify instead of attempting
+   activation with stale evidence.
 8. Complete the real-Hermes canary with a separate sandbox product and
    profile. Never copy the production `.env`, secrets, board mapping, registry,
    ledger, or LaunchAgent.
@@ -509,16 +532,13 @@ same-UID token exposure remains until a broker or OS isolation is used.
    different `Kit-SHA`. Activation scans committed local, tracking, and live
    remote ticket sources; a Done claim also requires a valid normal attestation
    chain or protected-main legacy closeout.
-10. Before merging any protected product PR while a production generation is
-    active, publish maintenance and drain its runs and leases; a protected-main
-    merge changes the product tree bound to that generation. Open the
-    already-certified product commit as a protected PR and stop for operator
-    approval. Include only the exact complete migration evidence required by
-    step 3. After merge, require canonical protected main's tracked tree to
-    match the certification receipt exactly.
-11. At replacement-host cutover, publish maintenance on the old host and wait
-   for its runs and leases to drain. Confirm the old dispatcher is stopped;
-   if that cannot be proven, revoke its execution access before proceeding.
+10. Immediately before activation, fetch canonical protected main again and
+    require its SHA and tracked tree to match the certification receipt
+    exactly. Drift requires a new protected product PR and recertification.
+11. At replacement-host cutover, re-confirm the old host remains in maintenance
+    with its runs, leases, and provider work drained. Confirm the old dispatcher
+    is stopped; if that cannot be proven, revoke its execution access before
+    proceeding.
 12. Run `factory-kit.sh plan`. It must report `No files were changed.`
 13. Stop only the product factory profile and reconciler. Leave the dashboard
    and primary Hermes profile alone.
@@ -591,6 +611,12 @@ any route, family, effort, transport, account, or profile drift fails closed.
 Legacy v1 plans retain their exact encoded provenance and receive the same
 refreshed release-migration revision. Mutating migration refuses absent or
 changed readiness evidence.
+It also revalidates the selected ticket against the same protected authorization
+used by activation and refuses protected-main, remote-head, state, branch,
+repository, or kit drift before writing. A retry is idempotent only for the
+single direct migration child that changed that ticket's Kit-SHA and exact route
+journal, with both paths still regular `100644` blobs; any other child requires
+a new protected authorization.
 Then claim fresh leases before resuming.
 Any branch-head, state, source-kit, candidate-kit, repository, ticket-set, or
 protected-main drift requires a new protected authorization. Never preserve or

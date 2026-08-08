@@ -1078,6 +1078,12 @@ else:
         self.assertFalse(approval.exists())
         self.assertFalse((approval.parent / "bundle.json").exists())
         receipt = json.loads((approval.parent / "refresh.json").read_text())
+        self.assertEqual(
+            receipt["schema"], "nysa.software-factory.ticket-refresh/v2"
+        )
+        self.assertEqual(receipt["revalidation_factory_sha"], KIT_SHA)
+        self.assertEqual(receipt["revalidation_generation"], 1)
+        self.assertEqual(receipt["revalidation_budget_micro_usd"], 20_000_000)
         self.assertEqual(receipt["old_head"], old_head)
         self.assertEqual(receipt["base_head"], base_head)
         self.assertEqual(receipt["prior_approval_blob"], old_approval_blob)
@@ -1158,6 +1164,10 @@ else:
 
         result = self.attest("refresh")
         self.assertEqual(result.returncode, 0, result.stderr)
+        first_refresh = json.loads(
+            (self.product / "factory/attestations/T-700/refresh.json").read_text()
+        )
+        self.assertEqual(first_refresh["revalidation_generation"], 1)
         result = self.attest("bundle")
         self.assertEqual(result.returncode, 0, result.stderr)
         attestation = json.loads(
@@ -1176,7 +1186,35 @@ else:
         self.update_state(merge_state="UNKNOWN")
         result = self.attest("refresh")
         self.assertEqual(result.returncode, 0, result.stderr)
+        second_refresh = json.loads(
+            (self.product / "factory/attestations/T-700/refresh.json").read_text()
+        )
+        self.assertEqual(second_refresh["generation"], 2)
+        self.assertEqual(second_refresh["revalidation_generation"], 1)
+        self.assertEqual(second_refresh["revalidation_factory_sha"], KIT_SHA)
         self.assertIn("post-refresh Reviewer", self.attest("bundle").stderr)
+        second_refresh["revalidation_generation"] = 2
+        refresh_path = (
+            self.product / "factory/attestations/T-700/refresh.json"
+        )
+        refresh_path.write_text(
+            json.dumps(second_refresh, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        command("git", "add", str(refresh_path), cwd=self.product)
+        command(
+            "git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+            "commit", "--amend", "-qm", "change refresh reservation generation",
+            cwd=self.product,
+        )
+        command(
+            "git", "push", "-q", "--force", "origin", "ticket/T-700",
+            cwd=self.product,
+        )
+        self.assertIn(
+            "revalidation generation is not continuous",
+            self.attest("bundle").stderr,
+        )
 
     def test_control_only_refresh_invalidates_orphaned_review_lineage(self):
         tree = command(
@@ -1282,6 +1320,7 @@ else:
         ):
             result = TICKET_ATTEST.dependency_refresh(
                 args, self.product, self.product, "ticket/", str(self.remote),
+                KIT_SHA,
             )
         self.assertEqual(result["action"], "dependency-refresh")
         self.assertIn("State: Building", ticket.read_text())
@@ -1349,6 +1388,7 @@ else:
             with self.assertRaises(SystemExit):
                 TICKET_ATTEST.dependency_refresh(
                     args, self.product, self.product, "ticket/", str(self.remote),
+                    KIT_SHA,
                 )
             os.environ.pop("FACTORY_TEST_REFRESH_CRASH_AFTER_PUSH")
             refreshed_head = self.head()
@@ -1423,6 +1463,7 @@ else:
         with patch.dict(os.environ, self.env, clear=True):
             result = TICKET_ATTEST.dependency_refresh(
                 args, self.product, self.product, "ticket/", str(self.remote),
+                KIT_SHA,
             )
         self.assertEqual(result, {
             "action": "dependency-wait",
@@ -1500,8 +1541,20 @@ else:
             result = TICKET_ATTEST.dependency_refresh(
                 argparse.Namespace(ticket="T-700"), self.product,
                 self.product, "ticket/", str(self.remote),
+                KIT_SHA,
             )
         self.assertEqual(result["action"], "dependency-publication-refresh")
+        self.assertEqual(
+            result["attestation"]["schema"],
+            "nysa.software-factory.ticket-refresh/v2",
+        )
+        self.assertEqual(
+            result["attestation"]["revalidation_factory_sha"], KIT_SHA,
+        )
+        self.assertEqual(
+            result["attestation"]["revalidation_budget_micro_usd"],
+            20_000_000,
+        )
         self.assertEqual(result["attestation"]["prior_bundle_blob"], prior_bundle)
         self.assertIsNone(result["attestation"]["prior_approval_blob"])
         self.assertFalse((attestation_dir / "bundle.json").exists())
@@ -1567,6 +1620,7 @@ else:
         ):
             result = TICKET_ATTEST.dependency_refresh(
                 args, self.product, self.product, "ticket/", str(self.remote),
+                KIT_SHA,
             )
 
         self.assertEqual(result["action"], "dependency-conflict-refresh")
@@ -1664,6 +1718,7 @@ else:
         ):
             TICKET_ATTEST.dependency_refresh(
                 args, self.product, self.product, "ticket/", str(self.remote),
+                KIT_SHA,
             )
         self.assertEqual(self.head(), old_head)
         self.assertEqual(

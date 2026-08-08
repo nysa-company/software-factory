@@ -5714,6 +5714,25 @@ Validation: the prepared head, operator-fix head, passport edge, rebound signed
 record, superseded archive, and stable attempt count are checked together;
 ambiguous or unauthenticated head movement remains a typed refusal.
 
+## FI-20260808-219 — Protected-base revalidation exhausted qualification budget
+
+Status: Implemented; qualification pending
+Priority: P0/P1 (#351, #250)
+Area: protected-base refresh accounting
+Owner: Factory
+Impact: a semantic protected-main advance after Narrator could correctly retire
+downstream evidence after all $100 of sealed successor budget had already been
+spent, leaving no current-head Narrator result and no legal provider attempt.
+Smallest repair: retain the fixed $100 cap and reserve its final two sealed $10
+slots for receipt-bound Reviewer/Narrator revalidation. One refresh v2
+reservation is candidate-Factory-bound and carried across later refresh
+generations. Reviewer and Narrator have separate $90 and $100 prospective
+ceilings; ordinary roles, overrides, legacy receipts, and siblings cannot
+consume or enlarge either slot.
+Validation: focused before/after-approval refresh, repeated generation,
+restart, sibling, exact-cap, foreign-Factory, and ordinary-override regressions
+are green. A sealed qualification canary remains required before closure.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

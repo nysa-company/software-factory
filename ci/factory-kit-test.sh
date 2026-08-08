@@ -111,6 +111,30 @@ print("" if value is None else value)
 PY
 }
 
+failure_receipt_valid() {
+  python3 - "$1" <<'PY'
+import hashlib, json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+value = json.loads(path.read_text())
+identity = {key: value[key] for key in (
+    "certification_exit_status", "driver_exit_status",
+    "driver_output_sha256", "evidence_sha256", "factory_sha",
+    "failure_stage", "product_output_sha256", "product_tree",
+)}
+canonical = lambda item: json.dumps(
+    item, sort_keys=True, separators=(",", ":")
+).encode()
+assert value["failure_id"] == hashlib.sha256(canonical(identity)).hexdigest()
+assert path.stem == value["failure_id"]
+assert value["redacted_output_sha256"] == hashlib.sha256(
+    value["redacted_output"].encode()
+).hexdigest()
+record = dict(value)
+digest = record.pop("record_sha256")
+assert digest == hashlib.sha256(canonical(record)).hexdigest()
+PY
+}
+
 set_evidence_value() {
   local path="$1" key="$2" value="$3"
   python3 - "$path" "$key" "$value" <<'PY'
@@ -932,12 +956,24 @@ commit_all "$PRODUCT_ONE" "force certification failure"
 push_main "$PRODUCT_ONE"
 expect_failure "failed certification output is redacted" \
   certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A"
-CERTIFICATION_FAILURE="$(find "$STATE/receipts/failures" -type f -name '*.json' \
-  -print -quit)"
+CERTIFICATION_FAILURE=""
+for candidate in "$STATE/receipts/failures/"*.json; do
+  if [[ "$(json_value "$candidate" failure_stage 2>/dev/null)" == "product" &&
+        "$(json_value "$candidate" driver_exit_status 2>/dev/null)" == "42" ]]; then
+    CERTIFICATION_FAILURE="$candidate"
+    break
+  fi
+done
 CERTIFICATION_FAILURE_SAFE=0
 if [[ -f "$CERTIFICATION_FAILURE" ]] &&
    [[ "$(json_value "$CERTIFICATION_FAILURE" status)" == "fail" ]] &&
+   [[ "$(json_value "$CERTIFICATION_FAILURE" schema)" == \
+      "nysa.software-factory.certification-failure/v2" ]] &&
+   [[ "$(json_value "$CERTIFICATION_FAILURE" failure_stage)" == "product" ]] &&
+   [[ "$(json_value "$CERTIFICATION_FAILURE" driver_exit_status)" == "42" ]] &&
+   [[ "$(json_value "$CERTIFICATION_FAILURE" certification_exit_status)" == "42" ]] &&
    [[ "$(json_value "$CERTIFICATION_FAILURE" factory_sha)" == "$SHA_A" ]] &&
+   failure_receipt_valid "$CERTIFICATION_FAILURE" &&
    ! grep -qE 'supersecret|user:pass|bearer-one|digest-one|json-one|line-one|query-one' \
      "$CERTIFICATION_FAILURE"; then
   CERTIFICATION_FAILURE_SAFE=1
@@ -961,6 +997,97 @@ fi
 rm "$PRODUCT_ONE/factory/FAIL_CERTIFY"
 commit_all "$PRODUCT_ONE" "restore certification"
 push_main "$PRODUCT_ONE"
+
+python3 - "$PRODUCT_ONE/factory/certification-plan.json" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+value = json.loads(path.read_text())
+value["phases"][0]["command"] = ["false"]
+path.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n")
+PY
+commit_all "$PRODUCT_ONE" "force certification phase failure"
+push_main "$PRODUCT_ONE"
+expect_failure "phase failure preserves phase evidence" \
+  certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A"
+PHASE_FAILURE=""
+for candidate in "$STATE/receipts/failures/"*.json; do
+  if [[ "$(json_value "$candidate" failure_stage 2>/dev/null)" == "phases" ]]; then
+    PHASE_FAILURE="$candidate"
+    break
+  fi
+done
+if [[ -f "$PHASE_FAILURE" ]] &&
+   [[ "$(json_value "$PHASE_FAILURE" driver_exit_status)" == "1" ]] &&
+   [[ "$(json_value "$PHASE_FAILURE" certification_exit_status)" == "1" ]] &&
+   [[ "$(json_value "$PHASE_FAILURE" result.status)" == "fail" ]] &&
+   failure_receipt_valid "$PHASE_FAILURE"; then
+  pass "phase failure retains its exact boundary and result"
+else
+  fail "phase failure retains its exact boundary and result" "$LAST_OUTPUT"
+fi
+python3 - "$PRODUCT_ONE/factory/certification-plan.json" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+value = json.loads(path.read_text())
+value["phases"][0]["command"] = ["true"]
+path.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n")
+PY
+commit_all "$PRODUCT_ONE" "restore certification phase"
+push_main "$PRODUCT_ONE"
+
+export FACTORY_KIT_TEST_CERTIFICATION_DRIVER_SETUP_FAIL=1
+expect_failure "setup-stage certification preserves a typed diagnostic" \
+  certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A"
+unset FACTORY_KIT_TEST_CERTIFICATION_DRIVER_SETUP_FAIL
+SETUP_FAILURE=""
+for candidate in "$STATE/receipts/failures/"*.json; do
+  if [[ "$(json_value "$candidate" failure_stage 2>/dev/null)" == "setup" ]]; then
+    SETUP_FAILURE="$candidate"
+    break
+  fi
+done
+if [[ -n "$SETUP_FAILURE" && -f "$SETUP_FAILURE" ]] &&
+   [[ "$(json_value "$SETUP_FAILURE" schema)" == \
+      "nysa.software-factory.certification-failure/v2" ]] &&
+   [[ "$(json_value "$SETUP_FAILURE" driver_exit_status)" == "73" ]] &&
+   [[ "$(json_value "$SETUP_FAILURE" certification_exit_status)" == "73" ]] &&
+   [[ "$(json_value "$SETUP_FAILURE" result)" == "" ]] &&
+   [[ "$(json_value "$SETUP_FAILURE" failure_reason)" == \
+      "driver exited 73 before product launch" ]] &&
+   grep -q '\[REDACTED\]' "$SETUP_FAILURE" &&
+   ! grep -q 'factory-setup-fixture' "$SETUP_FAILURE" &&
+   failure_receipt_valid "$SETUP_FAILURE" &&
+   [[ "$LAST_OUTPUT" == *"[REDACTED]"* ]] &&
+   [[ "$LAST_OUTPUT" != *"factory-setup-fixture"* ]]; then
+  pass "setup-stage certification failure is actionable and redacted"
+else
+  fail "setup-stage certification failure is actionable and redacted" \
+    "$LAST_OUTPUT"
+fi
+
+export FACTORY_KIT_TEST_CERTIFICATION_CACHE_PUBLISH_FAIL=1
+expect_failure "post-driver cache failure preserves the driver result" \
+  certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A"
+unset FACTORY_KIT_TEST_CERTIFICATION_CACHE_PUBLISH_FAIL
+CACHE_FAILURE=""
+for candidate in "$STATE/receipts/failures/"*.json; do
+  if [[ "$(json_value "$candidate" failure_stage 2>/dev/null)" == "cache" ]]; then
+    CACHE_FAILURE="$candidate"
+    break
+  fi
+done
+if [[ -f "$CACHE_FAILURE" ]] &&
+   [[ "$(json_value "$CACHE_FAILURE" driver_exit_status)" == "0" ]] &&
+   [[ "$(json_value "$CACHE_FAILURE" certification_exit_status)" == "125" ]] &&
+   [[ "$(json_value "$CACHE_FAILURE" result.status)" == "pass" ]] &&
+   [[ "$(json_value "$CACHE_FAILURE" failure_reason)" == \
+      "certification cache publication failed after driver success" ]] &&
+   failure_receipt_valid "$CACHE_FAILURE"; then
+  pass "cache failure retains separate driver and certification status"
+else
+  fail "cache failure retains separate driver and certification status" \
+    "$LAST_OUTPUT"
+fi
 
 CERTIFICATION_TRACE="$TMP/certification.trace"
 export FACTORY_KIT_TEST_CERTIFICATION_TRACE="$CERTIFICATION_TRACE"
@@ -1794,6 +1921,15 @@ expect_failure "wrong authorized remote head blocks activation" \
 expect_failure "plan and activation reject the same wrong authorized remote head" \
   plan --project alpha --product "$PRODUCT_ONE" --sha "$SHA_B" \
   --receipt "$RECEIPT_WRONG_AUTH"
+if [[ "$LAST_OUTPUT" == *"T-006 does not match its exact in-flight release authorization"* &&
+      "$LAST_OUTPUT" == *"expected branch=ticket/T-006"* &&
+      "$LAST_OUTPUT" == *"head=$(printf '0%.0s' {1..40})"* &&
+      "$LAST_OUTPUT" == *"state=Planning"* &&
+      "$LAST_OUTPUT" == *"source_kit_sha=$SHA_A"* ]]; then
+  pass "in-flight mismatch names the exact remediation inputs"
+else
+  fail "in-flight mismatch reports an actionable exact plan" "$LAST_OUTPUT"
+fi
 
 VALID_INFLIGHT_PLAN="$TMP/t006-valid-route-plan.json"
 cp "$LEASE_BRANCH_WORKTREE/factory/route-plans/T-006.json" "$VALID_INFLIGHT_PLAN"

@@ -1831,36 +1831,62 @@ configure_phase_sandbox() {
 }
 
 preserve_certification_failure() {
-  local evidence="$1" redacted="$2" sha="$3" tree="$4" directory failure_id
+  local evidence="$1" redacted="$2" driver="$3" sha="$4" tree="$5"
+  local driver_status="$6" status="$7" stage="$8" workspace="$9"
+  local directory failure_id receipt
   directory="$RECEIPTS_DIR/failures"
+  receipt="$workspace/certification-failure.json"
   safe_create_directory "$directory"
-  failure_id="$(python3 - "$evidence" "$redacted" "$sha" "$tree" <<'PY'
-import hashlib, pathlib, sys
-evidence, output, sha, tree = sys.argv[1:]
-digest = hashlib.sha256((sha + tree).encode())
-for item in (evidence, output):
-    path = pathlib.Path(item)
-    digest.update(path.read_bytes() if path.is_file() else b"")
-print(digest.hexdigest())
-PY
-)"
-  python3 - "$evidence" "$redacted" "$sha" "$tree" "$failure_id" <<'PY' |
+  python3 - "$evidence" "$redacted" "$driver" "$sha" "$tree" \
+    "$driver_status" "$status" "$stage" <<'PY' > "$receipt"
 import hashlib, json, pathlib, sys
-evidence, output, factory_sha, product_tree, failure_id = sys.argv[1:]
-evidence_path, output_path = pathlib.Path(evidence), pathlib.Path(output)
-raw_output = output_path.read_bytes() if output_path.is_file() else b""
+(
+    evidence, output, driver, factory_sha, product_tree,
+    driver_status, certification_status, failure_stage,
+) = sys.argv[1:]
+evidence_path = pathlib.Path(evidence)
+evidence_raw = evidence_path.read_bytes() if evidence_path.is_file() else b""
+driver_raw = pathlib.Path(driver).read_bytes() if pathlib.Path(driver).is_file() else b""
+product_raw = pathlib.Path(output).read_bytes() if pathlib.Path(output).is_file() else b""
+raw_output = driver_raw + product_raw
+displayed = raw_output[:1_000_000]
+displayed_text = displayed.decode("utf-8", "replace")
 try:
-    result = json.loads(evidence_path.read_text()) if evidence_path.is_file() else None
-except (OSError, json.JSONDecodeError):
+    result = json.loads(evidence_raw) if evidence_raw else None
+except (UnicodeError, json.JSONDecodeError):
     result = None
-body = {
+driver_exit_status = int(driver_status)
+certification_exit_status = int(certification_status)
+identity = {
+    "certification_exit_status": certification_exit_status,
+    "driver_exit_status": driver_exit_status,
+    "driver_output_sha256": hashlib.sha256(driver_raw).hexdigest(),
+    "evidence_sha256": hashlib.sha256(evidence_raw).hexdigest(),
     "factory_sha": factory_sha,
+    "failure_stage": failure_stage,
+    "product_output_sha256": hashlib.sha256(product_raw).hexdigest(),
+    "product_tree": product_tree,
+}
+failure_id = hashlib.sha256(json.dumps(
+    identity, sort_keys=True, separators=(",", ":")
+).encode()).hexdigest()
+body = {
+    **identity,
+    "failure_reason": (
+        "certification cache publication failed after driver success"
+        if failure_stage == "cache"
+        else (
+            f"driver exited {driver_exit_status} before product launch"
+            if failure_stage == "setup"
+            else f"driver exited {driver_exit_status} during {failure_stage}"
+        )
+    ),
     "failure_id": failure_id,
     "output_sha256": hashlib.sha256(raw_output).hexdigest(),
-    "product_tree": product_tree,
-    "redacted_output": raw_output[:1_000_000].decode("utf-8", "replace"),
+    "redacted_output": displayed_text,
+    "redacted_output_sha256": hashlib.sha256(displayed_text.encode()).hexdigest(),
     "result": result,
-    "schema": "nysa.software-factory.certification-failure/v1",
+    "schema": "nysa.software-factory.certification-failure/v2",
     "status": "fail",
 }
 body["record_sha256"] = hashlib.sha256(json.dumps(
@@ -1868,7 +1894,17 @@ body["record_sha256"] = hashlib.sha256(json.dumps(
 ).encode()).hexdigest()
 print(json.dumps(body))
 PY
-    atomic_json_from_stdin "$directory/$failure_id.json"
+  chmod 600 "$receipt"
+  failure_id="$(python3 - "$receipt" <<'PY'
+import json, re, sys
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+failure_id = value.get("failure_id", "")
+if not isinstance(failure_id, str) or re.fullmatch(r"[0-9a-f]{64}", failure_id) is None:
+    raise SystemExit("certification failure identifier is invalid")
+print(failure_id)
+PY
+)"
+  atomic_json_from_stdin "$directory/$failure_id.json" < "$receipt"
   chmod 600 "$directory/$failure_id.json"
   say "CERTIFICATION FAILURE PRESERVED: $directory/$failure_id.json" >&2
 }
@@ -1880,8 +1916,11 @@ run_product_certification() {
   local product_git_sha="$9" kit_tree="${10}" contract="${11}"
   local runtime_tuple="${12}"
   local raw="$workspace/certification.raw" redacted="$workspace/certification.redacted"
+  local driver_raw="$workspace/certification-driver.raw"
+  local driver_redacted="$workspace/certification-driver.redacted"
+  local driver_stage="$workspace/certification-driver.stage"
   local evidence="$workspace/product-certification.json" timeout status=0
-  local network_opt_in deny_profile=""
+  local cache_source driver_status=0 failure_stage network_opt_in deny_profile=""
   PRODUCT_CERTIFICATION_EVIDENCE=""
   PRODUCT_CERTIFICATION_EVIDENCE_DIGEST=""
   timeout="${FACTORY_KIT_CERTIFY_TIMEOUT_SECONDS:-900}"
@@ -1894,6 +1933,7 @@ run_product_certification() {
     write_sandbox_profile "$deny_profile" "$workspace" 0 \
       "$real_product" "$real_release"
   fi
+  : > "$raw"
   python3 - "$product_copy" "$script" "$sha" "$release_copy" "$workspace/home" \
     "$workspace/tmp" "$timeout" "$raw" "$SANDBOX_PROFILE" "$SANDBOX_EXEC" \
     "$SCRIPT_ROOT/scripts/lib/sandbox-ps.py" \
@@ -1902,8 +1942,8 @@ run_product_certification() {
     "${FACTORY_KIT_SANDBOX_DENY_HOME:-}" \
     "$product_git_tree" "$evidence" "$network_opt_in" "$deny_profile" \
     "$product_git_sha" "$kit_tree" "$contract" "$runtime_tuple" \
-    "$CERTIFICATION_CACHE_INPUT" "$CERTIFICATION_CACHE_OUTPUT" \
-    <<'PY' || status=$?
+    "$CERTIFICATION_CACHE_INPUT" "$CERTIFICATION_CACHE_OUTPUT" "$driver_stage" \
+    <<'PY' >"$driver_raw" 2>&1 || driver_status=$?
 import json, os, pathlib, subprocess, sys
 product, script, sha, release, home, scratch, timeout, output = sys.argv[1:9]
 profile = sys.argv[9]
@@ -1922,6 +1962,7 @@ contract_version = sys.argv[21]
 runtime_tuple = sys.argv[22]
 cache_input = sys.argv[23]
 cache_output = sys.argv[24]
+driver_stage = pathlib.Path(sys.argv[25])
 path_value = os.environ.get("PATH", "/usr/bin:/bin")
 tool_environment = {}
 if os.path.isfile("/usr/bin/xcode-select"):
@@ -1995,6 +2036,13 @@ if deny_sibling:
     environment["FACTORY_KIT_SANDBOX_DENY_SIBLING"] = deny_sibling
 if deny_home:
     environment["FACTORY_KIT_SANDBOX_DENY_HOME"] = deny_home
+if (
+    os.environ.get("FACTORY_KIT_TEST_MODE") == "1"
+    and os.environ.get("FACTORY_KIT_TEST_CERTIFICATION_DRIVER_SETUP_FAIL") == "1"
+):
+    print("Authorization: factory-setup-fixture", file=sys.stderr)
+    raise SystemExit(73)
+driver_stage.write_text("product\n")
 with open(output, "wb") as stream:
     try:
         result = subprocess.run(
@@ -2009,21 +2057,47 @@ with open(output, "wb") as stream:
         raise SystemExit(124)
 raise SystemExit(result.returncode)
 PY
-  if [[ -n "$CERTIFICATION_CACHE_OUTPUT" ]]; then
+  status="$driver_status"
+  cache_source="$CERTIFICATION_CACHE_OUTPUT"
+  if [[ "${FACTORY_KIT_TEST_MODE:-0}" == "1" &&
+        "${FACTORY_KIT_TEST_CERTIFICATION_CACHE_PUBLISH_FAIL:-0}" == "1" ]]; then
+    cache_source="$driver_raw"
+  fi
+  if [[ "$driver_status" -eq 0 && -n "$cache_source" ]]; then
     python3 "$SCRIPT_ROOT/scripts/lib/certification_cache.py" publish \
       --store "$CERTIFICATION_ARTIFACTS_DIR" \
-      --source "$CERTIFICATION_CACHE_OUTPUT" \
+      --source "$cache_source" \
       --plan "$real_product/factory/certification-plan.json" \
       --factory-sha "$sha" --factory-tree "$kit_tree" \
       --product-sha "$product_git_sha" --product-tree "$product_git_tree" \
       --contract-version "$contract" --runtime-tuple "$runtime_tuple" || status=125
   fi
   redact_output "$raw" "$redacted"
+  redact_output "$driver_raw" "$driver_redacted"
   rm -f "$raw"
   if [[ "$status" -ne 0 ]]; then
+    failure_stage="setup"
+    if [[ "$driver_status" -eq 0 ]]; then
+      failure_stage="cache"
+    elif [[ -f "$evidence" ]] && python3 - "$evidence" <<'PY'
+import json, sys
+try:
+    value = json.load(open(sys.argv[1], encoding="utf-8"))
+except (OSError, UnicodeError, json.JSONDecodeError):
+    raise SystemExit(1)
+raise SystemExit(0 if value.get("status") == "fail" else 1)
+PY
+    then
+      failure_stage="phases"
+    elif [[ -f "$driver_stage" &&
+          "$(<"$driver_stage")" == "product" ]]; then
+      failure_stage="product"
+    fi
     preserve_certification_failure \
-      "$evidence" "$redacted" "$sha" "$product_git_tree"
-    awk '{print "  | " $0}' "$redacted" >&2
+      "$evidence" "$redacted" "$driver_redacted" "$sha" \
+      "$product_git_tree" "$driver_status" "$status" "$failure_stage" \
+      "$workspace"
+    awk '{print "  | " $0}' "$driver_redacted" "$redacted" >&2
     return "$status"
   fi
   if [[ -e "$evidence" || -L "$evidence" ]]; then
@@ -2496,6 +2570,9 @@ factory, candidate, lib, candidate_scripts, origin, certified_previous_tree = (
 )
 sys.path.insert(0, sys.argv[3])
 from effective_ticket import ticket_branch_prefix
+from inflight_release import (
+    AuthorizationError, authorize_ticket, parse_authorization, unique_object,
+)
 from legacy_closeout import (
     ValidationError, certified_legacy_terminal, protected_terminal,
 )
@@ -2526,14 +2603,6 @@ def load_migration_policy():
     migration_policy = manager, catalog, routes, profiles
     return migration_policy
 
-def no_duplicates(pairs):
-    value = {}
-    for key, item in pairs:
-        if key in value:
-            raise ValueError("duplicate key")
-        value[key] = item
-    return value
-
 def load_inflight_authorization():
     global authorization, authorized
     if authorization is not None:
@@ -2545,8 +2614,6 @@ def load_inflight_authorization():
     )
     if result.returncode:
         raise SystemExit("nonterminal ticket uses another kit without an exact in-flight release authorization")
-    if len(result.stdout.encode("utf-8")) > 1024 * 1024:
-        raise SystemExit("in-flight release authorization is malformed")
     head = subprocess.check_output(
         ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True,
     ).strip()
@@ -2557,77 +2624,29 @@ def load_inflight_authorization():
     if not remote_main or remote_main[0] != head:
         raise SystemExit("in-flight release authorization is not on protected main")
 
-    try:
-        value = json.loads(result.stdout, object_pairs_hook=no_duplicates)
-    except (json.JSONDecodeError, ValueError):
-        raise SystemExit("in-flight release authorization is malformed")
-    expected = {
-        "schema", "repository", "source_kit_sha", "target_kit_sha", "tickets",
-    }
-    if (
-        not isinstance(value, dict)
-        or set(value) != expected
-        or value.get("schema") != "nysa.software-factory.inflight-release-authorization/v1"
-    ):
-        raise SystemExit("in-flight release authorization is malformed")
     project = factory / "PROJECT.env"
-    repositories = []
-    for raw in project.read_text().splitlines():
-        match = re.fullmatch(
-            r"\s*(?:export\s+)?GH_REPO\s*=\s*['\"]?([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)['\"]?\s*",
-            raw,
-        )
-        if match:
-            repositories.append(match.group(1))
-    if repositories != [value.get("repository")]:
-        raise SystemExit("in-flight release authorization repository does not match the product")
-    source = value.get("source_kit_sha", "")
     if (
-        not re.fullmatch(r"[0-9a-f]{40}", source)
-        or source == candidate
-        or value.get("target_kit_sha") != candidate
-        or not isinstance(value.get("tickets"), list)
-        or not value["tickets"]
+        not project.is_file() or project.is_symlink()
     ):
-        raise SystemExit("in-flight release authorization kit binding is invalid")
-    entries = {}
-    ordered = []
-    allowed_states = {
-        "Ready", "Planning", "Building", "Review", "Awaiting Approval",
-        "Approved", "Blocked-Escalated",
-    }
-    for item in value["tickets"]:
-        if not isinstance(item, dict) or set(item) != {"ticket", "branch", "head", "state"}:
-            raise SystemExit("in-flight release authorization ticket entry is malformed")
-        ticket_id = item.get("ticket", "")
-        if (
-            not re.fullmatch(r"T-[0-9]+", ticket_id)
-            or item.get("branch") != prefix + ticket_id
-            or not re.fullmatch(r"[0-9a-f]{40}", item.get("head", ""))
-            or item.get("state") not in allowed_states
-            or ticket_id in entries
-        ):
-            raise SystemExit("in-flight release authorization ticket entry is invalid")
-        entries[ticket_id] = item
-        ordered.append(ticket_id)
-    if ordered != sorted(ordered):
-        raise SystemExit("in-flight release authorization tickets are not canonical")
-    authorization = value
-    authorized = entries
+        raise SystemExit("product project descriptor is unsafe")
+    try:
+        authorization, authorized = parse_authorization(
+            result.stdout, project.read_text(), candidate,
+        )
+    except (AuthorizationError, OSError, UnicodeError) as error:
+        raise SystemExit(str(error))
 
 def authorize_inflight(ticket_id, branch, remote_tip, source_ref, state, lease):
     load_inflight_authorization()
-    item = authorized.get(ticket_id)
-    if (
-        lease != authorization["source_kit_sha"]
-        or not remote_tip
-        or source_ref == "HEAD"
-        or item is None
-        or item["branch"] != branch
-        or item["head"] != remote_tip
-        or item["state"] != state
-    ):
-        expected = item or {
+    try:
+        if not remote_tip or source_ref == "HEAD":
+            raise AuthorizationError("remote ticket ref is unavailable")
+        authorize_ticket(
+            authorization, authorized, ticket=ticket_id, branch=branch,
+            head=remote_tip, state=state, source_kit_sha=lease,
+        )
+    except AuthorizationError:
+        expected = authorized.get(ticket_id) or {
             "branch": branch, "head": remote_tip, "state": state,
         }
         raise SystemExit(
@@ -2647,7 +2666,7 @@ def authorize_inflight(ticket_id, branch, remote_tip, source_ref, state, lease):
     if result.returncode or len(result.stdout.encode("utf-8")) > 1024 * 1024:
         raise SystemExit("authorized in-flight ticket lacks a safe migratable route document")
     try:
-        plan = json.loads(result.stdout, object_pairs_hook=no_duplicates)
+        plan = json.loads(result.stdout, object_pairs_hook=unique_object)
         manager, catalog, routes, profiles = load_migration_policy()
         if plan.get("ticket") != ticket_id or plan.get("kit_sha") != authorization["source_kit_sha"]:
             raise ValueError("route plan identity mismatch")

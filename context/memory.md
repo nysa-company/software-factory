@@ -4581,3 +4581,94 @@ records one ticket-scoped prior-kit or invalid-receipt event otherwise. Invalid
 inactive leases are released; live roles and typed cross-release recovery keep
 their stricter boundaries. Terminal claims retire before inspection, Doctor
 shows unresolved incidents, and unaffected siblings continue reconciling.
+
+## 2026-08-08 — Decision 337: Protected-base revalidation is reserved inside the sealed cap
+
+Category: Reliability
+
+Contract 1.8 successor qualification keeps the fixed $100 ticket allowance
+and prospectively reserves its final two $10 slots for exact-current-head
+Reviewer and Narrator work after an authenticated semantic protected-base
+refresh. The refresh v2 receipt binds the candidate Factory and carries one
+reservation generation across later refreshes of that candidate, preventing
+concurrent protected advances from minting additional allowance. Ordinary
+roles stop at $80, refresh Reviewer at $90, and refresh Narrator at $100, so a
+failed Reviewer cannot consume the Narrator slot through a second paid retry.
+Legacy, absent, malformed, or foreign receipts and ordinary envelope overrides
+cannot spend or enlarge the reserve. Candidate-scoped accounting gives a later
+successor Factory its own sealed allowance.
+
+## 2026-08-08 — Decision 338: In-flight migration consumes activation authority
+
+Category: Trust boundary
+
+Factory activation and mutating model-route migration share one strict parser
+for protected in-flight release authorization. The first migration requires the
+exact authorized remote head, branch, state, source and target kit, repository,
+and current protected main. An idempotent retry is limited to that head's single
+direct child whose only changes are the selected ticket's Kit-SHA and canonical
+append-only release migration, both as regular `100644` blobs; siblings remain
+independent. Every other drift requires a new protected authorization.
+
+## 2026-08-08 — Decision 339: Qualification optimization follows measured latency
+
+Category: Reliability
+
+On protected main `ce6e0ac7cbe41158eb3d4c29590c3ca46c97caf0`, twenty
+disposable three-ticket qualification-core runs measured 4.081 seconds median,
+4.336 seconds p95, and 4.410 seconds maximum across restart recovery, terminal
+adoption, concurrent release upgrade, and first-worker scheduling. A real
+disposable selected-ticket Linear initialization pass completed in 2.73
+seconds. The measured hot path does not justify a reusable admission cache or
+monolithic migration command. Near-expiry Linear snapshot reuse and
+qualification phase/admission telemetry remain a separately measured canary
+follow-up because the sealed dispatch child owns late freshness validation and
+the existing launcher grammar has no honest controller-only snapshot input.
+These core timings are not end-to-end first-live-role proof and do not satisfy
+those two acceptance criteria in #244. Keep #244 open until that canary evidence
+exists, or split the unchecked criteria into a named follow-up before closing
+it.
+
+## 2026-08-08 — Decision 340: Release migration stays an ordered native procedure
+
+Category: Operations
+
+Release migration deliberately reuses the canonical Git-origin policy,
+`factory-kit.sh` maintenance and stale-lease recovery, native atomic file
+replacement, and exact-tree certification rather than adding a second
+migration service. An active host pauses first; a stale-lease refusal leaves
+maintenance published while each named lease is recovered, then pause is
+retried. The sealed launcher is retained as a rollback copy and replaced only
+after controller and provider work are drained. The fail-fast native block
+constructs and compares a temporary copy before atomically replacing the
+installed launcher. All product migration controls merge to protected main
+only after the old active host is also in maintenance with controller and
+provider work drained. Certification then binds that exact protected-main
+SHA/tree, and any later commit or protected-main tree drift requires
+recertification.
+SSH aliases remain outside the trusted origin grammar.
+
+## 2026-08-08 — Decision 341: Canceled retirement is ticket-local
+
+Category: Reliability
+
+A protected Canceled claim with an exact empty lease has no dispatcher
+capability to release and retires normally. Malformed lease evidence or a
+publication or lease cleanup refusal retains only that claim and emits one
+bounded waiting event; it never aborts sibling reconciliation. Active roles
+remain untouched until the existing post-drain retirement pass. A parked claim
+with malformed lease evidence enters the existing invalid-ticket quarantine
+and cannot reach recovery, admission, or scheduling.
+
+## 2026-08-08 — Decision 342: Certification setup failures remain actionable
+
+Category: Reliability
+
+A failed product-certification driver preserves its own and the final command
+exit status, exact setup, product, phase, or post-driver cache boundary, and a
+bounded redacted diagnostic in the failure receipt. A failure before product
+launch therefore retains a nonempty fixed
+reason even without phase evidence. Separate evidence, driver-output, and
+product-output digests make the receipt identifier recomputable without
+ambiguous byte concatenation, while successful certification and the existing
+phase evidence contract remain unchanged.

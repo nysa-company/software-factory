@@ -2754,9 +2754,13 @@ run_launcher launchtest project-ledger --ticket T-777 \
 python3 - "$ROOT" "$CONTRACT" <<'PY'
 import json
 import os
+import pathlib
 import plistlib
 import re
+import subprocess
 import sys
+import tempfile
+import textwrap
 
 root, contract_path = sys.argv[1:]
 with open(contract_path, encoding="utf-8") as handle:
@@ -3142,6 +3146,7 @@ for surface in [
     "scripts/lib/terminal_backfill.py",
     "scripts/lib/protected_merge_reconciliation.py",
     "scripts/lib/qualification_manifest.py",
+    "scripts/lib/inflight_release.py",
     "scripts/legacy-closeout.py",
     "scripts/protected-merge-reconciliation.py",
     "scripts/terminal-backfill.py",
@@ -3227,6 +3232,131 @@ for relative in (
     assert not re.search(
         r"`(?:scripts/)?(?:run-agent|preflight|next-stage)\.sh(?:`|\s)", text,
     )
+setup = open(os.path.join(root, "docs/factory-setup.md"), encoding="utf-8").read()
+operator = open(
+    os.path.join(root, "docs/runbooks/operator.md"), encoding="utf-8",
+).read()
+migration = open(
+    os.path.join(root, "docs/runbooks/release-migration-prompt.md"),
+    encoding="utf-8",
+).read()
+operator = operator[operator.index("## Preparing and activating a release"):]
+operator = operator[:operator.index("\n## ", 1)]
+migration = migration[migration.index("this exact order:"):]
+
+def numbered_steps(text):
+    matches = list(re.finditer(r"(?m)^(\d+)\. ", text))
+    return {
+        int(match.group(1)): re.sub(
+            r"\s+",
+            " ",
+            text[match.start():(next_match.start() if next_match else len(text))],
+        )
+        for match, next_match in zip(matches, matches[1:] + [None])
+    }
+
+
+operator_steps = numbered_steps(operator)
+assert "SSH host aliases" in operator_steps[1]
+operator_drain = operator_steps[4]
+assert operator_drain.index("factory-kit.sh pause") < operator_drain.index(
+    "factory-kit.sh recover-lease"
+) < operator_drain.index("prove every remaining provider") < operator_drain.index(
+    "install the exact sealed"
+)
+assert operator_drain.index("publish maintenance on the old active host") < \
+    operator_drain.index("prove its controller and provider work are drained") < \
+    operator_drain.index("keep it stopped through cutover")
+assert operator_steps[7].index("merge the protected product PR") < \
+    operator_steps[7].index("certify that exact protected-main SHA and tree")
+operator_release = " ".join(operator_steps[index] for index in range(1, 8))
+assert operator_release.index("publish maintenance on the old active host") < \
+    operator_release.index("prove its controller and provider work are drained") < \
+    operator_release.index("merge the protected product PR")
+operator_cutover = operator_steps[11]
+assert "re-confirm the old host remains in maintenance" in operator_cutover
+assert "provider work drained" in operator_cutover
+assert "publish maintenance" not in operator_cutover
+assert "wait for" not in operator_cutover
+
+migration_steps = numbered_steps(migration)
+assert "SSH host aliases" in migration_steps[1]
+migration_drain = migration_steps[3]
+assert migration_drain.index("factory-kit.sh pause") < migration_drain.index(
+    "factory-kit.sh recover-lease"
+) < migration_drain.index("prove every remaining provider") < \
+    migration_drain.index("install the sealed")
+assert migration_drain.index("publish maintenance on the old active host") < \
+    migration_drain.index("prove its controller and provider work are drained") < \
+    migration_drain.index("keep it stopped through cutover")
+assert "manual protected merge" in migration_steps[8]
+assert "certify that exact" in migration_steps[9]
+migration_release = " ".join(migration_steps[index] for index in range(1, 10))
+assert migration_release.index("publish maintenance on the old active host") < \
+    migration_release.index("prove its controller and provider work are drained") < \
+    migration_release.index("manual protected merge")
+migration_cutover = migration_steps[11]
+assert "re-confirm the old host remains in maintenance" in migration_cutover
+assert "controller and provider work drained" in migration_cutover
+assert "publish maintenance" not in migration_cutover
+assert "drain it" not in migration_cutover
+
+block_match = re.search(
+    r"```bash\n(?P<block>  \(\n    set -eu.*?\n  \))\n  ```",
+    setup,
+    re.S,
+)
+assert block_match
+launcher_install = textwrap.dedent(block_match.group("block"))
+
+def exercise_launcher_install(failure=None):
+    with tempfile.TemporaryDirectory() as root:
+        home = pathlib.Path(root)
+        installed = home / ".factory/bin/factory-launch"
+        candidate = home / (
+            ".factory/kits/releases/<full-sha>/integrations/hermes/bin/"
+            "factory-launch"
+        )
+        installed.parent.mkdir(parents=True)
+        installed.write_bytes(b"installed-old\n")
+        installed.chmod(0o700)
+        if failure != "candidate":
+            candidate.parent.mkdir(parents=True)
+            candidate.write_bytes(b"sealed-new\n")
+            candidate.chmod(0o700)
+        env = dict(os.environ)
+        env["HOME"] = str(home)
+        if failure in {"install", "cmp"}:
+            stub = home / "stub"
+            stub.mkdir()
+            command = stub / failure
+            command.write_text("#!/bin/sh\nexit 23\n", encoding="utf-8")
+            command.chmod(0o700)
+            env["PATH"] = f"{stub}{os.pathsep}{env['PATH']}"
+        result = subprocess.run(
+            ["bash", "-c", launcher_install],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        rollbacks = list(installed.parent.glob("factory-launch.rollback.*"))
+        assert not list(installed.parent.glob(".factory-launch.*"))
+        if failure:
+            assert result.returncode != 0
+            assert installed.read_bytes() == b"installed-old\n"
+            assert len(rollbacks) == (0 if failure == "candidate" else 1)
+            if rollbacks:
+                assert rollbacks[0].read_bytes() == b"installed-old\n"
+        else:
+            assert result.returncode == 0, result.stderr
+            assert installed.read_bytes() == b"sealed-new\n"
+            assert len(rollbacks) == 1
+            assert rollbacks[0].read_bytes() == b"installed-old\n"
+
+
+for failure in ("candidate", "install", "cmp", None):
+    exercise_launcher_install(failure)
 skill = open(
     os.path.join(integration, "templates/profile/skills/factory-dispatch/SKILL.md"),
     encoding="utf-8",

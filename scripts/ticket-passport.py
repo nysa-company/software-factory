@@ -32,6 +32,12 @@ from cursor_model_identity import approved_reported_models
 from failed_attempt_handoff import (  # noqa: E402
     HandoffError, RoleBoundaryPolicy, _validate_committed_changes,
 )
+from inflight_release import (  # noqa: E402
+    AuthorizationError as InflightAuthorizationError,
+    SCHEMA as INFLIGHT_SCHEMA,
+    authorize_ticket as authorize_inflight_ticket,
+    parse_authorization as parse_inflight_authorization,
+)
 from route_evidence import (  # noqa: E402
     RouteEvidenceError, exact_kit_sha_change, journal_extends, validate_route,
 )
@@ -45,7 +51,6 @@ DIGEST = re.compile(r"^[0-9a-f]{64}$")
 TERMINAL_ACCOUNTING = {
     "completed", "abandoned_conservative", "cancelled", "cancelled_conservative",
 }
-INFLIGHT_SCHEMA = "nysa.software-factory.inflight-release-authorization/v1"
 REWRITE_SCHEMA = "nysa.software-factory.ticket-rewrite-authorization/v1"
 NORMALIZATION_SCHEMA = (
     "nysa.software-factory.ticket-history-normalization-authorization/v1"
@@ -71,10 +76,6 @@ RECOVERABLE_ROLES = {
     "planner", "spec-linter", "test-author", "builder", "reviewer", "narrator",
 }
 RUN_ID = re.compile(r"^[A-Za-z0-9._-]{1,200}$")
-INFLIGHT_STATES = {
-    "Ready", "Planning", "Building", "Review", "Awaiting Approval", "Approved",
-    "Blocked-Escalated",
-}
 
 
 class PassportError(ValueError):
@@ -399,55 +400,27 @@ def authorized_inflight_rewrite(
     project = git(
         args.factory_root, "show", f"{protected}:factory/PROJECT.env", check=False
     )
-    if not raw or len(raw.encode()) > 1_000_000 or not project:
+    if not raw or not project:
         return False
     try:
-        authorization = json.loads(raw, object_pairs_hook=unique_object)
-    except (json.JSONDecodeError, ValueError):
+        authorization, entries = parse_inflight_authorization(raw, project, target)
+    except InflightAuthorizationError:
         return False
-    repositories = re.findall(
-        r"^(?:export\s+)?GH_REPO\s*=\s*['\"]?([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)['\"]?\s*$",
-        project,
-        re.M,
-    )
     if (
-        not isinstance(authorization, dict)
-        or set(authorization) != {
-            "repository", "schema", "source_kit_sha", "target_kit_sha", "tickets",
-        }
-        or authorization.get("schema") != INFLIGHT_SCHEMA
-        or repositories != [authorization.get("repository")]
-        or authorization.get("source_kit_sha") != source
-        or authorization.get("target_kit_sha") != target
-        or not isinstance(authorization.get("tickets"), list)
-        or not authorization["tickets"]
+        authorization.get("source_kit_sha") != source
         or not DIGEST.fullmatch(previous.get("route_plan_sha256", ""))
         or previous["route_plan_sha256"] != route_digest(args.workdir, args.ticket)
     ):
         return False
-    tickets, selected = [], None
-    for item in authorization["tickets"]:
-        if (
-            not isinstance(item, dict)
-            or set(item) != {"branch", "head", "state", "ticket"}
-            or not TICKET.fullmatch(item.get("ticket", ""))
-            or item.get("branch") != f"ticket/{item.get('ticket')}"
-            or not SHA.fullmatch(item.get("head", ""))
-            or item.get("state") not in INFLIGHT_STATES
-        ):
-            return False
-        tickets.append(item["ticket"])
-        if item["ticket"] == args.ticket:
-            selected = item
-    return (
-        tickets == sorted(set(tickets))
-        and selected == {
-            "branch": current["branch"],
-            "head": current["head_sha"],
-            "state": current_state,
-            "ticket": args.ticket,
-        }
-    )
+    try:
+        authorize_inflight_ticket(
+            authorization, entries, ticket=args.ticket, branch=current["branch"],
+            head=current["head_sha"], state=current_state,
+            source_kit_sha=source,
+        )
+    except InflightAuthorizationError:
+        return False
+    return True
 
 
 def project_value(text: str, name: str) -> str | None:
