@@ -1,6 +1,7 @@
 # Calibration retro findings — nysa-app pilot (2026-07-14)
 
-Status: open — awaiting kit implementation
+Status: partially resolved — F1 and F2 are implemented; remaining findings keep
+their individual status below
 Source: first day of real pipeline runs on the `nysa-app` product repo (calibration tickets T-001 trace store, T-002 version endpoint + footer, T-003 DB wrapper skeleton). Evidence lives in `nysa-app`: `factory/ledger.csv`, `factory/tickets/T-001..T-003.md`, PRs #13–#18.
 
 ## How to use this document
@@ -18,6 +19,13 @@ Each finding below is a candidate kit improvement. For each one you take on: cut
 
 ### F1 — Runtime state dirties the product repo's main clone (high)
 
+**Resolved.** Runtime accounting now uses ignored, owner-controlled per-run
+manifests plus an ignored deterministic ledger projection. The tracked ledger
+is updated only from a clean closeout worktree after active and ambiguous run
+state drains. `ci/test-factory-scripts.sh` and `ci/ledger-view-test.py` cover
+linked-worktree projection, registered-checkout mutation, active claims, and
+malformed runtime evidence.
+
 **What happened.** `factory/ledger.csv` rows and ticket `State:` edits accumulate as uncommitted changes in the main clone while runs execute. This broke `preflight.sh` ("working tree not clean") twice and caused a merge conflict on the T-002 PR when a bookkeeping commit on `main` raced the ticket branch's copy of the same files. Earlier the same day, `factory/linear-map.json` had the same problem and was moved to `.gitignore` as runtime state.
 
 **Proposed fix.** Stop mutating shared tracked files during runs:
@@ -26,6 +34,13 @@ Each finding below is a candidate kit improvement. For each one you take on: cut
 - Audit for any other tracked file written mid-run.
 
 ### F2 — Planner works in the product repo's main clone (high)
+
+**Resolved.** Deterministic admission now creates or reuses only a clean ticket
+branch in an owner-controlled disposable `cell-N` linked worktree; a ticket
+branch checked out elsewhere, dirty, divergent, or unpushed is refused.
+`ci/dispatch-plan-test.py::test_claim_prepares_exact_worktree_then_next_claim_is_distinct`
+and its dirty/divergent cleanup cases cover this boundary for every role,
+including Planner and Spec-linter.
 
 **What happened.** The planner creates the ticket branch inside the main clone and leaves it checked out; on T-003 it also exited leaving its ticket-file edits uncommitted. Consequences: the next ticket's preflight fails (dirty tree / wrong branch), a `git pull` by anyone else lands on the ticket branch, and uncommitted planning work can be lost. The builder already avoids this by running in a dedicated worktree.
 

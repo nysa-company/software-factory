@@ -4672,3 +4672,61 @@ reason even without phase evidence. Separate evidence, driver-output, and
 product-output digests make the receipt identifier recomputable without
 ambiguous byte concatenation, while successful certification and the existing
 phase evidence contract remain unchanged.
+
+## 2026-08-08 — Decision 343: Judgment stays inside bounded roles pending proof
+
+Category: Trust boundary
+
+On protected main `ca831c98010714f5ff7d6e3645e5f675ff6c9048`, the current
+operator-facing stop and escalation inventory has four classes. Model judgment
+is already confined to bounded role outputs: Planner, Test-author, and Builder
+can produce one exact authenticated `CONTRACT-BLOCKED` result for ambiguity,
+an unsatisfiable fixture, incomplete fixture lifecycle, protected-test
+conflict, or impossible implementation; Spec-linter, Reviewer, and Narrator
+produce their existing bounded verdict or artifact evidence. Deterministic
+code routes those inputs: contract blockers stop immediately, while loop caps
+and a second malformed Narrator bundle are no-progress escalations. Budget and
+provider-policy stops are deterministic resource boundaries. Receipt, Git,
+lease, accounting, publication, and other control-plane refusals are
+deterministic integrity boundaries. Operator Ready, approval, and
+receipt-bound resume remain explicit human authority rather than classifier
+fallbacks.
+
+Do not add a second model call to routing yet. Issue #257 remains open until
+the labeled blocker corpus proves authority-versus-interpretation separation,
+closed-set accuracy with an `unknown` fallback, exact prompt/evidence/model/cost
+receipts, confidence and per-ticket budget bounds, and issue #263 measures that
+these classifications would remove real interventions. Deterministic code
+retains sole authority over every state transition.
+
+## 2026-08-08 — Decision 344: Frozen contracts advance; they do not mutate
+
+Category: Trust boundary
+
+Reject same-version frozen-contract amendments. Test, seed, and harness paths
+are not a universal non-behavioral boundary, assertion weakening is not
+reliably decidable across product languages, and changing one frozen version
+would require reinterpreting already-bound role, passport, and receipt
+evidence.
+
+The supported fast re-cut is the existing ticket-only, append-only higher
+contract epoch with its exact PASS marker. It preserves prior evidence as
+immutable history, reopens Test-author ownership, and reruns the required
+Planner, Spec-linter, Test-author, and Builder prefix against the new version.
+Issue #258's same-version mechanism is therefore rejected; any future
+optimization must retain that higher-epoch trust boundary.
+
+## 2026-08-08 — Decision 345: Coordination repairs stay boundary-specific
+
+Category: Reliability
+
+The proposed omnibus port in #295 is rejected. Its four cited incidents already
+have narrower authenticated repairs and regressions: exact fallback rearm,
+complete qualification-target restart accounting, atomic passport-key
+publication, and a merged-state recheck into ordinary idempotent closeout. The
+older calibration F1/F2 findings are also resolved by ignored immutable run
+manifests with closeout-only tracked projection and owner-controlled disposable
+ticket cells. A generic request/outcome layer would duplicate receipt,
+passport, compare-and-swap, and recovery evidence without a reproduced missing
+boundary. Future coordination work starts from one current failure and repairs
+its shared path; no upstream invariant is ported without that evidence.
