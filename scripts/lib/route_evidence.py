@@ -13,6 +13,10 @@ import re
 import stat
 import subprocess
 
+from failed_attempt_handoff import (
+    HandoffError, RoleBoundaryPolicy, validate_handoff_commit,
+)
+
 
 class RouteEvidenceError(ValueError):
     pass
@@ -36,6 +40,12 @@ def _manager():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _handoff_policy(ticket: str) -> RoleBoundaryPolicy:
+    path = Path(__file__).resolve().parent.parent / "model-routing/handoff-boundaries-v1.json"
+    value = json.loads(path.read_text(encoding="utf-8").replace("TICKET", ticket))
+    return RoleBoundaryPolicy.from_dict(value)
 
 
 def validate_route(product: Path, worktree: Path, ticket: str, kit_sha: str) -> None:
@@ -185,10 +195,18 @@ def authenticated_fallback_head(
             or message.count("Model-Route-Revision: " + revision["revision_hash"]) != 1
         ):
             raise RouteEvidenceError("fallback handoff commit is invalid")
+        validate_handoff_commit(
+            worktree, commit=commit, role="planner",
+            provider_scan_base=failed["role_head_before"],
+            policy=_handoff_policy(ticket),
+            expected_snapshot_digest=body["approved_snapshot_digest"],
+            expected_revision_hash=revision["revision_hash"],
+            expected_subject=f"{ticket}: preserve failed attempt and revise model route",
+        )
     except RouteEvidenceError:
         raise
     except (
         FileNotFoundError, KeyError, OSError, TypeError, UnicodeError,
-        ValueError, json.JSONDecodeError, subprocess.SubprocessError,
+        ValueError, json.JSONDecodeError, subprocess.SubprocessError, HandoffError,
     ) as error:
         raise RouteEvidenceError("fallback route evidence is invalid") from error

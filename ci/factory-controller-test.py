@@ -55,6 +55,12 @@ MANAGER_SPEC = importlib.util.spec_from_file_location(
 assert MANAGER_SPEC and MANAGER_SPEC.loader
 MANAGER = importlib.util.module_from_spec(MANAGER_SPEC)
 MANAGER_SPEC.loader.exec_module(MANAGER)
+HANDOFF_SPEC = importlib.util.spec_from_file_location(
+    "controller_test_handoff", ROOT / "scripts/lib/failed_attempt_handoff.py"
+)
+assert HANDOFF_SPEC and HANDOFF_SPEC.loader
+HANDOFF = importlib.util.module_from_spec(HANDOFF_SPEC)
+HANDOFF_SPEC.loader.exec_module(HANDOFF)
 FACTORY_ISSUE = "https://github.com/nysa-company/software-factory/issues/253"
 
 
@@ -1091,7 +1097,9 @@ class FactoryControllerTest(unittest.TestCase):
             claims.append(claim)
         return CONTROL.Controller(self.args), claims
 
-    def install_passportless_fallback(self, claim: dict) -> dict:
+    def install_passportless_fallback(
+        self, claim: dict, snapshot_path: str | None = None,
+    ) -> dict:
         worktree = Path(claim["worktree"])
         ticket = claim["ticket"]
         receipt_path = self.state / f"{ticket}.json"
@@ -1143,18 +1151,33 @@ class FactoryControllerTest(unittest.TestCase):
             "nonce": "3" * 32,
             "schema": "ticket-model-fallback-qualification/v1",
         }
+        entries = ()
+        if snapshot_path:
+            content = b"untrusted sibling mutation\n"
+            candidate = worktree / snapshot_path
+            candidate.parent.mkdir(parents=True, exist_ok=True)
+            candidate.write_bytes(content)
+            blob = subprocess.run(
+                ["git", "-C", worktree, "hash-object", "--stdin"],
+                input=content, capture_output=True, check=True,
+            ).stdout.decode().strip()
+            entries = (HANDOFF.SnapshotEntry(
+                path=snapshot_path, state="file", mode="100644", blob_oid=blob,
+                content_sha256=hashlib.sha256(content).hexdigest(), size=len(content),
+            ),)
+        snapshot_digest = HANDOFF._snapshot_digest(entries)
         journal = MANAGER.append_fallback_revision(
-            journal, fallback, hashlib.sha256(terminal).hexdigest(), "4" * 64,
+            journal, fallback, hashlib.sha256(terminal).hexdigest(), snapshot_digest,
             "provider_unavailable", approval, "2026-08-07T00:00:45Z",
             catalog, routes, profile_map,
         )
         route_path.write_text(ROUTER.canonical_json(journal) + "\n")
-        subprocess.run(["git", "-C", worktree, "add", "factory"], check=True)
+        subprocess.run(["git", "-C", worktree, "add", "-A"], check=True)
         revision = journal["revisions"][-1]["revision_hash"]
         subprocess.run(
             ["git", "-C", worktree, "commit", "-qm",
              f"{ticket}: preserve failed attempt and revise model route",
-             "-m", "Failed-Attempt-Snapshot: " + "4" * 64,
+             "-m", "Failed-Attempt-Snapshot: " + snapshot_digest,
              "-m", "Model-Route-Revision: " + revision],
             check=True,
         )
@@ -2732,6 +2755,52 @@ class FactoryControllerTest(unittest.TestCase):
         subprocess.run(["git", "-C", worktree, "add", "factory"], check=True)
         subprocess.run(["git", "-C", worktree, "commit", "-qm", "unsafe migration"], check=True)
         subprocess.run(["git", "-C", worktree, "push", "-q", "origin", "ticket/T-177"], check=True)
+        controller.release_path = successor
+        claim.update(blocked_reason="state-machine-refusal", lease_released=True)
+        controller.recover_passportless_route_migrations([claim])
+        self.assertEqual(claim["status"], "blocked")
+
+    def test_passportless_kit_refusal_rejects_untrusted_fallback_snapshot(self) -> None:
+        controller, claims = self.initialize_passportless_planner_claims(["T-177"])
+        claim = claims[0]
+        fallback = self.install_passportless_fallback(
+            claim, "app/untrusted-sibling.py",
+        )
+        receipt_path = self.state / "T-177.json"
+        receipt = CONTROL.read(receipt_path)
+        successor = self.root / ("e" * 40)
+        successor.mkdir()
+        receipt.update(
+            factory_sha=successor.name, role=None,
+            stage="REFUSE ticket Kit-SHA lease does not match the selected kit SHA",
+        )
+        immutable = {
+            key: value for key, value in receipt.items()
+            if key not in {"consumed", "consumed_at_epoch", "receipt_sha256"}
+        }
+        receipt["receipt_sha256"] = hashlib.sha256(
+            CONTROL.canonical(immutable).encode()
+        ).hexdigest()
+        receipt_path.unlink()
+        CONTROL.write(receipt_path, receipt)
+        worktree = Path(claim["worktree"])
+        ticket = worktree / "factory/tickets/T-177.md"
+        ticket.write_text(ticket.read_text().replace(self.release.name, successor.name))
+        route = worktree / "factory/route-plans/T-177.json"
+        catalog, routes, _profiles, profile_map = ROUTER.load_policy()
+        value = MANAGER.migrate_v2_journal(
+            fallback, receipt["head_sha"], successor.name,
+            "2026-08-07T00:01:00Z", catalog, routes, profile_map,
+        )
+        route.write_text(ROUTER.canonical_json(value) + "\n")
+        subprocess.run(["git", "-C", worktree, "add", "factory"], check=True)
+        subprocess.run(
+            ["git", "-C", worktree, "commit", "-qm", "migrate route"], check=True,
+        )
+        subprocess.run(
+            ["git", "-C", worktree, "push", "-q", "origin", "ticket/T-177"],
+            check=True,
+        )
         controller.release_path = successor
         claim.update(blocked_reason="state-machine-refusal", lease_released=True)
         controller.recover_passportless_route_migrations([claim])

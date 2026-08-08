@@ -610,6 +610,88 @@ def _snapshot_digest(entries):
     return digest.hexdigest()
 
 
+def validate_handoff_commit(
+    repo, *, commit, role, provider_scan_base, policy,
+    expected_snapshot_digest, expected_revision_hash, expected_subject,
+):
+    """Re-authenticate the exact tree produced by build_handoff_commit."""
+    if not HEX64_RE.fullmatch(expected_snapshot_digest or "") or not HEX64_RE.fullmatch(
+        expected_revision_hash or ""
+    ):
+        raise HandoffError("handoff commit digests are invalid")
+    parents = _git(repo, ["rev-list", "--parents", "-n", "1", commit]).decode().split()
+    if len(parents) != 2 or parents[0] != commit:
+        raise HandoffError("handoff commit must be one direct commit")
+    parent = parents[1]
+    message = _git(repo, ["show", "-s", "--format=%B", commit]).decode().splitlines()
+    if (
+        not message
+        or message[0] != expected_subject
+        or message.count(f"Failed-Attempt-Snapshot: {expected_snapshot_digest}") != 1
+        or message.count(f"Model-Route-Revision: {expected_revision_hash}") != 1
+    ):
+        raise HandoffError("handoff commit message is invalid")
+    _reject_provider_commits(
+        repo, provider_scan_base, parent, policy.provider_identities,
+    )
+    _validate_committed_changes(repo, provider_scan_base, parent, role, policy)
+    parent_tree = _parse_tree(_git(repo, ["ls-tree", "-rz", "--full-tree", parent]))
+    commit_tree = _parse_tree(_git(repo, ["ls-tree", "-rz", "--full-tree", commit]))
+    changed = sorted(
+        _decode_path(item)
+        for item in _git(
+            repo,
+            ["-c", "diff.renames=false", "diff", "--name-only", "-z", parent, commit, "--"],
+        ).split(b"\0")
+        if item
+    )
+    if policy.journal_path not in changed:
+        raise HandoffError("handoff commit omitted its route journal")
+    entries = []
+    allowed = policy.paths_for(role)
+    for path in changed:
+        _validate_path_text(path)
+        previous = parent_tree.get(path)
+        current = commit_tree.get(path)
+        if path == policy.journal_path:
+            if current is None or current[0] != "100644":
+                raise HandoffError("handoff route journal mode is unsafe")
+            continue
+        if _matches(path, policy.protected_paths):
+            raise HandoffError(f"protected path changed: {path}")
+        if not _matches(path, allowed):
+            raise HandoffError(f"path is outside the {role} boundary: {path}")
+        if (
+            _matches(path, policy.forbidden_for(role))
+            and not _matches(path, policy.forbidden_exceptions_for(role))
+        ):
+            raise HandoffError(f"path is forbidden for {role}: {path}")
+        if current is None:
+            entry = SnapshotEntry(path=path, state="deleted")
+        else:
+            mode, oid = current
+            if mode not in {"100644", "100755"}:
+                raise HandoffError(f"handoff path has an unsafe mode: {path}")
+            content = _git(repo, ["cat-file", "blob", oid])
+            if len(content) > policy.max_file_bytes:
+                raise HandoffError(f"handoff path is oversized: {path}")
+            _validate_content(path, content, policy)
+            entry = SnapshotEntry(
+                path=path, state="file", mode=mode, blob_oid=oid,
+                content_sha256=_sha256(content), size=len(content),
+            )
+        if re.fullmatch(r"factory/tickets/T-[0-9]+\.md", path):
+            if previous is None or current is None:
+                raise HandoffError("ticket file creation or deletion is forbidden")
+            before = _ticket_evidence(_git(repo, ["cat-file", "blob", previous[1]]))
+            after = _ticket_evidence(_git(repo, ["cat-file", "blob", current[1]]))
+            if not _ticket_evidence_is_legal(before, after, role):
+                raise HandoffError("protected ticket evidence changed")
+        entries.append(entry)
+    if _snapshot_digest(tuple(entries)) != expected_snapshot_digest:
+        raise HandoffError("handoff snapshot digest is invalid")
+
+
 def _remote_state(repo, remote, branch, destination=None, git_auth=None):
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", remote):
         raise HandoffError("remote name is invalid")
