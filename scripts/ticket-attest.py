@@ -35,10 +35,13 @@ from approval_evidence import (  # noqa: E402
 )
 from legacy_closeout import (  # noqa: E402
     EMERGENCY_DONE_SCHEMA,
+    EMERGENCY_DONE_SCHEMA_V2,
     EMERGENCY_PLAN_SCHEMA,
+    EMERGENCY_PLAN_SCHEMA_V2,
     ValidationError,
     protected_dependency,
     protected_terminal,
+    stale_bundle_invalidation,
 )
 from runtime_paths import canonical_factory_file  # noqa: E402
 
@@ -1352,10 +1355,13 @@ def validate_linked_issue(url):
 def emergency_preview(args, product, workdir, repo, prefix, checks, kit_sha, method):
     request = emergency_request(args.request)
     validate_linked_issue(request["issue"])
+    stale_partial = False
     try:
         protected_terminal(workdir, args.ticket)
     except ValidationError as error:
-        if str(error) != "protected main lacks valid terminal evidence":
+        if str(error) == "protected main has a partial normal attestation chain":
+            stale_partial = True
+        elif str(error) != "protected main lacks valid terminal evidence":
             raise Refusal(f"protected terminal evidence is invalid: {error}") from error
     else:
         raise Refusal("ticket is already terminal on protected main")
@@ -1472,8 +1478,44 @@ def emergency_preview(args, product, workdir, repo, prefix, checks, kit_sha, met
             execution_basis = "operator-built-no-runtime"
         else:
             raise Refusal("passportless emergency target is not exact operator-built work")
+    stale_attestation = None
+    if stale_partial:
+        try:
+            stale_attestation = stale_bundle_invalidation(
+                workdir, args.ticket, main_head, kit_sha,
+            )
+        except ValidationError as error:
+            raise Refusal(
+                f"protected terminal evidence is invalid: {error}"
+            ) from error
+        history = passport.get("factory_release_history", []) if passport_plan else []
+        valid_history = isinstance(history, list) and all(
+            isinstance(item, dict)
+            and set(item) == {"contract_version", "factory_sha"}
+            and isinstance(item["contract_version"], str)
+            and bool(item["contract_version"])
+            and valid_oid(item["factory_sha"])
+            for item in history
+        )
+        identities = {
+            (item["contract_version"], item["factory_sha"])
+            for item in history
+        } if valid_history else set()
+        if (
+            not valid_history
+            or len(history) != len(identities)
+            or stale_attestation["kit_sha"] not in {
+                item["factory_sha"] for item in history
+            }
+        ):
+            raise Refusal(
+                "stale bundle kit is not in the authenticated passport history"
+            )
     plan = {
-        "schema": EMERGENCY_PLAN_SCHEMA,
+        "schema": (
+            EMERGENCY_PLAN_SCHEMA_V2
+            if stale_attestation is not None else EMERGENCY_PLAN_SCHEMA
+        ),
         "ticket": args.ticket,
         "repository": repo,
         "branch": branch,
@@ -1495,6 +1537,10 @@ def emergency_preview(args, product, workdir, repo, prefix, checks, kit_sha, met
         "kit_sha": kit_sha,
         "auto_merge_method": method,
         **{name: value for name, value in request.items() if name != "schema"},
+        **(
+            {"stale_attestation": stale_attestation}
+            if stale_attestation is not None else {}
+        ),
     }
     approval = hashlib.sha256(json.dumps(
         plan, ensure_ascii=True, sort_keys=True, separators=(",", ":"),
@@ -1693,7 +1739,7 @@ def refresh_baselines(text, manifests):
     return reviewer_count, approvals, requests, len(narrators)
 
 
-def refresh(args, product, workdir, repo, prefix, remote):
+def refresh(args, product, workdir, repo, prefix, remote, *, expected_base=None):
     branch = f"{prefix}{args.ticket}"
     old_head = ensure_clean_branch(product, workdir, branch)
     ticket_path = workdir / "factory" / "tickets" / f"{args.ticket}.md"
@@ -1721,8 +1767,21 @@ def refresh(args, product, workdir, repo, prefix, remote):
     if len(observed) != 2 or not valid_oid(observed[0]) or observed[1] != "refs/heads/main":
         raise Refusal("certified protected main tip is missing or ambiguous")
     base_head = observed[0]
+    if expected_base is not None and base_head != expected_base:
+        return {
+            "action": "dependency-wait",
+            "expected_protected_head": expected_base,
+            "observed_protected_head": base_head,
+        }
     git(workdir, "fetch", "--no-tags", "--", remote, "refs/heads/main")
-    if git(workdir, "rev-parse", "FETCH_HEAD").stdout.strip() != base_head:
+    fetched = git(workdir, "rev-parse", "FETCH_HEAD").stdout.strip()
+    if expected_base is not None and fetched != expected_base:
+        return {
+            "action": "dependency-wait",
+            "expected_protected_head": expected_base,
+            "observed_protected_head": fetched,
+        }
+    if fetched != base_head:
         raise Refusal("fetched protected main does not match its certified remote tip")
     if not git(workdir, "merge-base", "--is-ancestor", base_head, old_head, check=False).returncode:
         raise Refusal("ticket branch is already based on protected main")
@@ -2064,15 +2123,18 @@ def dependency_refresh(args, product, workdir, prefix, remote):
     ticket_path = workdir / "factory" / "tickets" / f"{args.ticket}.md"
     text = ticket_path.read_text(encoding="utf-8")
     state = field(text, "State")
-    if state.lower() not in {"planning", "building"}:
-        raise Refusal("dependency refresh is limited to prepublication ticket states")
+    publication = state.lower() in {"review", "awaiting approval", "approved"}
+    if state.lower() not in {
+        "planning", "building", "review", "awaiting approval", "approved",
+    }:
+        raise Refusal("dependency refresh requires an active ticket state")
     declared = [item.strip() for item in field(text, "Depends-On").split(",")]
     if declared != dependencies:
         raise Refusal("dependency refresh does not match the ticket dependencies")
     attestation_dir = workdir / "factory" / "attestations" / args.ticket
     bundle = attestation_dir / "bundle.json"
     approval = attestation_dir / "approval.json"
-    if any(os.path.lexists(path) for path in (bundle, approval)):
+    if not publication and any(os.path.lexists(path) for path in (bundle, approval)):
         raise Refusal("prepublication dependency refresh found publication evidence")
     configured = git(
         product, "remote", "get-url", "--push", "--all", "origin"
@@ -2124,6 +2186,22 @@ def dependency_refresh(args, product, workdir, prefix, remote):
                 ).encode()
             ).hexdigest(),
         })
+    if publication:
+        repo, configured_prefix, _, _ = parse_project(
+            product / "factory" / "PROJECT.env"
+        )
+        if configured_prefix != prefix:
+            raise Refusal("dependency refresh ticket prefix changed")
+        result = refresh(
+            args, product, workdir, repo, prefix, remote,
+            expected_base=expected_base,
+        )
+        if result.get("action") == "dependency-wait":
+            return result
+        result["action"] = "dependency-publication-refresh"
+        result["dependencies"] = dependencies
+        result["dependency_terminals"] = terminals
+        return result
     prior_base = git(workdir, "merge-base", old_head, expected_base).stdout.strip()
     if not valid_oid(prior_base):
         raise Refusal("dependency refresh prior base is invalid")
@@ -2784,7 +2862,13 @@ def emergency_done(
             name: request[name] for name in EMERGENCY_REQUEST_KEYS if name != "schema"
         }
         if (
-            done_att.get("schema") != EMERGENCY_DONE_SCHEMA
+            done_att.get("schema")
+            != (
+                EMERGENCY_DONE_SCHEMA_V2
+                if isinstance(plan, dict)
+                and plan.get("schema") == EMERGENCY_PLAN_SCHEMA_V2
+                else EMERGENCY_DONE_SCHEMA
+            )
             or done_att.get("approval_sha256") != args.approve_hash
             or not isinstance(plan, dict)
             or any(plan.get(name) != value for name, value in expected_request.items())
@@ -2814,6 +2898,19 @@ def emergency_done(
         text = ticket_path.read_text()
         if field(text, "State") != plan["protected_main"]["state"]:
             raise Refusal("emergency closeout ticket changed after planning")
+        stale_path = None
+        if plan.get("schema") == EMERGENCY_PLAN_SCHEMA_V2:
+            try:
+                observed_stale = stale_bundle_invalidation(
+                    workdir, args.ticket, head, kit_sha,
+                )
+            except ValidationError as error:
+                raise Refusal(
+                    f"emergency stale evidence changed after planning: {error}"
+                ) from error
+            if observed_stale != plan.get("stale_attestation"):
+                raise Refusal("emergency stale evidence changed after planning")
+            stale_path = workdir / observed_stale["path"]
         ledger = Path(__file__).with_name("ledger-view.py")
         projection = run([
             sys.executable, "-I", "-S", str(ledger), "project",
@@ -2824,8 +2921,13 @@ def emergency_done(
         text = replace_field(text, "State", "Done")
         text = check_item(text, "PR merged and staging confirmed")
         ticket_path.write_text(text)
+        if stale_path is not None:
+            stale_path.unlink()
         done_att = {
-            "schema": EMERGENCY_DONE_SCHEMA,
+            "schema": (
+                EMERGENCY_DONE_SCHEMA_V2
+                if stale_path is not None else EMERGENCY_DONE_SCHEMA
+            ),
             "ticket": args.ticket,
             "repository": repo,
             "pr_number": pr["number"],
@@ -2843,10 +2945,13 @@ def emergency_done(
             "attested_at": now(),
         }
         write_json(done_path, done_att)
+        changed_paths = [workdir / "factory" / "ledger.csv", ticket_path, done_path]
+        if stale_path is not None:
+            changed_paths.append(stale_path)
         head = commit_push(
             product, workdir, remote, branch,
             f"{args.ticket}: record authorized emergency closeout",
-            (workdir / "factory" / "ledger.csv", ticket_path, done_path),
+            changed_paths,
         )
     try:
         terminal = protected_terminal(workdir, args.ticket, head)

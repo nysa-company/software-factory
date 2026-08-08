@@ -37,6 +37,15 @@ everything the Factory actually enforces lives here.
   Approved/merged passport. Its terminal Kit-SHA may be current or an earlier
   candidate in the active qualification environment's hash-validated receipt
   chain, never an arbitrary historical release.
+- A dependency that becomes terminal after bundle or approval uses its exact
+  dependency receipt to invoke the ordinary publication refresh. That route
+  binds the protected tip and terminal truth, drafts the PR, retires bundle
+  and approval blobs, and returns to Review; a moved tip waits without
+  mutation.
+- Emergency closeout v2 may retire exactly one validated bundle-only
+  prior-kit artifact from protected main. Its plan binds the path, blob, and
+  stale kit, and the protected closeout commit must delete that exact path.
+  Current-kit, malformed, or broader partial chains remain refused.
 - Linear supports a fail-closed exact-ticket operator pull for an already
   initialized mapping. It reads only that issue, merges only operator-owned
   fields under the short map lock, survives an overlapping stale full-board
@@ -4517,3 +4526,14 @@ lineage and never to the not-yet-active candidate. Once that candidate is the
 active Factory, an idempotent restart may validate its own exact lineage
 evidence. Controller and reducer remain strict consumers of source lineage and
 never synthesize it from later execution.
+
+## 2026-08-08 — Decision 334: Publication dependency evidence is retired explicitly
+
+Category: Reliability
+
+An exact dependency-refresh receipt may reuse the ordinary publication refresh
+after bundle or approval, invalidating those bound blobs and returning the
+ticket to Review for fresh evidence. If a prior-kit bundle-only artifact has
+already reached protected main, emergency closeout v2 binds and deletes only
+that exact stale path in its protected PR; current-kit or malformed partial
+chains still fail closed.

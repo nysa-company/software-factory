@@ -535,6 +535,14 @@ another role can run. An authenticated ticket whose implementation is already
 merged skips provider routing and resumes ordinary closeout. The refresh may
 start from the expected new-kit `Kit-SHA` refusal; the sealed launcher remains
 the authority that accepts only a non-dependency `REFUSE` or `AWAIT` receipt.
+When a dependency completes after bundle or approval, do not delete evidence
+manually. The exact dependency receipt invokes the publication refresh, which
+drafts the PR, retires the stale bundle/approval, and returns the ticket to
+Review for fresh Reviewer and Narrator evidence. If a prior-kit bundle-only
+artifact has already reached protected main, only an explicitly approved
+emergency plan v2 may bind and delete that exact blob in its protected closeout
+PR. Current-kit or malformed partial evidence still requires repair and must
+not be waived.
 A clean, correctly named, un-attested closeout retry is fast-forwarded to the
 current protected main. Closeouts are serialized; a sibling waits while an
 earlier exact Done closeout remains unmerged. If protected main advances and

@@ -331,6 +331,7 @@ def verify(
                 or done.get("schema") not in {
                     "nysa.software-factory.ticket-done/v1",
                     "nysa.software-factory.ticket-emergency-done/v1",
+                    "nysa.software-factory.ticket-emergency-done/v2",
                 }
                 or done.get("ticket") != ticket
                 or reconciliation.get("done_sha256")
@@ -482,8 +483,10 @@ def verify(
                 or not SHA.fullmatch(emergency.get("protected_ticket_blob", ""))
                 or not DIGEST.fullmatch(emergency.get("pause_file_sha256", ""))
                 or not DIGEST.fullmatch(emergency.get("pause_receipt_sha256", ""))
-                or done.get("schema")
-                != "nysa.software-factory.ticket-emergency-done/v1"
+                or done.get("schema") not in {
+                    "nysa.software-factory.ticket-emergency-done/v1",
+                    "nysa.software-factory.ticket-emergency-done/v2",
+                }
                 or done.get("ticket") != ticket
                 or done.get("kit_sha") != emergency.get("terminal_factory_sha")
                 or not isinstance(plan, dict)

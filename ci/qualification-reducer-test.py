@@ -140,7 +140,7 @@ class QualificationReducerTest(unittest.TestCase):
             "pr_head": normal["approved_pr_head"],
             "pr_number": normal["pr_number"],
             "required_checks": normal["required_checks"],
-            "schema": "nysa.software-factory.ticket-emergency-done/v1",
+            "schema": "nysa.software-factory.ticket-emergency-done/v2",
             "successful_checks": normal["successful_checks"],
             "ticket": ticket,
         }

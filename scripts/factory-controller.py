@@ -1172,8 +1172,10 @@ class Controller:
         terminal_factory_sha = done.get("kit_sha")
         if (
             terminal.get("terminal_basis") != "attested-emergency-closeout"
-            or done.get("schema")
-            != "nysa.software-factory.ticket-emergency-done/v1"
+            or done.get("schema") not in {
+                "nysa.software-factory.ticket-emergency-done/v1",
+                "nysa.software-factory.ticket-emergency-done/v2",
+            }
             or not SHA.fullmatch(terminal_factory_sha or "")
             or terminal_factory_sha not in release_receipts
             or not isinstance(plan, dict)
@@ -1319,7 +1321,10 @@ class Controller:
                 raise ControllerError(
                     "qualification terminal adoption is incomplete"
                 ) from error
-            if done.get("schema") == "nysa.software-factory.ticket-emergency-done/v1":
+            if done.get("schema") in {
+                "nysa.software-factory.ticket-emergency-done/v1",
+                "nysa.software-factory.ticket-emergency-done/v2",
+            }:
                 reconciliation = self.qualification_emergency_terminal(ticket)
                 stable = {
                     "done_sha256", "pause_file_sha256", "pause_receipt_sha256",
@@ -6535,14 +6540,46 @@ class Controller:
                     return {"status": "waiting", "ticket": claim["ticket"]}
                 attestation = value.get("attestation")
                 refreshed = value.get("head", "")
+                publication_refresh = (
+                    value.get("action") == "dependency-publication-refresh"
+                )
+                dependency_tickets = dependency_refresh[1].split(",")
+                terminal_receipts = value.get("dependency_terminals")
                 if (
                     value.get("action") not in {
                         "dependency-refresh", "dependency-conflict-refresh",
+                        "dependency-publication-refresh",
                     }
                     or not isinstance(attestation, dict)
                     or attestation.get("old_head") != receipt_record["head_sha"]
-                    or attestation.get("protected_head")
-                    != dependency_refresh[2]
+                    or (
+                        attestation.get(
+                            "base_head" if publication_refresh else "protected_head"
+                        ) != dependency_refresh[2]
+                    )
+                    or (
+                        publication_refresh
+                        and value.get("dependencies")
+                        != dependency_tickets
+                    )
+                    or (
+                        publication_refresh
+                        and (
+                            not isinstance(terminal_receipts, list)
+                            or len(terminal_receipts) != len(dependency_tickets)
+                            or any(
+                                not isinstance(item, dict)
+                                or set(item) != {"ticket", "terminal_sha256"}
+                                or item.get("ticket") != ticket
+                                or not DIGEST.fullmatch(
+                                    item.get("terminal_sha256", "")
+                                )
+                                for ticket, item in zip(
+                                    dependency_tickets, terminal_receipts
+                                )
+                            )
+                        )
+                    )
                     or not SHA.fullmatch(refreshed)
                     or subprocess.run(
                         [
@@ -6560,6 +6597,8 @@ class Controller:
                     (
                         "dependency_conflict_routed"
                         if value.get("action") == "dependency-conflict-refresh"
+                        else "dependency_publication_evidence_retired"
+                        if publication_refresh
                         else "dependency_base_refreshed"
                     ),
                     claim["ticket"],

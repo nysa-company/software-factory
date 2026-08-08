@@ -675,6 +675,13 @@ publication closes before dependency refresh is considered. Application,
 mixed-owner, Factory-control, contract, CI, configuration, add/delete,
 rename, non-regular, unknown, missing-receipt, or tampered conflicts remain
 fail-closed.
+If the dependency becomes terminal after publication evidence exists, the
+same exact dependency receipt routes through the ordinary publication refresh
+instead. It verifies the receipt-bound protected tip and dependency truth,
+makes the exact PR draft, retires the bound bundle and approval blobs, resets
+the ticket to Review, and records the existing `ticket-refresh/v1` receipt.
+Reviewer and Narrator must establish fresh evidence over the changed semantic
+base. A moved protected tip returns to waiting without changing PR or evidence.
 That atomic introduction may also contain the exact in-flight release
 authorization for the same target Factory SHA. No other migration,
 application, test, contract, or CI path is admitted.
@@ -1221,6 +1228,13 @@ the terminal reader independently revalidates commit topology, authorized
 paths, source ticket blob, receipt digest, timestamps, and ledger containment. A
 merged emergency closeout uses the same protected-terminal-first exact Linear
 Done projection as ordinary closeout.
+One versioned extension may also retire exactly one bundle-only partial chain
+whose internally validated bundle names a kit other than the active closeout
+kit. The plan binds its exact protected-main path, blob, and prior kit; apply
+deletes that path in the same protected closeout commit. The terminal reader
+independently revalidates the prior artifact and requires its deletion.
+Current-kit evidence, approval/done partials, malformed bundles, changed
+artifacts, or additional path changes remain invalid and cannot use this route.
 Successor qualification reconciles that terminal against the unchanged
 authenticated source passport and its exact signed idle pause; it does not
 fabricate an Approved/merged passport. The reducer retains historical roles

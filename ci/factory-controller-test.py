@@ -740,7 +740,7 @@ class FactoryControllerTest(unittest.TestCase):
                     )
                 },
             },
-            "schema": "nysa.software-factory.ticket-emergency-done/v1",
+            "schema": "nysa.software-factory.ticket-emergency-done/v2",
         }
         done_path.write_text(json.dumps(done), encoding="utf-8")
         protected = {
@@ -9151,14 +9151,29 @@ class FactoryControllerTest(unittest.TestCase):
                 },
                 "head": refreshed,
             },
+            {
+                "action": "dependency-publication-refresh",
+                "attestation": {
+                    "old_head": old,
+                    "base_head": protected,
+                },
+                "dependencies": ["T-094"],
+                "dependency_terminals": [{
+                    "ticket": "T-094", "terminal_sha256": "a" * 64,
+                }],
+                "head": refreshed,
+            },
         ))
         migrations = []
+        events = []
         controller.renew = lambda _claim: None
         controller.finish_pending_run = lambda _claim: True
         controller.refresh_dependency_tracking = lambda _claim: True
         controller.withdraw_publication = lambda _claim: None
         controller.migrate_passport = lambda *_args: migrations.append("passport")
-        controller.event = lambda *_args, **_kwargs: None
+        controller.event = lambda name, *_args, **kwargs: events.append(
+            (name, kwargs)
+        )
 
         def json_call(*arguments, **_kwargs):
             if arguments[0] == "state-machine":
@@ -9186,7 +9201,11 @@ class FactoryControllerTest(unittest.TestCase):
             self.assertEqual(
                 controller.reconcile_ticket(claim)["status"], "progressed"
             )
-        self.assertEqual(migrations, ["passport"])
+            self.assertEqual(
+                controller.reconcile_ticket(claim)["status"], "progressed"
+            )
+        self.assertEqual(migrations, ["passport", "passport"])
+        self.assertEqual(events[-1][0], "dependency_publication_evidence_retired")
 
     def test_dependency_test_conflict_routes_without_generic_block(self) -> None:
         controller = CONTROL.Controller(self.args)
