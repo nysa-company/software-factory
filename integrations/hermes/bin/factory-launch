@@ -1276,7 +1276,7 @@ PY
           ;;
         --cursor)
           [[ "$WATCH_CURSOR" -eq 0 && $# -ge 2 &&
-             "$2" =~ ^[A-Za-z0-9_-]{1,1024}$ ]] || usage
+             "${#2}" -le 1024 && "$2" =~ ^[A-Za-z0-9_-]+$ ]] || usage
           WATCH_CURSOR=1
           WATCH_ARGS+=(--cursor "$2")
           shift 2

@@ -18,6 +18,7 @@ from typing import Any, Iterator
 
 EVENT_SCHEMA = "nysa.software-factory.controller-event/v1"
 WATCH_SCHEMA = "nysa.software-factory.operator-watch-event/v1"
+DIAGNOSTIC_SCHEMA = "nysa.software-factory.operator-watch-diagnostic/v1"
 CURSOR_SCHEMA = "nysa.software-factory.operator-watch-cursor/v1"
 DIGEST = re.compile(r"^[0-9a-f]{64}$")
 EVENT_FILE = re.compile(r"^([1-9][0-9]{0,20})-([0-9a-f]{16})[.]json$")
@@ -149,7 +150,9 @@ def decode_cursor(state: Path, project: str, token: str) -> tuple[str, str]:
         or value.get("schema") != CURSOR_SCHEMA
         or value.get("project") != project
         or value.get("stream_sha256") != stream_id(state, project)
+        or not isinstance(value.get("event"), str)
         or not EVENT_FILE.fullmatch(value.get("event", ""))
+        or not isinstance(value.get("event_sha256"), str)
         or not DIGEST.fullmatch(value.get("event_sha256", ""))
     ):
         raise WatchError("operator watch cursor is invalid for this stream")
@@ -216,6 +219,7 @@ def read_event(path: Path, expected: tuple[int, int, int, int]) -> dict[str, Any
     if (
         value.get("schema") != EVENT_SCHEMA
         or value.get("observed_at_epoch_ns") != event_key(path.name)[0]
+        or not isinstance(digest, str)
         or not DIGEST.fullmatch(digest)
         or digest != hashlib.sha256(canonical(unsigned).encode()).hexdigest()
         or raw != (canonical(value) + "\n").encode()
@@ -272,6 +276,7 @@ def action_event(
     role = source.get("role")
     run_id = source.get("run_id")
     passport = source.get("passport_sha256")
+    factory_sha = source.get("factory_sha")
     if (
         not isinstance(ticket, str) or not TICKET.fullmatch(ticket)
         or role is not None and (
@@ -286,8 +291,6 @@ def action_event(
         or not isinstance(source.get("observed_at_epoch_ns"), int)
         or isinstance(source.get("observed_at_epoch_ns"), bool)
         or source["observed_at_epoch_ns"] <= 0
-        or not isinstance(source.get("factory_sha"), str)
-        or not re.fullmatch(r"[0-9a-f]{40}", source["factory_sha"])
     ):
         raise WatchError("operator action context is invalid")
     generation = source.get("qualification_generation")
@@ -301,11 +304,23 @@ def action_event(
         )
     ):
         raise WatchError("operator action qualification context is invalid")
+    schema = WATCH_SCHEMA
+    if not isinstance(factory_sha, str) or not re.fullmatch(
+        r"[0-9a-f]{40}", factory_sha
+    ):
+        schema = DIAGNOSTIC_SCHEMA
+        action = "invalid_action_context"
+        reason = "factory_identity_unavailable"
+        question = (
+            "Inspect the authenticated source event; "
+            "Factory identity is unavailable."
+        )
+        factory_sha = None
     digest = source["event_sha256"]
     return {
         "action": action,
         "cursor": encode_cursor(state, project, name, digest),
-        "factory_sha": source["factory_sha"],
+        "factory_sha": factory_sha,
         "observed_at_epoch_ns": source["observed_at_epoch_ns"],
         "passport_sha256": passport,
         "project": project,
@@ -315,7 +330,7 @@ def action_event(
         "reason": safe_text(reason),
         "role": role,
         "run_id": run_id,
-        "schema": WATCH_SCHEMA,
+        "schema": schema,
         "source_event_sha256": digest,
         "ticket": ticket,
     }

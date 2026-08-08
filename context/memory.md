@@ -4392,8 +4392,10 @@ arbitrary command hook, GitHub credential, or provider credential enters this
 boundary, so delivery remains an external operator concern and production and
 qualification retain disjoint state.
 
-Authenticated action context is type-checked before regex classification;
-malformed required or optional fields produce the watcher's typed nonzero
+Authenticated action context is type-checked before regex classification.
+An otherwise valid historical action with no usable Factory identity emits a
+fixed, sanitized diagnostic schema and cursor so later actions remain visible;
+other malformed required or optional fields still produce a typed nonzero
 error rather than an interpreter traceback.
 
 The controller also repairs the narrow durable-state/event publication crash

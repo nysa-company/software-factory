@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import importlib.util
 import json
@@ -111,7 +112,7 @@ class OperatorEventWatchTest(unittest.TestCase):
                 qualification_manifest_sha256="c" * 64,
             )
 
-        required = ("ticket", "factory_sha", "observed_at_epoch_ns")
+        required = ("ticket", "observed_at_epoch_ns")
         for field in required:
             for value in ("missing", None, []):
                 with self.subTest(field=field, value=value):
@@ -124,6 +125,22 @@ class OperatorEventWatchTest(unittest.TestCase):
                         WATCH.WatchError, "operator action context is invalid"
                     ):
                         WATCH.action_event(source, self.state, "relay", "1-a.json")
+
+        for value in ("missing", None, [], "not-a-sha"):
+            with self.subTest(factory_sha=value):
+                source = complete()
+                if value == "missing":
+                    source.pop("factory_sha")
+                else:
+                    source["factory_sha"] = value
+                projected = WATCH.action_event(
+                    source, self.state, "relay", "1-a.json"
+                )
+                self.assertEqual(projected["schema"], WATCH.DIAGNOSTIC_SCHEMA)
+                self.assertEqual(projected["action"], "invalid_action_context")
+                self.assertEqual(projected["reason"], "factory_identity_unavailable")
+                self.assertIsNone(projected["factory_sha"])
+                self.assertNotIn(str(value), WATCH.canonical(projected))
 
         optional = ("role", "run_id", "passport_sha256")
         for field in optional:
@@ -182,14 +199,33 @@ class OperatorEventWatchTest(unittest.TestCase):
             self.assertEqual(projected["action"], "terminal_role_failure")
             self.assertEqual(projected["reason"], "")
 
-    def test_null_factory_sha_exits_typed_without_traceback(self) -> None:
+    def test_null_factory_sha_diagnostic_restart_and_idle_completion(self) -> None:
+        self.write(self.source("ticket_released", factory_sha=None))
         self.write(self.source("budget_wait", factory_sha=None))
-        result = self.run_watch("--limit", "1", "--idle-timeout-seconds", "1")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(result.stdout, "")
-        self.assertIn("operator action context is invalid", result.stderr)
-        self.assertNotIn("TypeError", result.stderr)
-        self.assertNotIn("Traceback", result.stderr)
+        self.write(self.source("budget_wait", ticket="T-111"))
+
+        first = self.run_watch("--limit", "1", "--idle-timeout-seconds", "1")
+        self.assertEqual(first.returncode, 0, first.stderr)
+        diagnostic = json.loads(first.stdout)
+        self.assertEqual(diagnostic["schema"], WATCH.DIAGNOSTIC_SCHEMA)
+        self.assertEqual(diagnostic["action"], "invalid_action_context")
+        self.assertEqual(diagnostic["reason"], "factory_identity_unavailable")
+        self.assertIsNone(diagnostic["factory_sha"])
+
+        second = self.run_watch(
+            "--cursor", diagnostic["cursor"], "--limit", "1",
+            "--idle-timeout-seconds", "1",
+        )
+        self.assertEqual(second.returncode, 0, second.stderr)
+        action = json.loads(second.stdout)
+        self.assertEqual(action["schema"], WATCH.WATCH_SCHEMA)
+        self.assertEqual(action["ticket"], "T-111")
+
+        repeated = self.run_watch(
+            "--cursor", action["cursor"], "--idle-timeout-seconds", "0.2",
+        )
+        self.assertEqual(repeated.returncode, 0, repeated.stderr)
+        self.assertEqual(repeated.stdout, "")
 
     def test_variable_width_epoch_names_use_numeric_order(self) -> None:
         later = self.source("budget_wait", ticket="T-110")
@@ -315,10 +351,18 @@ class OperatorEventWatchTest(unittest.TestCase):
         )
 
     def test_tampered_event_and_cursor_fail_closed(self) -> None:
-        path = self.write(self.source("budget_wait"))
+        path = self.write(self.source("budget_wait", factory_sha=None))
         raw = json.loads(path.read_text(encoding="utf-8"))
         raw["ticket"] = "T-999"
         path.write_text(WATCH.canonical(raw) + "\n", encoding="utf-8")
+        path.chmod(0o600)
+        result = self.run_watch("--limit", "1", "--idle-timeout-seconds", "1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unauthenticated", result.stderr)
+        path.unlink()
+        noncanonical = self.source("budget_wait", factory_sha=None)
+        path = self.write(noncanonical)
+        path.write_text(json.dumps(noncanonical) + "\n", encoding="utf-8")
         path.chmod(0o600)
         result = self.run_watch("--limit", "1", "--idle-timeout-seconds", "1")
         self.assertNotEqual(result.returncode, 0)
@@ -328,6 +372,40 @@ class OperatorEventWatchTest(unittest.TestCase):
         )
         self.assertNotEqual(malformed.returncode, 0)
         self.assertIn("cursor", malformed.stderr)
+
+    def test_null_digest_and_cursor_fields_exit_typed(self) -> None:
+        source = self.source("budget_wait", factory_sha=None)
+        source["event_sha256"] = None
+        path = self.write(source)
+        result = self.run_watch("--limit", "1", "--idle-timeout-seconds", "1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("unauthenticated", result.stderr)
+        self.assertNotIn("TypeError", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        path.unlink()
+
+        for field in ("event", "event_sha256"):
+            with self.subTest(field=field):
+                cursor = {
+                    "event": "1-0000000000000001.json",
+                    "event_sha256": "a" * 64,
+                    "project": "relay",
+                    "schema": WATCH.CURSOR_SCHEMA,
+                    "stream_sha256": WATCH.stream_id(self.state, "relay"),
+                }
+                cursor[field] = None
+                token = base64.urlsafe_b64encode(
+                    WATCH.canonical(cursor).encode()
+                ).decode().rstrip("=")
+                result = self.run_watch(
+                    "--cursor", token, "--idle-timeout-seconds", "0.1"
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(result.stdout, "")
+                self.assertIn("cursor", result.stderr)
+                self.assertNotIn("TypeError", result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
 
     def test_cursor_anchor_loss_is_nonzero(self) -> None:
         path = self.write(self.source("budget_wait"))
@@ -384,7 +462,7 @@ class OperatorEventWatchTest(unittest.TestCase):
         self.assertEqual(calls, 1)
 
     def test_unsafe_event_mode_and_cross_project_cursor_are_refused(self) -> None:
-        path = self.write(self.source("budget_wait"))
+        path = self.write(self.source("budget_wait", factory_sha=None))
         path.chmod(0o644)
         unsafe = self.run_watch("--idle-timeout-seconds", "0.1")
         self.assertNotEqual(unsafe.returncode, 0)
