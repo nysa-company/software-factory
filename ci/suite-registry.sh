@@ -18,6 +18,7 @@ suite_registry() {
   "$callback" provider-runtime "transactional provider runtime suite" python3 "$ROOT/ci/provider-runtime-test.py"
   "$callback" dispatch-plan "autonomous dispatch planner suite" python3 "$ROOT/ci/dispatch-plan-test.py"
   "$callback" factory-controller "non-agent reconciliation controller suite" python3 "$ROOT/ci/factory-controller-test.py"
+  "$callback" operator-event-watch "authenticated operator event watch suite" python3 "$ROOT/ci/operator-event-watch-test.py"
   "$callback" certification-runner "measured certification DAG suite" python3 "$ROOT/ci/certification-runner-test.py"
   "$callback" certification-preflight "exact certification runtime tuple suite" python3 "$ROOT/ci/certification-preflight-test.py"
   "$callback" owner-runtime-pin "owner-local certification runtime pin suite" python3 "$ROOT/ci/owner-runtime-pin-test.py"

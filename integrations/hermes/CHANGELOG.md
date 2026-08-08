@@ -31,6 +31,9 @@ helper output are not compatibility promises.
 - Makes ordinary route-migration previews compact, retains an explicit full
   journal diagnostic, and binds apply to the preview's exact readiness digest
   with one fresh probe round.
+- Adds a credential-free, channel-neutral operator event watch with bounded
+  sanitized NDJSON, authenticated project-bound resume cursors, and fail-closed
+  stream-loss detection.
 
 ## 1.7.0 — 2026-07-22
 

@@ -348,6 +348,15 @@ class Controller:
         safe_directory(self.logs, create=True)
         self.events = self.state / "events"
         safe_directory(self.events, create=True)
+        event_epochs = [
+            int(match[1])
+            for path in self.events.glob("*.json")
+            if (match := re.fullmatch(
+                r"([1-9][0-9]{0,20})-[0-9a-f]{16}[.]json", path.name
+            ))
+        ]
+        self.event_epoch_ns = max(event_epochs, default=0)
+        self.event_lock = Lock()
         self.capacity = self.read_capacity()
         self.qualification = self.read_qualification()
         self.qualification_manifest_sha256 = (
@@ -376,35 +385,65 @@ class Controller:
             raise ControllerError(str(error)) from error
 
     def event(self, name: str, ticket: str = "", **details: Any) -> None:
-        value = {
-            "event": name,
-            "factory_sha": self.release_path.name,
-            "observed_at_epoch_ns": time.time_ns(),
-            "schema": EVENT_SCHEMA,
-            "ticket": ticket or None,
-            **details,
-        }
-        if self.qualification:
-            value.update({
-                "qualification_generation": self.qualification["generation"],
-                "qualification_manifest_sha256": (
-                    self.qualification_manifest_sha256
-                ),
-            })
-        raw = canonical(value).encode()
-        value["event_sha256"] = hashlib.sha256(raw).hexdigest()
-        path = self.events / (
-            f"{value['observed_at_epoch_ns']}-{secrets.token_hex(8)}.json"
-        )
-        descriptor = os.open(
-            path,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
-            0o600,
-        )
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            stream.write(canonical(value) + "\n")
-            stream.flush()
-            os.fsync(stream.fileno())
+        with self.event_lock:
+            self.event_epoch_ns = max(time.time_ns(), self.event_epoch_ns + 1)
+            value = {
+                "event": name,
+                "factory_sha": self.release_path.name,
+                "observed_at_epoch_ns": self.event_epoch_ns,
+                "schema": EVENT_SCHEMA,
+                "ticket": ticket or None,
+                **details,
+            }
+            if self.qualification:
+                value.update({
+                    "qualification_generation": self.qualification["generation"],
+                    "qualification_manifest_sha256": (
+                        self.qualification_manifest_sha256
+                    ),
+                })
+            raw = canonical(value).encode()
+            value["event_sha256"] = hashlib.sha256(raw).hexdigest()
+            path = self.events / (
+                f"{value['observed_at_epoch_ns']}-{secrets.token_hex(8)}.json"
+            )
+            temporary = self.state / (
+                f".controller-event-{secrets.token_hex(8)}.tmp"
+            )
+            descriptor = -1
+            try:
+                descriptor = os.open(
+                    temporary,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                    | getattr(os, "O_NOFOLLOW", 0),
+                    0o600,
+                )
+                with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                    descriptor = -1
+                    stream.write(canonical(value) + "\n")
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temporary, path)
+                directory = os.open(
+                    self.events, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+                )
+                try:
+                    os.fsync(directory)
+                finally:
+                    os.close(directory)
+            finally:
+                if descriptor >= 0:
+                    os.close(descriptor)
+                temporary.unlink(missing_ok=True)
+
+    def passport_sha256(self, ticket: str) -> str | None:
+        path = self.state / "passports" / f"{ticket}.json"
+        if not path.exists():
+            return None
+        digest = read(path).get("passport_sha256", "")
+        if not DIGEST.fullmatch(digest):
+            raise ControllerError("ticket passport digest is invalid")
+        return digest
 
     def event_once(self, name: str, ticket: str, **details: Any) -> None:
         for path in sorted(self.events.glob("*.json")):
@@ -4468,7 +4507,13 @@ class Controller:
             claim["blocked_reason"] = "role-failure"
             self.save_claim(claim)
             self.release_ticket_lease(claim)
-            self.event("role_blocked", claim["ticket"], role=claim["role"])
+            self.event(
+                "role_blocked", claim["ticket"],
+                passport_sha256=self.passport_sha256(claim["ticket"]),
+                role=claim["role"], role_exit=terminal.get("role_exit"),
+                run_id=terminal.get("run_id"),
+                terminal_reason_code=terminal.get("terminal_reason_code", ""),
+            )
             return False
         if claim["role"] == "reviewer":
             self.json_call(
@@ -5413,6 +5458,11 @@ class Controller:
                     "--workdir", claim["worktree"], "--action", "bundle", "--json",
                 )
                 self.migrate_passport(claim, "validating")
+                self.event_once(
+                    "awaiting_approval", claim["ticket"],
+                    passport_sha256=self.passport_sha256(claim["ticket"]),
+                    question="Approve this ticket to merge in Linear.",
+                )
                 return {"status": "progressed", "ticket": claim["ticket"]}
             if stage.startswith("AWAIT-OPERATOR Linear approval observed"):
                 if claim.get("publication_lease"):
@@ -5490,7 +5540,10 @@ class Controller:
                     role="", status="budget",
                 )
                 self.save_claim(claim)
-                self.event("budget_wait", claim["ticket"])
+                self.event(
+                    "budget_wait", claim["ticket"],
+                    passport_sha256=self.passport_sha256(claim["ticket"]),
+                )
                 return {"status": "budget", "ticket": claim["ticket"]}
             if stage.startswith("AWAIT-MERGE protected auto-merge requested"):
                 if self.ticket_merged(claim):
@@ -5536,6 +5589,7 @@ class Controller:
                 self.block(claim, "state-machine-escalation")
                 self.event(
                     "state_machine_escalated", claim["ticket"], detail=detail,
+                    passport_sha256=self.passport_sha256(claim["ticket"]),
                 )
                 return {"status": "blocked", "ticket": claim["ticket"]}
             if stage in {

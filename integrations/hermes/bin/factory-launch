@@ -28,7 +28,7 @@ die() {
 }
 
 usage() {
-  echo "usage: factory-launch <project> <contract|doctor|reconcile|ticket-control|qualification|dispatch-plan|state-machine|emergency-admit|passport|publication|publication-repair|ci-rerun|ticket-pr|models|envelope|operator-snapshot|attempt|claim|renew|release|release-expired|preflight|next-stage|ticket-state|ticket-attest|project-ledger|reorder-test-fixes|run> [arguments]" >&2
+  echo "usage: factory-launch <project> <contract|doctor|reconcile|watch|ticket-control|qualification|dispatch-plan|state-machine|emergency-admit|passport|publication|publication-repair|ci-rerun|ticket-pr|models|envelope|operator-snapshot|attempt|claim|renew|release|release-expired|preflight|next-stage|ticket-state|ticket-attest|project-ledger|reorder-test-fixes|run> [arguments]" >&2
   exit 2
 }
 
@@ -1253,6 +1253,52 @@ PY
       --product-root "$PRODUCT_ROOT" \
       --release-path "$RELEASE_PATH" \
       --state-dir "$CONTROLLER_STATE_DIR"
+    ;;
+  watch)
+    [[ "$ACTIVE_CONTRACT" == "1.8.0" ]] ||
+      die "operator event watch requires contract 1.8.0"
+    WATCH_ARGS=() WATCH_JSON=0 WATCH_CURSOR=0 WATCH_LIMIT=0 WATCH_IDLE=0
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --json)
+          [[ "$WATCH_JSON" -eq 0 ]] || usage
+          WATCH_JSON=1
+          WATCH_ARGS+=(--json)
+          shift
+          ;;
+        --cursor)
+          [[ "$WATCH_CURSOR" -eq 0 && $# -ge 2 &&
+             "$2" =~ ^[A-Za-z0-9_-]{1,1024}$ ]] || usage
+          WATCH_CURSOR=1
+          WATCH_ARGS+=(--cursor "$2")
+          shift 2
+          ;;
+        --limit)
+          [[ "$WATCH_LIMIT" -eq 0 && $# -ge 2 &&
+             "$2" =~ ^[0-9]{1,4}$ ]] || usage
+          WATCH_LIMIT=1
+          WATCH_ARGS+=(--limit "$2")
+          shift 2
+          ;;
+        --idle-timeout-seconds)
+          [[ "$WATCH_IDLE" -eq 0 && $# -ge 2 &&
+             "$2" =~ ^[0-9]{1,4}([.][0-9]{1,3})?$ ]] || usage
+          WATCH_IDLE=1
+          WATCH_ARGS+=(--idle-timeout-seconds "$2")
+          shift 2
+          ;;
+        *) usage ;;
+      esac
+    done
+    [[ "$WATCH_JSON" -eq 1 ]] || usage
+    controller_state_dir
+    WATCH_HELPER="$RELEASE_PATH/scripts/operator-event-watch.py"
+    require_managed_file "$WATCH_HELPER" "active release operator event watch"
+    cleanup_runtime
+    trap - EXIT HUP INT TERM
+    exec /usr/bin/env -i "HOME=$HOME" "PATH=$SAFE_PATH" "TMPDIR=$SAFE_TMPDIR" \
+      "$PYTHON_BIN" -I -S "$WATCH_HELPER" \
+      --state-dir "$CONTROLLER_STATE_DIR" --project "$PROJECT" "${WATCH_ARGS[@]}"
     ;;
   ticket-control)
     [[ "$ACTIVE_CONTRACT" == "1.8.0" ]] ||

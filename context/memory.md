@@ -4330,3 +4330,20 @@ already the authenticated passport head. During later-blocker authoring, a
 current answer beside the prior stale resume pair remains a pure waiting shape;
 it cannot invoke resume or change claim, passport, completed-role, or accounting
 identity before the exact second commit arrives.
+
+## 2026-08-08 — Decision 322: Operator notification remains channel-neutral
+
+Category: Reliability
+
+The sealed launcher exposes one read-only NDJSON watch over its already
+confined canonical controller event directory. It emits only bounded,
+sanitized approval, escalation, terminal role failure, budget halt, and
+progress-timeout actions. Each opaque cursor binds the exact project state path
+and last authenticated immutable event, making restart idempotent and stream
+loss fail closed. The controller serializes and publishes canonical events
+atomically, retaining monotonic filename order across a clock rollback or
+restart from a filename-only maximum; a live watch inventories history once
+and parses only new files. No Slack, desktop,
+arbitrary command hook, GitHub credential, or provider credential enters this
+boundary, so delivery remains an external operator concern and production and
+qualification retain disjoint state.

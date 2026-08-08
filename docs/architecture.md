@@ -257,6 +257,22 @@ recorded claim status, and target release before reacquiring one lease, then
 archives the repro record. Backlog, canceled, merged, and Done tickets are
 never pause/resume targets. Startup and interrupted-reconciliation recovery
 never turn paused or historical repro records into runnable claims.
+Contract 1.8 also exposes a channel-neutral `watch --json` read boundary over
+the selected project's canonical controller events. It projects only bounded,
+redacted operator actions for contract or lifecycle escalation, approval,
+terminal role failure, budget halt, and progress timeout. Every output retains
+the authenticated source-event digest and an opaque cursor bound to the exact
+project controller path, source filename, and digest. Restart validates that
+anchor and resumes after it; missing, replaced, reordered, broadly writable,
+or digest-invalid evidence exits nonzero. One process inventories historical
+filenames once, then parses only newly published events. The single live
+controller serializes event publication and seeds its next monotonic timestamp
+from the largest filename on restart without parsing event bodies; files are
+fsynced and atomically renamed before becoming visible. The watcher is
+read-only, receives no GitHub or provider credential, and provides no delivery
+hook; Slack, desktop, or other notification channels may consume its NDJSON
+without entering the Factory trust boundary. Production and qualification use
+their already distinct launcher-selected controller state paths.
 The product test-immutability gate treats one ticket-only higher numbered
 frozen contract plus its matching PASS marker as a new tests-first epoch. New
 Planner output uses the canonical append-only marker. Historical Planner output

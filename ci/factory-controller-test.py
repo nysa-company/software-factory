@@ -16,6 +16,7 @@ from pathlib import Path
 import plistlib
 import subprocess
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -109,6 +110,60 @@ class FactoryControllerTest(unittest.TestCase):
             if json.loads(path.read_text()).get("event") == "linear_terminal_synced"
         ]
         self.assertEqual(len(matching), 1)
+
+    def test_concurrent_event_publication_is_monotonic_across_restart(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        first_started = threading.Event()
+        release_first = threading.Event()
+        original_replace = CONTROL.os.replace
+        replacements = 0
+
+        def delayed_replace(source, destination):
+            nonlocal replacements
+            if ".controller-event-" in str(source):
+                replacements += 1
+                if replacements == 1:
+                    first_started.set()
+                    self.assertTrue(release_first.wait(2))
+            return original_replace(source, destination)
+
+        first = threading.Thread(
+            target=controller.event, args=("first", "T-110")
+        )
+        second = threading.Thread(
+            target=controller.event, args=("second", "T-111")
+        )
+        with (
+            patch.object(CONTROL.time, "time_ns", return_value=100),
+            patch.object(CONTROL.os, "replace", side_effect=delayed_replace),
+        ):
+            first.start()
+            self.assertTrue(first_started.wait(2))
+            second.start()
+            time.sleep(0.05)
+            self.assertEqual(list(controller.events.glob("*.json")), [])
+            release_first.set()
+            first.join(2)
+            second.join(2)
+        self.assertFalse(first.is_alive() or second.is_alive())
+        records = [
+            CONTROL.read(path) for path in sorted(controller.events.glob("*.json"))
+        ]
+        self.assertEqual([item["event"] for item in records], ["first", "second"])
+        self.assertEqual(
+            [item["observed_at_epoch_ns"] for item in records], [100, 101]
+        )
+
+        restarted = CONTROL.Controller(self.args)
+        with patch.object(CONTROL.time, "time_ns", return_value=1):
+            restarted.event("third", "T-112")
+        records = [
+            CONTROL.read(path) for path in sorted(controller.events.glob("*.json"))
+        ]
+        self.assertEqual(
+            [item["event"] for item in records], ["first", "second", "third"]
+        )
+        self.assertEqual(records[-1]["observed_at_epoch_ns"], 102)
 
     def test_contract_resume_refusal_is_restart_safe_and_ticket_scoped(self) -> None:
         controller = CONTROL.Controller(self.args)
@@ -6730,7 +6785,8 @@ class FactoryControllerTest(unittest.TestCase):
                 {
                     "detail": (
                         "evidence bundle remained invalid after one Narrator retry"
-                    )
+                    ),
+                    "passport_sha256": None,
                 },
             ),
             events,

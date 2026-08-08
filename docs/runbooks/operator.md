@@ -8,6 +8,24 @@ What to do when something breaks, written for a non-technical operator. Each ent
 - Do: check the terminal/session running the role. If it's spinning or confused, stop it, add a ticket comment "run abandoned — restarting", and re-run the role through `~/.factory/bin/factory-launch <project> run`. Second stall on the same ticket → move it to Blocked-Escalated and re-read the ticket's contract: stalls usually mean the spec is ambiguous.
 - Don't: let a stuck run keep burning budget while you wait.
 
+## Watch for operator action
+
+- Run `factory-launch <project> watch --json` in a supervised terminal or feed
+  its newline-delimited JSON to your notification channel. It reports only an
+  approval request, escalation or contract blocker, terminal role failure,
+  budget halt, or progress timeout; it does not send Slack or desktop messages
+  itself.
+- Save the opaque `cursor` from the last handled line. After a restart, pass it
+  back as `--cursor <value>` so that line is authenticated and not delivered
+  again. `--limit N` and `--idle-timeout-seconds N` support bounded drains.
+- A nonzero exit means the selected controller stream, cursor event, ownership,
+  mode, path, or digest was lost or changed. Stop the consumer and inspect the
+  sealed lane; do not invent a cursor, skip files, or read another project's
+  controller directory directly.
+- The command is read-only and credential-free. Keep channel credentials in the
+  external consumer, never in the Factory launcher, controller state, cursor,
+  or event payload.
+
 ## Park a ticket on a Factory defect
 
 - Open the defect in the Software Factory GitHub repository, then wait for the
