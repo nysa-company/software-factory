@@ -1672,6 +1672,11 @@ phase output, npm debug logs, result evidence, and their digests survive a
 failed product-certification workspace. Before source preparation, an existing
 active product must match its exact committed activation generation, canonical
 path, and origin; a fresh project remains certifiable without an active record.
+Certification failure receipts also bind the driver and final exit statuses,
+the setup, product, phase, or post-driver cache boundary, and separate evidence
+and output digests. A pre-product driver failure retains a
+bounded redacted diagnostic and a nonempty fixed reason even when no product
+result exists; raw setup output is never persisted.
 On macOS the protected product wrapper only coordinates its disposable tree;
 each declared phase enters exactly one Factory-generated Seatbelt profile.
 Production requires both the external-network-denied and reviewed-network

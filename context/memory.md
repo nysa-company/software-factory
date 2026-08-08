@@ -4659,3 +4659,16 @@ bounded waiting event; it never aborts sibling reconciliation. Active roles
 remain untouched until the existing post-drain retirement pass. A parked claim
 with malformed lease evidence enters the existing invalid-ticket quarantine
 and cannot reach recovery, admission, or scheduling.
+
+## 2026-08-08 — Decision 342: Certification setup failures remain actionable
+
+Category: Reliability
+
+A failed product-certification driver preserves its own and the final command
+exit status, exact setup, product, phase, or post-driver cache boundary, and a
+bounded redacted diagnostic in the failure receipt. A failure before product
+launch therefore retains a nonempty fixed
+reason even without phase evidence. Separate evidence, driver-output, and
+product-output digests make the receipt identifier recomputable without
+ambiguous byte concatenation, while successful certification and the existing
+phase evidence contract remain unchanged.
