@@ -40,6 +40,16 @@ PRIVATE_KEY = re.compile(
     re.DOTALL,
 )
 
+# Cursor may report a context tier chosen for the exact requested selection.
+# Keep presentation aliases finite and bound to both the selection ID and its
+# canonical catalog label; never infer a model from a prefix or fuzzy match.
+REPORTED_MODEL_ALIASES = {
+    (
+        "gpt-5.6-sol-high",
+        "GPT-5.6 Sol 272K High",
+    ): frozenset({"GPT-5.6 Sol 1M High"}),
+}
+
 
 def dictionaries(value: Any) -> Iterator[dict[str, Any]]:
     if isinstance(value, dict):
@@ -137,6 +147,7 @@ def main() -> int:
     terminal_success = False
     malformed_json = False
     reported_model = ""
+    reported_models = []
     reported_cwd = ""
     turns = 0
     usage_sources = {
@@ -203,6 +214,7 @@ def main() -> int:
             if event_type == "system" and subtype in {"init", "initialize"}:
                 if isinstance(event.get("model"), str):
                     reported_model = event["model"]
+                    reported_models.append(reported_model)
                 if isinstance(event.get("cwd"), str):
                     reported_cwd = event["cwd"]
             if progress_stream is not None and (
@@ -270,6 +282,7 @@ def main() -> int:
             **usage,
             "requested_model": expected_model,
             "reported_model": reported_model,
+            "reported_model_count": len(reported_models),
             "reported_cwd": reported_cwd,
             "internal_retries": internal_retries,
             "progress_events": progress_events,
@@ -296,11 +309,21 @@ def main() -> int:
     if malformed_json:
         print("cursor stream contains malformed JSON events", file=sys.stderr)
         return 13
-    if reported_model and reported_model not in {
+    approved_reported_models = {
         expected_model,
         expected_reported_model,
-    }:
-        print(f"cursor reported unapproved model: {reported_model}", file=sys.stderr)
+        *REPORTED_MODEL_ALIASES.get(
+            (expected_model, expected_reported_model), frozenset()
+        ),
+    }
+    unapproved_models = [
+        model for model in reported_models if model not in approved_reported_models
+    ]
+    if unapproved_models:
+        print(f"cursor reported unapproved model: {unapproved_models[0]}", file=sys.stderr)
+        return 11
+    if len(set(reported_models)) > 1:
+        print("cursor reported conflicting model identities", file=sys.stderr)
         return 11
     if reported_cwd and os.path.realpath(reported_cwd) != expected_cwd:
         print("cursor reported an unexpected workspace", file=sys.stderr)

@@ -323,7 +323,7 @@
           "pin workdir uses the launcher's exact physical ticket worktree validation",
           "fallback uses a dedicated exact-worktree validator that permits only helper-validated partial changes",
           "fallback consumes one exact unexpired Linear operator approval bound to its preview hash",
-          "profile GH_TOKEN is not passed to this task-free helper",
+          "only fallback and migration GitHub HTTPS network operations receive the profile GH_TOKEN through an inherited descriptor; model probes and every other task-free action remain credential-free",
           "only pin receives the receipt-bound FACTORY_CERTIFIED_PRODUCT_ORIGIN",
           "task-bearing adapters do not inherit FACTORY_MODEL_STATE_ROOT or FACTORY_PROJECT"
         ]

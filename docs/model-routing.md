@@ -30,9 +30,12 @@ Kimi K2.6 is a disabled experimental Moonshot-family route through Claude CLI
 and OpenRouter. It is not in any profile and is never selected by the current
 workflow.
 
-Cursor model evidence is exact: the Opus selection currently reports
-`Opus 5 300K Medium`. A different context-window or effort label is rejected,
-and native Claude fallback defaults to the certified CLI version `2.1.223`.
+Cursor model evidence is exact. The Opus selection currently reports
+`Opus 5 300K Medium`. The GPT-5.6 Sol High selection may report either its
+canonical `GPT-5.6 Sol 272K High` label or the explicitly certified
+`GPT-5.6 Sol 1M High` task-context label. Every other context-window, effort,
+selection, or family label is rejected. Native Claude fallback defaults to the
+certified CLI version `2.1.223`.
 Native Claude readiness runs version, help, OAuth, and authenticated-status
 checks through one disposable owner-only configuration containing only a
 validated credential copy. Ambient Claude settings and hooks therefore cannot
@@ -201,3 +204,11 @@ Legacy revisions containing full prior resolutions remain valid.
 Only `credits_exhausted` and `provider_unavailable` are eligible mid-ticket
 reasons. Logic errors, test failures, unsafe worktree changes, stale evidence,
 and ambiguous accounting do not authorize a model fallback.
+
+For a certified `https://github.com/...` product origin, fallback and route
+migration receive the trusted Hermes profile token only for their exact
+`ls-remote`, push, and remote verification subprocesses through
+`gh auth git-credential`. The token is
+removed before model readiness runs and is never placed in a URL, argument,
+repository configuration, fallback journal, or role environment. SSH and local
+remotes keep their existing credential-free path.

@@ -892,6 +892,11 @@ changes, including a Builder's current-ticket root-cause log but never sibling
 tickets, tests, or Factory controls, it runs before terminal passport export;
 the resulting clean exact head then receives the failed charge through
 preserving passport migration.
+When the certified product origin is GitHub HTTPS, only fallback and route
+migration Git network subprocesses receive the trusted Hermes profile credential through
+the host-scoped `gh auth git-credential` helper. Readiness probes, model
+adapters, local Git operations, URLs, arguments, repository configuration, and
+durable fallback evidence remain credential-free.
 An unsubmitted durable-GO terminal is not a model fallback. The controller
 exports its conservative charge into the ordinary passport, blocks it under
 the same release, and leaves only the authenticated successor recovery path.

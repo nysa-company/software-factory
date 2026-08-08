@@ -488,7 +488,11 @@ class CursorStreamTest(unittest.TestCase):
         self.assertIn("exactly one successful result", result.stderr)
 
     def run_stream(
-        self, events: list[dict], repeated_error_limit: int
+        self,
+        events: list[dict],
+        repeated_error_limit: int,
+        model: str = "claude-sonnet-5-thinking-high",
+        reported_model: str = "claude-sonnet-5-thinking-high",
     ) -> subprocess.CompletedProcess:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -498,8 +502,8 @@ class CursorStreamTest(unittest.TestCase):
                 [
                     str(STREAM),
                     str(metrics),
-                    "claude-sonnet-5-thinking-high",
-                    "claude-sonnet-5-thinking-high",
+                    model,
+                    reported_model,
                     str(root),
                     "4",
                     str(repeated_error_limit),
@@ -513,6 +517,64 @@ class CursorStreamTest(unittest.TestCase):
             result.metrics = metrics.read_text()  # type: ignore[attr-defined]
             result.progress = progress.read_text()  # type: ignore[attr-defined]
             return result
+
+    def test_exact_gpt_context_alias_normalizes_only_its_certified_route(self) -> None:
+        events = [
+            {
+                "type": "system",
+                "subtype": "init",
+                "model": "GPT-5.6 Sol 1M High",
+            },
+            {"type": "result", "subtype": "success"},
+        ]
+        accepted = self.run_stream(
+            events,
+            0,
+            model="gpt-5.6-sol-high",
+            reported_model="GPT-5.6 Sol 272K High",
+        )
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        self.assertIn("reported_model=GPT-5.6 Sol 1M High", accepted.metrics)
+
+        for identities in (
+            ("GPT-5.6 Sol 1M Medium", "GPT-5.6 Sol 1M High"),
+            ("GPT-5.6 Sol 1M High", "GPT-5.6 Sol 1M Medium"),
+            ("GPT-5.6 Sol 272K High", "GPT-5.6 Sol 1M High"),
+        ):
+            with self.subTest(identities=identities):
+                refused = self.run_stream(
+                    [
+                        {"type": "system", "subtype": "init", "model": identity}
+                        for identity in identities
+                    ]
+                    + [{"type": "result", "subtype": "success"}],
+                    0,
+                    model="gpt-5.6-sol-high",
+                    reported_model="GPT-5.6 Sol 272K High",
+                )
+                self.assertEqual(refused.returncode, 11)
+
+        for wrong_model, wrong_report in (
+            ("gpt-5.6-sol-high", "GPT-5.6 Sol 1M Medium"),
+            ("gpt-5.6-terra", "GPT-5.6 Sol 1M High"),
+            ("claude-opus-5-thinking-medium", "GPT-5.6 Sol 1M High"),
+        ):
+            with self.subTest(model=wrong_model, report=wrong_report):
+                refused = self.run_stream(
+                    [
+                        {
+                            "type": "system",
+                            "subtype": "init",
+                            "model": wrong_report,
+                        },
+                        {"type": "result", "subtype": "success"},
+                    ],
+                    0,
+                    model=wrong_model,
+                    reported_model=wrong_model,
+                )
+                self.assertEqual(refused.returncode, 11)
+                self.assertIn("unapproved model", refused.stderr)
 
     def test_structured_events_create_sequenced_progress_evidence(self) -> None:
         result = self.run_stream(

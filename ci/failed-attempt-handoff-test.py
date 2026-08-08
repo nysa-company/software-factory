@@ -7,18 +7,21 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts" / "lib"))
 
 from failed_attempt_handoff import (  # noqa: E402
+    GitHubHTTPSCredential,
     HandoffError,
     RoleBoundaryPolicy,
     build_handoff_commit,
     preview_handoff,
     revalidate_handoff,
 )
+import failed_attempt_handoff as HANDOFF  # noqa: E402
 
 
 def git(repo, *args, input_text=None):
@@ -122,6 +125,44 @@ class HandoffTest(unittest.TestCase):
         self.assertFalse(
             any(item.path == "factory/model-route-journal.json" for item in third.entries)
         )
+
+    def test_github_credential_is_scoped_to_the_exact_network_git_call(self):
+        helper = self.base / "gh"
+        helper.write_text(
+            "#!/bin/sh\n"
+            "test \"$GH_TOKEN\" = ghp_test_secret || exit 3\n"
+            "test \"$1 $2 $3\" = 'auth git-credential get' || exit 0\n"
+            "printf 'username=test\\npassword=fixture\\n'\n"
+        )
+        helper.chmod(0o700)
+        helper = helper.resolve()
+        credential = GitHubHTTPSCredential(str(helper), "ghp_test_secret")
+        completed = subprocess.CompletedProcess([], 0, b"ok", b"")
+        with mock.patch.object(HANDOFF.subprocess, "run", return_value=completed) as run:
+            HANDOFF._git(self.repo, ["ls-remote"], git_auth=credential)
+        command = run.call_args.args[0]
+        environment = run.call_args.kwargs["env"]
+        self.assertEqual(environment["GH_TOKEN"], "ghp_test_secret")
+        self.assertNotIn("ghp_test_secret", repr(command))
+        self.assertIn("credential.helper=", command)
+        self.assertIn(
+            f"credential.https://github.com.helper=!{helper} auth git-credential",
+            command,
+        )
+        output = HANDOFF._git(
+            self.repo,
+            ["credential", "fill"],
+            input_bytes=b"protocol=https\nhost=github.com\n\n",
+            git_auth=credential,
+        )
+        self.assertIn(b"password=fixture", output)
+
+        with mock.patch.dict(os.environ, {"GH_TOKEN": "ambient-secret"}):
+            with mock.patch.object(
+                HANDOFF.subprocess, "run", return_value=completed
+            ) as run:
+                HANDOFF._git(self.repo, ["status"])
+        self.assertNotIn("GH_TOKEN", run.call_args.kwargs["env"])
 
     def test_revalidate_detects_worktree_index_head_branch_and_remote_drift(self):
         (self.repo / "src/kept.txt").write_text("changed\n")

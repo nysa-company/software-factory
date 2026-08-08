@@ -4267,3 +4267,15 @@ old claims and uses only `git worktree move`. A digest journal under the durable
 successor controller makes the move prefix restart-safe; no branch deletion,
 claim edit, arbitrary checkout adoption, or dispatch trust relaxation is
 permitted.
+
+## 2026-08-07 — Decision 318: Fallback Git credentials are action-scoped
+
+Category: Security
+
+For an exact certified GitHub HTTPS product origin, model fallback and route
+migration receive the trusted Hermes profile token only inside their bounded remote-read, push, and
+verification Git subprocesses through the physical `gh auth git-credential`
+helper. The token is removed before model readiness, is never accepted from the
+caller, and never enters a URL, argument, repository configuration, provider
+environment, or durable fallback evidence. Other model-control actions and SSH
+or local remotes retain their credential-free behavior.

@@ -15,12 +15,67 @@ import stat
 import subprocess
 import tempfile
 import unicodedata
+import urllib.parse
 from pathlib import Path
 from typing import Optional, Tuple
 
 
 class HandoffError(ValueError):
     """The attempted handoff is unsafe or no longer matches its preview."""
+
+
+@dataclasses.dataclass(frozen=True)
+class GitHubHTTPSCredential:
+    """Ephemeral GitHub credential helper capability; never serialized."""
+
+    helper: str
+    token: str = dataclasses.field(repr=False)
+
+    def __post_init__(self):
+        helper = Path(self.helper)
+        try:
+            metadata = helper.stat()
+        except OSError as error:
+            raise HandoffError("github credential helper is unavailable") from error
+        if (
+            not helper.is_absolute()
+            or helper.is_symlink()
+            or helper.resolve() != helper
+            or not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid not in {0, os.geteuid()}
+            or stat.S_IMODE(metadata.st_mode) & 0o022
+            or not os.access(helper, os.X_OK)
+            or not re.fullmatch(r"/[A-Za-z0-9_./+-]+", self.helper)
+        ):
+            raise HandoffError("github credential helper is unsafe")
+        if (
+            not self.token
+            or len(self.token.encode("utf-8")) > 65536
+            or any(character.isspace() or ord(character) < 32 for character in self.token)
+        ):
+            raise HandoffError("github credential is invalid")
+
+
+def github_https_remote(url):
+    """Return true only for the certified GitHub HTTPS repository shape."""
+    if not isinstance(url, str):
+        return False
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        port = parsed.port
+    except ValueError:
+        return False
+    return (
+        parsed.scheme == "https"
+        and parsed.hostname == "github.com"
+        and port is None
+        and parsed.username is None
+        and parsed.password is None
+        and not parsed.query
+        and not parsed.fragment
+        and re.fullmatch(r"/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?", parsed.path)
+        is not None
+    )
 
 
 DEFAULT_PROTECTED = (
@@ -264,6 +319,7 @@ class HandoffCommit:
 
 def _git_env(extra=None):
     env = os.environ.copy()
+    env.pop("GH_TOKEN", None)
     env.update(
         {
             "GIT_CONFIG_NOSYSTEM": "1",
@@ -278,7 +334,17 @@ def _git_env(extra=None):
     return env
 
 
-def _git(repo, arguments, *, input_bytes=None, env=None):
+def _git(repo, arguments, *, input_bytes=None, env=None, git_auth=None):
+    credential_args = []
+    credential_env = env
+    if git_auth is not None:
+        credential_args = [
+            "-c",
+            "credential.https://github.com.helper="
+            f"!{git_auth.helper} auth git-credential",
+        ]
+        credential_env = dict(env or {})
+        credential_env["GH_TOKEN"] = git_auth.token
     command = [
         "git",
         "-C",
@@ -289,6 +355,7 @@ def _git(repo, arguments, *, input_bytes=None, env=None):
         f"core.hooksPath={os.devnull}",
         "-c",
         "credential.helper=",
+        *credential_args,
         "-c",
         "diff.external=",
         "-c",
@@ -300,9 +367,11 @@ def _git(repo, arguments, *, input_bytes=None, env=None):
         input=input_bytes,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        env=_git_env(env),
+        env=_git_env(credential_env),
     )
     if result.returncode:
+        if git_auth is not None:
+            raise HandoffError("github_https_authentication_failed")
         message = result.stderr.decode("utf-8", "replace").strip()
         raise HandoffError(f"sanitized git command failed: {message}")
     return result.stdout
@@ -525,7 +594,7 @@ def _snapshot_digest(entries):
     return digest.hexdigest()
 
 
-def _remote_state(repo, remote, branch, destination=None):
+def _remote_state(repo, remote, branch, destination=None, git_auth=None):
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", remote):
         raise HandoffError("remote name is invalid")
     _validate_path_text(branch)
@@ -542,6 +611,13 @@ def _remote_state(repo, remote, branch, destination=None):
         or re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://[^/]*@", url)
     ):
         raise HandoffError("remote URL is invalid")
+    if github_https_remote(url) != (git_auth is not None):
+        reason = (
+            "github_credential_unavailable"
+            if git_auth is None
+            else "github credential supplied for a non-GitHub remote"
+        )
+        raise HandoffError(reason)
     output = _git(
         repo,
         [
@@ -551,6 +627,7 @@ def _remote_state(repo, remote, branch, destination=None):
             destination or remote,
             f"refs/heads/{branch}",
         ],
+        git_auth=git_auth,
     )
     records = [record for record in output.splitlines() if record]
     if len(records) != 1:
@@ -675,6 +752,7 @@ def preview_handoff(
     expected_remote_head,
     remote_destination=None,
     provider_scan_base=None,
+    git_auth=None,
 ):
     """Create a bound preview, refusing unsafe content and any expected-state drift."""
     root = Path(
@@ -690,7 +768,7 @@ def preview_handoff(
     if branch != expected_branch:
         raise HandoffError("branch drifted from the expected branch")
     remote_url, remote_head = _remote_state(
-        root, remote, remote_branch, remote_destination
+        root, remote, remote_branch, remote_destination, git_auth
     )
     if remote_head != expected_remote_head:
         raise HandoffError("remote branch drifted from the expected commit")
@@ -799,7 +877,7 @@ def preview_handoff(
     )
 
 
-def revalidate_handoff(preview, policy):
+def revalidate_handoff(preview, policy, git_auth=None):
     """Recompute every Git/index/filesystem input and require byte-for-byte equality."""
     if policy.digest != preview.policy_digest:
         raise HandoffError("role-boundary policy drifted")
@@ -814,6 +892,7 @@ def revalidate_handoff(preview, policy):
         expected_remote_head=preview.remote_head,
         remote_destination=preview.remote_destination,
         provider_scan_base=preview.provider_scan_base,
+        git_auth=git_auth,
     )
     if current != preview:
         raise HandoffError("handoff snapshot drifted after preview")
@@ -830,9 +909,10 @@ def build_handoff_commit(
     author_name="Nysa Failed Attempt Handoff",
     author_email="handoff@nysa.invalid",
     subject="Preserve failed attempt for trusted handoff",
+    git_auth=None,
 ):
     """Revalidate and prepare an unreferenced commit through a temporary index."""
-    revalidate_handoff(preview, policy)
+    revalidate_handoff(preview, policy, git_auth)
     if not HEX64_RE.fullmatch(revision_hash):
         raise HandoffError("revision hash must be a lowercase SHA-256 digest")
     if (
@@ -927,7 +1007,7 @@ def build_handoff_commit(
         )
         tree = _git(repo, ["write-tree"], env=commit_env).decode().strip()
         # Seal only after a final check of paths omitted from the fixed tree, too.
-        revalidate_handoff(preview, policy)
+        revalidate_handoff(preview, policy, git_auth)
         message = (
             f"{subject}\n\n"
             f"Failed-Attempt-Snapshot: {preview.snapshot_digest}\n"
