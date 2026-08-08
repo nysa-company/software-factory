@@ -3656,6 +3656,50 @@ setup_role_exit_fixture() {
   git -C "$ROLE_EXIT_WORKTREE" push -q -u origin "ticket/$ticket"
 }
 
+install_ticket_mode_hooks() {
+  local ticket="$1" shape="$2" hook target
+  hook="$(git -C "$ROLE_EXIT_WORKTREE" rev-parse --git-path hooks/pre-commit)"
+  mkdir -p "$(dirname "$hook")"
+  {
+    printf '%s\n' '#!/usr/bin/env bash' 'set -eu'
+    printf 'printf "Provider note: committed by mock\\n" >> %q\n' \
+      "$ROLE_EXIT_WORKTREE/factory/tickets/$ticket.md"
+    printf 'git -C %q add %q\n' "$ROLE_EXIT_WORKTREE" \
+      "factory/tickets/$ticket.md"
+    if [[ "$shape" == "index-executable" ]]; then
+      printf 'git -C %q update-index --chmod=+x -- %q\n' \
+        "$ROLE_EXIT_WORKTREE" "factory/tickets/$ticket.md"
+    fi
+  } >"$hook"
+  chmod +x "$hook"
+  hook="$(git -C "$ROLE_EXIT_WORKTREE" rev-parse --git-path hooks/post-commit)"
+  target="$(git -C "$ROLE_EXIT_WORKTREE" rev-parse --git-path "provider-ticket-$ticket")"
+  {
+    printf '%s\n' '#!/usr/bin/env bash' 'set -eu'
+    case "$shape" in
+      0600|0664|0755|index-executable)
+        [[ "$shape" != "index-executable" ]] || shape=0644
+        printf 'chmod %s %q\n' "$shape" \
+          "$ROLE_EXIT_WORKTREE/factory/tickets/$ticket.md"
+        ;;
+      hardlink)
+        printf 'cp %q %q\nrm %q\nln %q %q\n' \
+          "$ROLE_EXIT_WORKTREE/factory/tickets/$ticket.md" "$target" \
+          "$ROLE_EXIT_WORKTREE/factory/tickets/$ticket.md" "$target" \
+          "$ROLE_EXIT_WORKTREE/factory/tickets/$ticket.md"
+        ;;
+      symlink)
+        printf 'cp %q %q\nrm %q\nln -s %q %q\n' \
+          "$ROLE_EXIT_WORKTREE/factory/tickets/$ticket.md" "$target" \
+          "$ROLE_EXIT_WORKTREE/factory/tickets/$ticket.md" "$target" \
+          "$ROLE_EXIT_WORKTREE/factory/tickets/$ticket.md"
+        ;;
+      *) fail "invalid ticket-mode hook shape: $shape" ;;
+    esac
+  } >"$hook"
+  chmod +x "$hook"
+}
+
 if [[ "$SUBSET" == "role-exit-git" ]]; then
 setup_role_exit_fixture T-606
 git -C "$ROLE_EXIT_ROOT" checkout -q --detach HEAD
@@ -3726,6 +3770,84 @@ if [[ "$ROLE_NO_COMMIT" -eq 11 && "$ROLE_COMMIT" -eq 0 &&
 else
   fail "role exit requires a clean commit and pushes it non-force" \
     "no-commit=$ROLE_NO_COMMIT commit=$ROLE_COMMIT"
+fi
+
+setup_role_exit_fixture T-655
+install_ticket_mode_hooks T-655 0600
+ROLE_MODE_STATUS=0
+mkdir -m 700 "$TMP/role-ticket-model-state"
+MOCK_COMMIT_WORKDIR=1 FACTORY_ROOT="$ROLE_EXIT_ROOT" \
+  FACTORY_GLOBAL_ENV="$TMP/no-global.env" FACTORY_TEST_MODE=1 \
+  FACTORY_CERTIFIED_PRODUCT_ORIGIN="$ROLE_EXIT_REMOTE" \
+  FACTORY_TEST_ENFORCE_ROLE_EXIT=1 FACTORY_ADAPTER_OVERRIDE=mock \
+  "$RUN_AGENT" --role planner --ticket T-655 --workdir "$ROLE_EXIT_WORKTREE" -- \
+    "normalize ticket mode" >"$TMP/role-ticket-mode.out" 2>&1 ||
+  ROLE_MODE_STATUS=$?
+if [[ "$ROLE_MODE_STATUS" -eq 0 &&
+      "$(python3 -c 'import os,stat,sys; print(oct(stat.S_IMODE(os.stat(sys.argv[1]).st_mode)))' \
+        "$ROLE_EXIT_WORKTREE/factory/tickets/T-655.md")" == "0o644" ]] &&
+   [[ "$(git -C "$ROLE_EXIT_WORKTREE" hash-object \
+        factory/tickets/T-655.md)" == \
+      "$(git -C "$ROLE_EXIT_WORKTREE" rev-parse \
+        HEAD:factory/tickets/T-655.md)" ]] &&
+   python3 "$ROOT/scripts/model-manager.py" ticket-status \
+     --state-root "$TMP/role-ticket-model-state" --project test \
+     --ticket T-655 \
+     --ticket-file "$ROLE_EXIT_WORKTREE/factory/tickets/T-655.md" >/dev/null &&
+   git --git-dir="$ROLE_EXIT_REMOTE" show \
+     refs/heads/ticket/T-655:factory/tickets/T-655.md |
+     grep -Fxq 'Provider note: committed by mock'; then
+  pass "role exit normalizes a provider-authored tracked ticket to 0644"
+else
+  fail "role exit normalizes a provider-authored tracked ticket to 0644" \
+    "status=$ROLE_MODE_STATUS"
+fi
+
+for mode_case in 0664 0755 hardlink symlink index-executable; do
+  case "$mode_case" in
+    0664) mode_ticket=T-656 ;;
+    0755) mode_ticket=T-657 ;;
+    hardlink) mode_ticket=T-658 ;;
+    symlink) mode_ticket=T-659 ;;
+    index-executable) mode_ticket=T-660 ;;
+  esac
+  setup_role_exit_fixture "$mode_ticket"
+  MODE_REMOTE_BEFORE="$(git --git-dir="$ROLE_EXIT_REMOTE" \
+    rev-parse "refs/heads/ticket/$mode_ticket")"
+  install_ticket_mode_hooks "$mode_ticket" "$mode_case"
+  ROLE_MODE_STATUS=0
+  MOCK_COMMIT_WORKDIR=1 FACTORY_ROOT="$ROLE_EXIT_ROOT" \
+    FACTORY_GLOBAL_ENV="$TMP/no-global.env" FACTORY_TEST_MODE=1 \
+    FACTORY_CERTIFIED_PRODUCT_ORIGIN="$ROLE_EXIT_REMOTE" \
+    FACTORY_TEST_ENFORCE_ROLE_EXIT=1 FACTORY_ADAPTER_OVERRIDE=mock \
+    "$RUN_AGENT" --role planner --ticket "$mode_ticket" \
+      --workdir "$ROLE_EXIT_WORKTREE" -- "unsafe ticket mode" \
+      >"$TMP/role-ticket-mode-$mode_case.out" 2>&1 || ROLE_MODE_STATUS=$?
+  MODE_SHAPE_VALID=1
+  if [[ "$mode_case" == "index-executable" ]] &&
+     { [[ "$(git -C "$ROLE_EXIT_WORKTREE" ls-tree HEAD -- \
+          "factory/tickets/$mode_ticket.md" | awk 'NR == 1 { print $1 }')" != \
+          "100755" ]] ||
+       [[ "$(python3 -c 'import os,stat,sys; print(oct(stat.S_IMODE(os.stat(sys.argv[1]).st_mode)))' \
+          "$ROLE_EXIT_WORKTREE/factory/tickets/$mode_ticket.md")" != "0o644" ]]; }; then
+    MODE_SHAPE_VALID=0
+  fi
+  if [[ "$ROLE_MODE_STATUS" -eq 11 &&
+        "$MODE_SHAPE_VALID" -eq 1 &&
+        "$(git --git-dir="$ROLE_EXIT_REMOTE" \
+          rev-parse "refs/heads/ticket/$mode_ticket")" == "$MODE_REMOTE_BEFORE" ]] &&
+     grep -q 'role_exit_unsafe_ticket_mode' \
+       "$TMP/role-ticket-mode-$mode_case.out"; then
+    pass "role exit refuses unsafe tracked ticket shape $mode_case"
+  else
+    fail "role exit refuses unsafe tracked ticket shape $mode_case" \
+      "status=$ROLE_MODE_STATUS"
+  fi
+done
+if grep -qF 'before.st_uid != os.geteuid()' "$ROOT/scripts/run-agent.sh"; then
+  pass "role exit retains foreign-owner ticket refusal"
+else
+  fail "role exit retains foreign-owner ticket refusal"
 fi
 
 setup_role_exit_fixture T-654 builder

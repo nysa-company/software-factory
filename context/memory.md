@@ -4478,3 +4478,14 @@ released before the claim is removed, so superseded tickets cannot re-enter
 release, contract-block, or targeted repair loops. An active role must drain,
 and qualification continues to require Done rather than treating cancellation
 as lane success.
+
+## 2026-08-08 — Decision 332: Successful role exit restores the tracked ticket mode
+
+Category: Reliability
+
+Before publication, a successful role reconciles its selected ticket's
+physical `0600` mode to the committed Git `100644` mode. Only an owner-owned,
+single-link regular file is eligible; symlink, hardlink, executable,
+foreign-owned, group/world-writable, or non-`100644` shapes fail before push.
+The ordinary clean-worktree, content, and protected-evidence checks remain
+authoritative after the metadata repair.

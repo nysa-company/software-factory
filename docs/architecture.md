@@ -1018,6 +1018,12 @@ failed charge was exported exactly once with no completed-role evidence, and
 every terminal field matches the typed post-GO failure. Test-author's separate
 operator-authorized protected rewrite flow remains the sole ancestry-rewrite
 exception; the controller never force-pushes either path.
+Before those publication checks, the wrapper reconciles the selected ticket's
+physical mode with its committed `100644` mode. It changes only an owner-owned,
+single-link regular file from `0600` to `0644`; symlinks, hardlinks,
+executables, foreign ownership, group/world-writable modes, or a non-`100644`
+Git entry fail the role before push. Existing content and protected-evidence
+checks still run afterward, so mode repair cannot bless dirty ticket bytes.
 The same quarantine boundary applies when a clean Planner, Spec-linter,
 Builder, or Narrator commit changes protected ticket evidence. The wrapper
 preserves the rejected head under the failed-role ref and restores the exact
