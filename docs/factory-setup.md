@@ -161,7 +161,15 @@ until expiry.
   manifest, output, or progress journal stops preparation before a paid role.
   The preparer also fails before admission when the chosen root is too long for Cursor's
   isolated attempt scratch. `--upgrade` is limited to a fresh isolated
-  qualification; a takeover binds one frozen candidate.
+  qualification; a takeover binds one frozen candidate. A successor upgrade
+  also requires an authenticated source-rooted passport for every selected
+  ticket before it changes operator state, initializes Linear, seals the
+  release, or replaces activation. If any selected ticket is candidate-native
+  or has no source passport, has malformed migration history, or carries
+  pre-activation charge/completion evidence from the candidate or evidence from
+  a foreign release, use a fresh ordinary qualification instead of retrying or
+  rewriting its history. An already-active candidate accepts its own exact
+  lineage evidence on an idempotent restart.
   If a failed isolated predecessor stopped after issuing Planner receipts but
   before preflight, commit and protect the successor manifest, candidate pin,
   and exact `preprovider-branch-resets.json`; prepare that unchanged successor

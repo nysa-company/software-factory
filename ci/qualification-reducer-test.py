@@ -604,6 +604,18 @@ class QualificationReducerTest(unittest.TestCase):
         self.assertEqual(report["status"], "green")
         self.assertEqual(report["qualification_charge_micro_usd"], 38_000_000)
 
+        candidate_native = copy.deepcopy(evidence)
+        candidate_passport = candidate_native[1][ticket]
+        candidate_passport["factory_release_history"] = [{
+            "contract_version": "1.8.0",
+            "factory_sha": manifest["factory_sha"],
+        }]
+        candidate_passport["migration_history"] = []
+        with self.assertRaisesRegex(
+            REDUCER.QualificationError, f"{ticket} passport is not terminal",
+        ):
+            REDUCER.verify(*candidate_native)
+
         passports[ticket]["migration_history"][1]["from_factory_sha"] = "d" * 40
         with self.assertRaisesRegex(
             REDUCER.QualificationError, "successor migration is missing"

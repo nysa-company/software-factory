@@ -737,6 +737,17 @@ qualification, the same preparer upgrades that root only while reconciliation an
 are drained. It seals the successor, verifies unchanged provider policy,
 atomically advances the activation record, and preserves the controller
 directory, passport key, passports, claims, and cumulative provider ledger.
+Before that upgrade publishes any successor state, every selected ticket must
+already have an authenticated passport whose release history is rooted at the
+successor manifest's source Factory. A missing, malformed, foreign, mixed, or
+candidate-native passport refuses the upgrade and instructs the operator to
+start a fresh ordinary qualification; neither the controller nor reducer may
+infer source history from work performed after the candidate starts. The
+passport's complete migration chain and retained role accounting must agree
+with that authenticated release history. Before activation, candidate or
+foreign charge, completion, and correction evidence is not source work and
+refuses the upgrade; an already-active candidate may validate its own exact
+lineage evidence on an idempotent restart.
 If the defect instead requires a fresh successor root after an unconsumed
 Planner receipt but before any passport or provider run, the predecessor cell
 is handed off rather than recreated. Both lane activations, owner authorities,

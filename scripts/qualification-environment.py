@@ -1668,6 +1668,258 @@ def takeover_source(
     }
 
 
+def validate_successor_upgrade_cohort(
+    factory: Path, controller: Path, project: str, active_factory_sha: str,
+    manifest: dict[str, Any],
+) -> None:
+    """Require every in-place successor target to descend from its source."""
+    if manifest.get("mode") != "successor":
+        return
+    ticket = "selected cohort"
+    try:
+        passport_spec = importlib.util.spec_from_file_location(
+            "qualification_upgrade_passport", factory / "scripts/ticket-passport.py"
+        )
+        if not passport_spec or not passport_spec.loader:
+            raise EnvironmentError("successor passport verifier is unavailable")
+        passport = importlib.util.module_from_spec(passport_spec)
+        passport_spec.loader.exec_module(passport)
+        passports = safe_directory(controller / "passports")
+        secret = passport.read_regular(controller / "passport.key", 0o600, 32)
+        if len(secret) != 32:
+            raise EnvironmentError("successor passport key is invalid")
+        source = manifest["source_factory_sha"]
+        for ticket in manifest["tickets"]:
+            value, _ = passport.load_passport(passports / f"{ticket}.json", secret)
+            valid_sha = lambda item: (  # noqa: E731
+                isinstance(item, str) and SHA.fullmatch(item) is not None
+            )
+            valid_digest = lambda item: (  # noqa: E731
+                isinstance(item, str)
+                and passport.DIGEST.fullmatch(item) is not None
+            )
+            history = value.get("factory_release_history")
+            migrations = value.get("migration_history")
+            releases = [
+                item.get("factory_sha")
+                for item in history or []
+                if isinstance(item, dict)
+                and set(item) == {"contract_version", "factory_sha"}
+                and item.get("contract_version") == "1.8.0"
+                and valid_sha(item.get("factory_sha"))
+            ]
+            charges = value.get("charge_records")
+            completed = value.get("completed_role_evidence")
+            charge_keys = {
+                "accounting_state", "charge_micro_usd", "contract_version",
+                "factory_sha", "head_before", "manifest_sha256", "role",
+                "run_id", "transition_receipt_sha256",
+            }
+            completed_keys = {
+                "contract_version", "factory_sha", "head_before",
+                "manifest_sha256", "output_sha256", "role", "run_id",
+                "transition_receipt_sha256",
+            }
+            candidate = manifest["factory_sha"]
+            charge_ids = {
+                item.get("run_id") for item in charges or []
+                if isinstance(item, dict)
+                and isinstance(item.get("run_id"), str)
+            }
+            completed_ids = {
+                item.get("run_id") for item in completed or []
+                if isinstance(item, dict)
+                and isinstance(item.get("run_id"), str)
+            }
+            core_valid = (
+                value.get("schema") == "nysa.software-factory.ticket-passport/v1"
+                and value.get("contract_version") == "1.8.0"
+                and value.get("branch") == f"ticket/{ticket}"
+                and valid_sha(value.get("head_sha"))
+                and valid_sha(value.get("head_tree"))
+                and valid_sha(value.get("ticket_blob"))
+                and valid_digest(value.get("product_origin_sha256"))
+                and valid_sha(value.get("protected_base_sha"))
+                and valid_digest(value.get("route_plan_sha256"))
+                and valid_digest(value.get("transition_receipt_sha256"))
+                and isinstance(value.get("nonce"), str)
+                and re.fullmatch(r"[0-9a-f]{32}", value["nonce"])
+                and value.get("current_state") in {
+                    "Ready", "Planning", "Building", "Review",
+                    "Awaiting Approval", "Approved", "Blocked-Escalated",
+                }
+                and isinstance(value.get("current_stage"), str)
+                and bool(value["current_stage"])
+                and value.get("publication_state") in {
+                    "none", "validating", "ready", "merge-pending",
+                    "merged", "repair",
+                }
+                and isinstance(value.get("base_history"), list)
+                and value["base_history"]
+                and all(
+                    valid_sha(item)
+                    for item in value["base_history"]
+                )
+                and len(value["base_history"]) == len(set(value["base_history"]))
+                and value["protected_base_sha"] in value["base_history"]
+                and (
+                    (
+                        value.get("parent_digest"),
+                        value.get("parent_file_sha256"),
+                    ) == (None, None)
+                    or (
+                        valid_digest(value.get("parent_digest"))
+                        and valid_digest(value.get("parent_file_sha256"))
+                    )
+                )
+            )
+            lineage_valid = (
+                isinstance(history, list)
+                and releases
+                and len(releases) == len(history) == len(set(releases))
+                and releases[-1] == value.get("factory_sha")
+                and source in releases
+                and value.get("factory_sha") in {source, active_factory_sha}
+                and isinstance(migrations, list)
+                and all(passport.valid_v2_migration(item) for item in migrations)
+                and (
+                    not migrations and len(releases) == 1
+                    or bool(migrations)
+                    and migrations[0]["from_factory_sha"] == releases[0]
+                    and migrations[-1]["to_factory_sha"] == releases[-1]
+                    and all(
+                        prior["to_factory_sha"] == following["from_factory_sha"]
+                        and prior["to_head_sha"] == following["from_head_sha"]
+                        and prior["to_protected_base_sha"]
+                        == following["from_protected_base_sha"]
+                        and prior["to_route_plan_sha256"]
+                        == following["from_route_plan_sha256"]
+                        for prior, following in zip(migrations, migrations[1:])
+                    )
+                    and [
+                        (item["from_factory_sha"], item["to_factory_sha"])
+                        for item in migrations
+                        if item["from_factory_sha"] != item["to_factory_sha"]
+                    ] == list(zip(releases, releases[1:]))
+                    and migrations[-1]["to_head_sha"] == value.get("head_sha")
+                    and migrations[-1]["to_protected_base_sha"]
+                    == value.get("protected_base_sha")
+                    and migrations[-1]["to_route_plan_sha256"]
+                    == value.get("route_plan_sha256")
+                    and migrations[-1]["from_passport_sha256"]
+                    == value.get("parent_digest")
+                    and migrations[-1]["from_passport_file_sha256"]
+                    == value.get("parent_file_sha256")
+                )
+                and successor_release_lineage(
+                    history, migrations, source,
+                    value.get("factory_sha", ""), passport.valid_v2_migration,
+                )
+            )
+            evidence_valid = (
+                isinstance(charges, list)
+                and isinstance(completed, list)
+                and len(charge_ids) == len(charges)
+                and len(completed_ids) == len(completed)
+                and all(
+                    isinstance(item, dict)
+                    and set(item) == charge_keys
+                    and item.get("accounting_state") in passport.TERMINAL_ACCOUNTING
+                    and isinstance(item.get("charge_micro_usd"), int)
+                    and not isinstance(item["charge_micro_usd"], bool)
+                    and item["charge_micro_usd"] >= 0
+                    and item.get("contract_version") == "1.8.0"
+                    and item.get("factory_sha") in releases
+                    and (
+                        active_factory_sha == candidate
+                        or item.get("factory_sha") != candidate
+                    )
+                    and valid_sha(item.get("head_before"))
+                    and valid_digest(item.get("manifest_sha256"))
+                    and item.get("role") in passport.RECOVERABLE_ROLES
+                    and isinstance(item.get("run_id"), str)
+                    and passport.RUN_ID.fullmatch(item["run_id"])
+                    and valid_digest(item.get("transition_receipt_sha256"))
+                    for item in charges
+                )
+                and all(
+                    isinstance(item, dict)
+                    and set(item) == completed_keys
+                    and item.get("contract_version") == "1.8.0"
+                    and item.get("factory_sha") in releases
+                    and (
+                        active_factory_sha == candidate
+                        or item.get("factory_sha") != candidate
+                    )
+                    and valid_sha(item.get("head_before"))
+                    and valid_digest(item.get("manifest_sha256"))
+                    and valid_digest(item.get("output_sha256"))
+                    and item.get("role") in passport.RECOVERABLE_ROLES
+                    and isinstance(item.get("run_id"), str)
+                    and passport.RUN_ID.fullmatch(item["run_id"])
+                    and valid_digest(item.get("transition_receipt_sha256"))
+                    and sum(
+                        charge.get("run_id") == item["run_id"]
+                        and charge.get("accounting_state") == "completed"
+                        and charge.get("factory_sha") == item["factory_sha"]
+                        and charge.get("head_before") == item["head_before"]
+                        and charge.get("manifest_sha256")
+                        == item["manifest_sha256"]
+                        and charge.get("role") == item["role"]
+                        and charge.get("transition_receipt_sha256")
+                        == item["transition_receipt_sha256"]
+                        for charge in charges
+                    ) == 1
+                    for item in completed
+                )
+                and isinstance(value.get("cumulative_charges_micro_usd"), int)
+                and not isinstance(value["cumulative_charges_micro_usd"], bool)
+                and value["cumulative_charges_micro_usd"] >= 0
+                and value.get("cumulative_charges_micro_usd") == sum(
+                    item["charge_micro_usd"] for item in charges
+                )
+            )
+            corrections = value.get("completed_role_corrections", [])
+            try:
+                corrections = passport.validate_completion_corrections(
+                    corrections, completed if isinstance(completed, list) else []
+                )
+            except (AttributeError, ValueError):
+                corrections = None
+            if (
+                value.get("ticket") != ticket
+                or value.get("project") != project
+                or not core_valid
+                or not lineage_valid
+                or not evidence_valid
+                or corrections is None
+                or any(
+                    item.get("failed_factory_sha") not in releases
+                    or item.get("recovery_factory_sha") not in releases
+                    or (
+                        active_factory_sha != candidate
+                        and candidate in {
+                            item.get("failed_factory_sha"),
+                            item.get("recovery_factory_sha"),
+                        }
+                    )
+                    for item in corrections
+                )
+            ):
+                raise EnvironmentError("successor passport is not source-bound")
+    except (
+        AttributeError, FileNotFoundError, KeyError, OSError, TypeError, ValueError,
+    ) as error:
+        if isinstance(error, EnvironmentError) and str(error).startswith(
+            "successor qualification requires"
+        ):
+            raise
+        raise EnvironmentError(
+            f"{ticket}: successor qualification requires every selected ticket "
+            "to be bound to its source Factory; use a fresh ordinary qualification"
+        ) from error
+
+
 def claim_for_handoff(
     controller: Path, entry: dict[str, Any], authorization: str,
 ) -> dict[str, Any]:
@@ -2549,6 +2801,9 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
         or runtime_ledger_path != authority / "operator/runtime-ledger.csv"
     ):
         raise EnvironmentError("durable qualification authority path changed")
+    validate_successor_upgrade_cohort(
+        factory, controller, args.project, active["kit_sha"], manifest,
+    )
     validate_operator_map(read(operator_map_path))
     identity = authority_identity(
         args.project, sha, tree, product, product_sha, product_tree, origin,

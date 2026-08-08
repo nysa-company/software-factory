@@ -51,6 +51,11 @@ everything the Factory actually enforces lives here.
   blob in the sealed control checkout to equal protected `origin/main`.
   Qualification-only metadata can therefore never validate one contract and
   dispatch another.
+- An in-place successor upgrade requires every selected authenticated passport
+  to descend from the manifest's source Factory before operator-state resume,
+  Linear initialization, sealing, or activation. Candidate-native, missing,
+  mixed, malformed, or foreign passports require a fresh ordinary lane; later
+  execution never synthesizes source history.
 - Fresh isolated qualification requires one explicit safe canonical Linear map
   seed, copies it into owner-only lane authority, and binds the mutable map and
   runtime ledger in its receipt and activation. Selected-only initialization,
@@ -4495,3 +4500,20 @@ single-link regular file is eligible; symlink, hardlink, executable,
 foreign-owned, group/world-writable, or non-`100644` shapes fail before push.
 The ordinary clean-worktree, content, and protected-evidence checks remain
 authoritative after the metadata repair.
+
+## 2026-08-08 — Decision 333: Successor cohorts are source-bound before upgrade
+
+Category: Trust boundary
+
+An in-place isolated successor may publish only when every selected ticket
+already has an authenticated passport with one exact release lineage rooted at
+the manifest's source Factory. Missing, malformed, foreign, mixed, or
+candidate-native passports fail before operator-state resume, Linear
+initialization, release sealing, activation replacement, claim, lease, role,
+attempt, or spend. The operator must use a fresh ordinary qualification for
+candidate-native work. The complete migration chain and every retained charge,
+completion, and correction must belong to the authenticated historical release
+lineage and never to the not-yet-active candidate. Once that candidate is the
+active Factory, an idempotent restart may validate its own exact lineage
+evidence. Controller and reducer remain strict consumers of source lineage and
+never synthesize it from later execution.
