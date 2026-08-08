@@ -2856,6 +2856,23 @@ class Controller:
         if len(roles) != 1 or len(receipts) != 1:
             return "resume_directives_ambiguous"
         if receipts[0] != receipt:
+            answer_attempts = re.findall(
+                r"^OPERATOR ANSWER(?: RECEIPT)?:", ticket_text, re.M
+            )
+            answers = re.findall(
+                r"^OPERATOR ANSWER: [^\r\n]+$", ticket_text, re.M
+            )
+            answer_receipts = re.findall(
+                r"^OPERATOR ANSWER RECEIPT: ([0-9a-f]{64})$",
+                ticket_text,
+                re.M,
+            )
+            if (
+                len(answer_attempts) == 2
+                and len(answers) == 1
+                and answer_receipts == [receipt]
+            ):
+                return "waiting"
             return "resume_receipt_mismatch"
         return "ready"
 

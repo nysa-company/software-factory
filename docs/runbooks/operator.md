@@ -641,18 +641,30 @@ These run in your interactive session — never inside the loop. The factory's o
 - Assign an issue to a different initiative by changing its Linear Project. The next successful pull updates the ignored operator overlay; trusted materialization updates `Initiative:` on the ticket branch. Removing all Project membership clears the effective initiative and makes preflight ineligible until the issue is assigned again.
 - Prioritize by setting priority and moving Backlog → Ready. Wait for sync health to advance before dispatching.
 - Contract 1.2 stops in Review. Under contract 1.3, wait for trusted bundle attestation to create Awaiting Approval, then make the one business decision by moving it to Approved in Linear. Do not click a separate GitHub approval or bypass protection; the trusted approval attestation requests auto-merge. Done appears only after the protected closeout commit merges.
-- Resume an escalated contract blocker in two pushed commits when a substantive
-  ruling is needed. First record and push only the ruling or requested
-  `Protected-Test-Conflicts` context, leave Linear blocked, and wait for
-  `contract_block_passport_migrated`. Then make and push a ticket-only commit
+- Resume an escalated contract blocker in two pushed commits when an operator
+  answer is needed. First append one ticket-local
+  `OPERATOR ANSWER: <single-line-answer>` (at most 4096 UTF-8 bytes) and
+  `OPERATOR ANSWER RECEIPT: <current-blocked-receipt-sha256>` pair, or replace
+  the one prior pair for a later blocker. The answer is bounded non-contract
+  context for the named repair role; it does not amend the frozen contract or
+  authorize any other ticket field. That same commit may append one validated
+  `Protected-Test-Conflicts` entry and, when needed, only its exact tracked test
+  path already covered by protected `PROJECT.env` `TEST_PATHS` to
+  `Fixture-Seams`. The complete ticket must pass readiness. Change no other
+  ticket bytes or path. Push it, leave
+  Linear blocked, and wait for `contract_block_passport_migrated` when the
+  controller records that event. Then make and push a ticket-only commit
   containing exactly `OPERATOR RESUME: <role>` and
   `OPERATOR RESUME RECEIPT: <current-blocked-receipt-sha256>`, replacing the one
-  prior pair when present and changing nothing else. Do not combine the ruling
-  and receipt pair in one commit, and do not leave the receipt commit local.
+  prior pair when present and changing nothing else. Do not combine the answer
+  and resume pairs in one commit, and do not leave the resume commit local.
+  On a later blocker, the old resume pair remains non-authoritative while only
+  the new answer pair is present; the controller classifies that interval as
+  waiting and preserves the claim, passport, role evidence, and accounting.
   If both commits are pushed before that migration event, recovery accepts only
-  one direct non-merge context commit that adds one parser-valid
-  `Protected-Test-Conflicts` entry to the selected ticket and changes no other
-  path; every broader or longer chain stops as `resume_parent_not_migrated`.
+  that one direct non-merge, receipt-bound context commit; every broader or
+  longer chain stops as `resume_parent_not_migrated`. `factory/rulings.md`
+  remains outside this exception.
   Finally move Linear from Blocked-Escalated to the ticket's `Resume-State:`.
   A missing, stale, mismatched, partial, unpushed, over-full, or otherwise
   illegal decision is rejected; `doctor --json` reports it under

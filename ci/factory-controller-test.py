@@ -144,6 +144,27 @@ class FactoryControllerTest(unittest.TestCase):
             ["T-110", "T-110", "T-111", "T-112"],
         )
 
+    def test_operator_answer_without_resume_stays_waiting_during_sweep(self) -> None:
+        receipt = "c" * 64
+        ticket = (
+            "# T-110\n\nState: Blocked-Escalated\n"
+            "OPERATOR ANSWER: Preserve the isolated fixture seam.\n"
+            f"OPERATOR ANSWER RECEIPT: {receipt}\n"
+        )
+        self.assertEqual(
+            CONTROL.Controller.contract_resume_directive_status(ticket, receipt),
+            "waiting",
+        )
+        later = (
+            ticket
+            + "OPERATOR RESUME: builder\n"
+            + f"OPERATOR RESUME RECEIPT: {'b' * 64}\n"
+        )
+        self.assertEqual(
+            CONTROL.Controller.contract_resume_directive_status(later, receipt),
+            "waiting",
+        )
+
     def test_remote_cell_head_status_distinguishes_unpushed_from_diverged(self) -> None:
         controller = CONTROL.Controller(self.args)
         claim = {

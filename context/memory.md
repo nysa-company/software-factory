@@ -4308,3 +4308,25 @@ the controller's refusal allowlist. The latest valid refusal or recovery per
 ticket remains visible as a warning across controller upgrades, including
 `resume_parent_not_migrated`; malformed or tampered event evidence still makes
 the check fail closed.
+
+## 2026-08-08 — Decision 321: Operator answers are receipt-bound context
+
+Category: Trust boundary
+
+One direct non-merge ticket commit may carry a bounded single-line operator
+answer paired with the current blocked receipt before the existing byte-exact
+`OPERATOR RESUME` commit. That context commit may also append one validated
+protected-test conflict and only its matching tracked `Fixture-Seams` path.
+New seam ownership must remain under the authenticated protected product's
+`TEST_PATHS`, and the complete ticket must remain ready. The answer is
+non-contract context for the authenticated repair role: it does
+not amend frozen fields, broaden test ownership, authorize another path, or
+re-admit `factory/rulings.md`. A later blocker replaces the one prior answer
+pair with its own receipt; stale, partial, duplicate, broad, or replayed shapes
+remain closed while passport, completed-role, and accounting evidence are
+preserved unchanged. Passport migration does not launder context bytes: resume
+revalidates the unique predecessor-to-context edge even when that context is
+already the authenticated passport head. During later-blocker authoring, a
+current answer beside the prior stale resume pair remains a pure waiting shape;
+it cannot invoke resume or change claim, passport, completed-role, or accounting
+identity before the exact second commit arrives.
