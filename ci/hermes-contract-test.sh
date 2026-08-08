@@ -605,6 +605,9 @@ write(
     blocked_receipt_sha256="e" * 64,
     reason_code="resume_future_contract_guard",
 )
+# Authenticated legacy events outside Doctor's two projections may lack the
+# Factory identity that current relevant events require.
+write("controller_started", "T-109", 0, factory_sha=None)
 write(
     "prior_kit_transition_receipt_observed", "T-114", 6,
     active_factory_sha=factory_sha,
@@ -785,22 +788,22 @@ assert all(
 )
 PY
 
-# Structurally invalid state remains an error even when its digest is valid.
+# A relevant event still requires Factory identity even when its digest is valid.
 INVALID_RESUME_EVENT="$CONTROLLER_STATE/events/6-invalid.json"
-python3 - "$INVALID_RESUME_EVENT" "$KIT_SHA" <<'PY'
+python3 - "$INVALID_RESUME_EVENT" <<'PY'
 import hashlib
 import json
 import os
 from pathlib import Path
 import sys
 
-path, factory_sha = Path(sys.argv[1]), sys.argv[2]
+path = Path(sys.argv[1])
 value = {
     "blocked_receipt_sha256": "f" * 64,
     "event": "contract_resume_refused",
-    "factory_sha": factory_sha,
+    "factory_sha": None,
     "observed_at_epoch_ns": 6,
-    "reason_code": "not-a-resume-reason",
+    "reason_code": "resume_future_contract_guard",
     "schema": "nysa.software-factory.controller-event/v1",
     "ticket": "T-114",
 }
@@ -814,9 +817,12 @@ PY
 INVALID_RESUME_RC=0
 HOME="$TEST_HOME" PATH="$STUB_BIN:$PATH" FACTORY_LINEAR_FRESH_SECONDS=600 \
   FACTORY_CONTROLLER_STATE_DIR="$CONTROLLER_STATE" \
-  bash "$DOCTOR" --json --project relay > "$TMP/doctor-invalid-resume.json" || \
+  bash "$DOCTOR" --json --project relay > "$TMP/doctor-invalid-resume.json" \
+  2> "$TMP/doctor-invalid-resume.err" || \
   INVALID_RESUME_RC=$?
 [[ "$INVALID_RESUME_RC" -eq 1 ]] || fail "doctor accepted invalid resume event state"
+[[ ! -s "$TMP/doctor-invalid-resume.err" ]] || \
+  fail "doctor exposed an interpreter error for invalid resume state"
 python3 - "$TMP/doctor-invalid-resume.json" <<'PY'
 import json
 import sys

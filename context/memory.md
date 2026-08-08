@@ -4791,3 +4791,16 @@ aggregate `ci`, instead of repeating in every Linux group. Measured cost of the
 duplication was about five seconds per group, so this is a topology
 simplification, not a speed win. `ci/test-all.sh` also emits a `RUN:` line
 before each suite so a hung hosted group names the suite in flight.
+
+## 2026-08-08 — Decision 348: Doctor validates identity after relevance
+
+Category: Reliability
+
+Doctor authenticates every controller event's canonical digest, schema, and
+observation time before classification. It then ignores event types outside
+its contract-resume and transition-receipt projections; only relevant events
+must carry the current 40-hex Factory identity, ticket identity, and
+type-specific evidence. This keeps digest or envelope tampering fail-closed
+while allowing authenticated historical operational events with a legacy null
+Factory identity to remain outside those two reports. A null or malformed
+identity on a relevant event remains an error and never becomes an incident.
