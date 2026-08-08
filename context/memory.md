@@ -76,6 +76,10 @@ everything the Factory actually enforces lives here.
   Exact resume directives and reconciler-authored writes do not advance it;
   accepted same-blocker decisions survive overlapping saves, while rejected
   moves stay visible in Linear and typed sync health.
+- Doctor folds the latest contract-resume refusal or recovery per ticket. Every
+  structurally valid `resume_*` reason remains a visible warning without a
+  duplicated allowlist; malformed or tampered controller evidence remains an
+  error and cannot erase valid incident-type distinctions.
 - An active contract repair with no owner success may follow one exact
   authenticated forward passport migration after an operator preflight fix.
   The old signed record is archived, the active record is rebound without
@@ -4294,3 +4298,59 @@ that ordinary journals use the active Factory and successor journals use only
 the active or declared source Factory. Recovery rechecks the same product and
 manifest digests before reusing a committed fallback; production receives no
 qualification authority.
+
+## 2026-08-07 — Decision 320: Doctor preserves typed resume refusal drift
+
+Category: Reliability
+
+Doctor validates the stable `resume_*` reason-code grammar instead of copying
+the controller's refusal allowlist. The latest valid refusal or recovery per
+ticket remains visible as a warning across controller upgrades, including
+`resume_parent_not_migrated`; malformed or tampered event evidence still makes
+the check fail closed.
+
+## 2026-08-08 — Decision 321: Operator answers are receipt-bound context
+
+Category: Trust boundary
+
+One direct non-merge ticket commit may carry a bounded single-line operator
+answer paired with the current blocked receipt before the existing byte-exact
+`OPERATOR RESUME` commit. That context commit may also append one validated
+protected-test conflict and only its matching tracked `Fixture-Seams` path.
+New seam ownership must remain under the authenticated protected product's
+`TEST_PATHS`, and the complete ticket must remain ready. The answer is
+non-contract context for the authenticated repair role: it does
+not amend frozen fields, broaden test ownership, authorize another path, or
+re-admit `factory/rulings.md`. A later blocker replaces the one prior answer
+pair with its own receipt; stale, partial, duplicate, broad, or replayed shapes
+remain closed while passport, completed-role, and accounting evidence are
+preserved unchanged. Passport migration does not launder context bytes: resume
+revalidates the unique predecessor-to-context edge even when that context is
+already the authenticated passport head. During later-blocker authoring, a
+current answer beside the prior stale resume pair remains a pure waiting shape;
+it cannot invoke resume or change claim, passport, completed-role, or accounting
+identity before the exact second commit arrives.
+
+## 2026-08-08 — Decision 322: Operator notification remains channel-neutral
+
+Category: Reliability
+
+The sealed launcher exposes one read-only NDJSON watch over its already
+confined canonical controller event directory. It emits only bounded,
+sanitized approval, escalation, terminal role failure, budget halt, and
+progress-timeout actions. Each opaque cursor binds the exact project state path
+and last authenticated immutable event, making restart idempotent and stream
+loss fail closed. The controller serializes and publishes canonical events
+atomically, retaining monotonic filename order across a clock rollback or
+restart from a filename-only maximum; a live watch inventories history once
+and parses only new files. No Slack, desktop,
+arbitrary command hook, GitHub credential, or provider credential enters this
+boundary, so delivery remains an external operator concern and production and
+qualification retain disjoint state.
+
+The controller also repairs the narrow durable-state/event publication crash
+window at startup. It inventories canonical events once and backfills exact
+missing actions only from current-release claims plus authenticated transition,
+passport, and terminal evidence. Generic and specialized escalation records
+remain one operator action, and pre-GO terminal blocks are visible without
+introducing a second journal.

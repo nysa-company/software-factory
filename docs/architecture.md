@@ -257,6 +257,28 @@ recorded claim status, and target release before reacquiring one lease, then
 archives the repro record. Backlog, canceled, merged, and Done tickets are
 never pause/resume targets. Startup and interrupted-reconciliation recovery
 never turn paused or historical repro records into runnable claims.
+Contract 1.8 also exposes a channel-neutral `watch --json` read boundary over
+the selected project's canonical controller events. It projects only bounded,
+redacted operator actions for contract or lifecycle escalation, approval,
+terminal role failure, budget halt, and progress timeout. Every output retains
+the authenticated source-event digest and an opaque cursor bound to the exact
+project controller path, source filename, and digest. Restart validates that
+anchor and resumes after it; missing, replaced, reordered, broadly writable,
+or digest-invalid evidence exits nonzero. One process inventories historical
+filenames once, then parses only newly published events. The single live
+controller serializes event publication and seeds its next monotonic timestamp
+from the largest filename on restart without parsing event bodies; files are
+fsynced and atomically renamed before becoming visible. The watcher is
+read-only, receives no GitHub or provider credential, and provides no delivery
+hook; Slack, desktop, or other notification channels may consume its NDJSON
+without entering the Factory trust boundary. Production and qualification use
+their already distinct launcher-selected controller state paths.
+At controller startup, actionable durable claims are reconciled against one
+inventory of canonical events. A crash-lost budget, approval, known block,
+pre-provider failure, or terminal role failure is republished once only when
+its current-release transition and, where applicable, HMAC-authenticated
+passport and exact terminal evidence agree. This closes the mutation-to-event
+crash window without a second event journal or per-ticket history scans.
 The product test-immutability gate treats one ticket-only higher numbered
 frozen contract plus its matching PASS marker as a new tests-first epoch. New
 Planner output uses the canonical append-only marker. Historical Planner output
@@ -1584,6 +1606,19 @@ assertions, and snapshots. A conflict is executable only when the operator
 declares exact `<test path> => <literal>` evidence in
 `Protected-Test-Conflicts` and includes that tracked test in `Fixture-Seams`;
 unknown checks and unowned declarations fail before Builder.
+An escalated blocker may carry one direct, ticket-only operator-context commit
+before its byte-exact resume commit. The context commit appends or exactly
+replaces one bounded single-line `OPERATOR ANSWER` paired with the current
+blocked receipt. It may also append one validated protected-test conflict and
+only the matching tracked path in `Fixture-Seams` when that path is inside the
+authenticated protected `PROJECT.env` `TEST_PATHS`; complete ticket readiness
+still applies. The answer is non-contract
+repair context: it cannot change State, kit, route, contract, provider,
+application, test, or CI authority, and it grants no ownership beyond the
+existing receipt-bound repair role. Multiple answers, stale receipts, broader
+paths, merges, longer ancestry, and `factory/rulings.md` changes fail closed.
+Passport migration records the context head but does not bless its diff; resume
+revalidates the exact predecessor-to-context commit in either ordering.
 Under Contract 1.8, Reviewer-owned Test-author work first routes through one
 ticket-only Planner repair that appends a higher frozen-contract epoch. The
 sequencer authenticates that exact commit before Test-author, preserving

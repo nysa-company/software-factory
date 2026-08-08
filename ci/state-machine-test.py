@@ -1550,32 +1550,63 @@ class StateMachineTest(unittest.TestCase):
         blocked_head = run("git", "rev-parse", "HEAD", cwd=self.product)
         ticket.write_text(
             ticket.read_text(encoding="utf-8").rstrip()
+            + "\n\nOPERATOR ANSWER: Preserve the authenticated planner decision.\n"
+            + f"OPERATOR ANSWER RECEIPT: {self.args.receipt}\n",
+            encoding="utf-8",
+        )
+        run("git", "add", str(ticket), cwd=self.product)
+        run(
+            "git", "commit", "-qm", "record receipt-bound planner answer",
+            cwd=self.product,
+        )
+        answer_head = run("git", "rev-parse", "HEAD", cwd=self.product)
+        ticket.write_text(
+            ticket.read_text(encoding="utf-8").rstrip()
             + "\n\nOPERATOR RESUME: planner\n"
             + f"OPERATOR RESUME RECEIPT: {self.args.receipt}\n",
             encoding="utf-8",
         )
         run("git", "add", str(ticket), cwd=self.product)
         run("git", "commit", "-qm", "authorize exact planner resume", cwd=self.product)
-        directive_head = run("git", "rev-parse", "HEAD", cwd=self.product)
+        resume_head = run("git", "rev-parse", "HEAD", cwd=self.product)
 
         secret = b"k" * 32
         (self.state_dir / "passport.key").write_bytes(secret)
         os.chmod(self.state_dir / "passport.key", 0o600)
         passports = self.state_dir / "passports"
         passports.mkdir(mode=0o700)
+        prior_completed = {
+            "contract_version": self.args.contract_version,
+            "factory_sha": old_factory,
+            "head_before": issued["head_sha"],
+            "manifest_sha256": "1" * 64,
+            "output_sha256": "2" * 64,
+            "role": "planner",
+            "run_id": "completed-planner",
+            "transition_receipt_sha256": "3" * 64,
+        }
         body = {
             "branch": "ticket/T-110",
-            "charge_records": [{
-                "accounting_state": "completed",
-                "contract_version": self.args.contract_version,
-                "factory_sha": old_factory,
-                "head_before": issued["head_sha"],
-                "manifest_sha256": hashlib.sha256(manifest.read_bytes()).hexdigest(),
-                "role": "builder",
-                "run_id": "migrated-fix-builder",
-                "transition_receipt_sha256": self.args.receipt,
-            }],
-            "completed_role_evidence": [],
+            "charge_records": [
+                {
+                    **prior_completed,
+                    "accounting_state": "completed",
+                    "charge_micro_usd": 1_000_000,
+                },
+                {
+                    "accounting_state": "completed",
+                    "contract_version": self.args.contract_version,
+                    "factory_sha": old_factory,
+                    "head_before": issued["head_sha"],
+                    "manifest_sha256": hashlib.sha256(
+                        manifest.read_bytes()
+                    ).hexdigest(),
+                    "role": "builder",
+                    "run_id": "migrated-fix-builder",
+                    "transition_receipt_sha256": self.args.receipt,
+                },
+            ],
+            "completed_role_evidence": [prior_completed],
             "contract_version": self.args.contract_version,
             "current_stage": "FIX builder",
             "current_state": "Blocked-Escalated",
@@ -1590,10 +1621,10 @@ class StateMachineTest(unittest.TestCase):
                 },
             ],
             "factory_sha": current_factory,
-            "head_sha": directive_head,
+            "head_sha": answer_head,
             "migration_history": [{
                 "from_head_sha": blocked_head,
-                "to_head_sha": directive_head,
+                "to_head_sha": answer_head,
             }],
             "project": self.args.project,
             "schema": STATE.PASSPORT_SCHEMA,
@@ -1608,6 +1639,8 @@ class StateMachineTest(unittest.TestCase):
             STATE.canonical(passport)
         ).hexdigest()
         STATE.write_atomic(passports / "T-110.json", passport)
+        preserved_charges = json.loads(json.dumps(body["charge_records"]))
+        preserved_roles = json.loads(json.dumps(body["completed_role_evidence"]))
 
         self.args.factory_sha = current_factory
         self.args.action = "resume"
@@ -1642,8 +1675,19 @@ class StateMachineTest(unittest.TestCase):
             result = STATE.resume_transition(self.args)
 
         self.assertEqual(result["status"], "ready")
+        self.assertEqual(result["ticket"], "T-110")
+        self.assertEqual(result["head"], resume_head)
         self.assertEqual(result["role"], "builder")
         self.assertEqual(result["repair_role"], "planner")
+        resumed = ticket.read_text(encoding="utf-8")
+        self.assertIn(
+            "OPERATOR ANSWER: Preserve the authenticated planner decision.",
+            resumed,
+        )
+        self.assertIn("OPERATOR RESUME: planner", resumed)
+        retained, _ = STATE.authenticated_passport(self.args)
+        self.assertEqual(retained["charge_records"], preserved_charges)
+        self.assertEqual(retained["completed_role_evidence"], preserved_roles)
         self.assertEqual(
             STATE.load_repair(self.args, secret)["blocked_receipt"],
             self.args.receipt,
@@ -1683,20 +1727,32 @@ class StateMachineTest(unittest.TestCase):
     def test_operator_resume_accepts_only_one_safe_unmigrated_context_commit(self) -> None:
         self.args.receipt = "b" * 64
         ticket = self.product / "factory/tickets/T-110.md"
+        fixture = self.product / "apps/api/tests/example.test.ts"
+        fixture.parent.mkdir(parents=True)
+        fixture.write_text("export const expected = 'expected-literal';\n")
         ticket.write_text(
             "# T-110\n\nState: Planning\n"
+            "Product-Decisions: frozen\n"
+            "Fixture-Seams: apps/api/tests/example.test.ts\n"
+            "Authentication-Seams: none\n"
             "Protected-Test-Conflicts: none\n",
             encoding="utf-8",
         )
+        project = self.product / "factory/PROJECT.env"
+        project.write_text('TEST_PATHS="apps/api/tests/"\n')
         rulings = self.product / "factory/rulings.md"
         rulings.write_text("# Rulings\n\nT-100: preserve prior ruling.\n")
-        run("git", "add", str(ticket), str(rulings), cwd=self.product)
+        run(
+            "git", "add", str(ticket), str(rulings), str(fixture), str(project),
+            cwd=self.product,
+        )
         run("git", "commit", "-qm", "add operator fields", cwd=self.product)
         base = run("git", "rev-parse", "HEAD", cwd=self.product)
         passport = {
             "branch": "ticket/T-110",
             "factory_sha": self.args.factory_sha,
             "head_sha": base,
+            "protected_base_sha": base,
             "ticket": "T-110",
         }
         entry = "apps/api/tests/example.test.ts => expected-literal"
@@ -1752,6 +1808,13 @@ class StateMachineTest(unittest.TestCase):
             if ruling_change == "rewrite":
                 rulings.write_text("# Rulings\n\nT-110: replace every ruling.\n")
                 run("git", "add", str(rulings), cwd=self.product)
+            elif ruling_change == "append":
+                rulings.write_text(
+                    rulings.read_text(encoding="utf-8")
+                    + "T-110: append an unauthorized ruling.\n",
+                    encoding="utf-8",
+                )
+                run("git", "add", str(rulings), cwd=self.product)
             elif ruling_change == "delete":
                 rulings.unlink()
                 run("git", "add", "-u", str(rulings), cwd=self.product)
@@ -1774,6 +1837,7 @@ class StateMachineTest(unittest.TestCase):
             ("other-control", "factory/other.md", False, False, None),
             ("sibling", "factory/tickets/T-111.md", False, False, None),
             ("protected-field", None, True, False, None),
+            ("rulings-append", None, False, False, "append"),
             ("rulings-rewrite", None, False, False, "rewrite"),
             ("rulings-delete", None, False, False, "delete"),
             ("two-intermediates", None, False, True, None),
@@ -1805,6 +1869,327 @@ class StateMachineTest(unittest.TestCase):
             STATE.operator_resume_role(self.args, passport, "builder")
         self.assertEqual(raised.exception.reason_code, "resume_parent_not_migrated")
         self.assertEqual(raised.exception.evidence["offending_parent"], merge_parent)
+
+    def test_operator_resume_accepts_receipt_bound_answer_context(self) -> None:
+        prior_receipt = "a" * 64
+        self.args.receipt = "b" * 64
+        ticket = self.product / "factory/tickets/T-110.md"
+
+        def commit_resume() -> None:
+            ticket.write_text(
+                ticket.read_text(encoding="utf-8").rstrip()
+                + "\n\nOPERATOR RESUME: builder\n"
+                + f"OPERATOR RESUME RECEIPT: {self.args.receipt}\n",
+                encoding="utf-8",
+            )
+            run("git", "add", str(ticket), cwd=self.product)
+            run("git", "commit", "-qm", "resume after operator answer", cwd=self.product)
+
+        base = run("git", "rev-parse", "HEAD", cwd=self.product)
+        passport = {
+            "branch": "ticket/T-110",
+            "factory_sha": self.args.factory_sha,
+            "head_sha": base,
+            "ticket": "T-110",
+        }
+        ticket.write_text(
+            ticket.read_text(encoding="utf-8").rstrip()
+            + "\n\nOPERATOR ANSWER: Preserve the exact authenticated seam.\n"
+            + f"OPERATOR ANSWER RECEIPT: {self.args.receipt}\n",
+            encoding="utf-8",
+        )
+        run("git", "add", str(ticket), cwd=self.product)
+        run("git", "commit", "-qm", "record receipt-bound answer", cwd=self.product)
+        with self.assertRaisesRegex(STATE.StateError, "requires exactly one"):
+            STATE.operator_resume_role(self.args, passport, "builder")
+        commit_resume()
+        self.assertEqual(
+            STATE.operator_resume_role(self.args, passport, "builder"), "builder"
+        )
+        self.assertEqual(
+            STATE.operator_resume_role(self.args, passport, "builder"), "builder"
+        )
+
+        run("git", "reset", "--hard", base, cwd=self.product)
+        ticket.write_text(
+            ticket.read_text(encoding="utf-8").rstrip()
+            + "\n\nOPERATOR ANSWER: Preserve the prior fixture.\n"
+            + f"OPERATOR ANSWER RECEIPT: {prior_receipt}\n",
+            encoding="utf-8",
+        )
+        run("git", "add", str(ticket), cwd=self.product)
+        run("git", "commit", "-qm", "record prior operator answer", cwd=self.product)
+        prior_answer_head = run("git", "rev-parse", "HEAD", cwd=self.product)
+        passport["head_sha"] = prior_answer_head
+        commit_resume()
+        with self.assertRaises(STATE.ContractResumeError) as raised:
+            STATE.operator_resume_role(self.args, passport, "builder")
+        self.assertEqual(raised.exception.reason_code, "resume_parent_not_migrated")
+        run("git", "reset", "--hard", prior_answer_head, cwd=self.product)
+        ticket.write_text(
+            ticket.read_text(encoding="utf-8")
+            .replace("Preserve the prior fixture.", "Use the current isolated seam.")
+            .replace(prior_receipt, self.args.receipt),
+            encoding="utf-8",
+        )
+        run("git", "add", str(ticket), cwd=self.product)
+        run("git", "commit", "-qm", "replace answer for later blocker", cwd=self.product)
+        context_head = run("git", "rev-parse", "HEAD", cwd=self.product)
+        passport["head_sha"] = context_head
+        passport["migration_history"] = [{
+            "from_head_sha": prior_answer_head,
+            "to_head_sha": context_head,
+        }]
+        commit_resume()
+        self.assertEqual(
+            STATE.operator_resume_role(self.args, passport, "builder"), "builder"
+        )
+
+        run("git", "reset", "--hard", base, cwd=self.product)
+        ticket.write_text(
+            ticket.read_text(encoding="utf-8").rstrip()
+            + "\n\nOPERATOR ANSWER: This must not authorize application drift.\n"
+            + f"OPERATOR ANSWER RECEIPT: {self.args.receipt}\n",
+            encoding="utf-8",
+        )
+        application = self.product / "app.js"
+        application.write_text("unsafe context\n")
+        run("git", "add", str(ticket), str(application), cwd=self.product)
+        run("git", "commit", "-qm", "record unsafe migrated answer", cwd=self.product)
+        unsafe_head = run("git", "rev-parse", "HEAD", cwd=self.product)
+        passport["head_sha"] = unsafe_head
+        passport["migration_history"] = [{
+            "from_head_sha": base,
+            "to_head_sha": unsafe_head,
+        }]
+        commit_resume()
+        with self.assertRaises(STATE.ContractResumeError) as raised:
+            STATE.operator_resume_role(self.args, passport, "builder")
+        self.assertEqual(raised.exception.reason_code, "resume_parent_not_migrated")
+        self.assertEqual(raised.exception.evidence["offending_parent"], unsafe_head)
+
+    def test_operator_resume_accepts_coupled_conflict_fixture_and_answer(self) -> None:
+        self.args.receipt = "b" * 64
+        ticket = self.product / "factory/tickets/T-110.md"
+        fixture = self.product / "apps/api/tests/example.test.ts"
+        fixture.parent.mkdir(parents=True)
+        fixture.write_text("export const expected = 'expected-literal';\n")
+        application = self.product / "apps/api/src/server.ts"
+        application.parent.mkdir(parents=True)
+        application.write_text("export const server = true;\n")
+        workflow = self.product / ".github/workflows/ci.yml"
+        workflow.parent.mkdir(parents=True)
+        workflow.write_text("name: CI\n")
+        factory_control = self.product / "factory/control.sh"
+        factory_control.write_text("#!/bin/sh\n")
+        project = self.product / "factory/PROJECT.env"
+        project.write_text('TEST_PATHS="apps/api/tests/"\n')
+        ticket.write_text(
+            "# T-110\n\nState: Planning\n"
+            "Product-Decisions: frozen\n"
+            "Fixture-Seams: none\n"
+            "Authentication-Seams: none\n"
+            "Protected-Test-Conflicts: none\n",
+            encoding="utf-8",
+        )
+        run(
+            "git", "add", str(ticket), str(fixture), str(application),
+            str(workflow), str(factory_control), str(project), cwd=self.product,
+        )
+        run("git", "commit", "-qm", "seed protected fixture contract", cwd=self.product)
+        base = run("git", "rev-parse", "HEAD", cwd=self.product)
+        passport = {
+            "branch": "ticket/T-110",
+            "factory_sha": self.args.factory_sha,
+            "head_sha": base,
+            "protected_base_sha": base,
+            "ticket": "T-110",
+        }
+        relative = "apps/api/tests/example.test.ts"
+        entry = f"{relative} => expected-literal"
+        ticket.write_text(
+            ticket.read_text(encoding="utf-8")
+            .replace("Fixture-Seams: none", f"Fixture-Seams: {relative}")
+            .replace(
+                "Protected-Test-Conflicts: none",
+                f"Protected-Test-Conflicts: {entry}",
+            ).rstrip()
+            + "\n\nOPERATOR ANSWER: The protected literal is intentional.\n"
+            + f"OPERATOR ANSWER RECEIPT: {self.args.receipt}\n",
+            encoding="utf-8",
+        )
+        run("git", "add", str(ticket), cwd=self.product)
+        run("git", "commit", "-qm", "record coupled operator context", cwd=self.product)
+        context_head = run("git", "rev-parse", "HEAD", cwd=self.product)
+        passport["head_sha"] = context_head
+        passport["migration_history"] = [{
+            "from_head_sha": base,
+            "to_head_sha": context_head,
+        }]
+        ticket.write_text(
+            ticket.read_text(encoding="utf-8").rstrip()
+            + "\n\nOPERATOR RESUME: test-author\n"
+            + f"OPERATOR RESUME RECEIPT: {self.args.receipt}\n",
+            encoding="utf-8",
+        )
+        run("git", "add", str(ticket), cwd=self.product)
+        run("git", "commit", "-qm", "resume protected fixture repair", cwd=self.product)
+        self.assertEqual(
+            STATE.operator_resume_role(self.args, passport, "builder"),
+            "test-author",
+        )
+
+        def commit_context_and_resume(path: str, *, add_fixture: bool) -> str:
+            run("git", "reset", "--hard", base, cwd=self.product)
+            current = ticket.read_text(encoding="utf-8")
+            if add_fixture:
+                current = current.replace(
+                    "Fixture-Seams: none", f"Fixture-Seams: {path}"
+                )
+            ticket.write_text(
+                current.replace(
+                    "Protected-Test-Conflicts: none",
+                    f"Protected-Test-Conflicts: {path} => expected-literal",
+                ),
+                encoding="utf-8",
+            )
+            run("git", "add", str(ticket), cwd=self.product)
+            run("git", "commit", "-qm", "record unsafe operator context", cwd=self.product)
+            parent = run("git", "rev-parse", "HEAD", cwd=self.product)
+            passport["head_sha"] = parent
+            passport["migration_history"] = [{
+                "from_head_sha": base,
+                "to_head_sha": parent,
+            }]
+            ticket.write_text(
+                ticket.read_text(encoding="utf-8").rstrip()
+                + "\n\nOPERATOR RESUME: test-author\n"
+                + f"OPERATOR RESUME RECEIPT: {self.args.receipt}\n",
+                encoding="utf-8",
+            )
+            run("git", "add", str(ticket), cwd=self.product)
+            run("git", "commit", "-qm", "attempt unsafe fixture resume", cwd=self.product)
+            return parent
+
+        parent = commit_context_and_resume(relative, add_fixture=False)
+        with self.assertRaises(STATE.ContractResumeError) as raised:
+            STATE.operator_resume_role(self.args, passport, "builder")
+        self.assertEqual(raised.exception.reason_code, "resume_parent_not_migrated")
+        self.assertEqual(raised.exception.evidence["offending_parent"], parent)
+
+        for unsafe in (
+            "apps/api/src/server.ts",
+            ".github/workflows/ci.yml",
+            "factory/control.sh",
+        ):
+            with self.subTest(unsafe_test_ownership=unsafe):
+                parent = commit_context_and_resume(unsafe, add_fixture=True)
+                with self.assertRaises(STATE.ContractResumeError) as raised:
+                    STATE.operator_resume_role(self.args, passport, "builder")
+                self.assertEqual(
+                    raised.exception.reason_code, "resume_parent_not_migrated"
+                )
+                self.assertEqual(
+                    raised.exception.evidence["offending_parent"], parent
+                )
+
+        run("git", "reset", "--hard", base, cwd=self.product)
+        unsafe = "apps/api/src/server.ts"
+        ticket.write_text(
+            ticket.read_text(encoding="utf-8").replace(
+                "Fixture-Seams: none", f"Fixture-Seams: {unsafe}"
+            ),
+            encoding="utf-8",
+        )
+        run("git", "add", str(ticket), cwd=self.product)
+        run("git", "commit", "-qm", "seed unsafe preowned seam", cwd=self.product)
+        preowned_head = run("git", "rev-parse", "HEAD", cwd=self.product)
+        ticket.write_text(
+            ticket.read_text(encoding="utf-8").replace(
+                "Protected-Test-Conflicts: none",
+                f"Protected-Test-Conflicts: {unsafe} => expected-literal",
+            ),
+            encoding="utf-8",
+        )
+        run("git", "add", str(ticket), cwd=self.product)
+        run("git", "commit", "-qm", "append conflict to unsafe seam", cwd=self.product)
+        context_head = run("git", "rev-parse", "HEAD", cwd=self.product)
+        passport["head_sha"] = context_head
+        passport["migration_history"] = [{
+            "from_head_sha": preowned_head,
+            "to_head_sha": context_head,
+        }]
+        ticket.write_text(
+            ticket.read_text(encoding="utf-8").rstrip()
+            + "\n\nOPERATOR RESUME: test-author\n"
+            + f"OPERATOR RESUME RECEIPT: {self.args.receipt}\n",
+            encoding="utf-8",
+        )
+        run("git", "add", str(ticket), cwd=self.product)
+        run("git", "commit", "-qm", "attempt preowned unsafe resume", cwd=self.product)
+        with self.assertRaises(STATE.ContractResumeError) as raised:
+            STATE.operator_resume_role(self.args, passport, "builder")
+        self.assertEqual(raised.exception.reason_code, "resume_parent_not_migrated")
+        self.assertEqual(
+            raised.exception.evidence["offending_parent"], context_head
+        )
+
+    def test_safe_operator_context_refuses_ambiguous_or_broad_answers(self) -> None:
+        self.args.receipt = "b" * 64
+        before = "# T-110\n\nState: Planning\n"
+        answer = (
+            "\nOPERATOR ANSWER: Keep the bounded decision.\n"
+            f"OPERATOR ANSWER RECEIPT: {self.args.receipt}\n"
+        )
+        self.assertTrue(STATE.safe_operator_context(self.args, before, before + answer))
+
+        prior = (
+            before
+            + "\nOPERATOR ANSWER: Prior blocker decision.\n"
+            + f"OPERATOR ANSWER RECEIPT: {'a' * 64}\n"
+        )
+        replacement = (
+            before
+            + "\nOPERATOR ANSWER: Current blocker decision.\n"
+            + f"OPERATOR ANSWER RECEIPT: {self.args.receipt}\n"
+        )
+        self.assertTrue(STATE.safe_operator_context(self.args, prior, replacement))
+        self.assertFalse(STATE.safe_operator_context(
+            self.args,
+            prior,
+            prior.replace("Prior blocker decision.", "Stale blocker decision."),
+        ))
+
+        invalid = {
+            "wrong-receipt": answer.replace(self.args.receipt, "c" * 64),
+            "partial-answer": "\nOPERATOR ANSWER: Missing receipt.\n",
+            "partial-receipt": f"\nOPERATOR ANSWER RECEIPT: {self.args.receipt}\n",
+            "ambiguous": answer + answer,
+            "malformed-receipt": (
+                "\nOPERATOR ANSWER: Bad receipt.\n"
+                "OPERATOR ANSWER RECEIPT: not-a-receipt\n"
+            ),
+            "oversized": (
+                "\nOPERATOR ANSWER: "
+                + ("x" * (STATE.OPERATOR_ANSWER_MAX_BYTES + 1))
+                + "\n"
+                f"OPERATOR ANSWER RECEIPT: {self.args.receipt}\n"
+            ),
+            "non-printable": answer.replace("bounded", "bounded\t"),
+            "state": answer + "State: Building\n",
+            "kit": answer + f"Kit-SHA: {'c' * 40}\n",
+            "route": answer + "Route-Plan: alternate\n",
+            "contract": answer + "Contract: changed\n",
+            "provider": answer + "Provider: alternate\n",
+            "application": answer + "Application: changed\n",
+            "test": answer + "Tests: skipped\n",
+            "ci": answer + "CI: waived\n",
+        }
+        for label, addition in invalid.items():
+            with self.subTest(label=label):
+                self.assertFalse(
+                    STATE.safe_operator_context(self.args, before, before + addition)
+                )
 
     def test_operator_resume_names_overfull_commit_with_safe_diff(self) -> None:
         self.args.receipt = "b" * 64

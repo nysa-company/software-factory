@@ -308,6 +308,17 @@ ledger.chmod(0o600)
             'PROVIDER_STATE_ROOT="$ACTIVE_PROVIDER_STATE"', launcher_text
         )
         self.assertIn(
+            'CONTROLLER_STATE_DIR="$ACTIVE_CONTROLLER_STATE"', launcher_text
+        )
+        self.assertIn(
+            '--state-dir "$CONTROLLER_STATE_DIR" --project "$PROJECT"',
+            launcher_text,
+        )
+        self.assertIn(
+            'exec /usr/bin/env -i "HOME=$HOME" "PATH=$SAFE_PATH" "TMPDIR=$SAFE_TMPDIR"',
+            launcher_text,
+        )
+        self.assertIn(
             '"FACTORY_CLI_LANE_ROOT=$QUALIFICATION_ROOT"',
             launcher_text,
         )

@@ -39,6 +39,18 @@ SHA = re.compile(r"^[0-9a-f]{40}$")
 DIGEST = re.compile(r"^[0-9a-f]{64}$")
 ROLE = re.compile(r"^(planner|spec-linter|test-author|builder|reviewer|narrator)$")
 CONTRACT_BLOCK_ROLES = frozenset(("planner", "test-author", "builder"))
+OPERATOR_ANSWER_MAX_BYTES = 4096
+OPERATOR_ANSWER = re.compile(r"^OPERATOR ANSWER: ([^\r\n]+)$", re.M)
+OPERATOR_ANSWER_RECEIPT = re.compile(
+    r"^OPERATOR ANSWER RECEIPT: ([0-9a-f]{64})$", re.M
+)
+OPERATOR_ANSWER_LINE = re.compile(
+    r"^OPERATOR ANSWER(?: RECEIPT)?:[^\r\n]*$", re.M
+)
+OPERATOR_CONFLICT_LINE = re.compile(
+    r"^Protected-Test-Conflicts: [^\r\n]+$", re.M
+)
+OPERATOR_FIXTURE_LINE = re.compile(r"^Fixture-Seams: [^\r\n]+$", re.M)
 LOOP_LIMIT = 3
 TARGET_STATE = {
     "planner": "Planning",
@@ -827,6 +839,145 @@ def contract_blocked_receipt(args: argparse.Namespace) -> str:
     return role
 
 
+def safe_operator_context(
+    args: argparse.Namespace, before: str, after: str, protected_head: str = "",
+) -> bool:
+    conflict_pattern = re.compile(
+        r"^Protected-Test-Conflicts: ([^\r\n]+)$", re.M
+    )
+    fixture_pattern = re.compile(r"^Fixture-Seams: ([^\r\n]+)$", re.M)
+
+    def entries(pattern: re.Pattern[str], text: str) -> list[str] | None:
+        fields = pattern.findall(text)
+        if fields == ["none"]:
+            return []
+        if len(fields) != 1:
+            return None
+        values = [item.strip() for item in fields[0].split(",")]
+        return values if all(values) and len(values) == len(set(values)) else None
+
+    expected = before
+    before_conflicts = entries(conflict_pattern, before)
+    after_conflicts = entries(conflict_pattern, after)
+    conflict = ""
+    if before_conflicts != after_conflicts:
+        if (
+            before_conflicts is None
+            or after_conflicts is None
+            or after_conflicts[:-1] != before_conflicts
+            or len(after_conflicts) != len(before_conflicts) + 1
+        ):
+            return False
+        conflict = after_conflicts[-1]
+        expected = conflict_pattern.sub(
+            lambda _match: (
+                f"Protected-Test-Conflicts: {conflict_pattern.findall(after)[0]}"
+            ),
+            expected,
+            count=1,
+        )
+        conflict_path = conflict.partition(" => ")[0]
+        if not SHA.fullmatch(protected_head):
+            return False
+        try:
+            test_paths = safe_test_paths(git(
+                args.workdir, "show", f"{protected_head}:factory/PROJECT.env",
+            ))
+        except StateError:
+            return False
+        if not any(
+            conflict_path == root.rstrip("/")
+            or conflict_path.startswith(root.rstrip("/") + "/")
+            for root in test_paths
+        ):
+            return False
+
+    before_fixtures = entries(fixture_pattern, before)
+    after_fixtures = entries(fixture_pattern, after)
+    fixture_added = False
+    if before_fixtures != after_fixtures:
+        conflict_path = conflict.partition(" => ")[0]
+        if (
+            not conflict
+            or before_fixtures is None
+            or after_fixtures is None
+            or after_fixtures[:-1] != before_fixtures
+            or len(after_fixtures) != len(before_fixtures) + 1
+            or after_fixtures[-1] != conflict_path
+        ):
+            return False
+        expected = fixture_pattern.sub(
+            lambda _match: f"Fixture-Seams: {fixture_pattern.findall(after)[0]}",
+            expected,
+            count=1,
+        )
+        fixture_added = True
+
+    before_answers = OPERATOR_ANSWER.findall(before)
+    before_answer_receipts = OPERATOR_ANSWER_RECEIPT.findall(before)
+    after_answers = OPERATOR_ANSWER.findall(after)
+    after_answer_receipts = OPERATOR_ANSWER_RECEIPT.findall(after)
+    if (
+        len(OPERATOR_ANSWER_LINE.findall(before))
+        != len(before_answers) + len(before_answer_receipts)
+        or len(OPERATOR_ANSWER_LINE.findall(after))
+        != len(after_answers) + len(after_answer_receipts)
+        or len(before_answers) not in {0, 1}
+        or len(before_answer_receipts) != len(before_answers)
+        or len(after_answers) not in {0, 1}
+        or len(after_answer_receipts) != len(after_answers)
+    ):
+        return False
+    answer_changed = (
+        before_answers != after_answers
+        or before_answer_receipts != after_answer_receipts
+    )
+    if after_answers:
+        answer = after_answers[0]
+        if (
+            after_answer_receipts != [args.receipt]
+            or answer != answer.strip()
+            or len(answer.encode("utf-8")) > OPERATOR_ANSWER_MAX_BYTES
+            or not all(character.isprintable() for character in answer)
+        ):
+            return False
+        if answer_changed:
+            if before_answers:
+                expected = OPERATOR_ANSWER.sub(
+                    lambda _match: f"OPERATOR ANSWER: {answer}",
+                    expected,
+                    count=1,
+                )
+                expected = OPERATOR_ANSWER_RECEIPT.sub(
+                    lambda _match: f"OPERATOR ANSWER RECEIPT: {args.receipt}",
+                    expected,
+                    count=1,
+                )
+            else:
+                expected = (
+                    expected.rstrip("\n")
+                    + f"\n\nOPERATOR ANSWER: {answer}\n"
+                    + f"OPERATOR ANSWER RECEIPT: {args.receipt}\n"
+                )
+    elif before_answers:
+        return False
+
+    if after != expected or not (conflict or fixture_added or answer_changed):
+        return False
+    if not conflict:
+        return answer_changed
+
+    readiness = subprocess.run(
+        [
+            sys.executable, "-B",
+            str(Path(__file__).with_name("ticket-readiness.py")),
+            "--ticket", args.ticket, "--workdir", str(args.workdir),
+        ],
+        text=True, capture_output=True, check=False, timeout=120,
+    )
+    return readiness.returncode == 0 and readiness.stdout.strip() == "READINESS PASS"
+
+
 def operator_resume_role(
     args: argparse.Namespace, passport: dict[str, Any], blocked_role: str
 ) -> str:
@@ -841,6 +992,23 @@ def operator_resume_role(
     ):
         raise StateError("contract repair passport is invalid")
     current = git(args.workdir, "show", f"HEAD:{relative}") + "\n"
+    answer_lines = OPERATOR_ANSWER_LINE.findall(current)
+    answers = OPERATOR_ANSWER.findall(current)
+    answer_receipts = OPERATOR_ANSWER_RECEIPT.findall(current)
+    answer_present = bool(answer_lines)
+    if answer_present and (
+        len(answer_lines) != 2
+        or len(answers) != 1
+        or answer_receipts != [args.receipt]
+        or answers[0] != answers[0].strip()
+        or len(answers[0].encode("utf-8")) > OPERATOR_ANSWER_MAX_BYTES
+        or not all(character.isprintable() for character in answers[0])
+    ):
+        raise ContractResumeError(
+            "resume_parent_not_migrated",
+            "contract repair operator answer is not uniquely receipt-bound",
+            offending_parent=git(args.workdir, "rev-parse", "HEAD^"),
+        )
     directives = re.findall(
         r"^OPERATOR RESUME: (planner|spec-linter|test-author|builder)$",
         current, re.M,
@@ -864,7 +1032,8 @@ def operator_resume_role(
     directive = f"OPERATOR RESUME: {repair_role}"
     receipt_directive = f"OPERATOR RESUME RECEIPT: {args.receipt}"
     known_heads = {prior_head}
-    for migration in passport.get("migration_history", []):
+    migrations = passport.get("migration_history", [])
+    for migration in migrations:
         if isinstance(migration, dict):
             known_heads.update(
                 migration.get(name, "")
@@ -919,7 +1088,56 @@ def operator_resume_role(
             ).returncode != 0
         ):
             continue
-        if ancestry[1] not in known_heads:
+        if ancestry[1] in known_heads:
+            parent_ancestry = git(
+                args.workdir, "rev-list", "--parents", "-n", "1", ancestry[1]
+            ).split()
+            before_context = ""
+            after_context = ""
+            context_changed = answer_present
+            migration_edges = []
+            if len(parent_ancestry) == 2 and parent_ancestry[0] == ancestry[1]:
+                before_actual = git(
+                    args.workdir, "show", f"{parent_ancestry[1]}:{relative}"
+                ) + "\n"
+                after_actual = git(
+                    args.workdir, "show", f"{ancestry[1]}:{relative}"
+                ) + "\n"
+                migration_edges = [
+                    migration for migration in migrations
+                    if isinstance(migration, dict)
+                    and migration.get("from_head_sha") == parent_ancestry[1]
+                    and migration.get("to_head_sha") == ancestry[1]
+                ]
+                if migration_edges:
+                    context_changed = context_changed or any(
+                        pattern.findall(before_actual)
+                        != pattern.findall(after_actual)
+                        for pattern in (
+                            OPERATOR_ANSWER_LINE,
+                            OPERATOR_CONFLICT_LINE,
+                            OPERATOR_FIXTURE_LINE,
+                        )
+                    )
+                changed = git(
+                    args.workdir, "diff", "--name-only",
+                    f"{parent_ancestry[1]}..{ancestry[1]}",
+                ).splitlines()
+                if changed == [relative]:
+                    before_context = before_actual
+                    after_context = after_actual
+            if context_changed and (
+                len(migration_edges) != 1
+                or not safe_operator_context(
+                    args,
+                    before_context,
+                    after_context,
+                    passport.get("protected_base_sha", ""),
+                )
+            ):
+                unmigrated_parents.append(ancestry[1])
+                continue
+        else:
             parent_ancestry = git(
                 args.workdir, "rev-list", "--parents", "-n", "1", ancestry[1]
             ).split()
@@ -939,47 +1157,11 @@ def operator_resume_role(
                 git(args.workdir, "show", f"{ancestry[1]}:{relative}") + "\n"
                 if before_context else ""
             )
-            pattern = re.compile(
-                r"^Protected-Test-Conflicts: ([^\r\n]+)$", re.M
-            )
-            before_fields = pattern.findall(before_context)
-            after_fields = pattern.findall(after_context)
-            before_entries = (
-                [] if before_fields == ["none"] else
-                [item.strip() for item in before_fields[0].split(",")]
-                if len(before_fields) == 1 else []
-            )
-            after_entries = (
-                [item.strip() for item in after_fields[0].split(",")]
-                if len(after_fields) == 1 else []
-            )
-            added = (
-                after_entries[-1]
-                if after_entries[:-1] == before_entries
-                and len(after_entries) == len(before_entries) + 1
-                and len(after_entries) == len(set(after_entries))
-                else ""
-            )
-            expected_context = (
-                pattern.sub(
-                    f"Protected-Test-Conflicts: {after_fields[0]}",
-                    before_context,
-                    count=1,
-                ) if added else ""
-            )
-            readiness = subprocess.run(
-                [
-                    sys.executable, "-B",
-                    str(Path(__file__).with_name("ticket-readiness.py")),
-                    "--conflict-entry", added,
-                ],
-                text=True, capture_output=True, check=False, timeout=120,
-            ) if added else None
-            if (
-                after_context != expected_context
-                or readiness is None
-                or readiness.returncode != 0
-                or readiness.stdout.strip() != "CONFLICT DECLARATION PASS"
+            if not safe_operator_context(
+                args,
+                before_context,
+                after_context,
+                passport.get("protected_base_sha", ""),
             ):
                 unmigrated_parents.append(ancestry[1])
                 continue

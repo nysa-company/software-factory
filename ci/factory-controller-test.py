@@ -16,6 +16,7 @@ from pathlib import Path
 import plistlib
 import subprocess
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -110,6 +111,349 @@ class FactoryControllerTest(unittest.TestCase):
         ]
         self.assertEqual(len(matching), 1)
 
+    def test_concurrent_event_publication_is_monotonic_across_restart(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        first_started = threading.Event()
+        release_first = threading.Event()
+        original_replace = CONTROL.os.replace
+        replacements = 0
+
+        def delayed_replace(source, destination):
+            nonlocal replacements
+            if ".controller-event-" in str(source):
+                replacements += 1
+                if replacements == 1:
+                    first_started.set()
+                    self.assertTrue(release_first.wait(2))
+            return original_replace(source, destination)
+
+        first = threading.Thread(
+            target=controller.event, args=("first", "T-110")
+        )
+        second = threading.Thread(
+            target=controller.event, args=("second", "T-111")
+        )
+        with (
+            patch.object(CONTROL.time, "time_ns", return_value=100),
+            patch.object(CONTROL.os, "replace", side_effect=delayed_replace),
+        ):
+            first.start()
+            self.assertTrue(first_started.wait(2))
+            second.start()
+            time.sleep(0.05)
+            self.assertEqual(list(controller.events.glob("*.json")), [])
+            release_first.set()
+            first.join(2)
+            second.join(2)
+        self.assertFalse(first.is_alive() or second.is_alive())
+        records = [
+            CONTROL.read(path) for path in sorted(controller.events.glob("*.json"))
+        ]
+        self.assertEqual([item["event"] for item in records], ["first", "second"])
+        self.assertEqual(
+            [item["observed_at_epoch_ns"] for item in records], [100, 101]
+        )
+
+        restarted = CONTROL.Controller(self.args)
+        with patch.object(CONTROL.time, "time_ns", return_value=1):
+            restarted.event("third", "T-112")
+        records = [
+            CONTROL.read(path) for path in sorted(controller.events.glob("*.json"))
+        ]
+        self.assertEqual(
+            [item["event"] for item in records], ["first", "second", "third"]
+        )
+        self.assertEqual(records[-1]["observed_at_epoch_ns"], 102)
+
+    def operator_transition(
+        self, ticket: str, stage: str, role: str | None = None,
+        consumed: bool = False,
+    ) -> str:
+        value = {
+            "branch": f"ticket/{ticket}",
+            "consumed": consumed,
+            "contract_version": "1.8.0",
+            "factory_sha": self.release.name,
+            "head_sha": "b" * 40,
+            "project": "relay",
+            "role": role,
+            "schema": "nysa.software-factory.transition-receipt/v1",
+            "stage": stage,
+            "ticket": ticket,
+        }
+        value["receipt_sha256"] = hashlib.sha256(CONTROL.canonical({
+            key: item for key, item in value.items()
+            if key not in {"consumed", "receipt_sha256"}
+        }).encode()).hexdigest()
+        CONTROL.write(self.state / f"{ticket}.json", value)
+        return value["receipt_sha256"]
+
+    def operator_passport(
+        self, ticket: str, current_state: str, publication_state: str,
+        transition_receipt_sha256: str = "",
+    ) -> str:
+        key_path = self.state / "passport.key"
+        if not key_path.exists():
+            key_path.write_bytes(b"k" * 32)
+            key_path.chmod(0o600)
+        body = {
+            "branch": f"ticket/{ticket}",
+            "contract_version": "1.8.0",
+            "current_state": current_state,
+            "factory_sha": self.release.name,
+            "project": "relay",
+            "publication_state": publication_state,
+            "schema": "nysa.software-factory.ticket-passport/v1",
+            "ticket": ticket,
+            "transition_receipt_sha256": transition_receipt_sha256,
+        }
+        body["authentication_sha256"] = hmac.new(
+            key_path.read_bytes(), CONTROL.canonical(body).encode(), hashlib.sha256,
+        ).hexdigest()
+        body["passport_sha256"] = hashlib.sha256(
+            CONTROL.canonical(body).encode()
+        ).hexdigest()
+        passports = self.state / "passports"
+        passports.mkdir(mode=0o700, exist_ok=True)
+        CONTROL.write(passports / f"{ticket}.json", body)
+        return body["passport_sha256"]
+
+    def test_operator_events_backfill_each_durable_crash_boundary_once(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        claims = []
+
+        budget_ticket = "T-110"
+        self.operator_transition(budget_ticket, "AWAIT_BUDGET daily envelope")
+        claims.append({
+            "branch": f"ticket/{budget_ticket}",
+            "budget_sha256": controller.envelope_digest(), "lease": "1" * 64,
+            "receipt": "", "role": "", "status": "budget",
+            "ticket": budget_ticket,
+        })
+
+        approval_ticket = "T-111"
+        self.operator_transition(
+            approval_ticket, "AWAIT-OPERATOR bundle posted; approval required",
+            consumed=True,
+        )
+        approval_passport = self.operator_passport(
+            approval_ticket, "Awaiting Approval", "validating",
+        )
+        claims.append({
+            "branch": f"ticket/{approval_ticket}", "lease": "2" * 64,
+            "receipt": "", "role": "", "status": "waiting",
+            "ticket": approval_ticket,
+        })
+
+        role_ticket = "T-112"
+        role_receipt = self.operator_transition(
+            role_ticket, "RUN builder", "builder", consumed=True,
+        )
+        role_passport = self.operator_passport(
+            role_ticket, "Building", "none", role_receipt,
+        )
+        (self.product / "factory/runs/role-failure.meta").write_text(
+            "run_id=role-failure\n"
+            "phase=completed\n"
+            f"ticket={role_ticket}\n"
+            "role=builder\n"
+            "accounting_state=completed\n"
+            "go_issued=1\n"
+            "task_submitted=1\n"
+            "effective_cost=1\n"
+            "cost_basis=provider_reported\n"
+            "exit_status=1\n"
+            "role_exit=provider_failed\n"
+            f"kit_sha={self.release.name}\n"
+            f"role_branch_before=ticket/{role_ticket}\n"
+            f"role_head_before={'b' * 40}\n"
+            "terminal_reason_code=soft_timeout\n"
+            f"transition_receipt_sha256={role_receipt}\n",
+            encoding="utf-8",
+        )
+        claims.append({
+            "blocked_reason": "role-failure",
+            "branch": f"ticket/{role_ticket}", "lease": "3" * 64,
+            "receipt": role_receipt, "role": "builder", "status": "blocked",
+            "ticket": role_ticket,
+        })
+
+        escalation_ticket = "T-113"
+        self.operator_transition(
+            escalation_ticket, "ESCALATE evidence bundle invalid",
+        )
+        claims.append({
+            "blocked_reason": "state-machine-escalation",
+            "branch": f"ticket/{escalation_ticket}", "lease": "4" * 64,
+            "receipt": "", "role": "", "status": "blocked",
+            "ticket": escalation_ticket,
+        })
+
+        pre_go_ticket = "T-114"
+        pre_go_receipt = self.operator_transition(
+            pre_go_ticket, "RUN narrator", "narrator",
+        )
+        (self.product / "factory/runs/pre-go.meta").write_text(
+            "run_id=pre-go\n"
+            "phase=abandoned\n"
+            f"ticket={pre_go_ticket}\n"
+            "role=narrator\n"
+            "accounting_state=launch_void\n"
+            "go_issued=0\n"
+            "task_submitted=0\n"
+            "effective_cost=0\n"
+            "cost_basis=launch_void\n"
+            "exit_status=6\n"
+            "role_exit=\n"
+            f"kit_sha={self.release.name}\n"
+            f"role_branch_before=ticket/{pre_go_ticket}\n"
+            f"role_head_before={'b' * 40}\n"
+            "terminal_reason_code=cursor_credential_unsafe\n"
+            f"transition_receipt_sha256={pre_go_receipt}\n",
+            encoding="utf-8",
+        )
+        claims.append({
+            "blocked_reason": "pre-go-failure",
+            "branch": f"ticket/{pre_go_ticket}", "lease": "5" * 64,
+            "receipt": pre_go_receipt, "role": "narrator", "status": "blocked",
+            "ticket": pre_go_ticket,
+        })
+
+        class InjectedCrash(BaseException):
+            pass
+
+        for name, ticket in (
+            ("budget_wait", budget_ticket),
+            ("awaiting_approval", approval_ticket),
+            ("role_blocked", role_ticket),
+            ("ticket_blocked", escalation_ticket),
+            ("pre_go_failure_blocked", pre_go_ticket),
+        ):
+            with (
+                patch.object(controller, "event", side_effect=InjectedCrash),
+                self.assertRaises(InjectedCrash),
+            ):
+                controller.event(name, ticket)
+
+        controller.recover_operator_action_events(claims)
+        CONTROL.Controller(self.args).recover_operator_action_events(claims)
+        events = [
+            CONTROL.read(path) for path in self.state.glob("events/*.json")
+        ]
+        expected = {
+            "budget_wait", "awaiting_approval", "role_blocked",
+            "ticket_blocked", "state_machine_escalated",
+            "pre_go_failure_blocked",
+        }
+        self.assertEqual(
+            {event["event"] for event in events}, expected,
+        )
+        for name in expected:
+            self.assertEqual(
+                len([event for event in events if event["event"] == name]), 1,
+            )
+        self.assertEqual(
+            next(event for event in events if event["event"] == "budget_wait")
+            ["passport_sha256"],
+            None,
+        )
+        self.assertEqual(
+            next(event for event in events if event["event"] == "awaiting_approval")
+            ["passport_sha256"],
+            approval_passport,
+        )
+        self.assertEqual(
+            next(event for event in events if event["event"] == "role_blocked")
+            ["passport_sha256"],
+            role_passport,
+        )
+
+    def test_operator_event_backfill_refuses_tampered_passport(self) -> None:
+        ticket = "T-110"
+        self.operator_transition(
+            ticket, "AWAIT-OPERATOR bundle posted; approval required",
+            consumed=True,
+        )
+        self.operator_passport(ticket, "Awaiting Approval", "validating")
+        passport = self.state / f"passports/{ticket}.json"
+        value = CONTROL.read(passport)
+        value["current_state"] = "Done"
+        CONTROL.write(passport, value)
+        claim = {
+            "branch": f"ticket/{ticket}", "lease": "1" * 64,
+            "receipt": "", "role": "", "status": "waiting", "ticket": ticket,
+        }
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "passport digest is invalid",
+        ):
+            CONTROL.Controller(self.args).recover_operator_action_events([claim])
+        self.assertEqual(list((self.state / "events").glob("*.json")), [])
+
+    def test_operator_event_backfill_binds_passport_project_and_contract(
+        self,
+    ) -> None:
+        ticket = "T-110"
+        self.operator_transition(
+            ticket, "AWAIT-OPERATOR bundle posted; approval required",
+            consumed=True,
+        )
+        claim = {
+            "branch": f"ticket/{ticket}", "lease": "1" * 64,
+            "receipt": "", "role": "", "status": "waiting", "ticket": ticket,
+        }
+        key = (self.state / "passport.key")
+        passport_path = self.state / f"passports/{ticket}.json"
+        for field, wrong in (("project", "another"), ("contract_version", "1.7.0")):
+            with self.subTest(field=field):
+                self.operator_passport(ticket, "Awaiting Approval", "validating")
+                value = CONTROL.read(passport_path)
+                value.pop("passport_sha256")
+                value.pop("authentication_sha256")
+                value[field] = wrong
+                value["authentication_sha256"] = hmac.new(
+                    key.read_bytes(), CONTROL.canonical(value).encode(), hashlib.sha256,
+                ).hexdigest()
+                value["passport_sha256"] = hashlib.sha256(
+                    CONTROL.canonical(value).encode()
+                ).hexdigest()
+                CONTROL.write(passport_path, value)
+                with self.assertRaisesRegex(
+                    CONTROL.ControllerError, "passport identity is invalid",
+                ):
+                    CONTROL.Controller(self.args).recover_operator_action_events(
+                        [claim]
+                    )
+        self.assertEqual(list((self.state / "events").glob("*.json")), [])
+
+    def test_operator_event_backfill_inventories_history_once(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        for number in range(12):
+            controller.event("unrelated", f"T-{200 + number}")
+        claim = {
+            "blocked_reason": "preflight", "branch": "ticket/T-110",
+            "lease": "1" * 64, "receipt": "", "role": "",
+            "status": "blocked", "ticket": "T-110",
+        }
+        original_read = CONTROL.read
+        reads = 0
+
+        def counted(path):
+            nonlocal reads
+            if path.parent == controller.events:
+                reads += 1
+            return original_read(path)
+
+        with patch.object(CONTROL, "read", side_effect=counted):
+            controller.recover_operator_action_events([claim] * 3)
+        self.assertEqual(reads, 12)
+        events = [
+            original_read(path) for path in controller.events.glob("*.json")
+        ]
+        self.assertEqual(
+            len([event for event in events if event["event"] == "ticket_blocked"]),
+            1,
+        )
+
     def test_contract_resume_refusal_is_restart_safe_and_ticket_scoped(self) -> None:
         controller = CONTROL.Controller(self.args)
         claim = {"receipt": "c" * 64, "ticket": "T-110"}
@@ -142,6 +486,27 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(
             sorted(item["ticket"] for item in refusals),
             ["T-110", "T-110", "T-111", "T-112"],
+        )
+
+    def test_operator_answer_without_resume_stays_waiting_during_sweep(self) -> None:
+        receipt = "c" * 64
+        ticket = (
+            "# T-110\n\nState: Blocked-Escalated\n"
+            "OPERATOR ANSWER: Preserve the isolated fixture seam.\n"
+            f"OPERATOR ANSWER RECEIPT: {receipt}\n"
+        )
+        self.assertEqual(
+            CONTROL.Controller.contract_resume_directive_status(ticket, receipt),
+            "waiting",
+        )
+        later = (
+            ticket
+            + "OPERATOR RESUME: builder\n"
+            + f"OPERATOR RESUME RECEIPT: {'b' * 64}\n"
+        )
+        self.assertEqual(
+            CONTROL.Controller.contract_resume_directive_status(later, receipt),
+            "waiting",
         )
 
     def test_remote_cell_head_status_distinguishes_unpushed_from_diverged(self) -> None:
@@ -6709,7 +7074,8 @@ class FactoryControllerTest(unittest.TestCase):
                 {
                     "detail": (
                         "evidence bundle remained invalid after one Narrator retry"
-                    )
+                    ),
+                    "passport_sha256": None,
                 },
             ),
             events,

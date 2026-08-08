@@ -8,6 +8,29 @@ What to do when something breaks, written for a non-technical operator. Each ent
 - Do: check the terminal/session running the role. If it's spinning or confused, stop it, add a ticket comment "run abandoned — restarting", and re-run the role through `~/.factory/bin/factory-launch <project> run`. Second stall on the same ticket → move it to Blocked-Escalated and re-read the ticket's contract: stalls usually mean the spec is ambiguous.
 - Don't: let a stuck run keep burning budget while you wait.
 
+## Watch for operator action
+
+- Run `factory-launch <project> watch --json` in a supervised terminal or feed
+  its newline-delimited JSON to your notification channel. It reports only an
+  approval request, escalation or contract blocker, terminal role failure,
+  budget halt, or progress timeout; it does not send Slack or desktop messages
+  itself.
+- Save the opaque `cursor` from the last handled line. After a restart, pass it
+  back as `--cursor <value>` so that line is authenticated and not delivered
+  again. `--limit N` and `--idle-timeout-seconds N` support bounded drains.
+- A nonzero exit means the selected controller stream, cursor event, ownership,
+  mode, path, or digest was lost or changed. Stop the consumer and inspect the
+  sealed lane; do not invent a cursor, skip files, or read another project's
+  controller directory directly.
+- The command is read-only and credential-free. Keep channel credentials in the
+  external consumer, never in the Factory launcher, controller state, cursor,
+  or event payload.
+- If the controller stops after durably recording a blocked, budget,
+  Awaiting Approval, or failed-role boundary but before publishing its event,
+  the next reconcile reconstructs that one event from the exact authenticated
+  claim, transition, passport, and terminal evidence. Do not create a manual
+  substitute; restart with the last watcher cursor.
+
 ## Park a ticket on a Factory defect
 
 - Open the defect in the Software Factory GitHub repository, then wait for the
@@ -641,23 +664,38 @@ These run in your interactive session — never inside the loop. The factory's o
 - Assign an issue to a different initiative by changing its Linear Project. The next successful pull updates the ignored operator overlay; trusted materialization updates `Initiative:` on the ticket branch. Removing all Project membership clears the effective initiative and makes preflight ineligible until the issue is assigned again.
 - Prioritize by setting priority and moving Backlog → Ready. Wait for sync health to advance before dispatching.
 - Contract 1.2 stops in Review. Under contract 1.3, wait for trusted bundle attestation to create Awaiting Approval, then make the one business decision by moving it to Approved in Linear. Do not click a separate GitHub approval or bypass protection; the trusted approval attestation requests auto-merge. Done appears only after the protected closeout commit merges.
-- Resume an escalated contract blocker in two pushed commits when a substantive
-  ruling is needed. First record and push only the ruling or requested
-  `Protected-Test-Conflicts` context, leave Linear blocked, and wait for
-  `contract_block_passport_migrated`. Then make and push a ticket-only commit
+- Resume an escalated contract blocker in two pushed commits when an operator
+  answer is needed. First append one ticket-local
+  `OPERATOR ANSWER: <single-line-answer>` (at most 4096 UTF-8 bytes) and
+  `OPERATOR ANSWER RECEIPT: <current-blocked-receipt-sha256>` pair, or replace
+  the one prior pair for a later blocker. The answer is bounded non-contract
+  context for the named repair role; it does not amend the frozen contract or
+  authorize any other ticket field. That same commit may append one validated
+  `Protected-Test-Conflicts` entry and, when needed, only its exact tracked test
+  path already covered by protected `PROJECT.env` `TEST_PATHS` to
+  `Fixture-Seams`. The complete ticket must pass readiness. Change no other
+  ticket bytes or path. Push it, leave
+  Linear blocked, and wait for `contract_block_passport_migrated` when the
+  controller records that event. Then make and push a ticket-only commit
   containing exactly `OPERATOR RESUME: <role>` and
   `OPERATOR RESUME RECEIPT: <current-blocked-receipt-sha256>`, replacing the one
-  prior pair when present and changing nothing else. Do not combine the ruling
-  and receipt pair in one commit, and do not leave the receipt commit local.
+  prior pair when present and changing nothing else. Do not combine the answer
+  and resume pairs in one commit, and do not leave the resume commit local.
+  On a later blocker, the old resume pair remains non-authoritative while only
+  the new answer pair is present; the controller classifies that interval as
+  waiting and preserves the claim, passport, role evidence, and accounting.
   If both commits are pushed before that migration event, recovery accepts only
-  one direct non-merge context commit that adds one parser-valid
-  `Protected-Test-Conflicts` entry to the selected ticket and changes no other
-  path; every broader or longer chain stops as `resume_parent_not_migrated`.
+  that one direct non-merge, receipt-bound context commit; every broader or
+  longer chain stops as `resume_parent_not_migrated`. `factory/rulings.md`
+  remains outside this exception.
   Finally move Linear from Blocked-Escalated to the ticket's `Resume-State:`.
   A missing, stale, mismatched, partial, unpushed, over-full, or otherwise
   illegal decision is rejected; `doctor --json` reports it under
-  `checks.contract_resume.incidents` with a typed reason. An earlier decision
-  never authorizes a later blocker.
+  `checks.contract_resume.incidents` with a typed reason. Doctor preserves the
+  latest structurally valid `resume_*` refusal per ticket as a warning even
+  when a newer controller introduces the reason; malformed or tampered event
+  evidence remains an error. An earlier decision never authorizes a later
+  blocker.
 - Treat receipt-bound `OPERATOR RESUME` as the contract-block recovery and
   hash-approved `emergency-admit` as the one-use pre-provider control-plane
   fallback. Neither grants a lifecycle transition or skips any downstream

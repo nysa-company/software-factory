@@ -285,6 +285,7 @@ PY
   cp "$ROOT/scripts/envelope-control.py" "$release/scripts/envelope-control.py"
   cp "$ROOT/scripts/attempt-cancel.py" "$release/scripts/attempt-cancel.py"
   cp "$ROOT/scripts/operator-state.py" "$release/scripts/operator-state.py"
+  cp "$ROOT/scripts/operator-event-watch.py" "$release/scripts/operator-event-watch.py"
   cp -R "$ROOT/scripts/model-routing" "$release/scripts/model-routing"
   cp "$ROOT/scripts/lib/backend-policy.sh" "$release/scripts/lib/backend-policy.sh"
   cp "$ROOT/scripts/lib/cursor-model-families.txt" \
@@ -404,7 +405,7 @@ EOF
     "$release/scripts/next-stage.sh" "$release/scripts/run-agent.sh" \
     "$release/scripts/reorder-test-fixes.sh" "$release/scripts/model-control.sh" \
     "$release/scripts/model-control-real.sh" \
-    "$release/scripts/dispatch-lease.sh"
+    "$release/scripts/dispatch-lease.sh" "$release/scripts/operator-event-watch.py"
 }
 
 mkdir -p "$PROFILE/projects" "$TEST_HOME/.hermes/secrets" "$TEST_HOME/.factory/.ledger.lock"
@@ -570,6 +571,18 @@ write(
     remote_head="a" * 40,
 )
 write("contract_blocker_recovered", "T-111", 3)
+write(
+    "contract_resume_refused", "T-112", 4,
+    blocked_receipt_sha256="d" * 64,
+    offending_parent="9" * 40, reason_code="resume_parent_not_migrated",
+)
+# Doctor validates the stable reason-code grammar, not a controller allowlist,
+# so a future typed refusal stays visible without suppressing known siblings.
+write(
+    "contract_resume_refused", "T-113", 5,
+    blocked_receipt_sha256="e" * 64,
+    reason_code="resume_future_contract_guard",
+)
 PY
 
 HOME="$TEST_HOME" PATH="$STUB_BIN:$PATH" FACTORY_LINEAR_FRESH_SECONDS=600 \
@@ -665,6 +678,17 @@ assert checks["contract_resume"] == {
         "observed_at_epoch_ns": 1,
         "reason_code": "resume_commit_content_mismatch",
         "ticket": "T-110",
+    }, {
+        "blocked_receipt_sha256": "d" * 64,
+        "observed_at_epoch_ns": 4,
+        "offending_parent": "9" * 40,
+        "reason_code": "resume_parent_not_migrated",
+        "ticket": "T-112",
+    }, {
+        "blocked_receipt_sha256": "e" * 64,
+        "observed_at_epoch_ns": 5,
+        "reason_code": "resume_future_contract_guard",
+        "ticket": "T-113",
     }],
     "status": "warning",
 }
@@ -672,6 +696,48 @@ allowed = {"ok", "warning", "error", "unknown"}
 assert data["overall_status"] in allowed
 assert all(check["status"] in allowed for check in checks.values())
 PY
+
+# Structurally invalid state remains an error even when its digest is valid.
+INVALID_RESUME_EVENT="$CONTROLLER_STATE/events/6-invalid.json"
+python3 - "$INVALID_RESUME_EVENT" "$KIT_SHA" <<'PY'
+import hashlib
+import json
+import os
+from pathlib import Path
+import sys
+
+path, factory_sha = Path(sys.argv[1]), sys.argv[2]
+value = {
+    "blocked_receipt_sha256": "f" * 64,
+    "event": "contract_resume_refused",
+    "factory_sha": factory_sha,
+    "observed_at_epoch_ns": 6,
+    "reason_code": "not-a-resume-reason",
+    "schema": "nysa.software-factory.controller-event/v1",
+    "ticket": "T-114",
+}
+canonical = json.dumps(
+    value, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+).encode()
+value["event_sha256"] = hashlib.sha256(canonical).hexdigest()
+path.write_text(json.dumps(value, sort_keys=True) + "\n", encoding="utf-8")
+os.chmod(path, 0o600)
+PY
+INVALID_RESUME_RC=0
+HOME="$TEST_HOME" PATH="$STUB_BIN:$PATH" FACTORY_LINEAR_FRESH_SECONDS=600 \
+  FACTORY_CONTROLLER_STATE_DIR="$CONTROLLER_STATE" \
+  bash "$DOCTOR" --json --project relay > "$TMP/doctor-invalid-resume.json" || \
+  INVALID_RESUME_RC=$?
+[[ "$INVALID_RESUME_RC" -eq 1 ]] || fail "doctor accepted invalid resume event state"
+python3 - "$TMP/doctor-invalid-resume.json" <<'PY'
+import json
+import sys
+
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+assert data["overall_status"] == "error"
+assert data["checks"]["contract_resume"] == {"incidents": [], "status": "error"}
+PY
+rm "$INVALID_RESUME_EVENT"
 
 PROVIDER_TEST_ROOT="$(cd "$TMP" && pwd -P)/provider-v2"
 mkdir -m 700 "$PROVIDER_TEST_ROOT" "$PROVIDER_TEST_ROOT/attempts" \
@@ -1002,6 +1068,7 @@ if compgen -G "$TMP/launcher-tmp/factory-launch-tree.*" >/dev/null; then
 fi
 
 mkdir -m 700 -p "$KITS_ROOT/projects/launchtest/controller/events"
+chmod 700 "$KITS_ROOT/projects/launchtest/controller"
 if ! run_launcher launchtest doctor --json > "$TMP/launcher-doctor.json"; then
   cat "$TMP/launcher-doctor.json" >&2
   fail "launcher doctor rejected controller-state diagnostics"
@@ -1283,6 +1350,51 @@ LAUNCH_PRODUCT_REMOTE="$TMP/launch-product.git"
 git init --bare -q "$LAUNCH_PRODUCT_REMOTE"
 git -C "$LAUNCH_PRODUCT" remote add origin "$LAUNCH_PRODUCT_REMOTE"
 git -C "$LAUNCH_PRODUCT" push -q -u origin main
+
+# Contract 1.8 exposes a read-only watch over only this project's production
+# controller state. Its cursor must bind that exact path and project.
+printf '%s\n' "$SHA_MODELS_V18" > "$LAUNCH_PRODUCT/factory/KIT_PIN"
+write_active "$SHA_MODELS_V18" "$TREE_MODELS_V18" "$RELEASE_MODELS_V18"
+python3 - "$EXPECTED_CONTROLLER_STATE/events/9000001-0000000000000001.json" \
+  "$SHA_MODELS_V18" <<'PY'
+import hashlib, json, os, sys
+path, factory_sha = sys.argv[1:]
+value = {
+    "event": "state_machine_escalated",
+    "factory_sha": factory_sha,
+    "observed_at_epoch_ns": 9000001,
+    "schema": "nysa.software-factory.controller-event/v1",
+    "ticket": "T-901",
+    "detail": "token=operator-watch-secret https://user:password@example.invalid/path",
+}
+raw = json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+value["event_sha256"] = hashlib.sha256(raw.encode()).hexdigest()
+with open(path, "w", encoding="utf-8") as stream:
+    stream.write(json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":")) + "\n")
+os.chmod(path, 0o600)
+PY
+run_launcher launchtest watch --json --limit 1 --idle-timeout-seconds 1 \
+  > "$TMP/launcher-watch.jsonl"
+python3 - "$TMP/launcher-watch.jsonl" "$EXPECTED_CONTROLLER_STATE" \
+  "$ROOT/scripts/operator-event-watch.py" <<'PY'
+import importlib.util, json, pathlib, sys
+output, state, helper = sys.argv[1:]
+value = json.loads(pathlib.Path(output).read_text())
+assert value["schema"] == "nysa.software-factory.operator-watch-event/v1"
+assert value["project"] == "launchtest"
+assert value["ticket"] == "T-901"
+assert value["action"] == "blocked_escalated"
+spec = importlib.util.spec_from_file_location("operator_event_watch", helper)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+assert module.decode_cursor(pathlib.Path(state), "launchtest", value["cursor"])[0] == \
+    "9000001-0000000000000001.json"
+PY
+assert_no_secret "$TMP/launcher-watch.jsonl"
+! grep -Fq "operator-watch-secret" "$TMP/launcher-watch.jsonl" ||
+  fail "operator watch leaked source detail"
+rm -f "$EXPECTED_CONTROLLER_STATE/events/9000001-0000000000000001.json"
+
 REORDER_WORKTREE="$TMP/reorder-worktree"
 git -C "$LAUNCH_PRODUCT" worktree add -q -b ticket/T-456 "$REORDER_WORKTREE"
 REORDER_WORKTREE_PHYS="$(cd "$REORDER_WORKTREE" && pwd -P)"
@@ -2386,6 +2498,8 @@ assert contract["launcher"]["source"] == "integrations/hermes/bin/factory-launch
 commands = contract["launcher"]["commands"]
 assert commands["reconcile"]["output_schema"] == \
     "nysa.software-factory.controller/v1"
+assert commands["watch"]["output_schema"] == \
+    "nysa.software-factory.operator-watch-event/v1"
 assert commands["qualification"]["output_schema"] == \
     "nysa.software-factory.qualification-report/v1"
 assert commands["state-machine"]["output_schema"] == \
@@ -2760,6 +2874,10 @@ assert '"FACTORY_DURABLE_LEDGER=$PRODUCT_ROOT/factory/ledger.csv"' in launcher_t
 assert '"FACTORY_REFRESH_RUNTIME_LEDGER=1"' in launcher_text
 assert 'CLI_RUNTIME_ROOT="$QUALIFICATION_ROOT"' in launcher_text
 assert '"FACTORY_CLI_RUNTIME_ROOT=$CLI_RUNTIME_ROOT"' in launcher_text
+assert 'CONTROLLER_STATE_DIR="$ACTIVE_CONTROLLER_STATE"' in launcher_text
+assert 'CONTROLLER_STATE_DIR="$KITS_ROOT/projects/$PROJECT/controller"' in launcher_text
+assert '--state-dir "$CONTROLLER_STATE_DIR" --project "$PROJECT"' in launcher_text
+assert 'exec /usr/bin/env -i "HOME=$HOME" "PATH=$SAFE_PATH" "TMPDIR=$SAFE_TMPDIR"' in launcher_text
 assert 'CURSOR_ACCOUNT_DB="$HOME/.factory/accounting/cursor-account-admission-v1.sqlite3"' in launcher_text
 assert '"FACTORY_CURSOR_ACCOUNT_DB=$CURSOR_ACCOUNT_DB"' in launcher_text
 assert '"FACTORY_ADAPTER_OVERRIDE=mock"' in launcher_text
