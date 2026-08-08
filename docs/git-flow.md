@@ -34,8 +34,11 @@ frozen after the first implementation commit in each epoch.
 Every behavioral pull request runs fail-closed targeted-or-deferred selection
 on Linux and macOS system Bash. Mapped leaf changes execute their applicable
 suites. Unknown, shared, mixed, dependency, CI, selector, addition, deletion,
-and rename changes run policy gates and defer complete coverage. Every push to
-`main` runs four balanced groups on both platforms, then publishes the three
+and rename changes run policy gates and defer complete coverage. Repository
+policy runs once per run in its own `policy` job and gates the aggregate `ci`
+context. Every push to
+`main` runs four groups on both platforms, balanced from observed run
+durations, then publishes the three
 stable shard evidence aliases per platform, so release verification remains
 bound to a fully tested merged SHA. Instantiated product workflows may skip
 expensive product checks for allowlisted PRs, but every product push to `main`

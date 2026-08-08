@@ -4758,3 +4758,36 @@ define zero as zero unplanned repair interventions; keep a signed manual action
 ledger; run paired isolated real-provider arms; and apply one neutral Done gate.
 New evidence may reopen that experiment. This disposition does not satisfy issue
 #257's separate offline labeled-corpus classifier gate.
+
+## 2026-08-08 — Decision 347: Hosted group balance is maintained from measured run durations
+
+Category: Verification
+
+Four hosted groups per platform remain the model, and local full-suite
+concurrency is not adopted: an argument-free `bash ci/test-all.sh` stays
+sequential, and managed local readiness stays `--changed-or-defer`. The audited
+local full run reproduced the timing risk that policy exists to avoid —
+`ci/factory-controller-test.py` failed deterministically under Python 3.14
+because `test_scheduler_wakes_new_ticket_while_provider_future_is_live` gave a
+helper thread one second to observe the scheduler wake. That test now exposes
+the second claim from inside the first ticket's reconcile call, so the wake is
+observed without a timed thread.
+
+Group membership carries no meaning beyond balance. Measured protected-main
+runs 31282334014 and 31278822555 showed macOS group 4 at 395s and 482s against
+group 1 at 180s and 184s, because group 4 held `factory-dev-lane` plus the
+entire unclassified tail. Seven suites moved — `factory-dev-lane` to group 2,
+`ticket-attest` to group 4, `qualification-environment`, `state-machine`,
+`terminal-backfill`, and `protected-merge-reconciliation` to group 1, and
+`model-control` to group 3 — replaying those two runs at a 314s and 352s
+critical path. Shard assignment is untouched, so the six release-evidence
+aliases and the aggregate `ci` context are unchanged. Rebalance from observed
+per-suite durations when a group drifts; do not add a fifth group or a new
+runner dependency first.
+
+Repository policy (`scripts/repo-check`, `scripts/secret-scan`,
+`scripts/artifact-check`) now runs once per run in a `policy` job that gates
+aggregate `ci`, instead of repeating in every Linux group. Measured cost of the
+duplication was about five seconds per group, so this is a topology
+simplification, not a speed win. `ci/test-all.sh` also emits a `RUN:` line
+before each suite so a hung hosted group names the suite in flight.
