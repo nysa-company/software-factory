@@ -584,6 +584,22 @@ def _ticket_evidence(content):
     )
 
 
+def _ticket_evidence_is_legal(before, after, role):
+    if role != "spec-linter":
+        return before == after
+    spec_lint = re.compile(
+        r"^\s*SPEC-LINT:\s*(?:PASS|FAIL(?:\s+—\s+.*)?)\s*$", re.I
+    )
+    prior = tuple(line for line in before if spec_lint.fullmatch(line))
+    current = tuple(line for line in after if spec_lint.fullmatch(line))
+    return (
+        tuple(line for line in before if not spec_lint.fullmatch(line))
+        == tuple(line for line in after if not spec_lint.fullmatch(line))
+        and len(current) == len(prior) + 1
+        and current[:-1] == prior
+    )
+
+
 def _snapshot_digest(entries):
     digest = hashlib.sha256()
     digest.update(b"nysa-failed-attempt-snapshot-v1\0")
@@ -652,7 +668,9 @@ def _reject_provider_commits(repo, baseline, head, identities):
             raise HandoffError("provider-authored commit is forbidden")
 
 
-def _validate_committed_changes(repo, baseline, head, role, policy):
+def _validate_committed_changes(
+    repo, baseline, head, role, policy, *, allow_spec_lint_append=False
+):
     if baseline == head:
         return
     _git(repo, ["merge-base", "--is-ancestor", baseline, head])
@@ -707,7 +725,15 @@ def _validate_committed_changes(repo, baseline, head, role, policy):
                 raise HandoffError("ticket file creation or deletion is forbidden")
             prior_content = _git(repo, ["cat-file", "blob", previous[1]])
             current_content = _git(repo, ["cat-file", "blob", current[1]])
-            if _ticket_evidence(prior_content) != _ticket_evidence(current_content):
+            before = _ticket_evidence(prior_content)
+            after = _ticket_evidence(current_content)
+            if (
+                before != after
+                and not (
+                    allow_spec_lint_append
+                    and _ticket_evidence_is_legal(before, after, role)
+                )
+            ):
                 raise HandoffError("protected ticket evidence changed")
 
 

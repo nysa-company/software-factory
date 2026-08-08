@@ -10,6 +10,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -32,6 +33,8 @@ def module(name: str, path: Path):
 STATE = module("state_machine", ROOT / "scripts/state-machine.py")
 PASSPORT = module("ticket_passport", ROOT / "scripts/ticket-passport.py")
 ROLE_OUTPUT = module("role_output", ROOT / "scripts/lib/role_output.py")
+ROUTER = module("passport_test_router", ROOT / "scripts/model-router.py")
+MANAGER = module("passport_test_manager", ROOT / "scripts/model-manager.py")
 
 
 def run(*command: str, cwd: Path) -> str:
@@ -311,6 +314,329 @@ class TicketPassportTest(unittest.TestCase):
             "terminal_reason_code=\n",
             encoding="utf-8",
         )
+
+    def direct_model_identity_terminal(
+        self, run_id: str, receipt: str, head_before: str,
+        role: str = "planner", policy_hash: str = "9" * 64,
+    ) -> None:
+        plan = json.loads(
+            (self.product / "factory/route-plans/T-110.json").read_text()
+        )
+        selected = PASSPORT.route_selection(plan, role)
+        _catalog, routes, _profiles, _profile_map = ROUTER.load_policy()
+        route = routes[selected["route_id"]]
+        actual = {
+            "gpt-5.6-sol-high": "GPT-5.6 Sol 1M High",
+            "claude-opus-5-thinking-medium": "Opus 5 300K Medium",
+        }.get(route["selection_id"], route["expected_reported_identity"])
+        adapter = route["adapter"]
+        output_path = self.product / f"factory/runs/{run_id}.out"
+        result = "APPROVE" if role == "reviewer" else "completed"
+        output_digest = subprocess.run(
+            [sys.executable, str(ROOT / "scripts/lib/role_output.py"),
+             "publish", str(output_path)],
+            input=(
+                json.dumps({"model": actual, "subtype": "init", "type": "system"})
+                + "\n"
+                + json.dumps({
+                    "result": result, "subtype": "success", "type": "result",
+                })
+                + "\n"
+                + f"cursor reported unapproved model: {actual}\n"
+                + "Cursor output validation/redaction failed\n"
+            ).encode(),
+            capture_output=True, check=True,
+        ).stdout.decode().strip()
+        progress = self.product / f"factory/runs/{run_id}.progress.jsonl"
+        progress.write_text("".join(
+            json.dumps(item, sort_keys=True, separators=(",", ":")) + "\n"
+            for item in ({
+                "event_sha256": "1" * 64, "observed_monotonic_ns": 1,
+                "sequence": 1, "subtype": "init", "type": "system",
+            }, {
+                "event_sha256": "2" * 64, "observed_monotonic_ns": 2,
+                "sequence": 2, "subtype": "success", "type": "result",
+            })
+        ), encoding="utf-8")
+        os.chmod(progress, 0o600)
+        route_digest = hashlib.sha256(
+            (self.product / "factory/route-plans/T-110.json").read_bytes()
+        ).hexdigest()
+        (self.product / f"factory/runs/{run_id}.meta").write_text(
+            f"run_id={run_id}\n"
+            "phase=completed\naccounting_state=abandoned_conservative\n"
+            "reserved_usd=2.00\ngo_issued=1\ntask_submitted=1\nturns=3\n"
+            "effective_cost=2.00\nexit_status=9\n"
+            "cost_basis=conservative_reservation\nticket=T-110\n"
+            f"role={role}\nadapter={adapter}\n"
+            f"provider_family={route['provider_family']}\n"
+            f"model_id={route['selection_id']}\neffort={selected['effort']}\n"
+            "selection_reason=pinned_route_plan\nadapter_version=1.0.0\n"
+            f"route_id={route['route_id']}\ngateway_id={route['gateway_id']}\n"
+            f"inference_provider_id={route['inference_provider_id']}\n"
+            f"account_route_id={route['account_route_id']}\n"
+            f"transport={route['transport']}\n"
+            f"policy_hash={policy_hash}\nroute_plan_sha256={route_digest}\n"
+            "provider_attempt_id=attempt-direct\nrole_exit=provider_failed\n"
+            "role_branch_before=ticket/T-110\n"
+            f"role_head_before={head_before}\nrole_remote_before={head_before}\n"
+            f"kit_sha={'a' * 40}\ncontract_version=1.8.0\n"
+            f"transition_receipt_sha256={receipt}\n"
+            f"output_sha256={output_digest}\nprogress_events=2\n"
+            f"progress_journal_sha256={hashlib.sha256(progress.read_bytes()).hexdigest()}\n"
+            "terminal_reason_code=\n",
+            encoding="utf-8",
+        )
+
+    def test_passportless_cursor_planner_success_is_recovered_once(self) -> None:
+        catalog, routes, _profiles, profile_map = ROUTER.load_policy()
+        readiness = {
+            route_id: {
+                "adapter_version": "1.0.0", "reason": "ok",
+                "reported_identity": value["expected_reported_identity"],
+                "state": "READY",
+            }
+            for route_id, value in routes.items() if value["enabled"]
+        }
+        resolution = ROUTER.resolve_policy(
+            catalog, routes, profile_map["cursor-opus-v1"], readiness,
+        )
+        route = resolution["selections"]["planner"]
+        plan = {
+            "created_at": "2026-08-07T00:00:00Z",
+            "kit_sha": "a" * 40,
+            "resolution": resolution,
+            "schema": "ticket-model-route-plan/v1",
+            "ticket": "T-110",
+        }
+        (self.product / "factory/route-plans/T-110.json").write_text(
+            json.dumps(plan, sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+        (self.product / "factory/tickets/T-110.md").write_text(
+            f"# T-110\n\nState: Planning\n\nKit-SHA: {'a' * 40}\n\n## Log\n",
+            encoding="utf-8",
+        )
+        run("git", "add", "factory", cwd=self.product)
+        run("git", "commit", "-qm", "pin Cursor Planner", cwd=self.product)
+        run("git", "push", "-q", "origin", "HEAD:ticket/T-110", cwd=self.product)
+        issued = STATE.issue(self.state_args, "RUN planner")
+        self.state_args.receipt = issued["receipt_sha256"]
+        STATE.verify(self.state_args, consume=True)
+        input_head = run("git", "rev-parse", "HEAD", cwd=self.product)
+        ticket = self.product / "factory/tickets/T-110.md"
+        ticket.write_text(
+            ticket.read_text(encoding="utf-8").replace(
+                "## Log", "Plan: retain completed work\n\n## Log"
+            ), encoding="utf-8",
+        )
+        run("git", "add", str(ticket), cwd=self.product)
+        run("git", "commit", "-qm", "record Planner result", cwd=self.product)
+        output_head = run("git", "rev-parse", "HEAD", cwd=self.product)
+        run_id = "run-passportless-model-success"
+        self.direct_model_identity_terminal(
+            run_id, issued["receipt_sha256"], input_head,
+            policy_hash=resolution["policy_hash"],
+        )
+        self.passport_args.receipt = issued["receipt_sha256"]
+        self.passport_args.run_id = run_id
+        secret = PASSPORT.key(self.state_dir)
+        same_release = PASSPORT.direct_model_identity_evidence(
+            self.passport_args, PASSPORT.identity(self.passport_args)
+        )
+        self.assertEqual(same_release["topology"]["control_commit_count"], 0)
+
+        plan = MANAGER.migrate_v1_plan(
+            (ROUTER.canonical_json(plan) + "\n").encode(), output_head,
+            "b" * 40, "2026-08-07T00:01:00Z", catalog, routes, profile_map,
+        )
+        (self.product / "factory/route-plans/T-110.json").write_text(
+            ROUTER.canonical_json(plan) + "\n",
+            encoding="utf-8",
+        )
+        ticket.write_text(
+            ticket.read_text(encoding="utf-8").replace("a" * 40, "b" * 40),
+            encoding="utf-8",
+        )
+        route_path = self.product / "factory/route-plans/T-110.json"
+        valid_route = route_path.read_text()
+        corrupt = json.loads(valid_route)
+        corrupt["revisions"][0]["revision_hash"] = "f" * 64
+        route_path.write_text(ROUTER.canonical_json(corrupt) + "\n")
+        route_evidence = module(
+            "passport_test_route_evidence_invalid",
+            ROOT / "scripts/lib/route_evidence.py",
+        )
+        with self.assertRaises(route_evidence.RouteEvidenceError):
+            route_evidence.validate_route(
+                self.product, self.product, "T-110", "b" * 40,
+            )
+        route_path.write_text(valid_route)
+        run("git", "add", "factory", cwd=self.product)
+        run("git", "commit", "-qm", "migrate recovered route", cwd=self.product)
+        route_evidence = module(
+            "passport_test_route_evidence", ROOT / "scripts/lib/route_evidence.py"
+        )
+        self.assertTrue(route_evidence.journal_extends(
+            subprocess.run(
+                ["git", "-C", str(self.product), "show", f"{output_head}:factory/route-plans/T-110.json"],
+                capture_output=True, check=True,
+            ).stdout,
+            (self.product / "factory/route-plans/T-110.json").read_bytes(),
+        ))
+        self.assertTrue(route_evidence.exact_kit_sha_change(
+            subprocess.run(
+                ["git", "-C", str(self.product), "show", f"{output_head}:factory/tickets/T-110.md"],
+                capture_output=True, check=True,
+            ).stdout,
+            ticket.read_bytes(),
+        ))
+        self.assertEqual(
+            re.findall(rb"^Kit-SHA:\s*([0-9a-f]{40})\s*$", ticket.read_bytes(), re.M),
+            [b"b" * 40],
+        )
+        migration_head = run("git", "rev-parse", "HEAD", cwd=self.product)
+        self.assertEqual(
+            run("git", "ls-tree", migration_head, "factory/tickets/T-110.md", cwd=self.product).split()[0],
+            "100644",
+        )
+        self.passport_args.factory_sha = "b" * 40
+        recovered = PASSPORT.recover_model_identity_success(
+            self.passport_args, secret
+        )
+        self.assertNotEqual(recovered["head_sha"], output_head)
+        self.assertEqual(recovered["current_stage"], "RUN planner")
+        self.assertEqual(len(recovered["charge_records"]), 1)
+        self.assertEqual(
+            recovered["completed_role_evidence"][-1]["role"], "planner"
+        )
+        correction = recovered["completed_role_corrections"][-1]
+        self.assertEqual(
+            correction["schema"], PASSPORT.PASSPORTLESS_MODEL_CORRECTION_SCHEMA
+        )
+        self.assertIsNone(correction["receipt_parent_file_sha256"])
+        self.assertEqual(correction["failed_factory_sha"], "a" * 40)
+        self.assertEqual(correction["recovery_factory_sha"], "b" * 40)
+        replayed = PASSPORT.recover_model_identity_success(
+            self.passport_args, secret
+        )
+        self.assertEqual(replayed["passport_sha256"], recovered["passport_sha256"])
+
+        (self.product / "untrusted.txt").write_text("extra\n", encoding="utf-8")
+        run("git", "add", "untrusted.txt", cwd=self.product)
+        run("git", "commit", "-qm", "add untrusted descendant", cwd=self.product)
+        with self.assertRaisesRegex(PASSPORT.PassportError, "role output"):
+            PASSPORT.recover_model_identity_success(self.passport_args, secret)
+
+    def test_direct_model_identity_evidence_covers_all_roles_and_releases(self) -> None:
+        catalog, routes, _profiles, profile_map = ROUTER.load_policy()
+        readiness = {
+            route_id: {
+                "adapter_version": "1.0.0", "reason": "ok",
+                "reported_identity": value["expected_reported_identity"],
+                "state": "READY",
+            }
+            for route_id, value in routes.items() if value["enabled"]
+        }
+        resolution = ROUTER.resolve_policy(
+            catalog, routes, profile_map["cursor-opus-v1"], readiness,
+        )
+        seed = run("git", "rev-parse", "HEAD", cwd=self.product)
+        observed = set()
+        for role in ("planner", "test-author", "builder", "reviewer", "narrator"):
+            for migrated in (False, True):
+                with self.subTest(role=role, migrated=migrated):
+                    run("git", "reset", "--hard", seed, cwd=self.product)
+                    shutil.rmtree(self.product / "factory/runs")
+                    (self.product / "factory/runs").mkdir()
+                    (self.state_dir / "T-110.json").unlink(missing_ok=True)
+                    plan = {
+                        "created_at": "2026-08-07T00:00:00Z",
+                        "kit_sha": "a" * 40,
+                        "resolution": resolution,
+                        "schema": "ticket-model-route-plan/v1",
+                        "ticket": "T-110",
+                    }
+                    route_path = self.product / "factory/route-plans/T-110.json"
+                    route_path.write_text(ROUTER.canonical_json(plan) + "\n")
+                    ticket = self.product / "factory/tickets/T-110.md"
+                    ticket.write_text(
+                        f"# T-110\n\nState: Planning\nKit-SHA: {'a' * 40}\n"
+                    )
+                    run("git", "add", "factory", cwd=self.product)
+                    run("git", "commit", "-qm", f"pin {role}", cwd=self.product)
+                    input_head = run("git", "rev-parse", "HEAD", cwd=self.product)
+                    selected = resolution["selections"][role]
+                    observed.add(selected["adapter"])
+                    receipt = {
+                        **PASSPORT.identity(self.passport_args),
+                        "consumed": True,
+                        "contract_version": "1.8.0",
+                        "factory_sha": "a" * 40,
+                        "passport_sha256": None if role == "planner" else "8" * 64,
+                        "role": role,
+                        "route_plan_sha256": hashlib.sha256(route_path.read_bytes()).hexdigest(),
+                        "schema": PASSPORT.RECEIPT_SCHEMA,
+                        "stage": f"RUN {role}",
+                    }
+                    receipt["receipt_sha256"] = hashlib.sha256(
+                        PASSPORT.canonical({
+                            key: value for key, value in receipt.items()
+                            if key not in {"consumed", "consumed_at_epoch", "receipt_sha256"}
+                        })
+                    ).hexdigest()
+                    PASSPORT.write_atomic(self.state_dir / "T-110.json", receipt)
+                    if role != "reviewer":
+                        ticket.write_text(
+                            ticket.read_text() + f"\nRole-Result: {role} complete\n"
+                        )
+                        run("git", "add", str(ticket), cwd=self.product)
+                        run("git", "commit", "-qm", f"record {role}", cwd=self.product)
+                    run_id = f"matrix-{role}-{int(migrated)}"
+                    self.direct_model_identity_terminal(
+                        run_id, receipt["receipt_sha256"], input_head,
+                        role=role, policy_hash=resolution["policy_hash"],
+                    )
+                    self.passport_args.receipt = receipt["receipt_sha256"]
+                    self.passport_args.run_id = run_id
+                    if migrated:
+                        journal = MANAGER.migrate_v1_plan(
+                            route_path.read_bytes(), input_head, "b" * 40,
+                            "2026-08-07T00:01:00Z", catalog, routes, profile_map,
+                        )
+                        route_path.write_text(ROUTER.canonical_json(journal) + "\n")
+                        ticket.write_text(ticket.read_text().replace("a" * 40, "b" * 40))
+                        run("git", "add", "factory", cwd=self.product)
+                        run("git", "commit", "-qm", "migrate route", cwd=self.product)
+                        self.passport_args.factory_sha = "b" * 40
+                    else:
+                        self.passport_args.factory_sha = "a" * 40
+                    evidence = PASSPORT.direct_model_identity_evidence(
+                        self.passport_args, PASSPORT.identity(self.passport_args)
+                    )
+                    self.assertEqual(evidence["terminal"]["role"], role)
+                    self.assertEqual(
+                        evidence["topology"]["control_commit_count"],
+                        1 if migrated else 0,
+                    )
+        self.assertEqual(observed, {"cursor-anthropic", "cursor-openai"})
+        manifest = self.product / "factory/runs/matrix-narrator-1.meta"
+        original = manifest.read_text()
+        for field, wrong in (
+            ("provider_family", "anthropic"),
+            ("model_id", "gpt-5.6-terra-medium"),
+        ):
+            with self.subTest(wrong_field=field):
+                manifest.write_text(re.sub(
+                    rf"(?m)^{field}=.*$", f"{field}={wrong}", original,
+                ))
+                with self.assertRaisesRegex(
+                    PASSPORT.PassportError, "typed model-identity",
+                ):
+                    PASSPORT.direct_model_identity_evidence(
+                        self.passport_args, PASSPORT.identity(self.passport_args)
+                    )
+        manifest.write_text(original)
     def test_role_output_uses_one_streaming_eight_mib_bound(self) -> None:
         existing_size = 5_662_048
         self.terminal(

@@ -1733,6 +1733,7 @@ class StateMachineTest(unittest.TestCase):
         ticket.write_text(
             "# T-110\n\nState: Planning\n"
             "Product-Decisions: frozen\n"
+            "Builder ownership: README.md only\n"
             "Fixture-Seams: apps/api/tests/example.test.ts\n"
             "Authentication-Seams: none\n"
             "Protected-Test-Conflicts: none\n",
@@ -1987,6 +1988,7 @@ class StateMachineTest(unittest.TestCase):
         ticket.write_text(
             "# T-110\n\nState: Planning\n"
             "Product-Decisions: frozen\n"
+            "Builder ownership: README.md only\n"
             "Fixture-Seams: none\n"
             "Authentication-Seams: none\n"
             "Protected-Test-Conflicts: none\n",

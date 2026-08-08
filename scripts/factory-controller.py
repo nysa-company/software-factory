@@ -39,6 +39,10 @@ from legacy_closeout import (  # noqa: E402
     ValidationError as ProtectedTerminalError,
     protected_terminal,
 )
+from route_evidence import (  # noqa: E402
+    RouteEvidenceError, authenticated_fallback_head, exact_kit_sha_change,
+    journal_extends, validate_route,
+)
 
 
 SCHEMA = "nysa.software-factory.controller/v1"
@@ -72,6 +76,9 @@ PREVIEW_IDENTITY_WAIT_SECONDS = 900
 COMPLETION_CORRECTION_SCHEMA = (
     "nysa.software-factory.completed-role-correction/v1"
 )
+MODEL_IDENTITY_CORRECTION_SCHEMA = (
+    "nysa.software-factory.completed-role-correction/v2"
+)
 TERMINAL_ADOPTION_SCHEMA = (
     "nysa.software-factory.qualification-terminal-adoption/v2"
 )
@@ -84,6 +91,10 @@ EMERGENCY_TERMINAL_RECONCILIATION_SCHEMA = (
 
 
 class ControllerError(ValueError):
+    pass
+
+
+class ModelIdentityEvidenceError(ControllerError):
     pass
 
 
@@ -670,6 +681,20 @@ class Controller:
             if claim.get("status") != "blocked":
                 continue
             blocked_reason = claim.get("blocked_reason", "")
+            fallback_refusal = re.fullmatch(
+                r"qualification-fallback-refused:"
+                r"(readiness|manifest|attempt_count|handoff|route_policy|provenance|unknown):"
+                r"([0-9a-f]{40})",
+                blocked_reason,
+            )
+            if fallback_refusal is not None:
+                if fallback_refusal.group(2) == self.release_path.name:
+                    emit(
+                        "typed_recovery_refused", ticket,
+                        reason=fallback_refusal.group(1),
+                        recovery_kind="qualification_fallback",
+                    )
+                continue
             if blocked_reason == "role-failure":
                 transition = self.operator_transition(claim)
                 passport = self.authenticated_operator_passport(ticket)
@@ -1764,6 +1789,15 @@ class Controller:
         claims = list(existing)
         if not 0 <= reserved_capacity <= self.capacity:
             raise ControllerError("reserved controller capacity is invalid")
+        if self.qualification:
+            readiness = self.json_call("models", "qualification-readiness", "--json")
+            if (
+                readiness.get("schema")
+                != "nysa.software-factory.qualification-fallback-readiness/v1"
+                or readiness.get("status") != "ready"
+                or not DIGEST.fullmatch(readiness.get("readiness_sha256", ""))
+            ):
+                raise ControllerError("qualification fallback readiness drifted")
         excluded = sorted(
             item["ticket"]
             for item in claims if not self.consumes_capacity(item)
@@ -2961,10 +2995,133 @@ class Controller:
         ]
         return (
             completed.count(expected) == 1
-            and corrections.count((
-                terminal.get("run_id"), COMPLETION_CORRECTION_SCHEMA,
-                claim.get("receipt"), self.release_path.name,
-            )) == 1
+            and sum(
+                item == (
+                    terminal.get("run_id"), schema, claim.get("receipt"),
+                    self.release_path.name,
+                )
+                for item in corrections
+                for schema in {
+                    COMPLETION_CORRECTION_SCHEMA,
+                    MODEL_IDENTITY_CORRECTION_SCHEMA,
+                }
+            ) == 1
+        )
+
+    def direct_model_identity_candidate(
+        self, claim: dict[str, Any], terminal: dict[str, str] | None,
+        receipt: str,
+    ) -> bool:
+        if terminal is None:
+            return False
+        run_id = terminal.get("run_id", "")
+        if (
+            not re.fullmatch(r"[A-Za-z0-9._-]{1,200}", run_id)
+            or terminal.get("ticket") != claim["ticket"]
+            or terminal.get("transition_receipt_sha256") != receipt
+            or terminal.get("phase") != "completed"
+            or terminal.get("accounting_state") != "abandoned_conservative"
+            or terminal.get("go_issued") != "1"
+            or terminal.get("task_submitted") != "1"
+            or terminal.get("exit_status") != "9"
+            or terminal.get("role_exit") != "provider_failed"
+            or terminal.get("terminal_reason_code", "") != ""
+            or terminal.get("role") not in {
+                "planner", "spec-linter", "test-author", "builder", "reviewer",
+                "narrator",
+            }
+            or claim.get("role", "") not in {"", terminal.get("role")}
+            or terminal.get("adapter") not in {"cursor-anthropic", "cursor-openai"}
+            or terminal.get("route_id", "").startswith("cursor-") is not True
+            or not DIGEST.fullmatch(terminal.get("output_sha256", ""))
+            or not terminal.get("progress_events", "").isdigit()
+            or int(terminal["progress_events"]) <= 0
+            or not DIGEST.fullmatch(terminal.get("progress_journal_sha256", ""))
+        ):
+            return False
+        output = self.product / "factory/runs" / f"{run_id}.out"
+        try:
+            info = output.lstat()
+            raw = output.read_bytes()
+        except OSError:
+            return False
+        return (
+            stat.S_ISREG(info.st_mode)
+            and info.st_uid == os.geteuid()
+            and info.st_nlink == 1
+            and len(raw) <= 8 * 1024 * 1024
+            and raw.count(b"cursor reported unapproved model: ") == 1
+            and raw.count(b"Cursor output validation/redaction failed") == 1
+        )
+
+    def recover_direct_model_identity_success(
+        self, claim: dict[str, Any], terminal: dict[str, str], receipt: str,
+    ) -> None:
+        response = self.call(
+            "passport", "recover-model-identity-success",
+            "--ticket", claim["ticket"], "--receipt", receipt,
+            "--run-id", terminal["run_id"],
+            "--workdir", claim["worktree"], "--json",
+        )
+        try:
+            result = json.loads(response.stdout)
+        except json.JSONDecodeError as error:
+            raise ControllerError("model identity recovery returned malformed JSON") from error
+        if not isinstance(result, dict):
+            raise ControllerError("model identity recovery returned malformed JSON")
+        if response.returncode:
+            if (
+                result.get("schema") == "nysa.software-factory.ticket-passport/v1"
+                and result.get("status") == "error"
+                and result.get("error_kind") == "evidence"
+            ):
+                raise ModelIdentityEvidenceError(
+                    "model identity recovery evidence was refused"
+                )
+            raise ControllerError("model identity recovery operation failed")
+        if (
+            result.get("schema") != "nysa.software-factory.ticket-passport/v1"
+            or result.get("status") != "ok"
+            or result.get("ticket") != claim["ticket"]
+            or not DIGEST.fullmatch(result.get("passport", ""))
+        ):
+            raise ControllerError("model identity correction result is invalid")
+        passport = read(
+            self.state / "passports" / f"{claim['ticket']}.json"
+        )
+        if (
+            passport.get("passport_sha256") != result["passport"]
+            or passport.get("head_sha")
+            != subprocess.run(
+                ["git", "-C", claim["worktree"], "rev-parse", "HEAD"],
+                text=True, capture_output=True, check=True, timeout=120,
+            ).stdout.strip()
+        ):
+            raise ControllerError("model identity correction passport is invalid")
+        self.ensure_lease(claim, "model-identity-success-recovery")
+        status, local_head, remote_head = self.remote_cell_head_status(claim)
+        input_head = terminal.get("role_head_before", "")
+        if status == "resume_commit_not_pushed" and remote_head in {"", input_head}:
+            pushed = subprocess.run(
+                ["git", "-C", claim["worktree"], "push", "--no-force", "--",
+                 "origin", f"{local_head}:refs/heads/{claim['branch']}"],
+                text=True, capture_output=True, check=False, timeout=120,
+            )
+            if pushed.returncode:
+                raise ControllerError(
+                    safe_error(pushed.stderr or "model identity output push failed")
+                )
+        elif status != "pushed" or remote_head != local_head:
+            raise ControllerError("model identity recovery remote moved")
+        if not self.remote_passport_valid(claim):
+            raise ControllerError("model identity recovery push is unverified")
+        claim.update(receipt="", role="", status="claimed")
+        claim.pop("blocked_reason", None)
+        self.save_claim(claim)
+        self.event_once(
+            "model_identity_success_recovered", claim["ticket"],
+            failed_run_id=terminal["run_id"],
+            transition_receipt_sha256=receipt,
         )
 
     def ticket_release_current(self, claim: dict[str, Any]) -> bool:
@@ -3084,6 +3241,152 @@ class Controller:
             route.get("kit_sha") != self.release_path.name,
             states != ["Planning"],
             kit_shas != [self.release_path.name],
+        ))
+
+    def exact_passportless_route_migration_refusal(
+        self, claim: dict[str, Any], receipt: dict[str, Any]
+    ) -> bool:
+        worktree = Path(claim["worktree"])
+        ticket_path = f"factory/tickets/{claim['ticket']}.md"
+        route_path = f"factory/route-plans/{claim['ticket']}.json"
+        old_head = receipt.get("head_sha", "")
+        try:
+            current_head = subprocess.run(
+                ["git", "-C", str(worktree), "rev-parse", "HEAD"],
+                text=True, capture_output=True, check=True, timeout=120,
+            ).stdout.strip()
+            clean = subprocess.run(
+                ["git", "-C", str(worktree), "status", "--porcelain=v1", "-z"],
+                text=True, capture_output=True, check=True, timeout=120,
+            ).stdout
+            changed = subprocess.run(
+                ["git", "-C", str(worktree), "diff", "--name-only", old_head, current_head],
+                text=True, capture_output=True, check=True, timeout=120,
+            ).stdout.splitlines()
+            commits = subprocess.run(
+                ["git", "-C", str(worktree), "rev-list", "--count", f"{old_head}..{current_head}"],
+                text=True, capture_output=True, check=True, timeout=120,
+            ).stdout.strip()
+            lineage = subprocess.run(
+                ["git", "-C", str(worktree), "rev-list", "--reverse",
+                 "--ancestry-path", f"{old_head}..{current_head}"],
+                text=True, capture_output=True, check=True, timeout=120,
+            ).stdout.splitlines()
+            merges = subprocess.run(
+                ["git", "-C", str(worktree), "rev-list", "--merges", f"{old_head}..{current_head}"],
+                text=True, capture_output=True, check=True, timeout=120,
+            ).stdout.strip()
+            old_tree = subprocess.run(
+                ["git", "-C", str(worktree), "rev-parse", f"{old_head}^{{tree}}"],
+                text=True, capture_output=True, check=True, timeout=120,
+            ).stdout.strip()
+            old_ticket_blob = subprocess.run(
+                ["git", "-C", str(worktree), "rev-parse", f"{old_head}:{ticket_path}"],
+                text=True, capture_output=True, check=True, timeout=120,
+            ).stdout.strip()
+            old_route = subprocess.run(
+                ["git", "-C", str(worktree), "show", f"{old_head}:{route_path}"],
+                capture_output=True, check=True, timeout=120,
+            ).stdout
+            old_ticket = subprocess.run(
+                ["git", "-C", str(worktree), "show", f"{old_head}:{ticket_path}"],
+                capture_output=True, check=True, timeout=120,
+            ).stdout
+            authenticated_fallback_head(
+                self.product, worktree, claim["ticket"], claim["branch"],
+                old_head, old_route,
+            )
+            parent = old_head
+            previous_route = old_route
+            previous_ticket = old_ticket
+            for commit in lineage:
+                parents = subprocess.run(
+                    ["git", "-C", str(worktree), "rev-list", "--parents",
+                     "-n", "1", commit],
+                    text=True, capture_output=True, check=True, timeout=120,
+                ).stdout.split()
+                paths = subprocess.run(
+                    ["git", "-C", str(worktree), "diff-tree", "--no-commit-id",
+                     "--name-only", "--no-renames", "-r", commit],
+                    text=True, capture_output=True, check=True, timeout=120,
+                ).stdout.splitlines()
+                if parents != [commit, parent] or sorted(paths) != sorted(
+                    (ticket_path, route_path)
+                ):
+                    return False
+                route_raw = subprocess.run(
+                    ["git", "-C", str(worktree), "show", f"{commit}:{route_path}"],
+                    capture_output=True, check=True, timeout=120,
+                ).stdout
+                ticket_raw = subprocess.run(
+                    ["git", "-C", str(worktree), "show", f"{commit}:{ticket_path}"],
+                    capture_output=True, check=True, timeout=120,
+                ).stdout
+                route_value = json.loads(route_raw)
+                ticket_kits = re.findall(
+                    rb"^Kit-SHA:\s*([0-9a-f]{40})\s*$", ticket_raw, re.M,
+                )
+                modes = subprocess.run(
+                    ["git", "-C", str(worktree), "ls-tree", commit, "--",
+                     ticket_path, route_path],
+                    text=True, capture_output=True, check=True, timeout=120,
+                ).stdout.splitlines()
+                if (
+                    len(modes) != 2
+                    or any(not line.startswith("100644 blob ") for line in modes)
+                    or not journal_extends(previous_route, route_raw)
+                    or not exact_kit_sha_change(previous_ticket, ticket_raw)
+                    or ticket_kits != [route_value.get("kit_sha", "").encode()]
+                ):
+                    return False
+                previous_route = route_raw
+                previous_ticket = ticket_raw
+                parent = commit
+            branch = subprocess.run(
+                ["git", "-C", str(worktree), "symbolic-ref", "--quiet", "--short", "HEAD"],
+                text=True, capture_output=True, check=True, timeout=120,
+            ).stdout.strip()
+            common = subprocess.run(
+                ["git", "-C", str(worktree), "rev-parse", "--path-format=absolute",
+                 "--git-common-dir"],
+                text=True, capture_output=True, check=True, timeout=120,
+            ).stdout.strip()
+            product_common = subprocess.run(
+                ["git", "-C", str(self.product), "rev-parse", "--path-format=absolute",
+                 "--git-common-dir"],
+                text=True, capture_output=True, check=True, timeout=120,
+            ).stdout.strip()
+            origins = subprocess.run(
+                ["git", "-C", str(worktree), "remote", "get-url", "--push", "--all", "origin"],
+                text=True, capture_output=True, check=True, timeout=120,
+            ).stdout.splitlines()
+            validate_route(self.product, worktree, claim["ticket"], self.release_path.name)
+        except (OSError, RouteEvidenceError, subprocess.SubprocessError, ValueError):
+            return False
+        return not any((
+            receipt.get("stage")
+            != "REFUSE ticket Kit-SHA lease does not match the selected kit SHA",
+            receipt.get("role") is not None,
+            receipt.get("consumed") is not False,
+            receipt.get("head_tree") != old_tree,
+            receipt.get("ticket_blob") != old_ticket_blob,
+            receipt.get("route_plan_sha256") != hashlib.sha256(old_route).hexdigest(),
+            receipt.get("lease_sha256")
+            != hashlib.sha256(claim.get("lease", "").encode()).hexdigest(),
+            receipt.get("passport_sha256") is not None,
+            branch != claim.get("branch"),
+            not common or not product_common
+            or Path(common).resolve() != Path(product_common).resolve(),
+            len(origins) != 1 or receipt.get("product_origin_sha256")
+            != hashlib.sha256(origins[0].encode()).hexdigest(),
+            not SHA.fullmatch(old_head) or not SHA.fullmatch(current_head),
+            bool(clean),
+            not commits.isdigit() or not 1 <= int(commits) <= 32,
+            len(lineage) != (int(commits) if commits.isdigit() else -1),
+            bool(merges),
+            sorted(changed) != sorted((ticket_path, route_path)),
+            not self.ticket_release_current(claim),
+            not self.remote_cell_head_valid(claim),
         ))
 
     def release_bundle_refreshable(
@@ -3721,6 +4024,74 @@ class Controller:
                 transition_receipt_sha256=transition["receipt"],
             )
 
+    def recover_passportless_route_migrations(
+        self, claims: list[dict[str, Any]],
+    ) -> None:
+        for claim in claims:
+            passport = self.state / "passports" / f"{claim['ticket']}.json"
+            if (
+                claim.get("status") != "blocked"
+                or claim.get("blocked_reason") not in {
+                    "state-machine-refusal",
+                    "model-identity-delivery-retry:" + self.release_path.name,
+                }
+                or claim.get("receipt")
+                or claim.get("role")
+                or claim.get("publication_lease")
+                or claim.get("lease_released") not in {None, True}
+                or self.role_active(claim)
+                or passport.is_symlink()
+            ):
+                continue
+            receipt = self.operator_transition(claim)
+            if receipt is None or not self.exact_passportless_route_migration_refusal(
+                claim, receipt,
+            ):
+                continue
+            failed_receipt = receipt.get("parent_digest", "")
+            terminal = (
+                self.terminal_for_receipt(claim["ticket"], failed_receipt)
+                if DIGEST.fullmatch(failed_receipt) else None
+            )
+            if self.direct_model_identity_candidate(
+                claim, terminal, failed_receipt,
+            ):
+                try:
+                    self.recover_direct_model_identity_success(
+                        claim, terminal, failed_receipt,
+                    )
+                except ModelIdentityEvidenceError as error:
+                    reason = "model-identity-recovery-refused:" + self.release_path.name
+                    self.block(claim, reason)
+                    self.release_ticket_lease(claim)
+                    self.event_once(
+                        "typed_recovery_refused", claim["ticket"],
+                        recovery_kind="model_identity_success",
+                        reason=safe_error(str(error)),
+                    )
+                except (ControllerError, OSError, subprocess.SubprocessError) as error:
+                    self.block(
+                        claim,
+                        "model-identity-delivery-retry:" + self.release_path.name,
+                    )
+                    self.release_ticket_lease(claim)
+                    self.event_once(
+                        "typed_recovery_refused", claim["ticket"],
+                        recovery_kind="model_identity_delivery",
+                        reason=safe_error(str(error)),
+                    )
+                continue
+            if passport.exists():
+                continue
+            self.ensure_lease(claim, "passportless-route-migration")
+            claim.update(receipt="", role="", status="claimed")
+            claim.pop("blocked_reason", None)
+            self.save_claim(claim)
+            self.event_once(
+                "passportless_route_migration_recovered", claim["ticket"],
+                refused_receipt_sha256=receipt["receipt_sha256"],
+            )
+
     def quarantine_legacy_protected_mutation(
         self, claim: dict[str, Any], terminal: dict[str, str]
     ) -> bool:
@@ -4215,6 +4586,9 @@ class Controller:
             ):
                 continue
             terminal = self.terminal_for_receipt(claim["ticket"], claim["receipt"])
+            direct_model_identity_success = self.direct_model_identity_candidate(
+                claim, terminal, claim["receipt"],
+            )
             model_identity_success = (
                 terminal is not None
                 and claim.get("role") == "spec-linter"
@@ -4256,11 +4630,48 @@ class Controller:
             model_recovery_block = (
                 "model-identity-recovery-refused:" + self.release_path.name
             )
+            fallback_refusal = re.fullmatch(
+                r"qualification-fallback-refused:"
+                r"(?:readiness|manifest|attempt_count|handoff|route_policy|provenance|unknown):"
+                + re.escape(self.release_path.name),
+                claim.get("blocked_reason", ""),
+            )
+            if fallback_refusal is not None:
+                continue
             if (
-                model_identity_success
+                (model_identity_success or direct_model_identity_success)
                 and claim.get("blocked_reason") == model_recovery_block
             ):
                 continue
+            if direct_model_identity_success:
+                try:
+                    self.recover_direct_model_identity_success(
+                        claim, terminal, claim["receipt"],
+                    )
+                except ModelIdentityEvidenceError as error:
+                    if not model_identity_success:
+                        self.block(claim, model_recovery_block)
+                        self.release_ticket_lease(claim)
+                        self.event_once(
+                            "typed_recovery_refused", claim["ticket"],
+                            recovery_kind="model_identity_success",
+                            reason=safe_error(str(error)),
+                        )
+                        continue
+                except (ControllerError, OSError, subprocess.SubprocessError) as error:
+                    self.block(
+                        claim,
+                        "model-identity-delivery-retry:" + self.release_path.name,
+                    )
+                    self.release_ticket_lease(claim)
+                    self.event_once(
+                        "typed_recovery_refused", claim["ticket"],
+                        recovery_kind="model_identity_delivery",
+                        reason=safe_error(str(error)),
+                    )
+                    continue
+                else:
+                    continue
             if (
                 self.qualification
                 and terminal is not None
@@ -4763,6 +5174,33 @@ class Controller:
             and terminal.get("task_submitted") == "1"
             and terminal.get("route_id", "").startswith("cursor-")
         )
+        if qualification_fallback and self.direct_model_identity_candidate(
+            claim, terminal, claim["receipt"],
+        ):
+            try:
+                self.recover_direct_model_identity_success(
+                    claim, terminal, claim["receipt"],
+                )
+                return True
+            except ModelIdentityEvidenceError as error:
+                self.block(
+                    claim,
+                    "model-identity-recovery-refused:" + self.release_path.name,
+                )
+                recovery_kind = "model_identity_success"
+            except (ControllerError, OSError, subprocess.SubprocessError) as error:
+                self.block(
+                    claim,
+                    "model-identity-delivery-retry:" + self.release_path.name,
+                )
+                recovery_kind = "model_identity_delivery"
+            self.release_ticket_lease(claim)
+            self.event_once(
+                "typed_recovery_refused", claim["ticket"],
+                recovery_kind=recovery_kind,
+                reason=safe_error(str(error)),
+            )
+            return False
         if not qualification_fallback:
             if self.terminal_already_exported(claim, terminal):
                 self.migrate_passport(claim, publication)
@@ -4794,13 +5232,36 @@ class Controller:
             return True
         if terminal.get("exit_status") != "0" or terminal.get("role_exit") != "ok":
             if qualification_fallback:
-                with self.fallback_lock:
-                    result = self.json_call(
-                        "models", "fallback-auto", "--ticket", claim["ticket"],
-                        "--failed-run", terminal["run_id"],
-                        "--workdir", claim["worktree"],
-                        "--reason", "provider_unavailable", "--json",
+                try:
+                    with self.fallback_lock:
+                        result = self.json_call(
+                            "models", "fallback-auto", "--ticket", claim["ticket"],
+                            "--failed-run", terminal["run_id"],
+                            "--workdir", claim["worktree"],
+                            "--reason", "provider_unavailable", "--json",
+                        )
+                except ControllerError as error:
+                    match = re.search(
+                        r"automatic qualification fallback refused:"
+                        r"(readiness|manifest|attempt_count|handoff|route_policy|provenance|unknown)",
+                        str(error),
                     )
+                    if match is None:
+                        raise
+                    reason_code = match.group(1)
+                    self.block(
+                        claim,
+                        f"qualification-fallback-refused:{reason_code}:"
+                        f"{self.release_path.name}",
+                    )
+                    self.release_ticket_lease(claim)
+                    self.event_once(
+                        "typed_recovery_refused", claim["ticket"],
+                        failed_run_id=terminal["run_id"],
+                        reason=reason_code,
+                        recovery_kind="qualification_fallback",
+                    )
+                    return False
                 if result.get("failed_run_id") != terminal["run_id"]:
                     raise ControllerError("provider fallback did not bind the failed run")
                 self.migrate_passport(claim, publication)
@@ -6070,6 +6531,10 @@ class Controller:
             existing, self.recover_missing_terminals, "missing-terminal",
         )
         self.recover_each(
+            existing, self.recover_passportless_route_migrations,
+            "passportless-route-migration",
+        )
+        self.recover_each(
             existing, self.recover_preflight_blocks, "preflight-retry",
             concurrent=True,
         )
@@ -6204,6 +6669,10 @@ class Controller:
                 )
                 self.recover_each(
                     idle, self.recover_missing_terminals, "missing-terminal",
+                )
+                self.recover_each(
+                    idle, self.recover_passportless_route_migrations,
+                    "passportless-route-migration",
                 )
                 self.recover_each(
                     idle, self.recover_preflight_blocks, "preflight-retry",

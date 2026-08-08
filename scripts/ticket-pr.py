@@ -168,6 +168,17 @@ def project_nonvisual_paths(factory: Path) -> tuple[str, ...]:
     return tuple(sorted(values))
 
 
+def project_preview_provider(factory: Path) -> str:
+    values = re.findall(
+        r"^(?:export\s+)?PREVIEW_PROVIDER\s*=\s*([^\s#]+)\s*$",
+        (factory / "PROJECT.env").read_text(encoding="utf-8"),
+        re.MULTILINE,
+    )
+    if len(values) != 1 or values[0] not in {"none", "railway"}:
+        raise Refusal("PREVIEW_PROVIDER must be exactly railway or none")
+    return values[0]
+
+
 def safe_repo_path(value: object) -> str:
     if (
         not isinstance(value, str)
@@ -771,6 +782,7 @@ def main() -> None:
         product = Path(os.environ["FACTORY_ROOT"]).resolve(strict=True)
         workdir = args.workdir.resolve(strict=True)
         factory = product / "factory"
+        preview_provider = project_preview_provider(factory)
         branch = ticket_branch_prefix(factory) + args.ticket
         expected_origin = os.environ.get("FACTORY_CERTIFIED_PRODUCT_ORIGIN", "")
         origins = git(product, "remote", "get-url", "--push", "--all", "origin").splitlines()
@@ -863,6 +875,8 @@ def main() -> None:
             if preview_identity is not None:
                 publication_mode = "nonvisual"
             else:
+                if preview_provider == "none":
+                    raise Refusal("preview_capability_missing")
                 publication_mode = "railway"
                 preview_urls, preview_identity = railway_preview_evidence(
                     repo, pr["number"], branch, head,

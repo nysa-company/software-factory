@@ -13,6 +13,8 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Iterator
 
+from cursor_model_identity import approved_reported_models
+
 SENSITIVE_KEY = re.compile(
     r"(key|token|secret|password|url|dsn|conn|auth)", re.IGNORECASE
 )
@@ -39,17 +41,6 @@ PRIVATE_KEY = re.compile(
     r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
     re.DOTALL,
 )
-
-# Cursor may report a context tier chosen for the exact requested selection.
-# Keep presentation aliases finite and bound to both the selection ID and its
-# canonical catalog label; never infer a model from a prefix or fuzzy match.
-REPORTED_MODEL_ALIASES = {
-    (
-        "gpt-5.6-sol-high",
-        "GPT-5.6 Sol 272K High",
-    ): frozenset({"GPT-5.6 Sol 1M High"}),
-}
-
 
 def dictionaries(value: Any) -> Iterator[dict[str, Any]]:
     if isinstance(value, dict):
@@ -309,15 +300,11 @@ def main() -> int:
     if malformed_json:
         print("cursor stream contains malformed JSON events", file=sys.stderr)
         return 13
-    approved_reported_models = {
-        expected_model,
-        expected_reported_model,
-        *REPORTED_MODEL_ALIASES.get(
-            (expected_model, expected_reported_model), frozenset()
-        ),
-    }
+    approved_models = approved_reported_models(
+        expected_model, expected_reported_model,
+    )
     unapproved_models = [
-        model for model in reported_models if model not in approved_reported_models
+        model for model in reported_models if model not in approved_models
     ]
     if unapproved_models:
         print(f"cursor reported unapproved model: {unapproved_models[0]}", file=sys.stderr)

@@ -1599,7 +1599,9 @@ require_clean_product() {
 }
 
 certify_script_path() {
-  python3 - "$1/factory/PROJECT.env" "$1" <<'PY'
+  python3 - "$1/factory/PROJECT.env" "$1" \
+    "$SCRIPT_ROOT/scripts/ticket-pr.py" <<'PY'
+import importlib.util
 import os
 import pathlib
 import shlex
@@ -1609,21 +1611,33 @@ env_file = pathlib.Path(sys.argv[1])
 root = pathlib.Path(sys.argv[2]).resolve()
 if not env_file.is_file():
     raise SystemExit("factory/PROJECT.env is required")
-value = None
+scripts = []
 for raw in env_file.read_text().splitlines():
     line = raw.strip()
     if not line or line.startswith("#") or "=" not in line:
         continue
     key, candidate = line.split("=", 1)
-    if key.strip() == "CERTIFY_SCRIPT":
+    key = key.strip()
+    if key == "CERTIFY_SCRIPT":
         words = shlex.split(candidate, comments=False, posix=True)
         if len(words) != 1:
             raise SystemExit("CERTIFY_SCRIPT must be one repository-contained path")
-        value = words[0]
-        break
-if not value:
-    raise SystemExit("PROJECT.env must define CERTIFY_SCRIPT")
-path = pathlib.Path(value)
+        scripts.extend(words)
+if len(scripts) != 1:
+    raise SystemExit("PROJECT.env must define exactly one CERTIFY_SCRIPT")
+spec = importlib.util.spec_from_file_location("factory_ticket_pr", sys.argv[3])
+if spec is None or spec.loader is None:
+    raise SystemExit("NONVISUAL_PATHS validator is unavailable")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+try:
+    preview = module.project_preview_provider(root / "factory")
+    nonvisual = module.project_nonvisual_paths(root / "factory")
+except (OSError, UnicodeError, module.Refusal) as error:
+    raise SystemExit(str(error)) from error
+if preview == "none" and not nonvisual:
+    raise SystemExit("PREVIEW_PROVIDER=none requires strict NONVISUAL_PATHS")
+path = pathlib.Path(scripts[0])
 if path.is_absolute() or ".." in path.parts or "." in path.parts:
     raise SystemExit("CERTIFY_SCRIPT must be a contained relative path")
 resolved = (root / path).resolve()

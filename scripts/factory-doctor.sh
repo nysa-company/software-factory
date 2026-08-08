@@ -575,6 +575,29 @@ for cli_name in claude codex agent gh; do
     "$(printf '%s' "$cli_version" | sanitize | tr '\t\r\n' '___')" >> "$CLI_FILE"
 done
 
+FALLBACK_READINESS_STATUS="not_applicable"
+FALLBACK_READINESS_JSON="null"
+if [[ "${FACTORY_KIT_TRUST_SCOPE:-}" == "qualification-candidate" ]]; then
+  FALLBACK_READINESS_STATUS="error"
+  if FALLBACK_READINESS_RAW="$(
+      /bin/bash "$KIT_DIR/scripts/model-control.sh" qualification-readiness 2>/dev/null
+    )"; then
+    FALLBACK_READINESS_EXIT=0
+  else
+    FALLBACK_READINESS_EXIT=$?
+  fi
+  if FALLBACK_READINESS_JSON="$($PYTHON_BIN - "$FALLBACK_READINESS_RAW" <<'PY'
+import json, sys
+value = json.loads(sys.argv[1])
+assert value.get("schema") == "nysa.software-factory.qualification-fallback-readiness/v1"
+assert value.get("status") in {"ready", "invalid"}
+print(json.dumps(value, sort_keys=True, separators=(",", ":")))
+PY
+)"; then
+    [[ "$FALLBACK_READINESS_EXIT" -eq 0 ]] && FALLBACK_READINESS_STATUS="ok"
+  fi
+fi
+
 GH_PRESENT="false"
 LINEAR_PRESENT="false"
 if [[ ${GH_TOKEN+x} == x ]]; then
@@ -897,7 +920,8 @@ fi
 OVERALL_STATUS="ok"
 for check_status in "$REGISTRY_STATUS" "$KIT_STATUS" "$PIN_STATUS" "$RUNTIME_STATUS" \
                     "$HERMES_STATUS" "$CLI_STATUS" "$CREDENTIAL_STATUS" "$LINEAR_STATUS" \
-                    "$PROVIDER_RUNTIME_STATUS" "$CONTRACT_RESUME_STATUS"; do
+                    "$PROVIDER_RUNTIME_STATUS" "$CONTRACT_RESUME_STATUS" \
+                    "$FALLBACK_READINESS_STATUS"; do
   if [[ "$check_status" == "error" ]]; then
     OVERALL_STATUS="error"
     break
@@ -932,6 +956,7 @@ export PROVIDER_EXECUTION_MODE
 export PROVIDER_ACTIVE_TOKENS PROVIDER_UNKNOWN_WORKERS PROVIDER_LEGACY_INTERVALS
 export PROVIDER_CONCURRENCY_REQUIRED PROVIDER_CONCURRENCY_READY
 export CONTRACT_RESUME_STATUS CONTRACT_RESUME_FILE OVERALL_STATUS RUN_FILE
+export FALLBACK_READINESS_STATUS FALLBACK_READINESS_JSON
 
 if [[ "$JSON_MODE" -eq 1 ]]; then
   "$PYTHON_BIN" <<'PY'
@@ -1031,6 +1056,10 @@ document = {
         "clis": {
             "status": os.environ["CLI_STATUS"],
             "items": clis,
+        },
+        "fallback_readiness": {
+            "status": os.environ["FALLBACK_READINESS_STATUS"],
+            "report": json.loads(os.environ["FALLBACK_READINESS_JSON"]),
         },
         "credentials": {
             "status": os.environ["CREDENTIAL_STATUS"],

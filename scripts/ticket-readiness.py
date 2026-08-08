@@ -72,6 +72,26 @@ def field(text: str, name: str) -> str:
     return values[0]
 
 
+def builder_paths(text: str) -> list[str]:
+    raw = field(text, "Builder ownership")
+    if not raw.endswith(" only"):
+        raise ReadinessError("Builder ownership must end with only")
+    values = [item.strip() for item in raw[:-5].split(",")]
+    if not values or len(values) != len(set(values)):
+        raise ReadinessError("Builder ownership paths are empty or duplicated")
+    for value in values:
+        path = PurePosixPath(value)
+        if (
+            path.is_absolute()
+            or not path.parts
+            or value.endswith("/")
+            or any(part in {"", ".", ".."} for part in path.parts)
+            or not re.fullmatch(r"[A-Za-z0-9._/@+-]+", value)
+        ):
+            raise ReadinessError("Builder ownership contains an unsafe path")
+    return values
+
+
 def paths(text: str, name: str, workdir: Path) -> list[str]:
     raw = field(text, name)
     if raw.casefold() == "none":
@@ -140,6 +160,7 @@ def validate(ticket: str, workdir: Path) -> None:
     text = ticket_path.read_text(encoding="utf-8")
     if field(text, "Product-Decisions").casefold() != "frozen":
         raise ReadinessError("product decisions are not frozen")
+    builder_paths(text)
     fixture_seams = paths(text, "Fixture-Seams", workdir)
     paths(text, "Authentication-Seams", workdir)
     protected_test_conflicts(text, workdir, fixture_seams)

@@ -1033,6 +1033,7 @@ EOF
 PROJECT_NAME=$project
 TICKET_BRANCH_PREFIX=ticket/
 TEST_PATHS="app/tests/"
+PREVIEW_PROVIDER=railway
 WORKTREES_DIR=$root/worktrees
 EOF
   printf '%s\n' "$sha" > "$root/product/factory/KIT_PIN"
@@ -1050,6 +1051,12 @@ Priority: low
 Risk class: low
 External: no
 Kit-SHA: $sha
+Product-Decisions: frozen
+Depends-On: none
+Builder ownership: app/server.js only
+Fixture-Seams: app/tests/health.test.js
+Authentication-Seams: none
+Protected-Test-Conflicts: none
 
 ## Description
 
