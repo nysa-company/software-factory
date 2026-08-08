@@ -1608,6 +1608,12 @@ deleted or rewritten during planning or activation, so a shared qualification
 cell cannot be detached. A genuinely nonterminal protected ticket still uses
 the exact remote branch and in-flight release authorization and remains
 fail-closed on local, tracking, or remote ambiguity.
+Production reconciliation also treats the exact committed Canceled state as
+retirement authority for a retained controller claim. After any active role
+drains, it withdraws publication, releases only that claim's exact lease, emits
+one retirement event, and removes the claim before recovery; it never
+reacquires a lease or replays role evidence. Qualification continues to require
+Done for every selected target and does not count Canceled as completion.
 
 The activation journal advances through `prepared`,
 `maintenance_published`, `launch_drained`, `services_stopped`,

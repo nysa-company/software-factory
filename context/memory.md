@@ -104,6 +104,11 @@ everything the Factory actually enforces lives here.
   considering retained ticket refs. A stale terminal ref is left untouched for
   lane safety; genuinely nonterminal protected truth still requires the exact
   branch lease and authorization.
+- Production reconciliation retires an idle retained claim when its committed
+  ticket state is exactly Canceled. It withdraws publication, releases only the
+  exact retained lease, records one event, and removes the claim before any
+  recovery path can reacquire it. Active roles drain first; qualification still
+  requires Done and never counts Canceled as a successful target.
 - Done is projected through one separate exact-ticket Linear mutation only
   after the closeout receipt validates on protected main. The issue is re-read
   as exact Done and one controller event is recorded before lease release;
@@ -4462,3 +4467,14 @@ repeats an uncertain mutation, including inside the GraphQL transport helper.
 Operator evidence and selected success become durable only with the exact
 intended-Project issue and its complete non-canceled state, while a post-map clear interruption
 retries the same matching one-use clear without touching siblings.
+
+## 2026-08-08 — Decision 331: Canceled claims retire before recovery
+
+Category: Reliability
+
+Production uses the committed Canceled state as terminal retirement authority
+for an idle retained controller claim. Publication and the exact lease are
+released before the claim is removed, so superseded tickets cannot re-enter
+release, contract-block, or targeted repair loops. An active role must drain,
+and qualification continues to require Done rather than treating cancellation
+as lane success.

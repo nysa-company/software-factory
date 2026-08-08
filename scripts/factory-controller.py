@@ -1874,6 +1874,45 @@ class Controller:
         states = re.findall(r"^State:\s*(.*?)\s*$", text, re.I | re.M)
         return len(states) == 1 and states[0].casefold() == "done"
 
+    def product_ticket_canceled(self, ticket: str) -> bool:
+        if self.qualification:
+            return False
+        observed = subprocess.run(
+            [
+                "git", "-C", str(self.product), "show",
+                f"refs/remotes/origin/main:factory/tickets/{ticket}.md",
+            ],
+            text=True, capture_output=True, check=False, timeout=120,
+        )
+        if observed.returncode != 0:
+            return False
+        states = re.findall(
+            r"^State:\s*(.*?)\s*$", observed.stdout, re.I | re.M,
+        )
+        return len(states) == 1 and states[0].casefold() == "canceled"
+
+    def retire_canceled_claims(
+        self, claims: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        retained = []
+        for claim in claims:
+            if (
+                not self.product_ticket_canceled(claim["ticket"])
+                or self.role_active(claim)
+            ):
+                retained.append(claim)
+                continue
+            self.withdraw_publication(claim)
+            if claim.get("lease_released") is not True:
+                if not DIGEST.fullmatch(claim.get("lease", "")):
+                    raise ControllerError("canceled ticket claim lease is invalid")
+                self.release_ticket_lease(claim)
+            self.event_once(
+                "ticket_retired", claim["ticket"], reason="canceled",
+            )
+            self.claim_path(claim["ticket"]).unlink(missing_ok=True)
+        return retained
+
     def recover_missing_passport_claims(
         self, claims: list[dict[str, Any]]
     ) -> None:
@@ -6520,6 +6559,7 @@ class Controller:
                 if claim["ticket"] not in tickets:
                     self.withdraw_publication(claim)
             existing = [claim for claim in existing if claim["ticket"] in tickets]
+        existing = self.retire_canceled_claims(existing)
         completed = [
             claim for claim in existing
             if self.product_ticket_done(claim["ticket"])
