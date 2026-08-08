@@ -1701,7 +1701,12 @@ withdraws publication, releases only that claim's exact lease, emits one
 retirement event, and removes the claim before recovery; it never reacquires a
 lease or replays role evidence. A crash after publication release is recovered
 only when a capability-bound retry plus withdrawal proves that ticket has no
-publication state. Qualification continues to require Done for every selected
+publication state. A retained claim with an exact empty lease has nothing to
+release and still retires; malformed lease evidence or a failed publication or
+lease cleanup remains ticket-local and cannot stop sibling reconciliation.
+Malformed parked lease evidence is loaded only into the existing invalid-ticket
+quarantine and cannot enter recovery, admission, or scheduling.
+Qualification continues to require Done for every selected
 target and does not count Canceled as completion.
 
 The activation journal advances through `prepared`,

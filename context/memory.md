@@ -4647,3 +4647,15 @@ provider work drained. Certification then binds that exact protected-main
 SHA/tree, and any later commit or protected-main tree drift requires
 recertification.
 SSH aliases remain outside the trusted origin grammar.
+
+## 2026-08-08 — Decision 341: Canceled retirement is ticket-local
+
+Category: Reliability
+
+A protected Canceled claim with an exact empty lease has no dispatcher
+capability to release and retires normally. Malformed lease evidence or a
+publication or lease cleanup refusal retains only that claim and emits one
+bounded waiting event; it never aborts sibling reconciliation. Active roles
+remain untouched until the existing post-drain retirement pass. A parked claim
+with malformed lease evidence enters the existing invalid-ticket quarantine
+and cannot reach recovery, admission, or scheduling.

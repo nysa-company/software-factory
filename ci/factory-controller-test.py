@@ -10884,6 +10884,153 @@ class FactoryControllerTest(unittest.TestCase):
             controller.claim_path(ticket).exists() for ticket in canceled
         ))
 
+    def test_canceled_retirement_isolates_absent_and_invalid_leases(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        for ticket, lease, released in (
+            ("T-110", "", None),
+            ("T-111", "", True),
+            ("T-112", "a" * 64, None),
+            ("T-113", "not-a-lease", None),
+            ("T-114", "b" * 64, None),
+            ("T-115", "c" * 64, None),
+            ("T-116", "d" * 64, None),
+            ("T-117", "e" * 64, None),
+        ):
+            claim = {
+                "branch": f"ticket/{ticket}",
+                "lease": lease,
+                "parked": True,
+                "priority": "normal",
+                "publication_lease": "",
+                "receipt": "",
+                "role": "planner",
+                "schema": CONTROL.CLAIM_SCHEMA,
+                "status": "blocked",
+                "ticket": ticket,
+                "worktree": str(self.root / f"parked/{ticket}"),
+            }
+            Path(claim["worktree"]).mkdir(parents=True)
+            if released is not None:
+                claim["lease_released"] = released
+            controller.save_claim(claim)
+        claims = controller.load_claims()
+        self.assertIn("T-113", controller.invalid_transition_tickets)
+
+        controller.product_ticket_canceled = (
+            lambda ticket, _main=None: ticket != "T-114"
+        )
+        controller.role_active = lambda claim: claim["ticket"] == "T-115"
+        withdrawn = []
+        released = []
+
+        def withdraw(claim):
+            withdrawn.append(claim["ticket"])
+            if claim["ticket"] == "T-117":
+                raise CONTROL.ControllerError("publication unavailable")
+
+        def release(claim):
+            released.append(claim["ticket"])
+            if claim["ticket"] == "T-116":
+                raise CONTROL.ControllerError("lease unavailable")
+
+        controller.withdraw_publication = withdraw
+        controller.release_ticket_lease = release
+
+        retained = controller.retire_canceled_claims(claims, "f" * 40)
+        repeated = controller.retire_canceled_claims(retained, "f" * 40)
+        events = [CONTROL.read(path) for path in controller.events.glob("*.json")]
+
+        self.assertEqual(
+            [claim["ticket"] for claim in retained],
+            ["T-113", "T-114", "T-115", "T-116", "T-117"],
+        )
+        self.assertEqual(repeated, retained)
+        self.assertEqual(released, ["T-112", "T-116", "T-116"])
+        self.assertEqual(
+            withdrawn,
+            [
+                "T-110", "T-111", "T-112", "T-113", "T-116", "T-117",
+                "T-113", "T-116", "T-117",
+            ],
+        )
+        self.assertEqual(
+            sorted([
+                (event["event"], event["ticket"], event.get("reason_code"))
+                for event in events
+            ]),
+            sorted([
+                ("ticket_retired", "T-110", None),
+                ("ticket_retired", "T-111", None),
+                ("ticket_retired", "T-112", None),
+                (
+                    "canceled_ticket_retirement_waiting", "T-113",
+                    "lease_invalid",
+                ),
+                (
+                    "canceled_ticket_retirement_waiting", "T-116",
+                    "lease_release_refused",
+                ),
+                (
+                    "canceled_ticket_retirement_waiting", "T-117",
+                    "publication_withdraw_refused",
+                ),
+                ("controller_claim_invalid", "T-113", "lease_invalid"),
+            ]),
+        )
+        self.assertFalse(any(
+            controller.claim_path(ticket).exists()
+            for ticket in ("T-110", "T-111", "T-112")
+        ))
+        self.assertTrue(all(
+            controller.claim_path(ticket).exists()
+            for ticket in ("T-113", "T-114", "T-115", "T-116", "T-117")
+        ))
+
+    def test_malformed_parked_lease_is_quarantined_before_reconcile_actions(
+        self,
+    ) -> None:
+        controller = CONTROL.Controller(self.args)
+        for ticket, lease in (("T-110", "not-a-lease"), ("T-111", "")):
+            cell = self.root / f"parked/{ticket}"
+            cell.mkdir(parents=True)
+            controller.save_claim({
+                "branch": f"ticket/{ticket}", "lease": lease,
+                "parked": True, "priority": "normal", "publication_lease": "",
+                "receipt": "", "role": "", "schema": CONTROL.CLAIM_SCHEMA,
+                "status": "blocked", "ticket": ticket, "worktree": str(cell),
+            })
+        observed = []
+        controller.cancellation_authority = lambda _claims: None
+        controller.product_ticket_done = lambda ticket: ticket == "T-110"
+        controller.operator_transition = lambda claim: observed.append(
+            ("transition", claim["ticket"])
+        )
+        controller.recover_operator_action_events = lambda claims: observed.extend(
+            ("operator-events", claim["ticket"]) for claim in claims
+        )
+        controller.ensure_lease = lambda claim, label: observed.append(
+            (label, claim["ticket"])
+        )
+        controller.release_inactive_ticket_leases = lambda _claims: None
+        controller.recover_missing_passport_claims = lambda _claims: None
+        controller.record_qualification_done_targets = lambda: None
+        controller.recover_terminal_requests = lambda _claims: None
+        controller.recover_each = lambda *_args, **_kwargs: None
+        controller.claim_new = lambda claims, *_args: claims
+        controller.clear_admission_failure = lambda: None
+        controller.runnable = lambda _claim: False
+        controller.pin_routes = lambda _claims: []
+        controller.role_active = lambda _claim: False
+
+        result = controller.reconcile()
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(
+            observed,
+            [("transition", "T-111"), ("operator-events", "T-111")],
+        )
+        self.assertIn("T-110", controller.invalid_transition_tickets)
+
     def test_publication_repair_releases_merge_lease_and_preserves_checkpoint(self) -> None:
         controller = CONTROL.Controller(self.args)
         claim = {
