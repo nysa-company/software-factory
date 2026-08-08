@@ -3142,6 +3142,7 @@ for surface in [
     "scripts/lib/terminal_backfill.py",
     "scripts/lib/protected_merge_reconciliation.py",
     "scripts/lib/qualification_manifest.py",
+    "scripts/lib/inflight_release.py",
     "scripts/legacy-closeout.py",
     "scripts/protected-merge-reconciliation.py",
     "scripts/terminal-backfill.py",

@@ -11,6 +11,8 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTROL = ROOT / "scripts" / "model-control.sh"
+sys.path.insert(0, str(ROOT / "scripts" / "lib"))
+from inflight_release import verify_migration  # noqa: E402
 
 
 class ModelControlTest(unittest.TestCase):
@@ -28,6 +30,7 @@ class ModelControlTest(unittest.TestCase):
         ).strip()
         (self.product / "factory" / "KIT_PIN").write_text(self.kit_sha + "\n")
         (self.product / "factory" / "PROJECT.env").write_text(
+            "GH_REPO=nysa-company/model-control-test\n"
             "TICKET_BRANCH_PREFIX=ticket/\n"
         )
         (self.product / "factory" / "tickets" / "T-901.md").write_text(
@@ -555,6 +558,141 @@ class ModelControlTest(unittest.TestCase):
 
     def test_migration_preview_binds_one_current_readiness_probe_per_command(self):
         self.command("pin", "--ticket", "T-901", "--workdir", str(self.workdir))
+        source_kit_sha = "a" * 40
+        ticket_path = self.workdir / "factory" / "tickets" / "T-901.md"
+        route_plan = self.workdir / "factory" / "route-plans" / "T-901.json"
+        ticket_path.write_text(
+            ticket_path.read_text().replace(self.kit_sha, source_kit_sha)
+        )
+        source_plan = json.loads(route_plan.read_text())
+        source_plan["kit_sha"] = source_kit_sha
+        route_plan.write_text(
+            json.dumps(source_plan, sort_keys=True, separators=(",", ":")) + "\n"
+        )
+        subprocess.run(
+            ["git", "-C", str(self.workdir), "add", "factory"], check=True,
+        )
+        subprocess.run(
+            [
+                "git", "-C", str(self.workdir), "-c", "user.name=test",
+                "-c", "user.email=test@example.com", "commit", "-qm",
+                "old release route fixture",
+            ],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.workdir), "push", "-q", "origin", "ticket/T-901"],
+            check=True,
+        )
+        source_head = subprocess.check_output(
+            ["git", "-C", str(self.workdir), "rev-parse", "HEAD"], text=True,
+        ).strip()
+
+        sibling_ticket = self.product / "factory" / "tickets" / "T-902.md"
+        sibling_ticket.write_text("# T-902\n\nState: Ready\n")
+        subprocess.run(
+            ["git", "-C", str(self.product), "add", str(sibling_ticket)], check=True,
+        )
+        subprocess.run(
+            [
+                "git", "-C", str(self.product), "commit", "-qm",
+                "add sibling migration fixture",
+            ],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.product), "push", "-q", "origin", "main"],
+            check=True,
+        )
+        sibling_workdir = self.base / "ticket-T-902"
+        subprocess.run(
+            [
+                "git", "-C", str(self.product), "worktree", "add", "-q", "-b",
+                "ticket/T-902", str(sibling_workdir),
+            ],
+            check=True,
+        )
+        sibling_ticket = sibling_workdir / "factory" / "tickets" / "T-902.md"
+        sibling_ticket.write_text(
+            sibling_ticket.read_text() + f"Kit-SHA: {source_kit_sha}\n"
+        )
+        sibling_plan = dict(source_plan)
+        sibling_plan["ticket"] = "T-902"
+        sibling_route = sibling_workdir / "factory" / "route-plans" / "T-902.json"
+        sibling_route.parent.mkdir(parents=True)
+        sibling_route.write_text(
+            json.dumps(sibling_plan, sort_keys=True, separators=(",", ":")) + "\n"
+        )
+        subprocess.run(
+            ["git", "-C", str(sibling_workdir), "add", "factory"], check=True,
+        )
+        subprocess.run(
+            [
+                "git", "-C", str(sibling_workdir), "-c", "user.name=test",
+                "-c", "user.email=test@example.com", "commit", "-qm",
+                "old release sibling route fixture",
+            ],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(sibling_workdir), "push", "-q", "-u", "origin", "ticket/T-902"],
+            check=True,
+        )
+        sibling_head = subprocess.check_output(
+            ["git", "-C", str(sibling_workdir), "rev-parse", "HEAD"], text=True,
+        ).strip()
+        sibling_tree = subprocess.check_output(
+            ["git", "-C", str(sibling_workdir), "rev-parse", "HEAD^{tree}"], text=True,
+        ).strip()
+
+        def authorize(head, state):
+            path = (
+                self.product / "factory" / "migrations" / "inflight-release"
+                / f"{self.kit_sha}.json"
+            )
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({
+                "repository": "nysa-company/model-control-test",
+                "schema": "nysa.software-factory.inflight-release-authorization/v1",
+                "source_kit_sha": source_kit_sha,
+                "target_kit_sha": self.kit_sha,
+                "tickets": [
+                    {
+                        "branch": "ticket/T-901", "head": head, "state": state,
+                        "ticket": "T-901",
+                    },
+                    {
+                        "branch": "ticket/T-902", "head": sibling_head,
+                        "state": "Ready", "ticket": "T-902",
+                    },
+                ],
+            }, sort_keys=True, separators=(",", ":")) + "\n")
+            subprocess.run(
+                ["git", "-C", str(self.product), "add", str(path)], check=True,
+            )
+            subprocess.run(
+                [
+                    "git", "-C", str(self.product), "commit", "-qm",
+                    "authorize in-flight model migration",
+                ],
+                check=True,
+            )
+            subprocess.run(
+                [
+                    "git", "-C", str(self.product), "push", "-q",
+                    str(self.remote), "main:refs/heads/main",
+                ],
+                check=True,
+            )
+            subprocess.run(
+                [
+                    "git", "-C", str(self.product), "update-ref",
+                    "refs/remotes/origin/main", "HEAD",
+                ],
+                check=True,
+            )
+
+        authorize(source_head, "Building")
         release = self.base / "release"
         shutil.copytree(ROOT / "scripts", release / "scripts")
         backend = release / "scripts" / "lib" / "backend-policy.sh"
@@ -564,6 +702,14 @@ class ModelControlTest(unittest.TestCase):
   if [[ ${GH_TOKEN+x} == x ]] || /bin/bash -c ': <&9' 2>/dev/null; then
     FACTORY_RESOLVE_ERROR="github_credential_leaked_to_readiness"
     return 2
+  fi
+  if [[ -n "${FACTORY_TEST_MIGRATION_REMOTE_RACE_SHA:-}" ]]; then
+    /usr/bin/git --git-dir="$TEST_LOCAL_REMOTE" update-ref \
+      refs/heads/ticket/T-901 "$FACTORY_TEST_MIGRATION_REMOTE_RACE_SHA" \
+      "$FACTORY_TEST_MIGRATION_REMOTE_RACE_BASE" || return 2
+  fi
+  if [[ -n "${FACTORY_TEST_MIGRATION_DIRTY_TICKET:-}" ]]; then
+    printf '\nreadiness race fixture\n' >> "$FACTORY_TEST_MIGRATION_DIRTY_TICKET" || return 2
   fi
 ''',
             1,
@@ -616,7 +762,7 @@ PY
         git_wrapper = tools / "git"
         git_wrapper.write_text(
             "#!/usr/bin/env python3\n"
-            "import os, sys\n"
+            "import os, subprocess, sys\n"
             "args = sys.argv[1:]\n"
             "url = os.environ['TEST_GITHUB_URL']\n"
             "network = url in args and ('push' in args or 'ls-remote' in args)\n"
@@ -624,8 +770,25 @@ PY
             "    assert os.environ.get('GH_TOKEN') == 'fixture-token'\n"
             "    assert any('credential.https://github.com.helper=!' in x for x in args)\n"
             "    args = [os.environ['TEST_LOCAL_REMOTE'] if x == url else x for x in args]\n"
+            "    operation = 'push' if 'push' in args else 'ls-remote'\n"
+            "    if operation == 'push' and os.environ.get('FACTORY_TEST_MIGRATION_PUSH_FAIL'):\n"
+            "        with open(os.environ['TEST_GIT_TRACE'], 'a') as handle:\n"
+            "            handle.write('push-fail\\n')\n"
+            "        raise SystemExit(1)\n"
             "    with open(os.environ['TEST_GIT_TRACE'], 'a') as handle:\n"
-            "        handle.write('authenticated-git-network\\n')\n"
+            "        handle.write(operation + '\\n')\n"
+            "    race = os.environ.get('FACTORY_TEST_MIGRATION_PUSH_RACE')\n"
+            "    if operation == 'push' and race:\n"
+            "        ref = 'refs/heads/ticket/T-901'\n"
+            "        old = os.environ['FACTORY_TEST_MIGRATION_PUSH_RACE_BASE']\n"
+            "        command = ['/usr/bin/git', '--git-dir=' + os.environ['TEST_LOCAL_REMOTE'], 'update-ref']\n"
+            "        if race == 'delete':\n"
+            "            command += ['-d', ref, old]\n"
+            "        elif race == 'rewind':\n"
+            "            command += [ref, os.environ['FACTORY_TEST_MIGRATION_PUSH_RACE_SHA'], old]\n"
+            "        else:\n"
+            "            raise AssertionError('unknown push race')\n"
+            "        subprocess.run(command, check=True)\n"
             "else:\n"
             "    assert 'GH_TOKEN' not in os.environ\n"
             "os.execv('/usr/bin/git', ['/usr/bin/git', *args])\n"
@@ -678,11 +841,327 @@ PY
         preview_probes = trace.read_text().splitlines()
         self.assertNotIn("journal", preview)
         self.assertRegex(preview["readiness_sha256"], r"^[0-9a-f]{64}$")
-        route_plan = self.workdir / "factory" / "route-plans" / "T-901.json"
         before_head = subprocess.check_output(
             ["git", "-C", str(self.workdir), "rev-parse", "HEAD"], text=True
         )
         before_plan = route_plan.read_bytes()
+        state_refusal = migrate(
+            "migrate", "--ticket", "T-901", "--workdir", str(self.workdir),
+            "--approve-hash", preview["preview_hash"],
+            "--readiness-hash", preview["readiness_sha256"],
+            "--approved-by", "tester", check=False,
+        )
+        self.assertEqual(state_refusal.returncode, 2)
+        self.assertIn("exact protected in-flight", state_refusal.stdout)
+        self.assertEqual(
+            subprocess.check_output(
+                ["git", "-C", str(self.workdir), "rev-parse", "HEAD"], text=True,
+            ).strip(),
+            source_head,
+        )
+        authorize(source_head, "Ready")
+        (self.workdir / "fixture-note.txt").write_text("authorization head drift\n")
+        subprocess.run(
+            ["git", "-C", str(self.workdir), "add", "fixture-note.txt"], check=True,
+        )
+        subprocess.run(
+            [
+                "git", "-C", str(self.workdir), "-c", "user.name=test",
+                "-c", "user.email=test@example.com", "commit", "-qm",
+                "advance ticket head",
+            ],
+            check=True,
+        )
+        subprocess.run(
+            [
+                "git", "-C", str(self.workdir), "push", "-q", str(self.remote),
+                "ticket/T-901:refs/heads/ticket/T-901",
+            ],
+            check=True,
+        )
+        subprocess.run(
+            [
+                "git", "-C", str(self.workdir), "update-ref",
+                "refs/remotes/origin/ticket/T-901", "HEAD",
+            ],
+            check=True,
+        )
+        advanced_head = subprocess.check_output(
+            ["git", "-C", str(self.workdir), "rev-parse", "HEAD"], text=True,
+        ).strip()
+        head_refusal = migrate(
+            "migrate", "--ticket", "T-901", "--workdir", str(self.workdir),
+            "--approve-hash", preview["preview_hash"],
+            "--readiness-hash", preview["readiness_sha256"],
+            "--approved-by", "tester", check=False,
+        )
+        self.assertEqual(head_refusal.returncode, 2)
+        self.assertIn("exact protected in-flight", head_refusal.stdout)
+        subprocess.run(
+            ["git", "-C", str(self.workdir), "config", "core.filemode", "true"],
+            check=True,
+        )
+        ticket_path.chmod(0o755)
+        subprocess.run(
+            ["git", "-C", str(self.workdir), "add", str(ticket_path)], check=True,
+        )
+        subprocess.run(
+            [
+                "git", "-C", str(self.workdir), "-c", "user.name=test",
+                "-c", "user.email=test@example.com", "commit", "--amend",
+                "--no-edit", "-q",
+            ],
+            check=True,
+        )
+        executable_source_head = subprocess.check_output(
+            ["git", "-C", str(self.workdir), "rev-parse", "HEAD"], text=True,
+        ).strip()
+        self.assertTrue(
+            subprocess.check_output(
+                [
+                    "git", "-C", str(self.workdir), "ls-tree",
+                    executable_source_head, "--", "factory/tickets/T-901.md",
+                ],
+                text=True,
+            ).startswith("100755 blob ")
+        )
+        subprocess.run(
+            [
+                "git", "-C", str(self.workdir), "push", "-q", "--force",
+                str(self.remote), "HEAD:refs/heads/ticket/T-901",
+            ],
+            check=True,
+        )
+        subprocess.run(
+            [
+                "git", "-C", str(self.workdir), "update-ref",
+                "refs/remotes/origin/ticket/T-901", "HEAD",
+            ],
+            check=True,
+        )
+        authorize(executable_source_head, "Ready")
+        source_mode_trace_start = len(network_trace.read_text().splitlines())
+        source_mode_refusal = migrate(
+            "migrate", "--ticket", "T-901", "--workdir", str(self.workdir),
+            "--approve-hash", preview["preview_hash"],
+            "--readiness-hash", preview["readiness_sha256"],
+            "--approved-by", "tester", check=False,
+        )
+        self.assertEqual(source_mode_refusal.returncode, 2)
+        self.assertIn("exact protected in-flight", source_mode_refusal.stdout)
+        self.assertNotIn(
+            "push", network_trace.read_text().splitlines()[source_mode_trace_start:]
+        )
+        self.assertEqual(
+            subprocess.check_output(
+                ["git", "-C", str(self.workdir), "rev-parse", "HEAD"], text=True,
+            ).strip(),
+            executable_source_head,
+        )
+        self.assertEqual(
+            subprocess.check_output(
+                ["git", "-C", str(self.workdir), "status", "--porcelain"], text=True,
+            ),
+            "",
+        )
+        self.assertEqual(route_plan.read_bytes(), before_plan)
+        subprocess.run(
+            [
+                "git", "-C", str(self.workdir), "reset", "--hard", "-q",
+                advanced_head,
+            ],
+            check=True,
+        )
+        subprocess.run(
+            [
+                "git", "-C", str(self.workdir), "push", "-q", "--force",
+                str(self.remote), "HEAD:refs/heads/ticket/T-901",
+            ],
+            check=True,
+        )
+        subprocess.run(
+            [
+                "git", "-C", str(self.workdir), "update-ref",
+                "refs/remotes/origin/ticket/T-901", "HEAD",
+            ],
+            check=True,
+        )
+        authorize(advanced_head, "Ready")
+        before_head = subprocess.check_output(
+            ["git", "-C", str(self.workdir), "rev-parse", "HEAD"], text=True,
+        )
+        dirty_trace_start = len(network_trace.read_text().splitlines())
+        dirty = migrate(
+            "migrate", "--ticket", "T-901", "--workdir", str(self.workdir),
+            "--approve-hash", preview["preview_hash"],
+            "--readiness-hash", preview["readiness_sha256"],
+            "--approved-by", "tester",
+            run_environment={
+                **environment,
+                "FACTORY_TEST_MIGRATION_DIRTY_TICKET": str(ticket_path),
+            },
+            check=False,
+        )
+        self.assertEqual(dirty.returncode, 2)
+        self.assertIn("worktree changed during migration readiness", dirty.stdout)
+        self.assertNotIn(
+            "push", network_trace.read_text().splitlines()[dirty_trace_start:]
+        )
+        self.assertEqual(
+            subprocess.check_output(
+                ["git", "-C", str(self.workdir), "rev-parse", "HEAD"], text=True,
+            ),
+            before_head,
+        )
+        self.assertEqual(route_plan.read_bytes(), before_plan)
+        subprocess.run(
+            ["git", "-C", str(self.workdir), "restore", str(ticket_path)], check=True,
+        )
+        self.assertEqual(
+            subprocess.check_output(
+                ["git", "-C", str(self.workdir), "status", "--porcelain"], text=True,
+            ),
+            "",
+        )
+        race_head = subprocess.check_output(
+            [
+                "git", "-C", str(self.workdir), "-c", "user.name=test",
+                "-c", "user.email=test@example.com", "commit-tree", "HEAD^{tree}",
+                "-p", advanced_head, "-m", "remote race fixture",
+            ],
+            text=True,
+        ).strip()
+        subprocess.run(
+            [
+                "git", "-C", str(self.workdir), "push", "-q", str(self.remote),
+                f"{race_head}:refs/heads/race-fixture",
+            ],
+            check=True,
+        )
+        race_trace_start = len(network_trace.read_text().splitlines())
+        race = migrate(
+            "migrate", "--ticket", "T-901", "--workdir", str(self.workdir),
+            "--approve-hash", preview["preview_hash"],
+            "--readiness-hash", preview["readiness_sha256"],
+            "--approved-by", "tester",
+            run_environment={
+                **environment,
+                "FACTORY_TEST_MIGRATION_REMOTE_RACE_BASE": advanced_head,
+                "FACTORY_TEST_MIGRATION_REMOTE_RACE_SHA": race_head,
+            },
+            check=False,
+        )
+        self.assertEqual(race.returncode, 2)
+        self.assertIn("authorization changed before migration", race.stdout)
+        self.assertNotIn(
+            "push", network_trace.read_text().splitlines()[race_trace_start:]
+        )
+        self.assertEqual(
+            subprocess.check_output(
+                ["git", "-C", str(self.workdir), "rev-parse", "HEAD"], text=True,
+            ),
+            before_head,
+        )
+        self.assertEqual(
+            subprocess.check_output(
+                ["git", "-C", str(self.workdir), "status", "--porcelain"], text=True,
+            ),
+            "",
+        )
+        subprocess.run(
+            [
+                "git", "--git-dir", str(self.remote), "update-ref",
+                "refs/heads/ticket/T-901", advanced_head, race_head,
+            ],
+            check=True,
+        )
+        subprocess.run(
+            [
+                "git", "--git-dir", str(self.remote), "update-ref", "-d",
+                "refs/heads/race-fixture", race_head,
+            ],
+            check=True,
+        )
+        ticket_ref = "refs/heads/ticket/T-901"
+        delete_push_start = len(network_trace.read_text().splitlines())
+        deleted_during_push = migrate(
+            "migrate", "--ticket", "T-901", "--workdir", str(self.workdir),
+            "--approve-hash", preview["preview_hash"],
+            "--readiness-hash", preview["readiness_sha256"],
+            "--approved-by", "tester",
+            run_environment={
+                **environment,
+                "FACTORY_TEST_MIGRATION_PUSH_RACE": "delete",
+                "FACTORY_TEST_MIGRATION_PUSH_RACE_BASE": advanced_head,
+            },
+            check=False,
+        )
+        self.assertEqual(deleted_during_push.returncode, 2)
+        self.assertIn(
+            "push", network_trace.read_text().splitlines()[delete_push_start:]
+        )
+        self.assertNotEqual(
+            subprocess.run(
+                [
+                    "git", "--git-dir", str(self.remote), "rev-parse", "--verify",
+                    "--quiet", ticket_ref,
+                ],
+                stdout=subprocess.PIPE,
+            ).returncode,
+            0,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.workdir), "reset", "--hard", "-q", advanced_head],
+            check=True,
+        )
+        subprocess.run(
+            [
+                "git", "--git-dir", str(self.remote), "update-ref", ticket_ref,
+                advanced_head,
+            ],
+            check=True,
+        )
+        rewind_head = subprocess.check_output(
+            ["git", "-C", str(self.workdir), "rev-parse", f"{advanced_head}^"],
+            text=True,
+        ).strip()
+        rewind_push_start = len(network_trace.read_text().splitlines())
+        rewound_during_push = migrate(
+            "migrate", "--ticket", "T-901", "--workdir", str(self.workdir),
+            "--approve-hash", preview["preview_hash"],
+            "--readiness-hash", preview["readiness_sha256"],
+            "--approved-by", "tester",
+            run_environment={
+                **environment,
+                "FACTORY_TEST_MIGRATION_PUSH_RACE": "rewind",
+                "FACTORY_TEST_MIGRATION_PUSH_RACE_BASE": advanced_head,
+                "FACTORY_TEST_MIGRATION_PUSH_RACE_SHA": rewind_head,
+            },
+            check=False,
+        )
+        self.assertEqual(rewound_during_push.returncode, 2)
+        self.assertIn(
+            "push", network_trace.read_text().splitlines()[rewind_push_start:]
+        )
+        self.assertEqual(
+            subprocess.check_output(
+                ["git", "--git-dir", str(self.remote), "rev-parse", ticket_ref],
+                text=True,
+            ).strip(),
+            rewind_head,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.workdir), "reset", "--hard", "-q", advanced_head],
+            check=True,
+        )
+        subprocess.run(
+            [
+                "git", "--git-dir", str(self.remote), "update-ref", ticket_ref,
+                advanced_head, rewind_head,
+            ],
+            check=True,
+        )
+        after_race_probes = trace.read_text().splitlines()
         drift_environment = {
             **environment,
             "FACTORY_TEST_MIGRATION_READINESS_COUNTER": str(
@@ -715,33 +1194,196 @@ PY
         )
         after_drift_probes = trace.read_text().splitlines()
         self.assertEqual(
-            len(after_drift_probes) - len(preview_probes), len(preview_probes)
+            len(after_drift_probes) - len(after_race_probes), len(preview_probes)
         )
         self.assertEqual(
             (self.base / "migration-readiness-counter").read_text().strip(), "1"
         )
-        applied = migrate(
+        failed_push = migrate(
             "migrate", "--ticket", "T-901", "--workdir", str(self.workdir),
             "--approve-hash", preview["preview_hash"],
             "--readiness-hash", preview["readiness_sha256"],
+            "--approved-by", "tester",
+            run_environment={
+                **environment,
+                "FACTORY_TEST_MIGRATION_PUSH_FAIL": "1",
+            },
+            check=False,
+        )
+        self.assertEqual(failed_push.returncode, 2)
+        pending_child = subprocess.check_output(
+            ["git", "-C", str(self.workdir), "rev-parse", "HEAD"], text=True,
+        ).strip()
+        self.assertEqual(
+            subprocess.check_output(
+                ["git", "-C", str(self.workdir), "rev-parse", "HEAD^"], text=True,
+            ).strip(),
+            advanced_head,
+        )
+        self.assertEqual(
+            subprocess.check_output(
+                ["git", "--git-dir", str(self.remote), "rev-parse", ticket_ref],
+                text=True,
+            ).strip(),
+            advanced_head,
+        )
+        self.assertEqual(
+            subprocess.check_output(
+                [
+                    "git", "-C", str(self.workdir), "rev-parse",
+                    "refs/remotes/origin/ticket/T-901",
+                ],
+                text=True,
+            ).strip(),
+            advanced_head,
+        )
+        retry_preview = migrate(
+            "migrate-plan", "--ticket", "T-901", "--workdir", str(self.workdir)
+        )
+        applied = migrate(
+            "migrate", "--ticket", "T-901", "--workdir", str(self.workdir),
+            "--approve-hash", retry_preview["preview_hash"],
+            "--readiness-hash", retry_preview["readiness_sha256"],
             "--approved-by", "tester",
         )
         self.assertGreaterEqual(len(preview_probes), 6)
         self.assertEqual(
             len(trace.read_text().splitlines()) - len(after_drift_probes),
-            len(preview_probes),
+            len(preview_probes) * 3,
         )
-        self.assertEqual(applied["preview_hash"], preview["preview_hash"])
+        self.assertTrue(applied["recovered"])
+        self.assertEqual(applied["preview_hash"], retry_preview["preview_hash"])
+        self.assertEqual(applied["commit_sha"], pending_child)
         self.assertEqual(
-            network_trace.read_text().splitlines(),
-            ["authenticated-git-network", "authenticated-git-network"],
+            subprocess.check_output(
+                ["git", "-C", str(self.workdir), "rev-parse", "HEAD"], text=True,
+            ).strip(),
+            pending_child,
         )
+        self.assertEqual(
+            subprocess.check_output(
+                ["git", "--git-dir", str(self.remote), "rev-parse", ticket_ref],
+                text=True,
+            ).strip(),
+            pending_child,
+        )
+        self.assertEqual(network_trace.read_text().splitlines().count("push-fail"), 1)
+        self.assertEqual(network_trace.read_text().splitlines().count("push"), 3)
         self.assertEqual(
             json.loads(
                 route_plan.read_text()
             )["schema"],
             "ticket-model-route-journal/v2",
         )
+        self.assertEqual(
+            subprocess.check_output(
+                ["git", "-C", str(sibling_workdir), "rev-parse", "HEAD"], text=True,
+            ).strip(),
+            sibling_head,
+        )
+        self.assertEqual(
+            subprocess.check_output(
+                ["git", "-C", str(sibling_workdir), "rev-parse", "HEAD^{tree}"],
+                text=True,
+            ).strip(),
+            sibling_tree,
+        )
+        canonical_replay_head = subprocess.check_output(
+            ["git", "-C", str(self.workdir), "rev-parse", "HEAD"], text=True,
+        ).strip()
+        ticket_path.chmod(0o755)
+        subprocess.run(
+            ["git", "-C", str(self.workdir), "add", str(ticket_path)], check=True,
+        )
+        subprocess.run(
+            [
+                "git", "-C", str(self.workdir), "-c", "user.name=test",
+                "-c", "user.email=test@example.com", "commit", "--amend",
+                "--no-edit", "-q",
+            ],
+            check=True,
+        )
+        subprocess.run(
+            [
+                "git", "-C", str(self.workdir), "push", "-q", "--force",
+                str(self.remote), "HEAD:refs/heads/ticket/T-901",
+            ],
+            check=True,
+        )
+        subprocess.run(
+            [
+                "git", "-C", str(self.workdir), "update-ref",
+                "refs/remotes/origin/ticket/T-901", "HEAD",
+            ],
+            check=True,
+        )
+        mode_preview = migrate(
+            "migrate-plan", "--ticket", "T-901", "--workdir", str(self.workdir)
+        )
+        mode_refusal = migrate(
+            "migrate", "--ticket", "T-901", "--workdir", str(self.workdir),
+            "--approve-hash", mode_preview["preview_hash"],
+            "--readiness-hash", mode_preview["readiness_sha256"],
+            "--approved-by", "tester", check=False,
+        )
+        self.assertEqual(mode_refusal.returncode, 2)
+        self.assertIn("exact protected in-flight", mode_refusal.stdout)
+        subprocess.run(
+            [
+                "git", "-C", str(self.workdir), "reset", "--hard", "-q",
+                canonical_replay_head,
+            ],
+            check=True,
+        )
+        subprocess.run(
+            [
+                "git", "-C", str(self.workdir), "push", "-q", "--force",
+                str(self.remote), "HEAD:refs/heads/ticket/T-901",
+            ],
+            check=True,
+        )
+        subprocess.run(
+            [
+                "git", "-C", str(self.workdir), "update-ref",
+                "refs/remotes/origin/ticket/T-901", "HEAD",
+            ],
+            check=True,
+        )
+        replay_preview = migrate(
+            "migrate-plan", "--ticket", "T-901", "--workdir", str(self.workdir)
+        )
+        replay_head = subprocess.check_output(
+            ["git", "-C", str(self.workdir), "rev-parse", "HEAD"], text=True,
+        ).strip()
+        protected_head = subprocess.check_output(
+            [
+                "git", "-C", str(self.workdir), "rev-parse",
+                "refs/remotes/origin/main",
+            ],
+            text=True,
+        ).strip()
+        self.assertEqual(
+            verify_migration(
+                self.workdir, protected_head, self.kit_sha, "T-901",
+                "ticket/T-901", replay_head,
+            ),
+            "replay",
+        )
+        replay = migrate(
+            "migrate", "--ticket", "T-901", "--workdir", str(self.workdir),
+            "--approve-hash", replay_preview["preview_hash"],
+            "--readiness-hash", replay_preview["readiness_sha256"],
+            "--approved-by", "tester",
+        )
+        self.assertTrue(replay["recovered"])
+        self.assertEqual(replay["commit_sha"], replay_head)
+        self.assertEqual(
+            subprocess.check_output(
+                ["git", "-C", str(self.workdir), "rev-parse", "HEAD"], text=True,
+            ).strip(),
+            replay_head,
+        )
+        self.assertEqual(network_trace.read_text().splitlines().count("push"), 4)
         bundle = self.workdir / "factory/attestations/T-901/bundle.json"
         bundle.parent.mkdir(parents=True)
         bundle.write_text(json.dumps({"kit_sha": "b" * 40}) + "\n")

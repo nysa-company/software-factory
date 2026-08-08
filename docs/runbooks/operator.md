@@ -591,6 +591,12 @@ any route, family, effort, transport, account, or profile drift fails closed.
 Legacy v1 plans retain their exact encoded provenance and receive the same
 refreshed release-migration revision. Mutating migration refuses absent or
 changed readiness evidence.
+It also revalidates the selected ticket against the same protected authorization
+used by activation and refuses protected-main, remote-head, state, branch,
+repository, or kit drift before writing. A retry is idempotent only for the
+single direct migration child that changed that ticket's Kit-SHA and exact route
+journal, with both paths still regular `100644` blobs; any other child requires
+a new protected authorization.
 Then claim fresh leases before resuming.
 Any branch-head, state, source-kit, candidate-kit, repository, ticket-set, or
 protected-main drift requires a new protected authorization. Never preserve or

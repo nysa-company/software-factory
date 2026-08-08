@@ -1836,6 +1836,54 @@ class TicketPassportTest(unittest.TestCase):
         self.assertEqual(migrated["factory_sha"], "b" * 40)
         self.assertEqual(migrated["current_state"], "Blocked-Escalated")
 
+    def test_inflight_authorization_parser_is_typed_and_size_bound(self) -> None:
+        target = "b" * 40
+        project = (
+            "GH_REPO=nysa-company/relay-factory\n"
+            "TICKET_BRANCH_PREFIX=ticket/\n"
+        )
+        value = {
+            "repository": "nysa-company/relay-factory",
+            "schema": PASSPORT.INFLIGHT_SCHEMA,
+            "source_kit_sha": "a" * 40,
+            "target_kit_sha": target,
+            "tickets": [{
+                "branch": "ticket/T-110", "head": "c" * 40,
+                "state": "Blocked-Escalated", "ticket": "T-110",
+            }],
+        }
+        for field, invalid in (
+            ("source_kit_sha", None),
+            ("source_kit_sha", 1),
+        ):
+            malformed = dict(value)
+            malformed[field] = invalid
+            with self.subTest(field=field, invalid=invalid):
+                with self.assertRaises(PASSPORT.InflightAuthorizationError):
+                    PASSPORT.parse_inflight_authorization(
+                        json.dumps(malformed), project, target,
+                    )
+        for field, invalid in (("ticket", None), ("head", 1), ("state", [])):
+            malformed = json.loads(json.dumps(value))
+            malformed["tickets"][0][field] = invalid
+            with self.subTest(field=field, invalid=invalid):
+                with self.assertRaises(PASSPORT.InflightAuthorizationError):
+                    PASSPORT.parse_inflight_authorization(
+                        json.dumps(malformed), project, target,
+                    )
+        raw = json.dumps(value, sort_keys=True, separators=(",", ":"))
+        limit = 1024 * 1024
+        exact = "{" + " " * (limit - len(raw)) + raw[1:]
+        authorization, entries = PASSPORT.parse_inflight_authorization(
+            exact, project, target,
+        )
+        self.assertEqual(authorization, value)
+        self.assertEqual(entries["T-110"], value["tickets"][0])
+        with self.assertRaises(PASSPORT.InflightAuthorizationError):
+            PASSPORT.parse_inflight_authorization(
+                "{" + " " * (limit + 1 - len(raw)) + raw[1:], project, target,
+            )
+
     def test_protected_same_release_test_rewrite_is_exact_and_charged(self) -> None:
         ticket = self.product / "factory/tickets/T-110.md"
         ticket.write_text("# T-110\n\nState: Building\n", encoding="utf-8")

@@ -1317,6 +1317,16 @@ either a v1 ticket route plan or a v2 route journal whose ticket and Kit-SHA
 match the authorization and whose complete history passes the candidate's
 migration validator. The normal maintenance, zero-active-run, and
 zero-dispatcher-lease barriers still apply.
+Activation and mutating model-route migration use the same strict authorization
+parser. Migration revalidates current protected main, the selected remote ticket
+head, repository, source and target kit, branch, and state before changing Git.
+The first application starts at the exact authorized head. An interrupted
+idempotent retry may start only at its one direct child when that commit changes
+only the selected ticket's Kit-SHA and its exact append-only release-migration
+journal, with both paths committed as regular `100644` blobs; sibling entries
+remain neither consumed nor reinterpreted. Every other
+head, state, path, or route-history change requires a new protected
+authorization.
 Qualification upgrades bind liveness to the non-overlapping controller lock
 and active-run markers. A terminal orphaned `running` claim remains portable
 state for the successor controller rather than an upgrade deadlock.

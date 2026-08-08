@@ -2496,6 +2496,9 @@ factory, candidate, lib, candidate_scripts, origin, certified_previous_tree = (
 )
 sys.path.insert(0, sys.argv[3])
 from effective_ticket import ticket_branch_prefix
+from inflight_release import (
+    AuthorizationError, authorize_ticket, parse_authorization, unique_object,
+)
 from legacy_closeout import (
     ValidationError, certified_legacy_terminal, protected_terminal,
 )
@@ -2526,14 +2529,6 @@ def load_migration_policy():
     migration_policy = manager, catalog, routes, profiles
     return migration_policy
 
-def no_duplicates(pairs):
-    value = {}
-    for key, item in pairs:
-        if key in value:
-            raise ValueError("duplicate key")
-        value[key] = item
-    return value
-
 def load_inflight_authorization():
     global authorization, authorized
     if authorization is not None:
@@ -2545,8 +2540,6 @@ def load_inflight_authorization():
     )
     if result.returncode:
         raise SystemExit("nonterminal ticket uses another kit without an exact in-flight release authorization")
-    if len(result.stdout.encode("utf-8")) > 1024 * 1024:
-        raise SystemExit("in-flight release authorization is malformed")
     head = subprocess.check_output(
         ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True,
     ).strip()
@@ -2557,77 +2550,29 @@ def load_inflight_authorization():
     if not remote_main or remote_main[0] != head:
         raise SystemExit("in-flight release authorization is not on protected main")
 
-    try:
-        value = json.loads(result.stdout, object_pairs_hook=no_duplicates)
-    except (json.JSONDecodeError, ValueError):
-        raise SystemExit("in-flight release authorization is malformed")
-    expected = {
-        "schema", "repository", "source_kit_sha", "target_kit_sha", "tickets",
-    }
-    if (
-        not isinstance(value, dict)
-        or set(value) != expected
-        or value.get("schema") != "nysa.software-factory.inflight-release-authorization/v1"
-    ):
-        raise SystemExit("in-flight release authorization is malformed")
     project = factory / "PROJECT.env"
-    repositories = []
-    for raw in project.read_text().splitlines():
-        match = re.fullmatch(
-            r"\s*(?:export\s+)?GH_REPO\s*=\s*['\"]?([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)['\"]?\s*",
-            raw,
-        )
-        if match:
-            repositories.append(match.group(1))
-    if repositories != [value.get("repository")]:
-        raise SystemExit("in-flight release authorization repository does not match the product")
-    source = value.get("source_kit_sha", "")
     if (
-        not re.fullmatch(r"[0-9a-f]{40}", source)
-        or source == candidate
-        or value.get("target_kit_sha") != candidate
-        or not isinstance(value.get("tickets"), list)
-        or not value["tickets"]
+        not project.is_file() or project.is_symlink()
     ):
-        raise SystemExit("in-flight release authorization kit binding is invalid")
-    entries = {}
-    ordered = []
-    allowed_states = {
-        "Ready", "Planning", "Building", "Review", "Awaiting Approval",
-        "Approved", "Blocked-Escalated",
-    }
-    for item in value["tickets"]:
-        if not isinstance(item, dict) or set(item) != {"ticket", "branch", "head", "state"}:
-            raise SystemExit("in-flight release authorization ticket entry is malformed")
-        ticket_id = item.get("ticket", "")
-        if (
-            not re.fullmatch(r"T-[0-9]+", ticket_id)
-            or item.get("branch") != prefix + ticket_id
-            or not re.fullmatch(r"[0-9a-f]{40}", item.get("head", ""))
-            or item.get("state") not in allowed_states
-            or ticket_id in entries
-        ):
-            raise SystemExit("in-flight release authorization ticket entry is invalid")
-        entries[ticket_id] = item
-        ordered.append(ticket_id)
-    if ordered != sorted(ordered):
-        raise SystemExit("in-flight release authorization tickets are not canonical")
-    authorization = value
-    authorized = entries
+        raise SystemExit("product project descriptor is unsafe")
+    try:
+        authorization, authorized = parse_authorization(
+            result.stdout, project.read_text(), candidate,
+        )
+    except (AuthorizationError, OSError, UnicodeError) as error:
+        raise SystemExit(str(error))
 
 def authorize_inflight(ticket_id, branch, remote_tip, source_ref, state, lease):
     load_inflight_authorization()
-    item = authorized.get(ticket_id)
-    if (
-        lease != authorization["source_kit_sha"]
-        or not remote_tip
-        or source_ref == "HEAD"
-        or item is None
-        or item["branch"] != branch
-        or item["head"] != remote_tip
-        or item["state"] != state
-    ):
-        expected = item or {
+    try:
+        if not remote_tip or source_ref == "HEAD":
+            raise AuthorizationError("remote ticket ref is unavailable")
+        authorize_ticket(
+            authorization, authorized, ticket=ticket_id, branch=branch,
+            head=remote_tip, state=state, source_kit_sha=lease,
+        )
+    except AuthorizationError:
+        expected = authorized.get(ticket_id) or {
             "branch": branch, "head": remote_tip, "state": state,
         }
         raise SystemExit(
@@ -2647,7 +2592,7 @@ def authorize_inflight(ticket_id, branch, remote_tip, source_ref, state, lease):
     if result.returncode or len(result.stdout.encode("utf-8")) > 1024 * 1024:
         raise SystemExit("authorized in-flight ticket lacks a safe migratable route document")
     try:
-        plan = json.loads(result.stdout, object_pairs_hook=no_duplicates)
+        plan = json.loads(result.stdout, object_pairs_hook=unique_object)
         manager, catalog, routes, profiles = load_migration_policy()
         if plan.get("ticket") != ticket_id or plan.get("kit_sha") != authorization["source_kit_sha"]:
             raise ValueError("route plan identity mismatch")

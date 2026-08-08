@@ -4597,3 +4597,15 @@ failed Reviewer cannot consume the Narrator slot through a second paid retry.
 Legacy, absent, malformed, or foreign receipts and ordinary envelope overrides
 cannot spend or enlarge the reserve. Candidate-scoped accounting gives a later
 successor Factory its own sealed allowance.
+
+## 2026-08-08 — Decision 338: In-flight migration consumes activation authority
+
+Category: Trust boundary
+
+Factory activation and mutating model-route migration share one strict parser
+for protected in-flight release authorization. The first migration requires the
+exact authorized remote head, branch, state, source and target kit, repository,
+and current protected main. An idempotent retry is limited to that head's single
+direct child whose only changes are the selected ticket's Kit-SHA and canonical
+append-only release migration, both as regular `100644` blobs; siblings remain
+independent. Every other drift requires a new protected authorization.
