@@ -7644,6 +7644,7 @@ class FactoryControllerTest(unittest.TestCase):
 
     def test_failed_admission_does_not_block_existing_claims(self) -> None:
         controller = CONTROL.Controller(self.args)
+        controller.protected_main_head = lambda: "f" * 40
         claim = {
             "branch": "ticket/T-110",
             "lease": "a" * 64,
@@ -7691,6 +7692,7 @@ class FactoryControllerTest(unittest.TestCase):
 
     def test_named_ticket_refusal_does_not_block_sibling_or_repeat_in_cycle(self) -> None:
         controller = CONTROL.Controller(self.args)
+        controller.protected_main_head = lambda: "f" * 40
         cell = self.root / "cell-1"
         cell.mkdir()
         refusal = {
@@ -8350,6 +8352,7 @@ class FactoryControllerTest(unittest.TestCase):
 
     def test_progressed_ticket_advances_while_sibling_is_still_active(self) -> None:
         controller = CONTROL.Controller(self.args)
+        controller.protected_main_head = lambda: "f" * 40
         claims = []
         for number, ticket in enumerate(("T-110", "T-111"), 1):
             cell = self.root / f"cell-{number}"
@@ -8396,6 +8399,7 @@ class FactoryControllerTest(unittest.TestCase):
         import threading
 
         controller = CONTROL.Controller(self.args)
+        controller.protected_main_head = lambda: "f" * 40
         claims = []
         for number, ticket in enumerate(("T-110", "T-111", "T-112"), 1):
             cell = self.root / f"cell-{number}"
@@ -8452,6 +8456,7 @@ class FactoryControllerTest(unittest.TestCase):
         import time
 
         controller = CONTROL.Controller(self.args)
+        controller.protected_main_head = lambda: "f" * 40
         claims = []
         for number, ticket in enumerate(("T-110", "T-111"), 1):
             cell = self.root / f"cell-{number}"
@@ -8506,6 +8511,7 @@ class FactoryControllerTest(unittest.TestCase):
         import threading
 
         controller = CONTROL.Controller(self.args)
+        controller.protected_main_head = lambda: "f" * 40
         claims = []
         for number, ticket in enumerate(("T-110", "T-111"), 1):
             cell = self.root / f"cell-{number}"
@@ -8571,6 +8577,7 @@ class FactoryControllerTest(unittest.TestCase):
 
     def test_restart_does_not_resubmit_externally_active_role(self) -> None:
         controller = CONTROL.Controller(self.args)
+        controller.protected_main_head = lambda: "f" * 40
         claims = []
         for number, ticket in enumerate(("T-110", "T-111"), 1):
             cell = self.root / f"cell-{number}"
@@ -8608,6 +8615,7 @@ class FactoryControllerTest(unittest.TestCase):
 
     def test_restart_does_not_reattach_parked_ticket_when_cells_are_full(self) -> None:
         controller = CONTROL.Controller(self.args)
+        controller.protected_main_head = lambda: "f" * 40
         controller.capacity = 3
         claims = []
         for number, ticket in enumerate(("T-110", "T-111", "T-112"), 1):
@@ -9475,6 +9483,7 @@ class FactoryControllerTest(unittest.TestCase):
 
     def test_done_product_ticket_prunes_existing_claim_before_recovery(self) -> None:
         controller = CONTROL.Controller(self.args)
+        controller.protected_main_head = lambda: "f" * 40
         (self.product / "factory/tickets").mkdir()
         (self.product / "factory/tickets/T-110.md").write_text(
             "State: Done\n", encoding="utf-8"
@@ -9537,7 +9546,8 @@ class FactoryControllerTest(unittest.TestCase):
         controller.load_claims = lambda: (
             [claim] if controller.claim_path("T-110").exists() else []
         )
-        controller.product_ticket_canceled = lambda _ticket: True
+        controller.protected_main_head = lambda: "f" * 40
+        controller.product_ticket_canceled = lambda _ticket, _main=None: True
         calls = []
         controller.role_active = lambda _claim: False
         controller.withdraw_publication = lambda item: (
@@ -9581,17 +9591,64 @@ class FactoryControllerTest(unittest.TestCase):
             "State: Canceled\n", encoding="utf-8"
         )
         claim = {
+            "branch": "ticket/T-110",
             "lease": "a" * 64,
-            "status": "running",
+            "priority": "normal",
+            "publication_lease": "",
+            "receipt": "",
+            "role": "planner",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "blocked",
             "ticket": "T-110",
+            "worktree": str(self.root / "parked/T-110"),
         }
-        controller.product_ticket_canceled = lambda _ticket: True
-        controller.role_active = lambda _claim: True
-        controller.withdraw_publication = lambda _claim: self.fail(
-            "active cancellation must not release controller resources"
+        controller.save_claim(claim)
+        controller.load_claims = lambda: (
+            [claim] if controller.claim_path("T-110").exists() else []
         )
+        controller.protected_main_head = lambda: "f" * 40
+        controller.product_ticket_canceled = lambda _ticket, _main=None: True
+        active = [True]
+        controller.role_active = lambda _claim: active.pop(0) if active else False
+        entered_loop = False
+        recovered_after_drain = []
 
-        self.assertEqual(controller.retire_canceled_claims([claim]), [claim])
+        def recover_each(claims, *_args, **_kwargs):
+            if entered_loop:
+                recovered_after_drain.extend(item["ticket"] for item in claims)
+
+        def event(name, *_args, **_kwargs):
+            nonlocal entered_loop
+            if name == "controller_started":
+                entered_loop = True
+
+        released = []
+        controller.withdraw_publication = lambda _claim: None
+        controller.release_ticket_lease = lambda item: (
+            released.append(item["ticket"]), item.update(lease_released=True),
+            controller.save_claim(item),
+        )[-1]
+        controller.event_once = lambda *_args, **_kwargs: None
+        controller.event = event
+        controller.recover_operator_action_events = lambda *_args: None
+        controller.record_qualification_done_targets = lambda: None
+        controller.recover_missing_passport_claims = lambda claims: (
+            recovered_after_drain.extend(
+                item["ticket"] for item in claims
+            ) if entered_loop else None
+        )
+        controller.recover_terminal_requests = lambda *_args: None
+        controller.recover_each = recover_each
+        controller.claim_new = lambda claims, *_args: claims
+        controller.clear_admission_failure = lambda: None
+        controller.pin_routes = lambda _claims: []
+
+        result = controller.reconcile()
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(released, ["T-110"])
+        self.assertEqual(recovered_after_drain, [])
+        self.assertFalse(controller.claim_path("T-110").exists())
 
     def test_qualification_never_treats_canceled_as_done(self) -> None:
         controller = CONTROL.Controller(self.args)
@@ -9606,8 +9663,13 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertFalse(controller.product_ticket_canceled("T-110"))
         self.assertEqual(controller.retire_canceled_claims([claim]), [claim])
 
-    def test_canceled_retirement_reads_only_committed_protected_main(self) -> None:
+    def test_canceled_retirement_refreshes_current_protected_main(self) -> None:
         controller = CONTROL.Controller(self.args)
+        remote = self.root / "origin.git"
+        subprocess.run(
+            ["git", "init", "-q", "--bare", "-b", "main", str(remote)],
+            check=True,
+        )
         subprocess.run(
             ["git", "init", "-q", "-b", "main", str(self.product)], check=True,
         )
@@ -9619,8 +9681,31 @@ class FactoryControllerTest(unittest.TestCase):
                 ["git", "-C", str(self.product), "config", key, value],
                 check=True,
             )
+        subprocess.run(
+            ["git", "-C", str(self.product), "remote", "add", "origin", str(remote)],
+            check=True,
+        )
         ticket = self.product / "factory/tickets/T-110.md"
         ticket.parent.mkdir()
+        ticket.write_text("State: Ready\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "-C", str(self.product), "add", "factory"], check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.product), "commit", "-qm", "ready"],
+            check=True,
+        )
+        subprocess.run(
+            [
+                "git", "-C", str(self.product), "push", "-q", "origin", "main",
+            ],
+            check=True,
+        )
+        protected_ready = subprocess.run(
+            ["git", "-C", str(self.product), "rev-parse", "HEAD"],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+
         ticket.write_text("State: Canceled\n", encoding="utf-8")
         subprocess.run(
             ["git", "-C", str(self.product), "add", "factory"], check=True,
@@ -9629,17 +9714,143 @@ class FactoryControllerTest(unittest.TestCase):
             ["git", "-C", str(self.product), "commit", "-qm", "cancel"],
             check=True,
         )
+        local_canceled = subprocess.run(
+            ["git", "-C", str(self.product), "rev-parse", "HEAD"],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
         subprocess.run(
             [
                 "git", "-C", str(self.product), "update-ref",
-                "refs/remotes/origin/main", "HEAD",
+                "refs/remotes/origin/main", local_canceled,
             ],
             check=True,
         )
 
-        ticket.write_text("State: Ready\n", encoding="utf-8")
-
+        self.assertFalse(controller.product_ticket_canceled("T-110"))
+        self.assertEqual(
+            subprocess.run(
+                [
+                    "git", "-C", str(self.product), "rev-parse",
+                    "refs/remotes/origin/main",
+                ],
+                text=True, capture_output=True, check=True,
+            ).stdout.strip(),
+            protected_ready,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.product), "push", "-q", "origin", "main"],
+            check=True,
+        )
+        subprocess.run(
+            [
+                "git", "-C", str(self.product), "update-ref",
+                "refs/remotes/origin/main", protected_ready,
+            ],
+            check=True,
+        )
         self.assertTrue(controller.product_ticket_canceled("T-110"))
+
+    def test_canceled_retirement_recovers_publication_release_save_crash(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        claim = {
+            "branch": "ticket/T-110",
+            "lease": "a" * 64,
+            "priority": "normal",
+            "publication_lease": "b" * 64,
+            "receipt": "",
+            "role": "planner",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "blocked",
+            "ticket": "T-110",
+            "worktree": str(self.root / "parked/T-110"),
+        }
+        controller.save_claim(claim)
+        controller.json_call = lambda *_args, **_kwargs: {"status": "released"}
+        controller.save_claim = lambda _claim: (_ for _ in ()).throw(
+            RuntimeError("crash after publication release")
+        )
+        with self.assertRaisesRegex(RuntimeError, "crash after publication release"):
+            controller.release_publication(claim)
+
+        persisted = CONTROL.read(controller.claim_path("T-110"))
+        self.assertEqual(persisted["publication_lease"], "b" * 64)
+        restarted = CONTROL.Controller(self.args)
+        calls = []
+
+        def json_call(*arguments, **_kwargs):
+            calls.append(arguments[:2])
+            if arguments[:2] == ("publication", "release"):
+                raise CONTROL.ControllerError("publication lease does not match")
+            if arguments[:2] == ("publication", "withdraw"):
+                return {"status": "absent"}
+            if arguments[0] == "release":
+                return {"absent": True, "ticket": "T-110"}
+            self.fail(f"unexpected command: {arguments}")
+
+        restarted.json_call = json_call
+        restarted.product_ticket_canceled = lambda _ticket, _main=None: True
+        restarted.role_active = lambda _claim: False
+        restarted.event_once = lambda *_args, **_kwargs: None
+
+        self.assertEqual(
+            restarted.retire_canceled_claims([persisted], "f" * 40), []
+        )
+        self.assertEqual(
+            calls,
+            [
+                ("publication", "release"),
+                ("publication", "withdraw"),
+                ("release", "--ticket"),
+            ],
+        )
+        self.assertFalse(restarted.claim_path("T-110").exists())
+
+    def test_retired_claims_do_not_reduce_live_capacity_or_repeat_events(self) -> None:
+        (self.product / "factory/PROJECT.env").write_text(
+            "MAX_CONCURRENT_TICKETS=3\n", encoding="utf-8",
+        )
+        controller = CONTROL.Controller(self.args)
+        canceled = {"T-110", "T-111"}
+        claims = []
+        for ticket in ("T-110", "T-111", "T-112", "T-113"):
+            claim = {
+                "branch": f"ticket/{ticket}",
+                "lease": ticket[-1] * 64,
+                "priority": "normal",
+                "publication_lease": "",
+                "receipt": "",
+                "role": "planner",
+                "schema": CONTROL.CLAIM_SCHEMA,
+                "status": "blocked" if ticket in canceled else "running",
+                "ticket": ticket,
+                "worktree": str(self.root / f"parked/{ticket}"),
+            }
+            controller.save_claim(claim)
+            claims.append(claim)
+        controller.product_ticket_canceled = (
+            lambda ticket, _main=None: ticket in canceled
+        )
+        controller.role_active = lambda _claim: False
+        controller.withdraw_publication = lambda _claim: None
+        controller.release_ticket_lease = lambda item: (
+            item.update(lease_released=True), controller.save_claim(item),
+        )[-1]
+
+        retained = controller.retire_canceled_claims(claims, "f" * 40)
+        repeated = controller.retire_canceled_claims(retained, "f" * 40)
+        events = [
+            CONTROL.read(path) for path in controller.events.glob("*.json")
+            if CONTROL.read(path).get("event") == "ticket_retired"
+        ]
+
+        self.assertEqual([item["ticket"] for item in retained], ["T-112", "T-113"])
+        self.assertEqual(repeated, retained)
+        self.assertEqual(controller.capacity, 3)
+        self.assertEqual(sum(map(controller.consumes_capacity, retained)), 2)
+        self.assertEqual(sorted(item["ticket"] for item in events), sorted(canceled))
+        self.assertFalse(any(
+            controller.claim_path(ticket).exists() for ticket in canceled
+        ))
 
     def test_publication_repair_releases_merge_lease_and_preserves_checkpoint(self) -> None:
         controller = CONTROL.Controller(self.args)

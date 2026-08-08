@@ -1874,13 +1874,54 @@ class Controller:
         states = re.findall(r"^State:\s*(.*?)\s*$", text, re.I | re.M)
         return len(states) == 1 and states[0].casefold() == "done"
 
-    def product_ticket_canceled(self, ticket: str) -> bool:
+    def protected_main_head(self) -> str:
+        observed = subprocess.run(
+            [
+                "git", "-C", str(self.product), "ls-remote", "--heads",
+                "origin", "refs/heads/main",
+            ],
+            text=True, capture_output=True, check=False, timeout=120,
+        )
+        fields = observed.stdout.split()
+        if (
+            observed.returncode
+            or len(fields) != 2
+            or not SHA.fullmatch(fields[0])
+            or fields[1] != "refs/heads/main"
+        ):
+            raise ControllerError("protected main cancellation authority is unavailable")
+        with self.git_lock:
+            subprocess.run(
+                [
+                    "git", "-C", str(self.product), "fetch", "--quiet",
+                    "--no-tags", "origin",
+                    "+refs/heads/main:refs/remotes/origin/main",
+                ],
+                check=True, timeout=120,
+            )
+            fetched = subprocess.run(
+                [
+                    "git", "-C", str(self.product), "rev-parse", "--verify",
+                    "refs/remotes/origin/main^{commit}",
+                ],
+                text=True, capture_output=True, check=True, timeout=120,
+            ).stdout.strip()
+        if fetched != fields[0]:
+            raise ControllerError("protected main cancellation authority changed")
+        return fetched
+
+    def product_ticket_canceled(
+        self, ticket: str, protected_main: str | None = None,
+    ) -> bool:
         if self.qualification:
             return False
+        protected_main = protected_main or self.protected_main_head()
+        if not SHA.fullmatch(protected_main):
+            raise ControllerError("protected main cancellation authority is invalid")
         observed = subprocess.run(
             [
                 "git", "-C", str(self.product), "show",
-                f"refs/remotes/origin/main:factory/tickets/{ticket}.md",
+                f"{protected_main}:factory/tickets/{ticket}.md",
             ],
             text=True, capture_output=True, check=False, timeout=120,
         )
@@ -1891,13 +1932,24 @@ class Controller:
         )
         return len(states) == 1 and states[0].casefold() == "canceled"
 
-    def retire_canceled_claims(
+    def cancellation_authority(
         self, claims: list[dict[str, Any]],
+    ) -> str | None:
+        if self.qualification or not claims:
+            return None
+        return self.protected_main_head()
+
+    def retire_canceled_claims(
+        self, claims: list[dict[str, Any]], protected_main: str | None = None,
     ) -> list[dict[str, Any]]:
+        if claims and not self.qualification and protected_main is None:
+            protected_main = self.cancellation_authority(claims)
+        if protected_main is None:
+            return claims
         retained = []
         for claim in claims:
             if (
-                not self.product_ticket_canceled(claim["ticket"])
+                not self.product_ticket_canceled(claim["ticket"], protected_main)
                 or self.role_active(claim)
             ):
                 retained.append(claim)
@@ -2322,13 +2374,20 @@ class Controller:
         self.event("ticket_released", claim["ticket"])
 
     def release_publication(self, claim: dict[str, Any]) -> None:
-        self.json_call(
-            "publication", "release", "--ticket", claim["ticket"],
-            "--lease", claim["publication_lease"], "--json",
-        )
+        try:
+            self.json_call(
+                "publication", "release", "--ticket", claim["ticket"],
+                "--lease", claim["publication_lease"], "--json",
+            )
+        except ControllerError as error:
+            recovered = self.json_call(
+                "publication", "withdraw", "--ticket", claim["ticket"], "--json",
+            )
+            if recovered.get("status") != "absent":
+                raise error
         claim["publication_lease"] = ""
         self.save_claim(claim)
-        self.event("publication_released", claim["ticket"])
+        self.event_once("publication_released", claim["ticket"])
 
     def withdraw_publication(self, claim: dict[str, Any]) -> None:
         if claim.get("publication_lease"):
@@ -6553,13 +6612,14 @@ class Controller:
     def reconcile(self) -> dict[str, Any]:
         self.admission_refusals = {}
         existing = self.load_claims()
+        protected_main = self.cancellation_authority(existing)
         if self.qualification:
             tickets = set(self.qualification["tickets"])
             for claim in existing:
                 if claim["ticket"] not in tickets:
                     self.withdraw_publication(claim)
             existing = [claim for claim in existing if claim["ticket"] in tickets]
-        existing = self.retire_canceled_claims(existing)
+        existing = self.retire_canceled_claims(existing, protected_main)
         completed = [
             claim for claim in existing
             if self.product_ticket_done(claim["ticket"])
@@ -6705,6 +6765,18 @@ class Controller:
                     and time.monotonic() >= retry_after.get(claim["ticket"], 0)
                     and not self.role_active(claim)
                 ]
+                if protected_main is None:
+                    protected_main = self.cancellation_authority(idle)
+                before_retirement = {claim["ticket"] for claim in idle}
+                idle = self.retire_canceled_claims(idle, protected_main)
+                retired = before_retirement - {
+                    claim["ticket"] for claim in idle
+                }
+                if retired:
+                    claims = [
+                        claim for claim in claims
+                        if claim["ticket"] not in retired
+                    ]
                 self.recover_missing_passport_claims(claims)
                 self.recover_terminal_requests(idle)
                 self.recover_each(

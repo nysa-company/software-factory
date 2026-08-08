@@ -1615,11 +1615,15 @@ cell cannot be detached. A genuinely nonterminal protected ticket still uses
 the exact remote branch and in-flight release authorization and remains
 fail-closed on local, tracking, or remote ambiguity.
 Production reconciliation also treats the exact committed Canceled state as
-retirement authority for a retained controller claim. After any active role
-drains, it withdraws publication, releases only that claim's exact lease, emits
-one retirement event, and removes the claim before recovery; it never
-reacquires a lease or replays role evidence. Qualification continues to require
-Done for every selected target and does not count Canceled as completion.
+retirement authority for a retained controller claim. It refreshes and
+byte-reads the current protected `origin/main` commit rather than trusting a
+mutable remote-tracking ref. After any active role drains, the same reconciliation
+withdraws publication, releases only that claim's exact lease, emits one
+retirement event, and removes the claim before recovery; it never reacquires a
+lease or replays role evidence. A crash after publication release is recovered
+only when a capability-bound retry plus withdrawal proves that ticket has no
+publication state. Qualification continues to require Done for every selected
+target and does not count Canceled as completion.
 
 The activation journal advances through `prepared`,
 `maintenance_published`, `launch_drained`, `services_stopped`,

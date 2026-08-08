@@ -105,10 +105,14 @@ everything the Factory actually enforces lives here.
   lane safety; genuinely nonterminal protected truth still requires the exact
   branch lease and authorization.
 - Production reconciliation retires an idle retained claim when its committed
-  ticket state is exactly Canceled. It withdraws publication, releases only the
-  exact retained lease, records one event, and removes the claim before any
-  recovery path can reacquire it. Active roles drain first; qualification still
-  requires Done and never counts Canceled as a successful target.
+  ticket state at the freshly authenticated protected `origin/main` commit is
+  exactly Canceled. It withdraws publication, releases only the exact retained
+  lease, records one event, and removes the claim before any recovery path can
+  reacquire it. Active roles retire at the same reconciliation's post-drain
+  boundary, and an already-released publication capability is cleared only
+  after an absent withdrawal proves no ticket publication state remains.
+  Qualification still requires Done and never counts Canceled as a successful
+  target.
 - Done is projected through one separate exact-ticket Linear mutation only
   after the closeout receipt validates on protected main. The issue is re-read
   as exact Done and one controller event is recorded before lease release;
@@ -4473,11 +4477,13 @@ retries the same matching one-use clear without touching siblings.
 Category: Reliability
 
 Production uses the committed Canceled state as terminal retirement authority
-for an idle retained controller claim. Publication and the exact lease are
-released before the claim is removed, so superseded tickets cannot re-enter
-release, contract-block, or targeted repair loops. An active role must drain,
-and qualification continues to require Done rather than treating cancellation
-as lane success.
+for an idle retained controller claim. The controller refreshes exact protected
+main before making that destructive decision. Publication and the exact lease
+are released crash-idempotently before the claim is removed, so superseded
+tickets cannot re-enter release, contract-block, or targeted repair loops. An
+active role retires at the same reconciliation's post-drain boundary, and
+qualification continues to require Done rather than treating cancellation as
+lane success.
 
 ## 2026-08-08 — Decision 332: Successful role exit restores the tracked ticket mode
 
