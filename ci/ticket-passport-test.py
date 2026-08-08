@@ -2257,6 +2257,10 @@ class TicketPassportTest(unittest.TestCase):
             {"contract_version": "1.8.0", "factory_sha": "a" * 40},
             previous["factory_release_history"],
         )
+        self.state_args.factory_sha = "b" * 40
+        lineage_receipt = STATE.issue(self.state_args, "FIX test-author")
+        self.state_args.receipt = lineage_receipt["receipt_sha256"]
+        STATE.verify(self.state_args, consume=True)
         old_evidence = previous["completed_role_evidence"]
         old_charges = previous["charge_records"]
         subprocess.run(
@@ -2329,16 +2333,25 @@ class TicketPassportTest(unittest.TestCase):
             rewrites[0]["to_route_plan_sha256"],
         )
         self.assertEqual(PASSPORT.migrate(self.passport_args, secret), migrated)
-        exported = PASSPORT.export(self.passport_args, secret)
+        with self.assertRaisesRegex(PASSPORT.PassportError, "receipt"):
+            PASSPORT.export(self.passport_args, secret)
+        exported = PASSPORT.validate(self.passport_args, secret)
         self.assertEqual(exported["head_sha"], rewritten)
         self.assertEqual(exported["charge_records"], old_charges)
 
         consumed = PASSPORT.receipt(
-            self.state_dir, "T-110", repair["receipt_sha256"]
+            self.state_dir, "T-110", lineage_receipt["receipt_sha256"]
         )
         current = PASSPORT.identity(self.passport_args)
         self.assertTrue(STATE.contract_block_head_in_lineage(
             self.state_args, consumed, exported
+        ))
+        self.assertTrue(PASSPORT.migrated_receipt_lineage(
+            self.passport_args, migrated, consumed, current
+        ))
+        stale_consumed = {**consumed, "passport_sha256": "0" * 64}
+        self.assertFalse(PASSPORT.migrated_receipt_lineage(
+            self.passport_args, migrated, stale_consumed, current
         ))
         tampered = dict(migrated)
         tampered["migration_history"] = [
