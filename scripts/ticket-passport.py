@@ -2101,6 +2101,11 @@ def recover_model_identity_success(
     if destination.exists() or destination.is_symlink():
         previous, parent_raw = load_passport(destination, secret)
     role = terminal["role"]
+    migrated_parent = (
+        bool(previous)
+        and transition.get("factory_sha") != args.factory_sha
+        and migrated_receipt_lineage(args, previous, transition, current)
+    )
     existing_corrections = previous.get("completed_role_corrections", [])
     if any(
         isinstance(item, dict)
@@ -2122,7 +2127,8 @@ def recover_model_identity_success(
         return previous
     if previous:
         if any((
-            transition.get("passport_sha256") != parent_raw,
+            transition.get("passport_sha256") != parent_raw
+            and not migrated_parent,
             previous.get("ticket") != args.ticket,
             previous.get("project") != args.project,
             previous.get("branch") != current["branch"],

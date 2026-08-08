@@ -637,6 +637,189 @@ class TicketPassportTest(unittest.TestCase):
                         self.passport_args, PASSPORT.identity(self.passport_args)
                     )
         manifest.write_text(original)
+
+    def test_model_identity_recovery_preserves_migrated_passport_roles(self) -> None:
+        catalog, routes, _profiles, profile_map = ROUTER.load_policy()
+        readiness = {
+            route_id: {
+                "adapter_version": "1.0.0", "reason": "ok",
+                "reported_identity": value["expected_reported_identity"],
+                "state": "READY",
+            }
+            for route_id, value in routes.items() if value["enabled"]
+        }
+        resolution = ROUTER.resolve_policy(
+            catalog, routes, profile_map["cursor-opus-v1"], readiness,
+        )
+        seed = run("git", "rev-parse", "HEAD", cwd=self.product)
+        observed = set()
+        for role in ("test-author", "builder", "reviewer", "narrator"):
+            for migrated in (False, True):
+                with self.subTest(role=role, migrated=migrated):
+                    run("git", "reset", "--hard", seed, cwd=self.product)
+                    shutil.rmtree(self.product / "factory/runs")
+                    (self.product / "factory/runs").mkdir()
+                    state_dir = STATE.safe_state_dir(
+                        self.root / f"controller-{role}-{int(migrated)}"
+                    )
+                    self.state_args.state_dir = state_dir
+                    self.state_args.factory_sha = "a" * 40
+                    self.state_args.role = "planner"
+                    self.passport_args.state_dir = state_dir
+                    self.passport_args.factory_sha = "a" * 40
+                    plan = {
+                        "created_at": "2026-08-07T00:00:00Z",
+                        "kit_sha": "a" * 40,
+                        "resolution": resolution,
+                        "schema": "ticket-model-route-plan/v1",
+                        "ticket": "T-110",
+                    }
+                    route_path = self.product / "factory/route-plans/T-110.json"
+                    route_path.write_text(ROUTER.canonical_json(plan) + "\n")
+                    ticket = self.product / "factory/tickets/T-110.md"
+                    ticket.write_text(
+                        f"# T-110\n\nState: Planning\nKit-SHA: {'a' * 40}\n"
+                    )
+                    run("git", "add", "factory", cwd=self.product)
+                    run("git", "commit", "-qm", f"pin {role}", cwd=self.product)
+                    secret = PASSPORT.key(state_dir)
+
+                    planner = STATE.issue(self.state_args, "RUN planner")
+                    self.state_args.receipt = planner["receipt_sha256"]
+                    STATE.verify(self.state_args, consume=True)
+                    self.terminal(
+                        f"prior-{role}-{int(migrated)}", "planner",
+                        planner["receipt_sha256"], "a" * 40,
+                    )
+                    self.passport_args.receipt = planner["receipt_sha256"]
+                    prior = PASSPORT.export(self.passport_args, secret)
+
+                    self.state_args.role = role
+                    issued = STATE.issue(self.state_args, f"RUN {role}")
+                    self.state_args.receipt = issued["receipt_sha256"]
+                    STATE.verify(self.state_args, consume=True)
+                    input_head = run("git", "rev-parse", "HEAD", cwd=self.product)
+                    if role != "reviewer":
+                        ticket.write_text(
+                            ticket.read_text() + f"\nRole-Result: {role} complete\n"
+                        )
+                        run("git", "add", str(ticket), cwd=self.product)
+                        run("git", "commit", "-qm", f"record {role}", cwd=self.product)
+                    run_id = f"recover-{role}-{int(migrated)}"
+                    self.direct_model_identity_terminal(
+                        run_id, issued["receipt_sha256"], input_head,
+                        role=role, policy_hash=resolution["policy_hash"],
+                    )
+                    self.passport_args.receipt = issued["receipt_sha256"]
+                    self.passport_args.run_id = run_id
+                    observed.add(resolution["selections"][role]["adapter"])
+
+                    def migrate_current_passport() -> dict:
+                        journal = MANAGER.migrate_v1_plan(
+                            route_path.read_bytes(),
+                            run("git", "rev-parse", "HEAD", cwd=self.product),
+                            "b" * 40, "2026-08-07T00:01:00Z",
+                            catalog, routes, profile_map,
+                        )
+                        route_path.write_text(ROUTER.canonical_json(journal) + "\n")
+                        ticket.write_text(
+                            ticket.read_text().replace("a" * 40, "b" * 40)
+                        )
+                        run("git", "add", "factory", cwd=self.product)
+                        run("git", "commit", "-qm", "migrate route", cwd=self.product)
+                        self.passport_args.factory_sha = "b" * 40
+                        return PASSPORT.migrate(self.passport_args, secret)
+
+                    if migrated:
+                        prior = migrate_current_passport()
+                        if role == "test-author":
+                            passport_path = state_dir / "passports/T-110.json"
+                            invalid = json.loads(json.dumps({
+                                key: value for key, value in prior.items()
+                                if key not in {
+                                    "authentication_sha256", "passport_sha256",
+                                }
+                            }))
+                            invalid["migration_history"][-1][
+                                "from_passport_file_sha256"
+                            ] = "0" * 64
+                            PASSPORT.write_atomic(
+                                passport_path, PASSPORT.authenticate(invalid, secret)
+                            )
+                            with self.assertRaisesRegex(
+                                PASSPORT.PassportError, "passport lineage",
+                            ):
+                                PASSPORT.recover_model_identity_success(
+                                    self.passport_args, secret
+                                )
+                            PASSPORT.write_atomic(passport_path, prior)
+
+                    artifacts = {
+                        path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+                        for path in (self.product / "factory/runs").iterdir()
+                    }
+                    recovered = PASSPORT.recover_model_identity_success(
+                        self.passport_args, secret
+                    )
+                    replayed = PASSPORT.recover_model_identity_success(
+                        self.passport_args, secret
+                    )
+                    if not migrated:
+                        direct = replayed
+                        prior = migrate_current_passport()
+                        recovered = PASSPORT.recover_model_identity_success(
+                            self.passport_args, secret
+                        )
+                        replayed = PASSPORT.recover_model_identity_success(
+                            self.passport_args, secret
+                        )
+                        self.assertEqual(
+                            direct["charge_records"], recovered["charge_records"]
+                        )
+                        self.assertEqual(
+                            direct["completed_role_evidence"],
+                            recovered["completed_role_evidence"],
+                        )
+                        self.assertEqual(
+                            direct["completed_role_corrections"],
+                            recovered["completed_role_corrections"],
+                        )
+                    self.assertEqual(
+                        replayed["passport_sha256"], recovered["passport_sha256"]
+                    )
+                    self.assertEqual(
+                        artifacts,
+                        {
+                            path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+                            for path in (self.product / "factory/runs").iterdir()
+                        },
+                    )
+                    self.assertEqual(
+                        sum(
+                            item["run_id"] == run_id
+                            for item in recovered["charge_records"]
+                        ),
+                        1,
+                    )
+                    self.assertEqual(
+                        sum(
+                            item["run_id"] == run_id
+                            for item in recovered["completed_role_evidence"]
+                        ),
+                        1,
+                    )
+                    self.assertEqual(
+                        sum(
+                            item["run_id"] == run_id
+                            for item in recovered["completed_role_corrections"]
+                        ),
+                        1,
+                    )
+                    self.assertEqual(
+                        recovered["charge_records"][0], prior["charge_records"][0]
+                    )
+        self.assertEqual(observed, {"cursor-anthropic", "cursor-openai"})
+
     def test_role_output_uses_one_streaming_eight_mib_bound(self) -> None:
         existing_size = 5_662_048
         self.terminal(
