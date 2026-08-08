@@ -272,21 +272,63 @@ case "$command_name" in
     probe_timeout="${FACTORY_PROBE_TIMEOUT_SEC:-30}"
     command -v timeout >/dev/null 2>&1 ||
       json_error "cursor model inventory requires timeout"
-    command -v "$cursor_bin" >/dev/null 2>&1 ||
+    cursor_bin="$(type -P "$cursor_bin" 2>/dev/null)" ||
       json_error "cursor model inventory executable is unavailable"
+    [[ -n "${CURSOR_AGENT_VERSION:-}" ]] ||
+      json_error "cursor model inventory version is not approved"
     TEMPORARY_DIR="$(mktemp -d "${TMPDIR:-/tmp}/factory-model-inventory.XXXXXX")" ||
       json_error "could not allocate isolated cursor model inventory"
     chmod 700 "$TEMPORARY_DIR"
+    version_output="$(mktemp "$TEMPORARY_DIR/.version.XXXXXX")" ||
+      json_error "could not allocate cursor version output"
+    chmod 600 "$version_output"
+    HOME="$TEMPORARY_DIR" timeout "$probe_timeout" "$cursor_bin" --version \
+      >"$version_output" 2>/dev/null ||
+      json_error "cursor model inventory version is not approved"
+    python3 - "$version_output" "$CURSOR_AGENT_VERSION" <<'PY' ||
+import os
+import stat
+import sys
+
+path, expected = sys.argv[1:]
+descriptor = -1
+try:
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    before = os.fstat(descriptor)
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or before.st_uid != os.geteuid()
+        or before.st_nlink != 1
+        or stat.S_IMODE(before.st_mode) != 0o600
+        or before.st_size > 256
+    ):
+        raise OSError
+    raw = os.read(descriptor, 257)
+    after = os.fstat(descriptor)
+    if (
+        (before.st_dev, before.st_ino, before.st_mode, before.st_size,
+         before.st_mtime_ns)
+        != (after.st_dev, after.st_ino, after.st_mode, after.st_size,
+            after.st_mtime_ns)
+        or raw != f"Cursor Agent {expected}\n".encode()
+    ):
+        raise OSError
+except (OSError, UnicodeError):
+    raise SystemExit(1)
+finally:
+    if descriptor >= 0:
+        os.close(descriptor)
+PY
+      json_error "cursor model inventory version is not approved"
+    rm -f "$version_output"
     credential_reason=""
     if ! credential_reason="$(factory_prepare_cursor_probe_home \
         "$cursor_source_home" "$TEMPORARY_DIR")"; then
       json_error "cursor model inventory refused: ${credential_reason:-credential_invalid}"
     fi
-    installed="$(HOME="$TEMPORARY_DIR" timeout "$probe_timeout" \
-      "$cursor_bin" --version 2>/dev/null | awk 'NR==1 {print $NF; exit}' || true)"
-    [[ -n "${CURSOR_AGENT_VERSION:-}" && "$installed" == "$CURSOR_AGENT_VERSION" ]] ||
-      json_error "cursor model inventory version is not approved"
-    inventory_output="$TEMPORARY_DIR/models.txt"
+    inventory_output="$(mktemp "$TEMPORARY_DIR/.models.XXXXXX")" ||
+      json_error "could not allocate cursor model inventory output"
+    chmod 600 "$inventory_output"
     HOME="$TEMPORARY_DIR" timeout "$probe_timeout" "$cursor_bin" models \
       >"$inventory_output" 2>/dev/null ||
       json_error "cursor model inventory probe failed"
@@ -301,16 +343,32 @@ import sys
 path = pathlib.Path(sys.argv[1])
 try:
     descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-    info = os.fstat(descriptor)
+    before = os.fstat(descriptor)
     if (
-        not stat.S_ISREG(info.st_mode)
-        or info.st_uid != os.geteuid()
-        or info.st_nlink != 1
+        not stat.S_ISREG(before.st_mode)
+        or before.st_uid != os.geteuid()
+        or before.st_nlink != 1
+        or stat.S_IMODE(before.st_mode) != 0o600
+        or before.st_size > 1_000_000
     ):
         raise OSError
-    with os.fdopen(descriptor, "rb") as stream:
-        descriptor = -1
-        raw = stream.read(1_000_001)
+    chunks = []
+    remaining = 1_000_001
+    while remaining:
+        chunk = os.read(descriptor, min(65_536, remaining))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    raw = b"".join(chunks)
+    after = os.fstat(descriptor)
+    if (
+        (before.st_dev, before.st_ino, before.st_mode, before.st_size,
+         before.st_mtime_ns)
+        != (after.st_dev, after.st_ino, after.st_mode, after.st_size,
+            after.st_mtime_ns)
+    ):
+        raise OSError
 except OSError:
     raise SystemExit(1)
 finally:
@@ -325,6 +383,17 @@ except UnicodeError:
 ansi = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 lines = [ansi.sub("", value) for value in text.splitlines()]
 normalized = "\n".join(lines)
+credential = re.compile(
+    r"(?i)(?:"
+    r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----|"
+    r"github_pat_[A-Za-z0-9_]{20,}|"
+    r"gh[opusr]_[A-Za-z0-9]{20,}|"
+    r"sk-(?:proj-)?[A-Za-z0-9_-]{20,}|"
+    r"xox[baprs]-[A-Za-z0-9-]{10,}|"
+    r"AKIA[0-9A-Z]{16}|"
+    r"eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\."
+    r"[A-Za-z0-9_-]{10,})"
+)
 tip = (
     "Tip: use --model <id> (or /model <id> in interactive mode) to switch. "
     "Parameterized models also accept quoted overrides, e.g. --model "
@@ -339,6 +408,7 @@ if (
         r"(?i)https?://|authorization|api[_-]?key|token|secret|password",
         normalized,
     )
+    or credential.search(normalized)
 ):
     raise SystemExit(1)
 model_id = re.compile(r"[a-z0-9][a-z0-9._:/+-]{0,127}")

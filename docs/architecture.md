@@ -218,7 +218,9 @@ contract, and conformance smokes pass. Cursor readiness runs in a disposable
 owner-only home populated from validated owner-only source files; Cursor never
 receives the source home, and the disposable home is removed after the probe.
 The sealed Cursor inventory uses that same disposable-home boundary and first
-requires the configured CLI version. It accepts only the certified `Available
+requires the exact configured CLI identity in an empty disposable home, before
+copying credentials. Captured output is owner-only and accepted only after a
+stable bounded read. It accepts only the certified `Available
 models` envelope, known current/default flags, bounded safe display labels, and
 unique selection IDs, returning the IDs rather than terminal presentation
 text. Unknown structure, malformed or oversized output, and secret-like values

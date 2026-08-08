@@ -218,20 +218,30 @@ class ModelControlTest(unittest.TestCase):
         inventory_tmp = self.base / "inventory-tmp"
         inventory_tmp.mkdir()
         trace = self.base / "inventory.trace"
+        mode_trace = self.base / "inventory-mode.trace"
         fixture = self.base / "models.txt"
+        version = self.base / "version.txt"
         current_fixture = (
             ROOT / "ci/fixtures/cursor-models-2026.07.23-e383d2b.txt"
         ).read_bytes()
         fixture.write_bytes(current_fixture)
+        version.write_text("Cursor Agent 2026.07.23-e383d2b\n")
         agent = tools / "agent"
         agent.write_text(
             "#!/bin/sh\n"
-            "printf '%s|%s\\n' \"$1\" \"$HOME\" >> \"$MODEL_INVENTORY_TRACE\"\n"
+            "credential_state=empty\n"
+            "test ! -e \"$HOME/.cursor/auth.json\" || credential_state=copied\n"
+            "printf '%s|%s|%s\\n' \"$1\" \"$HOME\" \"$credential_state\" "
+            ">> \"$MODEL_INVENTORY_TRACE\"\n"
             "case \"$1\" in\n"
-            "  --version) printf '%s\\n' 'Cursor Agent 2026.07.23-e383d2b' ;;\n"
+            "  --version) cat \"$MODEL_INVENTORY_VERSION\" ;;\n"
             "  models)\n"
             "    printf '%s\\n' changed > \"$HOME/.cursor/cli-config.json\"\n"
+            "    python3 -c 'import os,stat,sys; print(oct(stat.S_IMODE(os.stat(sys.argv[1]).st_mode)))' "
+            "\"$HOME\"/.models.* >> \"$MODEL_INVENTORY_MODE_TRACE\"\n"
             "    cat \"$MODEL_INVENTORY_FIXTURE\"\n"
+            "    test \"${MODEL_INVENTORY_UNSAFE_OUTPUT:-}\" != mode || "
+            "chmod 0644 \"$HOME\"/.models.*\n"
             "    ;;\n"
             "  *) exit 2 ;;\n"
             "esac\n"
@@ -245,7 +255,9 @@ class ModelControlTest(unittest.TestCase):
         self.environment.update(
             FACTORY_CURSOR_SESSION_HOME=str(source),
             MODEL_INVENTORY_FIXTURE=str(fixture),
+            MODEL_INVENTORY_MODE_TRACE=str(mode_trace),
             MODEL_INVENTORY_TRACE=str(trace),
+            MODEL_INVENTORY_VERSION=str(version),
             PATH=f"{tools}:{self.environment['PATH']}",
             TMPDIR=str(inventory_tmp),
         )
@@ -269,8 +281,10 @@ class ModelControlTest(unittest.TestCase):
             "schema": "factory-cursor-model-inventory/v1",
             "status": "ok",
         })
-        self.assertEqual([line.split("|", 1)[0] for line in trace.read_text().splitlines()],
-                         ["--version", "models"])
+        initial_trace = [line.split("|") for line in trace.read_text().splitlines()]
+        self.assertEqual([line[0] for line in initial_trace], ["--version", "models"])
+        self.assertEqual([line[2] for line in initial_trace], ["empty", "copied"])
+        self.assertEqual(mode_trace.read_text().splitlines(), ["0o600"])
         fixture.write_bytes(
             current_fixture.replace(
                 b"Available models", b"\x1b[2mAvailable models\x1b[22m"
@@ -298,6 +312,22 @@ class ModelControlTest(unittest.TestCase):
             "secret": current_fixture.replace(
                 b"GPT-5.6 Sol 272K High", b"API to\x1b[31mken\x1b[0m material"
             ),
+            "github-token": current_fixture.replace(
+                b"gpt-5.6-sol-high", b"gh" + b"p_abcdefghijklmnopqrstuvwxyz012345"
+            ),
+            "openai-token": current_fixture.replace(
+                b"gpt-5.6-sol-high", b"s" + b"k-proj-abcdefghijklmnopqrstuvwxyz012345"
+            ),
+            "slack-token": current_fixture.replace(
+                b"gpt-5.6-sol-high", b"x" + b"oxb-1234567890-abcdefghijklmnopqrstuv"
+            ),
+            "jwt-token": current_fixture.replace(
+                b"GPT-5.6 Sol 272K High",
+                b"eyJabcdefghijk.eyJabcdefghijkl.mnopqrstuvwxyz",
+            ),
+            "private-key": current_fixture.replace(
+                b"GPT-5.6 Sol 272K High", b"-----BEGIN " + b"PRIVATE KEY-----"
+            ),
             "oversized": b"x" * 1_000_001,
         }.items():
             with self.subTest(refusal=name):
@@ -311,6 +341,35 @@ class ModelControlTest(unittest.TestCase):
                 self.assertEqual(list(inventory_tmp.iterdir()), [])
 
         fixture.write_bytes(current_fixture)
+        for output in (
+            "Malicious Shim 2026.07.23-e383d2b\n",
+            "Cursor Agent 2026.07.23-e383d2b\nextra\n",
+            "Cursor Agent 2026.07.23-e383d2b",
+            "x" * 257,
+        ):
+            with self.subTest(version_output=output[:40]):
+                version.write_text(output)
+                calls = len(trace.read_text().splitlines())
+                refused = self.command("inventory", check=False)
+                self.assertEqual(refused.returncode, 2)
+                self.assertIn("version is not approved", refused.stdout)
+                self.assertEqual(len(trace.read_text().splitlines()), calls + 1)
+                self.assertEqual(
+                    trace.read_text().splitlines()[-1].split("|")[2], "empty"
+                )
+                self.assertEqual(list(inventory_tmp.iterdir()), [])
+        version.write_text("Cursor Agent 2026.07.23-e383d2b\n")
+
+        self.environment["MODEL_INVENTORY_UNSAFE_OUTPUT"] = "mode"
+        unsafe_output = self.command("inventory", check=False)
+        self.assertEqual(unsafe_output.returncode, 2)
+        self.assertIn("unsafe or invalid output", unsafe_output.stdout)
+        self.assertEqual(list(inventory_tmp.iterdir()), [])
+        del self.environment["MODEL_INVENTORY_UNSAFE_OUTPUT"]
+        control_text = CONTROL.read_text()
+        self.assertIn("before.st_mtime_ns", control_text)
+        self.assertIn("after.st_mtime_ns", control_text)
+
         approved = self.global_env.read_text()
         self.global_env.write_text(approved.replace(
             "CURSOR_AGENT_VERSION=2026.07.23-e383d2b",
@@ -329,12 +388,13 @@ class ModelControlTest(unittest.TestCase):
         refused = self.command("inventory", check=False)
         self.assertEqual(refused.returncode, 2)
         self.assertIn("cursor_cli_config_mode_0644", refused.stdout)
-        self.assertEqual(len(trace.read_text().splitlines()), calls)
+        self.assertEqual(len(trace.read_text().splitlines()), calls + 1)
+        self.assertEqual(trace.read_text().splitlines()[-1].split("|")[2], "empty")
         self.assertEqual(list(inventory_tmp.iterdir()), [])
         config.chmod(0o600)
 
         probe_homes = {
-            Path(line.split("|", 1)[1]) for line in trace.read_text().splitlines()
+            Path(line.split("|")[1]) for line in trace.read_text().splitlines()
         }
         self.assertNotIn(source, probe_homes)
         self.assertTrue(all(not path.exists() for path in probe_homes))
