@@ -2934,7 +2934,7 @@ launcher_text = open(
     encoding="utf-8",
 ).read()
 assert "/private/tmp/nysa-sf-qualification" in launcher_text
-assert 'optional = ("", "", "", "", "", "", "", "", "")' in launcher_text
+assert 'optional = ("", "", "", "", "", "", "", "", "", "")' in launcher_text
 assert 'WORKTREE_PARENT="$KITS_ROOT/worktrees"' in launcher_text
 assert '"FACTORY_CLI_LANE_ROOT=$QUALIFICATION_ROOT"' in launcher_text
 assert 'KIT_TRUST_SCOPE="qualification-candidate"' in launcher_text
