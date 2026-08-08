@@ -284,8 +284,11 @@ terminal role failure, budget halt, and progress timeout. Every output retains
 the authenticated source-event digest and an opaque cursor bound to the exact
 project controller path, source filename, and digest. Restart validates that
 anchor and resumes after it; missing, replaced, reordered, broadly writable,
-digest-invalid, or malformed action context exits through the same typed
-nonzero boundary without an interpreter traceback. One process inventories
+or digest-invalid evidence exits through the same typed nonzero boundary.
+An otherwise valid action whose historical Factory identity is unavailable is
+instead emitted under the separate operator-watch-diagnostic/v1 schema with a
+fixed reason, null Factory SHA, and no source value echoed; other malformed
+action context remains fatal. One process inventories
 historical filenames once, then parses only newly published events. The single
 live controller serializes event publication and seeds its next monotonic timestamp
 from the largest filename on restart without parsing event bodies; files are

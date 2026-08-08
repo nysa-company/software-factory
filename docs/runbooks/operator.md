@@ -18,6 +18,10 @@ What to do when something breaks, written for a non-technical operator. Each ent
 - Save the opaque `cursor` from the last handled line. After a restart, pass it
   back as `--cursor <value>` so that line is authenticated and not delivered
   again. `--limit N` and `--idle-timeout-seconds N` support bounded drains.
+- A line tagged `operator-watch-diagnostic/v1` with reason
+  `factory_identity_unavailable` reports one authenticated historical action
+  whose Factory SHA cannot be recovered. Inspect that source event; do not
+  infer a SHA. Continue from its cursor so later actions remain visible.
 - A nonzero exit means the selected controller stream, cursor event, ownership,
   mode, path, or digest was lost or changed. Stop the consumer and inspect the
   sealed lane; do not invent a cursor, skip files, or read another project's

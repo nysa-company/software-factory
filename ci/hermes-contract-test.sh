@@ -1579,32 +1579,66 @@ assert_no_secret "$TMP/launcher-watch.jsonl"
 ! grep -Fq "operator-watch-secret" "$TMP/launcher-watch.jsonl" ||
   fail "operator watch leaked source detail"
 rm -f "$EXPECTED_CONTROLLER_STATE/events/9000001-0000000000000001.json"
-python3 - "$EXPECTED_CONTROLLER_STATE/events/9000002-0000000000000002.json" <<'PY'
+python3 - "$EXPECTED_CONTROLLER_STATE/events/9000002-0000000000000002.json" \
+  "$EXPECTED_CONTROLLER_STATE/events/9000003-0000000000000003.json" \
+  "$SHA_MODELS_V18" <<'PY'
 import hashlib, json, os, sys
-value = {
-    "event": "budget_wait",
-    "factory_sha": None,
-    "observed_at_epoch_ns": 9000002,
-    "schema": "nysa.software-factory.controller-event/v1",
-    "ticket": "T-902",
-}
-raw = json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
-value["event_sha256"] = hashlib.sha256(raw.encode()).hexdigest()
-with open(sys.argv[1], "w", encoding="utf-8") as stream:
-    stream.write(json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":")) + "\n")
-os.chmod(sys.argv[1], 0o600)
+for path, epoch, ticket, factory_sha in (
+    (sys.argv[1], 9000002, "T-902", None),
+    (sys.argv[2], 9000003, "T-903", sys.argv[3]),
+):
+    value = {
+        "event": "budget_wait",
+        "factory_sha": factory_sha,
+        "observed_at_epoch_ns": epoch,
+        "schema": "nysa.software-factory.controller-event/v1",
+        "ticket": ticket,
+    }
+    raw = json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    value["event_sha256"] = hashlib.sha256(raw.encode()).hexdigest()
+    with open(path, "w", encoding="utf-8") as stream:
+        stream.write(json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":")) + "\n")
+    os.chmod(path, 0o600)
 PY
-if run_launcher launchtest watch --json --limit 1 --idle-timeout-seconds 1 \
-    > "$TMP/launcher-watch-invalid.out" 2> "$TMP/launcher-watch-invalid.err"; then
-  fail "sealed operator watch accepted a null Factory SHA"
-fi
-[[ ! -s "$TMP/launcher-watch-invalid.out" ]] ||
-  fail "sealed operator watch projected malformed context"
-grep -Fq "operator action context is invalid" "$TMP/launcher-watch-invalid.err" ||
-  fail "sealed operator watch did not return a typed context error"
-! grep -Eq "Traceback|TypeError" "$TMP/launcher-watch-invalid.err" ||
-  fail "sealed operator watch leaked an implementation exception"
-rm -f "$EXPECTED_CONTROLLER_STATE/events/9000002-0000000000000002.json"
+run_launcher launchtest watch --json --limit 1 --idle-timeout-seconds 1 \
+  > "$TMP/launcher-watch-diagnostic.json"
+python3 - "$TMP/launcher-watch-diagnostic.json" > "$TMP/launcher-watch.cursor" <<'PY'
+import json, pathlib, sys
+value = json.loads(pathlib.Path(sys.argv[1]).read_text())
+assert value["schema"] == "nysa.software-factory.operator-watch-diagnostic/v1"
+assert value["action"] == "invalid_action_context"
+assert value["reason"] == "factory_identity_unavailable"
+assert value["factory_sha"] is None
+assert value["ticket"] == "T-902"
+print(value["cursor"])
+PY
+IFS= read -r WATCH_DIAGNOSTIC_CURSOR < "$TMP/launcher-watch.cursor"
+[[ "${#WATCH_DIAGNOSTIC_CURSOR}" -le 1024 &&
+   "$WATCH_DIAGNOSTIC_CURSOR" =~ ^[A-Za-z0-9_-]+$ ]] ||
+  fail "sealed operator watch emitted an invalid diagnostic cursor"
+run_launcher launchtest watch --json \
+  --cursor "$WATCH_DIAGNOSTIC_CURSOR" \
+  --limit 1 --idle-timeout-seconds 1 > "$TMP/launcher-watch-after.json"
+python3 - "$TMP/launcher-watch-after.json" > "$TMP/launcher-watch-after.cursor" <<'PY'
+import json, pathlib, sys
+value = json.loads(pathlib.Path(sys.argv[1]).read_text())
+assert value["schema"] == "nysa.software-factory.operator-watch-event/v1"
+assert value["action"] == "budget_halt"
+assert value["ticket"] == "T-903"
+assert isinstance(value["factory_sha"], str) and len(value["factory_sha"]) == 40
+print(value["cursor"])
+PY
+IFS= read -r WATCH_ACTION_CURSOR < "$TMP/launcher-watch-after.cursor"
+[[ "${#WATCH_ACTION_CURSOR}" -le 1024 &&
+   "$WATCH_ACTION_CURSOR" =~ ^[A-Za-z0-9_-]+$ ]] ||
+  fail "sealed operator watch emitted an invalid action cursor"
+run_launcher launchtest watch --json \
+  --cursor "$WATCH_ACTION_CURSOR" \
+  --idle-timeout-seconds 1 > "$TMP/launcher-watch-idle.out"
+[[ ! -s "$TMP/launcher-watch-idle.out" ]] ||
+  fail "sealed operator watch repeated a handled record after idle restart"
+rm -f "$EXPECTED_CONTROLLER_STATE/events/9000002-0000000000000002.json" \
+  "$EXPECTED_CONTROLLER_STATE/events/9000003-0000000000000003.json"
 
 REORDER_WORKTREE="$TMP/reorder-worktree"
 git -C "$LAUNCH_PRODUCT" worktree add -q -b ticket/T-456 "$REORDER_WORKTREE"
@@ -2752,6 +2786,8 @@ assert commands["reconcile"]["output_schema"] == \
     "nysa.software-factory.controller/v1"
 assert commands["watch"]["output_schema"] == \
     "nysa.software-factory.operator-watch-event/v1"
+assert commands["watch"]["diagnostic_schema"] == \
+    "nysa.software-factory.operator-watch-diagnostic/v1"
 assert commands["qualification"]["output_schema"] == \
     "nysa.software-factory.qualification-report/v1"
 assert commands["state-machine"]["output_schema"] == \

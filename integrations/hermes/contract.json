@@ -104,6 +104,7 @@
         "helper": "scripts/operator-event-watch.py",
         "grammar": "--json [--cursor <opaque-cursor>] [--limit <1-1000>] [--idle-timeout-seconds <1-3600>]",
         "output_schema": "nysa.software-factory.operator-watch-event/v1",
+        "diagnostic_schema": "nysa.software-factory.operator-watch-diagnostic/v1",
         "authority": "read-only newline-delimited, sanitized operator-action projections of authenticated immutable controller events; opaque cursors are bound to the exact project event stream"
       },
       "ticket-control": {
