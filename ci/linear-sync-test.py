@@ -70,6 +70,7 @@ class FakeLinear:
                                 if name == issue["state"]["name"]
                             ),
                         },
+                        "team": issue["team"],
                         "project": issue.get("project"),
                         "title": issue["title"],
                         "updatedAt": issue["updatedAt"],
@@ -158,7 +159,12 @@ class FakeLinear:
                 "title": data["title"],
                 "description": data["description"],
                 "priority": data.get("priority", 0),
-                "state": {"id": data.get("stateId"), "name": self.state_name(data.get("stateId"))},
+                "state": {
+                    "id": data.get("stateId"),
+                    "name": self.state_name(data.get("stateId")),
+                    "type": self.state_type(data.get("stateId")),
+                },
+                "team": {"id": data["teamId"]},
                 "project": {"id": data["projectId"]} if data.get("projectId") else None,
                 "labels": {"nodes": [{"id": item, "name": item} for item in data.get("labelIds", [])]},
                 "assignee": {"id": data["assigneeId"]} if data.get("assigneeId") else None,
@@ -178,7 +184,11 @@ class FakeLinear:
                 if key in data:
                     issue[key] = data[key]
             if "stateId" in data:
-                issue["state"] = {"id": data["stateId"], "name": self.state_name(data["stateId"])}
+                issue["state"] = {
+                    "id": data["stateId"],
+                    "name": self.state_name(data["stateId"]),
+                    "type": self.state_type(data["stateId"]),
+                }
                 issue["updatedAt"] = "2026-08-01T00:00:01Z"
             if "projectId" in data:
                 issue["project"] = {"id": data["projectId"]}
@@ -203,6 +213,14 @@ class FakeLinear:
                 return name
         suffix = state_id.removeprefix("state-")
         return " ".join(word.capitalize() for word in suffix.split("-"))
+
+    @staticmethod
+    def state_type(state_id):
+        name = FakeLinear.state_name(state_id)
+        return next(
+            kind for _key, (candidate, kind) in LINEAR.STATES.items()
+            if candidate == name
+        )
 
 
 class FakeResponse:
@@ -284,7 +302,11 @@ class LinearSyncTest(unittest.TestCase):
         self.reconcile()
         issue = next(iter(self.fake.issues.values()))
         issue["priority"] = LINEAR.PRIORITIES["high"]
-        issue["state"] = {"id": config()["states"]["ready"], "name": "Ready"}
+        issue["state"] = {
+            "id": config()["states"]["ready"],
+            "name": "Ready",
+            "type": "unstarted",
+        }
         self.mapping["tickets"].clear()
         self.reconcile()
         self.assertEqual(self.mapping["tickets"]["T-001"]["issue_id"], issue["id"])
@@ -1694,6 +1716,53 @@ class LinearSyncTest(unittest.TestCase):
         )
         self.assertIn("T-002", saved["_sync"]["selected_ticket_success_at"])
 
+    def test_uncertain_create_refuses_exact_title_in_wrong_project(self):
+        self.reconcile()
+        second = self.factory / "tickets/T-002.md"
+        second.write_text((self.factory / "tickets/T-001.md").read_text().replace(
+            "# T-001 — first ticket", "# T-002 — second ticket",
+        ))
+        mapping = LINEAR.load_map(self.map_path)
+        project_id = mapping["initiatives"]["I-001"]["project_id"]
+        ticket = {"id": "T-002", "title": "T-002 — second ticket"}
+        mapping["tickets"]["T-002"] = {
+            "issue_id": None,
+            "operator_fields_initialized": False,
+            "pending_issue_create": LINEAR.create_intent(
+                ticket, "team-1", project_id, "uncertain",
+            ),
+        }
+        LINEAR.save_map(self.map_path, mapping)
+        existing = copy.deepcopy(next(iter(self.fake.issues.values())))
+        existing.update({
+            "description": LINEAR.BANNER,
+            "id": "issue-wrong-project",
+            "identifier": "SF-999",
+            "project": {"id": "project-wrong"},
+            "title": ticket["title"],
+        })
+        self.fake.issues[existing["id"]] = existing
+        self.fake.calls.clear()
+
+        with (
+            patch.object(LINEAR, "gql", self.fake),
+            self.assertRaisesRegex(RuntimeError, "did not confirm the created issue"),
+        ):
+            LINEAR.initialize_ticket(
+                "key", self.factory, self.map_path, "T-002", dry=False,
+            )
+        self.assertFalse(any(
+            "issueCreate" in query for query, _variables in self.fake.calls
+        ))
+        saved = LINEAR.load_map(self.map_path)
+        self.assertEqual(
+            saved["tickets"]["T-002"]["pending_issue_create"]["status"],
+            "uncertain",
+        )
+        self.assertNotIn(
+            "T-002", saved["_sync"].get("selected_ticket_success_at", {})
+        )
+
     def test_matching_clear_retries_after_map_commit_before_unlink(self):
         self.reconcile()
         second = self.factory / "tickets/T-002.md"
@@ -1816,21 +1885,37 @@ class LinearSyncTest(unittest.TestCase):
                         "key", "team-1", "T-002 — second ticket"
                     )
 
-    def test_identified_create_refuses_canceled_state_type(self):
+    def test_created_issue_confirmation_refuses_wrong_project_or_state(self):
         ticket = {"id": "T-002", "title": "T-002 — second ticket"}
-        actual = {
+        valid = {
             "description": LINEAR.BANNER,
             "id": "issue-2",
             "identifier": "SF-2",
-            "state": {"id": "state-duplicate", "name": "Duplicate", "type": "canceled"},
+            "project": {"id": "project-1"},
+            "state": {"id": "state-backlog", "name": "Backlog", "type": "backlog"},
+            "team": {"id": "team-1"},
             "title": ticket["title"],
         }
-        with self.assertRaisesRegex(
-            RuntimeError, "did not confirm the created issue",
-        ):
-            LINEAR.validate_created_issue(
-                ticket, actual, "issue-2", "SF-2",
-            )
+        cases = {
+            "wrong team": {**valid, "team": {"id": "team-2"}},
+            "wrong project": {**valid, "project": {"id": "project-2"}},
+            "missing project": {key: value for key, value in valid.items() if key != "project"},
+            "missing state": {key: value for key, value in valid.items() if key != "state"},
+            "malformed state": {**valid, "state": []},
+            "canceled state": {
+                **valid,
+                "state": {
+                    "id": "state-duplicate", "name": "Duplicate", "type": "canceled",
+                },
+            },
+        }
+        for label, actual in cases.items():
+            with self.subTest(label=label), self.assertRaisesRegex(
+                RuntimeError, "did not confirm the created issue",
+            ):
+                LINEAR.validate_created_issue(
+                    ticket, actual, "team-1", "project-1", "issue-2", "SF-2",
+                )
 
     def test_overlapping_full_save_preserves_newer_selected_success(self):
         self.reconcile()

@@ -1334,7 +1334,8 @@ def fetch_issue(key, issue_id):
         key,
         """query($id: String!) { issue(id: $id) {
              id identifier title description priority updatedAt
-             state { id name type } project { id } labels { nodes { id name } }
+             state { id name type } team { id } project { id }
+             labels { nodes { id name } }
              assignee { id }
              comments(last: 100) {
                nodes { id body createdAt updatedAt user { id name } }
@@ -1412,7 +1413,7 @@ def factory_issue_index(key, team_id):
             """query($id: String!, $after: String) { team(id: $id) {
                  issues(first: 100, after: $after) {
                    nodes { id identifier title description priority updatedAt
-                           state { id name type } project { id }
+                           state { id name type } team { id } project { id }
                            labels { nodes { id name } } assignee { id }
                            comments(last: 1) {
                              nodes { id createdAt updatedAt }
@@ -1441,7 +1442,7 @@ def factory_issue_candidates(key, team_id, title):
         """query($id: String!, $title: String!) { team(id: $id) {
              issues(first: 3, filter: { title: { eq: $title } }) {
                nodes { id identifier title description priority updatedAt
-                       state { id name type } project { id }
+                       state { id name type } team { id } project { id }
                        labels { nodes { id name } } assignee { id }
                        comments(last: 1) {
                          nodes { id createdAt updatedAt }
@@ -1520,15 +1521,38 @@ def validate_create_intent(value, ticket, team_id, project_id):
     return value
 
 
-def validate_created_issue(ticket, actual, issue_id=None, identifier=None):
+def validate_created_issue(
+    ticket, actual, team_id, project_id, issue_id=None, identifier=None,
+):
+    state = actual.get("state") if isinstance(actual, dict) else None
+    project = actual.get("project") if isinstance(actual, dict) else None
     if (
         not isinstance(actual, dict)
+        or not isinstance(actual.get("id"), str)
+        or not re.fullmatch(r"[A-Za-z0-9_-]{1,200}", actual["id"])
+        or not isinstance(actual.get("identifier"), str)
+        or not re.fullmatch(r"[A-Za-z0-9-]{1,100}", actual["identifier"])
         or (issue_id is not None and actual.get("id") != issue_id)
         or (identifier is not None and actual.get("identifier") != identifier)
         or actual.get("title") != ticket["title"]
         or not (actual.get("description") or "").startswith(BANNER)
-        or (actual.get("state") or {}).get("type") == "canceled"
-        or normalize_state((actual.get("state") or {}).get("name", "")) == "canceled"
+        or actual.get("team") != {"id": team_id}
+        or (
+            project != ({"id": project_id} if project_id is not None else None)
+        )
+        or not isinstance(state, dict)
+        or set(state) != {"id", "name", "type"}
+        or not isinstance(state.get("id"), str)
+        or not re.fullmatch(r"[A-Za-z0-9_-]{1,200}", state["id"])
+        or not isinstance(state.get("name"), str)
+        or not state["name"]
+        or state["name"] != state["name"].strip()
+        or len(state["name"]) > 200
+        or any(ord(character) < 32 or ord(character) == 127 for character in state["name"])
+        or state.get("type") not in {
+            kind for _name, kind in STATES.values() if kind != "canceled"
+        }
+        or normalize_state(state["name"]) == "canceled"
     ):
         raise RuntimeError(
             f"{ticket['id']}: Linear did not confirm the created issue"
@@ -2125,6 +2149,8 @@ def sync_tickets(key, factory_dir, mapping, map_path, dry, only=None):
                 actual = validate_created_issue(
                     ticket,
                     fetch_issue(key, pending["issue_id"]),
+                    config["team_id"],
+                    project_id,
                     pending["issue_id"],
                     pending["identifier"],
                 )
@@ -2143,6 +2169,10 @@ def sync_tickets(key, factory_dir, mapping, map_path, dry, only=None):
                     fetch_recent_comments(key, candidates[0], entry, dry)
                     if candidates else None
                 )
+                if actual is not None:
+                    actual = validate_created_issue(
+                        ticket, actual, config["team_id"], project_id,
+                    )
                 if pending and actual is None:
                     raise RuntimeError(
                         f"{ticket['id']}: Linear create outcome is uncertain; "
@@ -2209,6 +2239,8 @@ def sync_tickets(key, factory_dir, mapping, map_path, dry, only=None):
             save_map(map_path, mapping, clear_tickets=clear_tickets)
             actual = validate_created_issue(
                 ticket, fetch_issue(key, issue["id"]),
+                config["team_id"],
+                project_id,
                 issue["id"], issue["identifier"],
             )
             ingest_fallback_approval(actual, entry, dry)

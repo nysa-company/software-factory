@@ -61,8 +61,9 @@ everything the Factory actually enforces lives here.
 - Selected-only Linear initialization uses one bounded exact-title query and a
   ticket-, team-, Project-, and title-bound create intent. It persists a
   returned issue identity before observation and never repeats an uncertain
-  create. Only the exact observed issue records success and consumes the
-  matching ticket clear; historical issues and sibling clears remain untouched.
+  create. Only the exact intended-Project issue with complete non-canceled
+  state records success and consumes the matching ticket clear; historical
+  issues and sibling clears remain untouched.
 - Qualification fallback reads the strict manifest at the receipt-bound
   protected product commit. Ordinary lanes authorize only their active Factory;
   a successor additionally authorizes its exact source Factory. A changed
@@ -4458,6 +4459,6 @@ Selected-ticket initialization persists a bound uncertain intent before a
 Linear create and the returned issue identity before observation. A restart
 fetches that identity or adopts one exact visible Factory issue; it never
 repeats an uncertain mutation, including inside the GraphQL transport helper.
-Operator evidence and selected success become
-durable only with the exact observed issue, while a post-map clear interruption
+Operator evidence and selected success become durable only with the exact
+intended-Project issue and its complete non-canceled state, while a post-map clear interruption
 retries the same matching one-use clear without touching siblings.

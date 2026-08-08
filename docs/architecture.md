@@ -549,8 +549,9 @@ so exact-ticket adoption cannot create duplicates. Initial create or adoption
 uses one bounded exact-title query. Before creation it records a ticket-, team-,
 Project-, and title-bound uncertain intent; a returned ID is persisted before
 observation. Restart therefore fetches that exact ID or waits to adopt one exact
-Factory issue and never repeats an uncertain create. Only the exact observed
-issue clears the intent and records selected-ticket success. A matching
+Factory issue in the intended Project and never repeats an uncertain create.
+Confirmation requires its complete canonical non-canceled state. Only that
+exact observed issue clears the intent and records selected-ticket success. A matching
 one-use clear is consumed for that ticket only; sibling issues and clears are
 not read or changed. The create mutation itself never retries an ambiguous
 transport or quota response. Historical tickets are not reconciled.
