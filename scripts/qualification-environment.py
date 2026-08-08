@@ -194,6 +194,51 @@ def snapshot_global_config(args: argparse.Namespace, root: Path) -> None:
     install_config(target, raw)
 
 
+def qualification_fallback_readiness(
+    release: Path, root: Path, project: str, product: Path,
+) -> tuple[dict[str, Any], str]:
+    result = subprocess.run(
+        [str(release / "scripts/model-control.sh"), "qualification-readiness"],
+        env={
+            "HOME": str(Path.home().resolve(strict=True)),
+            "PATH": f"{Path.home()}/.factory/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+            "TMPDIR": os.environ.get("TMPDIR", "/tmp"),
+            "FACTORY_GLOBAL_ENV": str(root / "global.env"),
+            "FACTORY_KIT_TRUST_SCOPE": "qualification-candidate",
+            "FACTORY_MODEL_POLICY_FILE": str(product / "factory/model-policy.json"),
+            "FACTORY_MODEL_STATE_ROOT": str(root / "projects"),
+            "FACTORY_PROJECT": project,
+            "FACTORY_ROOT": str(product),
+        },
+        text=True, capture_output=True, check=False, timeout=120,
+    )
+    try:
+        report = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise EnvironmentError("qualification fallback readiness is unavailable") from error
+    digest = report.get("readiness_sha256", "") if isinstance(report, dict) else ""
+    if (
+        result.returncode
+        or report.get("schema")
+        != "nysa.software-factory.qualification-fallback-readiness/v1"
+        or report.get("status") != "ready"
+        or not re.fullmatch(r"[0-9a-f]{64}", digest)
+    ):
+        checks = report.get("checks", []) if isinstance(report, dict) else []
+        reason = next(
+            (
+                f"{item.get('fallback_route_id') or item.get('cursor_route_id')}:"
+                f"{item.get('reason', 'invalid')}:expected="
+                f"{item.get('expected_version') or 'unknown'}:installed="
+                f"{item.get('installed_version') or 'unknown'}"
+                for item in checks if isinstance(item, dict) and item.get("state") != "READY"
+            ),
+            "invalid",
+        )
+        raise EnvironmentError(f"qualification fallback readiness refused: {reason}")
+    return report, digest
+
+
 def read(path: Path) -> dict[str, Any]:
     descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     try:
@@ -269,6 +314,7 @@ def qualification_lane(root_value: Path, project: str) -> dict[str, Any]:
     shared = (
         "contract_version", "kit_sha", "kit_tree", "product_path",
         "product_sha", "product_tree", "project", "provider_policy_sha256",
+        "fallback_readiness_sha256",
         "qualification_mode", "operator_map_path", "controller_state_path",
         "provider_state_path", "runtime_ledger_path",
     )
@@ -783,6 +829,23 @@ def validate_selected_contracts(
     ):
         raise EnvironmentError("qualification tickets are invalid")
     cohort = set(selected)
+    readiness_spec = importlib.util.spec_from_file_location(
+        "qualification_ticket_readiness", Path(__file__).with_name("ticket-readiness.py")
+    )
+    preview_spec = importlib.util.spec_from_file_location(
+        "qualification_ticket_pr", Path(__file__).with_name("ticket-pr.py")
+    )
+    if not readiness_spec or not readiness_spec.loader or not preview_spec or not preview_spec.loader:
+        raise EnvironmentError("qualification admission helpers are unavailable")
+    readiness_module = importlib.util.module_from_spec(readiness_spec)
+    preview_module = importlib.util.module_from_spec(preview_spec)
+    readiness_spec.loader.exec_module(readiness_module)
+    preview_spec.loader.exec_module(preview_module)
+    try:
+        preview_provider = preview_module.project_preview_provider(product / "factory")
+        nonvisual_paths = preview_module.project_nonvisual_paths(product / "factory")
+    except (OSError, UnicodeError, preview_module.Refusal) as error:
+        raise EnvironmentError(str(error)) from error
     for ticket in selected:
         path = product / "factory/tickets" / f"{ticket}.md"
         try:
@@ -800,6 +863,18 @@ def validate_selected_contracts(
             raise EnvironmentError(f"{path}: State must appear exactly once")
         if states[0].lower() == "done":
             continue
+        try:
+            semantic_paths = readiness_module.builder_paths(text)
+        except readiness_module.ReadinessError as error:
+            raise EnvironmentError(f"{path}: {error}") from error
+        if preview_provider == "none" and (
+            not nonvisual_paths
+            or any(
+                not any(item.startswith(prefix) for prefix in nonvisual_paths)
+                for item in semantic_paths
+            )
+        ):
+            raise EnvironmentError(f"{ticket}: preview_capability_missing")
         decisions = values("Product-Decisions")
         if decisions != ["frozen"]:
             raise EnvironmentError(f"{path}: Product-Decisions must be exactly frozen")
@@ -2294,6 +2369,9 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
     materialize(factory, sha, release)
     if git_tree(release) != tree:
         raise EnvironmentError("sealed qualification tree does not match the candidate")
+    fallback_readiness, fallback_readiness_sha256 = qualification_fallback_readiness(
+        release, root, args.project, product,
+    )
     provider_policy_sha256 = (
         takeover["provider_policy_sha256"]
         if takeover else (
@@ -2314,6 +2392,8 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
         "product_tree": product_tree,
         "project": args.project,
         "provider_policy_sha256": provider_policy_sha256,
+        "fallback_readiness": fallback_readiness,
+        "fallback_readiness_sha256": fallback_readiness_sha256,
         "qualification_mode": qualification_mode,
         "operator_map_path": operator_map_path,
         "status": "pass",
@@ -2338,6 +2418,7 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
         "product_tree": product_tree,
         "project": args.project,
         "provider_policy_sha256": provider_policy_sha256,
+        "fallback_readiness_sha256": fallback_readiness_sha256,
         "qualification_mode": qualification_mode,
         "operator_map_path": operator_map_path,
         "receipt_id": receipt_id,
@@ -2513,6 +2594,9 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
         ):
             raise EnvironmentError("successor changes the active provider policy")
         snapshot_global_config(args, root)
+        fallback_readiness, fallback_readiness_sha256 = qualification_fallback_readiness(
+            release, root, args.project, product,
+        )
 
         origins = command(
             "git", "-C", str(product), "remote", "get-url", "--push", "--all", "origin"
@@ -2530,6 +2614,8 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
             "product_tree": product_tree,
             "project": args.project,
             "provider_policy_sha256": policy_hash,
+            "fallback_readiness": fallback_readiness,
+            "fallback_readiness_sha256": fallback_readiness_sha256,
             "controller_state_path": str(controller),
             "provider_state_path": str(provider),
             "operator_map_path": str(operator_map_path),
@@ -2556,6 +2642,7 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
             "product_tree": product_tree,
             "project": args.project,
             "provider_policy_sha256": policy_hash,
+            "fallback_readiness_sha256": fallback_readiness_sha256,
             "controller_state_path": str(controller),
             "provider_state_path": str(provider),
             "operator_map_path": str(operator_map_path),

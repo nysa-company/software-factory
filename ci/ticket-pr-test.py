@@ -71,6 +71,7 @@ class TicketPrTest(unittest.TestCase):
         (factory / "PROJECT.env").write_text(
             "GH_REPO=example/product\nTICKET_BRANCH_PREFIX=ticket/\n"
             "MAX_CONCURRENT_TICKETS=4\nAUTO_MERGE_METHOD=squash\n"
+            "PREVIEW_PROVIDER=railway\n"
         )
         leases = factory / ".dispatch-leases"
         leases.mkdir()
@@ -837,6 +838,23 @@ print(json.dumps([{
             "nonvisual_paths",
         )
         self.assertNotIn("pr view", self.trace.read_text())
+
+    def test_product_without_preview_refuses_visual_publication(self):
+        project = self.product / "factory/PROJECT.env"
+        project.write_text(
+            project.read_text().replace("PREVIEW_PROVIDER=railway", "PREVIEW_PROVIDER=none")
+        )
+        subprocess.run(["git", "-C", self.product, "add", "factory/PROJECT.env"], check=True)
+        subprocess.run(
+            ["git", "-C", self.product, "commit", "-qm", "disable previews"], check=True,
+        )
+        subprocess.run(
+            ["git", "-C", self.product, "push", "-q", "origin", "ticket/T-100"],
+            check=True,
+        )
+        self.prepare_narrator()
+        result = self.command(expected=2, preview_reported=False)
+        self.assertIn("preview_capability_missing", result["error"])
 
     def test_nonvisual_paths_keep_mixed_and_renamed_diffs_on_the_preview_gate(self):
         self.configure_nonvisual_paths()

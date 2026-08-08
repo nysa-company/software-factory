@@ -147,6 +147,25 @@ Completed roles remain immutable. The exact failed route is excluded from all
 remaining roles in that fallback revision. `INVALID` and `UNKNOWN` readiness
 remain hard stops during fallback; only `UNAVAILABLE` is skippable.
 
+Qualification additionally requires every selected Cursor role to have one
+ready same-family native fallback at its exact pinned CLI version. Preparation
+records the bounded readiness report, Doctor exposes route plus expected and
+installed versions, and the controller repeats the check immediately before a
+new claim so an ambient CLI update cannot turn into paid late failure.
+
+If Cursor completes a role but reports one exact catalog-approved identity
+alias, the controller authenticates the receipt, route, terminal, progress,
+role-owned Git delta, and charge before creating or extending the signed
+passport. It never replays the provider call. Evidence mismatch remains a
+release-bound refusal; a local push or materialization failure remains
+retryable and cannot create a second charge or completed-role record.
+
+Automatic qualification fallback failures are persisted only as a bounded
+typed family. The same release does not hot-loop them; a sealed successor may
+retry after repair. A passportless fallback already followed by release
+migration can reopen only when its failed terminal and approval authenticate
+the final fallback revision and every later revision is an exact Kit migration.
+
 ## Other profiles
 
 The operator may activate a different profile before pinning:

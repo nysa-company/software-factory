@@ -352,6 +352,7 @@ optional = (
     value.get("product_sha", ""),
     value.get("controller_state_path", ""),
     value.get("provider_state_path", ""),
+    value.get("fallback_readiness_sha256", ""),
 )
 if value["contract_version"] in ("1.2.0", "1.3.0", "1.4.0", "1.5.0", "1.6.0", "1.7.0", "1.8.0"):
     for index, item in enumerate(optional):
@@ -360,7 +361,7 @@ if value["contract_version"] in ("1.2.0", "1.3.0", "1.4.0", "1.5.0", "1.6.0", "1
         if index < 2 and not item:
             raise SystemExit(1)
 else:
-    optional = ("", "", "", "", "", "", "", "", "")
+    optional = ("", "", "", "", "", "", "", "", "", "")
 runtime_tuple = value.get("runtime_tuple", {})
 tuple_keys = {
     "factory_sha", "factory_tree", "product_sha", "product_tree",
@@ -415,6 +416,7 @@ IFS="$(printf '\t')" read -r ACTIVE_PROJECT KIT_SHA KIT_TREE ACTIVE_CONTRACT \
   QUALIFICATION_MODE TAKEOVER_KITS_ROOT ACTIVE_OPERATOR_MAP \
   ACTIVE_RUNTIME_LEDGER \
   ACTIVE_PRODUCT_SHA ACTIVE_CONTROLLER_STATE ACTIVE_PROVIDER_STATE \
+  ACTIVE_FALLBACK_READINESS_SHA256 \
   ACTIVE_RUNTIME_TUPLE ACTIVE_RUNTIME_NODE \
   ACTIVE_RUNTIME_NPM <<EOF
 $ACTIVE_DATA
@@ -429,6 +431,7 @@ EOF
 [[ "$ACTIVE_PRODUCT_SHA" == "-" ]] && ACTIVE_PRODUCT_SHA=""
 [[ "$ACTIVE_CONTROLLER_STATE" == "-" ]] && ACTIVE_CONTROLLER_STATE=""
 [[ "$ACTIVE_PROVIDER_STATE" == "-" ]] && ACTIVE_PROVIDER_STATE=""
+[[ "$ACTIVE_FALLBACK_READINESS_SHA256" == "-" ]] && ACTIVE_FALLBACK_READINESS_SHA256=""
 [[ "$ACTIVE_RUNTIME_NODE" == "-" ]] && ACTIVE_RUNTIME_NODE=""
 [[ "$ACTIVE_RUNTIME_NPM" == "-" ]] && ACTIVE_RUNTIME_NPM=""
 
@@ -442,6 +445,8 @@ case "$ACTIVE_CONTRACT" in
 esac
 
 if [[ "$QUALIFICATION_LAUNCHER" == "1" ]]; then
+  [[ "$ACTIVE_FALLBACK_READINESS_SHA256" =~ ^[0-9a-f]{64}$ ]] ||
+    die "qualification fallback readiness binding is invalid"
   [[ "$QUALIFICATION_MODE" == "isolated" || "$QUALIFICATION_MODE" == "takeover" ]] ||
     die "qualification state mode is invalid"
   ACTIVE_OPERATOR_MAP="$(expand_absolute_path "$ACTIVE_OPERATOR_MAP" 2>/dev/null || true)"
@@ -512,13 +517,14 @@ if [[ "$CONTRACT_VERSION" == "1.2.0" || "$CONTRACT_VERSION" == "1.3.0" ||
     "$ACTIVE_PRODUCT_TREE" "$CONTRACT_VERSION" "$QUALIFICATION_MODE" \
     "$TAKEOVER_KITS_ROOT" "$ACTIVE_OPERATOR_MAP" "$ACTIVE_RUNTIME_LEDGER" \
     "$ACTIVE_PRODUCT_SHA" \
+    "$ACTIVE_FALLBACK_READINESS_SHA256" \
     "$ACTIVE_RUNTIME_TUPLE" <<'PY'
 import json, os, stat, sys
 
 (
     path, receipt_id, project, kit_sha, kit_tree, product_path, product_tree,
     contract, qualification_mode, takeover_kits_root, operator_map_path,
-    runtime_ledger_path, product_sha, runtime_tuple,
+    runtime_ledger_path, product_sha, fallback_readiness_sha256, runtime_tuple,
 ) = sys.argv[1:]
 flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
 descriptor = os.open(path, flags)
@@ -556,6 +562,7 @@ if qualification_mode:
     if (
         value.get("qualification_mode") != qualification_mode
         or value.get("operator_map_path") != operator_map_path
+        or value.get("fallback_readiness_sha256") != fallback_readiness_sha256
     ):
         raise SystemExit(1)
     if qualification_mode == "takeover":
@@ -785,6 +792,7 @@ if [[ "$QUALIFICATION_LAUNCHER" == "1" ]]; then
     "FACTORY_QUALIFICATION_MANIFEST=$PRODUCT_ROOT/factory/QUALIFICATION.json"
     "FACTORY_QUALIFICATION_PRODUCT_SHA=$ACTIVE_PRODUCT_SHA"
     "FACTORY_QUALIFICATION_PRODUCT_TREE=$ACTIVE_PRODUCT_TREE"
+    "FACTORY_QUALIFICATION_FALLBACK_READINESS_SHA256=$ACTIVE_FALLBACK_READINESS_SHA256"
     "FACTORY_LEDGER=$ACTIVE_RUNTIME_LEDGER"
     "FACTORY_DURABLE_LEDGER=$PRODUCT_ROOT/factory/ledger.csv"
     "FACTORY_REFRESH_RUNTIME_LEDGER=1"
@@ -1510,6 +1518,7 @@ PY
       [[ "$PASSPORT_PUBLICATION" =~ ^(none|validating|ready|merge-pending|merged|repair)$ ]] ||
         die "invalid publication state"
     elif [[ ( "$PASSPORT_ACTION" == "correct-converged-success" ||
+              "$PASSPORT_ACTION" == "recover-model-identity-success" ||
               "$PASSPORT_ACTION" == "verify-model-identity-success" ) && $# -eq 10 &&
             "$2" == "--ticket" && "$4" == "--receipt" &&
             "$6" == "--run-id" && "$8" == "--workdir" &&
@@ -1551,6 +1560,7 @@ PY
       --project "$PROJECT"
     )
     if [[ "$PASSPORT_ACTION" == "correct-converged-success" ||
+          "$PASSPORT_ACTION" == "recover-model-identity-success" ||
           "$PASSPORT_ACTION" == "verify-model-identity-success" ]]; then
       PASSPORT_ARGS+=(
         --receipt "$PASSPORT_RECEIPT"
@@ -1741,6 +1751,12 @@ PY
     MODEL_MUTATION=0
     case "$MODEL_ACTION" in
       profiles|status|inventory)
+        [[ $# -eq 2 && "$2" == "--json" ]] || usage
+        MODEL_ARGS=("$MODEL_ACTION")
+        ;;
+      qualification-readiness)
+        [[ "$QUALIFICATION_LAUNCHER" == "1" && "$CONTRACT_VERSION" == "1.8.0" ]] ||
+          die "qualification fallback readiness requires a Contract 1.8 qualification lane"
         [[ $# -eq 2 && "$2" == "--json" ]] || usage
         MODEL_ARGS=("$MODEL_ACTION")
         ;;

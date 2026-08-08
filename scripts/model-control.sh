@@ -248,6 +248,22 @@ command_name="${1:-}"
 shift
 
 case "$command_name" in
+  qualification-readiness)
+    [[ $# -eq 0 ]] || json_error "qualification-readiness takes no arguments"
+    load_machine_config
+    factory_load_model_probe_context ||
+      json_error "model state is invalid: ${FACTORY_RESOLVE_ERROR:-unknown}"
+    TEMPORARY_DIR="$(mktemp -d "$FACTORY_MODEL_STATE_ROOT/.qualification-readiness.XXXXXX")" ||
+      json_error "could not allocate qualification readiness"
+    resolution="$TEMPORARY_DIR/resolution.json"
+    readiness="$TEMPORARY_DIR/readiness.json"
+    factory_resolve_model_profile "$FACTORY_MODEL_PROFILE_ID" "$resolution" \
+      "$FACTORY_DISABLED_ROUTE_IDS" "$readiness" ||
+      json_error "qualification model resolution failed: ${FACTORY_RESOLVE_ERROR:-unknown}"
+    python3 -B "$KIT_DIR/scripts/model-fallback-readiness.py" \
+      --plan "$resolution" --readiness "$readiness" \
+      --catalog "$FACTORY_MODEL_CATALOG" --profiles "$FACTORY_MODEL_PROFILES"
+    ;;
   inventory)
     [[ $# -eq 0 ]] || json_error "inventory accepts no arguments"
     load_machine_config
@@ -635,8 +651,34 @@ PY
     rm -f "$readiness"
     factory_resolve_model_profile "$profile_id" "$plan_probe" \
       "$FACTORY_DISABLED_ROUTE_IDS" "$readiness" >/dev/null 2>&1 || true
-    rm -f "$plan_probe"
     [[ -s "$readiness" ]] || json_error "model readiness probes failed"
+    fallback_readiness="$TEMPORARY_DIR/fallback-readiness.json"
+    python3 -B "$KIT_DIR/scripts/model-fallback-readiness.py" \
+      --plan "$plan_probe" --readiness "$readiness" \
+      --catalog "$FACTORY_MODEL_CATALOG" --profiles "$FACTORY_MODEL_PROFILES" \
+      > "$fallback_readiness" || true
+    fallback_diagnostic="$(python3 - "$fallback_readiness" <<'PY'
+import json, pathlib, sys
+try:
+    value = json.loads(pathlib.Path(sys.argv[1]).read_text())
+except (OSError, json.JSONDecodeError):
+    raise SystemExit(2)
+if value.get("status") == "ready":
+    raise SystemExit(0)
+item = next((item for item in value.get("checks", []) if item.get("state") != "READY"), {})
+route = item.get("fallback_route_id") or item.get("cursor_route_id") or "unknown"
+expected = item.get("expected_version") or "unknown"
+installed = item.get("installed_version") or "unknown"
+reason = item.get("reason") if item.get("reason") in {
+    "authentication_unavailable", "contract_mismatch", "executable_missing",
+    "local_contract_ready", "same_family_native_fallback_missing",
+    "version_mismatch", "version_probe_failed",
+} else "invalid"
+print(f"{route}:{reason}:expected={expected}:installed={installed}")
+raise SystemExit(1)
+PY
+)" || json_error "fallback readiness refused:${fallback_diagnostic:-invalid}"
+    rm -f "$plan_probe" "$fallback_readiness"
     if [[ "$command_name" == "fallback-plan" ]]; then
       preview_file="$(mktemp "$FACTORY_MODEL_STATE_ROOT/.model-fallback-preview.XXXXXX")" ||
         json_error "could not allocate fallback preview"
@@ -664,14 +706,20 @@ PY
         json_error "remote tracking state is unavailable"
       apply_file="$(mktemp "$FACTORY_MODEL_STATE_ROOT/.model-fallback-apply.XXXXXX")" ||
         json_error "could not allocate fallback result"
+      error_file="$(mktemp "$FACTORY_MODEL_STATE_ROOT/.model-fallback-error.XXXXXX")" ||
+        json_error "could not allocate fallback error"
       if ! fallback_python qualification-apply \
         --workdir "$workdir" --factory-root "$FACTORY_ROOT" \
         --project "$FACTORY_PROJECT" --ticket "$ticket" \
         --failed-run "$failed_run" --reason "$reason" \
-        --readiness "$readiness" --remote "$CONTROL_REMOTE" > "$apply_file"; then
+        --readiness "$readiness" --remote "$CONTROL_REMOTE" \
+        > "$apply_file" 2> "$error_file"; then
+        reason_code="$(python3 -B "$KIT_DIR/scripts/lib/fallback_refusal.py" "$error_file")"
         rm -f "$apply_file"
-        json_error "automatic qualification fallback failed"
+        rm -f "$error_file"
+        json_error "automatic qualification fallback refused:$reason_code"
       fi
+      rm -f "$error_file"
       commit_sha="$(push_exact_head "$workdir" "$CONTROL_BRANCH" \
         "$CONTROL_REMOTE" "$expected_remote_head")"
       rmdir "$FALLBACK_LAUNCH_LOCK"

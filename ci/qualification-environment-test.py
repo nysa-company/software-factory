@@ -63,6 +63,17 @@ class QualificationEnvironmentTest(unittest.TestCase):
         launcher = self.factory / "integrations/hermes/bin/factory-launch"
         launcher.write_text("#!/bin/sh\n", encoding="utf-8")
         launcher.chmod(0o755)
+        model_control = self.factory / "scripts/model-control.sh"
+        model_control.parent.mkdir(exist_ok=True)
+        model_control.write_text(
+            "#!/bin/sh\n"
+            "printf '%s\\n' '{\"checks\":[],\"profile_id\":\"fixture\","
+            "\"readiness_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\","
+            "\"schema\":\"nysa.software-factory.qualification-fallback-readiness/v1\","
+            "\"status\":\"ready\"}'\n",
+            encoding="utf-8",
+        )
+        model_control.chmod(0o755)
         (self.factory / "scripts/model-routing").mkdir(parents=True)
         shutil.copy2(
             ROOT / "scripts/provider-activation.py",
@@ -155,6 +166,9 @@ ledger.chmod(0o600)
             }) + "\n",
             encoding="utf-8",
         )
+        (self.product / "factory/PROJECT.env").write_text(
+            "PREVIEW_PROVIDER=railway\n", encoding="utf-8",
+        )
         (self.product / ".gitignore").write_text(
             "factory/runs/\n", encoding="utf-8",
         )
@@ -164,7 +178,8 @@ ledger.chmod(0o600)
                 f"# {ticket}\n\nState: Ready\nProduct-Decisions: frozen\n"
                 "Initiative: I-001\n"
                 "Depends-On: none\nFixture-Seams: none\n"
-                "Authentication-Seams: none\nProtected-Test-Conflicts: none\n",
+                "Authentication-Seams: none\nProtected-Test-Conflicts: none\n"
+                "Builder ownership: app/server.js only\n",
                 encoding="utf-8",
             )
         (self.product / "factory/certification-plan.json").write_text(
@@ -250,6 +265,8 @@ ledger.chmod(0o600)
         self.assertEqual(active["runtime_ledger_path"], str(runtime_ledger))
         self.assertEqual(receipt["operator_map_path"], str(operator_map))
         self.assertEqual(receipt["runtime_ledger_path"], str(runtime_ledger))
+        self.assertEqual(receipt["fallback_readiness_sha256"], "a" * 64)
+        self.assertEqual(active["fallback_readiness_sha256"], "a" * 64)
         self.assertEqual(
             set(ENVIRONMENT.read(operator_map)["tickets"]),
             {"T-101", "T-102", "T-103"},
@@ -345,6 +362,10 @@ ledger.chmod(0o600)
         )
         self.assertIn(
             '"FACTORY_QUALIFICATION_PRODUCT_TREE=$ACTIVE_PRODUCT_TREE"',
+            launcher_text,
+        )
+        self.assertIn(
+            '"FACTORY_QUALIFICATION_FALLBACK_READINESS_SHA256=$ACTIVE_FALLBACK_READINESS_SHA256"',
             launcher_text,
         )
         self.assertIn(
@@ -670,6 +691,23 @@ ledger.chmod(0o600)
         ):
             ENVIRONMENT.validate_selected_contracts(self.product)
 
+        ticket.write_text(original)
+        project = self.product / "factory/PROJECT.env"
+        project.write_text("PREVIEW_PROVIDER=none\nNONVISUAL_PATHS=docs/\n")
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError, "T-101: preview_capability_missing",
+        ):
+            ENVIRONMENT.validate_selected_contracts(self.product)
+
+        ticket.write_text(original.replace(
+            "Builder ownership: app/server.js only",
+            "Builder ownership: generated files only",
+        ))
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError, "Builder ownership",
+        ):
+            ENVIRONMENT.validate_selected_contracts(self.product)
+
     def test_qualification_manifest_validation_is_strict(self) -> None:
         path = self.product / "factory/QUALIFICATION.json"
         original = json.loads(path.read_text())
@@ -868,8 +906,9 @@ ledger.chmod(0o600)
         for ticket in tickets:
             (self.product / f"factory/tickets/{ticket}.md").write_text(
                 f"# {ticket}\n\nState: Ready\nProduct-Decisions: frozen\n"
-                "Depends-On: none\nFixture-Seams: none\n"
-                "Authentication-Seams: none\nProtected-Test-Conflicts: none\n",
+                "Initiative: I-001\nDepends-On: none\nFixture-Seams: none\n"
+                "Authentication-Seams: none\nProtected-Test-Conflicts: none\n"
+                "Builder ownership: app/server.js only\n",
                 encoding="utf-8",
             )
         run(

@@ -35,6 +35,17 @@ helper output are not compatibility promises.
   sanitized NDJSON, authenticated project-bound resume cursors, and fail-closed
   stream-loss detection. Startup reconstructs crash-lost actionable events once
   from exact durable claim, transition, passport, and terminal evidence.
+- Accepts only exact route-bound Cursor identity aliases and recovers an
+  authenticated completed role without provider replay or duplicate charge;
+  evidence refusals remain permanent while delivery failures remain retryable.
+- Requires a ready, exact-version same-family native fallback before
+  qualification preparation and again before claim admission. Doctor preserves
+  the bounded route, expected version, and installed version on refusal.
+- Makes automatic fallback refusal release-bound and typed, and permits a
+  passportless successor to reopen only an authenticated fallback journal
+  followed exclusively by exact release migrations.
+- Certifies one explicit preview provider and strict nonvisual policy, then
+  checks each selected ticket's exact Builder-owned paths before provider work.
 
 ## 1.7.0 — 2026-07-22
 

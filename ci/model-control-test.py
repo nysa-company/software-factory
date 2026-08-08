@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -152,6 +153,55 @@ class ModelControlTest(unittest.TestCase):
         self.assertEqual(default["profile_id"], "cursor-opus-v1")
         self.assertEqual(selected["profile_id"], "claude-priority-v1")
         self.assertEqual(selected["selections"]["planner"]["adapter"], "claude-code")
+
+    def test_qualification_requires_ready_native_fallbacks_for_cursor_routes(self):
+        ready = json.loads(self.command("qualification-readiness").stdout)
+        self.assertEqual(ready["status"], "ready")
+        self.assertRegex(ready["readiness_sha256"], r"^[0-9a-f]{64}$")
+        self.assertTrue(ready["checks"])
+        self.assertTrue(all(item["state"] == "READY" for item in ready["checks"]))
+
+        self.global_env.write_text(
+            self.global_env.read_text().replace(
+                "FACTORY_PROBE_CODEX=READY:test",
+                "FACTORY_PROBE_CODEX=INVALID:version_mismatch",
+            )
+        )
+        refused = self.command("qualification-readiness", check=False)
+        self.assertNotEqual(refused.returncode, 0)
+        value = json.loads(refused.stdout)
+        self.assertEqual(value["status"], "invalid")
+        self.assertIn("version_mismatch", {item["reason"] for item in value["checks"]})
+        mismatch = next(item for item in value["checks"] if item["reason"] == "version_mismatch")
+        self.assertEqual(mismatch["expected_version"], "0.144.1")
+        self.assertEqual(mismatch["installed_version"], "test")
+
+    def test_fallback_refusals_are_typed_without_leaking_detail(self):
+        helper = ROOT / "scripts/lib/fallback_refusal.py"
+        cases = (
+            ("readiness", "native CLI version mismatch token=DO-NOT-LEAK"),
+            ("manifest", "qualification fallback authority changed token=DO-NOT-LEAK"),
+            ("attempt_count", "failed run still has a process record token=DO-NOT-LEAK"),
+            ("handoff", "remote branch is missing or ambiguous token=DO-NOT-LEAK"),
+            ("route_policy", "provider family violates route policy token=DO-NOT-LEAK"),
+            ("provenance", "Linear approval does not match current evidence token=DO-NOT-LEAK"),
+            ("route_policy", "role-boundary policy is invalid token=DO-NOT-LEAK"),
+            ("route_policy", "provider identities are invalid token=DO-NOT-LEAK"),
+            ("handoff", "ticket content is not UTF-8 token=DO-NOT-LEAK"),
+            ("handoff", "existing fallback has a non-migration suffix token=DO-NOT-LEAK"),
+            ("handoff", "role forbidden exceptions must be an object token=DO-NOT-LEAK"),
+            ("handoff", "role forbidden exceptions reference an unknown role token=DO-NOT-LEAK"),
+        )
+        for expected, detail in cases:
+            with self.subTest(expected=expected):
+                source = self.base / f"{expected}.error"
+                source.write_text(detail)
+                result = subprocess.run(
+                    [sys.executable, str(helper), str(source)],
+                    text=True, capture_output=True, check=True,
+                )
+                self.assertEqual(result.stdout.strip(), expected)
+                self.assertNotIn("DO-NOT-LEAK", result.stdout + result.stderr)
 
     def test_cursor_inventory_uses_disposable_credentials_and_refuses_unsafe_source(self):
         source = self.base / "cursor-home"

@@ -255,6 +255,8 @@ EOF
 PROJECT_NAME=test-product
 GH_REPO=example/test-product
 CERTIFY_SCRIPT=factory/certify.sh
+PREVIEW_PROVIDER=none
+NONVISUAL_PATHS=app/tools/,app/tests/
 EOF
   node_version="$(node --version)"
   npm_version="$(npm --version)"
@@ -862,6 +864,45 @@ fi
 
 PRODUCT_ONE="$(make_product product-one)"
 set_pin "$PRODUCT_ONE" "$SHA_A"
+printf '%s\n' 'PREVIEW_PROVIDER=none' >> "$PRODUCT_ONE/factory/PROJECT.env"
+commit_all "$PRODUCT_ONE" "add duplicate preview provider"
+push_main "$PRODUCT_ONE"
+expect_failure "certification rejects a duplicate preview provider after CERTIFY_SCRIPT" \
+  certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A"
+if [[ "$LAST_OUTPUT" == *"PREVIEW_PROVIDER must be exactly railway or none"* ]]; then
+  pass "certification parses provider declarations after CERTIFY_SCRIPT"
+else
+  fail "certification reports duplicate preview providers" "$LAST_OUTPUT"
+fi
+python3 - "$PRODUCT_ONE/factory/PROJECT.env" <<'PY'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+lines = path.read_text().splitlines()
+path.write_text("\n".join(lines[:-1]) + "\n")
+PY
+commit_all "$PRODUCT_ONE" "restore preview provider"
+push_main "$PRODUCT_ONE"
+python3 - "$PRODUCT_ONE/factory/PROJECT.env" <<'PY'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+path.write_text("\n".join(
+    line for line in path.read_text().splitlines()
+    if not line.startswith("NONVISUAL_PATHS=")
+) + "\n")
+PY
+commit_all "$PRODUCT_ONE" "remove nonvisual policy"
+push_main "$PRODUCT_ONE"
+expect_failure "certification refuses a nonvisual-only product without strict paths" \
+  certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A"
+if [[ "$LAST_OUTPUT" == *"PREVIEW_PROVIDER=none requires strict NONVISUAL_PATHS"* ]]; then
+  pass "certification binds nonvisual-only products to strict paths"
+else
+  fail "certification reports missing nonvisual paths" "$LAST_OUTPUT"
+fi
+printf '%s\n' 'NONVISUAL_PATHS=app/tools/,app/tests/' >> \
+  "$PRODUCT_ONE/factory/PROJECT.env"
+commit_all "$PRODUCT_ONE" "restore nonvisual policy"
+push_main "$PRODUCT_ONE"
 MISMATCHED_LAUNCHER="$TMP/mismatched-factory-launch"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 1' > "$MISMATCHED_LAUNCHER"
 chmod +x "$MISMATCHED_LAUNCHER"

@@ -28,6 +28,13 @@ from reorder_test_fixes import (  # noqa: E402
     verified_history_repair, verified_normalization_plan,
 )
 from role_output import RoleOutputError, sha256 as role_output_sha256
+from cursor_model_identity import approved_reported_models
+from failed_attempt_handoff import (  # noqa: E402
+    HandoffError, RoleBoundaryPolicy, _validate_committed_changes,
+)
+from route_evidence import (  # noqa: E402
+    RouteEvidenceError, exact_kit_sha_change, journal_extends, validate_route,
+)
 
 
 SCHEMA = "nysa.software-factory.ticket-passport/v1"
@@ -51,12 +58,18 @@ LINEAGE_SCHEMA = "nysa.software-factory.ticket-passport-lineage-authorization/v1
 COMPLETION_CORRECTION_SCHEMA = (
     "nysa.software-factory.completed-role-correction/v1"
 )
+PASSPORTLESS_MODEL_CORRECTION_SCHEMA = (
+    "nysa.software-factory.completed-role-correction/v2"
+)
 COMPLETION_CORRECTION_ISSUE = (
     "https://github.com/nysa-company/software-factory/issues/218"
 )
 MODEL_IDENTITY_CORRECTION_ISSUE = (
     "https://github.com/nysa-company/software-factory/issues/390"
 )
+RECOVERABLE_ROLES = {
+    "planner", "spec-linter", "test-author", "builder", "reviewer", "narrator",
+}
 RUN_ID = re.compile(r"^[A-Za-z0-9._-]{1,200}$")
 INFLIGHT_STATES = {
     "Ready", "Planning", "Building", "Review", "Awaiting Approval", "Approved",
@@ -957,12 +970,13 @@ def validate_completion_corrections(
     if not isinstance(value, list):
         raise PassportError("completion correction history is invalid")
     identities = set()
-    expected = {
+    expected_v1 = {
         "failed_factory_sha", "issue", "output_head_sha", "progress_events",
         "progress_journal_sha256", "receipt_parent_file_sha256",
         "recovery_factory_sha", "run_id", "schema",
         "transition_receipt_sha256",
     }
+    expected_v2 = {*expected_v1, "role"}
     for item in value:
         identity_key = (
             item.get("run_id", "") if isinstance(item, dict) else "",
@@ -970,10 +984,23 @@ def validate_completion_corrections(
             if isinstance(item, dict) else "",
         )
         issue = item.get("issue") if isinstance(item, dict) else None
+        schema = item.get("schema") if isinstance(item, dict) else None
         expected_role = (
-            "builder" if issue == COMPLETION_CORRECTION_ISSUE
+            item.get("role", "")
+            if schema == PASSPORTLESS_MODEL_CORRECTION_SCHEMA
+            and issue == MODEL_IDENTITY_CORRECTION_ISSUE
+            else "builder" if issue == COMPLETION_CORRECTION_ISSUE
             else "spec-linter" if issue == MODEL_IDENTITY_CORRECTION_ISSUE
             else ""
+        )
+        expected_keys = (
+            expected_v2
+            if schema == PASSPORTLESS_MODEL_CORRECTION_SCHEMA
+            else expected_v1
+        )
+        parent = (
+            item.get("receipt_parent_file_sha256")
+            if isinstance(item, dict) else None
         )
         matches = [
             evidence for evidence in completed
@@ -986,15 +1013,28 @@ def validate_completion_corrections(
         ]
         if (
             not isinstance(item, dict)
-            or set(item) != expected
-            or item.get("schema") != COMPLETION_CORRECTION_SCHEMA
-            or not expected_role
+            or set(item) != expected_keys
+            or schema not in {
+                COMPLETION_CORRECTION_SCHEMA,
+                PASSPORTLESS_MODEL_CORRECTION_SCHEMA,
+            }
+            or expected_role not in RECOVERABLE_ROLES
             or not SHA.fullmatch(item.get("failed_factory_sha", ""))
             or not SHA.fullmatch(item.get("recovery_factory_sha", ""))
-            or item["failed_factory_sha"] == item["recovery_factory_sha"]
+            or (
+                schema == COMPLETION_CORRECTION_SCHEMA
+                and item["failed_factory_sha"] == item["recovery_factory_sha"]
+            )
             or not SHA.fullmatch(item.get("output_head_sha", ""))
             or not DIGEST.fullmatch(item.get("progress_journal_sha256", ""))
-            or not DIGEST.fullmatch(item.get("receipt_parent_file_sha256", ""))
+            or not (
+                DIGEST.fullmatch(parent or "")
+                or (
+                    schema == PASSPORTLESS_MODEL_CORRECTION_SCHEMA
+                    and expected_role == "planner"
+                    and parent is None
+                )
+            )
             or not DIGEST.fullmatch(identity_key[1])
             or not RUN_ID.fullmatch(identity_key[0])
             or not isinstance(item.get("progress_events"), int)
@@ -1430,7 +1470,7 @@ def migrated_receipt_lineage(
     if ancestor(old_head, current["head_sha"]):
         return standard_lineage
     if (
-        not all(valid_v2_migration(item) for item in suffix)
+        not v2_lineage
         or suffix[-1]["from_passport_file_sha256"]
         != previous.get("parent_file_sha256")
         or suffix[-1]["from_passport_sha256"]
@@ -1720,6 +1760,476 @@ def active_journal_selection(journal: dict[str, Any], role: str) -> dict[str, An
         if body.get("kind") == "migration":
             return body["historical_selections"][role]
     raise KeyError(role)
+
+
+def route_selection(plan: dict[str, Any], role: str) -> dict[str, Any]:
+    if plan.get("schema") == "ticket-model-route-plan/v1":
+        value = plan["resolution"]["selections"][role]
+    elif plan.get("schema") == "ticket-model-route-journal/v2":
+        value = active_journal_selection(plan, role)
+    else:
+        raise KeyError(role)
+    if not isinstance(value, dict):
+        raise KeyError(role)
+    return value
+
+
+def transition_context(
+    args: argparse.Namespace, terminal: dict[str, str], current: dict[str, Any]
+) -> dict[str, Any]:
+    path = args.state_dir / f"{args.ticket}.json"
+    value = json.loads(read_regular(path, 0o600), object_pairs_hook=unique_object)
+    immutable = {
+        name: item for name, item in value.items()
+        if name not in {"consumed", "consumed_at_epoch", "receipt_sha256"}
+    }
+    digest = value.get("receipt_sha256", "") if isinstance(value, dict) else ""
+    if (
+        not isinstance(value, dict)
+        or value.get("schema") != RECEIPT_SCHEMA
+        or digest != hashlib.sha256(canonical(immutable)).hexdigest()
+        or not isinstance(value.get("consumed"), bool)
+    ):
+        raise PassportError("model identity transition receipt is invalid")
+    if digest == args.receipt and value["consumed"] is True:
+        return value
+    route = route_digest(args.workdir, args.ticket)
+    if any((
+        value["consumed"] is not False,
+        value.get("parent_digest") != args.receipt,
+        value.get("stage")
+        != "REFUSE ticket Kit-SHA lease does not match the selected kit SHA",
+        value.get("role") is not None,
+        value.get("ticket") != args.ticket,
+        value.get("project") != args.project,
+        value.get("branch") != current["branch"],
+        value.get("product_origin_sha256") != current["product_origin_sha256"],
+        value.get("factory_sha") != args.factory_sha,
+        value.get("contract_version") != args.contract_version,
+        value.get("head_sha") != current["head_sha"],
+        value.get("head_tree") != current["head_tree"],
+        value.get("ticket_blob") != current["ticket_blob"],
+        value.get("route_plan_sha256") != route,
+    )):
+        raise PassportError("model identity transition lineage is invalid")
+    input_head = terminal.get("role_head_before", "")
+    if not SHA.fullmatch(input_head):
+        raise PassportError("model identity transition lineage is invalid")
+    return {
+        "branch": current["branch"],
+        "contract_version": args.contract_version,
+        "factory_sha": terminal.get("kit_sha"),
+        "head_sha": input_head,
+        "head_tree": git(args.workdir, "rev-parse", f"{input_head}^{{tree}}"),
+        "passport_sha256": value.get("passport_sha256"),
+        "product_origin_sha256": current["product_origin_sha256"],
+        "project": args.project,
+        "receipt_sha256": args.receipt,
+        "role": terminal.get("role"),
+        "route_plan_sha256": terminal.get("route_plan_sha256"),
+        "stage": f"RUN {terminal.get('role', '')}",
+        "ticket": args.ticket,
+        "ticket_blob": git(
+            args.workdir, "rev-parse",
+            f"{input_head}:factory/tickets/{args.ticket}.md",
+        ),
+    }
+
+
+def direct_model_output_topology(
+    args: argparse.Namespace, terminal: dict[str, str], current: dict[str, Any]
+) -> dict[str, Any]:
+    input_head = terminal.get("role_head_before", "")
+    current_head = current["head_sha"]
+    ticket_path = f"factory/tickets/{args.ticket}.md"
+    route_path = f"factory/route-plans/{args.ticket}.json"
+    if (
+        not SHA.fullmatch(input_head)
+        or subprocess.run(
+            ["git", "-C", str(args.workdir), "merge-base", "--is-ancestor",
+             input_head, current_head],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            check=False, timeout=120,
+        ).returncode != 0
+    ):
+        raise PassportError("model identity recovery topology is invalid")
+    commits = git(
+        args.workdir, "rev-list", "--reverse", "--ancestry-path",
+        f"{input_head}..{current_head}",
+    ).splitlines()
+    if len(commits) > 64:
+        raise PassportError("model identity recovery topology is invalid")
+    parent = input_head
+    changed: list[list[str]] = []
+    for commit in commits:
+        if commit_parent(args.workdir, commit) != parent:
+            raise PassportError("model identity recovery topology is invalid")
+        changed.append(sorted(git(
+            args.workdir, "diff-tree", "--no-commit-id", "--name-only",
+            "--no-renames", "-r", commit,
+        ).splitlines()))
+        parent = commit
+    control = sorted((ticket_path, route_path))
+    split = next(
+        (index for index, paths in enumerate(changed)
+         if paths == control and all(item == control for item in changed[index:])),
+        len(commits),
+    )
+    output_commits = commits[:split]
+    control_commits = commits[split:]
+    role = terminal.get("role", "")
+    if (
+        role not in RECOVERABLE_ROLES
+        or len(output_commits) > 32
+        or len(control_commits) > 32
+        or (role == "reviewer" and output_commits)
+        or (role != "reviewer" and not output_commits)
+    ):
+        raise PassportError("model identity recovery topology is invalid")
+    output_head = output_commits[-1] if output_commits else input_head
+    previous_route = git_blob(args.workdir, output_head, route_path)
+    previous_ticket = git_blob(args.workdir, output_head, ticket_path)
+    for commit in control_commits:
+        route_raw = git_blob(args.workdir, commit, route_path)
+        ticket_raw = git_blob(args.workdir, commit, ticket_path)
+        try:
+            plan = json.loads(route_raw, object_pairs_hook=unique_object)
+            kit = plan["kit_sha"]
+            leases = re.findall(
+                rb"^Kit-SHA:\s*([0-9a-f]{40})\s*$", ticket_raw, re.M,
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise PassportError("model identity recovery topology is invalid") from error
+        checks = {
+            "schema": plan.get("schema") == "ticket-model-route-journal/v2",
+            "ticket": plan.get("ticket") == args.ticket,
+            "kit": SHA.fullmatch(kit) is not None and leases == [kit.encode()],
+            "route": route_raw != previous_route
+            and journal_extends(previous_route, route_raw),
+            "ticket_delta": exact_kit_sha_change(previous_ticket, ticket_raw),
+            "ticket_mode": git(
+                args.workdir, "ls-tree", commit, ticket_path
+            ).split()[0] == "100644",
+            "route_mode": git(
+                args.workdir, "ls-tree", commit, route_path
+            ).split()[0] == "100644",
+        }
+        if not all(checks.values()):
+            failed = next(name for name, ok in checks.items() if not ok)
+            raise PassportError(
+                f"model identity recovery topology is invalid: {failed}"
+            )
+        previous_route = route_raw
+        previous_ticket = ticket_raw
+    try:
+        validate_route(args.factory_root, args.workdir, args.ticket, args.factory_sha)
+    except RouteEvidenceError as error:
+        raise PassportError("model identity route evidence is invalid") from error
+    try:
+        policy_raw = json.loads(read_regular(
+            Path(__file__).resolve().parent
+            / "model-routing/handoff-boundaries-v1.json"
+        ))
+        policy = RoleBoundaryPolicy.from_dict(json.loads(
+            json.dumps(policy_raw, sort_keys=True).replace("TICKET", args.ticket)
+        ))
+        _validate_committed_changes(
+            args.workdir, input_head, output_head, role, policy,
+            allow_spec_lint_append=True,
+        )
+    except (HandoffError, KeyError, TypeError, ValueError) as error:
+        raise PassportError("model identity role output is invalid") from error
+    if output_head != input_head:
+        sentinel = subprocess.run(
+            [sys.executable,
+             str(Path(__file__).resolve().parent / "lib/lane-path-sentinel.py"),
+             str(args.workdir), input_head, output_head],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            check=False, timeout=120,
+        )
+        if sentinel.returncode:
+            raise PassportError("model identity role output is invalid")
+    return {
+        "control_commit_count": len(control_commits),
+        "input_head": input_head,
+        "output_head": output_head,
+    }
+
+
+def direct_model_identity_evidence(
+    args: argparse.Namespace, current: dict[str, Any]
+) -> dict[str, Any]:
+    manifest, terminal = completion_manifest(args)
+    output_path = manifest.with_suffix(".out")
+    output_digest = role_output_digest(output_path)
+    progress_events, progress_digest = successful_progress(
+        manifest.with_suffix(".progress.jsonl")
+    )
+    transition = transition_context(args, terminal, current)
+    topology = direct_model_output_topology(args, terminal, current)
+    route_path = f"factory/route-plans/{args.ticket}.json"
+    source_raw = git_blob(args.workdir, topology["input_head"], route_path)
+    try:
+        source_plan = json.loads(source_raw, object_pairs_hook=unique_object)
+        selection = route_selection(source_plan, terminal["role"])
+        catalog = json.loads(read_regular(
+            Path(__file__).resolve().parent / "model-routing/catalog-v1.json"
+        ), object_pairs_hook=unique_object)
+        routes = [
+            item for item in catalog["routes"]
+            if isinstance(item, dict)
+            and item.get("route_id") == terminal.get("route_id")
+        ]
+    except (KeyError, TypeError, ValueError) as error:
+        raise PassportError("model identity recovery route evidence is invalid") from error
+    if len(routes) != 1:
+        raise PassportError("model identity recovery route evidence is invalid")
+    route = routes[0]
+    raw = read_regular(output_path, maximum=8 * 1024 * 1024)
+    models, successes = [], 0
+    for line in raw.splitlines():
+        try:
+            value = json.loads(line, object_pairs_hook=unique_object)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(value, dict):
+            continue
+        if value.get("type") == "system" and value.get("subtype") == "init":
+            models.append(value.get("model"))
+        if value.get("type") == "result" and value.get("subtype") == "success":
+            successes += 1
+    actual = models[0] if len(models) == 1 and isinstance(models[0], str) else ""
+    canonical_identity = route.get("expected_reported_identity", "")
+    diagnostic = f"cursor reported unapproved model: {actual}".encode()
+    manifest_route_fields = {
+        "account_route_id": "account_route_id",
+        "adapter": "adapter",
+        "gateway_id": "gateway_id",
+        "inference_provider_id": "inference_provider_id",
+        "model_id": "selection_id",
+        "provider_family": "provider_family",
+        "route_id": "route_id",
+        "transport": "transport",
+    }
+    if any((
+        terminal.get("ticket") != args.ticket,
+        terminal.get("run_id") != args.run_id,
+        terminal.get("phase") != "completed",
+        terminal.get("accounting_state") != "abandoned_conservative",
+        terminal.get("go_issued") != "1",
+        terminal.get("task_submitted") != "1",
+        terminal.get("exit_status") != "9",
+        terminal.get("role_exit") != "provider_failed",
+        terminal.get("terminal_reason_code", "") != "",
+        terminal.get("role") not in RECOVERABLE_ROLES,
+        terminal.get("adapter") not in {"cursor-anthropic", "cursor-openai"},
+        terminal.get("role_branch_before") != current["branch"],
+        terminal.get("role_remote_before") != topology["input_head"],
+        terminal.get("transition_receipt_sha256") != args.receipt,
+        terminal.get("kit_sha") != source_plan.get("kit_sha"),
+        terminal.get("contract_version") != args.contract_version,
+        terminal.get("cost_basis") != "conservative_reservation",
+        terminal.get("effective_cost") != terminal.get("reserved_usd"),
+        micro_usd(terminal) <= 0,
+        terminal.get("output_sha256") != output_digest,
+        terminal.get("progress_events") != str(progress_events),
+        terminal.get("progress_journal_sha256") != progress_digest,
+        terminal.get("route_plan_sha256") != hashlib.sha256(source_raw).hexdigest(),
+        transition.get("head_sha") != topology["input_head"],
+        transition.get("role") != terminal.get("role"),
+        transition.get("stage") != f"RUN {terminal.get('role', '')}",
+        transition.get("factory_sha") != terminal.get("kit_sha"),
+        transition.get("route_plan_sha256") != terminal.get("route_plan_sha256"),
+        route.get("enabled") is not True,
+        not isinstance(canonical_identity, str) or not canonical_identity,
+        selection.get("reported_identity") != canonical_identity,
+        selection.get("effort") != terminal.get("effort"),
+        selection.get("adapter_version") != terminal.get("adapter_version"),
+        terminal.get("selection_reason") not in {"pinned_route_plan", "route_journal"},
+        any(
+            terminal.get(manifest_name) != route.get(route_name)
+            or selection.get(route_name) != route.get(route_name)
+            for manifest_name, route_name in manifest_route_fields.items()
+        ),
+        actual not in approved_reported_models(
+            route.get("selection_id", ""), canonical_identity,
+        ),
+        successes != 1,
+        raw.splitlines().count(diagnostic) != 1,
+        raw.splitlines().count(b"Cursor output validation/redaction failed") != 1,
+    )):
+        raise PassportError("run is not the typed model-identity success failure")
+    if terminal["role"] == "reviewer":
+        verdict = subprocess.run(
+            [sys.executable,
+             str(Path(__file__).resolve().parent / "lib/reviewer-verdict.py"),
+             "--adapter", terminal["adapter"], "--input", str(output_path),
+             "--contract-version", args.contract_version],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            check=False, timeout=120,
+        )
+        if verdict.returncode:
+            raise PassportError("model identity Reviewer output is invalid")
+    return {
+        "manifest_digest": hashlib.sha256(read_regular(manifest)).hexdigest(),
+        "output_digest": output_digest,
+        "progress_digest": progress_digest,
+        "progress_events": progress_events,
+        "reported_identity": actual,
+        "terminal": terminal,
+        "topology": topology,
+        "transition": transition,
+    }
+
+
+def recover_model_identity_success(
+    args: argparse.Namespace, secret: bytes
+) -> dict[str, Any]:
+    if git(args.workdir, "status", "--porcelain=v1", "-z"):
+        raise PassportError("model identity recovery requires a clean execution cell")
+    current = identity(args)
+    evidence = direct_model_identity_evidence(args, current)
+    terminal = evidence["terminal"]
+    transition = evidence["transition"]
+    passports = args.state_dir / "passports"
+    if not passports.exists() and not passports.is_symlink():
+        passports.mkdir(mode=0o700)
+    passports = safe_directory(passports)
+    destination = passports / f"{args.ticket}.json"
+    previous: dict[str, Any] = {}
+    parent_raw = None
+    if destination.exists() or destination.is_symlink():
+        previous, parent_raw = load_passport(destination, secret)
+    role = terminal["role"]
+    migrated_parent = (
+        bool(previous)
+        and transition.get("factory_sha") != args.factory_sha
+        and migrated_receipt_lineage(args, previous, transition, current)
+    )
+    existing_corrections = previous.get("completed_role_corrections", [])
+    if any(
+        isinstance(item, dict)
+        and item.get("schema") == PASSPORTLESS_MODEL_CORRECTION_SCHEMA
+        and item.get("run_id") == args.run_id
+        and item.get("transition_receipt_sha256") == args.receipt
+        for item in existing_corrections
+    ):
+        if (
+            any(previous.get(name) != item for name, item in current.items())
+            or previous.get("factory_sha") != args.factory_sha
+            or previous.get("current_stage") != f"RUN {role}"
+            or previous.get("transition_receipt_sha256") != args.receipt
+        ):
+            raise PassportError("model identity correction conflicts with prior evidence")
+        validate_completion_corrections(
+            existing_corrections, previous.get("completed_role_evidence", [])
+        )
+        return previous
+    if previous:
+        if any((
+            transition.get("passport_sha256") != parent_raw
+            and not migrated_parent,
+            previous.get("ticket") != args.ticket,
+            previous.get("project") != args.project,
+            previous.get("branch") != current["branch"],
+            previous.get("product_origin_sha256") != current["product_origin_sha256"],
+            previous.get("contract_version") != args.contract_version,
+            previous.get("factory_sha") != args.factory_sha,
+            subprocess.run(
+                ["git", "-C", str(args.workdir), "merge-base", "--is-ancestor",
+                 previous.get("head_sha", ""), current["head_sha"]],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                check=False, timeout=120,
+            ).returncode != 0,
+        )):
+            raise PassportError("model identity passport lineage is invalid")
+    elif role != "planner" or transition.get("passport_sha256") is not None:
+        raise PassportError("passportless model identity recovery is not a first role")
+    normal_completed, charges = run_evidence(
+        args.factory_root / "factory", args.ticket
+    )
+    matching_charges = [
+        item for item in charges
+        if item.get("run_id") == args.run_id
+        and item.get("transition_receipt_sha256") == args.receipt
+        and item.get("role") == role
+        and item.get("head_before") == evidence["topology"]["input_head"]
+        and item.get("factory_sha") == terminal.get("kit_sha")
+        and item.get("contract_version") == args.contract_version
+        and item.get("manifest_sha256") == evidence["manifest_digest"]
+    ]
+    if len(matching_charges) != 1:
+        raise PassportError("authenticated run charge is missing")
+    charges = merge_records(previous.get("charge_records", []), charges)
+    completed = merge_records(
+        previous.get("completed_role_evidence", []), normal_completed
+    )
+    completed_record = {
+        "contract_version": args.contract_version,
+        "factory_sha": terminal["kit_sha"],
+        "head_before": evidence["topology"]["input_head"],
+        "manifest_sha256": evidence["manifest_digest"],
+        "output_sha256": evidence["output_digest"],
+        "role": role,
+        "run_id": args.run_id,
+        "transition_receipt_sha256": args.receipt,
+    }
+    completed = merge_records(completed, [completed_record])
+    corrections = previous.get("completed_role_corrections", [])
+    if not isinstance(corrections, list):
+        raise PassportError("completion correction history is invalid")
+    correction = {
+        "failed_factory_sha": terminal["kit_sha"],
+        "issue": MODEL_IDENTITY_CORRECTION_ISSUE,
+        "output_head_sha": evidence["topology"]["output_head"],
+        "progress_events": evidence["progress_events"],
+        "progress_journal_sha256": evidence["progress_digest"],
+        "receipt_parent_file_sha256": parent_raw,
+        "recovery_factory_sha": args.factory_sha,
+        "role": role,
+        "run_id": args.run_id,
+        "schema": PASSPORTLESS_MODEL_CORRECTION_SCHEMA,
+        "transition_receipt_sha256": args.receipt,
+    }
+    corrections = validate_completion_corrections(
+        [*corrections, correction], completed
+    )
+    protected = git(args.factory_root, "rev-parse", "origin/main")
+    history = list(previous.get("factory_release_history", []))
+    for factory_sha in (terminal["kit_sha"], args.factory_sha):
+        item = {"contract_version": args.contract_version, "factory_sha": factory_sha}
+        if item not in history:
+            history.append(item)
+    value = {
+        **current,
+        "base_history": [
+            *previous.get("base_history", []),
+            *([] if protected in previous.get("base_history", []) else [protected]),
+        ],
+        "charge_records": charges,
+        "completed_role_corrections": corrections,
+        "completed_role_evidence": completed,
+        "contract_version": args.contract_version,
+        "cumulative_charges_micro_usd": sum(
+            item["charge_micro_usd"] for item in charges
+        ),
+        "current_stage": f"RUN {role}",
+        "current_state": ticket_state(args.workdir, args.ticket),
+        "factory_release_history": history,
+        "factory_sha": args.factory_sha,
+        "migration_history": list(previous.get("migration_history", [])),
+        "nonce": secrets.token_hex(16),
+        "parent_digest": previous.get("passport_sha256"),
+        "parent_file_sha256": parent_raw,
+        "protected_base_sha": protected,
+        "publication_state": previous.get("publication_state", "none"),
+        "route_plan_sha256": route_digest(args.workdir, args.ticket),
+        "schema": SCHEMA,
+        "transition_receipt_sha256": args.receipt,
+    }
+    signed = authenticate(value, secret)
+    write_atomic(destination, signed)
+    return signed
 
 
 def model_identity_recovery_topology(
@@ -2403,7 +2913,8 @@ def main() -> None:
     parser.add_argument(
         "action", choices=(
             "authorize-lineage", "correct-converged-success", "export",
-            "migrate", "validate", "verify-model-identity-success",
+            "migrate", "recover-model-identity-success", "validate",
+            "verify-model-identity-success",
         )
     )
     parser.add_argument("--factory-root", required=True, type=Path)
@@ -2432,13 +2943,14 @@ def main() -> None:
             or (
                 args.action in {
                     "authorize-lineage", "correct-converged-success", "export",
-                    "verify-model-identity-success",
+                    "recover-model-identity-success", "verify-model-identity-success",
                 }
                 and not DIGEST.fullmatch(args.receipt)
             )
             or (
                 args.action in {
-                    "correct-converged-success", "verify-model-identity-success",
+                    "correct-converged-success", "recover-model-identity-success",
+                    "verify-model-identity-success",
                 }
                 and not RUN_ID.fullmatch(args.run_id)
             )
@@ -2452,6 +2964,8 @@ def main() -> None:
             value = authorize_lineage(args, secret)
         elif args.action == "correct-converged-success":
             value = correct_converged_success(args, secret)
+        elif args.action == "recover-model-identity-success":
+            value = recover_model_identity_success(args, secret)
         elif args.action == "verify-model-identity-success":
             value = verify_model_identity_success(args, secret)
         elif args.action == "export":
@@ -2472,17 +2986,20 @@ def main() -> None:
                 "ticket": args.ticket,
             }, sort_keys=True)
         )
+    except PassportError as error:
+        print(json.dumps({
+            "error": str(error), "error_kind": "evidence",
+            "schema": SCHEMA, "status": "error",
+            "ticket": args.ticket,
+        }, sort_keys=True))
+        raise SystemExit(1)
     except (
-        FileNotFoundError,
-        json.JSONDecodeError,
-        OSError,
-        PassportError,
-        subprocess.SubprocessError,
-        UnicodeError,
+        FileNotFoundError, json.JSONDecodeError, OSError,
+        subprocess.SubprocessError, UnicodeError,
     ) as error:
         print(json.dumps({
-            "error": str(error), "schema": SCHEMA, "status": "error",
-            "ticket": args.ticket,
+            "error": str(error), "error_kind": "operation",
+            "schema": SCHEMA, "status": "error", "ticket": args.ticket,
         }, sort_keys=True))
         raise SystemExit(1)
 

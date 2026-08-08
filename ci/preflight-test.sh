@@ -123,6 +123,7 @@ write_ready_ticket() {
 State: Ready
 Initiative: I-001
 Priority: normal
+Builder ownership: README.md only
 
 ## Description
 
@@ -835,6 +836,24 @@ else
   echo "FAIL: contract 1.8 provider-free readiness rejected executable seams"
   FAILURES=$((FAILURES + 1))
 fi
+cp "$READINESS/factory/tickets/T-110.md" "$TMP/readiness-ticket.md"
+for builder_case in missing malformed broad; do
+  cp "$TMP/readiness-ticket.md" "$READINESS/factory/tickets/T-110.md"
+  case "$builder_case" in
+    missing) sed '/^Builder ownership:/d' "$READINESS/factory/tickets/T-110.md" > "$TMP/readiness-builder.md" ;;
+    malformed) sed 's|^Builder ownership:.*|Builder ownership: README.md|' "$READINESS/factory/tickets/T-110.md" > "$TMP/readiness-builder.md" ;;
+    broad) sed 's|^Builder ownership:.*|Builder ownership: app/ only|' "$READINESS/factory/tickets/T-110.md" > "$TMP/readiness-builder.md" ;;
+  esac
+  mv "$TMP/readiness-builder.md" "$READINESS/factory/tickets/T-110.md"
+  if python3 "$KIT_DIR/scripts/ticket-readiness.py" \
+       --ticket T-110 --workdir "$READINESS" > "$TMP/readiness-$builder_case.out"; then
+    echo "FAIL: contract 1.8 accepted $builder_case Builder ownership"
+    FAILURES=$((FAILURES + 1))
+  else
+    echo "PASS: contract 1.8 rejects $builder_case Builder ownership"
+  fi
+done
+cp "$TMP/readiness-ticket.md" "$READINESS/factory/tickets/T-110.md"
 if ! python3 "$KIT_DIR/scripts/ticket-readiness.py" \
      --global-literal 'Skip to main content' --workdir "$READINESS" \
      > "$TMP/global-text-collision.out" &&

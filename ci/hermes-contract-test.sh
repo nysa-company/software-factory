@@ -121,6 +121,7 @@ assert_helper_confinement() {
     FACTORY_DISPATCH_LEASE_ID \
     FACTORY_QUALIFICATION_MANIFEST FACTORY_QUALIFICATION_PRODUCT_SHA \
     FACTORY_QUALIFICATION_PRODUCT_TREE \
+    FACTORY_QUALIFICATION_FALLBACK_READINESS_SHA256 \
     FACTORY_PROBE_CODEX FACTORY_PROBE_CLAUDE_CODE \
     FACTORY_CURSOR_FALLBACK_ENABLED CURSOR_AGENT_BIN CODEX_PINNED MOCK_STATUS \
     PROJECTED_TICKET_USD PYTHONHOME PYTHONPATH PYTHONWARNINGS GIT_DIR GIT_WORK_TREE \
@@ -238,6 +239,7 @@ run_launcher() {
     FACTORY_QUALIFICATION_MANIFEST="$TMP/caller-qualification-bypass.json" \
     FACTORY_QUALIFICATION_PRODUCT_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
     FACTORY_QUALIFICATION_PRODUCT_TREE=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+    FACTORY_QUALIFICATION_FALLBACK_READINESS_SHA256=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc \
     FACTORY_MODEL_STATE_ROOT="$TMP/caller-model-state-bypass" \
     FACTORY_PROJECT=caller-model-project \
     FACTORY_MODEL_MANAGER="$TMP/caller-model-manager.py" \
@@ -396,6 +398,16 @@ if [[ -e "$FACTORY_ROOT/factory/test-model-args-only" ]]; then
     unset PROFILE_TOKEN
   fi
   printf 'ARG=%s\n' "$@"
+  exit 0
+fi
+if [[ "${1:-}" == "qualification-readiness" &&
+      -e "$FACTORY_ROOT/factory/test-model-readiness-invalid" ]]; then
+  printf '%s\n' '{"checks":[{"cursor_route_id":"cursor-gpt-5.6-sol-high","expected_version":"0.147.0","fallback_route_id":"codex-gpt-5.6-sol-high","installed_version":"0.148.0","reason":"version_mismatch","role":"planner","state":"INVALID"}],"profile_id":"cursor-opus-v1","readiness_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","schema":"nysa.software-factory.qualification-fallback-readiness/v1","status":"invalid"}'
+  exit 1
+fi
+if [[ "${1:-}" == "qualification-readiness" &&
+      -e "$FACTORY_ROOT/factory/test-model-readiness-ready" ]]; then
+  printf '%s\n' '{"checks":[],"profile_id":"cursor-opus-v1","readiness_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","schema":"nysa.software-factory.qualification-fallback-readiness/v1","status":"ready"}'
   exit 0
 fi
 exec /bin/bash "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/model-control-real.sh" "$@"
@@ -694,7 +706,9 @@ assert checks["contract_resume"] == {
 }
 allowed = {"ok", "warning", "error", "unknown"}
 assert data["overall_status"] in allowed
-assert all(check["status"] in allowed for check in checks.values())
+assert all(
+    check["status"] in allowed | {"not_applicable"} for check in checks.values()
+)
 PY
 
 # Structurally invalid state remains an error even when its digest is valid.
@@ -1085,6 +1099,9 @@ assert data["checks"]["kit"] == {"status": "ok", "full_sha": sha}
 assert data["checks"]["registry"]["kit_dir"] == os.path.realpath(release), "doctor reported wrong resolved release"
 assert data["checks"]["registry"]["product_root"] == os.path.realpath(product), "doctor reported wrong product"
 assert data["checks"]["kit_pin"]["matches_kit"] is True
+assert data["checks"]["fallback_readiness"] == {
+    "status": "not_applicable", "report": None,
+}
 PY
 assert_no_secret "$TMP/launcher-doctor.json"
 DOCTOR_HELPER_ENV="$LAUNCH_PRODUCT/factory/doctor-helper.env"
@@ -1093,6 +1110,56 @@ assert_helper_confinement "$DOCTOR_HELPER_ENV"
 EXPECTED_CONTROLLER_STATE="$(cd "$KITS_ROOT/projects/launchtest/controller" && pwd -P)"
 grep -Fx "FACTORY_CONTROLLER_STATE_DIR=$EXPECTED_CONTROLLER_STATE" \
   "$DOCTOR_HELPER_ENV" >/dev/null || fail "doctor did not receive controller state"
+
+touch "$LAUNCH_PRODUCT/factory/test-model-readiness-invalid"
+DOCTOR_READINESS_RC=0
+HOME="$TEST_HOME" PATH="$STUB_BIN:$PATH" TMPDIR="$TMP/launcher-tmp" \
+  FACTORY_KIT_TRUST_SCOPE=qualification-candidate \
+  FACTORY_RELEASE_CONTRACT_VERSION=1.8.0 FACTORY_PROJECT=launchtest \
+  FACTORY_ROOT="$LAUNCH_PRODUCT" FACTORY_MODEL_STATE_ROOT="$KITS_ROOT/projects" \
+  bash "$RELEASE_A/scripts/factory-doctor-real.sh" --json \
+    --profile-dir "$PROFILE" --kit-dir "$RELEASE_A" \
+    --product-root "$LAUNCH_PRODUCT" --kit-sha "$SHA_A" \
+    > "$TMP/doctor-readiness-invalid.json" || DOCTOR_READINESS_RC=$?
+[[ "$DOCTOR_READINESS_RC" -eq 1 ]] || fail "Doctor accepted invalid fallback readiness"
+python3 - "$TMP/doctor-readiness-invalid.json" <<'PY'
+import json, sys
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+check = value["checks"]["fallback_readiness"]
+assert check["status"] == "error"
+assert check["report"]["readiness_sha256"] == "a" * 64
+route = check["report"]["checks"][0]
+assert route == {
+    "cursor_route_id": "cursor-gpt-5.6-sol-high",
+    "expected_version": "0.147.0",
+    "fallback_route_id": "codex-gpt-5.6-sol-high",
+    "installed_version": "0.148.0",
+    "reason": "version_mismatch",
+    "role": "planner",
+    "state": "INVALID",
+}
+PY
+rm -f "$LAUNCH_PRODUCT/factory/test-model-readiness-invalid"
+touch "$LAUNCH_PRODUCT/factory/test-model-readiness-ready"
+HOME="$TEST_HOME" PATH="$STUB_BIN:$PATH" TMPDIR="$TMP/launcher-tmp" \
+  FACTORY_KIT_TRUST_SCOPE=qualification-candidate \
+  FACTORY_RELEASE_CONTRACT_VERSION=1.8.0 FACTORY_PROJECT=launchtest \
+  FACTORY_ROOT="$LAUNCH_PRODUCT" FACTORY_MODEL_STATE_ROOT="$KITS_ROOT/projects" \
+  bash "$RELEASE_A/scripts/factory-doctor-real.sh" --json \
+    --profile-dir "$PROFILE" --kit-dir "$RELEASE_A" \
+    --product-root "$LAUNCH_PRODUCT" --kit-sha "$SHA_A" \
+    > "$TMP/doctor-readiness-ready.json" || true
+python3 - "$TMP/doctor-readiness-ready.json" <<'PY'
+import json, sys
+check = json.load(open(sys.argv[1], encoding="utf-8"))["checks"]["fallback_readiness"]
+assert check == {"status": "ok", "report": {
+    "checks": [], "profile_id": "cursor-opus-v1",
+    "readiness_sha256": "b" * 64,
+    "schema": "nysa.software-factory.qualification-fallback-readiness/v1",
+    "status": "ready",
+}}
+PY
+rm -f "$LAUNCH_PRODUCT/factory/test-model-readiness-ready"
 
 # The upgraded standalone launcher must continue selecting an inherited 1.1
 # release without rewriting its public contract.
@@ -1929,6 +1996,7 @@ printf '%s\n' \
   "date,time,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status,run_id,provider_family,model_id,selection_reason,cost_basis,adapter_version" \
   > "$LAUNCH_PRODUCT/factory/ledger.csv"
 printf '%s\n' 'TICKET_BRANCH_PREFIX=ticket/' 'MAX_CONCURRENT_TICKETS=2' \
+  'PREVIEW_PROVIDER=railway' \
   > "$LAUNCH_PRODUCT/factory/PROJECT.env"
 git -C "$LAUNCH_PRODUCT" add factory/tickets/T-77{7,8,9}.md \
   factory/tickets/T-78{0,1,2}.md factory/initiatives/I-777.md \
@@ -2545,11 +2613,14 @@ assert commands["models"]["grammars"] == [
     "pin --ticket <T-NNN> --workdir <exact-ticket-worktree> --json",
     "migrate-plan --ticket <T-NNN> --workdir <exact-clean-ticket-worktree> [--include-journal] --json",
     "migrate --ticket <T-NNN> --workdir <exact-clean-ticket-worktree> --approve-hash <lowercase-sha256> --readiness-hash <lowercase-sha256> --approved-by <safe-id> --json",
+    "qualification-readiness --json (qualification launcher, Contract 1.8)",
     "fallback-plan --ticket <T-NNN> --failed-run <safe-run-id> --workdir <exact-ticket-worktree> --reason <credits_exhausted|provider_unavailable> --json",
     "fallback-auto --ticket <T-NNN> --failed-run <safe-run-id> --workdir <exact-ticket-worktree> --reason <credits_exhausted|provider_unavailable> --json",
     "fallback --ticket <T-NNN> --failed-run <safe-run-id> --workdir <exact-ticket-worktree> --reason <credits_exhausted|provider_unavailable> [--allow-reviewer-family <safe-id>] --json",
 ]
 assert commands["models"]["output_schemas"]["inventory"] == "factory-cursor-model-inventory/v1"
+assert commands["models"]["output_schemas"]["qualification-readiness"] == \
+    "nysa.software-factory.qualification-fallback-readiness/v1"
 assert commands["models"]["state"] == {
     "root": "$FACTORY_KITS_ROOT/projects",
     "project": "<project>",
@@ -2569,7 +2640,7 @@ assert commands["models"]["maintenance"] == {
     "allowed": [
         "profiles", "status", "inventory", "policy-candidates", "policy-preview",
         "reviewer-exception-contract", "ticket-status", "plan",
-        "migrate-plan", "fallback-plan",
+        "migrate-plan", "qualification-readiness", "fallback-plan",
     ],
     "refused": [
         "activate", "disable", "enable", "policy-apply", "pin", "migrate",
@@ -2725,6 +2796,7 @@ assert contract["launcher"]["helper_environment"] == {
     "FACTORY_QUALIFICATION_MANIFEST": "sealed qualification manifest path supplied only by a qualification launcher",
     "FACTORY_QUALIFICATION_PRODUCT_SHA": "qualification receipt-bound protected product commit",
     "FACTORY_QUALIFICATION_PRODUCT_TREE": "qualification receipt-bound protected product tree",
+    "FACTORY_QUALIFICATION_FALLBACK_READINESS_SHA256": "qualification receipt-bound native fallback readiness digest",
     "FACTORY_CERTIFIED_PRODUCT_ORIGIN": "contract 1.2+ certification receipt product_origin; consumed by trusted write helpers and never exposed to adapters",
     "FACTORY_DISPATCH_LEASE_ID": "validated optional ticket lease supplied by the dispatcher",
     "FACTORY_TRANSITION_RECEIPT_SHA256": "Contract 1.8 consumed one-use state-machine receipt",
@@ -2759,6 +2831,7 @@ assert contract["launcher"]["helper_environment_allowlist"] == [
     "FACTORY_QUALIFICATION_MANIFEST",
     "FACTORY_QUALIFICATION_PRODUCT_SHA",
     "FACTORY_QUALIFICATION_PRODUCT_TREE",
+    "FACTORY_QUALIFICATION_FALLBACK_READINESS_SHA256",
     "FACTORY_CERTIFIED_PRODUCT_ORIGIN",
     "FACTORY_DISPATCH_LEASE_ID",
     "FACTORY_TRANSITION_RECEIPT_SHA256",
@@ -2861,7 +2934,7 @@ launcher_text = open(
     encoding="utf-8",
 ).read()
 assert "/private/tmp/nysa-sf-qualification" in launcher_text
-assert 'optional = ("", "", "", "", "", "", "", "", "")' in launcher_text
+assert 'optional = ("", "", "", "", "", "", "", "", "", "")' in launcher_text
 assert 'WORKTREE_PARENT="$KITS_ROOT/worktrees"' in launcher_text
 assert '"FACTORY_CLI_LANE_ROOT=$QUALIFICATION_ROOT"' in launcher_text
 assert 'KIT_TRUST_SCOPE="qualification-candidate"' in launcher_text
@@ -2869,6 +2942,7 @@ assert '"FACTORY_KIT_TRUST_SCOPE=$KIT_TRUST_SCOPE"' in launcher_text
 assert '"FACTORY_QUALIFICATION_MANIFEST=$PRODUCT_ROOT/factory/QUALIFICATION.json"' in launcher_text
 assert '"FACTORY_QUALIFICATION_PRODUCT_SHA=$ACTIVE_PRODUCT_SHA"' in launcher_text
 assert '"FACTORY_QUALIFICATION_PRODUCT_TREE=$ACTIVE_PRODUCT_TREE"' in launcher_text
+assert '"FACTORY_QUALIFICATION_FALLBACK_READINESS_SHA256=$ACTIVE_FALLBACK_READINESS_SHA256"' in launcher_text
 assert '"FACTORY_LEDGER=$ACTIVE_RUNTIME_LEDGER"' in launcher_text
 assert '"FACTORY_DURABLE_LEDGER=$PRODUCT_ROOT/factory/ledger.csv"' in launcher_text
 assert '"FACTORY_REFRESH_RUNTIME_LEDGER=1"' in launcher_text

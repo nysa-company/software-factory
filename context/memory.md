@@ -4354,3 +4354,45 @@ missing actions only from current-release claims plus authenticated transition,
 passport, and terminal evidence. Generic and specialized escalation records
 remain one operator action, and pre-GO terminal blocks are visible without
 introducing a second journal.
+
+## 2026-08-08 — Decision 323: Completed Cursor work is recovered, not replayed
+
+Category: Reliability
+
+An exact route-bound Cursor reported-identity alias may normalize to its sealed
+catalog identity only when every observed init identity is approved. If the
+role otherwise completed, the controller authenticates its receipt, route,
+terminal, progress, role-owned Git delta, and charge before recording one
+signed completion. Evidence mismatch is a release-bound refusal; delivery and
+push failures are retryable. Neither path may launch a provider or duplicate a
+charge or completed-role record.
+
+## 2026-08-08 — Decision 324: Qualification proves native fallback before spend
+
+Category: Reliability
+
+Every selected Cursor role in qualification must have a ready same-family
+native fallback at the exact pinned CLI version. Preparation persists the
+bounded report and digest in the activation receipt, Doctor preserves route
+plus expected and installed versions, and claim admission requires a fresh
+probe to match that digest before a lease or provider call.
+
+## 2026-08-08 — Decision 325: Fallback refusal and migration are exact
+
+Category: Trust boundary
+
+Automatic qualification fallback stores only a sanitized typed reason bound to
+the executing release. The same release cannot hot-loop it; a successor may
+retry after repair. A passportless fallback followed by release migration may
+reopen only when the consumed approval and failed terminal authenticate the
+final fallback revision and every suffix revision is an exact Kit migration.
+
+## 2026-08-08 — Decision 326: Preview capability is certified before admission
+
+Category: Reliability
+
+Each Contract 1.8 product certifies exactly one Railway or nonvisual preview
+capability. `none` requires a strict nonempty nonvisual path policy, while each
+ready ticket declares exact Builder-owned files. Qualification compares those
+files with the certified policy before publishing lane state; missing,
+ambiguous, broad, or visual/deployable work fails before claims or provider use.

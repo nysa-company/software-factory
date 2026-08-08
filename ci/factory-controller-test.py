@@ -43,6 +43,24 @@ ATTEST_SPEC = importlib.util.spec_from_file_location(
 assert ATTEST_SPEC and ATTEST_SPEC.loader
 ATTEST = importlib.util.module_from_spec(ATTEST_SPEC)
 ATTEST_SPEC.loader.exec_module(ATTEST)
+ROUTER_SPEC = importlib.util.spec_from_file_location(
+    "controller_test_router", ROOT / "scripts/model-router.py"
+)
+assert ROUTER_SPEC and ROUTER_SPEC.loader
+ROUTER = importlib.util.module_from_spec(ROUTER_SPEC)
+ROUTER_SPEC.loader.exec_module(ROUTER)
+MANAGER_SPEC = importlib.util.spec_from_file_location(
+    "controller_test_manager", ROOT / "scripts/model-manager.py"
+)
+assert MANAGER_SPEC and MANAGER_SPEC.loader
+MANAGER = importlib.util.module_from_spec(MANAGER_SPEC)
+MANAGER_SPEC.loader.exec_module(MANAGER)
+HANDOFF_SPEC = importlib.util.spec_from_file_location(
+    "controller_test_handoff", ROOT / "scripts/lib/failed_attempt_handoff.py"
+)
+assert HANDOFF_SPEC and HANDOFF_SPEC.loader
+HANDOFF = importlib.util.module_from_spec(HANDOFF_SPEC)
+HANDOFF_SPEC.loader.exec_module(HANDOFF)
 FACTORY_ISSUE = "https://github.com/nysa-company/software-factory/issues/253"
 
 
@@ -319,6 +337,15 @@ class FactoryControllerTest(unittest.TestCase):
             "ticket": pre_go_ticket,
         })
 
+        fallback_ticket = "T-115"
+        claims.append({
+            "blocked_reason": "qualification-fallback-refused:manifest:"
+            + controller.release_path.name,
+            "branch": f"ticket/{fallback_ticket}", "lease": "6" * 64,
+            "receipt": "", "role": "", "status": "blocked",
+            "ticket": fallback_ticket,
+        })
+
         class InjectedCrash(BaseException):
             pass
 
@@ -328,6 +355,7 @@ class FactoryControllerTest(unittest.TestCase):
             ("role_blocked", role_ticket),
             ("ticket_blocked", escalation_ticket),
             ("pre_go_failure_blocked", pre_go_ticket),
+            ("typed_recovery_refused", fallback_ticket),
         ):
             with (
                 patch.object(controller, "event", side_effect=InjectedCrash),
@@ -344,6 +372,7 @@ class FactoryControllerTest(unittest.TestCase):
             "budget_wait", "awaiting_approval", "role_blocked",
             "ticket_blocked", "state_machine_escalated",
             "pre_go_failure_blocked",
+            "typed_recovery_refused",
         }
         self.assertEqual(
             {event["event"] for event in events}, expected,
@@ -958,6 +987,18 @@ class FactoryControllerTest(unittest.TestCase):
             check=True,
         )
         claims = []
+        catalog, routes, _profiles, profile_map = ROUTER.load_policy()
+        readiness = {
+            route_id: {
+                "adapter_version": "test-v1", "reason": "ok",
+                "reported_identity": value["expected_reported_identity"],
+                "state": "READY",
+            }
+            for route_id, value in routes.items() if value["enabled"]
+        }
+        resolution = ROUTER.resolve_policy(
+            catalog, routes, profile_map["cursor-opus-v1"], readiness,
+        )
         for number, ticket in enumerate(tickets, 1):
             worktree = self.root / f"cell-{number}"
             branch = f"ticket/{ticket}"
@@ -975,11 +1016,13 @@ class FactoryControllerTest(unittest.TestCase):
             )
             route_path = worktree / f"factory/route-plans/{ticket}.json"
             route_path.parent.mkdir()
-            route_path.write_text(json.dumps({
+            route_path.write_text(ROUTER.canonical_json({
+                "created_at": "2026-08-07T00:00:00Z",
                 "kit_sha": self.release.name,
+                "resolution": resolution,
                 "schema": "ticket-model-route-plan/v1",
                 "ticket": ticket,
-            }, sort_keys=True) + "\n", encoding="utf-8")
+            }) + "\n", encoding="utf-8")
             subprocess.run(
                 ["git", "-C", str(worktree), "add", "factory"], check=True,
             )
@@ -1053,6 +1096,160 @@ class FactoryControllerTest(unittest.TestCase):
                 claim["lease_released"] = True
             claims.append(claim)
         return CONTROL.Controller(self.args), claims
+
+    def install_passportless_fallback(
+        self, claim: dict, snapshot_path: str | None = None,
+    ) -> dict:
+        worktree = Path(claim["worktree"])
+        ticket = claim["ticket"]
+        receipt_path = self.state / f"{ticket}.json"
+        receipt = CONTROL.read(receipt_path)
+        route_path = worktree / f"factory/route-plans/{ticket}.json"
+        catalog, routes, _profiles, profile_map = ROUTER.load_policy()
+        journal = MANAGER.migrate_v1_plan(
+            route_path.read_bytes(), receipt["head_sha"], self.release.name,
+            "2026-08-07T00:00:30Z", catalog, routes, profile_map,
+        )
+        prior = MANAGER.active_resolution(journal)
+        failed = prior["selections"]["planner"]
+        readiness = {
+            route_id: {
+                "adapter_version": "test-v1", "reason": "ok",
+                "reported_identity": value["expected_reported_identity"],
+                "state": "READY",
+            }
+            for route_id, value in routes.items() if value["enabled"]
+        }
+        readiness[failed["route_id"]].update(
+            reason="provider_unavailable", state="UNAVAILABLE",
+        )
+        fallback = ROUTER.resolve_fallback_policy(
+            catalog, routes, profile_map[prior["profile_id"]], readiness,
+            prior, "planner", failed["route_id"], ["planner"],
+            {"P": [], "T": [], "B": []},
+        )
+        run_id = f"fallback-{ticket}"
+        terminal = (
+            f"run_id={run_id}\nphase=completed\n"
+            "accounting_state=abandoned_conservative\n"
+            "go_issued=1\ntask_submitted=1\nexit_status=9\n"
+            f"ticket={ticket}\nrole=planner\nadapter={failed['adapter']}\n"
+            f"provider_family={failed['provider_family']}\n"
+            f"model_id={failed['selection_id']}\nroute_id={failed['route_id']}\n"
+            f"policy_hash={prior['policy_hash']}\nrole_exit=provider_failed\n"
+            f"role_branch_before={claim['branch']}\n"
+            f"role_head_before={receipt['head_sha']}\n"
+            f"role_remote_before={receipt['head_sha']}\n"
+            f"kit_sha={self.release.name}\n"
+        ).encode()
+        (self.product / f"factory/runs/{run_id}.meta").write_bytes(terminal)
+        approval = {
+            "approval_hash": "1" * 64,
+            "failed_run_id": run_id,
+            "generation": 1,
+            "manifest_digest": "2" * 64,
+            "nonce": "3" * 32,
+            "schema": "ticket-model-fallback-qualification/v1",
+        }
+        entries = ()
+        if snapshot_path:
+            content = b"untrusted sibling mutation\n"
+            candidate = worktree / snapshot_path
+            candidate.parent.mkdir(parents=True, exist_ok=True)
+            candidate.write_bytes(content)
+            blob = subprocess.run(
+                ["git", "-C", worktree, "hash-object", "--stdin"],
+                input=content, capture_output=True, check=True,
+            ).stdout.decode().strip()
+            entries = (HANDOFF.SnapshotEntry(
+                path=snapshot_path, state="file", mode="100644", blob_oid=blob,
+                content_sha256=hashlib.sha256(content).hexdigest(), size=len(content),
+            ),)
+        snapshot_digest = HANDOFF._snapshot_digest(entries)
+        journal = MANAGER.append_fallback_revision(
+            journal, fallback, hashlib.sha256(terminal).hexdigest(), snapshot_digest,
+            "provider_unavailable", approval, "2026-08-07T00:00:45Z",
+            catalog, routes, profile_map,
+        )
+        route_path.write_text(ROUTER.canonical_json(journal) + "\n")
+        subprocess.run(["git", "-C", worktree, "add", "-A"], check=True)
+        revision = journal["revisions"][-1]["revision_hash"]
+        subprocess.run(
+            ["git", "-C", worktree, "commit", "-qm",
+             f"{ticket}: preserve failed attempt and revise model route",
+             "-m", "Failed-Attempt-Snapshot: " + snapshot_digest,
+             "-m", "Model-Route-Revision: " + revision],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", worktree, "push", "-q", "origin", claim["branch"]],
+            check=True,
+        )
+        head = subprocess.run(
+            ["git", "-C", worktree, "rev-parse", "HEAD"],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+        receipt.update(
+            head_sha=head,
+            head_tree=subprocess.run(
+                ["git", "-C", worktree, "rev-parse", "HEAD^{tree}"],
+                text=True, capture_output=True, check=True,
+            ).stdout.strip(),
+            route_plan_sha256=hashlib.sha256(route_path.read_bytes()).hexdigest(),
+            ticket_blob=subprocess.run(
+                ["git", "-C", worktree, "rev-parse",
+                 f"HEAD:factory/tickets/{ticket}.md"],
+                text=True, capture_output=True, check=True,
+            ).stdout.strip(),
+        )
+        immutable = {
+            key: value for key, value in receipt.items()
+            if key not in {"consumed", "consumed_at_epoch", "receipt_sha256"}
+        }
+        receipt["receipt_sha256"] = hashlib.sha256(
+            CONTROL.canonical(immutable).encode()
+        ).hexdigest()
+        receipt_path.unlink()
+        CONTROL.write(receipt_path, receipt)
+        return journal
+
+    def test_qualification_claim_rechecks_fallback_readiness(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        controller.qualification = {"tickets": ["T-110"]}
+        controller.qualification_fallback_readiness_sha256 = "f" * 64
+        calls = []
+
+        def ready(*args, **_kwargs):
+            calls.append(args)
+            if args[:2] == ("models", "qualification-readiness"):
+                return {
+                    "readiness_sha256": "f" * 64,
+                    "schema": "nysa.software-factory.qualification-fallback-readiness/v1",
+                    "status": "ready",
+                }
+            return {"action": "WAIT"}
+
+        controller.json_call = ready
+        self.assertEqual(controller.claim_new([]), [])
+        self.assertEqual(calls[0], ("models", "qualification-readiness", "--json"))
+        controller.json_call = lambda *_args, **_kwargs: {
+            "readiness_sha256": "f" * 64,
+            "schema": "nysa.software-factory.qualification-fallback-readiness/v1",
+            "status": "invalid",
+        }
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "fallback readiness drifted",
+        ):
+            controller.claim_new([])
+        controller.json_call = lambda *_args, **_kwargs: {
+            "readiness_sha256": "e" * 64,
+            "schema": "nysa.software-factory.qualification-fallback-readiness/v1",
+            "status": "ready",
+        }
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "fallback readiness drifted",
+        ):
+            controller.claim_new([])
 
     def test_claims_four_cells_and_recovers_terminal_receipt(self) -> None:
         controller = CONTROL.Controller(self.args)
@@ -1607,7 +1804,19 @@ class FactoryControllerTest(unittest.TestCase):
                 "ticket": ticket,
                 "worktree": str(cell),
             })
-        first.json_call = lambda *_args, **_kwargs: values.pop(0)
+        def json_call(*parts, **_kwargs):
+            if parts[:2] == ("models", "qualification-readiness"):
+                return {
+                    "readiness_sha256": "f" * 64,
+                    "schema": (
+                        "nysa.software-factory.qualification-"
+                        "fallback-readiness/v1"
+                    ),
+                    "status": "ready",
+                }
+            return values.pop(0)
+
+        first.json_call = json_call
         self.assertEqual(first.reconcile()["status"], "restart_required")
         current_boundary = self.state / (
             f"qualification-restart-boundary-{'a' * 40}.json"
@@ -2456,6 +2665,215 @@ class FactoryControllerTest(unittest.TestCase):
         ]
         self.assertEqual(sorted(item["ticket"] for item in events), tickets)
 
+    def test_passportless_kit_refusal_recovers_after_exact_route_migration(self) -> None:
+        controller, claims = self.initialize_passportless_planner_claims(["T-177"])
+        claim = claims[0]
+        fallback = self.install_passportless_fallback(claim)
+        receipt_path = self.state / "T-177.json"
+        receipt = CONTROL.read(receipt_path)
+        successor = self.root / ("e" * 40)
+        successor.mkdir()
+        receipt.update(
+            factory_sha=successor.name,
+            role=None,
+            stage="REFUSE ticket Kit-SHA lease does not match the selected kit SHA",
+        )
+        immutable = {
+            key: value for key, value in receipt.items()
+            if key not in {"consumed", "consumed_at_epoch", "receipt_sha256"}
+        }
+        receipt["receipt_sha256"] = hashlib.sha256(
+            CONTROL.canonical(immutable).encode()
+        ).hexdigest()
+        receipt_path.unlink()
+        CONTROL.write(receipt_path, receipt)
+
+        worktree = Path(claim["worktree"])
+        ticket = worktree / "factory/tickets/T-177.md"
+        ticket.write_text(ticket.read_text().replace(self.release.name, successor.name))
+        route = worktree / "factory/route-plans/T-177.json"
+        catalog, routes, _profiles, profile_map = ROUTER.load_policy()
+        value = MANAGER.migrate_v2_journal(
+            fallback, receipt["head_sha"], successor.name,
+            "2026-08-07T00:01:00Z", catalog, routes, profile_map,
+        )
+        route.write_text(ROUTER.canonical_json(value) + "\n")
+        subprocess.run(["git", "-C", worktree, "add", "factory"], check=True)
+        subprocess.run(
+            ["git", "-C", worktree, "commit", "-qm", "migrate route"], check=True,
+        )
+        subprocess.run(
+            ["git", "-C", worktree, "push", "-q", "origin", "ticket/T-177"],
+            check=True,
+        )
+        controller.release_path = successor
+        claim.update(
+            blocked_reason="state-machine-refusal", lease_released=True,
+        )
+        calls = []
+        crash = [True]
+
+        def ensure_lease(item, label):
+            calls.append(label)
+            item.pop("lease_released", None)
+            if crash.pop() if crash else False:
+                raise KeyboardInterrupt("crash after durable lease recovery")
+
+        controller.ensure_lease = ensure_lease
+        with self.assertRaises(KeyboardInterrupt):
+            controller.recover_passportless_route_migrations([claim])
+        self.assertEqual(claim["status"], "blocked")
+        controller.recover_passportless_route_migrations([claim])
+        controller.recover_passportless_route_migrations([claim])
+        self.assertEqual(claim["status"], "claimed")
+        self.assertNotIn("blocked_reason", claim)
+        self.assertEqual(calls, ["passportless-route-migration"] * 2)
+
+    def test_passportless_kit_refusal_rejects_untrusted_control_bytes(self) -> None:
+        controller, claims = self.initialize_passportless_planner_claims(["T-177"])
+        claim = claims[0]
+        fallback = self.install_passportless_fallback(claim)
+        receipt = CONTROL.read(self.state / "T-177.json")
+        successor = self.root / ("e" * 40)
+        successor.mkdir()
+        receipt.update(
+            factory_sha=successor.name, role=None,
+            stage="REFUSE ticket Kit-SHA lease does not match the selected kit SHA",
+        )
+        immutable = {
+            key: value for key, value in receipt.items()
+            if key not in {"consumed", "consumed_at_epoch", "receipt_sha256"}
+        }
+        receipt["receipt_sha256"] = hashlib.sha256(
+            CONTROL.canonical(immutable).encode()
+        ).hexdigest()
+        (self.state / "T-177.json").unlink()
+        CONTROL.write(self.state / "T-177.json", receipt)
+        worktree = Path(claim["worktree"])
+        ticket = worktree / "factory/tickets/T-177.md"
+        ticket.write_text(
+            ticket.read_text().replace(self.release.name, successor.name)
+            + "\nAcceptance-Criteria: untrusted rewrite\n"
+        )
+        route = worktree / "factory/route-plans/T-177.json"
+        catalog, routes, _profiles, profile_map = ROUTER.load_policy()
+        value = MANAGER.migrate_v2_journal(
+            fallback, receipt["head_sha"], successor.name,
+            "2026-08-07T00:01:00Z", catalog, routes, profile_map,
+        )
+        route.write_text(ROUTER.canonical_json(value) + "\n")
+        subprocess.run(["git", "-C", worktree, "add", "factory"], check=True)
+        subprocess.run(["git", "-C", worktree, "commit", "-qm", "unsafe migration"], check=True)
+        subprocess.run(["git", "-C", worktree, "push", "-q", "origin", "ticket/T-177"], check=True)
+        controller.release_path = successor
+        claim.update(blocked_reason="state-machine-refusal", lease_released=True)
+        controller.recover_passportless_route_migrations([claim])
+        self.assertEqual(claim["status"], "blocked")
+
+    def test_passportless_kit_refusal_rejects_untrusted_fallback_snapshot(self) -> None:
+        controller, claims = self.initialize_passportless_planner_claims(["T-177"])
+        claim = claims[0]
+        fallback = self.install_passportless_fallback(
+            claim, "app/untrusted-sibling.py",
+        )
+        receipt_path = self.state / "T-177.json"
+        receipt = CONTROL.read(receipt_path)
+        successor = self.root / ("e" * 40)
+        successor.mkdir()
+        receipt.update(
+            factory_sha=successor.name, role=None,
+            stage="REFUSE ticket Kit-SHA lease does not match the selected kit SHA",
+        )
+        immutable = {
+            key: value for key, value in receipt.items()
+            if key not in {"consumed", "consumed_at_epoch", "receipt_sha256"}
+        }
+        receipt["receipt_sha256"] = hashlib.sha256(
+            CONTROL.canonical(immutable).encode()
+        ).hexdigest()
+        receipt_path.unlink()
+        CONTROL.write(receipt_path, receipt)
+        worktree = Path(claim["worktree"])
+        ticket = worktree / "factory/tickets/T-177.md"
+        ticket.write_text(ticket.read_text().replace(self.release.name, successor.name))
+        route = worktree / "factory/route-plans/T-177.json"
+        catalog, routes, _profiles, profile_map = ROUTER.load_policy()
+        value = MANAGER.migrate_v2_journal(
+            fallback, receipt["head_sha"], successor.name,
+            "2026-08-07T00:01:00Z", catalog, routes, profile_map,
+        )
+        route.write_text(ROUTER.canonical_json(value) + "\n")
+        subprocess.run(["git", "-C", worktree, "add", "factory"], check=True)
+        subprocess.run(
+            ["git", "-C", worktree, "commit", "-qm", "migrate route"], check=True,
+        )
+        subprocess.run(
+            ["git", "-C", worktree, "push", "-q", "origin", "ticket/T-177"],
+            check=True,
+        )
+        controller.release_path = successor
+        claim.update(blocked_reason="state-machine-refusal", lease_released=True)
+        controller.recover_passportless_route_migrations([claim])
+        self.assertEqual(claim["status"], "blocked")
+
+    def test_passportless_kit_refusal_rejects_intermediate_kit_mismatch(self) -> None:
+        controller, claims = self.initialize_passportless_planner_claims(["T-177"])
+        claim = claims[0]
+        fallback = self.install_passportless_fallback(claim)
+        receipt_path = self.state / "T-177.json"
+        receipt = CONTROL.read(receipt_path)
+        middle, wrong, final = "d" * 40, "e" * 40, "f" * 40
+        receipt.update(
+            factory_sha=final, role=None,
+            stage="REFUSE ticket Kit-SHA lease does not match the selected kit SHA",
+        )
+        immutable = {
+            key: value for key, value in receipt.items()
+            if key not in {"consumed", "consumed_at_epoch", "receipt_sha256"}
+        }
+        receipt["receipt_sha256"] = hashlib.sha256(
+            CONTROL.canonical(immutable).encode()
+        ).hexdigest()
+        receipt_path.unlink()
+        CONTROL.write(receipt_path, receipt)
+
+        worktree = Path(claim["worktree"])
+        ticket = worktree / "factory/tickets/T-177.md"
+        route = worktree / "factory/route-plans/T-177.json"
+        catalog, routes, _profiles, profile_map = ROUTER.load_policy()
+        first = MANAGER.migrate_v2_journal(
+            fallback, receipt["head_sha"], middle,
+            "2026-08-07T00:01:00Z", catalog, routes, profile_map,
+        )
+        ticket.write_text(ticket.read_text().replace(self.release.name, wrong))
+        route.write_text(ROUTER.canonical_json(first) + "\n")
+        subprocess.run(["git", "-C", worktree, "add", "factory"], check=True)
+        subprocess.run(
+            ["git", "-C", worktree, "commit", "-qm", "mismatched migration"],
+            check=True,
+        )
+        second = MANAGER.migrate_v2_journal(
+            first, receipt["head_sha"], final,
+            "2026-08-07T00:02:00Z", catalog, routes, profile_map,
+        )
+        ticket.write_text(ticket.read_text().replace(wrong, final))
+        route.write_text(ROUTER.canonical_json(second) + "\n")
+        subprocess.run(["git", "-C", worktree, "add", "factory"], check=True)
+        subprocess.run(
+            ["git", "-C", worktree, "commit", "-qm", "final migration"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", worktree, "push", "-q", "origin", "ticket/T-177"],
+            check=True,
+        )
+        successor = self.root / final
+        successor.mkdir()
+        controller.release_path = successor
+        claim.update(blocked_reason="state-machine-refusal", lease_released=True)
+        controller.recover_passportless_route_migrations([claim])
+        self.assertEqual(claim["status"], "blocked")
+
     def test_passportless_worker_error_rejects_identity_and_runtime_drift(self) -> None:
         controller, claims = self.initialize_passportless_planner_claims(["T-170"])
         claim = claims[0]
@@ -3236,6 +3654,43 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertFalse(
             any(
                 isinstance(call, tuple) and call and call[0] == "release"
+                for call in calls
+            )
+        )
+
+        claim.update(
+            lease="a" * 64, receipt="b" * 64, role="planner", status="running",
+        )
+        typed = []
+        controller.json_call = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            CONTROL.ControllerError(
+                '{"error":"automatic qualification fallback refused:manifest",'
+                '"status":"error"}'
+            )
+        )
+        controller.block = lambda item, reason: item.update(
+            blocked_reason=reason, status="blocked",
+        )
+        controller.release_ticket_lease = lambda *_args: calls.append("released")
+        controller.event_once = lambda *args, **kwargs: typed.append((args, kwargs))
+        self.assertFalse(controller.finish_pending_run(claim))
+        self.assertEqual(
+            claim["blocked_reason"],
+            "qualification-fallback-refused:manifest:" + "a" * 40,
+        )
+        self.assertIn("released", calls)
+        self.assertEqual(typed[0][0], ("typed_recovery_refused", "T-112"))
+        self.assertEqual(typed[0][1]["reason"], "manifest")
+        self.assertEqual(typed[0][1]["recovery_kind"], "qualification_fallback")
+        calls.clear()
+        controller.restore_recorded_contract_repair = lambda _claim: False
+        controller.restore_contract_blocker = lambda _claim: False
+        controller.role_active = lambda _claim: False
+        controller.recover_repaired_failures([claim])
+        self.assertNotIn("provider-fallback-recovery", calls)
+        self.assertFalse(
+            any(
+                isinstance(call, tuple) and call[:2] == ("models", "fallback-auto")
                 for call in calls
             )
         )
@@ -6571,6 +7026,7 @@ class FactoryControllerTest(unittest.TestCase):
 
         controller.recover_repaired_failures([claim])
         self.assertEqual(claim["status"], "claimed")
+
         self.assertNotIn("fallback", calls)
         self.assertIn(("restore", run_id), calls)
         self.assertIn(
@@ -6641,6 +7097,67 @@ class FactoryControllerTest(unittest.TestCase):
         controller.recover_repaired_failures([claim])
         self.assertIn(("successor-restore", run_id), calls)
         self.assertEqual(claim["status"], "claimed")
+
+    def test_first_model_identity_success_observation_never_replays_provider(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        controller.qualification = {"tickets": ["T-177"]}
+        claim = {
+            "branch": "ticket/T-177", "lease": "8" * 64,
+            "publication_lease": "", "receipt": "9" * 64,
+            "role": "planner", "status": "running", "ticket": "T-177",
+            "worktree": str(self.root / "cell-first-model-success"),
+        }
+        Path(claim["worktree"]).mkdir()
+        terminal = {
+            "exit_status": "9", "role_exit": "provider_failed",
+            "route_id": "cursor-gpt-5.6-sol-high", "run_id": "paid-success",
+            "task_submitted": "1",
+        }
+        calls = []
+        controller.terminal_for_receipt = lambda *_args: terminal
+        controller.emit_attempt_terminal = lambda *_args: None
+        controller.direct_model_identity_candidate = lambda *_args: True
+        controller.recover_direct_model_identity_success = (
+            lambda item, *_args: (
+                calls.append("recover"),
+                item.update(receipt="", role="", status="claimed"),
+            )
+        )
+        controller.json_call = lambda *_args, **_kwargs: calls.append("fallback")
+        controller.passport = lambda *_args: calls.append("passport")
+
+        self.assertTrue(controller.finish_pending_run(claim))
+        self.assertEqual(calls, ["recover"])
+        self.assertEqual(claim["status"], "claimed")
+
+    def test_model_identity_recovery_retries_only_operational_failures(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        claim = {"ticket": "T-177", "worktree": str(self.root / "cell")}
+        terminal = {"run_id": "paid-success"}
+
+        def response(kind):
+            return subprocess.CompletedProcess(
+                [], 1, json.dumps({
+                    "error": "redacted", "error_kind": kind,
+                    "schema": "nysa.software-factory.ticket-passport/v1",
+                    "status": "error", "ticket": "T-177",
+                }), "",
+            )
+
+        controller.call = lambda *_args, **_kwargs: response("operation")
+        with self.assertRaises(CONTROL.ControllerError) as operational:
+            controller.recover_direct_model_identity_success(
+                claim, terminal, "9" * 64,
+            )
+        self.assertNotIsInstance(
+            operational.exception, CONTROL.ModelIdentityEvidenceError,
+        )
+
+        controller.call = lambda *_args, **_kwargs: response("evidence")
+        with self.assertRaises(CONTROL.ModelIdentityEvidenceError):
+            controller.recover_direct_model_identity_success(
+                claim, terminal, "9" * 64,
+            )
 
     def test_model_identity_restore_preserves_pushed_route_migration(self) -> None:
         controller = CONTROL.Controller(self.args)
