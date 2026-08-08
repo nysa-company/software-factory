@@ -4730,3 +4730,31 @@ ticket cells. A generic request/outcome layer would duplicate receipt,
 passport, compare-and-swap, and recovery evidence without a reproduced missing
 boundary. Future coordination work starts from one current failure and repairs
 its shared path; no upstream invariant is ported without that evidence.
+
+## 2026-08-08 — Decision 346: The autonomy baseline needs a narrower experiment
+
+Category: Measurement
+
+Issue #263 is rejected and closed as currently specified. The product backlog
+does not contain five eligible small, independent contracts; literal zero
+intervention conflicts with the Factory's planned Ready, approval, protected
+merge, and closeout authority gates; and Contract 1.8 qualification admits an
+ordered three-ticket cohort or four independent tickets, not five independent
+tickets run sequentially. Mock and development fixtures stop short of protected
+Done and cannot establish comparable cost or escaped-defect outcomes. The
+commodity arm likewise has no neutral, like-for-like completion endpoint.
+
+Relay T-176 remains partial context only: one fixed Factory SHA completed all
+six roles; its q43 controller `ticket_claimed` to `ticket_complete` interval was
+38m02.535s (38m03s rounded), with a $12 conservative reservation and zero
+recorded repair interventions. It was one undersized Relay ticket, required the
+planned approval and publication gates, and lacked complete out-of-band
+human-action capture, so it is not a zero-intervention cohort.
+
+A future narrower experiment must first pre-register five independent,
+approximately 100–200 product-LOC, readiness-PASS contracts with disjoint
+ownership; freeze the exact Factory SHA and protected base for each paired run;
+define zero as zero unplanned repair interventions; keep a signed manual action
+ledger; run paired isolated real-provider arms; and apply one neutral Done gate.
+New evidence may reopen that experiment. This disposition does not satisfy issue
+#257's separate offline labeled-corpus classifier gate.
