@@ -865,12 +865,10 @@ PY
     load_machine_config
     factory_load_model_probe_context ||
       json_error "model state is invalid: ${FACTORY_RESOLVE_ERROR:-unknown}"
-    readiness="$(mktemp "$FACTORY_MODEL_STATE_ROOT/.model-fallback-readiness.XXXXXX")" ||
-      json_error "could not allocate readiness output"
-    plan_probe="$(mktemp "$FACTORY_MODEL_STATE_ROOT/.model-fallback-plan.XXXXXX")" ||
-      json_error "could not allocate probe output"
-    TEMPORARY_FILE="$readiness"
-    rm -f "$readiness"
+    TEMPORARY_DIR="$(mktemp -d "$FACTORY_MODEL_STATE_ROOT/.model-fallback.XXXXXX")" ||
+      json_error "could not allocate fallback readiness"
+    readiness="$TEMPORARY_DIR/readiness.json"
+    plan_probe="$TEMPORARY_DIR/plan.json"
     factory_resolve_model_profile "$profile_id" "$plan_probe" \
       "$FACTORY_DISABLED_ROUTE_IDS" "$readiness" >/dev/null 2>&1 || true
     [[ -s "$readiness" ]] || json_error "model readiness probes failed"
@@ -902,7 +900,7 @@ PY
 )" || json_error "fallback readiness refused:${fallback_diagnostic:-invalid}"
     rm -f "$plan_probe" "$fallback_readiness"
     if [[ "$command_name" == "fallback-plan" ]]; then
-      preview_file="$(mktemp "$FACTORY_MODEL_STATE_ROOT/.model-fallback-preview.XXXXXX")" ||
+      preview_file="$(mktemp "$TEMPORARY_DIR/preview.XXXXXX")" ||
         json_error "could not allocate fallback preview"
       if ! fallback_python preview \
         "${fallback_exception_args[@]}" \
@@ -926,9 +924,9 @@ PY
       expected_remote_head="$(factory_remote_tracking_tip "$workdir" "$CONTROL_BRANCH")"
       [[ "$expected_remote_head" =~ ^[0-9a-f]{40}$ ]] ||
         json_error "remote tracking state is unavailable"
-      apply_file="$(mktemp "$FACTORY_MODEL_STATE_ROOT/.model-fallback-apply.XXXXXX")" ||
+      apply_file="$(mktemp "$TEMPORARY_DIR/apply.XXXXXX")" ||
         json_error "could not allocate fallback result"
-      error_file="$(mktemp "$FACTORY_MODEL_STATE_ROOT/.model-fallback-error.XXXXXX")" ||
+      error_file="$(mktemp "$TEMPORARY_DIR/error.XXXXXX")" ||
         json_error "could not allocate fallback error"
       if ! fallback_python qualification-apply \
         --workdir "$workdir" --factory-root "$FACTORY_ROOT" \
@@ -955,7 +953,7 @@ PY
       rm -f "$apply_file"
       exit 0
     fi
-    approval_file="$(mktemp "$FACTORY_MODEL_STATE_ROOT/.model-fallback-approval.XXXXXX")" ||
+    approval_file="$(mktemp "$TEMPORARY_DIR/approval.XXXXXX")" ||
       json_error "could not allocate approval input"
     approval_available=1
     if ! python3 -B "$KIT_DIR/scripts/lib/model-fallback-approval.py" read \
@@ -989,7 +987,7 @@ PY
     [[ "$expected_remote_head" =~ ^[0-9a-f]{40}$ ]] ||
       json_error "remote tracking state is unavailable"
     if [[ "$approval_available" -eq 0 ]]; then
-      recovery_file="$(mktemp "$FACTORY_MODEL_STATE_ROOT/.model-fallback-recovery.XXXXXX")" ||
+      recovery_file="$(mktemp "$TEMPORARY_DIR/recovery.XXXXXX")" ||
         json_error "could not allocate fallback recovery result"
       if ! fallback_python recover \
         --workdir "$workdir" --factory-root "$FACTORY_ROOT" \
@@ -1039,7 +1037,7 @@ PY
       rm -f "$recovery_file" "$approval_file"
       exit 0
     fi
-    apply_file="$(mktemp "$FACTORY_MODEL_STATE_ROOT/.model-fallback-apply.XXXXXX")" ||
+    apply_file="$(mktemp "$TEMPORARY_DIR/apply.XXXXXX")" ||
       json_error "could not allocate fallback result"
     if ! fallback_python apply \
       "${fallback_exception_args[@]}" \

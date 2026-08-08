@@ -206,6 +206,113 @@ class ModelControlTest(unittest.TestCase):
                 self.assertEqual(result.stdout.strip(), expected)
                 self.assertNotIn("DO-NOT-LEAK", result.stdout + result.stderr)
 
+    def test_sealed_fallback_auto_preserves_bounded_inner_refusal(self):
+        self.command("pin", "--ticket", "T-901", "--workdir", str(self.workdir))
+        release = self.base / "release"
+        shutil.copytree(ROOT / "scripts", release / "scripts")
+        (release / "integrations/hermes").mkdir(parents=True)
+        shutil.copy2(
+            ROOT / "integrations/hermes/contract.json",
+            release / "integrations/hermes/contract.json",
+        )
+        release_tree = subprocess.check_output(
+            [
+                "bash", "-c", 'source "$1"; factory_directory_tree "$2"', "_",
+                str(ROOT / "scripts/lib/kit-pin.sh"), str(release),
+            ],
+            text=True,
+        ).strip()
+        environment = {
+            **self.environment,
+            "FACTORY_RELEASE_PATH": str(release),
+            "FACTORY_RELEASE_SHA": self.kit_sha,
+            "FACTORY_RELEASE_TREE": release_tree,
+            "FACTORY_RELEASE_CONTRACT_VERSION": "1.8.0",
+        }
+        before_head = subprocess.check_output(
+            ["git", "-C", str(self.workdir), "rev-parse", "HEAD"], text=True,
+        ).strip()
+        before_tree = subprocess.check_output(
+            ["git", "-C", str(self.workdir), "rev-parse", "HEAD^{tree}"], text=True,
+        ).strip()
+        before_status = subprocess.check_output(
+            ["git", "-C", str(self.workdir), "status", "--porcelain"], text=True,
+        )
+        before_remote = subprocess.check_output(
+            [
+                "git", "--git-dir", str(self.remote), "rev-parse",
+                "refs/heads/ticket/T-901",
+            ],
+            text=True,
+        ).strip()
+        before_state = sorted(
+            str(path.relative_to(self.state)) for path in self.state.rglob("*")
+        )
+        lock_paths = tuple(
+            self.product / f"factory/{name}"
+            for name in (".launch.lock", ".provider.lock", ".ledger.lock")
+        )
+        before_locks = tuple((path.exists(), path.is_symlink()) for path in lock_paths)
+        self.assertFalse((self.product / "factory/runs/failed-run-1.meta").exists())
+        result = subprocess.run(
+            [
+                str(release / "scripts/model-control.sh"), "fallback-auto",
+                "--ticket", "T-901", "--failed-run", "failed-run-1",
+                "--workdir", str(self.workdir), "--reason", "provider_unavailable",
+            ],
+            env=environment,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(
+            json.loads(result.stdout),
+            {
+                "error": "automatic qualification fallback refused:manifest",
+                "status": "error",
+            },
+            result.stderr,
+        )
+        self.assertEqual(result.stderr, "")
+        self.assertEqual(
+            tuple((path.exists(), path.is_symlink()) for path in lock_paths),
+            before_locks,
+        )
+        self.assertEqual(
+            sorted(str(path.relative_to(self.state)) for path in self.state.rglob("*")),
+            before_state,
+        )
+        self.assertEqual(
+            subprocess.check_output(
+                ["git", "-C", str(self.workdir), "rev-parse", "HEAD"], text=True,
+            ).strip(),
+            before_head,
+        )
+        self.assertEqual(
+            subprocess.check_output(
+                ["git", "-C", str(self.workdir), "rev-parse", "HEAD^{tree}"],
+                text=True,
+            ).strip(),
+            before_tree,
+        )
+        self.assertEqual(
+            subprocess.check_output(
+                [
+                    "git", "--git-dir", str(self.remote), "rev-parse",
+                    "refs/heads/ticket/T-901",
+                ],
+                text=True,
+            ).strip(),
+            before_remote,
+        )
+        self.assertEqual(
+            subprocess.check_output(
+                ["git", "-C", str(self.workdir), "status", "--porcelain"], text=True,
+            ),
+            before_status,
+        )
+
     def test_cursor_inventory_uses_disposable_credentials_and_refuses_unsafe_source(self):
         source = self.base / "cursor-home"
         cursor = source / ".cursor"
