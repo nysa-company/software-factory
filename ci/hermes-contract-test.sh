@@ -1470,6 +1470,32 @@ assert_no_secret "$TMP/launcher-watch.jsonl"
 ! grep -Fq "operator-watch-secret" "$TMP/launcher-watch.jsonl" ||
   fail "operator watch leaked source detail"
 rm -f "$EXPECTED_CONTROLLER_STATE/events/9000001-0000000000000001.json"
+python3 - "$EXPECTED_CONTROLLER_STATE/events/9000002-0000000000000002.json" <<'PY'
+import hashlib, json, os, sys
+value = {
+    "event": "budget_wait",
+    "factory_sha": None,
+    "observed_at_epoch_ns": 9000002,
+    "schema": "nysa.software-factory.controller-event/v1",
+    "ticket": "T-902",
+}
+raw = json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+value["event_sha256"] = hashlib.sha256(raw.encode()).hexdigest()
+with open(sys.argv[1], "w", encoding="utf-8") as stream:
+    stream.write(json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":")) + "\n")
+os.chmod(sys.argv[1], 0o600)
+PY
+if run_launcher launchtest watch --json --limit 1 --idle-timeout-seconds 1 \
+    > "$TMP/launcher-watch-invalid.out" 2> "$TMP/launcher-watch-invalid.err"; then
+  fail "sealed operator watch accepted a null Factory SHA"
+fi
+[[ ! -s "$TMP/launcher-watch-invalid.out" ]] ||
+  fail "sealed operator watch projected malformed context"
+grep -Fq "operator action context is invalid" "$TMP/launcher-watch-invalid.err" ||
+  fail "sealed operator watch did not return a typed context error"
+! grep -Eq "Traceback|TypeError" "$TMP/launcher-watch-invalid.err" ||
+  fail "sealed operator watch leaked an implementation exception"
+rm -f "$EXPECTED_CONTROLLER_STATE/events/9000002-0000000000000002.json"
 
 REORDER_WORKTREE="$TMP/reorder-worktree"
 git -C "$LAUNCH_PRODUCT" worktree add -q -b ticket/T-456 "$REORDER_WORKTREE"

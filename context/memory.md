@@ -4384,6 +4384,10 @@ arbitrary command hook, GitHub credential, or provider credential enters this
 boundary, so delivery remains an external operator concern and production and
 qualification retain disjoint state.
 
+Authenticated action context is type-checked before regex classification;
+malformed required or optional fields produce the watcher's typed nonzero
+error rather than an interpreter traceback.
+
 The controller also repairs the narrow durable-state/event publication crash
 window at startup. It inventories canonical events once and backfills exact
 missing actions only from current-release claims plus authenticated transition,

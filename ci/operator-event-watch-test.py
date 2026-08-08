@@ -103,6 +103,94 @@ class OperatorEventWatchTest(unittest.TestCase):
         self.assertEqual(repeated.returncode, 0, repeated.stderr)
         self.assertEqual(repeated.stdout, "")
 
+    def test_action_context_fields_are_type_checked(self) -> None:
+        def complete():
+            return self.source(
+                "budget_wait", role="builder", run_id="run-1",
+                passport_sha256="b" * 64, qualification_generation=1,
+                qualification_manifest_sha256="c" * 64,
+            )
+
+        required = ("ticket", "factory_sha", "observed_at_epoch_ns")
+        for field in required:
+            for value in ("missing", None, []):
+                with self.subTest(field=field, value=value):
+                    source = complete()
+                    if value == "missing":
+                        source.pop(field)
+                    else:
+                        source[field] = value
+                    with self.assertRaisesRegex(
+                        WATCH.WatchError, "operator action context is invalid"
+                    ):
+                        WATCH.action_event(source, self.state, "relay", "1-a.json")
+
+        optional = ("role", "run_id", "passport_sha256")
+        for field in optional:
+            for value in ("missing", None):
+                with self.subTest(field=field, value=value):
+                    source = complete()
+                    if value == "missing":
+                        source.pop(field)
+                    else:
+                        source[field] = value
+                    projected = WATCH.action_event(
+                        source, self.state, "relay", "1-a.json"
+                    )
+                    self.assertIsNone(projected[field])
+            with self.subTest(field=field, value=[]):
+                source = complete()
+                source[field] = []
+                with self.assertRaisesRegex(
+                    WATCH.WatchError, "operator action context is invalid"
+                ):
+                    WATCH.action_event(source, self.state, "relay", "1-a.json")
+
+        for generation, manifest in (
+            (None, None), ("missing", "missing"),
+        ):
+            source = complete()
+            if generation == "missing":
+                source.pop("qualification_generation")
+                source.pop("qualification_manifest_sha256")
+            else:
+                source["qualification_generation"] = generation
+                source["qualification_manifest_sha256"] = manifest
+            self.assertIsNotNone(
+                WATCH.action_event(source, self.state, "relay", "1-a.json")
+            )
+        for generation, manifest in (
+            (1, None), (None, "c" * 64), ("1", "c" * 64), (1, []),
+        ):
+            with self.subTest(generation=generation, manifest=manifest):
+                source = complete()
+                source["qualification_generation"] = generation
+                source["qualification_manifest_sha256"] = manifest
+                with self.assertRaisesRegex(
+                    WATCH.WatchError,
+                    "operator action qualification context is invalid",
+                ):
+                    WATCH.action_event(source, self.state, "relay", "1-a.json")
+
+        for field in ("terminal_reason_code", "role_exit"):
+            source = complete()
+            source["event"] = "role_blocked"
+            source[field] = []
+            projected = WATCH.action_event(
+                source, self.state, "relay", "1-a.json"
+            )
+            self.assertEqual(projected["action"], "terminal_role_failure")
+            self.assertEqual(projected["reason"], "")
+
+    def test_null_factory_sha_exits_typed_without_traceback(self) -> None:
+        self.write(self.source("budget_wait", factory_sha=None))
+        result = self.run_watch("--limit", "1", "--idle-timeout-seconds", "1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("operator action context is invalid", result.stderr)
+        self.assertNotIn("TypeError", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
     def test_variable_width_epoch_names_use_numeric_order(self) -> None:
         later = self.source("budget_wait", ticket="T-110")
         later["observed_at_epoch_ns"] = 10

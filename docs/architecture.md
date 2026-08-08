@@ -284,9 +284,10 @@ terminal role failure, budget halt, and progress timeout. Every output retains
 the authenticated source-event digest and an opaque cursor bound to the exact
 project controller path, source filename, and digest. Restart validates that
 anchor and resumes after it; missing, replaced, reordered, broadly writable,
-or digest-invalid evidence exits nonzero. One process inventories historical
-filenames once, then parses only newly published events. The single live
-controller serializes event publication and seeds its next monotonic timestamp
+digest-invalid, or malformed action context exits through the same typed
+nonzero boundary without an interpreter traceback. One process inventories
+historical filenames once, then parses only newly published events. The single
+live controller serializes event publication and seeds its next monotonic timestamp
 from the largest filename on restart without parsing event bodies; files are
 fsynced and atomically renamed before becoming visible. The watcher is
 read-only, receives no GitHub or provider credential, and provides no delivery
