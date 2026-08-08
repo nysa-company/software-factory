@@ -43,6 +43,10 @@ REFRESH_RECEIPT_KEYS = {
     "prior_request_changes_verdicts", "prior_narrator_runs",
     "prior_bundle_blob", "prior_approval_blob", "refreshed_at",
 }
+REFRESH_REVALIDATION_KEYS = {
+    "revalidation_budget_micro_usd", "revalidation_factory_sha",
+    "revalidation_generation",
+}
 
 
 class Refusal(ValueError):
@@ -371,8 +375,18 @@ def preserved_refresh_metadata(
             )
         ]
         if (
-            set(receipt) != REFRESH_RECEIPT_KEYS
-            or receipt.get("schema") != "nysa.software-factory.ticket-refresh/v1"
+            (
+                receipt.get("schema") == "nysa.software-factory.ticket-refresh/v1"
+                and set(receipt) != REFRESH_RECEIPT_KEYS
+                or receipt.get("schema")
+                == "nysa.software-factory.ticket-refresh/v2"
+                and set(receipt)
+                != REFRESH_RECEIPT_KEYS | REFRESH_REVALIDATION_KEYS
+                or receipt.get("schema") not in {
+                    "nysa.software-factory.ticket-refresh/v1",
+                    "nysa.software-factory.ticket-refresh/v2",
+                }
+            )
             or receipt.get("ticket") != ticket
             or isinstance(receipt.get("generation"), bool)
             or not isinstance(receipt.get("generation"), int)
@@ -394,6 +408,18 @@ def preserved_refresh_metadata(
             )
             or not isinstance(receipt.get("refreshed_at"), str)
             or not receipt["refreshed_at"].endswith("Z")
+            or receipt.get("schema")
+            == "nysa.software-factory.ticket-refresh/v2"
+            and (
+                receipt.get("revalidation_budget_micro_usd") != 20_000_000
+                or not re.fullmatch(
+                    r"[0-9a-f]{40}",
+                    receipt.get("revalidation_factory_sha", ""),
+                )
+                or isinstance(receipt.get("revalidation_generation"), bool)
+                or not isinstance(receipt.get("revalidation_generation"), int)
+                or not 1 <= receipt["revalidation_generation"] <= receipt["generation"]
+            )
         ):
             return set()
     except (OSError, TypeError, ValueError, json.JSONDecodeError):

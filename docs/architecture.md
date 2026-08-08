@@ -429,6 +429,17 @@ its predecessor immutable and names that exact record in its preview-bound
 hash. It is effective only for the same scope, target, base-envelope identity,
 and setting-key set, with a later issue time and no shorter lifetime; missing,
 ambiguous, or malformed supersession lineage refuses reduction.
+Contract 1.8 successor qualification keeps its sealed $100 ticket cap and
+reserves the final two $10 run slots for exact-current-head Reviewer and
+Narrator revalidation after a semantic protected-base refresh. The committed
+refresh v2 receipt binds the candidate Factory and carries one reservation
+generation across later refresh generations of that same candidate. Ordinary
+roles stop prospectively at $80, refresh Reviewer at $90, and refresh Narrator
+at $100; a failed Reviewer therefore cannot consume the Narrator slot through
+a second paid retry. Legacy, malformed, foreign-Factory, or absent receipts
+cannot spend the reserve, and ordinary envelope overrides do not change it. A
+successor Factory receives a fresh fixed allowance because its authenticated
+accounting is candidate-scoped.
 Six-role model-plan pinning relies on its individually bounded readiness
 probes and has no aggregate controller timeout; slow successful probes cannot
 become a wall-clock delivery stop before the first provider call.

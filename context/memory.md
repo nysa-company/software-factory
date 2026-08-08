@@ -4581,3 +4581,19 @@ records one ticket-scoped prior-kit or invalid-receipt event otherwise. Invalid
 inactive leases are released; live roles and typed cross-release recovery keep
 their stricter boundaries. Terminal claims retire before inspection, Doctor
 shows unresolved incidents, and unaffected siblings continue reconciling.
+
+## 2026-08-08 — Decision 337: Protected-base revalidation is reserved inside the sealed cap
+
+Category: Reliability
+
+Contract 1.8 successor qualification keeps the fixed $100 ticket allowance
+and prospectively reserves its final two $10 slots for exact-current-head
+Reviewer and Narrator work after an authenticated semantic protected-base
+refresh. The refresh v2 receipt binds the candidate Factory and carries one
+reservation generation across later refreshes of that candidate, preventing
+concurrent protected advances from minting additional allowance. Ordinary
+roles stop at $80, refresh Reviewer at $90, and refresh Narrator at $100, so a
+failed Reviewer cannot consume the Narrator slot through a second paid retry.
+Legacy, absent, malformed, or foreign receipts and ordinary envelope overrides
+cannot spend or enlarge the reserve. Candidate-scoped accounting gives a later
+successor Factory its own sealed allowance.

@@ -3456,6 +3456,194 @@ if expect_stage "RUN reviewer" "$NOOP_REFRESH_ROOT" T-511; then
   pass "refresh accepts an authenticated no-op Review ticket reset"
 fi
 
+# Successor qualification holds two sealed run reservations for one exact
+# receipt-bound Reviewer/Narrator revalidation. A legacy or absent receipt
+# cannot spend those slots.
+REFRESH_RESERVE_ROOT="$TMP/refresh-revalidation-reserve"
+write_envelope "$REFRESH_RESERVE_ROOT"
+cat > "$REFRESH_RESERVE_ROOT/factory/QUALIFICATION.json" <<JSON
+{"budget_usd":"300.000000","capacity":3,"contract_version":"1.8.0","factory_sha":"$KIT_SHA","generation":1,"mode":"successor","per_run_budget_usd":"10.000000","per_ticket_budget_usd":"100.000000","schema":"nysa.software-factory.qualification/v2","source_factory_sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","target_done":3,"tickets":["T-540","T-541","T-542"]}
+JSON
+cat > "$REFRESH_RESERVE_ROOT/factory/tickets/T-540.md" <<TICKET
+# T-540
+State: Review
+Kit-SHA: $KIT_SHA
+SPEC-LINT: PASS
+- [ ] Evidence bundle posted
+- [ ] Operator approved
+TICKET
+git -C "$REFRESH_RESERVE_ROOT" add factory
+git -C "$REFRESH_RESERVE_ROOT" -c user.name=test -c user.email=test@example.com \
+  commit -qm "reserve protected-base revalidation"
+RESERVE_OLD_HEAD="$(git -C "$REFRESH_RESERVE_ROOT" rev-parse HEAD)"
+RESERVE_BRANCH="$(git -C "$REFRESH_RESERVE_ROOT" branch --show-current)"
+git -C "$REFRESH_RESERVE_ROOT" checkout -qb reserve-base
+printf 'semantic protected advance\n' > "$REFRESH_RESERVE_ROOT/product.txt"
+git -C "$REFRESH_RESERVE_ROOT" add product.txt
+git -C "$REFRESH_RESERVE_ROOT" -c user.name=test -c user.email=test@example.com \
+  commit -qm "advance protected product"
+RESERVE_BASE_HEAD="$(git -C "$REFRESH_RESERVE_ROOT" rev-parse HEAD)"
+git -C "$REFRESH_RESERVE_ROOT" checkout -q "$RESERVE_BRANCH"
+git -C "$REFRESH_RESERVE_ROOT" -c user.name=test -c user.email=test@example.com \
+  merge -q --no-ff reserve-base -m "refresh protected product"
+RESERVE_MERGE_HEAD="$(git -C "$REFRESH_RESERVE_ROOT" rev-parse HEAD)"
+mkdir -p "$REFRESH_RESERVE_ROOT/factory/attestations/T-540"
+python3 - "$REFRESH_RESERVE_ROOT/factory/attestations/T-540/refresh.json" \
+  "$RESERVE_OLD_HEAD" "$RESERVE_BASE_HEAD" "$RESERVE_MERGE_HEAD" \
+  "$KIT_SHA" <<'PY'
+import json
+import sys
+json.dump({
+    "schema": "nysa.software-factory.ticket-refresh/v2",
+    "ticket": "T-540", "generation": 1,
+    "old_head": sys.argv[2], "base_head": sys.argv[3],
+    "merge_head": sys.argv[4], "prior_reviewer_runs": 0,
+    "prior_approve_verdicts": 0, "prior_request_changes_verdicts": 0,
+    "prior_narrator_runs": 0, "prior_bundle_blob": None,
+    "prior_approval_blob": None, "revalidation_budget_micro_usd": 20000000,
+    "revalidation_factory_sha": sys.argv[5], "revalidation_generation": 1,
+    "refreshed_at": "2026-08-08T12:00:00Z",
+}, open(sys.argv[1], "w", encoding="utf-8"), sort_keys=True)
+PY
+git -C "$REFRESH_RESERVE_ROOT" add factory/attestations/T-540/refresh.json
+git -C "$REFRESH_RESERVE_ROOT" -c user.name=test -c user.email=test@example.com \
+  commit -qm "bind one revalidation reserve"
+RESERVE_V2_HEAD="$(git -C "$REFRESH_RESERVE_ROOT" rev-parse HEAD)"
+git -C "$REFRESH_RESERVE_ROOT" branch legacy-reserve "$RESERVE_MERGE_HEAD"
+for role in planner spec-linter test-author builder; do
+  run_id="reserve-$role"
+  ledger_row_run T-540 "$role" "$run_id" >> \
+    "$REFRESH_RESERVE_ROOT/factory/ledger.csv"
+  write_run_manifest "$REFRESH_RESERVE_ROOT" T-540 "$role" "$run_id" \
+    "$RESERVE_OLD_HEAD"
+  printf 'effective_cost=10.000000\nkit_sha=%s\n' "$KIT_SHA" >> \
+    "$REFRESH_RESERVE_ROOT/factory/runs/$run_id.meta"
+done
+for attempt in 1 2 3 4; do
+  cat > "$REFRESH_RESERVE_ROOT/factory/runs/reserve-failed-$attempt.meta" <<META
+run_id=reserve-failed-$attempt
+ticket=T-540
+role=builder
+accounting_state=completed
+effective_cost=10.000000
+exit_status=5
+role_exit=budget
+kit_sha=$KIT_SHA
+META
+done
+REFRESH_RESERVE_OK=1
+TEST_CONTRACT_VERSION=1.8.0 expect_stage \
+  "RUN reviewer" "$REFRESH_RESERVE_ROOT" T-540 || REFRESH_RESERVE_OK=0
+TEST_CONTRACT_VERSION=1.8.0 expect_stage \
+  "RUN reviewer" "$REFRESH_RESERVE_ROOT" T-540 || REFRESH_RESERVE_OK=0
+cat > "$REFRESH_RESERVE_ROOT/factory/runs/reserve-reviewer-failed.meta" <<META
+run_id=reserve-reviewer-failed
+ticket=T-540
+role=reviewer
+accounting_state=completed
+effective_cost=10.000000
+exit_status=5
+role_exit=budget
+kit_sha=$KIT_SHA
+META
+TEST_CONTRACT_VERSION=1.8.0 expect_stage \
+  "AWAIT_BUDGET protected-base revalidation budget reserved" \
+  "$REFRESH_RESERVE_ROOT" T-540 || REFRESH_RESERVE_OK=0
+rm "$REFRESH_RESERVE_ROOT/factory/runs/reserve-reviewer-failed.meta"
+cp "$REFRESH_RESERVE_ROOT/factory/ledger.csv" "$TMP/reserve-ledger.csv"
+git -C "$REFRESH_RESERVE_ROOT" checkout -q -- factory/ledger.csv
+
+# A later protected advance must retain the first reservation generation.
+# Neither a discontinuous receipt nor a same-Factory reset may unlock it.
+git -C "$REFRESH_RESERVE_ROOT" checkout -q reserve-base
+printf 'second semantic protected advance\n' >> \
+  "$REFRESH_RESERVE_ROOT/product.txt"
+git -C "$REFRESH_RESERVE_ROOT" add product.txt
+git -C "$REFRESH_RESERVE_ROOT" -c user.name=test -c user.email=test@example.com \
+  commit -qm "advance protected product again"
+RESERVE_SECOND_BASE_HEAD="$(git -C "$REFRESH_RESERVE_ROOT" rev-parse HEAD)"
+git -C "$REFRESH_RESERVE_ROOT" checkout -q "$RESERVE_BRANCH"
+git -C "$REFRESH_RESERVE_ROOT" -c user.name=test -c user.email=test@example.com \
+  merge -q --no-ff reserve-base -m "refresh protected product again"
+RESERVE_SECOND_MERGE_HEAD="$(git -C "$REFRESH_RESERVE_ROOT" rev-parse HEAD)"
+python3 - "$REFRESH_RESERVE_ROOT/factory/attestations/T-540/refresh.json" \
+  "$RESERVE_V2_HEAD" "$RESERVE_SECOND_BASE_HEAD" \
+  "$RESERVE_SECOND_MERGE_HEAD" <<'PY'
+import json
+import sys
+path = sys.argv[1]
+value = json.load(open(path, encoding="utf-8"))
+value.update({
+    "generation": 999,
+    "old_head": sys.argv[2],
+    "base_head": sys.argv[3],
+    "merge_head": sys.argv[4],
+    "revalidation_generation": 998,
+})
+json.dump(value, open(path, "w", encoding="utf-8"), sort_keys=True)
+PY
+git -C "$REFRESH_RESERVE_ROOT" add factory/attestations/T-540/refresh.json
+git -C "$REFRESH_RESERVE_ROOT" -c user.name=test -c user.email=test@example.com \
+  commit -qm "forge discontinuous refresh reserve"
+TEST_CONTRACT_VERSION=1.8.0 expect_stage \
+  "REFUSE malformed refresh receipt" "$REFRESH_RESERVE_ROOT" T-540 || \
+  REFRESH_RESERVE_OK=0
+
+git -C "$REFRESH_RESERVE_ROOT" checkout -qb reserve-reset \
+  "$RESERVE_SECOND_MERGE_HEAD"
+python3 - "$REFRESH_RESERVE_ROOT/factory/attestations/T-540/refresh.json" \
+  "$RESERVE_V2_HEAD" "$RESERVE_SECOND_BASE_HEAD" \
+  "$RESERVE_SECOND_MERGE_HEAD" <<'PY'
+import json
+import sys
+path = sys.argv[1]
+value = json.load(open(path, encoding="utf-8"))
+value.update({
+    "generation": 2,
+    "old_head": sys.argv[2],
+    "base_head": sys.argv[3],
+    "merge_head": sys.argv[4],
+    "revalidation_generation": 2,
+})
+json.dump(value, open(path, "w", encoding="utf-8"), sort_keys=True)
+PY
+git -C "$REFRESH_RESERVE_ROOT" add factory/attestations/T-540/refresh.json
+git -C "$REFRESH_RESERVE_ROOT" -c user.name=test -c user.email=test@example.com \
+  commit -qm "forge reset refresh reserve"
+TEST_CONTRACT_VERSION=1.8.0 expect_stage \
+  "REFUSE malformed refresh receipt" "$REFRESH_RESERVE_ROOT" T-540 || \
+  REFRESH_RESERVE_OK=0
+
+git -C "$REFRESH_RESERVE_ROOT" checkout -q legacy-reserve
+mkdir -p "$REFRESH_RESERVE_ROOT/factory/attestations/T-540"
+git -C "$REFRESH_RESERVE_ROOT" show \
+  "$RESERVE_V2_HEAD:factory/attestations/T-540/refresh.json" > \
+  "$REFRESH_RESERVE_ROOT/factory/attestations/T-540/refresh.json" || \
+  REFRESH_RESERVE_OK=0
+cp "$TMP/reserve-ledger.csv" "$REFRESH_RESERVE_ROOT/factory/ledger.csv"
+python3 - "$REFRESH_RESERVE_ROOT/factory/attestations/T-540/refresh.json" <<'PY'
+import json
+import sys
+path = sys.argv[1]
+value = json.load(open(path, encoding="utf-8"))
+value["schema"] = "nysa.software-factory.ticket-refresh/v1"
+for key in (
+    "revalidation_budget_micro_usd", "revalidation_factory_sha",
+    "revalidation_generation",
+):
+    value.pop(key)
+json.dump(value, open(path, "w", encoding="utf-8"), sort_keys=True)
+PY
+git -C "$REFRESH_RESERVE_ROOT" add factory/attestations/T-540/refresh.json
+git -C "$REFRESH_RESERVE_ROOT" -c user.name=test -c user.email=test@example.com \
+  commit -qm "legacy refresh has no reserve" || REFRESH_RESERVE_OK=0
+TEST_CONTRACT_VERSION=1.8.0 expect_stage \
+  "AWAIT_BUDGET protected-base revalidation budget reserved" \
+  "$REFRESH_RESERVE_ROOT" T-540 || REFRESH_RESERVE_OK=0
+if [[ "$REFRESH_RESERVE_OK" -eq 1 ]]; then
+  pass "successor refresh reserve is exact-head, role-bound, and one candidate"
+fi
+
 # Control-only refreshes may preserve only role evidence that belongs to the
 # receipt-bound old head. Auditable runs on a discarded force-pushed lineage
 # must not advance the replacement branch.

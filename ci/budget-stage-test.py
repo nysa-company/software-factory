@@ -136,11 +136,13 @@ class BudgetStageTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            def charge(run_id: str, factory_sha: str) -> None:
+            def charge(
+                run_id: str, factory_sha: str, role: str = "builder"
+            ) -> None:
                 (runs / f"{run_id}.meta").write_text(
                     f"run_id={run_id}\n"
                     "ticket=T-110\n"
-                    "role=builder\n"
+                    f"role={role}\n"
                     "accounting_state=completed\n"
                     "effective_cost=10.000000\n"
                     "exit_status=5\n"
@@ -153,19 +155,86 @@ class BudgetStageTest(unittest.TestCase):
                 charge(f"historical-{number}", source)
             charge("current-0", current)
             self.assertEqual(
-                BUDGET.resolve(ROOT, product, "T-110", current), "AVAILABLE"
+                BUDGET.resolve(
+                    ROOT, product, "T-110", current, "RUN planner"
+                ),
+                "AVAILABLE",
             )
-            for number in range(1, 10):
+            for number in range(1, 8):
                 charge(f"current-{number}", current)
+            override_dir = product / "factory/envelope-overrides"
+            override_dir.mkdir()
+            override = {
+                "base_env_sha256": hashlib.sha256(
+                    (product / "factory/ENVELOPE.env").read_bytes()
+                ).hexdigest(),
+                "changes": {"PER_TICKET_BUDGET_USD": "1000.00"},
+                "day": None,
+                "expires_at": "2099-01-01T00:00:00Z",
+                "issued_at": "2026-08-08T00:00:00Z",
+                "operator_id": "operator",
+                "reason": "budget_exhausted",
+                "role": None,
+                "schema": "factory-envelope-override/v1",
+                "scope": "ticket",
+                "ticket": "T-110",
+            }
+            raw = json.dumps(
+                override, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+            ).encode()
+            (override_dir / f"{hashlib.sha256(raw).hexdigest()}.json").write_bytes(
+                raw + b"\n"
+            )
             self.assertTrue(
-                BUDGET.resolve(ROOT, product, "T-110", current).startswith(
-                    "AWAIT_BUDGET"
-                )
+                BUDGET.resolve(
+                    ROOT, product, "T-110", current, "RUN builder"
+                ).startswith("AWAIT_BUDGET protected-base revalidation")
+            )
+            self.assertTrue(
+                BUDGET.resolve(
+                    ROOT, product, "T-110", current, "RUN reviewer",
+                    current, 20_000_000,
+                ).startswith("AVAILABLE")
+            )
+            charge("current-8", current, "reviewer")
+            self.assertTrue(
+                BUDGET.resolve(
+                    ROOT, product, "T-110", current, "RUN reviewer",
+                    current, 20_000_000,
+                ).startswith("AWAIT_BUDGET protected-base revalidation")
+            )
+            self.assertEqual(
+                BUDGET.resolve(
+                    ROOT, product, "T-110", current, "RUN narrator",
+                    current, 20_000_000,
+                ),
+                "AVAILABLE",
+            )
+            charge("current-9", current)
+            self.assertTrue(
+                BUDGET.resolve(
+                    ROOT, product, "T-110", current, "RUN narrator",
+                    current, 20_000_000,
+                ).startswith("AWAIT_BUDGET ticket budget exhausted")
+            )
+            self.assertTrue(
+                BUDGET.resolve(
+                    ROOT, product, "T-110", current, "RUN reviewer",
+                    "c" * 40, 20_000_000,
+                ).startswith("AWAIT_BUDGET")
+            )
+            self.assertEqual(
+                BUDGET.resolve(
+                    ROOT, product, "T-111", current, "RUN planner"
+                ),
+                "AVAILABLE",
             )
             with self.assertRaisesRegex(
                 ValueError, "successor qualification budget is invalid"
             ):
-                BUDGET.resolve(ROOT, product, "T-110", "c" * 40)
+                BUDGET.resolve(
+                    ROOT, product, "T-110", "c" * 40, "RUN planner"
+                )
 
 
 if __name__ == "__main__":

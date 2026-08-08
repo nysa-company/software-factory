@@ -247,6 +247,9 @@ REFRESH_RECEIPT="$CONTENT_ROOT/factory/attestations/$TICKET/refresh.json"
 REFRESH_ACTIVE=0
 REFRESH_PRESERVE_REVIEW=0
 REFRESH_PRESERVE_NARRATOR=0
+REFRESH_REVALIDATION_BUDGET=0
+REFRESH_REVALIDATION_FACTORY=""
+REFRESH_REVALIDATION_GENERATION=0
 if [[ -e "$REFRESH_RECEIPT" ]]; then
   [[ -f "$REFRESH_RECEIPT" && ! -L "$REFRESH_RECEIPT" ]] || {
     echo "REFUSE refresh receipt is not a regular file"
@@ -262,58 +265,61 @@ if [[ -e "$REFRESH_RECEIPT" ]]; then
     echo "REFUSE refresh receipt is not committed unchanged at HEAD"
     exit 1
   fi
-  REFRESH_VALUES="$(python3 - "$REFRESH_RECEIPT" "$TICKET" <<'PY'
-import datetime
-import json
-import re
+  REFRESH_STATUS=0
+  REFRESH_VALUES="$(python3 - "$KIT_DIR/scripts/ticket-attest.py" \
+    "$TICKET_WORKTREE_ROOT" "$TICKET" <<'PY'
+import importlib.util
+from pathlib import Path
 import sys
 
-try:
-    value = json.load(open(sys.argv[1], encoding="utf-8"))
-    sha = re.compile(r"[0-9a-f]{40}")
-    if set(value) != {
-        "schema", "ticket", "generation", "old_head", "base_head", "merge_head",
-        "prior_reviewer_runs", "prior_approve_verdicts",
-        "prior_request_changes_verdicts", "prior_narrator_runs",
-        "prior_bundle_blob", "prior_approval_blob", "refreshed_at",
-    }:
-        raise ValueError
-    if value.get("schema") != "nysa.software-factory.ticket-refresh/v1":
-        raise ValueError
-    if value.get("ticket") != sys.argv[2]:
-        raise ValueError
-    generation = value.get("generation")
-    if isinstance(generation, bool) or not isinstance(generation, int) or generation < 1:
-        raise ValueError
-    heads = [value.get(name) for name in ("old_head", "base_head", "merge_head")]
-    if not all(isinstance(item, str) and sha.fullmatch(item) for item in heads):
-        raise ValueError
-    counts = [value.get(name) for name in (
-        "prior_reviewer_runs", "prior_approve_verdicts",
-        "prior_request_changes_verdicts", "prior_narrator_runs",
-    )]
-    if any(isinstance(item, bool) or not isinstance(item, int) or item < 0 for item in counts):
-        raise ValueError
-    if counts[0] != counts[1] + counts[2]:
-        raise ValueError
-    for name in ("prior_bundle_blob", "prior_approval_blob"):
-        item = value.get(name)
-        if item is not None and not (isinstance(item, str) and sha.fullmatch(item)):
-            raise ValueError
-    refreshed_at = value.get("refreshed_at")
-    if not isinstance(refreshed_at, str) or not refreshed_at.endswith("Z"):
-        raise ValueError
-    datetime.datetime.fromisoformat(refreshed_at[:-1] + "+00:00")
-except (OSError, ValueError, TypeError, json.JSONDecodeError):
+script = Path(sys.argv[1]).resolve(strict=True)
+sys.path.insert(0, str(script.parent))
+spec = importlib.util.spec_from_file_location("factory_ticket_attest", script)
+if spec is None or spec.loader is None:
     raise SystemExit(1)
-print("|".join(map(str, heads + counts)))
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+try:
+    value, _ = module.load_refresh_receipt(Path(sys.argv[2]), sys.argv[3])
+except module.Refusal as error:
+    print(
+        "stale"
+        if str(error) in {
+            "refresh receipt commit topology is invalid",
+            "refresh merge topology is invalid",
+        }
+        else "malformed"
+    )
+    raise SystemExit(1)
+except (OSError, TypeError, ValueError):
+    print("malformed")
+    raise SystemExit(1)
+heads = [value[name] for name in ("old_head", "base_head", "merge_head")]
+counts = [value[name] for name in (
+    "prior_reviewer_runs", "prior_approve_verdicts",
+    "prior_request_changes_verdicts", "prior_narrator_runs",
+)]
+if module.refresh_receipt_version(value, sys.argv[3]) == 2:
+    factory = value["revalidation_factory_sha"]
+    reservation_generation = value["revalidation_generation"]
+    budget = value["revalidation_budget_micro_usd"]
+else:
+    factory, reservation_generation, budget = "", 0, 0
+print("|".join(map(str, heads + counts + [factory, reservation_generation, budget])))
 PY
-)" || {
-    echo "REFUSE malformed refresh receipt"
+)" || REFRESH_STATUS=$?
+  if [[ "$REFRESH_STATUS" -ne 0 ]]; then
+    if [[ "$REFRESH_VALUES" == "stale" ]]; then
+      echo "REFUSE stale refresh receipt does not bind this branch history"
+    else
+      echo "REFUSE malformed refresh receipt"
+    fi
     exit 1
-  }
+  fi
   IFS='|' read -r REFRESH_OLD_HEAD REFRESH_BASE_HEAD REFRESH_MERGE_HEAD \
     REFRESH_REVIEWERS REFRESH_APPROVES REFRESH_REQUESTS REFRESH_NARRATORS \
+    REFRESH_REVALIDATION_FACTORY REFRESH_REVALIDATION_GENERATION \
+    REFRESH_REVALIDATION_BUDGET \
     <<< "$REFRESH_VALUES"
   read -r -a REFRESH_PARENTS <<< "$(git -C "$TICKET_WORKTREE_ROOT" \
     rev-list --parents -n 1 "$REFRESH_MERGE_HEAD" 2>/dev/null || true)"
@@ -343,7 +349,11 @@ PY
     exit 1
   fi
   case "$REFRESH_CLASSIFICATION" in
-    PRESERVE) REFRESH_PRESERVE_REVIEW=1 ;;
+    PRESERVE)
+      REFRESH_PRESERVE_REVIEW=1
+      REFRESH_REVALIDATION_FACTORY=""
+      REFRESH_REVALIDATION_BUDGET=0
+      ;;
     INVALIDATE) ;;
     *)
       echo "REFUSE protected-base semantic classification was invalid"
@@ -547,28 +557,33 @@ if [[ -z "${FACTORY_LEDGER:-}" || "$REFRESH_RUNTIME_LEDGER" == "1" ]] &&
   echo "REFUSE effective ledger could not be reduced"
   exit 1
 fi
-BUDGET_STAGE="AVAILABLE"
 emit_stage() {
   local stage="$1"
-  if [[ ( "$stage" == RUN\ * || "$stage" == FIX\ * ) &&
-        "$BUDGET_STAGE" == AWAIT_BUDGET* ]]; then
-    printf '%s\n' "$BUDGET_STAGE"
-  else
-    printf '%s\n' "$stage"
+  local budget_stage="AVAILABLE"
+  if [[ "$CONTRACT_VERSION" == "1.8.0" &&
+        ( "$stage" == RUN\ * || "$stage" == FIX\ * ) ]]; then
+    budget_stage="$(python3 -B "$KIT_DIR/scripts/budget-stage.py" \
+      "$REPO_ROOT" "$TICKET" "$FACTORY_RELEASE_SHA" "$stage" \
+      "$REFRESH_REVALIDATION_FACTORY" \
+      "$REFRESH_REVALIDATION_BUDGET")" || {
+        echo "REFUSE ticket budget could not be reduced"
+        exit 1
+      }
+    [[ "$budget_stage" == "AVAILABLE" ||
+       "$budget_stage" == AWAIT_BUDGET* ]] || {
+      echo "REFUSE ticket budget reducer returned an invalid stage"
+      exit 1
+    }
   fi
+  if [[ "$budget_stage" == AWAIT_BUDGET* ]]; then
+    printf '%s\n' "$budget_stage"
+    exit 0
+  fi
+  printf '%s\n' "$stage"
   exit 0
 }
 
 if [[ "$CONTRACT_VERSION" == "1.8.0" ]]; then
-  BUDGET_STAGE="$(python3 -B "$KIT_DIR/scripts/budget-stage.py" \
-    "$REPO_ROOT" "$TICKET" "$FACTORY_RELEASE_SHA")" || {
-      echo "REFUSE ticket budget could not be reduced"
-      exit 1
-    }
-  [[ "$BUDGET_STAGE" == "AVAILABLE" || "$BUDGET_STAGE" == AWAIT_BUDGET* ]] || {
-    echo "REFUSE ticket budget reducer returned an invalid stage"
-    exit 1
-  }
   if [[ -n "${FACTORY_TRANSITION_STATE_DIR:-}" ]]; then
     REPAIR_STAGE="$(python3 -B "$KIT_DIR/scripts/publication-repair.py" stage \
       --factory-root "$REPO_ROOT" --workdir "$CONTENT_ROOT" \
