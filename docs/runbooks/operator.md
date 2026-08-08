@@ -25,6 +25,11 @@ What to do when something breaks, written for a non-technical operator. Each ent
 - The command is read-only and credential-free. Keep channel credentials in the
   external consumer, never in the Factory launcher, controller state, cursor,
   or event payload.
+- If the controller stops after durably recording a blocked, budget,
+  Awaiting Approval, or failed-role boundary but before publishing its event,
+  the next reconcile reconstructs that one event from the exact authenticated
+  claim, transition, passport, and terminal evidence. Do not create a manual
+  substitute; restart with the last watcher cursor.
 
 ## Park a ticket on a Factory defect
 

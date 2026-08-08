@@ -20,7 +20,7 @@ EVENT_SCHEMA = "nysa.software-factory.controller-event/v1"
 WATCH_SCHEMA = "nysa.software-factory.operator-watch-event/v1"
 CURSOR_SCHEMA = "nysa.software-factory.operator-watch-cursor/v1"
 DIGEST = re.compile(r"^[0-9a-f]{64}$")
-EVENT_FILE = re.compile(r"^[1-9][0-9]{0,20}-[0-9a-f]{16}[.]json$")
+EVENT_FILE = re.compile(r"^([1-9][0-9]{0,20})-([0-9a-f]{16})[.]json$")
 PROJECT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 TICKET = re.compile(r"^T-[0-9]+$")
 ROLE = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
@@ -41,23 +41,50 @@ def canonical(value: Any) -> str:
 def safe_text(value: Any, limit: int = 240) -> str:
     if not isinstance(value, str):
         return ""
-    text = value.replace("\x00", "")
-    text = re.sub(
+    detail = value.replace("\x00", "")
+    detail = re.sub(
         r"(?im)(authorization\s*:\s*)(?:bearer|basic|token)?\s*[^\r\n]*",
         lambda match: match.group(1) + "[redacted]",
-        text,
+        detail,
     )
-    text = re.sub(r"(?i)\b[A-Za-z][A-Za-z0-9+.-]*://\S+", "[redacted-url]", text)
+    detail = re.sub(
+        r"(?i)\b[A-Za-z][A-Za-z0-9+.-]*://\S+", "[redacted-url]", detail,
+    )
     sensitive = (
         r"[A-Za-z0-9_.-]*(?:key|token|secret|password|url|dsn|conn|auth)"
         r"[A-Za-z0-9_.-]*"
     )
-    text = re.sub(
-        rf"(?i)\b({sensitive})\s*[:=]\s*\S+",
-        lambda match: match.group(1) + "=[redacted]",
-        text,
+    quoted = re.compile(
+        rf"(?is)(?P<prefix>['\"]?{sensitive}['\"]?\s*[:=]\s*)"
+        rf"(?P<quote>['\"])(?:\\.|(?!(?P=quote)).)*(?P=quote)"
     )
-    return " ".join(text.split())[:limit]
+    detail = quoted.sub(
+        lambda match: match.group("prefix") + "[redacted]", detail,
+    )
+    key_line = re.compile(
+        rf"(?i)^(?P<prefix>.*?['\"]?{sensitive}['\"]?\s*[:=]\s*)"
+        r"(?P<value>.*)$"
+    )
+    redacted: list[str] = []
+    continuation_indent: int | None = None
+    for line in detail.splitlines(keepends=True):
+        content = line.rstrip("\r\n")
+        ending = line[len(content):]
+        indent = len(content) - len(content.lstrip(" \t"))
+        if continuation_indent is not None:
+            if not content.strip() or indent > continuation_indent:
+                redacted.append(content[:indent] + "[redacted]" + ending)
+                continue
+            continuation_indent = None
+        match = key_line.match(content)
+        if match:
+            item = match.group("value").strip()
+            redacted.append(match.group("prefix") + "[redacted]" + ending)
+            if item in {"", "|", ">", "|-", ">-"}:
+                continuation_indent = indent
+            continue
+        redacted.append(line)
+    return " ".join("".join(redacted).split())[:limit]
 
 
 def safe_directory(path: Path, label: str) -> Path:
@@ -80,6 +107,13 @@ def safe_directory(path: Path, label: str) -> Path:
 
 def stream_id(state: Path, project: str) -> str:
     return hashlib.sha256(f"{state}\0{project}".encode()).hexdigest()
+
+
+def event_key(name: str) -> tuple[int, str]:
+    match = EVENT_FILE.fullmatch(name)
+    if not match:
+        raise WatchError("controller event filename is invalid")
+    return int(match[1]), match[2]
 
 
 def encode_cursor(state: Path, project: str, name: str, digest: str) -> str:
@@ -181,6 +215,7 @@ def read_event(path: Path, expected: tuple[int, int, int, int]) -> dict[str, Any
     unsigned.pop("event_sha256", None)
     if (
         value.get("schema") != EVENT_SCHEMA
+        or value.get("observed_at_epoch_ns") != event_key(path.name)[0]
         or not DIGEST.fullmatch(digest)
         or digest != hashlib.sha256(canonical(unsigned).encode()).hexdigest()
         or raw != (canonical(value) + "\n").encode()
@@ -204,10 +239,22 @@ def action_event(
         action = "blocked_escalated"
         reason = source.get("detail", "state_machine_escalation")
         question = "Resolve the escalation before authorizing a resume in Linear."
+    elif event == "ticket_blocked":
+        if source.get("reason") == "state-machine-escalation":
+            return None
+        action = "blocked_escalated"
+        reason = source.get("reason", "ticket_blocked")
+        question = "Inspect the blocked claim and choose a supported recovery."
     elif event == "budget_wait":
         action = "budget_halt"
         reason = "budget_envelope_exhausted"
         question = "Update the approved budget envelope before resuming."
+    elif event == "pre_go_failure_blocked":
+        action = "terminal_role_failure"
+        reason = source.get("reason", "pre_go_failure")
+        question = "Inspect terminal role evidence and choose a supported recovery."
+        source = dict(source)
+        source["run_id"] = source.get("failed_run_id")
     elif event == "role_blocked":
         reason = source.get("terminal_reason_code") or source.get("role_exit")
         if reason in TIMEOUT_REASONS:
@@ -285,7 +332,7 @@ def watch(
     directory_identity: tuple[int, int] | None = None
     directory_mtime = -1
     pending: list[str] = []
-    high_watermark = ""
+    high_watermark: tuple[int, str] | None = None
     checkpoint_name = ""
     emitted = 0
     while True:
@@ -310,8 +357,8 @@ def watch(
                 assert current is not None
                 directory_identity = current_identity
                 known = current
-                names = sorted(current)
-                high_watermark = names[-1] if names else ""
+                names = sorted(current, key=event_key)
+                high_watermark = event_key(names[-1]) if names else None
                 if anchor_name:
                     if anchor_name not in current:
                         raise WatchError("operator watch cursor event was lost")
@@ -319,7 +366,10 @@ def watch(
                     if anchor.get("event_sha256") != anchor_digest:
                         raise WatchError("operator watch cursor event was tampered")
                     checkpoint_name = anchor_name
-                    pending = [name for name in names if name > anchor_name]
+                    anchor_key = event_key(anchor_name)
+                    pending = [
+                        name for name in names if event_key(name) > anchor_key
+                    ]
                 else:
                     pending = names
             elif current_identity != directory_identity:
@@ -328,13 +378,16 @@ def watch(
                 for name, identity in known.items():
                     if current.get(name) != identity:
                         raise WatchError("controller event stream lost immutable evidence")
-                added = sorted(set(current) - set(known))
-                if added and high_watermark and added[0] <= high_watermark:
+                added = sorted(set(current) - set(known), key=event_key)
+                if (
+                    added and high_watermark is not None
+                    and event_key(added[0]) <= high_watermark
+                ):
                     raise WatchError("controller event stream order regressed")
                 pending.extend(added)
                 known = current
                 if added:
-                    high_watermark = added[-1]
+                    high_watermark = event_key(added[-1])
             directory_mtime = current_mtime
         while pending:
             name = pending.pop(0)

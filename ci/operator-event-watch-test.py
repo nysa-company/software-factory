@@ -103,6 +103,37 @@ class OperatorEventWatchTest(unittest.TestCase):
         self.assertEqual(repeated.returncode, 0, repeated.stderr)
         self.assertEqual(repeated.stdout, "")
 
+    def test_variable_width_epoch_names_use_numeric_order(self) -> None:
+        later = self.source("budget_wait", ticket="T-110")
+        later["observed_at_epoch_ns"] = 10
+        later.pop("event_sha256")
+        later["event_sha256"] = hashlib.sha256(
+            WATCH.canonical(later).encode()
+        ).hexdigest()
+        earlier = self.source("budget_wait", ticket="T-109")
+        earlier["observed_at_epoch_ns"] = 9
+        earlier.pop("event_sha256")
+        earlier["event_sha256"] = hashlib.sha256(
+            WATCH.canonical(earlier).encode()
+        ).hexdigest()
+        self.write(later, "0000000000000010")
+        self.write(earlier, "0000000000000009")
+        result = self.run_watch("--limit", "2", "--idle-timeout-seconds", "1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            [json.loads(line)["ticket"] for line in result.stdout.splitlines()],
+            ["T-109", "T-110"],
+        )
+
+    def test_filename_epoch_must_match_authenticated_observation(self) -> None:
+        value = self.source("budget_wait")
+        path = self.write(value)
+        mismatched = self.events / f"9-{path.name.partition('-')[2]}"
+        path.rename(mismatched)
+        result = self.run_watch("--limit", "1", "--idle-timeout-seconds", "1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unauthenticated", result.stderr)
+
     def test_contract_timeout_and_blocked_escalation_are_typed(self) -> None:
         values = [
             self.source(
@@ -128,9 +159,49 @@ class OperatorEventWatchTest(unittest.TestCase):
             ["contract_blocker", "progress_timeout", "blocked_escalated"],
         )
 
+    def test_pre_go_and_generic_claim_blocks_are_typed_without_duplicates(
+        self,
+    ) -> None:
+        self.write(self.source(
+            "pre_go_failure_blocked", failed_run_id="pre-go-1",
+            reason="cursor_credential_unsafe",
+        ))
+        self.write(self.source(
+            "ticket_blocked", ticket="T-111",
+            reason="state-machine-escalation",
+        ))
+        self.write(self.source(
+            "state_machine_escalated", ticket="T-111",
+            detail="evidence bundle remained invalid",
+            passport_sha256="d" * 64,
+        ))
+        self.write(self.source(
+            "ticket_blocked", ticket="T-112", reason="preflight",
+        ))
+        result = self.run_watch("--limit", "3", "--idle-timeout-seconds", "1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        events = [json.loads(line) for line in result.stdout.splitlines()]
+        self.assertEqual(
+            [(event["action"], event["ticket"], event["run_id"]) for event in events],
+            [
+                ("terminal_role_failure", "T-110", "pre-go-1"),
+                ("blocked_escalated", "T-111", None),
+                ("blocked_escalated", "T-112", None),
+            ],
+        )
+        restarted = self.run_watch(
+            "--cursor", events[-1]["cursor"], "--idle-timeout-seconds", "0.2",
+        )
+        self.assertEqual(restarted.returncode, 0, restarted.stderr)
+        self.assertEqual(restarted.stdout, "")
+
     def test_sanitized_payload_is_bounded_and_contains_no_secret(self) -> None:
         detail = (
-            "token=super-secret https://person:password@example.invalid/path "
+            "password: hunter two\n"
+            '{"token": "quoted json sentinel"}\n'
+            "yaml_secret: |\n  continuation sentinel\n"
+            "Authorization: Bearer authorization-sentinel\n"
+            "https://url-user:url-sentinel@example.invalid/path\n"
             + "x" * 400
         )
         self.write(self.source("state_machine_escalated", detail=detail))
@@ -138,8 +209,12 @@ class OperatorEventWatchTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         event = json.loads(result.stdout)
         encoded = json.dumps(event)
-        self.assertNotIn("super-secret", encoded)
-        self.assertNotIn("password@example", encoded)
+        for sentinel in (
+            "hunter", "two", "quoted json sentinel", "continuation sentinel",
+            "authorization-sentinel", "url-sentinel",
+        ):
+            self.assertNotIn(sentinel, encoded)
+            self.assertNotIn(sentinel, result.stderr)
         self.assertLessEqual(len(event["reason"]), 240)
         self.assertEqual(
             set(event),

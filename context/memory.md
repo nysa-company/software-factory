@@ -4347,3 +4347,10 @@ and parses only new files. No Slack, desktop,
 arbitrary command hook, GitHub credential, or provider credential enters this
 boundary, so delivery remains an external operator concern and production and
 qualification retain disjoint state.
+
+The controller also repairs the narrow durable-state/event publication crash
+window at startup. It inventories canonical events once and backfills exact
+missing actions only from current-release claims plus authenticated transition,
+passport, and terminal evidence. Generic and specialized escalation records
+remain one operator action, and pre-GO terminal blocks are visible without
+introducing a second journal.

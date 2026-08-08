@@ -273,6 +273,12 @@ read-only, receives no GitHub or provider credential, and provides no delivery
 hook; Slack, desktop, or other notification channels may consume its NDJSON
 without entering the Factory trust boundary. Production and qualification use
 their already distinct launcher-selected controller state paths.
+At controller startup, actionable durable claims are reconciled against one
+inventory of canonical events. A crash-lost budget, approval, known block,
+pre-provider failure, or terminal role failure is republished once only when
+its current-release transition and, where applicable, HMAC-authenticated
+passport and exact terminal evidence agree. This closes the mutation-to-event
+crash window without a second event journal or per-ticket history scans.
 The product test-immutability gate treats one ticket-only higher numbered
 frozen contract plus its matching PASS marker as a new tests-first epoch. New
 Planner output uses the canonical append-only marker. Historical Planner output

@@ -7,6 +7,7 @@ import argparse
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 import fcntl
 import hashlib
+import hmac
 import json
 import os
 from pathlib import Path
@@ -468,6 +469,324 @@ class Controller:
             ):
                 return
         self.event(name, ticket, **details)
+
+    def authenticated_operator_passport(
+        self, ticket: str,
+    ) -> dict[str, Any] | None:
+        key_path = self.state / "passport.key"
+        passport_path = self.state / "passports" / f"{ticket}.json"
+        if not key_path.exists() and not key_path.is_symlink():
+            if passport_path.exists() or passport_path.is_symlink():
+                raise ControllerError("operator passport authentication is unavailable")
+            return None
+        descriptor = os.open(
+            key_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        )
+        try:
+            info = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_uid != os.geteuid()
+                or info.st_nlink != 1
+                or stat.S_IMODE(info.st_mode) != 0o600
+                or info.st_size != 32
+            ):
+                raise ControllerError("operator passport key is unsafe")
+            secret = os.read(descriptor, 33)
+        finally:
+            os.close(descriptor)
+        if not passport_path.exists() and not passport_path.is_symlink():
+            return None
+        value = read(passport_path)
+        passport_digest = value.pop("passport_sha256", "")
+        if passport_digest != hashlib.sha256(canonical(value).encode()).hexdigest():
+            raise ControllerError("operator passport digest is invalid")
+        authentication = value.pop("authentication_sha256", "")
+        if not hmac.compare_digest(
+            authentication,
+            hmac.new(secret, canonical(value).encode(), hashlib.sha256).hexdigest(),
+        ):
+            raise ControllerError("operator passport authentication is invalid")
+        value.update(
+            authentication_sha256=authentication,
+            passport_sha256=passport_digest,
+        )
+        if (
+            value.get("schema") != "nysa.software-factory.ticket-passport/v1"
+            or value.get("ticket") != ticket
+            or value.get("project") != self.project
+            or value.get("contract_version") != "1.8.0"
+        ):
+            raise ControllerError("operator passport identity is invalid")
+        return value
+
+    def operator_transition(
+        self, claim: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        path = self.state / f"{claim['ticket']}.json"
+        if not path.exists() and not path.is_symlink():
+            return None
+        value = read(path)
+        digest = value.get("receipt_sha256", "")
+        immutable = {
+            key: item for key, item in value.items()
+            if key not in {"consumed", "consumed_at_epoch", "receipt_sha256"}
+        }
+        if any((
+            value.get("schema")
+            != "nysa.software-factory.transition-receipt/v1",
+            digest != hashlib.sha256(canonical(immutable).encode()).hexdigest(),
+            value.get("ticket") != claim["ticket"],
+            value.get("branch") != claim["branch"],
+            value.get("factory_sha") != self.release_path.name,
+            value.get("project") != self.project,
+            value.get("contract_version") != "1.8.0",
+            not isinstance(value.get("consumed"), bool),
+        )):
+            raise ControllerError("operator transition evidence is invalid")
+        return value
+
+    def recover_operator_action_events(
+        self, claims: list[dict[str, Any]],
+    ) -> None:
+        """Backfill crash-lost operator events from exact durable boundaries."""
+        candidates = [
+            claim for claim in claims
+            if claim.get("status") in {"blocked", "budget", "claimed", "waiting"}
+        ]
+        if not candidates:
+            return
+        inventory: list[dict[str, Any]] = []
+        for path in self.events.glob("*.json"):
+            value = read(path)
+            digest = value.get("event_sha256", "")
+            unsigned = dict(value)
+            unsigned.pop("event_sha256", None)
+            if (
+                value.get("schema") != EVENT_SCHEMA
+                or digest != hashlib.sha256(canonical(unsigned).encode()).hexdigest()
+            ):
+                raise ControllerError("controller event evidence is invalid")
+            inventory.append(value)
+
+        def emit(name: str, ticket: str, **details: Any) -> None:
+            found = any(
+                value.get("event") == name
+                and value.get("factory_sha") == self.release_path.name
+                and value.get("ticket") == ticket
+                and (
+                    not self.qualification
+                    or (
+                        value.get("qualification_generation")
+                        == self.qualification["generation"]
+                        and value.get("qualification_manifest_sha256")
+                        == self.qualification_manifest_sha256
+                    )
+                )
+                and all(value.get(key) == item for key, item in details.items())
+                for value in inventory
+            )
+            if found:
+                return
+            self.event(name, ticket, **details)
+            inventory.append({
+                "event": name, "factory_sha": self.release_path.name,
+                "ticket": ticket, **details,
+                **(
+                    {
+                        "qualification_generation": self.qualification["generation"],
+                        "qualification_manifest_sha256": (
+                            self.qualification_manifest_sha256
+                        ),
+                    }
+                    if self.qualification else {}
+                ),
+            })
+
+        for claim in candidates:
+            ticket = claim["ticket"]
+            if claim.get("status") == "budget":
+                transition = self.operator_transition(claim)
+                passport = self.authenticated_operator_passport(ticket)
+                passport_digest = (
+                    passport.get("passport_sha256")
+                    if passport is not None else None
+                )
+                if (
+                    transition is not None
+                    and transition.get("stage", "").startswith("AWAIT_BUDGET ")
+                    and transition.get("role") is None
+                    and claim.get("receipt") == ""
+                    and claim.get("role") == ""
+                    and claim.get("budget_sha256") == self.envelope_digest()
+                    and (
+                        passport is None
+                        or (
+                            passport.get("branch") == claim["branch"]
+                            and passport.get("factory_sha")
+                            == self.release_path.name
+                        )
+                    )
+                ):
+                    emit("budget_wait", ticket, passport_sha256=passport_digest)
+                continue
+            if (
+                claim.get("status") in {"claimed", "waiting"}
+            ):
+                transition = self.operator_transition(claim)
+                if not (
+                    transition is not None
+                    and transition.get("stage", "").startswith(
+                        "AWAIT-OPERATOR bundle posted"
+                    )
+                ):
+                    continue
+                passport = self.authenticated_operator_passport(ticket)
+                passport_digest = (
+                    passport.get("passport_sha256")
+                    if passport is not None else None
+                )
+            if (
+                claim.get("status") in {"claimed", "waiting"}
+                and transition is not None
+                and transition.get("stage", "").startswith(
+                    "AWAIT-OPERATOR bundle posted"
+                )
+                and transition.get("role") is None
+                and claim.get("receipt") == ""
+                and claim.get("role") == ""
+                and passport is not None
+                and passport.get("branch") == claim["branch"]
+                and passport.get("factory_sha") == self.release_path.name
+                and passport.get("current_state") == "Awaiting Approval"
+                and passport.get("publication_state") == "validating"
+            ):
+                emit(
+                    "awaiting_approval", ticket,
+                    passport_sha256=passport_digest,
+                    question="Approve this ticket to merge in Linear.",
+                )
+                continue
+            if claim.get("status") != "blocked":
+                continue
+            blocked_reason = claim.get("blocked_reason", "")
+            if blocked_reason == "role-failure":
+                transition = self.operator_transition(claim)
+                passport = self.authenticated_operator_passport(ticket)
+                passport_digest = (
+                    passport.get("passport_sha256")
+                    if passport is not None else None
+                )
+                terminal = self.terminal_for_receipt(ticket, claim.get("receipt", ""))
+                if (
+                    transition is not None
+                    and transition.get("receipt_sha256") == claim.get("receipt")
+                    and transition.get("role") == claim.get("role")
+                    and transition.get("stage")
+                    in {f"RUN {claim.get('role')}", f"FIX {claim.get('role')}"}
+                    and SHA.fullmatch(transition.get("head_sha", ""))
+                    and terminal is not None
+                    and terminal.get("ticket") == ticket
+                    and terminal.get("role") == claim.get("role")
+                    and terminal.get("kit_sha") == self.release_path.name
+                    and terminal.get("transition_receipt_sha256")
+                    == claim.get("receipt")
+                    and terminal.get("role_branch_before") == claim["branch"]
+                    and terminal.get("role_head_before")
+                    == transition.get("head_sha")
+                    and terminal.get("phase") == "completed"
+                    and terminal.get("go_issued") == "1"
+                    and terminal.get("task_submitted") == "1"
+                    and terminal.get("exit_status") != "0"
+                    and terminal.get("role_exit") != "ok"
+                    and re.fullmatch(
+                        r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}",
+                        terminal.get("run_id", ""),
+                    )
+                    and passport is not None
+                    and passport.get("branch") == claim["branch"]
+                    and passport.get("factory_sha") == self.release_path.name
+                    and passport.get("transition_receipt_sha256")
+                    == claim.get("receipt")
+                ):
+                    emit(
+                        "role_blocked", ticket,
+                        passport_sha256=passport_digest,
+                        role=claim["role"], role_exit=terminal.get("role_exit"),
+                        run_id=terminal.get("run_id"),
+                        terminal_reason_code=terminal.get(
+                            "terminal_reason_code", ""
+                        ),
+                    )
+                continue
+            if blocked_reason == "pre-go-failure":
+                transition = self.operator_transition(claim)
+                terminal = self.terminal_for_receipt(ticket, claim.get("receipt", ""))
+                if (
+                    transition is not None
+                    and transition.get("receipt_sha256") == claim.get("receipt")
+                    and transition.get("role") == claim.get("role")
+                    and SHA.fullmatch(transition.get("head_sha", ""))
+                    and terminal is not None
+                    and self.typed_launch_void(terminal)
+                    and terminal.get("role") == claim.get("role")
+                    and terminal.get("kit_sha") == self.release_path.name
+                    and terminal.get("role_branch_before") == claim["branch"]
+                    and terminal.get("role_head_before")
+                    == transition.get("head_sha")
+                    and re.fullmatch(
+                        r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}",
+                        terminal.get("run_id", ""),
+                    )
+                ):
+                    reason = terminal.get("terminal_reason_code", "")
+                    emit(
+                        "pre_go_failure_blocked", ticket,
+                        failed_run_id=terminal.get("run_id"),
+                        reason=(
+                            reason if re.fullmatch(r"[a-z0-9_]{1,64}", reason)
+                            else "pre_go_failure"
+                        ),
+                    )
+                continue
+            known_block = blocked_reason in {
+                "bundle-pr-gate", "narrator-pr-gate", "preflight",
+                "preflight-evidence", "preview-identity-timeout",
+                "preview-preflight", "route-migration-required",
+                "state-machine-escalation", "state-machine-refusal",
+            } or blocked_reason == (
+                "model-identity-recovery-refused:" + self.release_path.name
+            )
+            if not known_block:
+                continue
+            if blocked_reason == "state-machine-escalation":
+                transition = self.operator_transition(claim)
+                passport = self.authenticated_operator_passport(ticket)
+                passport_digest = (
+                    passport.get("passport_sha256")
+                    if passport is not None else None
+                )
+                if (
+                    transition is not None
+                    and transition.get("role") is None
+                    and transition.get("stage", "").startswith("ESCALATE ")
+                    and (
+                        passport is None
+                        or (
+                            passport.get("branch") == claim["branch"]
+                            and passport.get("factory_sha")
+                            == self.release_path.name
+                        )
+                    )
+                ):
+                    emit("ticket_blocked", ticket, reason=blocked_reason)
+                    emit(
+                        "state_machine_escalated", ticket,
+                        detail=transition["stage"].partition(" ")[2],
+                        passport_sha256=passport_digest,
+                    )
+                continue
+            emit("ticket_blocked", ticket, reason=blocked_reason)
 
     def record_contract_resume_refusal(
         self, claim: dict[str, Any], reason_code: str, evidence: dict[str, Any]
@@ -5740,6 +6059,7 @@ class Controller:
             self.ensure_lease(claim, "terminal-cleanup")
             self.release(claim)
         existing = [claim for claim in existing if claim not in completed]
+        self.recover_operator_action_events(existing)
         self.record_qualification_done_targets()
         self.recover_missing_passport_claims(existing)
         self.recover_terminal_requests(existing)

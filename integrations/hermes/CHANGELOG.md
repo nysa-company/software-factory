@@ -33,7 +33,8 @@ helper output are not compatibility promises.
   with one fresh probe round.
 - Adds a credential-free, channel-neutral operator event watch with bounded
   sanitized NDJSON, authenticated project-bound resume cursors, and fail-closed
-  stream-loss detection.
+  stream-loss detection. Startup reconstructs crash-lost actionable events once
+  from exact durable claim, transition, passport, and terminal evidence.
 
 ## 1.7.0 — 2026-07-22
 
