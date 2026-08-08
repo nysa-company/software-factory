@@ -27,7 +27,10 @@ Per-ticket budget: USD {{PER_TICKET_BUDGET_USD}} (use 100.00 for Nysa)
 Follow docs/runbooks/operator.md § "Preparing and activating a release" in
 this exact order:
 
-1. Fetch the kit repository. Require {{SHA}} to be the exact current
+1. Fetch a clean kit checkout with the canonical
+   `github.com/nysa-company/software-factory` remote. SSH host aliases are not
+   trusted and `--origin` does not rescue a mismatched checkout. Require
+   {{SHA}} to be the exact current
    `origin/main` commit and require the authenticated GitHub Actions push run
    for that SHA to have all three Linux shards, all three macOS shards, the
    aggregate `ci` job, and `test-immutability` successful. A PR run, partial
@@ -37,9 +40,20 @@ this exact order:
    exact protected-main evidence from step 1 and run only the local sandboxed
    host smoke; never substitute the complete local factory suite.
 3. Inventory all runs, claims, leases, activation journals, and ticket states.
-   On an active host, stop new dispatch, publish maintenance, and drain all
-   runs and leases. On an inactive replacement, keep dispatcher, reconciler,
-   and LaunchAgent disabled. Do not alter an in-flight route plan or lease.
+   On an active host, run `factory-kit.sh pause`. If it refuses on a stale
+   lease, leave maintenance published, prove no run is active, run
+   `factory-kit.sh recover-lease` for each named ticket, and retry pause; never
+   delete a lease by hand. Once pause succeeds, keep dispatch stopped and prove
+   every remaining provider attempt and reservation is drained. Only then
+   atomically install the sealed candidate launcher with the fail-fast,
+   rollback-preserving native command block in `docs/factory-setup.md`. On an
+   inactive replacement, keep dispatcher, reconciler,
+   and LaunchAgent disabled and install the sealed launcher before
+   certification. Before the protected merge in step 8, publish maintenance on
+   the old active host, pause and recover its stale leases through the same
+   supported sequence, prove its controller and provider work are drained, and
+   keep it stopped through cutover. Do not alter an in-flight route plan or
+   lease.
 4. Prepare one clean canonical product checkout at
    {{PRODUCT_REPO_ABSOLUTE_PATH}} from the latest `origin/main`, on a dedicated
    migration branch. Before certification, commit the exact candidate
@@ -77,33 +91,39 @@ this exact order:
    - Restart Codex and Claude sessions. Run the repository-baseline plan; any
      proposed tracked baseline change is a separate product change and stops
      this migration.
-8. Verify Node 22 and product certification dependencies. For nysa-app,
-   require PostgreSQL at `127.0.0.1:55432`, review its pinned dependency fetch,
-   and certify the exact clean committed tree at
-   {{PRODUCT_REPO_ABSOLUTE_PATH}} with
+8. Only after the final `KIT_PIN`, complete in-flight authorization, and every
+   other migration control are committed, open the product PR and stop for
+   operator approval. Disable auto-merge and bypass for the one-time
+   reconciliation batch. After its manual protected merge, fetch canonical
+   `origin/main` and require its SHA and tracked tree to be the intended final
+   product tuple. Make {{PRODUCT_REPO_ABSOLUTE_PATH}} a clean
+   `HEAD == origin/main` checkout at that exact commit.
+9. From that exact clean protected-main checkout, verify Node 22 and product
+   certification dependencies. For nysa-app, require PostgreSQL at
+   `127.0.0.1:55432`, review its pinned dependency fetch, and certify that exact
+   protected-main SHA and tree at {{PRODUCT_REPO_ABSOLUTE_PATH}} with
    `FACTORY_KIT_CERTIFICATION_NETWORK_REVIEWED=1 bash
    scripts/factory-kit.sh certify --project {{PROJECT_SLUG}} --product
    {{PRODUCT_REPO_ABSOLUTE_PATH}} --sha {{SHA}}`. The opt-in applies only to
    this reviewed certification command; installation and unreviewed products
    remain network-denied. Record the host-bound receipt ID and expiry; another
-   computer's receipt is invalid.
-9. {{CANARY_LINE: "Run the isolated real-Hermes canary with a separate sandbox
+   computer's receipt is invalid. Any later product commit or protected-main
+   tree drift requires certification of the new final tree before activation.
+10. {{CANARY_LINE: "Run the isolated real-Hermes canary with a separate sandbox
    product/profile because this release changes {{SURFACES_TOUCHED}}. Never
    copy production environment, credentials, board mapping, registry, ledger,
    or LaunchAgent into it." | "No compatibility-sensitive surface changed;
    record the exact diff-based skip justification."}}
-10. Open the product PR from the already certified migration commit and stop
-    for operator approval. Disable auto-merge and bypass for the one-time
-    reconciliation batch. After its manual protected merge, fetch canonical
-    `origin/main` and require its tracked tree to match the certification
-    receipt exactly. Drift requires a new branch, reconciliation basis, and
-    certification.
-11. On a replacement cutover, now publish maintenance on the old host and
-    drain it. Prove its dispatcher and Linear reconciler are stopped; otherwise
-    revoke their execution access. Only then transfer the ignored production
-    `factory/linear-map.json` securely to the same canonical path with
-    owner-only permissions. Never print, commit, or copy it into the canary.
-12. Run `factory-kit.sh plan`; require `No files were changed.` Stop only the
+11. On a replacement cutover, re-confirm the old host remains in maintenance
+    with its controller and provider work drained. Prove its dispatcher and
+    Linear reconciler are stopped; otherwise revoke their execution access.
+    Only then transfer the ignored production `factory/linear-map.json`
+    securely to the same canonical path with owner-only permissions. Never
+    print, commit, or copy it into the canary.
+12. Immediately before activation, fetch canonical protected main again and
+    require its SHA and tracked tree to match the certification receipt. Drift
+    requires a new branch, protected merge, and certification. Run
+    `factory-kit.sh plan`; require `No files were changed.` Stop only the
     product factory profile and reconciler, leaving the dashboard and primary
     Hermes profile running. Activate while dispatch and Linear remain stopped.
     Collect activation journal, doctor JSON, sandbox smoke, PID, and repeated

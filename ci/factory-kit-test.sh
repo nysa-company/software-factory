@@ -1794,6 +1794,15 @@ expect_failure "wrong authorized remote head blocks activation" \
 expect_failure "plan and activation reject the same wrong authorized remote head" \
   plan --project alpha --product "$PRODUCT_ONE" --sha "$SHA_B" \
   --receipt "$RECEIPT_WRONG_AUTH"
+if [[ "$LAST_OUTPUT" == *"T-006 does not match its exact in-flight release authorization"* &&
+      "$LAST_OUTPUT" == *"expected branch=ticket/T-006"* &&
+      "$LAST_OUTPUT" == *"head=$(printf '0%.0s' {1..40})"* &&
+      "$LAST_OUTPUT" == *"state=Planning"* &&
+      "$LAST_OUTPUT" == *"source_kit_sha=$SHA_A"* ]]; then
+  pass "in-flight mismatch names the exact remediation inputs"
+else
+  fail "in-flight mismatch reports an actionable exact plan" "$LAST_OUTPUT"
+fi
 
 VALID_INFLIGHT_PLAN="$TMP/t006-valid-route-plan.json"
 cp "$LEASE_BRANCH_WORKTREE/factory/route-plans/T-006.json" "$VALID_INFLIGHT_PLAN"

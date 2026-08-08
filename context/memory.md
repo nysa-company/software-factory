@@ -4609,3 +4609,41 @@ and current protected main. An idempotent retry is limited to that head's single
 direct child whose only changes are the selected ticket's Kit-SHA and canonical
 append-only release migration, both as regular `100644` blobs; siblings remain
 independent. Every other drift requires a new protected authorization.
+
+## 2026-08-08 — Decision 339: Qualification optimization follows measured latency
+
+Category: Reliability
+
+On protected main `ce6e0ac7cbe41158eb3d4c29590c3ca46c97caf0`, twenty
+disposable three-ticket qualification-core runs measured 4.081 seconds median,
+4.336 seconds p95, and 4.410 seconds maximum across restart recovery, terminal
+adoption, concurrent release upgrade, and first-worker scheduling. A real
+disposable selected-ticket Linear initialization pass completed in 2.73
+seconds. The measured hot path does not justify a reusable admission cache or
+monolithic migration command. Near-expiry Linear snapshot reuse and
+qualification phase/admission telemetry remain a separately measured canary
+follow-up because the sealed dispatch child owns late freshness validation and
+the existing launcher grammar has no honest controller-only snapshot input.
+These core timings are not end-to-end first-live-role proof and do not satisfy
+those two acceptance criteria in #244. Keep #244 open until that canary evidence
+exists, or split the unchecked criteria into a named follow-up before closing
+it.
+
+## 2026-08-08 — Decision 340: Release migration stays an ordered native procedure
+
+Category: Operations
+
+Release migration deliberately reuses the canonical Git-origin policy,
+`factory-kit.sh` maintenance and stale-lease recovery, native atomic file
+replacement, and exact-tree certification rather than adding a second
+migration service. An active host pauses first; a stale-lease refusal leaves
+maintenance published while each named lease is recovered, then pause is
+retried. The sealed launcher is retained as a rollback copy and replaced only
+after controller and provider work are drained. The fail-fast native block
+constructs and compares a temporary copy before atomically replacing the
+installed launcher. All product migration controls merge to protected main
+only after the old active host is also in maintenance with controller and
+provider work drained. Certification then binds that exact protected-main
+SHA/tree, and any later commit or protected-main tree drift requires
+recertification.
+SSH aliases remain outside the trusted origin grammar.

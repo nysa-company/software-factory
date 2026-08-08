@@ -205,18 +205,53 @@ until expiry.
 - Before certification, compare the installed
   `~/.factory/bin/factory-launch` with the sealed release copy. If they differ,
   drain controller and provider work, retain the current launcher as the
-  rollback artifact, and atomically install the exact sealed executable.
-  Certification and activation now refuse any byte mismatch; never patch the
+  rollback artifact, and atomically install the exact sealed executable. Only
+  after maintenance is published, controller pause has succeeded, and provider
+  status proves every attempt and reservation drained, run this fail-fast
+  native replacement against the installed release:
+
+  ```bash
+  (
+    set -eu
+    candidate="$HOME/.factory/kits/releases/<full-sha>/integrations/hermes/bin/factory-launch"
+    installed="$HOME/.factory/bin/factory-launch"
+    test -f "$candidate"
+    test ! -L "$candidate"
+    test -x "$candidate"
+    test -f "$installed"
+    test ! -L "$installed"
+    rollback="$(mktemp "$HOME/.factory/bin/factory-launch.rollback.XXXXXX")"
+    cp -p "$installed" "$rollback"
+    printf 'rollback=%s\n' "$rollback"
+    temporary="$(mktemp "$HOME/.factory/bin/.factory-launch.XXXXXX")"
+    trap 'rm -f "$temporary"' EXIT
+    install -m 700 "$candidate" "$temporary"
+    cmp -s "$candidate" "$temporary"
+    mv -f "$temporary" "$installed"
+  )
+  ```
+
+  Keep the printed `$rollback` path with the release evidence. Stop if any
+  command fails; do not remove the rollback artifact or resume the lane.
+  Certification and activation refuse any byte mismatch; never patch the
   installed launcher independently.
 
-- For a release migration, land `factory/KIT_PIN` and the complete canonical
+- For a release migration, merge the protected product PR containing
+  `factory/KIT_PIN` and the complete canonical
   `factory/migrations/inflight-release/<target-sha>.json` authorization before
-  certification. Then install the sealed release and launcher, certify the
-  now-final protected product tree, publish maintenance, recover any named
-  stale dispatcher leases, drain, and activate. Any later product commit
-  invalidates the certification and requires recertification. SSH host aliases
-  are not a trusted kit origin; use a clean checkout whose remote canonicalizes
-  to `github.com/nysa-company/software-factory`.
+  certification. Fetch canonical protected main, require its exact SHA and
+  tracked tree, and certify that exact protected-main tuple. Install the sealed
+  release first. On an active host, publish maintenance, recover any named
+  stale dispatcher leases, drain controller and provider work, and install the
+  sealed launcher before the protected merge. On an inactive replacement,
+  keep dispatch disabled while installing the launcher and certifying; also
+  publish maintenance on the old active host and drain its controller and
+  provider work before the protected merge, then preserve that maintenance
+  through cutover. Activate only the exact certified tree. Any later product
+  commit invalidates the certification and requires recertification. SSH host
+  aliases are not a trusted kit origin; use a clean checkout whose remote
+  canonicalizes to
+  `github.com/nysa-company/software-factory`.
 
 - Before certifying a Contract 1.8 product with
   `MAX_CONCURRENT_TICKETS` above one, enter maintenance and drain every role,
