@@ -93,6 +93,11 @@ everything the Factory actually enforces lives here.
 - Production certification, activation planning, and activation reject any
   `factory/QUALIFICATION.json` before receipt or journal mutation. Sealed
   qualification continues to require its exact manifest.
+- Product CI and the local readiness classifier validate a changed committed
+  `factory/QUALIFICATION.json` with the shared parser from the exact committed
+  `KIT_PIN`. Manifest-only controls remain lightweight only behind that gate;
+  malformed, cross-mode, or cross-pin authority fails before merge instead of
+  degrading to the broad-test path.
 - Activation validates protected-main Done or lease-free Canceled truth before
   considering retained ticket refs. A stale terminal ref is left untouched for
   lane safety; genuinely nonterminal protected truth still requires the exact
@@ -4428,3 +4433,17 @@ typed candidate evidence before creation. HTTP 400/429 and GraphQL quota
 responses share one bounded structural parser and one owner-only
 credential-identity cooldown; every entry point stops before further API calls
 until expiry.
+
+## 2026-08-08 — Decision 329: Qualification authority is checked before merge
+
+Category: Reliability
+
+Product CI checks out the exact committed Factory pin into an absent reserved
+path with a read-only token
+only when `factory/QUALIFICATION.json` is added or changed, disables persisted
+checkout credentials, and invokes that release's shared strict parser over
+committed product blobs. The copied local classifier invokes the same parser
+from the installed exact-pin release and preserves validator refusal as a hard
+readiness failure. Manifest-only changes avoid broad application
+tests only behind this mandatory check; malformed, cross-mode, or cross-pin
+authority is rejected before protected main moves.

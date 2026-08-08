@@ -8,6 +8,9 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   ci:
     runs-on: ubuntu-latest
@@ -15,16 +18,59 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
+      - name: inspect qualification control
+        id: qualification
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          status=0
+          if test "$BASE_SHA" = 0000000000000000000000000000000000000000; then
+            status=1
+          else
+            git diff --quiet --no-ext-diff --no-renames "$BASE_SHA" "$GITHUB_SHA" -- factory/QUALIFICATION.json || status=$?
+          fi
+          case "$status" in
+            0) echo "changed=false" >> "$GITHUB_OUTPUT" ;;
+            1)
+              if git cat-file -e "$GITHUB_SHA:factory/QUALIFICATION.json"; then
+                pin="$(git show "$GITHUB_SHA:factory/KIT_PIN")"
+                test "$(printf '%s' "$pin" | wc -l | tr -d ' ')" = 0
+                test "${#pin}" = 40
+                test -z "${pin//[0-9a-f]/}"
+                test ! -e "$GITHUB_WORKSPACE/.qualification-kit"
+                test ! -L "$GITHUB_WORKSPACE/.qualification-kit"
+                echo "changed=true" >> "$GITHUB_OUTPUT"
+                echo "pin=$pin" >> "$GITHUB_OUTPUT"
+              else
+                echo "changed=false" >> "$GITHUB_OUTPUT"
+              fi
+              ;;
+            *) exit "$status" ;;
+          esac
+      - uses: actions/checkout@v5
+        if: steps.qualification.outputs.changed == 'true'
+        with:
+          repository: nysa-company/software-factory
+          ref: ${{ steps.qualification.outputs.pin }}
+          path: .qualification-kit
+          token: ${{ secrets.FACTORY_REPOSITORY_TOKEN }}
+          persist-credentials: false
       - name: classify change
         id: scope
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          QUALIFICATION_CHANGED: ${{ steps.qualification.outputs.changed }}
         run: |
-          if .github/scripts/lightweight-change.sh "$BASE_SHA" "$GITHUB_SHA"; then
-            echo "full=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "full=true" >> "$GITHUB_OUTPUT"
+          if test "$QUALIFICATION_CHANGED" = true; then
+            export FACTORY_QUALIFICATION_PARSER="$GITHUB_WORKSPACE/.qualification-kit/scripts/lib/qualification_manifest.py"
           fi
+          status=0
+          .github/scripts/lightweight-change.sh "$BASE_SHA" "$GITHUB_SHA" || status=$?
+          case "$status" in
+            0) echo "full=false" >> "$GITHUB_OUTPUT" ;;
+            1) echo "full=true" >> "$GITHUB_OUTPUT" ;;
+            *) exit "$status" ;;
+          esac
       - uses: actions/setup-node@v5
         if: github.event_name == 'push' || steps.scope.outputs.full == 'true'
         with:

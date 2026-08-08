@@ -89,6 +89,18 @@ calculates the same recommendation but executes the full registry.
 suites because repository, secret, artifact, and immutability gates remain
 separate required checks.
 
+Product CI treats an exact `factory/QUALIFICATION.json`-only change as a
+lightweight control change only after a separate mandatory gate checks its
+committed blob. The gate reads the exact committed `factory/KIT_PIN`, checks
+out that private Factory revision with non-persisted read-only credentials,
+and invokes the release's shared strict qualification-manifest parser. Local
+readiness invokes that same parser through the copied lightweight classifier
+from the installed exact-pin release; validator refusal is distinct from the
+ordinary broad-test classification.
+Unrelated diffs do not fetch the Factory or parse qualification state; any
+present malformed or cross-pin manifest fails before product merge without
+running a broad application suite.
+
 Selection fails closed to full for invalid or empty comparisons, additions,
 deletions, renames, unknown or shared paths, multiple components, dependencies,
 contracts, launchers, roles, CI or selector changes, malformed modes, and empty,

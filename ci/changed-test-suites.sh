@@ -21,10 +21,16 @@ git -C "$ROOT" cat-file -e "$HEAD^{commit}" 2>/dev/null || full "invalid head"
 MERGE_BASE="$(git -C "$ROOT" merge-base "$BASE" "$HEAD" 2>/dev/null)" || full "no merge base"
 git -C "$ROOT" diff --quiet "$MERGE_BASE" "$HEAD" && full "empty diff"
 
-if (cd "$ROOT" && bash ci/lightweight-change.sh "$MERGE_BASE" "$HEAD"); then
-  printf 'metadata|inert metadata|\n'
-  exit 0
-fi
+LIGHTWEIGHT_STATUS=0
+(cd "$ROOT" && bash ci/lightweight-change.sh "$MERGE_BASE" "$HEAD") || LIGHTWEIGHT_STATUS=$?
+case "$LIGHTWEIGHT_STATUS" in
+  0)
+    printf 'metadata|inert metadata|\n'
+    exit 0
+    ;;
+  1) ;;
+  *) exit "$LIGHTWEIGHT_STATUS" ;;
+esac
 
 set_group() {
   local next_state="$1" next="$2" next_suites="$3"
