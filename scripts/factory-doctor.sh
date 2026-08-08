@@ -694,6 +694,7 @@ try:
                 "conflicting_project_identity",
                 "durable_project_foreign_team",
                 "mapped_project_foreign_team",
+                "mapped_project_marker_invalid",
                 "mapped_project_unavailable",
                 "multiple_durable_identities",
                 "unmarked_same_name_project",

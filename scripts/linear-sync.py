@@ -15,6 +15,7 @@ import datetime as dt
 import fcntl
 import hashlib
 import json
+import math
 import os
 import re
 import stat
@@ -56,6 +57,10 @@ TARGETED_OPERATOR_FIELDS = (
     "operator_state_source_sha256",
 )
 LINEAR_COOLDOWN_SCHEMA = "nysa.software-factory.linear-account-cooldown/v1"
+LINEAR_CREATE_INTENT_SCHEMA = "nysa.software-factory.linear-create-intent/v1"
+RATE_LIMIT_REFUSAL = re.compile(
+    r"linear_rate_limited retry_after_seconds=([0-9]{1,10})(?![0-9])"
+)
 
 # Ticket State: values map 1:1 onto board columns (docs/workflows/linear.md).
 # The second element is the Linear workflow-state *type* used when the
@@ -226,7 +231,7 @@ def operator_map_path(factory_dir):
     return path
 
 
-def gql(key, query, variables=None):
+def gql(key, query, variables=None, retry_transient=True):
     body = json.dumps({"query": query, "variables": variables or {}}).encode()
     request = urllib.request.Request(
         API_URL,
@@ -240,7 +245,7 @@ def gql(key, query, variables=None):
             if data.get("errors"):
                 wait = rate_limit_seconds(detail=data["errors"])
                 if wait is not None:
-                    if attempt < 2:
+                    if retry_transient and attempt < 2:
                         delay = min(2 ** attempt, 30)
                         log(f"Linear quota exhausted, backing off {delay}s")
                         time.sleep(delay)
@@ -257,7 +262,7 @@ def gql(key, query, variables=None):
             )
             quota_wait = rate_limit_seconds(error.headers, detail)
             if quota_wait is not None:
-                if attempt < 2:
+                if retry_transient and attempt < 2:
                     raw_wait = error.headers.get("Retry-After")
                     try:
                         wait = int(raw_wait) if raw_wait is not None else 2 ** attempt
@@ -270,7 +275,11 @@ def gql(key, query, variables=None):
                 raise RuntimeError(
                     f"linear_rate_limited retry_after_seconds={quota_wait}"
                 ) from error
-            if error.code in {500, 502, 503, 504} and attempt < 2:
+            if (
+                retry_transient
+                and error.code in {500, 502, 503, 504}
+                and attempt < 2
+            ):
                 raw_wait = error.headers.get("Retry-After")
                 try:
                     wait = int(raw_wait) if raw_wait is not None else 2 ** attempt
@@ -285,21 +294,53 @@ def gql(key, query, variables=None):
 
 
 def rate_limit_seconds(headers=None, detail=None):
+    structured = detail
     try:
         encoded = (
             json.dumps(detail, sort_keys=True)
             if not isinstance(detail, str) else detail
         )
+        if isinstance(detail, str):
+            structured = json.loads(detail)
     except (TypeError, ValueError):
         encoded = str(detail)
     if "rate limit" not in encoded.lower() and "ratelimited" not in encoded.lower():
         return None
     raw = headers.get("Retry-After") if headers is not None else None
+    if raw is None:
+        pending = [structured]
+        for _visited in range(1000):
+            if not pending:
+                break
+            value = pending.pop()
+            if isinstance(value, dict):
+                result = value.get("rateLimitResult")
+                duration = result.get("duration") if isinstance(result, dict) else None
+                if (
+                    isinstance(duration, int)
+                    and not isinstance(duration, bool)
+                    and duration >= 0
+                ):
+                    return min((duration + 999) // 1000, 3600)
+                if (
+                    isinstance(duration, float)
+                    and math.isfinite(duration)
+                    and duration >= 0
+                ):
+                    return min(math.ceil(duration / 1000), 3600)
+                pending.extend(value.values())
+            elif isinstance(value, list):
+                pending.extend(value)
     try:
         wait = int(raw) if raw is not None else 3600
     except (TypeError, ValueError):
         wait = 3600
     return min(max(wait, 0), 3600)
+
+
+def typed_rate_limit_seconds(error):
+    match = RATE_LIMIT_REFUSAL.search(str(error))
+    return min(int(match.group(1)), 3600) if match is not None else None
 
 
 def normalize_state(value):
@@ -442,12 +483,21 @@ def map_lock(map_path):
         yield
 
 
-def operator_clear_intents(map_path):
+def operator_clear_intents(map_path, tickets=None):
     directory = map_path.parent / ".linear-operator-clears"
     if not directory.is_dir() or directory.is_symlink():
         return []
     result = []
-    for path in sorted(directory.glob("T-*.json")):
+    paths = (
+        directory.glob("T-*.json")
+        if tickets is None
+        else (
+            path
+            for ticket in sorted(tickets)
+            for path in directory.glob(f"{ticket}-*.json")
+        )
+    )
+    for path in sorted(paths):
         value = json.loads(path.read_text())
         if (
             set(value) != {"operator_version", "schema", "ticket"}
@@ -461,11 +511,18 @@ def operator_clear_intents(map_path):
     return result
 
 
-def apply_operator_clears(map_path, mapping):
-    for _path, intent in operator_clear_intents(map_path):
+def apply_operator_clears(map_path, mapping, tickets=None):
+    for _path, intent in operator_clear_intents(map_path, tickets):
         entry = mapping.get("tickets", {}).get(intent["ticket"], {})
         if operator_version(entry.get("operator") or {}) == intent["operator_version"]:
             entry.pop("operator", None)
+
+
+def consume_operator_clears(map_path, mapping, tickets):
+    for path, intent in operator_clear_intents(map_path, tickets):
+        entry = mapping.get("tickets", {}).get(intent["ticket"], {})
+        if operator_version(entry.get("operator") or {}) == intent["operator_version"]:
+            path.unlink()
 
 
 def retire_operator_clears(map_path):
@@ -502,14 +559,10 @@ def parsed_timestamp(value):
 def rate_limit_cooldown(mapping, now=None):
     health = mapping.get("_sync", mapping) if isinstance(mapping, dict) else None
     health = health if isinstance(health, dict) else {}
-    match = re.fullmatch(
-        r"linear_rate_limited retry_after_seconds=([0-9]+)",
-        str(health.get("last_error") or ""),
-    )
+    wait = typed_rate_limit_seconds(health.get("last_error") or "")
     failed_at = parsed_timestamp(health.get("failed_at"))
-    if match is None or failed_at is None:
+    if wait is None or failed_at is None:
         return 0
-    wait = min(int(match.group(1)), 3600)
     now = now or dt.datetime.now(dt.timezone.utc)
     remaining = (failed_at + dt.timedelta(seconds=wait) - now).total_seconds()
     return max(0, int(remaining + 0.999))
@@ -544,10 +597,10 @@ def load_account_cooldown(path):
 
 
 def record_account_cooldown(path, error):
-    if re.fullmatch(
-        r"linear_rate_limited retry_after_seconds=([0-9]+)", str(error)
-    ) is None:
+    wait = typed_rate_limit_seconds(error)
+    if wait is None:
         return False
+    canonical = f"linear_rate_limited retry_after_seconds={wait}"
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     parent = path.parent.lstat()
     if (
@@ -559,7 +612,7 @@ def record_account_cooldown(path, error):
         raise RuntimeError("Linear cooldown directory is unsafe")
     value = {
         "failed_at": utc_now(),
-        "last_error": str(error),
+        "last_error": canonical,
         "schema": LINEAR_COOLDOWN_SCHEMA,
     }
     descriptor, temporary = tempfile.mkstemp(
@@ -578,6 +631,17 @@ def record_account_cooldown(path, error):
             os.close(descriptor)
         Path(temporary).unlink(missing_ok=True)
     return True
+
+
+def observe_account_cooldown(path, error):
+    try:
+        recorded = record_account_cooldown(path, error)
+    except (OSError, RuntimeError) as cooldown_error:
+        log(f"Linear account cooldown persistence failed: {cooldown_error}")
+        return False
+    if not recorded:
+        log("Linear failure was not a typed rate-limit refusal; cooldown not recorded")
+    return recorded
 
 
 def operator_freshness(entry):
@@ -698,14 +762,18 @@ def preserve_newer_operator_pull(path, mapping, preserve_project_conflict=True):
         )
 
 
-def save_map(path, mapping, preserve_project_conflict=True):
+def save_map(
+    path, mapping, preserve_project_conflict=True, clear_tickets=None,
+    consume_clear_tickets=(),
+):
     with map_lock(path):
         preserve_newer_operator_pull(path, mapping, preserve_project_conflict)
-        apply_operator_clears(path, mapping)
+        apply_operator_clears(path, mapping, clear_tickets)
         atomic_write(path, json.dumps(mapping, indent=2, sort_keys=True) + "\n")
+        consume_operator_clears(path, mapping, consume_clear_tickets)
 
 
-def record_failure(map_path, mapping, error):
+def record_failure(map_path, mapping, error, clear_tickets=None):
     health = mapping.get("_sync", {})
     conflict = (
         error.conflict
@@ -729,7 +797,7 @@ def record_failure(map_path, mapping, error):
             if isinstance(conflict, dict) else {}
         ),
     }
-    save_map(map_path, mapping)
+    save_map(map_path, mapping, clear_tickets=clear_tickets)
 
 
 def ledger_stats(path):
@@ -1123,6 +1191,13 @@ def ensure_projects(key, factory_dir, mapping, map_path, dry):
                     "mapped_project_foreign_team",
                     [project],
                 )
+            if identities.get(project["id"]) != {initiative_id}:
+                raise ProjectIdentityError(
+                    f"{initiative_id}: mapped Linear Project marker is invalid",
+                    initiative_id,
+                    "mapped_project_marker_invalid",
+                    [project],
+                )
             if (
                 any(item.get("id") != project.get("id") for item in same_name)
                 or durable_matches
@@ -1259,7 +1334,8 @@ def fetch_issue(key, issue_id):
         key,
         """query($id: String!) { issue(id: $id) {
              id identifier title description priority updatedAt
-             state { id name } project { id } labels { nodes { id name } }
+             state { id name type } team { id } project { id }
+             labels { nodes { id name } }
              assignee { id }
              comments(last: 100) {
                nodes { id body createdAt updatedAt user { id name } }
@@ -1337,7 +1413,7 @@ def factory_issue_index(key, team_id):
             """query($id: String!, $after: String) { team(id: $id) {
                  issues(first: 100, after: $after) {
                    nodes { id identifier title description priority updatedAt
-                           state { id name type } project { id }
+                           state { id name type } team { id } project { id }
                            labels { nodes { id name } } assignee { id }
                            comments(last: 1) {
                              nodes { id createdAt updatedAt }
@@ -1358,6 +1434,130 @@ def factory_issue_index(key, team_id):
         after = page["pageInfo"].get("endCursor")
         if not after:
             raise RuntimeError("Linear issue history is incomplete")
+
+
+def factory_issue_candidates(key, team_id, title):
+    page = gql(
+        key,
+        """query($id: String!, $title: String!) { team(id: $id) {
+             issues(first: 3, filter: { title: { eq: $title } }) {
+               nodes { id identifier title description priority updatedAt
+                       state { id name type } team { id } project { id }
+                       labels { nodes { id name } } assignee { id }
+                       comments(last: 1) {
+                         nodes { id createdAt updatedAt }
+                       } }
+               pageInfo { hasNextPage }
+             }
+           } }""",
+        {"id": team_id, "title": title},
+    )["team"]["issues"]
+    if (
+        not isinstance(page, dict)
+        or not isinstance(page.get("nodes"), list)
+        or not isinstance(page.get("pageInfo"), dict)
+        or page["pageInfo"].get("hasNextPage") is not False
+    ):
+        raise RuntimeError("Linear exact-title candidate query is incomplete")
+    return [
+        issue for issue in page.get("nodes", [])
+        if issue.get("title") == title
+        and (issue.get("description") or "").startswith(BANNER)
+        and issue.get("state", {}).get("type") != "canceled"
+    ]
+
+
+def create_intent(ticket, team_id, project_id, status, issue=None):
+    value = {
+        "project_id": project_id,
+        "schema": LINEAR_CREATE_INTENT_SCHEMA,
+        "status": status,
+        "team_id": team_id,
+        "title_sha256": hashlib.sha256(ticket["title"].encode()).hexdigest(),
+    }
+    if status == "identified":
+        value.update({
+            "identifier": issue.get("identifier") if isinstance(issue, dict) else None,
+            "issue_id": issue.get("id") if isinstance(issue, dict) else None,
+        })
+    return value
+
+
+def validate_create_intent(value, ticket, team_id, project_id):
+    if not isinstance(value, dict):
+        raise RuntimeError(f"{ticket['id']}: Linear create intent is invalid")
+    status = value.get("status")
+    expected_keys = {"project_id", "schema", "status", "team_id", "title_sha256"}
+    if status == "identified":
+        expected_keys.update(("identifier", "issue_id"))
+    expected = create_intent(ticket, team_id, project_id, status)
+    if (
+        status not in {"uncertain", "identified"}
+        or set(value) != expected_keys
+        or value.get("schema") != LINEAR_CREATE_INTENT_SCHEMA
+        or not isinstance(team_id, str)
+        or not re.fullmatch(r"[A-Za-z0-9_-]{1,200}", team_id)
+        or (
+            project_id is not None
+            and (
+                not isinstance(project_id, str)
+                or not re.fullmatch(r"[A-Za-z0-9_-]{1,200}", project_id)
+            )
+        )
+        or value.get("team_id") != expected["team_id"]
+        or value.get("project_id") != expected["project_id"]
+        or value.get("title_sha256") != expected["title_sha256"]
+        or (
+            status == "identified"
+            and (
+                not isinstance(value.get("issue_id"), str)
+                or not re.fullmatch(r"[A-Za-z0-9_-]{1,200}", value["issue_id"])
+                or not isinstance(value.get("identifier"), str)
+                or not re.fullmatch(r"[A-Za-z0-9-]{1,100}", value["identifier"])
+            )
+        )
+    ):
+        raise RuntimeError(f"{ticket['id']}: Linear create intent is invalid")
+    return value
+
+
+def validate_created_issue(
+    ticket, actual, team_id, project_id, issue_id=None, identifier=None,
+):
+    state = actual.get("state") if isinstance(actual, dict) else None
+    project = actual.get("project") if isinstance(actual, dict) else None
+    if (
+        not isinstance(actual, dict)
+        or not isinstance(actual.get("id"), str)
+        or not re.fullmatch(r"[A-Za-z0-9_-]{1,200}", actual["id"])
+        or not isinstance(actual.get("identifier"), str)
+        or not re.fullmatch(r"[A-Za-z0-9-]{1,100}", actual["identifier"])
+        or (issue_id is not None and actual.get("id") != issue_id)
+        or (identifier is not None and actual.get("identifier") != identifier)
+        or actual.get("title") != ticket["title"]
+        or not (actual.get("description") or "").startswith(BANNER)
+        or actual.get("team") != {"id": team_id}
+        or (
+            project != ({"id": project_id} if project_id is not None else None)
+        )
+        or not isinstance(state, dict)
+        or set(state) != {"id", "name", "type"}
+        or not isinstance(state.get("id"), str)
+        or not re.fullmatch(r"[A-Za-z0-9_-]{1,200}", state["id"])
+        or not isinstance(state.get("name"), str)
+        or not state["name"]
+        or state["name"] != state["name"].strip()
+        or len(state["name"]) > 200
+        or any(ord(character) < 32 or ord(character) == 127 for character in state["name"])
+        or state.get("type") not in {
+            kind for _name, kind in STATES.values() if kind != "canceled"
+        }
+        or normalize_state(state["name"]) == "canceled"
+    ):
+        raise RuntimeError(
+            f"{ticket['id']}: Linear did not confirm the created issue"
+        )
+    return actual
 
 
 def comment_head(issue):
@@ -1460,7 +1660,9 @@ def fetch_viewer_id(key):
         return _VIEWER_ID_CACHE[key]
     try:
         viewer_id = gql(key, "{ viewer { id } }")["viewer"]["id"]
-    except Exception as error:  # noqa: BLE001 - must never fail the sync cycle
+    except Exception as error:  # noqa: BLE001 - optional except for account quota
+        if typed_rate_limit_seconds(error) is not None:
+            raise
         log(f"could not fetch viewer id, skipping escalation assignment: {error}")
         viewer_id = None
     _VIEWER_ID_CACHE[key] = viewer_id
@@ -1871,7 +2073,11 @@ def sync_ticket_terminal(key, factory_dir, map_path, ticket_id):
 def sync_tickets(key, factory_dir, mapping, map_path, dry, only=None):
     config = mapping["_config"]
     viewer_id = fetch_viewer_id(key)
-    existing_issues, issues_by_id = factory_issue_index(key, config["team_id"])
+    existing_issues, issues_by_id = (
+        factory_issue_index(key, config["team_id"])
+        if only is None else ({}, {})
+    )
+    clear_tickets = None if only is None else ()
     stats = ledger_stats(effective_ledger(factory_dir, dry))
     project_ids = {
         initiative_id: entry.get("project_id")
@@ -1922,7 +2128,7 @@ def sync_tickets(key, factory_dir, mapping, map_path, dry, only=None):
                 actual = fetch_recent_comments(key, actual, entry, dry)
             if not entry.get("identifier") and actual.get("identifier") and not dry:
                 entry["identifier"] = actual["identifier"]
-                save_map(map_path, mapping)
+                save_map(map_path, mapping, clear_tickets=clear_tickets)
             if entry.get("operator_fields_initialized"):
                 ticket = ingest_operator_fields(
                     key, ticket, actual, mapping, entry, dry
@@ -1934,15 +2140,44 @@ def sync_tickets(key, factory_dir, mapping, map_path, dry, only=None):
             project_id = project_ids.get(ticket["initiative"])
             desired_state_id = config["states"].get(ticket["state"])
         else:
-            candidates = existing_issues.get(ticket["title"], [])
-            if len(candidates) > 1:
-                raise RuntimeError(
-                    f"{ticket['id']}: multiple active Factory issues require reconciliation"
+            pending = entry.get("pending_issue_create")
+            if pending is not None:
+                pending = validate_create_intent(
+                    pending, ticket, config["team_id"], project_id,
                 )
-            actual = (
-                fetch_recent_comments(key, candidates[0], entry, dry)
-                if candidates else None
-            )
+            if pending and pending["status"] == "identified":
+                actual = validate_created_issue(
+                    ticket,
+                    fetch_issue(key, pending["issue_id"]),
+                    config["team_id"],
+                    project_id,
+                    pending["issue_id"],
+                    pending["identifier"],
+                )
+            else:
+                candidates = (
+                    existing_issues.get(ticket["title"], [])
+                    if only is None else factory_issue_candidates(
+                        key, config["team_id"], ticket["title"]
+                    )
+                )
+                if len(candidates) > 1:
+                    raise RuntimeError(
+                        f"{ticket['id']}: multiple active Factory issues require reconciliation"
+                    )
+                actual = (
+                    fetch_recent_comments(key, candidates[0], entry, dry)
+                    if candidates else None
+                )
+                if actual is not None:
+                    actual = validate_created_issue(
+                        ticket, actual, config["team_id"], project_id,
+                    )
+                if pending and actual is None:
+                    raise RuntimeError(
+                        f"{ticket['id']}: Linear create outcome is uncertain; "
+                        "exact adoption is required"
+                    )
             if actual is not None:
                 entry.update({
                     "issue_id": actual["id"],
@@ -1950,13 +2185,14 @@ def sync_tickets(key, factory_dir, mapping, map_path, dry, only=None):
                     "operator_fields_initialized": True,
                     "source_ref": source_ref,
                 })
+                entry.pop("pending_issue_create", None)
                 ticket = ingest_operator_fields(
                     key, ticket, actual, mapping, entry, dry
                 )
                 project_id = project_ids.get(ticket["initiative"])
                 desired_state_id = config["states"].get(ticket["state"])
                 if not dry:
-                    save_map(map_path, mapping)
+                    save_map(map_path, mapping, clear_tickets=clear_tickets)
                     log(f"{ticket['id']}: adopted existing issue {actual['identifier']}")
         if ticket["state"] == "awaiting approval" and ticket["merge_policy"] == "auto":
             if protected_merge_policy(factory_dir, ticket["id"]) == "auto":
@@ -1970,7 +2206,15 @@ def sync_tickets(key, factory_dir, mapping, map_path, dry, only=None):
             if dry:
                 log(f"{ticket['id']}: DRY would create issue in Project {ticket['initiative'] or 'none'}")
                 continue
-            issue = gql(
+            pending = create_intent(
+                ticket, config["team_id"], project_id, "uncertain",
+            )
+            validate_create_intent(
+                pending, ticket, config["team_id"], project_id,
+            )
+            entry["pending_issue_create"] = pending
+            save_map(map_path, mapping, clear_tickets=clear_tickets)
+            result = gql(
                 key,
                 "mutation($input: IssueCreateInput!) { issueCreate(input: $input) { issue { id identifier } } }",
                 {"input": {
@@ -1982,13 +2226,41 @@ def sync_tickets(key, factory_dir, mapping, map_path, dry, only=None):
                     **({"projectId": project_id} if project_id else {}),
                     **({"labelIds": label_ids} if label_ids else {}),
                 }},
-            )["issueCreate"]["issue"]
+                retry_transient=False,
+            )
+            issue = (result.get("issueCreate") or {}).get("issue")
+            identified = create_intent(
+                ticket, config["team_id"], project_id, "identified", issue,
+            )
+            validate_create_intent(
+                identified, ticket, config["team_id"], project_id,
+            )
+            entry["pending_issue_create"] = identified
+            save_map(map_path, mapping, clear_tickets=clear_tickets)
+            actual = validate_created_issue(
+                ticket, fetch_issue(key, issue["id"]),
+                config["team_id"],
+                project_id,
+                issue["id"], issue["identifier"],
+            )
+            ingest_fallback_approval(actual, entry, dry)
+            digest, _created_at = comment_head({
+                "comments": {
+                    "nodes": (actual.get("comments") or {}).get("nodes", [])[-1:]
+                }
+            })
             entry.update({
                 "issue_id": issue["id"],
                 "identifier": issue["identifier"],
                 "operator_fields_initialized": True,
+                "linear_comment_head_sha256": digest,
+                "source_ref": source_ref,
             })
-            save_map(map_path, mapping)
+            entry.pop("pending_issue_create", None)
+            ticket = ingest_operator_fields(
+                key, ticket, actual, mapping, entry, dry
+            )
+            save_map(map_path, mapping, clear_tickets=clear_tickets)
             log(f"{ticket['id']}: created issue {issue['identifier']}")
         else:
             patch = {}
@@ -2034,14 +2306,14 @@ def sync_tickets(key, factory_dir, mapping, map_path, dry, only=None):
                     log(f"{ticket['id']}: patched {sorted(patch)}")
             if not dry and not entry.get("operator_fields_initialized"):
                 entry["operator_fields_initialized"] = True
-                save_map(map_path, mapping)
+                save_map(map_path, mapping, clear_tickets=clear_tickets)
 
         new_lines = ticket["log_lines"][entry.get("log_cursor", 0):]
         if new_lines and entry.get("issue_id"):
             post_comment(key, entry["issue_id"], "**Ticket log**\n\n" + "\n".join(new_lines), dry)
             if not dry:
                 entry["log_cursor"] = len(ticket["log_lines"])
-                save_map(map_path, mapping)
+                save_map(map_path, mapping, clear_tickets=clear_tickets)
 
         bundle = factory_dir / "tickets" / f"{ticket['id']}-bundle.md"
         bundle_text, _bundle_ref = committed_factory_file(
@@ -2067,7 +2339,7 @@ def sync_tickets(key, factory_dir, mapping, map_path, dry, only=None):
             if not dry:
                 entry["bundle_digest"] = bundle_digest
                 entry.pop("bundle_posted", None)
-                save_map(map_path, mapping)
+                save_map(map_path, mapping, clear_tickets=clear_tickets)
 
 
 def initialize_ticket(key, factory_dir, map_path, ticket_id, dry=False):
@@ -2089,14 +2361,27 @@ def initialize_ticket(key, factory_dir, map_path, ticket_id, dry=False):
         )
     sync_tickets(key, factory_dir, mapping, map_path, dry, {ticket_id})
     if not dry:
+        entry = mapping["tickets"].get(ticket_id, {})
+        observed_at = (entry.get("operator") or {}).get("observed_at")
+        if (
+            entry.get("operator_fields_initialized") is not True
+            or not entry.get("issue_id")
+            or parsed_timestamp(observed_at) is None
+        ):
+            raise RuntimeError(
+                f"{ticket_id}: selected-ticket Linear observation is incomplete"
+            )
         previous = mapping.get("_sync", {})
         selected = dict(previous.get("selected_ticket_success_at", {}))
-        selected[ticket_id] = utc_now()
+        selected[ticket_id] = observed_at
         mapping["_sync"] = {
             **previous,
             "selected_ticket_success_at": selected,
         }
-        save_map(map_path, mapping)
+        save_map(
+            map_path, mapping, clear_tickets=(),
+            consume_clear_tickets={ticket_id},
+        )
 
 
 def reconcile(key, factory_dir, mapping, map_path, setup_only=False, dry=False):
@@ -2175,13 +2460,12 @@ def main():
             else:
                 sync_ticket_operator(key, factory_dir, map_path, args.ticket, args.dry_run)
         except Exception as error:
-            try:
-                record_account_cooldown(cooldown_path, error)
-            except (OSError, RuntimeError):
-                pass
+            observe_account_cooldown(cooldown_path, error)
             if args.initialize and not args.dry_run:
                 try:
-                    record_failure(map_path, load_map(map_path), error)
+                    record_failure(
+                        map_path, load_map(map_path), error, clear_tickets=(),
+                    )
                 except OSError:
                     pass
             log(f"exact-ticket sync error: {error}")
@@ -2197,10 +2481,10 @@ def main():
                 log(f"sync error (will retry next cycle): {error}")
                 if not args.dry_run:
                     try:
-                        record_account_cooldown(cooldown_path, error)
+                        observe_account_cooldown(cooldown_path, error)
                         record_failure(map_path, mapping, error)
-                    except (OSError, RuntimeError):
-                        pass
+                    except OSError:
+                        log("Linear reconciliation failure could not be persisted")
     except Exception as error:
         log(f"sync error (will retry next cycle): {error}")
     return 0

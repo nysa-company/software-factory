@@ -9,7 +9,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Stable operating truth lives in `docs/`; prompts, templates, and evidence stay colocated with consumers.
 - Nysa Agents baseline v3 as a toolkit; `bash ci/test-all.sh` is the unconditional full command.
 - Live products resolve sealed exact-SHA releases under `~/.factory/kits` via `~/.factory/bin/factory-launch`.
-- Model routing is portfolio policy; routes pin at the ticket boundary and change only via the Contract 1.4 journal flow.
+- Model routing is portfolio policy; routes pin at the ticket boundary and change only via the Contract 1.4 journal flow. Sealed Cursor inventory verifies the exact configured CLI identity in an empty disposable owner-only home before copying credentials, then accepts only its bounded certified structure.
 - The only emergency recovery is the receipt-bound `OPERATOR RESUME` ticket commit. No generic lifecycle bypass is approved.
 - **Contract rules below in Operating contract are authoritative**; this summary is only what the session hook can inject.
 
@@ -45,7 +45,8 @@ everything the Factory actually enforces lives here.
   Project inventory instead of refetching every mapped object. It fetches full
   comment history only when the latest comment changes inside the approval
   window. HTTP 400/429 and GraphQL quota responses produce one typed bounded
-  cooldown; no Linear call is made until its persisted expiry.
+  credential-shared cooldown, including Linear's nested duration; no Linear
+  call is made until its persisted expiry.
 - Qualification pre-seal and dispatch both require every selected ticket's Git
   blob in the sealed control checkout to equal protected `origin/main`.
   Qualification-only metadata can therefore never validate one contract and
@@ -57,6 +58,12 @@ everything the Factory actually enforces lives here.
   product; a durable bootstrap reuses partial initialization without duplicate
   issues even if the source seed later changes or disappears. Takeover retains
   its canonical live-map and product-ledger behavior.
+- Selected-only Linear initialization uses one bounded exact-title query and a
+  ticket-, team-, Project-, and title-bound create intent. It persists a
+  returned issue identity before observation and never repeats an uncertain
+  create. Only the exact intended-Project issue with complete non-canceled
+  state records success and consumes the matching ticket clear; historical
+  issues and sibling clears remain untouched.
 - Qualification fallback reads the strict manifest at the receipt-bound
   protected product commit. Ordinary lanes authorize only their active Factory;
   a successor additionally authorizes its exact source Factory. A changed
@@ -70,8 +77,9 @@ everything the Factory actually enforces lives here.
   admission reports its exact ID and `initiative_missing` while healthy
   siblings continue.
 - Linear Project creation refuses missing mapped Projects, foreign-team
-  mappings, duplicate durable markers, and same-name identity conflicts;
-  Doctor exposes the canonical mapped Project IDs and URLs.
+  mappings, removed or changed mapped markers, duplicate durable markers, and
+  same-name identity conflicts; Doctor exposes the canonical mapped Project IDs
+  and URLs.
 - A contract-blocked Linear baseline is recorded once per substantive blocker.
   Exact resume directives and reconciler-authored writes do not advance it;
   accepted same-blocker decisions survive overlapping saves, while rejected
@@ -87,6 +95,11 @@ everything the Factory actually enforces lives here.
 - Production certification, activation planning, and activation reject any
   `factory/QUALIFICATION.json` before receipt or journal mutation. Sealed
   qualification continues to require its exact manifest.
+- Product CI and the local readiness classifier validate a changed committed
+  `factory/QUALIFICATION.json` with the shared parser from the exact committed
+  `KIT_PIN`. Manifest-only controls remain lightweight only behind that gate;
+  malformed, cross-mode, or cross-pin authority fails before merge instead of
+  degrading to the broad-test path.
 - Activation validates protected-main Done or lease-free Canceled truth before
   considering retained ticket refs. A stale terminal ref is left untouched for
   lane safety; genuinely nonterminal protected truth still requires the exact
@@ -4396,3 +4409,56 @@ capability. `none` requires a strict nonempty nonvisual path policy, while each
 ready ticket declares exact Builder-owned files. Qualification compares those
 files with the certified policy before publishing lane state; missing,
 ambiguous, broad, or visual/deployable work fails before claims or provider use.
+
+## 2026-08-08 — Decision 327: Cursor inventory parses one certified structure
+
+Category: Security
+
+The sealed model inventory first matches the exact configured Cursor CLI
+identity in an empty disposable owner-only home before copying credentials,
+then accepts only its bounded `Available models` header, unique selection-ID
+rows with optional safe display labels and known current/default markers, and
+exact usage footer. It returns sorted selection IDs. Unknown, malformed,
+oversized, duplicate, or secret-like output fails closed; captures must remain
+owner-only and unchanged across their bounded read. Source session files remain
+immutable and every disposable probe home is removed after success or failure.
+
+## 2026-08-08 — Decision 328: Linear admission is exact and account-aware
+
+Category: Reliability
+
+Selected-ticket initialization uses a bounded exact-title lookup and confirms
+the exact created or adopted issue before persisting an operator observation
+and selected success. A matching one-use clear is consumed only for that ticket;
+sibling issues, clears, and historical inventory remain untouched. Project
+identity drift, including a removed or changed mapped marker, refuses with
+typed candidate evidence before creation. HTTP 400/429 and GraphQL quota
+responses share one bounded structural parser and one owner-only
+credential-identity cooldown; every entry point stops before further API calls
+until expiry.
+
+## 2026-08-08 — Decision 329: Qualification authority is checked before merge
+
+Category: Reliability
+
+Product CI checks out the exact committed Factory pin into an absent reserved
+path with a read-only token
+only when `factory/QUALIFICATION.json` is added or changed, disables persisted
+checkout credentials, and invokes that release's shared strict parser over
+committed product blobs. The copied local classifier invokes the same parser
+from the installed exact-pin release and preserves validator refusal as a hard
+readiness failure. Manifest-only changes avoid broad application
+tests only behind this mandatory check; malformed, cross-mode, or cross-pin
+authority is rejected before protected main moves.
+
+## 2026-08-08 — Decision 330: Linear create outcomes are never guessed
+
+Category: Reliability
+
+Selected-ticket initialization persists a bound uncertain intent before a
+Linear create and the returned issue identity before observation. A restart
+fetches that identity or adopts one exact visible Factory issue; it never
+repeats an uncertain mutation, including inside the GraphQL transport helper.
+Operator evidence and selected success become durable only with the exact
+intended-Project issue and its complete non-canceled state, while a post-map clear interruption
+retries the same matching one-use clear without touching siblings.

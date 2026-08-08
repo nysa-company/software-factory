@@ -101,6 +101,10 @@ mapping = json.loads(mapping_path.read_text())
 entry = mapping['tickets'].setdefault(args.ticket, {})
 entry.setdefault('issue_id', 'issue-' + args.ticket)
 entry.setdefault('identifier', 'SF-' + args.ticket.split('-')[1])
+entry['operator_fields_initialized'] = True
+entry['operator'] = {
+    'observed_at': '2026-08-07T00:00:00+00:00', 'priority': 'none',
+}
 selected = mapping['_sync'].setdefault('selected_ticket_success_at', {})
 selected[args.ticket] = '2026-08-07T00:00:00+00:00'
 mapping_path.write_text(json.dumps(mapping, sort_keys=True) + '\\n')
@@ -738,7 +742,14 @@ ledger.chmod(0o600)
         ENVIRONMENT.write(mapping, {
             "_config": {}, "_sync": {}, "initiatives": {},
             "tickets": {
-                ticket: {"operator_fields_initialized": True, "issue_id": ticket}
+                ticket: {
+                    "operator_fields_initialized": True,
+                    "issue_id": ticket,
+                    "operator": {
+                        "observed_at": "2026-08-07T00:00:00+00:00",
+                        "priority": "none",
+                    },
+                }
                 for ticket in ("T-101", "T-102", "T-103")
             },
         })

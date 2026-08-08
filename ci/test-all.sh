@@ -71,7 +71,14 @@ if [[ $# -gt 0 ]]; then
       [[ $# -ge 2 && $# -le 3 ]] || { echo "usage: ci/test-all.sh [--shard factory|hermes|release | --changed|--shadow-changed|--changed-or-defer BASE [HEAD]]" >&2; exit 2; }
       CHANGE_BASE="$2"
       CHANGE_HEAD="${3:-HEAD}"
-      SELECTION="$(bash "$ROOT/ci/changed-test-suites.sh" "$CHANGE_BASE" "$CHANGE_HEAD")" || SELECTION="full|selector failed|"
+      SELECTION_STATUS=0
+      SELECTION="$(bash "$ROOT/ci/changed-test-suites.sh" "$CHANGE_BASE" "$CHANGE_HEAD")" || SELECTION_STATUS=$?
+      if [[ "$SELECTION_STATUS" -ge 2 ]]; then
+        echo "CI selection refused" >&2
+        exit "$SELECTION_STATUS"
+      elif [[ "$SELECTION_STATUS" -ne 0 ]]; then
+        SELECTION="full|selector failed|"
+      fi
       IFS='|' read -r PLANNED_MODE REASON SELECTED <<EOF
 $SELECTION
 EOF

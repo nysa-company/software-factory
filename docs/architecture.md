@@ -89,6 +89,18 @@ calculates the same recommendation but executes the full registry.
 suites because repository, secret, artifact, and immutability gates remain
 separate required checks.
 
+Product CI treats an exact `factory/QUALIFICATION.json`-only change as a
+lightweight control change only after a separate mandatory gate checks its
+committed blob. The gate reads the exact committed `factory/KIT_PIN`, checks
+out that private Factory revision with non-persisted read-only credentials,
+and invokes the release's shared strict qualification-manifest parser. Local
+readiness invokes that same parser through the copied lightweight classifier
+from the installed exact-pin release; validator refusal is distinct from the
+ordinary broad-test classification.
+Unrelated diffs do not fetch the Factory or parse qualification state; any
+present malformed or cross-pin manifest fails before product merge without
+running a broad application suite.
+
 Selection fails closed to full for invalid or empty comparisons, additions,
 deletions, renames, unknown or shared paths, multiple components, dependencies,
 contracts, launchers, roles, CI or selector changes, malformed modes, and empty,
@@ -205,6 +217,14 @@ Calibrate a route only after its task-free identity/readiness probe, adapter
 contract, and conformance smokes pass. Cursor readiness runs in a disposable
 owner-only home populated from validated owner-only source files; Cursor never
 receives the source home, and the disposable home is removed after the probe.
+The sealed Cursor inventory uses that same disposable-home boundary and first
+requires the exact configured CLI identity in an empty disposable home, before
+copying credentials. Captured output is owner-only and accepted only after a
+stable bounded read. It accepts only the certified `Available
+models` envelope, known current/default flags, bounded safe display labels, and
+unique selection IDs, returning the IDs rather than terminal presentation
+text. Unknown structure, malformed or oversized output, and secret-like values
+fail closed without exposing the captured bytes.
 Cursor output is redacted while streaming; the redacted `.out` artifact
 remains local and ignored, while the manifest and ledger carry durable
 provenance. Mutating Factory Cursor roles stay in the default agent execution
@@ -417,9 +437,11 @@ the lease before provider or publication work.
 Linear reconciliation retries transient server responses and quota responses
 reported as HTTP `400`/`429` or GraphQL errors at most twice. Short retry
 delays are clamped to 0 through 30 seconds. Exhaustion persists one typed
-cooldown of at most one hour, and every scheduled or exact-ticket entry point
-makes zero Linear calls until it expires. Other semantic GraphQL errors remain
-fail-closed for the next reconciliation cycle.
+cooldown of at most one hour, deriving Linear's nested millisecond duration
+when present. The canonical owner-only record is keyed by credential identity,
+and every scheduled or exact-ticket entry point makes zero Linear calls until
+it expires. Other semantic GraphQL errors remain fail-closed for the next
+reconciliation cycle.
 Description projection compares a narrow canonical Markdown form that covers
 Linear's ordered-list indentation, continuation, renumbering, inline-code, and
 fence-boundary round trips. Nested-list structure, fenced content, and unknown
@@ -441,10 +463,10 @@ cohort. A null operator initiative remains authoritative, but if it removes a
 Ready ticket's effective initiative, admission emits a named
 `initiative_missing` refusal while eligible siblings continue. Linear Project
 reconciliation adopts one exact durable initiative marker and refuses missing
-mapped Projects, foreign-team mappings, duplicate markers, and same-name
-identity conflicts before creating or updating anything. Doctor lists the
-canonical mapped Project IDs and URLs; reconciliation failures remain visible
-in its Linear health output.
+mapped Projects, changed or removed mapped markers, foreign-team mappings,
+duplicate markers, and same-name identity conflicts before creating or updating
+anything. Doctor lists the canonical mapped Project IDs and URLs;
+reconciliation failures remain visible in its Linear health output.
 Planner preflight validates the complete pinned route contract without
 repeating machine probes; the role runner re-verifies only its selected route
 immediately before provider admission.
@@ -523,9 +545,18 @@ exports them on every qualification command. Preparation rechecks the product
 worktree after initialization and publishes no usable environment if it is
 dirty. An owner-only bootstrap receipt lets a retry reuse a partially
 initialized lane map even if the original seed later changes or disappears,
-so exact-ticket adoption cannot create duplicates. Historical tickets are not
-reconciled. Production-successor takeover continues to bind the canonical live
-map instead of copying it.
+so exact-ticket adoption cannot create duplicates. Initial create or adoption
+uses one bounded exact-title query. Before creation it records a ticket-, team-,
+Project-, and title-bound uncertain intent; a returned ID is persisted before
+observation. Restart therefore fetches that exact ID or waits to adopt one exact
+Factory issue in the intended Project and never repeats an uncertain create.
+Confirmation requires its complete canonical non-canceled state. Only that
+exact observed issue clears the intent and records selected-ticket success. A matching
+one-use clear is consumed for that ticket only; sibling issues and clears are
+not read or changed. The create mutation itself never retries an ambiguous
+transport or quota response. Historical tickets are not reconciled.
+Production-successor takeover continues to bind the canonical live map instead
+of copying it.
 
 After a successful Reviewer publication commit, passport migration precedes
 cell parking so the expected validating-head change remains a waiting boundary.

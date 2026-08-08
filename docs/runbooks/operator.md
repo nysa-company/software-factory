@@ -196,11 +196,17 @@ Use only the selected release through the sealed launcher:
 ~/.factory/bin/factory-launch <project> models fallback --ticket T-123 --failed-run <run-id> --workdir /absolute/ticket-worktree --reason credits_exhausted --json
 ```
 
-Use the sealed `models inventory` command for Cursor model discovery. It copies
-owner-only credentials into a disposable owner-only home, removes that copy on
-exit, and never writes the source `~/.cursor` files. Do not run ambient
-`agent models` or `agent status` while another lane is active because those
-commands may rewrite shared Cursor configuration permissions.
+Use the sealed `models inventory` command for Cursor model discovery. It first
+requires the exact configured CLI identity in an empty disposable owner-only
+home, then copies owner-only credentials into that home, removes the copy on
+exit, and never writes the source `~/.cursor` files. Owner-only capture files
+are accepted only after stable bounded reads. The command returns exact
+selection IDs from the certified `Available models` response; headers, display
+labels, current/default markers, and the usage footer are presentation only. An
+unknown response shape fails closed—do not parse it manually against the ambient
+account. Do not run ambient `agent models` or `agent status` while another lane
+is active because
+those commands may rewrite shared Cursor configuration permissions.
 
 `models plan --json` previews the active profile, or default
 `cursor-opus-v1` when none is active. Activation accepts only the exact

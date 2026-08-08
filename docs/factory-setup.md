@@ -37,7 +37,18 @@ Read [architecture.md](architecture.md) first. It defines the kit/product bounda
   silently using the legacy provider lock. Older contracts and capacity one
   retain the serialized path. An API route may use isolated parallel admission
   only after exact Contract 1.6 owner activation.
-- Copy exactly three CI files (GitHub requires workflows and helpers to live in the repo they run on): `ci/test-immutability-check.sh` and `ci/lightweight-change.sh` → `.github/scripts/`, and `ci/github-actions-ci.template.yml` → `.github/workflows/ci.yml`. Set `TEST_PATHS` from `PROJECT.env` and review the helper's narrow inert-metadata allowlist for the product. Existing product repositories must receive template updates explicitly; kit updates do not rewrite instantiated CI.
+- Copy exactly three CI files (GitHub requires workflows and helpers to live in the repo they run on): `ci/test-immutability-check.sh` and `ci/lightweight-change.sh` → `.github/scripts/`, and `ci/github-actions-ci.template.yml` → `.github/workflows/ci.yml`. Set `TEST_PATHS` from `PROJECT.env` and review the helper's narrow inert-metadata allowlist for the product. Give the workflow one read-only fine-grained `FACTORY_REPOSITORY_TOKEN` for `nysa-company/software-factory`; it is consulted only when the committed diff adds or changes `factory/QUALIFICATION.json`. That path checks out the exact committed `KIT_PIN` with persisted Git credentials disabled and runs its shared manifest parser before merge. Existing product repositories must receive template updates explicitly; kit updates do not rewrite instantiated CI.
+- The copied local readiness classifier invokes the same parser from the
+  installed exact-pin release and committed product blobs; it does not validate
+  dirty checkout bytes:
+
+  ```bash
+  bash .github/scripts/lightweight-change.sh origin/main HEAD
+  ```
+
+  Exit `0` means inert metadata, exit `1` requires broad product tests, and exit
+  `2` is a hard readiness refusal. A present changed manifest must strictly
+  match the committed pin before either test classification is returned.
 - Write `factory/ENVELOPE.env` from the filled `ENVELOPE.md` — plain `KEY=value` lines for `PER_RUN_BUDGET_USD`, `PER_TICKET_BUDGET_USD`, `PER_RUN_MAX_TURNS`, `PER_RUN_TIMEOUT_MIN`, `DAILY_CAP_USD`. Optional `<ROLE>_PER_RUN_BUDGET_USD`, `<ROLE>_PER_RUN_MAX_TURNS`, and `<ROLE>_PER_RUN_TIMEOUT_MIN` keys override one role's attempt limits; normalize role hyphens to underscores, and omit a key to inherit its default. Money values are capped at $1,000,000 with six decimal places, turns at 1,000, and timeout at 1,440 minutes. The validator checks the two files agree. `ENVELOPE.env` and `~/.factory/global.env` are parsed as whitelisted data and must never contain shell commands or expansions.
 - Cursor interprets the selected timeout as a soft inactivity window and keeps
   a nonextendable hard limit at twice that duration. Only normalized structured
@@ -78,9 +89,15 @@ preparation requires `--operator-map-seed <absolute-owner-only-linear-map.json>`
 absent, ambiguous, unsafe, malformed, or contains secret-bearing fields. It
 copies the validated seed into owner-only qualification authority, where the
 mutable map, locks, clear intents, and runtime ledger remain outside the sealed
-product checkout. A Linear
-rate limit is persisted as `linear_rate_limited retry_after_seconds=N` and
-keeps provider admission closed until a later successful reconciliation.
+product checkout. Each selected initialization records a bounded create intent
+before mutation, persists a returned issue identity before observation, and
+never repeats an uncertain create. It confirms the exact intended Project and
+complete non-canceled state before persisting the issue's operator observation,
+consumes only its matching one-use clear, and does not inventory historical
+issues. A Linear rate limit is
+persisted canonically as `linear_rate_limited retry_after_seconds=N`, shared by
+credential identity, and keeps provider admission closed without API calls
+until expiry.
 
 ## Step 5 — Hermes release boundary
 

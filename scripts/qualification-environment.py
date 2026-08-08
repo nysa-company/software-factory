@@ -1112,6 +1112,9 @@ def initialize_selected_linear(
         if (
             not isinstance(entry, dict)
             or not entry.get("issue_id")
+            or entry.get("operator_fields_initialized") is not True
+            or not isinstance(entry.get("operator"), dict)
+            or not isinstance(entry["operator"].get("observed_at"), str)
             or not isinstance(initialized, dict)
             or not isinstance(initialized.get(ticket), str)
         ):
