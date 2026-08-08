@@ -380,6 +380,8 @@ class Controller:
             "FACTORY_QUALIFICATION_FALLBACK_READINESS_SHA256", ""
         )
         self.admission_refusals: dict[str, dict[str, str]] = {}
+        self.invalid_transition_tickets: set[str] = set()
+        self.prior_transition_tickets: set[str] = set()
         self.fallback_lock = Lock()
         # ponytail: cells share one Git common directory; use per-cell refs only if refresh throughput matters.
         self.git_lock = Lock()
@@ -536,31 +538,92 @@ class Controller:
             raise ControllerError("operator passport identity is invalid")
         return value
 
-    def operator_transition(
-        self, claim: dict[str, Any],
+    def transition_receipt(
+        self, claim: dict[str, Any], *, allow_prior: bool = False,
     ) -> dict[str, Any] | None:
         path = self.state / f"{claim['ticket']}.json"
         if not path.exists() and not path.is_symlink():
             return None
-        value = read(path)
+        try:
+            value = read(path)
+        except (
+            ControllerError, json.JSONDecodeError, OSError, UnicodeError,
+        ):
+            self.invalid_transition_tickets.add(claim["ticket"])
+            self.event_once(
+                "transition_receipt_invalid", claim["ticket"],
+                reason_code="receipt_unreadable",
+            )
+            return None
         digest = value.get("receipt_sha256", "")
         immutable = {
             key: item for key, item in value.items()
             if key not in {"consumed", "consumed_at_epoch", "receipt_sha256"}
         }
+        if (
+            not isinstance(digest, str)
+            or DIGEST.fullmatch(digest) is None
+            or digest != hashlib.sha256(canonical(immutable).encode()).hexdigest()
+        ):
+            self.invalid_transition_tickets.add(claim["ticket"])
+            self.event_once(
+                "transition_receipt_invalid", claim["ticket"],
+                reason_code="receipt_digest_invalid",
+            )
+            return None
+        factory_sha = value.get("factory_sha", "")
         if any((
             value.get("schema")
             != "nysa.software-factory.transition-receipt/v1",
-            digest != hashlib.sha256(canonical(immutable).encode()).hexdigest(),
             value.get("ticket") != claim["ticket"],
             value.get("branch") != claim["branch"],
-            value.get("factory_sha") != self.release_path.name,
+            not isinstance(factory_sha, str) or SHA.fullmatch(factory_sha) is None,
             value.get("project") != self.project,
             value.get("contract_version") != "1.8.0",
             not isinstance(value.get("consumed"), bool),
         )):
-            raise ControllerError("operator transition evidence is invalid")
+            self.invalid_transition_tickets.add(claim["ticket"])
+            self.event_once(
+                "transition_receipt_invalid", claim["ticket"],
+                reason_code="receipt_identity_invalid",
+            )
+            return None
+        if factory_sha != self.release_path.name:
+            self.prior_transition_tickets.add(claim["ticket"])
+            self.event_once(
+                "prior_kit_transition_receipt_observed", claim["ticket"],
+                active_factory_sha=self.release_path.name,
+                receipt_factory_sha=factory_sha,
+                transition_receipt_sha256=digest,
+            )
+            return value if allow_prior else None
         return value
+
+    def operator_transition(
+        self, claim: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        return self.transition_receipt(claim)
+
+    def quarantine_invalid_transition_claims(
+        self, claims: list[dict[str, Any]],
+    ) -> None:
+        for claim in claims:
+            if (
+                claim["ticket"] in self.invalid_transition_tickets
+                and DIGEST.fullmatch(claim.get("lease", ""))
+                and claim.get("lease_released") is not True
+                and not self.role_active(claim)
+            ):
+                try:
+                    self.release_ticket_lease(claim)
+                except (
+                    ControllerError, json.JSONDecodeError, OSError,
+                    subprocess.SubprocessError, UnicodeError,
+                ):
+                    self.event_once(
+                        "transition_receipt_quarantine_waiting",
+                        claim["ticket"], reason_code="lease_release_refused",
+                    )
 
     def dependency_publication_replay_transition(
         self, claim: dict[str, Any],
@@ -573,8 +636,10 @@ class Controller:
         try:
             if not stat.S_ISREG(refresh_path.lstat().st_mode):
                 return None
-            candidate = read(self.state / f"{claim['ticket']}.json")
+            candidate = self.operator_transition(claim)
         except (ControllerError, OSError, json.JSONDecodeError, UnicodeError):
+            return None
+        if candidate is None:
             return None
         stage = candidate.get("stage", "")
         if not (
@@ -2045,11 +2110,17 @@ class Controller:
             ):
                 raise ControllerError("qualification fallback readiness drifted")
         excluded = sorted(
+            self.invalid_transition_tickets | self.prior_transition_tickets | {
             item["ticket"]
             for item in claims if not self.consumes_capacity(item)
+            }
         )
         while len(
-            [item for item in claims if self.consumes_capacity(item)]
+            [
+                item for item in claims
+                if self.consumes_capacity(item)
+                and item["ticket"] not in self.invalid_transition_tickets
+            ]
         ) + reserved_capacity < self.capacity:
             arguments = ["dispatch-plan", "--claim"]
             for ticket in excluded:
@@ -4353,7 +4424,10 @@ class Controller:
         concurrent: bool = False,
     ) -> None:
         def recover(claim: dict[str, Any]) -> None:
-            if self.role_active(claim):
+            if (
+                self.role_active(claim)
+                or claim["ticket"] in self.invalid_transition_tickets
+            ):
                 return
             before_lease = claim.get("lease", "")
             before_released = claim.get("lease_released") is True
@@ -4491,7 +4565,9 @@ class Controller:
                 or receipt_path.is_symlink()
             ):
                 continue
-            receipt = read(receipt_path)
+            receipt = self.operator_transition(claim)
+            if receipt is None:
+                continue
             if (
                 receipt.get("schema")
                 != "nysa.software-factory.transition-receipt/v1"
@@ -5037,7 +5113,9 @@ class Controller:
         passport_path = self.state / "passports" / f"{claim['ticket']}.json"
         if not receipt_path.exists() or not passport_path.exists():
             return False
-        receipt = read(receipt_path)
+        receipt = self.transition_receipt(claim, allow_prior=True)
+        if receipt is None:
+            return False
         passport = read(passport_path)
         receipt_digest = receipt.get("receipt_sha256", "")
         role = receipt.get("role", "")
@@ -7122,6 +7200,8 @@ class Controller:
 
     def reconcile(self) -> dict[str, Any]:
         self.admission_refusals = {}
+        self.invalid_transition_tickets.clear()
+        self.prior_transition_tickets.clear()
         existing = self.load_claims()
         protected_main = self.cancellation_authority(existing)
         if self.qualification:
@@ -7139,11 +7219,17 @@ class Controller:
             self.ensure_lease(claim, "terminal-cleanup")
             self.release(claim)
         existing = [claim for claim in existing if claim not in completed]
+        for claim in existing:
+            self.operator_transition(claim)
+        self.quarantine_invalid_transition_claims(existing)
         self.release_inactive_ticket_leases(existing)
         self.recover_operator_action_events(existing)
         self.record_qualification_done_targets()
         self.recover_missing_passport_claims(existing)
-        self.recover_terminal_requests(existing)
+        self.recover_terminal_requests([
+            claim for claim in existing
+            if claim["ticket"] not in self.invalid_transition_tickets
+        ])
         self.recover_each(
             existing, self.recover_interrupted_claims, "interrupted-reconciliation",
         )
@@ -7151,11 +7237,17 @@ class Controller:
             existing, self.recover_missing_terminals, "missing-terminal",
         )
         self.recover_each(
-            existing, self.recover_passportless_route_migrations,
+            [
+                claim for claim in existing
+                if claim["ticket"] not in self.prior_transition_tickets
+            ], self.recover_passportless_route_migrations,
             "passportless-route-migration",
         )
         self.recover_each(
-            existing, self.recover_preflight_blocks, "preflight-retry",
+            [
+                claim for claim in existing
+                if claim["ticket"] not in self.prior_transition_tickets
+            ], self.recover_preflight_blocks, "preflight-retry",
             concurrent=True,
         )
         self.recover_each(
@@ -7170,7 +7262,12 @@ class Controller:
         )
         self.event(
             "controller_started", recovered_tickets=sorted(
-                item["ticket"] for item in existing if self.runnable(item)
+                item["ticket"] for item in existing
+                if self.runnable(item)
+                and item["ticket"] not in (
+                    self.invalid_transition_tickets
+                    | self.prior_transition_tickets
+                )
             ),
         )
         try:
@@ -7184,7 +7281,12 @@ class Controller:
             and not self.qualification_marker("qualification-restart-boundary")
         ):
             active = sorted(
-                item["ticket"] for item in claims if self.runnable(item)
+                item["ticket"] for item in claims
+                if self.runnable(item)
+                and item["ticket"] not in (
+                    self.invalid_transition_tickets
+                    | self.prior_transition_tickets
+                )
             )
             accounted = sorted({item["ticket"] for item in claims} | {
                 ticket for ticket in self.qualification["tickets"]
@@ -7242,12 +7344,21 @@ class Controller:
             capacity_slots = max(
                 0,
                 self.capacity
-                - sum(self.consumes_capacity(claim) for claim in all_claims)
+                - sum(
+                    self.consumes_capacity(claim)
+                    for claim in all_claims
+                    if claim["ticket"] not in self.invalid_transition_tickets
+                )
                 - reserved_live,
             )
             for claim in sorted(
                 candidates, key=lambda item: not self.consumes_capacity(item)
             ):
+                if claim["ticket"] in (
+                    self.invalid_transition_tickets
+                    | self.prior_transition_tickets
+                ):
+                    continue
                 if available <= 0:
                     break
                 if not self.consumes_capacity(claim):
@@ -7274,6 +7385,7 @@ class Controller:
                     claim for claim in claims
                     if claim["ticket"] not in busy
                     and claim["ticket"] not in settled
+                    and claim["ticket"] not in self.invalid_transition_tickets
                     and time.monotonic() >= retry_after.get(claim["ticket"], 0)
                     and not self.role_active(claim)
                 ]
@@ -7304,11 +7416,17 @@ class Controller:
                     idle, self.recover_missing_terminals, "missing-terminal",
                 )
                 self.recover_each(
-                    idle, self.recover_passportless_route_migrations,
+                    [
+                        claim for claim in idle
+                        if claim["ticket"] not in self.prior_transition_tickets
+                    ], self.recover_passportless_route_migrations,
                     "passportless-route-migration",
                 )
                 self.recover_each(
-                    idle, self.recover_preflight_blocks, "preflight-retry",
+                    [
+                        claim for claim in idle
+                        if claim["ticket"] not in self.prior_transition_tickets
+                    ], self.recover_preflight_blocks, "preflight-retry",
                     concurrent=True,
                 )
                 self.recover_each(
@@ -7326,6 +7444,7 @@ class Controller:
                 ready = [
                     claim for claim in idle
                     if self.runnable(claim)
+                    and claim["ticket"] not in self.prior_transition_tickets
                     and self.route_path(claim).exists()
                 ]
                 submit_ready(ready, claims)
@@ -7347,6 +7466,8 @@ class Controller:
                     claim for claim in claims
                     if claim["ticket"] not in busy
                     and claim["ticket"] not in settled
+                    and claim["ticket"] not in self.invalid_transition_tickets
+                    and claim["ticket"] not in self.prior_transition_tickets
                     and time.monotonic() >= retry_after.get(claim["ticket"], 0)
                     and not self.role_active(claim)
                     and self.runnable(claim)

@@ -102,6 +102,14 @@ everything the Factory actually enforces lives here.
   structurally valid `resume_*` reason remains a visible warning without a
   duplicated allowlist; malformed or tampered controller evidence remains an
   error and cannot erase valid incident-type distinctions.
+- Transition-receipt cache reads authenticate digest and stable identity before
+  checking release lineage. Only current-release evidence is returned as
+  ordinary authority; prior-kit or invalid evidence is isolated to one ticket,
+  emitted once, and surfaced by Doctor without stopping siblings. Inactive
+  invalid claims release retained leases, live roles remain untouched, and
+  authenticated prior evidence stays available only to existing typed
+  cross-release recovery. Historical receipts remain immutable, and terminal
+  claims retire before the cache is inspected.
 - An active contract repair with no owner success may follow one exact
   authenticated forward passport migration after an operator preflight fix.
   The old signed record is archived, the active record is rebound without
@@ -4384,6 +4392,10 @@ arbitrary command hook, GitHub credential, or provider credential enters this
 boundary, so delivery remains an external operator concern and production and
 qualification retain disjoint state.
 
+Authenticated action context is type-checked before regex classification;
+malformed required or optional fields produce the watcher's typed nonzero
+error rather than an interpreter traceback.
+
 The controller also repairs the narrow durable-state/event publication crash
 window at startup. It inventories canonical events once and backfills exact
 missing actions only from current-release claims plus authenticated transition,
@@ -4556,3 +4568,14 @@ is idempotent, while changed authenticated input, outcome, or release restores
 the original recovery selector and starts a new count.
 Inactive blocked, waiting, and budget leases are normalized at entry and after
 role drain without touching active roles or sibling claims.
+
+## 2026-08-08 — Decision 336: Prior-kit transition caches are inert
+
+Category: Reliability
+
+The controller never re-stamps a historical transition receipt. It validates
+the receipt first, returns ordinary authority only for the active Factory, and
+records one ticket-scoped prior-kit or invalid-receipt event otherwise. Invalid
+inactive leases are released; live roles and typed cross-release recovery keep
+their stricter boundaries. Terminal claims retire before inspection, Doctor
+shows unresolved incidents, and unaffected siblings continue reconciling.

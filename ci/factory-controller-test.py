@@ -185,14 +185,15 @@ class FactoryControllerTest(unittest.TestCase):
 
     def operator_transition(
         self, ticket: str, stage: str, role: str | None = None,
-        consumed: bool = False,
+        consumed: bool = False, factory_sha: str | None = None,
+        head_sha: str | None = None,
     ) -> str:
         value = {
             "branch": f"ticket/{ticket}",
             "consumed": consumed,
             "contract_version": "1.8.0",
-            "factory_sha": self.release.name,
-            "head_sha": "b" * 40,
+            "factory_sha": factory_sha or self.release.name,
+            "head_sha": head_sha or "b" * 40,
             "project": "relay",
             "role": role,
             "schema": "nysa.software-factory.transition-receipt/v1",
@@ -399,6 +400,301 @@ class FactoryControllerTest(unittest.TestCase):
             ["passport_sha256"],
             role_passport,
         )
+
+    def test_multi_kit_receipts_leave_terminal_inert_and_sibling_runnable(
+        self,
+    ) -> None:
+        controller = CONTROL.Controller(self.args)
+        controller.capacity = 1
+        claims = []
+        for ticket, release in (("T-110", "b" * 40), ("T-111", "c" * 40)):
+            cell = self.root / ticket
+            cell.mkdir()
+            self.operator_transition(
+                ticket, "RUN planner", role="planner", factory_sha=release,
+            )
+            claim = {
+                "blocked_reason": "preflight",
+                "branch": f"ticket/{ticket}",
+                "lease": ticket[-1] * 64,
+                "lease_released": True,
+                "priority": "normal", "publication_lease": "",
+                "receipt": "", "role": "", "schema": CONTROL.CLAIM_SCHEMA,
+                "status": "blocked", "ticket": ticket, "worktree": str(cell),
+            }
+            controller.save_claim(claim)
+            claims.append(claim)
+
+        terminal = "T-109"
+        terminal_cell = self.root / terminal
+        terminal_cell.mkdir()
+        self.operator_transition(
+            terminal, "COMPLETE protected terminal", factory_sha="d" * 40,
+        )
+        terminal_claim = {
+            "branch": f"ticket/{terminal}", "lease": "9" * 64,
+            "priority": "normal", "publication_lease": "", "receipt": "",
+            "role": "", "schema": CONTROL.CLAIM_SCHEMA, "status": "waiting",
+            "ticket": terminal, "worktree": str(terminal_cell),
+        }
+        controller.save_claim(terminal_claim)
+        claims.append(terminal_claim)
+
+        sibling = "T-112"
+        sibling_cell = self.root / sibling
+        route = sibling_cell / f"factory/route-plans/{sibling}.json"
+        route.parent.mkdir(parents=True)
+        route.write_text("{}\n", encoding="utf-8")
+        sibling_digest = self.operator_transition(
+            sibling, "AWAIT-OPERATOR bundle posted; approval required",
+            consumed=True,
+        )
+        self.operator_passport(sibling, "Awaiting Approval", "validating")
+        sibling_claim = {
+            "branch": f"ticket/{sibling}", "lease": "2" * 64,
+            "priority": "normal", "publication_lease": "", "receipt": "",
+            "role": "", "schema": CONTROL.CLAIM_SCHEMA, "status": "waiting",
+            "ticket": sibling, "worktree": str(sibling_cell),
+        }
+        controller.save_claim(sibling_claim)
+        claims.append(sibling_claim)
+        self.assertEqual(
+            controller.operator_transition(sibling_claim)["receipt_sha256"],
+            sibling_digest,
+        )
+
+        tampered = "T-113"
+        tampered_cell = self.root / tampered
+        tampered_cell.mkdir()
+        self.operator_transition(tampered, "ESCALATE operator decision required")
+        tampered_path = self.state / f"{tampered}.json"
+        tampered_receipt = CONTROL.read(tampered_path)
+        tampered_receipt["stage"] = "ESCALATE altered evidence"
+        CONTROL.write(tampered_path, tampered_receipt)
+        tampered_claim = {
+            "branch": f"ticket/{tampered}", "lease": "3" * 64,
+            "priority": "normal", "publication_lease": "", "receipt": "",
+            "role": "", "schema": CONTROL.CLAIM_SCHEMA, "status": "claimed",
+            "ticket": tampered, "worktree": str(tampered_cell),
+        }
+        controller.save_claim(tampered_claim)
+        claims.append(tampered_claim)
+
+        tampered_preflight = "T-114"
+        preflight_cell = self.root / tampered_preflight
+        preflight_cell.mkdir()
+        self.operator_transition(
+            tampered_preflight, "AWAIT_BUDGET daily envelope", role="planner",
+        )
+        preflight_path = self.state / f"{tampered_preflight}.json"
+        preflight_receipt = CONTROL.read(preflight_path)
+        preflight_receipt["stage"] = "RUN planner"
+        CONTROL.write(preflight_path, preflight_receipt)
+        preflight_claim = {
+            "blocked_reason": "preflight",
+            "branch": f"ticket/{tampered_preflight}", "lease": "4" * 64,
+            "lease_released": True, "priority": "normal",
+            "publication_lease": "", "receipt": "", "role": "",
+            "schema": CONTROL.CLAIM_SCHEMA, "status": "blocked",
+            "ticket": tampered_preflight, "worktree": str(preflight_cell),
+        }
+        controller.save_claim(preflight_claim)
+        claims.append(preflight_claim)
+
+        release_refused = "T-115"
+        refused_cell = self.root / release_refused
+        refused_cell.mkdir()
+        self.operator_transition(release_refused, "RUN planner", role="planner")
+        refused_path = self.state / f"{release_refused}.json"
+        refused_receipt = CONTROL.read(refused_path)
+        refused_receipt["stage"] = "RUN builder"
+        CONTROL.write(refused_path, refused_receipt)
+        refused_claim = {
+            "branch": f"ticket/{release_refused}", "lease": "5" * 64,
+            "priority": "normal", "publication_lease": "", "receipt": "",
+            "role": "", "schema": CONTROL.CLAIM_SCHEMA, "status": "claimed",
+            "ticket": release_refused, "worktree": str(refused_cell),
+        }
+        controller.save_claim(refused_claim)
+        claims.append(refused_claim)
+
+        reconciled = []
+        leased = []
+        preflight_candidates = []
+        upgrade_candidates = []
+        controller_calls = []
+        controller.cancellation_authority = lambda _claims: None
+        controller.product_ticket_done = lambda ticket: ticket == terminal
+        controller.ensure_lease = lambda claim, _label: leased.append(
+            claim["ticket"]
+        )
+        controller.release = lambda claim: controller.claim_path(
+            claim["ticket"]
+        ).unlink()
+        controller.record_qualification_done_targets = lambda: None
+        controller.recover_missing_passport_claims = lambda _claims: None
+        controller.recover_terminal_requests = lambda _claims: None
+        for name in (
+            "recover_interrupted_claims", "recover_missing_terminals",
+            "recover_passportless_route_migrations",
+            "recover_prepublication_attestations", "recover_terminal_exports",
+            "recover_repaired_failures",
+        ):
+            setattr(controller, name, lambda _claims: None)
+        controller.recover_preflight_blocks = lambda group: (
+            preflight_candidates.extend(claim["ticket"] for claim in group)
+        )
+        controller.recover_upgraded_claims = lambda group: (
+            upgrade_candidates.extend(claim["ticket"] for claim in group)
+        )
+        def json_call(*args, **_kwargs):
+            controller_calls.append(args)
+            if args[:3] == ("release", "--ticket", release_refused):
+                raise CONTROL.ControllerError("fixture release refused")
+            return {"action": "WAIT"}
+
+        controller.json_call = json_call
+        controller.clear_admission_failure = lambda: None
+        controller.pin_routes = lambda _claims: []
+        controller.reconcile_ticket_until_wait = lambda claim: (
+            reconciled.append(claim["ticket"])
+            or {"status": "waiting", "ticket": claim["ticket"]}
+        )
+
+        result = controller.reconcile()
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(reconciled, [sibling])
+        self.assertNotIn(tampered, leased)
+        self.assertEqual(
+            [call for call in controller_calls if call[0] == "release"],
+            [
+                ("release", "--ticket", tampered, "--lease", "3" * 64),
+                (
+                    "release", "--ticket", release_refused,
+                    "--lease", "5" * 64,
+                ),
+                ("release", "--ticket", sibling, "--lease", "2" * 64),
+            ],
+        )
+        self.assertTrue(
+            CONTROL.read(controller.claim_path(tampered))["lease_released"]
+        )
+        self.assertNotIn(
+            "lease_released", CONTROL.read(controller.claim_path(release_refused))
+        )
+        self.assertTrue(
+            CONTROL.read(controller.claim_path(sibling))["lease_released"]
+        )
+        self.assertTrue({"T-110", "T-111"}.issubset(upgrade_candidates))
+        self.assertFalse(
+            {
+                "T-110", "T-111", tampered, tampered_preflight,
+                release_refused,
+            }.intersection(preflight_candidates)
+        )
+        dispatches = [
+            call for call in controller_calls if call[0] == "dispatch-plan"
+        ]
+        self.assertTrue(dispatches)
+        for arguments in dispatches:
+            excluded = {
+                arguments[index + 1]
+                for index, item in enumerate(arguments)
+                if item == "--exclude-ticket"
+            }
+            self.assertTrue({
+                "T-110", "T-111", tampered, tampered_preflight,
+                release_refused,
+            }.issubset(excluded))
+        self.assertFalse(controller.claim_path(terminal).exists())
+        events = [
+            CONTROL.read(path) for path in self.state.glob("events/*.json")
+        ]
+        stale_events = [
+            event for event in events
+            if event["event"] == "prior_kit_transition_receipt_observed"
+        ]
+        self.assertEqual(
+            sorted(event["ticket"] for event in stale_events),
+            ["T-110", "T-111"],
+        )
+        self.assertNotIn(terminal, [event["ticket"] for event in stale_events])
+        self.assertIn(
+            (tampered, "receipt_digest_invalid"),
+            [
+                (event["ticket"], event.get("reason_code")) for event in events
+                if event["event"] == "transition_receipt_invalid"
+            ],
+        )
+        self.assertNotIn(
+            tampered,
+            [
+                event["ticket"] for event in events
+                if event["event"] == "state_machine_escalated"
+            ],
+        )
+
+        restarted = CONTROL.Controller(self.args)
+        restarted.recover_operator_action_events(restarted.load_claims())
+        self.assertEqual(
+            len([
+                path for path in self.state.glob("events/*.json")
+                if CONTROL.read(path).get("event")
+                == "prior_kit_transition_receipt_observed"
+            ]),
+            2,
+        )
+        second = controller.reconcile()
+        self.assertEqual(second["status"], "ok")
+        self.assertEqual(reconciled, [sibling, sibling])
+        self.assertEqual(
+            len([
+                path for path in self.state.glob("events/*.json")
+                if CONTROL.read(path).get("event")
+                == "transition_receipt_quarantine_waiting"
+            ]),
+            1,
+        )
+        self.assertEqual(
+            len([
+                path for path in self.state.glob("events/*.json")
+                if CONTROL.read(path).get("event")
+                == "transition_receipt_invalid"
+            ]),
+            3,
+        )
+
+    def test_invalid_transition_quarantine_preserves_active_role(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        active = {
+            "branch": "ticket/T-110", "lease": "1" * 64,
+            "receipt": "", "role": "", "status": "claimed",
+            "ticket": "T-110",
+        }
+        waiting = {
+            "branch": "ticket/T-111", "lease": "2" * 64,
+            "receipt": "", "role": "", "status": "waiting",
+            "ticket": "T-111",
+        }
+        for claim in (active, waiting):
+            self.operator_transition(claim["ticket"], "RUN planner", role="planner")
+            path = self.state / f"{claim['ticket']}.json"
+            receipt = CONTROL.read(path)
+            receipt["stage"] = "RUN builder"
+            CONTROL.write(path, receipt)
+            self.assertIsNone(controller.operator_transition(claim))
+        released = []
+        controller.role_active = lambda claim: claim["ticket"] == "T-110"
+        controller.release_ticket_lease = lambda claim: (
+            released.append(claim["ticket"]),
+            claim.update(lease_released=True),
+        )
+
+        controller.quarantine_invalid_transition_claims([active, waiting])
+
+        self.assertEqual(released, ["T-111"])
+        self.assertTrue(controller.consumes_capacity(active))
+        self.assertTrue(waiting["lease_released"])
 
     def test_operator_event_backfill_refuses_tampered_passport(self) -> None:
         ticket = "T-110"
@@ -2544,15 +2840,7 @@ class FactoryControllerTest(unittest.TestCase):
             "worktree": str(cell),
         }
         controller.save_claim(claim)
-        CONTROL.write(self.state / "T-110.json", {
-            "branch": "ticket/T-110",
-            "consumed": False,
-            "receipt_sha256": "b" * 64,
-            "role": "planner",
-            "schema": "nysa.software-factory.transition-receipt/v1",
-            "stage": "RUN planner",
-            "ticket": "T-110",
-        })
+        self.operator_transition("T-110", "RUN planner", role="planner")
         transition = {
             "action": "RUN",
             "detail": "planner",
@@ -5117,9 +5405,12 @@ class FactoryControllerTest(unittest.TestCase):
         self,
     ) -> None:
         controller = CONTROL.Controller(self.args)
-        receipt = "b" * 64
         old_factory = "c" * 40
-        head = "d" * 40
+        head = "b" * 40
+        receipt = self.operator_transition(
+            "T-110", "RUN builder", role="builder", consumed=True,
+            factory_sha=old_factory,
+        )
         cell = self.root / "cell-1"
         (cell / "factory/route-plans").mkdir(parents=True)
         (cell / "factory/tickets").mkdir()
@@ -5159,20 +5450,6 @@ class FactoryControllerTest(unittest.TestCase):
             f"kit_sha={old_factory}\n"
             f"transition_receipt_sha256={receipt}\n",
             encoding="utf-8",
-        )
-        CONTROL.write(
-            self.state / "T-110.json",
-            {
-                "branch": claim["branch"],
-                "consumed": True,
-                "contract_version": "1.8.0",
-                "factory_sha": old_factory,
-                "head_sha": head,
-                "receipt_sha256": receipt,
-                "role": "builder",
-                "schema": "nysa.software-factory.transition-receipt/v1",
-                "ticket": "T-110",
-            },
         )
         (self.state / "passports").mkdir(mode=0o700)
         CONTROL.write(
@@ -5223,6 +5500,25 @@ class FactoryControllerTest(unittest.TestCase):
         controller.json_call = json_call
         controller.remote_passport_valid = lambda _claim: True
         controller.event = lambda name, *_args, **_kwargs: calls.append((name,))
+
+        transition_path = self.state / "T-110.json"
+        transition = CONTROL.read(transition_path)
+        altered = dict(transition)
+        altered["stage"] = "FIX builder"
+        CONTROL.write(transition_path, altered)
+        passport_path = self.state / "passports/T-110.json"
+        passport = CONTROL.read(passport_path)
+        passport["factory_sha"] = self.release.name
+        CONTROL.write(passport_path, passport)
+        self.assertFalse(controller.restore_contract_blocker(claim))
+        self.assertEqual(claim["lease"], "e" * 64)
+        self.assertNotIn(("contract_blocker_claim_restored",), calls)
+        self.assertFalse(any(call[0] == "claim" for call in calls))
+
+        CONTROL.write(transition_path, transition)
+        passport["factory_sha"] = old_factory
+        CONTROL.write(passport_path, passport)
+        calls.clear()
         controller.recover_upgraded_claims([claim])
         self.assertEqual(claim["status"], "blocked")
         self.assertEqual(claim["receipt"], receipt)
@@ -9942,7 +10238,6 @@ class FactoryControllerTest(unittest.TestCase):
         old = "d" * 40
         protected = "e" * 40
         refreshed = "f" * 40
-        receipt = "b" * 64
         stage = (
             "REFUSE dependency refresh required; "
             f"dependencies=T-094; protected-main={protected}"
@@ -9959,10 +10254,7 @@ class FactoryControllerTest(unittest.TestCase):
             "ticket": "T-110",
             "worktree": str(cell),
         }
-        CONTROL.write(self.state / "T-110.json", {
-            "head_sha": old,
-            "receipt_sha256": receipt,
-        })
+        receipt = self.operator_transition("T-110", stage, head_sha=old)
         migrations = []
         events = []
         controller.renew = lambda _claim: None

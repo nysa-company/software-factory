@@ -284,9 +284,10 @@ terminal role failure, budget halt, and progress timeout. Every output retains
 the authenticated source-event digest and an opaque cursor bound to the exact
 project controller path, source filename, and digest. Restart validates that
 anchor and resumes after it; missing, replaced, reordered, broadly writable,
-or digest-invalid evidence exits nonzero. One process inventories historical
-filenames once, then parses only newly published events. The single live
-controller serializes event publication and seeds its next monotonic timestamp
+digest-invalid, or malformed action context exits through the same typed
+nonzero boundary without an interpreter traceback. One process inventories
+historical filenames once, then parses only newly published events. The single
+live controller serializes event publication and seeds its next monotonic timestamp
 from the largest filename on restart without parsing event bodies; files are
 fsynced and atomically renamed before becoming visible. The watcher is
 read-only, receives no GitHub or provider credential, and provides no delivery
@@ -383,6 +384,16 @@ submission, the controller records the unconsumed receipt, settles the ticket
 for that invocation, parks its clean checkpoint, and releases its lease. The
 next invocation issues an ordinary descendant receipt; no provider call,
 charge, or successful-role replay is created by the interruption.
+Cached transition receipts are never re-stamped during that migration. Their
+digest and stable identity are checked first; only an exact current-release
+receipt is returned as transition authority. A valid prior-release receipt or
+an invalid receipt yields no authority, emits one ticket-scoped typed event,
+and is excluded from ordinary recovery, admission, and scheduling for that
+sweep. An inactive invalid claim releases its lease without rewriting the
+receipt; a live role is untouched. Existing typed release-upgrade, terminal,
+and contract-blocker recovery may still use a digest-valid prior receipt under
+their stricter bindings. Done and Canceled claims retire before this check,
+while Doctor reports the latest unresolved receipt incident per ticket.
 The role runner retains the validated project only in a non-exported host
 binding for its receipt rechecks; provider processes never inherit the
 project's model-state controls. Its trusted exact-head remote observation

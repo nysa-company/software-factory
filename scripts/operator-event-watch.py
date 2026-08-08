@@ -257,7 +257,7 @@ def action_event(
         source["run_id"] = source.get("failed_run_id")
     elif event == "role_blocked":
         reason = source.get("terminal_reason_code") or source.get("role_exit")
-        if reason in TIMEOUT_REASONS:
+        if isinstance(reason, str) and reason in TIMEOUT_REASONS:
             action = "progress_timeout"
             question = "Inspect progress evidence and choose a supported retry or repair."
         elif source.get("role_exit") == "role_exit_contract_blocked":
@@ -273,14 +273,21 @@ def action_event(
     run_id = source.get("run_id")
     passport = source.get("passport_sha256")
     if (
-        not TICKET.fullmatch(ticket or "")
-        or role is not None and not ROLE.fullmatch(role)
-        or run_id is not None and not RUN.fullmatch(run_id)
-        or passport is not None and not DIGEST.fullmatch(passport)
+        not isinstance(ticket, str) or not TICKET.fullmatch(ticket)
+        or role is not None and (
+            not isinstance(role, str) or not ROLE.fullmatch(role)
+        )
+        or run_id is not None and (
+            not isinstance(run_id, str) or not RUN.fullmatch(run_id)
+        )
+        or passport is not None and (
+            not isinstance(passport, str) or not DIGEST.fullmatch(passport)
+        )
         or not isinstance(source.get("observed_at_epoch_ns"), int)
         or isinstance(source.get("observed_at_epoch_ns"), bool)
         or source["observed_at_epoch_ns"] <= 0
-        or not re.fullmatch(r"[0-9a-f]{40}", source.get("factory_sha", ""))
+        or not isinstance(source.get("factory_sha"), str)
+        or not re.fullmatch(r"[0-9a-f]{40}", source["factory_sha"])
     ):
         raise WatchError("operator action context is invalid")
     generation = source.get("qualification_generation")
@@ -289,7 +296,8 @@ def action_event(
         (generation is None) != (manifest is None)
         or generation is not None and (
             isinstance(generation, bool) or not isinstance(generation, int)
-            or generation < 1 or not DIGEST.fullmatch(manifest or "")
+            or generation < 1 or not isinstance(manifest, str)
+            or not DIGEST.fullmatch(manifest)
         )
     ):
         raise WatchError("operator action qualification context is invalid")
