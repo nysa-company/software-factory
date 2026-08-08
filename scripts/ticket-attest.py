@@ -5,7 +5,9 @@ import argparse
 import base64
 import csv
 from datetime import datetime, timezone
+import fcntl
 import hashlib
+import hmac
 import importlib.util
 import json
 import os
@@ -35,10 +37,18 @@ from approval_evidence import (  # noqa: E402
 )
 from legacy_closeout import (  # noqa: E402
     EMERGENCY_DONE_SCHEMA,
+    EMERGENCY_DONE_SCHEMA_V2,
     EMERGENCY_PLAN_SCHEMA,
+    EMERGENCY_PLAN_SCHEMA_V2,
     ValidationError,
     protected_dependency,
     protected_terminal,
+    stale_bundle_invalidation,
+)
+from release_lineage import (  # noqa: E402
+    passport_head_lineage,
+    successor_release_lineage,
+    valid_v2_migration,
 )
 from runtime_paths import canonical_factory_file  # noqa: E402
 
@@ -627,6 +637,65 @@ REFRESH_RECEIPT_KEYS = {
 }
 
 
+def publication_refresh_replay(workdir, ticket, branch, remote, expected_base):
+    """Recognize the exact already-pushed refresh after a controller crash."""
+    relative = f"factory/attestations/{ticket}/refresh.json"
+    receipt, receipt_commit = load_refresh_receipt(workdir, ticket)
+    head = git(workdir, "rev-parse", "HEAD").stdout.strip()
+    if (
+        receipt.get("base_head") != expected_base or head != receipt_commit
+    ):
+        raise Refusal("dependency publication replay receipt is not exact")
+    ticket_path = f"factory/tickets/{ticket}.md"
+    bundle_path = f"factory/attestations/{ticket}/bundle.json"
+    approval_path = f"factory/attestations/{ticket}/approval.json"
+    expected_ticket = git(
+        workdir, "show", f"{receipt['merge_head']}:{ticket_path}",
+    ).stdout
+    expected_ticket = replace_field(expected_ticket, "State", "Review")
+    expected_ticket = remove_field(expected_ticket, "Operator-Approval")
+    expected_ticket = uncheck_item(expected_ticket, "Evidence bundle posted")
+    expected_ticket = uncheck_item(expected_ticket, "Operator approved")
+    current_ticket = git(workdir, "show", f"{head}:{ticket_path}").stdout
+    prior_blobs = {
+        bundle_path: receipt["prior_bundle_blob"],
+        approval_path: receipt["prior_approval_blob"],
+    }
+    expected_status = {f"M\t{ticket_path}"}
+    old_receipt = git(
+        workdir, "cat-file", "-e", f"{receipt['old_head']}:{relative}", check=False,
+    ).returncode == 0
+    expected_status.add(f"{'M' if old_receipt else 'A'}\t{relative}")
+    for stale_path, stale_blob in prior_blobs.items():
+        observed = git(
+            workdir, "rev-parse", f"{receipt['old_head']}:{stale_path}", check=False,
+        )
+        if stale_blob is None:
+            if observed.returncode == 0:
+                raise Refusal("dependency publication replay stale evidence is ambiguous")
+        elif (
+            not valid_oid(stale_blob)
+            or observed.returncode
+            or observed.stdout.strip() != stale_blob
+        ):
+            raise Refusal("dependency publication replay stale evidence changed")
+        else:
+            expected_status.add(f"D\t{stale_path}")
+        if git(workdir, "cat-file", "-e", f"{head}:{stale_path}", check=False).returncode == 0:
+            raise Refusal("dependency publication replay retained stale evidence")
+    statuses = set(git(
+        workdir, "diff-tree", "--no-commit-id", "--name-status", "-r", head,
+    ).stdout.splitlines())
+    if current_ticket != expected_ticket or statuses != expected_status:
+        raise Refusal("dependency publication replay changed unauthorized paths")
+    remote_head = git(
+        workdir, "ls-remote", "--heads", "--", remote, f"refs/heads/{branch}",
+    ).stdout.split()
+    if remote_head != [head, f"refs/heads/{branch}"]:
+        raise Refusal("dependency publication replay is not pushed exactly")
+    return {"action": "refresh", "head": head, "attestation": receipt}
+
+
 def unique_json_object(pairs):
     value = {}
     for key, item in pairs:
@@ -634,6 +703,87 @@ def unique_json_object(pairs):
             raise ValueError("duplicate key")
         value[key] = item
     return value
+
+
+def load_refresh_receipt(workdir, ticket):
+    relative = f"factory/attestations/{ticket}/refresh.json"
+    path = workdir / relative
+    if not safe_optional_attestation(path):
+        raise Refusal("refresh receipt is missing or unsafe")
+    try:
+        receipt = json.loads(
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=unique_json_object,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+        raise Refusal("refresh receipt is malformed") from error
+    counts = [receipt.get(name) for name in (
+        "prior_reviewer_runs", "prior_approve_verdicts",
+        "prior_request_changes_verdicts", "prior_narrator_runs",
+    )] if isinstance(receipt, dict) else []
+    generation = receipt.get("generation") if isinstance(receipt, dict) else None
+    if (
+        not isinstance(receipt, dict)
+        or set(receipt) != REFRESH_RECEIPT_KEYS
+        or receipt.get("schema") != "nysa.software-factory.ticket-refresh/v1"
+        or receipt.get("ticket") != ticket
+        or isinstance(generation, bool)
+        or not isinstance(generation, int)
+        or generation < 1
+        or any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+            for value in counts
+        )
+        or counts[0] != counts[1] + counts[2]
+        or not all(valid_oid(receipt.get(name)) for name in (
+            "old_head", "base_head", "merge_head",
+        ))
+    ):
+        raise Refusal("refresh receipt identity or baselines are invalid")
+    timestamp(receipt.get("refreshed_at"), "refresh receipt")
+    receipt_commit = git(
+        workdir, "log", "-1", "--format=%H", "HEAD", "--", relative,
+    ).stdout.strip()
+    parents = git(
+        workdir, "rev-list", "--parents", "-n", "1", receipt_commit,
+    ).stdout.split()
+    merge_parents = git(
+        workdir, "rev-list", "--parents", "-n", "1", receipt["merge_head"],
+    ).stdout.split()
+    if parents != [receipt_commit, receipt["merge_head"]]:
+        raise Refusal("refresh receipt commit topology is invalid")
+    if merge_parents != [
+        receipt["merge_head"], receipt["old_head"], receipt["base_head"],
+    ]:
+        raise Refusal("refresh merge topology is invalid")
+    previous = git(
+        workdir, "show", f"{receipt['old_head']}:{relative}", check=False,
+    )
+    expected_generation = 1
+    if previous.returncode == 0:
+        try:
+            prior = json.loads(previous.stdout, object_pairs_hook=unique_json_object)
+        except (json.JSONDecodeError, ValueError) as error:
+            raise Refusal("prior refresh receipt is malformed") from error
+        prior_generation = prior.get("generation") if isinstance(prior, dict) else None
+        if (
+            not isinstance(prior, dict)
+            or set(prior) != REFRESH_RECEIPT_KEYS
+            or prior.get("schema") != "nysa.software-factory.ticket-refresh/v1"
+            or prior.get("ticket") != ticket
+            or isinstance(prior_generation, bool)
+            or not isinstance(prior_generation, int)
+            or prior_generation < 1
+        ):
+            raise Refusal("prior refresh receipt is malformed")
+        expected_generation = prior_generation + 1
+    elif git(
+        workdir, "log", "-1", "--format=%H", receipt["old_head"], "--", relative,
+    ).stdout.strip():
+        raise Refusal("prior refresh receipt is missing from the recorded old head")
+    if generation != expected_generation:
+        raise Refusal("refresh generation is not continuous")
+    return receipt, receipt_commit
 
 
 def validate_refresh_review_evidence(workdir, ticket, text, manifests, reviewer, narrator):
@@ -646,71 +796,7 @@ def validate_refresh_review_evidence(workdir, ticket, text, manifests, reviewer,
         if historical:
             raise Refusal("committed refresh receipt is missing from the ticket head")
         return None
-    if not safe_optional_attestation(path):
-        raise Refusal("refresh receipt is unsafe")
-
-    try:
-        receipt = json.loads(path.read_text(), object_pairs_hook=unique_json_object)
-    except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
-        raise Refusal("refresh receipt is malformed")
-    if not isinstance(receipt, dict):
-        raise Refusal("refresh receipt is malformed")
-    counts = [receipt.get(name) for name in (
-        "prior_reviewer_runs", "prior_approve_verdicts",
-        "prior_request_changes_verdicts", "prior_narrator_runs",
-    )]
-    generation = receipt.get("generation")
-    if (
-        set(receipt) != REFRESH_RECEIPT_KEYS
-        or receipt.get("schema") != "nysa.software-factory.ticket-refresh/v1"
-        or receipt.get("ticket") != ticket
-        or isinstance(generation, bool)
-        or not isinstance(generation, int)
-        or generation < 1
-        or any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in counts)
-        or counts[0] != counts[1] + counts[2]
-        or not all(valid_oid(receipt.get(name)) for name in ("old_head", "base_head", "merge_head"))
-    ):
-        raise Refusal("refresh receipt identity or baselines are invalid")
-    receipt_commit = git(
-        workdir, "log", "-1", "--format=%H", "HEAD", "--", relative,
-    ).stdout.strip()
-    parents = git(workdir, "rev-list", "--parents", "-n", "1", receipt_commit).stdout.split()
-    if parents != [receipt_commit, receipt["merge_head"]]:
-        raise Refusal("refresh receipt commit topology is invalid")
-    merge_parents = git(
-        workdir, "rev-list", "--parents", "-n", "1", receipt["merge_head"],
-    ).stdout.split()
-    if merge_parents != [
-        receipt["merge_head"], receipt["old_head"], receipt["base_head"],
-    ]:
-        raise Refusal("refresh merge topology is invalid")
-    previous_result = git(
-        workdir, "show", f"{receipt['old_head']}:{relative}", check=False,
-    )
-    expected_generation = 1
-    if previous_result.returncode == 0:
-        try:
-            previous = json.loads(previous_result.stdout, object_pairs_hook=unique_json_object)
-            previous_generation = previous.get("generation")
-        except (json.JSONDecodeError, ValueError, AttributeError):
-            raise Refusal("prior refresh receipt is malformed")
-        if (
-            set(previous) != REFRESH_RECEIPT_KEYS
-            or previous.get("schema") != "nysa.software-factory.ticket-refresh/v1"
-            or previous.get("ticket") != ticket
-            or isinstance(previous_generation, bool)
-            or not isinstance(previous_generation, int)
-            or previous_generation < 1
-        ):
-            raise Refusal("prior refresh generation is invalid")
-        expected_generation = previous_generation + 1
-    elif git(
-        workdir, "log", "-1", "--format=%H", receipt["old_head"], "--", relative,
-    ).stdout.strip():
-        raise Refusal("prior refresh receipt is missing from the recorded old head")
-    if generation != expected_generation:
-        raise Refusal("refresh generation is not continuous")
+    receipt, receipt_commit = load_refresh_receipt(workdir, ticket)
     old_ticket = git(
         workdir, "show", f"{receipt['old_head']}:factory/tickets/{ticket}.md",
     ).stdout
@@ -775,7 +861,10 @@ def validate_refresh_review_evidence(workdir, ticket, text, manifests, reviewer,
 
 
 def exact_pr(repo, branch, state):
-    fields = "number,headRefName,baseRefName,headRefOid,url,state,isDraft,mergedAt,mergeCommit"
+    fields = (
+        "number,headRefName,baseRefName,headRefOid,url,state,isDraft,"
+        "autoMergeRequest,mergedAt,mergeCommit"
+    )
     result = json.loads(gh(
         "pr", "list", "--repo", repo, "--state", state, "--head", branch,
         "--base", "main", "--json", fields,
@@ -1235,12 +1324,7 @@ def emergency_request(path, *, require_current=True):
 
 
 def authenticated_passport(ticket, state_dir):
-    module_path = Path(__file__).with_name("ticket-passport.py")
-    spec = importlib.util.spec_from_file_location("emergency_ticket_passport", module_path)
-    if spec is None or spec.loader is None:
-        raise Refusal("passport validator is unavailable")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    module = passport_module()
     try:
         state_dir = module.safe_directory(state_dir)
         value, _ = module.load_passport(
@@ -1249,6 +1333,363 @@ def authenticated_passport(ticket, state_dir):
     except (FileNotFoundError, OSError, ValueError) as error:
         raise Refusal(f"authenticated emergency passport is unavailable: {error}") from error
     return value
+
+
+def passport_module():
+    module_path = Path(__file__).with_name("ticket-passport.py")
+    spec = importlib.util.spec_from_file_location("emergency_ticket_passport", module_path)
+    if spec is None or spec.loader is None:
+        raise Refusal("passport validator is unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def emergency_state_dir():
+    state_dir = Path(os.environ.get("FACTORY_CONTROLLER_STATE_DIR", ""))
+    if not state_dir.is_absolute():
+        raise Refusal("trusted controller state is unavailable")
+    try:
+        return passport_module().safe_directory(state_dir)
+    except (FileNotFoundError, OSError, ValueError) as error:
+        raise Refusal("trusted controller state is unsafe")
+
+
+EMERGENCY_JOURNAL_KEYS = {
+    "schema", "ticket", "branch", "worktree", "parent", "parent_tree",
+    "approval_sha256", "plan", "paths", "pre_blobs", "phase", "commit",
+    "observed_blobs", "pending", "authentication_sha256",
+}
+EMERGENCY_JOURNAL_PHASES = {
+    "prepared", "projected", "ticket", "bundle", "materialized",
+    "committed", "pushed",
+}
+
+
+def emergency_journal_path(state_dir, ticket, *, create=False):
+    root = state_dir / "emergency-closeout"
+    if not os.path.lexists(root):
+        if not create:
+            return root / f"{ticket}.json"
+        root.mkdir(mode=0o700)
+        descriptor = os.open(state_dir, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    info = root.lstat()
+    if (
+        root.resolve(strict=True) != root
+        or not stat.S_ISDIR(info.st_mode)
+        or info.st_uid != os.geteuid()
+        or stat.S_IMODE(info.st_mode) != 0o700
+    ):
+        raise Refusal("emergency closeout journal directory is unsafe")
+    return root / f"{ticket}.json"
+
+
+def signed_emergency_journal(value, state_dir):
+    module = passport_module()
+    body = dict(value)
+    body.pop("authentication_sha256", None)
+    key = module.key(state_dir)
+    body["authentication_sha256"] = hmac.new(
+        key, module.canonical(body), hashlib.sha256,
+    ).hexdigest()
+    return body
+
+
+def write_emergency_journal(path, value, state_dir):
+    body = signed_emergency_journal(value, state_dir)
+    module = passport_module()
+    try:
+        module.write_atomic(path, body)
+    except (OSError, ValueError) as error:
+        raise Refusal("emergency closeout journal could not be persisted") from error
+    directory = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
+def remove_emergency_journal(path):
+    path.unlink()
+    directory = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
+def emergency_controller_lock(state_dir):
+    path = state_dir / "reconcile.lock"
+    descriptor = os.open(
+        path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600,
+    )
+    info = os.fstat(descriptor)
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or info.st_uid != os.geteuid()
+        or stat.S_IMODE(info.st_mode) != 0o600
+        or info.st_nlink != 1
+    ):
+        os.close(descriptor)
+        raise Refusal("controller reconcile lock is unsafe")
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as error:
+        os.close(descriptor)
+        raise Refusal("controller reconcile is active; emergency closeout refused") from error
+    return descriptor
+
+
+def load_emergency_journal(path, state_dir):
+    _, value = controller_record(path, "emergency closeout journal")
+    authentication = value.get("authentication_sha256", "")
+    unsigned = dict(value)
+    unsigned.pop("authentication_sha256", None)
+    module = passport_module()
+    expected = hmac.new(
+        module.key(state_dir), module.canonical(unsigned), hashlib.sha256,
+    ).hexdigest()
+    if (
+        set(value) != EMERGENCY_JOURNAL_KEYS
+        or value.get("schema") != "nysa.software-factory.emergency-closeout-journal/v1"
+        or value.get("phase") not in EMERGENCY_JOURNAL_PHASES
+        or (
+            (value.get("phase") in {"committed", "pushed"})
+            != bool(valid_oid(value.get("commit")))
+        )
+        or not hmac.compare_digest(authentication, expected)
+    ):
+        raise Refusal("emergency closeout journal is invalid")
+    return value
+
+
+def prepare_emergency_journal(
+    args, workdir, branch, head, plan, stale_path, state_dir,
+):
+    relative_paths = [
+        "factory/ledger.csv",
+        f"factory/tickets/{args.ticket}.md",
+        str(stale_path.relative_to(workdir)),
+        f"factory/attestations/{args.ticket}/done.json",
+    ]
+    pre_blobs = {}
+    for relative in relative_paths:
+        result = git(workdir, "rev-parse", f"{head}:{relative}", check=False)
+        pre_blobs[relative] = result.stdout.strip() if result.returncode == 0 else None
+    value = {
+        "schema": "nysa.software-factory.emergency-closeout-journal/v1",
+        "ticket": args.ticket,
+        "branch": branch,
+        "worktree": str(workdir),
+        "parent": head,
+        "parent_tree": git(workdir, "rev-parse", f"{head}^{{tree}}").stdout.strip(),
+        "approval_sha256": args.approve_hash,
+        "plan": plan,
+        "paths": relative_paths,
+        "pre_blobs": pre_blobs,
+        "phase": "prepared",
+        "commit": None,
+        "observed_blobs": {},
+        "pending": None,
+    }
+    path = emergency_journal_path(state_dir, args.ticket, create=True)
+    if os.path.lexists(path):
+        raise Refusal("emergency closeout journal already exists")
+    write_emergency_journal(path, value, state_dir)
+    return path, value
+
+
+def advance_emergency_journal(
+    path, value, state_dir, phase, *, workdir=None, observed_count=None,
+    commit=None,
+):
+    if phase not in EMERGENCY_JOURNAL_PHASES:
+        raise Refusal("emergency closeout journal phase is invalid")
+    observed = dict(value["observed_blobs"])
+    if observed_count is not None:
+        if workdir is None or not 0 <= observed_count <= len(value["paths"]):
+            raise Refusal("emergency closeout journal observation is invalid")
+        for relative in value["paths"][:observed_count]:
+            target = workdir / relative
+            observed[relative] = (
+                blob_id(workdir, target) if target.is_file() else None
+            )
+    value = {
+        **value, "phase": phase, "commit": commit,
+        "observed_blobs": observed, "pending": None,
+    }
+    write_emergency_journal(path, value, state_dir)
+    return value
+
+
+def intend_emergency_mutation(path, value, state_dir, relative, blob):
+    expected_index = len(value["observed_blobs"])
+    if (
+        value.get("pending") is not None
+        or expected_index >= len(value["paths"])
+        or value["paths"][expected_index] != relative
+        or (blob is not None and not valid_oid(blob))
+    ):
+        raise Refusal("emergency closeout mutation intent is invalid")
+    value = {
+        **value,
+        "pending": {"path": relative, "blob": blob},
+    }
+    write_emergency_journal(path, value, state_dir)
+    return value
+
+
+def emergency_crash(point):
+    if os.environ.get("FACTORY_TEST_EMERGENCY_CRASH_AFTER") == point:
+        raise SystemExit(91)
+
+
+def emergency_changed_paths(workdir, head):
+    tracked = set(git(
+        workdir, "diff", "--name-only", "--no-renames", head,
+    ).stdout.splitlines())
+    tracked.update(git(
+        workdir, "diff", "--cached", "--name-only", "--no-renames", head,
+    ).stdout.splitlines())
+    tracked.update(git(
+        workdir, "ls-files", "--others", "--exclude-standard",
+    ).stdout.splitlines())
+    return tracked
+
+
+def recover_emergency_journal(args, workdir, state_dir):
+    path = emergency_journal_path(state_dir, args.ticket)
+    if not os.path.lexists(path):
+        return False
+    value = load_emergency_journal(path, state_dir)
+    branch = f"chore/{args.ticket.lower().replace('-', '')}-closeout"
+    paths = value.get("paths")
+    pre_blobs = value.get("pre_blobs")
+    observed_blobs = value.get("observed_blobs")
+    pending = value.get("pending")
+    plan = value.get("plan")
+    parent = value.get("parent", "")
+    expected_paths = [
+        "factory/ledger.csv",
+        f"factory/tickets/{args.ticket}.md",
+        f"factory/attestations/{args.ticket}/bundle.json",
+        f"factory/attestations/{args.ticket}/done.json",
+    ]
+    observed_counts = {
+        "prepared": 0, "projected": 1, "ticket": 2, "bundle": 3,
+        "materialized": 4, "committed": 4, "pushed": 4,
+    }
+    if (
+        value.get("ticket") != args.ticket
+        or value.get("branch") != branch
+        or value.get("worktree") != str(workdir)
+        or value.get("approval_sha256") != args.approve_hash
+        or not isinstance(plan, dict)
+        or hashlib.sha256(json.dumps(
+            plan, ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+        ).encode()).hexdigest() != args.approve_hash
+        or paths != expected_paths
+        or not isinstance(pre_blobs, dict)
+        or set(pre_blobs) != set(paths)
+        or not isinstance(observed_blobs, dict)
+        or set(observed_blobs)
+        != set(paths[:observed_counts.get(value.get("phase"), -1)])
+        or any(
+            blob is not None and not valid_oid(blob)
+            for blob in observed_blobs.values()
+        )
+        or (
+            pending is not None
+            and (
+                not isinstance(pending, dict)
+                or set(pending) != {"path", "blob"}
+                or len(observed_blobs) >= len(paths)
+                or pending.get("path") != paths[len(observed_blobs)]
+                or (
+                    pending.get("blob") is not None
+                    and not valid_oid(pending.get("blob"))
+                )
+            )
+        )
+        or not valid_oid(parent)
+        or value.get("parent_tree")
+        != git(workdir, "rev-parse", f"{parent}^{{tree}}").stdout.strip()
+        or git(workdir, "symbolic-ref", "--quiet", "--short", "HEAD").stdout.strip()
+        != branch
+    ):
+        raise Refusal("emergency closeout journal authority changed")
+    for relative, expected_blob in pre_blobs.items():
+        observed = git(workdir, "rev-parse", f"{parent}:{relative}", check=False)
+        actual = observed.stdout.strip() if observed.returncode == 0 else None
+        if actual != expected_blob:
+            raise Refusal("emergency closeout journal parent evidence changed")
+    head = git(workdir, "rev-parse", "HEAD").stdout.strip()
+    if head == parent:
+        changed = emergency_changed_paths(workdir, parent)
+        actual_blobs = {
+            relative: (
+                blob_id(workdir, workdir / relative)
+                if (workdir / relative).is_file() else None
+            )
+            for relative in paths
+        }
+        stable = {**pre_blobs, **observed_blobs}
+        candidates = [stable]
+        if pending is not None:
+            candidates.append({**stable, pending["path"]: pending["blob"]})
+        if not any(
+            actual_blobs == candidate
+            and changed == {
+                relative for relative, blob in candidate.items()
+                if blob != pre_blobs[relative]
+            }
+            for candidate in candidates
+        ):
+            raise Refusal("interrupted emergency closeout bytes are not exact")
+        for relative in paths:
+            target = workdir / relative
+            if pre_blobs[relative] is not None:
+                git(
+                    workdir, "restore", "--source", parent,
+                    "--staged", "--worktree", "--", relative,
+                )
+            elif os.path.lexists(target):
+                info = target.lstat()
+                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                    raise Refusal("interrupted emergency closeout path is unsafe")
+                target.unlink()
+        if emergency_changed_paths(workdir, parent):
+            raise Refusal("interrupted emergency closeout rollback was incomplete")
+        remove_emergency_journal(path)
+        return True
+    parents = git(workdir, "rev-list", "--parents", "-n", "1", head).stdout.split()
+    changed = set(git(
+        workdir, "diff-tree", "--no-commit-id", "--name-only", "-r", head,
+    ).stdout.splitlines())
+    expected_changed = {
+        relative for relative, blob in observed_blobs.items()
+        if blob != pre_blobs[relative]
+    }
+    if (
+        parents != [head, parent]
+        or value.get("commit") not in {None, head}
+        or set(observed_blobs) != set(paths)
+        or pending is not None
+        or changed != expected_changed
+    ):
+        raise Refusal("emergency closeout journal does not bind the committed head")
+    try:
+        terminal = protected_terminal(workdir, args.ticket, head)
+    except ValidationError as error:
+        raise Refusal("emergency closeout journal commit is invalid") from error
+    if terminal.get("basis") != "attested-emergency-closeout":
+        raise Refusal("emergency closeout journal commit is not terminal")
+    remove_emergency_journal(path)
+    return True
 
 
 def controller_record(path, label):
@@ -1352,10 +1793,13 @@ def validate_linked_issue(url):
 def emergency_preview(args, product, workdir, repo, prefix, checks, kit_sha, method):
     request = emergency_request(args.request)
     validate_linked_issue(request["issue"])
+    stale_partial = False
     try:
         protected_terminal(workdir, args.ticket)
     except ValidationError as error:
-        if str(error) != "protected main lacks valid terminal evidence":
+        if str(error) == "protected main has a partial normal attestation chain":
+            stale_partial = True
+        elif str(error) != "protected main lacks valid terminal evidence":
             raise Refusal(f"protected terminal evidence is invalid: {error}") from error
     else:
         raise Refusal("ticket is already terminal on protected main")
@@ -1387,17 +1831,7 @@ def emergency_preview(args, product, workdir, repo, prefix, checks, kit_sha, met
     if git(workdir, "merge-base", "--is-ancestor", merge, main_head, check=False).returncode:
         raise Refusal("PR merge commit is not reachable from authoritative origin/main")
     successful = successful_post_merge_checks(repo, merge, checks)
-    state_dir = Path(os.environ.get("FACTORY_CONTROLLER_STATE_DIR", ""))
-    if not state_dir.is_absolute():
-        raise Refusal("trusted controller state is unavailable")
-    state_info = state_dir.lstat()
-    if (
-        state_dir.resolve(strict=True) != state_dir
-        or not stat.S_ISDIR(state_info.st_mode)
-        or state_info.st_uid != os.geteuid()
-        or stat.S_IMODE(state_info.st_mode) != 0o700
-    ):
-        raise Refusal("trusted controller state is unsafe")
+    state_dir = emergency_state_dir()
     passport_path = state_dir / "passports" / f"{args.ticket}.json"
     claim_path = state_dir / "claims" / f"{args.ticket}.json"
     pause_path = state_dir / f"pause-{args.ticket}.json"
@@ -1472,8 +1906,59 @@ def emergency_preview(args, product, workdir, repo, prefix, checks, kit_sha, met
             execution_basis = "operator-built-no-runtime"
         else:
             raise Refusal("passportless emergency target is not exact operator-built work")
+    stale_attestation = None
+    if stale_partial:
+        try:
+            stale_attestation = stale_bundle_invalidation(
+                workdir, args.ticket, main_head, kit_sha,
+            )
+        except ValidationError as error:
+            raise Refusal(
+                f"protected terminal evidence is invalid: {error}"
+            ) from error
+        history = passport.get("factory_release_history", []) if passport_plan else []
+        migrations = passport.get("migration_history", []) if passport_plan else []
+        stale_path = stale_attestation["path"]
+        stale_bundle_raw = git(
+            workdir, "show", f"{main_head}:{stale_path}",
+        ).stdout
+        try:
+            stale_bundle = json.loads(
+                stale_bundle_raw, object_pairs_hook=unique_json_object,
+            )
+        except (json.JSONDecodeError, ValueError) as error:
+            raise Refusal("stale bundle lineage evidence is malformed") from error
+        stale_bundle_commit = git(
+            workdir, "log", "-1", "--format=%H", main_head, "--", stale_path,
+        ).stdout.strip()
+        source_edges = [
+            item for item in migrations
+            if isinstance(item, dict)
+            and item.get("from_factory_sha") == stale_attestation["kit_sha"]
+            and item.get("from_head_sha") == stale_bundle_commit
+            and item.get("from_route_plan_sha256")
+            == stale_bundle.get("route_plan_sha256")
+        ] if isinstance(migrations, list) else []
+        if (
+            not passport_plan
+            or passport.get("factory_sha") != kit_sha
+            or len(source_edges) != 1
+            or not successor_release_lineage(
+                history, migrations, stale_attestation["kit_sha"], kit_sha,
+                valid_v2_migration,
+            )
+            or not passport_head_lineage(
+                passport, source_edges[0].get("from_head_sha", ""),
+            )
+        ):
+            raise Refusal(
+                "stale bundle kit lacks exact authenticated successor lineage"
+            )
     plan = {
-        "schema": EMERGENCY_PLAN_SCHEMA,
+        "schema": (
+            EMERGENCY_PLAN_SCHEMA_V2
+            if stale_attestation is not None else EMERGENCY_PLAN_SCHEMA
+        ),
         "ticket": args.ticket,
         "repository": repo,
         "branch": branch,
@@ -1495,6 +1980,10 @@ def emergency_preview(args, product, workdir, repo, prefix, checks, kit_sha, met
         "kit_sha": kit_sha,
         "auto_merge_method": method,
         **{name: value for name, value in request.items() if name != "schema"},
+        **(
+            {"stale_attestation": stale_attestation}
+            if stale_attestation is not None else {}
+        ),
     }
     approval = hashlib.sha256(json.dumps(
         plan, ensure_ascii=True, sort_keys=True, separators=(",", ":"),
@@ -1568,9 +2057,14 @@ def push_head(product, workdir, remote, branch, head):
     if configured != [remote]:
         raise Refusal("configured origin no longer matches the certified product origin")
     git(workdir, "push", "--no-force", "--", remote, f"{head}:refs/heads/{branch}")
-    observed = git(workdir, "ls-remote", "--heads", "--", remote, f"refs/heads/{branch}").stdout
-    if observed.split()[:1] != [head]:
+    observed = git(
+        workdir, "ls-remote", "--heads", "--", remote,
+        f"refs/heads/{branch}",
+    ).stdout.split()
+    if observed != [head, f"refs/heads/{branch}"]:
         raise Refusal("remote did not confirm the attestation commit")
+    if os.environ.get("FACTORY_TEST_REFRESH_CRASH_AFTER_PUSH") == "1":
+        raise SystemExit(92)
     git(workdir, "update-ref", f"refs/remotes/origin/{branch}", head)
     return head
 
@@ -1693,7 +2187,7 @@ def refresh_baselines(text, manifests):
     return reviewer_count, approvals, requests, len(narrators)
 
 
-def refresh(args, product, workdir, repo, prefix, remote):
+def refresh(args, product, workdir, repo, prefix, remote, *, expected_base=None):
     branch = f"{prefix}{args.ticket}"
     old_head = ensure_clean_branch(product, workdir, branch)
     ticket_path = workdir / "factory" / "tickets" / f"{args.ticket}.md"
@@ -1721,8 +2215,21 @@ def refresh(args, product, workdir, repo, prefix, remote):
     if len(observed) != 2 or not valid_oid(observed[0]) or observed[1] != "refs/heads/main":
         raise Refusal("certified protected main tip is missing or ambiguous")
     base_head = observed[0]
+    if expected_base is not None and base_head != expected_base:
+        return {
+            "action": "dependency-wait",
+            "expected_protected_head": expected_base,
+            "observed_protected_head": base_head,
+        }
     git(workdir, "fetch", "--no-tags", "--", remote, "refs/heads/main")
-    if git(workdir, "rev-parse", "FETCH_HEAD").stdout.strip() != base_head:
+    fetched = git(workdir, "rev-parse", "FETCH_HEAD").stdout.strip()
+    if expected_base is not None and fetched != expected_base:
+        return {
+            "action": "dependency-wait",
+            "expected_protected_head": expected_base,
+            "observed_protected_head": fetched,
+        }
+    if fetched != base_head:
         raise Refusal("fetched protected main does not match its certified remote tip")
     if not git(workdir, "merge-base", "--is-ancestor", base_head, old_head, check=False).returncode:
         raise Refusal("ticket branch is already based on protected main")
@@ -2060,25 +2567,36 @@ def dependency_refresh(args, product, workdir, prefix, remote):
     dependencies = match[1].split(",")
     expected_base = match[2]
     branch = f"{prefix}{args.ticket}"
-    old_head = ensure_clean_branch(product, workdir, branch)
+    old_head = ensure_clean_branch(
+        product, workdir, branch, require_remote=False,
+    )
     ticket_path = workdir / "factory" / "tickets" / f"{args.ticket}.md"
     text = ticket_path.read_text(encoding="utf-8")
     state = field(text, "State")
-    if state.lower() not in {"planning", "building"}:
-        raise Refusal("dependency refresh is limited to prepublication ticket states")
+    publication = state.lower() in {"review", "awaiting approval", "approved"}
+    if state.lower() not in {
+        "planning", "building", "review", "awaiting approval", "approved",
+    }:
+        raise Refusal("dependency refresh requires an active ticket state")
     declared = [item.strip() for item in field(text, "Depends-On").split(",")]
     if declared != dependencies:
         raise Refusal("dependency refresh does not match the ticket dependencies")
     attestation_dir = workdir / "factory" / "attestations" / args.ticket
     bundle = attestation_dir / "bundle.json"
     approval = attestation_dir / "approval.json"
-    if any(os.path.lexists(path) for path in (bundle, approval)):
+    if not publication and any(os.path.lexists(path) for path in (bundle, approval)):
         raise Refusal("prepublication dependency refresh found publication evidence")
     configured = git(
         product, "remote", "get-url", "--push", "--all", "origin"
     ).stdout.splitlines()
     if configured != [remote]:
         raise Refusal("configured origin no longer matches the certified product origin")
+    branch_tip = git(
+        workdir, "ls-remote", "--heads", "--", remote, f"refs/heads/{branch}",
+    ).stdout.split()
+    if branch_tip != [old_head, f"refs/heads/{branch}"]:
+        raise Refusal("ticket branch does not match its certified remote tip")
+    git(workdir, "update-ref", f"refs/remotes/origin/{branch}", old_head)
     observed = git(
         workdir, "ls-remote", "--heads", "--", remote, "refs/heads/main"
     ).stdout.split()
@@ -2102,11 +2620,10 @@ def dependency_refresh(args, product, workdir, prefix, remote):
             "expected_protected_head": expected_base,
             "observed_protected_head": fetched,
         }
-    if not git(
+    contains_base = not git(
         workdir, "merge-base", "--is-ancestor", expected_base, old_head,
         check=False,
-    ).returncode:
-        raise Refusal("ticket branch already contains the dependency base")
+    ).returncode
     terminals = []
     for dependency in dependencies:
         try:
@@ -2124,6 +2641,41 @@ def dependency_refresh(args, product, workdir, prefix, remote):
                 ).encode()
             ).hexdigest(),
         })
+    if publication:
+        repo, configured_prefix, _, _ = parse_project(
+            product / "factory" / "PROJECT.env"
+        )
+        if configured_prefix != prefix:
+            raise Refusal("dependency refresh ticket prefix changed")
+        if contains_base:
+            result = publication_refresh_replay(
+                workdir, args.ticket, branch, remote, expected_base,
+            )
+            refreshed_pr = exact_pr(repo, branch, "open")
+            if (
+                refreshed_pr.get("headRefOid") != result["head"]
+                or not refreshed_pr.get("isDraft")
+                or refreshed_pr.get("autoMergeRequest") is not None
+            ):
+                raise Refusal(
+                    "dependency publication replay lacks the exact draft PR"
+                )
+            overlay = stale_approval_overlay_version(product, args.ticket)
+            if overlay:
+                consume_stale_approval_overlay(product, args.ticket, overlay)
+        else:
+            result = refresh(
+                args, product, workdir, repo, prefix, remote,
+                expected_base=expected_base,
+            )
+        if result.get("action") == "dependency-wait":
+            return result
+        result["action"] = "dependency-publication-refresh"
+        result["dependencies"] = dependencies
+        result["dependency_terminals"] = terminals
+        return result
+    if contains_base:
+        raise Refusal("ticket branch already contains the dependency base")
     prior_base = git(workdir, "merge-base", old_head, expected_base).stdout.strip()
     if not valid_oid(prior_base):
         raise Refusal("dependency refresh prior base is invalid")
@@ -2335,6 +2887,88 @@ def dependency_refresh(args, product, workdir, prefix, remote):
         "head": result_head,
         "attestation": receipt,
     }
+
+
+def dependency_publication_replay(args, product, workdir, prefix, remote):
+    """Finish the exact post-push publication refresh tail once."""
+    branch = f"{prefix}{args.ticket}"
+    head = ensure_clean_branch(
+        product, workdir, branch, require_remote=False,
+    )
+    ticket = (
+        workdir / "factory" / "tickets" / f"{args.ticket}.md"
+    ).read_text(encoding="utf-8")
+    if field(ticket, "State").lower() not in {
+        "review", "awaiting approval", "approved",
+    }:
+        raise Refusal("dependency publication replay requires publication state")
+    current_dependencies = [
+        item.strip() for item in field(ticket, "Depends-On").split(",")
+    ]
+    if (
+        not current_dependencies
+        or len(current_dependencies) != len(set(current_dependencies))
+        or any(
+            not re.fullmatch(r"T-[0-9]+", item)
+            for item in current_dependencies
+        )
+    ):
+        raise Refusal("dependency publication replay dependencies are invalid")
+    receipt, receipt_commit = load_refresh_receipt(workdir, args.ticket)
+    if receipt_commit != head:
+        raise Refusal("dependency publication replay receipt is not current")
+    old_ticket = git(
+        workdir, "show",
+        f"{receipt['old_head']}:factory/tickets/{args.ticket}.md",
+    ).stdout
+    dependencies = [
+        item.strip() for item in field(old_ticket, "Depends-On").split(",")
+    ]
+    if dependencies != current_dependencies:
+        raise Refusal("dependency publication replay dependencies changed")
+    configured = git(
+        product, "remote", "get-url", "--push", "--all", "origin"
+    ).stdout.splitlines()
+    if configured != [remote]:
+        raise Refusal("configured origin no longer matches the certified product origin")
+    terminals = []
+    for dependency in dependencies:
+        try:
+            terminal = protected_dependency(
+                product, dependency, receipt["base_head"],
+            )
+        except ValidationError as error:
+            raise Refusal(
+                f"dependency terminal truth changed for {dependency}: {error}"
+            )
+        terminals.append({
+            "ticket": dependency,
+            "terminal_sha256": hashlib.sha256(json.dumps(
+                terminal, ensure_ascii=True, sort_keys=True,
+                separators=(",", ":"),
+            ).encode()).hexdigest(),
+        })
+    result = publication_refresh_replay(
+        workdir, args.ticket, branch, remote, receipt["base_head"],
+    )
+    git(workdir, "update-ref", f"refs/remotes/origin/{branch}", head)
+    repo, _, _, _ = parse_project(product / "factory" / "PROJECT.env")
+    refreshed_pr = exact_pr(repo, branch, "open")
+    if (
+        refreshed_pr.get("headRefOid") != result["head"]
+        or not refreshed_pr.get("isDraft")
+        or refreshed_pr.get("autoMergeRequest") is not None
+    ):
+        raise Refusal("dependency publication replay lacks the exact draft PR")
+    overlay = stale_approval_overlay_version(product, args.ticket)
+    if overlay:
+        consume_stale_approval_overlay(product, args.ticket, overlay)
+    result.update(
+        action="dependency-publication-refresh",
+        dependencies=dependencies,
+        dependency_terminals=terminals,
+    )
+    return result
 
 
 def bundle(args, product, workdir, repo, prefix, remote, kit_sha):
@@ -2784,7 +3418,13 @@ def emergency_done(
             name: request[name] for name in EMERGENCY_REQUEST_KEYS if name != "schema"
         }
         if (
-            done_att.get("schema") != EMERGENCY_DONE_SCHEMA
+            done_att.get("schema")
+            != (
+                EMERGENCY_DONE_SCHEMA_V2
+                if isinstance(plan, dict)
+                and plan.get("schema") == EMERGENCY_PLAN_SCHEMA_V2
+                else EMERGENCY_DONE_SCHEMA
+            )
             or done_att.get("approval_sha256") != args.approve_hash
             or not isinstance(plan, dict)
             or any(plan.get(name) != value for name, value in expected_request.items())
@@ -2814,18 +3454,92 @@ def emergency_done(
         text = ticket_path.read_text()
         if field(text, "State") != plan["protected_main"]["state"]:
             raise Refusal("emergency closeout ticket changed after planning")
+        stale_path = None
+        journal_path = None
+        journal = None
+        state_dir = emergency_state_dir()
+        if plan.get("schema") == EMERGENCY_PLAN_SCHEMA_V2:
+            try:
+                observed_stale = stale_bundle_invalidation(
+                    workdir, args.ticket, head, kit_sha,
+                )
+            except ValidationError as error:
+                raise Refusal(
+                    f"emergency stale evidence changed after planning: {error}"
+                ) from error
+            if observed_stale != plan.get("stale_attestation"):
+                raise Refusal("emergency stale evidence changed after planning")
+            stale_path = workdir / observed_stale["path"]
+            journal_path, journal = prepare_emergency_journal(
+                args, workdir, branch, head, plan, stale_path, state_dir,
+            )
         ledger = Path(__file__).with_name("ledger-view.py")
-        projection = run([
+        projection_args = [
             sys.executable, "-I", "-S", str(ledger), "project",
             "--factory-root", str(product), "--workdir", str(workdir),
             "--ticket", args.ticket,
-        ])
+        ]
+        if journal_path is not None:
+            projection_preview = run([
+                sys.executable, "-I", "-S", str(ledger), "print",
+                "--factory-root", str(product),
+                "--durable-ledger", str(workdir / "factory/ledger.csv"),
+                "--runs-dir", str(product / "factory/runs"),
+            ])
+            expected_ledger_sha256 = hashlib.sha256(
+                projection_preview.stdout.encode()
+            ).hexdigest()
+            expected_ledger_blob = run(
+                ["git", "-C", str(workdir), "hash-object", "--stdin"],
+                input_text=projection_preview.stdout,
+            ).stdout.strip()
+            journal = intend_emergency_mutation(
+                journal_path, journal, state_dir, "factory/ledger.csv",
+                expected_ledger_blob,
+            )
+            projection_args.extend(("--expect-sha256", expected_ledger_sha256))
+        projection = run(projection_args)
         ledger_result = json.loads(projection.stdout)
+        if journal_path is not None:
+            emergency_crash("ledger")
+            journal = advance_emergency_journal(
+                journal_path, journal, state_dir, "projected",
+                workdir=workdir, observed_count=1,
+            )
         text = replace_field(text, "State", "Done")
         text = check_item(text, "PR merged and staging confirmed")
+        if journal_path is not None:
+            expected_ticket_blob = run(
+                ["git", "-C", str(workdir), "hash-object", "--stdin"],
+                input_text=text,
+            ).stdout.strip()
+            journal = intend_emergency_mutation(
+                journal_path, journal, state_dir,
+                f"factory/tickets/{args.ticket}.md", expected_ticket_blob,
+            )
         ticket_path.write_text(text)
+        emergency_crash("ticket")
+        if journal_path is not None:
+            journal = advance_emergency_journal(
+                journal_path, journal, state_dir, "ticket",
+                workdir=workdir, observed_count=2,
+            )
+        if stale_path is not None:
+            journal = intend_emergency_mutation(
+                journal_path, journal, state_dir,
+                str(stale_path.relative_to(workdir)), None,
+            )
+            stale_path.unlink()
+            emergency_crash("bundle")
+            journal = advance_emergency_journal(
+                journal_path, journal, state_dir, "bundle",
+                workdir=workdir, observed_count=3,
+            )
         done_att = {
-            "schema": EMERGENCY_DONE_SCHEMA,
+            "schema": (
+                EMERGENCY_DONE_SCHEMA_V2
+                if stale_path is not None else EMERGENCY_DONE_SCHEMA
+            ),
             "ticket": args.ticket,
             "repository": repo,
             "pr_number": pr["number"],
@@ -2842,12 +3556,59 @@ def emergency_done(
             "approval_sha256": args.approve_hash,
             "attested_at": now(),
         }
+        if journal_path is not None:
+            done_content = json.dumps(done_att, indent=2, sort_keys=True) + "\n"
+            expected_done_blob = run(
+                ["git", "-C", str(workdir), "hash-object", "--stdin"],
+                input_text=done_content,
+            ).stdout.strip()
+            journal = intend_emergency_mutation(
+                journal_path, journal, state_dir,
+                f"factory/attestations/{args.ticket}/done.json",
+                expected_done_blob,
+            )
         write_json(done_path, done_att)
-        head = commit_push(
-            product, workdir, remote, branch,
-            f"{args.ticket}: record authorized emergency closeout",
-            (workdir / "factory" / "ledger.csv", ticket_path, done_path),
-        )
+        emergency_crash("done")
+        if journal_path is not None:
+            journal = advance_emergency_journal(
+                journal_path, journal, state_dir, "materialized",
+                workdir=workdir, observed_count=4,
+            )
+        changed_paths = [workdir / "factory" / "ledger.csv", ticket_path, done_path]
+        if stale_path is not None:
+            changed_paths.append(stale_path)
+        if journal_path is None:
+            head = commit_push(
+                product, workdir, remote, branch,
+                f"{args.ticket}: record authorized emergency closeout",
+                changed_paths,
+            )
+        else:
+            for path in changed_paths:
+                git(workdir, "add", "--", str(path.relative_to(workdir)))
+            git(
+                workdir, "-c", "user.name=Software Factory", "-c",
+                "user.email=factory@local", "commit", "-m",
+                f"{args.ticket}: record authorized emergency closeout",
+            )
+            head = git(workdir, "rev-parse", "HEAD").stdout.strip()
+            emergency_crash("commit")
+            try:
+                terminal = protected_terminal(workdir, args.ticket, head)
+            except ValidationError as error:
+                raise Refusal("emergency closeout journal commit is invalid") from error
+            if terminal.get("basis") != "attested-emergency-closeout":
+                raise Refusal("emergency closeout journal commit is not terminal")
+            journal = advance_emergency_journal(
+                journal_path, journal, state_dir, "committed", commit=head,
+            )
+            push_head(product, workdir, remote, branch, head)
+            emergency_crash("push")
+            journal = advance_emergency_journal(
+                journal_path, journal, state_dir, "pushed", commit=head,
+            )
+            emergency_crash("cleanup")
+            remove_emergency_journal(journal_path)
     try:
         terminal = protected_terminal(workdir, args.ticket, head)
     except ValidationError as error:
@@ -3036,8 +3797,9 @@ def main():
     parser.add_argument(
         "--action",
         choices=(
-            "bundle", "approval", "dependency-refresh", "refresh", "done",
-            "emergency-plan", "emergency-apply",
+            "bundle", "approval", "dependency-refresh",
+            "dependency-refresh-replay", "refresh", "done", "emergency-plan",
+            "emergency-apply",
         ),
         required=True,
     )
@@ -3070,19 +3832,29 @@ def main():
             args, product, workdir, repo, prefix, checks, kit_sha, method,
         )
     elif args.action == "emergency-apply":
-        retry = (
-            git(workdir, "rev-parse", "HEAD").stdout.strip()
-            != git(workdir, "rev-parse", "origin/main").stdout.strip()
-            and (workdir / "factory" / "attestations" / args.ticket / "done.json").is_file()
-        )
-        request = emergency_request(args.request, require_current=not retry)
-        preview = None if retry else emergency_preview(
-            args, product, workdir, repo, prefix, checks, kit_sha, method,
-        )
-        result = emergency_done(
-            args, product, workdir, repo, prefix, remote, checks, kit_sha,
-            method, preview, request,
-        )
+        state_dir = emergency_state_dir()
+        controller_lock = emergency_controller_lock(state_dir)
+        try:
+            request = emergency_request(args.request, require_current=False)
+            recover_emergency_journal(args, workdir, state_dir)
+            retry = (
+                git(workdir, "rev-parse", "HEAD").stdout.strip()
+                != git(workdir, "rev-parse", "origin/main").stdout.strip()
+                and (
+                    workdir / "factory" / "attestations" / args.ticket / "done.json"
+                ).is_file()
+            )
+            if not retry:
+                request = emergency_request(args.request, require_current=True)
+            preview = None if retry else emergency_preview(
+                args, product, workdir, repo, prefix, checks, kit_sha, method,
+            )
+            result = emergency_done(
+                args, product, workdir, repo, prefix, remote, checks, kit_sha,
+                method, preview, request,
+            )
+        finally:
+            os.close(controller_lock)
     elif args.action == "bundle":
         result = bundle(args, product, workdir, repo, prefix, remote, kit_sha)
     elif args.action == "approval":
@@ -3093,6 +3865,10 @@ def main():
         result = refresh(args, product, workdir, repo, prefix, remote)
     elif args.action == "dependency-refresh":
         result = dependency_refresh(
+            args, product, workdir, prefix, remote,
+        )
+    elif args.action == "dependency-refresh-replay":
+        result = dependency_publication_replay(
             args, product, workdir, prefix, remote,
         )
     else:

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable
 import fcntl
 import hashlib
 import hmac
@@ -226,6 +227,69 @@ ledger.chmod(0o600)
         os.environ["FACTORY_QUALIFICATION_OPERATOR_MAP_SEED"] = str(
             self.operator_seed
         )
+
+    def write_passport(
+        self, path: Path, secret: bytes, ticket: str, factory_sha: str,
+        source_factory_sha: str | None = None,
+    ) -> None:
+        source = source_factory_sha or factory_sha
+        migrated = factory_sha != source
+        value = {
+            "base_history": ["9" * 40, *(["7" * 40] if migrated else [])],
+            "branch": f"ticket/{ticket}",
+            "charge_records": [],
+            "completed_role_evidence": [],
+            "contract_version": "1.8.0",
+            "cumulative_charges_micro_usd": 0,
+            "current_stage": "RUN planner",
+            "current_state": "Planning",
+            "factory_release_history": [
+                {"contract_version": "1.8.0", "factory_sha": source},
+                *([{"contract_version": "1.8.0", "factory_sha": factory_sha}]
+                  if migrated else []),
+            ],
+            "factory_sha": factory_sha,
+            "head_sha": "6" * 40 if migrated else "1" * 40,
+            "head_tree": "a" * 40,
+            "migration_history": ([{
+                "from_factory_sha": source,
+                "from_head_sha": "1" * 40,
+                "from_passport_file_sha256": "2" * 64,
+                "from_passport_sha256": "3" * 64,
+                "from_protected_base_sha": "9" * 40,
+                "from_route_plan_sha256": "5" * 64,
+                "schema": "nysa.software-factory.ticket-passport-migration/v2",
+                "to_factory_sha": factory_sha,
+                "to_head_sha": "6" * 40,
+                "to_protected_base_sha": "7" * 40,
+                "to_route_plan_sha256": "8" * 64,
+            }] if migrated else []),
+            "nonce": "1" * 32,
+            "parent_digest": "3" * 64 if migrated else None,
+            "parent_file_sha256": "2" * 64 if migrated else None,
+            "product_origin_sha256": "a" * 64,
+            "project": "relay",
+            "protected_base_sha": "7" * 40 if migrated else "9" * 40,
+            "publication_state": "none",
+            "route_plan_sha256": "8" * 64 if migrated else "5" * 64,
+            "schema": "nysa.software-factory.ticket-passport/v1",
+            "ticket": ticket,
+            "ticket_blob": "b" * 40,
+            "transition_receipt_sha256": "c" * 64,
+        }
+        self.sign_passport(path, secret, value)
+
+    def sign_passport(
+        self, path: Path, secret: bytes, value: dict[str, object],
+    ) -> None:
+        value["authentication_sha256"] = hmac.new(
+            secret, ENVIRONMENT.canonical(value), hashlib.sha256,
+        ).hexdigest()
+        value["passport_sha256"] = hashlib.sha256(
+            ENVIRONMENT.canonical(value)
+        ).hexdigest()
+        path.write_bytes(ENVIRONMENT.canonical(value))
+        path.chmod(0o600)
 
     def tearDown(self) -> None:
         for base, directories, files in os.walk(self.root, topdown=False):
@@ -1257,6 +1321,258 @@ ledger.chmod(0o600)
         self.assertEqual(key.read_bytes(), b"p" * 32)
         self.assertTrue((self.root / f"releases/{self.sha}").is_dir())
         self.assertTrue((self.root / f"releases/{successor}").is_dir())
+
+    def test_successor_upgrade_requires_exact_source_bound_cohort(self) -> None:
+        controller = (self.workspace / "cohort-controller").resolve()
+        passports = controller / "passports"
+        passports.mkdir(mode=0o700, parents=True)
+        controller.chmod(0o700)
+        secret = b"p" * 32
+        key = controller / "passport.key"
+        key.write_bytes(secret)
+        key.chmod(0o600)
+        source = "b" * 40
+        candidate = "c" * 40
+        tickets = ["T-101", "T-102", "T-103"]
+        manifest = {
+            "factory_sha": candidate,
+            "mode": "successor",
+            "source_factory_sha": source,
+            "tickets": tickets,
+        }
+        for ticket in tickets:
+            self.write_passport(
+                passports / f"{ticket}.json", secret, ticket, source,
+            )
+        before = {
+            path.name: path.read_bytes() for path in controller.rglob("*")
+            if path.is_file()
+        }
+        ENVIRONMENT.validate_successor_upgrade_cohort(
+            self.factory, controller, "relay", source, manifest,
+        )
+        ENVIRONMENT.validate_successor_upgrade_cohort(
+            self.factory, controller, "relay", source, manifest,
+        )
+        self.assertEqual(before, {
+            path.name: path.read_bytes() for path in controller.rglob("*")
+            if path.is_file()
+        })
+        for ticket in tickets:
+            self.write_passport(
+                passports / f"{ticket}.json", secret, ticket, candidate, source,
+            )
+        ENVIRONMENT.validate_successor_upgrade_cohort(
+            self.factory, controller, "relay", candidate, manifest,
+        )
+        ENVIRONMENT.validate_successor_upgrade_cohort(
+            self.factory, controller, "relay", candidate, manifest,
+        )
+
+        for ticket in tickets:
+            self.write_passport(
+                passports / f"{ticket}.json", secret, ticket, source,
+            )
+        path = passports / "T-102.json"
+        foreign = "d" * 40
+
+        def rewrite(mutator: Callable[[dict[str, object]], None]) -> None:
+            value = json.loads(path.read_text(encoding="utf-8"))
+            value.pop("authentication_sha256")
+            value.pop("passport_sha256")
+            mutator(value)
+            self.sign_passport(path, secret, value)
+
+        def charge(factory_sha: str, run_id: str) -> dict[str, object]:
+            return {
+                "accounting_state": "completed",
+                "charge_micro_usd": 1,
+                "contract_version": "1.8.0",
+                "factory_sha": factory_sha,
+                "head_before": "1" * 40,
+                "manifest_sha256": "2" * 64,
+                "role": "builder",
+                "run_id": run_id,
+                "transition_receipt_sha256": "3" * 64,
+            }
+
+        def completion(factory_sha: str, run_id: str) -> dict[str, object]:
+            return {
+                "contract_version": "1.8.0",
+                "factory_sha": factory_sha,
+                "head_before": "1" * 40,
+                "manifest_sha256": "2" * 64,
+                "output_sha256": "4" * 64,
+                "role": "builder",
+                "run_id": run_id,
+                "transition_receipt_sha256": "3" * 64,
+            }
+
+        def set_charge(value: dict[str, object], factory_sha: str) -> None:
+            value["charge_records"] = [charge(factory_sha, "run-charge")]
+            value["cumulative_charges_micro_usd"] = 1
+
+        def set_completion(
+            value: dict[str, object], factory_sha: str,
+            charge_factory_sha: str = source,
+        ) -> None:
+            value["charge_records"] = [
+                charge(charge_factory_sha, "run-completed")
+            ]
+            value["completed_role_evidence"] = [
+                completion(factory_sha, "run-completed")
+            ]
+            value["cumulative_charges_micro_usd"] = 1
+
+        rewrite(lambda value: set_completion(value, source))
+        ENVIRONMENT.validate_successor_upgrade_cohort(
+            self.factory, controller, "relay", source, manifest,
+        )
+
+        for ticket in tickets:
+            self.write_passport(
+                passports / f"{ticket}.json", secret, ticket, candidate, source,
+            )
+        rewrite(lambda value: set_completion(value, candidate, candidate))
+        rewrite(lambda value: value.update(completed_role_corrections=[{
+            "failed_factory_sha": candidate,
+            "issue": "https://github.com/nysa-company/software-factory/issues/218",
+            "output_head_sha": "5" * 40,
+            "progress_events": 1,
+            "progress_journal_sha256": "6" * 64,
+            "receipt_parent_file_sha256": "7" * 64,
+            "recovery_factory_sha": source,
+            "run_id": "run-completed",
+            "schema": "nysa.software-factory.completed-role-correction/v1",
+            "transition_receipt_sha256": "3" * 64,
+        }]))
+        ENVIRONMENT.validate_successor_upgrade_cohort(
+            self.factory, controller, "relay", candidate, manifest,
+        )
+        ENVIRONMENT.validate_successor_upgrade_cohort(
+            self.factory, controller, "relay", candidate, manifest,
+        )
+        for ticket in tickets:
+            self.write_passport(
+                passports / f"{ticket}.json", secret, ticket, source,
+            )
+
+        cases = {
+            "candidate-native": lambda: self.write_passport(
+                path, secret, "T-102", candidate,
+            ),
+            "foreign-source": lambda: self.write_passport(
+                path, secret, "T-102", foreign, source,
+            ),
+            "malformed-migration": lambda: rewrite(
+                lambda value: value.update(migration_history=[{"schema": "bad"}])
+            ),
+            "candidate-charge": lambda: rewrite(
+                lambda value: set_charge(value, candidate)
+            ),
+            "foreign-charge": lambda: rewrite(
+                lambda value: set_charge(value, foreign)
+            ),
+            "candidate-completed": lambda: rewrite(
+                lambda value: set_completion(value, candidate)
+            ),
+            "foreign-completed": lambda: rewrite(
+                lambda value: set_completion(value, foreign)
+            ),
+            "missing": path.unlink,
+        }
+        for label, mutate in cases.items():
+            with self.subTest(label=label):
+                self.write_passport(path, secret, "T-102", source)
+                mutate()
+                with self.assertRaisesRegex(
+                    ENVIRONMENT.EnvironmentError,
+                    "T-102: successor qualification requires every selected ticket",
+                ):
+                    ENVIRONMENT.validate_successor_upgrade_cohort(
+                        self.factory, controller, "relay", source, manifest,
+                    )
+        self.write_passport(path, secret, "T-102", source)
+        drifted = dict(manifest, source_factory_sha="e" * 40)
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError,
+            "T-101: successor qualification requires every selected ticket",
+        ):
+            ENVIRONMENT.validate_successor_upgrade_cohort(
+                self.factory, controller, "relay", source, drifted,
+            )
+
+    def test_candidate_native_successor_refuses_before_upgrade_publication(self) -> None:
+        args = argparse.Namespace(
+            factory_root=self.factory,
+            product_root=self.product,
+            project="relay",
+            root=self.root,
+        )
+        first = ENVIRONMENT.prepare(args)
+        active_path = self.root / "projects/relay/active.json"
+        authority = Path(first["authority_root"])
+
+        (self.factory / "successor.txt").write_text("successor\n", encoding="utf-8")
+        run(self.factory, "git", "add", "successor.txt")
+        run(self.factory, "git", "commit", "-qm", "successor")
+        successor = run(self.factory, "git", "rev-parse", "HEAD")
+        manifest_path = self.product / "factory/QUALIFICATION.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest.update({
+            "budget_usd": "300.000000",
+            "factory_sha": successor,
+            "mode": "successor",
+            "per_run_budget_usd": "10.000000",
+            "per_ticket_budget_usd": "100.000000",
+            "source_factory_sha": self.sha,
+        })
+        (self.product / "factory/KIT_PIN").write_text(successor + "\n")
+        manifest_path.write_text(json.dumps(manifest) + "\n")
+        run(
+            self.product, "git", "add", "factory/KIT_PIN",
+            "factory/QUALIFICATION.json",
+        )
+        run(self.product, "git", "commit", "-qm", "authorize successor")
+        before_root = {
+            path.relative_to(self.root): path.read_bytes()
+            for path in self.root.rglob("*") if path.is_file()
+        }
+        before_authority = {
+            path.relative_to(authority): path.read_bytes()
+            for path in authority.rglob("*") if path.is_file()
+        }
+
+        with (
+            mock.patch.object(
+                ENVIRONMENT, "resume_operator_state",
+                side_effect=AssertionError("operator state must not change"),
+            ),
+            mock.patch.object(
+                ENVIRONMENT, "initialize_selected_linear",
+                side_effect=AssertionError("Linear must not run"),
+            ),
+            mock.patch.object(
+                ENVIRONMENT, "materialize",
+                side_effect=AssertionError("successor must not be sealed"),
+            ),
+            self.assertRaisesRegex(
+                ENVIRONMENT.EnvironmentError,
+                "successor qualification requires every selected ticket",
+            ),
+        ):
+            ENVIRONMENT.upgrade(args)
+
+        self.assertEqual(ENVIRONMENT.read(active_path)["kit_sha"], self.sha)
+        self.assertEqual(before_root, {
+            path.relative_to(self.root): path.read_bytes()
+            for path in self.root.rglob("*") if path.is_file()
+        })
+        self.assertEqual(before_authority, {
+            path.relative_to(authority): path.read_bytes()
+            for path in authority.rglob("*") if path.is_file()
+        })
+        self.assertFalse((self.root / f"releases/{successor}").exists())
 
     def test_normal_upgrade_refuses_terminal_target_before_any_mutation(self) -> None:
         args = argparse.Namespace(

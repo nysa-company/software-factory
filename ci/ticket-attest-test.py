@@ -1302,6 +1302,211 @@ else:
             0,
         )
 
+    def test_dependency_refresh_retires_bundle_and_approval_after_publication(self):
+        ticket = self.product / "factory/tickets/T-700.md"
+        ticket.write_text(ticket.read_text().replace(
+            "Priority: normal", "Priority: normal\nDepends-On: T-094",
+        ))
+        self.commit("declare publication dependency")
+        command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
+        self.bundle()
+        self.approval_overlay()
+        approved = self.attest("approval")
+        self.assertEqual(approved.returncode, 0, approved.stderr)
+        self.approval_overlay()
+        old_head = self.head()
+        attestation_dir = self.product / "factory/attestations/T-700"
+        prior_bundle = TICKET_ATTEST.blob_id(
+            self.product, attestation_dir / "bundle.json",
+        )
+        prior_approval = TICKET_ATTEST.blob_id(
+            self.product, attestation_dir / "approval.json",
+        )
+
+        updater = self.temp / "approved-dependency-main-update"
+        command("git", "clone", "-q", "--branch", "main", str(self.remote), str(updater))
+        (updater / "dependency.txt").write_text("terminal dependency\n")
+        command("git", "add", ".", cwd=updater)
+        command(
+            "git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+            "commit", "-qm", "complete dependency", cwd=updater,
+        )
+        protected = self.head_at(updater)
+        command("git", "push", "-q", "origin", "main", cwd=updater)
+        self.env["FACTORY_TRANSITION_STAGE"] = (
+            "REFUSE dependency refresh required; "
+            f"dependencies=T-094; protected-main={protected}"
+        )
+        args = argparse.Namespace(ticket="T-700")
+        with (
+            patch.dict(os.environ, self.env, clear=True),
+            patch.object(
+                TICKET_ATTEST, "protected_dependency",
+                return_value={"basis": "normal", "ticket": "T-094"},
+            ),
+        ):
+            os.environ["FACTORY_TEST_REFRESH_CRASH_AFTER_PUSH"] = "1"
+            with self.assertRaises(SystemExit):
+                TICKET_ATTEST.dependency_refresh(
+                    args, self.product, self.product, "ticket/", str(self.remote),
+                )
+            os.environ.pop("FACTORY_TEST_REFRESH_CRASH_AFTER_PUSH")
+            refreshed_head = self.head()
+            self.assertNotEqual(
+                command(
+                    "git", "rev-parse", "refs/remotes/origin/ticket/T-700",
+                    cwd=self.product,
+                ).stdout.strip(),
+                refreshed_head,
+            )
+            self.assertEqual(
+                json.loads(
+                    (self.product / "factory/linear-map.json").read_text()
+                )["tickets"]["T-700"]["operator"]["approval"],
+                "Linear",
+            )
+            os.environ.pop("FACTORY_TRANSITION_STAGE", None)
+            os.environ.pop("FACTORY_TRANSITION_RECEIPT_SHA256", None)
+            replayed = TICKET_ATTEST.dependency_publication_replay(
+                args, self.product, self.product, "ticket/", str(self.remote),
+            )
+
+        self.assertEqual(replayed["action"], "dependency-publication-refresh")
+        self.assertEqual(self.head(), refreshed_head)
+        self.assertIsNone(
+            TICKET_ATTEST.stale_approval_overlay_version(
+                self.product, "T-700",
+            )
+        )
+        self.assertEqual(replayed["dependencies"], ["T-094"])
+        self.assertEqual(replayed["attestation"]["old_head"], old_head)
+        self.assertEqual(replayed["attestation"]["base_head"], protected)
+        self.assertEqual(replayed["attestation"]["prior_bundle_blob"], prior_bundle)
+        self.assertEqual(replayed["attestation"]["prior_approval_blob"], prior_approval)
+        self.assertFalse((attestation_dir / "bundle.json").exists())
+        self.assertFalse((attestation_dir / "approval.json").exists())
+        refreshed = ticket.read_text()
+        self.assertIn("State: Review", refreshed)
+        self.assertNotIn("Operator-Approval:", refreshed)
+        self.assertIn("- [ ] Evidence bundle posted", refreshed)
+        self.assertIn("- [ ] Operator approved", refreshed)
+        self.assertIn("post-refresh Reviewer", self.attest("bundle").stderr)
+
+    def test_publication_dependency_refresh_waits_without_retiring_evidence(self):
+        ticket = self.product / "factory/tickets/T-700.md"
+        ticket.write_text(ticket.read_text().replace(
+            "Priority: normal", "Priority: normal\nDepends-On: T-094",
+        ))
+        self.commit("declare dependency before bundle")
+        command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
+        self.bundle()
+        bundle = self.product / "factory/attestations/T-700/bundle.json"
+        old_head = self.head()
+        expected = command(
+            "git", "rev-parse", "origin/main", cwd=self.product,
+        ).stdout.strip()
+        updater = self.temp / "moved-dependency-main"
+        command("git", "clone", "-q", "--branch", "main", str(self.remote), str(updater))
+        (updater / "moved.txt").write_text("newer protected main\n")
+        command("git", "add", ".", cwd=updater)
+        command(
+            "git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+            "commit", "-qm", "move protected main", cwd=updater,
+        )
+        observed = self.head_at(updater)
+        command("git", "push", "-q", "origin", "main", cwd=updater)
+        self.env["FACTORY_TRANSITION_STAGE"] = (
+            "REFUSE dependency refresh required; "
+            f"dependencies=T-094; protected-main={expected}"
+        )
+        args = argparse.Namespace(ticket="T-700")
+        with patch.dict(os.environ, self.env, clear=True):
+            result = TICKET_ATTEST.dependency_refresh(
+                args, self.product, self.product, "ticket/", str(self.remote),
+            )
+        self.assertEqual(result, {
+            "action": "dependency-wait",
+            "expected_protected_head": expected,
+            "observed_protected_head": observed,
+        })
+        self.assertEqual(self.head(), old_head)
+        self.assertTrue(bundle.is_file())
+
+    def test_dependency_publication_replay_refuses_dependency_drift_before_overlay(self):
+        ticket = self.product / "factory/tickets/T-700.md"
+        ticket.write_text(
+            "# T-700\n\nState: Review\nDepends-On: T-095\n",
+            encoding="utf-8",
+        )
+        old_ticket = "# T-700\n\nState: Review\nDepends-On: T-094\n"
+        completed = subprocess.CompletedProcess(
+            ["git"], 0, old_ticket, "",
+        )
+        with (
+            patch.object(
+                TICKET_ATTEST, "ensure_clean_branch", return_value="a" * 40,
+            ),
+            patch.object(
+                TICKET_ATTEST, "load_refresh_receipt",
+                return_value=({"old_head": "b" * 40}, "a" * 40),
+            ),
+            patch.object(TICKET_ATTEST, "git", return_value=completed),
+            patch.object(
+                TICKET_ATTEST, "consume_stale_approval_overlay",
+            ) as consume,
+            self.assertRaisesRegex(
+                TICKET_ATTEST.Refusal, "replay dependencies changed",
+            ),
+        ):
+            TICKET_ATTEST.dependency_publication_replay(
+                argparse.Namespace(ticket="T-700"), self.product,
+                self.product, "ticket/", str(self.remote),
+            )
+        consume.assert_not_called()
+
+    def test_dependency_refresh_retires_bundle_before_approval(self):
+        ticket = self.product / "factory/tickets/T-700.md"
+        ticket.write_text(ticket.read_text().replace(
+            "Priority: normal", "Priority: normal\nDepends-On: T-094",
+        ))
+        self.commit("declare dependency before publication")
+        command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
+        self.bundle()
+        attestation_dir = self.product / "factory/attestations/T-700"
+        prior_bundle = TICKET_ATTEST.blob_id(
+            self.product, attestation_dir / "bundle.json",
+        )
+        updater = self.temp / "bundle-dependency-main-update"
+        command("git", "clone", "-q", "--branch", "main", str(self.remote), str(updater))
+        (updater / "dependency-done.txt").write_text("done\n")
+        command("git", "add", ".", cwd=updater)
+        command(
+            "git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+            "commit", "-qm", "complete dependency after bundle", cwd=updater,
+        )
+        protected = self.head_at(updater)
+        command("git", "push", "-q", "origin", "main", cwd=updater)
+        self.env["FACTORY_TRANSITION_STAGE"] = (
+            "REFUSE dependency refresh required; "
+            f"dependencies=T-094; protected-main={protected}"
+        )
+        with (
+            patch.dict(os.environ, self.env, clear=True),
+            patch.object(
+                TICKET_ATTEST, "protected_dependency",
+                return_value={"basis": "normal", "ticket": "T-094"},
+            ),
+        ):
+            result = TICKET_ATTEST.dependency_refresh(
+                argparse.Namespace(ticket="T-700"), self.product,
+                self.product, "ticket/", str(self.remote),
+            )
+        self.assertEqual(result["action"], "dependency-publication-refresh")
+        self.assertEqual(result["attestation"]["prior_bundle_blob"], prior_bundle)
+        self.assertIsNone(result["attestation"]["prior_approval_blob"])
+        self.assertFalse((attestation_dir / "bundle.json").exists())
+        self.assertIn("State: Review", ticket.read_text())
+
     def test_dependency_refresh_routes_regular_test_conflict_to_test_author(self):
         command("git", "switch", "-q", "main", cwd=self.product)
         test_path = self.product / "tests/dependency-conflict.test.ts"
@@ -1678,6 +1883,9 @@ else:
                 "branch": "ticket/T-700", "current_state": "Review",
                 "publication_state": "none", "factory_sha": KIT_SHA,
                 "head_sha": merge_sha,
+                "factory_release_history": [{
+                    "contract_version": "1.8.0", "factory_sha": KIT_SHA,
+                }],
             }
             canonical = lambda item: (json.dumps(
                 item, ensure_ascii=True, sort_keys=True, separators=(",", ":"),
@@ -1771,6 +1979,285 @@ else:
             )["basis"],
             "attested-emergency-closeout",
         )
+
+    def prepare_stale_emergency(self, *, bundle_v2=False):
+        old_kit = ("d" if bundle_v2 else "e") * 40
+        route = self.product / "factory/route-plans/T-700.json"
+        route_value = json.loads(route.read_text())
+        route_value["kit_sha"] = old_kit
+        route.write_text(json.dumps(route_value, indent=2, sort_keys=True) + "\n")
+        self.write_runs()
+        for manifest in (self.product / "factory/runs").glob("*.meta"):
+            manifest.write_text(manifest.read_text().replace(
+                f"kit_sha={KIT_SHA}", f"kit_sha={old_kit}",
+            ))
+        self.commit("bind prior release evidence")
+        command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
+        self.env["FACTORY_RELEASE_SHA"] = old_kit
+        if bundle_v2:
+            self.add_legacy_planner()
+            pinned = self.product / "factory/runs/planner-pinned-1.meta"
+            pinned.write_text(pinned.read_text().replace(
+                f"kit_sha={KIT_SHA}", f"kit_sha={old_kit}",
+            ))
+        self.bundle()
+        stale_bundle = json.loads(
+            (self.product / "factory/attestations/T-700/bundle.json").read_text()
+        )
+        stale_bundle_commit = command(
+            "git", "log", "-1", "--format=%H", "HEAD", "--",
+            "factory/attestations/T-700/bundle.json", cwd=self.product,
+        ).stdout.strip()
+        self.assertEqual(stale_bundle["kit_sha"], old_kit)
+
+        route_value["kit_sha"] = KIT_SHA
+        route.write_text(json.dumps(route_value, indent=2, sort_keys=True) + "\n")
+        ticket = self.product / "factory/tickets/T-700.md"
+        ticket.write_text(ticket.read_text().replace(
+            "State: Awaiting Approval", "State: Review",
+        ))
+        self.commit("migrate release while preserving stale bundle")
+        command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
+        self.env["FACTORY_RELEASE_SHA"] = KIT_SHA
+        self.prepare_emergency()
+        self.assertIn(
+            "lacks exact authenticated successor lineage",
+            self.emergency("emergency-plan").stderr,
+        )
+        passport_path = self.controller_state / "passports/T-700.json"
+        passport = json.loads(passport_path.read_text())
+        passport.pop("authentication_sha256")
+        passport.pop("passport_sha256")
+        passport["factory_release_history"].insert(0, {
+            "contract_version": "1.8.0", "factory_sha": old_kit,
+        })
+        prior_passport_file = "6" * 64
+        prior_passport = "7" * 64
+        current_route = hashlib.sha256(
+            command(
+                "git", "show", f"{passport['head_sha']}:factory/route-plans/T-700.json",
+                cwd=self.workdir,
+            ).stdout.encode()
+        ).hexdigest()
+        passport.update({
+            "protected_base_sha": passport["head_sha"],
+            "route_plan_sha256": current_route,
+            "parent_file_sha256": prior_passport_file,
+            "parent_digest": prior_passport,
+            "migration_history": [{
+                "schema": "nysa.software-factory.ticket-passport-migration/v2",
+                "from_factory_sha": old_kit,
+                "from_head_sha": stale_bundle_commit,
+                "from_passport_file_sha256": prior_passport_file,
+                "from_passport_sha256": prior_passport,
+                "from_protected_base_sha": stale_bundle["branch_head"],
+                "from_route_plan_sha256": stale_bundle["route_plan_sha256"],
+                "to_factory_sha": KIT_SHA,
+                "to_head_sha": passport["head_sha"],
+                "to_protected_base_sha": passport["head_sha"],
+                "to_route_plan_sha256": current_route,
+            }],
+        })
+        canonical = lambda item: (json.dumps(
+            item, ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+        ) + "\n").encode()
+        passport["authentication_sha256"] = hmac.new(
+            b"p" * 32, canonical(passport), hashlib.sha256,
+        ).hexdigest()
+        passport["passport_sha256"] = hashlib.sha256(
+            canonical(passport)
+        ).hexdigest()
+        passport_path.write_bytes(canonical(passport))
+        passport_path.chmod(0o600)
+
+        planned = self.emergency("emergency-plan")
+        self.assertEqual(planned.returncode, 0, planned.stderr)
+        plan = json.loads(planned.stdout)
+        self.assertEqual(
+            plan["plan"]["schema"],
+            "nysa.software-factory.emergency-closeout-plan/v2",
+        )
+        stale = plan["plan"]["stale_attestation"]
+        self.assertEqual(stale["kit_sha"], old_kit)
+        self.assertEqual(
+            stale["path"], "factory/attestations/T-700/bundle.json",
+        )
+        return old_kit, plan
+
+    def test_emergency_closeout_accepts_exact_prior_kit_bundle_v2(self):
+        _, plan = self.prepare_stale_emergency(bundle_v2=True)
+        bundle = json.loads(command(
+            "git", "show",
+            f"{plan['plan']['protected_main']['commit']}:"
+            "factory/attestations/T-700/bundle.json",
+            cwd=self.workdir,
+        ).stdout)
+        self.assertEqual(bundle["schema"], "nysa.software-factory.ticket-bundle/v2")
+
+    def test_emergency_closeout_retires_exact_prior_kit_bundle_and_retries(self):
+        _, plan = self.prepare_stale_emergency()
+        self.update_state(create_fail=True)
+        failed = self.emergency("emergency-apply", plan["approval_sha256"])
+        self.assertIn("did not create", failed.stderr)
+        closeout_head = self.head_at(self.workdir)
+        self.assertFalse(
+            (self.workdir / "factory/attestations/T-700/bundle.json").exists()
+        )
+        self.update_state(create_fail=False)
+        retried = self.emergency("emergency-apply", plan["approval_sha256"])
+        self.assertEqual(retried.returncode, 0, retried.stderr)
+        self.assertEqual(self.head_at(self.workdir), closeout_head)
+        self.assertEqual(
+            TICKET_ATTEST.protected_terminal(
+                self.workdir, "T-700", closeout_head,
+            )["basis"],
+            "attested-emergency-closeout",
+        )
+
+    def test_emergency_closeout_requires_exact_authenticated_bundle_lineage(self):
+        _, _ = self.prepare_stale_emergency()
+        passport_path = self.controller_state / "passports/T-700.json"
+        original = json.loads(passport_path.read_text())
+
+        def write_passport(value):
+            value.pop("authentication_sha256", None)
+            value.pop("passport_sha256", None)
+            canonical = lambda item: (json.dumps(
+                item, ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+            ) + "\n").encode()
+            value["authentication_sha256"] = hmac.new(
+                b"p" * 32, canonical(value), hashlib.sha256,
+            ).hexdigest()
+            value["passport_sha256"] = hashlib.sha256(canonical(value)).hexdigest()
+            passport_path.write_bytes(canonical(value))
+            passport_path.chmod(0o600)
+
+        variants = {}
+        foreign = json.loads(json.dumps(original))
+        foreign["migration_history"][0]["from_factory_sha"] = "f" * 40
+        variants["foreign source release"] = foreign
+        wrong_route = json.loads(json.dumps(original))
+        wrong_route["migration_history"][0]["from_route_plan_sha256"] = "0" * 64
+        variants["wrong source route"] = wrong_route
+        malformed = json.loads(json.dumps(original))
+        malformed["migration_history"][0].pop("to_route_plan_sha256")
+        variants["malformed migration"] = malformed
+        ambiguous = json.loads(json.dumps(original))
+        ambiguous["migration_history"].append(
+            dict(ambiguous["migration_history"][0])
+        )
+        variants["ambiguous migration"] = ambiguous
+
+        for label, value in variants.items():
+            with self.subTest(label=label):
+                write_passport(value)
+                refused = self.emergency("emergency-plan")
+                self.assertNotEqual(refused.returncode, 0)
+                self.assertIn(
+                    "lacks exact authenticated successor lineage", refused.stderr,
+                )
+        write_passport(original)
+
+    def assert_emergency_mutation_crash_recovers(self, point):
+        _, plan = self.prepare_stale_emergency()
+        self.env["FACTORY_TEST_EMERGENCY_CRASH_AFTER"] = point
+        crashed = self.emergency("emergency-apply", plan["approval_sha256"])
+        self.assertEqual(crashed.returncode, 91, crashed.stderr)
+        journal = self.controller_state / "emergency-closeout/T-700.json"
+        self.assertTrue(journal.is_file())
+        self.assertEqual(journal.stat().st_mode & 0o777, 0o600)
+        self.env.pop("FACTORY_TEST_EMERGENCY_CRASH_AFTER")
+        retried = self.emergency("emergency-apply", plan["approval_sha256"])
+        self.assertEqual(retried.returncode, 0, retried.stderr)
+        self.assertFalse(journal.exists())
+        self.assertEqual(
+            TICKET_ATTEST.protected_terminal(
+                self.workdir, "T-700", self.head_at(self.workdir),
+            )["basis"],
+            "attested-emergency-closeout",
+        )
+
+    def test_emergency_closeout_recovers_crash_after_ledger_projection(self):
+        self.assert_emergency_mutation_crash_recovers("ledger")
+
+    def test_emergency_closeout_recovers_crash_after_ticket_rewrite(self):
+        self.assert_emergency_mutation_crash_recovers("ticket")
+
+    def test_emergency_closeout_recovers_crash_after_bundle_unlink(self):
+        self.assert_emergency_mutation_crash_recovers("bundle")
+
+    def test_emergency_closeout_recovers_crash_after_done_write(self):
+        self.assert_emergency_mutation_crash_recovers("done")
+
+    def test_emergency_closeout_recovers_crash_after_commit(self):
+        self.assert_emergency_mutation_crash_recovers("commit")
+
+    def test_emergency_closeout_recovers_crash_after_push(self):
+        self.assert_emergency_mutation_crash_recovers("push")
+
+    def test_emergency_closeout_recovers_crash_before_journal_cleanup(self):
+        self.assert_emergency_mutation_crash_recovers("cleanup")
+
+    def test_emergency_closeout_recovers_push_failure_after_commit(self):
+        _, plan = self.prepare_stale_emergency()
+        wrong_remote = self.temp / "wrong.git"
+        command("git", "init", "--bare", "-q", str(wrong_remote))
+        command(
+            "git", "remote", "set-url", "--push", "origin", str(wrong_remote),
+            cwd=self.product,
+        )
+        failed = self.emergency("emergency-apply", plan["approval_sha256"])
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertIn("configured origin", failed.stderr)
+        committed = self.head_at(self.workdir)
+        command(
+            "git", "remote", "set-url", "--push", "origin", str(self.remote),
+            cwd=self.product,
+        )
+        retried = self.emergency("emergency-apply", plan["approval_sha256"])
+        self.assertEqual(retried.returncode, 0, retried.stderr)
+        self.assertEqual(self.head_at(self.workdir), committed)
+        observed = command(
+            "git", "ls-remote", "--heads", str(self.remote),
+            "refs/heads/chore/t700-closeout",
+        ).stdout.split()
+        self.assertEqual(observed, [committed, "refs/heads/chore/t700-closeout"])
+
+    def assert_emergency_mutation_tamper_refused(self, point, relative):
+        _, plan = self.prepare_stale_emergency()
+        self.env["FACTORY_TEST_EMERGENCY_CRASH_AFTER"] = point
+        crashed = self.emergency("emergency-apply", plan["approval_sha256"])
+        self.assertEqual(crashed.returncode, 91, crashed.stderr)
+        self.env.pop("FACTORY_TEST_EMERGENCY_CRASH_AFTER")
+        target = self.workdir / relative
+        target.write_text(target.read_text() + "foreign edit\n")
+        refused = self.emergency("emergency-apply", plan["approval_sha256"])
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("bytes are not exact", refused.stderr)
+        self.assertTrue(target.read_text().endswith("foreign edit\n"))
+
+    def test_emergency_closeout_refuses_foreign_ledger_prefix(self):
+        self.assert_emergency_mutation_tamper_refused(
+            "ledger", "factory/ledger.csv",
+        )
+
+    def test_emergency_closeout_refuses_foreign_ticket_prefix(self):
+        self.assert_emergency_mutation_tamper_refused(
+            "ticket", "factory/tickets/T-700.md",
+        )
+
+    def test_emergency_closeout_refuses_current_kit_partial_evidence(self):
+        self.bundle()
+        ticket = self.product / "factory/tickets/T-700.md"
+        ticket.write_text(ticket.read_text().replace(
+            "State: Awaiting Approval", "State: Review",
+        ))
+        self.commit("strand current release bundle")
+        command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
+        self.prepare_emergency()
+        refused = self.emergency("emergency-plan")
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("not exact prior-kit evidence", refused.stderr)
 
     def test_emergency_closeout_accepts_exact_paused_checkpoint(self):
         self.prepare_emergency(paused=True)

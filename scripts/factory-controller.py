@@ -560,6 +560,93 @@ class Controller:
             raise ControllerError("operator transition evidence is invalid")
         return value
 
+    def dependency_publication_replay_transition(
+        self, claim: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Recognize only the exact post-push dependency refresh boundary."""
+        refresh_path = (
+            Path(claim["worktree"]) / "factory" / "attestations"
+            / claim["ticket"] / "refresh.json"
+        )
+        try:
+            if not stat.S_ISREG(refresh_path.lstat().st_mode):
+                return None
+            candidate = read(self.state / f"{claim['ticket']}.json")
+        except (ControllerError, OSError, json.JSONDecodeError, UnicodeError):
+            return None
+        stage = candidate.get("stage", "")
+        if not (
+            candidate.get("schema")
+            == "nysa.software-factory.transition-receipt/v1"
+            and candidate.get("consumed") is True
+            and re.fullmatch(
+                r"REFUSE dependency refresh required; "
+                r"dependencies=T-[0-9]+(?:,T-[0-9]+)*; "
+                r"protected-main=[0-9a-f]{40}",
+                stage,
+            ) is not None
+            and SHA.fullmatch(candidate.get("head_sha", ""))
+        ):
+            return None
+        current = subprocess.run(
+            ["git", "-C", claim["worktree"], "rev-parse", "HEAD"],
+            text=True, capture_output=True, check=False, timeout=120,
+        )
+        refresh_commit = subprocess.run(
+            [
+                "git", "-C", claim["worktree"], "log", "-1",
+                "--format=%H", "HEAD", "--",
+                f"factory/attestations/{claim['ticket']}/refresh.json",
+            ],
+            text=True, capture_output=True, check=False, timeout=120,
+        )
+        current_head = current.stdout.strip()
+        if (
+            current.returncode
+            or refresh_commit.returncode
+            or not SHA.fullmatch(current_head)
+            or refresh_commit.stdout.strip() != current_head
+            or candidate["head_sha"] == current_head
+        ):
+            return None
+        passport = self.authenticated_operator_passport(claim["ticket"])
+        if (
+            passport is None
+            or passport.get("branch") != claim["branch"]
+            or passport.get("factory_sha") != self.release_path.name
+        ):
+            raise ControllerError(
+                "dependency refresh replay passport is invalid"
+            )
+        passport_head = passport.get("head_sha", "") if passport else ""
+        if passport_head == current_head:
+            return None
+        if passport_head != candidate["head_sha"]:
+            raise ControllerError(
+                "dependency refresh replay passport is invalid"
+            )
+        transition = self.operator_transition(claim)
+        if (
+            transition is None
+            or transition.get("stage") != stage
+            or transition.get("consumed") is not True
+            or transition.get("head_sha") != candidate["head_sha"]
+        ):
+            raise ControllerError(
+                "dependency refresh replay transition changed"
+            )
+        return {
+            "action": stage.partition(" ")[0],
+            "detail": stage.partition(" ")[2] or None,
+            "loop": transition.get("loop"),
+            "receipt": transition["receipt_sha256"],
+            "role": transition.get("role"),
+            "schema": "nysa.software-factory.state-machine/v1",
+            "stage": stage,
+            "status": "ok",
+            "ticket": claim["ticket"],
+        }
+
     def recover_operator_action_events(
         self, claims: list[dict[str, Any]],
     ) -> None:
@@ -1172,8 +1259,10 @@ class Controller:
         terminal_factory_sha = done.get("kit_sha")
         if (
             terminal.get("terminal_basis") != "attested-emergency-closeout"
-            or done.get("schema")
-            != "nysa.software-factory.ticket-emergency-done/v1"
+            or done.get("schema") not in {
+                "nysa.software-factory.ticket-emergency-done/v1",
+                "nysa.software-factory.ticket-emergency-done/v2",
+            }
             or not SHA.fullmatch(terminal_factory_sha or "")
             or terminal_factory_sha not in release_receipts
             or not isinstance(plan, dict)
@@ -1319,7 +1408,10 @@ class Controller:
                 raise ControllerError(
                     "qualification terminal adoption is incomplete"
                 ) from error
-            if done.get("schema") == "nysa.software-factory.ticket-emergency-done/v1":
+            if done.get("schema") in {
+                "nysa.software-factory.ticket-emergency-done/v1",
+                "nysa.software-factory.ticket-emergency-done/v2",
+            }:
                 reconciliation = self.qualification_emergency_terminal(ticket)
                 stable = {
                     "done_sha256", "pause_file_sha256", "pause_receipt_sha256",
@@ -1874,6 +1966,97 @@ class Controller:
         states = re.findall(r"^State:\s*(.*?)\s*$", text, re.I | re.M)
         return len(states) == 1 and states[0].casefold() == "done"
 
+    def protected_main_head(self) -> str:
+        observed = subprocess.run(
+            [
+                "git", "-C", str(self.product), "ls-remote", "--heads",
+                "origin", "refs/heads/main",
+            ],
+            text=True, capture_output=True, check=False, timeout=120,
+        )
+        fields = observed.stdout.split()
+        if (
+            observed.returncode
+            or len(fields) != 2
+            or not SHA.fullmatch(fields[0])
+            or fields[1] != "refs/heads/main"
+        ):
+            raise ControllerError("protected main cancellation authority is unavailable")
+        with self.git_lock:
+            subprocess.run(
+                [
+                    "git", "-C", str(self.product), "fetch", "--quiet",
+                    "--no-tags", "origin",
+                    "+refs/heads/main:refs/remotes/origin/main",
+                ],
+                check=True, timeout=120,
+            )
+            fetched = subprocess.run(
+                [
+                    "git", "-C", str(self.product), "rev-parse", "--verify",
+                    "refs/remotes/origin/main^{commit}",
+                ],
+                text=True, capture_output=True, check=True, timeout=120,
+            ).stdout.strip()
+        if fetched != fields[0]:
+            raise ControllerError("protected main cancellation authority changed")
+        return fetched
+
+    def product_ticket_canceled(
+        self, ticket: str, protected_main: str | None = None,
+    ) -> bool:
+        if self.qualification:
+            return False
+        protected_main = protected_main or self.protected_main_head()
+        if not SHA.fullmatch(protected_main):
+            raise ControllerError("protected main cancellation authority is invalid")
+        observed = subprocess.run(
+            [
+                "git", "-C", str(self.product), "show",
+                f"{protected_main}:factory/tickets/{ticket}.md",
+            ],
+            text=True, capture_output=True, check=False, timeout=120,
+        )
+        if observed.returncode != 0:
+            return False
+        states = re.findall(
+            r"^State:\s*(.*?)\s*$", observed.stdout, re.I | re.M,
+        )
+        return len(states) == 1 and states[0].casefold() == "canceled"
+
+    def cancellation_authority(
+        self, claims: list[dict[str, Any]],
+    ) -> str | None:
+        if self.qualification or not claims:
+            return None
+        return self.protected_main_head()
+
+    def retire_canceled_claims(
+        self, claims: list[dict[str, Any]], protected_main: str | None = None,
+    ) -> list[dict[str, Any]]:
+        if claims and not self.qualification and protected_main is None:
+            protected_main = self.cancellation_authority(claims)
+        if protected_main is None:
+            return claims
+        retained = []
+        for claim in claims:
+            if (
+                not self.product_ticket_canceled(claim["ticket"], protected_main)
+                or self.role_active(claim)
+            ):
+                retained.append(claim)
+                continue
+            self.withdraw_publication(claim)
+            if claim.get("lease_released") is not True:
+                if not DIGEST.fullmatch(claim.get("lease", "")):
+                    raise ControllerError("canceled ticket claim lease is invalid")
+                self.release_ticket_lease(claim)
+            self.event_once(
+                "ticket_retired", claim["ticket"], reason="canceled",
+            )
+            self.claim_path(claim["ticket"]).unlink(missing_ok=True)
+        return retained
+
     def recover_missing_passport_claims(
         self, claims: list[dict[str, Any]]
     ) -> None:
@@ -2283,13 +2466,20 @@ class Controller:
         self.event("ticket_released", claim["ticket"])
 
     def release_publication(self, claim: dict[str, Any]) -> None:
-        self.json_call(
-            "publication", "release", "--ticket", claim["ticket"],
-            "--lease", claim["publication_lease"], "--json",
-        )
+        try:
+            self.json_call(
+                "publication", "release", "--ticket", claim["ticket"],
+                "--lease", claim["publication_lease"], "--json",
+            )
+        except ControllerError as error:
+            recovered = self.json_call(
+                "publication", "withdraw", "--ticket", claim["ticket"], "--json",
+            )
+            if recovered.get("status") != "absent":
+                raise error
         claim["publication_lease"] = ""
         self.save_claim(claim)
-        self.event("publication_released", claim["ticket"])
+        self.event_once("publication_released", claim["ticket"])
 
     def withdraw_publication(self, claim: dict[str, Any]) -> None:
         if claim.get("publication_lease"):
@@ -6100,11 +6290,17 @@ class Controller:
                 claim["status"] = "waiting"
                 self.save_claim(claim)
                 return {"status": "waiting", "ticket": claim["ticket"]}
-            transition = self.json_call(
-                "state-machine", "--ticket", claim["ticket"],
-                "--lease", claim["lease"], "--workdir", claim["worktree"],
-                "--json",
-                timeout=None,
+            replay_transition = (
+                self.dependency_publication_replay_transition(claim)
+            )
+            transition = (
+                replay_transition
+                if replay_transition is not None else self.json_call(
+                    "state-machine", "--ticket", claim["ticket"],
+                    "--lease", claim["lease"],
+                    "--workdir", claim["worktree"], "--json",
+                    timeout=None,
+                )
             )
             maintenance = (self.product / "factory/MAINTENANCE").exists()
             if not valid_transition_evidence(transition, claim["ticket"]):
@@ -6409,23 +6605,34 @@ class Controller:
             )
             if dependency_refresh:
                 receipt_record = read(self.state / f"{claim['ticket']}.json")
+                current_head = subprocess.run(
+                    ["git", "-C", claim["worktree"], "rev-parse", "HEAD"],
+                    text=True, capture_output=True, check=True, timeout=120,
+                ).stdout.strip()
+                recorded_head = receipt_record.get("head_sha", "")
                 if (
                     receipt_record.get("receipt_sha256") != receipt
-                    or receipt_record.get("head_sha")
-                    != subprocess.run(
-                        ["git", "-C", claim["worktree"], "rev-parse", "HEAD"],
-                        text=True, capture_output=True, check=True, timeout=120,
-                    ).stdout.strip()
+                    or not SHA.fullmatch(recorded_head)
+                    or not SHA.fullmatch(current_head)
                 ):
                     raise ControllerError(
                         "dependency refresh receipt does not bind the old head"
                     )
-                value = self.json_call(
-                    "ticket-attest", "--ticket", claim["ticket"],
-                    "--lease", claim["lease"], "--receipt", receipt,
-                    "--workdir", claim["worktree"],
-                    "--action", "dependency-refresh", "--json",
-                )
+                if current_head != recorded_head:
+                    attest_arguments = [
+                        "ticket-attest", "--ticket", claim["ticket"],
+                        "--lease", claim["lease"],
+                        "--workdir", claim["worktree"], "--action",
+                        "dependency-refresh-replay", "--json",
+                    ]
+                else:
+                    attest_arguments = [
+                        "ticket-attest", "--ticket", claim["ticket"],
+                        "--lease", claim["lease"], "--receipt", receipt,
+                        "--workdir", claim["worktree"],
+                        "--action", "dependency-refresh", "--json",
+                    ]
+                value = self.json_call(*attest_arguments)
                 if value.get("action") == "dependency-wait":
                     claim["status"] = "waiting"
                     self.save_claim(claim)
@@ -6437,15 +6644,52 @@ class Controller:
                     return {"status": "waiting", "ticket": claim["ticket"]}
                 attestation = value.get("attestation")
                 refreshed = value.get("head", "")
+                publication_refresh = (
+                    value.get("action") == "dependency-publication-refresh"
+                )
+                replay = current_head != recorded_head
+                dependency_tickets = dependency_refresh[1].split(",")
+                terminal_receipts = value.get("dependency_terminals")
                 if (
                     value.get("action") not in {
                         "dependency-refresh", "dependency-conflict-refresh",
+                        "dependency-publication-refresh",
                     }
                     or not isinstance(attestation, dict)
                     or attestation.get("old_head") != receipt_record["head_sha"]
-                    or attestation.get("protected_head")
-                    != dependency_refresh[2]
+                    or (
+                        attestation.get(
+                            "base_head" if publication_refresh else "protected_head"
+                        ) != dependency_refresh[2]
+                    )
+                    or (
+                        publication_refresh
+                        and value.get("dependencies")
+                        != dependency_tickets
+                    )
+                    or (
+                        publication_refresh
+                        and (
+                            not isinstance(terminal_receipts, list)
+                            or len(terminal_receipts) != len(dependency_tickets)
+                            or any(
+                                not isinstance(item, dict)
+                                or set(item) != {"ticket", "terminal_sha256"}
+                                or item.get("ticket") != ticket
+                                or not DIGEST.fullmatch(
+                                    item.get("terminal_sha256", "")
+                                )
+                                for ticket, item in zip(
+                                    dependency_tickets, terminal_receipts
+                                )
+                            )
+                        )
+                    )
                     or not SHA.fullmatch(refreshed)
+                    or (
+                        replay
+                        and (not publication_refresh or refreshed != current_head)
+                    )
                     or subprocess.run(
                         [
                             "git", "-C", claim["worktree"], "merge-base",
@@ -6462,6 +6706,8 @@ class Controller:
                     (
                         "dependency_conflict_routed"
                         if value.get("action") == "dependency-conflict-refresh"
+                        else "dependency_publication_evidence_retired"
+                        if publication_refresh
                         else "dependency_base_refreshed"
                     ),
                     claim["ticket"],
@@ -6514,12 +6760,14 @@ class Controller:
     def reconcile(self) -> dict[str, Any]:
         self.admission_refusals = {}
         existing = self.load_claims()
+        protected_main = self.cancellation_authority(existing)
         if self.qualification:
             tickets = set(self.qualification["tickets"])
             for claim in existing:
                 if claim["ticket"] not in tickets:
                     self.withdraw_publication(claim)
             existing = [claim for claim in existing if claim["ticket"] in tickets]
+        existing = self.retire_canceled_claims(existing, protected_main)
         completed = [
             claim for claim in existing
             if self.product_ticket_done(claim["ticket"])
@@ -6665,6 +6913,18 @@ class Controller:
                     and time.monotonic() >= retry_after.get(claim["ticket"], 0)
                     and not self.role_active(claim)
                 ]
+                if protected_main is None:
+                    protected_main = self.cancellation_authority(idle)
+                before_retirement = {claim["ticket"] for claim in idle}
+                idle = self.retire_canceled_claims(idle, protected_main)
+                retired = before_retirement - {
+                    claim["ticket"] for claim in idle
+                }
+                if retired:
+                    claims = [
+                        claim for claim in claims
+                        if claim["ticket"] not in retired
+                    ]
                 self.recover_missing_passport_claims(claims)
                 self.recover_terminal_requests(idle)
                 self.recover_each(

@@ -662,6 +662,17 @@ class LedgerViewTest(unittest.TestCase):
             path, state="completed", go="1", cost="0.40", status="0",
             terminal="2026-07-15T12:05:00Z",
         )
+        unchanged = (worktree / "factory" / "ledger.csv").read_bytes()
+        mismatched = run(
+            "project", "--factory-root", self.root, "--workdir", worktree,
+            "--ticket", "T-123", "--expect-sha256", "0" * 64,
+            check=False,
+        )
+        self.assertNotEqual(mismatched.returncode, 0)
+        self.assertIn("changed after its write-ahead intent", mismatched.stderr)
+        self.assertEqual(
+            (worktree / "factory" / "ledger.csv").read_bytes(), unchanged,
+        )
         first = run("project", "--factory-root", self.root, "--workdir", worktree, "--ticket", "T-123")
         payload = json.loads(first.stdout)
         content = (worktree / "factory" / "ledger.csv").read_bytes()

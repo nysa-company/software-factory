@@ -675,6 +675,19 @@ publication closes before dependency refresh is considered. Application,
 mixed-owner, Factory-control, contract, CI, configuration, add/delete,
 rename, non-regular, unknown, missing-receipt, or tampered conflicts remain
 fail-closed.
+If the dependency becomes terminal after publication evidence exists, the
+same exact dependency receipt routes through the ordinary publication refresh
+instead. It verifies the receipt-bound protected tip and dependency truth,
+makes the exact PR draft, retires the bound bundle and approval blobs, resets
+the ticket to Review, and records the existing `ticket-refresh/v1` receipt.
+Reviewer and Narrator must establish fresh evidence over the changed semantic
+base. A moved protected tip returns to waiting without changing PR or evidence.
+A controller restart after the refresh push recognizes only the exact committed
+refresh receipt, retired evidence diff, remote branch, and draft PR, then
+continues the same post-push reduction without another merge or push. The
+sealed `dependency-refresh-replay` action requires the ticket's exact dispatcher
+lease; the committed refresh receipt replaces, rather than reuses, the consumed
+transition receipt as replay authority.
 That atomic introduction may also contain the exact in-flight release
 authorization for the same target Factory SHA. No other migration,
 application, test, contract, or CI path is admitted.
@@ -737,6 +750,17 @@ qualification, the same preparer upgrades that root only while reconciliation an
 are drained. It seals the successor, verifies unchanged provider policy,
 atomically advances the activation record, and preserves the controller
 directory, passport key, passports, claims, and cumulative provider ledger.
+Before that upgrade publishes any successor state, every selected ticket must
+already have an authenticated passport whose release history is rooted at the
+successor manifest's source Factory. A missing, malformed, foreign, mixed, or
+candidate-native passport refuses the upgrade and instructs the operator to
+start a fresh ordinary qualification; neither the controller nor reducer may
+infer source history from work performed after the candidate starts. The
+passport's complete migration chain and retained role accounting must agree
+with that authenticated release history. Before activation, candidate or
+foreign charge, completion, and correction evidence is not source work and
+refuses the upgrade; an already-active candidate may validate its own exact
+lineage evidence on an idempotent restart.
 If the defect instead requires a fresh successor root after an unconsumed
 Planner receipt but before any passport or provider run, the predecessor cell
 is handed off rather than recreated. Both lane activations, owner authorities,
@@ -1018,6 +1042,12 @@ failed charge was exported exactly once with no completed-role evidence, and
 every terminal field matches the typed post-GO failure. Test-author's separate
 operator-authorized protected rewrite flow remains the sole ancestry-rewrite
 exception; the controller never force-pushes either path.
+Before those publication checks, the wrapper reconciles the selected ticket's
+physical mode with its committed `100644` mode. It changes only an owner-owned,
+single-link regular file from `0600` to `0644`; symlinks, hardlinks,
+executables, foreign ownership, group/world-writable modes, or a non-`100644`
+Git entry fail the role before push. Existing content and protected-evidence
+checks still run afterward, so mode repair cannot bless dirty ticket bytes.
 The same quarantine boundary applies when a clean Planner, Spec-linter,
 Builder, or Narrator commit changes protected ticket evidence. The wrapper
 preserves the rejected head under the failed-role ref and restores the exact
@@ -1204,6 +1234,13 @@ the terminal reader independently revalidates commit topology, authorized
 paths, source ticket blob, receipt digest, timestamps, and ledger containment. A
 merged emergency closeout uses the same protected-terminal-first exact Linear
 Done projection as ordinary closeout.
+One versioned extension may also retire exactly one bundle-only partial chain
+whose internally validated bundle names a kit other than the active closeout
+kit. The plan binds its exact protected-main path, blob, and prior kit; apply
+deletes that path in the same protected closeout commit. The terminal reader
+independently revalidates the prior artifact and requires its deletion.
+Current-kit evidence, approval/done partials, malformed bundles, changed
+artifacts, or additional path changes remain invalid and cannot use this route.
 Successor qualification reconciles that terminal against the unchanged
 authenticated source passport and its exact signed idle pause; it does not
 fabricate an Approved/merged passport. The reducer retains historical roles
@@ -1608,6 +1645,16 @@ deleted or rewritten during planning or activation, so a shared qualification
 cell cannot be detached. A genuinely nonterminal protected ticket still uses
 the exact remote branch and in-flight release authorization and remains
 fail-closed on local, tracking, or remote ambiguity.
+Production reconciliation also treats the exact committed Canceled state as
+retirement authority for a retained controller claim. It refreshes and
+byte-reads the current protected `origin/main` commit rather than trusting a
+mutable remote-tracking ref. After any active role drains, the same reconciliation
+withdraws publication, releases only that claim's exact lease, emits one
+retirement event, and removes the claim before recovery; it never reacquires a
+lease or replays role evidence. A crash after publication release is recovered
+only when a capability-bound retry plus withdrawal proves that ticket has no
+publication state. Qualification continues to require Done for every selected
+target and does not count Canceled as completion.
 
 The activation journal advances through `prepared`,
 `maintenance_published`, `launch_drained`, `services_stopped`,

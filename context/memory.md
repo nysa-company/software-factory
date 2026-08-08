@@ -37,6 +37,15 @@ everything the Factory actually enforces lives here.
   Approved/merged passport. Its terminal Kit-SHA may be current or an earlier
   candidate in the active qualification environment's hash-validated receipt
   chain, never an arbitrary historical release.
+- A dependency that becomes terminal after bundle or approval uses its exact
+  dependency receipt to invoke the ordinary publication refresh. That route
+  binds the protected tip and terminal truth, drafts the PR, retires bundle
+  and approval blobs, and returns to Review; a moved tip waits without
+  mutation.
+- Emergency closeout v2 may retire exactly one validated bundle-only
+  prior-kit artifact from protected main. Its plan binds the path, blob, and
+  stale kit, and the protected closeout commit must delete that exact path.
+  Current-kit, malformed, or broader partial chains remain refused.
 - Linear supports a fail-closed exact-ticket operator pull for an already
   initialized mapping. It reads only that issue, merges only operator-owned
   fields under the short map lock, survives an overlapping stale full-board
@@ -51,6 +60,11 @@ everything the Factory actually enforces lives here.
   blob in the sealed control checkout to equal protected `origin/main`.
   Qualification-only metadata can therefore never validate one contract and
   dispatch another.
+- An in-place successor upgrade requires every selected authenticated passport
+  to descend from the manifest's source Factory before operator-state resume,
+  Linear initialization, sealing, or activation. Candidate-native, missing,
+  mixed, malformed, or foreign passports require a fresh ordinary lane; later
+  execution never synthesizes source history.
 - Fresh isolated qualification requires one explicit safe canonical Linear map
   seed, copies it into owner-only lane authority, and binds the mutable map and
   runtime ledger in its receipt and activation. Selected-only initialization,
@@ -104,6 +118,15 @@ everything the Factory actually enforces lives here.
   considering retained ticket refs. A stale terminal ref is left untouched for
   lane safety; genuinely nonterminal protected truth still requires the exact
   branch lease and authorization.
+- Production reconciliation retires an idle retained claim when its committed
+  ticket state at the freshly authenticated protected `origin/main` commit is
+  exactly Canceled. It withdraws publication, releases only the exact retained
+  lease, records one event, and removes the claim before any recovery path can
+  reacquire it. Active roles retire at the same reconciliation's post-drain
+  boundary, and an already-released publication capability is cleared only
+  after an absent withdrawal proves no ticket publication state remains.
+  Qualification still requires Done and never counts Canceled as a successful
+  target.
 - Done is projected through one separate exact-ticket Linear mutation only
   after the closeout receipt validates on protected main. The issue is re-read
   as exact Done and one controller event is recorded before lease release;
@@ -4462,3 +4485,61 @@ repeats an uncertain mutation, including inside the GraphQL transport helper.
 Operator evidence and selected success become durable only with the exact
 intended-Project issue and its complete non-canceled state, while a post-map clear interruption
 retries the same matching one-use clear without touching siblings.
+
+## 2026-08-08 — Decision 331: Canceled claims retire before recovery
+
+Category: Reliability
+
+Production uses the committed Canceled state as terminal retirement authority
+for an idle retained controller claim. The controller refreshes exact protected
+main before making that destructive decision. Publication and the exact lease
+are released crash-idempotently before the claim is removed, so superseded
+tickets cannot re-enter release, contract-block, or targeted repair loops. An
+active role retires at the same reconciliation's post-drain boundary, and
+qualification continues to require Done rather than treating cancellation as
+lane success.
+
+## 2026-08-08 — Decision 332: Successful role exit restores the tracked ticket mode
+
+Category: Reliability
+
+Before publication, a successful role reconciles its selected ticket's
+physical `0600` mode to the committed Git `100644` mode. Only an owner-owned,
+single-link regular file is eligible; symlink, hardlink, executable,
+foreign-owned, group/world-writable, or non-`100644` shapes fail before push.
+The ordinary clean-worktree, content, and protected-evidence checks remain
+authoritative after the metadata repair.
+
+## 2026-08-08 — Decision 333: Successor cohorts are source-bound before upgrade
+
+Category: Trust boundary
+
+An in-place isolated successor may publish only when every selected ticket
+already has an authenticated passport with one exact release lineage rooted at
+the manifest's source Factory. Missing, malformed, foreign, mixed, or
+candidate-native passports fail before operator-state resume, Linear
+initialization, release sealing, activation replacement, claim, lease, role,
+attempt, or spend. The operator must use a fresh ordinary qualification for
+candidate-native work. The complete migration chain and every retained charge,
+completion, and correction must belong to the authenticated historical release
+lineage and never to the not-yet-active candidate. Once that candidate is the
+active Factory, an idempotent restart may validate its own exact lineage
+evidence. Controller and reducer remain strict consumers of source lineage and
+never synthesize it from later execution.
+
+## 2026-08-08 — Decision 334: Publication dependency evidence is retired explicitly
+
+Category: Reliability
+
+An exact dependency-refresh receipt may reuse the ordinary publication refresh
+after bundle or approval, invalidating those bound blobs and returning the
+ticket to Review for fresh evidence. A pushed refresh receipt is replayable
+after controller interruption only when its old head, merge, protected base,
+draft PR, remote tip, retired blobs, and reset ticket are exact. The sealed
+replay uses the exact dispatcher lease and committed receipt rather
+than reusing the consumed transition receipt. If a prior-kit bundle-only
+artifact has already reached protected main, emergency closeout v2
+requires its exact authenticated v2 release lineage and deletes only that stale
+path. Its signed controller-state journal records each intended blob before
+mutation, so restart either restores exact Factory bytes or refuses foreign
+same-path edits; current-kit or malformed partial chains still fail closed.

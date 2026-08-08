@@ -12,6 +12,12 @@ from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 
+from approval_evidence import (
+    ApprovalEvidenceError,
+    validate_bundle_attestation,
+    validate_bundle_commit,
+)
+
 
 class ValidationError(ValueError):
     pass
@@ -81,6 +87,8 @@ NORMAL_LEDGER_KEYS = {
 }
 EMERGENCY_DONE_SCHEMA = "nysa.software-factory.ticket-emergency-done/v1"
 EMERGENCY_PLAN_SCHEMA = "nysa.software-factory.emergency-closeout-plan/v1"
+EMERGENCY_DONE_SCHEMA_V2 = "nysa.software-factory.ticket-emergency-done/v2"
+EMERGENCY_PLAN_SCHEMA_V2 = "nysa.software-factory.emergency-closeout-plan/v2"
 EMERGENCY_DONE_KEYS = {
     "schema", "ticket", "repository", "pr_number", "pr_head",
     "merge_commit", "merged_at", "required_checks", "successful_checks",
@@ -94,6 +102,8 @@ EMERGENCY_PLAN_KEYS = {
     "execution_basis", "issue", "operator_id", "reason", "issued_at",
     "expires_at",
 }
+EMERGENCY_PLAN_V2_KEYS = EMERGENCY_PLAN_KEYS | {"stale_attestation"}
+EMERGENCY_STALE_ATTESTATION_KEYS = {"path", "blob", "kit_sha"}
 EMERGENCY_MAIN_KEYS = {"commit", "tree", "ticket_blob", "state"}
 EMERGENCY_PASSPORT_KEYS = {
     "passport_sha256", "current_state", "publication_state", "factory_sha",
@@ -306,9 +316,96 @@ def repository_from_project(repo, ref):
     return values[0]
 
 
+def stale_bundle_invalidation(repo, ticket, ref, current_kit):
+    """Return the one prior-kit bundle that emergency closeout may retire."""
+    current_kit = oid(current_kit, "current emergency kit SHA")
+    root = f"factory/attestations/{ticket}"
+    bundle_path = f"{root}/bundle.json"
+    bundle = json_at(repo, ref, bundle_path, "stale bundle attestation")
+    approval = json_at(repo, ref, f"{root}/approval.json", "approval attestation")
+    done = json_at(repo, ref, f"{root}/done.json", "Done attestation")
+    if bundle is None or approval is not None or done is not None:
+        raise ValidationError(
+            "emergency stale-evidence repair requires one bundle-only partial chain"
+        )
+    repository = repository_from_project(repo, ref)
+    branch_head = oid(bundle.get("branch_head"), "stale bundle branch head")
+    stale_kit = oid(bundle.get("kit_sha"), "stale bundle kit SHA")
+    route_path = f"factory/route-plans/{ticket}.json"
+    route_text = text_at(repo, branch_head, route_path)
+    try:
+        validate_bundle_attestation(
+            bundle, ticket, repository, f"ticket/{ticket}", stale_kit, repo,
+        )
+        bundle_commit = run(
+            repo, "log", "-1", "--format=%H", ref, "--", bundle_path,
+        ).stdout.strip()
+        oid(bundle_commit, "stale bundle commit")
+        validate_bundle_commit(repo, ticket, bundle, bundle_commit)
+    except ApprovalEvidenceError as error:
+        raise ValidationError(
+            "stale bundle attestation is not exact prior-kit evidence"
+        ) from error
+    if route_text is None or len(route_text.encode("utf-8")) > 1_000_000:
+        raise ValidationError("stale bundle route plan is missing or too large")
+    try:
+        route = json.loads(route_text, object_pairs_hook=_unique_json_object)
+    except (json.JSONDecodeError, ValueError) as error:
+        raise ValidationError("stale bundle route plan is not strict JSON") from error
+    route_schema = route.get("schema") if isinstance(route, dict) else None
+    if route_schema == "ticket-model-route-plan/v1":
+        route_shape = (
+            set(route) == {"schema", "ticket", "kit_sha", "created_at", "resolution"}
+            and isinstance(route.get("resolution"), dict)
+        )
+        if route_shape:
+            timestamp(route.get("created_at"), "stale bundle route created_at")
+    elif route_schema == "ticket-model-route-journal/v2":
+        revisions = route.get("revisions")
+        route_shape = (
+            set(route) == {"schema", "ticket", "kit_sha", "revisions"}
+            and isinstance(revisions, list)
+            and bool(revisions)
+        )
+    else:
+        route_shape = False
+    if (
+        stale_kit == current_kit
+        or not route_shape
+        or route.get("ticket") != ticket
+        or route.get("kit_sha") != stale_kit
+    ):
+        raise ValidationError("stale bundle attestation is not exact prior-kit evidence")
+    return {
+        "path": bundle_path,
+        "blob": oid(blob_at(repo, ref, bundle_path), "stale bundle attestation blob"),
+        "kit_sha": stale_kit,
+    }
+
+
+def _unique_json_object(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("duplicate key")
+        value[key] = item
+    return value
+
+
 def _emergency_terminal(repo, ticket, ref, done):
     exact(done, EMERGENCY_DONE_KEYS, "emergency Done attestation")
-    plan = exact(done.get("plan"), EMERGENCY_PLAN_KEYS, "emergency closeout plan")
+    repair = done.get("schema") == EMERGENCY_DONE_SCHEMA_V2
+    plan = exact(
+        done.get("plan"),
+        EMERGENCY_PLAN_V2_KEYS if repair else EMERGENCY_PLAN_KEYS,
+        "emergency closeout plan",
+    )
+    stale = None
+    if repair:
+        stale = exact(
+            plan.get("stale_attestation"), EMERGENCY_STALE_ATTESTATION_KEYS,
+            "emergency stale attestation",
+        )
     protected = exact(
         plan.get("protected_main"), EMERGENCY_MAIN_KEYS,
         "emergency protected-main basis",
@@ -335,8 +432,10 @@ def _emergency_terminal(repo, ticket, ref, done):
         digest(claim.get("sha256"), "emergency claim sha256")
         digest(claim.get("receipt"), "emergency claim receipt")
     if (
-        done["schema"] != EMERGENCY_DONE_SCHEMA
-        or plan["schema"] != EMERGENCY_PLAN_SCHEMA
+        done["schema"]
+        != (EMERGENCY_DONE_SCHEMA_V2 if repair else EMERGENCY_DONE_SCHEMA)
+        or plan["schema"]
+        != (EMERGENCY_PLAN_SCHEMA_V2 if repair else EMERGENCY_PLAN_SCHEMA)
         or done["ticket"] != ticket
         or plan["ticket"] != ticket
         or done["repository"] != repository
@@ -420,6 +519,8 @@ def _emergency_terminal(repo, ticket, ref, done):
         raise ValidationError("emergency closeout timestamps are not ordered")
     if run(repo, "rev-parse", f"{parent}^{{tree}}").stdout.strip() != protected["tree"]:
         raise ValidationError("emergency protected-main tree does not match")
+    if repair and stale_bundle_invalidation(repo, ticket, parent, kit_sha) != stale:
+        raise ValidationError("emergency stale attestation does not match protected main")
     ticket_path = f"factory/tickets/{ticket}.md"
     source_text = text_at(repo, parent, ticket_path)
     if (
@@ -454,10 +555,17 @@ def _emergency_terminal(repo, ticket, ref, done):
         repo, "diff-tree", "--no-commit-id", "--name-only", "-r", closeout,
     ).stdout.splitlines())
     required_paths = {ticket_path, done_path}
+    if repair:
+        required_paths.add(stale["path"])
     if not required_paths.issubset(paths) or not paths.issubset(
         required_paths | {"factory/ledger.csv"}
     ):
         raise ValidationError("emergency closeout commit changes unauthorized paths")
+    if repair and (
+        blob_at(repo, closeout, stale["path"]) is not None
+        or blob_at(repo, ref, stale["path"]) is not None
+    ):
+        raise ValidationError("emergency closeout did not retire stale evidence")
     ledger_text = text_at(repo, closeout, "factory/ledger.csv")
     current_ledger = text_at(repo, ref, "factory/ledger.csv")
     if (
@@ -480,7 +588,9 @@ def _normal_terminal(repo, ticket, ref):
     bundle = json_at(repo, ref, f"{root}/bundle.json", "bundle attestation")
     approval = json_at(repo, ref, f"{root}/approval.json", "approval attestation")
     done = json_at(repo, ref, done_path, "Done attestation")
-    if isinstance(done, dict) and done.get("schema") == EMERGENCY_DONE_SCHEMA:
+    if isinstance(done, dict) and done.get("schema") in {
+        EMERGENCY_DONE_SCHEMA, EMERGENCY_DONE_SCHEMA_V2,
+    }:
         return _emergency_terminal(repo, ticket, ref, done)
     present = tuple(value is not None for value in (bundle, approval, done))
     if not any(present):

@@ -140,7 +140,7 @@ class QualificationReducerTest(unittest.TestCase):
             "pr_head": normal["approved_pr_head"],
             "pr_number": normal["pr_number"],
             "required_checks": normal["required_checks"],
-            "schema": "nysa.software-factory.ticket-emergency-done/v1",
+            "schema": "nysa.software-factory.ticket-emergency-done/v2",
             "successful_checks": normal["successful_checks"],
             "ticket": ticket,
         }
@@ -603,6 +603,18 @@ class QualificationReducerTest(unittest.TestCase):
         report = REDUCER.verify(*evidence)
         self.assertEqual(report["status"], "green")
         self.assertEqual(report["qualification_charge_micro_usd"], 38_000_000)
+
+        candidate_native = copy.deepcopy(evidence)
+        candidate_passport = candidate_native[1][ticket]
+        candidate_passport["factory_release_history"] = [{
+            "contract_version": "1.8.0",
+            "factory_sha": manifest["factory_sha"],
+        }]
+        candidate_passport["migration_history"] = []
+        with self.assertRaisesRegex(
+            REDUCER.QualificationError, f"{ticket} passport is not terminal",
+        ):
+            REDUCER.verify(*candidate_native)
 
         passports[ticket]["migration_history"][1]["from_factory_sha"] = "d" * 40
         with self.assertRaisesRegex(

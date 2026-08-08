@@ -1064,6 +1064,68 @@ elif before["spec_lint"] != after["spec_lint"]:
 PY
 }
 
+normalize_role_ticket_mode() {
+  local relative="factory/tickets/$TICKET.md" committed_mode
+  committed_mode="$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" \
+    ls-tree "$ROLE_HEAD_AFTER" -- "$relative" 2>/dev/null | \
+    awk 'NR == 1 { print $1; exit }')"
+  [[ "$committed_mode" == "100644" ]] || return 1
+  python3 - "$WORKDIR" "$relative" <<'PY'
+import os
+import stat
+import sys
+
+root, relative = sys.argv[1:]
+descriptors = []
+try:
+    current = os.open(
+        root,
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+    )
+    descriptors.append(current)
+    parts = relative.split("/")
+    for part in parts[:-1]:
+        current = os.open(
+            part,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) |
+            getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=current,
+        )
+        descriptors.append(current)
+    descriptor = os.open(
+        parts[-1], os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=current
+    )
+    descriptors.append(descriptor)
+    before = os.fstat(descriptor)
+    mode = stat.S_IMODE(before.st_mode)
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or before.st_uid != os.geteuid()
+        or before.st_nlink != 1
+        or mode not in {0o600, 0o644}
+    ):
+        raise SystemExit(1)
+    if mode == 0o600:
+        os.fchmod(descriptor, 0o644)
+    after = os.fstat(descriptor)
+    current_path = os.stat(parts[-1], dir_fd=current, follow_symlinks=False)
+    if (
+        (after.st_dev, after.st_ino, after.st_uid, after.st_nlink) !=
+        (before.st_dev, before.st_ino, before.st_uid, before.st_nlink)
+        or (current_path.st_dev, current_path.st_ino) !=
+        (after.st_dev, after.st_ino)
+        or not stat.S_ISREG(after.st_mode)
+        or stat.S_IMODE(after.st_mode) != 0o644
+    ):
+        raise SystemExit(1)
+except OSError:
+    raise SystemExit(1)
+finally:
+    for descriptor in reversed(descriptors):
+        os.close(descriptor)
+PY
+}
+
 reconcile_cli_attempt() {
   [[ "$CLI_ATTEMPT_ACTIVE" -eq 1 && -n "$CLI_ATTEMPT_ID" ]] || return 0
   local output parsed state version result charge
@@ -2877,9 +2939,19 @@ elif [[ "$ROLE_OUTPUT_VALID" -eq 0 ]]; then
 elif [[ "$ROLE_EXIT_ENFORCED" -eq 1 ]]; then
   ROLE_BRANCH_AFTER="$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
   ROLE_HEAD_AFTER="$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" rev-parse HEAD 2>/dev/null || true)"
+  ROLE_TICKET_MODE_VALID=1
+  if [[ "$PROVIDER_STATUS" -eq 0 &&
+        "$ROLE_BRANCH_AFTER" == "$ROLE_BRANCH_BEFORE" ]] &&
+     ! normalize_role_ticket_mode; then
+    ROLE_TICKET_MODE_VALID=0
+  fi
   ROLE_DIRTY="$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" status --porcelain --untracked-files=all 2>/dev/null || true)"
-  ROLE_PROTECTED_AFTER="$(ticket_evidence_snapshot "$TICKET_FILE" 2>/dev/null)" ||
+  if [[ "$ROLE_TICKET_MODE_VALID" -eq 1 ]]; then
+    ROLE_PROTECTED_AFTER="$(ticket_evidence_snapshot "$TICKET_FILE" 2>/dev/null)" ||
+      ROLE_PROTECTED_AFTER="__invalid__"
+  else
     ROLE_PROTECTED_AFTER="__invalid__"
+  fi
   ROLE_DURABLE_ESCALATION_PARSE="$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" \
     diff --no-ext-diff --unified=0 "$ROLE_HEAD_BEFORE" "$ROLE_HEAD_AFTER" -- \
     "factory/tickets/$TICKET.md" 2>/dev/null | awk \
@@ -2911,6 +2983,8 @@ elif [[ "$ROLE_EXIT_ENFORCED" -eq 1 ]]; then
       ROLE_EXIT_STATUS="role_exit_invalid_escalation"
     elif [[ "$ROLE_BRANCH_AFTER" != "$ROLE_BRANCH_BEFORE" ]]; then
       ROLE_EXIT_STATUS="role_exit_wrong_branch"
+    elif [[ "$ROLE_TICKET_MODE_VALID" -ne 1 ]]; then
+      ROLE_EXIT_STATUS="role_exit_unsafe_ticket_mode"
     elif [[ "$ROLE" == "reviewer" &&
             ( -n "$ROLE_DIRTY" || "$ROLE_HEAD_AFTER" != "$ROLE_HEAD_BEFORE" ) ]]; then
       ROLE_EXIT_STATUS="reviewer_mutated_worktree"

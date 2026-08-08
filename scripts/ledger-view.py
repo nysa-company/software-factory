@@ -505,6 +505,7 @@ def main():
     project.add_argument("--factory-root", required=True)
     project.add_argument("--workdir", required=True)
     project.add_argument("--ticket", required=True)
+    project.add_argument("--expect-sha256")
     args = parser.parse_args()
 
     if args.command in ("refresh", "print"):
@@ -530,6 +531,11 @@ def main():
         )
         ensure_projectable(root, rows)
         content = csv_bytes(rows)
+        if (
+            args.expect_sha256 is not None
+            and args.expect_sha256 != hashlib.sha256(content).hexdigest()
+        ):
+            fail("projection changed after its write-ahead intent")
         # Recheck immediately before the atomic write while launch and
         # reservation remain blocked by their existing locks.
         ensure_projectable(root, rows)
