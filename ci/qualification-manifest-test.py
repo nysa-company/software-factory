@@ -272,7 +272,11 @@ class QualificationManifestTest(unittest.TestCase):
         result = run(
             root, "bash", "ci/test-all.sh", "--changed-or-defer",
             readiness_base, readiness_head, check=False,
-            env={**os.environ, "FACTORY_QUALIFICATION_PARSER": str(parser)},
+            env={
+                **os.environ,
+                "CI_FORCE_FULL": "0",
+                "FACTORY_QUALIFICATION_PARSER": str(parser),
+            },
         )
         self.assertEqual(result.returncode, 2)
         self.assertIn("CI selection refused", result.stderr)
