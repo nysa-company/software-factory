@@ -17,15 +17,18 @@ suite_shard_for() {
   esac
 }
 
+# Group membership is balance, not meaning: each group carries one slow anchor
+# suite plus filler, sized from observed hosted CI timings. Rebalance from the
+# per-suite durations in recent protected-main runs when a group drifts.
 suite_group_for() {
   case "$1" in
-    factory-scripts|model-fallback)
+    factory-scripts|model-fallback|qualification-environment|protected-merge-reconciliation|terminal-backfill|state-machine)
       printf '1\n'
       ;;
-    emergency-admit|hermes-contract|preflight|ticket-attest|provider-cli-runtime|provider-coordinator|provider-credential-broker|provider-recovery|provider-executor)
+    emergency-admit|hermes-contract|preflight|provider-cli-runtime|provider-coordinator|provider-credential-broker|provider-recovery|provider-executor|factory-dev-lane)
       printf '2\n'
       ;;
-    factory-kit|ticket-pr|terminal-backfill|protected-merge-reconciliation|provider-activation)
+    factory-kit|ticket-pr|provider-activation|model-control)
       printf '3\n'
       ;;
     *)
