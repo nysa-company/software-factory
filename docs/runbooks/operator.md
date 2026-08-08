@@ -656,8 +656,11 @@ These run in your interactive session — never inside the loop. The factory's o
   Finally move Linear from Blocked-Escalated to the ticket's `Resume-State:`.
   A missing, stale, mismatched, partial, unpushed, over-full, or otherwise
   illegal decision is rejected; `doctor --json` reports it under
-  `checks.contract_resume.incidents` with a typed reason. An earlier decision
-  never authorizes a later blocker.
+  `checks.contract_resume.incidents` with a typed reason. Doctor preserves the
+  latest structurally valid `resume_*` refusal per ticket as a warning even
+  when a newer controller introduces the reason; malformed or tampered event
+  evidence remains an error. An earlier decision never authorizes a later
+  blocker.
 - Treat receipt-bound `OPERATOR RESUME` as the contract-block recovery and
   hash-approved `emergency-admit` as the one-use pre-provider control-plane
   fallback. Neither grants a lifecycle transition or skips any downstream

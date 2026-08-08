@@ -435,13 +435,6 @@ import stat
 import sys
 
 root = Path(sys.argv[1]).resolve()
-reasons = {
-    "resume_ancestry_invalid",
-    "resume_commit_content_mismatch",
-    "resume_commit_not_pushed",
-    "resume_directives_ambiguous",
-    "resume_receipt_mismatch",
-}
 resolved = {"contract_blocker_recovered", "recorded_contract_repair_prepared"}
 
 def secure(path, *, directory=False):
@@ -487,7 +480,9 @@ try:
         if not isinstance(ticket, str) or not re.fullmatch(r"T-[0-9]+", ticket):
             raise ValueError
         if event == "contract_resume_refused":
-            if (value.get("reason_code") not in reasons
+            reason = value.get("reason_code")
+            if (not isinstance(reason, str)
+                    or not re.fullmatch(r"resume_[a-z0-9_]{1,120}", reason)
                     or not re.fullmatch(
                         r"[0-9a-f]{64}", value.get("blocked_receipt_sha256", "")
                     )):
@@ -497,7 +492,7 @@ try:
                 for key in (
                     "actual_bytes", "blocked_receipt_sha256",
                     "changed_path_count", "expected_bytes", "first_differing_line",
-                    "local_head", "observed_at_epoch_ns", "reason_code",
+                    "local_head", "observed_at_epoch_ns", "offending_parent", "reason_code",
                     "remote_head", "ticket",
                 )
                 if key in value
@@ -512,10 +507,9 @@ try:
                     or incident[key] < 0
                 ):
                     raise ValueError
-            for key in ("local_head", "remote_head"):
-                if key in incident and incident[key] is not None and not re.fullmatch(
-                    r"[0-9a-f]{40}", incident[key]
-                ):
+            for key in ("local_head", "offending_parent", "remote_head"):
+                if (key in incident and incident[key] not in {None, ""}
+                        and not re.fullmatch(r"[0-9a-f]{40}", incident[key])):
                     raise ValueError
         else:
             incident = None

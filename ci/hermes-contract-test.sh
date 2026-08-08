@@ -570,6 +570,18 @@ write(
     remote_head="a" * 40,
 )
 write("contract_blocker_recovered", "T-111", 3)
+write(
+    "contract_resume_refused", "T-112", 4,
+    blocked_receipt_sha256="d" * 64,
+    offending_parent="9" * 40, reason_code="resume_parent_not_migrated",
+)
+# Doctor validates the stable reason-code grammar, not a controller allowlist,
+# so a future typed refusal stays visible without suppressing known siblings.
+write(
+    "contract_resume_refused", "T-113", 5,
+    blocked_receipt_sha256="e" * 64,
+    reason_code="resume_future_contract_guard",
+)
 PY
 
 HOME="$TEST_HOME" PATH="$STUB_BIN:$PATH" FACTORY_LINEAR_FRESH_SECONDS=600 \
@@ -665,6 +677,17 @@ assert checks["contract_resume"] == {
         "observed_at_epoch_ns": 1,
         "reason_code": "resume_commit_content_mismatch",
         "ticket": "T-110",
+    }, {
+        "blocked_receipt_sha256": "d" * 64,
+        "observed_at_epoch_ns": 4,
+        "offending_parent": "9" * 40,
+        "reason_code": "resume_parent_not_migrated",
+        "ticket": "T-112",
+    }, {
+        "blocked_receipt_sha256": "e" * 64,
+        "observed_at_epoch_ns": 5,
+        "reason_code": "resume_future_contract_guard",
+        "ticket": "T-113",
     }],
     "status": "warning",
 }
@@ -672,6 +695,48 @@ allowed = {"ok", "warning", "error", "unknown"}
 assert data["overall_status"] in allowed
 assert all(check["status"] in allowed for check in checks.values())
 PY
+
+# Structurally invalid state remains an error even when its digest is valid.
+INVALID_RESUME_EVENT="$CONTROLLER_STATE/events/6-invalid.json"
+python3 - "$INVALID_RESUME_EVENT" "$KIT_SHA" <<'PY'
+import hashlib
+import json
+import os
+from pathlib import Path
+import sys
+
+path, factory_sha = Path(sys.argv[1]), sys.argv[2]
+value = {
+    "blocked_receipt_sha256": "f" * 64,
+    "event": "contract_resume_refused",
+    "factory_sha": factory_sha,
+    "observed_at_epoch_ns": 6,
+    "reason_code": "not-a-resume-reason",
+    "schema": "nysa.software-factory.controller-event/v1",
+    "ticket": "T-114",
+}
+canonical = json.dumps(
+    value, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+).encode()
+value["event_sha256"] = hashlib.sha256(canonical).hexdigest()
+path.write_text(json.dumps(value, sort_keys=True) + "\n", encoding="utf-8")
+os.chmod(path, 0o600)
+PY
+INVALID_RESUME_RC=0
+HOME="$TEST_HOME" PATH="$STUB_BIN:$PATH" FACTORY_LINEAR_FRESH_SECONDS=600 \
+  FACTORY_CONTROLLER_STATE_DIR="$CONTROLLER_STATE" \
+  bash "$DOCTOR" --json --project relay > "$TMP/doctor-invalid-resume.json" || \
+  INVALID_RESUME_RC=$?
+[[ "$INVALID_RESUME_RC" -eq 1 ]] || fail "doctor accepted invalid resume event state"
+python3 - "$TMP/doctor-invalid-resume.json" <<'PY'
+import json
+import sys
+
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+assert data["overall_status"] == "error"
+assert data["checks"]["contract_resume"] == {"incidents": [], "status": "error"}
+PY
+rm "$INVALID_RESUME_EVENT"
 
 PROVIDER_TEST_ROOT="$(cd "$TMP" && pwd -P)/provider-v2"
 mkdir -m 700 "$PROVIDER_TEST_ROOT" "$PROVIDER_TEST_ROOT/attempts" \

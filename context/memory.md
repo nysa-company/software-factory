@@ -76,6 +76,10 @@ everything the Factory actually enforces lives here.
   Exact resume directives and reconciler-authored writes do not advance it;
   accepted same-blocker decisions survive overlapping saves, while rejected
   moves stay visible in Linear and typed sync health.
+- Doctor folds the latest contract-resume refusal or recovery per ticket. Every
+  structurally valid `resume_*` reason remains a visible warning without a
+  duplicated allowlist; malformed or tampered controller evidence remains an
+  error and cannot erase valid incident-type distinctions.
 - An active contract repair with no owner success may follow one exact
   authenticated forward passport migration after an operator preflight fix.
   The old signed record is archived, the active record is rebound without
@@ -4294,3 +4298,13 @@ that ordinary journals use the active Factory and successor journals use only
 the active or declared source Factory. Recovery rechecks the same product and
 manifest digests before reusing a committed fallback; production receives no
 qualification authority.
+
+## 2026-08-07 — Decision 320: Doctor preserves typed resume refusal drift
+
+Category: Reliability
+
+Doctor validates the stable `resume_*` reason-code grammar instead of copying
+the controller's refusal allowlist. The latest valid refusal or recovery per
+ticket remains visible as a warning across controller upgrades, including
+`resume_parent_not_migrated`; malformed or tampered event evidence still makes
+the check fail closed.
