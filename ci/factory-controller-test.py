@@ -573,6 +573,7 @@ class FactoryControllerTest(unittest.TestCase):
                     "release", "--ticket", release_refused,
                     "--lease", "5" * 64,
                 ),
+                ("release", "--ticket", sibling, "--lease", "2" * 64),
             ],
         )
         self.assertTrue(
@@ -580,6 +581,9 @@ class FactoryControllerTest(unittest.TestCase):
         )
         self.assertNotIn(
             "lease_released", CONTROL.read(controller.claim_path(release_refused))
+        )
+        self.assertTrue(
+            CONTROL.read(controller.claim_path(sibling))["lease_released"]
         )
         self.assertTrue({"T-110", "T-111"}.issubset(upgrade_candidates))
         self.assertFalse(
