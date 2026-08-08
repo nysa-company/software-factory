@@ -1019,6 +1019,19 @@ for upgrade recovery. A repeated failure under the successor stays blocked, so
 release recovery cannot become a same-release retry loop. Submission markers
 use collision-resistant owner-only temporary files before atomic publication
 and directory synchronization.
+The controller also carries one bounded recovery attempt inside the exact
+ticket claim. It binds the Factory release, recovery name, claim state and
+receipt, qualification generation, passport, run evidence, Git head, and exact
+ticket bytes. Three identical no-progress outcomes leave a lease-free
+`recovery-abandoned:<name>` claim and emit one digest-only event. A changed
+authenticated input or outcome starts a new count; an unchanged abandoned
+claim is never recovered again. The attempt retains the exact pre-recovery
+blocked reason, so changed authenticated evidence or a successor release
+restores the real recovery selector instead of leaving the abandonment label
+as a dead end. Claims that are blocked, waiting, or budget limited release any
+inactive dispatcher lease both before recovery and after a role drains. Active
+roles and sibling claims are untouched, and a correctly reattached parked
+branch remains eligible for the ordinary one-use recovery.
 The same release boundary applies to a typed `launch_void`: release migration
 keeps its receipt runnable until the ordinary terminal reducer clears it only
 when the manifest proves abandoned phase, no GO, no submission, zero cost, and

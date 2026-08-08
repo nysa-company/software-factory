@@ -4543,3 +4543,16 @@ requires its exact authenticated v2 release lineage and deletes only that stale
 path. Its signed controller-state journal records each intended blob before
 mutation, so restart either restores exact Factory bytes or refuses foreign
 same-path edits; current-kit or malformed partial chains still fail closed.
+
+## 2026-08-08 — Decision 335: Identical recovery stops after three outcomes
+
+Category: Reliability
+
+Each recovery mutation atomically carries a ticket-local attempt bound to its
+release, recovery name, exact claim/receipt, qualification, passport, run, Git,
+and ticket evidence. Three identical no-progress outcomes produce one
+lease-free `recovery-abandoned:<name>` state and one digest-only event; restart
+is idempotent, while changed authenticated input, outcome, or release restores
+the original recovery selector and starts a new count.
+Inactive blocked, waiting, and budget leases are normalized at entry and after
+role drain without touching active roles or sibling claims.

@@ -17,7 +17,7 @@ import stat
 import subprocess
 import sys
 import tempfile
-from threading import Lock
+from threading import Lock, local
 import time
 from typing import Any
 from urllib.parse import urlsplit
@@ -73,6 +73,7 @@ INFLIGHT_STATES = frozenset({
 })
 RECONCILE_INTERVAL_SECONDS = 15
 PREVIEW_IDENTITY_WAIT_SECONDS = 900
+RECOVERY_ATTEMPT_LIMIT = 3
 COMPLETION_CORRECTION_SCHEMA = (
     "nysa.software-factory.completed-role-correction/v1"
 )
@@ -384,6 +385,7 @@ class Controller:
         self.git_lock = Lock()
         # ponytail: closeouts are rare; serialize them until throughput requires a queue.
         self.closeout_lock = Lock()
+        self.recovery_context = local()
 
     def read_qualification(self) -> dict[str, Any] | None:
         path = self.product / "factory/QUALIFICATION.json"
@@ -1785,7 +1787,147 @@ class Controller:
         return claim.get("parked") is True
 
     def save_claim(self, claim: dict[str, Any]) -> None:
+        context = getattr(self.recovery_context, "value", None)
+        if context and context["ticket"] == claim.get("ticket"):
+            claim["recovery_attempt"] = dict(context["attempt"])
         write(self.claim_path(claim["ticket"]), claim)
+
+    @staticmethod
+    def valid_recovery_attempt(value: Any) -> bool:
+        if not isinstance(value, dict) or set(value) != {
+            "count", "factory_sha", "input_sha256", "outcome_sha256",
+            "phase", "recovery", "retry_reason", "retry_status",
+        }:
+            return False
+        count = value.get("count")
+        phase = value.get("phase")
+        return (
+            all(isinstance(value.get(key), str) for key in {
+                "factory_sha", "input_sha256", "outcome_sha256", "phase",
+                "recovery", "retry_reason", "retry_status",
+            })
+            and SHA.fullmatch(value.get("factory_sha", "")) is not None
+            and re.fullmatch(r"[a-z][a-z0-9-]{0,63}", value.get("recovery", ""))
+            is not None
+            and re.fullmatch(
+                r"[A-Za-z0-9._:-]{0,256}", value.get("retry_reason", "")
+            ) is not None
+            and value.get("retry_status") in {
+                "claimed", "running", "waiting", "blocked", "budget",
+            }
+            and DIGEST.fullmatch(value.get("input_sha256", "")) is not None
+            and (
+                value.get("outcome_sha256") == ""
+                or DIGEST.fullmatch(value.get("outcome_sha256", "")) is not None
+            )
+            and isinstance(count, int)
+            and not isinstance(count, bool)
+            and 0 <= count <= RECOVERY_ATTEMPT_LIMIT
+            and ((count == 0) == (value["outcome_sha256"] == ""))
+            and phase in {"pending", "settled", "abandoning", "abandoned"}
+            and (phase != "pending" or count < RECOVERY_ATTEMPT_LIMIT)
+            and (phase != "settled" or 0 < count < RECOVERY_ATTEMPT_LIMIT)
+            and (
+                phase not in {"abandoning", "abandoned"}
+                or count == RECOVERY_ATTEMPT_LIMIT
+            )
+        )
+
+    @staticmethod
+    def recovery_outcome_sha256(
+        claim: dict[str, Any], error: str = "",
+    ) -> str:
+        return hashlib.sha256(canonical({
+            "blocked_reason": claim.get("blocked_reason", ""),
+            "error": error,
+            "parked": claim.get("parked") is True,
+            "status": claim.get("status", ""),
+        }).encode()).hexdigest()
+
+    def recovery_input_sha256(
+        self, claim: dict[str, Any], recovery: str,
+    ) -> str:
+        ticket = claim["ticket"]
+        passport_path = self.state / "passports" / f"{ticket}.json"
+        passport_sha256 = ""
+        if passport_path.exists() or passport_path.is_symlink():
+            passport_sha256 = hashlib.sha256(
+                canonical(read(passport_path)).encode()
+            ).hexdigest()
+        worktree = Path(claim.get("worktree", ""))
+        git_evidence = {
+            "branch": "", "head": "", "status_sha256": "",
+            "ticket_blob": "", "ticket_sha256": "",
+        }
+        if worktree.is_absolute() and worktree.is_dir():
+            head = subprocess.run(
+                ["git", "-C", str(worktree), "rev-parse", "HEAD"],
+                text=True, capture_output=True, check=False, timeout=120,
+            )
+            branch = subprocess.run(
+                [
+                    "git", "-C", str(worktree), "symbolic-ref", "--quiet",
+                    "--short", "HEAD",
+                ],
+                text=True, capture_output=True, check=False, timeout=120,
+            )
+            status = subprocess.run(
+                ["git", "-C", str(worktree), "status", "--porcelain=v1", "-z"],
+                text=True, capture_output=True, check=False, timeout=120,
+            )
+            ticket_path = (
+                worktree / "factory" / "tickets" / f"{ticket}.md"
+            )
+            ticket_sha256 = ""
+            if ticket_path.exists() or ticket_path.is_symlink():
+                info = ticket_path.lstat()
+                if (
+                    not stat.S_ISREG(info.st_mode)
+                    or ticket_path.is_symlink()
+                    or info.st_uid != os.geteuid()
+                    or info.st_nlink != 1
+                    or stat.S_IMODE(info.st_mode) & 0o022
+                    or info.st_size > 1_000_000
+                ):
+                    raise ControllerError("recovery ticket evidence is unsafe")
+                ticket_sha256 = hashlib.sha256(ticket_path.read_bytes()).hexdigest()
+            ticket_blob = subprocess.run(
+                [
+                    "git", "-C", str(worktree), "rev-parse",
+                    f"HEAD:factory/tickets/{ticket}.md",
+                ],
+                text=True, capture_output=True, check=False, timeout=120,
+            )
+            git_evidence = {
+                "branch": branch.stdout.strip() if branch.returncode == 0 else "",
+                "head": head.stdout.strip() if head.returncode == 0 else "",
+                "status_sha256": (
+                    hashlib.sha256(status.stdout.encode()).hexdigest()
+                    if status.returncode == 0 else ""
+                ),
+                "ticket_blob": (
+                    ticket_blob.stdout.strip()
+                    if ticket_blob.returncode == 0 else ""
+                ),
+                "ticket_sha256": ticket_sha256,
+            }
+        value = {
+            "branch": claim.get("branch", ""),
+            "blocked_reason": claim.get("blocked_reason", ""),
+            "factory_sha": self.release_path.name,
+            "git": git_evidence,
+            "passport_sha256": passport_sha256,
+            "priority": claim.get("priority", ""),
+            "qualification_manifest_sha256": self.qualification_manifest_sha256,
+            "receipt": claim.get("receipt", ""),
+            "recovery": recovery,
+            "role": claim.get("role", ""),
+            "run_snapshot_sha256": self.ticket_run_snapshot(ticket),
+            "status": claim.get("status", ""),
+            "ticket": ticket,
+            "worktree": str(worktree),
+        }
+        return hashlib.sha256(canonical(value).encode()).hexdigest()
 
     def worktrees_by_branch(self) -> dict[str, list[str]]:
         records: dict[str, list[str]] = {}
@@ -1834,6 +1976,10 @@ class Controller:
                 or value.get("status") not in {
                     "claimed", "running", "waiting", "blocked", "budget",
                 }
+                or (
+                    "recovery_attempt" in value
+                    and not self.valid_recovery_attempt(value["recovery_attempt"])
+                )
             ):
                 raise ControllerError("controller claim is malformed")
             if value["status"] == "budget":
@@ -2541,6 +2687,33 @@ class Controller:
         self.event(
             "ticket_lease_recovered", claim["ticket"], recovery=label,
         )
+
+    def release_inactive_ticket_leases(
+        self, claims: list[dict[str, Any]],
+    ) -> None:
+        for claim in claims:
+            if (
+                claim.get("status") in {"blocked", "budget", "waiting"}
+                and DIGEST.fullmatch(claim.get("lease", ""))
+                and claim.get("lease_released") is not True
+                and not self.role_active(claim)
+            ):
+                status = claim["status"]
+                try:
+                    self.release_ticket_lease(claim)
+                except (
+                    ControllerError, json.JSONDecodeError, OSError,
+                    subprocess.SubprocessError, UnicodeError,
+                ):
+                    self.event_once(
+                        "inactive_ticket_lease_release_waiting", claim["ticket"],
+                        status=status,
+                    )
+                else:
+                    self.event_once(
+                        "inactive_ticket_lease_released", claim["ticket"],
+                        status=status,
+                    )
 
     def release_expired_successor_lease(self, claim: dict[str, Any]) -> bool:
         if (
@@ -4048,6 +4221,130 @@ class Controller:
             self.save_claim(claim)
             self.event_once("terminal_replay_recovered", claim["ticket"])
 
+    def emit_recovery_abandoned(self, claim: dict[str, Any]) -> None:
+        attempt = claim["recovery_attempt"]
+        self.event_once(
+            "ticket_recovery_abandoned", claim["ticket"],
+            attempts=attempt["count"],
+            input_sha256=attempt["input_sha256"],
+            outcome_sha256=attempt["outcome_sha256"],
+            recovery=attempt["recovery"],
+        )
+
+    def finish_recovery_abandonment(self, claim: dict[str, Any]) -> bool:
+        attempt = claim["recovery_attempt"]
+        try:
+            self.withdraw_publication(claim)
+            if (
+                DIGEST.fullmatch(claim.get("lease", ""))
+                and claim.get("lease_released") is not True
+                and not self.role_active(claim)
+            ):
+                self.release_ticket_lease(claim)
+        except (
+            ControllerError, json.JSONDecodeError, OSError,
+            subprocess.SubprocessError, UnicodeError,
+        ):
+            self.event_once(
+                "ticket_recovery_abandonment_cleanup_waiting",
+                claim["ticket"], recovery=attempt["recovery"],
+            )
+            return False
+        self.emit_recovery_abandoned(claim)
+        attempt["phase"] = "abandoned"
+        self.save_claim(claim)
+        return True
+
+    def settle_recovery_attempt(
+        self, claim: dict[str, Any], error: str = "",
+    ) -> bool:
+        attempt = claim.get("recovery_attempt")
+        if not self.valid_recovery_attempt(attempt) or attempt["phase"] != "pending":
+            return False
+        current_input = self.recovery_input_sha256(
+            claim, attempt["recovery"],
+        )
+        if (
+            attempt["factory_sha"] != self.release_path.name
+            or attempt["input_sha256"] != current_input
+        ):
+            claim.pop("recovery_attempt", None)
+            self.save_claim(claim)
+            return False
+        outcome = self.recovery_outcome_sha256(claim, error)
+        count = (
+            attempt["count"] + 1
+            if attempt["outcome_sha256"] == outcome else 1
+        )
+        attempt.update(
+            count=count, outcome_sha256=outcome,
+            phase=(
+                "abandoning" if count >= RECOVERY_ATTEMPT_LIMIT else "settled"
+            ),
+        )
+        if attempt["phase"] == "abandoning":
+            claim["status"] = "blocked"
+            claim["blocked_reason"] = (
+                f"recovery-abandoned:{attempt['recovery']}"
+            )
+            attempt["input_sha256"] = self.recovery_input_sha256(
+                claim, attempt["recovery"],
+            )
+        self.save_claim(claim)
+        if attempt["phase"] == "abandoning":
+            self.finish_recovery_abandonment(claim)
+            return True
+        return False
+
+    def recovery_blocked(self, claim: dict[str, Any], name: str) -> bool:
+        attempt = claim.get("recovery_attempt")
+        if not attempt:
+            return False
+        if attempt["factory_sha"] != self.release_path.name:
+            claim["status"] = attempt["retry_status"]
+            if attempt["retry_reason"]:
+                claim["blocked_reason"] = attempt["retry_reason"]
+            else:
+                claim.pop("blocked_reason", None)
+            claim.pop("recovery_attempt", None)
+            self.save_claim(claim)
+            return False
+        if (
+            attempt["phase"] == "pending"
+            and claim.get("status") in {"claimed", "running"}
+        ):
+            return True
+        if attempt["recovery"] != name:
+            return True
+        current_input = self.recovery_input_sha256(
+            claim, attempt["recovery"],
+        )
+        if (
+            attempt["input_sha256"] != current_input
+        ):
+            claim["status"] = attempt["retry_status"]
+            if attempt["retry_reason"]:
+                claim["blocked_reason"] = attempt["retry_reason"]
+            else:
+                claim.pop("blocked_reason", None)
+            claim.pop("recovery_attempt", None)
+            self.save_claim(claim)
+            return False
+        if attempt["phase"] == "abandoned":
+            return True
+        if attempt["phase"] == "abandoning":
+            if attempt["recovery"] == name:
+                self.finish_recovery_abandonment(claim)
+            return True
+        if attempt["phase"] == "pending":
+            if claim.get("status") in {"blocked", "budget", "waiting"}:
+                if self.settle_recovery_attempt(claim):
+                    return True
+                attempt = claim.get("recovery_attempt")
+            else:
+                return True
+        return bool(attempt and attempt["recovery"] != name)
+
     def recover_each(
         self,
         claims: list[dict[str, Any]],
@@ -4056,25 +4353,81 @@ class Controller:
         concurrent: bool = False,
     ) -> None:
         def recover(claim: dict[str, Any]) -> None:
+            if self.role_active(claim):
+                return
             before_lease = claim.get("lease", "")
             before_released = claim.get("lease_released") is True
+            prepared: dict[str, Any] = {}
+            context_set = False
+            error_detail = ""
             try:
+                if self.recovery_blocked(claim, name):
+                    return
+                prior = claim.get("recovery_attempt", {})
+                prepared = {
+                    "count": prior.get("count", 0),
+                    "factory_sha": self.release_path.name,
+                    "input_sha256": self.recovery_input_sha256(claim, name),
+                    "outcome_sha256": prior.get("outcome_sha256", ""),
+                    "phase": "pending",
+                    "recovery": name,
+                    "retry_reason": prior.get(
+                        "retry_reason", claim.get("blocked_reason") or ""
+                    ),
+                    "retry_status": prior.get(
+                        "retry_status", claim.get("status", "blocked")
+                    ),
+                }
+                self.recovery_context.value = {
+                    "attempt": prepared, "ticket": claim["ticket"],
+                }
+                context_set = True
                 recovery([claim])
             except (
                 ControllerError,
                 json.JSONDecodeError,
                 OSError,
                 subprocess.SubprocessError,
+                UnicodeError,
             ) as error:
+                error_detail = safe_error(error)
                 claim["status"] = "blocked"
                 claim["blocked_reason"] = f"recovery:{name}"
                 self.save_claim(claim)
                 self.event_once(
                     "ticket_recovery_failed",
                     claim["ticket"],
-                    error=safe_error(error),
+                    error=error_detail,
                     recovery=name,
                 )
+            finally:
+                if context_set:
+                    self.recovery_context.value = None
+            if prepared and error_detail and claim.get("recovery_attempt") == prepared:
+                try:
+                    prepared["input_sha256"] = self.recovery_input_sha256(
+                        claim, name,
+                    )
+                except (
+                    ControllerError, json.JSONDecodeError, OSError,
+                    subprocess.SubprocessError, UnicodeError,
+                ):
+                    pass
+                else:
+                    claim["recovery_attempt"] = dict(prepared)
+                    self.save_claim(claim)
+            attempted = bool(prepared) and claim.get("recovery_attempt") == prepared
+            if attempted and claim.get("status") in {"blocked", "budget", "waiting"}:
+                try:
+                    self.settle_recovery_attempt(claim, error_detail)
+                except (
+                    ControllerError, json.JSONDecodeError, OSError,
+                    subprocess.SubprocessError, UnicodeError,
+                ):
+                    self.event_once(
+                        "ticket_recovery_settlement_waiting", claim["ticket"],
+                        recovery=name,
+                    )
             acquired = (
                 DIGEST.fullmatch(claim.get("lease", ""))
                 and claim.get("lease_released") is not True
@@ -4088,7 +4441,16 @@ class Controller:
                 and not self.role_active(claim)
                 and claim.get("status") in {"blocked", "budget", "waiting"}
             ):
-                self.release_ticket_lease(claim)
+                try:
+                    self.release_ticket_lease(claim)
+                except (
+                    ControllerError, json.JSONDecodeError, OSError,
+                    subprocess.SubprocessError, UnicodeError,
+                ):
+                    self.event_once(
+                        "ticket_recovery_lease_release_waiting", claim["ticket"],
+                        recovery=name,
+                    )
 
         if concurrent and len(claims) > 1:
             with ThreadPoolExecutor(
@@ -6755,6 +7117,7 @@ class Controller:
                     and not self.role_active(claim)
                 ):
                     self.park_claim(claim)
+                self.settle_recovery_attempt(claim)
                 return result
 
     def reconcile(self) -> dict[str, Any]:
@@ -6776,6 +7139,7 @@ class Controller:
             self.ensure_lease(claim, "terminal-cleanup")
             self.release(claim)
         existing = [claim for claim in existing if claim not in completed]
+        self.release_inactive_ticket_leases(existing)
         self.recover_operator_action_events(existing)
         self.record_qualification_done_targets()
         self.recover_missing_passport_claims(existing)
@@ -6913,6 +7277,7 @@ class Controller:
                     and time.monotonic() >= retry_after.get(claim["ticket"], 0)
                     and not self.role_active(claim)
                 ]
+                self.release_inactive_ticket_leases(idle)
                 if protected_main is None:
                     protected_main = self.cancellation_authority(idle)
                 before_retirement = {claim["ticket"] for claim in idle}
