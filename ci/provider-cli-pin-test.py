@@ -226,6 +226,36 @@ exit 2
         self.assertIn("version probe is invalid", planned.stderr)
         self.assertNotIn("DO-NOT-LEAK", planned.stdout + planned.stderr)
 
+    def test_varying_stderr_keeps_the_plan_hash_stable_across_invocations(self) -> None:
+        """plan -> apply must agree even when a CLI's stderr differs per run.
+
+        codex embeds the probe's randomly named temporary directory in its
+        warning. Digesting the merged streams made help_sha256 change on every
+        invocation, so the approval hash never matched and apply always refused
+        with 'provider CLI pin approval hash does not match'.
+        """
+        codex = self.vendor / "codex"
+        codex.write_text(
+            "#!/bin/sh\n"
+            "if [ \"$1\" = --version ]; then\n"
+            "  echo \"WARNING: temporary dir $$-$(date +%N)\" >&2\n"
+            "  echo 'codex-cli 0.144.3'\n"
+            "  exit 0\n"
+            "fi\n"
+            "if [ \"$1\" = exec ] && [ \"$2\" = --help ]; then\n"
+            "  echo \"WARNING: temporary dir $$-$(date +%N)\" >&2\n"
+            "  echo '--json --model'\n"
+            "  exit 0\n"
+            "fi\n"
+            "exit 2\n"
+        )
+        codex.chmod(0o755)
+        first = self.plan()
+        second = self.plan()
+        self.assertEqual(first["approval_sha256"], second["approval_sha256"])
+        applied = self.command("apply", approval=first["approval_sha256"])
+        self.assertEqual(applied.returncode, 0, applied.stderr)
+
     def test_never_managed_check_warns_without_creating_a_lock(self) -> None:
         lock = self.factory / ".provider-cli-pin.lock"
         checked = self.command("check")
