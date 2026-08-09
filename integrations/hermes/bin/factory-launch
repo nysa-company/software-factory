@@ -1376,10 +1376,23 @@ PY
     ACTION="${1#--}"
     shift
     DISPATCH_ARGS=()
+    DISPATCH_MAX_LINEAR_AGE=0
     while [[ $# -gt 1 ]]; do
-      [[ "$1" == "--exclude-ticket" && "$2" =~ ^T-[0-9]+$ ]] || usage
-      DISPATCH_ARGS+=(--exclude-ticket "$2")
-      shift 2
+      case "$1" in
+        --exclude-ticket)
+          [[ "$2" =~ ^T-[0-9]+$ ]] || usage
+          DISPATCH_ARGS+=(--exclude-ticket "$2")
+          shift 2
+          ;;
+        --max-linear-age)
+          [[ "$ACTION" == "shadow" && "$DISPATCH_MAX_LINEAR_AGE" -eq 0 &&
+             "$2" =~ ^[1-9][0-9]{0,2}$ && 10#$2 -le 600 ]] || usage
+          DISPATCH_MAX_LINEAR_AGE=1
+          DISPATCH_ARGS+=(--max-linear-age "$2")
+          shift 2
+          ;;
+        *) usage ;;
+      esac
     done
     require_exact "--json" "$@"
     DISPATCH_ARGS+=("$ACTION")

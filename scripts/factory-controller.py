@@ -2275,6 +2275,65 @@ class Controller:
             result.append(value)
         return result
 
+    def qualification_admission_preflight(
+        self, existing: list[dict[str, Any]],
+    ) -> dict[str, str] | None:
+        if not self.qualification:
+            return None
+        value: dict[str, Any] = {}
+        try:
+            value = self.json_call(
+                "dispatch-plan", "--shadow", "--max-linear-age", "300",
+                "--json", allow=(0, 2),
+            )
+            pair = (value.get("status"), value.get("action"))
+            valid = (
+                value.get("schema")
+                == "nysa.software-factory.dispatch-plan/v1"
+                and (
+                    pair == ("WAIT", "WAIT")
+                    or (
+                        pair == ("SHADOW", "SHADOW")
+                        and isinstance(value.get("ticket"), str)
+                        and TICKET.fullmatch(value.get("ticket", ""))
+                    )
+                    or (
+                        pair == ("error", "ESCALATE")
+                        and value.get("reason_code") == "unsafe_state"
+                        and isinstance(value.get("error"), str)
+                        and 0 < len(value["error"]) <= 500
+                    )
+                )
+            )
+            if not valid:
+                raise ControllerError(
+                    "qualification admission preflight response is malformed"
+                )
+            if pair != ("error", "ESCALATE"):
+                return None
+        except (ControllerError, OSError, subprocess.SubprocessError):
+            value = {}
+        detail = value.get("error", "")
+        restore = isinstance(detail, str) and detail.startswith(
+            "selected-ticket Linear "
+        )
+        failure = {
+            "error": (
+                "qualification Linear freshness requires the supported sealed "
+                "environment restore"
+                if restore else "qualification admission preflight failed"
+            ),
+            "reason_code": (
+                "qualification_linear_restore_required"
+                if restore else "qualification_admission_preflight_failed"
+            ),
+            "status": "error",
+        }
+        self.record_admission_failure(
+            ControllerError(canonical(failure)), existing,
+        )
+        return failure
+
     def claim_new(
         self, existing: list[dict[str, Any]], reserved_capacity: int = 0
     ) -> list[dict[str, Any]]:
@@ -8265,6 +8324,14 @@ class Controller:
         self.invalid_transition_tickets.clear()
         self.prior_transition_tickets.clear()
         existing = self.load_claims()
+        qualification_preflight = self.qualification_admission_preflight(existing)
+        if qualification_preflight is not None:
+            return {
+                "active": sum(self.consumes_capacity(item) for item in existing),
+                "results": [qualification_preflight],
+                "schema": SCHEMA,
+                "status": "error",
+            }
         protected_main = self.cancellation_authority(existing)
         if self.qualification:
             tickets = set(self.qualification["tickets"])
