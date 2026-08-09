@@ -515,6 +515,22 @@ document = {
             ],
             "observed_at": dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat(),
         },
+        "project_identity_warnings": [{
+            "schema": "nysa.software-factory.linear-project-identity-conflict/v1",
+            "initiative": "I-001",
+            "reason": "unmarked_same_name_project",
+            "candidates": [
+                {
+                    "project_id": "project-duplicate",
+                    "project_url": "https://linear.app/test/project/project-duplicate",
+                },
+                {
+                    "project_id": "project-canonical",
+                    "project_url": "https://linear.app/test/project/project-canonical",
+                },
+            ],
+            "observed_at": dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat(),
+        }],
     },
     "initiatives": {
         "I-001": {
@@ -751,6 +767,11 @@ assert checks["linear_sync"]["project_identity_conflict"]["reason"] == "conflict
 assert [
     item["project_id"]
     for item in checks["linear_sync"]["project_identity_conflict"]["candidates"]
+] == ["project-canonical", "project-duplicate"]
+assert checks["linear_sync"]["project_identity_warnings"][0]["reason"] == "unmarked_same_name_project"
+assert [
+    item["project_id"]
+    for item in checks["linear_sync"]["project_identity_warnings"][0]["candidates"]
 ] == ["project-canonical", "project-duplicate"]
 assert checks["contract_resume"] == {
     "incidents": [{

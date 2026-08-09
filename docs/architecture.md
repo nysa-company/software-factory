@@ -524,10 +524,16 @@ cohort. A null operator initiative remains authoritative, but if it removes a
 Ready ticket's effective initiative, admission emits a named
 `initiative_missing` refusal while eligible siblings continue. Linear Project
 reconciliation adopts one exact durable initiative marker and refuses missing
-mapped Projects, changed or removed mapped markers, foreign-team mappings,
-duplicate markers, and same-name identity conflicts before creating or updating
-anything. Doctor lists the canonical mapped Project IDs and URLs;
-reconciliation failures remain visible in its Linear health output.
+mapped Projects, changed mapped markers, foreign-team mappings, duplicate
+markers, and marker-bearing identity conflicts before ticket projection. A
+legacy mapped Project with the exact committed name, team, and no marker-like
+line may receive the canonical marker after an unchanged exact-Project re-read;
+the non-retried update preserves all prior content and a later sweep recovers
+an applied response timeout. Once that mapped identity is durable, unmarked
+same-name Projects are nonblocking diagnostics and are never mutated. Doctor
+lists the canonical mapped Project IDs and URLs, exposes those bounded
+warnings, and keeps reconciliation failures visible in its Linear health
+output.
 Planner preflight validates the complete pinned route contract without
 repeating machine probes; the role runner re-verifies only its selected route
 immediately before provider admission.

@@ -112,12 +112,21 @@ making the board harder to scan.
 
 Each initiative has one canonical Linear Project identified by its durable
 `Software-Factory-Initiative:` marker and mapped ID. A missing mapped Project,
-a removed or changed mapped marker, a foreign-team mapping, duplicate markers,
-or a same-name identity conflict stops reconciliation before a new Project can
-be created. `doctor --json` lists canonical mapped IDs and URLs plus the typed
-conflict and safe candidate IDs/URLs. Cleanup or adoption of an unmarked
-same-name Project remains an explicit operator action; names alone never
-authorize automatic adoption.
+a changed mapped marker, a foreign-team mapping, duplicate markers, or a
+marker-bearing same-name identity conflict stops reconciliation before ticket
+projection. A mapped legacy Project with no marker-like line is eligible for
+one marker backfill only when its exact ID, team, Git-owned name, content, and
+`updatedAt` value survive an immediate re-read and no other Project carries
+that initiative marker. The non-retried update prepends the exact marker and
+preserves the previous content byte-for-byte; if its response is lost after
+apply, the next sweep observes the marker and performs no write. Linear has no
+compare-and-swap Project update, so this narrows but cannot erase the final
+read/write race. Once the mapped marker exists, same-team unmarked same-name
+Projects no longer block or receive mutations; `doctor --json` reports one
+bounded warning with the canonical and duplicate IDs/URLs. Cleanup or adoption
+remains an explicit operator action, and names alone never authorize adoption.
+Project name and marker content are Factory-owned; status and target date
+remain operator-owned.
 
 Each product repo stores initiatives in `factory/initiatives/I-NNN.md`:
 
@@ -150,7 +159,8 @@ never inventories historical issues or consumes a sibling's clear.
 `View: factory` also creates a shared Project-filtered Factory Pipeline view
 and stores its UUID with the initiative mapping.
 Project status, target date, and issue membership may be edited in Linear and
-are ingested into the operator overlay; the initiative summary remains Git-owned.
+are ingested into the operator overlay; the initiative summary, Project name,
+and durable marker remain Git-owned.
 
 ## Ticket template
 

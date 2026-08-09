@@ -1026,6 +1026,7 @@ LINEAR_AGE=""
 LINEAR_LAST_ERROR=""
 LINEAR_PROJECTS_JSON="[]"
 LINEAR_PROJECT_CONFLICT_JSON="null"
+LINEAR_PROJECT_WARNINGS_JSON="[]"
 LINEAR_MAP=""
 if [[ -n "$FACTORY_DIR" ]]; then
   LINEAR_MAP="${FACTORY_OPERATOR_MAP:-$FACTORY_DIR/linear-map.json}"
@@ -1088,27 +1089,19 @@ try:
             "project_id": project_id,
             "project_url": project_url,
         })
-    conflict = sync.get("project_identity_conflict")
-    if conflict is not None:
+    def identity_record(value, reasons, *, minimum_candidates=0):
         if (
-            not isinstance(conflict, dict)
-            or conflict.get("schema") != "nysa.software-factory.linear-project-identity-conflict/v1"
-            or not re.fullmatch(r"I-[0-9]+", str(conflict.get("initiative") or ""))
-            or conflict.get("reason") not in {
-                "conflicting_project_identity",
-                "durable_project_foreign_team",
-                "mapped_project_foreign_team",
-                "mapped_project_marker_invalid",
-                "mapped_project_unavailable",
-                "multiple_durable_identities",
-                "unmarked_same_name_project",
-            }
-            or not isinstance(conflict.get("candidates"), list)
-            or len(conflict["candidates"]) > 250
+            not isinstance(value, dict)
+            or value.get("schema") != "nysa.software-factory.linear-project-identity-conflict/v1"
+            or not re.fullmatch(r"I-[0-9]+", str(value.get("initiative") or ""))
+            or value.get("reason") not in reasons
+            or not isinstance(value.get("candidates"), list)
+            or not minimum_candidates <= len(value["candidates"]) <= 250
         ):
             raise ValueError
         candidates = []
-        for candidate in conflict["candidates"]:
+        seen = set()
+        for candidate in value["candidates"]:
             if not isinstance(candidate, dict):
                 raise ValueError
             project_id = candidate.get("project_id")
@@ -1127,28 +1120,64 @@ try:
                 )
             ):
                 raise ValueError
+            if project_id in seen:
+                raise ValueError
+            seen.add(project_id)
             candidates.append({"project_id": project_id, "project_url": project_url})
-        conflict = {
-            "schema": conflict["schema"],
-            "initiative": conflict["initiative"],
-            "reason": conflict["reason"],
+        observed_at = value.get("observed_at")
+        if not isinstance(observed_at, str) or len(observed_at) > 64:
+            raise ValueError
+        observed = dt.datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+        if observed.tzinfo is None:
+            raise ValueError
+        return {
+            "schema": value["schema"],
+            "initiative": value["initiative"],
+            "reason": value["reason"],
             "candidates": sorted(candidates, key=lambda item: item["project_id"]),
-            "observed_at": str(conflict.get("observed_at") or ""),
+            "observed_at": observed_at,
         }
+
+    conflict = sync.get("project_identity_conflict")
+    if conflict is not None:
+        conflict = identity_record(conflict, {
+            "conflicting_project_identity",
+            "durable_project_foreign_team",
+            "mapped_project_changed_before_backfill",
+            "mapped_project_foreign_team",
+            "mapped_project_marker_invalid",
+            "mapped_project_name_mismatch",
+            "mapped_project_unavailable",
+            "multiple_durable_identities",
+            "unmarked_same_name_project",
+        })
+    raw_warnings = sync.get("project_identity_warnings") or []
+    if not isinstance(raw_warnings, list) or len(raw_warnings) > 250:
+        raise ValueError
+    warnings = [
+        identity_record(
+            warning, {"unmarked_same_name_project"}, minimum_candidates=2
+        )
+        for warning in raw_warnings
+    ]
+    if len({warning["initiative"] for warning in warnings}) != len(warnings):
+        raise ValueError
+    warnings.sort(key=lambda warning: warning["initiative"])
     age = ""
-    status = "warning" if error else "unknown"
+    status = "warning" if error or warnings else "unknown"
     if success:
         parsed = dt.datetime.fromisoformat(success.replace("Z", "+00:00"))
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=dt.timezone.utc)
         age = max(0, int((dt.datetime.now(dt.timezone.utc) - parsed).total_seconds()))
-        status = "ok" if age <= fresh and not error else "warning"
+        status = "ok" if age <= fresh and not error and not warnings else "warning"
     print(status)
     print(success)
     print(age)
     print(error)
     print(json.dumps(projects, sort_keys=True, separators=(",", ":")))
     print(json.dumps(conflict, sort_keys=True, separators=(",", ":")))
+    print(json.dumps(warnings, sort_keys=True, separators=(",", ":")))
 except Exception:
     print("error")
     print("")
@@ -1156,6 +1185,7 @@ except Exception:
     print("invalid Linear sync metadata")
     print("[]")
     print("null")
+    print("[]")
 PY
 )"
   LINEAR_STATUS="$(printf '%s\n' "$LINEAR_DATA" | awk 'NR == 1 { print; exit }')"
@@ -1164,6 +1194,7 @@ PY
   LINEAR_LAST_ERROR="$(printf '%s\n' "$LINEAR_DATA" | awk 'NR == 4 { print; exit }' | sanitize)"
   LINEAR_PROJECTS_JSON="$(printf '%s\n' "$LINEAR_DATA" | awk 'NR == 5 { print; exit }')"
   LINEAR_PROJECT_CONFLICT_JSON="$(printf '%s\n' "$LINEAR_DATA" | awk 'NR == 6 { print; exit }')"
+  LINEAR_PROJECT_WARNINGS_JSON="$(printf '%s\n' "$LINEAR_DATA" | awk 'NR == 7 { print; exit }')"
 fi
 
 PROVIDER_RUNTIME_STATUS="ok"
@@ -1357,6 +1388,7 @@ export CREDENTIAL_STATUS GH_PRESENT LINEAR_PRESENT
 export LINEAR_STATUS OUTPUT_LINEAR_MAP LINEAR_LAST_SUCCESS LINEAR_AGE LINEAR_LAST_ERROR
 export LINEAR_PROJECTS_JSON
 export LINEAR_PROJECT_CONFLICT_JSON
+export LINEAR_PROJECT_WARNINGS_JSON
 export PROVIDER_RUNTIME_STATUS PROVIDER_ACTIVATED PROVIDER_ACTIVE_ATTEMPTS
 export PROVIDER_EXECUTION_MODE
 export PROVIDER_ACTIVE_TOKENS PROVIDER_UNKNOWN_WORKERS PROVIDER_LEGACY_INTERVALS
@@ -1489,6 +1521,9 @@ document = {
             "project_identity_conflict": json.loads(
                 os.environ["LINEAR_PROJECT_CONFLICT_JSON"]
             ),
+            "project_identity_warnings": json.loads(
+                os.environ["LINEAR_PROJECT_WARNINGS_JSON"]
+            ),
         },
         "contract_resume": {
             "status": os.environ["CONTRACT_RESUME_STATUS"],
@@ -1533,7 +1568,7 @@ else
   done < "$CLI_FILE"
   echo "Credentials [$CREDENTIAL_STATUS]: github=$GH_PRESENT linear=$LINEAR_PRESENT (presence only; authentication not validated)"
   echo "Isolated provider [$PROVIDER_RUNTIME_STATUS]: activated=$PROVIDER_ACTIVATED concurrency_required=$PROVIDER_CONCURRENCY_REQUIRED concurrency_ready=$PROVIDER_CONCURRENCY_READY mode=${PROVIDER_EXECUTION_MODE:-none} attempts=$PROVIDER_ACTIVE_ATTEMPTS tokens=$PROVIDER_ACTIVE_TOKENS unknown_workers=$PROVIDER_UNKNOWN_WORKERS legacy=$PROVIDER_LEGACY_INTERVALS"
-  echo "Linear sync [$LINEAR_STATUS]: age_seconds=${LINEAR_AGE:-unknown} last_success=${LINEAR_LAST_SUCCESS:-unknown}"
+  echo "Linear sync [$LINEAR_STATUS]: age_seconds=${LINEAR_AGE:-unknown} last_success=${LINEAR_LAST_SUCCESS:-unknown} project_identity_warnings=$($PYTHON_BIN -c 'import json,sys; print(len(json.loads(sys.argv[1])))' "$LINEAR_PROJECT_WARNINGS_JSON")"
   echo "Contract resume [$CONTRACT_RESUME_STATUS]: incidents=$("$PYTHON_BIN" -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$CONTRACT_RESUME_FILE")"
   echo "Transition receipts [$TRANSITION_RECEIPT_STATUS]: incidents=$("$PYTHON_BIN" -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$TRANSITION_RECEIPT_FILE")"
   echo "Controller [$CONTROLLER_STATUS]: state=$CONTROLLER_SERVICE_STATE last_exit=${CONTROLLER_LAST_EXIT_STATUS:-none}"

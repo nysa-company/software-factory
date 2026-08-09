@@ -36,6 +36,10 @@ class FakeLinear:
         self.viewer_error = False
         self.issue_update_success = True
         self.comment_create_success = True
+        self.project_update_success = True
+        self.project_update_error_after_apply = False
+        self.project_update_retry_transient = []
+        self.project_reread_mutation = None
 
     def __call__(self, _key, query, variables=None, retry_transient=True):
         variables = variables or {}
@@ -132,10 +136,27 @@ class FakeLinear:
                 "content": variables["input"].get("content"),
                 "targetDate": variables["input"].get("targetDate"),
                 "status": {"name": "Planned"},
+                "teams": {"nodes": [{"id": "team-1"}]},
+                "updatedAt": "2026-08-01T00:00:00Z",
             }
             return {"projectCreate": {"project": project}}
         if "project(id:" in query:
-            return {"project": self.projects.get(variables["id"])}
+            project = self.projects.get(variables["id"])
+            if project is not None and self.project_reread_mutation is not None:
+                project.update(self.project_reread_mutation)
+                self.project_reread_mutation = None
+            return {"project": project}
+        if "projectUpdate" in query:
+            self.project_update_retry_transient.append(retry_transient)
+            project = self.projects[variables["id"]]
+            if not self.project_update_success:
+                return {"projectUpdate": {"success": False, "project": project}}
+            project.update(variables["input"])
+            project["updatedAt"] = "2026-08-01T00:00:01Z"
+            if self.project_update_error_after_apply:
+                self.project_update_error_after_apply = False
+                raise TimeoutError("response lost after apply")
+            return {"projectUpdate": {"success": True, "project": project}}
         if "customViews(" in query:
             return {"customViews": {"nodes": list(self.views.values())}}
         if "customView(id:" in query:
@@ -1380,42 +1401,96 @@ class LinearSyncTest(unittest.TestCase):
         )
         self.assertEqual(len(self.fake.projects), created)
 
-    def test_mapped_project_refuses_same_name_duplicate(self):
+    def test_mapped_legacy_project_backfills_marker_and_warns_on_unmarked_duplicate(self):
         self.reconcile()
         canonical = next(iter(self.fake.projects.values()))
+        canonical["content"] = "Existing operator-authored Project content.\n"
         self.fake.projects["project-duplicate"] = {
             **canonical,
             "content": "Unmarked duplicate.",
             "id": "project-duplicate",
+            "url": "https://linear.app/test/project/project-duplicate",
         }
+        issue = next(iter(self.fake.issues.values()))
+        issue["priority"] = LINEAR.PRIORITIES["high"]
+        self.fake.calls.clear()
 
-        with self.assertRaisesRegex(
-            RuntimeError, "I-001: conflicting Linear Project identity"
-        ) as raised:
-            self.reconcile()
+        self.reconcile()
 
-        LINEAR.record_failure(self.map_path, self.mapping, raised.exception)
-        conflict = LINEAR.load_map(self.map_path)["_sync"][
-            "project_identity_conflict"
-        ]
-        self.assertEqual(conflict["schema"], LINEAR.PROJECT_IDENTITY_SCHEMA)
-        self.assertEqual(conflict["initiative"], "I-001")
-        self.assertEqual(conflict["reason"], "conflicting_project_identity")
         self.assertEqual(
-            [item["project_id"] for item in conflict["candidates"]],
+            canonical["content"],
+            f"{LINEAR.PROJECT_MARKER} I-001\n\n"
+            "Existing operator-authored Project content.\n",
+        )
+        self.assertEqual(self.fake.project_update_retry_transient, [False])
+        warnings = self.mapping["_sync"]["project_identity_warnings"]
+        self.assertEqual(len(warnings), 1)
+        self.assertEqual(warnings[0]["reason"], "unmarked_same_name_project")
+        self.assertEqual(
+            [item["project_id"] for item in warnings[0]["candidates"]],
             ["project-1", "project-duplicate"],
         )
-
+        self.assertEqual(issue["project"], {"id": "project-1"})
         self.assertEqual(
-            len([query for query, _variables in self.fake.calls if "projectCreate" in query]),
-            1,
+            self.mapping["tickets"]["T-001"]["operator"]["priority"], "high"
         )
+
+        self.fake.calls.clear()
+        self.reconcile()
+        self.assertEqual(
+            [query for query, _variables in self.fake.calls if "projectUpdate" in query],
+            [],
+        )
+        self.assertEqual(canonical["content"].count(LINEAR.PROJECT_MARKER), 1)
 
         self.fake.projects.pop("project-duplicate")
         self.reconcile()
-        self.assertNotIn(
-            "project_identity_conflict", LINEAR.load_map(self.map_path)["_sync"]
+        self.assertNotIn("project_identity_warnings", self.mapping["_sync"])
+
+    def test_mapped_backfill_timeout_after_apply_recovers_without_second_write(self):
+        self.reconcile()
+        canonical = next(iter(self.fake.projects.values()))
+        canonical["content"] = "Retain this content."
+        self.fake.project_update_error_after_apply = True
+
+        with self.assertRaisesRegex(TimeoutError, "response lost after apply"):
+            self.reconcile()
+        self.assertEqual(self.fake.project_update_retry_transient, [False])
+        self.assertEqual(
+            canonical["content"],
+            f"{LINEAR.PROJECT_MARKER} I-001\n\nRetain this content.",
         )
+
+        self.fake.calls.clear()
+        self.reconcile()
+        self.assertFalse(any(
+            "projectUpdate" in query for query, _variables in self.fake.calls
+        ))
+
+    def test_mapped_backfill_requires_successful_update_response(self):
+        self.reconcile()
+        canonical = next(iter(self.fake.projects.values()))
+        canonical["content"] = None
+        self.fake.project_update_success = False
+
+        with self.assertRaisesRegex(RuntimeError, "backfill was not confirmed"):
+            self.reconcile()
+        self.assertEqual(self.fake.project_update_retry_transient, [False])
+        self.assertIsNone(canonical["content"])
+
+    def test_mapped_backfill_refuses_inventory_drift_before_write(self):
+        self.reconcile()
+        canonical = next(iter(self.fake.projects.values()))
+        canonical["content"] = "Inventory content."
+        self.fake.project_reread_mutation = {
+            "content": "Changed before write.",
+            "updatedAt": "2026-08-01T00:00:02Z",
+        }
+
+        with self.assertRaisesRegex(RuntimeError, "changed before identity backfill"):
+            self.reconcile()
+        self.assertEqual(self.fake.project_update_retry_transient, [])
+        self.assertEqual(canonical["content"], "Changed before write.")
 
     def test_mapped_project_refuses_duplicate_marker_and_foreign_team(self):
         self.reconcile()
@@ -1437,13 +1512,31 @@ class LinearSyncTest(unittest.TestCase):
         ):
             self.reconcile()
 
-    def test_mapped_project_refuses_removed_or_changed_marker(self):
+    def test_mapped_legacy_project_refuses_marker_on_another_project(self):
+        self.reconcile()
+        canonical = next(iter(self.fake.projects.values()))
+        canonical["content"] = None
+        self.fake.projects["project-other"] = {
+            **canonical,
+            "content": f"{LINEAR.PROJECT_MARKER} I-001",
+            "id": "project-other",
+            "name": "Different display name",
+            "url": "https://linear.app/test/project/project-other",
+        }
+
+        with self.assertRaisesRegex(RuntimeError, "multiple durable Linear Project identities"):
+            self.reconcile()
+        self.assertEqual(self.fake.project_update_retry_transient, [])
+
+    def test_mapped_project_refuses_wrong_multiple_malformed_or_case_variant_marker(self):
         self.reconcile()
         canonical = next(iter(self.fake.projects.values()))
         for content in (
-            "Marker removed by an operator.",
             f"{LINEAR.PROJECT_MARKER} I-999",
             f"{LINEAR.PROJECT_MARKER} I-001\n{LINEAR.PROJECT_MARKER} I-001",
+            f"{LINEAR.PROJECT_MARKER} not-an-initiative",
+            "software-factory-initiative: I-001",
+            f" {LINEAR.PROJECT_MARKER} I-001",
         ):
             with self.subTest(content=content):
                 canonical["content"] = content
@@ -1470,6 +1563,18 @@ class LinearSyncTest(unittest.TestCase):
             '"mapped_project_marker_invalid"',
             (ROOT / "scripts/factory-doctor.sh").read_text(),
         )
+
+    def test_mapped_project_refuses_name_mismatch_before_backfill(self):
+        self.reconcile()
+        canonical = next(iter(self.fake.projects.values()))
+        canonical["content"] = None
+        canonical["name"] = "Renamed in Linear"
+
+        with self.assertRaisesRegex(RuntimeError, "name does not match Git"):
+            self.reconcile()
+        self.assertFalse(any(
+            "projectUpdate" in query for query, _variables in self.fake.calls
+        ))
 
     def test_unmarked_same_name_project_is_never_duplicated(self):
         self.fake.projects["project-unmarked"] = {
@@ -2044,6 +2149,12 @@ class LinearSyncTest(unittest.TestCase):
             "selected_ticket_success_at": {
                 "T-001": "2026-08-07T12:00:00+00:00",
             },
+            "project_identity_warnings": [LINEAR.project_identity_record(
+                "I-001", "unmarked_same_name_project",
+                projects=[
+                    {"id": "project-1"}, {"id": "project-duplicate"},
+                ],
+            )],
         }
         LINEAR.record_failure(self.map_path, self.mapping, RuntimeError("offline"))
         saved = json.loads(self.map_path.read_text())
@@ -2053,6 +2164,10 @@ class LinearSyncTest(unittest.TestCase):
             "2026-08-07T12:00:00+00:00",
         )
         self.assertEqual(saved["_sync"]["last_error"], "offline")
+        self.assertEqual(
+            saved["_sync"]["project_identity_warnings"][0]["initiative"],
+            "I-001",
+        )
         self.assertIn("failed_at", saved["_sync"])
 
     def test_exact_unconsumed_comment_records_fallback_approval(self):
