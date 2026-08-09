@@ -4283,6 +4283,78 @@ class Controller:
             and not self.protected_base_current(claim, passport.get("head_sha", ""))
         )
 
+    def refresh_prior_release_receipt(self, claim: dict[str, Any]) -> str:
+        """Reissue one current-release receipt for a bundle-refresh claim.
+
+        Bundle-refresh recovery clears only ``claim["receipt"]``, but
+        ``transition_receipt`` reads the on-disk receipt, so a stale
+        prior-release receipt keeps re-adding the ticket to
+        ``prior_transition_tickets`` on every later pass. The scheduler then
+        skips the ticket before the receipt-bound ``ticket-attest refresh``
+        can invalidate the stale bundle, and the recovery never converges.
+
+        Issue exactly one successor receipt, authenticate it against the exact
+        ticket, branch, head, lease, passport, route, and stale parent receipt,
+        and return its digest. Return "" when no reissue is owed; refuse a
+        receipt that does not authenticate.
+        """
+        stale = self.transition_receipt(claim, allow_prior=True)
+        if stale is None:
+            return ""
+        parent = stale.get("receipt_sha256", "")
+        if (
+            stale.get("factory_sha") == self.release_path.name
+            or DIGEST.fullmatch(parent) is None
+            or DIGEST.fullmatch(claim.get("lease", "")) is None
+            or claim.get("lease_released") is True
+            or claim.get("publication_lease")
+            or self.role_active(claim)
+        ):
+            return ""
+        transition = self.json_call(
+            "state-machine", "--ticket", claim["ticket"],
+            "--lease", claim["lease"], "--workdir", claim["worktree"],
+            "--json", timeout=None,
+        )
+        issued = self.transition_receipt(claim, allow_prior=True)
+        if (
+            not valid_transition_evidence(transition, claim["ticket"])
+            or issued is None
+            or issued.get("factory_sha") != self.release_path.name
+            or issued.get("receipt_sha256") != transition.get("receipt")
+            or issued.get("parent_digest") != parent
+            or issued.get("ticket") != claim["ticket"]
+            or issued.get("branch") != claim["branch"]
+            or issued.get("head_sha") != stale.get("head_sha")
+            or issued.get("route_plan_sha256") != stale.get("route_plan_sha256")
+            or issued.get("lease_sha256")
+            != hashlib.sha256(claim["lease"].encode()).hexdigest()
+            or DIGEST.fullmatch(issued.get("passport_sha256") or "") is None
+            or issued.get("consumed") is not False
+        ):
+            raise ControllerError(
+                "bundle-refresh receipt reissue is invalid"
+            )
+        return transition["receipt"]
+
+    def clear_prior_release_exclusion(self, claim: dict[str, Any]) -> str:
+        """Reissue a stale receipt and readmit the ticket to scheduling.
+
+        Every upgrade-recovery exit that clears ``claim["receipt"]`` leaves the
+        on-disk receipt at the prior release, which keeps the ticket in
+        ``prior_transition_tickets`` and excludes it from the scheduler for
+        good. Self-limiting: the reissue is skipped when the on-disk receipt
+        already binds the active release.
+        """
+        refreshed = self.refresh_prior_release_receipt(claim)
+        if refreshed:
+            self.prior_transition_tickets.discard(claim["ticket"])
+            self.event_once(
+                "prior_release_receipt_refreshed", claim["ticket"],
+                transition_receipt_sha256=refreshed,
+            )
+        return refreshed
+
     def locally_valid_operator_passport(
         self, claim: dict[str, Any],
     ) -> dict[str, Any] | None:
@@ -5597,6 +5669,7 @@ class Controller:
             claim.pop("lease_released", None)
             self.save_claim(claim)
             if merged_closeout:
+                self.clear_prior_release_exclusion(claim)
                 claim.update(receipt="", role="", status="claimed")
                 if claim.get("blocked_reason") == "route-migration-required":
                     claim.pop("blocked_reason")
@@ -5613,8 +5686,10 @@ class Controller:
                 })
                 continue
             if bundle_refresh:
+                # Bind the reissued receipt so this branch is not re-entered.
+                refreshed = self.clear_prior_release_exclusion(claim)
                 claim.update(
-                    receipt="", role="", status="claimed",
+                    receipt=refreshed, role="", status="claimed",
                     release_refresh_required=True,
                 )
                 claim.pop("blocked_reason", None)
@@ -5673,6 +5748,9 @@ class Controller:
                     else "blocked"
                 )
             else:
+                # No terminal manifest: the receipt is stale cache, so a
+                # prior-release one must not keep the ticket excluded.
+                self.clear_prior_release_exclusion(claim)
                 claim.update(receipt="", role="", status="claimed")
                 claim.pop("budget_sha256", None)
             if claim.get("blocked_reason") == "route-migration-required":
