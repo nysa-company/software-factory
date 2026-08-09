@@ -557,9 +557,27 @@ if [[ -z "${FACTORY_LEDGER:-}" || "$REFRESH_RUNTIME_LEDGER" == "1" ]] &&
   echo "REFUSE effective ledger could not be reduced"
   exit 1
 fi
+SEMANTIC_SPEC_FAILURES="$(grep -ciE '^[[:space:]]*SPEC-LINT:[[:space:]]*FAIL([[:space:]]+—[[:space:]]+.*)?[[:space:]]*$' "$TICKET_FILE" || true)"
+SEMANTIC_SPEC_FAILURES="${SEMANTIC_SPEC_FAILURES:-0}"
+SEMANTIC_AUTHORIZATIONS="$(grep -cFx 'OPERATOR AUTHORIZATION: spec-linter round 3' "$TICKET_FILE" || true)"
+SEMANTIC_AUTHORIZATIONS="${SEMANTIC_AUTHORIZATIONS:-0}"
 emit_stage() {
   local stage="$1"
   local budget_stage="AVAILABLE"
+  if [[ "$stage" == "RUN planner" && "$SEMANTIC_SPEC_FAILURES" -ge 3 ]]; then
+    printf 'ESCALATE planner-spec-linter loop cap reached; attempts=%s; limit=3\n' \
+      "$SEMANTIC_SPEC_FAILURES"
+    exit 0
+  elif [[ ( "$stage" == "RUN planner" || "$stage" == "RUN spec-linter" ) &&
+        "$SEMANTIC_SPEC_FAILURES" -eq 2 ]]; then
+    if [[ "$SEMANTIC_AUTHORIZATIONS" -eq 0 ]]; then
+      printf '%s\n' "AWAIT-OPERATOR semantic-round authorization required; add exact line: OPERATOR AUTHORIZATION: spec-linter round 3"
+      exit 0
+    elif [[ "$SEMANTIC_AUTHORIZATIONS" -ne 1 ]]; then
+      printf '%s\n' "AWAIT-OPERATOR semantic-round authorization invalid; keep exactly one line: OPERATOR AUTHORIZATION: spec-linter round 3"
+      exit 0
+    fi
+  fi
   if [[ "$CONTRACT_VERSION" == "1.8.0" &&
         ( "$stage" == RUN\ * || "$stage" == FIX\ * ) ]]; then
     budget_stage="$(python3 -B "$KIT_DIR/scripts/budget-stage.py" \
@@ -618,9 +636,6 @@ PY
         'NR>1 && $3==t && $4==r && $9=="0"' |
       wc -l | tr -d ' '
   fi
-}
-count_authorization() { # role semantic-round
-  grep -ciE "^[[:space:]]*OPERATOR AUTHORIZATION:[[:space:]]*$1 round[[:space:]]*$2[[:space:]]*$" "$TICKET_FILE" || true
 }
 P="$(count_ok planner)"; SL="$(count_ok spec-linter)"; TA="$(count_ok test-author)"
 B="$(count_ok builder)"; R="$(count_ok reviewer)"; N="$(count_ok narrator)"

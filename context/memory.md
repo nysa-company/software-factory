@@ -4959,3 +4959,27 @@ control boundary. Installed production Doctor resolves the active profile and
 reports every unusable result, including temporary unavailability, as an error.
 Qualification retains its separate
 frozen fallback-readiness contract.
+
+## 2026-08-09 — Decision 357: The third Spec-lint round waits before provider admission
+
+Category: Reliability
+
+After exactly two Spec-linter FAIL verdicts, both the public sequencer and the
+controller stop provider-free until the ticket contains exactly one canonical
+`OPERATOR AUTHORIZATION: spec-linter round 3` line. Missing, duplicate,
+malformed, wrong-role, stale, or future grants remain typed operator waits;
+the watcher projects only fixed allowlisted instructions. Unchanged waits are
+quiescent and consume no worker, lease, provider, remote, or repeated operator
+notification capacity. The third FAIL remains the absolute semantic cap and
+Reviewer remains an uncapped, budget-only review loop.
+
+An authenticated wait resumes only through one clean pushed direct-child
+ticket commit that adds the exact grant, or one direct-child correction that
+removes duplicate exact grants and preserves every other byte. Passport
+migration binds the wait receipt's passport and route digests before the claim
+becomes runnable. The one historical T-198 shape additionally permits its
+exact old-release protected-mutation terminal, conservative charge, direct
+authorization child, and single route migration to move into the successor
+release. Recovery writes and reuses the current Spec-linter receipt before
+clearing the old failed claim, so every restart retains the charge and reopens
+only that role once.

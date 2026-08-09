@@ -2685,8 +2685,13 @@ OPERATOR AUTHORIZATION: spec-linter round 2
 OPERATOR AUTHORIZATION: spec-linter round 3 because the operator said so
 EOF
 
+if expect_stage "AWAIT-OPERATOR semantic-round authorization required" "$SPEC_ROUNDS" T-301; then
+  pass "third semantic round waits for one exact authorization"
+fi
+printf '%s\n' 'OPERATOR AUTHORIZATION: spec-linter round 3' >> \
+  "$SPEC_ROUNDS/factory/tickets/T-301.md"
 if expect_stage "RUN planner" "$SPEC_ROUNDS" T-301; then
-  pass "budget-only spec repair starts the next planning cycle"
+  pass "exact third-round authorization resumes planning"
 fi
 
 ledger_row T-301 planner >> "$SPEC_ROUNDS/factory/ledger.csv"
@@ -2696,8 +2701,8 @@ fi
 
 ledger_row T-301 spec-linter >> "$SPEC_ROUNDS/factory/ledger.csv"
 printf '%s\n' 'SPEC-LINT: FAIL — third' >> "$SPEC_ROUNDS/factory/tickets/T-301.md"
-if expect_stage "RUN planner" "$SPEC_ROUNDS" T-301; then
-  pass "budget-only spec repair has no semantic-round ceiling"
+if expect_stage "ESCALATE planner-spec-linter loop cap reached" "$SPEC_ROUNDS" T-301; then
+  pass "third failed spec round reaches the hard cap"
 fi
 
 sed -i.bak 's/SPEC-LINT: FAIL — third/SPEC-LINT: PASS/' "$SPEC_ROUNDS/factory/tickets/T-301.md"
@@ -3796,8 +3801,16 @@ printf '# T-503\n' > "$WALK/factory/tickets/T-503.md"
   ledger_row T-503 spec-linter
 } >> "$WALK/factory/ledger.csv"
 printf 'SPEC-LINT: FAIL — round 1\nSPEC-LINT: FAIL — round 2\n' >> "$WALK/factory/tickets/T-503.md"
-if expect_stage "RUN planner" "$WALK" T-503; then
-  pass "spec-lint two-fail budget-only continuation"
+if expect_stage "AWAIT-OPERATOR semantic-round authorization required" "$WALK" T-503; then
+  printf 'OPERATOR AUTHORIZATION: spec-linter round 3\n' >> \
+    "$WALK/factory/tickets/T-503.md"
+  if expect_stage "RUN planner" "$WALK" T-503; then
+    printf 'OPERATOR AUTHORIZATION: spec-linter round 3\n' >> \
+      "$WALK/factory/tickets/T-503.md"
+    if expect_stage "AWAIT-OPERATOR semantic-round authorization invalid" "$WALK" T-503; then
+      pass "spec-lint round-three authorization is exact and unambiguous"
+    fi
+  fi
 fi
 fi
 

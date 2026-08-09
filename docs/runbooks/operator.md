@@ -13,9 +13,10 @@ in that action; never relaunch a role or move Factory-owned state by hand.
 - Run `factory-launch <project> watch --json` in a supervised terminal or feed
   its newline-delimited JSON to your notification channel. It reports only an
   approval request, escalation or contract blocker, terminal role failure,
-  terminal recovery refusal or abandonment, budget halt, or progress timeout;
-  it does not send Slack or desktop messages itself. Intermediate recovery
-  failures stay silent while the bounded recovery remains active.
+  terminal recovery refusal or abandonment, budget halt, Spec-linter round-three
+  authorization action, or progress timeout; it does not send Slack or desktop
+  messages itself. Intermediate recovery failures stay silent while the bounded
+  recovery remains active.
 - Save the opaque `cursor` from the last handled line. After a restart, pass it
   back as `--cursor <value>` so that line is authenticated and not delivered
   again. `--limit N` and `--idle-timeout-seconds N` support bounded drains.
@@ -158,11 +159,11 @@ an in-flight manifest or backdate an override.
 - Do: keep KILL published and run `scripts/kill-switch.sh`. After recorded process groups drain, it quarantines only a safe, unchanged owner whose PID is absent or has a different process start identity. Re-run doctor and preflight, reconcile manifests and active claims, then remove KILL only when accounting and control state agree.
 - Don't: delete or rename `factory/.provider.lock` by hand. A live, malformed, changed, symlinked, hard-linked, or otherwise ambiguous lock is deliberately retained for inspection; ordinary launch never steals it and the ownership token must not be printed.
 
-## Spec-linter or reviewer reached the authorization boundary
+## Spec-linter reached the round-three authorization boundary
 
-- Notice: the launcher's `next-stage` route returns `ESCALATE` and names the next semantic round.
-- Do: if one more cycle is warranted, append exactly `OPERATOR AUTHORIZATION: spec-linter round <N>` or `OPERATOR AUTHORIZATION: reviewer round <N>` using the round named by the sequencer, then run it again.
-- Don't: add commentary to the authorization line, authorize a future round, or let the dispatcher infer authorization. A stale or inexact line grants nothing. If the third failed lap reaches the hard loop cap, open a Factory issue and park the ticket; no further semantic-round override is available.
+- Notice: after two Spec-linter FAIL verdicts, `next-stage` returns provider-free `AWAIT-OPERATOR` and the watcher asks for exactly `OPERATOR AUTHORIZATION: spec-linter round 3`. A duplicate or malformed attempt produces a typed correction action without launching a provider.
+- Do: if one final cycle is warranted, append exactly that one line in a ticket-only commit and push it. If duplicate exact lines already exist at the authenticated wait head, create and push one ticket-only correction commit that removes only the extras and leaves one canonical final line. If a candidate commit is rejected, amend that candidate so it remains the single direct child of the recorded wait head.
+- Don't: add commentary to the authorization line, authorize another role or round, change another path, or let the dispatcher infer authorization. The third FAIL reaches the absolute planner–Spec-linter cap; no round-four override exists. Reviewer remains governed by its budget-only review loop and has no semantic-round authorization gate.
 
 ## Linear, GitHub, or Railway down
 

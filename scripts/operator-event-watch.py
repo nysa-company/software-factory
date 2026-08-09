@@ -41,9 +41,28 @@ RECOVERY_KINDS = frozenset({
     "interrupted-reconciliation", "missing-terminal",
     "passportless-route-migration", "preflight-retry",
     "prepublication-attestation", "release-upgrade", "targeted-repair",
-    "terminal-export",
+    "semantic-round-authorization", "terminal-export",
 })
 RECOVERY_ATTEMPT_LIMIT = 3
+SEMANTIC_AUTHORIZATION_QUESTION = (
+    "Append exactly `OPERATOR AUTHORIZATION: spec-linter round 3` to the ticket."
+)
+SEMANTIC_INVALID_QUESTIONS = {
+    "authorization_count_invalid": (
+        "Create and push a ticket-only correction commit that keeps exactly one "
+        "final `OPERATOR AUTHORIZATION: spec-linter round 3` line."
+    ),
+    "authorization_content_invalid": (
+        "Amend the ticket-only commit to keep exactly one final "
+        "`OPERATOR AUTHORIZATION: spec-linter round 3` line."
+    ),
+    "branch_invalid": "Restore the recorded ticket branch before retrying.",
+    "commit_not_pushed": "Push the exact ticket-only authorization commit.",
+    "dirty_uncommitted": (
+        "Commit or discard the local ticket edit before authorization recovery."
+    ),
+    "remote_moved": "Reconcile the ticket branch with its remote before retrying.",
+}
 
 
 class WatchError(ValueError):
@@ -254,6 +273,36 @@ def action_event(
         action = "awaiting_approval"
         reason = "linear_approval_required"
         question = source.get("question", "Approve this ticket to merge in Linear.")
+    elif event in {
+        "semantic_round_authorization_invalid",
+        "semantic_round_authorization_wait",
+    }:
+        semantic_round = source.get("semantic_round")
+        if (
+            semantic_round != 3
+            or source.get("role") != "spec-linter"
+            or "question" in source
+            or not re.fullmatch(r"[0-9a-f]{40}", source.get("head_sha", ""))
+            or (
+                event == "semantic_round_authorization_invalid"
+                and source.get("reason_code")
+                not in SEMANTIC_INVALID_QUESTIONS
+            )
+            or not DIGEST.fullmatch(
+                source.get("transition_receipt_sha256", "")
+            )
+        ):
+            raise WatchError("semantic-round authorization context is invalid")
+        action = "semantic_round_authorization"
+        reason = (
+            "semantic_round_authorization_invalid"
+            if event == "semantic_round_authorization_invalid"
+            else "semantic_round_authorization_required"
+        )
+        if event == "semantic_round_authorization_invalid":
+            question = SEMANTIC_INVALID_QUESTIONS[source["reason_code"]]
+        else:
+            question = SEMANTIC_AUTHORIZATION_QUESTION
     elif event == "state_machine_escalated":
         action = "blocked_escalated"
         reason = source.get("detail", "state_machine_escalation")
@@ -384,7 +433,15 @@ def action_event(
         "project": project,
         "qualification_generation": generation,
         "qualification_manifest_sha256": manifest,
-        "question": safe_text(question),
+        "question": (
+            question
+            if action == "semantic_round_authorization"
+            and question in {
+                SEMANTIC_AUTHORIZATION_QUESTION,
+                *SEMANTIC_INVALID_QUESTIONS.values(),
+            }
+            else safe_text(question)
+        ),
         "reason": safe_text(reason),
         "role": role,
         "run_id": run_id,

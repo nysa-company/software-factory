@@ -287,7 +287,11 @@ Contract 1.8 also exposes a channel-neutral `watch --json` read boundary over
 the selected project's canonical controller events. It projects only bounded,
 redacted operator actions for contract or lifecycle escalation, approval,
 terminal role failure, terminal recovery refusal or abandonment, budget halt,
-and progress timeout. Intermediate recovery failures remain silent. Terminal
+Spec-linter round-three authorization, malformed authorization correction, and
+progress timeout. The semantic projections are fixed, structured actions: one
+asks for the literal canonical grant, while the other names only a closed
+append, amend, push, branch, or remote-topology correction. Intermediate
+recovery failures remain silent. Terminal
 recovery actions expose only closed recovery kinds and bounded reason codes or
 the terminal attempt count and authenticated input and outcome digests; raw
 recovery errors never enter the projection. Every output retains the

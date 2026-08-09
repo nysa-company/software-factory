@@ -25,6 +25,7 @@ from urllib.parse import urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
 from release_lineage import (  # noqa: E402
+    MIGRATION_SCHEMA as PASSPORT_MIGRATION_SCHEMA,
     passport_head_lineage, successor_release_lineage,
 )
 from qualification_artifacts import (  # noqa: E402
@@ -94,6 +95,15 @@ PROTECTED_TERMINAL_RECONCILIATION_SCHEMA = (
 EMERGENCY_TERMINAL_RECONCILIATION_SCHEMA = (
     "nysa.software-factory.qualification-emergency-terminal-reconciliation/v1"
 )
+SEMANTIC_AUTHORIZATION_WAIT = re.compile(
+    r"^AWAIT-OPERATOR semantic-round authorization "
+    r"(?:required; add exact line|invalid; keep exactly one line): "
+    r"(OPERATOR AUTHORIZATION: spec-linter round ([1-9][0-9]*))$"
+)
+SEMANTIC_BLOCK_REASON = "semantic-round-authorization:spec-linter:3"
+T198_FACTORY_SHA = "f165a5851dd0b0e84922b57735f26a586e967c66"
+T198_RUN_ID = "1786262312-97243"
+T198_RECEIPT = "baa1255fbb0dcc5be2cfa7315ba7610af6fffbb427e1d13e8ebe0fa24ac87aa7"
 
 
 class ControllerError(ValueError):
@@ -158,6 +168,38 @@ def safe_error(error: BaseException) -> str:
         redacted.append(line)
     detail = "".join(redacted)
     return " ".join(detail.split())[:500] or "recovery refused"
+
+
+def semantic_authorization_wait(stage: str) -> tuple[str, int] | None:
+    match = SEMANTIC_AUTHORIZATION_WAIT.fullmatch(stage)
+    return (match[1], int(match[2])) if match else None
+
+
+def semantic_authorization_event(
+    stage: str, head: str, receipt: str, reason_code: str | None = None,
+) -> tuple[str, tuple[str, ...], dict[str, Any]] | None:
+    wait = semantic_authorization_wait(stage)
+    if wait is None:
+        return None
+    invalid = reason_code is not None or " authorization invalid;" in stage
+    details: dict[str, Any] = {
+        "head_sha": head, "role": "spec-linter",
+        "semantic_round": wait[1],
+        "transition_receipt_sha256": receipt,
+    }
+    if invalid:
+        details["reason_code"] = reason_code or "authorization_count_invalid"
+    return (
+        (
+            "semantic_round_authorization_invalid"
+            if invalid else "semantic_round_authorization_wait"
+        ),
+        (
+            ("head_sha", "reason_code", "role", "semantic_round")
+            if invalid else ("head_sha", "role", "semantic_round")
+        ),
+        details,
+    )
 
 
 def valid_transition_evidence(value: dict[str, Any], ticket: str) -> bool:
@@ -474,7 +516,15 @@ class Controller:
             raise ControllerError("ticket passport digest is invalid")
         return digest
 
-    def event_once(self, name: str, ticket: str, **details: Any) -> None:
+    def event_once(
+        self, name: str, ticket: str, *,
+        dedupe_fields: tuple[str, ...] | None = None,
+        **details: Any,
+    ) -> None:
+        match_details = (
+            {key: details[key] for key in dedupe_fields}
+            if dedupe_fields is not None else details
+        )
         for path in sorted(self.events.glob("*.json")):
             value = read(path)
             digest = value.pop("event_sha256", "")
@@ -493,7 +543,10 @@ class Controller:
                         == self.qualification_manifest_sha256
                     )
                 )
-                and all(value.get(key) == item for key, item in details.items())
+                and all(
+                    value.get(key) == item
+                    for key, item in match_details.items()
+                )
             ):
                 return
         self.event(name, ticket, **details)
@@ -749,7 +802,15 @@ class Controller:
                 raise ControllerError("controller event evidence is invalid")
             inventory.append(value)
 
-        def emit(name: str, ticket: str, **details: Any) -> None:
+        def emit(
+            name: str, ticket: str, *,
+            dedupe_fields: tuple[str, ...] | None = None,
+            **details: Any,
+        ) -> None:
+            match_details = (
+                {key: details[key] for key in dedupe_fields}
+                if dedupe_fields is not None else details
+            )
             found = any(
                 value.get("event") == name
                 and value.get("factory_sha") == self.release_path.name
@@ -763,7 +824,10 @@ class Controller:
                         == self.qualification_manifest_sha256
                     )
                 )
-                and all(value.get(key) == item for key, item in details.items())
+                and all(
+                    value.get(key) == item
+                    for key, item in match_details.items()
+                )
                 for value in inventory
             )
             if found:
@@ -814,6 +878,15 @@ class Controller:
                 claim.get("status") in {"claimed", "waiting"}
             ):
                 transition = self.operator_transition(claim)
+                semantic_event = semantic_authorization_event(
+                    transition.get("stage", "") if transition else "",
+                    transition.get("head_sha", "") if transition else "",
+                    transition.get("receipt_sha256", "") if transition else "",
+                )
+                if semantic_event is not None:
+                    event, dedupe, details = semantic_event
+                    emit(event, ticket, dedupe_fields=dedupe, **details)
+                    continue
                 if not (
                     transition is not None
                     and transition.get("stage", "").startswith(
@@ -1924,7 +1997,14 @@ class Controller:
 
     @staticmethod
     def runnable(claim: dict[str, Any]) -> bool:
-        return claim["status"] not in {"blocked", "budget"}
+        return (
+            claim["status"] not in {"blocked", "budget"}
+            and not (
+                claim["status"] == "waiting"
+                and claim.get("blocked_reason")
+                == SEMANTIC_BLOCK_REASON
+            )
+        )
 
     @staticmethod
     def typed_launch_void(terminal: dict[str, str]) -> bool:
@@ -2973,6 +3053,7 @@ class Controller:
                 and DIGEST.fullmatch(claim.get("lease", ""))
                 and claim.get("lease_released") is not True
                 and not self.role_active(claim)
+                and not self.semantic_handoff_pending(claim)
             ):
                 status = claim["status"]
                 try:
@@ -2990,6 +3071,76 @@ class Controller:
                         "inactive_ticket_lease_released", claim["ticket"],
                         status=status,
                     )
+
+    def semantic_handoff_state(self, claim: dict[str, Any]) -> str:
+        if (
+            claim.get("status") != "blocked"
+            or claim.get("ticket") != "T-198"
+            or claim.get("receipt") != T198_RECEIPT
+            or claim.get("role") != "spec-linter"
+            or claim.get("blocked_reason") != "role-failure"
+            or not DIGEST.fullmatch(claim.get("receipt", ""))
+            or not DIGEST.fullmatch(claim.get("lease", ""))
+        ):
+            return "invalid"
+        try:
+            transition = self.operator_transition(claim)
+            passport = self.authenticated_operator_passport(claim["ticket"])
+            terminal = self.terminal_for_receipt(
+                claim["ticket"], claim["receipt"],
+            )
+            passport_path = (
+                self.state / "passports" / f"{claim['ticket']}.json"
+            )
+            local_exact = bool(
+                transition is not None
+                and passport is not None
+                and terminal is not None
+                and transition.get("factory_sha") == self.release_path.name
+                and transition.get("stage") == "RUN spec-linter"
+                and transition.get("role") == "spec-linter"
+                and transition.get("loop") == {
+                    "attempt": 2, "capped": False,
+                    "kind": "planner-spec-linter", "limit": 3,
+                }
+                and transition.get("parent_digest") == claim["receipt"]
+                and transition.get("consumed") is False
+                and transition.get("head_sha") == passport.get("head_sha")
+                and transition.get("route_plan_sha256")
+                == passport.get("route_plan_sha256")
+                and transition.get("passport_sha256")
+                == hashlib.sha256(passport_path.read_bytes()).hexdigest()
+                and transition.get("lease_sha256")
+                == hashlib.sha256(claim["lease"].encode()).hexdigest()
+            )
+            if not local_exact:
+                return "invalid"
+            try:
+                locally_valid = self.locally_valid_operator_passport(claim)
+            except (ControllerError, subprocess.SubprocessError):
+                return "transient"
+            if (
+                locally_valid is None
+                or not self.exact_semantic_authorization_recovery(
+                    claim, terminal, validate_remote=False,
+                )
+            ):
+                return "invalid"
+            try:
+                status, local, remote = self.remote_cell_head_status(claim)
+            except subprocess.SubprocessError:
+                return "transient"
+            if status == "remote_unavailable":
+                return "transient"
+            return (
+                "ready" if status == "pushed"
+                and local == remote == passport.get("head_sha") else "invalid"
+            )
+        except (ControllerError, OSError, json.JSONDecodeError, UnicodeError):
+            return "invalid"
+
+    def semantic_handoff_pending(self, claim: dict[str, Any]) -> bool:
+        return self.semantic_handoff_state(claim) != "invalid"
 
     def release_expired_successor_lease(self, claim: dict[str, Any]) -> bool:
         if (
@@ -4073,7 +4224,9 @@ class Controller:
             and not self.protected_base_current(claim, passport.get("head_sha", ""))
         )
 
-    def remote_passport_valid(self, claim: dict[str, Any]) -> bool:
+    def locally_valid_operator_passport(
+        self, claim: dict[str, Any],
+    ) -> dict[str, Any] | None:
         validation = self.json_call(
             "passport", "validate", "--ticket", claim["ticket"],
             "--workdir", claim["worktree"], "--json",
@@ -4089,7 +4242,15 @@ class Controller:
             or not SHA.fullmatch(head)
             or branch != claim["branch"]
         ):
+            return None
+        return passport
+
+    def remote_passport_valid(self, claim: dict[str, Any]) -> bool:
+        passport = self.locally_valid_operator_passport(claim)
+        if passport is None:
             return False
+        head = passport["head_sha"]
+        branch = passport["branch"]
         remote = subprocess.run(
             [
                 "git", "-C", claim["worktree"], "ls-remote", "--exit-code",
@@ -5104,9 +5265,23 @@ class Controller:
                 if claim.get("receipt")
                 else None
             )
-            if terminal is not None:
-                self.quarantine_legacy_protected_mutation(claim, terminal)
             passport = read(path)
+            migrated_authorization = None
+            if terminal is not None:
+                try:
+                    authenticated = self.authenticated_operator_passport(
+                        claim["ticket"]
+                    )
+                    migrated_authorization = (
+                        authenticated is not None
+                        and self.migrated_stranded_semantic_authorization(
+                            claim, terminal, authenticated,
+                        )
+                    )
+                except (ControllerError, OSError, subprocess.SubprocessError):
+                    pass
+                if not migrated_authorization:
+                    self.quarantine_legacy_protected_mutation(claim, terminal)
             prior = passport.get("factory_sha", "")
             if not SHA.fullmatch(prior):
                 raise ControllerError("blocked ticket passport has an invalid release")
@@ -5121,6 +5296,12 @@ class Controller:
             migration_complete = (
                 prior == self.release_path.name and self.marker(completed)
             )
+            if migrated_authorization and self.marker(pending):
+                self.event_once(
+                    "semantic_round_authorization_imported_by_release_upgrade",
+                    claim["ticket"], head_sha=migrated_authorization,
+                    role="spec-linter", semantic_round=3,
+                )
             if (
                 prior == self.release_path.name
                 and (
@@ -5170,12 +5351,59 @@ class Controller:
                 and not bundle_refresh
             ):
                 if prior != self.release_path.name:
+                    semantic_target = None
+                    local_head = subprocess.run(
+                        ["git", "-C", claim["worktree"], "rev-parse", "HEAD"],
+                        text=True, capture_output=True, check=False, timeout=120,
+                    ).stdout.strip()
+                    if (
+                        terminal is not None
+                        and terminal.get("role_exit")
+                        == "role_exit_protected_ticket_mutation"
+                        and local_head != passport.get("head_sha")
+                    ):
+                        authenticated = self.authenticated_operator_passport(
+                            claim["ticket"]
+                        )
+                        if authenticated is None:
+                            continue
+                        semantic_target = (
+                            self.exact_stranded_semantic_authorization(
+                                claim, terminal, authenticated,
+                            )
+                        )
+                        if semantic_target is None:
+                            continue
                     created = self.marker(pending, {
                         "factory_sha": self.release_path.name,
                         "schema": EVENT_SCHEMA,
                         "ticket": claim["ticket"],
                     })
                     self.migrate_passport(claim, "preserve")
+                    if semantic_target is not None:
+                        migrated = self.authenticated_operator_passport(
+                            claim["ticket"]
+                        )
+                        if (
+                            migrated is None
+                            or not self.semantic_import_migration(
+                                passport, migrated, semantic_target,
+                                self.release_path.name,
+                            )
+                            or not passport_head_lineage(
+                                migrated, passport.get("head_sha", ""),
+                            )
+                            or not self.remote_passport_valid(claim)
+                        ):
+                            raise ControllerError(
+                                "stranded semantic authorization migration "
+                                "is invalid"
+                            )
+                        self.event_once(
+                            "semantic_round_authorization_imported_by_release_upgrade",
+                            claim["ticket"], head_sha=semantic_target,
+                            role="spec-linter", semantic_round=3,
+                        )
                     if created:
                         self.event(
                             "passport_migrated_awaiting_route", claim["ticket"],
@@ -5416,6 +5644,533 @@ class Controller:
         self.save_claim(claim)
         self.event("recorded_contract_repair_prepared", claim["ticket"])
         return True
+
+    @staticmethod
+    def cell_git(
+        claim: dict[str, Any], *arguments: str,
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["git", "-C", claim["worktree"], *arguments], text=True,
+            capture_output=True, check=False, timeout=120,
+        )
+
+    def exact_ticket_commit(
+        self, claim: dict[str, Any], before: str, after: str, *,
+        authorization: bool = False,
+    ) -> bool:
+        ticket_path = f"factory/tickets/{claim['ticket']}.md"
+        parents = self.cell_git(claim, "show", "-s", "--format=%P", after)
+        paths = self.cell_git(
+            claim, "diff-tree", "--no-commit-id", "--name-status",
+            "--no-renames", "-r", after,
+        )
+        mode = self.cell_git(claim, "ls-tree", after, "--", ticket_path)
+        if (
+            any(item.returncode for item in (parents, paths, mode))
+            or parents.stdout.split() != [before]
+            or paths.stdout.splitlines() != [f"M\t{ticket_path}"]
+            or mode.stdout.split()[:2] != ["100644", "blob"]
+        ):
+            return False
+        if not authorization:
+            return True
+        old = self.cell_git(claim, "show", f"{before}:{ticket_path}")
+        new = self.cell_git(claim, "show", f"{after}:{ticket_path}")
+        authorization_line = "OPERATOR AUTHORIZATION: spec-linter round 3"
+        required = authorization_line + "\n"
+        exact_lines = lambda text: [
+            line[:-1] if line.endswith("\n") else line
+            for line in text.splitlines(keepends=True)
+        ]
+        old_count = exact_lines(old.stdout).count(authorization_line)
+        new_count = exact_lines(new.stdout).count(authorization_line)
+        without_grants = lambda text: "".join(
+            line for line in text.splitlines(keepends=True)
+            if (line[:-1] if line.endswith("\n") else line)
+            != authorization_line
+        )
+        appended = lambda text: {
+            text + authorization_line,
+            text + required,
+            text + "\n" + authorization_line,
+            text + "\n" + required,
+        }
+        return (
+            old.returncode == new.returncode == 0
+            and len(re.findall(
+                r"^\s*SPEC-LINT:\s*FAIL(?:\s+—\s+.*)?\s*$",
+                old.stdout, re.I | re.M,
+            )) == 2
+            and new_count == 1
+            and (
+                old_count == 0
+                and new.stdout in appended(old.stdout)
+                or old_count > 1
+                and new_count == 1
+                and new.stdout in appended(without_grants(old.stdout))
+            )
+        )
+
+    def semantic_authorization_head(
+        self, claim: dict[str, Any], passport: dict[str, Any],
+    ) -> tuple[str | None, str]:
+        local = self.cell_git(claim, "rev-parse", "HEAD").stdout.strip()
+        branch = self.cell_git(
+            claim, "symbolic-ref", "--quiet", "--short", "HEAD",
+        )
+        dirty = self.cell_git(claim, "status", "--porcelain=v1", "-z")
+        if dirty.returncode or dirty.stdout:
+            return None, "dirty_uncommitted"
+        if branch.returncode or branch.stdout.strip() != claim["branch"]:
+            return None, "branch_invalid"
+        if (
+            passport.get("ticket") != claim["ticket"]
+            or passport.get("project") != self.project
+            or passport.get("contract_version") != "1.8.0"
+            or passport.get("branch") != claim["branch"]
+            or local == passport.get("head_sha")
+            or not self.exact_ticket_commit(
+                claim, passport.get("head_sha", ""), local,
+                authorization=True,
+            )
+        ):
+            return None, "authorization_content_invalid"
+        status, observed_local, remote = self.remote_cell_head_status(claim)
+        if observed_local != local:
+            return None, ""
+        if status == "resume_commit_not_pushed":
+            return None, "commit_not_pushed"
+        if status == "resume_ancestry_invalid":
+            return None, "remote_moved"
+        if status != "pushed" or remote != local:
+            return None, ""
+        return local, ""
+
+    def stranded_semantic_evidence(
+        self, claim: dict[str, Any], terminal: dict[str, str],
+        passport: dict[str, Any],
+    ) -> tuple[str, str] | None:
+        input_head = terminal.get("role_head_before", "")
+        run_id = terminal.get("run_id", "")
+        expected = (run_id, "spec-linter", claim.get("receipt"))
+        records = lambda name: [
+            (
+                item.get("run_id"), item.get("role"),
+                item.get("transition_receipt_sha256"),
+            )
+            for item in passport.get(name, [])
+            if isinstance(item, dict)
+        ]
+        charges = [
+            item for item in passport.get("charge_records", [])
+            if isinstance(item, dict)
+            and (item.get("run_id"), item.get("role"),
+                 item.get("transition_receipt_sha256")) == expected
+        ]
+        manifest = self.product / "factory/runs" / f"{run_id}.meta"
+        try:
+            manifest_info = manifest.lstat()
+            manifest_digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
+        except OSError:
+            manifest_info = None
+            manifest_digest = ""
+        migrations = passport.get("migration_history")
+        release_history = passport.get("factory_release_history")
+        source_release = {
+            "contract_version": "1.8.0", "factory_sha": T198_FACTORY_SHA,
+        }
+        current_release = {
+            "contract_version": "1.8.0",
+            "factory_sha": self.release_path.name,
+        }
+        starts = [
+            item for item in migrations or []
+            if isinstance(item, dict)
+            and item.get("from_head_sha") == input_head
+        ]
+        if passport.get("head_sha") == input_head:
+            authorization, _reason = self.semantic_authorization_head(
+                claim, passport,
+            )
+        else:
+            authorization = (
+                starts[0].get("to_head_sha") if len(starts) == 1 else None
+            )
+        diagnostic = self.cell_git(
+            claim, "rev-parse", "--verify",
+            f"refs/factory/failed-role/{claim['ticket']}/{run_id}^{{commit}}",
+        )
+        diagnostic_head = diagnostic.stdout.strip()
+        migrated = passport.get("head_sha") != input_head
+        first = starts[0] if len(starts) == 1 else {}
+        if (
+            claim.get("status") != "blocked"
+            or claim.get("ticket") != "T-198"
+            or claim.get("receipt") != T198_RECEIPT
+            or claim.get("role") != "spec-linter"
+            or terminal.get("role") != "spec-linter"
+            or terminal.get("kit_sha") != T198_FACTORY_SHA
+            or run_id != T198_RUN_ID
+            or terminal.get("role_branch_before") != claim.get("branch")
+            or terminal.get("role_remote_before") != input_head
+            or terminal.get("kit_sha") == self.release_path.name
+            or terminal.get("phase") != "completed"
+            or terminal.get("accounting_state") != "abandoned_conservative"
+            or terminal.get("go_issued") != "1"
+            or terminal.get("task_submitted") != "1"
+            or terminal.get("exit_status") != "11"
+            or terminal.get("role_exit")
+            != "role_exit_protected_ticket_mutation"
+            or terminal.get("cost_basis") != "conservative_reservation"
+            or terminal.get("effective_cost") != terminal.get("reserved_usd")
+            or not re.fullmatch(
+                r"(?:0|[1-9][0-9]{0,6})(?:\.[0-9]{1,18})?",
+                terminal.get("reserved_usd", ""),
+            )
+            or int(terminal.get("reserved_usd", "0").replace(".", "")) <= 0
+            or not SHA.fullmatch(input_head)
+            or not SHA.fullmatch(terminal.get("kit_sha", ""))
+            or not re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", run_id,
+            )
+            or passport.get("branch") != claim.get("branch")
+            or passport.get("transition_receipt_sha256") != claim.get("receipt")
+            or records("charge_records").count(expected) != 1
+            or len(charges) != 1
+            or manifest_info is None
+            or manifest.is_symlink()
+            or not stat.S_ISREG(manifest_info.st_mode)
+            or manifest_info.st_nlink != 1
+            or charges[0].get("factory_sha") != terminal.get("kit_sha")
+            or charges[0].get("contract_version") != "1.8.0"
+            or charges[0].get("head_before") != input_head
+            or charges[0].get("manifest_sha256") != manifest_digest
+            or records("completed_role_evidence").count(expected) != 0
+            or authorization is None
+            or diagnostic.returncode
+            or not SHA.fullmatch(diagnostic_head)
+            or diagnostic_head == authorization
+            or not self.exact_ticket_commit(
+                claim, input_head, authorization, authorization=True,
+            )
+            or not self.exact_ticket_commit(
+                claim, input_head, diagnostic_head,
+            )
+            or (
+                migrated
+                and (
+                    release_history != [source_release, current_release]
+                    or not isinstance(migrations, list)
+                    or not 1 <= len(migrations) <= 2
+                    or migrations[0] != first
+                    or passport.get("factory_sha") != self.release_path.name
+                    or first.get("from_factory_sha") != terminal.get("kit_sha")
+                    or first.get("to_factory_sha") != self.release_path.name
+                    or first.get("from_route_plan_sha256")
+                    != first.get("to_route_plan_sha256")
+                )
+            )
+            or (
+                not migrated
+                and (
+                    passport.get("factory_sha") != terminal.get("kit_sha")
+                    or migrations != []
+                    or release_history != [source_release]
+                )
+            )
+        ):
+            return None
+        return input_head, authorization
+
+    def exact_stranded_semantic_authorization(
+        self, claim: dict[str, Any], terminal: dict[str, str],
+        passport: dict[str, Any],
+    ) -> str | None:
+        evidence = self.stranded_semantic_evidence(claim, terminal, passport)
+        return (
+            evidence[1]
+            if evidence and passport.get("head_sha") == evidence[0] else None
+        )
+
+    def migrated_stranded_semantic_authorization(
+        self, claim: dict[str, Any], terminal: dict[str, str],
+        passport: dict[str, Any],
+    ) -> str | None:
+        evidence = self.stranded_semantic_evidence(claim, terminal, passport)
+        return (
+            evidence[1]
+            if evidence and passport.get("head_sha") != evidence[0] else None
+        )
+
+    @staticmethod
+    def semantic_import_migration(
+        before: dict[str, Any], after: dict[str, Any], target: str,
+        factory_sha: str,
+    ) -> bool:
+        old = before.get("migration_history")
+        new = after.get("migration_history")
+        edge = (
+            new[-1]
+            if isinstance(old, list) and isinstance(new, list)
+            and len(new) == len(old) + 1 and new[:-1] == old else {}
+        )
+        return (
+            isinstance(edge, dict)
+            and edge.get("schema") == PASSPORT_MIGRATION_SCHEMA
+            and edge.get("from_factory_sha") == before.get("factory_sha")
+            and edge.get("from_head_sha") == before.get("head_sha")
+            and edge.get("from_route_plan_sha256")
+            == edge.get("to_route_plan_sha256")
+            == before.get("route_plan_sha256")
+            and edge.get("to_factory_sha") == after.get("factory_sha")
+            == factory_sha
+            and edge.get("to_head_sha") == after.get("head_sha") == target
+            and after.get("charge_records") == before.get("charge_records")
+            and after.get("completed_role_evidence")
+            == before.get("completed_role_evidence")
+        )
+
+    def exact_route_migration_commit(
+        self, claim: dict[str, Any], before: str, after: str,
+    ) -> bool:
+        ticket_path = f"factory/tickets/{claim['ticket']}.md"
+        route_path = f"factory/route-plans/{claim['ticket']}.json"
+        parents = self.cell_git(
+            claim, "rev-list", "--parents", "-n", "1", after,
+        )
+        paths = self.cell_git(
+            claim, "diff-tree", "--no-commit-id", "--name-only",
+            "--no-renames", "-r", after,
+        )
+        modes = self.cell_git(
+            claim, "ls-tree", after, "--", ticket_path, route_path,
+        )
+        old_route = self.cell_git(claim, "show", f"{before}:{route_path}")
+        route = self.cell_git(claim, "show", f"{after}:{route_path}")
+        old_ticket = self.cell_git(claim, "show", f"{before}:{ticket_path}")
+        ticket = self.cell_git(claim, "show", f"{after}:{ticket_path}")
+        try:
+            route_value = json.loads(route.stdout)
+            validate_route(
+                self.product, Path(claim["worktree"]), claim["ticket"],
+                self.release_path.name,
+            )
+        except (json.JSONDecodeError, OSError, RouteEvidenceError, ValueError):
+            return False
+        ticket_raw = ticket.stdout.encode()
+        return (
+            not any(item.returncode for item in (
+                parents, paths, modes, old_route, route, old_ticket, ticket,
+            ))
+            and parents.stdout.split() == [after, before]
+            and sorted(paths.stdout.splitlines())
+            == sorted((ticket_path, route_path))
+            and len(modes.stdout.splitlines()) == 2
+            and all(
+                line.startswith("100644 blob ")
+                for line in modes.stdout.splitlines()
+            )
+            and journal_extends(
+                old_route.stdout.encode(), route.stdout.encode(),
+            )
+            and exact_kit_sha_change(
+                old_ticket.stdout.encode(), ticket_raw,
+            )
+            and re.findall(
+                rb"^Kit-SHA:\s*([0-9a-f]{40})\s*$", ticket_raw, re.M,
+            ) == [route_value.get("kit_sha", "").encode()]
+        )
+
+    def recover_semantic_authorizations(
+        self, claims: list[dict[str, Any]],
+    ) -> None:
+        for claim in claims:
+            if (
+                claim.get("status") not in {"claimed", "waiting"}
+                or claim.get("status") == "waiting"
+                and claim.get("blocked_reason")
+                != SEMANTIC_BLOCK_REASON
+                or claim.get("status") == "claimed"
+                and claim.get("blocked_reason") is not None
+                or claim.get("receipt")
+                or claim.get("role")
+                or claim.get("publication_lease")
+                or self.role_active(claim)
+            ):
+                continue
+            transition = self.operator_transition(claim)
+            if (
+                transition is None
+                or transition.get("factory_sha") != self.release_path.name
+                or transition.get("consumed") is not False
+                or transition.get("role") is not None
+                or transition.get("loop") != {
+                    "attempt": 2, "capped": False,
+                    "kind": "planner-spec-linter", "limit": 3,
+                }
+                or semantic_authorization_wait(
+                    transition.get("stage", "")
+                ) != (
+                    "OPERATOR AUTHORIZATION: spec-linter round 3", 3,
+                )
+            ):
+                continue
+            passport = self.authenticated_operator_passport(claim["ticket"])
+            if (
+                passport is None
+                or passport.get("factory_sha") != self.release_path.name
+            ):
+                continue
+            path = self.state / "passports" / f"{claim['ticket']}.json"
+            passport_file = hashlib.sha256(path.read_bytes()).hexdigest()
+            local = self.cell_git(claim, "rev-parse", "HEAD").stdout.strip()
+            dirty = self.cell_git(
+                claim, "status", "--porcelain=v1", "-z",
+            ).stdout
+            branch = self.cell_git(
+                claim, "symbolic-ref", "--quiet", "--short", "HEAD",
+            )
+            if branch.returncode or branch.stdout.strip() != claim["branch"]:
+                if SHA.fullmatch(local):
+                    event = semantic_authorization_event(
+                        transition["stage"], local,
+                        transition["receipt_sha256"], "branch_invalid",
+                    )
+                    if event is not None:
+                        self.event_once(
+                            event[0], claim["ticket"],
+                            dedupe_fields=event[1], **event[2],
+                        )
+                continue
+            if transition.get("head_sha") != passport.get("head_sha"):
+                history = passport.get("migration_history")
+                edge = (
+                    history[-1]
+                    if isinstance(history, list) and history else {}
+                )
+                target = passport.get("head_sha", "")
+                if (
+                    not isinstance(edge, dict)
+                    or edge.get("schema") != PASSPORT_MIGRATION_SCHEMA
+                    or not (
+                        edge.get("from_factory_sha")
+                        == edge.get("to_factory_sha")
+                        == self.release_path.name
+                    )
+                    or edge.get("from_head_sha") != transition.get("head_sha")
+                    or edge.get("to_head_sha") != target
+                    or edge.get("from_passport_file_sha256")
+                    != transition.get("passport_sha256")
+                    or not (
+                        edge.get("from_route_plan_sha256")
+                        == edge.get("to_route_plan_sha256")
+                        == transition.get("route_plan_sha256")
+                    )
+                    or not self.exact_ticket_commit(
+                        claim, transition.get("head_sha", ""), target,
+                        authorization=True,
+                    )
+                    or not passport_head_lineage(
+                        passport, transition.get("head_sha", ""),
+                    )
+                    or not self.remote_passport_valid(claim)
+                ):
+                    continue
+                self.event_once(
+                    "semantic_round_authorization_imported", claim["ticket"],
+                    head_sha=target, role="spec-linter", semantic_round=3,
+                )
+                claim.update(status="claimed")
+                claim.pop("blocked_reason", None)
+                self.save_claim(claim)
+                continue
+            if local == passport.get("head_sha") and not dirty:
+                continue
+            target, reason_code = self.semantic_authorization_head(
+                claim, passport,
+            )
+            if (
+                transition.get("passport_sha256") != passport_file
+                or transition.get("route_plan_sha256")
+                != passport.get("route_plan_sha256")
+            ):
+                continue
+            if target is None:
+                if SHA.fullmatch(local) and reason_code:
+                    event = semantic_authorization_event(
+                        transition["stage"], local,
+                        transition["receipt_sha256"], reason_code,
+                    )
+                    if event is not None:
+                        self.event_once(
+                            event[0], claim["ticket"],
+                            dedupe_fields=event[1], **event[2],
+                        )
+                continue
+            self.ensure_lease(claim, "semantic-round-authorization")
+            self.migrate_passport(claim, "preserve")
+            migrated = self.authenticated_operator_passport(claim["ticket"])
+            if (
+                migrated is None
+                or not self.semantic_import_migration(
+                    passport, migrated, target, self.release_path.name,
+                )
+                or not passport_head_lineage(
+                    migrated, passport.get("head_sha", ""),
+                )
+                or not self.remote_passport_valid(claim)
+            ):
+                raise ControllerError(
+                    "semantic-round authorization passport migration is invalid"
+                )
+            self.event_once(
+                "semantic_round_authorization_imported", claim["ticket"],
+                head_sha=target, role="spec-linter", semantic_round=3,
+            )
+            claim.update(status="claimed")
+            claim.pop("blocked_reason", None)
+            self.save_claim(claim)
+
+    def exact_semantic_authorization_recovery(
+        self, claim: dict[str, Any], terminal: dict[str, str], *,
+        validate_remote: bool = True,
+    ) -> bool:
+        passport = self.authenticated_operator_passport(claim["ticket"])
+        evidence = (
+            self.stranded_semantic_evidence(claim, terminal, passport)
+            if passport is not None else None
+        )
+        if evidence is None:
+            return False
+        input_head, authorization = evidence
+        migrations = passport.get("migration_history")
+        starts = [
+            index for index, edge in enumerate(migrations or [])
+            if isinstance(edge, dict)
+            and edge.get("from_head_sha") == input_head
+        ]
+        suffix = migrations[starts[0]:] if len(starts) == 1 else []
+        current = passport.get("head_sha", "")
+        return (
+            len(suffix) == 2
+            and suffix[0].get("to_head_sha") == authorization
+            and suffix[1].get("from_factory_sha")
+            == suffix[1].get("to_factory_sha")
+            == self.release_path.name
+            and suffix[1].get("from_head_sha") == authorization
+            and suffix[1].get("to_head_sha") == current
+            and passport_head_lineage(passport, input_head)
+            and successor_release_lineage(
+                passport.get("factory_release_history"), migrations,
+                terminal.get("kit_sha", ""), self.release_path.name,
+            )
+            and self.exact_route_migration_commit(
+                claim, authorization, current,
+            )
+            and (
+                not validate_remote or self.remote_passport_valid(claim)
+            )
+        )
 
     def recover_repaired_failures(self, claims: list[dict[str, Any]]) -> None:
         for claim in claims:
@@ -5741,11 +6496,22 @@ class Controller:
                     )
                     for item in passport.get("completed_role_evidence", [])
                 ]
+                semantic_authorization = (
+                    protected_mutation
+                    and passport.get("head_sha")
+                    != terminal.get("role_head_before")
+                    and self.exact_semantic_authorization_recovery(
+                        claim, terminal,
+                    )
+                )
                 if (
                     passport.get("head_sha") != terminal.get("role_head_before")
+                    and not semantic_authorization
                     or completed.count(expected) != 0
                 ):
                     continue
+            else:
+                semantic_authorization = False
             if model_identity_success:
                 try:
                     self.restore_model_identity_success(claim, terminal)
@@ -5861,10 +6627,72 @@ class Controller:
                     continue
             if not valid_passport:
                 continue
-            self.ensure_lease(claim, "repaired-role")
+            reuse_handoff = (
+                semantic_authorization
+                and self.semantic_handoff_state(claim) == "ready"
+            )
+            persisted = (
+                self.operator_transition(claim)
+                if semantic_authorization else None
+            )
+            if (
+                semantic_authorization
+                and not reuse_handoff
+                and persisted is not None
+                and persisted.get("factory_sha") == self.release_path.name
+            ):
+                continue
+            if not reuse_handoff:
+                self.ensure_lease(claim, "repaired-role")
             failed_run = terminal.get("run_id", "")
+            if semantic_authorization:
+                transition = None
+                if not reuse_handoff:
+                    transition = self.json_call(
+                        "state-machine", "--ticket", claim["ticket"],
+                        "--lease", claim["lease"], "--workdir",
+                        claim["worktree"], "--json", timeout=None,
+                    )
+                    persisted = self.operator_transition(claim)
+                if (
+                    persisted is None
+                    or persisted.get("loop") != {
+                        "attempt": 2, "capped": False,
+                        "kind": "planner-spec-linter", "limit": 3,
+                    }
+                    or persisted.get("factory_sha") != self.release_path.name
+                    or persisted.get("stage") != "RUN spec-linter"
+                    or persisted.get("role") != "spec-linter"
+                    or persisted.get("parent_digest") != claim.get("receipt")
+                    or persisted.get("consumed") is not False
+                    or (
+                        transition is not None
+                        and (
+                            not valid_transition_evidence(
+                                transition, claim["ticket"]
+                            )
+                            or transition.get("stage") != "RUN spec-linter"
+                            or transition.get("role") != "spec-linter"
+                            or transition.get("loop") != persisted.get("loop")
+                            or persisted.get("receipt_sha256")
+                            != transition.get("receipt")
+                        )
+                    )
+                ):
+                    raise ControllerError(
+                        "semantic-round recovery transition is invalid"
+                    )
+                self.prior_transition_tickets.discard(claim["ticket"])
+                self.event_once(
+                    "semantic_round_authorization_recovered_by_release_upgrade",
+                    claim["ticket"], failed_run_id=failed_run,
+                    transition_receipt_sha256=persisted["receipt_sha256"],
+                )
             claim.update(receipt="", role="", status="claimed")
+            claim.pop("blocked_reason", None)
             self.save_claim(claim)
+            if semantic_authorization:
+                continue
             self.event(
                 (
                     "push_failure_recovered"
@@ -5879,8 +6707,11 @@ class Controller:
                                 "history_rewrite_recovered_by_release_upgrade"
                                 if history_rewrite
                                 else (
-                                    "protected_ticket_mutation_recovered_by_release_upgrade"
-                                    if protected_mutation
+                                    (
+                                        "semantic_round_authorization_recovered_by_release_upgrade"
+                                        if semantic_authorization
+                                        else "protected_ticket_mutation_recovered_by_release_upgrade"
+                                    ) if protected_mutation
                                     else (
                                         "model_identity_success_recovered_by_release_upgrade"
                                         if model_identity_success
@@ -6958,6 +7789,13 @@ class Controller:
             receipt = transition.get("receipt", "")
             role = transition.get("role")
             loop = transition.get("loop")
+            if (
+                not semantic_authorization_wait(stage)
+                and claim.get("blocked_reason")
+                == SEMANTIC_BLOCK_REASON
+            ):
+                claim.pop("blocked_reason", None)
+                self.save_claim(claim)
             if loop is not None:
                 self.event_once(
                     "loop_attempt", claim["ticket"],
@@ -7158,7 +7996,25 @@ class Controller:
                 return {"status": "waiting", "ticket": claim["ticket"]}
             if stage.startswith("AWAIT-OPERATOR"):
                 claim["status"] = "waiting"
-                self.save_claim(claim)
+                semantic_event = semantic_authorization_event(
+                    stage,
+                    subprocess.run(
+                        ["git", "-C", claim["worktree"], "rev-parse", "HEAD"],
+                        text=True, capture_output=True, check=True, timeout=120,
+                    ).stdout.strip(),
+                    receipt,
+                ) if semantic_authorization_wait(stage) is not None else None
+                if semantic_event is not None:
+                    claim["blocked_reason"] = SEMANTIC_BLOCK_REASON
+                    self.save_claim(claim)
+                    event, dedupe, details = semantic_event
+                    self.event_once(
+                        event, claim["ticket"],
+                        dedupe_fields=dedupe, **details,
+                    )
+                else:
+                    claim.pop("blocked_reason", None)
+                    self.save_claim(claim)
                 return {"status": "waiting", "ticket": claim["ticket"]}
             if stage.startswith("AWAIT_BUDGET"):
                 if claim.get("publication_lease"):
@@ -7463,6 +8319,10 @@ class Controller:
             concurrent=True,
         )
         self.recover_each(
+            existing, self.recover_semantic_authorizations,
+            "semantic-round-authorization",
+        )
+        self.recover_each(
             existing, self.recover_upgraded_claims, "release-upgrade",
             concurrent=True,
         )
@@ -7641,6 +8501,10 @@ class Controller:
                         if claim["ticket"] not in self.prior_transition_tickets
                     ], self.recover_preflight_blocks, "preflight-retry",
                     concurrent=True,
+                )
+                self.recover_each(
+                    idle, self.recover_semantic_authorizations,
+                    "semantic-round-authorization",
                 )
                 self.recover_each(
                     idle, self.recover_upgraded_claims, "release-upgrade",

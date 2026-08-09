@@ -3104,11 +3104,30 @@ def govern_loop(
     elif (
         spec
         and spec[-1].upper() == "FAIL"
-        and stage in {"RUN planner", "RUN spec-linter"}
+        and (
+            stage in {"RUN planner", "RUN spec-linter"}
+            or stage.startswith(
+                "AWAIT-OPERATOR semantic-round authorization required;"
+            )
+            or stage.startswith(
+                "AWAIT-OPERATOR semantic-round authorization invalid;"
+            )
+            or stage.startswith(
+                "REFUSE semantic-round authorization is ambiguous;"
+            )
+            or stage.startswith(
+                "ESCALATE planner-spec-linter loop cap reached;"
+            )
+        )
     ):
         kind = "planner-spec-linter"
         attempt = sum(item.upper() == "FAIL" for item in spec)
-        cap_stage = stage == "RUN planner"
+        cap_stage = (
+            stage == "RUN planner"
+            or stage.startswith(
+                "ESCALATE planner-spec-linter loop cap reached;"
+            )
+        )
     elif repair_override:
         attempt = contract_repair_attempt(args)
         if attempt:
@@ -3128,6 +3147,25 @@ def govern_loop(
             f"ESCALATE {kind} loop cap reached; "
             f"attempts={attempt}; limit={LOOP_LIMIT}"
         )
+    elif (
+        kind == "planner-spec-linter"
+        and attempt == LOOP_LIMIT - 1
+        and stage in {"RUN planner", "RUN spec-linter"}
+    ):
+        required = (
+            f"OPERATOR AUTHORIZATION: spec-linter round {attempt + 1}"
+        )
+        matches = text.split("\n").count(required)
+        if matches == 0:
+            stage = (
+                "AWAIT-OPERATOR semantic-round authorization required; "
+                f"add exact line: {required}"
+            )
+        elif matches != 1:
+            stage = (
+                "AWAIT-OPERATOR semantic-round authorization invalid; "
+                f"keep exactly one line: {required}"
+            )
     return stage, loop
 
 
