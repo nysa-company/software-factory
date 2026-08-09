@@ -4284,76 +4284,158 @@ class Controller:
         )
 
     def refresh_prior_release_receipt(self, claim: dict[str, Any]) -> str:
-        """Reissue one current-release receipt for a bundle-refresh claim.
-
-        Bundle-refresh recovery clears only ``claim["receipt"]``, but
-        ``transition_receipt`` reads the on-disk receipt, so a stale
-        prior-release receipt keeps re-adding the ticket to
-        ``prior_transition_tickets`` on every later pass. The scheduler then
-        skips the ticket before the receipt-bound ``ticket-attest refresh``
-        can invalidate the stale bundle, and the recovery never converges.
-
-        Issue exactly one successor receipt, authenticate it against the exact
-        ticket, branch, head, lease, passport, route, and stale parent receipt,
-        and return its digest. Return "" when no reissue is owed; refuse a
-        receipt that does not authenticate.
-        """
-        stale = self.transition_receipt(claim, allow_prior=True)
-        if stale is None:
+        """Issue or recover the exact current receipt for bundle refresh."""
+        receipt = self.transition_receipt(claim, allow_prior=True)
+        if receipt is None:
             return ""
-        parent = stale.get("receipt_sha256", "")
+        passport = self.authenticated_operator_passport(claim["ticket"])
+        passport_path = (
+            self.state / "passports" / f"{claim['ticket']}.json"
+        )
+        migrations = (
+            passport.get("migration_history")
+            if passport is not None else None
+        )
+        edge = migrations[-1] if isinstance(migrations, list) and migrations else {}
+        lease = claim.get("lease", "")
+        passport_file = (
+            hashlib.sha256(passport_path.read_bytes()).hexdigest()
+            if passport is not None else ""
+        )
         if (
-            stale.get("factory_sha") == self.release_path.name
-            or DIGEST.fullmatch(parent) is None
-            or DIGEST.fullmatch(claim.get("lease", "")) is None
+            passport is None
+            or passport.get("factory_sha") != self.release_path.name
+            or passport.get("branch") != claim["branch"]
+            or passport.get("current_state") not in {
+                "Awaiting Approval", "Approved",
+            }
+            or passport.get("publication_state") == "merged"
+            or not SHA.fullmatch(passport.get("head_sha", ""))
+            or not DIGEST.fullmatch(passport.get("route_plan_sha256", ""))
+            or not isinstance(edge, dict)
+            or edge.get("schema") != PASSPORT_MIGRATION_SCHEMA
+            or edge.get("to_factory_sha") != self.release_path.name
+            or edge.get("from_factory_sha") == self.release_path.name
+            or not (
+                edge.get("from_head_sha")
+                == edge.get("to_head_sha")
+                == passport.get("head_sha")
+            )
+            or not (
+                edge.get("from_route_plan_sha256")
+                == edge.get("to_route_plan_sha256")
+                == passport.get("route_plan_sha256")
+            )
+            or not DIGEST.fullmatch(
+                edge.get("from_passport_file_sha256", "")
+            )
+            or not DIGEST.fullmatch(lease)
             or claim.get("lease_released") is True
             or claim.get("publication_lease")
             or self.role_active(claim)
         ):
-            return ""
-        transition = self.json_call(
-            "state-machine", "--ticket", claim["ticket"],
-            "--lease", claim["lease"], "--workdir", claim["worktree"],
-            "--json", timeout=None,
+            raise ControllerError("bundle-refresh receipt authority is invalid")
+
+        marker_name = (
+            f"bundle-refresh-transition-{claim['ticket']}-"
+            f"{self.release_path.name}"
         )
-        issued = self.transition_receipt(claim, allow_prior=True)
+        marker_path = self.state / f"{marker_name}.json"
+        transition: dict[str, Any] | None = None
+        if receipt.get("factory_sha") != self.release_path.name:
+            expected = {
+                "factory_sha": self.release_path.name,
+                "from_factory_sha": edge.get("from_factory_sha"),
+                "from_passport_file_sha256": (
+                    edge.get("from_passport_file_sha256")
+                ),
+                "from_receipt_sha256": receipt.get("receipt_sha256"),
+                "head_sha": passport["head_sha"],
+                "lease_sha256": hashlib.sha256(lease.encode()).hexdigest(),
+                "passport_file_sha256": passport_file,
+                "route_plan_sha256": passport["route_plan_sha256"],
+                "schema": EVENT_SCHEMA,
+                "ticket": claim["ticket"],
+            }
+            if (
+                receipt.get("factory_sha") != edge.get("from_factory_sha")
+                or receipt.get("passport_sha256")
+                != edge.get("from_passport_file_sha256")
+                or receipt.get("head_sha") != passport.get("head_sha")
+                or receipt.get("route_plan_sha256")
+                != passport.get("route_plan_sha256")
+                or receipt.get("lease_sha256") != expected["lease_sha256"]
+                or receipt.get("consumed") is not False
+                or receipt.get("role") is not None
+                or not receipt.get("stage", "").startswith(
+                    "AWAIT-OPERATOR bundle attested;"
+                )
+            ):
+                raise ControllerError(
+                    "bundle-refresh prior receipt is invalid"
+                )
+            self.marker(marker_name, expected)
+            if read(marker_path) != expected:
+                raise ControllerError(
+                    "bundle-refresh transition marker is invalid"
+                )
+            transition = self.json_call(
+                "state-machine", "--ticket", claim["ticket"],
+                "--lease", lease, "--workdir", claim["worktree"],
+                "--json", timeout=None,
+            )
+            receipt = self.transition_receipt(claim, allow_prior=True)
+        else:
+            try:
+                expected = read(marker_path)
+            except (FileNotFoundError, json.JSONDecodeError, OSError) as error:
+                raise ControllerError(
+                    "bundle-refresh transition marker is unavailable"
+                ) from error
+
+        expected_marker = {
+            "factory_sha": self.release_path.name,
+            "from_factory_sha": edge.get("from_factory_sha"),
+            "from_passport_file_sha256": edge.get(
+                "from_passport_file_sha256"
+            ),
+            "from_receipt_sha256": (
+                receipt.get("parent_digest") if receipt else None
+            ),
+            "head_sha": passport["head_sha"],
+            "lease_sha256": hashlib.sha256(lease.encode()).hexdigest(),
+            "passport_file_sha256": passport_file,
+            "route_plan_sha256": passport["route_plan_sha256"],
+            "schema": EVENT_SCHEMA,
+            "ticket": claim["ticket"],
+        }
+        stage = receipt.get("stage", "") if receipt else ""
         if (
-            not valid_transition_evidence(transition, claim["ticket"])
-            or issued is None
-            or issued.get("factory_sha") != self.release_path.name
-            or issued.get("receipt_sha256") != transition.get("receipt")
-            or issued.get("parent_digest") != parent
-            or issued.get("ticket") != claim["ticket"]
-            or issued.get("branch") != claim["branch"]
-            or issued.get("head_sha") != stale.get("head_sha")
-            or issued.get("route_plan_sha256") != stale.get("route_plan_sha256")
-            or issued.get("lease_sha256")
-            != hashlib.sha256(claim["lease"].encode()).hexdigest()
-            or DIGEST.fullmatch(issued.get("passport_sha256") or "") is None
-            or issued.get("consumed") is not False
+            receipt is None
+            or expected != expected_marker
+            or receipt.get("factory_sha") != self.release_path.name
+            or receipt.get("ticket") != claim["ticket"]
+            or receipt.get("branch") != claim["branch"]
+            or receipt.get("head_sha") != passport.get("head_sha")
+            or receipt.get("route_plan_sha256")
+            != passport.get("route_plan_sha256")
+            or receipt.get("lease_sha256") != expected["lease_sha256"]
+            or receipt.get("passport_sha256") != passport_file
+            or receipt.get("consumed") is not False
+            or receipt.get("role") is not None
+            or stage.startswith("REFUSE dependency refresh required")
+            or not (stage.startswith("REFUSE ") or stage.startswith("AWAIT-"))
+            or transition is not None
+            and (
+                not valid_transition_evidence(transition, claim["ticket"])
+                or transition.get("receipt")
+                != receipt.get("receipt_sha256")
+                or transition.get("stage") != stage
+                or transition.get("role") is not None
+            )
         ):
-            raise ControllerError(
-                "bundle-refresh receipt reissue is invalid"
-            )
-        return transition["receipt"]
-
-    def clear_prior_release_exclusion(self, claim: dict[str, Any]) -> str:
-        """Reissue a stale receipt and readmit the ticket to scheduling.
-
-        Every upgrade-recovery exit that clears ``claim["receipt"]`` leaves the
-        on-disk receipt at the prior release, which keeps the ticket in
-        ``prior_transition_tickets`` and excludes it from the scheduler for
-        good. Self-limiting: the reissue is skipped when the on-disk receipt
-        already binds the active release.
-        """
-        refreshed = self.refresh_prior_release_receipt(claim)
-        if refreshed:
-            self.prior_transition_tickets.discard(claim["ticket"])
-            self.event_once(
-                "prior_release_receipt_refreshed", claim["ticket"],
-                transition_receipt_sha256=refreshed,
-            )
-        return refreshed
+            raise ControllerError("bundle-refresh receipt reissue is invalid")
+        return receipt["receipt_sha256"]
 
     def locally_valid_operator_passport(
         self, claim: dict[str, Any],
@@ -5669,7 +5751,6 @@ class Controller:
             claim.pop("lease_released", None)
             self.save_claim(claim)
             if merged_closeout:
-                self.clear_prior_release_exclusion(claim)
                 claim.update(receipt="", role="", status="claimed")
                 if claim.get("blocked_reason") == "route-migration-required":
                     claim.pop("blocked_reason")
@@ -5686,10 +5767,15 @@ class Controller:
                 })
                 continue
             if bundle_refresh:
-                # Bind the reissued receipt so this branch is not re-entered.
-                refreshed = self.clear_prior_release_exclusion(claim)
+                refreshed = self.refresh_prior_release_receipt(claim)
+                if refreshed:
+                    self.prior_transition_tickets.discard(claim["ticket"])
+                    self.event_once(
+                        "prior_release_receipt_refreshed", claim["ticket"],
+                        transition_receipt_sha256=refreshed,
+                    )
                 claim.update(
-                    receipt=refreshed, role="", status="claimed",
+                    receipt="", role="", status="claimed",
                     release_refresh_required=True,
                 )
                 claim.pop("blocked_reason", None)
@@ -5748,9 +5834,6 @@ class Controller:
                     else "blocked"
                 )
             else:
-                # No terminal manifest: the receipt is stale cache, so a
-                # prior-release one must not keep the ticket excluded.
-                self.clear_prior_release_exclusion(claim)
                 claim.update(receipt="", role="", status="claimed")
                 claim.pop("budget_sha256", None)
             if claim.get("blocked_reason") == "route-migration-required":
