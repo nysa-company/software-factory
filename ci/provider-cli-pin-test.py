@@ -180,6 +180,52 @@ exit 2
         for name in ("claude", "codex", "agent"):
             self.assertEqual(os.readlink(self.factory / "bin" / name), str(self.vendor / name))
 
+    def test_benign_stderr_warning_does_not_break_the_version_probe(self) -> None:
+        """A provider CLI may warn on stderr and still be pinnable.
+
+        codex reports that it will not create PATH aliases because the probe
+        deliberately points HOME and TMPDIR at a temporary directory. Parsing
+        the merged streams made that warning indistinguishable from the version
+        line and refused every codex build on the machine.
+        """
+        codex = self.vendor / "codex"
+        codex.write_text(
+            "#!/bin/sh\n"
+            "if [ \"$1\" = --version ]; then\n"
+            "  echo 'WARNING: refusing to create helper binaries under temporary dir' >&2\n"
+            "  echo 'codex-cli 0.144.3'\n"
+            "  exit 0\n"
+            "fi\n"
+            "if [ \"$1\" = exec ] && [ \"$2\" = --help ]; then echo '--json --model'; exit 0; fi\n"
+            "exit 2\n"
+        )
+        codex.chmod(0o755)
+        applied = self.apply()
+        self.assertEqual(applied.returncode, 0, applied.stderr)
+        status = json.loads(self.command("check").stdout)
+        entry = next(item for item in status["items"] if item["name"] == "codex")
+        self.assertEqual(entry["reason"], "exact_pin_ready")
+        self.assertEqual(entry["version"], "0.144.3")
+
+    def test_sensitive_stderr_still_refuses_the_version_probe(self) -> None:
+        """The refusal scan must still cover stderr, not only stdout."""
+        codex = self.vendor / "codex"
+        codex.write_text(
+            "#!/bin/sh\n"
+            "if [ \"$1\" = --version ]; then\n"
+            "  echo 'Authorization: Bearer sk-live-DO-NOT-LEAK' >&2\n"
+            "  echo 'codex-cli 0.144.3'\n"
+            "  exit 0\n"
+            "fi\n"
+            "if [ \"$1\" = exec ] && [ \"$2\" = --help ]; then echo '--json --model'; exit 0; fi\n"
+            "exit 2\n"
+        )
+        codex.chmod(0o755)
+        planned = self.command("plan")
+        self.assertNotEqual(planned.returncode, 0)
+        self.assertIn("version probe is invalid", planned.stderr)
+        self.assertNotIn("DO-NOT-LEAK", planned.stdout + planned.stderr)
+
     def test_never_managed_check_warns_without_creating_a_lock(self) -> None:
         lock = self.factory / ".provider-cli-pin.lock"
         checked = self.command("check")
