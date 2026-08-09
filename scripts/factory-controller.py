@@ -521,12 +521,14 @@ class Controller:
             return None
         value = read(passport_path)
         passport_digest = value.pop("passport_sha256", "")
-        if passport_digest != hashlib.sha256(canonical(value).encode()).hexdigest():
+        if passport_digest != hashlib.sha256(canonical_document(value)).hexdigest():
             raise ControllerError("operator passport digest is invalid")
         authentication = value.pop("authentication_sha256", "")
         if not hmac.compare_digest(
             authentication,
-            hmac.new(secret, canonical(value).encode(), hashlib.sha256).hexdigest(),
+            hmac.new(
+                secret, canonical_document(value), hashlib.sha256,
+            ).hexdigest(),
         ):
             raise ControllerError("operator passport authentication is invalid")
         value.update(
