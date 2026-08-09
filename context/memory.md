@@ -5130,9 +5130,11 @@ Category: Reliability
 
 An unmerged prior-kit bundle may replace its stale transition receipt only at
 the existing authenticated release-upgrade refresh boundary. The controller
-binds the exact old receipt and passport-file digest to the current passport's
-latest migration edge, unchanged head and route, active lease, and one durable
-release-scoped marker before asking the state machine for a current receipt.
+binds the exact old receipt and passport-file digest through one unique,
+contiguous suffix of authenticated release-changing migration edges to the
+current passport, with unchanged head and route. The stale receipt commits its
+historical lease; the successor binds the controller's current active lease and
+one durable release-scoped marker before the state machine issues it.
 Restart accepts only that marked parent/receipt pair and never overwrites an
 unexpected current receipt. The successor receipt remains solely in the
 controller transition file; `claim.receipt` stays empty because that field
