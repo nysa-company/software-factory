@@ -11655,6 +11655,39 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertNotIn("--attest-only", calls[3])
         self.assertEqual(claim["publication_lease"], "f" * 64)
 
+    def test_failed_awaiting_approval_check_reopens_publication_repair(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "cell-1"
+        (cell / "factory/route-plans").mkdir(parents=True)
+        (cell / "factory/route-plans/T-110.json").write_text("{}\n")
+        claim = {
+            "branch": "ticket/T-110", "lease": "a" * 64,
+            "priority": "normal", "publication_lease": "",
+            "receipt": "", "role": "", "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "claimed", "ticket": "T-110", "worktree": str(cell),
+        }
+        calls = []
+        controller.renew = lambda _claim: None
+        controller.finish_pending_run = lambda _claim: True
+        controller.refresh_dependency_tracking = lambda _claim: True
+        controller.withdraw_publication = lambda *_args: None
+        controller.retry_ci = lambda *_args: False
+        controller.publication_repair = lambda _claim, receipt, pr: calls.append(
+            (receipt, pr["pr_number"])
+        )
+        controller.json_call = lambda *arguments, **_kwargs: (
+            state_transition(
+                "AWAIT-OPERATOR Linear approval observed", "b" * 64
+            )
+            if arguments[0] == "state-machine"
+            else {"pr_number": 24, "status": "failed"}
+        )
+
+        self.assertEqual(
+            controller.reconcile_ticket(claim)["status"], "progressed"
+        )
+        self.assertEqual(calls, [("b" * 64, 24)])
+
     def test_stale_approval_recovers_only_from_exact_prepublication_boundary(
         self,
     ) -> None:

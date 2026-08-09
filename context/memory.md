@@ -5119,4 +5119,7 @@ requirement must have a positive app integration identity. A missing context,
 including one omitted by `gh pr checks --required` before its aggregate job is
 reported, remains an uncharged wait; malformed, unbound, duplicate, extra, or
 ambiguous evidence fails closed. Reviewer and Narrator therefore cannot use a
-partial green subset as protected-CI authority.
+partial green subset as protected-CI authority. A definitive failure discovered
+after bundle attestation but before business approval enters the existing
+authenticated publication-repair transaction, withdraws the stale bundle, and
+routes only the named Builder or Test-author repair back to Building.
