@@ -308,6 +308,27 @@ read-only, receives no GitHub or provider credential, and provides no delivery
 hook; Slack, desktop, or other notification channels may consume its NDJSON
 without entering the Factory trust boundary. Production and qualification use
 their already distinct launcher-selected controller state paths.
+Installed Contract 1.8 production Doctor also checks the exact managed macOS
+LaunchAgent, its native disabled-service override, and its label-specific
+`launchctl list` dictionary. A live PID or an idle job whose latest exit is
+zero is `ok`; an explicit disabled override, missing job, route mismatch,
+malformed native response, or idle nonzero exit is `error`. Absence from the
+override map is the native default-enabled state. The bounded
+`checks.controller` projection contains only `status`, closed-set `state`, and
+nullable `last_exit_status`; it never echoes labels, paths, arguments, logs,
+environment, or native command output. Qualification, disposable lanes,
+non-macOS hosts, and older contracts report `not_applicable` without querying
+launchd. This check complements durable controller events; watcher silence is
+not controller-liveness evidence.
+Doctor's event reducers retain one narrower compatibility boundary for
+authenticated production history: exact legacy `contract_blocker_recovered`
+records with a null Factory identity and one bounded `failed_run_id`, exact
+`ticket_released` records with a null Factory identity, and exact legacy
+`upgraded_claim_recovered` records with either a null Factory identity or a
+self-referential `from_factory_sha`, are ignored. They never resolve or hide a
+contract-resume or transition-receipt incident. Digest, schema, observation
+time, and ticket are validated first; every incident-bearing null identity and
+every broader legacy shape remains an error.
 At controller startup, actionable durable claims are reconciled against one
 inventory of canonical events. A crash-lost budget, approval, known block,
 pre-provider failure, or terminal role failure is republished once only when

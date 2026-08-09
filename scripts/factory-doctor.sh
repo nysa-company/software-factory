@@ -503,13 +503,45 @@ try:
             and event not in transition_resolved
         ):
             continue
-        factory_sha = value.get("factory_sha")
         ticket = value.get("ticket")
+        if not isinstance(ticket, str) or not re.fullmatch(r"T-[0-9]+", ticket):
+            raise ValueError
+        factory_sha = value.get("factory_sha")
+        base_fields = {
+            "event", "factory_sha", "observed_at_epoch_ns", "schema", "ticket",
+        }
+        if (
+            factory_sha is None
+            and event == "contract_blocker_recovered"
+            and set(value) == base_fields | {"failed_run_id"}
+            and isinstance(value.get("failed_run_id"), str)
+            and re.fullmatch(r"[A-Za-z0-9._-]{1,200}", value["failed_run_id"])
+        ):
+            continue
+        if (
+            factory_sha is None
+            and event == "ticket_released"
+            and set(value) == base_fields
+        ):
+            continue
+        if (
+            event == "upgraded_claim_recovered"
+            and set(value) == base_fields | {"from_factory_sha"}
+            and isinstance(value.get("from_factory_sha"), str)
+            and re.fullmatch(r"[0-9a-f]{40}", value.get("from_factory_sha", ""))
+            and (
+                factory_sha is None
+                or (
+                    isinstance(factory_sha, str)
+                    and re.fullmatch(r"[0-9a-f]{40}", factory_sha)
+                    and value["from_factory_sha"] == factory_sha
+                )
+            )
+        ):
+            continue
         if (
             not isinstance(factory_sha, str)
             or not re.fullmatch(r"[0-9a-f]{40}", factory_sha)
-            or not isinstance(ticket, str)
-            or not re.fullmatch(r"T-[0-9]+", ticket)
         ):
             raise ValueError
         if event == "contract_resume_refused":
@@ -645,7 +677,10 @@ try:
         for _, incident in sorted(latest.values(), key=lambda item: item[0])
         if incident is not None
     ], sort_keys=True))
-except (FileNotFoundError, json.JSONDecodeError, OSError, UnicodeError, ValueError):
+except (
+    FileNotFoundError, json.JSONDecodeError, OSError, TypeError, UnicodeError,
+    ValueError,
+):
     raise SystemExit(1)
 PY
   then
@@ -660,6 +695,245 @@ PY
      [[ "$(tr -d '[:space:]' < "$TRANSITION_RECEIPT_FILE")" != "[]" ]]; then
     TRANSITION_RECEIPT_STATUS="warning"
   fi
+fi
+
+CONTROLLER_STATUS="not_applicable"
+CONTROLLER_SERVICE_STATE="not_applicable"
+CONTROLLER_LAST_EXIT_STATUS=""
+CONTROLLER_PLATFORM="$(/usr/bin/uname -s 2>/dev/null || true)"
+CONTROLLER_LAUNCHCTL="/bin/launchctl"
+if [[ "${FACTORY_TRUSTED_TEST_HARNESS:-0}" == "1" ]]; then
+  [[ -z "${FACTORY_DOCTOR_PLATFORM:-}" ]] ||
+    CONTROLLER_PLATFORM="$FACTORY_DOCTOR_PLATFORM"
+  [[ -z "${FACTORY_DOCTOR_LAUNCHCTL:-}" ]] ||
+    CONTROLLER_LAUNCHCTL="$FACTORY_DOCTOR_LAUNCHCTL"
+fi
+if [[ "$CONTRACT_VERSION" == "1.8.0" &&
+      "${FACTORY_KIT_TRUST_SCOPE:-}" == "production-certified" &&
+      "${FACTORY_TEST_MODE:-0}" != "1" &&
+      "$CONTROLLER_PLATFORM" == "Darwin" ]]; then
+  CONTROLLER_STATUS="error"
+  CONTROLLER_SERVICE_STATE="unavailable"
+  CONTROLLER_RESULT="$("$PYTHON_BIN" -I -S - \
+      "$HOME" "$PRODUCT_ROOT" "$PROJECT" "$CONTROLLER_LAUNCHCTL" <<'PY'
+import os
+from pathlib import Path
+import plistlib
+import re
+import stat
+import subprocess
+import sys
+
+home = Path(sys.argv[1]).resolve()
+product = Path(sys.argv[2]).resolve()
+project = sys.argv[3]
+launchctl = Path(sys.argv[4])
+label = f"com.factory.controller.{project}"
+expected_program = str(home / ".factory/bin/factory-launch")
+expected_arguments = [expected_program, project, "reconcile", "--json"]
+expected_job = {
+    "Label": label,
+    "ProcessType": "Interactive",
+    "ProgramArguments": expected_arguments,
+    "RunAtLoad": True,
+    "StandardErrorPath": str(
+        home / f".factory/logs/{project}-controller.error.log"
+    ),
+    "StandardOutPath": str(
+        home / f".factory/logs/{project}-controller.log"
+    ),
+    "StartInterval": 15,
+    "WatchPaths": [str(product / "factory/runs")],
+}
+
+
+def line(state, last=None):
+    print(state)
+    print("" if last is None else last)
+
+
+def regular(path, maximum):
+    if not path.is_absolute() or path.resolve() != path:
+        raise ValueError
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_uid != os.geteuid()
+            or before.st_nlink != 1
+            or before.st_mode & 0o022
+            or not 0 < before.st_size <= maximum
+        ):
+            raise ValueError
+        raw = os.read(descriptor, maximum + 1)
+        after = os.fstat(descriptor)
+        if (
+            len(raw) != before.st_size
+            or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+            != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+        ):
+            raise ValueError
+        return raw
+    finally:
+        os.close(descriptor)
+
+
+def native(*arguments):
+    result = subprocess.run(
+        [
+            str(launchctl), "asuser", str(os.getuid()), str(launchctl),
+            *arguments,
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=5,
+        check=False,
+    )
+    if (
+        result.returncode != 0
+        or len(result.stdout) > 65_536
+        or len(result.stderr) > 65_536
+        or b"\0" in result.stdout
+        or b"\0" in result.stderr
+    ):
+        raise ValueError
+    return result.stdout.decode("utf-8")
+
+
+try:
+    if launchctl != Path("/bin/launchctl"):
+        if os.environ.get("FACTORY_TRUSTED_TEST_HARNESS") != "1":
+            raise ValueError
+        info = launchctl.lstat()
+        if (
+            not launchctl.is_absolute()
+            or launchctl.resolve() != launchctl
+            or not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or info.st_nlink != 1
+            or stat.S_IMODE(info.st_mode) & 0o022
+            or not os.access(launchctl, os.X_OK)
+        ):
+            raise ValueError
+    job_path = home / "Library/LaunchAgents" / f"{label}.plist"
+    try:
+        job = plistlib.loads(regular(job_path, 65_536))
+    except FileNotFoundError:
+        line("unavailable")
+        raise SystemExit(0)
+    if job != expected_job:
+        line("route_mismatch")
+        raise SystemExit(0)
+    disabled = {}
+    opened = False
+    closed = False
+    for item in native("print-disabled", f"gui/{os.getuid()}").splitlines():
+        if not item.strip():
+            continue
+        if not opened:
+            if not re.fullmatch(r"\s*disabled services\s*=\s*\{\s*", item):
+                raise ValueError
+            opened = True
+            continue
+        if re.fullmatch(r"\s*\}\s*", item):
+            if closed:
+                raise ValueError
+            closed = True
+            continue
+        if closed:
+            raise ValueError
+        match = re.fullmatch(
+            r'\s*"([^"\r\n]+)"\s*=>\s*(enabled|disabled|true|false)\s*',
+            item,
+        )
+        if match is None or match.group(1) in disabled:
+            raise ValueError
+        disabled[match.group(1)] = match.group(2)
+    if not opened or not closed:
+        raise ValueError
+    if disabled.get(label) in {"disabled", "true"}:
+        line("disabled")
+        raise SystemExit(0)
+    output = native("list", label)
+    strings = {}
+    integers = {}
+    arguments = None
+    argument_values = []
+    in_arguments = False
+    for item in output.splitlines():
+        if in_arguments:
+            if re.fullmatch(r"\s*\);\s*", item):
+                arguments = argument_values
+                in_arguments = False
+                continue
+            match = re.fullmatch(r'\s*"([^"\r\n]*)";\s*', item)
+            if match is None:
+                raise ValueError
+            argument_values.append(match.group(1))
+            continue
+        match = re.fullmatch(r'\s*"ProgramArguments"\s*=\s*\(\s*', item)
+        if match:
+            if arguments is not None or argument_values:
+                raise ValueError
+            in_arguments = True
+            continue
+        match = re.fullmatch(
+            r'\s*"(Label|Program)"\s*=\s*"([^"\r\n]*)";\s*', item
+        )
+        if match:
+            if match.group(1) in strings:
+                raise ValueError
+            strings[match.group(1)] = match.group(2)
+            continue
+        match = re.fullmatch(
+            r'\s*"(PID|LastExitStatus)"\s*=\s*(-?[0-9]+);\s*', item
+        )
+        if match:
+            if match.group(1) in integers:
+                raise ValueError
+            value = int(match.group(2))
+            if not -(2**31) <= value < 2**31:
+                raise ValueError
+            integers[match.group(1)] = value
+    if in_arguments:
+        raise ValueError
+    if (
+        strings.get("Label") != label
+        or strings.get("Program") != expected_program
+        or arguments != expected_arguments
+    ):
+        line("route_mismatch")
+    elif "PID" in integers:
+        if integers["PID"] <= 0:
+            raise ValueError
+        line("running", integers.get("LastExitStatus"))
+    elif integers.get("LastExitStatus") == 0:
+        line("idle_clean", 0)
+    elif "LastExitStatus" in integers:
+        line("last_exit_nonzero", integers["LastExitStatus"])
+    else:
+        line("unavailable")
+except (
+    OSError, RuntimeError, UnicodeError, ValueError, plistlib.InvalidFileException,
+    subprocess.SubprocessError,
+):
+    raise SystemExit(1)
+PY
+  )" || CONTROLLER_RESULT=""
+  if [[ -n "$CONTROLLER_RESULT" ]]; then
+    CONTROLLER_SERVICE_STATE="$(printf '%s\n' "$CONTROLLER_RESULT" | sed -n '1p')"
+    CONTROLLER_LAST_EXIT_STATUS="$(printf '%s\n' "$CONTROLLER_RESULT" | sed -n '2p')"
+  fi
+  case "$CONTROLLER_SERVICE_STATE" in
+    running|idle_clean) CONTROLLER_STATUS="ok" ;;
+    disabled|unavailable|route_mismatch|last_exit_nonzero) CONTROLLER_STATUS="error" ;;
+    *)
+      CONTROLLER_STATUS="error"
+      CONTROLLER_SERVICE_STATE="unavailable"
+      CONTROLLER_LAST_EXIT_STATUS=""
+      ;;
+  esac
 fi
 
 HERMES_PATH="$(command -v hermes 2>/dev/null || true)"
@@ -1052,7 +1326,7 @@ OVERALL_STATUS="ok"
 for check_status in "$REGISTRY_STATUS" "$KIT_STATUS" "$PIN_STATUS" "$RUNTIME_STATUS" \
                     "$HERMES_STATUS" "$CLI_STATUS" "$CREDENTIAL_STATUS" "$LINEAR_STATUS" \
                     "$PROVIDER_RUNTIME_STATUS" "$CONTRACT_RESUME_STATUS" \
-                    "$TRANSITION_RECEIPT_STATUS" \
+                    "$TRANSITION_RECEIPT_STATUS" "$CONTROLLER_STATUS" \
                     "$FALLBACK_READINESS_STATUS"; do
   if [[ "$check_status" == "error" ]]; then
     OVERALL_STATUS="error"
@@ -1089,6 +1363,7 @@ export PROVIDER_ACTIVE_TOKENS PROVIDER_UNKNOWN_WORKERS PROVIDER_LEGACY_INTERVALS
 export PROVIDER_CONCURRENCY_REQUIRED PROVIDER_CONCURRENCY_READY
 export CONTRACT_RESUME_STATUS CONTRACT_RESUME_FILE OVERALL_STATUS RUN_FILE
 export TRANSITION_RECEIPT_STATUS TRANSITION_RECEIPT_FILE
+export CONTROLLER_STATUS CONTROLLER_SERVICE_STATE CONTROLLER_LAST_EXIT_STATUS
 export FALLBACK_READINESS_STATUS FALLBACK_READINESS_JSON
 
 if [[ "$JSON_MODE" -eq 1 ]]; then
@@ -1223,6 +1498,11 @@ document = {
             "status": os.environ["TRANSITION_RECEIPT_STATUS"],
             "incidents": transition_receipt_incidents,
         },
+        "controller": {
+            "status": os.environ["CONTROLLER_STATUS"],
+            "state": os.environ["CONTROLLER_SERVICE_STATE"],
+            "last_exit_status": number("CONTROLLER_LAST_EXIT_STATUS"),
+        },
         "isolated_provider": {
             "status": os.environ["PROVIDER_RUNTIME_STATUS"],
             "activated": boolean("PROVIDER_ACTIVATED"),
@@ -1256,6 +1536,7 @@ else
   echo "Linear sync [$LINEAR_STATUS]: age_seconds=${LINEAR_AGE:-unknown} last_success=${LINEAR_LAST_SUCCESS:-unknown}"
   echo "Contract resume [$CONTRACT_RESUME_STATUS]: incidents=$("$PYTHON_BIN" -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$CONTRACT_RESUME_FILE")"
   echo "Transition receipts [$TRANSITION_RECEIPT_STATUS]: incidents=$("$PYTHON_BIN" -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$TRANSITION_RECEIPT_FILE")"
+  echo "Controller [$CONTROLLER_STATUS]: state=$CONTROLLER_SERVICE_STATE last_exit=${CONTROLLER_LAST_EXIT_STATUS:-none}"
   [[ -z "$LINEAR_LAST_ERROR" ]] || echo "Linear last error: $LINEAR_LAST_ERROR"
 fi
 

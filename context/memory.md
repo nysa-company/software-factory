@@ -101,7 +101,12 @@ everything the Factory actually enforces lives here.
 - Doctor folds the latest contract-resume refusal or recovery per ticket. Every
   structurally valid `resume_*` reason remains a visible warning without a
   duplicated allowlist; malformed or tampered controller evidence remains an
-  error and cannot erase valid incident-type distinctions.
+  error and cannot erase valid incident-type distinctions. Exact retained
+  null-Factory `contract_blocker_recovered` with one bounded `failed_run_id`
+  and null-Factory `ticket_released`, plus exact
+  null-Factory or self-referential `upgraded_claim_recovered`, are ignored and
+  cannot suppress incidents; all other relevant null or malformed identities
+  remain fatal.
 - Transition-receipt cache reads authenticate digest and stable identity before
   checking release lineage. Only current-release evidence is returned as
   ordinary authority; prior-kit or invalid evidence is isolated to one ticket,
@@ -197,6 +202,12 @@ everything the Factory actually enforces lives here.
   one-use state-machine receipts. Tickets are branch/passport identities, not
   lane or worktree identities; four disposable cells and PR validations may
   run concurrently behind one renewable per-product publication lease.
+- Installed Contract 1.8 macOS production Doctor verifies the exact managed
+  LaunchAgent, its native disabled-service override, and its label-specific
+  service state. Running and clean idle are healthy; an explicit disabled
+  override, absence, route mismatch, malformed output, and latest idle nonzero
+  exit fail closed. Qualification, disposable, non-macOS, and older
+  lanes are not applicable, and watcher silence is never liveness evidence.
 - A resumed Contract 1.8 blocker may leave the failed receipt and role on its
   blocked controller claim after the state machine has created the signed
   owner-only repair. The controller reopens it only when both retained fields
@@ -4868,3 +4879,31 @@ event remains silent while bounded recovery is still active.
 Operators keep the supervised watcher running and respond to its authenticated
 `progress_timeout` recovery path. They do not relaunch a role or move
 Factory-owned ticket state by hand.
+
+## 2026-08-08 — Decision 353: Production Doctor checks native controller liveness
+
+Category: Reliability
+
+Installed Contract 1.8 macOS production Doctor compares the exact managed
+LaunchAgent route with the native disabled-service override and label-specific
+service dictionary. A live PID or idle zero exit is healthy; an explicit
+disabled override, missing service, route drift, malformed native response,
+and idle nonzero exit are errors. Absence from the override map is the native
+default-enabled state. The report exposes only a
+closed state and nullable exit status. Qualification, disposable lanes,
+non-macOS hosts, and older contracts stay not applicable, and durable event
+silence remains separate from service liveness.
+
+## 2026-08-08 — Decision 354: Legacy resolutions never become current evidence
+
+Category: Reliability
+
+After authenticating file shape, digest, schema, observation time, and ticket,
+Doctor ignores only three observed retained-history forms: null-Factory
+`contract_blocker_recovered` with one bounded `failed_run_id`, null-Factory
+`ticket_released`, and exact
+`upgraded_claim_recovered` whose Factory is null or equals its valid
+`from_factory_sha`. Ignored records never enter either reducer, so they cannot
+hide a real incident. Every incident-bearing null identity and every broader
+legacy resolution shape remains fatal. This narrowly supersedes Decision 348's
+relevant-null rule only for those non-incident resolution records.

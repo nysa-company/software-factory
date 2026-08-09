@@ -170,6 +170,19 @@ charges, restart and relocation events, protected checks, PR heads, merge
 commits, and protected-main attestations. Only the four-ticket form asserts
 overlapping PR validation.
 
+For the installed Contract 1.8 macOS production lane, `doctor --json` verifies
+that exact managed LaunchAgent, rejects an explicit native disabled override,
+and reports its native service state under
+`checks.controller`. Qualification, disposable lanes, non-macOS hosts, and
+older contracts return `not_applicable`; operator event silence is not a
+substitute for this liveness check.
+The Doctor event reducer also ignores only the authenticated retained-history
+form of null-Factory `contract_blocker_recovered` with one bounded
+`failed_run_id`, null-Factory `ticket_released`, and null-Factory or
+self-referential `upgraded_claim_recovered`. These legacy
+resolution records never suppress incidents; malformed envelopes and every
+incident-bearing null identity still fail closed.
+
 Before promotion, `scripts/qualification-environment.py` may materialize the
 exact clean candidate as a read-only release under an owner-only
 `/private/tmp/nysa-sf-qualification.*` root. Its launcher derives that root
