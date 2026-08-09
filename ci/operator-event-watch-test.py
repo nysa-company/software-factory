@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ast
 import base64
 import hashlib
 import importlib.util
@@ -318,6 +319,157 @@ class OperatorEventWatchTest(unittest.TestCase):
         )
         self.assertEqual(restarted.returncode, 0, restarted.stderr)
         self.assertEqual(restarted.stdout, "")
+
+    def test_terminal_recovery_stops_are_bounded_and_restart_exactly_once(
+        self,
+    ) -> None:
+        self.write(self.source(
+            "typed_recovery_refused", recovery_kind="qualification_fallback",
+            reason="manifest", error="token=never-project-this",
+        ))
+        self.write(self.source(
+            "ticket_recovery_failed", recovery="release-upgrade",
+            error="token=intermediate-failure-must-stay-silent",
+        ))
+        self.write(self.source(
+            "ticket_recovery_abandoned", ticket="T-111", attempts=3,
+            recovery="release-upgrade", input_sha256="d" * 64,
+            outcome_sha256="e" * 64,
+        ))
+        self.write(self.source(
+            "awaiting_approval", ticket="T-112", passport_sha256="f" * 64,
+        ))
+
+        first = self.run_watch("--limit", "1", "--idle-timeout-seconds", "1")
+        self.assertEqual(first.returncode, 0, first.stderr)
+        refusal = json.loads(first.stdout)
+        self.assertEqual(refusal["action"], "blocked_escalated")
+        self.assertEqual(refusal["reason"], "qualification_fallback:manifest")
+        self.assertNotIn("never-project-this", first.stdout + first.stderr)
+
+        second = self.run_watch(
+            "--cursor", refusal["cursor"], "--limit", "1",
+            "--idle-timeout-seconds", "1",
+        )
+        self.assertEqual(second.returncode, 0, second.stderr)
+        abandoned = json.loads(second.stdout)
+        self.assertEqual(abandoned["ticket"], "T-111")
+        self.assertEqual(
+            abandoned["reason"],
+            "recovery_abandoned:release-upgrade:attempts=3:"
+            f"input_sha256={'d' * 64}:outcome_sha256={'e' * 64}",
+        )
+        self.assertNotIn(
+            "intermediate-failure-must-stay-silent",
+            second.stdout + second.stderr,
+        )
+
+        third = self.run_watch(
+            "--cursor", abandoned["cursor"], "--limit", "1",
+            "--idle-timeout-seconds", "1",
+        )
+        self.assertEqual(third.returncode, 0, third.stderr)
+        approval = json.loads(third.stdout)
+        self.assertEqual(
+            (approval["action"], approval["ticket"]),
+            ("awaiting_approval", "T-112"),
+        )
+        repeated = self.run_watch(
+            "--cursor", approval["cursor"], "--idle-timeout-seconds", "0.2",
+        )
+        self.assertEqual(repeated.returncode, 0, repeated.stderr)
+        self.assertEqual(repeated.stdout, "")
+
+    def test_terminal_recovery_context_is_closed_and_intermediate_is_silent(
+        self,
+    ) -> None:
+        model_refusal = WATCH.action_event(
+            self.source(
+                "typed_recovery_refused",
+                recovery_kind="model_identity_success",
+                reason="token=raw-source-reason",
+            ),
+            self.state, "relay", "1-a.json",
+        )
+        self.assertEqual(model_refusal["reason"], "model_identity_success:refused")
+        self.assertNotIn("raw-source-reason", WATCH.canonical(model_refusal))
+        self.assertIsNone(WATCH.action_event(
+            self.source(
+                "ticket_recovery_failed", recovery="made-up",
+                error="raw intermediate detail",
+            ),
+            self.state, "relay", "1-a.json",
+        ))
+
+        invalid = (
+            self.source(
+                "typed_recovery_refused", recovery_kind="qualification_fallback",
+                reason="raw failure",
+            ),
+            self.source(
+                "typed_recovery_refused", recovery_kind=[],
+                reason="manifest",
+            ),
+            self.source(
+                "ticket_recovery_abandoned", recovery="release-upgrade",
+                attempts=2, input_sha256="d" * 64, outcome_sha256="e" * 64,
+            ),
+            self.source(
+                "ticket_recovery_abandoned", recovery="release-upgrade",
+                attempts=3.0, input_sha256="d" * 64, outcome_sha256="e" * 64,
+            ),
+            self.source(
+                "ticket_recovery_abandoned", recovery="release-upgrade",
+                attempts="3", input_sha256="d" * 64, outcome_sha256="e" * 64,
+            ),
+            self.source(
+                "ticket_recovery_abandoned", recovery="release-upgrade",
+                attempts=True, input_sha256="d" * 64, outcome_sha256="e" * 64,
+            ),
+            self.source(
+                "ticket_recovery_abandoned", recovery=[], attempts=3,
+                input_sha256="d" * 64, outcome_sha256="e" * 64,
+            ),
+            self.source(
+                "ticket_recovery_abandoned", recovery="release-upgrade",
+                attempts=3, input_sha256="not-a-digest", outcome_sha256="e" * 64,
+            ),
+        )
+        for source in invalid:
+            with self.subTest(event=source["event"]), self.assertRaisesRegex(
+                WATCH.WatchError, "operator recovery context is invalid"
+            ):
+                WATCH.action_event(source, self.state, "relay", "1-a.json")
+
+    def test_recovery_projection_policy_matches_controller_emitters(self) -> None:
+        tree = ast.parse(
+            (ROOT / "scripts" / "factory-controller.py").read_text(
+                encoding="utf-8"
+            )
+        )
+        recoveries = {
+            node.args[2].value
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "recover_each"
+            and len(node.args) >= 3
+            and isinstance(node.args[2], ast.Constant)
+            and isinstance(node.args[2].value, str)
+        }
+        attempts = {
+            node.value.value
+            for node in tree.body
+            if isinstance(node, ast.Assign)
+            and any(
+                isinstance(target, ast.Name)
+                and target.id == "RECOVERY_ATTEMPT_LIMIT"
+                for target in node.targets
+            )
+            and isinstance(node.value, ast.Constant)
+        }
+        self.assertEqual(recoveries, WATCH.RECOVERY_KINDS)
+        self.assertEqual(attempts, {WATCH.RECOVERY_ATTEMPT_LIMIT})
 
     def test_sanitized_payload_is_bounded_and_contains_no_secret(self) -> None:
         detail = (

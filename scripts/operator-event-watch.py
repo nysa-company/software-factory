@@ -29,6 +29,21 @@ RUN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 MAX_EVENT_BYTES = 1_000_000
 MAX_CURSOR_BYTES = 1024
 TIMEOUT_REASONS = frozenset({"hard_timeout", "invalid_progress", "soft_timeout"})
+TYPED_RECOVERY_KINDS = frozenset({
+    "model_identity_delivery", "model_identity_success",
+    "qualification_fallback",
+})
+QUALIFICATION_FALLBACK_REASONS = frozenset({
+    "attempt_count", "handoff", "manifest", "provenance", "readiness",
+    "route_policy", "unknown",
+})
+RECOVERY_KINDS = frozenset({
+    "interrupted-reconciliation", "missing-terminal",
+    "passportless-route-migration", "preflight-retry",
+    "prepublication-attestation", "release-upgrade", "targeted-repair",
+    "terminal-export",
+})
+RECOVERY_ATTEMPT_LIMIT = 3
 
 
 class WatchError(ValueError):
@@ -259,6 +274,49 @@ def action_event(
         question = "Inspect terminal role evidence and choose a supported recovery."
         source = dict(source)
         source["run_id"] = source.get("failed_run_id")
+    elif event == "typed_recovery_refused":
+        recovery = source.get("recovery_kind")
+        code = source.get("reason")
+        if (
+            not isinstance(recovery, str)
+            or recovery not in TYPED_RECOVERY_KINDS
+            or not isinstance(code, str)
+            or (
+                recovery == "qualification_fallback"
+                and code not in QUALIFICATION_FALLBACK_REASONS
+            )
+        ):
+            raise WatchError("operator recovery context is invalid")
+        action = "blocked_escalated"
+        reason = (
+            f"{recovery}:{code}"
+            if recovery == "qualification_fallback"
+            else f"{recovery}:refused"
+        )
+        question = "Inspect the terminal recovery refusal before choosing a supported repair."
+    elif event == "ticket_recovery_abandoned":
+        recovery = source.get("recovery")
+        attempts = source.get("attempts")
+        input_digest = source.get("input_sha256")
+        outcome_digest = source.get("outcome_sha256")
+        if (
+            not isinstance(recovery, str)
+            or recovery not in RECOVERY_KINDS
+            or not isinstance(attempts, int)
+            or isinstance(attempts, bool)
+            or attempts != RECOVERY_ATTEMPT_LIMIT
+            or not isinstance(input_digest, str)
+            or not DIGEST.fullmatch(input_digest)
+            or not isinstance(outcome_digest, str)
+            or not DIGEST.fullmatch(outcome_digest)
+        ):
+            raise WatchError("operator recovery context is invalid")
+        action = "blocked_escalated"
+        reason = (
+            f"recovery_abandoned:{recovery}:attempts={attempts}:"
+            f"input_sha256={input_digest}:outcome_sha256={outcome_digest}"
+        )
+        question = "Inspect the terminal recovery evidence before choosing a supported repair."
     elif event == "role_blocked":
         reason = source.get("terminal_reason_code") or source.get("role_exit")
         if isinstance(reason, str) and reason in TIMEOUT_REASONS:

@@ -4852,3 +4852,19 @@ not dual-accept legacy verifier bytes, rewrite stored evidence, or mint a
 replacement receipt or passport. Cross-module tests construct evidence with
 the production writers so a verifier-only encoding cannot mask another wire
 incompatibility.
+
+## 2026-08-08 — Decision 352: Only terminal recovery stops reach the watcher
+
+Category: Reliability
+
+The authenticated operator watcher projects `typed_recovery_refused` and
+`ticket_recovery_abandoned` through its existing `blocked_escalated` action.
+Typed refusal output contains only a closed recovery kind and bounded reason
+code. Abandonment output contains only the closed recovery kind, exact terminal
+attempt count, and authenticated input and outcome digests. Raw source errors
+never enter either projection, and the intermediate `ticket_recovery_failed`
+event remains silent while bounded recovery is still active.
+
+Operators keep the supervised watcher running and respond to its authenticated
+`progress_timeout` recovery path. They do not relaunch a role or move
+Factory-owned ticket state by hand.
