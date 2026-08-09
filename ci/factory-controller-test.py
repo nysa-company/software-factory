@@ -1286,6 +1286,50 @@ class FactoryControllerTest(unittest.TestCase):
         self.temporary.cleanup()
 
     @staticmethod
+    def healthy_model_plan() -> dict:
+        return {
+            "profile_hash": "f" * 64,
+            "profile_id": "cursor-opus-v1",
+            "schema": "model-resolution-plan/v1",
+            "selections": {
+                role: {} for role in (
+                    "planner", "builder", "narrator", "spec-linter",
+                    "test-author", "reviewer",
+                )
+            },
+        }
+
+    @staticmethod
+    def model_resolution_error(
+        reason: str = "profile_resolution_failed",
+        operation: str = "plan",
+    ) -> dict:
+        prefix = "model plan failed" if operation == "plan" else "model pin resolution failed"
+        return {
+            "error": f"{prefix}: {reason}",
+            "profile_id": "cursor-opus-v1",
+            "readiness": {
+                "codex-gpt-5.6-sol": {
+                    "adapter_version": "0.147.0",
+                    "reason": (
+                        "authentication_unavailable"
+                        if reason == "profile_temporarily_unavailable"
+                        else "version_mismatch"
+                    ),
+                    "reported_identity": "",
+                    "state": (
+                        "UNAVAILABLE"
+                        if reason == "profile_temporarily_unavailable"
+                        else "INVALID"
+                    ),
+                },
+            },
+            "reason_code": reason,
+            "schema": CONTROL.MODEL_RESOLUTION_ERROR_SCHEMA,
+            "status": "error",
+        }
+
+    @staticmethod
     def initialize_parked_branch(cell: Path, branch: str) -> None:
         cell.mkdir(parents=True, exist_ok=True)
         subprocess.run(
@@ -1613,6 +1657,218 @@ class FactoryControllerTest(unittest.TestCase):
         ):
             controller.claim_new([])
 
+    def test_invalid_model_profile_blocks_before_real_claim(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        calls = []
+
+        def admission(*args, **_kwargs):
+            calls.append(args)
+            if args[:2] == ("dispatch-plan", "--shadow"):
+                return {"action": "SHADOW", "ticket": "T-110"}
+            if args[:2] == ("models", "plan"):
+                return self.model_resolution_error()
+            raise AssertionError("real claim must not run with an invalid profile")
+
+        controller.json_call = admission
+        with self.assertRaises(CONTROL.ControllerError) as raised:
+            controller.claim_new([])
+
+        failure = json.loads(str(raised.exception))
+        self.assertEqual(failure["ticket"], "T-110")
+        self.assertEqual(failure["reason_code"], "profile_resolution_failed")
+        self.assertEqual(
+            [call[:2] for call in calls],
+            [("dispatch-plan", "--shadow"), ("models", "plan")],
+        )
+        controller.record_admission_failure(raised.exception, [])
+        incident = CONTROL.read(self.state / "admission-incident.json")
+        self.assertEqual(incident["ticket"], "T-110")
+        self.assertEqual(
+            incident["readiness"]["codex-gpt-5.6-sol"]["reason"],
+            "version_mismatch",
+        )
+
+    def test_model_resolution_evidence_rejects_secret_key_families(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        for label, unsafe in (
+            ("authorization", "Authorization: Bearer DO-NOT-LEAK-A"),
+            ("dsn", "dsn=DO-NOT-LEAK-B"),
+            ("connection", "connection:DO-NOT-LEAK-C"),
+        ):
+            with self.subTest(label=label):
+                failure = self.model_resolution_error()
+                failure["readiness"]["codex-gpt-5.6-sol"][
+                    "adapter_version"
+                ] = unsafe
+                with self.assertRaisesRegex(
+                    CONTROL.ControllerError,
+                    "model resolution failure is malformed",
+                ):
+                    controller.model_resolution_failure(
+                        failure, "model plan failed",
+                    )
+
+        failure = self.model_resolution_error()
+        failure["readiness"]["codex-gpt-5.6-sol"]["reported_identity"] = (
+            "Authorization: Bearer DO-NOT-LEAK-D"
+        )
+        controller.record_admission_failure(
+            CONTROL.ControllerError(CONTROL.canonical({
+                **failure, "ticket": "T-110",
+            })),
+            [],
+        )
+        raw = (self.state / "admission-incident.json").read_text(encoding="utf-8")
+        self.assertNotIn("DO-NOT-LEAK", raw)
+        incident = json.loads(raw)
+        self.assertEqual(incident["reason_code"], "unsafe_state")
+        self.assertEqual(incident["ticket"], "T-110")
+
+    def test_temporary_model_profile_waits_before_real_claim(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        calls = []
+
+        def admission(*args, **_kwargs):
+            calls.append(args)
+            if args[:2] == ("dispatch-plan", "--shadow"):
+                return {"action": "SHADOW", "ticket": "T-110"}
+            if args[:2] == ("models", "plan"):
+                return self.model_resolution_error(
+                    "profile_temporarily_unavailable",
+                )
+            raise AssertionError("real claim must wait for model readiness")
+
+        controller.json_call = admission
+        self.assertEqual(controller.claim_new([]), [])
+        self.assertEqual(
+            [call[:2] for call in calls],
+            [("dispatch-plan", "--shadow"), ("models", "plan")],
+        )
+        events = [CONTROL.read(path) for path in controller.events.glob("*.json")]
+        wait = next(item for item in events if item["event"] == "model_admission_wait")
+        self.assertEqual(wait["ticket"], "T-110")
+        self.assertEqual(
+            wait["reason_code"], "profile_temporarily_unavailable",
+        )
+
+    def test_reconcile_reports_permanent_model_admission_failure(self) -> None:
+        controller = CONTROL.Controller(self.args)
+
+        def admission(*args, **_kwargs):
+            if args[:2] == ("dispatch-plan", "--shadow"):
+                return {"action": "SHADOW", "ticket": "T-110"}
+            if args[:2] == ("models", "plan"):
+                return self.model_resolution_error()
+            raise AssertionError("permanent admission failure reached a claim")
+
+        controller.json_call = admission
+        result = controller.reconcile()
+
+        self.assertEqual(result["active"], 0)
+        self.assertEqual(result["results"], [{
+            "profile_id": "cursor-opus-v1",
+            "readiness": self.model_resolution_error()["readiness"],
+            "reason_code": "profile_resolution_failed",
+            "status": "error",
+            "ticket": "T-110",
+        }])
+
+    def test_reconcile_reports_temporary_model_admission_wait(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        temporary = self.model_resolution_error(
+            "profile_temporarily_unavailable",
+        )
+
+        def admission(*args, **_kwargs):
+            if args[:2] == ("dispatch-plan", "--shadow"):
+                return {"action": "SHADOW", "ticket": "T-110"}
+            if args[:2] == ("models", "plan"):
+                return temporary
+            raise AssertionError("temporary admission wait reached a claim")
+
+        controller.json_call = admission
+        result = controller.reconcile()
+
+        self.assertEqual(result["active"], 0)
+        self.assertEqual(result["results"], [{
+            "profile_id": "cursor-opus-v1",
+            "readiness": temporary["readiness"],
+            "reason_code": "profile_temporarily_unavailable",
+            "status": "waiting",
+            "ticket": "T-110",
+        }])
+
+    def test_claim_race_wait_after_healthy_shadow_is_not_malformed(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        calls = []
+
+        def admission(*args, **_kwargs):
+            calls.append(args)
+            if args[:2] == ("dispatch-plan", "--shadow"):
+                return {"action": "SHADOW", "ticket": "T-110"}
+            if args[:2] == ("models", "plan"):
+                return self.healthy_model_plan()
+            return {"action": "WAIT", "reason_code": "claim_race"}
+
+        controller.json_call = admission
+        self.assertEqual(controller.claim_new([]), [])
+        self.assertEqual(
+            [call[:2] for call in calls],
+            [
+                ("dispatch-plan", "--shadow"),
+                ("models", "plan"),
+                ("dispatch-plan", "--claim"),
+            ],
+        )
+
+    def test_post_shadow_invalid_drift_retains_claim_with_typed_incident(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "cell-1"
+        cell.mkdir()
+        calls = []
+        real_claims = iter(({
+            "action": "START",
+            "branch": "ticket/T-110",
+            "lease_id": "a" * 64,
+            "priority": "normal",
+            "ticket": "T-110",
+            "worktree": str(cell),
+        }, {"action": "WAIT"}))
+
+        def admission(*args, **_kwargs):
+            calls.append(args)
+            if args[:2] == ("dispatch-plan", "--shadow"):
+                return {"action": "SHADOW", "ticket": "T-110"}
+            if args[:2] == ("models", "plan"):
+                return self.healthy_model_plan()
+            if args[:2] == ("dispatch-plan", "--claim"):
+                return next(real_claims)
+            if args[:2] == ("models", "pin-batch"):
+                return self.model_resolution_error(operation="pin")
+            raise AssertionError(f"unexpected command: {args}")
+
+        controller.json_call = admission
+        claims = controller.claim_new([])
+        with self.assertRaises(CONTROL.ControllerError) as raised:
+            controller.pin_routes(claims)
+        self.assertIn("model pin resolution failed", str(raised.exception))
+
+        retained = controller.load_claims()
+        self.assertEqual([claim["ticket"] for claim in retained], ["T-110"])
+        self.assertEqual(retained[0]["lease"], "a" * 64)
+        self.assertTrue(cell.is_dir())
+        incident = CONTROL.read(self.state / "admission-incident.json")
+        self.assertEqual(incident["ticket"], "T-110")
+        self.assertEqual(incident["reason_code"], "profile_resolution_failed")
+        self.assertEqual(
+            incident["readiness"]["codex-gpt-5.6-sol"]["reason"],
+            "version_mismatch",
+        )
+        self.assertEqual(
+            [call[:2] for call in calls].count(("models", "plan")), 1,
+        )
+        self.assertFalse(any(call[0] == "release" for call in calls))
+
     def test_claims_four_cells_and_recovers_terminal_receipt(self) -> None:
         controller = CONTROL.Controller(self.args)
         values = [
@@ -1629,9 +1885,22 @@ class FactoryControllerTest(unittest.TestCase):
         for value in values:
             Path(value["worktree"]).mkdir()
         values.append({"action": "WAIT"})
-        controller.json_call = lambda *_args, **_kwargs: values.pop(0)
+        calls = []
+
+        def admission(*args, **_kwargs):
+            calls.append(args)
+            if args[:2] == ("dispatch-plan", "--shadow"):
+                return {"action": "SHADOW", "ticket": "T-110"}
+            if args[:2] == ("models", "plan"):
+                return self.healthy_model_plan()
+            return values.pop(0)
+
+        controller.json_call = admission
         claims = controller.claim_new([])
         self.assertEqual(len(claims), 4)
+        self.assertEqual(
+            [call[:2] for call in calls].count(("models", "plan")), 1,
+        )
         self.assertEqual(
             {item["ticket"] for item in controller.load_claims()},
             {"T-110", "T-111", "T-112", "T-113"},
@@ -3889,13 +4158,9 @@ class FactoryControllerTest(unittest.TestCase):
             nonlocal model_calls
             if args[:2] == ("models", "pin-batch"):
                 model_calls += 1
-                return {
-                    "error": (
-                        "model pin resolution failed: "
-                        "profile_temporarily_unavailable"
-                    ),
-                    "status": "error",
-                }
+                return self.model_resolution_error(
+                    "profile_temporarily_unavailable", operation="pin",
+                )
             raise AssertionError("state machine must wait for model readiness")
 
         controller.json_call = json_call
@@ -3930,7 +4195,7 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(
             calls,
             [(
-                "dispatch-plan", "--claim", "--exclude-ticket", "T-110", "--json"
+                "dispatch-plan", "--shadow", "--exclude-ticket", "T-110", "--json"
             )],
         )
 
@@ -8649,15 +8914,28 @@ class FactoryControllerTest(unittest.TestCase):
             "worktree": str(self.root / "cell-1"),
         }
         Path(claim["worktree"]).mkdir()
+        route = controller.route_path(claim)
+        route.parent.mkdir(parents=True)
+        route.write_text("{}\n", encoding="utf-8")
         controller.save_claim(claim)
         events = []
-        controller.claim_new = lambda _claims: (
-            (_ for _ in ()).throw(CONTROL.ControllerError("unsafe admission"))
-        )
+        worker_started = threading.Event()
+
+        def fail_admission(_claims):
+            self.assertTrue(
+                worker_started.wait(2),
+                "existing pinned claim did not start before admission",
+            )
+            raise CONTROL.ControllerError("unsafe admission")
+
+        controller.claim_new = fail_admission
         controller.pin_routes = lambda _claims: []
-        controller.reconcile_ticket = lambda item: {
-            "status": "active", "ticket": item["ticket"],
-        }
+
+        def reconcile_ticket(item):
+            worker_started.set()
+            return {"status": "active", "ticket": item["ticket"]}
+
+        controller.reconcile_ticket = reconcile_ticket
         controller.event = lambda name, **fields: events.append((name, fields))
 
         result = controller.reconcile()
@@ -8703,11 +8981,20 @@ class FactoryControllerTest(unittest.TestCase):
             },
             {"action": "WAIT", "admission_refusal": refusal},
         ]
-        controller.json_call = lambda *_args, **_kwargs: (
-            values.pop(0) if values else {
+
+        def admission(*args, **_kwargs):
+            if args[:2] == ("dispatch-plan", "--shadow"):
+                return {
+                    "action": "SHADOW", "admission_refusal": refusal,
+                    "ticket": "T-110",
+                }
+            if args[:2] == ("models", "plan"):
+                return self.healthy_model_plan()
+            return values.pop(0) if values else {
                 "action": "WAIT", "admission_refusal": refusal,
             }
-        )
+
+        controller.json_call = admission
         controller.pin_routes = lambda _claims: []
         controller.reconcile_ticket = lambda item: {
             "status": "active", "ticket": item["ticket"],
@@ -9720,7 +10007,15 @@ class FactoryControllerTest(unittest.TestCase):
             "ticket": "T-111",
             "worktree": str(cell),
         }, {"action": "WAIT"}))
-        controller.json_call = lambda *_args, **_kwargs: next(admissions)
+
+        def admission(*args, **_kwargs):
+            if args[:2] == ("dispatch-plan", "--shadow"):
+                return {"action": "SHADOW", "ticket": "T-111"}
+            if args[:2] == ("models", "plan"):
+                return self.healthy_model_plan()
+            return next(admissions)
+
+        controller.json_call = admission
         admitted = controller.claim_new([claim])
         self.assertIn("T-111", {item["ticket"] for item in admitted})
 

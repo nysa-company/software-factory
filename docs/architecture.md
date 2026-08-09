@@ -1767,6 +1767,20 @@ inert after claim retirement even when a stale resume overlay or retained
 ticket branch still exists. A refusal after candidate selection reports that
 exact ticket; failures before selection remain lane-scoped. Parked worktrees
 and retained branches are neither trusted nor rewritten by this rule.
+Production then shadows the same candidate selection and resolves the active
+model profile before a real claim can create its lease or worktree. One healthy
+probe portfolio covers the bounded claim batch; the existing post-claim batch
+pin remains the race recheck. Temporary readiness waits without claiming, and
+invalid or unknown readiness persists one ticket-bound admission incident with
+only the strict per-route table. Permanent drift after a successful precheck
+retains the exact authenticated claim and records the same incident before any
+provider attempt; the controller does not invent partial branch/worktree
+cleanup authority. Existing pinned claims remain schedulable before this
+admission probe. Installed production Doctor checks the same active profile and
+reports all unusable readiness, including typed temporary unavailability, as an
+error. The controller returns a bounded ticket result (`waiting` for temporary,
+`error` for permanent) while preserving its no-claim behavior, and submits
+existing pinned claims before starting new production admission.
 Qualification continues to require Done for every selected
 target and does not count Canceled as completion.
 

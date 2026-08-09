@@ -60,6 +60,24 @@ The selected six-role plan and Kit SHA are committed to the ticket branch.
 Every role then uses its exact pinned route. Profile activation after pinning
 does not silently change an in-progress ticket.
 
+Production admission first selects one candidate in shadow mode and resolves
+the active profile before creating a dispatcher lease or worktree. One healthy
+result covers that reconciliation's bounded claim batch; the normal batch pin
+still re-probes after claim to catch a readiness race. Permanent drift in that
+narrow window retains the exact authenticated claim and records a ticket-bound
+incident without starting a provider; admission does not invent partial
+worktree/branch cleanup authority. A temporary outage waits without claiming,
+while invalid or unknown evidence creates a ticket-bound admission incident.
+Model-control errors expose only the strictly validated
+per-route readiness table (`state`, typed reason, adapter version, and reported
+identity); resolver stderr and unsafe probe detail are never returned. Doctor
+performs the same active-profile check for an installed production release and
+reports even temporary unavailability as an error because the approved profile
+cannot currently resolve. The controller still treats that typed temporary
+condition as a no-claim wait and returns the bounded ticket outcome; a permanent
+failure returns the same evidence with error status. Existing pinned work is
+submitted before either new-admission outcome.
+
 ## Product-owned policy backend
 
 A product may own `factory/model-policy.json` with schema
@@ -150,8 +168,10 @@ remain hard stops during fallback; only `UNAVAILABLE` is skippable.
 Qualification additionally requires every selected Cursor role to have one
 ready same-family native fallback at its exact pinned CLI version. Preparation
 records the bounded readiness report, Doctor exposes route plus expected and
-installed versions, and the controller repeats the check immediately before a
-new claim so an ambient CLI update cannot turn into paid late failure.
+installed versions, and its controller repeats that qualification-specific
+check immediately before a new claim. Production uses the separate
+active-profile admission check above, so ambient CLI drift cannot become a
+paid late failure in either lane.
 
 If Cursor completes a role but reports one exact catalog-approved identity
 alias, the controller authenticates the receipt, route, terminal, progress,

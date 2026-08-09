@@ -157,6 +157,105 @@ class ModelControlTest(unittest.TestCase):
         self.assertEqual(selected["profile_id"], "claude-priority-v1")
         self.assertEqual(selected["selections"]["planner"]["adapter"], "claude-code")
 
+    def test_plan_failure_reports_every_sanitized_route_readiness(self):
+        self.global_env.write_text(
+            self.global_env.read_text()
+            .replace(
+                "FACTORY_PROBE_CODEX=READY:test",
+                "FACTORY_PROBE_CODEX=INVALID:version_mismatch",
+            )
+            .replace(
+                "FACTORY_PROBE_CLAUDE_CODE=READY:test",
+                "FACTORY_PROBE_CLAUDE_CODE=INVALID:version_mismatch",
+            )
+            .replace(
+                "FACTORY_PROBE_CURSOR_OPENAI=READY:test",
+                "FACTORY_PROBE_CURSOR_OPENAI=INVALID:cli_config_mode_unsafe",
+            )
+        )
+
+        refused = self.command(
+            "plan", "--profile", "openai-priority-v1", check=False,
+        )
+
+        self.assertEqual(refused.returncode, 2)
+        self.assertEqual(refused.stderr, "")
+        value = json.loads(refused.stdout)
+        self.assertEqual(
+            set(value),
+            {
+                "error", "profile_id", "readiness", "reason_code", "schema",
+                "status",
+            },
+        )
+        self.assertEqual(
+            value["schema"],
+            "nysa.software-factory.model-resolution-error/v1",
+        )
+        self.assertEqual(value["reason_code"], "profile_resolution_failed")
+        self.assertEqual(value["profile_id"], "openai-priority-v1")
+        reasons = {
+            route: evidence["reason"]
+            for route, evidence in value["readiness"].items()
+        }
+        self.assertIn("version_mismatch", set(reasons.values()))
+        self.assertIn("cli_config_mode_unsafe", set(reasons.values()))
+        self.assertGreaterEqual(
+            sum(reason == "version_mismatch" for reason in reasons.values()), 2,
+        )
+        self.assertNotIn(str(self.global_env), refused.stdout)
+
+        pin = self.command(
+            "pin", "--ticket", "T-901", "--workdir", str(self.workdir),
+            check=False,
+        )
+        self.assertEqual(pin.returncode, 2)
+        pin_value = json.loads(pin.stdout)
+        self.assertEqual(
+            pin_value["error"],
+            "model pin resolution failed: profile_resolution_failed",
+        )
+        self.assertIn(
+            "version_mismatch",
+            {item["reason"] for item in pin_value["readiness"].values()},
+        )
+        self.assertIn(
+            "cli_config_mode_unsafe",
+            {item["reason"] for item in pin_value["readiness"].values()},
+        )
+        self.assertEqual(pin.stderr, "")
+
+        malicious_environment = {
+            **self.environment,
+            "FACTORY_TEST_PROBE_CODEX_VERSION": "Authorization: Bearer DO-NOT-LEAK-A",
+            "FACTORY_TEST_PROBE_CODEX_IDENTITY": "connection:DO-NOT-LEAK-B",
+            "FACTORY_TEST_PROBE_CLAUDE_VERSION": "dsn=DO-NOT-LEAK-C",
+            "FACTORY_TEST_PROBE_CURSOR_OPENAI_IDENTITY": (
+                "https://example.invalid/DO-NOT-LEAK-D"
+            ),
+        }
+        malicious = subprocess.run(
+            [str(CONTROL), "plan", "--profile", "openai-priority-v1"],
+            env=malicious_environment, text=True, capture_output=True,
+        )
+        self.assertEqual(malicious.returncode, 2)
+        self.assertNotIn("DO-NOT-LEAK", malicious.stdout + malicious.stderr)
+        self.assertNotIn("example.invalid", malicious.stdout + malicious.stderr)
+        self.assertEqual(json.loads(malicious.stdout)["readiness"], {})
+
+        self.global_env.write_text(
+            self.global_env.read_text().replace(
+                "FACTORY_PROBE_CODEX=INVALID:version_mismatch",
+                "FACTORY_PROBE_CODEX=INVALID:token=DO-NOT-LEAK",
+            )
+        )
+        unsafe = self.command(
+            "plan", "--profile", "openai-priority-v1", check=False,
+        )
+        self.assertEqual(unsafe.returncode, 2)
+        self.assertNotIn("DO-NOT-LEAK", unsafe.stdout + unsafe.stderr)
+        self.assertEqual(json.loads(unsafe.stdout)["status"], "error")
+
     def test_qualification_requires_ready_native_fallbacks_for_cursor_routes(self):
         ready = json.loads(self.command("qualification-readiness").stdout)
         self.assertEqual(ready["status"], "ready")
