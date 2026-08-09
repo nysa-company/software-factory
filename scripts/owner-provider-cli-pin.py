@@ -164,15 +164,24 @@ def executable(path: Path, label: str) -> tuple[Path, str]:
     return resolved, file_hash.hexdigest()
 
 
-def probe(command: list[str], env: dict[str, str]) -> bytes:
+def probe(command: list[str], env: dict[str, str]) -> tuple[bytes, bytes]:
+    """Run a provider CLI probe and return its stdout and its whole output.
+
+    Callers parse the stream a tool actually prints on and scan the combined
+    output for refusal checks. A provider CLI may legitimately write a warning
+    to stderr: codex reports that it will not create PATH aliases because this
+    probe deliberately points HOME and TMPDIR at a temporary directory. Parsing
+    the merged streams made that benign warning indistinguishable from the
+    version line.
+    """
     try:
         result = subprocess.run(command, capture_output=True, env=env, timeout=20)
     except (OSError, subprocess.TimeoutExpired) as error:
         raise PinError("provider CLI probe failed") from error
-    output = result.stdout + result.stderr
-    if result.returncode or len(output) > MAX_JSON or b"\0" in output:
+    combined = result.stdout + result.stderr
+    if result.returncode or len(combined) > MAX_JSON or b"\0" in combined:
         raise PinError("provider CLI probe failed")
-    return output
+    return result.stdout, combined
 
 
 def parsed_version(name: str, line: str) -> str:
@@ -199,15 +208,21 @@ def probe_candidate(name: str, source: Path, factory_bin: Path) -> dict[str, str
             "CLAUDE_CONFIG_DIR": str(scratch / ".claude"), "HOME": str(scratch),
             "PATH": f"{factory_bin}:{SAFE_PATH_SUFFIX}", "TMPDIR": str(scratch),
         }
-        raw_version = probe([str(resolved), "--version"], env)
+        version_stdout, version_all = probe([str(resolved), "--version"], env)
         try:
-            lines = raw_version.decode().strip().splitlines()
+            lines = version_stdout.decode().strip().splitlines()
         except UnicodeError as error:
             raise PinError(f"{name} version probe is invalid") from error
-        if len(lines) != 1 or len(lines[0]) > 4096 or SENSITIVE.search(lines[0]):
+        # The version is parsed from stdout only, but the refusal scan still
+        # covers stderr so a credential-bearing warning cannot slip through.
+        if (
+            len(lines) != 1
+            or len(lines[0]) > 4096
+            or SENSITIVE.search(version_all.decode(errors="replace"))
+        ):
             raise PinError(f"{name} version probe is invalid")
         version = parsed_version(name, lines[0])
-        help_output = probe([str(resolved), *TOOLS[name]["help"]], env)
+        _, help_output = probe([str(resolved), *TOOLS[name]["help"]], env)
         help_text = help_output.decode(errors="replace")
         if any(
             re.search(rf"(?<![A-Za-z0-9_-]){re.escape(flag)}(?![A-Za-z0-9_-])", help_text) is None
