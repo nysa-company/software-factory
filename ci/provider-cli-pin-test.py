@@ -26,7 +26,7 @@ TREE_LEGACY = "f" * 40
 
 class ProviderCliPinTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.temp = tempfile.TemporaryDirectory(prefix="provider-cli-pin-test.")
+        self.temp = tempfile.TemporaryDirectory(prefix="provider-cli-pin-test.", dir=Path.home())
         root = Path(self.temp.name).resolve()
         self.home = root / "home"
         self.factory = self.home / ".factory"
