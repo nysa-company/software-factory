@@ -83,6 +83,12 @@ everything the Factory actually enforces lives here.
   create. Only the exact intended-Project issue with complete non-canceled
   state records success and consumes the matching ticket clear; historical
   issues and sibling clears remain untouched.
+- Qualification reconciliation shadows selected-ticket Linear freshness at a
+  300-second limit immediately after claim loading and before recovery. A
+  typed failure stops the sweep and routes the operator through the existing
+  sealed environment restore; production skips the check, the controller
+  gains no Linear authority, and real claim dispatch retains its normal
+  600-second re-read.
 - Qualification fallback reads the strict manifest at the receipt-bound
   protected product commit. Ordinary lanes authorize only their active Factory;
   a successor additionally authorizes its exact source Factory. A changed
@@ -5054,3 +5060,22 @@ After rollback to such a legacy release, keep maintenance published and rerun
 the candidate helper check plus Doctor before resuming dispatch. No ranges,
 floors, `current` aliases, automatic updater, PATH widening, or runtime-tuple
 expansion are introduced.
+
+## 2026-08-09 — Decision 361: Qualification freshness fails before recovery
+
+Category: Reliability
+
+Contract 1.8 qualification reconciliation performs one sealed `dispatch-plan
+--shadow` with a 300-second Linear age limit immediately after durable claims
+load. Stale or malformed evidence records a bounded admission incident and
+stops before cancellation, terminal, passport, preflight, upgrade, claim,
+model, or provider work. The existing qualification environment `--restore`
+remains the only refresh authority; production skips this check, and the later
+real claim retains the normal 600-second map re-read. No process snapshot,
+admission receipt, Linear API authority, or alternate recovery path is added.
+
+This is the minimum measured fix for #244's reproduced TTL crossing. Literal
+issue closure still requires retained repeated three-ticket live canaries that
+prove the <=5-minute fresh and <=7-minute one-restore first-role p95 targets;
+focused or single-run tests do not satisfy those outcome criteria. Decision
+360 remains the provider-CLI pin lifecycle decision in composed history.

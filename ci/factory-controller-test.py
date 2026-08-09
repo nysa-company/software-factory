@@ -1330,6 +1330,24 @@ class FactoryControllerTest(unittest.TestCase):
             "status": "error",
         }
 
+    def qualification_controller(self) -> CONTROL.Controller:
+        (self.product / "factory/QUALIFICATION.json").write_text(
+            json.dumps({
+                "budget_usd": "100.000000",
+                "capacity": 4,
+                "contract_version": "1.8.0",
+                "factory_sha": self.release.name,
+                "generation": 1,
+                "per_run_budget_usd": "2.000000",
+                "per_ticket_budget_usd": "25.000000",
+                "schema": CONTROL.QUALIFICATION_SCHEMA,
+                "target_done": 4,
+                "tickets": ["T-110", "T-111", "T-112", "T-113"],
+            }),
+            encoding="utf-8",
+        )
+        return CONTROL.Controller(self.args)
+
     @staticmethod
     def initialize_parked_branch(cell: Path, branch: str) -> None:
         cell.mkdir(parents=True, exist_ok=True)
@@ -1837,6 +1855,122 @@ class FactoryControllerTest(unittest.TestCase):
             CONTROL.ControllerError, "fallback readiness drifted",
         ):
             controller.claim_new([])
+
+    def test_qualification_linear_preflight_blocks_before_recovery_once(self) -> None:
+        controller = self.qualification_controller()
+        calls = []
+
+        def preflight(*arguments, **kwargs):
+            calls.append((arguments, kwargs))
+            return {
+                "action": "ESCALATE",
+                "error": (
+                    "selected-ticket Linear reconciliation for T-110 is stale"
+                ),
+                "reason_code": "unsafe_state",
+                "schema": "nysa.software-factory.dispatch-plan/v1",
+                "status": "error",
+            }
+
+        controller.json_call = preflight
+        controller.cancellation_authority = lambda _claims: (
+            (_ for _ in ()).throw(AssertionError("recovery started"))
+        )
+
+        first = controller.reconcile()
+        second = controller.reconcile()
+
+        expected = {
+            "error": (
+                "qualification Linear freshness requires the supported sealed "
+                "environment restore"
+            ),
+            "reason_code": "qualification_linear_restore_required",
+            "status": "error",
+        }
+        self.assertEqual(first["results"], [expected])
+        self.assertEqual(second["results"], [expected])
+        self.assertEqual(first["active"], 0)
+        self.assertEqual(first["status"], "error")
+        self.assertEqual(
+            calls[0],
+            ((
+                "dispatch-plan", "--shadow", "--max-linear-age", "300",
+                "--json",
+            ), {"allow": (0, 2)}),
+        )
+        incident = CONTROL.read(self.state / "admission-incident.json")
+        self.assertEqual(incident["count"], 2)
+        self.assertEqual(
+            incident["reason_code"], "qualification_linear_restore_required",
+        )
+        events = [
+            CONTROL.read(path) for path in controller.events.glob("*.json")
+            if CONTROL.read(path).get("event") == "admission_blocked"
+        ]
+        self.assertEqual(len(events), 1)
+
+    def test_qualification_linear_preflight_accepts_fresh_shadow_and_wait(self) -> None:
+        class ExistingFlowReached(Exception):
+            pass
+
+        for value in (
+            {
+                "action": "SHADOW",
+                "schema": "nysa.software-factory.dispatch-plan/v1",
+                "status": "SHADOW",
+                "ticket": "T-110",
+            },
+            {
+                "action": "WAIT",
+                "reason_code": "no_candidate",
+                "schema": "nysa.software-factory.dispatch-plan/v1",
+                "status": "WAIT",
+            },
+        ):
+            with self.subTest(action=value["action"]):
+                controller = self.qualification_controller()
+                controller.json_call = lambda *_args, **_kwargs: value
+                controller.cancellation_authority = lambda _claims: (
+                    (_ for _ in ()).throw(ExistingFlowReached)
+                )
+                with self.assertRaises(ExistingFlowReached):
+                    controller.reconcile()
+
+    def test_production_reconcile_skips_qualification_linear_preflight(self) -> None:
+        class ExistingFlowReached(Exception):
+            pass
+
+        controller = CONTROL.Controller(self.args)
+        controller.json_call = lambda *_args, **_kwargs: (
+            (_ for _ in ()).throw(AssertionError("qualification preflight ran"))
+        )
+        controller.cancellation_authority = lambda _claims: (
+            (_ for _ in ()).throw(ExistingFlowReached)
+        )
+
+        with self.assertRaises(ExistingFlowReached):
+            controller.reconcile()
+
+    def test_qualification_linear_preflight_rejects_malformed_status_pair(self) -> None:
+        controller = self.qualification_controller()
+        controller.json_call = lambda *_args, **_kwargs: {
+            "action": "WAIT",
+            "schema": "nysa.software-factory.dispatch-plan/v1",
+            "status": "SHADOW",
+        }
+
+        failure = controller.qualification_admission_preflight([])
+
+        self.assertEqual(failure, {
+            "error": "qualification admission preflight failed",
+            "reason_code": "qualification_admission_preflight_failed",
+            "status": "error",
+        })
+        self.assertEqual(
+            CONTROL.read(self.state / "admission-incident.json")["reason_code"],
+            "qualification_admission_preflight_failed",
+        )
 
     def test_invalid_model_profile_blocks_before_real_claim(self) -> None:
         controller = CONTROL.Controller(self.args)
@@ -2604,6 +2738,7 @@ class FactoryControllerTest(unittest.TestCase):
                 json.dumps(stale), encoding="utf-8",
             )
         first = CONTROL.Controller(self.args)
+        first.qualification_admission_preflight = lambda _claims: None
         values = []
         for number, ticket in enumerate(tickets, 1):
             cell = self.root / f"cell-{number}"
@@ -2643,6 +2778,7 @@ class FactoryControllerTest(unittest.TestCase):
         )
 
         second = CONTROL.Controller(self.args)
+        second.qualification_admission_preflight = lambda _claims: None
         second.pin_routes = lambda _claims: []
         second.reconcile_ticket = lambda claim: {
             "status": "active", "ticket": claim["ticket"],
@@ -2682,6 +2818,7 @@ class FactoryControllerTest(unittest.TestCase):
             encoding="utf-8",
         )
         first = CONTROL.Controller(self.args)
+        first.qualification_admission_preflight = lambda _claims: None
         for number, ticket in enumerate(tickets, 1):
             cell = self.root / f"cell-{number}"
             cell.mkdir()
@@ -2710,6 +2847,7 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(result["active"], 1)
 
         second = CONTROL.Controller(self.args)
+        second.qualification_admission_preflight = lambda _claims: None
         second.recover_missing_passport_claims = lambda _claims: None
         second.recover_upgraded_claims = lambda _claims: None
         second.recover_terminal_exports = lambda _claims: None
@@ -2758,6 +2896,7 @@ class FactoryControllerTest(unittest.TestCase):
             "State: Done\n", encoding="utf-8"
         )
         first = CONTROL.Controller(self.args)
+        first.qualification_admission_preflight = lambda _claims: None
         passport_path = self.state / "passports/T-110.json"
         passport_path.parent.mkdir(mode=0o700)
         source_passport = "c" * 64
@@ -2977,6 +3116,7 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(CONTROL.read(passport_path)["factory_sha"], "a" * 40)
 
         second = CONTROL.Controller(self.args)
+        second.qualification_admission_preflight = lambda _claims: None
         second.recover_missing_passport_claims = lambda _claims: None
         second.recover_upgraded_claims = lambda _claims: None
         second.recover_terminal_exports = lambda _claims: None
@@ -3080,6 +3220,7 @@ class FactoryControllerTest(unittest.TestCase):
             encoding="utf-8",
         )
         controller = CONTROL.Controller(self.args)
+        controller.qualification_admission_preflight = lambda _claims: None
         for number, ticket in enumerate([*tickets, "T-113"], 1):
             cell = self.root / f"cell-{number}"
             cell.mkdir()
@@ -3164,6 +3305,7 @@ class FactoryControllerTest(unittest.TestCase):
             encoding="utf-8",
         )
         controller = CONTROL.Controller(self.args)
+        controller.qualification_admission_preflight = lambda _claims: None
         passports = self.state / "passports"
         passports.mkdir(mode=0o700)
         for number, ticket in enumerate(tickets, 1):

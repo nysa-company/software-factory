@@ -3030,6 +3030,71 @@ assert value["ticket"] == "T-777"
 PY
 [[ ! -e "$TEST_HOME/.factory/worktrees" ]] ||
   fail "dispatch shadow created the trusted worktree root"
+
+expect_bad_dispatch() {
+  local label="$1" rc=0
+  shift
+  run_launcher launchtest dispatch-plan "$@" \
+    > "$TMP/bad-dispatch-$label.out" 2>&1 || rc=$?
+  [[ "$rc" -ne 0 ]] || fail "invalid dispatch override was accepted: $label"
+}
+expect_bad_dispatch zero --shadow --max-linear-age 0 --json
+expect_bad_dispatch over --shadow --max-linear-age 601 --json
+expect_bad_dispatch noninteger --shadow --max-linear-age 3.0 --json
+expect_bad_dispatch duplicate --shadow --max-linear-age 300 \
+  --max-linear-age 300 --json
+expect_bad_dispatch claim-override --claim --max-linear-age 300 --json
+
+python3 - "$LAUNCH_PRODUCT/factory/linear-map.json" <<'PY'
+import datetime
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+value = json.loads(path.read_text(encoding="utf-8"))
+value["_sync"]["last_success_at"] = (
+    datetime.datetime.now(datetime.timezone.utc)
+    - datetime.timedelta(seconds=290)
+).isoformat()
+path.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n")
+PY
+dispatch_state_sha256() {
+  python3 - "$LAUNCH_PRODUCT/factory" <<'PY'
+import hashlib
+import pathlib
+import stat
+import sys
+
+root = pathlib.Path(sys.argv[1])
+digest = hashlib.sha256()
+for path in sorted(root.rglob("*")):
+    info = path.lstat()
+    digest.update(str(path.relative_to(root)).encode() + b"\0")
+    digest.update(f"{stat.S_IMODE(info.st_mode):04o}".encode() + b"\0")
+    if path.is_file() and not path.is_symlink():
+        digest.update(path.read_bytes())
+    digest.update(b"\0")
+print(digest.hexdigest())
+PY
+}
+dispatch_state_sha256 > "$TMP/dispatch-before.sha256"
+run_launcher launchtest dispatch-plan --shadow --max-linear-age 300 --json \
+  > "$TMP/dispatch-near-ttl.json"
+python3 - "$TMP/dispatch-near-ttl.json" <<'PY'
+import json
+import sys
+
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+assert (value["status"], value["action"], value["ticket"]) == (
+    "SHADOW", "SHADOW", "T-777",
+)
+PY
+dispatch_state_sha256 > "$TMP/dispatch-after.sha256"
+cmp "$TMP/dispatch-before.sha256" "$TMP/dispatch-after.sha256" >/dev/null ||
+  fail "near-TTL dispatch shadow mutated Factory state"
+[[ ! -e "$TEST_HOME/.factory/worktrees" ]] ||
+  fail "near-TTL dispatch shadow created the trusted worktree root"
 ACTIVE_SNAPSHOT_TMP="$(cd "$TMP/launcher-tmp" && pwd -P)"
 ACTIVE_SNAPSHOT_MARKER="$ACTIVE_SNAPSHOT_TMP/active-parsed.marker"
 ACTIVE_SNAPSHOT_GATE="$ACTIVE_SNAPSHOT_TMP/active-parsed.gate"

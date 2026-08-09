@@ -1789,6 +1789,16 @@ inert after claim retirement even when a stale resume overlay or retained
 ticket branch still exists. A refusal after candidate selection reports that
 exact ticket; failures before selection remain lane-scoped. Parked worktrees
 and retained branches are neither trusted nor rewritten by this rule.
+Qualification reconciliation performs one sealed dispatch shadow with a
+300-second selected-ticket Linear age limit immediately after loading durable
+claims and before cancellation, terminal, passport, preflight, or upgrade
+recovery. A stale or invalid result records one bounded admission incident and
+stops the sweep with no recovery, claim, model, or provider mutation. The
+operator uses the existing sealed qualification `--restore`; the controller
+receives no Linear API or timestamp-writing authority. A fresh `SHADOW` or
+`WAIT` enters the unchanged flow, and the later real claim still re-reads the
+map under its normal 600-second contract. Production does not run this
+qualification headroom check.
 Production then shadows the same candidate selection and resolves the active
 model profile before a real claim can create its lease or worktree. One healthy
 probe portfolio covers the bounded claim batch; the existing post-claim batch
