@@ -175,6 +175,11 @@ everything the Factory actually enforces lives here.
   and Done select the exact PR number sealed in the approval attestation;
   multiple open candidates, a missing bound PR, or branch/base/head drift
   remains fail-closed.
+- The ticket-PR boundary reads the complete evaluated app-bound required-check
+  rules for protected `main` and compares them with GitHub's reported required
+  checks. A context omitted by `gh pr checks --required` remains a wait; it can
+  never become Reviewer or Narrator authority merely because the other checks
+  are green.
 - Protected-terminal qualification evidence carries the authenticated
   generation and manifest digest used to select it. The reducer accepts those
   exact boundary fields while missing, partial, unknown, or cross-generation
@@ -5103,3 +5108,15 @@ authenticated T-198 terminal and migrated passport, exact pending marker, and
 the pushed authorization or migration head must all agree. Generic blocked or
 abandoned claims, siblings, retired tickets, and other in-flight migrations do
 not gain resurrection or automatic commit authority.
+
+## 2026-08-09 — Decision 363: Required-check omission is a wait, never success
+
+Category: Trust boundary
+
+The ticket-PR helper compares GitHub's reported required checks with the
+complete evaluated required-status-check rules for protected `main`. Every
+requirement must have a positive app integration identity. A missing context,
+including one omitted by `gh pr checks --required` before its aggregate job is
+reported, remains an uncharged wait; malformed, unbound, duplicate, extra, or
+ambiguous evidence fails closed. Reviewer and Narrator therefore cannot use a
+partial green subset as protected-CI authority.

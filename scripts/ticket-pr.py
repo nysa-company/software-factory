@@ -558,7 +558,50 @@ def validate_review_lineage(product: Path, workdir: Path, ticket: str, head: str
         raise Refusal("post-review route migration lineage is invalid")
 
 
+def required_check_names(repo: str) -> set[str]:
+    try:
+        pages = json.loads(run([
+            "gh", "api", f"repos/{repo}/rules/branches/main?per_page=100",
+            "--paginate", "--slurp",
+        ]).stdout)
+    except json.JSONDecodeError as error:
+        raise Refusal("GitHub returned invalid branch-rule evidence") from error
+    if not isinstance(pages, list) or any(not isinstance(page, list) for page in pages):
+        raise Refusal("GitHub returned invalid branch-rule evidence")
+    rules = [rule for page in pages for rule in page]
+    required = {}
+    for rule in rules:
+        if not isinstance(rule, dict):
+            raise Refusal("GitHub returned malformed branch-rule evidence")
+        if rule.get("type") != "required_status_checks":
+            continue
+        parameters = rule.get("parameters")
+        if not isinstance(parameters, dict):
+            raise Refusal("GitHub returned malformed required-check rules")
+        checks = parameters.get("required_status_checks")
+        if not isinstance(checks, list):
+            raise Refusal("GitHub returned malformed required-check rules")
+        for item in checks:
+            if (
+                not isinstance(item, dict)
+                or not isinstance(item.get("context"), str)
+                or not re.fullmatch(
+                    r"[A-Za-z0-9][A-Za-z0-9 ._:/()=-]{0,199}", item["context"]
+                )
+                or not isinstance(item.get("integration_id"), int)
+                or item["integration_id"] <= 0
+            ):
+                raise Refusal("GitHub required check is not app-bound")
+            prior = required.setdefault(item["context"], item["integration_id"])
+            if prior != item["integration_id"]:
+                raise Refusal("GitHub required-check identity is ambiguous")
+    if not required:
+        raise Refusal("main has no app-bound required GitHub checks")
+    return set(required)
+
+
 def required_check_status(repo: str, number: int) -> tuple[str, list[str]]:
+    required = required_check_names(repo)
     result = subprocess.run(
         [
             "gh", "pr", "checks", str(number), "--repo", repo, "--required",
@@ -588,10 +631,18 @@ def required_check_status(repo: str, number: int) -> tuple[str, list[str]]:
     if any(
         not isinstance(item, dict)
         or not isinstance(item.get("name"), str)
-        or not item["name"]
+        or not re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9 ._:/()=-]{0,199}", item["name"]
+        )
         for item in checks
     ):
         raise Refusal("GitHub returned malformed required-check evidence")
+    names = [item["name"] for item in checks]
+    if len(names) != len(set(names)) or set(names) - required:
+        raise Refusal("GitHub required-check evidence is ambiguous")
+    missing = sorted(required - set(names))
+    if missing:
+        return "wait", [f"required check not reported: {name}" for name in missing]
     buckets = {item.get("bucket") for item in checks if isinstance(item, dict)}
     if len(buckets) == 0 or not buckets <= {"pass", "fail", "pending", "skipping", "cancel"}:
         raise Refusal("GitHub returned unknown required-check state")
