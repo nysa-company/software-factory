@@ -625,7 +625,19 @@ exports them on every qualification command. Preparation rechecks the product
 worktree after initialization and publishes no usable environment if it is
 dirty. An owner-only bootstrap receipt lets a retry reuse a partially
 initialized lane map even if the original seed later changes or disappears,
-so exact-ticket adoption cannot create duplicates. Initial create or adoption
+so exact-ticket adoption cannot create duplicates.
+Qualification preparation is serialized per project and classifies the
+owner-local state as fresh, exact-incomplete, or exact-complete. Every retry
+reruns live fallback readiness, then creates or byte-validates the sealed
+release, pristine provider state, receipt, authority, activation, environment,
+and final profile registry in that order. Release materialization uses a
+same-directory temporary tree and rename; `environment.json` precedes the
+registry so a lost final response is replayable. Only an exact pristine prefix
+or complete lost-response state resumes. A changed artifact, missing
+predecessor, materialization remnant, active controller/provider, or unexpected
+entry refuses without deletion. This does not widen the signed safe-pause
+`--restore` boundary and adds no cleanup authority.
+Initial create or adoption
 uses one bounded exact-title query. Before creation it records a ticket-, team-,
 Project-, and title-bound uncertain intent; a returned ID is persisted before
 observation. Restart therefore fetches that exact ID or waits to adopt one exact

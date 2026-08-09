@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 import fcntl
 import hashlib
 import hmac
@@ -14,6 +15,8 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import threading
+import time
 import unittest
 from unittest import mock
 import json
@@ -464,10 +467,337 @@ ledger.chmod(0o600)
         configuration_lock = authority / "provider/provider-configuration.lock"
         self.assertTrue(configuration_lock.is_file())
         self.assertEqual(configuration_lock.stat().st_mode & 0o777, 0o600)
-        with self.assertRaisesRegex(
-            ENVIRONMENT.EnvironmentError, "already exists",
+        with (
+            mock.patch.object(
+                ENVIRONMENT, "initialize_selected_linear",
+                side_effect=AssertionError("complete replay must not call Linear"),
+            ),
+            mock.patch.object(
+                ENVIRONMENT, "qualification_fallback_readiness",
+                wraps=ENVIRONMENT.qualification_fallback_readiness,
+            ) as readiness,
+        ):
+            replay = ENVIRONMENT.prepare(args)
+        self.assertEqual(replay, value)
+        readiness.assert_called_once()
+
+    def test_prepare_recovers_each_exact_crash_prefix_and_response_loss(self) -> None:
+        args = argparse.Namespace(
+            factory_root=self.factory, product_root=self.product,
+            project="relay", root=self.root,
+        )
+        original_json = ENVIRONMENT.write_exact
+        original_bytes = ENVIRONMENT.write_bytes_exact
+        authority = self.home / ".factory/qualification/relay"
+        self.assertEqual(
+            ENVIRONMENT.preparation_state(self.root, authority), "fresh",
+        )
+
+        def crash_global(path, raw):
+            original_bytes(path, raw)
+            if path.name == "global.env":
+                raise ENVIRONMENT.EnvironmentError("simulated response loss")
+
+        with (
+            mock.patch.object(
+                ENVIRONMENT, "write_bytes_exact", side_effect=crash_global,
+            ),
+            self.assertRaisesRegex(
+                ENVIRONMENT.EnvironmentError, "simulated response loss",
+            ),
         ):
             ENVIRONMENT.prepare(args)
+        self.assertTrue((self.root / "global.env").is_file())
+        self.assertFalse((self.root / "marker.json").exists())
+
+        def crash_json(predicate):
+            crashed = False
+
+            def interrupted(path, value):
+                nonlocal crashed
+                original_json(path, value)
+                if not crashed and predicate(path):
+                    crashed = True
+                    raise ENVIRONMENT.EnvironmentError("simulated response loss")
+
+            return interrupted
+
+        predicates = (
+            lambda path: path.name == "provider-activation.json",
+            lambda path: path.parent.name == "receipts",
+            lambda path: path.name == "authority.json",
+            lambda path: path.name == "active.json",
+            lambda path: path.name == "environment.json",
+        )
+        for index, predicate in enumerate(predicates):
+            with (
+                mock.patch.object(
+                    ENVIRONMENT, "write_exact", side_effect=crash_json(predicate),
+                ),
+                self.assertRaisesRegex(
+                    ENVIRONMENT.EnvironmentError, "simulated response loss",
+                ),
+            ):
+                ENVIRONMENT.prepare(args)
+            if index == 0:
+                self.assertEqual(
+                    ENVIRONMENT.preparation_state(self.root, authority),
+                    "exact-incomplete",
+                )
+
+        crashed = False
+
+        def crash_registry(path, raw):
+            nonlocal crashed
+            original_bytes(path, raw)
+            if not crashed and path.name == "relay.env":
+                crashed = True
+                raise ENVIRONMENT.EnvironmentError("simulated response loss")
+
+        with (
+            mock.patch.object(
+                ENVIRONMENT, "write_bytes_exact", side_effect=crash_registry,
+            ),
+            self.assertRaisesRegex(
+                ENVIRONMENT.EnvironmentError, "simulated response loss",
+            ),
+        ):
+            ENVIRONMENT.prepare(args)
+        value = ENVIRONMENT.prepare(args)
+        self.assertEqual(value["status"], "prepared")
+        self.assertEqual(
+            ENVIRONMENT.preparation_state(
+                self.root, Path(value["authority_root"]),
+            ),
+            "exact-complete",
+        )
+
+    def test_prepare_serializes_same_project_and_replays_exact_result(self) -> None:
+        args = argparse.Namespace(
+            factory_root=self.factory, product_root=self.product,
+            project="relay", root=self.root,
+        )
+        original = ENVIRONMENT.qualification_fallback_readiness
+        guard = threading.Lock()
+        active = 0
+        maximum = 0
+
+        def slow_readiness(*arguments):
+            nonlocal active, maximum
+            with guard:
+                active += 1
+                maximum = max(maximum, active)
+            time.sleep(0.05)
+            try:
+                return original(*arguments)
+            finally:
+                with guard:
+                    active -= 1
+
+        with (
+            mock.patch.object(
+                ENVIRONMENT, "qualification_fallback_readiness",
+                side_effect=slow_readiness,
+            ),
+            ThreadPoolExecutor(max_workers=2) as pool,
+        ):
+            results = list(pool.map(lambda _: ENVIRONMENT.prepare(args), range(2)))
+        self.assertEqual(maximum, 1)
+        self.assertEqual(results[0], results[1])
+
+    def test_prepare_refuses_torn_release_without_deleting_it(self) -> None:
+        args = argparse.Namespace(
+            factory_root=self.factory, product_root=self.product,
+            project="relay", root=self.root,
+        )
+        with (
+            mock.patch.object(os, "rename", side_effect=OSError("simulated crash")),
+            self.assertRaisesRegex(OSError, "simulated crash"),
+        ):
+            ENVIRONMENT.prepare(args)
+        partial = self.root / f"releases/.{self.sha}.partial"
+        self.assertTrue(partial.is_dir())
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError, "partial qualification release",
+        ):
+            ENVIRONMENT.prepare(args)
+        self.assertTrue(partial.is_dir())
+
+    def test_prepare_refuses_missing_root_predecessor_and_changed_snapshot(self):
+        args = argparse.Namespace(
+            factory_root=self.factory, product_root=self.product,
+            project="relay", root=self.root,
+        )
+        with (
+            mock.patch.object(
+                ENVIRONMENT, "ensure_release",
+                side_effect=ENVIRONMENT.EnvironmentError("simulated interruption"),
+            ),
+            self.assertRaisesRegex(
+                ENVIRONMENT.EnvironmentError, "simulated interruption",
+            ),
+        ):
+            ENVIRONMENT.prepare(args)
+
+        controller = self.home / ".factory/qualification/relay/controller"
+        controller.rmdir()
+        with (
+            mock.patch.object(
+                ENVIRONMENT, "initialize_selected_linear",
+                side_effect=AssertionError("refusal must precede Linear"),
+            ),
+            self.assertRaisesRegex(
+                ENVIRONMENT.EnvironmentError, "preparation state is torn",
+            ),
+        ):
+            ENVIRONMENT.prepare(args)
+        self.assertFalse(controller.exists())
+        controller.mkdir(mode=0o700)
+
+        active = controller / "active.json"
+        ENVIRONMENT.write(active, {"status": "running"})
+        with (
+            mock.patch.object(
+                ENVIRONMENT, "initialize_selected_linear",
+                side_effect=AssertionError("refusal must precede Linear"),
+            ),
+            self.assertRaisesRegex(
+                ENVIRONMENT.EnvironmentError, "controller is active",
+            ),
+        ):
+            ENVIRONMENT.prepare(args)
+        self.assertTrue(active.is_file())
+        active.unlink()
+
+        missing = self.root / "profile/projects"
+        missing.rmdir()
+        with (
+            mock.patch.object(
+                ENVIRONMENT, "initialize_selected_linear",
+                side_effect=AssertionError("refusal must precede Linear"),
+            ),
+            self.assertRaisesRegex(
+                ENVIRONMENT.EnvironmentError, "preparation state is torn",
+            ),
+        ):
+            ENVIRONMENT.prepare(args)
+        self.assertFalse(missing.exists())
+
+        missing.mkdir(mode=0o700)
+        snapshot = self.root / "global.env"
+        snapshot.write_bytes(b"CHANGED=true\n")
+        snapshot.chmod(0o600)
+        with (
+            mock.patch.object(
+                ENVIRONMENT, "initialize_selected_linear",
+                side_effect=AssertionError("refusal must precede Linear"),
+            ),
+            self.assertRaisesRegex(
+                ENVIRONMENT.EnvironmentError, "preparation artifact changed",
+            ),
+        ):
+            ENVIRONMENT.prepare(args)
+        self.assertEqual(snapshot.read_bytes(), b"CHANGED=true\n")
+
+    def test_prepare_refuses_provider_gap_before_linear_or_repair(self) -> None:
+        args = argparse.Namespace(
+            factory_root=self.factory, product_root=self.product,
+            project="relay", root=self.root,
+        )
+        original = ENVIRONMENT.write_exact
+
+        def interrupt(path, value):
+            original(path, value)
+            if path.name == "provider-activation.json":
+                raise ENVIRONMENT.EnvironmentError("simulated interruption")
+
+        with (
+            mock.patch.object(ENVIRONMENT, "write_exact", side_effect=interrupt),
+            self.assertRaisesRegex(
+                ENVIRONMENT.EnvironmentError, "simulated interruption",
+            ),
+        ):
+            ENVIRONMENT.prepare(args)
+        provider = self.home / ".factory/qualification/relay/provider"
+        policy = provider / "provider-policy.json"
+        policy.unlink()
+        with (
+            mock.patch.object(
+                ENVIRONMENT, "initialize_selected_linear",
+                side_effect=AssertionError("refusal must precede Linear"),
+            ),
+            self.assertRaisesRegex(
+                ENVIRONMENT.EnvironmentError, "preparation state is torn",
+            ),
+        ):
+            ENVIRONMENT.prepare(args)
+        self.assertFalse(policy.exists())
+        self.assertTrue((provider / "provider-activation.json").is_file())
+
+    def test_prepare_refuses_mismatch_and_active_controller_without_mutation(self):
+        args = argparse.Namespace(
+            factory_root=self.factory, product_root=self.product,
+            project="relay", root=self.root,
+        )
+        value = ENVIRONMENT.prepare(args)
+        authority = Path(value["authority_root"])
+        environment = self.root / "environment.json"
+        original_environment = ENVIRONMENT.read(environment)
+        changed = dict(original_environment)
+        changed["historical_pr_objects"] = ["unexpected"]
+        ENVIRONMENT.replace(environment, changed)
+        before = environment.read_bytes()
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError, "preparation artifact changed",
+        ):
+            ENVIRONMENT.prepare(args)
+        self.assertEqual(environment.read_bytes(), before)
+        ENVIRONMENT.replace(environment, original_environment)
+
+        noncanonical = json.dumps(original_environment, indent=2).encode() + b"\n"
+        environment.write_bytes(noncanonical)
+        environment.chmod(0o600)
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError, "preparation artifact changed",
+        ):
+            ENVIRONMENT.prepare(args)
+        self.assertEqual(environment.read_bytes(), noncanonical)
+        ENVIRONMENT.replace(environment, original_environment)
+
+        activation = authority / "provider/provider-activation.json"
+        original_activation = ENVIRONMENT.read(activation)
+        changed_activation = dict(original_activation)
+        changed_activation["enabled"] = False
+        ENVIRONMENT.replace(activation, changed_activation)
+        before = activation.read_bytes()
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError, "preparation artifact changed",
+        ):
+            ENVIRONMENT.prepare(args)
+        self.assertEqual(activation.read_bytes(), before)
+        ENVIRONMENT.replace(activation, original_activation)
+
+        active_record = ENVIRONMENT.read(
+            self.root / "projects/relay/active.json"
+        )
+        receipt = self.root / f"receipts/{active_record['receipt_id']}.json"
+        receipt_value = ENVIRONMENT.read(receipt)
+        receipt.unlink()
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError, "preparation state is torn",
+        ):
+            ENVIRONMENT.prepare(args)
+        self.assertFalse(receipt.exists())
+        self.assertTrue(environment.is_file())
+        ENVIRONMENT.write(receipt, receipt_value)
+
+        active = authority / "controller/unexpected.json"
+        ENVIRONMENT.write(active, {"status": "running"})
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError, "controller is active",
+        ):
+            ENVIRONMENT.prepare(args)
+        self.assertTrue(active.is_file())
 
     def test_lane_refuses_digest_valid_foreign_operator_paths_without_mutation(self):
         args = argparse.Namespace(
@@ -1697,9 +2027,14 @@ ledger.chmod(0o600)
             for name in directories:
                 (Path(base) / name).chmod(0o700)
         shutil.rmtree(self.root)
-        restored = ENVIRONMENT.prepare(argparse.Namespace(
-            **vars(args), restore=True,
-        ))
+        with mock.patch.object(
+            ENVIRONMENT, "initialize_selected_linear",
+            wraps=ENVIRONMENT.initialize_selected_linear,
+        ) as initialize:
+            restored = ENVIRONMENT.prepare(argparse.Namespace(
+                **vars(args), restore=True,
+            ))
+        initialize.assert_called_once()
         active = ENVIRONMENT.read(self.root / "projects/relay/active.json")
         self.assertEqual(restored["status"], "restored")
         self.assertEqual(active["controller_state_path"], str(controller))

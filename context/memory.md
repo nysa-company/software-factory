@@ -77,6 +77,12 @@ everything the Factory actually enforces lives here.
   product; a durable bootstrap reuses partial initialization without duplicate
   issues even if the source seed later changes or disappears. Takeover retains
   its canonical live-map and product-ledger behavior.
+- Qualification preparation serializes per project and resumes only a fresh,
+  exact-incomplete, or pristine exact-complete state. It reruns live readiness,
+  create-or-validates every provider and publication artifact, renames a sealed
+  release from a same-directory temporary tree, and writes the environment
+  before the registry. Torn, mismatched, active, or unexpected state refuses
+  without deletion; the signed safe-pause restore boundary remains unchanged.
 - Selected-only Linear initialization uses one bounded exact-title query and a
   ticket-, team-, Project-, and title-bound create intent. It persists a
   returned issue identity before observation and never repeats an uncertain
@@ -5140,3 +5146,20 @@ unexpected current receipt. The successor receipt remains solely in the
 controller transition file; `claim.receipt` stays empty because that field
 means pending role or terminal work. Merged closeout and generic stale-cache
 recovery gain no receipt-reissue authority.
+
+## 2026-08-09 — Decision 365: Qualification preparation replays exact prefixes
+
+Category: Reliability
+
+Qualification preparation holds one owner-only per-project lock and classifies
+the lane as fresh, exact-incomplete, or exact-complete. Every attempt reruns
+live fallback readiness. The preparer atomically renames a same-directory
+release tree, create-or-validates pristine provider and publication artifacts,
+and persists `environment.json` before the final profile registry, so a crash
+or lost response at an exact write prefix resumes to the same result.
+
+A missing predecessor, changed or unexpected artifact, release remnant, active
+controller or provider, or non-pristine completed lane refuses without deleting
+anything. The existing signed safe-pause `--restore` flow remains the only
+authority for rebuilding a disposed root; no cleanup command or alternate
+state-edit boundary is introduced.

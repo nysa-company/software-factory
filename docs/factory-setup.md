@@ -188,6 +188,13 @@ until expiry.
   owner-local Linear map with `--operator-map-seed`; the preparer binds a
   lane-local copy and runtime ledger, initializes only the selected cohort,
   and proves the product is still clean before it publishes the environment.
+  Preparation is serialized per project. A retry reruns live readiness and
+  resumes only a byte-exact pristine write prefix or a completed lost-response
+  replay; it never deletes a torn, mismatched, unexpected, or active lane.
+  The sealed release is renamed from a same-directory temporary tree, and the
+  environment record is durable before the final profile registry. Continue
+  to use `--restore` only for its existing signed safe-pause boundary; there is
+  no partial-lane cleanup command.
   It also provisions the exact historical run artifacts named by those
   passports from its owner-only retained closure; any absent or altered
   manifest, output, or progress journal stops preparation before a paid role.

@@ -113,6 +113,34 @@ def write(path: Path, value: dict[str, Any]) -> None:
         os.fsync(stream.fileno())
 
 
+def write_exact(path: Path, value: dict[str, Any]) -> None:
+    if path.exists() or path.is_symlink():
+        if config_bytes(path) != canonical(value):
+            raise EnvironmentError("qualification preparation artifact changed")
+        return
+    write(path, value)
+
+
+def write_bytes(path: Path, raw: bytes) -> None:
+    descriptor = os.open(
+        path,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+    )
+    with os.fdopen(descriptor, "wb") as stream:
+        stream.write(raw)
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def write_bytes_exact(path: Path, raw: bytes) -> None:
+    if path.exists() or path.is_symlink():
+        if config_bytes(path) != raw:
+            raise EnvironmentError("qualification preparation artifact changed")
+        return
+    write_bytes(path, raw)
+
+
 def replace(path: Path, value: dict[str, Any]) -> None:
     descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
@@ -192,6 +220,23 @@ def snapshot_global_config(args: argparse.Namespace, root: Path) -> None:
     )
     raw = config_bytes(source) if source.exists() or source.is_symlink() else b""
     install_config(target, raw)
+
+
+def prepare_global_config(args: argparse.Namespace, root: Path) -> bytes:
+    target = root / "global.env"
+    supplied = getattr(args, "global_env", None)
+    if supplied is not None and not supplied.is_absolute():
+        raise EnvironmentError("qualification global config must be absolute")
+    source = (
+        supplied
+        if supplied is not None
+        else Path.home().resolve(strict=True) / ".factory/global.env"
+    )
+    raw = config_bytes(source) if source.exists() or source.is_symlink() else b""
+    if target.exists() or target.is_symlink():
+        if config_bytes(target) != raw:
+            raise EnvironmentError("qualification preparation artifact changed")
+    return raw
 
 
 def qualification_fallback_readiness(
@@ -644,6 +689,56 @@ def authority_root(project: str, create: bool = False) -> Path:
     return root
 
 
+def lock_preparation(project: str) -> int:
+    if not PROJECT.fullmatch(project):
+        raise EnvironmentError("qualification project is invalid")
+    factory = Path.home().resolve(strict=True) / ".factory"
+    safe_directory(factory)
+    qualification = factory / "qualification"
+    try:
+        qualification.mkdir(mode=0o700)
+    except FileExistsError:
+        pass
+    safe_directory(qualification)
+    descriptor = os.open(
+        qualification / f".prepare-{project}.lock",
+        os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+    )
+    info = os.fstat(descriptor)
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or info.st_uid != os.geteuid()
+        or info.st_nlink != 1
+        or stat.S_IMODE(info.st_mode) != 0o600
+    ):
+        os.close(descriptor)
+        raise EnvironmentError("qualification preparation lock is unsafe")
+    fcntl.flock(descriptor, fcntl.LOCK_EX)
+    return descriptor
+
+
+def preparation_state(root: Path, authority: Path | None) -> str:
+    authority_exists = bool(
+        authority and (authority.exists() or authority.is_symlink())
+    )
+    if root.exists() or root.is_symlink():
+        safe_directory(root)
+        root_populated = any(root.iterdir())
+        complete = (
+            (root / "environment.json").exists()
+            or (root / "environment.json").is_symlink()
+        )
+    else:
+        root_populated = False
+        complete = False
+    if complete:
+        return "exact-complete"
+    if authority_exists or root_populated:
+        return "exact-incomplete"
+    return "fresh"
+
+
 def partial_authority_root(project: str) -> Path:
     """Create or resume only the pre-publication operator bootstrap boundary."""
     factory = Path.home().resolve(strict=True) / ".factory"
@@ -1092,6 +1187,9 @@ def initialize_selected_linear(
         "FACTORY_DURABLE_LEDGER": str(product / "factory/ledger.csv"),
     }
     for ticket in selected:
+        mapping = read(map_path)
+        if selected_linear_ready(mapping, ticket):
+            continue
         result = subprocess.run(
             [
                 sys.executable, str(factory / "scripts/linear-sync.py"),
@@ -1107,20 +1205,24 @@ def initialize_selected_linear(
             )
         mapping = read(map_path)
         validate_operator_map(mapping)
-        entry = mapping["tickets"].get(ticket)
-        initialized = mapping["_sync"].get("selected_ticket_success_at", {})
-        if (
-            not isinstance(entry, dict)
-            or not entry.get("issue_id")
-            or entry.get("operator_fields_initialized") is not True
-            or not isinstance(entry.get("operator"), dict)
-            or not isinstance(entry["operator"].get("observed_at"), str)
-            or not isinstance(initialized, dict)
-            or not isinstance(initialized.get(ticket), str)
-        ):
+        if not selected_linear_ready(mapping, ticket):
             raise EnvironmentError(
                 f"{ticket}: selected-ticket Linear initialization was not durable"
             )
+
+
+def selected_linear_ready(mapping: dict[str, Any], ticket: str) -> bool:
+    entry = mapping["tickets"].get(ticket)
+    initialized = mapping["_sync"].get("selected_ticket_success_at", {})
+    return bool(
+        isinstance(entry, dict)
+        and entry.get("issue_id")
+        and entry.get("operator_fields_initialized") is True
+        and isinstance(entry.get("operator"), dict)
+        and isinstance(entry["operator"].get("observed_at"), str)
+        and isinstance(initialized, dict)
+        and isinstance(initialized.get(ticket), str)
+    )
 
 
 def provider_configuration(
@@ -1171,28 +1273,83 @@ def provider_configuration(
     return policy, activation, policy_hash
 
 
-def prepare_provider(release: Path, root: Path, capacity: int) -> str:
+def validate_prepare_provider(
+    release: Path, root: Path, capacity: int,
+) -> tuple[dict[str, Any], dict[str, Any], str]:
     policy, activation, policy_hash = provider_configuration(release, capacity)
     provider = root / "provider"
-    provider.mkdir(mode=0o700)
-    for name in (
+    if not (provider.exists() or provider.is_symlink()):
+        return policy, activation, policy_hash
+    safe_directory(provider)
+    allowed = {
+        "accounting", "cli-runtimes", "provider-activation.json",
+        "provider-apply-locks", "provider-attempts",
+        "provider-configuration.lock", "provider-policy.json",
+    }
+    if any(path.name not in allowed for path in provider.iterdir()):
+        raise EnvironmentError("partial qualification provider is invalid")
+    directories = (
         "accounting",
         "cli-runtimes",
         "provider-attempts",
         "provider-apply-locks",
-    ):
-        (provider / name).mkdir(mode=0o700)
-    configuration_lock = provider / "provider-configuration.lock"
-    descriptor = os.open(
-        configuration_lock,
-        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
-        0o600,
     )
-    os.close(descriptor)
+    for name in directories:
+        path = provider / name
+        if path.exists() or path.is_symlink():
+            safe_directory(path)
+    if any(
+        (provider / name).is_dir() and any((provider / name).iterdir())
+        for name in (
+        "cli-runtimes", "provider-attempts", "provider-apply-locks",
+        )
+    ):
+        raise EnvironmentError("partial qualification provider is active")
+    accounting = provider / "accounting"
+    if accounting.is_dir() and any(
+        path.name != "state-v2.sqlite3" for path in accounting.iterdir()
+    ):
+        raise EnvironmentError("partial qualification provider is invalid")
+    configuration_lock = provider / "provider-configuration.lock"
+    prefix = [provider / name for name in directories] + [
+        configuration_lock,
+        provider / "provider-policy.json",
+        provider / "provider-activation.json",
+        accounting / "state-v2.sqlite3",
+    ]
+    present = [path.exists() or path.is_symlink() for path in prefix]
+    if present != sorted(present, reverse=True):
+        raise EnvironmentError("qualification preparation state is torn")
+    if (
+        configuration_lock.exists() or configuration_lock.is_symlink()
+    ) and config_bytes(configuration_lock):
+        raise EnvironmentError("qualification preparation artifact changed")
+    for path, value in (
+        (provider / "provider-policy.json", policy),
+        (provider / "provider-activation.json", activation),
+    ):
+        if (
+            path.exists() or path.is_symlink()
+        ) and config_bytes(path) != canonical(value):
+            raise EnvironmentError("qualification preparation artifact changed")
+    return policy, activation, policy_hash
+
+
+def prepare_provider(release: Path, root: Path, capacity: int) -> str:
+    policy, activation, _ = validate_prepare_provider(release, root, capacity)
+    provider = root / "provider"
+    ensure_directory(provider)
+    for name in (
+        "accounting", "cli-runtimes", "provider-attempts",
+        "provider-apply-locks",
+    ):
+        ensure_directory(provider / name)
+    configuration_lock = provider / "provider-configuration.lock"
+    write_bytes_exact(configuration_lock, b"")
     policy_path = provider / "provider-policy.json"
     activation_path = provider / "provider-activation.json"
-    write(policy_path, policy)
-    write(activation_path, activation)
+    write_exact(policy_path, policy)
+    write_exact(activation_path, activation)
     command(
         "/usr/bin/python3",
         str(release / "scripts/provider-activation.py"),
@@ -1208,10 +1365,12 @@ def prepare_provider(release: Path, root: Path, capacity: int) -> str:
         str(provider / "accounting/state-v2.sqlite3"),
         "status",
     )
-    return policy_hash
+    return validate_provider(release, root, capacity, pristine=True)
 
 
-def validate_provider(release: Path, root: Path, capacity: int) -> str:
+def validate_provider(
+    release: Path, root: Path, capacity: int, *, pristine: bool = False,
+) -> str:
     policy, activation, policy_hash = provider_configuration(release, capacity)
     provider = safe_directory(root / "provider")
     if (
@@ -1234,6 +1393,7 @@ def validate_provider(release: Path, root: Path, capacity: int) -> str:
         not isinstance(attempts, list)
         or status.get("active_reserve_micro_usd") != 0
         or status.get("legacy_intervals") != []
+        or (pristine and attempts)
         or any(
             not isinstance(item, dict) or item.get("state") != "terminal"
             for item in attempts
@@ -2493,7 +2653,212 @@ def materialize(factory: Path, sha: str, release: Path) -> None:
     release.chmod(0o555)
 
 
-def prepare(args: argparse.Namespace) -> dict[str, Any]:
+def ensure_directory(path: Path) -> Path:
+    if path.exists() or path.is_symlink():
+        return safe_directory(path)
+    return safe_directory(path, create=True)
+
+
+def ensure_release(factory: Path, sha: str, tree: str, releases: Path) -> Path:
+    release = releases / sha
+    temporary = releases / f".{sha}.partial"
+    if temporary.exists() or temporary.is_symlink():
+        raise EnvironmentError("partial qualification release is torn")
+    if release.exists() or release.is_symlink():
+        sealed_directory(release)
+    else:
+        materialize(factory, sha, temporary)
+        temporary.chmod(0o700)
+        os.rename(temporary, release)
+        release.chmod(0o555)
+        descriptor = os.open(releases, os.O_RDONLY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    if git_tree(release) != tree:
+        raise EnvironmentError("sealed qualification tree does not match the candidate")
+    return release
+
+
+def validate_prepare_root(root: Path, sha: str, project: str) -> None:
+    allowed = {
+        "environment.json", "global.env", "marker.json", "profile",
+        "projects", "receipts", "releases",
+    }
+    if any(path.name not in allowed for path in root.iterdir()):
+        raise EnvironmentError("partial qualification environment is invalid")
+    releases = root / "releases"
+    if releases.exists() or releases.is_symlink():
+        safe_directory(releases)
+        if any(path.name != sha for path in releases.iterdir()):
+            raise EnvironmentError("partial qualification release is invalid")
+    projects = root / "projects"
+    if projects.exists() or projects.is_symlink():
+        safe_directory(projects)
+        if any(path.name != project for path in projects.iterdir()):
+            raise EnvironmentError("partial qualification project is invalid")
+        project_root = projects / project
+        if project_root.exists() or project_root.is_symlink():
+            safe_directory(project_root)
+            if any(path.name != "active.json" for path in project_root.iterdir()):
+                raise EnvironmentError("partial qualification activation is invalid")
+    profile = root / "profile"
+    if profile.exists() or profile.is_symlink():
+        safe_directory(profile)
+        if any(path.name != "projects" for path in profile.iterdir()):
+            raise EnvironmentError("partial qualification profile is invalid")
+        profile_projects = profile / "projects"
+        if profile_projects.exists() or profile_projects.is_symlink():
+            safe_directory(profile_projects)
+            if any(
+                path.name != f"{project}.env" for path in profile_projects.iterdir()
+            ):
+                raise EnvironmentError("partial qualification registry is invalid")
+
+
+def validate_authority_prepare_shape(authority: Path) -> None:
+    allowed = {
+        "authority.json", "controller", "operator", "operator-bootstrap.json",
+        "provider",
+    }
+    if any(path.name not in allowed for path in authority.iterdir()):
+        raise EnvironmentError("partial qualification authority is invalid")
+    controller = authority / "controller"
+    advanced = any(
+        (authority / name).exists() or (authority / name).is_symlink()
+        for name in ("authority.json", "provider")
+    )
+    if advanced and not controller.exists():
+        raise EnvironmentError("qualification preparation state is torn")
+    if controller.exists() or controller.is_symlink():
+        safe_directory(controller)
+        if any(controller.iterdir()):
+            raise EnvironmentError("qualification controller is active")
+
+
+def validate_prepare_phase(
+    root: Path, authority: Path | None, sha: str, project: str,
+) -> None:
+    provider = bool(
+        authority and (
+            (authority / "provider").exists()
+            or (authority / "provider").is_symlink()
+        )
+    )
+    if not (root.exists() or root.is_symlink()):
+        authority_state = bool(
+            authority and (
+                (authority / "authority.json").exists()
+                or (authority / "authority.json").is_symlink()
+            )
+        )
+        if provider or authority_state:
+            raise EnvironmentError("qualification preparation state is torn")
+        return
+    if authority is not None and any(root.iterdir()) and not (
+        (authority / "controller").exists()
+        or (authority / "controller").is_symlink()
+    ):
+        raise EnvironmentError("qualification preparation state is torn")
+    structural = (
+        root / "releases", root / "projects", root / "receipts",
+        root / "profile", root / "profile/projects",
+        root / f"projects/{project}",
+    )
+    phases = structural + (
+        root / "global.env", root / "marker.json", root / f"releases/{sha}",
+    )
+    present = [path.exists() or path.is_symlink() for path in phases]
+    if present != sorted(present, reverse=True):
+        raise EnvironmentError("qualification preparation state is torn")
+    release = root / f"releases/{sha}"
+    released = release.exists() or release.is_symlink()
+    downstream = bool(
+        authority and (
+            (authority / "authority.json").exists()
+            or (authority / "authority.json").is_symlink()
+        )
+    ) or any(
+        path.exists() or path.is_symlink() for path in (
+            root / "environment.json", root / f"projects/{project}/active.json",
+            root / f"profile/projects/{project}.env",
+        )
+    ) or bool((root / "receipts").is_dir() and any((root / "receipts").iterdir()))
+    if provider and not released or downstream and (
+        not released or authority is not None and not provider
+    ):
+        raise EnvironmentError("qualification preparation state is torn")
+    if downstream and authority is not None and any(
+        not path.exists() for path in (
+            authority / "provider/accounting/state-v2.sqlite3",
+            authority / "provider/cli-runtimes",
+            authority / "provider/provider-activation.json",
+            authority / "provider/provider-apply-locks",
+            authority / "provider/provider-attempts",
+            authority / "provider/provider-configuration.lock",
+            authority / "provider/provider-policy.json",
+        )
+    ):
+        raise EnvironmentError("qualification preparation state is torn")
+
+
+def validate_existing_publication_prefix(
+    root: Path, authority: Path | None, project: str,
+) -> None:
+    if not (root.exists() or root.is_symlink()):
+        return
+    receipt_paths: list[Path] = []
+    receipts = root / "receipts"
+    if receipts.exists() or receipts.is_symlink():
+        safe_directory(receipts)
+        receipt_paths = list(receipts.iterdir())
+        if (
+            len(receipt_paths) > 1
+            or receipt_paths
+            and not re.fullmatch(r"[0-9a-f]{64}[.]json", receipt_paths[0].name)
+        ):
+            raise EnvironmentError("qualification preparation receipt is unexpected")
+    paths: list[Path | None] = [receipt_paths[0] if receipt_paths else None]
+    if authority is not None:
+        paths.append(authority / "authority.json")
+    paths.extend((
+        root / f"projects/{project}/active.json",
+        root / "environment.json",
+        root / f"profile/projects/{project}.env",
+    ))
+    present = [
+        bool(path and (path.exists() or path.is_symlink())) for path in paths
+    ]
+    if present != sorted(present, reverse=True):
+        raise EnvironmentError("qualification preparation state is torn")
+    for path in paths[:-1]:
+        if path and (path.exists() or path.is_symlink()):
+            value = read(path)
+            if config_bytes(path) != canonical(value):
+                raise EnvironmentError("qualification preparation artifact changed")
+    registry = paths[-1]
+    if registry.exists() or registry.is_symlink():
+        config_bytes(registry)
+
+
+def validate_publication_prefix(
+    receipt: Path, authority_state: Path | None, active: Path,
+    environment: Path, registry: Path,
+) -> None:
+    paths = [receipt]
+    if authority_state is not None:
+        paths.append(authority_state)
+    paths.extend((active, environment, registry))
+    present = [path.exists() or path.is_symlink() for path in paths]
+    if present != sorted(present, reverse=True):
+        raise EnvironmentError("qualification preparation state is torn")
+    receipts = receipt.parent
+    if any(path != receipt for path in receipts.iterdir()):
+        raise EnvironmentError("qualification preparation receipt is unexpected")
+
+
+def _prepare(args: argparse.Namespace) -> dict[str, Any]:
     root = Path(os.path.realpath(args.root))
     if not ROOT.fullmatch(str(root)):
         raise EnvironmentError("qualification root must be under /private/tmp")
@@ -2553,44 +2918,102 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
         args.project, sha, tree, product, product_sha, product_tree, origin,
         runtime_tuple, operator_map_path, runtime_ledger_path,
     )
+    expected_authority = None if takeover else Path.home().resolve(strict=True) / (
+        f".factory/qualification/{args.project}"
+    )
+    state = "restore" if restoring else preparation_state(root, expected_authority)
+    map_path: Path | None = None
+    ledger_path: Path | None = None
     if not takeover:
-        expected_authority = Path.home().resolve(strict=True) / (
-            f".factory/qualification/{args.project}"
-        )
         bootstrap_exists = (
             (expected_authority / "operator-bootstrap.json").exists()
             or (expected_authority / "operator-bootstrap.json").is_symlink()
         )
         if restoring or bootstrap_exists:
             authority = authority_root(args.project)
-            if not restoring and (authority / "authority.json").exists():
-                raise EnvironmentError("qualification environment already exists")
             map_path, ledger_path = resume_operator_state(
                 authority, identity, manifest["tickets"],
             )
         else:
+            if (
+                root.exists() and any(root.iterdir())
+            ):
+                raise EnvironmentError("qualification preparation state is torn")
+            if state != "fresh" and not expected_authority.exists():
+                raise EnvironmentError("partial qualification authority is missing")
             seed = operator_seed(args)
             authority = partial_authority_root(args.project)
             map_path, ledger_path = prepare_operator_state(
                 authority, identity, manifest["tickets"], seed,
             )
-        initialize_selected_linear(factory, product, map_path, ledger_path)
-        validate_runtime_ledger(ledger_path)
-        if command(
-            "git", "-C", str(product), "status", "--porcelain",
-            "--untracked-files=all",
-        ):
-            raise EnvironmentError("qualification Linear initialization dirtied product")
-        controller = authority / "controller"
         if restoring:
+            initialize_selected_linear(factory, product, map_path, ledger_path)
+            validate_runtime_ledger(ledger_path)
+            if command(
+                "git", "-C", str(product), "status", "--porcelain",
+                "--untracked-files=all",
+            ):
+                raise EnvironmentError(
+                    "qualification Linear initialization dirtied product"
+                )
+            controller = authority / "controller"
             if read(authority / "authority.json") != identity:
                 raise EnvironmentError("durable qualification authority changed")
             safe_directory(controller)
             validate_paused_authority(factory, product, controller, identity)
-        else:
-            controller.mkdir(mode=0o700)
-        controller_state_path = str(controller)
-        provider_state_path = str(authority / "provider")
+            controller_state_path = str(controller)
+            provider_state_path = str(authority / "provider")
+
+    if not restoring:
+        marker = {"mode": "qualification", "schema": SCHEMA}
+        if authority is not None:
+            validate_authority_prepare_shape(authority)
+        validate_prepare_phase(root, authority, sha, args.project)
+        global_config = prepare_global_config(args, root)
+        if root.exists() or root.is_symlink():
+            validate_prepare_root(root, sha, args.project)
+            marker_path = root / "marker.json"
+            if (
+                marker_path.exists() or marker_path.is_symlink()
+            ) and config_bytes(marker_path) != canonical(marker):
+                raise EnvironmentError("qualification preparation artifact changed")
+            release = root / f"releases/{sha}"
+            if release.exists() or release.is_symlink():
+                sealed_directory(release)
+                if git_tree(release) != tree:
+                    raise EnvironmentError(
+                        "sealed qualification tree does not match the candidate"
+                    )
+            validate_existing_publication_prefix(root, authority, args.project)
+        if authority is not None:
+            validate_prepare_provider(
+                root / f"releases/{sha}"
+                if (root / f"releases/{sha}").exists() else factory,
+                authority, capacity,
+            )
+        if not takeover:
+            mapping = read(map_path)
+            advanced = (
+                root.exists() and any(root.iterdir())
+            ) or (authority / "controller").exists()
+            if advanced and not all(
+                selected_linear_ready(mapping, ticket)
+                for ticket in manifest["tickets"]
+            ):
+                raise EnvironmentError("qualification preparation state is torn")
+            if state != "exact-complete":
+                initialize_selected_linear(factory, product, map_path, ledger_path)
+            validate_runtime_ledger(ledger_path)
+            if command(
+                "git", "-C", str(product), "status", "--porcelain",
+                "--untracked-files=all",
+            ):
+                raise EnvironmentError(
+                    "qualification Linear initialization dirtied product"
+                )
+            controller = ensure_directory(authority / "controller")
+            controller_state_path = str(controller)
+            provider_state_path = str(authority / "provider")
 
     safe_directory(root, create=not root.exists())
     releases = root / "releases"
@@ -2599,31 +3022,29 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
     profile = root / "profile"
     profile_projects = profile / "projects"
     for path in (releases, projects, receipts, profile):
-        if path.exists():
-            safe_directory(path)
-        else:
-            path.mkdir(mode=0o700)
-    if profile_projects.exists():
-        safe_directory(profile_projects)
-    else:
-        profile_projects.mkdir(mode=0o700)
+        ensure_directory(path)
+    ensure_directory(profile_projects)
     project = projects / args.project
-    if project.exists():
-        safe_directory(project)
+    ensure_directory(project)
+    if restoring:
+        snapshot_global_config(args, root)
     else:
-        project.mkdir(mode=0o700)
-    snapshot_global_config(args, root)
-    release = releases / sha
+        write_bytes_exact(root / "global.env", global_config)
     active = project / "active.json"
-    if release.exists() or active.exists():
-        raise EnvironmentError("qualification environment already exists")
-    write(root / "marker.json", {
-        "mode": "qualification",
-        "schema": SCHEMA,
-    })
-    materialize(factory, sha, release)
-    if git_tree(release) != tree:
-        raise EnvironmentError("sealed qualification tree does not match the candidate")
+    marker = {"mode": "qualification", "schema": SCHEMA}
+    if restoring:
+        release = releases / sha
+        if release.exists() or active.exists():
+            raise EnvironmentError("qualification environment already exists")
+        write(root / "marker.json", marker)
+        materialize(factory, sha, release)
+        if git_tree(release) != tree:
+            raise EnvironmentError(
+                "sealed qualification tree does not match the candidate"
+            )
+    else:
+        write_exact(root / "marker.json", marker)
+        release = ensure_release(factory, sha, tree, releases)
     fallback_readiness, fallback_readiness_sha256 = qualification_fallback_readiness(
         release, root, args.project, product,
     )
@@ -2662,7 +3083,7 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
         receipt_value["provider_state_path"] = provider_state_path
     receipt_id = hashlib.sha256(canonical(receipt_value)).hexdigest()
     receipt_value["receipt_id"] = receipt_id
-    write(receipts / f"{receipt_id}.json", receipt_value)
+    receipt_path = receipts / f"{receipt_id}.json"
     active_value = bind_runtime_tuple({
         "contract_version": contract,
         "generation": 1,
@@ -2686,19 +3107,7 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
     else:
         active_value["controller_state_path"] = controller_state_path
         active_value["provider_state_path"] = provider_state_path
-        if not restoring:
-            write(authority / "authority.json", identity)
-    write(active, active_value)
     registry = profile_projects / f"{args.project}.env"
-    descriptor = os.open(
-        registry,
-        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
-        0o600,
-    )
-    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-        stream.write(f"PRODUCT_ROOT={product}\n")
-        stream.flush()
-        os.fsync(stream.fileno())
     result = bind_runtime_tuple({
         "factory_sha": sha,
         "factory_tree": tree,
@@ -2714,8 +3123,32 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
         "schema": SCHEMA,
         "status": "restored" if restoring else "prepared",
     }, runtime_tuple)
-    write(root / "environment.json", result)
+    environment = root / "environment.json"
+    if restoring:
+        write(receipt_path, receipt_value)
+        write(active, active_value)
+        write_bytes(registry, f"PRODUCT_ROOT={product}\n".encode())
+        write(environment, result)
+    else:
+        authority_state = authority / "authority.json" if authority else None
+        validate_publication_prefix(
+            receipt_path, authority_state, active, environment, registry,
+        )
+        write_exact(receipt_path, receipt_value)
+        if authority_state is not None:
+            write_exact(authority_state, identity)
+        write_exact(active, active_value)
+        write_exact(environment, result)
+        write_bytes_exact(registry, f"PRODUCT_ROOT={product}\n".encode())
     return result
+
+
+def prepare(args: argparse.Namespace) -> dict[str, Any]:
+    descriptor = lock_preparation(args.project)
+    try:
+        return _prepare(args)
+    finally:
+        os.close(descriptor)
 
 
 def upgrade(args: argparse.Namespace) -> dict[str, Any]:
