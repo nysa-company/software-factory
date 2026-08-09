@@ -4810,7 +4810,7 @@ while allowing authenticated historical operational events with a legacy null
 Factory identity to remain outside those two reports. A null or malformed
 identity on a relevant event remains an error and never becomes an incident.
 
-## 2026-08-08 — Decision 348: Certification load is diagnostic only
+## 2026-08-08 — Decision 349: Certification load is diagnostic only
 
 Category: Reliability
 
@@ -4828,7 +4828,7 @@ not warn, refuse, retry, serialize, widen network access, or infer a root cause
 from it. In particular, high load must not hide the independent same-boot
 loopback `EPERM` condition tracked by issue #465.
 
-## 2026-08-08 — Decision 349: Terminal base state outranks admission overlays
+## 2026-08-08 — Decision 350: Terminal base state outranks admission overlays
 
 Category: Trust boundary
 
