@@ -82,7 +82,8 @@ Linear is the visual board and the operator's decision surface. Git is the
 durable execution record. Every `factory/initiatives/I-NNN.md` file maps to a
 Linear Project, and every `factory/tickets/T-NNN.md` file maps to a Linear
 issue. A per-product `com.factory.linear-sync.*` job reconciles them every
-three minutes.
+three minutes through the stable launcher, so activation and rollback change
+only the validated active release pointer rather than the LaunchAgent.
 
 Linear owns the decisions a human should make:
 

@@ -77,7 +77,7 @@ Fill every blank in `factory/ENVELOPE.md`: per-ticket budget (USD and max turns)
 
 Set up the shared Software Factory team per `docs/workflows/linear.md`: compact phase-level workflow states, the factory issue template, risk/external labels, and one Linear Project per file in `factory/initiatives/`.
 
-Run `scripts/linear-sync.py --factory-root <product-repo> --setup` once to create or verify the team, states, labels, and Projects. Install the per-product job from `scripts/launchd/com.factory.linear-sync.plist.template` to reconcile every three minutes. Linear owns operator priority, Ready, approval, unblock, and Project membership; Git owns execution details. The reconciler is asynchronous so Linear never sits in the sequencer control path. Mint the Linear API key (`~/.hermes/secrets/linear-api-key`) from the on-call operator's own account, since that's the account Linear auto-assigns and notifies on Awaiting Approval and Blocked-Escalated tickets.
+Run `scripts/linear-sync.py --factory-root <product-repo> --setup` once to create or verify the team, states, labels, and Projects. After the selected release and stable launcher are active, install and explicitly enable the per-product three-minute job with `bash scripts/factory-kit.sh linear-sync-service enable --project <project> --product <absolute-product-path>`. Use `disable` for a product that must remain inactive; disabled means persistently disabled and unloaded, not merely absent from `launchctl print`. Linear owns operator priority, Ready, approval, unblock, and Project membership; Git owns execution details. The reconciler is asynchronous so Linear never sits in the sequencer control path. Mint the Linear API key (`~/.hermes/secrets/linear-api-key`) from the on-call operator's own account, since that's the account Linear auto-assigns and notifies on Awaiting Approval and Blocked-Escalated tickets.
 
 Fresh-map recovery adopts only Projects with one durable initiative identity and
 fails on ambiguity or an unidentified same-name Project. A pre-marker mapped
@@ -244,6 +244,21 @@ until expiry.
   Certification and activation refuse any byte mismatch; never patch the
   installed launcher independently.
 
+- Migrate each legacy release-pinned Linear LaunchAgent exactly once after its
+  product has activated this release. Keep maintenance published and run the
+  matching `linear-sync-service enable` or `disable` command. The command
+  drains both known Linear lock generations, snapshots the prior plist and
+  load/disable state, and rolls back automatically
+  on any bootout, write, enable/disable, bootstrap, or verification failure,
+  and leaves maintenance in place. An absent native override is first
+  normalized to verified explicit-enabled ownership and reported as
+  `LINEAR SYNC SERVICE OWNERSHIP ADOPTED`; that committed semantic no-op is the
+  rollback baseline even if the later migration fails. If adoption cannot be
+  verified, no plist or load-state migration is attempted and maintenance must
+  remain. Do not hand-render the plist or call
+  `launchctl` as part of activation. Verify Doctor reports either an enabled,
+  loaded stable route or a disabled, unloaded stable route before resuming.
+
 - For a release migration, merge the protected product PR containing
   `factory/KIT_PIN` and the complete canonical
   `factory/migrations/inflight-release/<target-sha>.json` authorization before
@@ -386,7 +401,7 @@ All boxes checked = the factory may start. Any box unchecked = it may not.
 - [ ] Console spend caps set on the primary providers; Cursor usage controls reviewed before fallback is enabled
 - [ ] Provider/account-route, Cursor, and product-runtime credentials are separated; none are committed
 - [ ] No secrets in git history (`git log -p | grep -i` for key patterns, or a scanner)
-- [ ] Linear board matches `docs/workflows/linear.md`; initiative Projects and ticket template installed; `scripts/linear-sync.py --setup` run; `com.factory.linear-sync` loaded; sync health is current
+- [ ] Linear board matches `docs/workflows/linear.md`; initiative Projects and ticket template installed; `scripts/linear-sync.py --setup` run; Doctor reports the intended explicit `com.factory.linear-sync` state and stable-launcher arguments; enabled products are loaded; sync health is current
 - [ ] Branch protection on; test-immutability check is a required status
 - [ ] `GH_REPO`, `DONE_REQUIRED_CHECKS`, and `AUTO_MERGE_METHOD` exactly match the protected repository, required post-merge contexts, and enabled merge strategy; GitHub auto-merge is enabled without bypass permissions
 - [ ] Staging deploy works; preview deploys work on PRs

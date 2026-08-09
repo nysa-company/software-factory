@@ -90,6 +90,13 @@
         ],
         "output_schema": "nysa.software-factory.hermes-doctor/v1"
       },
+      "linear-sync": {
+        "contract_version": "1.8.0",
+        "arguments": [],
+        "helper": "scripts/linear-sync.py",
+        "authority": "one scheduled full-board reconciliation for the selected production project",
+        "security": "fresh environment with only HOME, PATH, TMPDIR, and FACTORY_ROOT; credentials are resolved by the helper from owner-local stores"
+      },
       "reconcile": {
         "contract_version": "1.8.0",
         "helper": "scripts/factory-controller.py",
@@ -820,6 +827,7 @@
     "templates/profile/skills/factory-dispatch/SKILL.md",
     "templates/profile/skills/factory-supervisor/SKILL.md",
     "scripts/launchd/com.factory.controller.plist.template",
+    "scripts/launchd/com.factory.linear-sync.plist.template",
     "templates/launchd/com.nysa.hermes-factory-gateway.plist",
     "templates/launchd/com.nysa.hermes-dashboard.plist",
     "scripts/factory-doctor.sh",
@@ -875,6 +883,7 @@
     "scripts/ticket-pr.py",
     "scripts/lib/dispatch-leases.sh",
     "scripts/factory-kit.sh",
+    "scripts/linear-sync-service.py",
     "scripts/kill-switch.sh",
     "scripts/reorder-test-fixes.sh",
     "scripts/model-control.sh",
@@ -903,6 +912,11 @@
       "label": "com.factory.controller.<project>",
       "schedule_seconds": 15,
       "scope": "one registered product; non-overlapping one-shot reconciliation"
+    },
+    "linear_sync": {
+      "label": "com.factory.linear-sync.<project>",
+      "schedule_seconds": 180,
+      "scope": "one explicitly enabled or disabled registered production product through the stable launcher"
     },
     "gateway": {
       "label": "com.nysa.hermes-factory-gateway",

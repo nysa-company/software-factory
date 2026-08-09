@@ -56,6 +56,11 @@ everything the Factory actually enforces lives here.
   window. HTTP 400/429 and GraphQL quota responses produce one typed bounded
   credential-shared cooldown, including Linear's nested duration; no Linear
   call is made until its persisted expiry.
+- Scheduled Linear services invoke only the stable launcher and project slug.
+  Their explicit native enabled/disabled state is product-owned and migrated
+  transactionally under maintenance; activation and rollback change only the
+  validated active release pointer. Doctor rejects legacy release-pinned
+  arguments or a load state inconsistent with the persisted service state.
 - Qualification pre-seal and dispatch both require every selected ticket's Git
   blob in the sealed control checkout to equal protected `origin/main`.
   Qualification-only metadata can therefore never validate one contract and
@@ -4983,3 +4988,18 @@ authorization child, and single route migration to move into the successor
 release. Recovery writes and reuses the current Spec-linter receipt before
 clearing the old failed claim, so every restart retains the charge and reopens
 only that role once.
+
+## 2026-08-09 — Decision 358: Scheduled Linear follows the active release
+
+Category: Trust boundary
+
+Each product's scheduled Linear LaunchAgent calls the stable launcher with a
+zero-argument `linear-sync` command; it never embeds a sealed release path or a
+credential. One explicit maintenance command owns native enable/disable,
+atomic plist replacement, verification, and automatic restoration. Ordinary
+activation and rollback do not manipulate launchd, so the unchanged service
+follows the single validated active pointer. Before that transaction, an
+absent native override is adopted as verified explicit enabled and reported as
+a committed semantic no-op. It becomes the restoration baseline; an
+indeterminate adoption stops before later mutations, and later rollback never
+masks explicit enabled as unspecified.

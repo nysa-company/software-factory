@@ -208,9 +208,14 @@ External: no
 ## Reconciler operations
 
 Run `scripts/linear-sync.py --factory-root <product-repo> --setup` once, then
-schedule `scripts/launchd/com.factory.linear-sync.plist.template` every three
-minutes. `--dry-run` performs reads and prints both pull and push actions
-without changing Linear or local files. Sync health is recorded under
+run `bash scripts/factory-kit.sh linear-sync-service enable --project <project>
+--product <absolute-product-path>` after activation. The installed LaunchAgent
+invokes only `~/.factory/bin/factory-launch <project> linear-sync`, so every
+three-minute cycle follows the validated active release without rewriting the
+plist. Use the same command with `disable` to persistently disable and unload a
+product. Doctor treats a release-pinned plist, enabled-but-unloaded service, or
+disabled-but-loaded service as an error. `--dry-run` performs reads and prints
+both pull and push actions without changing Linear or local files. Sync health is recorded under
 `_sync` in `factory/linear-map.json`; investigate a stale timestamp before
 trusting the board. Evidence comments are keyed by a content digest and are
 posted again only when the committed bundle changes. Fallback approvals read

@@ -28,7 +28,7 @@ die() {
 }
 
 usage() {
-  echo "usage: factory-launch <project> <contract|doctor|reconcile|watch|ticket-control|qualification|dispatch-plan|state-machine|emergency-admit|passport|publication|publication-repair|ci-rerun|ticket-pr|models|envelope|operator-snapshot|attempt|claim|renew|release|release-expired|preflight|next-stage|ticket-state|ticket-attest|project-ledger|reorder-test-fixes|run> [arguments]" >&2
+  echo "usage: factory-launch <project> <contract|doctor|linear-sync|reconcile|watch|ticket-control|qualification|dispatch-plan|state-machine|emergency-admit|passport|publication|publication-repair|ci-rerun|ticket-pr|models|envelope|operator-snapshot|attempt|claim|renew|release|release-expired|preflight|next-stage|ticket-state|ticket-attest|project-ledger|reorder-test-fixes|run> [arguments]" >&2
   exit 2
 }
 
@@ -807,6 +807,9 @@ if [[ "$ISOLATED_TEST_LAUNCHER" == "1" ]]; then
     "FACTORY_TRUSTED_TEST_HARNESS=1"
     "FACTORY_ADAPTER_OVERRIDE=mock"
   )
+  if [[ -n "${FACTORY_DOCTOR_TEST_LAUNCHCTL:-}" ]]; then
+    HELPER_ENV+=("FACTORY_DOCTOR_TEST_LAUNCHCTL=$FACTORY_DOCTOR_TEST_LAUNCHCTL")
+  fi
 fi
 
 run_selected_helper() {
@@ -1245,6 +1248,21 @@ PY
     exec_selected_helper "$DOCTOR" --json --project "$PROJECT" \
       --profile-dir "$PROFILE_DIR" --registry "$REGISTRY_FILE" \
       --kit-dir "$RELEASE_PATH" --product-root "$PRODUCT_ROOT" --kit-sha "$KIT_SHA"
+    ;;
+  linear-sync)
+    [[ "$QUALIFICATION_LAUNCHER" -eq 0 ]] ||
+      die "scheduled Linear sync is production-only"
+    [[ "$ACTIVE_CONTRACT" == "1.8.0" ]] ||
+      die "scheduled Linear sync requires contract 1.8.0"
+    [[ $# -eq 0 ]] || usage
+    LINEAR_SYNC="$RELEASE_PATH/scripts/linear-sync.py"
+    require_managed_file "$LINEAR_SYNC" "active release Linear sync"
+    cleanup_runtime
+    trap - EXIT HUP INT TERM
+    exec /usr/bin/env -i \
+      "HOME=$HOME" "PATH=$SAFE_PATH" "TMPDIR=$SAFE_TMPDIR" \
+      "FACTORY_ROOT=$PRODUCT_ROOT" \
+      "$PYTHON_BIN" -I -S "$LINEAR_SYNC" --factory-root "$PRODUCT_ROOT"
     ;;
   reconcile)
     [[ "$ACTIVE_CONTRACT" == "1.8.0" ]] ||

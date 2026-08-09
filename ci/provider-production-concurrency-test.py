@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import plistlib
 import stat
 import subprocess
 import sys
@@ -822,8 +823,40 @@ esac
             path = binary_root / name
             path.write_text("#!/bin/sh\nprintf '%s\\n' test\n")
             path.chmod(0o700)
+        launcher = self.home / ".factory/bin/factory-launch"
+        launcher.parent.mkdir(parents=True)
+        launcher.write_bytes((ROOT / "integrations/hermes/bin/factory-launch").read_bytes())
+        launcher.chmod(0o700)
+        label = "com.factory.linear-sync.relay"
+        launch_agents = self.home / "Library/LaunchAgents"
+        launch_agents.mkdir(parents=True)
+        service = launch_agents / f"{label}.plist"
+        with service.open("wb") as stream:
+            plistlib.dump({
+                "Label": label,
+                "ProgramArguments": [str(launcher), "relay", "linear-sync"],
+                "StartInterval": 180,
+                "RunAtLoad": True,
+                "StandardOutPath": str(product / "factory/linear-sync.log"),
+                "StandardErrorPath": str(product / "factory/linear-sync.err.log"),
+            }, stream)
+        launchctl = self.root / "launchctl"
+        launchctl.write_text(
+            "#!/bin/sh\n"
+            "case \"$1\" in\n"
+            f"print-disabled) printf '%s\\n' 'disabled services = {{' "
+            f"'  \"{label}\" => enabled' '}}' ;;\n"
+            "print) printf '%s\\n' 'arguments = {' "
+            f"'  {launcher}' '  relay' '  linear-sync' '}}' ;;\n"
+            "*) exit 2 ;;\n"
+            "esac\n"
+        )
+        launchctl.chmod(0o700)
         environment = {
             **os.environ,
+            "FACTORY_DOCTOR_TEST_LAUNCHCTL": str(launchctl),
+            "FACTORY_TEST_MODE": "1",
+            "FACTORY_TRUSTED_TEST_HARNESS": "1",
             "FACTORY_PROVIDER_ACTIVATION": str(self.state / "isolated-v1.enabled"),
             "FACTORY_PROVIDER_APPLY_LOCK_ROOT": str(self.state / "provider-apply-locks"),
             "FACTORY_PROVIDER_ATTEMPT_ROOT": str(self.state / "provider-attempts"),

@@ -7,6 +7,7 @@ DOCTOR="$ROOT/scripts/factory-doctor.sh"
 CONTRACT="$ROOT/integrations/hermes/contract.json"
 LAUNCHER="$ROOT/integrations/hermes/bin/factory-launch"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/hermes-contract-test.XXXXXX")"
+TMP="$(cd "$TMP" && pwd -P)"
 TEST_HOME="$TMP/home"
 PROFILE="$TEST_HOME/.hermes/profiles/factory"
 PRODUCT="$TMP/product"
@@ -252,15 +253,17 @@ run_launcher() {
     GIT_CONFIG_GLOBAL="$TMP/git-global-bypass" GIT_CONFIG_SYSTEM="$TMP/git-system-bypass" \
     GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0="$TMP/hooks" \
     BASH_ENV=/dev/null ENV=/dev/null GH_TOKEN="$CALLER_GH_SECRET" \
+    LINEAR_API_KEY="$LINEAR_SECRET" \
     bash "$LAUNCHER" "$@"
 }
 
 create_test_release() {
   local release="$1" label="$2" action="$3" contract="${4:-1.6.0}"
-  mkdir -p "$release/integrations/hermes" "$release/scripts/lib" "$release/roles"
+  mkdir -p "$release/integrations/hermes/bin" "$release/scripts/lib" "$release/roles"
   printf '*.out\n' > "$release/.gitignore"
   printf 'tracked ignored release evidence\n' > "$release/tracked.out"
   cp "$CONTRACT" "$release/integrations/hermes/contract.json"
+  cp "$LAUNCHER" "$release/integrations/hermes/bin/factory-launch"
   python3 - "$release/integrations/hermes/contract.json" "$contract" <<'PY'
 import json, pathlib, sys
 path, contract = pathlib.Path(sys.argv[1]), sys.argv[2]
@@ -289,6 +292,17 @@ PY
   cp "$ROOT/scripts/operator-state.py" "$release/scripts/operator-state.py"
   cp "$ROOT/scripts/operator-event-watch.py" "$release/scripts/operator-event-watch.py"
   cp "$ROOT/scripts/ticket-attest.sh" "$release/scripts/ticket-attest.sh"
+  cat > "$release/scripts/linear-sync.py" <<EOF
+#!/usr/bin/env python3
+import os
+from pathlib import Path
+
+root = Path(os.environ["FACTORY_ROOT"])
+(root / "factory/linear-release.txt").write_text("$label\n", encoding="utf-8")
+(root / "factory/linear-helper.env").write_text(
+    "\n".join(sorted(os.environ)) + "\n", encoding="utf-8"
+)
+EOF
   cp -R "$ROOT/scripts/model-routing" "$release/scripts/model-routing"
   cp "$ROOT/scripts/lib/backend-policy.sh" "$release/scripts/lib/backend-policy.sh"
   cp "$ROOT/scripts/lib/cursor-model-families.txt" \
@@ -446,11 +460,15 @@ EOF
     "$release/scripts/reorder-test-fixes.sh" "$release/scripts/model-control.sh" \
     "$release/scripts/model-control-real.sh" \
     "$release/scripts/dispatch-lease.sh" "$release/scripts/operator-event-watch.py"
-  chmod +x "$release/scripts/ticket-attest.sh"
+  chmod +x "$release/scripts/ticket-attest.sh" "$release/scripts/linear-sync.py"
 }
 
-mkdir -p "$PROFILE/projects" "$TEST_HOME/.hermes/secrets" "$TEST_HOME/.factory/.ledger.lock"
-mkdir -p "$PRODUCT/factory/runs" "$PRODUCT/factory/.launch.lock" "$STUB_BIN"
+mkdir -p "$PROFILE/projects" "$TEST_HOME/.hermes/secrets" \
+  "$TEST_HOME/.factory/.ledger.lock" "$TEST_HOME/.factory/bin"
+mkdir -p "$PRODUCT/factory/runs" "$PRODUCT/factory/.launch.lock" "$STUB_BIN" \
+  "$TEST_HOME/Library/LaunchAgents"
+cp "$LAUNCHER" "$TEST_HOME/.factory/bin/factory-launch"
+chmod 700 "$TEST_HOME/.factory/bin/factory-launch"
 printf '%s\n' 'THIS_IS_NOT_A_VALID_ENVELOPE=1' > "$TMP/bypass-envelope.env"
 cat > "$TMP/bypass-global.env" <<'EOF'
 GLOBAL_DAILY_CAP_USD=0
@@ -585,7 +603,69 @@ cat > "$STUB_BIN/gh" <<EOF
 #!/usr/bin/env bash
 echo "gh version test https://cli-user:$CLI_SECRET@example.invalid/version"
 EOF
-chmod +x "$STUB_BIN/hermes" "$STUB_BIN/claude" "$STUB_BIN/codex" "$STUB_BIN/agent" "$STUB_BIN/gh"
+cat > "$STUB_BIN/launchctl" <<'STUB'
+#!/usr/bin/env bash
+set -u
+service_state() {
+  local label="$1" field="$2" file="$HOME/.factory/$label.test-state"
+  if [[ -f "$file" ]]; then
+    awk -v line="$field" 'NR == line { print; exit }' "$file"
+  elif [[ "$field" == "1" ]]; then
+    printf 'enabled\n'
+  else
+    printf 'loaded\n'
+  fi
+}
+case "${1:-}" in
+  print-disabled)
+    printf '\tdisabled services = {\n'
+    for label in com.factory.linear-sync.relay com.factory.linear-sync.launchtest; do
+      printf '\t\t"%s" => %s\n' "$label" "$(service_state "$label" 1)"
+    done
+    printf '\t}\n'
+    ;;
+  print)
+    label="${2##*/}"
+    [[ "$(service_state "$label" 2)" != "error" ]] || exit 5
+    [[ "$(service_state "$label" 2)" == "loaded" ]] || exit 113
+    plist="$HOME/Library/LaunchAgents/$label.plist"
+    [[ -f "$plist" ]] || exit 113
+    python3 - "$2" "$plist" <<'PY'
+import plistlib, sys
+target, path = sys.argv[1:]
+with open(path, "rb") as stream:
+    value = plistlib.load(stream)
+print(target + " = {")
+print("\targuments = {")
+for item in value["ProgramArguments"]:
+    print("\t\t" + item)
+print("\t}")
+print("}")
+PY
+    ;;
+  *) exit 2 ;;
+esac
+STUB
+chmod +x "$STUB_BIN/hermes" "$STUB_BIN/claude" "$STUB_BIN/codex" "$STUB_BIN/agent" \
+  "$STUB_BIN/gh" "$STUB_BIN/launchctl"
+export FACTORY_DOCTOR_TEST_LAUNCHCTL="$STUB_BIN/launchctl"
+export FACTORY_TEST_MODE=1
+export FACTORY_TRUSTED_TEST_HARNESS=1
+
+render_linear_plist() {
+  local project="$1" product="$2" home="${3:-$TEST_HOME}" destination
+  destination="$TEST_HOME/Library/LaunchAgents/com.factory.linear-sync.$project.plist"
+  python3 - "$ROOT/scripts/launchd/com.factory.linear-sync.plist.template" \
+    "$destination" "$home" "$project" "$product" <<'PY'
+import pathlib, sys
+source, destination, home, project, product = sys.argv[1:]
+text = pathlib.Path(source).read_text(encoding="utf-8")
+text = text.replace("__HOME__", home).replace("__PROJECT_SLUG__", project)
+text = text.replace("__FACTORY_ROOT__", product)
+pathlib.Path(destination).write_text(text, encoding="utf-8")
+PY
+}
+render_linear_plist relay "$PRODUCT"
 
 CONTROLLER_STATE="$TMP/controller-state"
 mkdir -m 700 "$CONTROLLER_STATE" "$CONTROLLER_STATE/events" \
@@ -739,11 +819,11 @@ assert_no_secret "$HUMAN_OUT"
 [[ "$(cksum "$TEST_HOME/.hermes/secrets/linear-api-key")" == "$KEY_BEFORE" ]] ||
   fail "doctor changed the Linear credential file"
 
-python3 - "$JSON_OUT" "$KIT_SHA" "$ROOT" "$PRODUCT" <<'PY'
+python3 - "$JSON_OUT" "$KIT_SHA" "$ROOT" "$PRODUCT" "$TEST_HOME" <<'PY'
 import json
 import sys
 
-path, sha, kit_dir, product_root = sys.argv[1:]
+path, sha, kit_dir, product_root, home = sys.argv[1:]
 with open(path, encoding="utf-8") as handle:
     data = json.load(handle)
 
@@ -784,6 +864,12 @@ assert checks["linear_sync"]["projects"] == [{
     "project_url": "https://linear.app/test/project/project-canonical",
 }]
 assert checks["linear_sync"]["project_identity_conflict"]["reason"] == "conflicting_project_identity"
+assert checks["linear_sync"]["service"] == {
+    "arguments_match": True,
+    "loaded": True,
+    "state": "enabled",
+    "status": "ok",
+}
 assert [
     item["project_id"]
     for item in checks["linear_sync"]["project_identity_conflict"]["candidates"]
@@ -1104,6 +1190,81 @@ run_controller_doctor production-certified Darwin 1 idle \
 [[ "$CONTROLLER_DOCTOR_RC" -eq 0 ]] || fail "disposable controller check was not neutral"
 assert_controller_check "$TMP/controller-disposable.json" not_applicable not_applicable null
 [[ ! -e "$CONTROLLER_LAUNCHCTL_MARKER" ]] || fail "disposable Doctor queried launchd"
+RELAY_SERVICE_STATE="$TEST_HOME/.factory/com.factory.linear-sync.relay.test-state"
+printf 'disabled\nunloaded\n' > "$RELAY_SERVICE_STATE"
+HOME="$TEST_HOME" PATH="$STUB_BIN:$PATH" FACTORY_LINEAR_FRESH_SECONDS=600 \
+  FACTORY_CONTROLLER_STATE_DIR="$CONTROLLER_STATE" \
+  bash "$DOCTOR" --json --project relay > "$TMP/doctor-linear-disabled.json"
+python3 - "$TMP/doctor-linear-disabled.json" <<'PY'
+import json, sys
+service = json.load(open(sys.argv[1]))["checks"]["linear_sync"]["service"]
+assert service["status"] == "ok"
+assert service["state"] == "disabled"
+assert service["loaded"] is False
+PY
+printf 'disabled\nloaded\n' > "$RELAY_SERVICE_STATE"
+LINEAR_DISABLED_LOADED_RC=0
+HOME="$TEST_HOME" PATH="$STUB_BIN:$PATH" FACTORY_LINEAR_FRESH_SECONDS=600 \
+  FACTORY_CONTROLLER_STATE_DIR="$CONTROLLER_STATE" \
+  bash "$DOCTOR" --json --project relay > "$TMP/doctor-linear-disabled-loaded.json" || \
+  LINEAR_DISABLED_LOADED_RC=$?
+[[ "$LINEAR_DISABLED_LOADED_RC" -eq 1 ]] || fail "doctor accepted disabled-but-loaded Linear service"
+python3 - "$TMP/doctor-linear-disabled-loaded.json" <<'PY'
+import json, sys
+service = json.load(open(sys.argv[1]))["checks"]["linear_sync"]["service"]
+assert service["status"] == "error"
+assert service["state"] == "disabled"
+assert service["loaded"] is True
+assert service["arguments_match"] is True
+PY
+printf 'disabled\nerror\n' > "$RELAY_SERVICE_STATE"
+LINEAR_QUERY_ERROR_RC=0
+HOME="$TEST_HOME" PATH="$STUB_BIN:$PATH" FACTORY_LINEAR_FRESH_SECONDS=600 \
+  FACTORY_CONTROLLER_STATE_DIR="$CONTROLLER_STATE" \
+  bash "$DOCTOR" --json --project relay > "$TMP/doctor-linear-query-error.json" || \
+  LINEAR_QUERY_ERROR_RC=$?
+[[ "$LINEAR_QUERY_ERROR_RC" -eq 1 ]] || fail "doctor treated a launchctl failure as unloaded"
+python3 - "$TMP/doctor-linear-query-error.json" <<'PY'
+import json, sys
+service = json.load(open(sys.argv[1]))["checks"]["linear_sync"]["service"]
+assert service["status"] == "error"
+assert service["state"] == "disabled"
+assert service["loaded"] is False
+PY
+printf 'enabled\nunloaded\n' > "$RELAY_SERVICE_STATE"
+LINEAR_UNLOADED_RC=0
+HOME="$TEST_HOME" PATH="$STUB_BIN:$PATH" FACTORY_LINEAR_FRESH_SECONDS=600 \
+  FACTORY_CONTROLLER_STATE_DIR="$CONTROLLER_STATE" \
+  bash "$DOCTOR" --json --project relay > "$TMP/doctor-linear-unloaded.json" || \
+  LINEAR_UNLOADED_RC=$?
+[[ "$LINEAR_UNLOADED_RC" -eq 1 ]] || fail "doctor accepted enabled-but-unloaded Linear service"
+python3 - "$TMP/doctor-linear-unloaded.json" <<'PY'
+import json, sys
+service = json.load(open(sys.argv[1]))["checks"]["linear_sync"]["service"]
+assert service["status"] == "error"
+assert service["state"] == "enabled"
+assert service["loaded"] is False
+PY
+rm "$RELAY_SERVICE_STATE"
+cp "$TEST_HOME/Library/LaunchAgents/com.factory.linear-sync.relay.plist" \
+  "$TMP/linear-service.plist"
+python3 - "$TEST_HOME/Library/LaunchAgents/com.factory.linear-sync.relay.plist" <<'PY'
+import plistlib, sys
+path = sys.argv[1]
+with open(path, "rb") as stream:
+    value = plistlib.load(stream)
+value["ProgramArguments"] = ["/legacy/release/scripts/linear-sync.py"]
+with open(path, "wb") as stream:
+    plistlib.dump(value, stream)
+PY
+LINEAR_LEGACY_RC=0
+HOME="$TEST_HOME" PATH="$STUB_BIN:$PATH" FACTORY_LINEAR_FRESH_SECONDS=600 \
+  FACTORY_CONTROLLER_STATE_DIR="$CONTROLLER_STATE" \
+  bash "$DOCTOR" --json --project relay > "$TMP/doctor-linear-legacy.json" || \
+  LINEAR_LEGACY_RC=$?
+[[ "$LINEAR_LEGACY_RC" -eq 1 ]] || fail "doctor accepted a release-pinned Linear plist"
+mv "$TMP/linear-service.plist" \
+  "$TEST_HOME/Library/LaunchAgents/com.factory.linear-sync.relay.plist"
 
 # A relevant event still requires Factory identity even when its digest is valid.
 INVALID_RESUME_EVENT="$CONTROLLER_STATE/events/6-invalid.json"
@@ -1358,25 +1519,47 @@ SHA_V11="dddddddddddddddddddddddddddddddddddddddd"
 SHA_MODELS="eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
 SHA_MODELS_V18="9999999999999999999999999999999999999999"
 SHA_FALLBACK="ffffffffffffffffffffffffffffffffffffffff"
+SHA_LINEAR_A="7777777777777777777777777777777777777777"
+SHA_LINEAR_B="8888888888888888888888888888888888888888"
 RELEASE_A="$KITS_ROOT/releases/$SHA_A"
 RELEASE_B="$KITS_ROOT/releases/$SHA_B"
 RELEASE_V11="$KITS_ROOT/releases/$SHA_V11"
 RELEASE_MODELS="$KITS_ROOT/releases/$SHA_MODELS"
 RELEASE_MODELS_V18="$KITS_ROOT/releases/$SHA_MODELS_V18"
 RELEASE_FALLBACK="$KITS_ROOT/releases/$SHA_FALLBACK"
+RELEASE_LINEAR_A="$KITS_ROOT/releases/$SHA_LINEAR_A"
+RELEASE_LINEAR_B="$KITS_ROOT/releases/$SHA_LINEAR_B"
 mkdir -p "$KITS_ROOT/projects/launchtest" "$LAUNCH_PRODUCT/factory"
+git -C "$LAUNCH_PRODUCT" init -q -b main
+git -C "$LAUNCH_PRODUCT" config user.email "hermes-contract@test.local"
+git -C "$LAUNCH_PRODUCT" config user.name "hermes-contract-test"
+printf 'initial launcher product\n' > "$LAUNCH_PRODUCT/README.md"
+git -C "$LAUNCH_PRODUCT" add README.md
+git -C "$LAUNCH_PRODUCT" commit -qm "initialize launcher product"
+LAUNCH_PRODUCT_REMOTE="$TMP/launch-product.git"
+git init --bare -q "$LAUNCH_PRODUCT_REMOTE"
+git -C "$LAUNCH_PRODUCT" remote add origin "$LAUNCH_PRODUCT_REMOTE"
+git -C "$LAUNCH_PRODUCT" push -q -u origin main
+render_linear_plist launchtest "$(cd "$LAUNCH_PRODUCT" && pwd -P)" \
+  "$(cd "$TEST_HOME" && pwd -P)"
+LAUNCHTEST_LINEAR_PLIST="$TEST_HOME/Library/LaunchAgents/com.factory.linear-sync.launchtest.plist"
+LAUNCHTEST_LINEAR_PLIST_BEFORE="$(cksum "$LAUNCHTEST_LINEAR_PLIST")"
 create_test_release "$RELEASE_A" "RELEASE-A" "RUN planner" "1.0.0"
 create_test_release "$RELEASE_B" "RELEASE-B" "AWAIT-OPERATOR" "1.1.0"
 create_test_release "$RELEASE_V11" "RELEASE-V11" "RUN planner" "1.1.0"
 create_test_release "$RELEASE_MODELS" "RELEASE-MODELS" "RUN planner" "1.2.0"
 create_test_release "$RELEASE_MODELS_V18" "RELEASE-MODELS-V18" "RUN planner" "1.8.0"
 create_test_release "$RELEASE_FALLBACK" "RELEASE-FALLBACK" "RUN planner" "1.6.0"
+create_test_release "$RELEASE_LINEAR_A" "RELEASE-LINEAR-A" "RUN planner" "1.8.0"
+create_test_release "$RELEASE_LINEAR_B" "RELEASE-LINEAR-B" "RUN planner" "1.8.0"
 TREE_A="$(tree_for_directory "$RELEASE_A")"
 TREE_B="$(tree_for_directory "$RELEASE_B")"
 TREE_V11="$(tree_for_directory "$RELEASE_V11")"
 TREE_MODELS="$(tree_for_directory "$RELEASE_MODELS")"
 TREE_MODELS_V18="$(tree_for_directory "$RELEASE_MODELS_V18")"
 TREE_FALLBACK="$(tree_for_directory "$RELEASE_FALLBACK")"
+TREE_LINEAR_A="$(tree_for_directory "$RELEASE_LINEAR_A")"
+TREE_LINEAR_B="$(tree_for_directory "$RELEASE_LINEAR_B")"
 printf '%s\n' "$SHA_A" > "$LAUNCH_PRODUCT/factory/KIT_PIN"
 REGISTRY_SENTINEL="$TMP/registry-was-sourced"
 cat > "$PROFILE/projects/launchtest.env" <<EOF
@@ -1407,6 +1590,53 @@ run_launcher launchtest ticket-state --ticket T-123 --workdir "$LAUNCH_PRODUCT" 
   --action materialize --json > "$TMP/ticket-state-v1.out" 2>&1 || TICKET_STATE_V1_RC=$?
 [[ "$TICKET_STATE_V1_RC" -eq 1 ]] || fail "contract 1.0 unexpectedly exposed ticket-state"
 [[ ! -e "$REGISTRY_SENTINEL" ]] || fail "launcher sourced arbitrary registry content"
+
+LINEAR_V1_RC=0
+run_launcher launchtest linear-sync > "$TMP/linear-v1.out" 2>&1 || LINEAR_V1_RC=$?
+[[ "$LINEAR_V1_RC" -eq 1 ]] || fail "contract 1.0 unexpectedly exposed scheduled Linear sync"
+printf '%s\n' "$SHA_LINEAR_A" > "$LAUNCH_PRODUCT/factory/KIT_PIN"
+write_active "$SHA_LINEAR_A" "$TREE_LINEAR_A" "$RELEASE_LINEAR_A"
+run_launcher launchtest linear-sync
+[[ "$(<"$LAUNCH_PRODUCT/factory/linear-release.txt")" == "RELEASE-LINEAR-A" ]] ||
+  fail "scheduled Linear sync did not select Linear release A"
+run_launcher launchtest doctor --json > "$TMP/linear-doctor.json"
+python3 - "$TMP/linear-doctor.json" <<'PY'
+import json, sys
+service = json.load(open(sys.argv[1], encoding="utf-8"))["checks"]["linear_sync"]["service"]
+assert service["status"] == "ok"
+assert service["state"] == "enabled"
+assert service["loaded"] is True
+assert service["arguments_match"] is True
+PY
+python3 - "$LAUNCH_PRODUCT/factory/linear-helper.env" <<'PY'
+import pathlib, sys
+names = set(pathlib.Path(sys.argv[1]).read_text().splitlines())
+required = {"FACTORY_ROOT", "HOME", "PATH", "TMPDIR"}
+assert required <= names, names
+platform = {
+    "CPATH", "LC_CTYPE", "LIBRARY_PATH", "MANPATH", "SDKROOT",
+    "__CF_USER_TEXT_ENCODING",
+}
+assert not names - required - platform, names
+PY
+LINEAR_ARGUMENT_RC=0
+run_launcher launchtest linear-sync --factory-root "$TMP/bypass" \
+  > "$TMP/linear-arguments.out" 2>&1 || LINEAR_ARGUMENT_RC=$?
+[[ "$LINEAR_ARGUMENT_RC" -eq 2 ]] || fail "scheduled Linear sync accepted caller arguments"
+printf '%s\n' "$SHA_LINEAR_B" > "$LAUNCH_PRODUCT/factory/KIT_PIN"
+write_active "$SHA_LINEAR_B" "$TREE_LINEAR_B" "$RELEASE_LINEAR_B"
+run_launcher launchtest linear-sync
+[[ "$(<"$LAUNCH_PRODUCT/factory/linear-release.txt")" == "RELEASE-LINEAR-B" ]] ||
+  fail "scheduled Linear sync did not follow the active Linear release switch"
+printf '%s\n' "$SHA_LINEAR_A" > "$LAUNCH_PRODUCT/factory/KIT_PIN"
+write_active "$SHA_LINEAR_A" "$TREE_LINEAR_A" "$RELEASE_LINEAR_A"
+run_launcher launchtest linear-sync
+[[ "$(<"$LAUNCH_PRODUCT/factory/linear-release.txt")" == "RELEASE-LINEAR-A" ]] ||
+  fail "scheduled Linear sync did not follow the active Linear release rollback"
+[[ "$(cksum "$LAUNCHTEST_LINEAR_PLIST")" == "$LAUNCHTEST_LINEAR_PLIST_BEFORE" ]] ||
+  fail "active release switches rewrote the stable Linear plist"
+printf '%s\n' "$SHA_A" > "$LAUNCH_PRODUCT/factory/KIT_PIN"
+write_active "$SHA_A" "$TREE_A" "$RELEASE_A"
 
 run_launcher launchtest preflight --ticket T-123 --json > "$TMP/preflight-a.json"
 run_launcher launchtest next-stage --ticket T-123 --json > "$TMP/next-a.json"
@@ -1552,6 +1782,8 @@ model_readiness = data["checks"]["model_readiness"]
 assert model_readiness["status"] == "ok"
 assert model_readiness["report"]["status"] == "ready"
 assert model_readiness["report"]["profile_id"] == "cursor-opus-v1"
+assert data["checks"]["linear_sync"]["service"]["status"] == "not_applicable"
+assert data["checks"]["linear_sync"]["service"]["arguments_match"] is False
 PY
 assert_no_secret "$TMP/launcher-doctor.json"
 DOCTOR_HELPER_ENV="$LAUNCH_PRODUCT/factory/doctor-helper.env"
@@ -1733,6 +1965,8 @@ python3 - "$TMP/launcher-contract-v11.json" "$TMP/launcher-doctor-v11.json" \
 import json, sys
 for path in sys.argv[1:]:
     assert json.load(open(path, encoding="utf-8"))["contract_version"] == "1.1.0"
+doctor = json.load(open(sys.argv[2], encoding="utf-8"))
+assert doctor["checks"]["linear_sync"]["service"]["status"] == "not_applicable"
 PY
 
 printf '%s\n' "$SHA_B" > "$LAUNCH_PRODUCT/factory/KIT_PIN"
@@ -1938,7 +2172,6 @@ assert data["output"] == "PREFLIGHT RELEASE-A\n"
 PY
 
 # Close-out reorder runs only in a physical worktree for the registered product.
-git -C "$LAUNCH_PRODUCT" init -b main >/dev/null 2>&1
 git -C "$LAUNCH_PRODUCT" config user.email "hermes-contract@test.local"
 git -C "$LAUNCH_PRODUCT" config user.name "hermes-contract-test"
 printf 'launcher worktree fixture\n' > "$LAUNCH_PRODUCT/README.md"
@@ -1961,9 +2194,6 @@ EOF
 printf '%s\n' 'TICKET_BRANCH_PREFIX=ticket/' > "$LAUNCH_PRODUCT/factory/PROJECT.env"
 git -C "$LAUNCH_PRODUCT" add -A
 git -C "$LAUNCH_PRODUCT" commit -qm "seed launcher worktree"
-LAUNCH_PRODUCT_REMOTE="$TMP/launch-product.git"
-git init --bare -q "$LAUNCH_PRODUCT_REMOTE"
-git -C "$LAUNCH_PRODUCT" remote add origin "$LAUNCH_PRODUCT_REMOTE"
 git -C "$LAUNCH_PRODUCT" push -q -u origin main
 
 # Contract 1.8 exposes a read-only watch over only this project's production
@@ -3373,6 +3603,9 @@ assert ticket_pr["minimum_contract_version"] == "1.6.0"
 assert ticket_pr["output_schema"] == "nysa.software-factory.ticket-pr/v1"
 assert commands["contract"]["arguments"] == ["--json"]
 assert commands["doctor"]["output_schema"] == contract["doctor_schema"]
+assert commands["linear-sync"]["arguments"] == []
+assert commands["linear-sync"]["contract_version"] == "1.8.0"
+assert commands["linear-sync"]["helper"] == "scripts/linear-sync.py"
 assert commands["models"]["minimum_contract_version"] == "1.2.0"
 assert commands["models"]["helper"] == "scripts/model-control.sh"
 assert commands["models"]["grammars"] == [
@@ -3677,6 +3910,7 @@ for surface in [
     "scripts/ci-rerun.py",
     "scripts/ticket-readiness.py",
     "scripts/launchd/com.factory.controller.plist.template",
+    "scripts/launchd/com.factory.linear-sync.plist.template",
     "scripts/provider-coordinator.py",
     "scripts/provider-cli-runtime.py",
     "scripts/provider-credential-broker.py",
@@ -3692,6 +3926,7 @@ for surface in [
     "worker/image-lock.json",
     "worker/provider-worker.mjs",
     "scripts/model-control.sh",
+    "scripts/linear-sync-service.py",
     "scripts/model-manager.py",
     "scripts/model-router.py",
     "scripts/lib/backend-policy.sh",
@@ -3722,6 +3957,8 @@ assert 'WORKTREE_PARENT="$KITS_ROOT/worktrees"' in launcher_text
 assert '"FACTORY_CLI_LANE_ROOT=$QUALIFICATION_ROOT"' in launcher_text
 assert 'KIT_TRUST_SCOPE="qualification-candidate"' in launcher_text
 assert '"FACTORY_KIT_TRUST_SCOPE=$KIT_TRUST_SCOPE"' in launcher_text
+assert '"FACTORY_ROOT=$PRODUCT_ROOT"' in launcher_text
+assert '"$PYTHON_BIN" -I -S "$LINEAR_SYNC"' in launcher_text
 assert '"FACTORY_QUALIFICATION_MANIFEST=$PRODUCT_ROOT/factory/QUALIFICATION.json"' in launcher_text
 assert '"FACTORY_QUALIFICATION_PRODUCT_SHA=$ACTIVE_PRODUCT_SHA"' in launcher_text
 assert '"FACTORY_QUALIFICATION_PRODUCT_TREE=$ACTIVE_PRODUCT_TREE"' in launcher_text
@@ -3967,6 +4204,21 @@ for relative in [
     assert not any(re.search(r"key|token|secret|password|url|dsn|conn|auth", key, re.I) for key in env)
 assert labels == ["com.nysa.hermes-factory-gateway", "com.nysa.hermes-dashboard"]
 assert len(set(labels)) == 2
+
+linear_template = pathlib.Path(root, "scripts/launchd/com.factory.linear-sync.plist.template")
+linear_text = linear_template.read_text(encoding="utf-8")
+linear = plistlib.loads(
+    linear_text.replace("__HOME__", "/Users/test")
+    .replace("__PROJECT_SLUG__", "alpha")
+    .replace("__FACTORY_ROOT__", "/product")
+    .encode()
+)
+assert linear["ProgramArguments"] == [
+    "/Users/test/.factory/bin/factory-launch", "alpha", "linear-sync"
+]
+assert "__KIT_DIR__" not in linear_text
 PY
+
+python3 "$ROOT/ci/linear-sync-service-test.py"
 
 echo "hermes-contract-test: all cases passed"
