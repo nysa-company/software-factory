@@ -222,15 +222,21 @@ def probe_candidate(name: str, source: Path, factory_bin: Path) -> dict[str, str
         ):
             raise PinError(f"{name} version probe is invalid")
         version = parsed_version(name, lines[0])
-        _, help_output = probe([str(resolved), *TOOLS[name]["help"]], env)
-        help_text = help_output.decode(errors="replace")
+        help_stdout, help_all = probe([str(resolved), *TOOLS[name]["help"]], env)
+        # The flag contract is searched across the whole output so a tool that
+        # documents on stderr still satisfies it, but the recorded digest covers
+        # stdout alone. Merged output is not reproducible: codex's stderr
+        # warning embeds the randomly named temporary directory this probe
+        # creates, so a merged digest changed on every run and no planned
+        # approval hash could ever match at apply time.
+        help_text = help_all.decode(errors="replace")
         if any(
             re.search(rf"(?<![A-Za-z0-9_-]){re.escape(flag)}(?![A-Za-z0-9_-])", help_text) is None
             for flag in TOOLS[name]["flags"]
         ):
             raise PinError(f"{name} contract probe failed")
     return {
-        "executable_sha256": binary_hash, "help_sha256": sha256(help_output),
+        "executable_sha256": binary_hash, "help_sha256": sha256(help_stdout),
         "link_target": str(resolved), "name": name, "physical_path": str(resolved),
         "pin_key": TOOLS[name]["pin"], "version": version,
     }
