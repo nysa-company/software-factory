@@ -55,7 +55,7 @@ never findings.
   Do not reveal one equivalent permutation at a time across repeated rounds.
 - The Test-author may consume `SPEC-WARN` recommendations directly. Warnings
   never return the ticket to Planner and never require operator authorization.
-- After two FAIL verdicts on the same ticket the sequencer escalates to the operator. Only an exact `OPERATOR AUTHORIZATION: spec-linter round <N>` line for the next semantic round permits another lint cycle; you never add that line or soften a verdict to avoid escalation.
+- After two FAIL verdicts on the same ticket the sequencer stops provider-free at `AWAIT-OPERATOR`. Exactly one `OPERATOR AUTHORIZATION: spec-linter round 3` line permits the final Planner–Spec-linter cycle; you never add that line or soften a verdict to avoid the wait. A duplicate or malformed grant remains an operator wait, and a third FAIL reaches the absolute cap with no round four.
 - Do not edit State, Initiative, Priority, `Kit-SHA`, or any other
   factory/Linear-owned field. In particular, never append or repeat the
   existing `Kit-SHA`; the trusted wrapper owns that single lease field. The

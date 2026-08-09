@@ -105,6 +105,79 @@ class OperatorEventWatchTest(unittest.TestCase):
         self.assertEqual(repeated.returncode, 0, repeated.stderr)
         self.assertEqual(repeated.stdout, "")
 
+    def test_semantic_round_wait_projects_the_exact_operator_action(self) -> None:
+        question = (
+            "Append exactly `OPERATOR AUTHORIZATION: spec-linter round 3` "
+            "to the ticket."
+        )
+        self.write(self.source(
+            "semantic_round_authorization_wait", head_sha="a" * 40,
+            role="spec-linter",
+            semantic_round=3,
+            transition_receipt_sha256="b" * 64,
+        ))
+        result = self.run_watch("--limit", "1", "--idle-timeout-seconds", "1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        event = json.loads(result.stdout)
+        self.assertEqual(event["action"], "semantic_round_authorization")
+        self.assertEqual(event["reason"], "semantic_round_authorization_required")
+        self.assertEqual(event["question"], question)
+        self.assertEqual(event["role"], "spec-linter")
+
+        self.write(self.source(
+            "semantic_round_authorization_invalid", head_sha="c" * 40,
+            reason_code="authorization_content_invalid", role="spec-linter",
+            semantic_round=3, transition_receipt_sha256="d" * 64,
+        ))
+        invalid_result = self.run_watch(
+            "--cursor", event["cursor"], "--limit", "1",
+            "--idle-timeout-seconds", "1",
+        )
+        self.assertEqual(
+            invalid_result.returncode, 0, invalid_result.stderr,
+        )
+        projected = json.loads(invalid_result.stdout)
+        self.assertEqual(
+            projected["reason"], "semantic_round_authorization_invalid",
+        )
+        self.assertIn("keep exactly one final", projected["question"])
+
+        questions = {
+            "authorization_count_invalid": "Create and push",
+            "branch_invalid": "Restore the recorded ticket branch",
+            "commit_not_pushed": "Push the exact ticket-only",
+            "dirty_uncommitted": "Commit or discard",
+            "remote_moved": "Reconcile the ticket branch",
+        }
+        for reason_code, wording in questions.items():
+            with self.subTest(reason_code=reason_code):
+                source = self.source(
+                    "semantic_round_authorization_invalid",
+                    head_sha="e" * 40, reason_code=reason_code,
+                    role="spec-linter", semantic_round=3,
+                    transition_receipt_sha256="f" * 64,
+                )
+                action = WATCH.action_event(
+                    source, self.state, "relay", "1-a.json",
+                )
+                self.assertIn(wording, action["question"])
+                if reason_code == "authorization_count_invalid":
+                    self.assertIn(
+                        "OPERATOR AUTHORIZATION: spec-linter round 3",
+                        action["question"],
+                    )
+
+        invalid = self.source(
+            "semantic_round_authorization_wait", head_sha="a" * 40,
+            role="spec-linter",
+            semantic_round=4,
+            transition_receipt_sha256="b" * 64,
+        )
+        with self.assertRaisesRegex(
+            WATCH.WatchError, "semantic-round authorization context is invalid",
+        ):
+            WATCH.action_event(invalid, self.state, "relay", "1-a.json")
+
     def test_action_context_fields_are_type_checked(self) -> None:
         def complete():
             return self.source(
