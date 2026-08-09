@@ -8949,7 +8949,7 @@ class FactoryControllerTest(unittest.TestCase):
             extra_path: bool = False, extra_ticket: bool = False,
             failures: int = 2, merge: bool = False, push: bool = True,
             route_migration: bool = False, post_auth_extra: bool = False,
-            blank_separator: bool = False,
+            blank_separator: bool = False, wrong_route_author: bool = False,
         ):
             root = self.root / name
             cell = root / "cell"
@@ -9113,17 +9113,19 @@ class FactoryControllerTest(unittest.TestCase):
                 )
                 new_route_value = {
                     "kit_sha": self.release.name,
-                    "revisions": [{
-                        "body": {
+                    "revisions": [{"body": {
                             "kind": "migration",
                             "legacy_plan_b64": base64.b64encode(
                                 old_route_raw
                             ).decode(),
                             "legacy_plan_sha256": old_route,
+                            "new_kit_sha": source_factory,
+                            "old_kit_sha": source_factory,
+                        }}, {"body": {
+                            "kind": "release-migration",
                             "new_kit_sha": self.release.name,
                             "old_kit_sha": source_factory,
-                        }
-                    }],
+                        }}],
                     "schema": "ticket-model-route-journal/v2",
                     "ticket": "T-198",
                 }
@@ -9136,7 +9138,17 @@ class FactoryControllerTest(unittest.TestCase):
                     check=True,
                 )
                 subprocess.run(
-                    ["git", "-C", str(cell), "commit", "-qm", "route migration"],
+                    [
+                        "git", "-C", str(cell),
+                        "-c", "user.name=" + (
+                            "Other" if wrong_route_author else "Software Factory"
+                        ),
+                        "-c", "user.email=" + (
+                            "other@example.invalid"
+                            if wrong_route_author else "factory@local"
+                        ),
+                        "commit", "-qm", "route migration",
+                    ],
                     check=True,
                 )
                 final_head = subprocess.run(
@@ -9622,6 +9634,12 @@ class FactoryControllerTest(unittest.TestCase):
             migrations += 1
             return after
 
+        model_calls = []
+        model_preview = {}
+        model_journal = {}
+        crash_before_route_push = [True]
+        crash_after_route_push = [True]
+
         def upgrade_call(*args, **_kwargs):
             if args[:2] == ("passport", "migrate"):
                 value = migrate_upgrade_passport()
@@ -9642,6 +9660,99 @@ class FactoryControllerTest(unittest.TestCase):
                 return {"passport": value["passport_sha256"], "status": "ok"}
             if args[0] == "renew":
                 return {}
+            if args[:2] == ("models", "migrate-plan"):
+                prior_route = upgrade.route_path(upgrade_claim).read_bytes()
+                prior_value = json.loads(prior_route)
+                model_journal.clear()
+                if prior_value.get("schema") == "ticket-model-route-plan/v1":
+                    model_journal.update({
+                        "kit_sha": self.release.name,
+                        "revisions": [{"body": {
+                            "kind": "migration",
+                            "legacy_plan_b64": base64.b64encode(
+                                prior_route
+                            ).decode(),
+                            "legacy_plan_sha256": hashlib.sha256(
+                                prior_route
+                            ).hexdigest(),
+                            "new_kit_sha": source_factory,
+                            "old_kit_sha": source_factory,
+                        }}, {"body": {
+                            "kind": "release-migration",
+                            "new_kit_sha": self.release.name,
+                            "old_kit_sha": source_factory,
+                        }}],
+                        "schema": "ticket-model-route-journal/v2",
+                        "ticket": "T-198",
+                    })
+                else:
+                    model_journal.update(prior_value)
+                preview_hash = hashlib.sha256(
+                    CONTROL.canonical(model_journal).encode()
+                ).hexdigest()
+                model_preview.clear()
+                model_preview.update({
+                    "journal_kit_sha": self.release.name,
+                    "journal_revision_count": 2,
+                    "journal_tail_sha256": "6" * 64,
+                    "preview_hash": preview_hash,
+                    "readiness_sha256": "7" * 64,
+                    "schema": "ticket-model-route-migration-preview/v1",
+                    "source_document_sha256": hashlib.sha256(
+                        prior_route
+                    ).hexdigest(),
+                    "ticket": "T-198",
+                })
+                model_calls.append("plan")
+                return dict(model_preview)
+            if args[:2] == ("models", "migrate"):
+                self.assertEqual(args[7], model_preview["preview_hash"])
+                self.assertEqual(args[9], model_preview["readiness_sha256"])
+                self.assertEqual(args[11], "release-upgrade")
+                if not upgrade.ticket_release_current(upgrade_claim):
+                    ticket = Path(upgrade_claim["worktree"]) / (
+                        "factory/tickets/T-198.md"
+                    )
+                    ticket.write_text(
+                        ticket.read_text(encoding="utf-8").replace(
+                            "Kit-SHA: " + source_factory,
+                            "Kit-SHA: " + self.release.name,
+                        ),
+                        encoding="utf-8",
+                    )
+                    upgrade.route_path(upgrade_claim).write_text(
+                        CONTROL.canonical(model_journal) + "\n",
+                        encoding="utf-8",
+                    )
+                    subprocess.run([
+                        "git", "-C", upgrade_claim["worktree"], "add", "--",
+                        "factory/tickets/T-198.md",
+                        "factory/route-plans/T-198.json",
+                    ], check=True)
+                    subprocess.run([
+                        "git", "-C", upgrade_claim["worktree"],
+                        "-c", "user.name=Software Factory",
+                        "-c", "user.email=factory@local", "commit", "-qm",
+                        "T-198: migrate model route journal",
+                    ], check=True)
+                commit = subprocess.run([
+                    "git", "-C", upgrade_claim["worktree"], "rev-parse", "HEAD",
+                ], text=True, capture_output=True, check=True).stdout.strip()
+                model_calls.append("apply")
+                if crash_before_route_push:
+                    crash_before_route_push.pop()
+                    raise CONTROL.ControllerError("migration push interrupted")
+                subprocess.run([
+                    "git", "-C", upgrade_claim["worktree"], "push", "-q",
+                    "origin", "HEAD:ticket/T-198",
+                ], check=True)
+                if crash_after_route_push:
+                    crash_after_route_push.pop()
+                    raise CONTROL.ControllerError("migration response lost")
+                return {
+                    **model_preview, "approved_by": "release-upgrade",
+                    "commit_sha": commit, "recovered": True,
+                }
             raise AssertionError(args)
 
         upgrade.json_call = upgrade_call
@@ -9668,57 +9779,84 @@ class FactoryControllerTest(unittest.TestCase):
         ]
         self.assertEqual(len(import_events), 1)
         import_events[0].unlink()
+        upgrade_claim.update(
+            blocked_reason="recovery-abandoned:release-upgrade",
+            lease_released=True,
+        )
+        upgrade_claim["recovery_attempt"] = {
+            "count": CONTROL.RECOVERY_ATTEMPT_LIMIT,
+            "factory_sha": self.release.name,
+            "input_sha256": "0" * 64,
+            "outcome_sha256": "5" * 64,
+            "phase": "abandoned", "recovery": "release-upgrade",
+            "retry_reason": "route-migration-required",
+            "retry_status": "blocked",
+        }
+        upgrade_claim["recovery_attempt"]["input_sha256"] = (
+            upgrade.recovery_input_sha256(upgrade_claim, "release-upgrade")
+        )
+        upgrade.save_claim(upgrade_claim)
         upgrade = CONTROL.Controller(argparse.Namespace(
             launcher=self.launcher, product_root=Path(upgrade_claim["worktree"]),
             project="relay", release_path=self.release,
             state_dir=upgrade.state,
         ))
         upgrade.json_call = upgrade_call
-        upgrade.recover_upgraded_claims([upgrade_claim])
+        upgrade.release_ticket_lease = lambda item: item.update(
+            lease_released=True,
+        )
+        with patch.object(CONTROL, "validate_route"):
+            upgrade.recover_each(
+                [upgrade_claim], upgrade.recover_upgraded_claims,
+                "release-upgrade",
+            )
         self.assertEqual(migrations, 1)
+        self.assertEqual(upgrade_claim["blocked_reason"], "recovery:release-upgrade")
+        self.assertEqual(model_calls, ["plan", "apply"])
+        local_after_crash = subprocess.run([
+            "git", "-C", upgrade_claim["worktree"], "rev-parse", "HEAD",
+        ], text=True, capture_output=True, check=True).stdout.strip()
+        remote_after_crash = subprocess.run([
+            "git", "-C", upgrade_claim["worktree"], "ls-remote", "origin",
+            "refs/heads/ticket/T-198",
+        ], text=True, capture_output=True, check=True).stdout.split()[0]
+        self.assertNotEqual(local_after_crash, remote_after_crash)
+        self.assertEqual(remote_after_crash, first_edge["head_sha"])
+        with patch.object(CONTROL, "validate_route"):
+            upgrade.recover_each(
+                [upgrade_claim], upgrade.recover_upgraded_claims,
+                "release-upgrade",
+            )
+        self.assertEqual(migrations, 1)
+        self.assertEqual(upgrade_claim["blocked_reason"], "recovery:release-upgrade")
+        self.assertEqual(
+            model_calls, ["plan", "apply", "plan", "apply"],
+        )
+        remote_after_push = subprocess.run([
+            "git", "-C", upgrade_claim["worktree"], "ls-remote", "origin",
+            "refs/heads/ticket/T-198",
+        ], text=True, capture_output=True, check=True).stdout.split()[0]
+        self.assertEqual(remote_after_push, local_after_crash)
+        with patch.object(CONTROL, "validate_route"):
+            upgrade.recover_each(
+                [upgrade_claim], upgrade.recover_upgraded_claims,
+                "release-upgrade",
+            )
+        self.assertEqual(migrations, 2)
+        self.assertEqual(
+            model_calls,
+            ["plan", "apply", "plan", "apply", "plan", "apply"],
+        )
+        self.assertEqual(len([
+            path for path in upgrade.events.glob("*.json")
+            if CONTROL.read(path).get("event")
+            == "stranded_route_upgrade_readmitted"
+        ]), 1)
         self.assertEqual(len([
             path for path in upgrade.events.glob("*.json")
             if CONTROL.read(path).get("event")
             == "semantic_round_authorization_imported_by_release_upgrade"
         ]), 1)
-
-        upgrade_ticket = Path(upgrade_claim["worktree"]) / "factory/tickets/T-198.md"
-        upgrade_route = upgrade.route_path(upgrade_claim)
-        prior_route = upgrade_route.read_bytes()
-        upgrade_ticket.write_text(
-            upgrade_ticket.read_text(encoding="utf-8").replace(
-                "Kit-SHA: " + source_factory, "Kit-SHA: " + self.release.name,
-            ),
-            encoding="utf-8",
-        )
-        route_value = {
-            "kit_sha": self.release.name,
-            "revisions": [{"body": {
-                "kind": "migration",
-                "legacy_plan_b64": base64.b64encode(prior_route).decode(),
-                "legacy_plan_sha256": hashlib.sha256(prior_route).hexdigest(),
-                "new_kit_sha": self.release.name,
-                "old_kit_sha": source_factory,
-            }}],
-            "schema": "ticket-model-route-journal/v2", "ticket": "T-198",
-        }
-        upgrade_route.write_text(
-            CONTROL.canonical(route_value) + "\n", encoding="utf-8",
-        )
-        subprocess.run(
-            ["git", "-C", upgrade_claim["worktree"], "add",
-             str(upgrade_ticket), str(upgrade_route)], check=True,
-        )
-        subprocess.run([
-            "git", "-C", upgrade_claim["worktree"], "-c", "user.name=Factory",
-            "-c", "user.email=factory@nysa.dev", "commit", "-qm", "route migrate",
-        ], check=True)
-        subprocess.run(
-            ["git", "-C", upgrade_claim["worktree"], "push", "-q", "origin", "HEAD"],
-            check=True,
-        )
-        upgrade.recover_upgraded_claims([upgrade_claim])
-        self.assertEqual(migrations, 2)
         self.assertEqual(upgrade_claim["status"], "blocked")
         self.assertNotIn("blocked_reason", upgrade_claim)
         with patch.object(CONTROL, "validate_route"):
@@ -9826,6 +9964,12 @@ class FactoryControllerTest(unittest.TestCase):
             "local-only": dict(
                 authorization=["OPERATOR AUTHORIZATION: spec-linter round 3"],
                 push=False, route_migration=True,
+            ),
+            "wrong-route-author": dict(
+                authorization=[
+                    "OPERATOR AUTHORIZATION: spec-linter round 3"
+                ],
+                route_migration=True, wrong_route_author=True,
             ),
             "post-auth-descendant": dict(
                 authorization=["OPERATOR AUTHORIZATION: spec-linter round 3"],

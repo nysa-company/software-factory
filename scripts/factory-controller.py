@@ -4827,6 +4827,8 @@ class Controller:
             self.save_claim(claim)
             return False
         if attempt["phase"] == "abandoned":
+            if self.readmit_stranded_route_upgrade(claim, name):
+                return False
             return True
         if attempt["phase"] == "abandoning":
             if attempt["recovery"] == name:
@@ -4840,6 +4842,86 @@ class Controller:
             else:
                 return True
         return bool(attempt and attempt["recovery"] != name)
+
+    def readmit_stranded_route_upgrade(
+        self, claim: dict[str, Any], name: str,
+    ) -> bool:
+        attempt = claim.get("recovery_attempt")
+        if (
+            name != "release-upgrade"
+            or not self.valid_recovery_attempt(attempt)
+            or attempt.get("phase") != "abandoned"
+            or attempt.get("count") != RECOVERY_ATTEMPT_LIMIT
+            or attempt.get("recovery") != name
+            or attempt.get("retry_reason") != "route-migration-required"
+            or attempt.get("retry_status") != "blocked"
+            or claim.get("status") != "blocked"
+            or claim.get("blocked_reason")
+            != "recovery-abandoned:release-upgrade"
+            or claim.get("lease_released") is not True
+            or claim.get("publication_lease")
+        ):
+            return False
+        pending = (
+            f"passport-route-migration-pending-{claim['ticket']}-"
+            f"{self.release_path.name}"
+        )
+        completed = (
+            f"passport-route-migration-complete-{claim['ticket']}-"
+            f"{self.release_path.name}"
+        )
+        try:
+            marker = read(self.state / f"{pending}.json")
+            terminal = self.terminal_for_receipt(
+                claim["ticket"], claim.get("receipt", ""),
+            )
+            passport = self.authenticated_operator_passport(claim["ticket"])
+            authorization = (
+                self.migrated_stranded_semantic_authorization(
+                    claim, terminal, passport,
+                )
+                if terminal is not None and passport is not None else None
+            )
+            remote_status, local_head, remote_head = (
+                self.remote_cell_head_status(claim)
+            )
+        except (
+            ControllerError, json.JSONDecodeError, OSError,
+            subprocess.SubprocessError, UnicodeError,
+        ):
+            return False
+        expected_marker = {
+            "factory_sha": self.release_path.name,
+            "schema": EVENT_SCHEMA,
+            "ticket": claim["ticket"],
+        }
+        route_ready = (
+            authorization is not None
+            and local_head != authorization
+            and self.ticket_release_current(claim)
+            and self.exact_route_migration_commit(
+                claim, authorization, local_head,
+            )
+        )
+        if (
+            marker != expected_marker
+            or (self.state / f"{completed}.json").exists()
+            or remote_status != "pushed"
+            or remote_head != local_head
+            or authorization is None
+            or local_head != authorization and not route_ready
+        ):
+            return False
+        claim.update(
+            status="blocked", blocked_reason="route-migration-required",
+        )
+        claim.pop("recovery_attempt")
+        self.save_claim(claim)
+        self.event_once(
+            "stranded_route_upgrade_readmitted", claim["ticket"],
+            authorization_head=authorization,
+        )
+        return True
 
     def recover_each(
         self,
@@ -5341,6 +5423,12 @@ class Controller:
                     pass
                 if not migrated_authorization:
                     self.quarantine_legacy_protected_mutation(claim, terminal)
+            if (
+                migrated_authorization
+                and claim.get("blocked_reason") == "recovery:release-upgrade"
+            ):
+                claim["blocked_reason"] = "route-migration-required"
+                self.save_claim(claim)
             prior = passport.get("factory_sha", "")
             if not SHA.fullmatch(prior):
                 raise ControllerError("blocked ticket passport has an invalid release")
@@ -5404,6 +5492,15 @@ class Controller:
                     ):
                         claim.pop("release_refresh_required", None)
                         self.save_claim(claim)
+            if (
+                migrated_authorization
+                and prior == self.release_path.name
+                and self.marker(pending)
+                and not migration_complete
+            ):
+                self.migrate_stranded_route_upgrade(
+                    claim, migrated_authorization, pending,
+                )
             if (
                 not self.ticket_release_current(claim)
                 and not merged_closeout
@@ -6008,6 +6105,9 @@ class Controller:
         route = self.cell_git(claim, "show", f"{after}:{route_path}")
         old_ticket = self.cell_git(claim, "show", f"{before}:{ticket_path}")
         ticket = self.cell_git(claim, "show", f"{after}:{ticket_path}")
+        author = self.cell_git(
+            claim, "show", "-s", "--format=%an%x00%ae", after,
+        )
         try:
             route_value = json.loads(route.stdout)
             validate_route(
@@ -6020,8 +6120,11 @@ class Controller:
         return (
             not any(item.returncode for item in (
                 parents, paths, modes, old_route, route, old_ticket, ticket,
+                author,
             ))
             and parents.stdout.split() == [after, before]
+            and author.stdout.rstrip("\n")
+            == "Software Factory\x00factory@local"
             and sorted(paths.stdout.splitlines())
             == sorted((ticket_path, route_path))
             and len(modes.stdout.splitlines()) == 2
@@ -6039,6 +6142,157 @@ class Controller:
                 rb"^Kit-SHA:\s*([0-9a-f]{40})\s*$", ticket_raw, re.M,
             ) == [route_value.get("kit_sha", "").encode()]
         )
+
+    def migrate_stranded_route_upgrade(
+        self, claim: dict[str, Any], authorization: str, pending: str,
+    ) -> str:
+        route_path = f"factory/route-plans/{claim['ticket']}.json"
+        ticket_path = f"factory/tickets/{claim['ticket']}.md"
+        authorized_route = self.cell_git(
+            claim, "show", f"{authorization}:{route_path}",
+        )
+        authorized_ticket = self.cell_git(
+            claim, "show", f"{authorization}:{ticket_path}",
+        )
+        local = self.cell_git(claim, "rev-parse", "HEAD")
+        local_head = local.stdout.strip()
+        before_status, observed_head, before_remote = (
+            self.remote_cell_head_status(claim)
+        )
+        replay = (
+            SHA.fullmatch(local_head) is not None
+            and local_head != authorization
+            and self.ticket_release_current(claim)
+            and self.exact_route_migration_commit(
+                claim, authorization, local_head,
+            )
+        )
+        if local_head == authorization:
+            source_route = authorized_route
+            expected_remote = (
+                before_status == "pushed"
+                and observed_head == before_remote == authorization
+            )
+        elif replay:
+            source_route = self.cell_git(
+                claim, "show", f"{local_head}:{route_path}",
+            )
+            expected_remote = (
+                before_status == "resume_commit_not_pushed"
+                and observed_head == local_head
+                and before_remote == authorization
+                or before_status == "pushed"
+                and observed_head == before_remote == local_head
+            )
+        else:
+            raise ControllerError("stranded route migration source is invalid")
+        try:
+            route = json.loads(source_route.stdout)
+            authorized = json.loads(authorized_route.stdout)
+            marker = read(self.state / f"{pending}.json")
+        except (json.JSONDecodeError, OSError, UnicodeError) as error:
+            raise ControllerError(
+                "stranded route migration source is invalid"
+            ) from error
+        if not isinstance(route, dict) or not isinstance(authorized, dict):
+            raise ControllerError("stranded route migration source is invalid")
+        revisions = route.get("revisions")
+        if not replay and route.get("schema") == "ticket-model-route-plan/v1":
+            revision_count = 2
+        elif (
+            route.get("schema") == "ticket-model-route-journal/v2"
+            and isinstance(revisions, list) and revisions
+        ):
+            revision_count = len(revisions) if replay else len(revisions) + 1
+        else:
+            raise ControllerError("stranded route migration source is invalid")
+        source_raw = source_route.stdout.encode()
+        expected_marker = {
+            "factory_sha": self.release_path.name,
+            "schema": EVENT_SCHEMA,
+            "ticket": claim["ticket"],
+        }
+        if (
+            local.returncode
+            or not expected_remote
+            or source_route.returncode
+            or authorized_route.returncode
+            or authorized_ticket.returncode
+            or not SHA.fullmatch(authorization)
+            or authorized.get("ticket") != claim["ticket"]
+            or authorized.get("kit_sha") != T198_FACTORY_SHA
+            or route.get("ticket") != claim["ticket"]
+            or route.get("kit_sha")
+            != (self.release_path.name if replay else T198_FACTORY_SHA)
+            or re.findall(
+                r"^Kit-SHA:\s*([0-9a-f]{40})\s*$",
+                authorized_ticket.stdout, re.M,
+            ) != [T198_FACTORY_SHA]
+            or marker != expected_marker
+        ):
+            raise ControllerError("stranded route migration source is invalid")
+        preview = self.json_call(
+            "models", "migrate-plan", "--ticket", claim["ticket"],
+            "--workdir", claim["worktree"], "--json", timeout=None,
+        )
+        preview_keys = {
+            "journal_kit_sha", "journal_revision_count",
+            "journal_tail_sha256", "preview_hash", "readiness_sha256",
+            "schema", "source_document_sha256", "ticket",
+        }
+        if (
+            set(preview) != preview_keys
+            or preview.get("schema")
+            != "ticket-model-route-migration-preview/v1"
+            or preview.get("ticket") != claim["ticket"]
+            or preview.get("journal_kit_sha") != self.release_path.name
+            or preview.get("journal_revision_count") != revision_count
+            or preview.get("source_document_sha256")
+            != hashlib.sha256(source_raw).hexdigest()
+            or any(
+                DIGEST.fullmatch(preview.get(key, "")) is None
+                for key in (
+                    "journal_tail_sha256", "preview_hash",
+                    "readiness_sha256", "source_document_sha256",
+                )
+            )
+        ):
+            raise ControllerError(
+                "stranded route migration preview is invalid"
+            )
+        result = self.json_call(
+            "models", "migrate", "--ticket", claim["ticket"],
+            "--workdir", claim["worktree"],
+            "--approve-hash", preview["preview_hash"],
+            "--readiness-hash", preview["readiness_sha256"],
+            "--approved-by", "release-upgrade", "--json", timeout=None,
+        )
+        result_keys = preview_keys | {"approved_by", "commit_sha"}
+        if result.get("recovered") is True:
+            result_keys.add("recovered")
+        commit = result.get("commit_sha", "")
+        status, local_head, remote_head = self.remote_cell_head_status(claim)
+        if (
+            set(result) != result_keys
+            or any(result.get(key) != value for key, value in preview.items())
+            or result.get("approved_by") != "release-upgrade"
+            or not SHA.fullmatch(commit)
+            or status != "pushed"
+            or local_head != remote_head
+            or commit != local_head
+            or not self.ticket_release_current(claim)
+            or not self.exact_route_migration_commit(
+                claim, authorization, commit,
+            )
+        ):
+            raise ControllerError("stranded route migration result is invalid")
+        self.event_once(
+            "stranded_route_migrated_by_release_upgrade", claim["ticket"],
+            authorization_head=authorization, migration_head=commit,
+            preview_hash=preview["preview_hash"],
+            readiness_sha256=preview["readiness_sha256"],
+        )
+        return commit
 
     def recover_semantic_authorizations(
         self, claims: list[dict[str, Any]],

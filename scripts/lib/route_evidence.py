@@ -80,17 +80,35 @@ def journal_extends(before: bytes, after: bytes) -> bool:
         return False
     if prior.get("schema") == "ticket-model-route-plan/v1":
         try:
-            body = revisions[0]["body"]
-            embedded = base64.b64decode(body["legacy_plan_b64"], validate=True)
-        except (KeyError, TypeError, ValueError):
+            legacy = revisions[0]["body"]
+            embedded = base64.b64decode(
+                legacy["legacy_plan_b64"], validate=True,
+            )
+        except (IndexError, KeyError, TypeError, ValueError):
+            return False
+        legacy_valid = (
+            legacy.get("kind") == "migration"
+            and embedded == before
+            and legacy.get("legacy_plan_sha256")
+            == hashlib.sha256(before).hexdigest()
+            and legacy.get("old_kit_sha") == prior.get("kit_sha")
+        )
+        if len(revisions) == 1:
+            return (
+                legacy_valid
+                and legacy.get("new_kit_sha") == current.get("kit_sha")
+            )
+        try:
+            release = revisions[1]["body"]
+        except (IndexError, KeyError, TypeError):
             return False
         return (
-            body.get("kind") == "migration"
-            and embedded == before
-            and body.get("legacy_plan_sha256") == hashlib.sha256(before).hexdigest()
-            and body.get("old_kit_sha") == prior.get("kit_sha")
-            and body.get("new_kit_sha") == current.get("kit_sha")
-            and len(revisions) == 1
+            len(revisions) == 2
+            and legacy_valid
+            and legacy.get("new_kit_sha") == prior.get("kit_sha")
+            and release.get("kind") == "release-migration"
+            and release.get("old_kit_sha") == prior.get("kit_sha")
+            and release.get("new_kit_sha") == current.get("kit_sha")
         )
     prior_revisions = prior.get("revisions")
     appended = revisions[-1].get("body", {}) if revisions else {}

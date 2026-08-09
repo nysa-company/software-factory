@@ -653,6 +653,13 @@ any route, family, effort, transport, account, or profile drift fails closed.
 Legacy v1 plans retain their exact encoded provenance and receive the same
 refreshed release-migration revision. Mutating migration refuses absent or
 changed readiness evidence.
+The one historical T-198 semantic-authorization recovery is different: its
+exact protected-main in-flight entry is the migration approval, and the
+controller consumes it through the same sealed plan/apply writer. Do not edit
+its abandoned claim, passport, ticket, or route journal. A repaired release
+must readmit the exact occurrence, push the authenticated two-path migration,
+and append the second passport edge; every other in-flight ticket keeps the
+manual preview and operator-approval procedure above.
 It also revalidates the selected ticket against the same protected authorization
 used by activation and refuses protected-main, remote-head, state, branch,
 repository, or kit drift before writing. A retry is idempotent only for the
