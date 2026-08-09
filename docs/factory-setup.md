@@ -80,7 +80,15 @@ Set up the shared Software Factory team per `docs/workflows/linear.md`: compact 
 Run `scripts/linear-sync.py --factory-root <product-repo> --setup` once to create or verify the team, states, labels, and Projects. Install the per-product job from `scripts/launchd/com.factory.linear-sync.plist.template` to reconcile every three minutes. Linear owns operator priority, Ready, approval, unblock, and Project membership; Git owns execution details. The reconciler is asynchronous so Linear never sits in the sequencer control path. Mint the Linear API key (`~/.hermes/secrets/linear-api-key`) from the on-call operator's own account, since that's the account Linear auto-assigns and notifies on Awaiting Approval and Blocked-Escalated tickets.
 
 Fresh-map recovery adopts only Projects with one durable initiative identity and
-fails on ambiguity or an unidentified same-name Project. For a new selected
+fails on ambiguity or an unidentified same-name Project. A pre-marker mapped
+Project is backfilled only when its exact ID still exists, its team and
+Git-owned name match, it has no marker-like line, no other Project carries the
+initiative marker, and an immediate re-read is unchanged. The update prepends
+the marker without changing prior content and is never retried in the same
+sweep; a later sweep observes an update whose response was lost. Once the
+mapped marker exists, unmarked same-name duplicates warn in Doctor but are not
+mutated or allowed to redirect tickets. Project name and marker content are
+Factory-owned; operators retain Project status and target date. For a new selected
 ticket after setup, use `scripts/linear-sync.py --factory-root <product-repo>
 --ticket T-NNN --initialize`; qualification preparation invokes that bounded
 path for every selected ticket against its bound lane-local map. Fresh isolated

@@ -4907,3 +4907,21 @@ Doctor ignores only three observed retained-history forms: null-Factory
 hide a real incident. Every incident-bearing null identity and every broader
 legacy resolution shape remains fatal. This narrowly supersedes Decision 348's
 relevant-null rule only for those non-incident resolution records.
+
+## 2026-08-09 — Decision 355: Legacy Project identity repairs stay mapped and fail closed
+
+Category: Reliability
+
+Linear reconciliation may prepend one canonical initiative marker to an exact
+already-mapped legacy Project only when the inventory and immediate re-read
+agree on ID, team, Git-owned name, content, and update identity, no marker-like
+line exists, and no other Project carries that initiative marker. The update is
+not retried in the same sweep, its response must confirm the resulting Project,
+and an applied response timeout converges on the next inventory. Once the
+canonical mapped marker exists, unmarked same-name Projects are retained as a
+bounded nonblocking Doctor warning and never mutated or used for ticket
+projection; every wrong, malformed, duplicate, foreign, renamed, missing, or
+drifting identity remains a global fail-closed boundary.
+
+This #484 decision lands on protected main before the concurrent #476 branch;
+that branch's unmerged Decision 355 is renumbered to Decision 356 on rebase.

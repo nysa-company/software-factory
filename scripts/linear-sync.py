@@ -157,41 +157,50 @@ BANNER = (
 )
 PROJECT_MARKER = "Software-Factory-Initiative:"
 PROJECT_IDENTITY_SCHEMA = "nysa.software-factory.linear-project-identity-conflict/v1"
+PROJECT_MARKER_LINE = re.compile(
+    r"^[ \t]*software-factory-initiative(?:\s*:|\s|$).*$", re.IGNORECASE
+)
+
+
+def project_identity_record(initiative, reason, projects=(), project_ids=()):
+    candidates = {}
+    for project in projects:
+        project_id = project.get("id") if isinstance(project, dict) else None
+        if not isinstance(project_id, str) or not re.fullmatch(
+            r"[A-Za-z0-9-]{1,200}", project_id
+        ):
+            continue
+        project_url = project.get("url")
+        if not isinstance(project_url, str) or not re.fullmatch(
+            r"https://linear\.app/[^\s\x00-\x1f\x7f]+", project_url
+        ):
+            project_url = None
+        candidates[project_id] = {
+            "project_id": project_id,
+            "project_url": project_url,
+        }
+    for project_id in project_ids:
+        if isinstance(project_id, str) and re.fullmatch(
+            r"[A-Za-z0-9-]{1,200}", project_id
+        ):
+            candidates.setdefault(project_id, {
+                "project_id": project_id,
+                "project_url": None,
+            })
+    return {
+        "schema": PROJECT_IDENTITY_SCHEMA,
+        "initiative": initiative,
+        "reason": reason,
+        "candidates": [candidates[key] for key in sorted(candidates)],
+        "observed_at": utc_now(),
+    }
 
 
 class ProjectIdentityError(RuntimeError):
     def __init__(self, message, initiative, reason, projects=(), project_ids=()):
-        candidates = {}
-        for project in projects:
-            project_id = project.get("id") if isinstance(project, dict) else None
-            if not isinstance(project_id, str) or not re.fullmatch(
-                r"[A-Za-z0-9-]{1,200}", project_id
-            ):
-                continue
-            project_url = project.get("url")
-            if not isinstance(project_url, str) or not re.fullmatch(
-                r"https://linear\.app/[^\s\x00-\x1f\x7f]+", project_url
-            ):
-                project_url = None
-            candidates[project_id] = {
-                "project_id": project_id,
-                "project_url": project_url,
-            }
-        for project_id in project_ids:
-            if isinstance(project_id, str) and re.fullmatch(
-                r"[A-Za-z0-9-]{1,200}", project_id
-            ):
-                candidates.setdefault(project_id, {
-                    "project_id": project_id,
-                    "project_url": None,
-                })
-        self.conflict = {
-            "schema": PROJECT_IDENTITY_SCHEMA,
-            "initiative": initiative,
-            "reason": reason,
-            "candidates": [candidates[key] for key in sorted(candidates)],
-            "observed_at": utc_now(),
-        }
+        self.conflict = project_identity_record(
+            initiative, reason, projects, project_ids
+        )
         super().__init__(message)
 
 
@@ -796,6 +805,10 @@ def record_failure(map_path, mapping, error, clear_tickets=None):
             {"project_identity_conflict": conflict}
             if isinstance(conflict, dict) else {}
         ),
+        **(
+            {"project_identity_warnings": health["project_identity_warnings"]}
+            if isinstance(health.get("project_identity_warnings"), list) else {}
+        ),
     }
     save_map(map_path, mapping, clear_tickets=clear_tickets)
 
@@ -1076,6 +1089,29 @@ def setup(key, mapping, map_path, dry=False):
     log("setup complete" if not dry else "DRY setup inspection complete")
 
 
+def project_marker_shape(project):
+    lines = [
+        line for line in str(project.get("content") or "").splitlines()
+        if PROJECT_MARKER_LINE.fullmatch(line)
+    ]
+    identities = []
+    for line in lines:
+        match = re.fullmatch(
+            rf"{re.escape(PROJECT_MARKER)}\s*(I-[0-9]+)\s*", line
+        )
+        if match:
+            identities.append(match.group(1))
+    return identities, len(lines)
+
+
+def project_team_ids(project):
+    return {
+        team.get("id")
+        for team in project.get("teams", {}).get("nodes", [])
+        if isinstance(team, dict)
+    }
+
+
 def ensure_projects(key, factory_dir, mapping, map_path, dry):
     initiatives_dir = factory_dir / "initiatives"
     initiatives = {
@@ -1091,7 +1127,7 @@ def ensure_projects(key, factory_dir, mapping, map_path, dry):
     page = gql(
         key,
         """query { projects(first: 250) {
-             nodes { id name url content targetDate status { name }
+             nodes { id name url content updatedAt targetDate status { name }
                      teams { nodes { id } } }
              pageInfo { hasNextPage }
            } }""",
@@ -1099,14 +1135,16 @@ def ensure_projects(key, factory_dir, mapping, map_path, dry):
     if page.get("pageInfo", {}).get("hasNextPage"):
         raise RuntimeError("Linear Project inventory is incomplete")
     projects = {item["id"]: item for item in page.get("nodes", [])}
-    identities = {}
+    marker_shapes = {
+        project_id: project_marker_shape(project)
+        for project_id, project in projects.items()
+    }
+    marker_identities = {}
     for project_id, project in projects.items():
-        marker = re.findall(
-            rf"^{re.escape(PROJECT_MARKER)}\s*(I-[0-9]+)\s*$",
-            project.get("content") or "", re.MULTILINE,
-        )
-        if len(marker) == 1:
-            identities.setdefault(project_id, set()).add(marker[0])
+        identities, marker_lines = marker_shapes[project_id]
+        if marker_lines == 1 and len(identities) == 1:
+            marker_identities[project_id] = {identities[0]}
+    identities = copy.deepcopy(marker_identities)
     if missing:
         title_initiatives = {}
         for path in sorted((factory_dir / "tickets").glob("T-*.md")):
@@ -1136,10 +1174,7 @@ def ensure_projects(key, factory_dir, mapping, map_path, dry):
                     matches,
                 )
             if matches:
-                if config["team_id"] not in {
-                    team.get("id")
-                    for team in matches[0].get("teams", {}).get("nodes", [])
-                }:
+                if config["team_id"] not in project_team_ids(matches[0]):
                     raise ProjectIdentityError(
                         f"{initiative_id}: durable Linear Project belongs to another team",
                         initiative_id,
@@ -1147,6 +1182,7 @@ def ensure_projects(key, factory_dir, mapping, map_path, dry):
                         matches,
                     )
                 candidates[initiative_id] = matches[0]
+    warnings = []
     for initiative_id, initiative in initiatives.items():
         entry = mapping["initiatives"].get(initiative_id)
         if entry is None:
@@ -1155,7 +1191,7 @@ def ensure_projects(key, factory_dir, mapping, map_path, dry):
                 mapping["initiatives"][initiative_id] = entry
         durable_matches = [
             project for project_id, project in projects.items()
-            if identities.get(project_id) == {initiative_id}
+            if marker_identities.get(project_id) == {initiative_id}
         ]
         if len(durable_matches) > 1:
             raise ProjectIdentityError(
@@ -1167,10 +1203,7 @@ def ensure_projects(key, factory_dir, mapping, map_path, dry):
         same_name = [
             item for item in projects.values()
             if item.get("name") == initiative["name"]
-            and config["team_id"] in {
-                team.get("id")
-                for team in item.get("teams", {}).get("nodes", [])
-            }
+            and config["team_id"] in project_team_ids(item)
         ]
         if entry.get("project_id"):
             project = projects.get(entry["project_id"])
@@ -1181,34 +1214,133 @@ def ensure_projects(key, factory_dir, mapping, map_path, dry):
                     "mapped_project_unavailable",
                     project_ids=[entry["project_id"]],
                 )
-            if config["team_id"] not in {
-                team.get("id")
-                for team in project.get("teams", {}).get("nodes", [])
-            }:
+            if config["team_id"] not in project_team_ids(project):
                 raise ProjectIdentityError(
                     f"{initiative_id}: mapped Linear Project belongs to another team",
                     initiative_id,
                     "mapped_project_foreign_team",
                     [project],
                 )
-            if identities.get(project["id"]) != {initiative_id}:
+            if project.get("name") != initiative["name"]:
+                raise ProjectIdentityError(
+                    f"{initiative_id}: mapped Linear Project name does not match Git",
+                    initiative_id,
+                    "mapped_project_name_mismatch",
+                    [project],
+                )
+            marker_ids, marker_lines = marker_shapes[project["id"]]
+            if marker_lines and not (
+                marker_lines == 1 and marker_ids == [initiative_id]
+            ):
                 raise ProjectIdentityError(
                     f"{initiative_id}: mapped Linear Project marker is invalid",
                     initiative_id,
                     "mapped_project_marker_invalid",
                     [project],
                 )
-            if (
-                any(item.get("id") != project.get("id") for item in same_name)
-                or durable_matches
-                and durable_matches[0].get("id") != project.get("id")
-            ):
+            other_marked = [
+                item for item in projects.values()
+                if item.get("id") != project.get("id")
+                and initiative_id in marker_shapes[item["id"]][0]
+            ]
+            if other_marked:
+                raise ProjectIdentityError(
+                    f"{initiative_id}: multiple durable Linear Project identities",
+                    initiative_id,
+                    "multiple_durable_identities",
+                    [project, *other_marked],
+                )
+            same_name_others = [
+                item for item in same_name if item.get("id") != project.get("id")
+            ]
+            marked_same_name = [
+                item for item in same_name_others
+                if marker_shapes[item["id"]][1]
+            ]
+            if marked_same_name:
                 raise ProjectIdentityError(
                     f"{initiative_id}: conflicting Linear Project identity",
                     initiative_id,
                     "conflicting_project_identity",
-                    [project, *same_name, *durable_matches],
+                    [project, *marked_same_name],
                 )
+            if marker_lines == 0:
+                desired_content = (
+                    f"{PROJECT_MARKER} {initiative_id}"
+                    + (
+                        f"\n\n{project['content']}"
+                        if project.get("content") not in (None, "") else ""
+                    )
+                )
+                if dry:
+                    log(f"{initiative_id}: DRY would backfill mapped Project identity")
+                    project = {**project, "content": desired_content}
+                else:
+                    current = gql(
+                        key,
+                        """query($id: String!) { project(id: $id) {
+                             id name url content updatedAt targetDate status { name }
+                             teams { nodes { id } }
+                           } }""",
+                        {"id": project["id"]},
+                    )["project"]
+                    if (
+                        not isinstance(current, dict)
+                        or not isinstance(project.get("updatedAt"), str)
+                        or any(
+                            current.get(field) != project.get(field)
+                            for field in ("id", "name", "content", "updatedAt")
+                        )
+                        or project_team_ids(current) != project_team_ids(project)
+                    ):
+                        raise ProjectIdentityError(
+                            f"{initiative_id}: mapped Linear Project changed before identity backfill",
+                            initiative_id,
+                            "mapped_project_changed_before_backfill",
+                            [project, current] if isinstance(current, dict) else [project],
+                        )
+                    desired_content = (
+                        f"{PROJECT_MARKER} {initiative_id}"
+                        + (
+                            f"\n\n{current['content']}"
+                            if current.get("content") not in (None, "") else ""
+                        )
+                    )
+                    result = gql(
+                        key,
+                        """mutation($id: String!, $input: ProjectUpdateInput!) {
+                             projectUpdate(id: $id, input: $input) {
+                               success
+                               project { id name url content updatedAt teams { nodes { id } } }
+                             }
+                           }""",
+                        {"id": project["id"], "input": {"content": desired_content}},
+                        retry_transient=False,
+                    )["projectUpdate"]
+                    updated = result.get("project") if isinstance(result, dict) else None
+                    if (
+                        not isinstance(result, dict)
+                        or result.get("success") is not True
+                        or not isinstance(updated, dict)
+                        or updated.get("id") != project["id"]
+                        or updated.get("name") != initiative["name"]
+                        or updated.get("content") != desired_content
+                        or not isinstance(updated.get("updatedAt"), str)
+                        or project_team_ids(updated) != project_team_ids(project)
+                    ):
+                        raise RuntimeError(
+                            f"{initiative_id}: mapped Linear Project identity backfill was not confirmed"
+                        )
+                    project = {**project, **updated}
+                    projects[project["id"]] = project
+                    log(f"{initiative_id}: backfilled mapped Project identity")
+                marker_shapes[project["id"]] = ([initiative_id], 1)
+            if same_name_others:
+                warnings.append(project_identity_record(
+                    initiative_id,
+                    "unmarked_same_name_project",
+                    [project, *same_name_others],
+                ))
             if project.get("url") and entry.get("project_url") != project["url"] and not dry:
                 entry["project_url"] = project["url"]
                 save_map(map_path, mapping)
@@ -1326,7 +1458,8 @@ def ensure_projects(key, factory_dir, mapping, map_path, dry):
             if view.get("slugId"):
                 entry["view_slug"] = view["slugId"]
             save_map(map_path, mapping)
-    return initiatives
+    warnings.sort(key=lambda warning: warning["initiative"])
+    return initiatives, warnings
 
 
 def fetch_issue(key, issue_id):
@@ -2389,7 +2522,9 @@ def reconcile(key, factory_dir, mapping, map_path, setup_only=False, dry=False):
         setup(key, mapping, map_path, dry)
         if dry and not mapping.get("_config"):
             return
-    ensure_projects(key, factory_dir, mapping, map_path, dry)
+    _initiatives, project_identity_warnings = ensure_projects(
+        key, factory_dir, mapping, map_path, dry
+    )
     if not setup_only:
         sync_tickets(key, factory_dir, mapping, map_path, dry)
     if not dry:
@@ -2399,6 +2534,10 @@ def reconcile(key, factory_dir, mapping, map_path, setup_only=False, dry=False):
             **(
                 {"last_rejected": previous_health["last_rejected"]}
                 if isinstance(previous_health.get("last_rejected"), dict) else {}
+            ),
+            **(
+                {"project_identity_warnings": project_identity_warnings}
+                if project_identity_warnings else {}
             ),
         }
         save_map(map_path, mapping, preserve_project_conflict=False)
