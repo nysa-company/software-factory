@@ -277,6 +277,48 @@ class DispatchPlanTest(unittest.TestCase):
         self.assertEqual(value["ticket"], "T-200")
         self.assertEqual(value["status"], "SHADOW")
 
+    def test_protected_canceled_ticket_cannot_be_resurrected_by_resume_overlay(self):
+        parked = self.worktrees / "parked/T-200"
+        parked.parent.mkdir()
+        run(
+            "git", "worktree", "add", "-q", "-b", "ticket/T-200",
+            str(parked), cwd=self.product,
+        )
+        branch_ticket = parked / "factory/tickets/T-200.md"
+        branch_ticket.write_text(
+            branch_ticket.read_text().replace("State: Ready", "State: Planning")
+        )
+        run("git", "add", str(branch_ticket), cwd=parked)
+        run("git", "commit", "-qm", "retain stale planning ticket", cwd=parked)
+        run("git", "push", "-qu", "origin", "ticket/T-200", cwd=parked)
+        branch_head = run("git", "rev-parse", "HEAD", cwd=parked).strip()
+        ticket = self.product / "factory/tickets/T-200.md"
+        ticket.write_text(ticket.read_text().replace("State: Ready", "State: Canceled"))
+        run("git", "add", str(ticket), cwd=self.product)
+        run("git", "commit", "-qm", "cancel ticket on protected main", cwd=self.product)
+        run("git", "push", "-q", "origin", "main", cwd=self.product)
+        self.write_mapping(states={"T-200": "Planning"})
+
+        value = self.command("claim")
+
+        self.assertEqual(value["ticket"], "T-100")
+        self.assertFalse(
+            (self.product / "factory/.dispatch-leases/T-200.json").exists()
+        )
+        self.assertEqual(run("git", "rev-parse", "HEAD", cwd=parked).strip(), branch_head)
+
+    def test_protected_done_ticket_cannot_be_resurrected_by_resume_overlay(self):
+        ticket = self.product / "factory/tickets/T-200.md"
+        ticket.write_text(ticket.read_text().replace("State: Ready", "State: Done"))
+        run("git", "add", str(ticket), cwd=self.product)
+        run("git", "commit", "-qm", "finish ticket on protected main", cwd=self.product)
+        run("git", "push", "-q", "origin", "main", cwd=self.product)
+        self.write_mapping(states={"T-200": "Planning"})
+
+        value = self.command("shadow")
+
+        self.assertEqual(value["ticket"], "T-100")
+
     def test_nonqualification_dispatch_waits_for_protected_dependency(self):
         ticket = self.product / "factory/tickets/T-200.md"
         ticket.write_text(ticket.read_text() + "Depends-On: T-300\n")
@@ -479,7 +521,9 @@ class DispatchPlanTest(unittest.TestCase):
 
     def test_stale_reconciliation_maintenance_and_dirty_root_refuse(self):
         self.write_mapping(age=601)
-        self.assertIn("stale", self.command("shadow", expected=2)["error"])
+        stale = self.command("shadow", expected=2)
+        self.assertIn("stale", stale["error"])
+        self.assertNotIn("ticket", stale)
         self.write_mapping()
         (self.product / "factory/MAINTENANCE").touch()
         self.assertIn("blocks dispatch", self.command("claim", expected=2)["error"])
@@ -515,6 +559,19 @@ class DispatchPlanTest(unittest.TestCase):
         (self.product / "factory/.dispatch-leases/T-200.json").unlink()
         value = self.command("claim", expected=2)
         self.assertIn("divergent or unpushed", value["error"])
+
+    def test_post_selection_refusal_names_the_selected_ticket(self):
+        outside = self.root / "parked/T-200"
+        outside.parent.mkdir()
+        run(
+            "git", "worktree", "add", "-q", "-b", "ticket/T-200",
+            str(outside), cwd=self.product,
+        )
+
+        value = self.command("claim", expected=2)
+
+        self.assertIn("outside a trusted cell", value["error"])
+        self.assertEqual(value["ticket"], "T-200")
 
     def test_authorized_control_only_remote_branch_rejoins_current_main(self):
         self.write_contract_18_qualification()

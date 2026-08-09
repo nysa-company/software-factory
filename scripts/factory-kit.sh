@@ -34,6 +34,8 @@ PREPARED_PRODUCT=""
 ISOLATED_HOME=""
 PRODUCT_CERTIFICATION_EVIDENCE=""
 PRODUCT_CERTIFICATION_EVIDENCE_DIGEST=""
+PRODUCT_CERTIFICATION_HOST_LOAD_START=""
+PRODUCT_CERTIFICATION_HOST_LOAD_END=""
 CERTIFICATION_CACHE_INPUT=""
 CERTIFICATION_CACHE_OUTPUT=""
 PROVIDER_CONCURRENCY_EVIDENCE=""
@@ -1830,19 +1832,38 @@ configure_phase_sandbox() {
   write_sandbox_profile "$SANDBOX_PROFILE" "$workspace" "$network_opt_in" "$@"
 }
 
+product_certification_host_load() {
+  python3 - <<'PY'
+import json, os, time
+try:
+    one, five, fifteen = (round(value, 6) for value in os.getloadavg())
+except OSError:
+    one = five = fifteen = None
+print(json.dumps({
+    "load_average_1m": one,
+    "load_average_5m": five,
+    "load_average_15m": fifteen,
+    "logical_cpu_count": max(1, os.cpu_count() or 1),
+    "observed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+}, sort_keys=True, separators=(",", ":")))
+PY
+}
+
 preserve_certification_failure() {
   local evidence="$1" redacted="$2" driver="$3" sha="$4" tree="$5"
   local driver_status="$6" status="$7" stage="$8" workspace="$9"
+  local load_start="${10}" load_end="${11}"
   local directory failure_id receipt
   directory="$RECEIPTS_DIR/failures"
   receipt="$workspace/certification-failure.json"
   safe_create_directory "$directory"
   python3 - "$evidence" "$redacted" "$driver" "$sha" "$tree" \
-    "$driver_status" "$status" "$stage" <<'PY' > "$receipt"
+    "$driver_status" "$status" "$stage" "$load_start" "$load_end" \
+    <<'PY' > "$receipt"
 import hashlib, json, pathlib, sys
 (
     evidence, output, driver, factory_sha, product_tree,
-    driver_status, certification_status, failure_stage,
+    driver_status, certification_status, failure_stage, load_start, load_end,
 ) = sys.argv[1:]
 evidence_path = pathlib.Path(evidence)
 evidence_raw = evidence_path.read_bytes() if evidence_path.is_file() else b""
@@ -1857,6 +1878,10 @@ except (UnicodeError, json.JSONDecodeError):
     result = None
 driver_exit_status = int(driver_status)
 certification_exit_status = int(certification_status)
+host_load = {
+    "end": json.loads(load_end),
+    "start": json.loads(load_start),
+}
 identity = {
     "certification_exit_status": certification_exit_status,
     "driver_exit_status": driver_exit_status,
@@ -1864,6 +1889,9 @@ identity = {
     "evidence_sha256": hashlib.sha256(evidence_raw).hexdigest(),
     "factory_sha": factory_sha,
     "failure_stage": failure_stage,
+    "host_load_sha256": hashlib.sha256(json.dumps(
+        host_load, sort_keys=True, separators=(",", ":")
+    ).encode()).hexdigest(),
     "product_output_sha256": hashlib.sha256(product_raw).hexdigest(),
     "product_tree": product_tree,
 }
@@ -1883,6 +1911,7 @@ body = {
     ),
     "failure_id": failure_id,
     "output_sha256": hashlib.sha256(raw_output).hexdigest(),
+    "product_certification_host_load": host_load,
     "redacted_output": displayed_text,
     "redacted_output_sha256": hashlib.sha256(displayed_text.encode()).hexdigest(),
     "result": result,
@@ -1923,6 +1952,8 @@ run_product_certification() {
   local cache_source driver_status=0 failure_stage network_opt_in deny_profile=""
   PRODUCT_CERTIFICATION_EVIDENCE=""
   PRODUCT_CERTIFICATION_EVIDENCE_DIGEST=""
+  PRODUCT_CERTIFICATION_HOST_LOAD_START=""
+  PRODUCT_CERTIFICATION_HOST_LOAD_END=""
   timeout="${FACTORY_KIT_CERTIFY_TIMEOUT_SECONDS:-900}"
   [[ "$timeout" =~ ^[0-9]+$ && "$timeout" -gt 0 ]] ||
     die "certification timeout must be positive"
@@ -1934,6 +1965,7 @@ run_product_certification() {
       "$real_product" "$real_release"
   fi
   : > "$raw"
+  PRODUCT_CERTIFICATION_HOST_LOAD_START="$(product_certification_host_load)"
   python3 - "$product_copy" "$script" "$sha" "$release_copy" "$workspace/home" \
     "$workspace/tmp" "$timeout" "$raw" "$SANDBOX_PROFILE" "$SANDBOX_EXEC" \
     "$SCRIPT_ROOT/scripts/lib/sandbox-ps.py" \
@@ -2072,6 +2104,7 @@ PY
       --product-sha "$product_git_sha" --product-tree "$product_git_tree" \
       --contract-version "$contract" --runtime-tuple "$runtime_tuple" || status=125
   fi
+  PRODUCT_CERTIFICATION_HOST_LOAD_END="$(product_certification_host_load)"
   redact_output "$raw" "$redacted"
   redact_output "$driver_raw" "$driver_redacted"
   rm -f "$raw"
@@ -2096,7 +2129,8 @@ PY
     preserve_certification_failure \
       "$evidence" "$redacted" "$driver_redacted" "$sha" \
       "$product_git_tree" "$driver_status" "$status" "$failure_stage" \
-      "$workspace"
+      "$workspace" "$PRODUCT_CERTIFICATION_HOST_LOAD_START" \
+      "$PRODUCT_CERTIFICATION_HOST_LOAD_END"
     awk '{print "  | " $0}' "$driver_redacted" "$redacted" >&2
     return "$status"
   fi
@@ -3336,7 +3370,8 @@ cmd_certify() {
     "$PRODUCT_CERTIFICATION_EVIDENCE" \
     "$PRODUCT_CERTIFICATION_EVIDENCE_DIGEST" \
     "$PROVIDER_CONCURRENCY_EVIDENCE" \
-    "$runtime_tuple" \
+    "$runtime_tuple" "$PRODUCT_CERTIFICATION_HOST_LOAD_START" \
+    "$PRODUCT_CERTIFICATION_HOST_LOAD_END" \
     <<'PY' | atomic_json_from_stdin "$receipt"
 import json, sys, time
 (slug, sha, kit_tree, kit_origin, product_path, product_origin, product_sha, product_tree,
@@ -3345,7 +3380,7 @@ import json, sys, time
  evidence_digest, evidence_created, evidence_expires, evidence_ttl,
  suite_definition, suite_reused, release, evidence_source,
  product_evidence_path, product_evidence_digest,
- provider_concurrency_evidence, runtime_tuple) = sys.argv[1:]
+ provider_concurrency_evidence, runtime_tuple, load_start, load_end) = sys.argv[1:]
 product_evidence = {"mode": "legacy"}
 if product_evidence_path:
     with open(product_evidence_path, encoding="utf-8") as stream:
@@ -3367,6 +3402,10 @@ value = {
     "product_origin": product_origin,
     "product_sha": product_sha,
     "product_tree": product_tree,
+    "product_certification_host_load": {
+        "end": json.loads(load_end),
+        "start": json.loads(load_start),
+    },
     "hashes": {
         "kit_pin": kit_pin_hash,
         "project_env": project_env_hash,

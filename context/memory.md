@@ -135,6 +135,11 @@ everything the Factory actually enforces lives here.
   after an absent withdrawal proves no ticket publication state remains.
   Qualification still requires Done and never counts Canceled as a successful
   target.
+- Dispatch reads the clean registered ticket's base State before applying the
+  Linear overlay. Done and Canceled remain inert after claim retirement even
+  with a stale resume overlay or retained branch; post-selection unsafe-state
+  evidence names the selected ticket without trusting or rewriting parked
+  worktrees.
 - Done is projected through one separate exact-ticket Linear mutation only
   after the closeout receipt validates on protected main. The issue is re-read
   as exact Done and one controller event is recorded before lease release;
@@ -4791,3 +4796,46 @@ aggregate `ci`, instead of repeating in every Linux group. Measured cost of the
 duplication was about five seconds per group, so this is a topology
 simplification, not a speed win. `ci/test-all.sh` also emits a `RUN:` line
 before each suite so a hung hosted group names the suite in flight.
+
+## 2026-08-08 — Decision 348: Doctor validates identity after relevance
+
+Category: Reliability
+
+Doctor authenticates every controller event's canonical digest, schema, and
+observation time before classification. It then ignores event types outside
+its contract-resume and transition-receipt projections; only relevant events
+must carry the current 40-hex Factory identity, ticket identity, and
+type-specific evidence. This keeps digest or envelope tampering fail-closed
+while allowing authenticated historical operational events with a legacy null
+Factory identity to remain outside those two reports. A null or malformed
+identity on a relevant event remains an error and never becomes an incident.
+
+## 2026-08-08 — Decision 349: Certification load is diagnostic only
+
+Category: Reliability
+
+Every passing or failing product-certification receipt records bounded host-load
+observations immediately before the product driver and after certification
+reaches its terminal driver/cache status: the 1-, 5-, and 15-minute averages,
+logical CPU count, and UTC observation time. The observation
+stays outside phase results and certification cache identity and does not change
+driver or final status or redaction. A failure identifier binds the observation
+digest so repeated otherwise identical null-result failures do not overwrite
+one another; the existing record hash continues to cover the complete receipt.
+
+Load is correlation evidence, not certification authority. The Factory does
+not warn, refuse, retry, serialize, widen network access, or infer a root cause
+from it. In particular, high load must not hide the independent same-boot
+loopback `EPERM` condition tracked by issue #465.
+
+## 2026-08-08 — Decision 350: Terminal base state outranks admission overlays
+
+Category: Trust boundary
+
+Dispatch evaluates the clean registered product ticket's committed base State
+before applying Linear-owned operator fields. Exact Done or Canceled base state
+is never a candidate, so claim retirement cannot be undone by a stale
+Blocked-Escalated resume overlay, retained branch, or parked worktree. The
+Factory does not broaden Linear cancellation, delete retained Git evidence, or
+trust parked paths. Once a candidate is selected, an unsafe-state refusal names
+that exact ticket; genuinely lane-scoped failures remain unscoped.

@@ -488,7 +488,6 @@ try:
         ).encode()
         if (digest != hashlib.sha256(canonical).hexdigest()
                 or value.get("schema") != "nysa.software-factory.controller-event/v1"
-                or not re.fullmatch(r"[0-9a-f]{40}", value.get("factory_sha", ""))
                 or not isinstance(value.get("observed_at_epoch_ns"), int)
                 or isinstance(value.get("observed_at_epoch_ns"), bool)
                 or value["observed_at_epoch_ns"] < 0):
@@ -504,8 +503,14 @@ try:
             and event not in transition_resolved
         ):
             continue
+        factory_sha = value.get("factory_sha")
         ticket = value.get("ticket")
-        if not isinstance(ticket, str) or not re.fullmatch(r"T-[0-9]+", ticket):
+        if (
+            not isinstance(factory_sha, str)
+            or not re.fullmatch(r"[0-9a-f]{40}", factory_sha)
+            or not isinstance(ticket, str)
+            or not re.fullmatch(r"T-[0-9]+", ticket)
+        ):
             raise ValueError
         if event == "contract_resume_refused":
             reason = value.get("reason_code")

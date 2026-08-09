@@ -1683,6 +1683,14 @@ the setup, product, phase, or post-driver cache boundary, and separate evidence
 and output digests. A pre-product driver failure retains a
 bounded redacted diagnostic and a nonempty fixed reason even when no product
 result exists; raw setup output is never persisted.
+Passing and failing product-certification receipts also retain bounded host-load
+observations from immediately before the product driver and after certification
+reaches its terminal driver/cache status: the 1-, 5-, and 15-minute load
+averages, logical CPU count, and UTC observation time. This
+is diagnostic context only. It does not enter phase or cache identity and never
+warns, refuses, retries, or reclassifies a certification result. A failed
+receipt binds the observation digest into its identifier, so repeated otherwise
+identical null-result failures retain distinct load evidence.
 On macOS the protected product wrapper only coordinates its disposable tree;
 each declared phase enters exactly one Factory-generated Seatbelt profile.
 Production requires both the external-network-denied and reviewed-network
@@ -1717,6 +1725,12 @@ release and still retires; malformed lease evidence or a failed publication or
 lease cleanup remains ticket-local and cannot stop sibling reconciliation.
 Malformed parked lease evidence is loaded only into the existing invalid-ticket
 quarantine and cannot enter recovery, admission, or scheduling.
+New admission checks the clean registered product ticket's base State before
+applying any Linear operator overlay. Done and Canceled tickets therefore stay
+inert after claim retirement even when a stale resume overlay or retained
+ticket branch still exists. A refusal after candidate selection reports that
+exact ticket; failures before selection remain lane-scoped. Parked worktrees
+and retained branches are neither trusted nor rewritten by this rule.
 Qualification continues to require Done for every selected
 target and does not count Canceled as completion.
 
