@@ -30,6 +30,13 @@ assert SPEC and SPEC.loader
 CONTROL = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(CONTROL)
 
+PASSPORT_SPEC = importlib.util.spec_from_file_location(
+    "ticket_passport_for_controller_test", ROOT / "scripts/ticket-passport.py"
+)
+assert PASSPORT_SPEC and PASSPORT_SPEC.loader
+PASSPORT = importlib.util.module_from_spec(PASSPORT_SPEC)
+PASSPORT_SPEC.loader.exec_module(PASSPORT)
+
 STATE_SPEC = importlib.util.spec_from_file_location(
     "state_machine_for_controller_test", ROOT / "scripts/state-machine.py"
 )
@@ -200,10 +207,10 @@ class FactoryControllerTest(unittest.TestCase):
             "stage": stage,
             "ticket": ticket,
         }
-        value["receipt_sha256"] = hashlib.sha256(CONTROL.canonical({
+        value["receipt_sha256"] = hashlib.sha256(STATE.canonical({
             key: item for key, item in value.items()
             if key not in {"consumed", "receipt_sha256"}
-        }).encode()).hexdigest()
+        })).hexdigest()
         CONTROL.write(self.state / f"{ticket}.json", value)
         return value["receipt_sha256"]
 
@@ -229,16 +236,31 @@ class FactoryControllerTest(unittest.TestCase):
         }
         if head_sha is not None:
             body["head_sha"] = head_sha
-        body["authentication_sha256"] = hmac.new(
-            key_path.read_bytes(), CONTROL.canonical(body).encode(), hashlib.sha256,
-        ).hexdigest()
-        body["passport_sha256"] = hashlib.sha256(
-            CONTROL.canonical(body).encode()
-        ).hexdigest()
+        body = PASSPORT.authenticate(body, key_path.read_bytes())
         passports = self.state / "passports"
         passports.mkdir(mode=0o700, exist_ok=True)
-        CONTROL.write(passports / f"{ticket}.json", body)
+        PASSPORT.write_atomic(passports / f"{ticket}.json", body)
         return body["passport_sha256"]
+
+    def test_operator_passport_accepts_writer_and_state_machine_wire_bytes(
+        self,
+    ) -> None:
+        ticket = "T-110"
+        digest = self.operator_passport(ticket, "Building", "none")
+        path = self.state / f"passports/{ticket}.json"
+        raw = path.read_bytes()
+
+        self.assertEqual(raw, PASSPORT.canonical(json.loads(raw)))
+        self.assertEqual(
+            CONTROL.Controller(self.args).authenticated_operator_passport(ticket)[
+                "passport_sha256"
+            ],
+            digest,
+        )
+        state_passport, _secret = STATE.authenticated_passport(
+            argparse.Namespace(state_dir=self.state, ticket=ticket)
+        )
+        self.assertEqual(state_passport["passport_sha256"], digest)
 
     def test_operator_events_backfill_each_durable_crash_boundary_once(self) -> None:
         controller = CONTROL.Controller(self.args)
@@ -717,6 +739,31 @@ class FactoryControllerTest(unittest.TestCase):
             CONTROL.Controller(self.args).recover_operator_action_events([claim])
         self.assertEqual(list((self.state / "events").glob("*.json")), [])
 
+    def test_operator_event_backfill_refuses_wrong_passport_hmac(self) -> None:
+        ticket = "T-110"
+        self.operator_transition(
+            ticket, "AWAIT-OPERATOR bundle posted; approval required",
+            consumed=True,
+        )
+        self.operator_passport(ticket, "Awaiting Approval", "validating")
+        passport = self.state / f"passports/{ticket}.json"
+        value = CONTROL.read(passport)
+        value.pop("passport_sha256")
+        value["authentication_sha256"] = "0" * 64
+        value["passport_sha256"] = hashlib.sha256(
+            PASSPORT.canonical(value)
+        ).hexdigest()
+        PASSPORT.write_atomic(passport, value)
+        claim = {
+            "branch": f"ticket/{ticket}", "lease": "1" * 64,
+            "receipt": "", "role": "", "status": "waiting", "ticket": ticket,
+        }
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "passport authentication is invalid",
+        ):
+            CONTROL.Controller(self.args).recover_operator_action_events([claim])
+        self.assertEqual(list((self.state / "events").glob("*.json")), [])
+
     def test_operator_event_backfill_binds_passport_project_and_contract(
         self,
     ) -> None:
@@ -738,13 +785,9 @@ class FactoryControllerTest(unittest.TestCase):
                 value.pop("passport_sha256")
                 value.pop("authentication_sha256")
                 value[field] = wrong
-                value["authentication_sha256"] = hmac.new(
-                    key.read_bytes(), CONTROL.canonical(value).encode(), hashlib.sha256,
-                ).hexdigest()
-                value["passport_sha256"] = hashlib.sha256(
-                    CONTROL.canonical(value).encode()
-                ).hexdigest()
-                CONTROL.write(passport_path, value)
+                PASSPORT.write_atomic(
+                    passport_path, PASSPORT.authenticate(value, key.read_bytes())
+                )
                 with self.assertRaisesRegex(
                     CONTROL.ControllerError, "passport identity is invalid",
                 ):
@@ -1393,10 +1436,10 @@ class FactoryControllerTest(unittest.TestCase):
                 "ticket": ticket,
                 "ticket_blob": ticket_blob,
             }
-            receipt["receipt_sha256"] = hashlib.sha256(CONTROL.canonical({
+            receipt["receipt_sha256"] = hashlib.sha256(STATE.canonical({
                 key: value for key, value in receipt.items()
                 if key not in {"consumed", "receipt_sha256"}
-            }).encode()).hexdigest()
+            })).hexdigest()
             CONTROL.write(self.state / f"{ticket}.json", receipt)
             claim = {
                 "blocked_reason": "worker-error",
@@ -1526,7 +1569,7 @@ class FactoryControllerTest(unittest.TestCase):
             if key not in {"consumed", "consumed_at_epoch", "receipt_sha256"}
         }
         receipt["receipt_sha256"] = hashlib.sha256(
-            CONTROL.canonical(immutable).encode()
+            STATE.canonical(immutable)
         ).hexdigest()
         receipt_path.unlink()
         CONTROL.write(receipt_path, receipt)
@@ -2997,7 +3040,7 @@ class FactoryControllerTest(unittest.TestCase):
             if key not in {"consumed", "consumed_at_epoch", "receipt_sha256"}
         }
         receipt["receipt_sha256"] = hashlib.sha256(
-            CONTROL.canonical(immutable).encode()
+            STATE.canonical(immutable)
         ).hexdigest()
         receipt_path.unlink()
         CONTROL.write(receipt_path, receipt)
@@ -3059,7 +3102,7 @@ class FactoryControllerTest(unittest.TestCase):
             if key not in {"consumed", "consumed_at_epoch", "receipt_sha256"}
         }
         receipt["receipt_sha256"] = hashlib.sha256(
-            CONTROL.canonical(immutable).encode()
+            STATE.canonical(immutable)
         ).hexdigest()
         (self.state / "T-177.json").unlink()
         CONTROL.write(self.state / "T-177.json", receipt)
@@ -3103,7 +3146,7 @@ class FactoryControllerTest(unittest.TestCase):
             if key not in {"consumed", "consumed_at_epoch", "receipt_sha256"}
         }
         receipt["receipt_sha256"] = hashlib.sha256(
-            CONTROL.canonical(immutable).encode()
+            STATE.canonical(immutable)
         ).hexdigest()
         receipt_path.unlink()
         CONTROL.write(receipt_path, receipt)
@@ -3146,7 +3189,7 @@ class FactoryControllerTest(unittest.TestCase):
             if key not in {"consumed", "consumed_at_epoch", "receipt_sha256"}
         }
         receipt["receipt_sha256"] = hashlib.sha256(
-            CONTROL.canonical(immutable).encode()
+            STATE.canonical(immutable)
         ).hexdigest()
         receipt_path.unlink()
         CONTROL.write(receipt_path, receipt)
@@ -3222,7 +3265,7 @@ class FactoryControllerTest(unittest.TestCase):
                     }
                 }
                 changed["receipt_sha256"] = hashlib.sha256(
-                    CONTROL.canonical(immutable).encode()
+                    STATE.canonical(immutable)
                 ).hexdigest()
                 attempt(changed)
 

@@ -103,6 +103,10 @@ def canonical(value: Any) -> str:
     return json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
 
 
+def canonical_document(value: Any) -> bytes:
+    return (canonical(value) + "\n").encode()
+
+
 def safe_error(error: BaseException) -> str:
     detail = str(error).replace("\x00", "")
     detail = re.sub(
@@ -517,12 +521,14 @@ class Controller:
             return None
         value = read(passport_path)
         passport_digest = value.pop("passport_sha256", "")
-        if passport_digest != hashlib.sha256(canonical(value).encode()).hexdigest():
+        if passport_digest != hashlib.sha256(canonical_document(value)).hexdigest():
             raise ControllerError("operator passport digest is invalid")
         authentication = value.pop("authentication_sha256", "")
         if not hmac.compare_digest(
             authentication,
-            hmac.new(secret, canonical(value).encode(), hashlib.sha256).hexdigest(),
+            hmac.new(
+                secret, canonical_document(value), hashlib.sha256,
+            ).hexdigest(),
         ):
             raise ControllerError("operator passport authentication is invalid")
         value.update(
@@ -563,7 +569,7 @@ class Controller:
         if (
             not isinstance(digest, str)
             or DIGEST.fullmatch(digest) is None
-            or digest != hashlib.sha256(canonical(immutable).encode()).hexdigest()
+            or digest != hashlib.sha256(canonical_document(immutable)).hexdigest()
         ):
             self.invalid_transition_tickets.add(claim["ticket"])
             self.event_once(
@@ -3696,7 +3702,7 @@ class Controller:
         states = re.findall(r"^State:\s*(.*?)\s*$", ticket, re.I | re.M)
         kit_shas = re.findall(r"^Kit-SHA:\s*(.*?)\s*$", ticket, re.M)
         return not any((
-            hashlib.sha256(canonical(immutable).encode()).hexdigest() != digest,
+            hashlib.sha256(canonical_document(immutable)).hexdigest() != digest,
             receipt.get("contract_version") != "1.8.0",
             receipt.get("factory_sha") != self.release_path.name,
             receipt.get("head_sha") != head,

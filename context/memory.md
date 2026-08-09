@@ -4839,3 +4839,16 @@ Blocked-Escalated resume overlay, retained branch, or parked worktree. The
 Factory does not broaden Linear cancellation, delete retained Git evidence, or
 trust parked paths. Once a candidate is selected, an unsafe-state refusal names
 that exact ticket; genuinely lane-scoped failures remain unscoped.
+
+## 2026-08-08 — Decision 351: Controller authentication uses writer document bytes
+
+Category: Trust boundary
+
+Transition receipts and ticket passports are authenticated over the exact
+newline-terminated canonical JSON bytes emitted by `state-machine.py` and
+`ticket-passport.py`. Controller-local event and claim canonicalization remains
+unchanged. The controller accepts only the established writer encoding; it does
+not dual-accept legacy verifier bytes, rewrite stored evidence, or mint a
+replacement receipt or passport. Cross-module tests construct evidence with
+the production writers so a verifier-only encoding cannot mask another wire
+incompatibility.
