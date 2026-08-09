@@ -8,7 +8,7 @@ unset CI_FORCE_FULL
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 WORKFLOW="$ROOT/.github/workflows/ci.yml"
-[[ "$(grep -Fc 'actions/checkout@v5' "$WORKFLOW")" -eq 4 &&
+[[ "$(grep -Fc 'actions/checkout@v5' "$WORKFLOW")" -eq 5 &&
     "$(grep -Fc 'actions/setup-node@v5' "$WORKFLOW")" -eq 2 &&
     "$(grep -Fc 'actions/setup-python@v6' "$WORKFLOW")" -eq 1 &&
     "$(grep -Fc 'HOMEBREW_NO_AUTO_UPDATE: "1"' "$WORKFLOW")" -eq 1 &&
@@ -28,8 +28,18 @@ WORKFLOW="$ROOT/.github/workflows/ci.yml"
   echo "FAIL: both protected-main platform jobs must force the full suite" >&2
   exit 1
 }
-[[ "$(grep -c '^    needs: scope$' "$WORKFLOW")" -eq 2 ]] || {
-  echo "FAIL: platform jobs must depend only on classification so they can run in parallel" >&2
+[[ "$(grep -c '^    needs: scope$' "$WORKFLOW")" -eq 3 ]] || {
+  echo "FAIL: policy and platform jobs must depend only on classification so they can run in parallel" >&2
+  exit 1
+}
+[[ "$(grep -Fc 'scripts/repo-check' "$WORKFLOW")" -eq 1 &&
+    "$(grep -Fc 'scripts/secret-scan' "$WORKFLOW")" -eq 1 &&
+    "$(grep -Fc 'scripts/artifact-check --base "$BASE_SHA"' "$WORKFLOW")" -eq 1 &&
+    "$(grep -Fc 'needs: [scope, policy, linux, macos-bash-3]' "$WORKFLOW")" -eq 1 &&
+    "$(grep -c '^    if: always()$' "$WORKFLOW")" -eq 1 &&
+    "$(grep -Fc 'POLICY_RESULT: ${{ needs.policy.result }}' "$WORKFLOW")" -eq 1 &&
+    "$(grep -Fc 'test "$POLICY_RESULT" = success' "$WORKFLOW")" -eq 1 ]] || {
+  echo "FAIL: repository policy must run once and gate the aggregate ci context" >&2
   exit 1
 }
 [[ "$(grep -Fc 'group: ${{ fromJSON(needs.scope.outputs.groups) }}' "$WORKFLOW")" -eq 2 &&

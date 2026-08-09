@@ -109,9 +109,15 @@ can recommend their direct and transitive suites plus CI-scope, immutability,
 and artifact-policy checks. The six audited leaf mappings remain available for
 focused local work. Pull requests run the same targeted-or-deferred selection
 on Linux and macOS: mapped leaf changes execute their suites, while broad work
-runs policy gates and defers complete coverage. Pushes to `main` partition the
+runs policy gates and defers complete coverage. Repository policy — baseline,
+secret scan, and artifact check — runs once per run in its own job and gates
+the aggregate `ci` context rather than repeating inside every platform group.
+Pushes to `main` partition the
 complete registry into four stable groups per platform on separate hosted
-runners. Their public suite IDs remain intact. The factory-script suite uses
+runners. Their public suite IDs remain intact. Group membership carries no
+meaning beyond balance: each group anchors one slow lifecycle suite plus
+filler, sized from observed hosted run durations and rebalanced when a group
+drifts. The factory-script suite uses
 six fixed internal workers with private temporary roots; lifecycle cases that
 share launch, cancellation, Git, accounting, or cleanup state remain
 sequential inside one worker. Worker process groups are drained on failure or

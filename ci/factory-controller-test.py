@@ -9501,6 +9501,9 @@ class FactoryControllerTest(unittest.TestCase):
             calls[ticket] += 1
             if ticket == "T-110":
                 first_started.set()
+                # Expose the second claim while this future is still live, so the
+                # scheduler wake is observed without racing a timed helper thread.
+                expose_second.set()
                 self.assertTrue(release_first.wait(2))
             else:
                 self.assertTrue(first_started.is_set())
@@ -9510,15 +9513,8 @@ class FactoryControllerTest(unittest.TestCase):
 
         controller.reconcile_ticket = reconcile
 
-        def expose() -> None:
-            self.assertTrue(first_started.wait(1))
-            expose_second.set()
-
-        wake = threading.Thread(target=expose)
-        wake.start()
         with patch.object(CONTROL, "RECONCILE_INTERVAL_SECONDS", 0.02):
             result = controller.reconcile()
-        wake.join(timeout=1)
         self.assertTrue(second_started.is_set())
         self.assertEqual(calls, {"T-110": 1, "T-111": 1})
         self.assertEqual(result["status"], "ok")

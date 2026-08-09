@@ -159,6 +159,7 @@ run_suite() {
   ID="$1" LABEL="$2"
   shift 2
   should_run "$ID" || return 0
+  summary "RUN: $LABEL"
   OUTPUT="$TMP/${LABEL// /-}.out"
   SUITE_STARTED=$SECONDS
   if "$@" > "$OUTPUT" 2>&1; then

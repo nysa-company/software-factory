@@ -43,6 +43,24 @@ jobs:
             echo 'groups=["pr"]' >> "$GITHUB_OUTPUT"
           fi
 
+  # Repository policy is diff-scoped, not group-scoped: run it once instead of
+  # once per platform group.
+  policy:
+    needs: scope
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: repository baseline
+        run: scripts/repo-check
+      - name: secret scan
+        run: scripts/secret-scan
+      - name: artifact policy
+        env:
+          BASE_SHA: ${{ needs.scope.outputs.base }}
+        run: scripts/artifact-check --base "$BASE_SHA"
+
   linux:
     name: linux-group-${{ matrix.group }}
     needs: scope
@@ -64,14 +82,6 @@ jobs:
         if: needs.scope.outputs.behavioral == 'true'
         with:
           python-version: "3.12"
-      - name: repository baseline
-        run: scripts/repo-check
-      - name: secret scan
-        run: scripts/secret-scan
-      - name: artifact policy
-        env:
-          BASE_SHA: ${{ needs.scope.outputs.base }}
-        run: scripts/artifact-check --base "$BASE_SHA"
       - name: targeted or deferred pull-request verification
         if: github.event_name == 'pull_request' && needs.scope.outputs.behavioral == 'true'
         env:
@@ -162,17 +172,19 @@ jobs:
   # Keep the required context stable while all eight platform groups execute.
   ci:
     if: always()
-    needs: [scope, linux, macos-bash-3]
+    needs: [scope, policy, linux, macos-bash-3]
     runs-on: ubuntu-latest
     steps:
       - name: require applicable verification
         env:
           SCOPE_RESULT: ${{ needs.scope.result }}
+          POLICY_RESULT: ${{ needs.policy.result }}
           BEHAVIORAL: ${{ needs.scope.outputs.behavioral }}
           LINUX_RESULT: ${{ needs.linux.result }}
           MACOS_RESULT: ${{ needs.macos-bash-3.result }}
         run: |
           test "$SCOPE_RESULT" = success
+          test "$POLICY_RESULT" = success
           test "$LINUX_RESULT" = success
           if test "$BEHAVIORAL" = false; then
             test "$MACOS_RESULT" = skipped
