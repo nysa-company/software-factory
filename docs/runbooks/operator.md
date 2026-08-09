@@ -523,7 +523,13 @@ same-UID token exposure remains until a broker or OS isolation is used.
 6. On the computer that will execute factory roles, verify the configured
    `CODEX_PINNED`, `CLAUDE_CODE_PINNED`, and `CURSOR_AGENT_VERSION` values,
    controlled physical CLI paths, and `scripts/adapters/contract-test.sh
-   --routes`. Update and verify the Nysa Agents plugin for both Codex and
+   --routes`. While maintenance and the complete drain from step 4 remain in
+   force, run the candidate's `provider-cli-pin plan`, review its exact
+   SHA/tree allowlist and physical targets, apply only that approval hash, and
+   require `provider-cli-pin check --sha <candidate>` to report ready. This
+   pin transaction precedes certification; certification and activation both
+   reject an absent, stale, or unlisted receipt. Update and verify the Nysa
+   Agents plugin for both Codex and
    Claude, restart agent sessions, and plan the repository baseline before
    certification. A baseline diff is a separate product change, not migration
    drift.

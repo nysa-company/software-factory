@@ -979,6 +979,37 @@ for cli_name in claude codex agent gh; do
     "$(printf '%s' "$cli_version" | sanitize | tr '\t\r\n' '___')" >> "$CLI_FILE"
 done
 
+PROVIDER_CLI_PIN_STATUS="not_applicable"
+PROVIDER_CLI_PIN_JSON="null"
+if [[ "${FACTORY_KIT_TRUST_SCOPE:-}" == "production-certified" ]]; then
+  # Legacy releases without the pin helper warn. Modern releases delegate to
+  # Factory-kit so the receipt-selected sealed authority can check this release.
+  PROVIDER_CLI_PIN_STATUS="warning"
+  if [[ "${FACTORY_RELEASE_TREE:-}" =~ ^[0-9a-f]{40}$ &&
+        -f "$KIT_DIR/scripts/owner-provider-cli-pin.py" &&
+        ! -L "$KIT_DIR/scripts/owner-provider-cli-pin.py" ]]; then
+    PROVIDER_CLI_PIN_STATUS="error"
+    PROVIDER_CLI_PIN_RAW="$(bash "$KIT_DIR/scripts/factory-kit.sh" \
+      provider-cli-pin check --sha "$KIT_SHA" 2>/dev/null || true)"
+    if PROVIDER_CLI_PIN_FIELDS="$(printf '%s' "$PROVIDER_CLI_PIN_RAW" | \
+        "$PYTHON_BIN" -c '
+import json, sys
+value = json.load(sys.stdin)
+assert value.get("schema") == "nysa.software-factory.provider-cli-pin-status/v1"
+assert value.get("status") in {"ready", "unready"}
+items = value.get("items")
+assert isinstance(items, list) and {item.get("name") for item in items} == {"claude", "codex", "agent"}
+assert all(item.get("status") in {"ok", "warning", "error"} for item in items)
+print(json.dumps(value, sort_keys=True, separators=(",", ":")))
+print("warning" if items and all(item["status"] == "warning" for item in items) else
+      ("ok" if value["status"] == "ready" else "error"))
+' 2>/dev/null)"; then
+      PROVIDER_CLI_PIN_JSON="$(printf '%s\n' "$PROVIDER_CLI_PIN_FIELDS" | sed -n '1p')"
+      PROVIDER_CLI_PIN_STATUS="$(printf '%s\n' "$PROVIDER_CLI_PIN_FIELDS" | sed -n '2p')"
+    fi
+  fi
+fi
+
 FALLBACK_READINESS_STATUS="not_applicable"
 FALLBACK_READINESS_JSON="null"
 if [[ "${FACTORY_KIT_TRUST_SCOPE:-}" == "qualification-candidate" ]]; then
@@ -1610,7 +1641,8 @@ for check_status in "$REGISTRY_STATUS" "$KIT_STATUS" "$PIN_STATUS" "$RUNTIME_STA
                     "$LINEAR_SERVICE_STATUS" \
                     "$PROVIDER_RUNTIME_STATUS" "$CONTRACT_RESUME_STATUS" \
                     "$TRANSITION_RECEIPT_STATUS" "$CONTROLLER_STATUS" \
-                    "$FALLBACK_READINESS_STATUS" "$MODEL_READINESS_STATUS"; do
+                    "$FALLBACK_READINESS_STATUS" "$MODEL_READINESS_STATUS" \
+                    "$PROVIDER_CLI_PIN_STATUS"; do
   if [[ "$check_status" == "error" ]]; then
     OVERALL_STATUS="error"
     break
@@ -1652,6 +1684,7 @@ export TRANSITION_RECEIPT_STATUS TRANSITION_RECEIPT_FILE
 export CONTROLLER_STATUS CONTROLLER_SERVICE_STATE CONTROLLER_LAST_EXIT_STATUS
 export FALLBACK_READINESS_STATUS FALLBACK_READINESS_JSON
 export MODEL_READINESS_STATUS MODEL_READINESS_JSON
+export PROVIDER_CLI_PIN_STATUS PROVIDER_CLI_PIN_JSON
 
 if [[ "$JSON_MODE" -eq 1 ]]; then
   "$PYTHON_BIN" <<'PY'
@@ -1754,6 +1787,10 @@ document = {
             "status": os.environ["CLI_STATUS"],
             "items": clis,
         },
+        "provider_cli_pins": {
+            "status": os.environ["PROVIDER_CLI_PIN_STATUS"],
+            "report": json.loads(os.environ["PROVIDER_CLI_PIN_JSON"]),
+        },
         "fallback_readiness": {
             "status": os.environ["FALLBACK_READINESS_STATUS"],
             "report": json.loads(os.environ["FALLBACK_READINESS_JSON"]),
@@ -1831,6 +1868,7 @@ else
   while IFS="$(printf '\t')" read -r cli_name cli_item_status cli_path cli_version; do
     echo "CLI $cli_name [$cli_item_status]: ${cli_version:-unavailable} (${cli_path:-not found})"
   done < "$CLI_FILE"
+  echo "Provider CLI pins [$PROVIDER_CLI_PIN_STATUS]"
   echo "Credentials [$CREDENTIAL_STATUS]: github=$GH_PRESENT linear=$LINEAR_PRESENT (presence only; authentication not validated)"
   echo "Isolated provider [$PROVIDER_RUNTIME_STATUS]: activated=$PROVIDER_ACTIVATED concurrency_required=$PROVIDER_CONCURRENCY_REQUIRED concurrency_ready=$PROVIDER_CONCURRENCY_READY mode=${PROVIDER_EXECUTION_MODE:-none} attempts=$PROVIDER_ACTIVE_ATTEMPTS tokens=$PROVIDER_ACTIVE_TOKENS unknown_workers=$PROVIDER_UNKNOWN_WORKERS legacy=$PROVIDER_LEGACY_INTERVALS"
   echo "Linear sync [$LINEAR_STATUS]: age_seconds=${LINEAR_AGE:-unknown} last_success=${LINEAR_LAST_SUCCESS:-unknown} project_identity_warnings=$($PYTHON_BIN -c 'import json,sys; print(len(json.loads(sys.argv[1])))' "$LINEAR_PROJECT_WARNINGS_JSON")"

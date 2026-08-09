@@ -305,6 +305,8 @@ root = Path(os.environ["FACTORY_ROOT"])
 EOF
   cp -R "$ROOT/scripts/model-routing" "$release/scripts/model-routing"
   cp "$ROOT/scripts/lib/backend-policy.sh" "$release/scripts/lib/backend-policy.sh"
+  cp "$ROOT/scripts/lib/provider-cli-version.sh" \
+    "$release/scripts/lib/provider-cli-version.sh"
   cp "$ROOT/scripts/lib/cursor-model-families.txt" \
     "$release/scripts/lib/cursor-model-families.txt"
   cp "$ROOT/scripts/lib/kit-pin.sh" "$release/scripts/lib/kit-pin.sh"
