@@ -139,7 +139,10 @@ elif args[:2] == ['pr', 'checks']:
     if bucket == 'unreported':
         print("no required checks reported on the 'ticket/T-100' branch", file=sys.stderr)
         raise SystemExit(1)
-    print(json.dumps([{'name': 'ci', 'state': bucket, 'bucket': bucket}]))
+    print(json.dumps([
+        {'name': name, 'state': bucket, 'bucket': bucket}
+        for name in os.environ.get('FAKE_CHECK_NAMES', 'ci').split(',')
+    ]))
     raise SystemExit(8 if bucket == 'pending' else 1 if bucket != 'pass' else 0)
 elif args[:2] == ['pr', 'view']:
     comments = [] if os.environ.get('FAKE_PREVIEW_REPORTED') == '0' else [{
@@ -149,6 +152,21 @@ elif args[:2] == ['pr', 'view']:
                 '| web | ✅ Success ([View Logs](https://railway.com/project/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/service/22222222-2222-2222-2222-222222222222?id=44444444-4444-4444-4444-444444444444&environmentId=bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb)) | [Web](https://web-example-pr-7.up.railway.app) | now |',
     }]
     print(json.dumps({'comments': comments}))
+elif args[:2] == ['api', 'repos/example/product/rules/branches/main?per_page=100']:
+    names = os.environ.get('FAKE_REQUIRED_CONTEXTS', 'ci').split(',')
+    print(json.dumps([[{
+        'type': 'required_status_checks',
+        'parameters': {'required_status_checks': [
+            {'context': name, 'integration_id': 15368}
+            for name in names[:1]
+        ]},
+    }], [{
+            'type': 'required_status_checks',
+            'parameters': {'required_status_checks': [
+                {'context': name, 'integration_id': 15368}
+                for name in names[1:]
+            ]},
+    }]]))
 elif args[:1] == ['api']:
     for item in json.loads(os.environ['FAKE_PR_FILES']):
         print(base64.b64encode(json.dumps(item).encode()).decode())
@@ -263,7 +281,8 @@ print(json.dumps([{
     def command(
         self, expected=0, bucket="pass", lease_id=LEASE_ID,
         contract="", stage="", receipt="", deployed_sha=None,
-        preview_reported=True, pr_files=None,
+        preview_reported=True, pr_files=None, check_names="ci",
+        required_contexts="ci",
     ):
         head = subprocess.run(
             ["git", "-C", self.product, "rev-parse", "HEAD"],
@@ -283,6 +302,8 @@ print(json.dumps([{
                 "FAKE_PR_TRACE": str(self.trace),
                 "FAKE_PR_HEAD": head,
                 "FAKE_CHECK_BUCKET": bucket,
+                "FAKE_CHECK_NAMES": check_names,
+                "FAKE_REQUIRED_CONTEXTS": required_contexts,
                 "FAKE_DEPLOYED_SHA": deployed_sha or head,
                 "FAKE_PREVIEW_REPORTED": "1" if preview_reported else "0",
                 "FAKE_PR_FILES": json.dumps(pr_files or [
@@ -739,6 +760,13 @@ print(json.dumps([{
         self.assertEqual(failed["status"], "failed")
         self.assertEqual(failed["checks"], ["ci"])
         self.assertEqual(self.command()["status"], "prepared")
+
+        omitted = self.command(
+            check_names="test-immutability",
+            required_contexts="test-immutability,ci",
+        )
+        self.assertEqual(omitted["status"], "wait")
+        self.assertEqual(omitted["checks"], ["required check not reported: ci"])
 
         self.prepare_narrator()
         current = subprocess.run(

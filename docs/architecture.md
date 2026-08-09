@@ -1648,10 +1648,14 @@ ephemeral dispatcher child on `START`, and exits on `WAIT` or `ESCALATE`.
 Autonomous claiming requires configured capacity above one so the lease can be
 transferred in memory to that child. At the first sequencer-authorized Reviewer
 boundary, the trusted ticket-PR helper creates or reuses exactly one open PR for
-the clean pushed ticket head. It waits without launching a role while required
-checks are not yet reported or pending, supplies completed failures to
+the clean pushed ticket head. It compares the complete app-bound required-check
+rules for protected `main` with GitHub's reported required checks, waits without
+launching a role while any required check is omitted or pending, supplies completed failures to
 Reviewer, and revalidates successful exact-head checks and Reviewer lineage
-before Narrator. A later
+before Narrator. If the exact PR becomes definitively red after its bundle is
+attested but before operator approval, the same authenticated publication-repair
+transaction used after approval withdraws the stale bundle and routes only the
+named repair owner back to Building. A later
 Builder or Test-author run forces fresh review. The helper has no approval or
 merge authority.
 Under Contract 1.8, compatibility `dispatch-plan` performs deterministic

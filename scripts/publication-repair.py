@@ -261,14 +261,16 @@ def create(args: argparse.Namespace, secret: bytes) -> dict[str, Any]:
         if re.search(r"fixture|test-author|contract test", check_name, re.I)
         else "builder"
     )
+    ticket_path = workdir / f"factory/tickets/{args.ticket}.md"
+    text = ticket_path.read_text(encoding="utf-8")
+    if field(text, "State").casefold() not in {"awaiting approval", "approved"}:
+        raise RepairError(
+            "publication repair requires committed Awaiting Approval or Approved state"
+        )
     if pr.get("autoMergeRequest"):
         command("gh", "pr", "merge", str(args.pr), "--repo", repo, "--disable-auto")
     if not pr.get("isDraft"):
         command("gh", "pr", "ready", str(args.pr), "--repo", repo, "--undo")
-    ticket_path = workdir / f"factory/tickets/{args.ticket}.md"
-    text = ticket_path.read_text(encoding="utf-8")
-    if field(text, "State").casefold() != "approved":
-        raise RepairError("publication repair requires committed Approved state")
     baseline = len(verdicts(text))
     text = replace_field(text, "State", "Building")
     text = re.sub(r"^Operator-Approval:.*\n?", "", text, flags=re.I | re.M)

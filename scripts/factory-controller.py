@@ -8252,6 +8252,9 @@ class Controller:
                     claim, receipt, pr
                 ):
                     return {"status": "waiting", "ticket": claim["ticket"]}
+                if pr.get("status") == "failed":
+                    self.publication_repair(claim, receipt, pr)
+                    return {"status": "progressed", "ticket": claim["ticket"]}
                 if pr.get("status") != "ready":
                     return {"status": "waiting", "ticket": claim["ticket"]}
                 try:
