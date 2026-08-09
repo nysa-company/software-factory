@@ -104,6 +104,7 @@ factory_model_report_name() {
 
 factory_probe_override() {
   local adapter="$1" explicit_model="${2:-}" value=""
+  local test_version="" test_identity=""
   case "$adapter" in
     codex) value="${FACTORY_PROBE_CODEX:-}" ;;
     claude-code) value="${FACTORY_PROBE_CLAUDE_CODE:-}" ;;
@@ -125,6 +126,29 @@ factory_probe_override() {
   PROBE_REPORTED_IDENTITY=""
   if [[ "$adapter" == cursor-* && -n "$PROBE_MODEL" ]]; then
     PROBE_REPORTED_IDENTITY="$(factory_model_report_name "$PROBE_MODEL" 2>/dev/null || true)"
+  fi
+  if [[ "${FACTORY_TEST_MODE:-0}" == "1" &&
+        "${FACTORY_TRUSTED_TEST_HARNESS:-0}" == "1" ]]; then
+    case "$adapter" in
+      codex)
+        test_version="${FACTORY_TEST_PROBE_CODEX_VERSION:-}"
+        test_identity="${FACTORY_TEST_PROBE_CODEX_IDENTITY:-}"
+        ;;
+      claude-code)
+        test_version="${FACTORY_TEST_PROBE_CLAUDE_VERSION:-}"
+        test_identity="${FACTORY_TEST_PROBE_CLAUDE_IDENTITY:-}"
+        ;;
+      cursor-openai)
+        test_version="${FACTORY_TEST_PROBE_CURSOR_OPENAI_VERSION:-}"
+        test_identity="${FACTORY_TEST_PROBE_CURSOR_OPENAI_IDENTITY:-}"
+        ;;
+      cursor-anthropic)
+        test_version="${FACTORY_TEST_PROBE_CURSOR_ANTHROPIC_VERSION:-}"
+        test_identity="${FACTORY_TEST_PROBE_CURSOR_ANTHROPIC_IDENTITY:-}"
+        ;;
+    esac
+    [[ -z "$test_version" ]] || PROBE_VERSION="$test_version"
+    [[ -z "$test_identity" ]] || PROBE_REPORTED_IDENTITY="$test_identity"
   fi
   return 0
 }

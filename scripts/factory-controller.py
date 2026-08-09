@@ -52,6 +52,11 @@ QUALIFICATION_SCHEMA = "nysa.software-factory.qualification/v2"
 TICKET = re.compile(r"^T-[0-9]+$")
 SHA = re.compile(r"^[0-9a-f]{40}$")
 DIGEST = re.compile(r"^[0-9a-f]{64}$")
+SAFE_MODEL_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
+SAFE_MODEL_TEXT = re.compile(r"^[^\x00-\x1f\x7f]{0,500}$")
+MODEL_RESOLUTION_ERROR_SCHEMA = (
+    "nysa.software-factory.model-resolution-error/v1"
+)
 FACTORY_ISSUE = re.compile(
     r"^https://github[.]com/[A-Za-z0-9_.-]+/software-factory/issues/[1-9][0-9]*$"
 )
@@ -383,6 +388,7 @@ class Controller:
         self.qualification_fallback_readiness_sha256 = os.environ.get(
             "FACTORY_QUALIFICATION_FALLBACK_READINESS_SHA256", ""
         )
+        self.model_admission_outcome: dict[str, Any] | None = None
         self.admission_refusals: dict[str, dict[str, str]] = {}
         self.invalid_transition_tickets: set[str] = set()
         self.prior_transition_tickets: set[str] = set()
@@ -1607,6 +1613,29 @@ class Controller:
             "error": str(decoded.get("error", raw))[:4096],
             "reason_code": str(decoded.get("reason_code", "unsafe_state"))[:64],
         }
+        if decoded.get("schema") == MODEL_RESOLUTION_ERROR_SCHEMA:
+            try:
+                prefix = (
+                    "model pin resolution failed"
+                    if str(decoded.get("error", "")).startswith(
+                        "model pin resolution failed:"
+                    )
+                    else "model plan failed"
+                )
+                model_failure = self.model_resolution_failure(
+                    {key: value for key, value in decoded.items() if key != "ticket"},
+                    prefix,
+                )
+            except ControllerError:
+                evidence = {
+                    "error": "model resolution failure is malformed",
+                    "reason_code": "unsafe_state",
+                }
+            else:
+                evidence.update(
+                    profile_id=model_failure["profile_id"],
+                    readiness=model_failure["readiness"],
+                )
         ticket = decoded.get("ticket", "")
         if isinstance(ticket, str) and TICKET.fullmatch(ticket):
             evidence["ticket"] = ticket
@@ -1643,6 +1672,11 @@ class Controller:
                 incident_sha256=digest,
                 reason_code=evidence["reason_code"],
             )
+            if "readiness" in evidence:
+                details.update(
+                    profile_id=evidence["profile_id"],
+                    readiness=evidence["readiness"],
+                )
             if "ticket" in evidence:
                 self.event(name, evidence["ticket"], **details)
             else:
@@ -1754,6 +1788,65 @@ class Controller:
             raise ControllerError("launcher returned malformed JSON") from error
         if not isinstance(value, dict):
             raise ControllerError("launcher returned malformed JSON")
+        return value
+
+    @staticmethod
+    def model_resolution_failure(
+        value: dict[str, Any], prefix: str,
+    ) -> dict[str, Any]:
+        if set(value) != {
+            "error", "profile_id", "readiness", "reason_code", "schema",
+            "status",
+        }:
+            raise ControllerError("model resolution failure is malformed")
+        reason = value.get("reason_code")
+        profile = value.get("profile_id")
+        readiness = value.get("readiness")
+        if (
+            value.get("schema") != MODEL_RESOLUTION_ERROR_SCHEMA
+            or value.get("status") != "error"
+            or not isinstance(reason, str)
+            or not SAFE_MODEL_ID.fullmatch(reason)
+            or not isinstance(profile, str)
+            or not SAFE_MODEL_ID.fullmatch(profile)
+            or value.get("error") != f"{prefix}: {reason}"
+            or not isinstance(readiness, dict)
+            or len(readiness) > 64
+            or (
+                reason in {
+                    "profile_resolution_failed",
+                    "profile_temporarily_unavailable",
+                }
+                and not readiness
+            )
+        ):
+            raise ControllerError("model resolution failure is malformed")
+        expected = {"adapter_version", "reason", "reported_identity", "state"}
+        for route_id, evidence in readiness.items():
+            if (
+                not isinstance(route_id, str)
+                or not SAFE_MODEL_ID.fullmatch(route_id)
+                or not isinstance(evidence, dict)
+                or set(evidence) != expected
+                or evidence.get("state")
+                not in {"READY", "UNAVAILABLE", "INVALID", "UNKNOWN"}
+                or not isinstance(evidence.get("reason"), str)
+                or not SAFE_MODEL_ID.fullmatch(evidence["reason"])
+            ):
+                raise ControllerError("model resolution failure is malformed")
+            for name in ("adapter_version", "reported_identity"):
+                text = evidence.get(name)
+                if (
+                    not isinstance(text, str)
+                    or not SAFE_MODEL_TEXT.fullmatch(text)
+                    or re.search(r"(?i)\b[A-Za-z][A-Za-z0-9+.-]*://", text)
+                    or re.search(
+                        r"(?i)[A-Za-z0-9_.-]*"
+                        r"(?:key|token|secret|password|url|dsn|conn|auth)"
+                        r"[A-Za-z0-9_.-]*\s*[:=]", text,
+                    )
+                ):
+                    raise ControllerError("model resolution failure is malformed")
         return value
 
     @staticmethod
@@ -2108,6 +2201,8 @@ class Controller:
         claims = list(existing)
         if not 0 <= reserved_capacity <= self.capacity:
             raise ControllerError("reserved controller capacity is invalid")
+        if not self.qualification:
+            self.model_admission_outcome = None
         if self.qualification:
             readiness = self.json_call("models", "qualification-readiness", "--json")
             if (
@@ -2128,6 +2223,71 @@ class Controller:
             for item in claims if not self.consumes_capacity(item)
             }
         )
+        capacity_used = len([
+            item for item in claims
+            if self.consumes_capacity(item)
+            and item["ticket"] not in self.invalid_transition_tickets
+        ]) + reserved_capacity
+        if not self.qualification and capacity_used < self.capacity:
+            shadow_arguments = ["dispatch-plan", "--shadow"]
+            for ticket in excluded:
+                shadow_arguments.extend(["--exclude-ticket", ticket])
+            shadow = self.json_call(*shadow_arguments, "--json")
+            if "admission_refusal" in shadow:
+                self.record_dispatch_refusal(shadow["admission_refusal"], claims)
+            if shadow.get("action") == "WAIT":
+                return claims
+            if (
+                shadow.get("action") != "SHADOW"
+                or not TICKET.fullmatch(shadow.get("ticket", ""))
+            ):
+                raise ControllerError("dispatch shadow is malformed")
+            plan = self.json_call(
+                "models", "plan", "--json", allow=(0, 2), timeout=None,
+            )
+            if plan.get("status") == "error":
+                failure = self.model_resolution_failure(
+                    plan, "model plan failed",
+                )
+                if failure["reason_code"] == "profile_temporarily_unavailable":
+                    self.model_admission_outcome = {
+                        "profile_id": failure["profile_id"],
+                        "readiness": failure["readiness"],
+                        "reason_code": failure["reason_code"],
+                        "status": "waiting",
+                        "ticket": shadow["ticket"],
+                    }
+                    self.event(
+                        "model_admission_wait", shadow["ticket"],
+                        profile_id=failure["profile_id"],
+                        reason_code=failure["reason_code"],
+                        readiness=failure["readiness"],
+                    )
+                    return claims
+                self.model_admission_outcome = {
+                    "profile_id": failure["profile_id"],
+                    "readiness": failure["readiness"],
+                    "reason_code": failure["reason_code"],
+                    "status": "error",
+                    "ticket": shadow["ticket"],
+                }
+                raise ControllerError(canonical({
+                    **failure, "ticket": shadow["ticket"],
+                }))
+            if (
+                plan.get("schema")
+                not in {"model-resolution-plan/v1", "model-resolution-plan/v2"}
+                or not isinstance(plan.get("profile_id"), str)
+                or not SAFE_MODEL_ID.fullmatch(plan["profile_id"])
+                or not DIGEST.fullmatch(plan.get("profile_hash", ""))
+                or not isinstance(plan.get("selections"), dict)
+                or set(plan["selections"])
+                != {
+                    "planner", "builder", "narrator", "spec-linter",
+                    "test-author", "reviewer",
+                }
+            ):
+                raise ControllerError("model admission plan is malformed")
         while len(
             [
                 item for item in claims
@@ -2689,13 +2849,15 @@ class Controller:
             ])
         pin = self.json_call(*arguments, "--json", allow=(0, 2), timeout=None)
         if pin.get("status") == "error":
-            error = pin.get("error", "")
-            if error != (
-                "model pin resolution failed: profile_temporarily_unavailable"
-            ):
-                raise ControllerError(
-                    error or "batch model pin returned an invalid error"
-                )
+            failure = self.model_resolution_failure(
+                pin, "model pin resolution failed",
+            )
+            if failure["reason_code"] != "profile_temporarily_unavailable":
+                error = ControllerError(canonical({
+                    **failure, "ticket": missing[0]["ticket"],
+                }))
+                self.record_admission_failure(error, claims)
+                raise error
             results = []
             for index, claim in enumerate(missing):
                 claim["status"] = "waiting"
@@ -7243,6 +7405,7 @@ class Controller:
 
     def reconcile(self) -> dict[str, Any]:
         self.admission_refusals = {}
+        self.model_admission_outcome = None
         self.invalid_transition_tickets.clear()
         self.prior_transition_tickets.clear()
         existing = self.load_claims()
@@ -7319,12 +7482,13 @@ class Controller:
                 )
             ),
         )
-        try:
-            claims = self.claim_new(existing)
-            self.clear_admission_failure()
-        except ControllerError as error:
-            self.record_admission_failure(error, existing)
-            claims = existing
+        claims = existing
+        if self.qualification:
+            try:
+                claims = self.claim_new(existing)
+                self.clear_admission_failure()
+            except ControllerError as error:
+                self.record_admission_failure(error, existing)
         if (
             self.qualification
             and not self.qualification_marker("qualification-restart-boundary")
@@ -7502,15 +7666,19 @@ class Controller:
                     not self.consumes_capacity(claim)
                     for claim in futures.values()
                 )
-                try:
-                    claims = (
-                        self.claim_new(claims, reserved_live)
-                        if reserved_live
-                        else self.claim_new(claims)
-                    )
-                    self.clear_admission_failure()
-                except ControllerError as error:
-                    self.record_admission_failure(error, claims)
+                if self.model_admission_outcome is None:
+                    try:
+                        claims = (
+                            self.claim_new(claims, reserved_live)
+                            if reserved_live
+                            else self.claim_new(claims)
+                        )
+                        self.clear_admission_failure()
+                    except ControllerError as error:
+                        self.record_admission_failure(error, claims)
+                if self.model_admission_outcome is not None:
+                    outcome = self.model_admission_outcome
+                    results[outcome["ticket"]] = outcome
                 new_idle = [
                     claim for claim in claims
                     if claim["ticket"] not in busy

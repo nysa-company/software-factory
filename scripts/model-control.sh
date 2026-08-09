@@ -34,6 +34,7 @@ PIN_TICKET_RELATIVE=""
 PIN_PLAN_RELATIVE=""
 PIN_PLAN_EXISTED=0
 TEMPORARY_FILE=""
+TEMPORARY_READINESS_FILE=""
 TEMPORARY_DIR=""
 FALLBACK_LAUNCH_LOCK=""
 CONTROL_GITHUB_HELPER=""
@@ -41,6 +42,7 @@ CONTROL_GITHUB_HELPER=""
 cleanup() {
   local rc=$?
   [[ -z "$TEMPORARY_FILE" ]] || rm -f "$TEMPORARY_FILE"
+  [[ -z "$TEMPORARY_READINESS_FILE" ]] || rm -f "$TEMPORARY_READINESS_FILE"
   [[ -z "$TEMPORARY_DIR" ]] || rm -rf "$TEMPORARY_DIR"
   [[ -z "$FALLBACK_LAUNCH_LOCK" ]] || rmdir "$FALLBACK_LAUNCH_LOCK" 2>/dev/null || true
   if [[ "$PIN_PRECOMMIT" -eq 1 && -n "$PIN_WORKDIR" ]]; then
@@ -65,6 +67,94 @@ import json
 import sys
 print(json.dumps({"error": sys.argv[1], "status": "error"},
                  ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+PY
+  exit 2
+}
+
+json_resolution_error() {
+  local operation="$1" reason="$2" profile_id="$3" readiness="$4" prefix
+  case "$operation" in
+    plan) prefix="model plan failed" ;;
+    pin) prefix="model pin resolution failed" ;;
+    *) json_error "model resolution failed" ;;
+  esac
+  [[ "$reason" =~ ^[a-z0-9][a-z0-9._-]{0,127}$ ]] || reason="resolution_error"
+  [[ "$profile_id" =~ ^[a-z0-9][a-z0-9._-]{0,127}$ ]] || profile_id="unknown"
+  python3 -B - "$prefix" "$reason" "$profile_id" "$readiness" <<'PY'
+import json
+import os
+import pathlib
+import re
+import stat
+import sys
+
+prefix, reason, profile_id, readiness_path = sys.argv[1:]
+safe_id = re.compile(r"[a-z0-9][a-z0-9._-]{0,127}\Z")
+safe_text = re.compile(r"[^\x00-\x1f\x7f]{0,500}\Z")
+sensitive = re.compile(
+    r"(?i)[A-Za-z0-9_.-]*(?:key|token|secret|password|url|dsn|conn|auth)"
+    r"[A-Za-z0-9_.-]*\s*[:=]"
+)
+url = re.compile(r"(?i)\b[A-Za-z][A-Za-z0-9+.-]*://")
+states = {"READY", "UNAVAILABLE", "INVALID", "UNKNOWN"}
+fields = {"adapter_version", "reason", "reported_identity", "state"}
+
+
+def no_duplicates(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError
+        value[key] = item
+    return value
+
+
+readiness = {}
+try:
+    path = pathlib.Path(readiness_path)
+    info = path.lstat()
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or info.st_uid != os.geteuid()
+        or info.st_nlink != 1
+        or stat.S_IMODE(info.st_mode) != 0o600
+        or info.st_size > 1_000_000
+    ):
+        raise ValueError
+    with path.open(encoding="utf-8") as handle:
+        candidate = json.load(handle, object_pairs_hook=no_duplicates)
+    if not isinstance(candidate, dict) or not 1 <= len(candidate) <= 64:
+        raise ValueError
+    for route_id, value in candidate.items():
+        if (
+            not isinstance(route_id, str)
+            or not safe_id.fullmatch(route_id)
+            or not isinstance(value, dict)
+            or set(value) != fields
+            or value.get("state") not in states
+            or not isinstance(value.get("reason"), str)
+            or not safe_id.fullmatch(value["reason"])
+            or any(
+                not isinstance(value.get(name), str)
+                or not safe_text.fullmatch(value[name])
+                or url.search(value[name])
+                or sensitive.search(value[name])
+                for name in ("adapter_version", "reported_identity")
+            )
+        ):
+            raise ValueError
+    readiness = candidate
+except (OSError, TypeError, UnicodeError, ValueError, json.JSONDecodeError):
+    readiness = {}
+
+print(json.dumps({
+    "error": f"{prefix}: {reason}",
+    "profile_id": profile_id,
+    "readiness": readiness,
+    "reason_code": reason,
+    "schema": "nysa.software-factory.model-resolution-error/v1",
+    "status": "error",
+}, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
 PY
   exit 2
 }
@@ -598,9 +688,13 @@ PY
     resolution="$(mktemp "$FACTORY_MODEL_STATE_ROOT/.model-control-plan.XXXXXX")" ||
       json_error "could not allocate plan output"
     TEMPORARY_FILE="$resolution"
+    readiness="$(mktemp "$FACTORY_MODEL_STATE_ROOT/.model-control-readiness.XXXXXX")" ||
+      json_error "could not allocate plan readiness"
+    TEMPORARY_READINESS_FILE="$readiness"
     factory_resolve_model_profile "$FACTORY_MODEL_PROFILE_ID" "$resolution" \
-      "$FACTORY_DISABLED_ROUTE_IDS" ||
-      json_error "model plan failed: ${FACTORY_RESOLVE_ERROR:-unknown}"
+      "$FACTORY_DISABLED_ROUTE_IDS" "$readiness" ||
+      json_resolution_error plan "${FACTORY_RESOLVE_ERROR:-unknown}" \
+        "$FACTORY_MODEL_PROFILE_ID" "$readiness"
     cat "$resolution"
     ;;
   migrate-plan|migrate)
@@ -1089,9 +1183,13 @@ PY
     resolution="$(mktemp "$FACTORY_MODEL_STATE_ROOT/.model-control-batch.XXXXXX")" ||
       json_error "could not allocate batch pin resolution"
     TEMPORARY_FILE="$resolution"
+    readiness="$(mktemp "$FACTORY_MODEL_STATE_ROOT/.model-control-readiness.XXXXXX")" ||
+      json_error "could not allocate batch pin readiness"
+    TEMPORARY_READINESS_FILE="$readiness"
     factory_resolve_model_profile "$FACTORY_MODEL_PROFILE_ID" "$resolution" \
-      "$FACTORY_DISABLED_ROUTE_IDS" ||
-      json_error "model pin resolution failed: ${FACTORY_RESOLVE_ERROR:-unknown}"
+      "$FACTORY_DISABLED_ROUTE_IDS" "$readiness" ||
+      json_resolution_error pin "${FACTORY_RESOLVE_ERROR:-unknown}" \
+        "$FACTORY_MODEL_PROFILE_ID" "$readiness"
     pin_results=()
     for index in "${!tickets[@]}"; do
       pin_result="$(FACTORY_CERTIFIED_PRODUCT_ORIGIN="$FACTORY_TRUSTED_PRODUCT_ORIGIN" \
@@ -1292,9 +1390,13 @@ PY
       resolution="$(mktemp "$FACTORY_MODEL_STATE_ROOT/.model-control-pin.XXXXXX")" ||
         json_error "could not allocate pin resolution"
       TEMPORARY_FILE="$resolution"
+      readiness="$(mktemp "$FACTORY_MODEL_STATE_ROOT/.model-control-readiness.XXXXXX")" ||
+        json_error "could not allocate pin readiness"
+      TEMPORARY_READINESS_FILE="$readiness"
       factory_resolve_model_profile "$FACTORY_MODEL_PROFILE_ID" "$resolution" \
-        "$FACTORY_DISABLED_ROUTE_IDS" ||
-        json_error "model pin resolution failed: ${FACTORY_RESOLVE_ERROR:-unknown}"
+        "$FACTORY_DISABLED_ROUTE_IDS" "$readiness" ||
+        json_resolution_error pin "${FACTORY_RESOLVE_ERROR:-unknown}" \
+          "$FACTORY_MODEL_PROFILE_ID" "$readiness"
     fi
     pin_json="$(manager pin --ticket "$ticket" --kit-sha "$FACTORY_KIT_SHA" \
       --resolution-file "$resolution" --output "$output")" ||

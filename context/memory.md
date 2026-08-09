@@ -86,6 +86,16 @@ everything the Factory actually enforces lives here.
   reports its exact ID in controller results, events, and durable incident
   evidence while eligible siblings continue. A selected qualification ticket
   with the same defect still refuses the sealed cohort globally.
+- Production admission shadows one exact candidate and resolves the active
+  model profile before any new claim, lease, or worktree. A healthy result is
+  shared by that bounded claim batch, post-claim pinning rechecks races, and an
+  unusable profile produces only strict per-route evidence in Doctor and the
+  ticket-bound admission incident. Permanent drift after the precheck retains
+  the exact authenticated claim and stops before provider work; no partial
+  branch/worktree cleanup authority is invented. Existing pinned claims remain
+  schedulable and are submitted before new production admission. Each refused
+  production candidate also appears in the bounded controller result as
+  `waiting` for temporary unavailability or `error` for permanent failure.
 - An operator-owned null initiative remains an explicit versioned tombstone,
   but a Ready ticket made initiative-less is never silently discarded:
   admission reports its exact ID and `initiative_missing` while healthy
@@ -4923,5 +4933,29 @@ bounded nonblocking Doctor warning and never mutated or used for ticket
 projection; every wrong, malformed, duplicate, foreign, renamed, missing, or
 drifting identity remains a global fail-closed boundary.
 
-This #484 decision lands on protected main before the concurrent #476 branch;
-that branch's unmerged Decision 355 is renumbered to Decision 356 on rebase.
+This #484 decision remains Decision 355 in the composed history; the subsequent
+#485 decision is numbered Decision 356.
+
+## 2026-08-09 — Decision 356: Active model readiness precedes production claim
+
+Category: Reliability
+
+Production reconciliation shadows the exact dispatch selection and resolves
+the active model profile before a real claim may create a dispatcher lease or
+worktree. One healthy resolution covers that bounded claim batch, while the
+existing post-claim batch pin remains the readiness-race authority. A temporary
+profile outage waits without claiming; invalid or unknown readiness creates a
+ticket-bound admission incident. Permanent drift after the precheck retains
+the authenticated claim without starting a provider because no transactional
+branch/worktree cleanup authority exists. Existing pinned claims continue to
+schedule before new admission. The reconciliation result retains the selected
+ticket plus the strict profile/reason/readiness evidence, with temporary
+unavailability typed as `waiting` and permanent failure as `error`.
+
+Model-control resolution failures expose only a strictly validated, bounded
+per-route readiness table with typed state, reason, adapter version, and
+reported identity. Raw resolver stderr and unsafe probe text never cross the
+control boundary. Installed production Doctor resolves the active profile and
+reports every unusable result, including temporary unavailability, as an error.
+Qualification retains its separate
+frozen fallback-readiness contract.

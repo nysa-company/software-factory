@@ -1002,6 +1002,128 @@ PY
   fi
 fi
 
+MODEL_READINESS_STATUS="not_applicable"
+MODEL_READINESS_JSON="null"
+if [[ "${FACTORY_KIT_TRUST_SCOPE:-}" == "production-certified" &&
+      "${FACTORY_MODEL_STATE_ROOT:-}" == /* &&
+      -d "${FACTORY_MODEL_STATE_ROOT:-}" ]]; then
+  MODEL_READINESS_STATUS="error"
+  if MODEL_READINESS_RAW="$(
+      /bin/bash "$KIT_DIR/scripts/model-control.sh" plan 2>/dev/null
+    )"; then
+    MODEL_READINESS_EXIT=0
+  else
+    MODEL_READINESS_EXIT=$?
+  fi
+  if MODEL_READINESS_PARSED="$($PYTHON_BIN - "$MODEL_READINESS_RAW" \
+      "$MODEL_READINESS_EXIT" 2>/dev/null <<'PY'
+import json
+import re
+import sys
+
+safe_id = re.compile(r"[a-z0-9][a-z0-9._-]{0,127}\Z")
+safe_text = re.compile(r"[^\x00-\x1f\x7f]{0,500}\Z")
+digest = re.compile(r"[0-9a-f]{64}\Z")
+fields = {"adapter_version", "reason", "reported_identity", "state"}
+states = {"READY", "UNAVAILABLE", "INVALID", "UNKNOWN"}
+roles = {"planner", "builder", "narrator", "spec-linter", "test-author", "reviewer"}
+
+
+def no_duplicates(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError
+        value[key] = item
+    return value
+
+
+value = json.loads(sys.argv[1], object_pairs_hook=no_duplicates)
+exit_code = int(sys.argv[2])
+if not isinstance(value, dict):
+    raise ValueError
+if exit_code == 0:
+    if (
+        value.get("schema") not in {
+            "model-resolution-plan/v1", "model-resolution-plan/v2",
+        }
+        or not isinstance(value.get("profile_id"), str)
+        or not safe_id.fullmatch(value["profile_id"])
+        or not isinstance(value.get("portfolio_id"), str)
+        or not safe_id.fullmatch(value["portfolio_id"])
+        or not isinstance(value.get("profile_hash"), str)
+        or not digest.fullmatch(value["profile_hash"])
+        or not isinstance(value.get("selections"), dict)
+        or set(value["selections"]) != roles
+    ):
+        raise ValueError
+    report = {
+        "portfolio_id": value["portfolio_id"],
+        "profile_hash": value["profile_hash"],
+        "profile_id": value["profile_id"],
+        "schema": "nysa.software-factory.doctor-model-readiness/v1",
+        "status": "ready",
+    }
+elif exit_code == 2:
+    if set(value) != {
+        "error", "profile_id", "readiness", "reason_code", "schema", "status",
+    }:
+        raise ValueError
+    reason = value.get("reason_code")
+    readiness = value.get("readiness")
+    if (
+        value.get("schema")
+        != "nysa.software-factory.model-resolution-error/v1"
+        or value.get("status") != "error"
+        or not isinstance(reason, str)
+        or not safe_id.fullmatch(reason)
+        or not isinstance(value.get("profile_id"), str)
+        or not safe_id.fullmatch(value["profile_id"])
+        or value.get("error") != f"model plan failed: {reason}"
+        or not isinstance(readiness, dict)
+        or len(readiness) > 64
+        or reason in {
+            "profile_resolution_failed", "profile_temporarily_unavailable",
+        } and not readiness
+    ):
+        raise ValueError
+    for route_id, evidence in readiness.items():
+        if (
+            not isinstance(route_id, str)
+            or not safe_id.fullmatch(route_id)
+            or not isinstance(evidence, dict)
+            or set(evidence) != fields
+            or evidence.get("state") not in states
+            or not isinstance(evidence.get("reason"), str)
+            or not safe_id.fullmatch(evidence["reason"])
+        ):
+            raise ValueError
+        for name in ("adapter_version", "reported_identity"):
+            text = evidence.get(name)
+            if (
+                not isinstance(text, str)
+                or not safe_text.fullmatch(text)
+                or re.search(r"(?i)\b[A-Za-z][A-Za-z0-9+.-]*://", text)
+                or re.search(
+                    r"(?i)[A-Za-z0-9_.-]*"
+                    r"(?:key|token|secret|password|url|dsn|conn|auth)"
+                    r"[A-Za-z0-9_.-]*\s*[:=]", text,
+                )
+            ):
+                raise ValueError
+    report = value
+else:
+    raise ValueError
+print(json.dumps(report, sort_keys=True, separators=(",", ":")))
+PY
+)"; then
+    MODEL_READINESS_JSON="$MODEL_READINESS_PARSED"
+    if [[ "$MODEL_READINESS_EXIT" -eq 0 ]]; then
+      MODEL_READINESS_STATUS="ok"
+    fi
+  fi
+fi
+
 GH_PRESENT="false"
 LINEAR_PRESENT="false"
 if [[ ${GH_TOKEN+x} == x ]]; then
@@ -1358,7 +1480,7 @@ for check_status in "$REGISTRY_STATUS" "$KIT_STATUS" "$PIN_STATUS" "$RUNTIME_STA
                     "$HERMES_STATUS" "$CLI_STATUS" "$CREDENTIAL_STATUS" "$LINEAR_STATUS" \
                     "$PROVIDER_RUNTIME_STATUS" "$CONTRACT_RESUME_STATUS" \
                     "$TRANSITION_RECEIPT_STATUS" "$CONTROLLER_STATUS" \
-                    "$FALLBACK_READINESS_STATUS"; do
+                    "$FALLBACK_READINESS_STATUS" "$MODEL_READINESS_STATUS"; do
   if [[ "$check_status" == "error" ]]; then
     OVERALL_STATUS="error"
     break
@@ -1397,6 +1519,7 @@ export CONTRACT_RESUME_STATUS CONTRACT_RESUME_FILE OVERALL_STATUS RUN_FILE
 export TRANSITION_RECEIPT_STATUS TRANSITION_RECEIPT_FILE
 export CONTROLLER_STATUS CONTROLLER_SERVICE_STATE CONTROLLER_LAST_EXIT_STATUS
 export FALLBACK_READINESS_STATUS FALLBACK_READINESS_JSON
+export MODEL_READINESS_STATUS MODEL_READINESS_JSON
 
 if [[ "$JSON_MODE" -eq 1 ]]; then
   "$PYTHON_BIN" <<'PY'
@@ -1503,6 +1626,10 @@ document = {
             "status": os.environ["FALLBACK_READINESS_STATUS"],
             "report": json.loads(os.environ["FALLBACK_READINESS_JSON"]),
         },
+        "model_readiness": {
+            "status": os.environ["MODEL_READINESS_STATUS"],
+            "report": json.loads(os.environ["MODEL_READINESS_JSON"]),
+        },
         "credentials": {
             "status": os.environ["CREDENTIAL_STATUS"],
             "validated_authentication": False,
@@ -1572,6 +1699,7 @@ else
   echo "Contract resume [$CONTRACT_RESUME_STATUS]: incidents=$("$PYTHON_BIN" -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$CONTRACT_RESUME_FILE")"
   echo "Transition receipts [$TRANSITION_RECEIPT_STATUS]: incidents=$("$PYTHON_BIN" -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$TRANSITION_RECEIPT_FILE")"
   echo "Controller [$CONTROLLER_STATUS]: state=$CONTROLLER_SERVICE_STATE last_exit=${CONTROLLER_LAST_EXIT_STATUS:-none}"
+  echo "Model readiness [$MODEL_READINESS_STATUS]"
   [[ -z "$LINEAR_LAST_ERROR" ]] || echo "Linear last error: $LINEAR_LAST_ERROR"
 fi
 

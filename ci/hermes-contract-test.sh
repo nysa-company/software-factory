@@ -418,6 +418,26 @@ if [[ "${1:-}" == "qualification-readiness" &&
   printf '%s\n' '{"checks":[],"profile_id":"cursor-opus-v1","readiness_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","schema":"nysa.software-factory.qualification-fallback-readiness/v1","status":"ready"}'
   exit 0
 fi
+if [[ "${1:-}" == "plan" &&
+      -e "$FACTORY_ROOT/factory/test-production-model-readiness-invalid" ]]; then
+  printf '%s\n' '{"error":"model plan failed: profile_resolution_failed","profile_id":"cursor-opus-v1","readiness":{"codex-gpt-5.6-sol":{"adapter_version":"0.148.0","reason":"version_mismatch","reported_identity":"","state":"INVALID"}},"reason_code":"profile_resolution_failed","schema":"nysa.software-factory.model-resolution-error/v1","status":"error"}'
+  exit 2
+fi
+if [[ "${1:-}" == "plan" &&
+      -e "$FACTORY_ROOT/factory/test-production-model-readiness-unsafe" ]]; then
+  printf '%s\n' '{"error":"model plan failed: profile_resolution_failed","profile_id":"cursor-opus-v1","readiness":{"codex-gpt-5.6-sol":{"adapter_version":"Authorization: Bearer DO-NOT-LEAK-A","reason":"version_mismatch","reported_identity":"connection:DO-NOT-LEAK-B","state":"INVALID"}},"reason_code":"profile_resolution_failed","schema":"nysa.software-factory.model-resolution-error/v1","status":"error"}'
+  exit 2
+fi
+if [[ "${1:-}" == "plan" &&
+      -e "$FACTORY_ROOT/factory/test-production-model-readiness-temporary" ]]; then
+  printf '%s\n' '{"error":"model plan failed: profile_temporarily_unavailable","profile_id":"cursor-opus-v1","readiness":{"codex-gpt-5.6-sol":{"adapter_version":"0.147.0","reason":"authentication_unavailable","reported_identity":"","state":"UNAVAILABLE"}},"reason_code":"profile_temporarily_unavailable","schema":"nysa.software-factory.model-resolution-error/v1","status":"error"}'
+  exit 2
+fi
+if [[ "${1:-}" == "plan" &&
+      -e "$FACTORY_ROOT/factory/test-production-model-readiness-ready" ]]; then
+  printf '%s\n' '{"portfolio_id":"cursor-openai-production","profile_hash":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","profile_id":"cursor-opus-v1","schema":"model-resolution-plan/v1","selections":{"builder":{},"narrator":{},"planner":{},"reviewer":{},"spec-linter":{},"test-author":{}}}'
+  exit 0
+fi
 exec /bin/bash "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/model-control-real.sh" "$@"
 EOF
   chmod +x "$release/scripts/factory-doctor.sh" "$release/scripts/factory-doctor-real.sh" \
@@ -1528,6 +1548,10 @@ assert data["checks"]["controller"] == {
 assert data["checks"]["fallback_readiness"] == {
     "status": "not_applicable", "report": None,
 }
+model_readiness = data["checks"]["model_readiness"]
+assert model_readiness["status"] == "ok"
+assert model_readiness["report"]["status"] == "ready"
+assert model_readiness["report"]["profile_id"] == "cursor-opus-v1"
 PY
 assert_no_secret "$TMP/launcher-doctor.json"
 DOCTOR_HELPER_ENV="$LAUNCH_PRODUCT/factory/doctor-helper.env"
@@ -1586,6 +1610,104 @@ assert check == {"status": "ok", "report": {
 }}
 PY
 rm -f "$LAUNCH_PRODUCT/factory/test-model-readiness-ready"
+
+touch "$LAUNCH_PRODUCT/factory/test-production-model-readiness-invalid"
+DOCTOR_MODEL_RC=0
+HOME="$TEST_HOME" PATH="$STUB_BIN:$PATH" TMPDIR="$TMP/launcher-tmp" \
+  FACTORY_KIT_TRUST_SCOPE=production-certified \
+  FACTORY_TEST_MODE=1 FACTORY_TRUSTED_TEST_HARNESS=1 \
+  FACTORY_RELEASE_CONTRACT_VERSION=1.8.0 FACTORY_PROJECT=launchtest \
+  FACTORY_ROOT="$LAUNCH_PRODUCT" FACTORY_MODEL_STATE_ROOT="$KITS_ROOT/projects" \
+  FACTORY_MODEL_MANAGER="$RELEASE_A/scripts/model-manager.py" \
+  bash "$RELEASE_A/scripts/factory-doctor-real.sh" --json \
+    --profile-dir "$PROFILE" --kit-dir "$RELEASE_A" \
+    --product-root "$LAUNCH_PRODUCT" --kit-sha "$SHA_A" \
+    > "$TMP/doctor-production-readiness-invalid.json" || DOCTOR_MODEL_RC=$?
+[[ "$DOCTOR_MODEL_RC" -eq 1 ]] || fail "Doctor accepted an unusable active profile"
+python3 - "$TMP/doctor-production-readiness-invalid.json" <<'PY'
+import json, sys
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+check = value["checks"]["model_readiness"]
+assert check["status"] == "error"
+assert check["report"]["profile_id"] == "cursor-opus-v1"
+assert check["report"]["reason_code"] == "profile_resolution_failed"
+assert check["report"]["readiness"]["codex-gpt-5.6-sol"] == {
+    "adapter_version": "0.148.0",
+    "reason": "version_mismatch",
+    "reported_identity": "",
+    "state": "INVALID",
+}
+PY
+rm -f "$LAUNCH_PRODUCT/factory/test-production-model-readiness-invalid"
+
+touch "$LAUNCH_PRODUCT/factory/test-production-model-readiness-unsafe"
+DOCTOR_MODEL_RC=0
+HOME="$TEST_HOME" PATH="$STUB_BIN:$PATH" TMPDIR="$TMP/launcher-tmp" \
+  FACTORY_KIT_TRUST_SCOPE=production-certified \
+  FACTORY_TEST_MODE=1 FACTORY_TRUSTED_TEST_HARNESS=1 \
+  FACTORY_RELEASE_CONTRACT_VERSION=1.8.0 FACTORY_PROJECT=launchtest \
+  FACTORY_ROOT="$LAUNCH_PRODUCT" FACTORY_MODEL_STATE_ROOT="$KITS_ROOT/projects" \
+  FACTORY_MODEL_MANAGER="$RELEASE_A/scripts/model-manager.py" \
+  bash "$RELEASE_A/scripts/factory-doctor-real.sh" --json \
+    --profile-dir "$PROFILE" --kit-dir "$RELEASE_A" \
+    --product-root "$LAUNCH_PRODUCT" --kit-sha "$SHA_A" \
+    > "$TMP/doctor-production-readiness-unsafe.json" || DOCTOR_MODEL_RC=$?
+[[ "$DOCTOR_MODEL_RC" -eq 1 ]] || fail "Doctor accepted unsafe readiness evidence"
+python3 - "$TMP/doctor-production-readiness-unsafe.json" <<'PY'
+import json, sys
+raw = open(sys.argv[1], encoding="utf-8").read()
+assert "DO-NOT-LEAK" not in raw
+check = json.loads(raw)["checks"]["model_readiness"]
+assert check == {"report": None, "status": "error"}
+PY
+rm -f "$LAUNCH_PRODUCT/factory/test-production-model-readiness-unsafe"
+
+touch "$LAUNCH_PRODUCT/factory/test-production-model-readiness-temporary"
+DOCTOR_MODEL_RC=0
+HOME="$TEST_HOME" PATH="$STUB_BIN:$PATH" TMPDIR="$TMP/launcher-tmp" \
+  FACTORY_KIT_TRUST_SCOPE=production-certified \
+  FACTORY_TEST_MODE=1 FACTORY_TRUSTED_TEST_HARNESS=1 \
+  FACTORY_RELEASE_CONTRACT_VERSION=1.8.0 FACTORY_PROJECT=launchtest \
+  FACTORY_ROOT="$LAUNCH_PRODUCT" FACTORY_MODEL_STATE_ROOT="$KITS_ROOT/projects" \
+  FACTORY_MODEL_MANAGER="$RELEASE_A/scripts/model-manager.py" \
+  bash "$RELEASE_A/scripts/factory-doctor-real.sh" --json \
+    --profile-dir "$PROFILE" --kit-dir "$RELEASE_A" \
+    --product-root "$LAUNCH_PRODUCT" --kit-sha "$SHA_A" \
+    > "$TMP/doctor-production-readiness-temporary.json" || DOCTOR_MODEL_RC=$?
+[[ "$DOCTOR_MODEL_RC" -eq 1 ]] || fail "Doctor accepted a temporarily unusable profile"
+python3 - "$TMP/doctor-production-readiness-temporary.json" <<'PY'
+import json, sys
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+check = value["checks"]["model_readiness"]
+assert check["status"] == "error"
+assert check["report"]["reason_code"] == "profile_temporarily_unavailable"
+assert value["overall_status"] == "error"
+PY
+rm -f "$LAUNCH_PRODUCT/factory/test-production-model-readiness-temporary"
+
+touch "$LAUNCH_PRODUCT/factory/test-production-model-readiness-ready"
+HOME="$TEST_HOME" PATH="$STUB_BIN:$PATH" TMPDIR="$TMP/launcher-tmp" \
+  FACTORY_KIT_TRUST_SCOPE=production-certified \
+  FACTORY_TEST_MODE=1 FACTORY_TRUSTED_TEST_HARNESS=1 \
+  FACTORY_RELEASE_CONTRACT_VERSION=1.8.0 FACTORY_PROJECT=launchtest \
+  FACTORY_ROOT="$LAUNCH_PRODUCT" FACTORY_MODEL_STATE_ROOT="$KITS_ROOT/projects" \
+  FACTORY_MODEL_MANAGER="$RELEASE_A/scripts/model-manager.py" \
+  bash "$RELEASE_A/scripts/factory-doctor-real.sh" --json \
+    --profile-dir "$PROFILE" --kit-dir "$RELEASE_A" \
+    --product-root "$LAUNCH_PRODUCT" --kit-sha "$SHA_A" \
+    > "$TMP/doctor-production-readiness-ready.json"
+python3 - "$TMP/doctor-production-readiness-ready.json" <<'PY'
+import json, sys
+check = json.load(open(sys.argv[1], encoding="utf-8"))["checks"]["model_readiness"]
+assert check == {"status": "ok", "report": {
+    "portfolio_id": "cursor-openai-production",
+    "profile_hash": "c" * 64,
+    "profile_id": "cursor-opus-v1",
+    "schema": "nysa.software-factory.doctor-model-readiness/v1",
+    "status": "ready",
+}}
+PY
+rm -f "$LAUNCH_PRODUCT/factory/test-production-model-readiness-ready"
 
 # The upgraded standalone launcher must continue selecting an inherited 1.1
 # release without rewriting its public contract.
