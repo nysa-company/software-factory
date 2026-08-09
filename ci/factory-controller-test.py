@@ -6565,38 +6565,54 @@ class FactoryControllerTest(unittest.TestCase):
 
     def migrated_bundle_passport(
         self, ticket: str, prior: str, head: str = "b" * 40,
-        route: str = "e" * 64,
+        route: str = "e" * 64, intermediates: tuple[str, ...] = (),
     ) -> tuple[dict[str, object], str]:
         key_path = self.state / "passport.key"
         if not key_path.exists():
             key_path.write_bytes(b"k" * 32)
             key_path.chmod(0o600)
-        prior_file = "7" * 64
+        releases = (prior, *intermediates, self.release.name)
+        files = tuple(
+            "7" * 64 if index == 0 else f"{7 + index:x}" * 64
+            for index in range(len(releases) - 1)
+        )
+        digests = tuple(
+            "6" * 64 if index == 0 else f"{8 + index:x}" * 64
+            for index in range(len(releases) - 1)
+        )
+        protected = tuple(
+            f"{index + 1:040x}" for index in range(len(releases))
+        )
+        migrations = [
+            {
+                "from_factory_sha": before, "from_head_sha": head,
+                "from_passport_file_sha256": files[index],
+                "from_passport_sha256": digests[index],
+                "from_protected_base_sha": protected[index],
+                "from_route_plan_sha256": route,
+                "schema": CONTROL.PASSPORT_MIGRATION_SCHEMA,
+                "to_factory_sha": after, "to_head_sha": head,
+                "to_protected_base_sha": protected[index + 1],
+                "to_route_plan_sha256": route,
+            }
+            for index, (before, after) in enumerate(zip(releases, releases[1:]))
+        ]
         passport = PASSPORT.authenticate({
             "base_history": [head], "branch": f"ticket/{ticket}",
             "charge_records": [], "completed_role_evidence": [],
             "contract_version": "1.8.0", "current_state": "Awaiting Approval",
             "factory_release_history": [
-                {"contract_version": "1.8.0", "factory_sha": prior},
-                {"contract_version": "1.8.0", "factory_sha": self.release.name},
+                {"contract_version": "1.8.0", "factory_sha": release}
+                for release in releases
             ],
             "factory_sha": self.release.name, "head_sha": head,
             "head_tree": "c" * 40,
-            "migration_history": [{
-                "from_factory_sha": prior, "from_head_sha": head,
-                "from_passport_file_sha256": prior_file,
-                "from_passport_sha256": "6" * 64,
-                "from_protected_base_sha": head,
-                "from_route_plan_sha256": route,
-                "schema": CONTROL.PASSPORT_MIGRATION_SCHEMA,
-                "to_factory_sha": self.release.name, "to_head_sha": head,
-                "to_protected_base_sha": head,
-                "to_route_plan_sha256": route,
-            }],
-            "parent_digest": "6" * 64,
-            "parent_file_sha256": prior_file,
+            "migration_history": migrations,
+            "parent_digest": digests[-1],
+            "parent_file_sha256": files[-1],
             "product_origin_sha256": "5" * 64, "project": "relay",
-            "protected_base_sha": head, "publication_state": "validating",
+            "protected_base_sha": protected[-1],
+            "publication_state": "validating",
             "route_plan_sha256": route,
             "schema": "nysa.software-factory.ticket-passport/v1",
             "ticket": ticket, "ticket_blob": "4" * 40,
@@ -6606,67 +6622,6 @@ class FactoryControllerTest(unittest.TestCase):
         path.parent.mkdir(mode=0o700, exist_ok=True)
         PASSPORT.write_atomic(path, passport)
         return passport, hashlib.sha256(path.read_bytes()).hexdigest()
-
-    def two_hop_bundle_passport(
-        self, ticket: str, oldest: str, middle: str, head: str = "b" * 40,
-        route: str = "e" * 64,
-    ) -> tuple[dict[str, object], str, str]:
-        """Passport migrated twice: oldest -> middle -> active release.
-
-        Models a ticket stranded across more than one upgrade, whose on-disk
-        receipt still binds ``oldest``.
-        """
-        key_path = self.state / "passport.key"
-        if not key_path.exists():
-            key_path.write_bytes(b"k" * 32)
-            key_path.chmod(0o600)
-        oldest_file = "7" * 64
-        middle_file = "8" * 64
-
-        def edge(source, target, source_file):
-            return {
-                "from_factory_sha": source, "from_head_sha": head,
-                "from_passport_file_sha256": source_file,
-                "from_passport_sha256": "6" * 64,
-                "from_protected_base_sha": head,
-                "from_route_plan_sha256": route,
-                "schema": CONTROL.PASSPORT_MIGRATION_SCHEMA,
-                "to_factory_sha": target, "to_head_sha": head,
-                "to_protected_base_sha": head,
-                "to_route_plan_sha256": route,
-            }
-
-        passport = PASSPORT.authenticate({
-            "base_history": [head], "branch": f"ticket/{ticket}",
-            "charge_records": [], "completed_role_evidence": [],
-            "contract_version": "1.8.0", "current_state": "Awaiting Approval",
-            "factory_release_history": [
-                {"contract_version": "1.8.0", "factory_sha": oldest},
-                {"contract_version": "1.8.0", "factory_sha": middle},
-                {"contract_version": "1.8.0", "factory_sha": self.release.name},
-            ],
-            "factory_sha": self.release.name, "head_sha": head,
-            "head_tree": "c" * 40,
-            "migration_history": [
-                edge(oldest, middle, oldest_file),
-                edge(middle, self.release.name, middle_file),
-            ],
-            "parent_digest": "6" * 64,
-            "parent_file_sha256": middle_file,
-            "product_origin_sha256": "5" * 64, "project": "relay",
-            "protected_base_sha": head, "publication_state": "validating",
-            "route_plan_sha256": route,
-            "schema": "nysa.software-factory.ticket-passport/v1",
-            "ticket": ticket, "ticket_blob": "4" * 40,
-            "transition_receipt_sha256": "",
-        }, key_path.read_bytes())
-        path = self.state / "passports" / f"{ticket}.json"
-        path.parent.mkdir(mode=0o700, exist_ok=True)
-        PASSPORT.write_atomic(path, passport)
-        return (
-            passport, oldest_file,
-            hashlib.sha256(path.read_bytes()).hexdigest(),
-        )
 
     def stale_release_receipt(
         self, ticket: str, prior: str, lease: str, head: str = "b" * 40,
@@ -6793,38 +6748,54 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(receipt_path.read_bytes(), issued_bytes)
         self.assertNotIn("T-110", restarted.prior_transition_tickets)
 
-    def two_hop_refresh_fixture(self, ticket="T-110", rotated=True):
-        """Stranded two releases back, with the ticket lease rotated since."""
-        oldest, middle = "f" * 40, "d" * 40
-        issued_lease, current_lease = "a" * 64, ("c" * 64 if rotated else "a" * 64)
-        _passport, oldest_file, passport_file = self.two_hop_bundle_passport(
-            ticket, oldest, middle,
-        )
-        cell = self.root / f"parked/{ticket}"
+    def test_bundle_refresh_receipt_crosses_two_releases_and_rotated_lease(
+        self,
+    ) -> None:
+        prior = "f" * 40
+        intermediate = "d" * 40
+        old_lease = "b" * 64
+        current_lease = "c" * 64
+        cell = self.root / "parked/T-110"
         cell.mkdir(parents=True)
-        controller = CONTROL.Controller(self.args)
-        controller.marker(
-            f"passport-route-migration-pending-{ticket}-{self.release.name}",
-            {
-                "factory_sha": self.release.name,
-                "schema": CONTROL.EVENT_SCHEMA,
-                "ticket": ticket,
-            },
+        self.migrated_bundle_passport(
+            "T-110", prior, intermediates=(intermediate,),
         )
         stale = self.stale_release_receipt(
-            ticket, oldest, issued_lease, passport_file=oldest_file,
+            "T-110", prior, old_lease,
         )
         claim = {
             "blocked_reason": "route-migration-required",
-            "branch": f"ticket/{ticket}", "lease": current_lease,
+            "branch": "ticket/T-110", "lease": current_lease,
             "priority": "normal", "publication_lease": "", "receipt": "",
             "release_refresh_required": True, "role": "",
             "schema": CONTROL.CLAIM_SCHEMA, "status": "blocked",
-            "ticket": ticket, "worktree": str(cell),
+            "ticket": "T-110", "worktree": str(cell),
         }
-        controller.save_claim(claim)
+        passport_file = hashlib.sha256(
+            (self.state / "passports/T-110.json").read_bytes()
+        ).hexdigest()
+        marker = (
+            self.state / f"bundle-refresh-transition-T-110-{self.release.name}.json"
+        )
+        controller = CONTROL.Controller(self.args)
+        controller.role_active = lambda _claim: False
+        controller.json_call = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("crash before receipt")
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "crash before receipt"):
+            controller.refresh_prior_release_receipt(claim)
+        marker_bytes = marker.read_bytes()
+        claim.pop("release_refresh_required")
+        controller.release_ticket_lease = lambda _claim: self.fail(
+            "exact handoff lease must survive restart"
+        )
+        controller.release_inactive_ticket_leases([claim])
 
         def state_machine(*args, **_kwargs):
+            self.assertEqual(
+                args[args.index("--lease") + 1], current_lease,
+            )
             value = dict(stale)
             value.update(
                 factory_sha=self.release.name,
@@ -6840,105 +6811,75 @@ class FactoryControllerTest(unittest.TestCase):
                     "consumed", "consumed_at_epoch", "receipt_sha256",
                 }
             })).hexdigest()
-            CONTROL.write(self.state / f"{ticket}.json", value)
+            CONTROL.write(self.state / "T-110.json", value)
             return state_transition(
-                "AWAIT-OPERATOR Linear approval observed",
-                value["receipt_sha256"], ticket,
+                value["stage"], value["receipt_sha256"], "T-110",
             )
 
-        controller.json_call = state_machine
-        controller.release_bundle_refreshable = lambda *_args: True
-        controller.ticket_release_current = lambda _claim: False
-        controller.renew = lambda _claim: None
-        controller.role_active = lambda _claim: False
-        return controller, claim, stale
-
-    def test_bundle_refresh_reissues_receipt_two_releases_behind(self) -> None:
-        """A ticket stranded across two upgrades must still be readmitted.
-
-        The original strand prevented the middle release from reissuing the
-        receipt, so it binds the oldest release while the newest passport edge
-        starts at the middle one. The reissue must authenticate through the
-        exact edge chain rather than assuming a single hop, and must tolerate
-        the ticket lease having rotated during the upgrades.
-        """
-        controller, claim, _stale = self.two_hop_refresh_fixture()
-        events = []
-        controller.event = lambda name, *_a, **_k: events.append(name)
-        controller.event_once = lambda name, *_a, **_k: events.append(name)
-
-        controller.recover_upgraded_claims([claim])
-
-        self.assertIn("prior_release_receipt_refreshed", events)
-        self.assertEqual(claim["status"], "claimed")
-        self.assertEqual(claim["receipt"], "")
-        self.assertNotIn("T-110", controller.prior_transition_tickets)
-        self.assertEqual(
-            CONTROL.read(self.state / "T-110.json")["factory_sha"],
-            self.release.name,
-        )
-
-    def test_two_hop_refresh_replay_reuses_the_same_origin(self) -> None:
-        """An idempotent replay must agree with the issuing origin edge."""
-        controller, claim, _stale = self.two_hop_refresh_fixture()
-        controller.event = lambda *_a, **_k: None
-        controller.event_once = lambda *_a, **_k: None
-        controller.recover_upgraded_claims([claim])
-        issued = (self.state / "T-110.json").read_bytes()
-
         restarted = CONTROL.Controller(self.args)
-        restarted.release_bundle_refreshable = lambda *_args: True
-        restarted.ticket_release_current = lambda _claim: False
-        restarted.renew = lambda _claim: None
         restarted.role_active = lambda _claim: False
-        restarted.event = lambda *_a, **_k: None
-        restarted.event_once = lambda *_a, **_k: None
-        restarted.json_call = lambda *_a, **_k: self.fail(
-            "replay must reuse the durable current receipt"
-        )
-        replayed = restarted.load_claims()[0]
-        restarted.recover_upgraded_claims([replayed])
+        restarted.json_call = state_machine
+        refreshed = restarted.refresh_prior_release_receipt(claim)
+        current = CONTROL.read(self.state / "T-110.json")
 
-        self.assertEqual((self.state / "T-110.json").read_bytes(), issued)
-        self.assertNotIn("T-110", restarted.prior_transition_tickets)
-
-    def test_two_hop_refresh_refuses_a_broken_chain(self) -> None:
-        """A receipt whose release is not on the recorded chain is refused."""
-        controller, claim, _stale = self.two_hop_refresh_fixture()
-        # Rewrite the receipt to a release that appears nowhere in the chain.
-        value = CONTROL.read(self.state / "T-110.json")
-        value["factory_sha"] = "1" * 40
-        value.pop("receipt_sha256")
-        value["receipt_sha256"] = hashlib.sha256(STATE.canonical({
-            key: item for key, item in value.items()
-            if key not in {"consumed", "consumed_at_epoch", "receipt_sha256"}
-        })).hexdigest()
-        CONTROL.write(self.state / "T-110.json", value)
-
-        with self.assertRaises(CONTROL.ControllerError):
-            controller.refresh_prior_release_receipt(claim)
-
-    def test_two_hop_refresh_refuses_another_tickets_receipt(self) -> None:
-        """Relaxing the lease binding must not admit a foreign receipt."""
-        controller, claim, _stale = self.two_hop_refresh_fixture()
-        value = CONTROL.read(self.state / "T-110.json")
-        value["ticket"] = "T-999"
-        value["branch"] = "ticket/T-999"
-        value.pop("receipt_sha256")
-        value["receipt_sha256"] = hashlib.sha256(STATE.canonical({
-            key: item for key, item in value.items()
-            if key not in {"consumed", "consumed_at_epoch", "receipt_sha256"}
-        })).hexdigest()
-        CONTROL.write(self.state / "T-110.json", value)
-
-        # The receipt no longer identifies this ticket, so it is rejected as
-        # unusable evidence: no reissue happens and the ticket stays excluded
-        # from scheduling rather than being readmitted on foreign evidence.
-        self.assertEqual(controller.refresh_prior_release_receipt(claim), "")
-        self.assertIn("T-110", controller.invalid_transition_tickets)
+        self.assertEqual(current["receipt_sha256"], refreshed)
+        self.assertEqual(current["parent_digest"], stale["receipt_sha256"])
         self.assertEqual(
-            CONTROL.read(self.state / "T-110.json")["ticket"], "T-999",
+            current["lease_sha256"],
+            hashlib.sha256(current_lease.encode()).hexdigest(),
         )
+        self.assertEqual(claim["receipt"], "")
+        self.assertEqual(marker.read_bytes(), marker_bytes)
+
+    def test_bundle_refresh_migration_suffix_is_exact(self) -> None:
+        prior = "f" * 40
+        intermediate = "d" * 40
+        passport, _file = self.migrated_bundle_passport(
+            "T-110", prior, intermediates=(intermediate,),
+        )
+        self.assertEqual(
+            len(CONTROL.Controller.bundle_refresh_migration_suffix(
+                passport, prior, "7" * 64,
+            )),
+            2,
+        )
+        mutations = []
+        for name in (
+            "first-passport", "gap", "reorder", "duplicate", "head",
+            "route", "protected", "final-file", "final-digest", "history",
+        ):
+            invalid = copy.deepcopy(passport)
+            edges = invalid["migration_history"]
+            if name == "first-passport":
+                edges[0]["from_passport_file_sha256"] = "0" * 64
+            elif name == "gap":
+                edges[1]["from_factory_sha"] = "c" * 40
+            elif name == "reorder":
+                invalid["migration_history"] = list(reversed(edges))
+            elif name == "duplicate":
+                invalid["migration_history"] = [edges[0], *edges]
+            elif name == "head":
+                edges[1]["from_head_sha"] = "c" * 40
+            elif name == "route":
+                edges[1]["from_route_plan_sha256"] = "0" * 64
+            elif name == "protected":
+                edges[1]["from_protected_base_sha"] = "c" * 40
+            elif name == "final-file":
+                invalid["parent_file_sha256"] = "0" * 64
+            elif name == "final-digest":
+                invalid["parent_digest"] = "0" * 64
+            else:
+                invalid["factory_release_history"].insert(
+                    1, dict(invalid["factory_release_history"][0]),
+                )
+            mutations.append((name, invalid))
+        for name, invalid in mutations:
+            with self.subTest(name=name):
+                self.assertIsNone(
+                    CONTROL.Controller.bundle_refresh_migration_suffix(
+                        invalid, prior, "7" * 64,
+                    )
+                )
 
     def test_bundle_refresh_receipt_handoff_refuses_unbound_evidence(self) -> None:
         prior = "f" * 40
@@ -6946,7 +6887,7 @@ class FactoryControllerTest(unittest.TestCase):
         controller = CONTROL.Controller(self.args)
         controller.role_active = lambda _claim: False
 
-        for ticket in ("T-110", "T-111"):
+        for ticket in ("T-110", "T-111", "T-112"):
             (self.root / f"parked/{ticket}").mkdir(parents=True)
             _, current_file = self.migrated_bundle_passport(ticket, prior)
             stale = self.stale_release_receipt(ticket, prior, lease)
@@ -6969,12 +6910,15 @@ class FactoryControllerTest(unittest.TestCase):
                 ).hexdigest()
                 CONTROL.write(self.state / f"{ticket}.json", stale)
             else:
+                parent = stale["receipt_sha256"]
                 stale.update(
                     factory_sha=self.release.name,
-                    parent_digest=stale["receipt_sha256"],
+                    parent_digest=parent,
                     passport_sha256=current_file,
                     stage="AWAIT-OPERATOR Linear approval observed",
                 )
+                if ticket == "T-112":
+                    stale["lease_sha256"] = "0" * 64
                 stale.pop("receipt_sha256")
                 stale["receipt_sha256"] = hashlib.sha256(STATE.canonical({
                     key: item for key, item in stale.items()
@@ -6983,10 +6927,43 @@ class FactoryControllerTest(unittest.TestCase):
                     }
                 })).hexdigest()
                 CONTROL.write(self.state / f"{ticket}.json", stale)
+                controller.marker(
+                    f"bundle-refresh-transition-{ticket}-{self.release.name}",
+                    {
+                        "factory_sha": self.release.name,
+                        "from_factory_sha": prior,
+                        "from_passport_file_sha256": "7" * 64,
+                        "from_receipt_sha256": (
+                            "0" * 64 if ticket == "T-111" else parent
+                        ),
+                        "head_sha": "b" * 40,
+                        "lease_sha256": hashlib.sha256(
+                            lease.encode()
+                        ).hexdigest(),
+                        "passport_file_sha256": current_file,
+                        "route_plan_sha256": "e" * 64,
+                        "schema": CONTROL.EVENT_SCHEMA,
+                        "ticket": ticket,
+                    },
+                )
             before = (self.state / f"{ticket}.json").read_bytes()
+            marker = (
+                self.state / f"bundle-refresh-transition-{ticket}-"
+                f"{self.release.name}.json"
+            )
+            marker_before = marker.read_bytes() if marker.exists() else None
             with self.assertRaises(CONTROL.ControllerError):
                 controller.refresh_prior_release_receipt(claim)
             self.assertEqual((self.state / f"{ticket}.json").read_bytes(), before)
+            self.assertEqual(
+                marker.read_bytes() if marker.exists() else None,
+                marker_before,
+            )
+            if ticket == "T-112":
+                released = []
+                controller.release_ticket_lease = released.append
+                controller.release_inactive_ticket_leases([claim])
+                self.assertEqual(released, [claim])
 
     def test_release_bundle_refresh_returns_to_route_migration_gate(self) -> None:
         controller = CONTROL.Controller(self.args)

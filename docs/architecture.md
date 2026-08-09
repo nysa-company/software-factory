@@ -432,9 +432,12 @@ sweep. An inactive invalid claim releases its lease without rewriting the
 receipt; a live role is untouched. Existing typed release-upgrade, terminal,
 and contract-blocker recovery may still use a digest-valid prior receipt under
 their stricter bindings. The one unmerged stale-bundle recovery may ask the
-state machine for a current receipt only after the authenticated passport's
-latest migration edge, old receipt, head, route, lease, and old passport-file
-digest agree. A release-scoped marker is durable before issuance, so restart
+state machine for a current receipt only after one unique contiguous suffix of
+authenticated release-changing migration edges binds the old receipt and
+passport-file digest to the current passport without changing head or route.
+The old receipt retains its historical lease while the successor receipt binds
+the controller's current active lease. A release-scoped marker is durable
+before issuance, so restart
 reuses the exact current receipt; its digest stays out of the claim's pending
 role field and authorizes only the launcher's existing `ticket-attest refresh`
 boundary. Done and Canceled claims retire before this check,

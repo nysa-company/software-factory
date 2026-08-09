@@ -26,7 +26,7 @@ from urllib.parse import urlsplit
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
 from release_lineage import (  # noqa: E402
     MIGRATION_SCHEMA as PASSPORT_MIGRATION_SCHEMA,
-    passport_head_lineage, successor_release_lineage,
+    passport_head_lineage, successor_release_lineage, valid_v2_migration,
 )
 from qualification_artifacts import (  # noqa: E402
     ArtifactError as QualificationArtifactError,
@@ -3113,6 +3113,7 @@ class Controller:
                 and claim.get("lease_released") is not True
                 and not self.role_active(claim)
                 and not self.semantic_handoff_pending(claim)
+                and not self.bundle_refresh_handoff_pending(claim)
             ):
                 status = claim["status"]
                 try:
@@ -4283,61 +4284,171 @@ class Controller:
             and not self.protected_base_current(claim, passport.get("head_sha", ""))
         )
 
-    def prior_receipt_migration_chain(
-        self, passport: dict[str, Any], source_factory_sha: str,
+    @staticmethod
+    def bundle_refresh_migration_suffix(
+        passport: dict[str, Any], source_factory: str,
+        source_passport_file: str,
     ) -> list[dict[str, Any]] | None:
-        """Return the exact edge chain from one release to the active one.
-
-        A ticket stranded across more than one upgrade holds a receipt several
-        releases behind the newest passport edge, because the strand itself
-        prevented each earlier reissue. Walk the recorded migration history
-        backwards from the active release and accept only a contiguous chain
-        that ends at the active release, starts at ``source_factory_sha``, and
-        never moves the ticket head or the route plan. Return None otherwise.
-        """
         migrations = passport.get("migration_history")
-        head = passport.get("head_sha")
-        route = passport.get("route_plan_sha256")
+        head = passport.get("head_sha", "")
+        route = passport.get("route_plan_sha256", "")
+        protected = passport.get("protected_base_sha", "")
         if (
             not isinstance(migrations, list)
-            or not migrations
-            or not SHA.fullmatch(source_factory_sha or "")
-            or source_factory_sha == self.release_path.name
+            or not SHA.fullmatch(source_factory)
+            or not DIGEST.fullmatch(source_passport_file)
+            or not SHA.fullmatch(head)
+            or not DIGEST.fullmatch(route)
+            or not SHA.fullmatch(protected)
+            or not DIGEST.fullmatch(passport.get("parent_file_sha256", ""))
+            or not DIGEST.fullmatch(passport.get("parent_digest", ""))
+            or not successor_release_lineage(
+                passport.get("factory_release_history"), migrations,
+                source_factory, passport.get("factory_sha", ""),
+                valid_v2_migration,
+            )
         ):
             return None
-        chain: list[dict[str, Any]] = []
-        target = self.release_path.name
-        for edge in reversed(migrations):
-            source = edge.get("from_factory_sha") if isinstance(edge, dict) else None
-            if (
-                not isinstance(edge, dict)
-                or edge.get("schema") != PASSPORT_MIGRATION_SCHEMA
-                or edge.get("to_factory_sha") != target
-                or not SHA.fullmatch(source or "")
-                # A same-release edge carries no upgrade and cannot advance
-                # the walk, so refuse rather than loop on it.
-                or source == target
-                or not (
-                    edge.get("from_head_sha")
-                    == edge.get("to_head_sha")
-                    == head
+        starts = [
+            index for index, edge in enumerate(migrations)
+            if valid_v2_migration(edge)
+            and edge["from_factory_sha"] == source_factory
+            and edge["from_passport_file_sha256"] == source_passport_file
+            and edge["from_head_sha"] == head
+            and edge["from_route_plan_sha256"] == route
+        ]
+        if len(starts) != 1:
+            return None
+        suffix = migrations[starts[0]:]
+        return suffix if (
+            all(
+                valid_v2_migration(item)
+                and item["from_factory_sha"] != item["to_factory_sha"]
+                and item["from_head_sha"] == item["to_head_sha"] == head
+                and item["from_route_plan_sha256"]
+                == item["to_route_plan_sha256"] == route
+                for item in suffix
+            )
+            and all(
+                prior["to_factory_sha"] == following["from_factory_sha"]
+                and prior["to_head_sha"] == following["from_head_sha"]
+                and prior["to_protected_base_sha"]
+                == following["from_protected_base_sha"]
+                and prior["to_route_plan_sha256"]
+                == following["from_route_plan_sha256"]
+                for prior, following in zip(suffix, suffix[1:])
+            )
+            and suffix[-1]["to_factory_sha"] == passport.get("factory_sha")
+            and suffix[-1]["to_head_sha"] == head
+            and suffix[-1]["to_protected_base_sha"] == protected
+            and suffix[-1]["to_route_plan_sha256"] == route
+            and suffix[-1]["from_passport_file_sha256"]
+            == passport["parent_file_sha256"]
+            and suffix[-1]["from_passport_sha256"]
+            == passport["parent_digest"]
+        ) else None
+
+    def bundle_refresh_handoff_pending(self, claim: dict[str, Any]) -> bool:
+        if (
+            claim.get("status") != "blocked"
+            or claim.get("receipt")
+            or claim.get("role")
+            or not DIGEST.fullmatch(claim.get("lease", ""))
+            or claim.get("lease_released") is True
+            or claim.get("publication_lease")
+            or self.role_active(claim)
+        ):
+            return False
+        marker_name = (
+            f"bundle-refresh-transition-{claim['ticket']}-"
+            f"{self.release_path.name}"
+        )
+        passport_path = self.state / "passports" / f"{claim['ticket']}.json"
+        try:
+            marker = read(self.state / f"{marker_name}.json")
+            receipt = self.transition_receipt(claim, allow_prior=True)
+            passport = self.authenticated_operator_passport(claim["ticket"])
+            passport_file = hashlib.sha256(passport_path.read_bytes()).hexdigest()
+        except (
+            ControllerError, FileNotFoundError, json.JSONDecodeError, OSError,
+            UnicodeError,
+        ):
+            return False
+        suffix = (
+            self.bundle_refresh_migration_suffix(
+                passport, marker.get("from_factory_sha", ""),
+                marker.get("from_passport_file_sha256", ""),
+            )
+            if passport is not None else None
+        )
+        current_lease = hashlib.sha256(claim["lease"].encode()).hexdigest()
+        stage = receipt.get("stage", "") if receipt else ""
+        expected = {
+            "factory_sha": self.release_path.name,
+            "from_factory_sha": suffix[0]["from_factory_sha"] if suffix else None,
+            "from_passport_file_sha256": (
+                suffix[0]["from_passport_file_sha256"] if suffix else None
+            ),
+            "from_receipt_sha256": marker.get("from_receipt_sha256"),
+            "head_sha": passport.get("head_sha") if passport else None,
+            "lease_sha256": current_lease,
+            "passport_file_sha256": passport_file,
+            "route_plan_sha256": (
+                passport.get("route_plan_sha256") if passport else None
+            ),
+            "schema": EVENT_SCHEMA,
+            "ticket": claim["ticket"],
+        }
+        prior = receipt is not None and receipt.get("factory_sha") != self.release_path.name
+        current = receipt is not None and receipt.get("factory_sha") == self.release_path.name
+        return bool(
+            suffix
+            and receipt is not None
+            and marker == expected
+            and passport.get("factory_sha") == self.release_path.name
+            and passport.get("branch") == claim["branch"]
+            and passport.get("current_state") in {
+                "Awaiting Approval", "Approved",
+            }
+            and passport.get("publication_state") != "merged"
+            and receipt.get("consumed") is False
+            and receipt.get("role") is None
+            and (
+                (
+                    prior
+                    and stage.startswith(
+                        "AWAIT-OPERATOR bundle attested;"
+                    )
+                    and receipt.get("factory_sha")
+                    == marker["from_factory_sha"]
+                    and receipt.get("passport_sha256")
+                    == marker["from_passport_file_sha256"]
+                    and receipt.get("receipt_sha256")
+                    == marker["from_receipt_sha256"]
+                    and DIGEST.fullmatch(receipt.get("lease_sha256", ""))
+                    and receipt.get("head_sha") == marker["head_sha"]
+                    and receipt.get("route_plan_sha256")
+                    == marker["route_plan_sha256"]
                 )
-                or not (
-                    edge.get("from_route_plan_sha256")
-                    == edge.get("to_route_plan_sha256")
-                    == route
+                or (
+                    current
+                    and not stage.startswith(
+                        "REFUSE dependency refresh required"
+                    )
+                    and (
+                        stage.startswith("REFUSE ")
+                        or stage.startswith("AWAIT-")
+                    )
+                    and receipt.get("parent_digest")
+                    == marker["from_receipt_sha256"]
+                    and receipt.get("lease_sha256") == current_lease
+                    and receipt.get("passport_sha256") == passport_file
+                    and receipt.get("head_sha") == marker["head_sha"]
+                    and receipt.get("route_plan_sha256")
+                    == marker["route_plan_sha256"]
                 )
-                or not DIGEST.fullmatch(
-                    edge.get("from_passport_file_sha256", "")
-                )
-            ):
-                return None
-            chain.append(edge)
-            if source == source_factory_sha:
-                chain.reverse()
-                return chain
-            target = source
-        return None
+            )
+        )
 
     def refresh_prior_release_receipt(self, claim: dict[str, Any]) -> str:
         """Issue or recover the exact current receipt for bundle refresh."""
@@ -4348,15 +4459,36 @@ class Controller:
         passport_path = (
             self.state / "passports" / f"{claim['ticket']}.json"
         )
-        migrations = (
-            passport.get("migration_history")
-            if passport is not None else None
-        )
-        edge = migrations[-1] if isinstance(migrations, list) and migrations else {}
         lease = claim.get("lease", "")
         passport_file = (
             hashlib.sha256(passport_path.read_bytes()).hexdigest()
             if passport is not None else ""
+        )
+        marker_name = (
+            f"bundle-refresh-transition-{claim['ticket']}-"
+            f"{self.release_path.name}"
+        )
+        marker_path = self.state / f"{marker_name}.json"
+        expected: dict[str, Any] | None = None
+        if receipt.get("factory_sha") == self.release_path.name:
+            try:
+                expected = read(marker_path)
+            except (FileNotFoundError, json.JSONDecodeError, OSError) as error:
+                raise ControllerError(
+                    "bundle-refresh transition marker is unavailable"
+                ) from error
+            source_factory = expected.get("from_factory_sha", "")
+            source_passport_file = expected.get(
+                "from_passport_file_sha256", ""
+            )
+        else:
+            source_factory = receipt.get("factory_sha", "")
+            source_passport_file = receipt.get("passport_sha256", "")
+        suffix = (
+            self.bundle_refresh_migration_suffix(
+                passport, source_factory, source_passport_file,
+            )
+            if passport is not None else None
         )
         if (
             passport is None
@@ -4368,23 +4500,7 @@ class Controller:
             or passport.get("publication_state") == "merged"
             or not SHA.fullmatch(passport.get("head_sha", ""))
             or not DIGEST.fullmatch(passport.get("route_plan_sha256", ""))
-            or not isinstance(edge, dict)
-            or edge.get("schema") != PASSPORT_MIGRATION_SCHEMA
-            or edge.get("to_factory_sha") != self.release_path.name
-            or edge.get("from_factory_sha") == self.release_path.name
-            or not (
-                edge.get("from_head_sha")
-                == edge.get("to_head_sha")
-                == passport.get("head_sha")
-            )
-            or not (
-                edge.get("from_route_plan_sha256")
-                == edge.get("to_route_plan_sha256")
-                == passport.get("route_plan_sha256")
-            )
-            or not DIGEST.fullmatch(
-                edge.get("from_passport_file_sha256", "")
-            )
+            or suffix is None
             or not DIGEST.fullmatch(lease)
             or claim.get("lease_released") is True
             or claim.get("publication_lease")
@@ -4392,51 +4508,32 @@ class Controller:
         ):
             raise ControllerError("bundle-refresh receipt authority is invalid")
 
-        marker_name = (
-            f"bundle-refresh-transition-{claim['ticket']}-"
-            f"{self.release_path.name}"
-        )
-        marker_path = self.state / f"{marker_name}.json"
+        first = suffix[0]
+        current_lease = hashlib.sha256(lease.encode()).hexdigest()
         transition: dict[str, Any] | None = None
         if receipt.get("factory_sha") != self.release_path.name:
-            # The receipt may sit several releases behind the newest edge, so
-            # the authenticated origin is the first edge of the exact chain
-            # from the receipt's release to the active one, not simply the
-            # last edge.
-            chain = self.prior_receipt_migration_chain(
-                passport, receipt.get("factory_sha", ""),
-            )
-            origin = chain[0] if chain else {}
             expected = {
                 "factory_sha": self.release_path.name,
-                "from_factory_sha": origin.get("from_factory_sha"),
-                "from_passport_file_sha256": (
-                    origin.get("from_passport_file_sha256")
-                ),
+                "from_factory_sha": first["from_factory_sha"],
+                "from_passport_file_sha256": first[
+                    "from_passport_file_sha256"
+                ],
                 "from_receipt_sha256": receipt.get("receipt_sha256"),
                 "head_sha": passport["head_sha"],
-                "lease_sha256": hashlib.sha256(lease.encode()).hexdigest(),
+                "lease_sha256": current_lease,
                 "passport_file_sha256": passport_file,
                 "route_plan_sha256": passport["route_plan_sha256"],
                 "schema": EVENT_SCHEMA,
                 "ticket": claim["ticket"],
             }
             if (
-                chain is None
+                receipt.get("factory_sha") != first["from_factory_sha"]
                 or receipt.get("passport_sha256")
-                != origin.get("from_passport_file_sha256")
+                != first["from_passport_file_sha256"]
                 or receipt.get("head_sha") != passport.get("head_sha")
                 or receipt.get("route_plan_sha256")
                 != passport.get("route_plan_sha256")
-                # The prior receipt was issued under the lease held at that
-                # time. A release upgrade legitimately reissues the ticket
-                # lease, so it cannot be required to match the current one.
-                # The reissued receipt is still checked against the current
-                # lease below, and the ticket and branch checks keep another
-                # ticket's receipt from being accepted here.
-                or not DIGEST.fullmatch(receipt.get("lease_sha256") or "")
-                or receipt.get("ticket") != claim["ticket"]
-                or receipt.get("branch") != claim["branch"]
+                or not DIGEST.fullmatch(receipt.get("lease_sha256", ""))
                 or receipt.get("consumed") is not False
                 or receipt.get("role") is not None
                 or not receipt.get("stage", "").startswith(
@@ -4457,31 +4554,18 @@ class Controller:
                 "--json", timeout=None,
             )
             receipt = self.transition_receipt(claim, allow_prior=True)
-        else:
-            try:
-                expected = read(marker_path)
-            except (FileNotFoundError, json.JSONDecodeError, OSError) as error:
-                raise ControllerError(
-                    "bundle-refresh transition marker is unavailable"
-                ) from error
 
-        # Both constructions must agree on the origin edge, or an idempotent
-        # replay after a crash would refuse forever.
-        replay_chain = self.prior_receipt_migration_chain(
-            passport, expected.get("from_factory_sha", ""),
-        )
-        replay_origin = replay_chain[0] if replay_chain else {}
         expected_marker = {
             "factory_sha": self.release_path.name,
-            "from_factory_sha": replay_origin.get("from_factory_sha"),
-            "from_passport_file_sha256": replay_origin.get(
+            "from_factory_sha": first["from_factory_sha"],
+            "from_passport_file_sha256": first[
                 "from_passport_file_sha256"
-            ),
+            ],
             "from_receipt_sha256": (
                 receipt.get("parent_digest") if receipt else None
             ),
             "head_sha": passport["head_sha"],
-            "lease_sha256": hashlib.sha256(lease.encode()).hexdigest(),
+            "lease_sha256": current_lease,
             "passport_file_sha256": passport_file,
             "route_plan_sha256": passport["route_plan_sha256"],
             "schema": EVENT_SCHEMA,
