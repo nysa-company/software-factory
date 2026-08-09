@@ -119,19 +119,44 @@ value = json.loads(path.read_text())
 identity = {key: value[key] for key in (
     "certification_exit_status", "driver_exit_status",
     "driver_output_sha256", "evidence_sha256", "factory_sha",
-    "failure_stage", "product_output_sha256", "product_tree",
+    "failure_stage", "host_load_sha256", "product_output_sha256",
+    "product_tree",
 )}
 canonical = lambda item: json.dumps(
     item, sort_keys=True, separators=(",", ":")
 ).encode()
 assert value["failure_id"] == hashlib.sha256(canonical(identity)).hexdigest()
 assert path.stem == value["failure_id"]
+assert value["host_load_sha256"] == hashlib.sha256(canonical(
+    value["product_certification_host_load"]
+)).hexdigest()
 assert value["redacted_output_sha256"] == hashlib.sha256(
     value["redacted_output"].encode()
 ).hexdigest()
 record = dict(value)
 digest = record.pop("record_sha256")
 assert digest == hashlib.sha256(canonical(record)).hexdigest()
+PY
+}
+
+product_certification_host_load_valid() {
+  python3 - "$1" <<'PY'
+import json, math, re, sys
+value = json.load(open(sys.argv[1]))["product_certification_host_load"]
+assert set(value) == {"end", "start"}
+timestamp = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
+for observation in value.values():
+    assert set(observation) == {
+        "load_average_1m", "load_average_5m", "load_average_15m",
+        "logical_cpu_count", "observed_at",
+    }
+    assert timestamp.fullmatch(observation["observed_at"])
+    assert type(observation["logical_cpu_count"]) is int
+    assert observation["logical_cpu_count"] > 0
+    for key in ("load_average_1m", "load_average_5m", "load_average_15m"):
+        item = observation[key]
+        assert type(item) in (int, float) and math.isfinite(item) and item >= 0
+assert value["end"]["observed_at"] >= value["start"]["observed_at"]
 PY
 }
 
@@ -297,6 +322,9 @@ esac
 [[ "$(pwd -P)" == "$FACTORY_PRODUCT_ROOT" ]]
 [[ "$FACTORY_KIT_RELEASE" == *factory-kit-certification*/release ]]
 [[ -x .context/tools/gitleaks/8.30.1/gitleaks ]]
+if [[ -f factory/SLEEP_CERTIFY ]]; then
+  sleep 2
+fi
 python3 "$FACTORY_KIT_RELEASE/scripts/certification-runner.py" \
   --plan factory/certification-plan.json \
   --result "$FACTORY_CERTIFICATION_EVIDENCE" \
@@ -1020,6 +1048,7 @@ if [[ -f "$PHASE_FAILURE" ]] &&
    [[ "$(json_value "$PHASE_FAILURE" driver_exit_status)" == "1" ]] &&
    [[ "$(json_value "$PHASE_FAILURE" certification_exit_status)" == "1" ]] &&
    [[ "$(json_value "$PHASE_FAILURE" result.status)" == "fail" ]] &&
+   product_certification_host_load_valid "$PHASE_FAILURE" &&
    failure_receipt_valid "$PHASE_FAILURE"; then
   pass "phase failure retains its exact boundary and result"
 else
@@ -1033,6 +1062,34 @@ value["phases"][0]["command"] = ["true"]
 path.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n")
 PY
 commit_all "$PRODUCT_ONE" "restore certification phase"
+push_main "$PRODUCT_ONE"
+
+printf 'sleep\n' > "$PRODUCT_ONE/factory/SLEEP_CERTIFY"
+commit_all "$PRODUCT_ONE" "force outer certification timeout"
+push_main "$PRODUCT_ONE"
+export FACTORY_KIT_CERTIFY_TIMEOUT_SECONDS=1
+expect_failure "outer timeout preserves host load without a product result" \
+  certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A"
+unset FACTORY_KIT_CERTIFY_TIMEOUT_SECONDS
+TIMEOUT_FAILURE=""
+for candidate in "$STATE/receipts/failures/"*.json; do
+  if [[ "$(json_value "$candidate" failure_stage 2>/dev/null)" == "product" &&
+        "$(json_value "$candidate" driver_exit_status 2>/dev/null)" == "124" ]]; then
+    TIMEOUT_FAILURE="$candidate"
+    break
+  fi
+done
+if [[ -f "$TIMEOUT_FAILURE" ]] &&
+   [[ "$(json_value "$TIMEOUT_FAILURE" certification_exit_status)" == "124" ]] &&
+   [[ "$(json_value "$TIMEOUT_FAILURE" result)" == "" ]] &&
+   product_certification_host_load_valid "$TIMEOUT_FAILURE" &&
+   failure_receipt_valid "$TIMEOUT_FAILURE"; then
+  pass "outer timeout retains bounded host load with null result"
+else
+  fail "outer timeout retains bounded host load with null result" "$LAST_OUTPUT"
+fi
+rm "$PRODUCT_ONE/factory/SLEEP_CERTIFY"
+commit_all "$PRODUCT_ONE" "restore certification timeout fixture"
 push_main "$PRODUCT_ONE"
 
 export FACTORY_KIT_TEST_CERTIFICATION_DRIVER_SETUP_FAIL=1
@@ -1381,8 +1438,9 @@ if [[ "$(basename "$RECEIPT_STALE")" == "$RECEIPT_STALE_ID.json" &&
       "$(json_value "$RECEIPT_STALE" provider_concurrency_evidence.factory_sha)" == "$SHA_A" &&
       "$(json_value "$RECEIPT_STALE" provider_concurrency_evidence.factory_tree)" == "$(git -C "$KIT_REPO" rev-parse "$SHA_A^{tree}")" &&
       "$(json_value "$RECEIPT_STALE" checks.provider_concurrency)" == "pass" &&
-      "$(json_value "$RECEIPT_STALE" product_certification_evidence.mode)" == "measured" &&
-      -z "$(json_value "$RECEIPT_STALE" expected_previous_generation)" &&
+      "$(json_value "$RECEIPT_STALE" product_certification_evidence.mode)" == "measured" ]] &&
+   product_certification_host_load_valid "$RECEIPT_STALE" &&
+   [[ -z "$(json_value "$RECEIPT_STALE" expected_previous_generation)" &&
       ! -e "$PRODUCT_ONE/factory/product-certification-marker" &&
       ! -e "$STATE/releases/$SHA_A/release-certification-marker" &&
       ! -e "$HOME/.factory-kit-certification-marker" ]]; then

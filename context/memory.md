@@ -4810,6 +4810,24 @@ while allowing authenticated historical operational events with a legacy null
 Factory identity to remain outside those two reports. A null or malformed
 identity on a relevant event remains an error and never becomes an incident.
 
+## 2026-08-08 — Decision 348: Certification load is diagnostic only
+
+Category: Reliability
+
+Every passing or failing product-certification receipt records bounded host-load
+observations immediately before the product driver and after certification
+reaches its terminal driver/cache status: the 1-, 5-, and 15-minute averages,
+logical CPU count, and UTC observation time. The observation
+stays outside phase results and certification cache identity and does not change
+driver or final status or redaction. A failure identifier binds the observation
+digest so repeated otherwise identical null-result failures do not overwrite
+one another; the existing record hash continues to cover the complete receipt.
+
+Load is correlation evidence, not certification authority. The Factory does
+not warn, refuse, retry, serialize, widen network access, or infer a root cause
+from it. In particular, high load must not hide the independent same-boot
+loopback `EPERM` condition tracked by issue #465.
+
 ## 2026-08-08 — Decision 349: Terminal base state outranks admission overlays
 
 Category: Trust boundary

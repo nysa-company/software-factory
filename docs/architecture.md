@@ -1683,6 +1683,14 @@ the setup, product, phase, or post-driver cache boundary, and separate evidence
 and output digests. A pre-product driver failure retains a
 bounded redacted diagnostic and a nonempty fixed reason even when no product
 result exists; raw setup output is never persisted.
+Passing and failing product-certification receipts also retain bounded host-load
+observations from immediately before the product driver and after certification
+reaches its terminal driver/cache status: the 1-, 5-, and 15-minute load
+averages, logical CPU count, and UTC observation time. This
+is diagnostic context only. It does not enter phase or cache identity and never
+warns, refuses, retries, or reclassifies a certification result. A failed
+receipt binds the observation digest into its identifier, so repeated otherwise
+identical null-result failures retain distinct load evidence.
 On macOS the protected product wrapper only coordinates its disposable tree;
 each declared phase enters exactly one Factory-generated Seatbelt profile.
 Production requires both the external-network-denied and reviewed-network
