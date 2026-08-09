@@ -4283,6 +4283,62 @@ class Controller:
             and not self.protected_base_current(claim, passport.get("head_sha", ""))
         )
 
+    def prior_receipt_migration_chain(
+        self, passport: dict[str, Any], source_factory_sha: str,
+    ) -> list[dict[str, Any]] | None:
+        """Return the exact edge chain from one release to the active one.
+
+        A ticket stranded across more than one upgrade holds a receipt several
+        releases behind the newest passport edge, because the strand itself
+        prevented each earlier reissue. Walk the recorded migration history
+        backwards from the active release and accept only a contiguous chain
+        that ends at the active release, starts at ``source_factory_sha``, and
+        never moves the ticket head or the route plan. Return None otherwise.
+        """
+        migrations = passport.get("migration_history")
+        head = passport.get("head_sha")
+        route = passport.get("route_plan_sha256")
+        if (
+            not isinstance(migrations, list)
+            or not migrations
+            or not SHA.fullmatch(source_factory_sha or "")
+            or source_factory_sha == self.release_path.name
+        ):
+            return None
+        chain: list[dict[str, Any]] = []
+        target = self.release_path.name
+        for edge in reversed(migrations):
+            source = edge.get("from_factory_sha") if isinstance(edge, dict) else None
+            if (
+                not isinstance(edge, dict)
+                or edge.get("schema") != PASSPORT_MIGRATION_SCHEMA
+                or edge.get("to_factory_sha") != target
+                or not SHA.fullmatch(source or "")
+                # A same-release edge carries no upgrade and cannot advance
+                # the walk, so refuse rather than loop on it.
+                or source == target
+                or not (
+                    edge.get("from_head_sha")
+                    == edge.get("to_head_sha")
+                    == head
+                )
+                or not (
+                    edge.get("from_route_plan_sha256")
+                    == edge.get("to_route_plan_sha256")
+                    == route
+                )
+                or not DIGEST.fullmatch(
+                    edge.get("from_passport_file_sha256", "")
+                )
+            ):
+                return None
+            chain.append(edge)
+            if source == source_factory_sha:
+                chain.reverse()
+                return chain
+            target = source
+        return None
+
     def refresh_prior_release_receipt(self, claim: dict[str, Any]) -> str:
         """Issue or recover the exact current receipt for bundle refresh."""
         receipt = self.transition_receipt(claim, allow_prior=True)
@@ -4343,11 +4399,19 @@ class Controller:
         marker_path = self.state / f"{marker_name}.json"
         transition: dict[str, Any] | None = None
         if receipt.get("factory_sha") != self.release_path.name:
+            # The receipt may sit several releases behind the newest edge, so
+            # the authenticated origin is the first edge of the exact chain
+            # from the receipt's release to the active one, not simply the
+            # last edge.
+            chain = self.prior_receipt_migration_chain(
+                passport, receipt.get("factory_sha", ""),
+            )
+            origin = chain[0] if chain else {}
             expected = {
                 "factory_sha": self.release_path.name,
-                "from_factory_sha": edge.get("from_factory_sha"),
+                "from_factory_sha": origin.get("from_factory_sha"),
                 "from_passport_file_sha256": (
-                    edge.get("from_passport_file_sha256")
+                    origin.get("from_passport_file_sha256")
                 ),
                 "from_receipt_sha256": receipt.get("receipt_sha256"),
                 "head_sha": passport["head_sha"],
@@ -4358,13 +4422,21 @@ class Controller:
                 "ticket": claim["ticket"],
             }
             if (
-                receipt.get("factory_sha") != edge.get("from_factory_sha")
+                chain is None
                 or receipt.get("passport_sha256")
-                != edge.get("from_passport_file_sha256")
+                != origin.get("from_passport_file_sha256")
                 or receipt.get("head_sha") != passport.get("head_sha")
                 or receipt.get("route_plan_sha256")
                 != passport.get("route_plan_sha256")
-                or receipt.get("lease_sha256") != expected["lease_sha256"]
+                # The prior receipt was issued under the lease held at that
+                # time. A release upgrade legitimately reissues the ticket
+                # lease, so it cannot be required to match the current one.
+                # The reissued receipt is still checked against the current
+                # lease below, and the ticket and branch checks keep another
+                # ticket's receipt from being accepted here.
+                or not DIGEST.fullmatch(receipt.get("lease_sha256") or "")
+                or receipt.get("ticket") != claim["ticket"]
+                or receipt.get("branch") != claim["branch"]
                 or receipt.get("consumed") is not False
                 or receipt.get("role") is not None
                 or not receipt.get("stage", "").startswith(
@@ -4393,10 +4465,16 @@ class Controller:
                     "bundle-refresh transition marker is unavailable"
                 ) from error
 
+        # Both constructions must agree on the origin edge, or an idempotent
+        # replay after a crash would refuse forever.
+        replay_chain = self.prior_receipt_migration_chain(
+            passport, expected.get("from_factory_sha", ""),
+        )
+        replay_origin = replay_chain[0] if replay_chain else {}
         expected_marker = {
             "factory_sha": self.release_path.name,
-            "from_factory_sha": edge.get("from_factory_sha"),
-            "from_passport_file_sha256": edge.get(
+            "from_factory_sha": replay_origin.get("from_factory_sha"),
+            "from_passport_file_sha256": replay_origin.get(
                 "from_passport_file_sha256"
             ),
             "from_receipt_sha256": (
