@@ -5123,3 +5123,18 @@ partial green subset as protected-CI authority. A definitive failure discovered
 after bundle attestation but before business approval enters the existing
 authenticated publication-repair transaction, withdraws the stale bundle, and
 routes only the named Builder or Test-author repair back to Building.
+
+## 2026-08-09 — Decision 364: Bundle refresh reissues authority, not pending work
+
+Category: Reliability
+
+An unmerged prior-kit bundle may replace its stale transition receipt only at
+the existing authenticated release-upgrade refresh boundary. The controller
+binds the exact old receipt and passport-file digest to the current passport's
+latest migration edge, unchanged head and route, active lease, and one durable
+release-scoped marker before asking the state machine for a current receipt.
+Restart accepts only that marked parent/receipt pair and never overwrites an
+unexpected current receipt. The successor receipt remains solely in the
+controller transition file; `claim.receipt` stays empty because that field
+means pending role or terminal work. Merged closeout and generic stale-cache
+recovery gain no receipt-reissue authority.

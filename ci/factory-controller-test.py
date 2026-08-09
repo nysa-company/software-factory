@@ -6563,11 +6563,54 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertNotIn("blocked_reason", claim)
         self.assertIn("upgraded_bundle_refresh_recovered", events)
 
+    def migrated_bundle_passport(
+        self, ticket: str, prior: str, head: str = "b" * 40,
+        route: str = "e" * 64,
+    ) -> tuple[dict[str, object], str]:
+        key_path = self.state / "passport.key"
+        if not key_path.exists():
+            key_path.write_bytes(b"k" * 32)
+            key_path.chmod(0o600)
+        prior_file = "7" * 64
+        passport = PASSPORT.authenticate({
+            "base_history": [head], "branch": f"ticket/{ticket}",
+            "charge_records": [], "completed_role_evidence": [],
+            "contract_version": "1.8.0", "current_state": "Awaiting Approval",
+            "factory_release_history": [
+                {"contract_version": "1.8.0", "factory_sha": prior},
+                {"contract_version": "1.8.0", "factory_sha": self.release.name},
+            ],
+            "factory_sha": self.release.name, "head_sha": head,
+            "head_tree": "c" * 40,
+            "migration_history": [{
+                "from_factory_sha": prior, "from_head_sha": head,
+                "from_passport_file_sha256": prior_file,
+                "from_passport_sha256": "6" * 64,
+                "from_protected_base_sha": head,
+                "from_route_plan_sha256": route,
+                "schema": CONTROL.PASSPORT_MIGRATION_SCHEMA,
+                "to_factory_sha": self.release.name, "to_head_sha": head,
+                "to_protected_base_sha": head,
+                "to_route_plan_sha256": route,
+            }],
+            "parent_digest": "6" * 64,
+            "parent_file_sha256": prior_file,
+            "product_origin_sha256": "5" * 64, "project": "relay",
+            "protected_base_sha": head, "publication_state": "validating",
+            "route_plan_sha256": route,
+            "schema": "nysa.software-factory.ticket-passport/v1",
+            "ticket": ticket, "ticket_blob": "4" * 40,
+            "transition_receipt_sha256": "",
+        }, key_path.read_bytes())
+        path = self.state / "passports" / f"{ticket}.json"
+        path.parent.mkdir(mode=0o700, exist_ok=True)
+        PASSPORT.write_atomic(path, passport)
+        return passport, hashlib.sha256(path.read_bytes()).hexdigest()
+
     def stale_release_receipt(
         self, ticket: str, prior: str, lease: str, head: str = "b" * 40,
-        route: str = "e" * 64,
+        route: str = "e" * 64, passport_file: str = "7" * 64,
     ) -> dict[str, object]:
-        """Write a prior-release on-disk receipt and return it."""
         value = {
             "branch": f"ticket/{ticket}",
             "consumed": False,
@@ -6576,7 +6619,7 @@ class FactoryControllerTest(unittest.TestCase):
             "head_sha": head,
             "lease_sha256": hashlib.sha256(lease.encode()).hexdigest(),
             "parent_digest": "9" * 64,
-            "passport_sha256": "7" * 64,
+            "passport_sha256": passport_file,
             "project": "relay",
             "role": None,
             "route_plan_sha256": route,
@@ -6591,29 +6634,15 @@ class FactoryControllerTest(unittest.TestCase):
         CONTROL.write(self.state / f"{ticket}.json", value)
         return value
 
-    def test_bundle_refresh_reissues_prior_release_receipt(self) -> None:
-        """A stale prior-release receipt must not strand the refreshed claim.
-
-        Reproduces the T-199 recovery loop: passport already migrated to the
-        successor, but bundle, route journal and on-disk transition receipt all
-        still bind the prior release. Before the repair the bundle-refresh
-        branch cleared only ``claim["receipt"]``, so every later pass re-read
-        the stale on-disk receipt, re-added the ticket to
-        ``prior_transition_tickets``, and the scheduler skipped it before
-        ``ticket-attest refresh`` could invalidate the bundle.
-        """
+    def test_bundle_refresh_receipt_handoff_survives_restart(self) -> None:
         prior = "f" * 40
         lease = "a" * 64
         controller = CONTROL.Controller(self.args)
-        passports = self.state / "passports"
-        passports.mkdir(mode=0o700)
         claims = {}
         for ticket in ("T-110", "T-111"):
             cell = self.root / f"parked/{ticket}"
             cell.mkdir(parents=True)
-            CONTROL.write(passports / f"{ticket}.json", {
-                "factory_sha": self.release.name,
-            })
+            self.migrated_bundle_passport(ticket, prior)
             controller.marker(
                 f"passport-route-migration-pending-{ticket}-"
                 f"{self.release.name}",
@@ -6631,20 +6660,20 @@ class FactoryControllerTest(unittest.TestCase):
                 "schema": CONTROL.CLAIM_SCHEMA, "status": "blocked",
                 "ticket": ticket, "worktree": str(cell),
             }
+            controller.save_claim(claims[ticket])
         stale = self.stale_release_receipt("T-110", prior, lease)
         sibling_stale = self.stale_release_receipt("T-111", prior, lease)
-
-        # Only T-110 is bundle-refreshable; T-111 is the isolated sibling.
-        issued = {}
-        calls = []
+        passport_file = hashlib.sha256(
+            (self.state / "passports/T-110.json").read_bytes()
+        ).hexdigest()
 
         def state_machine(*args, **_kwargs):
-            calls.append(args)
             ticket = args[args.index("--ticket") + 1]
             value = dict(stale)
             value.update(
                 factory_sha=self.release.name,
                 parent_digest=stale["receipt_sha256"],
+                passport_sha256=passport_file,
                 stage="AWAIT-OPERATOR Linear approval observed",
             )
             value.pop("receipt_sha256")
@@ -6655,20 +6684,11 @@ class FactoryControllerTest(unittest.TestCase):
                 }
             })).hexdigest()
             CONTROL.write(self.state / f"{ticket}.json", value)
-            issued[ticket] = value["receipt_sha256"]
-            return {
-                "action": "AWAIT-OPERATOR",
-                "detail": "Linear approval observed",
-                "loop": None,
-                "receipt": value["receipt_sha256"],
-                "role": None,
-                "schema": "nysa.software-factory.state-machine/v1",
-                "stage": "AWAIT-OPERATOR Linear approval observed",
-                "status": "ok",
-                "ticket": ticket,
-            }
+            return state_transition(
+                "AWAIT-OPERATOR Linear approval observed",
+                value["receipt_sha256"], ticket,
+            )
 
-        events = []
         controller.json_call = state_machine
         controller.release_bundle_refreshable = (
             lambda claim, *_args: claim["ticket"] == "T-110"
@@ -6676,186 +6696,89 @@ class FactoryControllerTest(unittest.TestCase):
         controller.ticket_release_current = lambda _claim: False
         controller.renew = lambda _claim: None
         controller.role_active = lambda _claim: False
-        controller.event = lambda name, *_args, **_kwargs: events.append(name)
-        controller.event_once = (
-            lambda name, *_args, **_kwargs: events.append(name)
-        )
+        original_event_once = controller.event_once
 
-        controller.recover_upgraded_claims(list(claims.values()))
+        def crash_after_receipt(name, *args, **kwargs):
+            if name == "prior_release_receipt_refreshed":
+                raise RuntimeError("crash after receipt")
+            return original_event_once(name, *args, **kwargs)
 
-        claim = claims["T-110"]
-        self.assertEqual(claim["status"], "claimed")
-        self.assertTrue(claim["release_refresh_required"])
-        self.assertIn("upgraded_bundle_refresh_recovered", events)
-        self.assertIn("prior_release_receipt_refreshed", events)
-        # The claim is bound to the reissued successor receipt, which also
-        # makes release_bundle_refreshable False on the next pass.
-        self.assertEqual(claim["receipt"], issued["T-110"])
-        self.assertNotIn("T-110", controller.prior_transition_tickets)
+        controller.event_once = crash_after_receipt
+        with self.assertRaisesRegex(RuntimeError, "crash after receipt"):
+            controller.recover_upgraded_claims([claims["T-110"]])
 
-        # Sibling isolation: no receipt was reissued for T-111, its on-disk
-        # receipt still binds the prior release, and it stays excluded.
-        self.assertEqual([args[0] for args in calls], ["state-machine"])
-        self.assertNotIn("T-111", issued)
+        receipt_path = self.state / "T-110.json"
+        issued_bytes = receipt_path.read_bytes()
+        self.assertEqual(CONTROL.read(receipt_path)["factory_sha"], self.release.name)
         self.assertEqual(
             CONTROL.read(self.state / "T-111.json")["receipt_sha256"],
             sibling_stale["receipt_sha256"],
         )
 
-        # Restart: a fresh controller must not re-add T-110, because the
-        # on-disk receipt now binds the active release.
         restarted = CONTROL.Controller(self.args)
-        self.assertEqual(
-            restarted.transition_receipt(claim)["factory_sha"],
-            self.release.name,
+        restarted.release_bundle_refreshable = lambda *_args: True
+        restarted.ticket_release_current = lambda _claim: False
+        restarted.renew = lambda _claim: None
+        restarted.role_active = lambda _claim: False
+        restarted.json_call = lambda *_args, **_kwargs: self.fail(
+            "restart must reuse the durable current receipt"
         )
-        self.assertNotIn("T-110", restarted.prior_transition_tickets)
-        self.assertIsNone(
-            restarted.transition_receipt(claims["T-111"]),
-        )
-        self.assertIn("T-111", restarted.prior_transition_tickets)
-
-    def test_upgrade_recovery_reissues_stale_cache_receipt(self) -> None:
-        """The non-bundle upgrade exit must also readmit the ticket.
-
-        ``recover_upgraded_claims`` clears a receipt that carries no terminal
-        manifest. Without a reissue the on-disk receipt stays at the prior
-        release and the ticket is excluded from scheduling for good, the same
-        way the bundle-refresh exit stranded T-199.
-        """
-        prior = "f" * 40
-        lease = "a" * 64
-        controller = CONTROL.Controller(self.args)
-        cell = self.root / "parked/T-110"
-        cell.mkdir(parents=True)
-        passports = self.state / "passports"
-        passports.mkdir(mode=0o700)
-        CONTROL.write(passports / "T-110.json", {
-            "factory_sha": self.release.name,
-        })
-        controller.marker(
-            f"passport-route-migration-pending-T-110-{self.release.name}",
-            {
-                "factory_sha": self.release.name,
-                "schema": CONTROL.EVENT_SCHEMA,
-                "ticket": "T-110",
-            },
-        )
-        stale = self.stale_release_receipt("T-110", prior, lease)
-        claim = {
-            "blocked_reason": "route-migration-required",
-            "branch": "ticket/T-110", "lease": lease, "priority": "normal",
-            "publication_lease": "", "receipt": "d" * 64, "role": "",
-            "schema": CONTROL.CLAIM_SCHEMA, "status": "blocked",
-            "ticket": "T-110", "worktree": str(cell),
-        }
-
-        def state_machine(*args, **_kwargs):
-            if args[0] != "state-machine":
-                return {"status": "ok", "passport": "7" * 64}
-            value = dict(stale)
-            value.update(
-                factory_sha=self.release.name,
-                parent_digest=stale["receipt_sha256"],
-            )
-            value.pop("receipt_sha256")
-            value["receipt_sha256"] = hashlib.sha256(STATE.canonical({
-                key: item for key, item in value.items()
-                if key not in {
-                    "consumed", "consumed_at_epoch", "receipt_sha256",
-                }
-            })).hexdigest()
-            CONTROL.write(self.state / "T-110.json", value)
-            return {
-                "action": "AWAIT-OPERATOR",
-                "detail": "bundle attested; await Linear approval",
-                "loop": None,
-                "receipt": value["receipt_sha256"],
-                "role": None,
-                "schema": "nysa.software-factory.state-machine/v1",
-                "stage": (
-                    "AWAIT-OPERATOR bundle attested; await Linear approval"
-                ),
-                "status": "ok",
-                "ticket": "T-110",
-            }
-
-        events = []
-        controller.json_call = state_machine
-        controller.ticket_release_current = lambda _claim: True
-        controller.release_bundle_refreshable = lambda *_args: False
-        controller.terminal_for_receipt = lambda *_args: None
-        controller.role_active = lambda _claim: False
-        controller.renew = lambda _claim: None
-        controller.event = lambda name, *_args, **_kwargs: events.append(name)
-        controller.event_once = (
-            lambda name, *_args, **_kwargs: events.append(name)
-        )
-
-        controller.recover_upgraded_claims([claim])
+        claim = restarted.load_claims()[0]
+        restarted.recover_upgraded_claims([claim])
 
         self.assertEqual(claim["status"], "claimed")
         self.assertEqual(claim["receipt"], "")
-        self.assertIn("prior_release_receipt_refreshed", events)
-        self.assertNotIn("T-110", controller.prior_transition_tickets)
-        restarted = CONTROL.Controller(self.args)
-        self.assertEqual(
-            restarted.transition_receipt(claim)["factory_sha"],
-            self.release.name,
-        )
+        self.assertTrue(claim["release_refresh_required"])
+        self.assertEqual(receipt_path.read_bytes(), issued_bytes)
         self.assertNotIn("T-110", restarted.prior_transition_tickets)
 
-    def test_bundle_refresh_refuses_unauthenticated_receipt_reissue(
-        self,
-    ) -> None:
-        """A reissued receipt that does not bind the exact claim is refused."""
+    def test_bundle_refresh_receipt_handoff_refuses_unbound_evidence(self) -> None:
         prior = "f" * 40
         lease = "a" * 64
         controller = CONTROL.Controller(self.args)
-        cell = self.root / "parked/T-110"
-        cell.mkdir(parents=True)
-        stale = self.stale_release_receipt("T-110", prior, lease)
-        claim = {
-            "branch": "ticket/T-110", "lease": lease, "priority": "normal",
-            "publication_lease": "", "receipt": "", "role": "",
-            "schema": CONTROL.CLAIM_SCHEMA, "status": "blocked",
-            "ticket": "T-110", "worktree": str(cell),
-        }
-
-        def state_machine(*args, **_kwargs):
-            value = dict(stale)
-            # Successor release, but the route digest silently changed.
-            value.update(
-                factory_sha=self.release.name,
-                parent_digest=stale["receipt_sha256"],
-                route_plan_sha256="d" * 64,
-            )
-            value.pop("receipt_sha256")
-            value["receipt_sha256"] = hashlib.sha256(STATE.canonical({
-                key: item for key, item in value.items()
-                if key not in {
-                    "consumed", "consumed_at_epoch", "receipt_sha256",
-                }
-            })).hexdigest()
-            CONTROL.write(self.state / "T-110.json", value)
-            return {
-                "action": "AWAIT-OPERATOR",
-                "detail": "bundle attested; await Linear approval",
-                "loop": None,
-                "receipt": value["receipt_sha256"],
-                "role": None,
-                "schema": "nysa.software-factory.state-machine/v1",
-                "stage": (
-                    "AWAIT-OPERATOR bundle attested; await Linear approval"
-                ),
-                "status": "ok",
-                "ticket": "T-110",
-            }
-
-        controller.json_call = state_machine
         controller.role_active = lambda _claim: False
-        with self.assertRaises(CONTROL.ControllerError):
-            controller.refresh_prior_release_receipt(claim)
+
+        for ticket in ("T-110", "T-111"):
+            (self.root / f"parked/{ticket}").mkdir(parents=True)
+            _, current_file = self.migrated_bundle_passport(ticket, prior)
+            stale = self.stale_release_receipt(ticket, prior, lease)
+            claim = {
+                "branch": f"ticket/{ticket}", "lease": lease,
+                "priority": "normal", "publication_lease": "",
+                "receipt": "", "role": "", "schema": CONTROL.CLAIM_SCHEMA,
+                "status": "blocked", "ticket": ticket,
+                "worktree": str(self.root / f"parked/{ticket}"),
+            }
+            if ticket == "T-110":
+                stale["passport_sha256"] = "8" * 64
+                stale["receipt_sha256"] = hashlib.sha256(
+                    CONTROL.canonical_document({
+                        key: item for key, item in stale.items()
+                        if key not in {
+                            "consumed", "consumed_at_epoch", "receipt_sha256",
+                        }
+                    })
+                ).hexdigest()
+                CONTROL.write(self.state / f"{ticket}.json", stale)
+            else:
+                stale.update(
+                    factory_sha=self.release.name,
+                    parent_digest=stale["receipt_sha256"],
+                    passport_sha256=current_file,
+                    stage="AWAIT-OPERATOR Linear approval observed",
+                )
+                stale.pop("receipt_sha256")
+                stale["receipt_sha256"] = hashlib.sha256(STATE.canonical({
+                    key: item for key, item in stale.items()
+                    if key not in {
+                        "consumed", "consumed_at_epoch", "receipt_sha256",
+                    }
+                })).hexdigest()
+                CONTROL.write(self.state / f"{ticket}.json", stale)
+            before = (self.state / f"{ticket}.json").read_bytes()
+            with self.assertRaises(CONTROL.ControllerError):
+                controller.refresh_prior_release_receipt(claim)
+            self.assertEqual((self.state / f"{ticket}.json").read_bytes(), before)
 
     def test_release_bundle_refresh_returns_to_route_migration_gate(self) -> None:
         controller = CONTROL.Controller(self.args)
