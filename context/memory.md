@@ -5079,3 +5079,27 @@ issue closure still requires retained repeated three-ticket live canaries that
 prove the <=5-minute fresh and <=7-minute one-restore first-role p95 targets;
 focused or single-run tests do not satisfy those outcome criteria. Decision
 360 remains the provider-CLI pin lifecycle decision in composed history.
+
+## 2026-08-09 — Decision 362: Exact release authority closes the stranded route edge
+
+Category: Trust boundary
+
+The historical T-198 semantic-authorization recovery consumes its exact
+protected-main in-flight release entry as the narrow approval for the existing
+sealed model-route writer. The controller binds source ticket and route bytes,
+source and target releases, ticket identity, preview and readiness hashes,
+expected journal revision count, complete response, local and remote head, and
+the exact two-path `Software Factory <factory@local>` child before the ordinary
+passport migration records the second edge. A legacy v1 plan becomes the
+writer's two-revision journal: byte-exact source provenance followed by the
+actual release migration. A crash after the commit or push resumes through the
+sealed writer from that one authenticated child without another commit or
+provider call; the passport advances only after certified remote verification.
+
+Only the exact predecessor occurrence may leave
+`recovery-abandoned:release-upgrade`: count three, abandoned phase,
+`route-migration-required` retry identity, released lease, current release,
+authenticated T-198 terminal and migrated passport, exact pending marker, and
+the pushed authorization or migration head must all agree. Generic blocked or
+abandoned claims, siblings, retired tickets, and other in-flight migrations do
+not gain resurrection or automatic commit authority.

@@ -1373,6 +1373,15 @@ journal, with both paths committed as regular `100644` blobs; sibling entries
 remain neither consumed nor reinterpreted. Every other
 head, state, path, or route-history change requires a new protected
 authorization.
+The historical T-198 semantic-authorization recovery consumes that same
+protected entry itself after its first passport edge. It binds the writer's
+preview and readiness hashes, requires the legacy plan to become the writer's
+two-revision v2 journal, and accepts only the exact pushed two-path child
+authored by `Software Factory <factory@local>` before recording the second
+passport edge. A crash after the commit or push resumes through the sealed
+writer from that exact child, and the passport advances only after the
+certified remote matches it. No other
+blocked or abandoned claim receives automatic migration authority.
 Qualification upgrades bind liveness to the non-overlapping controller lock
 and active-run markers. A terminal orphaned `running` claim remains portable
 state for the successor controller rather than an upgrade deadlock.
@@ -1445,6 +1454,11 @@ After the preview-bound route migration commits the successor Kit-SHA to both
 the ticket and route journal, a second ordinary descendant migration updates
 the passport route digest and only then reopens the claim. A durable
 controller marker makes the between-migrations restart boundary idempotent.
+The exact T-198 occurrence abandoned by the predecessor implementation is
+readmitted only when its authenticated terminal, migrated passport, pending
+marker, released lease, pushed authorization head, retry reason, attempt count,
+and active release all still match. Generic `recovery-abandoned` state remains
+terminal.
 If an operator-authorized repair deliberately removes invalid Git ancestry, a
 cross-release passport migration may use that protected authorization only
 when its source/target kits, ticket, branch, new head, and state match exactly,
