@@ -35,7 +35,10 @@ WORKFLOW="$ROOT/.github/workflows/ci.yml"
 [[ "$(grep -Fc 'scripts/repo-check' "$WORKFLOW")" -eq 1 &&
     "$(grep -Fc 'scripts/secret-scan' "$WORKFLOW")" -eq 1 &&
     "$(grep -Fc 'scripts/artifact-check --base "$BASE_SHA"' "$WORKFLOW")" -eq 1 &&
-    "$(grep -Fc 'needs: [scope, policy, linux, macos-bash-3]' "$WORKFLOW")" -eq 1 ]] || {
+    "$(grep -Fc 'needs: [scope, policy, linux, macos-bash-3]' "$WORKFLOW")" -eq 1 &&
+    "$(grep -c '^    if: always()$' "$WORKFLOW")" -eq 1 &&
+    "$(grep -Fc 'POLICY_RESULT: ${{ needs.policy.result }}' "$WORKFLOW")" -eq 1 &&
+    "$(grep -Fc 'test "$POLICY_RESULT" = success' "$WORKFLOW")" -eq 1 ]] || {
   echo "FAIL: repository policy must run once and gate the aggregate ci context" >&2
   exit 1
 }
