@@ -187,6 +187,7 @@ Usage:
   $PROGRAM certify   --project SLUG --product PRODUCT_REPO --sha FULL_SHA
   $PROGRAM plan      --project SLUG --product PRODUCT_REPO --sha FULL_SHA [--receipt FILE]
   $PROGRAM pause     --project SLUG --product PRODUCT_REPO
+  $PROGRAM linear-sync-service ACTION --project SLUG --product PRODUCT_REPO
   $PROGRAM activate  --project SLUG --product PRODUCT_REPO --sha FULL_SHA [--receipt FILE]
   $PROGRAM status    --project SLUG [--product PRODUCT_REPO] [--json]
   $PROGRAM reconcile --project SLUG [--product PRODUCT_REPO]
@@ -2966,6 +2967,40 @@ cmd_pause() {
   say "PAUSE OK: project=$slug"
 }
 
+cmd_linear_sync_service() {
+  local action="$1" slug="$2" product="$3" product_top active sha release helper launcher verified tree project_lock
+  [[ "$action" == "enable" || "$action" == "disable" ]] ||
+    die "linear-sync-service action must be enable or disable"
+  validate_slug "$slug"
+  validate_managed_layout "$slug"
+  product_top="$(absolute_dir "$product")"
+  require_production_product_shape "$product_top"
+  cmd_pause "$slug" "$product_top"
+  project_lock="$PROJECTS_DIR/$slug/.activation.lock"
+  acquire_lock "$project_lock" "project activation"
+  active="$(active_file_for "$slug")"
+  [[ -f "$active" && ! -L "$active" ]] || die "project active record is missing or unsafe"
+  [[ -z "$(latest_open_journal "$(journal_dir_for "$slug")")" ]] ||
+    die "project has an interrupted activation"
+  sha="$(json_get "$active" kit_sha)"
+  release="$RELEASES_DIR/$sha"
+  verified="$(verify_release_from_manifest "$sha")"
+  tree="${verified%%$'\t'*}"
+  [[ "$(json_get "$active" project)" == "$slug" &&
+     "$(json_get "$active" kit_tree)" == "$tree" &&
+     "$(json_get "$active" product_path)" == "$product_top" &&
+     "$(json_get "$active" release_path)" == "$release" ]] ||
+    die "active release does not belong to this project and product"
+  verify_installed_launcher_binding "$release"
+  helper="$release/scripts/linear-sync-service.py"
+  [[ -f "$helper" && ! -L "$helper" ]] ||
+    die "active release does not support stable Linear sync service ownership"
+  launcher="$HOME/.factory/bin/factory-launch"
+  python3 -I -S "$helper" "$action" --project "$slug" --product "$product_top" \
+    --release "$release" --launcher "$launcher"
+  release_lock "$project_lock"
+}
+
 active_file_for() { printf '%s/%s/active.json\n' "$PROJECTS_DIR" "$1"; }
 journal_dir_for() { printf '%s/%s/activation-journal\n' "$PROJECTS_DIR" "$1"; }
 
@@ -4019,6 +4054,16 @@ case "$COMMAND" in
     [[ -n "$PRODUCT" ]] || PRODUCT="${POSITIONALS[1]:-}"
     [[ -n "$PROJECT" && -n "$PRODUCT" ]] || { usage >&2; exit 2; }
     cmd_pause "$PROJECT" "$PRODUCT"
+    ;;
+  linear-sync-service)
+    ACTION="${POSITIONALS[0]:-}"
+    [[ -n "$PROJECT" && -n "$PRODUCT" &&
+       ( "$ACTION" == "enable" || "$ACTION" == "disable" ) &&
+       ${#POSITIONALS[@]} -eq 1 && "$JSON" -eq 0 &&
+       "$REPO" == "$SCRIPT_ROOT" &&
+       -z "$SHA$ORIGIN_OVERRIDE$RECEIPT$TICKET$CAPACITY$APPROVE_HASH$RUNTIME_BIN" ]] ||
+      { usage >&2; exit 2; }
+    cmd_linear_sync_service "$ACTION" "$PROJECT" "$PRODUCT"
     ;;
   activate)
     [[ -n "$PROJECT" ]] || PROJECT="${POSITIONALS[0]:-}"

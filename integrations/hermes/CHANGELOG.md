@@ -7,6 +7,9 @@ helper output are not compatibility promises.
 
 ## 1.8.0 — 2026-07-27
 
+- Adds a zero-argument production `linear-sync` route through the stable
+  launcher, explicit transactional LaunchAgent enable/disable ownership, and
+  Doctor validation of the persisted state and fixed arguments.
 - Replaces agent-selected routing with deterministic reconciliation and
   one-use, head- and passport-bound transition receipts.
 - Reinterprets ticket worktrees as disposable execution cells; ticket identity

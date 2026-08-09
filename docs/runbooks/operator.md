@@ -559,9 +559,28 @@ same-UID token exposure remains until a broker or OS isolation is used.
 12. Run `factory-kit.sh plan`. It must report `No files were changed.`
 13. Stop only the product factory profile and reconciler. Leave the dashboard
    and primary Hermes profile alone.
-14. Run `factory-kit.sh activate`, restart the factory services, then collect
+14. Run `factory-kit.sh activate`. While maintenance remains, migrate the
+   scheduled Linear service once with `factory-kit.sh linear-sync-service
+   enable|disable --project <project> --product <absolute-product-path>` using
+   the product's intended state. Do not call `launchctl` from activation or
+   hand-edit the plist. If the native override was absent, retain the separate
+   `LINEAR SYNC SERVICE OWNERSHIP ADOPTED` evidence: the command has committed
+   a verified explicit-enabled semantic no-op before starting the migration,
+   and that explicit state is the rollback baseline. An adoption failure or
+   indeterminate readback means no later migration was attempted; leave
+   maintenance in place. After successful adoption, any migration failure
+   restores the exact prior plist bytes, mode, load state, arguments, and the
+   explicit-enabled baseline. Restart the other factory services, then collect
    doctor JSON, sandbox smoke, PID, Linear freshness, and repeated health
-   probes.
+   probes. Doctor must show enabled plus loaded with the exact stable arguments,
+   or disabled plus unloaded; legacy release paths are a failed cutover.
+   Retain the before/after plist digest, native disable/load observations, and
+   process list. For an enabled product, honor any shared credential cooldown,
+   then observe at least two complete three-minute cycles with advancing
+   `_sync.last_success_at`, no new rate-limit response, and no release-pinned
+   process. For a disabled product, observe the same window with no loaded
+   process or new sync log entry. Tests alone are not production closure
+   evidence; bind these observations and timestamps to the exact protected SHA.
 15. For an authorized in-flight cutover, keep maintenance while reviewing each
    sealed `models migrate-plan`, then remove maintenance and apply only its
    operator-approved `models migrate`; claim fresh leases afterward. Without
@@ -690,6 +709,13 @@ alone was 5m50s and its full maintenance interval was longer.
 - Do: prove the previous release can read candidate-written state, restart the
   factory-only services, rerun doctor and sandbox smoke, then remove
   maintenance.
+- Do: leave the stable Linear plist unchanged across an ordinary Factory
+  rollback. Its next invocation follows the restored active pointer. If the
+  one-time service migration itself failed, rely on its automatic restoration
+  and compare the exact prior plist, explicit enable/disable state, and loaded
+  state before taking any further action. If the command separately reported
+  ownership adoption, verify explicit enabled rather than absence from the
+  override map; adoption is not undone or described as an unspecified state.
 - Target: restore known bits within 5 minutes and complete the full rollback
   within 30 minutes of the failed-health decision. Full rollback ends only
   after the pin revert is merged, previous tuple and state compatibility are

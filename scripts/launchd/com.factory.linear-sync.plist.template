@@ -7,11 +7,9 @@
   <string>com.factory.linear-sync.__PROJECT_SLUG__</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/bin/env</string>
-    <string>python3</string>
-    <string>__KIT_DIR__/scripts/linear-sync.py</string>
-    <string>--factory-root</string>
-    <string>__FACTORY_ROOT__</string>
+    <string>__HOME__/.factory/bin/factory-launch</string>
+    <string>__PROJECT_SLUG__</string>
+    <string>linear-sync</string>
   </array>
   <key>StartInterval</key>
   <integer>180</integer>

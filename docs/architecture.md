@@ -1741,6 +1741,24 @@ An activated contract 1.2, 1.3, or 1.4 keeps that receipt as the runtime destina
 binding for trusted ticket and role pushes. Its `product_origin` is the sole
 certified `origin` push URL, which may differ from the fetch URL.
 
+The per-product scheduled Linear LaunchAgent contains only the stable launcher,
+project slug, and `linear-sync` command. The launcher resolves and validates the
+active release once, then starts that release's sync helper in a fresh
+credential-free environment; the helper obtains the owner-local Linear
+credential itself. `factory-kit linear-sync-service enable|disable` is the sole
+service migration boundary: it publishes maintenance, drains work and both
+current and legacy Linear cycle locks, atomically replaces the plist, persists the matching
+native launchd state, verifies the
+fixed arguments, and restores the previous plist and load state on failure. If
+launchd has no product override, the command first adopts ownership by writing
+and verifying an explicit enabled override. That committed semantic no-op is
+reported separately and becomes the rollback baseline; an indeterminate
+adoption stops before plist or load-state migration. A later failure restores
+the exact prior plist bytes, mode, loaded arguments, and explicit-enabled
+baseline rather than pretending the absent override was restored.
+Activation and rollback move only the active release pointer, so an unchanged
+scheduled definition follows either transition without a second service edit.
+
 Activation uses `factory/MAINTENANCE` and the same launch lock as role startup.
 Launch checks occur before locking, after locking, and before the task GO
 signal. Maintenance must be published first; activation then waits for the
@@ -1795,7 +1813,8 @@ The activation journal advances through `prepared`,
 pre-switch interruptions and either validates/commits or restores post-switch
 interruptions. The service-named phases are transaction checkpoints; the
 current script does not itself manage `launchctl` or perform the external
-health smoke.
+health smoke. This excludes the separate, explicit `linear-sync-service`
+maintenance command; ordinary activation and rollback never own launchd.
 
 Rollback restores the previous activation record and sealed tree but keeps
 `MAINTENANCE`. The protected product `KIT_PIN` must then be reverted and the

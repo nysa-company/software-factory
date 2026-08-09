@@ -360,6 +360,8 @@ factory/.active-runs/
 factory/runs/
 factory/.dispatch-leases/
 factory/.dispatch-leases.lock/
+factory/.linear-sync-cycle.lock
+factory/.linear-sync.lock
 EOF
   cat > "$path/factory/tickets/T-001.md" <<'EOF'
 State: Ready
@@ -447,7 +449,7 @@ git_identity
 git init --bare -q "$CANONICAL"
 git init -q -b main "$KIT_REPO"
 git -C "$KIT_REPO" remote add origin "$CANONICAL"
-mkdir -p "$KIT_REPO/ci" "$KIT_REPO/scripts/lib" \
+mkdir -p "$KIT_REPO/ci" "$KIT_REPO/scripts/lib" "$KIT_REPO/scripts/launchd" \
   "$KIT_REPO/integrations/hermes/bin"
 mkdir -p "$KIT_REPO/scripts/model-routing"
 cp "$ROOT/scripts/model-manager.py" "$ROOT/scripts/model-router.py" \
@@ -460,6 +462,9 @@ cp "$ROOT/scripts/lib/certification_plan.py" \
 cp "$ROOT/integrations/hermes/bin/factory-launch" \
   "$KIT_REPO/integrations/hermes/bin/factory-launch"
 cp "$ROOT/integrations/hermes/contract.json" "$KIT_REPO/integrations/hermes/contract.json"
+cp "$ROOT/scripts/linear-sync-service.py" "$KIT_REPO/scripts/linear-sync-service.py"
+cp "$ROOT/scripts/launchd/com.factory.linear-sync.plist.template" \
+  "$KIT_REPO/scripts/launchd/com.factory.linear-sync.plist.template"
 chmod +x "$KIT_REPO/integrations/hermes/bin/factory-launch"
 cp "$ROOT/scripts/model-routing/catalog-v1.json" \
   "$ROOT/scripts/model-routing/profiles-v1.json" \
@@ -1817,6 +1822,83 @@ ACTIVE_ALPHA="$STATE/projects/alpha/active.json"
 [[ "$(json_value "$ACTIVE_ALPHA" kit_sha)" == "$SHA_A" ]] &&
   pass "first active generation is release a" ||
   fail "first active generation is release a"
+
+SERVICE_HOME="$TMP/service-home"
+SERVICE_STATE="$TMP/linear-service-state.json"
+SERVICE_LAUNCHCTL="$TMP/linear-service-launchctl"
+mkdir -p "$SERVICE_HOME/.factory/bin"
+cp "$STATE/releases/$SHA_A/integrations/hermes/bin/factory-launch" \
+  "$SERVICE_HOME/.factory/bin/factory-launch"
+chmod 700 "$SERVICE_HOME/.factory/bin/factory-launch"
+printf '%s\n' '{"arguments":[],"loaded":false,"state":"enabled"}' > "$SERVICE_STATE"
+cat > "$SERVICE_LAUNCHCTL" <<'PY'
+#!/usr/bin/env python3
+import json, os, plistlib, sys
+path = os.environ["FACTORY_KIT_TEST_LINEAR_SERVICE_STATE"]
+state = json.load(open(path, encoding="utf-8"))
+command, *arguments = sys.argv[1:]
+if command == "print-disabled":
+    print('disabled services = {')
+    print(f'  "com.factory.linear-sync.alpha" => {state["state"]}')
+    print('}')
+elif command == "print":
+    if not state["loaded"]:
+        raise SystemExit(113)
+    print(arguments[0] + " = {")
+    print("  arguments = {")
+    for item in state["arguments"]:
+        print("    " + item)
+    print("  }")
+    print("}")
+elif command == "bootout":
+    if not state["loaded"]:
+        raise SystemExit(113)
+    state["loaded"] = False
+elif command in ("enable", "disable"):
+    state["state"] = command + "d"
+elif command == "bootstrap":
+    with open(arguments[1], "rb") as stream:
+        state["arguments"] = plistlib.load(stream)["ProgramArguments"]
+    state["loaded"] = True
+else:
+    raise SystemExit(2)
+with open(path, "w", encoding="utf-8") as stream:
+    json.dump(state, stream, sort_keys=True)
+PY
+chmod 700 "$SERVICE_LAUNCHCTL"
+HOME="$SERVICE_HOME" FACTORY_KIT_TEST_LAUNCHCTL="$SERVICE_LAUNCHCTL" \
+  FACTORY_KIT_TEST_LINEAR_SERVICE_STATE="$SERVICE_STATE" \
+  expect_success "stable Linear service is enabled through the maintenance boundary" \
+    linear-sync-service enable --project alpha --product "$PRODUCT_ONE"
+python3 - "$SERVICE_STATE" "$SERVICE_HOME" "$PRODUCT_ONE" <<'PY'
+import json, plistlib, pathlib, sys
+state_path, home, product = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3])
+launcher = home / ".factory/bin/factory-launch"
+expected = [str(launcher), "alpha", "linear-sync"]
+assert json.loads(state_path.read_text()) == {
+    "arguments": expected, "loaded": True, "state": "enabled",
+}
+with open(home / "Library/LaunchAgents/com.factory.linear-sync.alpha.plist", "rb") as stream:
+    value = plistlib.load(stream)
+assert value["ProgramArguments"] == expected
+assert value["StandardOutPath"] == str(product / "factory/linear-sync.log")
+PY
+HOME="$SERVICE_HOME" FACTORY_KIT_TEST_LAUNCHCTL="$SERVICE_LAUNCHCTL" \
+  FACTORY_KIT_TEST_LINEAR_SERVICE_STATE="$SERVICE_STATE" \
+  expect_success "stable Linear service is explicitly disabled and unloaded" \
+    linear-sync-service disable --project alpha --product "$PRODUCT_ONE"
+python3 - "$SERVICE_STATE" <<'PY'
+import json, sys
+state = json.load(open(sys.argv[1], encoding="utf-8"))
+assert state["state"] == "disabled"
+assert state["loaded"] is False
+PY
+printf '{}\n' > "$PRODUCT_ONE/factory/QUALIFICATION.json"
+HOME="$SERVICE_HOME" FACTORY_KIT_TEST_LAUNCHCTL="$SERVICE_LAUNCHCTL" \
+  FACTORY_KIT_TEST_LINEAR_SERVICE_STATE="$SERVICE_STATE" \
+  expect_failure "qualification products cannot own a scheduled Linear service" \
+    linear-sync-service enable --project alpha --product "$PRODUCT_ONE"
+rm "$PRODUCT_ONE/factory/QUALIFICATION.json"
 
 NONCANONICAL_PRODUCT="$TMP/product-one-noncanonical"
 git -C "$PRODUCT_ONE" worktree add -q --detach "$NONCANONICAL_PRODUCT" main

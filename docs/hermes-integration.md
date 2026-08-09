@@ -75,6 +75,7 @@ Contract versions `1.0.0` through `1.8.0` certify Hermes Agent `0.18.2`, build
 ```bash
 ~/.factory/bin/factory-launch <project> contract --json
 ~/.factory/bin/factory-launch <project> doctor --json
+~/.factory/bin/factory-launch <project> linear-sync
 ~/.factory/bin/factory-launch <project> reconcile --json
 ~/.factory/bin/factory-launch <project> qualification --json
 ~/.factory/bin/factory-launch <project> dispatch-plan --shadow --json
@@ -86,6 +87,11 @@ Contract versions `1.0.0` through `1.8.0` certify Hermes Agent `0.18.2`, build
 ~/.factory/bin/factory-launch <project> ticket-attest --ticket T-123 [--lease <opaque-lease-id>] --workdir /absolute/ticket-worktree --action bundle --json
 ~/.factory/bin/factory-launch <project> project-ledger --ticket T-123 --workdir /absolute/chore-worktree --json
 ```
+
+Contract 1.8's `linear-sync` has no caller arguments. The per-product
+LaunchAgent owns this route; operators install or disable that service through the transactional
+`factory-kit.sh linear-sync-service` maintenance command rather than embedding
+a release path in the plist.
 
 Under Contracts 1.5 through 1.7, pass the exact role returned by `next-stage` to `preflight`;
 the launcher rejects roleless preflight so its envelope cannot differ from the

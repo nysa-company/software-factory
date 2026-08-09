@@ -1319,6 +1319,135 @@ PY
   LINEAR_PROJECT_WARNINGS_JSON="$(printf '%s\n' "$LINEAR_DATA" | awk 'NR == 7 { print; exit }')"
 fi
 
+LINEAR_SERVICE_STATUS="not_applicable"
+LINEAR_SERVICE_STATE="unavailable"
+LINEAR_SERVICE_LOADED="false"
+LINEAR_SERVICE_ARGUMENTS_OK="false"
+LINEAR_SERVICE_QUERY_OK="false"
+LINEAR_SERVICE_PLIST=""
+LAUNCHCTL_BIN="/bin/launchctl"
+if [[ -n "${FACTORY_DOCTOR_TEST_LAUNCHCTL:-}" ]]; then
+  if [[ "${FACTORY_TRUSTED_TEST_HARNESS:-0}" != "1" ]]; then
+    LINEAR_SERVICE_STATUS="error"
+    LAUNCHCTL_BIN=""
+  else
+    LAUNCHCTL_BIN="$FACTORY_DOCTOR_TEST_LAUNCHCTL"
+  fi
+fi
+if [[ "$CONTRACT_VERSION" == "1.8.0" &&
+      "${FACTORY_KIT_TRUST_SCOPE:-}" != "qualification-candidate" ]] &&
+   [[ "$(uname -s 2>/dev/null)" == "Darwin" ||
+      -n "${FACTORY_DOCTOR_TEST_LAUNCHCTL:-}" ]]; then
+  LINEAR_SERVICE_STATUS="error"
+  LINEAR_SERVICE_PLIST="$HOME/Library/LaunchAgents/com.factory.linear-sync.$PROJECT.plist"
+  LINEAR_SERVICE_LABEL="com.factory.linear-sync.$PROJECT"
+  LINEAR_SERVICE_DOMAIN="gui/$(id -u)"
+  LINEAR_SERVICE_TARGET="$LINEAR_SERVICE_DOMAIN/$LINEAR_SERVICE_LABEL"
+  EXPECTED_LINEAR_LAUNCHER="$HOME/.factory/bin/factory-launch"
+  if [[ -x "$LAUNCHCTL_BIN" && -f "$EXPECTED_LINEAR_LAUNCHER" &&
+        ! -L "$EXPECTED_LINEAR_LAUNCHER" && -x "$EXPECTED_LINEAR_LAUNCHER" &&
+        -f "$KIT_DIR/integrations/hermes/bin/factory-launch" &&
+        ! -L "$KIT_DIR/integrations/hermes/bin/factory-launch" ]] &&
+     cmp -s "$EXPECTED_LINEAR_LAUNCHER" \
+       "$KIT_DIR/integrations/hermes/bin/factory-launch" &&
+     [[ -f "$LINEAR_SERVICE_PLIST" &&
+        ! -L "$LINEAR_SERVICE_PLIST" ]] &&
+     "$PYTHON_BIN" -I -S - "$LINEAR_SERVICE_PLIST" "$LINEAR_SERVICE_LABEL" \
+       "$EXPECTED_LINEAR_LAUNCHER" "$PROJECT" "$PRODUCT_ROOT" <<'PY'
+import os, plistlib, stat, sys
+path, label, launcher, project, product = sys.argv[1:]
+info = os.lstat(path)
+if (os.path.realpath(path) != path or not stat.S_ISREG(info.st_mode)
+        or info.st_uid != os.geteuid()
+        or info.st_mode & 0o022):
+    raise SystemExit(1)
+with open(path, "rb") as stream:
+    value = plistlib.load(stream)
+expected = {
+    "Label": label,
+    "ProgramArguments": [launcher, project, "linear-sync"],
+    "StartInterval": 180,
+    "RunAtLoad": True,
+    "StandardOutPath": os.path.join(product, "factory/linear-sync.log"),
+    "StandardErrorPath": os.path.join(product, "factory/linear-sync.err.log"),
+}
+raise SystemExit(0 if value == expected else 1)
+PY
+  then
+    DISABLED_OUTPUT="$($LAUNCHCTL_BIN print-disabled "$LINEAR_SERVICE_DOMAIN" 2>/dev/null || true)"
+    printf '%s\n' "$DISABLED_OUTPUT" > "$TMP/linear-disabled.txt"
+    LINEAR_SERVICE_STATE="$($PYTHON_BIN -I -S - \
+        "$TMP/linear-disabled.txt" "$LINEAR_SERVICE_LABEL" <<'PY'
+import re, sys
+path, label = sys.argv[1:]
+states = {}
+opened = closed = False
+for line in open(path, encoding="utf-8", errors="replace"):
+    if not line.strip():
+        continue
+    if not opened:
+        if not re.fullmatch(r"\s*disabled services\s*=\s*\{\s*", line):
+            raise SystemExit(1)
+        opened = True
+        continue
+    if re.fullmatch(r"\s*\}\s*", line):
+        if closed:
+            raise SystemExit(1)
+        closed = True
+        continue
+    if closed:
+        raise SystemExit(1)
+    match = re.fullmatch(
+        r'\s*"([^"\r\n]+)"\s*=>\s*(enabled|disabled|true|false)\s*', line
+    )
+    if match is None or match.group(1) in states:
+        raise SystemExit(1)
+    states[match.group(1)] = match.group(2)
+if not opened or not closed:
+    raise SystemExit(1)
+state = states.get(label)
+if state in {"enabled", "false"}:
+    print("enabled")
+elif state in {"disabled", "true"}:
+    print("disabled")
+else:
+    print("unspecified")
+PY
+    )" || LINEAR_SERVICE_STATE="unavailable"
+    LINEAR_SERVICE_QUERY_RC=0
+    LINEAR_SERVICE_OUTPUT="$($LAUNCHCTL_BIN print "$LINEAR_SERVICE_TARGET" 2>/dev/null)" || \
+      LINEAR_SERVICE_QUERY_RC=$?
+    if [[ "$LINEAR_SERVICE_QUERY_RC" -eq 0 ]]; then
+      LINEAR_SERVICE_QUERY_OK="true"
+      LINEAR_SERVICE_LOADED="true"
+      printf '%s' "$LINEAR_SERVICE_OUTPUT" > "$TMP/linear-service.txt"
+      if "$PYTHON_BIN" -I -S - "$TMP/linear-service.txt" \
+          "$EXPECTED_LINEAR_LAUNCHER" "$PROJECT" linear-sync <<'PY'
+import re, sys
+path, *expected = sys.argv[1:]
+text = open(path, encoding="utf-8", errors="replace").read()
+matches = re.findall(r"^\s*arguments = \{\n(.*?)^\s*\}\s*$", text, re.M | re.S)
+actual = [line.strip() for line in matches[0].splitlines() if line.strip()] if len(matches) == 1 else []
+raise SystemExit(0 if actual == expected else 1)
+PY
+      then
+        LINEAR_SERVICE_ARGUMENTS_OK="true"
+      fi
+    elif [[ "$LINEAR_SERVICE_QUERY_RC" -eq 113 ]]; then
+      LINEAR_SERVICE_QUERY_OK="true"
+    fi
+    if [[ "$LINEAR_SERVICE_QUERY_OK" == "true" &&
+          "$LINEAR_SERVICE_STATE" == "enabled" &&
+          "$LINEAR_SERVICE_LOADED" == "true" &&
+          "$LINEAR_SERVICE_ARGUMENTS_OK" == "true" ]] ||
+       [[ "$LINEAR_SERVICE_QUERY_OK" == "true" &&
+          "$LINEAR_SERVICE_STATE" == "disabled" &&
+          "$LINEAR_SERVICE_LOADED" == "false" ]]; then
+      LINEAR_SERVICE_STATUS="ok"
+    fi
+  fi
+fi
+
 PROVIDER_RUNTIME_STATUS="ok"
 PROVIDER_ACTIVATED=false
 PROVIDER_EXECUTION_MODE=""
@@ -1478,6 +1607,7 @@ fi
 OVERALL_STATUS="ok"
 for check_status in "$REGISTRY_STATUS" "$KIT_STATUS" "$PIN_STATUS" "$RUNTIME_STATUS" \
                     "$HERMES_STATUS" "$CLI_STATUS" "$CREDENTIAL_STATUS" "$LINEAR_STATUS" \
+                    "$LINEAR_SERVICE_STATUS" \
                     "$PROVIDER_RUNTIME_STATUS" "$CONTRACT_RESUME_STATUS" \
                     "$TRANSITION_RECEIPT_STATUS" "$CONTROLLER_STATUS" \
                     "$FALLBACK_READINESS_STATUS" "$MODEL_READINESS_STATUS"; do
@@ -1511,6 +1641,8 @@ export LINEAR_STATUS OUTPUT_LINEAR_MAP LINEAR_LAST_SUCCESS LINEAR_AGE LINEAR_LAS
 export LINEAR_PROJECTS_JSON
 export LINEAR_PROJECT_CONFLICT_JSON
 export LINEAR_PROJECT_WARNINGS_JSON
+export LINEAR_SERVICE_STATUS LINEAR_SERVICE_STATE LINEAR_SERVICE_LOADED
+export LINEAR_SERVICE_ARGUMENTS_OK
 export PROVIDER_RUNTIME_STATUS PROVIDER_ACTIVATED PROVIDER_ACTIVE_ATTEMPTS
 export PROVIDER_EXECUTION_MODE
 export PROVIDER_ACTIVE_TOKENS PROVIDER_UNKNOWN_WORKERS PROVIDER_LEGACY_INTERVALS
@@ -1651,6 +1783,12 @@ document = {
             "project_identity_warnings": json.loads(
                 os.environ["LINEAR_PROJECT_WARNINGS_JSON"]
             ),
+            "service": {
+                "status": os.environ["LINEAR_SERVICE_STATUS"],
+                "state": os.environ["LINEAR_SERVICE_STATE"],
+                "loaded": boolean("LINEAR_SERVICE_LOADED"),
+                "arguments_match": boolean("LINEAR_SERVICE_ARGUMENTS_OK"),
+            },
         },
         "contract_resume": {
             "status": os.environ["CONTRACT_RESUME_STATUS"],
@@ -1696,6 +1834,7 @@ else
   echo "Credentials [$CREDENTIAL_STATUS]: github=$GH_PRESENT linear=$LINEAR_PRESENT (presence only; authentication not validated)"
   echo "Isolated provider [$PROVIDER_RUNTIME_STATUS]: activated=$PROVIDER_ACTIVATED concurrency_required=$PROVIDER_CONCURRENCY_REQUIRED concurrency_ready=$PROVIDER_CONCURRENCY_READY mode=${PROVIDER_EXECUTION_MODE:-none} attempts=$PROVIDER_ACTIVE_ATTEMPTS tokens=$PROVIDER_ACTIVE_TOKENS unknown_workers=$PROVIDER_UNKNOWN_WORKERS legacy=$PROVIDER_LEGACY_INTERVALS"
   echo "Linear sync [$LINEAR_STATUS]: age_seconds=${LINEAR_AGE:-unknown} last_success=${LINEAR_LAST_SUCCESS:-unknown} project_identity_warnings=$($PYTHON_BIN -c 'import json,sys; print(len(json.loads(sys.argv[1])))' "$LINEAR_PROJECT_WARNINGS_JSON")"
+  echo "Linear service [$LINEAR_SERVICE_STATUS]: state=$LINEAR_SERVICE_STATE loaded=$LINEAR_SERVICE_LOADED arguments_match=$LINEAR_SERVICE_ARGUMENTS_OK"
   echo "Contract resume [$CONTRACT_RESUME_STATUS]: incidents=$("$PYTHON_BIN" -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$CONTRACT_RESUME_FILE")"
   echo "Transition receipts [$TRANSITION_RECEIPT_STATUS]: incidents=$("$PYTHON_BIN" -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$TRANSITION_RECEIPT_FILE")"
   echo "Controller [$CONTROLLER_STATUS]: state=$CONTROLLER_SERVICE_STATE last_exit=${CONTROLLER_LAST_EXIT_STATUS:-none}"
