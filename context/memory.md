@@ -5003,3 +5003,24 @@ absent native override is adopted as verified explicit enabled and reported as
 a committed semantic no-op. It becomes the restoration baseline; an
 indeterminate adoption stops before later mutations, and later rollback never
 masks explicit enabled as unspecified.
+
+## 2026-08-09 — Decision 359: The historical judgment-classifier pilot is rejected
+
+Category: Trust boundary
+
+Decision 343 is superseded for issue #257. A frozen read-only census through
+the last pre-T-198 controller event found 32 digest-valid `role_blocked`
+projections. Exactly 27 authenticated `role_exit_contract_blocked` terminal
+chains bind a run, transition receipt, passport charge, retained pre-run head,
+and descendant blocker commit; six legacy projections have no exact terminal
+binding, while one T-100 terminal chain has no projection. The mandatory
+nine-case T-100 pilot therefore has only eight authenticated cases, and the
+retained schemas contain no human judgment labels. Missing terminal evidence
+and labels are not reconstructed or inferred from AI-authored hindsight.
+
+Issue #257 is rejected as specified. Model judgment remains inside bounded paid
+roles, while deterministic code retains sole transition, integrity, resource,
+and publication authority. A future experiment must be a new, pre-registered
+ticket with prospectively retained authenticated cases, two independent human
+labels, an explicit unknown fallback, exact prompt/model/cost receipts, bounded
+confidence and spend, and measured reduction of real operator interventions.
