@@ -286,11 +286,16 @@ never turn paused or historical repro records into runnable claims.
 Contract 1.8 also exposes a channel-neutral `watch --json` read boundary over
 the selected project's canonical controller events. It projects only bounded,
 redacted operator actions for contract or lifecycle escalation, approval,
-terminal role failure, budget halt, and progress timeout. Every output retains
-the authenticated source-event digest and an opaque cursor bound to the exact
-project controller path, source filename, and digest. Restart validates that
-anchor and resumes after it; missing, replaced, reordered, broadly writable,
-or digest-invalid evidence exits through the same typed nonzero boundary.
+terminal role failure, terminal recovery refusal or abandonment, budget halt,
+and progress timeout. Intermediate recovery failures remain silent. Terminal
+recovery actions expose only closed recovery kinds and bounded reason codes or
+the terminal attempt count and authenticated input and outcome digests; raw
+recovery errors never enter the projection. Every output retains the
+authenticated source-event digest and an
+opaque cursor bound to the exact project controller path, source filename, and
+digest. Restart validates that anchor and resumes after it; missing, replaced,
+reordered, broadly writable, or digest-invalid evidence exits through the same
+typed nonzero boundary.
 An otherwise valid action whose historical Factory identity is unavailable is
 instead emitted under the separate operator-watch-diagnostic/v1 schema with a
 fixed reason, null Factory SHA, and no source value echoed; other malformed

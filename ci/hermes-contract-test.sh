@@ -1646,6 +1646,132 @@ run_launcher launchtest watch --json \
 rm -f "$EXPECTED_CONTROLLER_STATE/events/9000002-0000000000000002.json" \
   "$EXPECTED_CONTROLLER_STATE/events/9000003-0000000000000003.json"
 
+# The sealed watcher skips intermediate recovery failures, projects both
+# terminal recovery stops, and resumes to a later sibling action exactly once.
+python3 - "$EXPECTED_CONTROLLER_STATE/events" "$SHA_MODELS_V18" <<'PY'
+import hashlib, json, os, pathlib, sys
+events, factory_sha = pathlib.Path(sys.argv[1]), sys.argv[2]
+values = (
+    (9000004, "0000000000000004", {
+        "event": "role_blocked",
+        "factory_sha": factory_sha,
+        "role": "builder",
+        "role_exit": "provider_failed",
+        "run_id": "run-timeout",
+        "terminal_reason_code": "soft_timeout",
+        "ticket": "T-904",
+    }),
+    (9000005, "0000000000000005", {
+        "event": "typed_recovery_refused",
+        "factory_sha": factory_sha,
+        "reason": "manifest",
+        "recovery_kind": "qualification_fallback",
+        "ticket": "T-905",
+    }),
+    (9000006, "0000000000000006", {
+        "error": "token=intermediate-recovery-secret",
+        "event": "ticket_recovery_failed",
+        "factory_sha": factory_sha,
+        "recovery": "release-upgrade",
+        "ticket": "T-905",
+    }),
+    (9000007, "0000000000000007", {
+        "attempts": 3,
+        "event": "ticket_recovery_abandoned",
+        "factory_sha": factory_sha,
+        "input_sha256": "d" * 64,
+        "outcome_sha256": "e" * 64,
+        "recovery": "release-upgrade",
+        "ticket": "T-906",
+    }),
+    (9000008, "0000000000000008", {
+        "event": "awaiting_approval",
+        "factory_sha": factory_sha,
+        "passport_sha256": "f" * 64,
+        "ticket": "T-907",
+    }),
+)
+for epoch, token, value in values:
+    value.update(
+        observed_at_epoch_ns=epoch,
+        schema="nysa.software-factory.controller-event/v1",
+    )
+    raw = json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    value["event_sha256"] = hashlib.sha256(raw.encode()).hexdigest()
+    path = events / f"{epoch}-{token}.json"
+    path.write_text(
+        json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    os.chmod(path, 0o600)
+PY
+run_launcher launchtest watch --json --limit 1 --idle-timeout-seconds 1 \
+  > "$TMP/launcher-watch-timeout.json"
+python3 - "$TMP/launcher-watch-timeout.json" \
+  > "$TMP/launcher-watch-timeout.cursor" <<'PY'
+import json, pathlib, sys
+value = json.loads(pathlib.Path(sys.argv[1]).read_text())
+assert value["action"] == "progress_timeout"
+assert value["reason"] == "soft_timeout"
+assert value["ticket"] == "T-904"
+print(value["cursor"])
+PY
+IFS= read -r WATCH_TIMEOUT_CURSOR < "$TMP/launcher-watch-timeout.cursor"
+run_launcher launchtest watch --json --cursor "$WATCH_TIMEOUT_CURSOR" \
+  --limit 1 --idle-timeout-seconds 1 \
+  > "$TMP/launcher-watch-recovery-refused.json"
+python3 - "$TMP/launcher-watch-recovery-refused.json" \
+  > "$TMP/launcher-watch-recovery-refused.cursor" <<'PY'
+import json, pathlib, sys
+value = json.loads(pathlib.Path(sys.argv[1]).read_text())
+assert value["action"] == "blocked_escalated"
+assert value["reason"] == "qualification_fallback:manifest"
+assert value["ticket"] == "T-905"
+print(value["cursor"])
+PY
+IFS= read -r WATCH_RECOVERY_CURSOR \
+  < "$TMP/launcher-watch-recovery-refused.cursor"
+run_launcher launchtest watch --json --cursor "$WATCH_RECOVERY_CURSOR" \
+  --limit 1 --idle-timeout-seconds 1 \
+  > "$TMP/launcher-watch-recovery-abandoned.json"
+python3 - "$TMP/launcher-watch-recovery-abandoned.json" \
+  > "$TMP/launcher-watch-recovery-abandoned.cursor" <<'PY'
+import json, pathlib, sys
+value = json.loads(pathlib.Path(sys.argv[1]).read_text())
+assert value["action"] == "blocked_escalated"
+assert value["ticket"] == "T-906"
+assert value["reason"] == (
+    "recovery_abandoned:release-upgrade:attempts=3:"
+    + "input_sha256=" + "d" * 64 + ":outcome_sha256=" + "e" * 64
+)
+print(value["cursor"])
+PY
+assert_no_secret "$TMP/launcher-watch-recovery-refused.json"
+assert_no_secret "$TMP/launcher-watch-recovery-abandoned.json"
+! grep -Fq "intermediate-recovery-secret" \
+  "$TMP/launcher-watch-recovery-abandoned.json" ||
+  fail "sealed operator watch projected an intermediate recovery failure"
+IFS= read -r WATCH_ABANDONED_CURSOR \
+  < "$TMP/launcher-watch-recovery-abandoned.cursor"
+run_launcher launchtest watch --json --cursor "$WATCH_ABANDONED_CURSOR" \
+  --limit 1 --idle-timeout-seconds 1 \
+  > "$TMP/launcher-watch-recovery-sibling.json"
+python3 - "$TMP/launcher-watch-recovery-sibling.json" \
+  > "$TMP/launcher-watch-recovery-sibling.cursor" <<'PY'
+import json, pathlib, sys
+value = json.loads(pathlib.Path(sys.argv[1]).read_text())
+assert value["action"] == "awaiting_approval"
+assert value["ticket"] == "T-907"
+print(value["cursor"])
+PY
+IFS= read -r WATCH_RECOVERY_SIBLING_CURSOR \
+  < "$TMP/launcher-watch-recovery-sibling.cursor"
+run_launcher launchtest watch --json --cursor "$WATCH_RECOVERY_SIBLING_CURSOR" \
+  --idle-timeout-seconds 1 > "$TMP/launcher-watch-recovery-idle.out"
+[[ ! -s "$TMP/launcher-watch-recovery-idle.out" ]] ||
+  fail "sealed operator watch repeated a handled recovery record"
+rm -f "$EXPECTED_CONTROLLER_STATE/events/900000"{4,5,6,7,8}-*.json
+
 REORDER_WORKTREE="$TMP/reorder-worktree"
 git -C "$LAUNCH_PRODUCT" worktree add -q -b ticket/T-456 "$REORDER_WORKTREE"
 REORDER_WORKTREE_PHYS="$(cd "$REORDER_WORKTREE" && pwd -P)"
@@ -3239,14 +3365,19 @@ for relative in (
         r"`(?:scripts/)?(?:run-agent|preflight|next-stage)\.sh(?:`|\s)", text,
     )
 setup = open(os.path.join(root, "docs/factory-setup.md"), encoding="utf-8").read()
-operator = open(
+operator_full = open(
     os.path.join(root, "docs/runbooks/operator.md"), encoding="utf-8",
 ).read()
 migration = open(
     os.path.join(root, "docs/runbooks/release-migration-prompt.md"),
     encoding="utf-8",
 ).read()
-operator = operator[operator.index("## Preparing and activating a release"):]
+stuck = operator_full[operator_full.index("## Stuck ticket"):]
+stuck = stuck[:stuck.index("\n## ", 1)]
+assert "watch --json" in stuck and "progress_timeout" in stuck
+assert "factory-launch <project> run" not in stuck
+assert "Blocked-Escalated" not in stuck
+operator = operator_full[operator_full.index("## Preparing and activating a release"):]
 operator = operator[:operator.index("\n## ", 1)]
 migration = migration[migration.index("this exact order:"):]
 

@@ -4,17 +4,18 @@ What to do when something breaks, written for a non-technical operator. Each ent
 
 ## Stuck ticket (no movement for hours)
 
-- Notice: ticket sits in an active role column with no new commits or comments.
-- Do: check the terminal/session running the role. If it's spinning or confused, stop it, add a ticket comment "run abandoned — restarting", and re-run the role through `~/.factory/bin/factory-launch <project> run`. Second stall on the same ticket → move it to Blocked-Escalated and re-read the ticket's contract: stalls usually mean the spec is ambiguous.
-- Don't: let a stuck run keep burning budget while you wait.
+Keep the supervised `watch --json` consumer running. For an authenticated
+`progress_timeout`, inspect the named evidence and use only the recovery path
+in that action; never relaunch a role or move Factory-owned state by hand.
 
 ## Watch for operator action
 
 - Run `factory-launch <project> watch --json` in a supervised terminal or feed
   its newline-delimited JSON to your notification channel. It reports only an
   approval request, escalation or contract blocker, terminal role failure,
-  budget halt, or progress timeout; it does not send Slack or desktop messages
-  itself.
+  terminal recovery refusal or abandonment, budget halt, or progress timeout;
+  it does not send Slack or desktop messages itself. Intermediate recovery
+  failures stay silent while the bounded recovery remains active.
 - Save the opaque `cursor` from the last handled line. After a restart, pass it
   back as `--cursor <value>` so that line is authenticated and not delivered
   again. `--limit N` and `--idle-timeout-seconds N` support bounded drains.
