@@ -22,6 +22,7 @@ suite_registry() {
   "$callback" certification-runner "measured certification DAG suite" python3 "$ROOT/ci/certification-runner-test.py"
   "$callback" certification-preflight "exact certification runtime tuple suite" python3 "$ROOT/ci/certification-preflight-test.py"
   "$callback" owner-runtime-pin "owner-local certification runtime pin suite" python3 "$ROOT/ci/owner-runtime-pin-test.py"
+  "$callback" provider-cli-pin "owner-local exact provider CLI pin suite" python3 "$ROOT/ci/provider-cli-pin-test.py"
   "$callback" state-machine "deterministic state-machine suite" python3 "$ROOT/ci/state-machine-test.py"
   "$callback" emergency-admit "one-use emergency role admission suite" python3 "$ROOT/ci/emergency-admit-test.py"
   "$callback" progress-timeout "authenticated progress timeout suite" python3 "$ROOT/ci/progress-timeout-test.py"

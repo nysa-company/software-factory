@@ -9,6 +9,9 @@
 # print agent output, and print a final line: "turns=N cost_usd=X".
 set -euo pipefail
 
+ADAPTER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$ADAPTER_DIR/../lib/provider-cli-version.sh"
+
 PINNED_VERSION="${CODEX_PINNED:-0.144.1}"  # pinned at shakedown 2026-07-11
 
 BUDGET="" MAX_TURNS="" TIMEOUT_MIN="" PROMPT_FILE="" WORKDIR="$PWD" MODEL="" EFFORT=""
@@ -29,10 +32,11 @@ TASK="${*:-}"
 
 command -v codex >/dev/null || { echo "codex CLI not installed" >&2; exit 6; }
 INSTALLED="$(codex --version 2>/dev/null | head -n1 || true)"
-case "$INSTALLED" in
-  *"$PINNED_VERSION"*) : ;;
-  *) echo "installed Codex does not match the approved version" >&2; exit 6 ;;
-esac
+INSTALLED_VERSION="$(factory_codex_version "$INSTALLED" 2>/dev/null || true)"
+[[ -n "$INSTALLED_VERSION" && "$INSTALLED_VERSION" == "$PINNED_VERSION" ]] || {
+  echo "installed Codex does not match the approved version" >&2
+  exit 6
+}
 if [[ "${FACTORY_CLI_INTERNAL_SANDBOX:-0}" == 1 ]]; then
   python3 - "${HOME:-}" "${TMPDIR:-}" "${FACTORY_CLI_ATTEMPT_ID:-}" <<'PY' || {
 import os

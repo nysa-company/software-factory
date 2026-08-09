@@ -115,10 +115,34 @@ until expiry.
   contract migration.
 - The launcher intentionally replaces caller `PATH` with its contract
   allowlist, which includes `~/.factory/bin` but not `~/.local/bin`. If
-  provider CLIs are installed outside the allowlist, bootstrap version-pinned
-  links for `claude` and `agent` into `~/.factory/bin`; do not widen the
-  launcher to an entire user-writable bin directory. Verify the physical link
-  targets, pinned versions, and `contract-test.sh --routes` before dispatch.
+  provider CLIs are installed outside the allowlist, keep every active product
+  in maintenance and fully drain controllers, leases, attempts, broker tokens,
+  and live qualification consumers. Preview the installed candidate's exact
+  three-CLI transaction, review its physical targets and approval hash, then
+  apply that same hash:
+
+  ```bash
+  bash scripts/factory-kit.sh provider-cli-pin plan --sha "$FACTORY_SHA" \
+    --claude-bin "/absolute/versioned/claude" \
+    --codex-bin "/absolute/versioned/codex" \
+    --cursor-bin "/absolute/versioned/agent" \
+    --operator-id "<operator-id>"
+  bash scripts/factory-kit.sh provider-cli-pin apply --sha "$FACTORY_SHA" \
+    --claude-bin "/absolute/versioned/claude" \
+    --codex-bin "/absolute/versioned/codex" \
+    --cursor-bin "/absolute/versioned/agent" \
+    --operator-id "<operator-id>" --approve-hash "<plan approval_sha256>"
+  bash scripts/factory-kit.sh provider-cli-pin check --sha "$FACTORY_SHA"
+  ```
+
+  The transaction updates only the three exact global pin keys and the
+  `~/.factory/bin/{claude,codex,agent}` links. It binds the sealed candidate,
+  the exact compatible active-release allowlist, raw link targets, physical
+  executable hashes, parsed versions, and fixed flag contracts. An absent link
+  is only an unmanaged warning before any pin or receipt exists; a missing or
+  dangling managed target is an error. Do not widen PATH, use `current` or a
+  version range, hand-edit the receipt, or resume dispatch until Doctor reports
+  the exact pins ready.
 - For a product with certification plan v2, pin its exact Node/npm runtime
   without changing the system-wide Homebrew link:
 
@@ -391,7 +415,7 @@ All boxes checked = the factory may start. Any box unchecked = it may not.
 - [ ] `factory/KIT_PIN` contains exactly one lowercase full SHA; `factory/PROJECT.env` names an executable, repository-contained `CERTIFY_SCRIPT`
 - [ ] Exact-SHA release exists under `~/.factory/kits/releases/`, is sealed read-only, and has a current, unexpired tuple-bound receipt
 - [ ] The active contract 1.2/1.3/1.4 receipt remains owner-only mode `0600`; its certified product origin matches the single configured push destination
-- [ ] `~/.factory/bin/factory-launch`, the product-plan Node/npm/npx pins, and any required version-pinned provider CLI links are installed; `contract --json` returns the expected version, `contract-test.sh --routes` passes, and `doctor --json` has no error category
+- [ ] `~/.factory/bin/factory-launch`, the product-plan Node/npm/npx pins, and the receipt-bound exact provider CLI links are installed; `provider-cli-pin check` is ready, `contract --json` returns the expected version, `contract-test.sh --routes` passes, and `doctor --json` has no error category
 - [ ] `models profiles --json` and `models plan --json` were reviewed; the operator approved the exact profile hash, or explicitly retained default `cursor-opus-v1`
 - [ ] A clean sample ticket passed `models pin --ticket <T-NNN> --workdir <exact-worktree> --json`, creating one pushed commit containing both `Kit-SHA` and the exact six-role route plan
 - [ ] Kimi remains disabled and absent from every profile; no live/billed-pilot claim is recorded, and credential rotation plus broker/OS isolation are prerequisites to a pilot

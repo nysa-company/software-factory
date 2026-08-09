@@ -5024,3 +5024,33 @@ and publication authority. A future experiment must be a new, pre-registered
 ticket with prospectively retained authenticated cases, two independent human
 labels, an explicit unknown fallback, exact prompt/model/cost receipts, bounded
 confidence and spend, and measured reduction of real operator interventions.
+
+## 2026-08-09 — Decision 360: Provider CLI pins are one owner transaction
+
+Category: Trust boundary
+
+Claude, Codex, and Cursor use exact owner-local versions and managed launcher
+links. One maintenance-only plan/apply/check transaction binds the installed
+candidate SHA/tree, every exact compatible active release, the complete global
+configuration digest, the accepted managed `CURSOR_AGENT_BIN` spelling, raw
+link targets, physical executable hashes, exact parsed versions, and fixed
+command flags. Apply acquires the global/provider authorities and every affected
+launch lock nonblockingly before mutation, journals the prior config, receipt,
+and three links, rolls the full unit back on failure, and recovers an interrupted
+prepared journal only inside the next fully drained plan/apply guard. Read-only
+checks report that recovery is required. Certification and every active-release
+transition require the target in the receipt allowlist; those transitions check
+while holding project and launch locks, so they cannot deadlock or race a pin
+apply, including before a first activation record exists.
+
+Doctor reports absent never-managed CLIs as warnings, but a missing or dangling
+managed link, version/contract mismatch, config/receipt drift, or unlisted active
+release is an error. Qualification keeps its sealed lane-local configuration
+and fallback-readiness authority and does not consume the production receipt.
+Legacy active releases are bound by exact sealed SHA/tree and their existing
+launcher/config/adapter surfaces solely for continued operation or rollback;
+the candidate alone must carry the exact parser and owner transaction helper.
+After rollback to such a legacy release, keep maintenance published and rerun
+the candidate helper check plus Doctor before resuming dispatch. No ranges,
+floors, `current` aliases, automatic updater, PATH widening, or runtime-tuple
+expansion are introduced.

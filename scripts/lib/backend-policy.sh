@@ -12,6 +12,7 @@ FACTORY_MODEL_MANAGER="${FACTORY_MODEL_MANAGER:-$FACTORY_POLICY_DIR/../model-man
 FACTORY_MODEL_CATALOG="${FACTORY_MODEL_CATALOG:-$FACTORY_POLICY_DIR/../model-routing/catalog-v1.json}"
 FACTORY_MODEL_PROFILES="${FACTORY_MODEL_PROFILES:-$FACTORY_POLICY_DIR/../model-routing/profiles-v1.json}"
 FACTORY_MODEL_POLICY_FILE="${FACTORY_MODEL_POLICY_FILE:-${FACTORY_ROOT:+$FACTORY_ROOT/factory/model-policy.json}}"
+source "$FACTORY_POLICY_DIR/provider-cli-version.sh"
 
 factory_role_group() {
   case "$1" in
@@ -366,11 +367,13 @@ factory_probe_adapter() {
         PROBE_STATE="UNAVAILABLE"; PROBE_REASON="executable_missing"; return 0
       fi
       installed="$(timeout "$probe_timeout" codex --version 2>/dev/null | awk 'NR==1 {print; exit}' || true)"
-      PROBE_VERSION="$installed"
       if [[ -z "$installed" ]]; then
         PROBE_STATE="UNAVAILABLE"; PROBE_REASON="version_probe_failed"; return 0
       fi
-      if [[ "$installed" != *"${CODEX_PINNED:-0.144.1}"* ]]; then
+      installed_version="$(factory_codex_version "$installed" 2>/dev/null || true)"
+      PROBE_VERSION="$installed_version"
+      if [[ -z "$installed_version" ||
+            "$installed_version" != "${CODEX_PINNED:-0.144.1}" ]]; then
         PROBE_STATE="INVALID"; PROBE_REASON="version_mismatch"; return 0
       fi
       help="$(timeout "$probe_timeout" codex exec --help 2>/dev/null || true)"

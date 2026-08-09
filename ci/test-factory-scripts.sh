@@ -112,7 +112,7 @@ write_backend_stubs() {
 #!/usr/bin/env bash
 case "${1:-}" in
   --version)
-    [[ "${STUB_CODEX_VERSION_EMPTY:-0}" == "1" ]] || echo "codex-cli 0.144.1"
+    [[ "${STUB_CODEX_VERSION_EMPTY:-0}" == "1" ]] || echo "${STUB_CODEX_VERSION:-codex-cli 0.144.1}"
     exit "${STUB_CODEX_VERSION_STATUS:-0}"
     ;;
   login) [[ "${2:-}" == "status" ]] && exit 0 ;;
@@ -685,6 +685,29 @@ if [[ "$EMPTY_CODEX_VERSION_PROBE" == "UNAVAILABLE:version_probe_failed" &&
 else
   fail "empty primary version probes permit startup fallback" \
     "codex=$EMPTY_CODEX_VERSION_PROBE claude=$EMPTY_CLAUDE_VERSION_PROBE missing=$MISSING_CLAUDE_FLAG_PROBE help=$FAILED_CLAUDE_HELP_PROBE"
+fi
+
+CONFUSABLE_CODEX_PROBE="$(PATH="$STUB_BIN:$PATH" CODEX_PINNED=0.144.1 \
+  STUB_CODEX_VERSION='codex-cli 10.144.10' \
+  bash -c 'set -euo pipefail; source "$1"; factory_probe_adapter codex; echo "$PROBE_STATE:$PROBE_REASON"' \
+  _ "$ROOT/scripts/lib/backend-policy.sh")"
+CONFUSABLE_CODEX_TRACE="$TMP/confusable-codex.trace"
+CONFUSABLE_CODEX_STATUS=0
+: > "$CONFUSABLE_CODEX_TRACE"
+PATH="$STUB_BIN:$PATH" CODEX_PINNED=0.144.1 \
+  STUB_CODEX_VERSION='codex-cli 10.144.10' \
+  FACTORY_TEST_TRACE="$CONFUSABLE_CODEX_TRACE" \
+  "$ROOT/scripts/adapters/codex.sh" --budget 1 --max-turns 1 \
+    --timeout-min 1 --prompt-file /dev/null --workdir "$TMP" \
+    --model gpt-test --effort medium -- task >/dev/null 2>&1 ||
+  CONFUSABLE_CODEX_STATUS=$?
+if [[ "$CONFUSABLE_CODEX_PROBE" == "INVALID:version_mismatch" &&
+      "$CONFUSABLE_CODEX_STATUS" -eq 6 &&
+      ! -s "$CONFUSABLE_CODEX_TRACE" ]]; then
+  pass "Codex readiness and adapter require an exact parsed version"
+else
+  fail "Codex readiness and adapter require an exact parsed version" \
+    "probe=$CONFUSABLE_CODEX_PROBE status=$CONFUSABLE_CODEX_STATUS"
 fi
 
 python3 - "$CLAUDE_AUTH_ROOT/.credentials.json" <<'PY'

@@ -195,6 +195,7 @@ Usage:
   $PROGRAM recover-lease --project SLUG --product PRODUCT_REPO --ticket T-NNN
   $PROGRAM runtime-pin --product PRODUCT_REPO --runtime-bin NODE_BIN_DIR
   $PROGRAM provider-concurrency ACTION --sha FULL_SHA --capacity 2..4 [--approve-hash HASH]
+  $PROGRAM provider-cli-pin ACTION --sha FULL_SHA [--claude-bin ABS --codex-bin ABS --cursor-bin ABS --operator-id ID] [--approve-hash HASH]
 
 FACTORY_KITS_ROOT overrides the default state root (~/.factory/kits).
 EOF
@@ -1274,6 +1275,87 @@ cmd_provider_concurrency() {
     python3 "$release/scripts/provider-concurrency-config.py" \
       --release "$release" --root "$PROVIDER_STATE_ROOT" \
       --capacity "$capacity" "$action"
+  fi
+}
+
+provider_cli_pin_helper() {
+  local sha="$1" verified tree release helper
+  verified="$(verify_release_from_manifest "$sha")"
+  tree="${verified%%$'\t'*}"
+  release="$RELEASES_DIR/$sha"
+  helper="$release/scripts/owner-provider-cli-pin.py"
+  [[ -f "$helper" && ! -L "$helper" ]] ||
+    die "release does not support exact provider CLI pinning"
+  printf '%s\t%s\t%s\n' "$tree" "$release" "$helper"
+}
+
+provider_cli_pin_authority_helper() {
+  local fallback_sha="$1" receipt="$PROVIDER_STATE_ROOT/provider-cli-pin.json" sha
+  sha="$fallback_sha"
+  if [[ -e "$receipt" || -L "$receipt" ]]; then
+    [[ -f "$receipt" && ! -L "$receipt" ]] &&
+      verify_restrictive_regular_file "$receipt" ||
+      die "provider CLI pin receipt is missing or unsafe"
+    sha="$(json_get "$receipt" candidate_release.factory_sha)"
+    validate_sha "$sha"
+  fi
+  provider_cli_pin_helper "$sha"
+}
+
+run_provider_cli_pin_check() {
+  local sha="$1" target authority tree release helper
+  target="$(verify_release_from_manifest "$sha")"
+  tree="${target%%$'\t'*}"
+  release="$RELEASES_DIR/$sha"
+  authority="$(provider_cli_pin_authority_helper "$sha")"
+  helper="${authority##*$'\t'}"
+  python3 -I -S "$helper" --kits-root "$KITS_ROOT" --sha "$sha" \
+    --tree "$tree" --release "$release" check
+}
+
+require_provider_cli_pin_ready() {
+  local sha="$1"
+  if [[ "${FACTORY_KIT_TEST_MODE:-0}" == "1" &&
+        "${FACTORY_KIT_TEST_SKIP_PROVIDER_CLI_PIN:-0}" == "1" ]]; then
+    return 0
+  fi
+  run_provider_cli_pin_check "$sha" >/dev/null ||
+    die "exact provider CLI pin receipt does not approve release $sha"
+}
+
+cmd_provider_cli_pin() {
+  local action="$1" sha="$2" claude_bin="$3" codex_bin="$4" cursor_bin="$5"
+  local operator="$6" approval="$7" values tree release helper
+  [[ "$action" == "plan" || "$action" == "apply" || "$action" == "check" ]] ||
+    die "provider-cli-pin action must be plan, apply, or check"
+  validate_sha "$sha"
+  if [[ "$action" == "check" ]]; then
+    [[ -z "$claude_bin$codex_bin$cursor_bin$operator$approval" ]] ||
+      die "provider-cli-pin check does not accept mutation options"
+    run_provider_cli_pin_check "$sha"
+    return
+  fi
+  values="$(provider_cli_pin_helper "$sha")"
+  IFS=$'\t' read -r tree release helper <<< "$values"
+  [[ "$claude_bin" == /* && "$codex_bin" == /* && "$cursor_bin" == /* ]] ||
+    die "provider-cli-pin plan/apply requires three absolute CLI paths"
+  [[ "$operator" =~ ^[a-z0-9][a-z0-9._-]{0,127}$ && "$operator" != "auto" ]] ||
+    die "provider-cli-pin requires an explicit operator ID"
+  [[ "$action" == "apply" || -z "$approval" ]] ||
+    die "--approve-hash is valid only for provider-cli-pin apply"
+  [[ "$action" == "plan" || "$approval" =~ ^[0-9a-f]{64}$ ]] ||
+    die "provider-cli-pin apply requires an exact approval hash"
+  if [[ "$action" == "apply" ]]; then
+    python3 -I -S "$helper" --kits-root "$KITS_ROOT" --sha "$sha" \
+      --tree "$tree" --release "$release" apply \
+      --claude-bin "$claude_bin" --codex-bin "$codex_bin" \
+      --cursor-bin "$cursor_bin" --operator-id "$operator" \
+      --approve-hash "$approval"
+  else
+    python3 -I -S "$helper" --kits-root "$KITS_ROOT" --sha "$sha" \
+      --tree "$tree" --release "$release" plan \
+      --claude-bin "$claude_bin" --codex-bin "$codex_bin" \
+      --cursor-bin "$cursor_bin" --operator-id "$operator"
   fi
 }
 
@@ -3375,6 +3457,7 @@ cmd_certify() {
     die "product certification failed"
   record_certification_trace "product-certification"
   verify_release_from_manifest "$sha" >/dev/null
+  require_provider_cli_pin_ready "$sha"
   require_clean_product "$product_top"
   [[ "$(product_tree "$product_top")" == "$product_git_tree" ]] ||
     die "product tree changed during certification"
@@ -3656,6 +3739,7 @@ cmd_activate() {
     die "certification receipt has already been consumed"
   launch_lock="$product_top/factory/.launch.lock"
   acquire_lock "$launch_lock" "product launch"
+  require_provider_cli_pin_ready "$sha"
   require_maintenance_after_lock "$slug" "$product_top"
   if has_active_runs "$product_top"; then
     die "product acquired launch lock with active runs"
@@ -3736,7 +3820,7 @@ PY
 cmd_reconcile() {
   local slug="$1" product="$2" project_dir journal_dir journal active product_top
   local project_lock launch_lock phase sha receipt_id snapshot previous transaction
-  local previous_product_tree
+  local previous_product_tree rollback_sha
   local claim pre_pointer=0 valid=0
   validate_slug "$slug"
   ensure_managed_directories "$slug"
@@ -3795,6 +3879,7 @@ cmd_reconcile() {
     valid=1
   fi
   if [[ "$valid" == "1" ]]; then
+    require_provider_cli_pin_ready "$sha"
     claim="$CONSUMED_DIR/$receipt_id.json"
     if [[ "$phase" == "prepared" ]]; then
       if [[ -e "$claim" || -L "$claim" ]]; then
@@ -3820,6 +3905,8 @@ cmd_reconcile() {
     set_journal_phase "$journal" committed
     say "RECONCILE OK: committed interrupted activation"
   else
+    rollback_sha="$(json_get "$journal" previous_record.kit_sha 2>/dev/null || true)"
+    [[ -z "$rollback_sha" ]] || require_provider_cli_pin_ready "$rollback_sha"
     rollback_journal "$journal" "$active"
     say "RECONCILE OK: restored previous generation"
   fi
@@ -3877,6 +3964,7 @@ cmd_rollback() {
 
   launch_lock="$product_top/factory/.launch.lock"
   acquire_lock "$launch_lock" "product launch"
+  require_provider_cli_pin_ready "$previous_sha"
   require_maintenance_after_lock "$slug" "$product_top"
   if has_active_runs "$product_top"; then
     die "product has active runs"
@@ -4006,6 +4094,10 @@ TICKET=""
 CAPACITY=""
 APPROVE_HASH=""
 RUNTIME_BIN=""
+CLAUDE_BIN=""
+CODEX_BIN=""
+CURSOR_BIN=""
+OPERATOR_ID=""
 JSON=0
 POSITIONALS=()
 
@@ -4021,6 +4113,10 @@ while [[ $# -gt 0 ]]; do
     --capacity) [[ $# -ge 2 ]] || die "$1 requires a value"; CAPACITY="$2"; shift 2 ;;
     --approve-hash) [[ $# -ge 2 ]] || die "$1 requires a value"; APPROVE_HASH="$2"; shift 2 ;;
     --runtime-bin) [[ $# -ge 2 ]] || die "$1 requires a value"; RUNTIME_BIN="$2"; shift 2 ;;
+    --claude-bin) [[ $# -ge 2 ]] || die "$1 requires a value"; CLAUDE_BIN="$2"; shift 2 ;;
+    --codex-bin) [[ $# -ge 2 ]] || die "$1 requires a value"; CODEX_BIN="$2"; shift 2 ;;
+    --cursor-bin) [[ $# -ge 2 ]] || die "$1 requires a value"; CURSOR_BIN="$2"; shift 2 ;;
+    --operator-id) [[ $# -ge 2 ]] || die "$1 requires a value"; OPERATOR_ID="$2"; shift 2 ;;
     --json) JSON=1; shift ;;
     --help|-h) usage; exit 0 ;;
     --*) die "unknown option: $1" ;;
@@ -4110,6 +4206,16 @@ case "$COMMAND" in
     [[ -n "$ACTION" && -n "$SHA" && -n "$CAPACITY" ]] ||
       { usage >&2; exit 2; }
     cmd_provider_concurrency "$ACTION" "$SHA" "$CAPACITY" "$APPROVE_HASH"
+    ;;
+  provider-cli-pin)
+    ACTION="${POSITIONALS[0]:-}"
+    [[ -n "$SHA" ]] || SHA="${POSITIONALS[1]:-}"
+    [[ -n "$ACTION" && -n "$SHA" && ${#POSITIONALS[@]} -le 2 &&
+       -z "$PROJECT$PRODUCT$RECEIPT$TICKET$CAPACITY$RUNTIME_BIN$ORIGIN_OVERRIDE" &&
+       "$REPO" == "$SCRIPT_ROOT" && "$JSON" -eq 0 ]] ||
+      { usage >&2; exit 2; }
+    cmd_provider_cli_pin "$ACTION" "$SHA" "$CLAUDE_BIN" "$CODEX_BIN" \
+      "$CURSOR_BIN" "$OPERATOR_ID" "$APPROVE_HASH"
     ;;
   prune) die "automatic prune is intentionally not implemented" ;;
   *) usage >&2; die "unknown command: $COMMAND" ;;
