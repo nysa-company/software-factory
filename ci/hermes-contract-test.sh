@@ -645,7 +645,27 @@ write(
     receipt_factory_sha="7" * 40,
     transition_receipt_sha256="b" * 64,
 )
-write("upgraded_claim_recovered", "T-119", 15, from_factory_sha="7" * 40)
+# Retained legacy resolution events authenticate, but lack usable Factory
+# lineage. Doctor ignores only these exact observed shapes so they cannot erase
+# current incident reports or turn an append-only history into a permanent
+# scanner error.
+write(
+    "contract_blocker_recovered", "T-110", 31,
+    factory_sha=None, failed_run_id="1785352139-78426",
+)
+write(
+    "contract_blocker_recovered", "T-112", 32,
+    factory_sha=None, failed_run_id="1785371676-11405",
+)
+write("ticket_released", "T-114", 33, factory_sha=None)
+write(
+    "upgraded_claim_recovered", "T-119", 34,
+    factory_sha=None, from_factory_sha="7" * 40,
+)
+write(
+    "upgraded_claim_recovered", "T-119", 57,
+    from_factory_sha=factory_sha,
+)
 PY
 
 HOME="$TEST_HOME" PATH="$STUB_BIN:$PATH" FACTORY_LINEAR_FRESH_SECONDS=600 \
@@ -781,12 +801,268 @@ assert checks["transition_receipts"] == {
     }],
     "status": "warning",
 }
+assert checks["controller"] == {
+    "last_exit_status": None,
+    "state": "not_applicable",
+    "status": "not_applicable",
+}
 allowed = {"ok", "warning", "error", "unknown"}
 assert data["overall_status"] in allowed
 assert all(
     check["status"] in allowed | {"not_applicable"} for check in checks.values()
 )
 PY
+
+# Installed Contract 1.8 production Doctor reads the exact managed LaunchAgent
+# and launchd's label-specific legacy dictionary. The production parser stays
+# native and fixed; these authenticated overrides exist only for this fixture.
+CONTROLLER_PLIST="$TEST_HOME/Library/LaunchAgents/com.factory.controller.relay.plist"
+CONTROLLER_LAUNCHCTL="$(cd "$TMP" && pwd -P)/launchctl-stub"
+CONTROLLER_LAUNCHCTL_MARKER="$TMP/launchctl-invoked"
+CONTROLLER_TEST_HOME="$(cd "$TEST_HOME" && pwd -P)"
+CONTROLLER_QUALIFICATION_KIT="$TMP/controller-qualification-kit"
+mkdir -m 700 -p "$(dirname "$CONTROLLER_PLIST")"
+mkdir -m 700 -p "$CONTROLLER_QUALIFICATION_KIT/scripts"
+cat > "$CONTROLLER_QUALIFICATION_KIT/scripts/model-control.sh" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' '{"checks":[],"profile_id":"fixture","readiness_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","schema":"nysa.software-factory.qualification-fallback-readiness/v1","status":"ready"}'
+STUB
+chmod 700 "$CONTROLLER_QUALIFICATION_KIT/scripts/model-control.sh"
+python3 - "$CONTROLLER_PLIST" "$TEST_HOME" "$PRODUCT" <<'PY'
+from pathlib import Path
+import os
+import plistlib
+import sys
+
+path = Path(sys.argv[1])
+home = Path(sys.argv[2]).resolve()
+product = Path(sys.argv[3]).resolve()
+program = str(home / ".factory/bin/factory-launch")
+value = {
+    "Label": "com.factory.controller.relay",
+    "ProcessType": "Interactive",
+    "ProgramArguments": [program, "relay", "reconcile", "--json"],
+    "RunAtLoad": True,
+    "StandardErrorPath": str(home / ".factory/logs/relay-controller.error.log"),
+    "StandardOutPath": str(home / ".factory/logs/relay-controller.log"),
+    "StartInterval": 15,
+    "WatchPaths": [str(product / "factory/runs")],
+}
+with path.open("wb") as handle:
+    plistlib.dump(value, handle, sort_keys=True)
+os.chmod(path, 0o600)
+PY
+cat > "$CONTROLLER_LAUNCHCTL" <<'STUB'
+#!/usr/bin/env bash
+set -eu
+
+[[ "$#" -eq 5 && "$1" == "asuser" && "$3" == "$0" &&
+   ( "$4" == "print-disabled" || "$4" == "list" ) ]] || exit 64
+printf '%s\n' "$4" >> "$FACTORY_LAUNCHCTL_MARKER"
+
+if [[ "$4" == "print-disabled" ]]; then
+  [[ "$5" == "gui/$2" ]] || exit 64
+  case "$FACTORY_LAUNCHCTL_SCENARIO" in
+    disabled-oversize)
+      python3 - <<'PY'
+import sys
+sys.stdout.write("launchctl-secret-never-print" + "x" * 65_537)
+PY
+      exit 0
+      ;;
+  esac
+  printf '\tdisabled services = {\n'
+  case "$FACTORY_LAUNCHCTL_SCENARIO" in
+    disabled-loaded)
+      printf '\t\t"com.factory.controller.relay" => disabled\n'
+      ;;
+    disabled-true-loaded)
+      printf '\t\t"com.factory.controller.relay" => true\n'
+      ;;
+    enabled-running)
+      printf '\t\t"com.factory.controller.relay" => enabled\n'
+      ;;
+    false-running)
+      printf '\t\t"com.factory.controller.relay" => false\n'
+      ;;
+    disabled-duplicate)
+      printf '\t\t"com.factory.controller.relay" => enabled\n'
+      printf '\t\t"com.factory.controller.relay" => disabled\n'
+      ;;
+    disabled-unknown)
+      printf '\t\t"com.factory.controller.relay" => maybe\n'
+      ;;
+    *)
+      printf '\t\t"com.factory.unrelated" => enabled\n'
+      ;;
+  esac
+  printf '\t}\n'
+  exit 0
+fi
+
+[[ "$5" == "com.factory.controller.relay" ]] || exit 64
+
+case "$FACTORY_LAUNCHCTL_SCENARIO" in
+  missing)
+    printf 'launchctl-secret-never-print\n' >&2
+    exit 113
+    ;;
+  oversize)
+    python3 - <<'PY'
+import sys
+sys.stdout.write("launchctl-secret-never-print" + "x" * 65_537)
+PY
+    exit 0
+    ;;
+  malformed)
+    printf 'launchctl-secret-never-print\n' >&2
+    printf '{\n    "Label" = "com.factory.controller.relay";\n'
+    printf '    "Label" = "com.factory.controller.relay";\n}\n'
+    exit 0
+    ;;
+esac
+
+printf '{\n'
+if [[ "$FACTORY_LAUNCHCTL_SCENARIO" == "running" ||
+      "$FACTORY_LAUNCHCTL_SCENARIO" == "disabled-loaded" ||
+      "$FACTORY_LAUNCHCTL_SCENARIO" == "disabled-true-loaded" ||
+      "$FACTORY_LAUNCHCTL_SCENARIO" == "enabled-running" ||
+      "$FACTORY_LAUNCHCTL_SCENARIO" == "false-running" ]]; then
+  printf '    "PID" = 123;\n'
+fi
+if [[ "$FACTORY_LAUNCHCTL_SCENARIO" == "nonzero" ||
+      "$FACTORY_LAUNCHCTL_SCENARIO" == "running" ||
+      "$FACTORY_LAUNCHCTL_SCENARIO" == "disabled-loaded" ||
+      "$FACTORY_LAUNCHCTL_SCENARIO" == "disabled-true-loaded" ||
+      "$FACTORY_LAUNCHCTL_SCENARIO" == "enabled-running" ||
+      "$FACTORY_LAUNCHCTL_SCENARIO" == "false-running" ]]; then
+  printf '    "LastExitStatus" = 7;\n'
+else
+  printf '    "LastExitStatus" = 0;\n'
+fi
+printf '    "Label" = "com.factory.controller.relay";\n'
+printf '    "Program" = "%s/.factory/bin/factory-launch";\n' "$HOME"
+printf '    "ProgramArguments" = (\n'
+printf '        "%s/.factory/bin/factory-launch";\n' "$HOME"
+printf '        "relay";\n        "reconcile";\n        "--json";\n'
+printf '    );\n}\n'
+STUB
+chmod 700 "$CONTROLLER_LAUNCHCTL"
+
+run_controller_doctor() {
+  local scope="$1" platform="$2" test_mode="$3" scenario="$4" output="$5"
+  local -a doctor_args
+  doctor_args=(--json --project relay)
+  if [[ "$scope" == "qualification-candidate" ]]; then
+    doctor_args+=(
+      --kit-dir "$CONTROLLER_QUALIFICATION_KIT"
+      --product-root "$PRODUCT"
+      --kit-sha "$KIT_SHA"
+    )
+  fi
+  rm -f "$CONTROLLER_LAUNCHCTL_MARKER"
+  CONTROLLER_DOCTOR_RC=0
+  HOME="$CONTROLLER_TEST_HOME" PATH="$STUB_BIN:$PATH" FACTORY_LINEAR_FRESH_SECONDS=600 \
+    FACTORY_CONTROLLER_STATE_DIR="$CONTROLLER_STATE" \
+    FACTORY_KIT_TRUST_SCOPE="$scope" FACTORY_TEST_MODE="$test_mode" \
+    FACTORY_TRUSTED_TEST_HARNESS=1 FACTORY_DOCTOR_PLATFORM="$platform" \
+    FACTORY_DOCTOR_LAUNCHCTL="$CONTROLLER_LAUNCHCTL" \
+    FACTORY_LAUNCHCTL_SCENARIO="$scenario" \
+    FACTORY_LAUNCHCTL_MARKER="$CONTROLLER_LAUNCHCTL_MARKER" \
+    bash "$DOCTOR" "${doctor_args[@]}" > "$output" \
+    2> "${output%.json}.err" || CONTROLLER_DOCTOR_RC=$?
+}
+
+assert_controller_check() {
+  python3 - "$1" "$2" "$3" "$4" <<'PY'
+import json
+import sys
+
+path, status, state, last = sys.argv[1:]
+expected_last = None if last == "null" else int(last)
+value = json.load(open(path, encoding="utf-8"))
+assert value["checks"]["controller"] == {
+    "last_exit_status": expected_last,
+    "state": state,
+    "status": status,
+}
+PY
+}
+
+while IFS='|' read -r scenario expected_rc status state last commands; do
+  output="$TMP/controller-$scenario.json"
+  run_controller_doctor production-certified Darwin 0 "$scenario" "$output"
+  [[ "$CONTROLLER_DOCTOR_RC" -eq "$expected_rc" ]] ||
+    fail "Doctor returned the wrong status for controller scenario $scenario"
+  assert_controller_check "$output" "$status" "$state" "$last"
+  observed_commands="$(paste -sd, "$CONTROLLER_LAUNCHCTL_MARKER")"
+  [[ "$observed_commands" == "$commands" ]] ||
+    fail "Doctor used the wrong launchctl sequence for controller scenario $scenario"
+done <<'EOF'
+running|0|ok|running|7|print-disabled,list
+idle|0|ok|idle_clean|0|print-disabled,list
+nonzero|1|error|last_exit_nonzero|7|print-disabled,list
+missing|1|error|unavailable|null|print-disabled,list
+malformed|1|error|unavailable|null|print-disabled,list
+oversize|1|error|unavailable|null|print-disabled,list
+disabled-loaded|1|error|disabled|null|print-disabled
+disabled-true-loaded|1|error|disabled|null|print-disabled
+enabled-running|0|ok|running|7|print-disabled,list
+false-running|0|ok|running|7|print-disabled,list
+disabled-duplicate|1|error|unavailable|null|print-disabled
+disabled-unknown|1|error|unavailable|null|print-disabled
+disabled-oversize|1|error|unavailable|null|print-disabled
+EOF
+if grep -R -Fq "launchctl-secret-never-print" "$TMP"/controller-*.json \
+    "$TMP"/controller-*.err; then
+  fail "Doctor exposed launchctl output"
+fi
+
+python3 - "$CONTROLLER_PLIST" <<'PY'
+import plistlib
+import sys
+
+path = sys.argv[1]
+with open(path, "rb") as handle:
+    value = plistlib.load(handle)
+value["StartInterval"] = 16
+with open(path, "wb") as handle:
+    plistlib.dump(value, handle, sort_keys=True)
+PY
+run_controller_doctor production-certified Darwin 0 idle \
+  "$TMP/controller-route-mismatch.json"
+[[ "$CONTROLLER_DOCTOR_RC" -eq 1 ]] || fail "Doctor accepted a mismatched controller route"
+assert_controller_check "$TMP/controller-route-mismatch.json" error route_mismatch null
+[[ ! -e "$CONTROLLER_LAUNCHCTL_MARKER" ]] || \
+  fail "Doctor queried launchd before rejecting its managed plist"
+python3 - "$CONTROLLER_PLIST" <<'PY'
+import plistlib
+import sys
+
+path = sys.argv[1]
+with open(path, "rb") as handle:
+    value = plistlib.load(handle)
+value["StartInterval"] = 15
+with open(path, "wb") as handle:
+    plistlib.dump(value, handle, sort_keys=True)
+PY
+
+run_controller_doctor qualification-candidate Darwin 0 idle \
+  "$TMP/controller-qualification.json"
+assert_controller_check "$TMP/controller-qualification.json" not_applicable not_applicable null
+[[ ! -e "$CONTROLLER_LAUNCHCTL_MARKER" ]] || fail "qualification Doctor queried launchd"
+
+run_controller_doctor production-certified Linux 0 idle \
+  "$TMP/controller-linux.json"
+[[ "$CONTROLLER_DOCTOR_RC" -eq 0 ]] || fail "Linux controller check was not neutral"
+assert_controller_check "$TMP/controller-linux.json" not_applicable not_applicable null
+[[ ! -e "$CONTROLLER_LAUNCHCTL_MARKER" ]] || fail "Linux Doctor queried launchd"
+
+run_controller_doctor production-certified Darwin 1 idle \
+  "$TMP/controller-disposable.json"
+[[ "$CONTROLLER_DOCTOR_RC" -eq 0 ]] || fail "disposable controller check was not neutral"
+assert_controller_check "$TMP/controller-disposable.json" not_applicable not_applicable null
+[[ ! -e "$CONTROLLER_LAUNCHCTL_MARKER" ]] || fail "disposable Doctor queried launchd"
 
 # A relevant event still requires Factory identity even when its digest is valid.
 INVALID_RESUME_EVENT="$CONTROLLER_STATE/events/6-invalid.json"
@@ -1223,6 +1499,11 @@ assert data["checks"]["kit"] == {"status": "ok", "full_sha": sha}
 assert data["checks"]["registry"]["kit_dir"] == os.path.realpath(release), "doctor reported wrong resolved release"
 assert data["checks"]["registry"]["product_root"] == os.path.realpath(product), "doctor reported wrong product"
 assert data["checks"]["kit_pin"]["matches_kit"] is True
+assert data["checks"]["controller"] == {
+    "last_exit_status": None,
+    "state": "not_applicable",
+    "status": "not_applicable",
+}
 assert data["checks"]["fallback_readiness"] == {
     "status": "not_applicable", "report": None,
 }

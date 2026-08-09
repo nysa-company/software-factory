@@ -461,14 +461,29 @@ same-UID token exposure remains until a broker or OS isolation is used.
 
 - Notice: `~/.factory/bin/factory-launch <project> doctor --json` returns a
   warning/error status, stale Linear sync, a pin mismatch, maintenance, a
-  lock, active/stale run records, or unsupported Hermes/CLI information.
+  lock, active/stale run records, a failed installed production controller, or
+  unsupported Hermes/CLI information. On Contract 1.8 macOS production, read
+  `checks.controller.state`: `running` and `idle_clean` are healthy;
+  `disabled`, `unavailable`, `route_mismatch`, and `last_exit_nonzero` are
+  errors.
 - Do: treat `error` as a dispatch stop. A warning requires operator review,
   not automatic repair. Confirm the selected full SHA, physical release,
   `KIT_PIN`, maintenance state, run PIDs, CLI versions, and Linear freshness.
+  For a controller error, inspect the managed LaunchAgent, native disabled
+  override, and local logs; correct the supported installed route or
+  underlying launch failure, then let the next scheduled reconciliation
+  succeed and rerun Doctor. Qualification,
+  disposable lanes, non-macOS hosts, and older contracts report the controller
+  check as `not_applicable`.
+  Doctor ignores only the three documented exact legacy resolution shapes in
+  retained event history; those records cannot clear a current incident.
+  Preserve the append-only history and investigate any other malformed or
+  incident-bearing null identity as an error.
   Credential results are presence-only; test authentication separately
   without printing values.
 - Don't: expect doctor to repair, authenticate, clear locks, kill processes, or
-  rewrite configuration. It is deliberately read-only.
+  rewrite configuration. It is deliberately read-only. Do not interpret an
+  empty watcher result as proof that the controller is alive.
 
 ## Preparing and activating a release
 
