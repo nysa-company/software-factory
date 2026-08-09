@@ -403,6 +403,10 @@ receipt; a live role is untouched. Existing typed release-upgrade, terminal,
 and contract-blocker recovery may still use a digest-valid prior receipt under
 their stricter bindings. Done and Canceled claims retire before this check,
 while Doctor reports the latest unresolved receipt incident per ticket.
+Transition receipts and ticket passports are authenticated over the exact
+newline-terminated canonical JSON document bytes emitted by their writers.
+The controller does not accept an alternate encoding or re-stamp either
+artifact.
 The role runner retains the validated project only in a non-exported host
 binding for its receipt rechecks; provider processes never inherit the
 project's model-state controls. Its trusted exact-head remote observation

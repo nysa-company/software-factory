@@ -103,6 +103,10 @@ def canonical(value: Any) -> str:
     return json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
 
 
+def canonical_document(value: Any) -> bytes:
+    return (canonical(value) + "\n").encode()
+
+
 def safe_error(error: BaseException) -> str:
     detail = str(error).replace("\x00", "")
     detail = re.sub(
@@ -563,7 +567,7 @@ class Controller:
         if (
             not isinstance(digest, str)
             or DIGEST.fullmatch(digest) is None
-            or digest != hashlib.sha256(canonical(immutable).encode()).hexdigest()
+            or digest != hashlib.sha256(canonical_document(immutable)).hexdigest()
         ):
             self.invalid_transition_tickets.add(claim["ticket"])
             self.event_once(
@@ -3696,7 +3700,7 @@ class Controller:
         states = re.findall(r"^State:\s*(.*?)\s*$", ticket, re.I | re.M)
         kit_shas = re.findall(r"^Kit-SHA:\s*(.*?)\s*$", ticket, re.M)
         return not any((
-            hashlib.sha256(canonical(immutable).encode()).hexdigest() != digest,
+            hashlib.sha256(canonical_document(immutable)).hexdigest() != digest,
             receipt.get("contract_version") != "1.8.0",
             receipt.get("factory_sha") != self.release_path.name,
             receipt.get("head_sha") != head,

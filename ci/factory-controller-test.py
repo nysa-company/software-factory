@@ -200,10 +200,10 @@ class FactoryControllerTest(unittest.TestCase):
             "stage": stage,
             "ticket": ticket,
         }
-        value["receipt_sha256"] = hashlib.sha256(CONTROL.canonical({
+        value["receipt_sha256"] = hashlib.sha256(STATE.canonical({
             key: item for key, item in value.items()
             if key not in {"consumed", "receipt_sha256"}
-        }).encode()).hexdigest()
+        })).hexdigest()
         CONTROL.write(self.state / f"{ticket}.json", value)
         return value["receipt_sha256"]
 
@@ -1393,10 +1393,10 @@ class FactoryControllerTest(unittest.TestCase):
                 "ticket": ticket,
                 "ticket_blob": ticket_blob,
             }
-            receipt["receipt_sha256"] = hashlib.sha256(CONTROL.canonical({
+            receipt["receipt_sha256"] = hashlib.sha256(STATE.canonical({
                 key: value for key, value in receipt.items()
                 if key not in {"consumed", "receipt_sha256"}
-            }).encode()).hexdigest()
+            })).hexdigest()
             CONTROL.write(self.state / f"{ticket}.json", receipt)
             claim = {
                 "blocked_reason": "worker-error",
@@ -1526,7 +1526,7 @@ class FactoryControllerTest(unittest.TestCase):
             if key not in {"consumed", "consumed_at_epoch", "receipt_sha256"}
         }
         receipt["receipt_sha256"] = hashlib.sha256(
-            CONTROL.canonical(immutable).encode()
+            STATE.canonical(immutable)
         ).hexdigest()
         receipt_path.unlink()
         CONTROL.write(receipt_path, receipt)
@@ -2997,7 +2997,7 @@ class FactoryControllerTest(unittest.TestCase):
             if key not in {"consumed", "consumed_at_epoch", "receipt_sha256"}
         }
         receipt["receipt_sha256"] = hashlib.sha256(
-            CONTROL.canonical(immutable).encode()
+            STATE.canonical(immutable)
         ).hexdigest()
         receipt_path.unlink()
         CONTROL.write(receipt_path, receipt)
@@ -3059,7 +3059,7 @@ class FactoryControllerTest(unittest.TestCase):
             if key not in {"consumed", "consumed_at_epoch", "receipt_sha256"}
         }
         receipt["receipt_sha256"] = hashlib.sha256(
-            CONTROL.canonical(immutable).encode()
+            STATE.canonical(immutable)
         ).hexdigest()
         (self.state / "T-177.json").unlink()
         CONTROL.write(self.state / "T-177.json", receipt)
@@ -3103,7 +3103,7 @@ class FactoryControllerTest(unittest.TestCase):
             if key not in {"consumed", "consumed_at_epoch", "receipt_sha256"}
         }
         receipt["receipt_sha256"] = hashlib.sha256(
-            CONTROL.canonical(immutable).encode()
+            STATE.canonical(immutable)
         ).hexdigest()
         receipt_path.unlink()
         CONTROL.write(receipt_path, receipt)
@@ -3146,7 +3146,7 @@ class FactoryControllerTest(unittest.TestCase):
             if key not in {"consumed", "consumed_at_epoch", "receipt_sha256"}
         }
         receipt["receipt_sha256"] = hashlib.sha256(
-            CONTROL.canonical(immutable).encode()
+            STATE.canonical(immutable)
         ).hexdigest()
         receipt_path.unlink()
         CONTROL.write(receipt_path, receipt)
@@ -3222,7 +3222,7 @@ class FactoryControllerTest(unittest.TestCase):
                     }
                 }
                 changed["receipt_sha256"] = hashlib.sha256(
-                    CONTROL.canonical(immutable).encode()
+                    STATE.canonical(immutable)
                 ).hexdigest()
                 attempt(changed)
 
