@@ -184,6 +184,7 @@ CLI_RUNTIME_LAYOUT=owner
 FACTORY_CLAUDE_SETTINGS=
 FACTORY_CURSOR_SESSION_HOME='{self.home}'
 HOME='{self.home}'
+source '{BACKEND_POLICY}'
 ADAPTER='{adapter}'
 CLI_ATTEMPT_ID='{attempt}'
 CLI_RUNTIME_ROOT=
@@ -204,6 +205,19 @@ printf '%s\\n' "$CLI_RUNTIME_ROOT"
             timeout=30,
         )
         return Path(result.stdout.strip())
+
+    def test_claude_runtime_materializes_setup_token(self) -> None:
+        token = self.home / ".factory/claude-oauth-token"
+        token.parent.mkdir(mode=0o700)
+        token_value = "sk-ant-oat01-" + "A" * 80
+        token.write_text(token_value + "\n", encoding="utf-8")
+        token.chmod(0o600)
+        runtime = self.prepare_runtime("claude-code", "setup-token")
+        credential = json.loads(
+            (runtime / "config/.credentials.json").read_text(encoding="utf-8")
+        )["claudeAiOauth"]
+        self.assertEqual(credential["accessToken"], token_value)
+        self.assertGreater(credential["expiresAt"], int(time.time() * 1000))
 
     def cleanup_runtime(self, adapter: str, attempt: str, runtime: Path) -> None:
         script = f"""
@@ -363,6 +377,7 @@ CLI_RUNTIME_LAYOUT=owner
 FACTORY_CLAUDE_SETTINGS=
 FACTORY_CURSOR_SESSION_HOME='{self.home}'
 HOME='{self.home}'
+source '{BACKEND_POLICY}'
 for entry in codex:prod-codex claude-code:prod-claude cursor-openai:prod-cursor; do
   ADAPTER="${{entry%%:*}}"
   CLI_ATTEMPT_ID="${{entry#*:}}"
@@ -441,6 +456,7 @@ CLI_RUNTIME_STATE_ROOT='{self.state}/cli-runtimes'
 CLI_RUNTIME_LAYOUT=owner
 FACTORY_CURSOR_SESSION_HOME='{self.home}'
 HOME='{self.home}'
+source '{BACKEND_POLICY}'
 ADAPTER=cursor-openai
 CLI_ATTEMPT_ID=login-shell
 CLI_RUNTIME_ROOT=

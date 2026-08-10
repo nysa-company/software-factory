@@ -70,6 +70,13 @@ Fill every blank in `factory/ENVELOPE.md`: per-ticket budget (USD and max turns)
 - Keep both Cursor session files owner-only. Task-free readiness copies them
   into a disposable owner-only home before invoking Cursor, so CLI-generated
   configuration rewrites cannot change the source files used by later roles.
+- On macOS, Claude Code may retain an interactive login only in Keychain, which
+  cannot be copied into isolated Factory attempts. Run `claude setup-token`,
+  save its single token line as `~/.factory/claude-oauth-token` with mode
+  `0600`, and never print, commit, or place it in `global.env`. A present token
+  is materialized into each disposable Claude config; an absent token preserves
+  the legacy owner-only `.claude/.credentials.json` path, and an unsafe token
+  fails closed rather than falling back.
 - Keep Kimi disabled. No live or billed pilot has run. Before any pilot, rotate its credential and address the residual same-UID token exposure with a credential broker or OS isolation.
 - Secrets live only in GitHub Actions secrets and the hosting platform. No `.env` in git, ever.
 

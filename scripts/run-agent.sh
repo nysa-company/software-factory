@@ -1290,19 +1290,20 @@ prepare_cli_runtime() {
   CLI_PROVIDER_CACHE_DIR="$CLI_RUNTIME_ROOT/cache"
   CLI_PROVIDER_OUTPUT_DIR="$CLI_RUNTIME_ROOT/output"
   if [[ "$ADAPTER" == claude-code ]]; then
-    local source="$HOME/.claude/.credentials.json"
-    [[ -f "$source" && ! -L "$source" ]] || {
-      TERMINAL_REASON_CODE="claude_credential_unavailable"
-      echo "Claude subscription credential is unavailable" >&2
-      return 1
-    }
+    local credential_reason
     mkdir -m 700 "$CLI_RUNTIME_ROOT/config"
-    copy_cli_credential "$source" \
-      "$CLI_RUNTIME_ROOT/config/.credentials.json" || {
+    if ! credential_reason="$(factory_prepare_claude_config \
+        "$HOME/.claude" "$CLI_RUNTIME_ROOT/config")"; then
+      if [[ "$credential_reason" == "claude_credential_missing" ||
+            "$credential_reason" == "claude_credential_unreadable" ]]; then
+        TERMINAL_REASON_CODE="claude_credential_unavailable"
+        echo "Claude subscription credential is unavailable" >&2
+      else
         TERMINAL_REASON_CODE="claude_credential_unsafe"
         echo "Claude subscription credential is unsafe" >&2
-        return 1
-      }
+      fi
+      return 1
+    fi
     CLI_CLAUDE_CONFIG_DIR="$CLI_RUNTIME_ROOT/config"
     CLI_CLAUDE_SETTINGS="$CLI_RUNTIME_ROOT/settings.json"
     if [[ -n "${FACTORY_CLAUDE_SETTINGS:-}" ]]; then

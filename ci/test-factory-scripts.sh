@@ -726,6 +726,35 @@ if [[ "$EXPIRED_CLAUDE_PROBE" == "UNAVAILABLE:authentication_expired" ]]; then
 else
   fail "expired Claude OAuth falls back before task submission" "$EXPIRED_CLAUDE_PROBE"
 fi
+
+CLAUDE_TOKEN_HOME="$TMP/claude-token-home"
+CLAUDE_UNSAFE_TOKEN_HOME="$TMP/claude-unsafe-token-home"
+mkdir -m 700 "$CLAUDE_TOKEN_HOME" "$CLAUDE_TOKEN_HOME/.factory" \
+  "$CLAUDE_UNSAFE_TOKEN_HOME" "$CLAUDE_UNSAFE_TOKEN_HOME/.factory"
+CLAUDE_TOKEN="sk-ant-oat01-$(printf 'A%.0s' {1..80})"
+printf '%s\n' "$CLAUDE_TOKEN" \
+  >"$CLAUDE_TOKEN_HOME/.factory/claude-oauth-token"
+chmod 600 "$CLAUDE_TOKEN_HOME/.factory/claude-oauth-token"
+CLAUDE_TOKEN_PROBE="$(HOME="$CLAUDE_TOKEN_HOME" PATH="$STUB_BIN:$PATH" \
+  STUB_CLAUDE_VERSION=2.1.223 STUB_CLAUDE_REQUIRE_CREDENTIAL=1 \
+  CLAUDE_CODE_PINNED=2.1.223 CLAUDE_CONFIG_DIR="$CLAUDE_AUTH_ROOT" \
+  bash -c 'set -euo pipefail; source "$1"; factory_probe_adapter claude-code; echo "$PROBE_STATE:$PROBE_REASON"' \
+  _ "$ROOT/scripts/lib/backend-policy.sh")"
+ln -s "$CLAUDE_TOKEN_HOME/.factory/claude-oauth-token" \
+  "$CLAUDE_UNSAFE_TOKEN_HOME/.factory/claude-oauth-token"
+CLAUDE_UNSAFE_TOKEN_PROBE="$(HOME="$CLAUDE_UNSAFE_TOKEN_HOME" \
+  PATH="$STUB_BIN:$PATH" STUB_CLAUDE_VERSION=2.1.223 \
+  CLAUDE_CODE_PINNED=2.1.223 CLAUDE_CONFIG_DIR="$CLAUDE_AUTH_ROOT" \
+  bash -c 'set -euo pipefail; source "$1"; factory_probe_adapter claude-code; echo "$PROBE_STATE:$PROBE_REASON"' \
+  _ "$ROOT/scripts/lib/backend-policy.sh")"
+if [[ "$CLAUDE_TOKEN_PROBE" == "READY:local_contract_ready" &&
+      "$CLAUDE_UNSAFE_TOKEN_PROBE" == \
+        "INVALID:claude_subscription_token_unsafe" ]]; then
+  pass "Claude setup token supplies isolated readiness and unsafe tokens refuse"
+else
+  fail "Claude setup token supplies isolated readiness and unsafe tokens refuse" \
+    "ready=$CLAUDE_TOKEN_PROBE unsafe=$CLAUDE_UNSAFE_TOKEN_PROBE"
+fi
 fi
 
 run_mock() {

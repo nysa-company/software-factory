@@ -5319,3 +5319,16 @@ reconcile lock. It deduplicates locks shared by retained roots or takeover and
 production authority, and does not invent a disposable-root controller
 directory. Missing, foreign, or mismatched authority refuses; an idle retained
 lane permits pinning and a live qualification controller remains a hard stop.
+
+## 2026-08-10 — Decision 376: Claude setup tokens preserve attempt isolation
+
+Category: Trust boundary
+
+macOS Keychain-backed Claude login is not shared with disposable config roots.
+The Factory instead accepts the vendor-issued long-lived setup token only from
+the fixed owner-only `~/.factory/claude-oauth-token` file and materializes the
+existing OAuth credential shape separately for each readiness probe and role
+attempt. A present unsafe, stale, linked, foreign, malformed, or oversized token
+refuses without falling back. When the token is absent, the legacy owner-only
+`.claude/.credentials.json` source remains supported. The raw token is never
+stored in product config, global env, receipts, plans, or logs.
