@@ -1851,8 +1851,14 @@ have aged past the admission limit. A fresh `SHADOW` or
 `WAIT` enters the unchanged flow, and the later real claim still re-reads the
 map under its normal 600-second contract. Production does not run this
 qualification headroom check.
-Production then shadows the same candidate selection and resolves the active
-model profile before a real claim can create its lease or worktree. One healthy
+Production candidate selection runs the existing provider-free ticket
+readiness contract for every otherwise eligible ticket before either shadow or
+claim may succeed. A refusal, malformed success, helper error, or timeout is a
+named `invalid_ticket_contract` refusal for only that ticket; eligible siblings
+continue, while an otherwise empty cohort waits without creating a ticket
+branch, cell, lease, route, or state transition. Production then shadows the
+same candidate selection and resolves the active model profile before a real
+claim can create its lease or worktree. One healthy
 probe portfolio covers the bounded claim batch; the existing post-claim batch
 pin remains the race recheck. Temporary readiness waits without claiming, and
 invalid or unknown readiness persists one ticket-bound admission incident with

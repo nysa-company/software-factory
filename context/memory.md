@@ -118,6 +118,12 @@ everything the Factory actually enforces lives here.
   schedulable and are submitted before new production admission. Each refused
   production candidate also appears in the bounded controller result as
   `waiting` for temporary unavailability or `error` for permanent failure.
+- Dispatch runs the existing provider-free ticket readiness contract during
+  both shadow and claim candidate selection. A refusal, malformed success,
+  helper error, or timeout is isolated as the existing named
+  `invalid_ticket_contract`; siblings continue, and no ticket branch, cell,
+  lease, model plan, route, or state transition is created for the refused
+  ticket.
 - An operator-owned null initiative remains an explicit versioned tombstone,
   but a Ready ticket made initiative-less is never silently discarded:
   admission reports its exact ID and `initiative_missing` while healthy
@@ -5223,3 +5229,17 @@ Missing, foreign, failed, cancelled, merged, policy-violating, or bare Git
 edges refuse before operator resume, Linear access, release sealing, provider
 publication, or activation. The validator writes no recovery state and never
 synthesizes a passport.
+
+## 2026-08-09 — Decision 369: Ticket readiness precedes admission mutation
+
+Category: Reliability
+
+Both dispatch shadow and claim run the existing provider-free ticket readiness
+contract while selecting otherwise eligible tickets. A nonzero result,
+malformed success, helper error, or timeout becomes the existing fixed,
+ticket-bound `invalid_ticket_contract` refusal; eligible siblings continue.
+The refused ticket receives no branch, execution cell, dispatcher lease, model
+plan, route pin, or state transition, and an ordinary later scan admits it once
+its protected metadata satisfies the unchanged readiness contract. Planner
+preflight retains the same defense-in-depth readiness check, and protected-main
+cancellation retirement remains unchanged.
