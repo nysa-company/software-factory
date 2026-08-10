@@ -61,6 +61,10 @@ everything the Factory actually enforces lives here.
   transactionally under maintenance; activation and rollback change only the
   validated active release pointer. Doctor rejects legacy release-pinned
   arguments or a load state inconsistent with the persisted service state.
+- Stable launcher revisions never add optional arguments to an active
+  controller parser. Current controllers derive optional capabilities from
+  the existing authenticated release path, while older sealed releases ignore
+  behavior they do not implement.
 - Qualification pre-seal and dispatch both require every selected ticket's Git
   blob in the sealed control checkout to equal protected `origin/main`.
   Qualification-only metadata can therefore never validate one contract and
@@ -5332,3 +5336,14 @@ attempt. A present unsafe, stale, linked, foreign, malformed, or oversized token
 refuses without falling back. When the token is absent, the legacy owner-only
 `.claude/.credentials.json` source remains supported. The raw token is never
 stored in product config, global env, receipts, plans, or logs.
+
+## 2026-08-10 — Decision 377: Stable launchers preserve controller grammar
+
+Category: Compatibility
+
+The owner-global stable launcher never adds optional arguments to the active
+release's controller parser. Current controllers derive the exact product or
+qualification worktree root from the existing authenticated release path,
+while older sealed controllers ignore the capability. Launcher
+replacement therefore cannot strand a product whose certified active release
+predates bounded cell reclamation.
