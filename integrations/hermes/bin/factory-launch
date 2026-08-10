@@ -1335,15 +1335,40 @@ PY
   ticket-control)
     [[ "$ACTIVE_CONTRACT" == "1.8.0" ]] ||
       die "ticket control requires contract 1.8.0"
+    CONTROL_ARGS=()
     if [[ $# -eq 6 && "$1" == "pause" && "$2" == "--ticket" &&
           "$3" =~ ^T-[0-9]+$ && "$4" == "--issue" &&
           "$5" =~ ^https://github[.]com/[A-Za-z0-9_.-]+/software-factory/issues/[1-9][0-9]*$ &&
           "$6" == "--json" ]]; then
-      CONTROL_ACTION="$1" TICKET="$3" CONTROL_FLAG="--issue" CONTROL_VALUE="$5"
+      CONTROL_ARGS=(--action pause --ticket "$3" --issue "$5")
     elif [[ $# -eq 6 && "$1" == "resume" && "$2" == "--ticket" &&
             "$3" =~ ^T-[0-9]+$ && "$4" == "--factory-sha" &&
             "$5" =~ ^[0-9a-f]{40}$ && "$6" == "--json" ]]; then
-      CONTROL_ACTION="$1" TICKET="$3" CONTROL_FLAG="--factory-sha" CONTROL_VALUE="$5"
+      CONTROL_ARGS=(--action resume --ticket "$3" --factory-sha "$5")
+    elif [[ $# -eq 11 && "$1" == "authorize-round" && "$2" == "plan" &&
+            "$3" == "--ticket" && "$4" =~ ^T-[0-9]+$ &&
+            "$5" == "--role" && "$6" == "spec-linter" &&
+            "$7" == "--round" && "$8" =~ ^[1-9][0-9]*$ &&
+            "$9" == "--operator-id" &&
+            "${10}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$ &&
+            "${10}" != "auto" && "${11}" == "--json" ]]; then
+      CONTROL_ARGS=(
+        --action authorize-round-plan --ticket "$4" --role "$6"
+        --semantic-round "$8" --operator-id "${10}"
+      )
+    elif [[ $# -eq 13 && "$1" == "authorize-round" && "$2" == "apply" &&
+            "$3" == "--ticket" && "$4" =~ ^T-[0-9]+$ &&
+            "$5" == "--role" && "$6" == "spec-linter" &&
+            "$7" == "--round" && "$8" =~ ^[1-9][0-9]*$ &&
+            "$9" == "--operator-id" &&
+            "${10}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$ &&
+            "${10}" != "auto" && "${11}" == "--approve-hash" &&
+            "${12}" =~ ^[0-9a-f]{64}$ && "${13}" == "--json" ]]; then
+      CONTROL_ARGS=(
+        --action authorize-round-apply --ticket "$4" --role "$6"
+        --semantic-round "$8" --operator-id "${10}"
+        --approve-hash "${12}"
+      )
     else
       usage
     fi
@@ -1358,8 +1383,7 @@ PY
       --product-root "$PRODUCT_ROOT" \
       --release-path "$RELEASE_PATH" \
       --state-dir "$CONTROLLER_STATE_DIR" \
-      --action "$CONTROL_ACTION" --ticket "$TICKET" \
-      "$CONTROL_FLAG" "$CONTROL_VALUE"
+      "${CONTROL_ARGS[@]}"
     ;;
   qualification)
     [[ "$ACTIVE_CONTRACT" == "1.8.0" ]] ||

@@ -162,7 +162,7 @@ an in-flight manifest or backdate an override.
 ## Spec-linter reached the round-three authorization boundary
 
 - Notice: after two Spec-linter FAIL verdicts, `next-stage` returns provider-free `AWAIT-OPERATOR` and the watcher asks for exactly `OPERATOR AUTHORIZATION: spec-linter round 3`. A duplicate or malformed attempt produces a typed correction action without launching a provider.
-- Do: if one final cycle is warranted, append exactly that one line in a ticket-only commit and push it. If duplicate exact lines already exist at the authenticated wait head, create and push one ticket-only correction commit that removes only the extras and leaves one canonical final line. If a candidate commit is rejected, amend that candidate so it remains the single direct child of the recorded wait head.
+- Do: if one final cycle is warranted, run `factory-launch <project> ticket-control authorize-round plan --ticket <T-NNN> --role spec-linter --round 3 --operator-id <ID> --json`, review its exact identities, then run the matching `authorize-round apply` command with `--approve-hash <HASH>`. The controller writes and pushes the single ticket-only child and ordinary reconciliation imports it. If duplicate exact lines already exist at the authenticated wait head, retain the existing correction procedure; this command only grants a missing round-three line.
 - Don't: add commentary to the authorization line, authorize another role or round, change another path, or let the dispatcher infer authorization. The third FAIL reaches the absolute planner–Spec-linter cap; no round-four override exists. Reviewer remains governed by its budget-only review loop and has no semantic-round authorization gate.
 
 ## Linear, GitHub, or Railway down

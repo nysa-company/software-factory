@@ -5264,3 +5264,16 @@ Builder–Reviewer loop. Every authenticated `REQUEST CHANGES` verdict continues
 through its exact `FIX-OWNER` route until ordinary ticket-budget admission
 refuses another paid attempt. The three-round hard cap remains exclusive to the
 Planner–Spec-linter loop; contract-repair limits are unchanged.
+
+## 2026-08-10 — Decision 372: Semantic authorization is command-backed
+
+Category: Trust boundary
+
+The operator authorizes the final Planner–Spec-linter cycle through sealed
+`ticket-control authorize-round plan/apply`, not a hand-edited cell. The plan
+binds the active release, exact waiting claim, passport, transition receipt,
+branch, cell, parent, ticket blobs, requested round, and operator identity.
+Apply creates and non-force pushes the one direct ticket-only child already
+accepted by the existing importer. A changed approval hash, wait, claim, cell,
+head, remote, ticket, role, or round refuses before mutation; commit-before-push
+and response-loss retries converge without another child or provider call.

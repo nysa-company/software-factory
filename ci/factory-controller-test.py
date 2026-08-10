@@ -12863,10 +12863,16 @@ class FactoryControllerTest(unittest.TestCase):
         )["launcher"]["commands"]["ticket-control"]
         self.assertIn('"$4" == "--issue"', launcher)
         self.assertIn('"$4" == "--factory-sha"', launcher)
+        self.assertIn('"$1" == "authorize-round"', launcher)
+        self.assertIn('"${11}" == "--approve-hash"', launcher)
         self.assertEqual(contract["grammars"], [
             "pause --ticket <T-NNN> --issue "
             "<software-factory-issue-url> --json",
             "resume --ticket <T-NNN> --factory-sha <FULL_SHA> --json",
+            "authorize-round plan --ticket <T-NNN> --role spec-linter "
+            "--round <N> --operator-id <ID> --json",
+            "authorize-round apply --ticket <T-NNN> --role spec-linter "
+            "--round <N> --operator-id <ID> --approve-hash <HASH> --json",
         ])
 
     def test_dependency_refresh_race_waits_then_migrates_exact_base(self) -> None:
@@ -14107,6 +14113,156 @@ class FactoryControllerTest(unittest.TestCase):
         mismatch.json_call = lambda *_args, **_kwargs: self.fail("passport migrated")
         mismatch.recover_semantic_authorizations([mismatch_claim])
         self.assertEqual(mismatch_claim["status"], "waiting")
+
+    def test_semantic_authorization_plan_apply_pushes_exact_child_once(self) -> None:
+        def state_bytes() -> dict[Path, bytes]:
+            return {
+                path.relative_to(self.state): path.read_bytes()
+                for path in self.state.rglob("*") if path.is_file()
+            }
+
+        controller, claim, cell, passport, _transition = (
+            self.semantic_wait_fixture("semantic-control", "T-213")
+        )
+        parent = passport["head_sha"]
+        remote = self.root / "semantic-control.git"
+        sibling = self.root / "parked/T-999"
+        sibling.mkdir(parents=True)
+        CONTROL.write(controller.claim_path("T-999"), {
+            "branch": "ticket/T-999", "lease": "invalid", "parked": True,
+            "priority": "normal", "publication_lease": "", "receipt": "",
+            "role": "", "schema": CONTROL.CLAIM_SCHEMA, "status": "blocked",
+            "ticket": "T-999", "worktree": str(sibling),
+        })
+        before_plan = state_bytes()
+        plan = controller.plan_semantic_authorization(
+            "T-213", "spec-linter", 3, "operator",
+        )
+        self.assertEqual(state_bytes(), before_plan)
+        self.assertEqual(plan["status"], "planned")
+        self.assertEqual(
+            subprocess.run(
+                ["git", "-C", str(cell), "rev-parse", "HEAD"], text=True,
+                capture_output=True, check=True,
+            ).stdout.strip(),
+            parent,
+        )
+        self.assertEqual(
+            subprocess.run(
+                ["git", "--git-dir", str(remote), "rev-parse", "ticket/T-213"],
+                text=True, capture_output=True, check=True,
+            ).stdout.strip(),
+            parent,
+        )
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "approval hash does not match",
+        ):
+            controller.apply_semantic_authorization(
+                "T-213", "spec-linter", 3, "operator", "0" * 64,
+            )
+        cell_git = controller.cell_git
+
+        def fail_first_push(claim, *arguments):
+            if arguments and arguments[0] == "push":
+                return subprocess.CompletedProcess(arguments, 1, "", "refused")
+            return cell_git(claim, *arguments)
+
+        controller.cell_git = fail_first_push
+        with self.assertRaisesRegex(CONTROL.ControllerError, "push failed"):
+            controller.apply_semantic_authorization(
+                "T-213", "spec-linter", 3, "operator", plan["approval_hash"],
+            )
+        committed = cell_git(claim, "rev-parse", "HEAD").stdout.strip()
+        self.assertNotEqual(committed, parent)
+        controller.cell_git = cell_git
+        result = controller.apply_semantic_authorization(
+            "T-213", "spec-linter", 3, "operator", plan["approval_hash"],
+        )
+        head = result["authorization_head"]
+        self.assertEqual(result["status"], "applied")
+        self.assertNotEqual(head, parent)
+        self.assertEqual(head, committed)
+        self.assertTrue(controller.exact_ticket_commit(
+            claim, parent, head, authorization=True,
+        ))
+        self.assertEqual(
+            subprocess.run(
+                ["git", "--git-dir", str(remote), "rev-parse", "ticket/T-213"],
+                text=True, capture_output=True, check=True,
+            ).stdout.strip(),
+            head,
+        )
+        self.assertEqual(
+            subprocess.run(
+                ["git", "-C", str(cell), "diff-tree", "--no-commit-id",
+                 "--name-only", "-r", head],
+                text=True, capture_output=True, check=True,
+            ).stdout.splitlines(),
+            ["factory/tickets/T-213.md"],
+        )
+        replay = controller.apply_semantic_authorization(
+            "T-213", "spec-linter", 3, "operator", plan["approval_hash"],
+        )
+        self.assertEqual(replay, result)
+        self.assertEqual(
+            controller.plan_semantic_authorization(
+                "T-213", "spec-linter", 3, "operator",
+            )["approval_hash"],
+            plan["approval_hash"],
+        )
+        invalid, _claim, _cell, _passport, _transition = (
+            self.semantic_wait_fixture("semantic-control-invalid", "T-214")
+        )
+        (self.state / "T-214.json").write_text("{", encoding="utf-8")
+        before_refusal = state_bytes()
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "authority is unavailable",
+        ):
+            invalid.plan_semantic_authorization(
+                "T-214", "spec-linter", 3, "operator",
+            )
+        self.assertEqual(state_bytes(), before_refusal)
+
+        unsafe, _claim, unsafe_cell, _passport, _transition = (
+            self.semantic_wait_fixture("semantic-control-unsafe", "T-215")
+        )
+        unsafe_plan = unsafe.plan_semantic_authorization(
+            "T-215", "spec-linter", 3, "operator",
+        )
+        unsafe_ticket = unsafe_cell / "factory/tickets/T-215.md"
+        original = unsafe_ticket.read_text(encoding="utf-8")
+        unsafe_ticket.write_text(
+            original + ("" if original.endswith("\n") else "\n")
+            + "OPERATOR AUTHORIZATION: spec-linter round 3\n",
+            encoding="utf-8",
+        )
+        os.link(unsafe_ticket, self.root / "semantic-control-hardlink")
+        unsafe_head = subprocess.run(
+            ["git", "-C", str(unsafe_cell), "rev-parse", "HEAD"], text=True,
+            capture_output=True, check=True,
+        ).stdout.strip()
+        unsafe_state = state_bytes()
+        for action in (
+            lambda: unsafe.plan_semantic_authorization(
+                "T-215", "spec-linter", 3, "operator",
+            ),
+            lambda: unsafe.apply_semantic_authorization(
+                "T-215", "spec-linter", 3, "operator",
+                unsafe_plan["approval_hash"],
+            ),
+        ):
+            with self.assertRaisesRegex(
+                CONTROL.ControllerError, "ticket is unsafe",
+            ):
+                action()
+        self.assertEqual(state_bytes(), unsafe_state)
+        self.assertEqual(
+            subprocess.run(
+                ["git", "-C", str(unsafe_cell), "rev-parse", "HEAD"],
+                text=True, capture_output=True, check=True,
+            ).stdout.strip(),
+            unsafe_head,
+        )
 
     def test_semantic_authorization_invalid_heads_are_recoverable(self) -> None:
         canonical = "OPERATOR AUTHORIZATION: spec-linter round 3"
