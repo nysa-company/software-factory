@@ -75,6 +75,11 @@ class DispatchPlanTest(unittest.TestCase):
             f"# {ticket}: test\n\nPriority: {priority}\n"
             "Initiative: I-1\n"
             f"State: {state}\nBranch: ticket/{ticket}\n"
+            "Product-Decisions: frozen\n"
+            "Builder ownership: README.md only\n"
+            "Fixture-Seams: none\n"
+            "Authentication-Seams: none\n"
+            "Protected-Test-Conflicts: none\n"
         )
 
     def write_mapping(self, age=0, states=None):
@@ -276,6 +281,85 @@ class DispatchPlanTest(unittest.TestCase):
         value = self.command("shadow", operator_map=external)
         self.assertEqual(value["ticket"], "T-200")
         self.assertEqual(value["status"], "SHADOW")
+
+    def test_readiness_refusal_is_ticket_local(self):
+        ticket = self.product / "factory/tickets/T-200.md"
+        ticket.write_text(ticket.read_text().replace(
+            "Builder ownership: README.md only\n", ""
+        ))
+        run("git", "add", str(ticket), cwd=self.product)
+        run("git", "commit", "-qm", "make one ticket unready", cwd=self.product)
+        run("git", "push", "-q", "origin", "main", cwd=self.product)
+
+        value = self.command("shadow")
+
+        self.assertEqual(value["ticket"], "T-100")
+        self.assertEqual(value["admission_refusal"], {
+            "error": "provider-free ticket readiness contract is not executable",
+            "reason_code": "invalid_ticket_contract",
+            "ticket": "T-200",
+        })
+
+    def test_readiness_errors_fail_closed(self):
+        failures = (
+            (subprocess.CompletedProcess([], 1, "READINESS BLOCKED\n", ""), None),
+            (subprocess.CompletedProcess([], 0, "not readiness evidence\n", ""), None),
+            (None, subprocess.TimeoutExpired(["ticket-readiness"], 120)),
+            (None, OSError("unavailable")),
+        )
+        for result, error in failures:
+            with self.subTest(error=type(error).__name__ if error else "result"):
+                with mock.patch.object(
+                    DISPATCH.subprocess, "run", return_value=result, side_effect=error,
+                ):
+                    self.assertFalse(
+                        DISPATCH.readiness_executable(self.product, "T-200")
+                    )
+
+    def test_readiness_refusal_precedes_claim_and_readmits_after_fix(self):
+        for name in ("T-100", "T-300", "T-400"):
+            path = self.product / f"factory/tickets/{name}.md"
+            path.write_text(path.read_text().replace("State: Ready", "State: Backlog"))
+        ticket = self.product / "factory/tickets/T-200.md"
+        ticket.write_text(ticket.read_text().replace(
+            "Builder ownership: README.md only\n", ""
+        ))
+        run("git", "add", ".", cwd=self.product)
+        run("git", "commit", "-qm", "leave one unready ticket", cwd=self.product)
+        run("git", "push", "-q", "origin", "main", cwd=self.product)
+        head = run("git", "rev-parse", "HEAD", cwd=self.product).strip()
+
+        for action in ("shadow", "claim"):
+            with self.subTest(action=action):
+                value = self.command(action)
+                self.assertEqual(value["action"], "WAIT")
+                self.assertEqual(value["reason_code"], "no_candidate")
+                self.assertEqual(value["admission_refusal"]["ticket"], "T-200")
+                self.assertFalse((self.product / "factory/.dispatch-leases").exists())
+                self.assertEqual(list(self.worktrees.glob("cell-*")), [])
+                self.assertEqual(
+                    run("git", "rev-parse", "HEAD", cwd=self.product).strip(), head
+                )
+                self.assertEqual(
+                    run("git", "branch", "--format=%(refname:short)", cwd=self.product),
+                    "main\n",
+                )
+
+        ticket.write_text(ticket.read_text().replace(
+            "Product-Decisions: frozen\n",
+            "Product-Decisions: frozen\nBuilder ownership: README.md only\n",
+        ))
+        run("git", "add", str(ticket), cwd=self.product)
+        run("git", "commit", "-qm", "repair ticket readiness", cwd=self.product)
+        run("git", "push", "-q", "origin", "main", cwd=self.product)
+
+        value = self.command("claim")
+
+        self.assertEqual(value["ticket"], "T-200")
+        self.assertEqual(Path(value["worktree"]).name, "cell-1")
+        self.assertTrue(
+            (self.product / "factory/.dispatch-leases/T-200.json").is_file()
+        )
 
     def test_protected_canceled_ticket_cannot_be_resurrected_by_resume_overlay(self):
         parked = self.worktrees / "parked/T-200"
@@ -597,6 +681,27 @@ class DispatchPlanTest(unittest.TestCase):
             "supersede pre-provider control state",
             run("git", "log", "-1", "--format=%s", cwd=worktree),
         )
+
+    def test_readiness_refusal_precedes_authorized_branch_reset(self):
+        self.write_contract_18_qualification()
+        ticket = self.product / "factory/tickets/T-110.md"
+        ticket.write_text(ticket.read_text().replace(
+            "Builder ownership: README.md only\n", ""
+        ))
+        run("git", "add", ".", cwd=self.product)
+        run("git", "commit", "-qm", "leave reset ticket unready", cwd=self.product)
+        run("git", "push", "-q", "origin", "main", cwd=self.product)
+        old_head = self.stale_preprovider_branch()
+        self.authorize_preprovider_reset(old_head)
+
+        value = self.command("claim")
+
+        self.assertEqual(value["ticket"], "T-111")
+        self.assertEqual(value["admission_refusal"]["ticket"], "T-110")
+        remote_head = run(
+            "git", "ls-remote", "--heads", str(self.remote), "ticket/T-110"
+        ).split()[0]
+        self.assertEqual(remote_head, old_head)
 
     def test_authorized_reset_does_not_adopt_an_outside_worktree(self):
         self.write_contract_18_qualification()

@@ -1763,13 +1763,16 @@ class Controller:
         self, refusal: Any, claims: list[dict[str, Any]]
     ) -> None:
         errors = {
-            "initiative_missing": "ticket initiative is missing",
-            "invalid_ticket_contract": "ticket dependencies are invalid",
+            "initiative_missing": {"ticket initiative is missing"},
+            "invalid_ticket_contract": {
+                "ticket dependencies are invalid",
+                "provider-free ticket readiness contract is not executable",
+            },
         }
         if (
             not isinstance(refusal, dict)
             or set(refusal) != {"error", "reason_code", "ticket"}
-            or errors.get(refusal.get("reason_code")) != refusal.get("error")
+            or refusal.get("error") not in errors.get(refusal.get("reason_code"), set())
             or not TICKET.fullmatch(refusal.get("ticket", ""))
         ):
             raise ControllerError("dispatch admission refusal is malformed")

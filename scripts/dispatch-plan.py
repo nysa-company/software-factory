@@ -474,6 +474,21 @@ def active_tickets(factory: Path) -> set[str]:
     return result
 
 
+def readiness_executable(product: Path, ticket: str) -> bool:
+    try:
+        result = subprocess.run(
+            [
+                sys.executable, "-B",
+                str(Path(__file__).with_name("ticket-readiness.py")),
+                "--ticket", ticket, "--workdir", str(product),
+            ],
+            text=True, capture_output=True, check=False, timeout=120,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0 and result.stdout.strip() == "READINESS PASS"
+
+
 def candidates(
     factory: Path,
     mapping: dict[str, Any],
@@ -536,6 +551,13 @@ def candidates(
             and state in ("planning", "building", "review")
         )
         if state != "ready" and not resumable:
+            continue
+        if not readiness_executable(factory.parent, path.stem):
+            refusals.append({
+                "error": "provider-free ticket readiness contract is not executable",
+                "reason_code": "invalid_ticket_contract",
+                "ticket": path.stem,
+            })
             continue
         initiative = field(effective, "Initiative")
         if not re.fullmatch(r"I-[0-9]+", initiative):
@@ -1012,6 +1034,10 @@ def main() -> None:
         reset_authorizations = preprovider_reset_authorizations(
             factory, qualification_state, prefix
         )
+        reset_authorizations = {
+            ticket: head for ticket, head in reset_authorizations.items()
+            if readiness_executable(product, ticket)
+        }
         if args.action == "claim" and reset_authorizations:
             safe_directory(args.worktree_root, "worktree root", owner_only=True)
             admission_descriptor = admission_lock(

@@ -11304,13 +11304,13 @@ class FactoryControllerTest(unittest.TestCase):
             events,
         )
 
-    def test_named_ticket_refusal_does_not_block_sibling_or_repeat_in_cycle(self) -> None:
+    def test_readiness_refusal_does_not_block_sibling_or_repeat_in_cycle(self) -> None:
         controller = CONTROL.Controller(self.args)
         controller.protected_main_head = lambda: "f" * 40
         cell = self.root / "cell-1"
         cell.mkdir()
         refusal = {
-            "error": "ticket dependencies are invalid",
+            "error": "provider-free ticket readiness contract is not executable",
             "reason_code": "invalid_ticket_contract",
             "ticket": "T-184",
         }
@@ -11351,7 +11351,7 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(result["results"], [
             {"status": "active", "ticket": "T-110"},
             {
-                "error": "ticket dependencies are invalid",
+                "error": "provider-free ticket readiness contract is not executable",
                 "reason_code": "invalid_ticket_contract",
                 "status": "skipped",
                 "ticket": "T-184",
@@ -11375,20 +11375,34 @@ class FactoryControllerTest(unittest.TestCase):
         )
 
     def test_malformed_dispatch_refusal_fails_closed(self) -> None:
-        controller = CONTROL.Controller(self.args)
-        controller.json_call = lambda *_args, **_kwargs: {
-            "action": "WAIT",
-            "admission_refusal": {
+        malformed = (
+            {
                 "error": "ticket dependencies are invalid",
                 "reason_code": "invalid_ticket_contract",
                 "ticket": "not-a-ticket",
             },
-        }
-
-        with self.assertRaisesRegex(
-            CONTROL.ControllerError, "dispatch admission refusal is malformed"
-        ):
-            controller.claim_new([])
+            {
+                "error": "provider-free ticket readiness contract is not executable",
+                "reason_code": "initiative_missing",
+                "ticket": "T-184",
+            },
+            {
+                "error": "unexpected readiness failure",
+                "reason_code": "invalid_ticket_contract",
+                "ticket": "T-184",
+            },
+        )
+        for refusal in malformed:
+            with self.subTest(refusal=refusal):
+                controller = CONTROL.Controller(self.args)
+                controller.json_call = lambda *_args, **_kwargs: {
+                    "action": "WAIT", "admission_refusal": refusal,
+                }
+                with self.assertRaisesRegex(
+                    CONTROL.ControllerError,
+                    "dispatch admission refusal is malformed",
+                ):
+                    controller.claim_new([])
 
     def test_named_initiative_refusal_is_returned(self) -> None:
         controller = CONTROL.Controller(self.args)
