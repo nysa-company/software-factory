@@ -41,7 +41,7 @@ RECOVERY_KINDS = frozenset({
     "interrupted-reconciliation", "missing-terminal",
     "passportless-route-migration", "preflight-retry",
     "prepublication-attestation", "release-upgrade", "targeted-repair",
-    "semantic-round-authorization", "terminal-export",
+    "reviewer-run-void", "semantic-round-authorization", "terminal-export",
 })
 RECOVERY_ATTEMPT_LIMIT = 3
 SEMANTIC_AUTHORIZATION_QUESTION = (
