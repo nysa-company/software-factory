@@ -741,13 +741,31 @@ PY
     if [[ -e "$bundle" || -L "$bundle" ]]; then
       [[ -f "$bundle" && ! -L "$bundle" ]] ||
         json_error "bundle attestation is unsafe"
-      python3 - "$bundle" "$FACTORY_KIT_SHA" <<'PY' ||
-import json, re, sys
-value = json.load(open(sys.argv[1]))
-kit = value.get("kit_sha", "") if isinstance(value, dict) else ""
-if not re.fullmatch(r"[0-9a-f]{40}", kit):
+      python3 - "$bundle" "$CONTROL_PLAN_FILE" "$FACTORY_KIT_SHA" \
+        "$workdir" "$ticket" <<'PY' ||
+import json, re, subprocess, sys
+bundle = json.load(open(sys.argv[1]))
+route = json.load(open(sys.argv[2]))
+bundle_kit = bundle.get("kit_sha", "") if isinstance(bundle, dict) else ""
+route_kit = route.get("kit_sha", "") if isinstance(route, dict) else ""
+kits = (bundle_kit, route_kit)
+if not all(re.fullmatch(r"[0-9a-f]{40}", item) for item in kits):
     raise SystemExit(2)
-if kit != sys.argv[2]:
+source_kit = route_kit
+if bundle_kit != sys.argv[3] and route_kit == sys.argv[3]:
+    parent = subprocess.run(
+        ["git", "-C", sys.argv[4], "show",
+         f"HEAD^:factory/route-plans/{sys.argv[5]}.json"],
+        text=True, capture_output=True,
+    )
+    try:
+        prior = json.loads(parent.stdout) if parent.returncode == 0 else None
+    except json.JSONDecodeError:
+        prior = None
+    source_kit = prior.get("kit_sha", "") if isinstance(prior, dict) else ""
+if bundle_kit != sys.argv[3] and not (
+    bundle_kit == source_kit and source_kit != sys.argv[3]
+):
     raise SystemExit(1)
 PY
       case "$?" in

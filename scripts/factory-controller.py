@@ -4280,6 +4280,7 @@ class Controller:
             and not claim.get("role")
             and not claim.get("publication_lease")
             and not self.role_active(claim)
+            and self.ticket_release_current(claim)
             and self.remote_passport_valid(claim)
             and not self.protected_base_current(claim, passport.get("head_sha", ""))
         )
@@ -4314,21 +4315,37 @@ class Controller:
             if valid_v2_migration(edge)
             and edge["from_factory_sha"] == source_factory
             and edge["from_passport_file_sha256"] == source_passport_file
-            and edge["from_head_sha"] == head
-            and edge["from_route_plan_sha256"] == route
         ]
         if len(starts) != 1:
             return None
         suffix = migrations[starts[0]:]
+        release_edges = suffix[:-1]
+        final = suffix[-1] if suffix else {}
+        source_head = suffix[0]["from_head_sha"] if suffix else ""
+        source_route = suffix[0]["from_route_plan_sha256"] if suffix else ""
         return suffix if (
-            all(
+            bool(release_edges)
+            and all(
                 valid_v2_migration(item)
                 and item["from_factory_sha"] != item["to_factory_sha"]
-                and item["from_head_sha"] == item["to_head_sha"] == head
+                and item["from_head_sha"]
+                == item["to_head_sha"] == source_head
                 and item["from_route_plan_sha256"]
-                == item["to_route_plan_sha256"] == route
-                for item in suffix
+                == item["to_route_plan_sha256"] == source_route
+                for item in release_edges
             )
+            and valid_v2_migration(final)
+            and final["from_factory_sha"] == final["to_factory_sha"]
+            == passport.get("factory_sha")
+            and final["from_head_sha"] == source_head
+            and final["to_head_sha"] == head
+            and final["from_head_sha"] != final["to_head_sha"]
+            and final["from_route_plan_sha256"] == source_route
+            and final["to_route_plan_sha256"] == route
+            and final["from_route_plan_sha256"]
+            != final["to_route_plan_sha256"]
+            and final["from_protected_base_sha"]
+            == final["to_protected_base_sha"] == protected
             and all(
                 prior["to_factory_sha"] == following["from_factory_sha"]
                 and prior["to_head_sha"] == following["from_head_sha"]
@@ -4338,13 +4355,9 @@ class Controller:
                 == following["from_route_plan_sha256"]
                 for prior, following in zip(suffix, suffix[1:])
             )
-            and suffix[-1]["to_factory_sha"] == passport.get("factory_sha")
-            and suffix[-1]["to_head_sha"] == head
-            and suffix[-1]["to_protected_base_sha"] == protected
-            and suffix[-1]["to_route_plan_sha256"] == route
-            and suffix[-1]["from_passport_file_sha256"]
+            and final["from_passport_file_sha256"]
             == passport["parent_file_sha256"]
-            and suffix[-1]["from_passport_sha256"]
+            and final["from_passport_sha256"]
             == passport["parent_digest"]
         ) else None
 
@@ -4426,9 +4439,10 @@ class Controller:
                     and receipt.get("receipt_sha256")
                     == marker["from_receipt_sha256"]
                     and DIGEST.fullmatch(receipt.get("lease_sha256", ""))
-                    and receipt.get("head_sha") == marker["head_sha"]
+                    and receipt.get("head_sha")
+                    == suffix[0]["from_head_sha"]
                     and receipt.get("route_plan_sha256")
-                    == marker["route_plan_sha256"]
+                    == suffix[0]["from_route_plan_sha256"]
                 )
                 or (
                     current
@@ -4530,9 +4544,9 @@ class Controller:
                 receipt.get("factory_sha") != first["from_factory_sha"]
                 or receipt.get("passport_sha256")
                 != first["from_passport_file_sha256"]
-                or receipt.get("head_sha") != passport.get("head_sha")
+                or receipt.get("head_sha") != first["from_head_sha"]
                 or receipt.get("route_plan_sha256")
-                != passport.get("route_plan_sha256")
+                != first["from_route_plan_sha256"]
                 or not DIGEST.fullmatch(receipt.get("lease_sha256", ""))
                 or receipt.get("consumed") is not False
                 or receipt.get("role") is not None
@@ -5912,6 +5926,20 @@ class Controller:
                 claim["lease"] = lease["lease_id"]
             claim.pop("lease_released", None)
             self.save_claim(claim)
+            if (
+                not migration_complete
+                and not merged_closeout
+                and not bundle_refresh
+            ):
+                try:
+                    self.migrate_passport(claim, "preserve")
+                except ControllerError:
+                    self.release_ticket_lease(claim)
+                    raise
+                passport = read(path)
+                bundle_refresh = self.release_bundle_refreshable(
+                    claim, passport,
+                )
             if merged_closeout:
                 claim.update(receipt="", role="", status="claimed")
                 if claim.get("blocked_reason") == "route-migration-required":
@@ -5948,12 +5976,6 @@ class Controller:
                 if migration_complete:
                     self.event_once("route_migration_cleared", claim["ticket"])
                 continue
-            if not migration_complete:
-                try:
-                    self.migrate_passport(claim, "preserve")
-                except ControllerError:
-                    self.release_ticket_lease(claim)
-                    raise
             if (
                 not claim.get("receipt")
                 and self.restore_contract_blocker(claim)
@@ -8519,6 +8541,13 @@ class Controller:
                     "ticket": claim["ticket"],
                 }
             if claim.get("release_refresh_required") is True:
+                if stage == (
+                    "REFUSE ticket Kit-SHA lease does not match the selected "
+                    "kit SHA"
+                ):
+                    claim.pop("release_refresh_required", None)
+                    self.block(claim, "route-migration-required")
+                    return {"status": "blocked", "ticket": claim["ticket"]}
                 with self.git_lock:
                     value = self.json_call(
                         "ticket-attest", "--ticket", claim["ticket"],
