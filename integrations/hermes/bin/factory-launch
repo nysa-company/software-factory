@@ -1269,6 +1269,11 @@ PY
       die "deterministic reconciliation requires contract 1.8.0"
     require_exact "--json" "$@"
     controller_state_dir
+    if [[ "$QUALIFICATION_LAUNCHER" == "1" ]]; then
+      CONTROLLER_WORKTREE_ROOT="$KITS_ROOT/worktrees/$PROJECT"
+    else
+      CONTROLLER_WORKTREE_ROOT="$HOME/.factory/worktrees/$PROJECT"
+    fi
     CONTROLLER="$RELEASE_PATH/scripts/factory-controller.py"
     require_managed_file "$CONTROLLER" "active release controller"
     cleanup_runtime
@@ -1278,7 +1283,8 @@ PY
       --project "$PROJECT" \
       --product-root "$PRODUCT_ROOT" \
       --release-path "$RELEASE_PATH" \
-      --state-dir "$CONTROLLER_STATE_DIR"
+      --state-dir "$CONTROLLER_STATE_DIR" \
+      --worktree-root "$CONTROLLER_WORKTREE_ROOT"
     ;;
   watch)
     [[ "$ACTIVE_CONTRACT" == "1.8.0" ]] ||
