@@ -12035,6 +12035,199 @@ class FactoryControllerTest(unittest.TestCase):
         controller.recover_interrupted_claims([claim])
         self.assertEqual(claim["status"], "claimed")
 
+    def test_reconciliation_marker_accepts_exact_passport_successor(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        ticket = "T-110"
+        cell = self.root / "cell-reconciliation-successor"
+        subprocess.run(["git", "init", "-q", str(cell)], check=True)
+        passports = self.state / "passports"
+        passports.mkdir(mode=0o700)
+        old = {
+            "branch": f"ticket/{ticket}",
+            "factory_sha": self.release.name,
+            "head_sha": "b" * 40,
+            "passport_sha256": "c" * 64,
+            "protected_base_sha": "d" * 40,
+            "route_plan_sha256": "e" * 64,
+            "ticket": ticket,
+        }
+        passport_path = passports / f"{ticket}.json"
+        CONTROL.write(passport_path, old)
+        claim = {
+            "branch": f"ticket/{ticket}", "lease": "a" * 64,
+            "priority": "normal", "publication_lease": "", "receipt": "",
+            "role": "", "schema": CONTROL.CLAIM_SCHEMA, "status": "claimed",
+            "ticket": ticket, "worktree": str(cell),
+        }
+        controller.mark_reconciling(claim)
+        marker = CONTROL.read(controller.reconciliation_marker(ticket))
+        current = {
+            **old,
+            "head_sha": "f" * 40,
+            "passport_sha256": "1" * 64,
+            "parent_digest": old["passport_sha256"],
+            "parent_file_sha256": "2" * 64,
+            "protected_base_sha": "3" * 40,
+            "route_plan_sha256": "4" * 64,
+            "migration_history": [{
+                "from_factory_sha": self.release.name,
+                "from_head_sha": old["head_sha"],
+                "from_passport_file_sha256": "2" * 64,
+                "from_passport_sha256": old["passport_sha256"],
+                "from_protected_base_sha": old["protected_base_sha"],
+                "from_route_plan_sha256": old["route_plan_sha256"],
+                "schema": CONTROL.PASSPORT_MIGRATION_SCHEMA,
+                "to_factory_sha": self.release.name,
+                "to_head_sha": "f" * 40,
+                "to_protected_base_sha": "3" * 40,
+                "to_route_plan_sha256": "4" * 64,
+            }],
+        }
+        CONTROL.write(passport_path, current)
+        controller.remote_passport_valid = lambda _claim: True
+
+        with patch.object(
+            CONTROL, "write", side_effect=OSError("crash before marker write"),
+        ):
+            with self.assertRaisesRegex(OSError, "crash before marker write"):
+                controller.mark_reconciling(claim)
+        self.assertEqual(
+            CONTROL.read(controller.reconciliation_marker(ticket)), marker
+        )
+        advanced = CONTROL.read(controller.reconciliation_marker(ticket))
+        events = [
+            CONTROL.read(path) for path in controller.events.glob("*.json")
+            if CONTROL.read(path).get("event")
+            == "reconciliation_boundary_refresh_authorized"
+        ]
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["from_head_sha"], old["head_sha"])
+        self.assertEqual(events[0]["head_sha"], current["head_sha"])
+        controller.mark_reconciling(claim)
+        advanced = CONTROL.read(controller.reconciliation_marker(ticket))
+        self.assertEqual(advanced["head_sha"], current["head_sha"])
+        self.assertEqual(
+            advanced["passport_sha256"], current["passport_sha256"]
+        )
+        controller.mark_reconciling(claim)
+        self.assertEqual(len([
+            path for path in controller.events.glob("*.json")
+            if CONTROL.read(path).get("event")
+            == "reconciliation_boundary_refresh_authorized"
+        ]), 1)
+        edge = current["migration_history"][0]
+        invalid = (
+            ({**marker, "head_sha": "5" * 40}, advanced, current),
+            (
+                marker,
+                {**advanced, "run_snapshot_sha256": "6" * 64},
+                current,
+            ),
+            (marker, advanced, {**current, "parent_digest": "7" * 64}),
+            (
+                marker,
+                advanced,
+                {**current, "route_plan_sha256": "8" * 64},
+            ),
+            (
+                marker,
+                advanced,
+                {
+                    **current,
+                    "migration_history": [{
+                        **edge, "to_factory_sha": "9" * 40,
+                    }],
+                },
+            ),
+        )
+        for old_boundary, new_boundary, candidate in invalid:
+            self.assertFalse(controller.reconciliation_boundary_successor(
+                claim, old_boundary, new_boundary, candidate,
+            ))
+        (cell / "dirty").write_text("dirty", encoding="utf-8")
+        self.assertFalse(controller.reconciliation_boundary_successor(
+            claim, marker, advanced, current,
+        ))
+        (cell / "dirty").unlink()
+
+        CONTROL.write(controller.reconciliation_marker(ticket), marker)
+        controller.remote_passport_valid = lambda _claim: False
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "reconciliation boundary conflicts"
+        ):
+            controller.mark_reconciling(claim)
+        self.assertEqual(
+            CONTROL.read(controller.reconciliation_marker(ticket)), marker
+        )
+
+    def test_reconciliation_boundary_conflict_does_not_block_sibling(
+        self,
+    ) -> None:
+        controller = CONTROL.Controller(self.args)
+        controller.protected_main_head = lambda: "f" * 40
+        claims = []
+        for number, ticket in enumerate(("T-110", "T-111"), 1):
+            cell = self.root / f"cell-reconciliation-{number}"
+            route = cell / f"factory/route-plans/{ticket}.json"
+            route.parent.mkdir(parents=True)
+            route.write_text("{}\n", encoding="utf-8")
+            claims.append({
+                "branch": f"ticket/{ticket}",
+                "lease": f"{number:064x}",
+                "priority": "normal",
+                "publication_lease": "",
+                "receipt": "",
+                "role": "",
+                "schema": CONTROL.CLAIM_SCHEMA,
+                "status": "claimed",
+                "ticket": ticket,
+                "worktree": str(cell),
+            })
+        controller.load_claims = lambda: claims
+        controller.recover_missing_passport_claims = lambda _claims: None
+        controller.recover_upgraded_claims = lambda _claims: None
+        controller.recover_repaired_failures = lambda _claims: None
+        controller.claim_new = lambda current: current
+        controller.pin_routes = lambda _claims: []
+        controller.event = lambda *_args, **_kwargs: None
+        cleanup_attempts = []
+
+        def cleanup_failure(name):
+            cleanup_attempts.append(name)
+            raise CONTROL.ControllerError(f"{name} cleanup unavailable")
+
+        def mark(claim):
+            if claim["ticket"] == "T-110":
+                raise CONTROL.ControllerError(
+                    "ticket reconciliation boundary conflicts"
+                )
+
+        reconciled = []
+        controller.withdraw_publication = lambda _claim: cleanup_failure(
+            "publication"
+        )
+        controller.release_ticket_lease = lambda _claim: cleanup_failure(
+            "lease"
+        )
+        controller.mark_reconciling = mark
+        controller.reconcile_ticket = lambda claim: (
+            reconciled.append(claim["ticket"])
+            or {"status": "waiting", "ticket": claim["ticket"]}
+        )
+
+        result = controller.reconcile()
+
+        by_ticket = {item["ticket"]: item for item in result["results"]}
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(by_ticket["T-110"]["status"], "blocked")
+        self.assertEqual(
+            claims[0]["blocked_reason"], "reconciliation-boundary"
+        )
+        self.assertEqual(cleanup_attempts, ["publication", "lease"])
+        self.assertNotIn("lease_released", claims[0])
+        self.assertEqual(reconciled, ["T-111"])
+        self.assertEqual(by_ticket["T-111"]["status"], "waiting")
+
     def test_worker_error_recovers_from_exact_reconciliation_boundary(self) -> None:
         controller = CONTROL.Controller(self.args)
         ticket = "T-110"
