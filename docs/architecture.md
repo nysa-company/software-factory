@@ -795,7 +795,9 @@ ticket execution remains branch-bound.
 For a production-successor qualification, preparation additionally requires
 a clean linked qualification worktree of the canonical product repository,
 the selected tickets' authenticated passports with an exact release-history
-suffix rooted at the installed source, a drained controller,
+suffix rooted at the installed source, or the source cohort's exact
+digest-bound protected-terminal reconciliation when that terminal ticket has
+no passport, a drained controller,
 and the current production provider activation. The activated source checkout
 must be clean and match its authenticated product tree, while current protected
 main must contain that source commit. This permits shared control policy to
@@ -806,7 +808,16 @@ not require a setup pull request. The sealed helper environment binds the exact
 qualification product tree authenticated by the owner-only qualification
 activation record. Preflight therefore requires that clean tree in this one
 environment;
-an ordinary or unbound launcher continues to require a clean, current `main`
+the terminal exception requires the identical source-manifest cohort, exact
+controller event boundary, zero charge, unchanged protected ticket and Done
+blobs, and current protected-terminal validation. A passport's successful
+role may pair with conservative accounting only when the retained run manifest
+and output still prove completed submitted execution, exit zero, role success,
+and an exact full-reservation charge. Adjacent same-source passport migrations
+may bridge a changed head only through a complete linear chain of those
+authenticated successful roles whose commits satisfy the sealed per-role path
+policy; a missing, cancelled, foreign, failed, merged, or bare Git edge refuses.
+An ordinary or unbound launcher continues to require a clean, current `main`
 checkout. The helper also binds the canonical live Linear map and revalidates
 it on every launch, so ticket-state
 logic consumes the same approval overlay as production. Before sealing, every

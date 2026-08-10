@@ -91,6 +91,10 @@ class QualificationEnvironmentTest(unittest.TestCase):
             ROOT / "scripts/ticket-passport.py",
             self.factory / "scripts/ticket-passport.py",
         )
+        shutil.copy2(
+            ROOT / "scripts/qualification-reducer.py",
+            self.factory / "scripts/qualification-reducer.py",
+        )
         linear_sync = self.factory / "scripts/linear-sync.py"
         linear_sync.write_text("""#!/usr/bin/env python3
 import argparse, json, os
@@ -146,6 +150,14 @@ ledger.chmod(0o600)
                 }],
             }) + "\n",
             encoding="utf-8",
+        )
+        shutil.copy2(
+            ROOT / "scripts/model-routing/handoff-boundaries-v1.json",
+            self.factory / "scripts/model-routing/handoff-boundaries-v1.json",
+        )
+        shutil.copy2(
+            ROOT / "scripts/lib/lane-path-sentinel.py",
+            self.factory / "scripts/lib/lane-path-sentinel.py",
         )
         run(self.factory, "git", "init", "-q", "-b", "main")
         run(self.factory, "git", "config", "user.name", "Test")
@@ -1675,6 +1687,7 @@ ledger.chmod(0o600)
             "source_factory_sha": source,
             "tickets": tickets,
         }
+        product_sha = run(self.product, "git", "rev-parse", "HEAD")
         for ticket in tickets:
             self.write_passport(
                 passports / f"{ticket}.json", secret, ticket, source,
@@ -1684,10 +1697,12 @@ ledger.chmod(0o600)
             if path.is_file()
         }
         ENVIRONMENT.validate_successor_upgrade_cohort(
-            self.factory, controller, "relay", source, manifest,
+            self.factory, self.product, controller, "relay", source,
+            product_sha, manifest,
         )
         ENVIRONMENT.validate_successor_upgrade_cohort(
-            self.factory, controller, "relay", source, manifest,
+            self.factory, self.product, controller, "relay", source,
+            product_sha, manifest,
         )
         self.assertEqual(before, {
             path.name: path.read_bytes() for path in controller.rglob("*")
@@ -1698,10 +1713,12 @@ ledger.chmod(0o600)
                 passports / f"{ticket}.json", secret, ticket, candidate, source,
             )
         ENVIRONMENT.validate_successor_upgrade_cohort(
-            self.factory, controller, "relay", candidate, manifest,
+            self.factory, self.product, controller, "relay", candidate,
+            product_sha, manifest,
         )
         ENVIRONMENT.validate_successor_upgrade_cohort(
-            self.factory, controller, "relay", candidate, manifest,
+            self.factory, self.product, controller, "relay", candidate,
+            product_sha, manifest,
         )
 
         for ticket in tickets:
@@ -1743,6 +1760,50 @@ ledger.chmod(0o600)
                 "transition_receipt_sha256": "3" * 64,
             }
 
+        def conservative_records() -> tuple[dict[str, object], dict[str, object]]:
+            runs = self.product / "factory/runs"
+            runs.mkdir(mode=0o700, exist_ok=True)
+            output = runs / "conservative.out"
+            output.write_bytes(b"successful output\n")
+            output.chmod(0o600)
+            output_digest = hashlib.sha256(output.read_bytes()).hexdigest()
+            fields = {
+                "accounting_state": "abandoned_conservative",
+                "contract_version": "1.8.0",
+                "cost_basis": "conservative_reservation",
+                "effective_cost": "2.000000",
+                "exit_status": "0",
+                "kit_sha": source,
+                "output_sha256": output_digest,
+                "phase": "completed",
+                "reserved_usd": "2.000000",
+                "role": "builder",
+                "role_exit": "ok",
+                "role_head_before": "1" * 40,
+                "run_id": "conservative",
+                "task_submitted": "1",
+                "ticket": "T-102",
+                "transition_receipt_sha256": "3" * 64,
+            }
+            meta = runs / "conservative.meta"
+            meta.write_text("".join(
+                f"{name}={value}\n" for name, value in sorted(fields.items())
+            ))
+            meta.chmod(0o600)
+            digest = hashlib.sha256(meta.read_bytes()).hexdigest()
+            charge_value = charge(source, "conservative")
+            charge_value.update({
+                "accounting_state": "abandoned_conservative",
+                "charge_micro_usd": 2_000_000,
+                "manifest_sha256": digest,
+            })
+            completion_value = completion(source, "conservative")
+            completion_value.update({
+                "manifest_sha256": digest,
+                "output_sha256": output_digest,
+            })
+            return charge_value, completion_value
+
         def set_charge(value: dict[str, object], factory_sha: str) -> None:
             value["charge_records"] = [charge(factory_sha, "run-charge")]
             value["cumulative_charges_micro_usd"] = 1
@@ -1761,8 +1822,57 @@ ledger.chmod(0o600)
 
         rewrite(lambda value: set_completion(value, source))
         ENVIRONMENT.validate_successor_upgrade_cohort(
-            self.factory, controller, "relay", source, manifest,
+            self.factory, self.product, controller, "relay", source,
+            product_sha, manifest,
         )
+        conservative_charge, conservative_completion = conservative_records()
+        rewrite(lambda value: value.update(
+            charge_records=[conservative_charge],
+            completed_role_evidence=[conservative_completion],
+            cumulative_charges_micro_usd=2_000_000,
+        ))
+        ENVIRONMENT.validate_successor_upgrade_cohort(
+            self.factory, self.product, controller, "relay", source,
+            product_sha, manifest,
+        )
+        meta = self.product / "factory/runs/conservative.meta"
+        meta.write_text(meta.read_text().replace("exit_status=0", "exit_status=1"))
+        failed_digest = hashlib.sha256(meta.read_bytes()).hexdigest()
+        failed_charge = dict(conservative_charge, manifest_sha256=failed_digest)
+        failed_completion = dict(
+            conservative_completion, manifest_sha256=failed_digest,
+        )
+        rewrite(lambda value: value.update(
+            charge_records=[failed_charge],
+            completed_role_evidence=[failed_completion],
+            cumulative_charges_micro_usd=2_000_000,
+        ))
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError,
+            "T-102: successor qualification requires every selected ticket",
+        ):
+            ENVIRONMENT.validate_successor_upgrade_cohort(
+                self.factory, self.product, controller, "relay", source,
+                product_sha, manifest,
+            )
+        conservative_charge, conservative_completion = conservative_records()
+        for accounting_state in ("cancelled", "cancelled_conservative"):
+            with self.subTest(accounting_state=accounting_state):
+                refused_charge = dict(conservative_charge)
+                refused_charge["accounting_state"] = accounting_state
+                rewrite(lambda value: value.update(
+                    charge_records=[refused_charge],
+                    completed_role_evidence=[conservative_completion],
+                    cumulative_charges_micro_usd=2_000_000,
+                ))
+                with self.assertRaisesRegex(
+                    ENVIRONMENT.EnvironmentError,
+                    "T-102: successor qualification requires every selected ticket",
+                ):
+                    ENVIRONMENT.validate_successor_upgrade_cohort(
+                        self.factory, self.product, controller, "relay", source,
+                        product_sha, manifest,
+                    )
 
         for ticket in tickets:
             self.write_passport(
@@ -1782,10 +1892,12 @@ ledger.chmod(0o600)
             "transition_receipt_sha256": "3" * 64,
         }]))
         ENVIRONMENT.validate_successor_upgrade_cohort(
-            self.factory, controller, "relay", candidate, manifest,
+            self.factory, self.product, controller, "relay", candidate,
+            product_sha, manifest,
         )
         ENVIRONMENT.validate_successor_upgrade_cohort(
-            self.factory, controller, "relay", candidate, manifest,
+            self.factory, self.product, controller, "relay", candidate,
+            product_sha, manifest,
         )
         for ticket in tickets:
             self.write_passport(
@@ -1822,10 +1934,12 @@ ledger.chmod(0o600)
                 mutate()
                 with self.assertRaisesRegex(
                     ENVIRONMENT.EnvironmentError,
-                    "T-102: successor qualification requires every selected ticket",
+                    ("selected cohort" if label == "missing" else "T-102")
+                    + ": successor qualification requires every selected ticket",
                 ):
                     ENVIRONMENT.validate_successor_upgrade_cohort(
-                        self.factory, controller, "relay", source, manifest,
+                        self.factory, self.product, controller, "relay", source,
+                        product_sha, manifest,
                     )
         self.write_passport(path, secret, "T-102", source)
         drifted = dict(manifest, source_factory_sha="e" * 40)
@@ -1834,8 +1948,303 @@ ledger.chmod(0o600)
             "T-101: successor qualification requires every selected ticket",
         ):
             ENVIRONMENT.validate_successor_upgrade_cohort(
-                self.factory, controller, "relay", source, drifted,
+                self.factory, self.product, controller, "relay", source,
+                product_sha, drifted,
             )
+
+    def test_successor_accepts_only_exact_source_terminal_reconciliations(self) -> None:
+        controller = (self.workspace / "terminal-controller").resolve()
+        passports = controller / "passports"
+        events = controller / "events"
+        for path in (controller, passports, events):
+            path.mkdir(mode=0o700)
+        secret = b"p" * 32
+        key = controller / "passport.key"
+        key.write_bytes(secret)
+        key.chmod(0o600)
+        self.write_passport(passports / "T-103.json", secret, "T-103", self.sha)
+        attestations = self.product / "factory/attestations"
+        for ticket in ("T-101", "T-102"):
+            ticket_path = self.product / f"factory/tickets/{ticket}.md"
+            ticket_path.write_text(
+                ticket_path.read_text().replace("State: Ready", "State: Done")
+            )
+            root = attestations / ticket
+            root.mkdir(parents=True)
+            (root / "done.json").write_text(json.dumps({
+                "schema": "nysa.software-factory.ticket-done/v1",
+                "ticket": ticket,
+            }) + "\n")
+        run(self.product, "git", "add", "factory")
+        run(self.product, "git", "commit", "-qm", "record source terminals")
+        source_product_sha = run(self.product, "git", "rev-parse", "HEAD")
+        run(
+            self.product, "git", "update-ref", "refs/remotes/origin/main",
+            source_product_sha,
+        )
+        source_manifest = json.loads(run(
+            self.product, "git", "show",
+            f"{source_product_sha}:factory/QUALIFICATION.json",
+        ))
+        source_manifest_sha256 = hashlib.sha256(json.dumps(
+            source_manifest, ensure_ascii=True, sort_keys=True,
+            separators=(",", ":"),
+        ).encode()).hexdigest()
+        source_tree = run(
+            self.product, "git", "rev-parse", f"{source_product_sha}^{{tree}}",
+        )
+        event_paths: dict[str, Path] = {}
+        original_events: dict[str, dict[str, object]] = {}
+        for epoch, ticket in enumerate(("T-101", "T-102"), 1):
+            done = json.loads(run(
+                self.product, "git", "show",
+                f"{source_product_sha}:factory/attestations/{ticket}/done.json",
+            ))
+            value: dict[str, object] = {
+                "done_sha256": hashlib.sha256(json.dumps(
+                    done, ensure_ascii=True, sort_keys=True,
+                    separators=(",", ":"),
+                ).encode()).hexdigest(),
+                "event": "protected_terminal_reconciled",
+                "factory_sha": self.sha,
+                "observed_at_epoch_ns": epoch,
+                "protected_main_sha": source_product_sha,
+                "protected_main_tree": source_tree,
+                "protected_ticket_blob": run(
+                    self.product, "git", "rev-parse",
+                    f"{source_product_sha}:factory/tickets/{ticket}.md",
+                ),
+                "qualification_charge_micro_usd": 0,
+                "qualification_generation": source_manifest["generation"],
+                "qualification_manifest_sha256": source_manifest_sha256,
+                "reconciliation_schema": (
+                    "nysa.software-factory.qualification-protected-terminal-"
+                    "reconciliation/v1"
+                ),
+                "schema": "nysa.software-factory.controller-event/v1",
+                "terminal_basis": "attested-done",
+                "ticket": ticket,
+            }
+            unsigned = json.dumps(
+                value, ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+            ).encode()
+            value["event_sha256"] = hashlib.sha256(unsigned).hexdigest()
+            event_paths[ticket] = events / f"{epoch}-000000000000000{epoch}.json"
+            original_events[ticket] = value
+            ENVIRONMENT.write(event_paths[ticket], value)
+        (self.product / "unrelated.txt").write_text("later protected change\n")
+        run(self.product, "git", "add", "unrelated.txt")
+        run(self.product, "git", "commit", "-qm", "advance protected main")
+        moved_protected = run(self.product, "git", "rev-parse", "HEAD")
+        run(
+            self.product, "git", "update-ref", "refs/remotes/origin/main",
+            source_product_sha,
+        )
+
+        candidate = "c" * 40
+        manifest = {
+            "factory_sha": candidate,
+            "mode": "successor",
+            "source_factory_sha": self.sha,
+            "tickets": ["T-101", "T-102", "T-103"],
+        }
+
+        def restore_events() -> None:
+            for path in events.glob("*.json"):
+                path.unlink()
+            for ticket, value in original_events.items():
+                ENVIRONMENT.write(event_paths[ticket], value)
+
+        def change_event(ticket: str, name: str, value: object) -> None:
+            event = dict(original_events[ticket])
+            event.pop("event_sha256")
+            event[name] = value
+            unsigned = json.dumps(
+                event, ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+            ).encode()
+            event["event_sha256"] = hashlib.sha256(unsigned).hexdigest()
+            event_paths[ticket].write_bytes(ENVIRONMENT.canonical(event))
+
+        terminal_refs: list[str] = []
+        move_ref = [True]
+
+        def terminal(_product: Path, ticket: str, ref: str) -> dict[str, str]:
+            terminal_refs.append(ref)
+            if move_ref:
+                move_ref.pop()
+                run(
+                    self.product, "git", "update-ref",
+                    "refs/remotes/origin/main", moved_protected,
+                )
+            return {"basis": "attested-done", "ticket": ticket}
+
+        before = {
+            str(path.relative_to(controller)): path.read_bytes()
+            for path in controller.rglob("*") if path.is_file()
+        }
+        with mock.patch.object(
+            ENVIRONMENT, "protected_terminal", side_effect=terminal,
+        ):
+            ENVIRONMENT.validate_successor_upgrade_cohort(
+                self.factory, self.product, controller, "relay", self.sha,
+                source_product_sha, manifest,
+            )
+            run(
+                self.product, "git", "update-ref", "refs/remotes/origin/main",
+                source_product_sha,
+            )
+            ENVIRONMENT.validate_successor_upgrade_cohort(
+                self.factory, self.product, controller, "relay", self.sha,
+                source_product_sha, manifest,
+            )
+        self.assertEqual(set(terminal_refs), {source_product_sha})
+        self.assertEqual(before, {
+            str(path.relative_to(controller)): path.read_bytes()
+            for path in controller.rglob("*") if path.is_file()
+        })
+
+        mutations = {
+            "manifest": ("qualification_manifest_sha256", "0" * 64),
+            "source": ("factory_sha", "b" * 40),
+            "charge": ("qualification_charge_micro_usd", 1),
+            "basis": ("terminal_basis", "attested-emergency-closeout"),
+            "done": ("done_sha256", "0" * 64),
+            "tree": ("protected_main_tree", "0" * 40),
+        }
+        for label, (name, value) in mutations.items():
+            with self.subTest(label=label):
+                restore_events()
+                change_event("T-101", name, value)
+                with mock.patch.object(
+                    ENVIRONMENT, "protected_terminal", side_effect=terminal,
+                ), self.assertRaisesRegex(
+                    ENVIRONMENT.EnvironmentError,
+                    "successor qualification requires every selected ticket",
+                ):
+                    ENVIRONMENT.validate_successor_upgrade_cohort(
+                        self.factory, self.product, controller, "relay", self.sha,
+                        source_product_sha, manifest,
+                    )
+
+        restore_events()
+        ENVIRONMENT.write(events / "3-0000000000000003.json", original_events["T-101"])
+        with mock.patch.object(
+            ENVIRONMENT, "protected_terminal", side_effect=terminal,
+        ), self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError,
+            "successor qualification requires every selected ticket",
+        ):
+            ENVIRONMENT.validate_successor_upgrade_cohort(
+                self.factory, self.product, controller, "relay", self.sha,
+                source_product_sha, manifest,
+            )
+
+        restore_events()
+        self.write_passport(passports / "T-101.json", secret, "T-101", self.sha)
+        with mock.patch.object(
+            ENVIRONMENT, "protected_terminal", side_effect=terminal,
+        ), self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError,
+            "successor qualification requires every selected ticket",
+        ):
+            ENVIRONMENT.validate_successor_upgrade_cohort(
+                self.factory, self.product, controller, "relay", self.sha,
+                source_product_sha, manifest,
+            )
+        (passports / "T-101.json").unlink()
+
+        ticket = self.product / "factory/tickets/T-101.md"
+        ticket.write_text(ticket.read_text() + "\nchanged after source\n")
+        run(self.product, "git", "add", "factory/tickets/T-101.md")
+        run(self.product, "git", "commit", "-qm", "change terminal ticket")
+        run(
+            self.product, "git", "update-ref", "refs/remotes/origin/main",
+            run(self.product, "git", "rev-parse", "HEAD"),
+        )
+        with mock.patch.object(
+            ENVIRONMENT, "protected_terminal", side_effect=terminal,
+        ), self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError,
+            "successor qualification requires every selected ticket",
+        ):
+            ENVIRONMENT.validate_successor_upgrade_cohort(
+                self.factory, self.product, controller, "relay", self.sha,
+                source_product_sha, manifest,
+            )
+
+    def test_successor_migration_gap_requires_completed_role_chain(self) -> None:
+        base = run(self.product, "git", "rev-parse", "HEAD")
+        test_path = self.product / "app/tests/feature.test.js"
+        test_path.parent.mkdir(parents=True)
+        test_path.write_text("test\n")
+        run(self.product, "git", "add", "app/tests/feature.test.js")
+        run(self.product, "git", "commit", "-qm", "test-author output")
+        middle = run(self.product, "git", "rev-parse", "HEAD")
+        builder_path = self.product / "app/server.js"
+        builder_path.write_text("build\n")
+        run(self.product, "git", "add", "app/server.js")
+        run(self.product, "git", "commit", "-qm", "builder output")
+        end = run(self.product, "git", "rev-parse", "HEAD")
+        source = "b" * 40
+
+        def completion(role: str, head: str, run_id: str) -> dict[str, object]:
+            return {
+                "contract_version": "1.8.0",
+                "factory_sha": source,
+                "head_before": head,
+                "manifest_sha256": ("1" if role == "test-author" else "2") * 64,
+                "output_sha256": "3" * 64,
+                "role": role,
+                "run_id": run_id,
+                "transition_receipt_sha256": "4" * 64,
+            }
+
+        completed = [
+            completion("test-author", base, "test-run"),
+            completion("builder", middle, "builder-run"),
+        ]
+        charges = [{
+            "accounting_state": "completed",
+            "charge_micro_usd": 1,
+            **{
+                name: item[name] for name in (
+                    "contract_version", "factory_sha", "head_before",
+                    "manifest_sha256", "role", "run_id",
+                    "transition_receipt_sha256",
+                )
+            },
+        } for item in completed]
+        passport_spec = importlib.util.spec_from_file_location(
+            "gap_passport", self.factory / "scripts/ticket-passport.py"
+        )
+        assert passport_spec and passport_spec.loader
+        passport = importlib.util.module_from_spec(passport_spec)
+        passport_spec.loader.exec_module(passport)
+        self.assertTrue(ENVIRONMENT.completed_role_gap(
+            self.factory, self.product, passport, "T-101",
+            charges, completed, base, end, source,
+        ))
+        negatives = {
+            "missing": (charges, completed[1:]),
+            "foreign": (
+                charges,
+                [{**completed[0], "factory_sha": "c" * 40}, completed[1]],
+            ),
+            "cancelled": (
+                [{**charges[0], "accounting_state": "cancelled"}, charges[1]],
+                completed,
+            ),
+            "head-gap": (
+                charges,
+                [{**completed[0], "head_before": middle}, completed[1]],
+            ),
+        }
+        for label, (case_charges, case_completed) in negatives.items():
+            with self.subTest(label=label):
+                self.assertFalse(ENVIRONMENT.completed_role_gap(
+                    self.factory, self.product, passport, "T-101",
+                    case_charges, case_completed, base, end, source,
+                ))
 
     def test_candidate_native_successor_refuses_before_upgrade_publication(self) -> None:
         args = argparse.Namespace(

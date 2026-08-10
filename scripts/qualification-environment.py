@@ -1829,8 +1829,241 @@ def takeover_source(
     }
 
 
+def successor_terminal_reconciliations(
+    factory: Path, product: Path, controller: Path, active_product_sha: str,
+    manifest: dict[str, Any], absent: set[str],
+) -> None:
+    """Accept only the source lane's exact protected-terminal reconciliations."""
+    source = manifest["source_factory_sha"]
+    if not SHA.fullmatch(active_product_sha):
+        raise EnvironmentError("successor source product identity is invalid")
+    spec = importlib.util.spec_from_file_location(
+        "qualification_upgrade_reducer", factory / "scripts/qualification-reducer.py"
+    )
+    if not spec or not spec.loader:
+        raise EnvironmentError("successor reconciliation verifier is unavailable")
+    reducer = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(reducer)
+    source_manifest = validate_qualification_manifest(
+        json.loads(command(
+            "git", "-C", str(product), "show",
+            f"{active_product_sha}:factory/QUALIFICATION.json",
+        )),
+        source,
+    )
+    if source_manifest["tickets"] != manifest["tickets"]:
+        raise EnvironmentError("successor source cohort changed")
+    events = reducer.qualification_events(
+        reducer.event_records(safe_directory(controller / "events")),
+        source_manifest,
+    )
+    reconciliations = reducer.protected_reconciliations(events, source)
+    if set(reconciliations) != absent or any(
+        (controller / "passports" / f"{ticket}.json").exists()
+        or (controller / "passports" / f"{ticket}.json").is_symlink()
+        for ticket in reconciliations
+    ):
+        raise EnvironmentError("successor terminal reconciliation set changed")
+    protected = command(
+        "git", "-C", str(product), "rev-parse", "refs/remotes/origin/main",
+    )
+    command(
+        "git", "-C", str(product), "merge-base", "--is-ancestor",
+        active_product_sha, protected,
+    )
+    allowed = {
+        "done_sha256", "event", "event_sha256", "factory_sha",
+        "observed_at_epoch_ns", "protected_main_sha", "protected_main_tree",
+        "protected_ticket_blob", "qualification_charge_micro_usd",
+        "qualification_generation", "qualification_manifest_sha256",
+        "reconciliation_schema", "schema", "terminal_basis", "ticket",
+    }
+    for ticket, event in reconciliations.items():
+        ticket_path = f"factory/tickets/{ticket}.md"
+        done_path = f"factory/attestations/{ticket}/done.json"
+        observed = event.get("protected_main_sha", "")
+        observed_done = json.loads(command(
+            "git", "-C", str(product), "show", f"{observed}:{done_path}",
+        ))
+        current_done = json.loads(command(
+            "git", "-C", str(product), "show", f"{protected}:{done_path}",
+        ))
+        terminal = protected_terminal(product, ticket, protected)
+        if (
+            set(event) != allowed
+            or event.get("schema") != reducer.EVENT_SCHEMA
+            or event.get("event") != "protected_terminal_reconciled"
+            or event.get("factory_sha") != source
+            or event.get("ticket") != ticket
+            or event.get("reconciliation_schema")
+            != reducer.PROTECTED_TERMINAL_RECONCILIATION_SCHEMA
+            or event.get("terminal_basis") not in {
+                "attested-done", "attested-emergency-closeout",
+            }
+            or event.get("qualification_charge_micro_usd") != 0
+            or event.get("protected_main_sha") != active_product_sha
+            or not isinstance(event.get("observed_at_epoch_ns"), int)
+            or isinstance(event["observed_at_epoch_ns"], bool)
+            or event["observed_at_epoch_ns"] < 1
+            or command(
+                "git", "-C", str(product), "rev-parse", f"{observed}^{{tree}}",
+            ) != event.get("protected_main_tree")
+            or command(
+                "git", "-C", str(product), "rev-parse", f"{observed}:{ticket_path}",
+            ) != event.get("protected_ticket_blob")
+            or command(
+                "git", "-C", str(product), "rev-parse", f"{protected}:{ticket_path}",
+            ) != event.get("protected_ticket_blob")
+            or current_done != observed_done
+            or hashlib.sha256(
+                reducer.canonical(observed_done).encode()
+            ).hexdigest() != event.get("done_sha256")
+            or terminal.get("ticket") != ticket
+            or terminal.get("basis") != event.get("terminal_basis")
+        ):
+            raise EnvironmentError(
+                f"{ticket}: successor terminal reconciliation changed"
+            )
+
+
+def conservative_success_evidence(
+    passport: Any, product: Path, ticket: str,
+    charge: dict[str, Any], completed: dict[str, Any],
+) -> bool:
+    """Recheck the retained run proof compressed into a conservative passport."""
+    matches = []
+    runs = passport.safe_directory(product.resolve(strict=True) / "factory/runs")
+    for path in runs.glob("*.meta"):
+        raw = passport.read_regular(path)
+        if hashlib.sha256(raw).hexdigest() != charge["manifest_sha256"]:
+            continue
+        fields = passport.manifest_fields(path)
+        output = path.with_suffix(".out")
+        if (
+            fields.get("ticket") == ticket
+            and fields.get("accounting_state") == "abandoned_conservative"
+            and fields.get("cost_basis") == "conservative_reservation"
+            and fields.get("effective_cost") == fields.get("reserved_usd")
+            and fields.get("phase") == "completed"
+            and fields.get("task_submitted") == "1"
+            and fields.get("exit_status") == "0"
+            and fields.get("role_exit") == "ok"
+            and fields.get("run_id") == charge["run_id"]
+            and fields.get("contract_version") == charge["contract_version"]
+            and fields.get("kit_sha") == charge["factory_sha"]
+            and fields.get("role_head_before") == charge["head_before"]
+            and fields.get("role") == charge["role"]
+            and fields.get("transition_receipt_sha256")
+            == charge["transition_receipt_sha256"]
+            and passport.micro_usd(fields) == charge["charge_micro_usd"]
+            and fields.get("output_sha256") == completed["output_sha256"]
+            and passport.role_output_digest(output) == completed["output_sha256"]
+        ):
+            matches.append(path)
+    return len(matches) == 1
+
+
+def completed_charge_matches(
+    passport: Any, product: Path, ticket: str,
+    charge: dict[str, Any], completed: dict[str, Any],
+) -> bool:
+    return (
+        charge.get("run_id") == completed["run_id"]
+        and charge.get("factory_sha") == completed["factory_sha"]
+        and charge.get("head_before") == completed["head_before"]
+        and charge.get("manifest_sha256") == completed["manifest_sha256"]
+        and charge.get("role") == completed["role"]
+        and charge.get("transition_receipt_sha256")
+        == completed["transition_receipt_sha256"]
+        and (
+            charge.get("accounting_state") == "completed"
+            or charge.get("accounting_state") == "abandoned_conservative"
+            and conservative_success_evidence(
+                passport, product, ticket, charge, completed,
+            )
+        )
+    )
+
+
+def completed_role_gap(
+    factory: Path, product: Path, passport: Any, ticket: str,
+    charges: list[dict[str, Any]], completed: list[dict[str, Any]],
+    start: str, end: str, source: str,
+) -> bool:
+    """Bind a migration head gap to exact successful role-owned commits."""
+    if not SHA.fullmatch(start) or not SHA.fullmatch(end) or start == end:
+        return False
+    ancestry = command(
+        "git", "-C", str(product), "rev-list", "--reverse", "--ancestry-path",
+        f"{start}..{end}",
+    ).splitlines()
+    if not ancestry or ancestry[-1] != end or len(ancestry) > 64:
+        return False
+    positions = {head: index for index, head in enumerate([start, *ancestry])}
+    chain = [
+        item for item in completed
+        if isinstance(item, dict)
+        and item.get("factory_sha") == source
+        and item.get("head_before") in positions
+        and item.get("head_before") != end
+    ]
+    chain.sort(key=lambda item: positions[item["head_before"]])
+    if (
+        not chain
+        or chain[0].get("head_before") != start
+        or len({item.get("head_before") for item in chain}) != len(chain)
+    ):
+        return False
+    policy_raw = json.loads(passport.read_regular(
+        factory / "scripts/model-routing/handoff-boundaries-v1.json"
+    ))
+    policy = passport.RoleBoundaryPolicy.from_dict(json.loads(
+        json.dumps(policy_raw, sort_keys=True).replace("TICKET", ticket)
+    ))
+    for index, item in enumerate(chain):
+        following = (
+            chain[index + 1]["head_before"] if index + 1 < len(chain) else end
+        )
+        if (
+            positions[following] <= positions[item["head_before"]]
+            or sum(
+                completed_charge_matches(
+                    passport, product, ticket, charge, item,
+                )
+                for charge in charges
+            ) != 1
+        ):
+            return False
+        parent = item["head_before"]
+        for commit in ancestry[
+            positions[parent]:positions[following]
+        ]:
+            if command(
+                "git", "-C", str(product), "show", "-s", "--format=%P", commit,
+            ).split() != [parent]:
+                return False
+            parent = commit
+        passport._validate_committed_changes(
+            product, item["head_before"], following, item["role"], policy,
+            allow_spec_lint_append=True,
+        )
+        sentinel = subprocess.run(
+            [
+                sys.executable,
+                str(factory / "scripts/lib/lane-path-sentinel.py"),
+                str(product), item["head_before"], following,
+            ],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            check=False, timeout=120,
+        )
+        if sentinel.returncode:
+            return False
+    return True
+
+
 def validate_successor_upgrade_cohort(
-    factory: Path, controller: Path, project: str, active_factory_sha: str,
+    factory: Path, product: Path, controller: Path, project: str,
+    active_factory_sha: str, active_product_sha: str,
     manifest: dict[str, Any],
 ) -> None:
     """Require every in-place successor target to descend from its source."""
@@ -1850,7 +2083,19 @@ def validate_successor_upgrade_cohort(
         if len(secret) != 32:
             raise EnvironmentError("successor passport key is invalid")
         source = manifest["source_factory_sha"]
+        absent = {
+            ticket for ticket in manifest["tickets"]
+            if not (passports / f"{ticket}.json").exists()
+            and not (passports / f"{ticket}.json").is_symlink()
+        }
+        if absent:
+            successor_terminal_reconciliations(
+                factory, product, controller, active_product_sha,
+                manifest, absent,
+            )
         for ticket in manifest["tickets"]:
+            if ticket in absent:
+                continue
             value, _ = passport.load_passport(passports / f"{ticket}.json", secret)
             valid_sha = lambda item: (  # noqa: E731
                 isinstance(item, str) and SHA.fullmatch(item) is not None
@@ -1950,11 +2195,21 @@ def validate_successor_upgrade_cohort(
                     and migrations[-1]["to_factory_sha"] == releases[-1]
                     and all(
                         prior["to_factory_sha"] == following["from_factory_sha"]
-                        and prior["to_head_sha"] == following["from_head_sha"]
                         and prior["to_protected_base_sha"]
                         == following["from_protected_base_sha"]
                         and prior["to_route_plan_sha256"]
                         == following["from_route_plan_sha256"]
+                        and (
+                            prior["to_head_sha"] == following["from_head_sha"]
+                            or prior["to_factory_sha"] == source
+                            and isinstance(charges, list)
+                            and isinstance(completed, list)
+                            and completed_role_gap(
+                                factory, product, passport, ticket,
+                                charges, completed, prior["to_head_sha"],
+                                following["from_head_sha"], source,
+                            )
+                        )
                         for prior, following in zip(migrations, migrations[1:])
                     )
                     and [
@@ -2020,15 +2275,9 @@ def validate_successor_upgrade_cohort(
                     and passport.RUN_ID.fullmatch(item["run_id"])
                     and valid_digest(item.get("transition_receipt_sha256"))
                     and sum(
-                        charge.get("run_id") == item["run_id"]
-                        and charge.get("accounting_state") == "completed"
-                        and charge.get("factory_sha") == item["factory_sha"]
-                        and charge.get("head_before") == item["head_before"]
-                        and charge.get("manifest_sha256")
-                        == item["manifest_sha256"]
-                        and charge.get("role") == item["role"]
-                        and charge.get("transition_receipt_sha256")
-                        == item["transition_receipt_sha256"]
+                        completed_charge_matches(
+                            passport, product, ticket, charge, item,
+                        )
                         for charge in charges
                     ) == 1
                     for item in completed
@@ -3238,7 +3487,8 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
     ):
         raise EnvironmentError("durable qualification authority path changed")
     validate_successor_upgrade_cohort(
-        factory, controller, args.project, active["kit_sha"], manifest,
+        factory, product, controller, args.project, active["kit_sha"],
+        active.get("product_sha", ""), manifest,
     )
     validate_operator_map(read(operator_map_path))
     identity = authority_identity(

@@ -66,10 +66,14 @@ everything the Factory actually enforces lives here.
   Qualification-only metadata can therefore never validate one contract and
   dispatch another.
 - An in-place successor upgrade requires every selected authenticated passport
-  to descend from the manifest's source Factory before operator-state resume,
-  Linear initialization, sealing, or activation. Candidate-native, missing,
-  mixed, malformed, or foreign passports require a fresh ordinary lane; later
-  execution never synthesizes source history.
+  to descend from the manifest's source Factory, except an absent terminal
+  passport proved by the identical source cohort's exact protected-terminal
+  reconciliation. Conservative successful charges are rechecked against their
+  retained full-reservation run/output evidence, and a migration head gap must
+  be a linear sealed-role-owned chain of those exact successful records. Every
+  check precedes operator-state resume, Linear initialization, sealing, or
+  activation; candidate-native, unexplained missing, cancelled, failed, mixed,
+  malformed, foreign, merged, or bare evidence requires a fresh ordinary lane.
 - Fresh isolated qualification requires one explicit safe canonical Linear map
   seed, copies it into owner-only lane authority, and binds the mutable map and
   runtime ledger in its receipt and activation. Selected-only initialization,
@@ -5194,3 +5198,28 @@ timestamp for current freshness. The controller retains no Linear API or
 timestamp-writing authority, and restore still revalidates the durable lane,
 pause, product cleanliness, provider state, and sealed identity before
 publication.
+
+## 2026-08-09 — Decision 368: Successor admission consumes terminal truth, not passports alone
+
+Category: Reliability
+
+An in-place successor may admit a selected ticket without a passport only when
+the owner-only source controller contains exactly one digest-valid
+`protected_terminal_reconciled` event for every absent passport. The event must
+bind the authenticated active product commit, the identical source manifest
+cohort, zero qualification charge, and unchanged protected ticket and Done
+evidence that still validates as terminal at current protected main. A generic
+terminal lookup, partial event set, passport conflict, or later blob change
+does not qualify.
+
+Completed passport evidence paired to `abandoned_conservative` accounting is
+successful only while its retained run manifest and output reprove the existing
+ticket-passport condition: completed and submitted execution, exit zero, role
+success, `conservative_reservation`, and effective cost exactly equal to the
+reservation. Adjacent same-source migrations need not repeat the same head
+when the entire gap is instead one linear chain of exact authenticated
+successful role inputs and every segment satisfies the sealed role path policy.
+Missing, foreign, failed, cancelled, merged, policy-violating, or bare Git
+edges refuse before operator resume, Linear access, release sealing, provider
+publication, or activation. The validator writes no recovery state and never
+synthesizes a passport.
