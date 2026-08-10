@@ -406,6 +406,8 @@ class Controller:
         self.product = args.product_root.resolve(strict=True)
         self.release_path = args.release_path.resolve(strict=True)
         self.state = safe_directory(args.state_dir)
+        worktree_root = getattr(args, "worktree_root", None)
+        self.worktree_root = Path(worktree_root) if worktree_root else None
         self.claims = self.state / "claims"
         safe_directory(self.claims, create=True)
         self.logs = self.state / "logs"
@@ -2176,8 +2178,8 @@ class Controller:
         }
         return hashlib.sha256(canonical(value).encode()).hexdigest()
 
-    def worktrees_by_branch(self) -> dict[str, list[str]]:
-        records: dict[str, list[str]] = {}
+    def worktree_records(self) -> list[dict[str, str]]:
+        records: list[dict[str, str]] = []
         current: dict[str, str] = {}
         output = subprocess.run(
             ["git", "-C", str(self.product), "worktree", "list", "--porcelain"],
@@ -2188,11 +2190,202 @@ class Controller:
                 name, _, item = line.partition(" ")
                 current[name] = item
                 continue
-            branch = current.get("branch", "")
-            if branch and current.get("worktree"):
-                records.setdefault(branch, []).append(current["worktree"])
+            if current:
+                records.append(current)
             current = {}
         return records
+
+    def worktrees_by_branch(self) -> dict[str, list[str]]:
+        result: dict[str, list[str]] = {}
+        for record in self.worktree_records():
+            branch = record.get("branch", "")
+            worktree = record.get("worktree", "")
+            if branch and worktree:
+                result.setdefault(branch, []).append(worktree)
+        return result
+
+    def dispatcher_lease_records(self) -> dict[str, dict[str, Any]]:
+        directory = self.product / "factory/.dispatch-leases"
+        try:
+            info = directory.lstat()
+        except FileNotFoundError:
+            return {}
+        if (
+            directory.is_symlink()
+            or not stat.S_ISDIR(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or info.st_mode & 0o022
+        ):
+            raise ControllerError("dispatcher lease state is unsafe")
+        records: dict[str, dict[str, Any]] = {}
+        lease_ids: set[str] = set()
+        for path in sorted(directory.iterdir()):
+            if not re.fullmatch(r"T-[0-9]+[.]json", path.name):
+                raise ControllerError("dispatcher lease state is unsafe")
+            value = read(path)
+            ticket = value.get("ticket", "")
+            lease_id = value.get("lease_id", "")
+            claimed = value.get("claimed_epoch")
+            expires = value.get("expires_epoch")
+            if (
+                set(value) != {
+                    "schema_version", "ticket", "lease_id",
+                    "claimed_epoch", "expires_epoch",
+                }
+                or value.get("schema_version") != 1
+                or ticket != path.stem
+                or not TICKET.fullmatch(ticket)
+                or not DIGEST.fullmatch(lease_id)
+                or ticket in records
+                or lease_id in lease_ids
+                or isinstance(claimed, bool)
+                or not isinstance(claimed, int)
+                or isinstance(expires, bool)
+                or not isinstance(expires, int)
+                or expires <= claimed
+            ):
+                raise ControllerError("dispatcher lease state is unsafe")
+            records[ticket] = value
+            lease_ids.add(lease_id)
+        return records
+
+    def active_run_tickets(self) -> set[str]:
+        directory = self.product / "factory/.active-runs"
+        try:
+            info = directory.lstat()
+        except FileNotFoundError:
+            return set()
+        if (
+            directory.is_symlink()
+            or not stat.S_ISDIR(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or info.st_mode & 0o022
+        ):
+            raise ControllerError("active-run state is unsafe")
+        tickets = set()
+        for path in sorted(directory.iterdir()):
+            match = re.fullmatch(
+                r"(T-[0-9]+)[.][A-Za-z0-9_-]+[.](lock|pid)", path.name,
+            )
+            if match is None:
+                raise ControllerError("active-run state is unsafe")
+            item = path.lstat()
+            if (
+                path.is_symlink()
+                or item.st_uid != os.geteuid()
+                or item.st_mode & 0o022
+                or (
+                    match.group(2) == "lock"
+                    and not stat.S_ISDIR(item.st_mode)
+                )
+                or (
+                    match.group(2) == "pid"
+                    and (
+                        not stat.S_ISREG(item.st_mode)
+                        or item.st_nlink != 1
+                        or item.st_size > 10_000
+                    )
+                )
+            ):
+                raise ControllerError("active-run state is unsafe")
+            tickets.add(match.group(1))
+        return tickets
+
+    def reclaim_orphaned_execution_cells(
+        self, claims: list[dict[str, Any]],
+    ) -> None:
+        """Reclaim clean bounded cells after their durable claim is gone."""
+        roots = []
+        if self.worktree_root is not None:
+            roots.append(self.worktree_root)
+        if self.qualification:
+            roots.append(self.state / "cells")
+        claimed = {
+            Path(claim["worktree"]).resolve()
+            for claim in claims
+        }
+        for candidate in dict.fromkeys(roots):
+            if not candidate.exists() and not candidate.is_symlink():
+                continue
+            root = safe_directory(candidate)
+            descriptor = os.open(
+                root / ".dispatch-admission.lock",
+                os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+            )
+            try:
+                info = os.fstat(descriptor)
+                if (
+                    not stat.S_ISREG(info.st_mode)
+                    or info.st_uid != os.geteuid()
+                    or info.st_nlink != 1
+                    or stat.S_IMODE(info.st_mode) != 0o600
+                ):
+                    raise ControllerError("admission lock is unsafe")
+                try:
+                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    continue
+                with self.git_lock:
+                    leased = set(self.dispatcher_lease_records())
+                    active = self.active_run_tickets()
+                    for record in self.worktree_records():
+                        value = record.get("worktree", "")
+                        if not value:
+                            continue
+                        worktree = Path(value)
+                        if (
+                            not worktree.is_absolute()
+                            or worktree.parent != root
+                            or not re.fullmatch(r"cell-[1-6]", worktree.name)
+                            or "locked" in record
+                            or "prunable" in record
+                        ):
+                            continue
+                        branch = record.get("branch", "")
+                        match = re.fullmatch(
+                            r"refs/heads/ticket/(T-[0-9]+)", branch,
+                        )
+                        ticket = match.group(1) if match else ""
+                        if not ticket and "detached" not in record:
+                            continue
+                        cell = worktree.resolve(strict=True)
+                        cell_info = cell.lstat()
+                        if (
+                            worktree != cell
+                            or not stat.S_ISDIR(cell_info.st_mode)
+                            or cell_info.st_uid != os.geteuid()
+                            or cell_info.st_mode & 0o022
+                            or cell in claimed
+                            or (
+                                ticket
+                                and (ticket in leased or ticket in active)
+                            )
+                            or (not ticket and (leased or active))
+                        ):
+                            continue
+                        clean = subprocess.run(
+                            [
+                                "git", "-C", str(cell), "status",
+                                "--porcelain=v1", "-z",
+                            ],
+                            text=True, capture_output=True, check=True, timeout=120,
+                        ).stdout == ""
+                        if not clean:
+                            continue
+                        subprocess.run(
+                            [
+                                "git", "-C", str(self.product), "worktree",
+                                "remove", str(cell),
+                            ],
+                            check=True, timeout=120,
+                        )
+                        self.event(
+                            "execution_cell_reclaimed", ticket,
+                            worktree=str(cell),
+                        )
+            finally:
+                os.close(descriptor)
 
     def load_claims(self) -> list[dict[str, Any]]:
         result = []
@@ -3230,47 +3423,7 @@ class Controller:
             or passport.get("factory_sha") != self.release_path.name
         ):
             raise ControllerError("expired lease recovery passport is not exact")
-        directory = self.product / "factory" / ".dispatch-leases"
-        try:
-            info = directory.lstat()
-        except FileNotFoundError:
-            return False
-        if (
-            directory.is_symlink()
-            or not stat.S_ISDIR(info.st_mode)
-            or info.st_uid != os.geteuid()
-        ):
-            raise ControllerError("dispatcher lease state is unsafe")
-        records: dict[str, dict[str, Any]] = {}
-        lease_ids: set[str] = set()
-        for path in sorted(directory.iterdir()):
-            if not re.fullmatch(r"T-[0-9]+[.]json", path.name):
-                raise ControllerError("dispatcher lease state is unsafe")
-            value = read(path)
-            ticket = value.get("ticket", "")
-            lease_id = value.get("lease_id", "")
-            claimed = value.get("claimed_epoch")
-            expires = value.get("expires_epoch")
-            if (
-                set(value) != {
-                    "schema_version", "ticket", "lease_id",
-                    "claimed_epoch", "expires_epoch",
-                }
-                or value.get("schema_version") != 1
-                or ticket != path.stem
-                or not TICKET.fullmatch(ticket)
-                or not DIGEST.fullmatch(lease_id)
-                or ticket in records
-                or lease_id in lease_ids
-                or isinstance(claimed, bool)
-                or not isinstance(claimed, int)
-                or isinstance(expires, bool)
-                or not isinstance(expires, int)
-                or expires <= claimed
-            ):
-                raise ControllerError("dispatcher lease state is unsafe")
-            records[ticket] = value
-            lease_ids.add(lease_id)
+        records = self.dispatcher_lease_records()
         record = records.get(claim["ticket"])
         if record is None or record["expires_epoch"] > int(time.time()):
             return False
@@ -8962,6 +9115,7 @@ class Controller:
             self.ensure_lease(claim, "terminal-cleanup")
             self.release(claim)
         existing = [claim for claim in existing if claim not in completed]
+        self.reclaim_orphaned_execution_cells(existing)
         for claim in existing:
             if claim["ticket"] not in self.invalid_transition_tickets:
                 self.operator_transition(claim)
@@ -9319,6 +9473,7 @@ def main() -> None:
     parser.add_argument("--product-root", required=True, type=Path)
     parser.add_argument("--release-path", required=True, type=Path)
     parser.add_argument("--state-dir", required=True, type=Path)
+    parser.add_argument("--worktree-root", type=Path)
     parser.add_argument(
         "--action", choices=("reconcile", "pause", "resume"),
         default="reconcile",

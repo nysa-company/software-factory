@@ -8241,7 +8241,7 @@ class FactoryControllerTest(unittest.TestCase):
             },
         )
         leases = self.product / "factory/.dispatch-leases"
-        leases.mkdir()
+        leases.mkdir(mode=0o700)
         now = int(time.time())
         stale = {
             "claimed_epoch": now - 901,
@@ -8319,7 +8319,7 @@ class FactoryControllerTest(unittest.TestCase):
             "ticket": claim["ticket"],
         })
         leases = self.product / "factory/.dispatch-leases"
-        leases.mkdir()
+        leases.mkdir(mode=0o700)
         now = int(time.time())
         live = {
             "claimed_epoch": now, "expires_epoch": now + 900,
@@ -12385,6 +12385,99 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(claim["lease"], "b" * 64)
         self.assertEqual(claim["worktree"], str(cell))
         self.assertTrue(cell.is_dir())
+
+    def test_reclaims_only_clean_claimless_inactive_execution_cells(self) -> None:
+        run = lambda *command, cwd=None: subprocess.run(
+            command, cwd=cwd, text=True, capture_output=True, check=True
+        )
+        run("git", "init", "-q", "-b", "main", cwd=self.product)
+        run("git", "config", "user.name", "Test", cwd=self.product)
+        run("git", "config", "user.email", "test@example.invalid", cwd=self.product)
+        run("git", "add", ".", cwd=self.product)
+        run("git", "commit", "-qm", "seed", cwd=self.product)
+        cells = self.root / "cells"
+        cells.mkdir(mode=0o700)
+        for number, ticket in enumerate(("T-110", "T-111", "T-112", "T-113"), 1):
+            run("git", "branch", f"ticket/{ticket}", cwd=self.product)
+            run(
+                "git", "worktree", "add", "-q", str(cells / f"cell-{number}"),
+                f"ticket/{ticket}", cwd=self.product,
+            )
+        run(
+            "git", "worktree", "add", "-q", "--detach", str(cells / "cell-5"),
+            "HEAD", cwd=self.product,
+        )
+        portable = self.root / "missing-portable-worktree"
+        run(
+            "git", "worktree", "add", "-q", "--detach", str(portable),
+            "HEAD", cwd=self.product,
+        )
+        run(
+            "git", "worktree", "lock", "--reason", "portable",
+            str(portable), cwd=self.product,
+        )
+        shutil.rmtree(portable)
+        (cells / "cell-2/dirty").write_text("preserve\n", encoding="utf-8")
+        active = self.product / "factory/.active-runs/T-113.builder.lock"
+        active.parent.mkdir(mode=0o700)
+        active.mkdir(mode=0o700)
+        (active / "owner").write_text(
+            "pid=1\nprocess_start=test\ntoken=" + "a" * 32 + "\n",
+            encoding="utf-8",
+        )
+        claim = {
+            "branch": "ticket/T-112", "ticket": "T-112",
+            "worktree": str(cells / "cell-3"),
+        }
+        self.args.worktree_root = cells
+        controller = CONTROL.Controller(self.args)
+        events = []
+        controller.event = lambda *args, **kwargs: events.append((args, kwargs))
+
+        unsafe = active.parent / "unexpected"
+        unsafe.symlink_to(active)
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "active-run state is unsafe",
+        ):
+            controller.reclaim_orphaned_execution_cells([claim])
+        self.assertTrue(all((cells / f"cell-{number}").exists() for number in range(1, 6)))
+        unsafe.unlink()
+
+        lock_path = cells / ".dispatch-admission.lock"
+        descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        CONTROL.fcntl.flock(descriptor, CONTROL.fcntl.LOCK_EX)
+        try:
+            controller.reclaim_orphaned_execution_cells([claim])
+            self.assertTrue(all((cells / f"cell-{number}").exists() for number in range(1, 6)))
+        finally:
+            CONTROL.fcntl.flock(descriptor, CONTROL.fcntl.LOCK_UN)
+            os.close(descriptor)
+
+        controller.reclaim_orphaned_execution_cells([claim])
+        self.assertFalse((cells / "cell-1").exists())
+        self.assertTrue((cells / "cell-2").exists())
+        self.assertTrue((cells / "cell-3").exists())
+        self.assertTrue((cells / "cell-4").exists())
+        self.assertTrue((cells / "cell-5").exists())
+        (active / "owner").unlink()
+        active.rmdir()
+        controller.reclaim_orphaned_execution_cells([claim])
+        controller.reclaim_orphaned_execution_cells([claim])
+        self.assertFalse((cells / "cell-4").exists())
+        self.assertFalse((cells / "cell-5").exists())
+        self.assertTrue(run(
+            "git", "show-ref", "--verify", "refs/heads/ticket/T-110",
+            cwd=self.product,
+        ).stdout)
+        reclaimed = [item for item in events if item[0][0] == "execution_cell_reclaimed"]
+        self.assertEqual(
+            [(item[0][1], item[1]["worktree"]) for item in reclaimed],
+            [
+                ("T-110", str(cells / "cell-1")),
+                ("T-113", str(cells / "cell-4")),
+                ("", str(cells / "cell-5")),
+            ],
+        )
 
     def test_qualification_parks_checkpoint_under_durable_controller_state(self) -> None:
         run = lambda *command, cwd=None: subprocess.run(

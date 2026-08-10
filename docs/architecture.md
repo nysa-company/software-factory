@@ -652,6 +652,13 @@ of copying it.
 
 After a successful Reviewer publication commit, passport migration precedes
 cell parking so the expected validating-head change remains a waiting boundary.
+After terminal or protected-cancellation retirement removes a durable claim,
+the next reconciliation holds the dispatch admission lock and removes only a
+clean exact `cell-1..cell-6` worktree with no remaining claim, dispatch lease,
+or active run. Dirty, claimed, leased, active, foreign-branch, and ambiguous
+cells remain untouched; Git branches and remote refs are never deleted. The
+sealed launcher supplies the exact product or qualification worktree root, so
+reclamation cannot search or mutate unrelated worktrees.
 Contract 1.8 certification requires exactly one `PREVIEW_PROVIDER`. A `none`
 provider also requires a strict nonempty `NONVISUAL_PATHS` policy, and every
 selected ticket must declare exact Builder-owned files wholly inside it before

@@ -5243,3 +5243,14 @@ plan, route pin, or state transition, and an ordinary later scan admits it once
 its protected metadata satisfies the unchanged readiness contract. Planner
 preflight retains the same defense-in-depth readiness check, and protected-main
 cancellation retirement remains unchanged.
+
+## 2026-08-09 — Decision 370: Retired claims release bounded execution cells
+
+Category: Reliability
+
+The deterministic controller reclaims exact `cell-1..cell-6` worktrees after
+their durable claim is retired. Reclamation uses the same admission lock as
+dispatch and only removes a clean cell with no claim, dispatch lease, or active
+run. Dirty, claimed, leased, active, foreign-branch, and ambiguous cells remain
+untouched; local branches and remote refs are preserved. The sealed launcher
+binds the exact worktree root, and restart simply repeats the idempotent scan.
