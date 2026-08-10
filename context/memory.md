@@ -5347,3 +5347,19 @@ qualification worktree root from the existing authenticated release path,
 while older sealed controllers ignore the capability. Launcher
 replacement therefore cannot strand a product whose certified active release
 predates bounded cell reclamation.
+
+## 2026-08-10 — Decision 378: Reconciliation markers follow exact passport successors
+
+Category: Reliability
+
+An interrupted pre-provider worker may durably refresh the ticket branch and
+passport before its reconciliation marker is consumed. Restart advances that
+marker only across the passport's exact latest authenticated same-release v2
+edge when the old head and passport digest match, the parent file/digest and
+current head/base/route match, the run snapshot is unchanged, the cell is clean,
+and the current remote passport validates. Any gap, release change, role/run
+change, dirty cell, invalid passport, or remote divergence still refuses.
+The durable authorization event precedes the atomic marker advance, making
+either crash edge replayable without a journal. Refusal is ticket-local: the
+controller persists the block before best-effort resource cleanup and continues
+to schedule healthy siblings even when that cleanup is temporarily unavailable.

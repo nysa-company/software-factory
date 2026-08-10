@@ -5102,10 +5102,68 @@ class Controller:
             "ticket": claim["ticket"],
         }
         path = self.reconciliation_marker(claim["ticket"])
-        if path.exists() and read(path) != value:
-            raise ControllerError("ticket reconciliation boundary conflicts")
-        if not path.exists():
+        if path.exists():
+            marker = read(path)
+            if marker != value:
+                if not self.reconciliation_boundary_successor(
+                    claim, marker, value, passport,
+                ):
+                    raise ControllerError("ticket reconciliation boundary conflicts")
+                self.event_once(
+                    "reconciliation_boundary_refresh_authorized",
+                    claim["ticket"],
+                    from_head_sha=marker["head_sha"],
+                    from_passport_sha256=marker["passport_sha256"],
+                    head_sha=value["head_sha"],
+                    passport_sha256=value["passport_sha256"],
+                )
+                write(path, value)
+        else:
             write(path, value)
+
+    def reconciliation_boundary_successor(
+        self, claim: dict[str, Any], marker: dict[str, Any],
+        current: dict[str, Any], passport: dict[str, Any],
+    ) -> bool:
+        migrations = passport.get("migration_history")
+        edge = migrations[-1] if isinstance(migrations, list) and migrations else {}
+        if (
+            set(marker) != {
+                "branch", "factory_sha", "head_sha", "passport_sha256",
+                "run_snapshot_sha256", "schema", "ticket",
+            }
+            or marker.get("schema")
+            != "nysa.software-factory.reconciliation-boundary/v1"
+            or marker.get("ticket") != claim["ticket"]
+            or marker.get("branch") != claim["branch"]
+            or marker.get("factory_sha") != self.release_path.name
+            or current.get("run_snapshot_sha256")
+            != marker.get("run_snapshot_sha256")
+            or not valid_v2_migration(edge)
+            or edge.get("from_factory_sha") != marker.get("factory_sha")
+            or edge.get("to_factory_sha") != self.release_path.name
+            or edge.get("from_head_sha") != marker.get("head_sha")
+            or edge.get("from_passport_sha256")
+            != marker.get("passport_sha256")
+            or edge.get("to_head_sha") != passport.get("head_sha")
+            or edge.get("to_protected_base_sha")
+            != passport.get("protected_base_sha")
+            or edge.get("to_route_plan_sha256")
+            != passport.get("route_plan_sha256")
+            or passport.get("parent_digest") != marker.get("passport_sha256")
+            or passport.get("parent_file_sha256")
+            != edge.get("from_passport_file_sha256")
+        ):
+            return False
+        status = subprocess.run(
+            ["git", "-C", claim["worktree"], "status", "--porcelain=v1", "-z"],
+            text=True, capture_output=True, check=False, timeout=120,
+        )
+        return (
+            status.returncode == 0
+            and not status.stdout
+            and self.remote_passport_valid(claim)
+        )
 
     def recover_interrupted_claims(self, claims: list[dict[str, Any]]) -> None:
         for claim in claims:
@@ -9987,11 +10045,60 @@ class Controller:
                     continue
                 if available <= 0:
                     break
-                if not self.consumes_capacity(claim):
+                needs_capacity = not self.consumes_capacity(claim)
+                if needs_capacity:
                     if capacity_slots <= 0:
                         continue
+                try:
+                    self.mark_reconciling(claim)
+                except (
+                    ControllerError,
+                    json.JSONDecodeError,
+                    OSError,
+                    subprocess.SubprocessError,
+                    UnicodeError,
+                ) as error:
+                    claim["status"] = "blocked"
+                    claim["blocked_reason"] = "reconciliation-boundary"
+                    self.save_claim(claim)
+                    cleanup_errors = []
+                    for name, cleanup in (
+                        ("publication", lambda: self.withdraw_publication(claim)),
+                        ("lease", lambda: self.release_ticket_lease(claim)),
+                    ):
+                        try:
+                            cleanup()
+                        except (
+                            ControllerError,
+                            json.JSONDecodeError,
+                            OSError,
+                            subprocess.SubprocessError,
+                            UnicodeError,
+                        ):
+                            cleanup_errors.append(name)
+                    try:
+                        self.event_once(
+                            "ticket_reconciliation_blocked", claim["ticket"],
+                            cleanup_deferred=cleanup_errors,
+                            error=safe_error(error),
+                        )
+                    except (
+                        ControllerError,
+                        json.JSONDecodeError,
+                        OSError,
+                        subprocess.SubprocessError,
+                        UnicodeError,
+                    ):
+                        pass
+                    results[claim["ticket"]] = {
+                        "error": safe_error(error),
+                        "status": "blocked",
+                        "ticket": claim["ticket"],
+                    }
+                    settled.add(claim["ticket"])
+                    continue
+                if needs_capacity:
                     capacity_slots -= 1
-                self.mark_reconciling(claim)
                 future = executor.submit(
                     self.reconcile_ticket_until_wait, claim
                 )
