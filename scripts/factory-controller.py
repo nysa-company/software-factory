@@ -5193,6 +5193,265 @@ class Controller:
             and self.remote_passport_valid(claim)
         )
 
+    def prior_maintenance_receipt_successor(
+        self, claim: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Admit one exact in-flight prior-release maintenance refusal."""
+        if (
+            (self.product / "factory/MAINTENANCE").exists()
+            or claim.get("status") != "claimed"
+            or claim.get("parked") is not True
+            or claim.get("role")
+            or claim.get("receipt")
+            or claim.get("publication_lease")
+            or claim.get("lease_released") is True
+            or DIGEST.fullmatch(claim.get("lease", "")) is None
+            or self.role_active(claim)
+        ):
+            return None
+        complete_path = self.state / (
+            f"passport-route-migration-complete-{claim['ticket']}-"
+            f"{self.release_path.name}.json"
+        )
+        boundary_path = self.reconciliation_marker(claim["ticket"])
+        try:
+            receipt = self.transition_receipt(
+                claim, allow_prior=True, record=False,
+            )
+            passport = self.authenticated_operator_passport(claim["ticket"])
+            complete = read(complete_path)
+            boundary = read(boundary_path)
+            old_tree = subprocess.run(
+                [
+                    "git", "-C", claim["worktree"], "rev-parse",
+                    f"{receipt.get('head_sha', '')}^{{tree}}",
+                ],
+                text=True, capture_output=True, check=True, timeout=120,
+            ).stdout.strip()
+            old_ticket = subprocess.run(
+                [
+                    "git", "-C", claim["worktree"], "rev-parse",
+                    f"{receipt.get('head_sha', '')}:factory/tickets/"
+                    f"{claim['ticket']}.md",
+                ],
+                text=True, capture_output=True, check=True, timeout=120,
+            ).stdout.strip()
+            old_route = subprocess.run(
+                [
+                    "git", "-C", claim["worktree"], "show",
+                    f"{receipt.get('head_sha', '')}:factory/route-plans/"
+                    f"{claim['ticket']}.json",
+                ],
+                capture_output=True, check=True, timeout=120,
+            ).stdout
+            clean = subprocess.run(
+                [
+                    "git", "-C", claim["worktree"], "status",
+                    "--porcelain=v1", "-z",
+                ],
+                text=True, capture_output=True, check=True, timeout=120,
+            ).stdout
+        except (
+            AttributeError, ControllerError, FileNotFoundError,
+            json.JSONDecodeError, OSError, subprocess.SubprocessError,
+            UnicodeError,
+        ):
+            return None
+        migrations = passport.get("migration_history") if passport else None
+        starts = [
+            index for index, edge in enumerate(migrations or [])
+            if valid_v2_migration(edge)
+            and edge["from_factory_sha"] == receipt.get("factory_sha")
+            and edge["from_head_sha"] == receipt.get("head_sha")
+            and edge["from_passport_file_sha256"]
+            == receipt.get("passport_sha256")
+            and edge["from_route_plan_sha256"]
+            == receipt.get("route_plan_sha256")
+        ] if isinstance(migrations, list) else []
+        suffix = migrations[starts[0]:] if len(starts) == 1 else []
+        final = suffix[-1] if suffix else {}
+        current = {
+            "branch": claim["branch"],
+            "factory_sha": self.release_path.name,
+            "head_sha": passport.get("head_sha") if passport else None,
+            "passport_sha256": (
+                passport.get("passport_sha256") if passport else None
+            ),
+            "run_snapshot_sha256": self.ticket_run_snapshot(claim["ticket"]),
+            "schema": "nysa.software-factory.reconciliation-boundary/v1",
+            "ticket": claim["ticket"],
+        }
+        if (
+            receipt is None
+            or passport is None
+            or receipt.get("factory_sha") == self.release_path.name
+            or receipt.get("stage")
+            != "REFUSE MAINTENANCE file present — factory control plane is paused"
+            or receipt.get("role") is not None
+            or receipt.get("loop") is not None
+            or receipt.get("consumed") is not False
+            or DIGEST.fullmatch(receipt.get("receipt_sha256", "")) is None
+            or DIGEST.fullmatch(receipt.get("passport_sha256", "")) is None
+            or old_tree != receipt.get("head_tree")
+            or old_ticket != receipt.get("ticket_blob")
+            or hashlib.sha256(old_route).hexdigest()
+            != receipt.get("route_plan_sha256")
+            or passport.get("ticket") != claim["ticket"]
+            or passport.get("branch") != claim["branch"]
+            or passport.get("factory_sha") != self.release_path.name
+            or passport.get("current_state") != "Review"
+            or passport.get("current_stage") != "RUN reviewer"
+            or passport.get("publication_state") != "validating"
+            or complete != {
+                "factory_sha": self.release_path.name,
+                "schema": EVENT_SCHEMA,
+                "ticket": claim["ticket"],
+            }
+            or not suffix
+            or not all(valid_v2_migration(edge) for edge in suffix)
+            or not all(
+                prior["to_factory_sha"] == following["from_factory_sha"]
+                and prior["to_head_sha"] == following["from_head_sha"]
+                and prior["to_protected_base_sha"]
+                == following["from_protected_base_sha"]
+                and prior["to_route_plan_sha256"]
+                == following["from_route_plan_sha256"]
+                for prior, following in zip(suffix, suffix[1:])
+            )
+            or not passport_head_lineage(
+                passport, receipt.get("head_sha", ""),
+            )
+            or not successor_release_lineage(
+                passport.get("factory_release_history"), migrations,
+                receipt.get("factory_sha", ""), self.release_path.name,
+                valid_v2_migration,
+            )
+            or final.get("to_factory_sha") != self.release_path.name
+            or final.get("to_head_sha") != passport.get("head_sha")
+            or final.get("to_protected_base_sha")
+            != passport.get("protected_base_sha")
+            or final.get("to_route_plan_sha256")
+            != passport.get("route_plan_sha256")
+            or final.get("from_passport_file_sha256")
+            != passport.get("parent_file_sha256")
+            or final.get("from_passport_sha256")
+            != passport.get("parent_digest")
+            or not self.ticket_release_current(claim)
+            or bool(clean)
+            or not self.remote_passport_valid(claim)
+            or (
+                boundary != current
+                and not self.reconciliation_boundary_successor(
+                    claim, boundary, current, passport,
+                )
+            )
+        ):
+            return None
+        return receipt
+
+    def recover_prior_maintenance_receipts(
+        self, claims: list[dict[str, Any]],
+    ) -> None:
+        for claim in claims:
+            if claim["ticket"] not in self.prior_transition_tickets:
+                continue
+            try:
+                receipt = self.prior_maintenance_receipt_successor(claim)
+            except (
+                ControllerError, json.JSONDecodeError, OSError,
+                subprocess.SubprocessError, UnicodeError,
+            ):
+                continue
+            if receipt is None:
+                continue
+            try:
+                self.ensure_lease(claim, "prior-maintenance-receipt")
+                receipt = self.prior_maintenance_receipt_successor(claim)
+                passport = self.authenticated_operator_passport(
+                    claim["ticket"]
+                )
+                passport_path = (
+                    self.state / "passports" / f"{claim['ticket']}.json"
+                )
+                if receipt is None or passport is None:
+                    continue
+                passport_file = hashlib.sha256(
+                    passport_path.read_bytes()
+                ).hexdigest()
+            except (
+                ControllerError, json.JSONDecodeError, OSError,
+                subprocess.SubprocessError, UnicodeError,
+            ):
+                continue
+            try:
+                self.event_once(
+                    "prior_maintenance_receipt_recovery_authorized",
+                    claim["ticket"],
+                    factory_sha=self.release_path.name,
+                    from_factory_sha=receipt["factory_sha"],
+                    head_sha=passport["head_sha"],
+                    lease_sha256=hashlib.sha256(
+                        claim["lease"].encode()
+                    ).hexdigest(),
+                    passport_file_sha256=passport_file,
+                    route_plan_sha256=passport["route_plan_sha256"],
+                    transition_receipt_sha256=receipt["receipt_sha256"],
+                )
+            except (
+                ControllerError, json.JSONDecodeError, OSError,
+                subprocess.SubprocessError, UnicodeError,
+            ):
+                continue
+            transition = None
+            try:
+                transition = self.json_call(
+                    "state-machine", "--ticket", claim["ticket"],
+                    "--lease", claim["lease"], "--workdir",
+                    claim["worktree"], "--json", timeout=None,
+                )
+            except (
+                ControllerError, json.JSONDecodeError, OSError,
+                subprocess.SubprocessError, UnicodeError,
+            ):
+                pass
+            current = self.transition_receipt(
+                claim, allow_prior=True, record=False,
+            )
+            stage = current.get("stage", "") if current else ""
+            if (
+                current is None
+                or current.get("factory_sha") != self.release_path.name
+                or current.get("parent_digest")
+                != receipt["receipt_sha256"]
+                or current.get("head_sha") != passport["head_sha"]
+                or current.get("route_plan_sha256")
+                != passport["route_plan_sha256"]
+                or current.get("passport_sha256") != passport_file
+                or current.get("lease_sha256")
+                != hashlib.sha256(claim["lease"].encode()).hexdigest()
+                or current.get("consumed") is not False
+                or stage not in {
+                    "RUN reviewer",
+                    "REFUSE MAINTENANCE file present — "
+                    "factory control plane is paused",
+                }
+                or current.get("role") != (
+                    "reviewer" if stage == "RUN reviewer" else None
+                )
+                or current.get("loop") is not None
+                or transition is not None
+                and (
+                    not valid_transition_evidence(
+                        transition, claim["ticket"]
+                    )
+                    or transition.get("receipt")
+                    != current.get("receipt_sha256")
+                    or transition.get("stage") != stage
+                )
+            ):
+                continue
+            self.prior_transition_tickets.discard(claim["ticket"])
+
     def recover_interrupted_claims(self, claims: list[dict[str, Any]]) -> None:
         for claim in claims:
             worker_error = claim.get("blocked_reason") == "worker-error"
@@ -9965,6 +10224,7 @@ class Controller:
             existing, self.recover_upgraded_claims, "release-upgrade",
             concurrent=True,
         )
+        self.recover_prior_maintenance_receipts(existing)
         self.recover_each(
             existing, self.recover_terminal_exports, "terminal-export",
         )
@@ -10198,6 +10458,7 @@ class Controller:
                     idle, self.recover_upgraded_claims, "release-upgrade",
                     concurrent=True,
                 )
+                self.recover_prior_maintenance_receipts(idle)
                 self.recover_each(
                     idle, self.recover_terminal_exports, "terminal-export",
                 )

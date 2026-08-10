@@ -5376,3 +5376,20 @@ release, head, protected base, and route; release history is exact; and the
 final edge and parent anchors bind the current passport. The existing unchanged
 run snapshot, clean cell, sealed passport, exact remote, durable authorization,
 and ticket-local refusal requirements remain mandatory.
+
+## 2026-08-10 — Decision 380: Migrated maintenance refusals use ordinary receipt succession
+
+Category: Reliability
+
+A roleless maintenance refusal retained from a prior Factory release remains
+inert by default. It may re-enter ordinary scheduling only after the protected
+in-flight release and route migration is complete and one unique authenticated
+passport suffix binds the receipt's release, head, passport-file, and route to
+the current Review passport. The current ticket lease and route, clean exact
+remote head, and current or authenticated unchanged-run reconciliation marker
+must also agree, with maintenance absent. The controller records that narrow
+admission, then requires the ordinary state machine to persist and return the
+current parent-linked receipt before removing the ticket-local prior-receipt
+exclusion. The recovery itself grants no role. A crash, lost response, restart,
+or maintenance race therefore remains replayable without provider or
+publication authority.

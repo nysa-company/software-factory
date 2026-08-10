@@ -431,7 +431,17 @@ and is excluded from ordinary recovery, admission, and scheduling for that
 sweep. An inactive invalid claim releases its lease without rewriting the
 receipt; a live role is untouched. Existing typed release-upgrade, terminal,
 and contract-blocker recovery may still use a digest-valid prior receipt under
-their stricter bindings. The one unmerged stale-bundle recovery may ask the
+their stricter bindings. One roleless prior-release maintenance refusal may
+also re-enter ordinary scheduling after its exact protected in-flight release
+and route migration is complete. Admission requires the authenticated current
+Review passport, one contiguous release/head/base/route suffix from the
+receipt-bound passport file, the current ticket lease and route, the exact
+clean remote head, and either the current reconciliation marker or its
+authenticated unchanged-run successor. The ordinary state machine then issues
+and persists the current receipt as a parent-linked child before the controller
+removes the prior-receipt exclusion; the recovery grants no direct role,
+provider, or publication authority. The one unmerged
+stale-bundle recovery may ask the
 state machine for a current receipt only after one unique contiguous suffix of
 authenticated release-changing migration edges binds the old receipt and
 passport-file digest to the current passport without changing head or route.
