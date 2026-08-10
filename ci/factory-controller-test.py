@@ -12372,6 +12372,343 @@ class FactoryControllerTest(unittest.TestCase):
                     claim, marker, advanced, candidate,
                 ))
 
+    def test_prior_maintenance_receipt_admits_only_exact_migrated_successor(
+        self,
+    ) -> None:
+        controller = CONTROL.Controller(self.args)
+        ticket = "T-110"
+        source_factory = "b" * 40
+        cell = self.root / f"parked/{ticket}"
+        remote = self.root / "prior-maintenance.git"
+        subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+        subprocess.run(
+            ["git", "init", "-q", "-b", f"ticket/{ticket}", str(cell)],
+            check=True,
+        )
+        route = cell / f"factory/route-plans/{ticket}.json"
+        ticket_path = cell / f"factory/tickets/{ticket}.md"
+        route.parent.mkdir(parents=True)
+        ticket_path.parent.mkdir(parents=True)
+        route.write_text(CONTROL.canonical({
+            "kit_sha": source_factory,
+            "schema": "ticket-model-route-plan/v1",
+            "ticket": ticket,
+        }) + "\n", encoding="utf-8")
+        ticket_path.write_text(
+            f"# {ticket}\n\nState: Review\nKit-SHA: {source_factory}\n",
+            encoding="utf-8",
+        )
+        subprocess.run(["git", "-C", str(cell), "add", "."], check=True)
+        subprocess.run([
+            "git", "-C", str(cell), "-c", "user.name=Factory",
+            "-c", "user.email=factory@example.invalid", "commit", "-qm", "old",
+        ], check=True)
+        subprocess.run(
+            ["git", "-C", str(cell), "remote", "add", "origin", str(remote)],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(cell), "push", "-q", "-u", "origin", "HEAD"],
+            check=True,
+        )
+        old_head = subprocess.run(
+            ["git", "-C", str(cell), "rev-parse", "HEAD"],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+        old_tree = subprocess.run(
+            ["git", "-C", str(cell), "rev-parse", "HEAD^{tree}"],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+        old_ticket = subprocess.run(
+            ["git", "-C", str(cell), "rev-parse", f"HEAD:{ticket_path.relative_to(cell)}"],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+        old_route = hashlib.sha256(route.read_bytes()).hexdigest()
+        source_file = "c" * 64
+        source_digest = "d" * 64
+        receipt = {
+            "branch": f"ticket/{ticket}",
+            "consumed": False,
+            "contract_version": "1.8.0",
+            "factory_sha": source_factory,
+            "head_sha": old_head,
+            "head_tree": old_tree,
+            "lease_sha256": "e" * 64,
+            "loop": None,
+            "nonce": "f" * 32,
+            "parent_digest": "0" * 64,
+            "passport_sha256": source_file,
+            "product_origin_sha256": "1" * 64,
+            "project": "relay",
+            "role": None,
+            "route_plan_sha256": old_route,
+            "schema": "nysa.software-factory.transition-receipt/v1",
+            "stage": (
+                "REFUSE MAINTENANCE file present — "
+                "factory control plane is paused"
+            ),
+            "ticket": ticket,
+            "ticket_blob": old_ticket,
+        }
+        receipt["receipt_sha256"] = hashlib.sha256(CONTROL.canonical_document({
+            key: value for key, value in receipt.items() if key != "consumed"
+        })).hexdigest()
+        CONTROL.write(self.state / f"{ticket}.json", receipt)
+
+        route.write_text(CONTROL.canonical({
+            "kit_sha": self.release.name,
+            "schema": "ticket-model-route-plan/v1",
+            "ticket": ticket,
+        }) + "\n", encoding="utf-8")
+        ticket_path.write_text(
+            f"# {ticket}\n\nState: Review\nKit-SHA: {self.release.name}\n",
+            encoding="utf-8",
+        )
+        subprocess.run(["git", "-C", str(cell), "add", "."], check=True)
+        subprocess.run([
+            "git", "-C", str(cell), "-c", "user.name=Factory",
+            "-c", "user.email=factory@example.invalid", "commit", "-qm", "route",
+        ], check=True)
+        subprocess.run(
+            ["git", "-C", str(cell), "push", "-q", "origin", "HEAD"],
+            check=True,
+        )
+        head = subprocess.run(
+            ["git", "-C", str(cell), "rev-parse", "HEAD"],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+        tree = subprocess.run(
+            ["git", "-C", str(cell), "rev-parse", "HEAD^{tree}"],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+        protected = "2" * 40
+        release_edge = {
+            "from_factory_sha": source_factory,
+            "from_head_sha": old_head,
+            "from_passport_file_sha256": source_file,
+            "from_passport_sha256": source_digest,
+            "from_protected_base_sha": "3" * 40,
+            "from_route_plan_sha256": old_route,
+            "schema": CONTROL.PASSPORT_MIGRATION_SCHEMA,
+            "to_factory_sha": self.release.name,
+            "to_head_sha": old_head,
+            "to_protected_base_sha": protected,
+            "to_route_plan_sha256": old_route,
+        }
+        route_edge = {
+            "from_factory_sha": self.release.name,
+            "from_head_sha": old_head,
+            "from_passport_file_sha256": "4" * 64,
+            "from_passport_sha256": "5" * 64,
+            "from_protected_base_sha": protected,
+            "from_route_plan_sha256": old_route,
+            "schema": CONTROL.PASSPORT_MIGRATION_SCHEMA,
+            "to_factory_sha": self.release.name,
+            "to_head_sha": head,
+            "to_protected_base_sha": protected,
+            "to_route_plan_sha256": hashlib.sha256(route.read_bytes()).hexdigest(),
+        }
+        key = self.state / "passport.key"
+        key.write_bytes(b"k" * 32)
+        key.chmod(0o600)
+        passport = PASSPORT.authenticate({
+            "base_history": [old_head, head],
+            "branch": f"ticket/{ticket}",
+            "charge_records": [],
+            "completed_role_evidence": [],
+            "contract_version": "1.8.0",
+            "current_stage": "RUN reviewer",
+            "current_state": "Review",
+            "factory_release_history": [
+                {"contract_version": "1.8.0", "factory_sha": source_factory},
+                {"contract_version": "1.8.0", "factory_sha": self.release.name},
+            ],
+            "factory_sha": self.release.name,
+            "head_sha": head,
+            "head_tree": tree,
+            "migration_history": [release_edge, route_edge],
+            "parent_digest": route_edge["from_passport_sha256"],
+            "parent_file_sha256": route_edge["from_passport_file_sha256"],
+            "product_origin_sha256": "1" * 64,
+            "project": "relay",
+            "protected_base_sha": protected,
+            "publication_state": "validating",
+            "route_plan_sha256": route_edge["to_route_plan_sha256"],
+            "schema": "nysa.software-factory.ticket-passport/v1",
+            "ticket": ticket,
+            "ticket_blob": subprocess.run(
+                ["git", "-C", str(cell), "rev-parse", f"HEAD:{ticket_path.relative_to(cell)}"],
+                text=True, capture_output=True, check=True,
+            ).stdout.strip(),
+            "transition_receipt_sha256": receipt["receipt_sha256"],
+        }, key.read_bytes())
+        passports = self.state / "passports"
+        passports.mkdir(mode=0o700)
+        PASSPORT.write_atomic(passports / f"{ticket}.json", passport)
+        claim = {
+            "branch": f"ticket/{ticket}", "lease": "6" * 64,
+            "parked": True, "priority": "normal", "publication_lease": "",
+            "receipt": "", "role": "", "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "claimed", "ticket": ticket, "worktree": str(cell),
+        }
+        complete = {
+            "factory_sha": self.release.name,
+            "schema": CONTROL.EVENT_SCHEMA,
+            "ticket": ticket,
+        }
+        CONTROL.write(
+            self.state / (
+                f"passport-route-migration-complete-{ticket}-"
+                f"{self.release.name}.json"
+            ),
+            complete,
+        )
+        CONTROL.write(controller.reconciliation_marker(ticket), {
+            "branch": claim["branch"],
+            "factory_sha": source_factory,
+            "head_sha": old_head,
+            "passport_sha256": source_digest,
+            "run_snapshot_sha256": controller.ticket_run_snapshot(ticket),
+            "schema": "nysa.software-factory.reconciliation-boundary/v1",
+            "ticket": ticket,
+        })
+        controller.locally_valid_operator_passport = lambda _claim: passport
+
+        self.assertEqual(
+            controller.prior_maintenance_receipt_successor(claim), receipt,
+        )
+
+        (self.product / "factory/MAINTENANCE").touch()
+        self.assertIsNone(controller.prior_maintenance_receipt_successor(claim))
+        (self.product / "factory/MAINTENANCE").unlink()
+        claim["role"] = "reviewer"
+        self.assertIsNone(controller.prior_maintenance_receipt_successor(claim))
+        claim["role"] = ""
+
+        for migration_history in (
+            [release_edge, release_edge, route_edge],
+            [{**release_edge, "to_head_sha": "7" * 40}, route_edge],
+        ):
+            invalid = {
+                key: copy.deepcopy(value) for key, value in passport.items()
+                if key not in {"authentication_sha256", "passport_sha256"}
+            }
+            invalid["migration_history"] = migration_history
+            invalid = PASSPORT.authenticate(invalid, key.read_bytes())
+            PASSPORT.write_atomic(passports / f"{ticket}.json", invalid)
+            controller.locally_valid_operator_passport = lambda _claim, value=invalid: value
+            self.assertIsNone(
+                controller.prior_maintenance_receipt_successor(claim)
+            )
+        PASSPORT.write_atomic(passports / f"{ticket}.json", passport)
+        controller.locally_valid_operator_passport = lambda _claim: passport
+        (cell / "dirty").write_text("dirty\n", encoding="utf-8")
+        self.assertIsNone(controller.prior_maintenance_receipt_successor(claim))
+        (cell / "dirty").unlink()
+
+        passport_file = hashlib.sha256(
+            (passports / f"{ticket}.json").read_bytes()
+        ).hexdigest()
+
+        def issue_current(
+            stage: str = "RUN reviewer", *, response_loss: bool = False,
+        ) -> dict:
+            current = {
+                "branch": claim["branch"],
+                "consumed": False,
+                "contract_version": "1.8.0",
+                "evidence_sha256": "8" * 64,
+                "factory_sha": self.release.name,
+                "head_sha": head,
+                "head_tree": tree,
+                "lease_sha256": hashlib.sha256(
+                    claim["lease"].encode()
+                ).hexdigest(),
+                "loop": None,
+                "nonce": "9" * 32,
+                "parent_digest": receipt["receipt_sha256"],
+                "passport_sha256": passport_file,
+                "product_origin_sha256": "1" * 64,
+                "project": "relay",
+                "role": STATE.stage_role(stage),
+                "route_plan_sha256": passport["route_plan_sha256"],
+                "schema": "nysa.software-factory.transition-receipt/v1",
+                "stage": stage,
+                "ticket": ticket,
+                "ticket_blob": passport["ticket_blob"],
+            }
+            current["receipt_sha256"] = hashlib.sha256(
+                CONTROL.canonical_document({
+                    key: value for key, value in current.items()
+                    if key != "consumed"
+                })
+            ).hexdigest()
+            CONTROL.write(self.state / f"{ticket}.json", current)
+            if response_loss:
+                raise CONTROL.ControllerError("state-machine response lost")
+            return state_transition(stage, current["receipt_sha256"], ticket)
+
+        controller.ensure_lease = lambda *_args: None
+        controller.prior_transition_tickets.add(ticket)
+        with patch.object(
+            controller, "event_once", side_effect=OSError("event unavailable"),
+        ):
+            controller.recover_prior_maintenance_receipts([claim])
+        self.assertIn(ticket, controller.prior_transition_tickets)
+        self.assertEqual(
+            CONTROL.read(self.state / f"{ticket}.json"), receipt,
+        )
+
+        controller.json_call = lambda *_args, **_kwargs: issue_current()
+        controller.recover_prior_maintenance_receipts([claim])
+        self.assertNotIn(ticket, controller.prior_transition_tickets)
+        current = CONTROL.read(self.state / f"{ticket}.json")
+        self.assertEqual(current["parent_digest"], receipt["receipt_sha256"])
+        self.assertEqual(current["factory_sha"], self.release.name)
+        events = [
+            CONTROL.read(path) for path in controller.events.glob("*.json")
+            if CONTROL.read(path).get("event")
+            == "prior_maintenance_receipt_recovery_authorized"
+        ]
+        self.assertEqual(len(events), 1)
+
+        CONTROL.write(self.state / f"{ticket}.json", receipt)
+        controller.prior_transition_tickets.add(ticket)
+        controller.json_call = lambda *_args, **_kwargs: issue_current(
+            response_loss=True,
+        )
+        controller.recover_prior_maintenance_receipts([claim])
+        self.assertNotIn(ticket, controller.prior_transition_tickets)
+        self.assertEqual(
+            CONTROL.read(self.state / f"{ticket}.json")["parent_digest"],
+            receipt["receipt_sha256"],
+        )
+
+        CONTROL.write(self.state / f"{ticket}.json", receipt)
+        controller.prior_transition_tickets.add(ticket)
+        maintenance_stage = (
+            "REFUSE MAINTENANCE file present — factory control plane is paused"
+        )
+        controller.json_call = lambda *_args, **_kwargs: issue_current(
+            maintenance_stage,
+        )
+        controller.recover_prior_maintenance_receipts([claim])
+        self.assertNotIn(ticket, controller.prior_transition_tickets)
+        controller.reconciliation_marker(ticket).unlink()
+        restarted = CONTROL.Controller(self.args)
+        self.assertEqual(
+            restarted.operator_transition(claim)["factory_sha"],
+            self.release.name,
+        )
+        self.assertEqual(restarted.prior_transition_tickets, set())
+        restarted.mark_reconciling(claim)
+        self.assertEqual(
+            CONTROL.read(restarted.reconciliation_marker(ticket))[
+                "factory_sha"
+            ],
+            self.release.name,
+        )
+
     def test_worker_error_recovers_from_exact_reconciliation_boundary(self) -> None:
         controller = CONTROL.Controller(self.args)
         ticket = "T-110"

@@ -609,6 +609,13 @@ merged skips provider routing and resumes ordinary closeout. The sealed route
 writer admits the retained bundle only when its `kit_sha` exactly equals the
 source route document's top-level `kit_sha` and differs from the selected
 target; any incoherent bundle remains a refusal.
+If the retained receipt is instead a roleless maintenance refusal from the
+source release, do not delete or rewrite it. After the protected in-flight
+release and route migration is complete, remove maintenance and run one
+ordinary reconcile. The controller admits only the exact authenticated
+migration suffix and requires the state machine's durable current parent-linked
+receipt before removing the prior-release exclusion; any mismatch stays
+ticket-local and parked.
 When a dependency completes after bundle or approval, do not delete evidence
 manually. The exact dependency receipt invokes the publication refresh, which
 drafts the PR, retires the stale bundle/approval, and returns the ticket to
