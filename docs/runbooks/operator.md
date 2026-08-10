@@ -593,14 +593,16 @@ same-UID token exposure remains until a broker or OS isolation is used.
    in-flight tickets, remove maintenance only after every acceptance check
    passes.
 
-If a named ticket already has a prior-kit bundle, the successor still refuses
-route migration until that evidence is retired. An unmerged ticket whose
-protected base is stale is resumed only far enough to run the ordinary
-receipt-bound base refresh, then returns to `route-migration-required` before
-another role can run. An authenticated ticket whose implementation is already
-merged skips provider routing and resumes ordinary closeout. The refresh may
-start from the expected new-kit `Kit-SHA` refusal; the sealed launcher remains
-the authority that accepts only a non-dependency `REFUSE` or `AWAIT` receipt.
+If a named unmerged ticket already has a prior-kit bundle, complete its sealed,
+operator-approved route migration before issuing or consuming a receipt for the
+ordinary protected-base refresh. A new-kit `Kit-SHA` refusal is a
+`route-migration-required` gate, never refresh authority. Once the route is
+current, the receipt-bound refresh may retire the stale bundle and return the
+ticket to Review. An authenticated ticket whose implementation is already
+merged skips provider routing and resumes ordinary closeout. The sealed route
+writer admits the retained bundle only when its `kit_sha` exactly equals the
+source route document's top-level `kit_sha` and differs from the selected
+target; any incoherent bundle remains a refusal.
 When a dependency completes after bundle or approval, do not delete evidence
 manually. The exact dependency receipt invokes the publication refresh, which
 drafts the PR, retires the stale bundle/approval, and returns the ticket to

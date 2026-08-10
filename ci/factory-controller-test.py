@@ -15,6 +15,7 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -6521,14 +6522,330 @@ class FactoryControllerTest(unittest.TestCase):
         controller.protected_base_current = lambda *_args: True
         self.assertFalse(controller.release_bundle_refreshable(claim, passport))
         controller.protected_base_current = lambda *_args: False
+        controller.ticket_release_current = lambda _claim: False
+        self.assertFalse(controller.release_bundle_refreshable(claim, passport))
+        controller.ticket_release_current = lambda _claim: True
         self.assertTrue(controller.release_bundle_refreshable(claim, passport))
         passport["publication_state"] = "merged"
         self.assertFalse(controller.release_bundle_refreshable(claim, passport))
 
     def test_release_upgrade_reclaims_preserved_bundle_refresh(self) -> None:
-        controller = CONTROL.Controller(self.args)
+        ticket_id = "T-110"
+        source = "f" * 40
+        target = subprocess.run(
+            ["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True,
+            capture_output=True, check=True,
+        ).stdout.strip()
+        product = self.root / "migration-product"
+        remote = self.root / "migration-product.git"
         cell = self.root / "parked/T-110"
-        cell.mkdir(parents=True)
+        (product / "factory/tickets").mkdir(parents=True)
+        (product / "factory/KIT_PIN").write_text(target + "\n")
+        (product / "factory/PROJECT.env").write_text(
+            "GH_REPO=nysa-company/migration-product\n"
+            "TICKET_BRANCH_PREFIX=ticket/\n"
+        )
+        (product / "factory/tickets/T-110.md").write_text(
+            "# T-110\n\nState: Review\n", encoding="utf-8",
+        )
+        subprocess.run(
+            ["git", "init", "-q", "-b", "main", str(product)], check=True,
+        )
+        for name, value in (
+            ("user.name", "Software Factory"),
+            ("user.email", "factory@local"),
+        ):
+            subprocess.run(
+                ["git", "-C", str(product), "config", name, value], check=True,
+            )
+        subprocess.run(["git", "-C", str(product), "add", "."], check=True)
+        subprocess.run(
+            ["git", "-C", str(product), "commit", "-qm", "baseline"],
+            check=True,
+        )
+        base = subprocess.run(
+            ["git", "-C", str(product), "rev-parse", "HEAD"], text=True,
+            capture_output=True, check=True,
+        ).stdout.strip()
+        subprocess.run(["git", "init", "--bare", "-q", str(remote)], check=True)
+        subprocess.run(
+            ["git", "-C", str(product), "remote", "add", "origin", str(remote)],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(product), "push", "-qu", "origin", "main"],
+            check=True,
+        )
+        subprocess.run(
+            [
+                "git", "-C", str(product), "worktree", "add", "-q", "-b",
+                "ticket/T-110", str(cell),
+            ],
+            check=True,
+        )
+        ticket = cell / "factory/tickets/T-110.md"
+        route = cell / "factory/route-plans/T-110.json"
+        bundle = cell / "factory/attestations/T-110/bundle.json"
+        route.parent.mkdir(parents=True)
+        bundle.parent.mkdir(parents=True)
+        catalog, routes, _profiles, profile_map = ROUTER.load_policy()
+        readiness = {
+            route_id: {
+                "adapter_version": "test-v1", "reason": "ok",
+                "reported_identity": value["expected_reported_identity"],
+                "state": "READY",
+            }
+            for route_id, value in routes.items() if value["enabled"]
+        }
+        resolution = ROUTER.resolve_policy(
+            catalog, routes, profile_map["cursor-opus-v1"], readiness,
+        )
+        ticket.write_text(
+            f"# T-110\n\nState: Review\nKit-SHA: {source}\n",
+            encoding="utf-8",
+        )
+        route.write_text(ROUTER.canonical_json({
+            "created_at": "2026-08-09T00:00:00Z", "kit_sha": source,
+            "resolution": resolution, "schema": "ticket-model-route-plan/v1",
+            "ticket": ticket_id,
+        }) + "\n", encoding="utf-8")
+        bundle.write_text(
+            json.dumps({"kit_sha": source}, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        subprocess.run(
+            ["git", "-C", str(cell), "add", "factory"], check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(cell), "commit", "-qm", "prior-kit bundle"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(cell), "push", "-qu", "origin", "HEAD"],
+            check=True,
+        )
+        source_head = subprocess.run(
+            ["git", "-C", str(cell), "rev-parse", "HEAD"], text=True,
+            capture_output=True, check=True,
+        ).stdout.strip()
+        source_tree = subprocess.run(
+            ["git", "-C", str(cell), "rev-parse", "HEAD^{tree}"], text=True,
+            capture_output=True, check=True,
+        ).stdout.strip()
+        source_route = hashlib.sha256(route.read_bytes()).hexdigest()
+        source_ticket_blob = subprocess.run(
+            ["git", "-C", str(cell), "rev-parse", "HEAD:factory/tickets/T-110.md"],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+
+        authorization = (
+            product / "factory/migrations/inflight-release" / f"{target}.json"
+        )
+        authorization.parent.mkdir(parents=True)
+        authorization.write_text(CONTROL.canonical({
+            "repository": "nysa-company/migration-product",
+            "schema": "nysa.software-factory.inflight-release-authorization/v1",
+            "source_kit_sha": source, "target_kit_sha": target,
+            "tickets": [{
+                "branch": "ticket/T-110", "head": source_head,
+                "state": "Review", "ticket": ticket_id,
+            }],
+        }) + "\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "-C", str(product), "add", str(authorization)], check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(product), "commit", "-qm", "authorize migration"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(product), "push", "-q", "origin", "main"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(cell), "fetch", "-q", "origin", "main"],
+            check=True,
+        )
+
+        release = self.root / target
+        shutil.copytree(ROOT / "scripts", release / "scripts")
+        contract = release / "integrations/hermes/contract.json"
+        contract.parent.mkdir(parents=True)
+        shutil.copy2(ROOT / "integrations/hermes/contract.json", contract)
+        release_tree = subprocess.run(
+            [
+                "bash", "-c", 'source "$1"; factory_directory_tree "$2"',
+                "_", str(ROOT / "scripts/lib/kit-pin.sh"), str(release),
+            ],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+        model_state = self.root / "model-state"
+        model_state.mkdir()
+        global_env = self.root / "global.env"
+        global_env.write_text("\n".join((
+            "CODEX_PINNED=0.144.1",
+            "CLAUDE_CODE_PINNED=2.1.207",
+            "FACTORY_CURSOR_FALLBACK_ENABLED=1",
+            "CURSOR_AGENT_VERSION=2026.07.23-e383d2b",
+            "CURSOR_OPENAI_MODEL=gpt-5.6-sol-high",
+            "CURSOR_ANTHROPIC_MODEL=claude-sonnet-5-thinking-high",
+            "FACTORY_PROBE_CODEX=READY:test",
+            "FACTORY_PROBE_CLAUDE_CODE=READY:test",
+            "FACTORY_PROBE_CURSOR_OPENAI=READY:test",
+            "FACTORY_PROBE_CURSOR_ANTHROPIC=READY:test", "",
+        )))
+        environment = {
+            **os.environ,
+            "FACTORY_CERTIFIED_PRODUCT_ORIGIN": str(remote),
+            "FACTORY_GLOBAL_ENV": str(global_env),
+            "FACTORY_MODEL_STATE_ROOT": str(model_state),
+            "FACTORY_PROJECT": "relay", "FACTORY_ROOT": str(product),
+            "FACTORY_RELEASE_CONTRACT_VERSION": "1.8.0",
+            "FACTORY_RELEASE_PATH": str(release),
+            "FACTORY_RELEASE_SHA": target,
+            "FACTORY_RELEASE_TREE": release_tree,
+            "FACTORY_TEST_MODE": "1", "FACTORY_TRUSTED_TEST_HARNESS": "1",
+        }
+
+        def models(*arguments):
+            result = subprocess.run(
+                [str(release / "scripts/model-control.sh"), *arguments],
+                env=environment, text=True, capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout)
+            return json.loads(result.stdout)
+
+        preview = models(
+            "migrate-plan", "--ticket", ticket_id, "--workdir", str(cell),
+        )
+        applied = models(
+            "migrate", "--ticket", ticket_id, "--workdir", str(cell),
+            "--approve-hash", preview["preview_hash"], "--readiness-hash",
+            preview["readiness_sha256"], "--approved-by", "release-upgrade",
+        )
+        migrated_head = applied["commit_sha"]
+        migrated_route = hashlib.sha256(route.read_bytes()).hexdigest()
+        self.assertNotEqual(migrated_head, source_head)
+        self.assertEqual(
+            sorted(subprocess.run(
+                [
+                    "git", "-C", str(cell), "diff-tree", "--no-commit-id",
+                    "--name-only", "-r", migrated_head,
+                ],
+                text=True, capture_output=True, check=True,
+            ).stdout.splitlines()),
+            [
+                "factory/route-plans/T-110.json",
+                "factory/tickets/T-110.md",
+            ],
+        )
+        self.assertEqual(bundle.read_text(), json.dumps(
+            {"kit_sha": source}, sort_keys=True,
+        ) + "\n")
+        replay_preview = models(
+            "migrate-plan", "--ticket", ticket_id, "--workdir", str(cell),
+        )
+        replay = models(
+            "migrate", "--ticket", ticket_id, "--workdir", str(cell),
+            "--approve-hash", replay_preview["preview_hash"],
+            "--readiness-hash", replay_preview["readiness_sha256"],
+            "--approved-by", "release-upgrade",
+        )
+        self.assertTrue(replay["recovered"])
+        self.assertEqual(replay["commit_sha"], migrated_head)
+        bundle.write_text(
+            json.dumps({"kit_sha": "e" * 40}, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        subprocess.run(
+            ["git", "-C", str(cell), "add", str(bundle)], check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(cell), "commit", "-qm", "incoherent bundle"],
+            check=True,
+        )
+        incoherent_head = subprocess.run(
+            ["git", "-C", str(cell), "rev-parse", "HEAD"], text=True,
+            capture_output=True, check=True,
+        ).stdout.strip()
+        incoherent = subprocess.run(
+            [
+                str(release / "scripts/model-control.sh"), "migrate-plan",
+                "--ticket", ticket_id, "--workdir", str(cell),
+            ],
+            env=environment, text=True, capture_output=True,
+        )
+        self.assertEqual(incoherent.returncode, 2)
+        self.assertIn(
+            "bundle attestation must be invalidated before route migration",
+            incoherent.stdout,
+        )
+        self.assertEqual(subprocess.run(
+            ["git", "-C", str(cell), "rev-parse", "HEAD"], text=True,
+            capture_output=True, check=True,
+        ).stdout.strip(), incoherent_head)
+        subprocess.run(
+            ["git", "-C", str(cell), "reset", "--hard", "-q", migrated_head],
+            check=True,
+        )
+
+        key = self.state / "passport.key"
+        key.write_bytes(b"k" * 32)
+        key.chmod(0o600)
+        passport_path = self.state / "passports/T-110.json"
+        passport_path.parent.mkdir(mode=0o700)
+        old_passport = PASSPORT.authenticate({
+            "base_history": [source_head], "branch": "ticket/T-110",
+            "charge_records": [], "completed_role_evidence": [],
+            "contract_version": "1.8.0", "current_state": "Awaiting Approval",
+            "factory_release_history": [{
+                "contract_version": "1.8.0", "factory_sha": source,
+            }],
+            "factory_sha": source, "head_sha": source_head,
+            "head_tree": source_tree, "migration_history": [],
+            "product_origin_sha256": hashlib.sha256(
+                str(remote).encode()
+            ).hexdigest(),
+            "project": "relay", "protected_base_sha": base,
+            "publication_state": "validating",
+            "route_plan_sha256": source_route,
+            "schema": "nysa.software-factory.ticket-passport/v1",
+            "ticket": ticket_id, "ticket_blob": source_ticket_blob,
+            "transition_receipt_sha256": "",
+        }, key.read_bytes())
+        PASSPORT.write_atomic(passport_path, old_passport)
+        old_file = hashlib.sha256(passport_path.read_bytes()).hexdigest()
+        release_edge = {
+            "from_factory_sha": source, "from_head_sha": source_head,
+            "from_passport_file_sha256": old_file,
+            "from_passport_sha256": old_passport["passport_sha256"],
+            "from_protected_base_sha": base,
+            "from_route_plan_sha256": source_route,
+            "schema": PASSPORT.MIGRATION_SCHEMA,
+            "to_factory_sha": target, "to_head_sha": source_head,
+            "to_protected_base_sha": base,
+            "to_route_plan_sha256": source_route,
+        }
+        before_route = PASSPORT.authenticate({
+            **{
+                name: value for name, value in old_passport.items()
+                if name not in {
+                    "authentication_sha256", "passport_sha256",
+                }
+            },
+            "factory_release_history": [
+                *old_passport["factory_release_history"],
+                {"contract_version": "1.8.0", "factory_sha": target},
+            ],
+            "factory_sha": target, "migration_history": [release_edge],
+            "parent_digest": old_passport["passport_sha256"],
+            "parent_file_sha256": old_file,
+        }, key.read_bytes())
+        PASSPORT.write_atomic(passport_path, before_route)
+        stale = self.stale_release_receipt(
+            ticket_id, source, "a" * 64, head=source_head,
+            route=source_route, passport_file=old_file,
+        )
         claim = {
             "branch": "ticket/T-110", "lease": "a" * 64,
             "priority": "normal", "publication_lease": "", "receipt": "",
@@ -6537,31 +6854,126 @@ class FactoryControllerTest(unittest.TestCase):
             "blocked_reason": "route-migration-required", "ticket": "T-110",
             "worktree": str(cell),
         }
-        passports = self.state / "passports"
-        passports.mkdir(mode=0o700)
-        CONTROL.write(passports / "T-110.json", {
-            "factory_sha": self.release.name,
-        })
+        args = argparse.Namespace(
+            launcher=self.launcher, product_root=product, project="relay",
+            release_path=release, state_dir=self.state,
+        )
+        controller = CONTROL.Controller(args)
         controller.marker(
-            f"passport-route-migration-pending-T-110-{self.release.name}",
+            f"passport-route-migration-pending-T-110-{target}",
             {
-                "factory_sha": self.release.name,
+                "factory_sha": target,
                 "schema": CONTROL.EVENT_SCHEMA,
                 "ticket": "T-110",
             },
         )
-        events = []
-        controller.release_bundle_refreshable = lambda *_args: True
-        controller.ticket_release_current = lambda _claim: False
+        controller.save_claim(claim)
+        passport_calls = []
+
+        def migrate_passport(*_args):
+            passport_calls.append("passport")
+            before = controller.authenticated_operator_passport(ticket_id)
+            parent_file = hashlib.sha256(passport_path.read_bytes()).hexdigest()
+            edge = {
+                "from_factory_sha": target, "from_head_sha": source_head,
+                "from_passport_file_sha256": parent_file,
+                "from_passport_sha256": before["passport_sha256"],
+                "from_protected_base_sha": base,
+                "from_route_plan_sha256": source_route,
+                "schema": PASSPORT.MIGRATION_SCHEMA,
+                "to_factory_sha": target, "to_head_sha": migrated_head,
+                "to_protected_base_sha": base,
+                "to_route_plan_sha256": migrated_route,
+            }
+            migrated = PASSPORT.authenticate({
+                **{
+                    name: value for name, value in before.items()
+                    if name not in {
+                        "authentication_sha256", "passport_sha256",
+                        "parent_digest", "parent_file_sha256",
+                    }
+                },
+                "head_sha": migrated_head,
+                "head_tree": subprocess.run(
+                    ["git", "-C", str(cell), "rev-parse", "HEAD^{tree}"],
+                    text=True, capture_output=True, check=True,
+                ).stdout.strip(),
+                "migration_history": [*before["migration_history"], edge],
+                "parent_digest": before["passport_sha256"],
+                "parent_file_sha256": parent_file,
+                "route_plan_sha256": migrated_route,
+                "ticket_blob": subprocess.run(
+                    [
+                        "git", "-C", str(cell), "rev-parse",
+                        "HEAD:factory/tickets/T-110.md",
+                    ],
+                    text=True, capture_output=True, check=True,
+                ).stdout.strip(),
+            }, key.read_bytes())
+            PASSPORT.write_atomic(passport_path, migrated)
+
+        def state_machine(*_args, **_kwargs):
+            current_file = hashlib.sha256(passport_path.read_bytes()).hexdigest()
+            value = dict(stale)
+            value.update(
+                factory_sha=target, head_sha=migrated_head,
+                parent_digest=stale["receipt_sha256"],
+                passport_sha256=current_file,
+                route_plan_sha256=migrated_route,
+                stage="AWAIT-OPERATOR Linear approval observed",
+            )
+            value.pop("receipt_sha256")
+            value["receipt_sha256"] = hashlib.sha256(STATE.canonical({
+                name: item for name, item in value.items()
+                if name not in {
+                    "consumed", "consumed_at_epoch", "receipt_sha256",
+                }
+            })).hexdigest()
+            CONTROL.write(self.state / "T-110.json", value)
+            return state_transition(
+                value["stage"], value["receipt_sha256"], ticket_id,
+            )
+
+        controller.json_call = state_machine
+        controller.migrate_passport = migrate_passport
+        controller.locally_valid_operator_passport = lambda _claim: (
+            controller.authenticated_operator_passport(ticket_id)
+        )
         controller.renew = lambda _claim: None
-        controller.event = lambda name, *_args, **_kwargs: events.append(name)
+        original_event_once = controller.event_once
 
-        controller.recover_upgraded_claims([claim])
+        def crash_after_receipt(name, *arguments, **keywords):
+            if name == "prior_release_receipt_refreshed":
+                raise RuntimeError("crash after receipt")
+            return original_event_once(name, *arguments, **keywords)
 
+        controller.event_once = crash_after_receipt
+        with self.assertRaisesRegex(RuntimeError, "crash after receipt"):
+            controller.recover_upgraded_claims([claim])
+
+        receipt_bytes = (self.state / "T-110.json").read_bytes()
+        restarted = CONTROL.Controller(args)
+        restarted.locally_valid_operator_passport = lambda _claim: (
+            restarted.authenticated_operator_passport(ticket_id)
+        )
+        restarted.renew = lambda _claim: None
+        restarted.json_call = lambda *_args, **_kwargs: self.fail(
+            "restart must reuse the current durable receipt"
+        )
+        restarted.migrate_passport = lambda *_args: self.fail(
+            "restart must retain the final passport edge"
+        )
+        claim = restarted.load_claims()[0]
+        restarted.recover_upgraded_claims([claim])
+
+        self.assertEqual(passport_calls, ["passport"])
+        self.assertEqual((self.state / "T-110.json").read_bytes(), receipt_bytes)
         self.assertEqual(claim["status"], "claimed")
         self.assertTrue(claim["release_refresh_required"])
         self.assertNotIn("blocked_reason", claim)
-        self.assertIn("upgraded_bundle_refresh_recovered", events)
+        self.assertFalse(restarted.marker(
+            f"passport-route-migration-complete-T-110-{target}"
+        ))
 
     def migrated_bundle_passport(
         self, ticket: str, prior: str, head: str = "b" * 40,
@@ -6597,6 +7009,19 @@ class FactoryControllerTest(unittest.TestCase):
             }
             for index, (before, after) in enumerate(zip(releases, releases[1:]))
         ]
+        final_head = "c" * 40
+        final_route = "d" * 64
+        migrations.append({
+            "from_factory_sha": self.release.name, "from_head_sha": head,
+            "from_passport_file_sha256": "a" * 64,
+            "from_passport_sha256": "b" * 64,
+            "from_protected_base_sha": protected[-1],
+            "from_route_plan_sha256": route,
+            "schema": CONTROL.PASSPORT_MIGRATION_SCHEMA,
+            "to_factory_sha": self.release.name, "to_head_sha": final_head,
+            "to_protected_base_sha": protected[-1],
+            "to_route_plan_sha256": final_route,
+        })
         passport = PASSPORT.authenticate({
             "base_history": [head], "branch": f"ticket/{ticket}",
             "charge_records": [], "completed_role_evidence": [],
@@ -6605,15 +7030,15 @@ class FactoryControllerTest(unittest.TestCase):
                 {"contract_version": "1.8.0", "factory_sha": release}
                 for release in releases
             ],
-            "factory_sha": self.release.name, "head_sha": head,
+            "factory_sha": self.release.name, "head_sha": final_head,
             "head_tree": "c" * 40,
             "migration_history": migrations,
-            "parent_digest": digests[-1],
-            "parent_file_sha256": files[-1],
+            "parent_digest": "b" * 64,
+            "parent_file_sha256": "a" * 64,
             "product_origin_sha256": "5" * 64, "project": "relay",
             "protected_base_sha": protected[-1],
             "publication_state": "validating",
-            "route_plan_sha256": route,
+            "route_plan_sha256": final_route,
             "schema": "nysa.software-factory.ticket-passport/v1",
             "ticket": ticket, "ticket_blob": "4" * 40,
             "transition_receipt_sha256": "",
@@ -6688,8 +7113,10 @@ class FactoryControllerTest(unittest.TestCase):
             value = dict(stale)
             value.update(
                 factory_sha=self.release.name,
+                head_sha="c" * 40,
                 parent_digest=stale["receipt_sha256"],
                 passport_sha256=passport_file,
+                route_plan_sha256="d" * 64,
                 stage="AWAIT-OPERATOR Linear approval observed",
             )
             value.pop("receipt_sha256")
@@ -6799,9 +7226,11 @@ class FactoryControllerTest(unittest.TestCase):
             value = dict(stale)
             value.update(
                 factory_sha=self.release.name,
+                head_sha="c" * 40,
                 lease_sha256=hashlib.sha256(current_lease.encode()).hexdigest(),
                 parent_digest=stale["receipt_sha256"],
                 passport_sha256=passport_file,
+                route_plan_sha256="d" * 64,
                 stage="AWAIT-OPERATOR Linear approval observed",
             )
             value.pop("receipt_sha256")
@@ -6841,12 +7270,14 @@ class FactoryControllerTest(unittest.TestCase):
             len(CONTROL.Controller.bundle_refresh_migration_suffix(
                 passport, prior, "7" * 64,
             )),
-            2,
+            3,
         )
         mutations = []
         for name in (
             "first-passport", "gap", "reorder", "duplicate", "head",
-            "route", "protected", "final-file", "final-digest", "history",
+            "route", "protected", "missing-final", "extra-final",
+            "final-factory", "final-head", "final-route", "final-protected",
+            "final-file", "final-digest", "history",
         ):
             invalid = copy.deepcopy(passport)
             edges = invalid["migration_history"]
@@ -6864,6 +7295,20 @@ class FactoryControllerTest(unittest.TestCase):
                 edges[1]["from_route_plan_sha256"] = "0" * 64
             elif name == "protected":
                 edges[1]["from_protected_base_sha"] = "c" * 40
+            elif name == "missing-final":
+                edges.pop()
+            elif name == "extra-final":
+                edges.append(copy.deepcopy(edges[-1]))
+            elif name == "final-factory":
+                edges[-1]["from_factory_sha"] = "0" * 40
+            elif name == "final-head":
+                edges[-1]["to_head_sha"] = edges[-1]["from_head_sha"]
+            elif name == "final-route":
+                edges[-1]["to_route_plan_sha256"] = edges[-1][
+                    "from_route_plan_sha256"
+                ]
+            elif name == "final-protected":
+                edges[-1]["from_protected_base_sha"] = "c" * 40
             elif name == "final-file":
                 invalid["parent_file_sha256"] = "0" * 64
             elif name == "final-digest":
@@ -6913,8 +7358,10 @@ class FactoryControllerTest(unittest.TestCase):
                 parent = stale["receipt_sha256"]
                 stale.update(
                     factory_sha=self.release.name,
+                    head_sha="c" * 40,
                     parent_digest=parent,
                     passport_sha256=current_file,
+                    route_plan_sha256="d" * 64,
                     stage="AWAIT-OPERATOR Linear approval observed",
                 )
                 if ticket == "T-112":
@@ -6936,12 +7383,12 @@ class FactoryControllerTest(unittest.TestCase):
                         "from_receipt_sha256": (
                             "0" * 64 if ticket == "T-111" else parent
                         ),
-                        "head_sha": "b" * 40,
+                        "head_sha": "c" * 40,
                         "lease_sha256": hashlib.sha256(
                             lease.encode()
                         ).hexdigest(),
                         "passport_file_sha256": current_file,
-                        "route_plan_sha256": "e" * 64,
+                        "route_plan_sha256": "d" * 64,
                         "schema": CONTROL.EVENT_SCHEMA,
                         "ticket": ticket,
                     },
@@ -6997,7 +7444,9 @@ class FactoryControllerTest(unittest.TestCase):
         controller.finish_pending_run = lambda _claim: True
         controller.refresh_dependency_tracking = lambda _claim: True
         controller.ticket_merged = lambda _claim: False
-        controller.migrate_passport = lambda *_args: calls.append(("passport",))
+        controller.migrate_passport = lambda *_args: self.fail(
+            "Kit-SHA refusal must wait for route migration"
+        )
 
         self.assertEqual(
             controller.reconcile_ticket(claim),
@@ -7006,9 +7455,8 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(claim["status"], "blocked")
         self.assertEqual(claim["blocked_reason"], "route-migration-required")
         self.assertNotIn("release_refresh_required", claim)
-        self.assertIn(("passport",), calls)
         self.assertEqual(
-            sum(call[0] == "ticket-attest" for call in calls if call), 1
+            sum(call[0] == "ticket-attest" for call in calls if call), 0
         )
 
     def test_release_upgrade_recovery_overlaps_independent_tickets(self) -> None:

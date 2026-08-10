@@ -5163,3 +5163,21 @@ controller or provider, or non-pristine completed lane refuses without deleting
 anything. The existing signed safe-pause `--restore` flow remains the only
 authority for rebuilding a disposed root; no cleanup command or alternate
 state-edit boundary is introduced.
+
+## 2026-08-09 — Decision 366: Route migration precedes stale-bundle refresh
+
+Category: Trust boundary
+
+An unmerged prior-kit bundle is refreshable only after the ticket and route
+journal already bind the selected release. Release recovery must preserve the
+protected authorization head for the sealed, explicitly approved model-route
+migration; only its exact successor may enter the existing receipt-bound bundle
+refresh. The writer admits a retained bundle only when its kit exactly equals
+the source route document's top-level kit and differs from the selected target.
+The authenticated handoff is one unique release-changing chain followed by
+exactly one same-release head-and-route edge with unchanged protected base: the
+stale receipt binds the first edge's head and route, while the durable marker
+and current receipt bind the final passport. A Kit-SHA mismatch refusal blocks
+at `route-migration-required` without ticket-attest, passport, branch, or
+bundle mutation. This corrects Decision 312's former ordering while retaining
+its fail-closed receipt validation after the route is current.
