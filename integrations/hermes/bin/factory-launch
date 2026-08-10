@@ -1369,6 +1369,27 @@ PY
         --semantic-round "$8" --operator-id "${10}"
         --approve-hash "${12}"
       )
+    elif [[ $# -eq 9 && "$1" == "reviewer-void" && "$2" == "plan" &&
+            "$3" == "--ticket" && "$4" =~ ^T-[0-9]+$ &&
+            "$5" == "--run" && "$6" =~ ^[1-9][0-9]*$ &&
+            "$7" == "--operator-id" &&
+            "$8" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$ &&
+            "$8" != "auto" && "$9" == "--json" ]]; then
+      CONTROL_ARGS=(
+        --action reviewer-void-plan --ticket "$4" --run-ordinal "$6"
+        --operator-id "$8"
+      )
+    elif [[ $# -eq 11 && "$1" == "reviewer-void" && "$2" == "apply" &&
+            "$3" == "--ticket" && "$4" =~ ^T-[0-9]+$ &&
+            "$5" == "--run" && "$6" =~ ^[1-9][0-9]*$ &&
+            "$7" == "--operator-id" &&
+            "$8" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$ &&
+            "$8" != "auto" && "$9" == "--approve-hash" &&
+            "${10}" =~ ^[0-9a-f]{64}$ && "${11}" == "--json" ]]; then
+      CONTROL_ARGS=(
+        --action reviewer-void-apply --ticket "$4" --run-ordinal "$6"
+        --operator-id "$8" --approve-hash "${10}"
+      )
     else
       usage
     fi
