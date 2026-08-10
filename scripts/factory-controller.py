@@ -6413,6 +6413,159 @@ class Controller:
             return None, ""
         return local, ""
 
+    def operator_ticket_change_status(
+        self, claim: dict[str, Any], passport: dict[str, Any], after: str,
+        exact_commit: Any, label: str,
+    ) -> str:
+        ticket_path = f"factory/tickets/{claim['ticket']}.md"
+        ticket_file = Path(claim["worktree"]) / ticket_path
+        try:
+            ticket_info = ticket_file.lstat()
+        except OSError as error:
+            raise ControllerError(f"{label} ticket is unsafe") from error
+        if (
+            not stat.S_ISREG(ticket_info.st_mode)
+            or ticket_info.st_uid != os.geteuid()
+            or ticket_info.st_nlink != 1
+        ):
+            raise ControllerError(f"{label} ticket is unsafe")
+        local = self.cell_git(claim, "rev-parse", "HEAD").stdout.strip()
+        branch = self.cell_git(
+            claim, "symbolic-ref", "--quiet", "--short", "HEAD",
+        )
+        dirty = self.cell_git(claim, "status", "--porcelain=v1", "-z")
+        entries = [item for item in dirty.stdout.split("\0") if item]
+        partial = (
+            local == passport["head_sha"]
+            and len(entries) == 1
+            and entries[0][:2] in {" M", "M ", "MM"}
+            and entries[0][3:] == ticket_path
+            and ticket_file.read_text(encoding="utf-8") == after
+        )
+        remote_status, observed, remote = self.remote_cell_head_status(claim)
+        if (
+            branch.returncode
+            or branch.stdout.strip() != claim["branch"]
+            or dirty.returncode
+        ):
+            raise ControllerError(f"{label} cell is invalid")
+        if local == passport["head_sha"]:
+            if entries and not partial:
+                raise ControllerError(f"{label} cell is dirty")
+            if not (
+                remote_status == "pushed"
+                and observed == remote == passport["head_sha"]
+            ):
+                raise ControllerError(f"{label} remote moved")
+            return "prepared" if partial else "planned"
+        current = self.cell_git(claim, "show", f"{local}:{ticket_path}")
+        if (
+            entries
+            or current.returncode
+            or hashlib.sha256(current.stdout.encode()).hexdigest()
+            != hashlib.sha256(after.encode()).hexdigest()
+            or not exact_commit(passport["head_sha"], local)
+        ):
+            raise ControllerError(f"{label} commit is invalid")
+        if remote_status == "pushed" and observed == remote == local:
+            return "applied"
+        if (
+            remote_status == "resume_commit_not_pushed"
+            and observed == local and remote == passport["head_sha"]
+        ):
+            return "commit_not_pushed"
+        raise ControllerError(f"{label} remote moved")
+
+    def apply_operator_ticket_change(
+        self, claim: dict[str, Any], plan: dict[str, Any], after: str,
+        observed_status: str, operator_id: str, message: str,
+        exact_commit: Any, label: str,
+    ) -> str:
+        if observed_status == "applied":
+            return self.cell_git(claim, "rev-parse", "HEAD").stdout.strip()
+        ticket_path = f"factory/tickets/{claim['ticket']}.md"
+        if observed_status in {"planned", "prepared"}:
+            path = Path(claim["worktree"]) / ticket_path
+            info = path.lstat()
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_uid != os.geteuid()
+                or info.st_nlink != 1
+            ):
+                raise ControllerError(f"{label} ticket is unsafe")
+            if observed_status == "planned":
+                path.write_text(after, encoding="utf-8")
+            added = self.cell_git(claim, "add", "--", ticket_path)
+            committed = self.cell_git(
+                claim, "-c", f"user.name={operator_id}",
+                "-c", "user.email=operator@local", "-c", "commit.gpgsign=false",
+                "commit", "-m", message, "--", ticket_path,
+            )
+            if added.returncode or committed.returncode:
+                raise ControllerError(f"{label} commit failed")
+        head = self.cell_git(claim, "rev-parse", "HEAD").stdout.strip()
+        if not exact_commit(plan["parent_sha"], head):
+            raise ControllerError(f"{label} commit is invalid")
+        status, observed, remote = self.remote_cell_head_status(claim)
+        if (
+            status == "resume_commit_not_pushed"
+            and observed == head and remote == plan["parent_sha"]
+        ):
+            pushed = self.cell_git(
+                claim, "push", "--porcelain", "origin",
+                f"HEAD:refs/heads/{claim['branch']}",
+            )
+            status, observed, remote = self.remote_cell_head_status(claim)
+            if pushed.returncode and not (
+                status == "pushed" and observed == remote == head
+            ):
+                raise ControllerError(f"{label} push failed")
+        if status != "pushed" or observed != remote or remote != head:
+            raise ControllerError(f"{label} push failed")
+        return head
+
+    def operator_control_claim(
+        self, ticket: str, label: str,
+    ) -> dict[str, Any]:
+        claim_path = self.claim_path(ticket)
+        try:
+            claim = read(claim_path)
+        except (
+            ControllerError, FileNotFoundError, json.JSONDecodeError, OSError,
+            UnicodeError,
+        ) as error:
+            raise ControllerError(f"{label} authority is unavailable") from error
+        if (
+            not self.valid_claim_document(claim_path, claim)
+            or not Path(claim["worktree"]).exists()
+        ):
+            raise ControllerError(f"{label} authority is unavailable")
+        self.operator_control_worktree(claim, label)
+        return claim
+
+    def operator_control_worktree(
+        self, claim: dict[str, Any], label: str,
+    ) -> Path:
+        worktree = Path(claim.get("worktree", ""))
+        try:
+            info = worktree.lstat()
+            resolved = worktree.resolve(strict=True)
+            registered = self.worktrees_by_branch().get(
+                f"refs/heads/{claim.get('branch', '')}", [],
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            raise ControllerError(f"{label} worktree is unsafe") from error
+        if (
+            not worktree.is_absolute()
+            or resolved != worktree
+            or not stat.S_ISDIR(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or info.st_mode & 0o022
+            or registered != [str(worktree)]
+        ):
+            raise ControllerError(f"{label} worktree is unsafe")
+        return worktree
+
     def semantic_authorization_plan(
         self, ticket: str, role: str, semantic_round: int, operator_id: str,
     ) -> tuple[dict[str, Any], dict[str, Any], str, str]:
@@ -6424,21 +6577,8 @@ class Controller:
             or operator_id == "auto"
         ):
             raise ControllerError("semantic authorization request is invalid")
-        claim_path = self.claim_path(ticket)
-        try:
-            claim = read(claim_path)
-        except (
-            ControllerError, FileNotFoundError, json.JSONDecodeError, OSError,
-            UnicodeError,
-        ) as error:
-            raise ControllerError(
-                "semantic authorization authority is unavailable"
-            ) from error
-        if (
-            not self.valid_claim_document(claim_path, claim)
-            or not DIGEST.fullmatch(claim.get("lease", ""))
-            or not Path(claim["worktree"]).exists()
-        ):
+        claim = self.operator_control_claim(ticket, "semantic authorization")
+        if not DIGEST.fullmatch(claim.get("lease", "")):
             raise ControllerError("semantic authorization authority is unavailable")
         transition = self.transition_receipt(claim, record=False)
         passport = self.authenticated_operator_passport(ticket)
@@ -6494,67 +6634,13 @@ class Controller:
         ):
             raise ControllerError("semantic authorization ticket is invalid")
         after = before.stdout + ("" if before.stdout.endswith("\n") else "\n") + line + "\n"
-        ticket_file = Path(claim["worktree"]) / ticket_path
-        try:
-            ticket_info = ticket_file.lstat()
-        except OSError as error:
-            raise ControllerError("semantic authorization ticket is unsafe") from error
-        if (
-            not stat.S_ISREG(ticket_info.st_mode)
-            or ticket_info.st_uid != os.geteuid()
-            or ticket_info.st_nlink != 1
-        ):
-            raise ControllerError("semantic authorization ticket is unsafe")
-        local = self.cell_git(claim, "rev-parse", "HEAD").stdout.strip()
-        branch = self.cell_git(
-            claim, "symbolic-ref", "--quiet", "--short", "HEAD",
+        observed_status = self.operator_ticket_change_status(
+            claim, passport, after,
+            lambda parent, child: self.exact_ticket_commit(
+                claim, parent, child, authorization=True,
+            ),
+            "semantic authorization",
         )
-        dirty = self.cell_git(claim, "status", "--porcelain=v1", "-z")
-        entries = [item for item in dirty.stdout.split("\0") if item]
-        partial = (
-            local == passport["head_sha"]
-            and len(entries) == 1
-            and entries[0][:2] in {" M", "M ", "MM"}
-            and entries[0][3:] == ticket_path
-            and ticket_file.read_text(encoding="utf-8") == after
-        )
-        remote_status, observed, remote = self.remote_cell_head_status(claim)
-        if (
-            branch.returncode
-            or branch.stdout.strip() != claim["branch"]
-            or dirty.returncode
-        ):
-            raise ControllerError("semantic authorization cell is invalid")
-        if local == passport["head_sha"]:
-            if entries and not partial:
-                raise ControllerError("semantic authorization cell is dirty")
-            if not (
-                remote_status == "pushed"
-                and observed == remote == passport["head_sha"]
-            ):
-                raise ControllerError("semantic authorization remote moved")
-            observed_status = "prepared" if partial else "planned"
-        else:
-            current = self.cell_git(claim, "show", f"{local}:{ticket_path}")
-            if (
-                entries
-                or current.returncode
-                or hashlib.sha256(current.stdout.encode()).hexdigest()
-                != hashlib.sha256(after.encode()).hexdigest()
-                or not self.exact_ticket_commit(
-                    claim, passport["head_sha"], local, authorization=True,
-                )
-            ):
-                raise ControllerError("semantic authorization commit is invalid")
-            if remote_status == "pushed" and observed == remote == local:
-                observed_status = "applied"
-            elif (
-                remote_status == "resume_commit_not_pushed"
-                and observed == local and remote == passport["head_sha"]
-            ):
-                observed_status = "commit_not_pushed"
-            else:
-                raise ControllerError("semantic authorization remote moved")
         plan = {
             "authorization_line": line,
             "branch": claim["branch"],
@@ -6596,58 +6682,266 @@ class Controller:
             or approve_hash != plan["approval_hash"]
         ):
             raise ControllerError("semantic authorization approval hash does not match")
-        if observed_status == "applied":
-            head = self.cell_git(claim, "rev-parse", "HEAD").stdout.strip()
-            return {
-                "approval_hash": approve_hash, "authorization_head": head,
-                "schema": SCHEMA, "status": "applied", "ticket": ticket,
-            }
-        ticket_path = f"factory/tickets/{ticket}.md"
-        if observed_status in {"planned", "prepared"}:
-            path = Path(claim["worktree"]) / ticket_path
-            info = path.lstat()
-            if (
-                not stat.S_ISREG(info.st_mode)
-                or info.st_uid != os.geteuid()
-                or info.st_nlink != 1
-            ):
-                raise ControllerError("semantic authorization ticket is unsafe")
-            if observed_status == "planned":
-                path.write_text(after, encoding="utf-8")
-            added = self.cell_git(claim, "add", "--", ticket_path)
-            committed = self.cell_git(
-                claim, "-c", f"user.name={operator_id}",
-                "-c", "user.email=operator@local", "-c", "commit.gpgsign=false",
-                "commit", "-m",
-                f"Authorize {role} round {semantic_round} for {ticket}",
-                "--", ticket_path,
-            )
-            if added.returncode or committed.returncode:
-                raise ControllerError("semantic authorization commit failed")
-        head = self.cell_git(claim, "rev-parse", "HEAD").stdout.strip()
-        if not self.exact_ticket_commit(
-            claim, plan["parent_sha"], head, authorization=True,
-        ):
-            raise ControllerError("semantic authorization commit is invalid")
-        status, observed, remote = self.remote_cell_head_status(claim)
-        if (
-            status == "resume_commit_not_pushed"
-            and observed == head and remote == plan["parent_sha"]
-        ):
-            pushed = self.cell_git(
-                claim, "push", "--porcelain", "origin",
-                f"HEAD:refs/heads/{claim['branch']}",
-            )
-            status, observed, remote = self.remote_cell_head_status(claim)
-            if pushed.returncode and not (
-                status == "pushed" and observed == remote == head
-            ):
-                raise ControllerError("semantic authorization push failed")
-        if status != "pushed" or observed != remote or remote != head:
-            raise ControllerError("semantic authorization push failed")
+        head = self.apply_operator_ticket_change(
+            claim, plan, after, observed_status, operator_id,
+            f"Authorize {role} round {semantic_round} for {ticket}",
+            lambda parent, child: self.exact_ticket_commit(
+                claim, parent, child, authorization=True,
+            ),
+            "semantic authorization",
+        )
         return {
             "approval_hash": approve_hash, "authorization_head": head,
             "schema": SCHEMA, "status": "applied", "ticket": ticket,
+        }
+
+    @staticmethod
+    def reviewer_void_records(text: str) -> list[int]:
+        broad = [
+            int(item) for item in re.findall(
+                r"^\s*OPERATOR NOTE:\s*reviewer run\s*(\d+)\s+"
+                r"void[^A-Za-z0-9]*duplicate\s*$",
+                text, re.I | re.M,
+            )
+        ]
+        exact = [
+            int(item) for item in re.findall(
+                r"^OPERATOR NOTE: reviewer run ([1-9][0-9]*) "
+                r"void — duplicate$",
+                text, re.M,
+            )
+        ]
+        if broad != exact or len(exact) != len(set(exact)):
+            raise ControllerError("reviewer void ticket is invalid")
+        return exact
+
+    def reviewer_void_evidence(
+        self, transition: dict[str, Any], passport: dict[str, Any],
+        before: str, ordinal: int,
+    ) -> dict[str, Any]:
+        stage = re.fullmatch(
+            r"REFUSE reviewer has ([1-9][0-9]*) non-void successful "
+            r"run\(s\) but only ([0-9]+) verdict\(s\) are logged on .+ — "
+            r"record the missing verdict, or mark a duplicate successful row "
+            r"with 'OPERATOR NOTE: reviewer run <ledger ordinal> void — "
+            r"duplicate'",
+            transition.get("stage", ""),
+        )
+        verdicts = [
+            int(number) for number, _verdict in re.findall(
+                r"^\s*reviewer round\s+([1-9][0-9]*):\s*"
+                r"(APPROVE|REQUEST CHANGES(?:\s+—\s+.*)?)\s*$",
+                before, re.I | re.M,
+            )
+        ]
+        voids = self.reviewer_void_records(before)
+        completed = passport.get("completed_role_evidence")
+        expected = {
+            "contract_version", "factory_sha", "head_before",
+            "manifest_sha256", "output_sha256", "role", "run_id",
+            "transition_receipt_sha256",
+        }
+        roles = {
+            "planner", "spec-linter", "test-author", "builder", "reviewer",
+            "narrator",
+        }
+        run_ids: set[str] = set()
+        receipts: set[str] = set()
+        if not isinstance(completed, list):
+            raise ControllerError("reviewer void evidence is invalid")
+        for item in completed:
+            if (
+                not isinstance(item, dict)
+                or set(item) != expected
+                or item.get("contract_version") != "1.8.0"
+                or not SHA.fullmatch(item.get("factory_sha", ""))
+                or not SHA.fullmatch(item.get("head_before", ""))
+                or not DIGEST.fullmatch(item.get("manifest_sha256", ""))
+                or not DIGEST.fullmatch(item.get("output_sha256", ""))
+                or item.get("role") not in roles
+                or not re.fullmatch(
+                    r"[A-Za-z0-9._-]{1,200}", item.get("run_id", ""),
+                )
+                or not DIGEST.fullmatch(
+                    item.get("transition_receipt_sha256", ""),
+                )
+                or item["run_id"] in run_ids
+                or item["transition_receipt_sha256"] in receipts
+            ):
+                raise ControllerError("reviewer void evidence is invalid")
+            run_ids.add(item["run_id"])
+            receipts.add(item["transition_receipt_sha256"])
+        reviewers = [item for item in completed if item["role"] == "reviewer"]
+        if (
+            stage is None
+            or verdicts != list(range(1, len(verdicts) + 1))
+            or any(item < 1 or item > len(reviewers) for item in voids)
+            or len(reviewers) - len(voids) != int(stage[1])
+            or int(stage[1]) != int(stage[2]) + 1
+            or int(stage[2]) != len(verdicts)
+            or isinstance(ordinal, bool)
+            or ordinal < 1
+            or ordinal > len(reviewers)
+            or ordinal in voids
+        ):
+            raise ControllerError("reviewer void evidence is invalid")
+        return reviewers[ordinal - 1]
+
+    def exact_reviewer_void_commit(
+        self, claim: dict[str, Any], before: str, after: str, ordinal: int,
+    ) -> bool:
+        if not self.exact_ticket_commit(claim, before, after):
+            return False
+        ticket_path = f"factory/tickets/{claim['ticket']}.md"
+        old = self.cell_git(claim, "show", f"{before}:{ticket_path}")
+        new = self.cell_git(claim, "show", f"{after}:{ticket_path}")
+        line = f"OPERATOR NOTE: reviewer run {ordinal} void — duplicate"
+        appended = {
+            old.stdout + line,
+            old.stdout + line + "\n",
+            old.stdout + "\n" + line,
+            old.stdout + "\n" + line + "\n",
+        }
+        try:
+            old_voids = self.reviewer_void_records(old.stdout)
+            new_voids = self.reviewer_void_records(new.stdout)
+        except ControllerError:
+            return False
+        return (
+            old.returncode == new.returncode == 0
+            and ordinal not in old_voids
+            and new_voids == [*old_voids, ordinal]
+            and new.stdout in appended
+        )
+
+    def reviewer_void_plan(
+        self, ticket: str, ordinal: int, operator_id: str,
+    ) -> tuple[dict[str, Any], dict[str, Any], str, str]:
+        if (
+            not TICKET.fullmatch(ticket)
+            or isinstance(ordinal, bool)
+            or ordinal < 1
+            or not OPERATOR_ID.fullmatch(operator_id)
+            or operator_id == "auto"
+        ):
+            raise ControllerError("reviewer void request is invalid")
+        claim = self.operator_control_claim(ticket, "reviewer void")
+        released = (
+            claim.get("lease") == "" and "lease_released" not in claim
+            or DIGEST.fullmatch(claim.get("lease", "")) is not None
+            and claim.get("lease_released") is True
+        )
+        transition = self.transition_receipt(claim, record=False)
+        passport = self.authenticated_operator_passport(ticket)
+        passport_path = self.state / "passports" / f"{ticket}.json"
+        if (
+            claim.get("status") != "blocked"
+            or claim.get("blocked_reason") != "state-machine-refusal"
+            or claim.get("parked") is not True
+            or not released
+            or claim.get("receipt")
+            or claim.get("role")
+            or claim.get("publication_lease")
+            or self.role_active(claim)
+            or transition is None
+            or transition.get("factory_sha") != self.release_path.name
+            or transition.get("consumed") is not False
+            or transition.get("role") is not None
+            or transition.get("loop") is not None
+            or not DIGEST.fullmatch(transition.get("lease_sha256", ""))
+            or (
+                DIGEST.fullmatch(claim.get("lease", "")) is not None
+                and transition["lease_sha256"]
+                != hashlib.sha256(claim["lease"].encode()).hexdigest()
+            )
+            or passport is None
+            or passport.get("ticket") != ticket
+            or passport.get("project") != self.project
+            or passport.get("contract_version") != "1.8.0"
+            or passport.get("factory_sha") != self.release_path.name
+            or passport.get("current_state") != "Review"
+            or passport.get("branch") != claim.get("branch")
+            or transition.get("head_sha") != passport.get("head_sha")
+            or transition.get("passport_sha256")
+            != hashlib.sha256(passport_path.read_bytes()).hexdigest()
+            or transition.get("route_plan_sha256")
+            != passport.get("route_plan_sha256")
+        ):
+            raise ControllerError("reviewer void authority is unavailable")
+        ticket_path = f"factory/tickets/{ticket}.md"
+        before = self.cell_git(
+            claim, "show", f"{passport['head_sha']}:{ticket_path}",
+        )
+        if before.returncode:
+            raise ControllerError("reviewer void ticket is unavailable")
+        selected = self.reviewer_void_evidence(
+            transition, passport, before.stdout, ordinal,
+        )
+        line = f"OPERATOR NOTE: reviewer run {ordinal} void — duplicate"
+        after = before.stdout + ("" if before.stdout.endswith("\n") else "\n") + line + "\n"
+        observed_status = self.operator_ticket_change_status(
+            claim, passport, after,
+            lambda parent, child: self.exact_reviewer_void_commit(
+                claim, parent, child, ordinal,
+            ),
+            "reviewer void",
+        )
+        plan = {
+            "branch": claim["branch"],
+            "claim_sha256": hashlib.sha256(canonical_document(claim)).hexdigest(),
+            "factory_sha": self.release_path.name,
+            "operator_id": operator_id,
+            "parent_sha": passport["head_sha"],
+            "passport_file_sha256": hashlib.sha256(
+                passport_path.read_bytes()
+            ).hexdigest(),
+            "passport_sha256": passport["passport_sha256"],
+            "project": self.project,
+            "reviewer_run": selected,
+            "run_ordinal": ordinal,
+            "schema": SCHEMA,
+            "ticket": ticket,
+            "ticket_after_sha256": hashlib.sha256(after.encode()).hexdigest(),
+            "ticket_before_sha256": hashlib.sha256(before.stdout.encode()).hexdigest(),
+            "transition_lease_sha256": transition["lease_sha256"],
+            "transition_receipt_sha256": transition["receipt_sha256"],
+            "void_line": line,
+            "worktree": claim["worktree"],
+        }
+        plan["approval_hash"] = hashlib.sha256(canonical_document(plan)).hexdigest()
+        return plan, claim, after, observed_status
+
+    def plan_reviewer_void(
+        self, ticket: str, ordinal: int, operator_id: str,
+    ) -> dict[str, Any]:
+        plan, _claim, _after, observed_status = self.reviewer_void_plan(
+            ticket, ordinal, operator_id,
+        )
+        return {**plan, "status": observed_status}
+
+    def apply_reviewer_void(
+        self, ticket: str, ordinal: int, operator_id: str, approve_hash: str,
+    ) -> dict[str, Any]:
+        plan, claim, after, observed_status = self.reviewer_void_plan(
+            ticket, ordinal, operator_id,
+        )
+        if (
+            not DIGEST.fullmatch(approve_hash)
+            or approve_hash != plan["approval_hash"]
+        ):
+            raise ControllerError("reviewer void approval hash does not match")
+        head = self.apply_operator_ticket_change(
+            claim, plan, after, observed_status, operator_id,
+            f"Mark reviewer run {ordinal} void for {ticket}",
+            lambda parent, child: self.exact_reviewer_void_commit(
+                claim, parent, child, ordinal,
+            ),
+            "reviewer void",
+        )
+        return {
+            "approval_hash": approve_hash, "run_ordinal": ordinal,
+            "schema": SCHEMA, "status": "applied", "ticket": ticket,
+            "void_head": head,
         }
 
     def stranded_semantic_evidence(
@@ -7059,6 +7353,10 @@ class Controller:
                 or self.role_active(claim)
             ):
                 continue
+            try:
+                self.operator_control_worktree(claim, "semantic authorization")
+            except ControllerError:
+                continue
             transition = self.operator_transition(claim)
             if (
                 transition is None
@@ -7189,6 +7487,160 @@ class Controller:
                 head_sha=target, role="spec-linter", semantic_round=3,
             )
             claim.update(status="claimed")
+            claim.pop("blocked_reason", None)
+            self.save_claim(claim)
+
+    def recover_reviewer_voids(self, claims: list[dict[str, Any]]) -> None:
+        for claim in claims:
+            released = (
+                claim.get("lease") == "" and "lease_released" not in claim
+                or DIGEST.fullmatch(claim.get("lease", "")) is not None
+                and claim.get("lease_released") is True
+            )
+            if (
+                claim.get("status") != "blocked"
+                or claim.get("blocked_reason") != "state-machine-refusal"
+                or claim.get("parked") is not True
+                or not released
+                or claim.get("receipt")
+                or claim.get("role")
+                or claim.get("publication_lease")
+                or self.role_active(claim)
+            ):
+                continue
+            try:
+                self.operator_control_worktree(claim, "reviewer void")
+            except ControllerError:
+                continue
+            transition = self.operator_transition(claim)
+            passport = self.authenticated_operator_passport(claim["ticket"])
+            if (
+                transition is None
+                or transition.get("factory_sha") != self.release_path.name
+                or transition.get("consumed") is not False
+                or transition.get("role") is not None
+                or transition.get("loop") is not None
+                or not DIGEST.fullmatch(transition.get("lease_sha256", ""))
+                or (
+                    DIGEST.fullmatch(claim.get("lease", "")) is not None
+                    and transition["lease_sha256"]
+                    != hashlib.sha256(claim["lease"].encode()).hexdigest()
+                )
+                or passport is None
+                or passport.get("project") != self.project
+                or passport.get("contract_version") != "1.8.0"
+                or passport.get("factory_sha") != self.release_path.name
+                or passport.get("current_state") != "Review"
+                or passport.get("branch") != claim.get("branch")
+                or passport.get("route_plan_sha256")
+                != transition.get("route_plan_sha256")
+            ):
+                continue
+            parent = transition.get("head_sha", "")
+            local = self.cell_git(claim, "rev-parse", "HEAD").stdout.strip()
+            branch = self.cell_git(
+                claim, "symbolic-ref", "--quiet", "--short", "HEAD",
+            )
+            dirty = self.cell_git(
+                claim, "status", "--porcelain=v1", "-z",
+            )
+            remote_status, observed, remote = self.remote_cell_head_status(claim)
+            ticket_path = f"factory/tickets/{claim['ticket']}.md"
+            old = self.cell_git(claim, "show", f"{parent}:{ticket_path}")
+            new = self.cell_git(claim, "show", f"{local}:{ticket_path}")
+            try:
+                old_voids = self.reviewer_void_records(old.stdout)
+                new_voids = self.reviewer_void_records(new.stdout)
+            except ControllerError:
+                continue
+            added = (
+                new_voids[-1]
+                if len(new_voids) == len(old_voids) + 1
+                and new_voids[:-1] == old_voids else 0
+            )
+            if (
+                not SHA.fullmatch(parent)
+                or not SHA.fullmatch(local)
+                or parent == local
+                or branch.returncode
+                or branch.stdout.strip() != claim["branch"]
+                or dirty.returncode
+                or dirty.stdout
+                or remote_status != "pushed"
+                or observed != remote
+                or remote != local
+                or old.returncode
+                or new.returncode
+                or not added
+                or not self.exact_reviewer_void_commit(
+                    claim, parent, local, added,
+                )
+            ):
+                continue
+            try:
+                selected = self.reviewer_void_evidence(
+                    transition, passport, old.stdout, added,
+                )
+            except ControllerError:
+                continue
+            passport_path = (
+                self.state / "passports" / f"{claim['ticket']}.json"
+            )
+            before = passport
+            if passport.get("head_sha") == parent:
+                if (
+                    transition.get("passport_sha256")
+                    != hashlib.sha256(passport_path.read_bytes()).hexdigest()
+                ):
+                    continue
+                migrated = self.migrate_passport(claim, "preserve")
+                passport = self.authenticated_operator_passport(claim["ticket"])
+                if (
+                    migrated.get("status") != "ok"
+                    or passport is None
+                    or migrated.get("passport") != passport.get("passport_sha256")
+                    or not self.semantic_import_migration(
+                        before, passport, local, self.release_path.name,
+                    )
+                ):
+                    raise ControllerError("reviewer void passport migration is invalid")
+            elif passport.get("head_sha") == local:
+                history = passport.get("migration_history")
+                edge = history[-1] if isinstance(history, list) and history else {}
+                if (
+                    not isinstance(edge, dict)
+                    or edge.get("schema") != PASSPORT_MIGRATION_SCHEMA
+                    or not (
+                        edge.get("from_factory_sha")
+                        == edge.get("to_factory_sha")
+                        == self.release_path.name
+                    )
+                    or edge.get("from_head_sha") != parent
+                    or edge.get("to_head_sha") != local
+                    or edge.get("from_passport_file_sha256")
+                    != transition.get("passport_sha256")
+                    or edge.get("from_route_plan_sha256")
+                    != edge.get("to_route_plan_sha256")
+                    or edge.get("to_route_plan_sha256")
+                    != transition.get("route_plan_sha256")
+                    or passport.get("parent_file_sha256")
+                    != transition.get("passport_sha256")
+                    or passport.get("parent_digest")
+                    != edge.get("from_passport_sha256")
+                ):
+                    continue
+            else:
+                continue
+            if (
+                not passport_head_lineage(passport, parent)
+                or not self.remote_passport_valid(claim)
+            ):
+                raise ControllerError("reviewer void passport migration is invalid")
+            self.event_once(
+                "reviewer_run_void_imported", claim["ticket"],
+                head_sha=local, run_id=selected["run_id"], run_ordinal=added,
+            )
+            claim["status"] = "claimed"
             claim.pop("blocked_reason", None)
             self.save_claim(claim)
 
@@ -9403,6 +9855,9 @@ class Controller:
             "semantic-round-authorization",
         )
         self.recover_each(
+            existing, self.recover_reviewer_voids, "reviewer-run-void",
+        )
+        self.recover_each(
             existing, self.recover_upgraded_claims, "release-upgrade",
             concurrent=True,
         )
@@ -9725,6 +10180,7 @@ def main() -> None:
         "--action", choices=(
             "reconcile", "pause", "resume",
             "authorize-round-plan", "authorize-round-apply",
+            "reviewer-void-plan", "reviewer-void-apply",
         ),
         default="reconcile",
     )
@@ -9733,6 +10189,7 @@ def main() -> None:
     parser.add_argument("--factory-sha", default="")
     parser.add_argument("--role", default="")
     parser.add_argument("--semantic-round", default=0, type=int)
+    parser.add_argument("--run-ordinal", default=0, type=int)
     parser.add_argument("--operator-id", default="")
     parser.add_argument("--approve-hash", default="")
     args = parser.parse_args()
@@ -9743,24 +10200,37 @@ def main() -> None:
         if (
             (args.action == "reconcile" and any((
                 args.ticket, args.issue, args.factory_sha, args.role,
-                args.semantic_round, args.operator_id, args.approve_hash,
+                args.semantic_round, args.run_ordinal, args.operator_id,
+                args.approve_hash,
             )))
             or (args.action == "pause" and any((
                 args.factory_sha, args.role, args.semantic_round,
-                args.operator_id, args.approve_hash, not args.issue,
+                args.run_ordinal, args.operator_id, args.approve_hash,
+                not args.issue,
             )))
             or (args.action == "resume" and any((
                 args.issue, args.role, args.semantic_round,
-                args.operator_id, args.approve_hash, not args.factory_sha,
+                args.run_ordinal, args.operator_id, args.approve_hash,
+                not args.factory_sha,
             )))
             or (
                 args.action in {"authorize-round-plan", "authorize-round-apply"}
                 and any((
                     args.issue, args.factory_sha, not args.ticket,
-                    not args.role, not args.semantic_round,
+                    not args.role, not args.semantic_round, args.run_ordinal,
                     not args.operator_id,
                     args.action == "authorize-round-plan" and args.approve_hash,
                     args.action == "authorize-round-apply" and not args.approve_hash,
+                ))
+            )
+            or (
+                args.action in {"reviewer-void-plan", "reviewer-void-apply"}
+                and any((
+                    args.issue, args.factory_sha, args.role,
+                    args.semantic_round, not args.ticket,
+                    not args.run_ordinal, not args.operator_id,
+                    args.action == "reviewer-void-plan" and args.approve_hash,
+                    args.action == "reviewer-void-apply" and not args.approve_hash,
                 ))
             )
         ):
@@ -9788,6 +10258,15 @@ def main() -> None:
         elif args.action == "authorize-round-apply":
             result = controller.apply_semantic_authorization(
                 args.ticket, args.role, args.semantic_round, args.operator_id,
+                args.approve_hash,
+            )
+        elif args.action == "reviewer-void-plan":
+            result = controller.plan_reviewer_void(
+                args.ticket, args.run_ordinal, args.operator_id,
+            )
+        elif args.action == "reviewer-void-apply":
+            result = controller.apply_reviewer_void(
+                args.ticket, args.run_ordinal, args.operator_id,
                 args.approve_hash,
             )
         else:

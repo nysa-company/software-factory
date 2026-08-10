@@ -165,6 +165,12 @@ an in-flight manifest or backdate an override.
 - Do: if one final cycle is warranted, run `factory-launch <project> ticket-control authorize-round plan --ticket <T-NNN> --role spec-linter --round 3 --operator-id <ID> --json`, review its exact identities, then run the matching `authorize-round apply` command with `--approve-hash <HASH>`. The controller writes and pushes the single ticket-only child and ordinary reconciliation imports it. If duplicate exact lines already exist at the authenticated wait head, retain the existing correction procedure; this command only grants a missing round-three line.
 - Don't: add commentary to the authorization line, authorize another role or round, change another path, or let the dispatcher infer authorization. The third FAIL reaches the absolute planner–Spec-linter cap; no round-four override exists. Reviewer remains governed by its budget-only review loop and has no semantic-round authorization gate.
 
+## One successful Reviewer run is a duplicate
+
+- Notice: reconciliation refuses because authenticated successful Reviewer runs exceed recorded verdicts by exactly one. The evidence proves one duplicate exists but cannot identify which run because verdict lines do not bind run IDs.
+- Do: choose the duplicate ledger ordinal and run `factory-launch <project> ticket-control reviewer-void plan --ticket <T-NNN> --run <N> --operator-id <ID> --json`. Review the selected run identities and approval hash, then run the matching `reviewer-void apply` command with `--approve-hash <HASH>`. The controller pushes one ticket-only child containing exactly `OPERATOR NOTE: reviewer run N void — duplicate`; ordinary reconciliation imports it without launching a provider.
+- Don't: infer the ordinal, edit the parked cell, add a generic operator note, void a failed or already-voided row, or reuse the command when zero or multiple successful rows are unmatched. Those cases require new evidence or a separate repair.
+
 ## Linear, GitHub, or Railway down
 
 - Do: if Linear is down, in-flight factory work continues from the ticket files, but do not expect a new priority, Ready, approval, or unblock action to take effect until sync recovers. Check `_sync.last_success_at`, `_sync.last_error`, and `_sync.last_rejected` in the machine-local `factory/linear-map.json`. GitHub or Railway outages still pause the stages that depend on them.

@@ -5277,3 +5277,19 @@ Apply creates and non-force pushes the one direct ticket-only child already
 accepted by the existing importer. A changed approval hash, wait, claim, cell,
 head, remote, ticket, role, or round refuses before mutation; commit-before-push
 and response-loss retries converge without another child or provider call.
+
+## 2026-08-10 — Decision 373: Duplicate Reviewer voids require operator selection
+
+Category: Trust boundary
+
+The Factory may prove that exactly one authenticated successful Reviewer run
+lacks a verdict, but verdict lines do not identify the duplicate run. Sealed
+`ticket-control reviewer-void plan/apply` therefore requires the operator to
+select its ledger ordinal. The plan binds that run's authenticated evidence,
+the active release, exact blocked claim, historical lease receipt, passport,
+cell, branch, parent, ticket blobs, and operator. Apply creates and non-force
+pushes one direct ticket-only child containing the canonical void line. The
+importer migrates the passport before unblocking the claim, never acquires a
+lease or launches a provider, and crash/replay converges on the same child.
+Zero or multiple unmatched rows and inferred, malformed, moved, unsafe, or
+already-voided selections refuse without mutation.

@@ -121,10 +121,12 @@
           "pause --ticket <T-NNN> --issue <software-factory-issue-url> --json",
           "resume --ticket <T-NNN> --factory-sha <FULL_SHA> --json",
           "authorize-round plan --ticket <T-NNN> --role spec-linter --round <N> --operator-id <ID> --json",
-          "authorize-round apply --ticket <T-NNN> --role spec-linter --round <N> --operator-id <ID> --approve-hash <HASH> --json"
+          "authorize-round apply --ticket <T-NNN> --role spec-linter --round <N> --operator-id <ID> --approve-hash <HASH> --json",
+          "reviewer-void plan --ticket <T-NNN> --run <N> --operator-id <ID> --json",
+          "reviewer-void apply --ticket <T-NNN> --run <N> --operator-id <ID> --approve-hash <HASH> --json"
         ],
         "output_schema": "nysa.software-factory.controller/v1",
-        "authority": "records one exact passport-bound pause, explicitly reconstructs that ticket without scanning historical passports, or plans and applies one exact semantic-round authorization child"
+        "authority": "records one exact passport-bound pause, explicitly reconstructs that ticket without scanning historical passports, plans and applies one exact semantic-round authorization child, or plans and applies one operator-selected authenticated duplicate Reviewer void child"
       },
       "qualification": {
         "contract_version": "1.8.0",

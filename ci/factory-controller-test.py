@@ -1492,6 +1492,138 @@ class FactoryControllerTest(unittest.TestCase):
             "ticket": ticket, "worktree": str(cell),
         }
         controller = CONTROL.Controller(self.args)
+        controller.worktrees_by_branch = lambda: {
+            f"refs/heads/ticket/{ticket}": [str(cell)],
+        }
+        controller.save_claim(claim)
+        return controller, claim, cell, passport, transition
+
+    def reviewer_void_fixture(
+        self, name: str, ticket: str,
+    ) -> tuple[CONTROL.Controller, dict, Path, dict, dict]:
+        cell = self.root / "parked" / ticket
+        remote = self.root / f"{name}.git"
+        subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+        subprocess.run(
+            ["git", "init", "-q", "-b", f"ticket/{ticket}", str(cell)],
+            check=True,
+        )
+        ticket_path = cell / f"factory/tickets/{ticket}.md"
+        route_path = cell / f"factory/route-plans/{ticket}.json"
+        ticket_path.parent.mkdir(parents=True)
+        route_path.parent.mkdir(parents=True)
+        ticket_path.write_text(
+            f"# {ticket}\n\nState: Review\nKit-SHA: {self.release.name}\n"
+            "reviewer round 1: APPROVE\n",
+            encoding="utf-8",
+        )
+        route_path.write_text(
+            CONTROL.canonical({
+                "kit_sha": self.release.name,
+                "schema": "ticket-model-route-plan/v1", "ticket": ticket,
+            }) + "\n",
+            encoding="utf-8",
+        )
+        subprocess.run(["git", "-C", str(cell), "add", "."], check=True)
+        subprocess.run([
+            "git", "-C", str(cell), "-c", "user.name=Test",
+            "-c", "user.email=test@nysa.dev", "commit", "-qm", "review wait",
+        ], check=True)
+        subprocess.run(
+            ["git", "-C", str(cell), "remote", "add", "origin", str(remote)],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(cell), "push", "-q", "-u", "origin", "HEAD"],
+            check=True,
+        )
+        head = subprocess.run(
+            ["git", "-C", str(cell), "rev-parse", "HEAD"], text=True,
+            capture_output=True, check=True,
+        ).stdout.strip()
+        tree = subprocess.run(
+            ["git", "-C", str(cell), "rev-parse", "HEAD^{tree}"], text=True,
+            capture_output=True, check=True,
+        ).stdout.strip()
+        route_digest = hashlib.sha256(route_path.read_bytes()).hexdigest()
+        key = self.state / "passport.key"
+        if not key.exists():
+            key.write_bytes(b"k" * 32)
+            key.chmod(0o600)
+        completed = [{
+            "contract_version": "1.8.0", "factory_sha": self.release.name,
+            "head_before": head,
+            "manifest_sha256": hashlib.sha256(f"manifest-{number}".encode()).hexdigest(),
+            "output_sha256": hashlib.sha256(f"output-{number}".encode()).hexdigest(),
+            "role": "reviewer", "run_id": f"reviewer-{number}",
+            "transition_receipt_sha256": hashlib.sha256(
+                f"receipt-{number}".encode()
+            ).hexdigest(),
+        } for number in (1, 2)]
+        passport = PASSPORT.authenticate({
+            "base_history": [head], "branch": f"ticket/{ticket}",
+            "charge_records": [], "completed_role_evidence": completed,
+            "contract_version": "1.8.0", "current_state": "Review",
+            "factory_release_history": [{
+                "contract_version": "1.8.0", "factory_sha": self.release.name,
+            }],
+            "factory_sha": self.release.name, "head_sha": head,
+            "head_tree": tree, "migration_history": [],
+            "product_origin_sha256": hashlib.sha256(
+                b"git@example.invalid:nysa/product.git"
+            ).hexdigest(),
+            "project": "relay", "protected_base_sha": head,
+            "publication_state": "none", "route_plan_sha256": route_digest,
+            "schema": "nysa.software-factory.ticket-passport/v1",
+            "ticket": ticket,
+            "ticket_blob": subprocess.run(
+                ["git", "-C", str(cell), "rev-parse",
+                 f"HEAD:{ticket_path.relative_to(cell)}"],
+                text=True, capture_output=True, check=True,
+            ).stdout.strip(),
+            "transition_receipt_sha256": "",
+        }, key.read_bytes())
+        passports = self.state / "passports"
+        passports.mkdir(mode=0o700, exist_ok=True)
+        passport_path = passports / f"{ticket}.json"
+        PASSPORT.write_atomic(passport_path, passport)
+        historical_lease = "3" * 64
+        transition = {
+            "branch": f"ticket/{ticket}", "consumed": False,
+            "contract_version": "1.8.0", "factory_sha": self.release.name,
+            "head_sha": head,
+            "lease_sha256": hashlib.sha256(historical_lease.encode()).hexdigest(),
+            "loop": None,
+            "passport_sha256": hashlib.sha256(passport_path.read_bytes()).hexdigest(),
+            "project": "relay", "role": None,
+            "route_plan_sha256": route_digest,
+            "schema": "nysa.software-factory.transition-receipt/v1",
+            "stage": (
+                "REFUSE reviewer has 2 non-void successful run(s) but only 1 "
+                f"verdict(s) are logged on {ticket_path} — record the missing "
+                "verdict, or mark a duplicate successful row with 'OPERATOR "
+                "NOTE: reviewer run <ledger ordinal> void — duplicate'"
+            ),
+            "ticket": ticket,
+        }
+        transition["receipt_sha256"] = hashlib.sha256(
+            CONTROL.canonical_document({
+                key: value for key, value in transition.items()
+                if key != "consumed"
+            })
+        ).hexdigest()
+        CONTROL.write(self.state / f"{ticket}.json", transition)
+        claim = {
+            "blocked_reason": "state-machine-refusal",
+            "branch": f"ticket/{ticket}", "lease": "", "parked": True,
+            "priority": "normal", "publication_lease": "", "receipt": "",
+            "role": "", "schema": CONTROL.CLAIM_SCHEMA, "status": "blocked",
+            "ticket": ticket, "worktree": str(cell),
+        }
+        controller = CONTROL.Controller(self.args)
+        controller.worktrees_by_branch = lambda: {
+            f"refs/heads/ticket/{ticket}": [str(cell)],
+        }
         controller.save_claim(claim)
         return controller, claim, cell, passport, transition
 
@@ -12864,6 +12996,7 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertIn('"$4" == "--issue"', launcher)
         self.assertIn('"$4" == "--factory-sha"', launcher)
         self.assertIn('"$1" == "authorize-round"', launcher)
+        self.assertIn('"$1" == "reviewer-void"', launcher)
         self.assertIn('"${11}" == "--approve-hash"', launcher)
         self.assertEqual(contract["grammars"], [
             "pause --ticket <T-NNN> --issue "
@@ -12873,6 +13006,10 @@ class FactoryControllerTest(unittest.TestCase):
             "--round <N> --operator-id <ID> --json",
             "authorize-round apply --ticket <T-NNN> --role spec-linter "
             "--round <N> --operator-id <ID> --approve-hash <HASH> --json",
+            "reviewer-void plan --ticket <T-NNN> --run <N> "
+            "--operator-id <ID> --json",
+            "reviewer-void apply --ticket <T-NNN> --run <N> "
+            "--operator-id <ID> --approve-hash <HASH> --json",
         ])
 
     def test_dependency_refresh_race_waits_then_migrates_exact_base(self) -> None:
@@ -14081,6 +14218,7 @@ class FactoryControllerTest(unittest.TestCase):
         )
         self.migrate_semantic_wait_passport(crash, crash_claim)
         restarted = CONTROL.Controller(self.args)
+        restarted.worktrees_by_branch = crash.worktrees_by_branch
         restarted.ensure_lease = lambda *_args: self.fail("lease reacquired")
 
         def validate_only(*args, **_kwargs):
@@ -14263,6 +14401,133 @@ class FactoryControllerTest(unittest.TestCase):
             ).stdout.strip(),
             unsafe_head,
         )
+
+    def test_reviewer_void_plan_apply_and_import_are_exact_and_replayable(
+        self,
+    ) -> None:
+        def state_bytes() -> dict[Path, bytes]:
+            return {
+                path.relative_to(self.state): path.read_bytes()
+                for path in self.state.rglob("*") if path.is_file()
+            }
+
+        controller, claim, cell, passport, transition = self.reviewer_void_fixture(
+            "reviewer-control", "T-216",
+        )
+        remote = self.root / "reviewer-control.git"
+        before = state_bytes()
+        plan = controller.plan_reviewer_void("T-216", 2, "operator")
+        self.assertEqual(state_bytes(), before)
+        self.assertEqual(plan["status"], "planned")
+        self.assertEqual(plan["reviewer_run"]["run_id"], "reviewer-2")
+        self.assertEqual(
+            plan["transition_lease_sha256"], transition["lease_sha256"],
+        )
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "approval hash does not match",
+        ):
+            controller.apply_reviewer_void(
+                "T-216", 2, "operator", "0" * 64,
+            )
+        result = controller.apply_reviewer_void(
+            "T-216", 2, "operator", plan["approval_hash"],
+        )
+        head = result["void_head"]
+        self.assertEqual(result["status"], "applied")
+        self.assertTrue(controller.exact_reviewer_void_commit(
+            claim, passport["head_sha"], head, 2,
+        ))
+        self.assertEqual(
+            subprocess.run(
+                ["git", "--git-dir", str(remote), "rev-parse", "ticket/T-216"],
+                text=True, capture_output=True, check=True,
+            ).stdout.strip(),
+            head,
+        )
+        self.assertEqual(
+            controller.apply_reviewer_void(
+                "T-216", 2, "operator", plan["approval_hash"],
+            ),
+            result,
+        )
+        with self.assertRaisesRegex(CONTROL.ControllerError, "evidence is invalid"):
+            controller.plan_reviewer_void("T-216", 3, "operator")
+
+        order: list[str] = []
+
+        def migrate(_claim: dict, _mode: str) -> dict:
+            order.append("passport")
+            migrated = self.migrate_semantic_wait_passport(controller, claim)
+            return {"passport": migrated["passport_sha256"], "status": "ok"}
+
+        save = controller.save_claim
+
+        def save_after_passport(item: dict) -> None:
+            order.append("claim")
+            save(item)
+
+        controller.migrate_passport = migrate
+        controller.save_claim = save_after_passport
+        controller.remote_passport_valid = lambda _claim: True
+        controller.ensure_lease = lambda *_args: self.fail("lease reacquired")
+        controller.run_role = lambda *_args: self.fail("provider role launched")
+        controller.recover_reviewer_voids([claim])
+        self.assertEqual(order, ["passport", "claim"])
+        self.assertEqual(claim["status"], "claimed")
+        self.assertEqual(claim["lease"], "")
+        self.assertNotIn("blocked_reason", claim)
+        imported = [
+            CONTROL.read(path) for path in controller.events.glob("*.json")
+            if CONTROL.read(path).get("event") == "reviewer_run_void_imported"
+        ]
+        self.assertEqual(len(imported), 1)
+        self.assertEqual(imported[0]["run_id"], "reviewer-2")
+
+        crash, crash_claim, _cell, _passport, _transition = (
+            self.reviewer_void_fixture("reviewer-control-crash", "T-217")
+        )
+        crash_plan = crash.plan_reviewer_void("T-217", 1, "operator")
+        crash.apply_reviewer_void(
+            "T-217", 1, "operator", crash_plan["approval_hash"],
+        )
+        self.migrate_semantic_wait_passport(crash, crash_claim)
+        restarted = CONTROL.Controller(self.args)
+        restarted.worktrees_by_branch = crash.worktrees_by_branch
+        restarted.migrate_passport = lambda *_args: self.fail("passport remigrated")
+        restarted.remote_passport_valid = lambda _claim: True
+        restarted.ensure_lease = lambda *_args: self.fail("lease reacquired")
+        restarted.run_role = lambda *_args: self.fail("provider role launched")
+        restarted.recover_reviewer_voids([crash_claim])
+        self.assertEqual(crash_claim["status"], "claimed")
+        self.assertNotIn("blocked_reason", crash_claim)
+
+        confined, _confined_claim, confined_cell, _passport, _transition = (
+            self.reviewer_void_fixture("reviewer-control-confined", "T-218")
+        )
+        confined_state = state_bytes()
+        for registered in (
+            {},
+            {"refs/heads/ticket/T-218": [
+                str(confined_cell), str(self.root / "foreign-cell"),
+            ]},
+        ):
+            confined.worktrees_by_branch = lambda value=registered: value
+            with self.assertRaisesRegex(
+                CONTROL.ControllerError, "worktree is unsafe",
+            ):
+                confined.plan_reviewer_void("T-218", 1, "operator")
+            self.assertEqual(state_bytes(), confined_state)
+        foreign = self.root / "foreign-cell"
+        confined_cell.rename(foreign)
+        confined_cell.symlink_to(foreign, target_is_directory=True)
+        confined.worktrees_by_branch = lambda: {
+            "refs/heads/ticket/T-218": [str(foreign)],
+        }
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "worktree is unsafe",
+        ):
+            confined.plan_reviewer_void("T-218", 1, "operator")
+        self.assertEqual(state_bytes(), confined_state)
 
     def test_semantic_authorization_invalid_heads_are_recoverable(self) -> None:
         canonical = "OPERATOR AUTHORIZATION: spec-linter round 3"
