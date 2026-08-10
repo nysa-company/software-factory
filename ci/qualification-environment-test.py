@@ -2172,7 +2172,7 @@ ledger.chmod(0o600)
                 source_product_sha, manifest,
             )
 
-    def test_successor_migration_gap_requires_completed_role_chain(self) -> None:
+    def test_repeated_successor_gap_uses_authenticated_edge_release(self) -> None:
         base = run(self.product, "git", "rev-parse", "HEAD")
         test_path = self.product / "app/tests/feature.test.js"
         test_path.parent.mkdir(parents=True)
@@ -2185,7 +2185,7 @@ ledger.chmod(0o600)
         run(self.product, "git", "add", "app/server.js")
         run(self.product, "git", "commit", "-qm", "builder output")
         end = run(self.product, "git", "rev-parse", "HEAD")
-        source = "b" * 40
+        source = "863e38a68235dd682c56ca44ee079797f626413a"
 
         def completion(role: str, head: str, run_id: str) -> dict[str, object]:
             return {
@@ -2245,6 +2245,92 @@ ledger.chmod(0o600)
                     self.factory, self.product, passport, "T-101",
                     case_charges, case_completed, base, end, source,
                 ))
+
+        controller = (self.workspace / "repeat-successor-controller").resolve()
+        passports = controller / "passports"
+        passports.mkdir(mode=0o700, parents=True)
+        controller.chmod(0o700)
+        secret = b"p" * 32
+        key = controller / "passport.key"
+        key.write_bytes(secret)
+        key.chmod(0o600)
+        successor = "cbc8bd12fa16af3f6a5872a3b4742f5be5906a8e"
+        candidate = "481a958642db2382b96510d637ea50ed5384e047"
+        for ticket in ("T-102", "T-103"):
+            self.write_passport(
+                passports / f"{ticket}.json", secret, ticket, successor,
+            )
+        path = passports / "T-101.json"
+        self.write_passport(path, secret, "T-101", successor, source)
+        value = json.loads(path.read_text(encoding="utf-8"))
+        value.pop("authentication_sha256")
+        value.pop("passport_sha256")
+
+        def migration(
+            from_factory: str, to_factory: str, from_head: str, to_head: str,
+            to_base: str = "9" * 40, to_route: str = "5" * 64,
+        ) -> dict[str, str]:
+            return {
+                "from_factory_sha": from_factory,
+                "from_head_sha": from_head,
+                "from_passport_file_sha256": "2" * 64,
+                "from_passport_sha256": "3" * 64,
+                "from_protected_base_sha": "9" * 40,
+                "from_route_plan_sha256": "5" * 64,
+                "schema": "nysa.software-factory.ticket-passport-migration/v2",
+                "to_factory_sha": to_factory,
+                "to_head_sha": to_head,
+                "to_protected_base_sha": to_base,
+                "to_route_plan_sha256": to_route,
+            }
+
+        value.update({
+            "charge_records": charges,
+            "completed_role_evidence": completed,
+            "cumulative_charges_micro_usd": 2,
+            "factory_release_history": [
+                {"contract_version": "1.8.0", "factory_sha": source},
+                {"contract_version": "1.8.0", "factory_sha": successor},
+            ],
+            "head_sha": end,
+            "migration_history": [
+                migration(source, source, base, base),
+                migration(source, source, end, end),
+                migration(
+                    source, successor, end, end,
+                    "7" * 40, "8" * 64,
+                ),
+            ],
+        })
+        self.sign_passport(path, secret, value)
+        manifest = {
+            "factory_sha": candidate,
+            "mode": "successor",
+            "source_factory_sha": successor,
+            "tickets": ["T-101", "T-102", "T-103"],
+        }
+        ENVIRONMENT.validate_successor_upgrade_cohort(
+            self.factory, self.product, controller, "relay", successor,
+            run(self.product, "git", "rev-parse", "HEAD"), manifest,
+        )
+        value = json.loads(path.read_text(encoding="utf-8"))
+        value.pop("authentication_sha256")
+        value.pop("passport_sha256")
+        value["charge_records"] = [
+            {**item, "factory_sha": successor} for item in charges
+        ]
+        value["completed_role_evidence"] = [
+            {**item, "factory_sha": successor} for item in completed
+        ]
+        self.sign_passport(path, secret, value)
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError,
+            "T-101: successor qualification requires every selected ticket",
+        ):
+            ENVIRONMENT.validate_successor_upgrade_cohort(
+                self.factory, self.product, controller, "relay", successor,
+                run(self.product, "git", "rev-parse", "HEAD"), manifest,
+            )
 
     def test_candidate_native_successor_refuses_before_upgrade_publication(self) -> None:
         args = argparse.Namespace(

@@ -5293,3 +5293,17 @@ importer migrates the passport before unblocking the claim, never acquires a
 lease or launches a provider, and crash/replay converges on the same child.
 Zero or multiple unmatched rows and inferred, malformed, moved, unsafe, or
 already-voided selections refuse without mutation.
+
+## 2026-08-10 — Decision 374: Successor gaps bind their historical release
+
+Category: Trust boundary
+
+A repeated successor revalidates every adjacent passport migration under the
+Factory release authenticated by that edge, not only the new manifest source.
+Direct head continuity remains sufficient. A head gap instead requires the
+existing exact completed-role chain whose Factory SHA equals the prior edge's
+target release and whose charges, linear Git ancestry, role-owned paths, and
+lane path policy all validate. The complete migration list must still preserve
+Factory, protected-base, route, release-history, and final passport continuity.
+A bare, foreign, failed, cancelled, ambiguous, or policy-violating gap remains
+invalid, and the validator writes no recovery state.

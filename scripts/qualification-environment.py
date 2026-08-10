@@ -2201,13 +2201,13 @@ def validate_successor_upgrade_cohort(
                         == following["from_route_plan_sha256"]
                         and (
                             prior["to_head_sha"] == following["from_head_sha"]
-                            or prior["to_factory_sha"] == source
-                            and isinstance(charges, list)
+                            or isinstance(charges, list)
                             and isinstance(completed, list)
                             and completed_role_gap(
                                 factory, product, passport, ticket,
                                 charges, completed, prior["to_head_sha"],
-                                following["from_head_sha"], source,
+                                following["from_head_sha"],
+                                prior["to_factory_sha"],
                             )
                         )
                         for prior, following in zip(migrations, migrations[1:])
