@@ -12650,18 +12650,20 @@ class FactoryControllerTest(unittest.TestCase):
         with patch.dict(os.environ, {"FACTORY_RELEASE_PATH": str(foreign)}):
             self.assertIsNone(CONTROL.Controller(self.args).worktree_root)
 
-        with tempfile.TemporaryDirectory(
-            prefix="nysa-sf-qualification.", dir="/private/tmp",
-        ) as directory:
-            lane = Path(directory).resolve()
-            release = lane / "releases" / ("d" * 40)
-            release.mkdir(parents=True)
-            self.args.release_path = release
-            with patch.dict(os.environ, {"FACTORY_RELEASE_PATH": str(release)}):
-                self.assertEqual(
-                    CONTROL.Controller(self.args).worktree_root,
-                    lane / "worktrees/relay",
-                )
+        private_tmp = Path("/private/tmp")
+        if private_tmp.is_dir():
+            with tempfile.TemporaryDirectory(
+                prefix="nysa-sf-qualification.", dir=private_tmp,
+            ) as directory:
+                lane = Path(directory).resolve()
+                release = lane / "releases" / ("d" * 40)
+                release.mkdir(parents=True)
+                self.args.release_path = release
+                with patch.dict(os.environ, {"FACTORY_RELEASE_PATH": str(release)}):
+                    self.assertEqual(
+                        CONTROL.Controller(self.args).worktree_root,
+                        lane / "worktrees/relay",
+                    )
 
     def test_qualification_parks_checkpoint_under_durable_controller_state(self) -> None:
         run = lambda *command, cwd=None: subprocess.run(
