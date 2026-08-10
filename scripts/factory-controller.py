@@ -5126,7 +5126,16 @@ class Controller:
         current: dict[str, Any], passport: dict[str, Any],
     ) -> bool:
         migrations = passport.get("migration_history")
-        edge = migrations[-1] if isinstance(migrations, list) and migrations else {}
+        starts = [
+            index for index, edge in enumerate(migrations or [])
+            if valid_v2_migration(edge)
+            and edge["from_factory_sha"] == marker.get("factory_sha")
+            and edge["from_head_sha"] == marker.get("head_sha")
+            and edge["from_passport_sha256"]
+            == marker.get("passport_sha256")
+        ] if isinstance(migrations, list) else []
+        suffix = migrations[starts[0]:] if len(starts) == 1 else []
+        final = suffix[-1] if suffix else {}
         if (
             set(marker) != {
                 "branch", "factory_sha", "head_sha", "passport_sha256",
@@ -5136,23 +5145,42 @@ class Controller:
             != "nysa.software-factory.reconciliation-boundary/v1"
             or marker.get("ticket") != claim["ticket"]
             or marker.get("branch") != claim["branch"]
-            or marker.get("factory_sha") != self.release_path.name
             or current.get("run_snapshot_sha256")
             != marker.get("run_snapshot_sha256")
-            or not valid_v2_migration(edge)
-            or edge.get("from_factory_sha") != marker.get("factory_sha")
-            or edge.get("to_factory_sha") != self.release_path.name
-            or edge.get("from_head_sha") != marker.get("head_sha")
-            or edge.get("from_passport_sha256")
-            != marker.get("passport_sha256")
-            or edge.get("to_head_sha") != passport.get("head_sha")
-            or edge.get("to_protected_base_sha")
+            or current.get("factory_sha") != self.release_path.name
+            or current.get("head_sha") != passport.get("head_sha")
+            or current.get("passport_sha256")
+            != passport.get("passport_sha256")
+            or passport.get("ticket") != claim["ticket"]
+            or passport.get("branch") != claim["branch"]
+            or passport.get("factory_sha") != self.release_path.name
+            or not suffix
+            or not all(valid_v2_migration(edge) for edge in suffix)
+            or not all(
+                prior["to_factory_sha"] == following["from_factory_sha"]
+                and prior["to_head_sha"] == following["from_head_sha"]
+                and prior["to_protected_base_sha"]
+                == following["from_protected_base_sha"]
+                and prior["to_route_plan_sha256"]
+                == following["from_route_plan_sha256"]
+                for prior, following in zip(suffix, suffix[1:])
+            )
+            or not passport_head_lineage(passport, marker.get("head_sha", ""))
+            or not successor_release_lineage(
+                passport.get("factory_release_history"), migrations,
+                marker.get("factory_sha", ""), self.release_path.name,
+                valid_v2_migration,
+            )
+            or final.get("to_factory_sha") != self.release_path.name
+            or final.get("to_head_sha") != passport.get("head_sha")
+            or final.get("to_protected_base_sha")
             != passport.get("protected_base_sha")
-            or edge.get("to_route_plan_sha256")
+            or final.get("to_route_plan_sha256")
             != passport.get("route_plan_sha256")
-            or passport.get("parent_digest") != marker.get("passport_sha256")
+            or passport.get("parent_digest")
+            != final.get("from_passport_sha256")
             or passport.get("parent_file_sha256")
-            != edge.get("from_passport_file_sha256")
+            != final.get("from_passport_file_sha256")
         ):
             return False
         status = subprocess.run(

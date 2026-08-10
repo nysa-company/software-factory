@@ -568,11 +568,13 @@ Every pre-provider worker submission also records a passport-, head-, route-,
 run-snapshot-, and release-bound reconciliation marker. A restart may reopen a
 receipt-free blocked claim only when that marker and every current invariant
 still match; typed blocks, pauses, dirty or diverged cells, terminal evidence,
-active runs, and cross-release claims remain closed. If the interrupted worker
-already wrote one authenticated same-release passport successor, the marker may
-advance only across that exact latest v2 edge with an unchanged run snapshot,
-clean cell, and exact current remote passport. A durable authorization event
-precedes the atomic advance, so either crash edge replays idempotently.
+active runs, and unauthenticated cross-release claims remain closed. If the
+interrupted worker already wrote one or more authenticated passport successors,
+the marker may advance only across the unique contiguous v2 suffix from its
+exact release, head, and passport digest to the current passport, with aligned
+release history, an unchanged run snapshot, clean cell, and exact current
+remote passport. A durable authorization event precedes the atomic advance, so
+either crash edge replays idempotently.
 Conflicting evidence is persisted as a ticket-local block before best-effort
 resource cleanup and cannot prevent healthy siblings from reconciling. The
 marker is consumed after ordinary worker completion, making recovery one-use
