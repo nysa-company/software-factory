@@ -92,8 +92,9 @@ everything the Factory actually enforces lives here.
 - Qualification reconciliation shadows selected-ticket Linear freshness at a
   300-second limit immediately after claim loading and before recovery. A
   typed failure stops the sweep and routes the operator through the existing
-  sealed environment restore; production skips the check, the controller
-  gains no Linear authority, and real claim dispatch retains its normal
+  sealed environment restore, which refreshes every selected ticket even when
+  its prior initialization was complete. Production skips the check, the
+  controller gains no Linear authority, and real claim dispatch retains its normal
   600-second re-read.
 - Qualification fallback reads the strict manifest at the receipt-bound
   protected product commit. Ordinary lanes authorize only their active Factory;
@@ -5181,3 +5182,15 @@ and current receipt bind the final passport. A Kit-SHA mismatch refusal blocks
 at `route-migration-required` without ticket-attest, passport, branch, or
 bundle mutation. This corrects Decision 312's former ordering while retaining
 its fail-closed receipt validation after the route is current.
+
+## 2026-08-09 — Decision 367: Qualification restore refreshes the selected cohort
+
+Category: Reliability
+
+The signed safe-pause `--restore` path reruns bounded exact-ticket Linear
+initialization for every selected ticket. Ordinary preparation still skips a
+complete selected entry, but restore no longer mistakes an old successful
+timestamp for current freshness. The controller retains no Linear API or
+timestamp-writing authority, and restore still revalidates the durable lane,
+pause, product cleanliness, provider state, and sealed identity before
+publication.

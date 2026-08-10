@@ -1134,7 +1134,12 @@ ledger.chmod(0o600)
     def test_selected_linear_refreshes_already_initialized_cohort(self) -> None:
         mapping = self.workspace / "selected-linear-map.json"
         ENVIRONMENT.write(mapping, {
-            "_config": {}, "_sync": {}, "initiatives": {},
+            "_config": {},
+            "_sync": {"selected_ticket_success_at": {
+                ticket: "2026-08-07T00:00:00+00:00"
+                for ticket in ("T-101", "T-102", "T-103")
+            }},
+            "initiatives": {},
             "tickets": {
                 ticket: {
                     "operator_fields_initialized": True,
@@ -1161,7 +1166,7 @@ ledger.chmod(0o600)
             ENVIRONMENT.subprocess, "run", side_effect=refresh,
         ) as invoked:
             ENVIRONMENT.initialize_selected_linear(
-                self.factory, self.product, mapping, ledger,
+                self.factory, self.product, mapping, ledger, refresh=True,
             )
         self.assertEqual(invoked.call_count, 3)
         self.assertEqual(
@@ -2035,6 +2040,7 @@ ledger.chmod(0o600)
                 **vars(args), restore=True,
             ))
         initialize.assert_called_once()
+        self.assertIs(initialize.call_args.kwargs.get("refresh"), True)
         active = ENVIRONMENT.read(self.root / "projects/relay/active.json")
         self.assertEqual(restored["status"], "restored")
         self.assertEqual(active["controller_state_path"], str(controller))
