@@ -1171,6 +1171,7 @@ def resume_operator_state(
 
 def initialize_selected_linear(
     factory: Path, product: Path, map_path: Path, ledger_path: Path,
+    *, refresh: bool = False,
 ) -> None:
     try:
         mapping = read(map_path)
@@ -1188,7 +1189,7 @@ def initialize_selected_linear(
     }
     for ticket in selected:
         mapping = read(map_path)
-        if selected_linear_ready(mapping, ticket):
+        if not refresh and selected_linear_ready(mapping, ticket):
             continue
         result = subprocess.run(
             [
@@ -2947,7 +2948,9 @@ def _prepare(args: argparse.Namespace) -> dict[str, Any]:
                 authority, identity, manifest["tickets"], seed,
             )
         if restoring:
-            initialize_selected_linear(factory, product, map_path, ledger_path)
+            initialize_selected_linear(
+                factory, product, map_path, ledger_path, refresh=True,
+            )
             validate_runtime_ledger(ledger_path)
             if command(
                 "git", "-C", str(product), "status", "--porcelain",

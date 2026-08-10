@@ -1834,7 +1834,9 @@ claims and before cancellation, terminal, passport, preflight, or upgrade
 recovery. A stale or invalid result records one bounded admission incident and
 stops the sweep with no recovery, claim, model, or provider mutation. The
 operator uses the existing sealed qualification `--restore`; the controller
-receives no Linear API or timestamp-writing authority. A fresh `SHADOW` or
+receives no Linear API or timestamp-writing authority. Restore reinitializes
+every selected ticket, including entries that were previously complete but
+have aged past the admission limit. A fresh `SHADOW` or
 `WAIT` enters the unchanged flow, and the later real claim still re-reads the
 map under its normal 600-second contract. Production does not run this
 qualification headroom check.
