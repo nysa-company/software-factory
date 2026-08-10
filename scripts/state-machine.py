@@ -3082,10 +3082,6 @@ def govern_loop(
     text = (
         args.workdir / "factory" / "tickets" / f"{args.ticket}.md"
     ).read_text(encoding="utf-8")
-    reviewer = re.findall(
-        r"^\s*reviewer round\s+\d+:\s*(APPROVE|REQUEST CHANGES)\s*$",
-        text, re.I | re.M,
-    )
     spec = re.findall(
         r"^\s*SPEC-LINT:\s*(PASS|FAIL)(?:\s+—\s+.*)?\s*$",
         text, re.I | re.M,
@@ -3094,14 +3090,6 @@ def govern_loop(
     attempt = 0
     cap_stage = False
     if (
-        reviewer
-        and reviewer[-1].upper() == "REQUEST CHANGES"
-        and (stage.startswith("FIX ") or stage == "RUN reviewer")
-    ):
-        kind = "builder-reviewer"
-        attempt = sum(item.upper() == "REQUEST CHANGES" for item in reviewer)
-        cap_stage = stage.startswith("FIX ")
-    elif (
         spec
         and spec[-1].upper() == "FAIL"
         and (

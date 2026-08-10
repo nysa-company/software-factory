@@ -5254,3 +5254,13 @@ dispatch and only removes a clean cell with no claim, dispatch lease, or active
 run. Dirty, claimed, leased, active, foreign-branch, and ambiguous cells remain
 untouched; local branches and remote refs are preserved. The sealed launcher
 binds the exact worktree root, and restart simply repeats the idempotent scan.
+
+## 2026-08-10 — Decision 371: Reviewer repair remains budget-only
+
+Category: Reliability
+
+The deterministic state machine does not impose a semantic round cap on the
+Builder–Reviewer loop. Every authenticated `REQUEST CHANGES` verdict continues
+through its exact `FIX-OWNER` route until ordinary ticket-budget admission
+refuses another paid attempt. The three-round hard cap remains exclusive to the
+Planner–Spec-linter loop; contract-repair limits are unchanged.

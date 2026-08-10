@@ -211,7 +211,7 @@ class StateMachineTest(unittest.TestCase):
         with self.assertRaisesRegex(STATE.StateError, "unsupported transition"):
             STATE.stage_role("FIX builder-or-test-author")
 
-    def test_rework_loops_are_visible_and_stop_at_three_failed_laps(self) -> None:
+    def test_spec_lint_stops_at_three_and_reviewer_remains_budget_only(self) -> None:
         ticket = self.product / "factory/tickets/T-110.md"
         ticket.write_text(
             "# T-110\n\nState: Planning\n"
@@ -238,11 +238,21 @@ class StateMachineTest(unittest.TestCase):
             encoding="utf-8",
         )
         stage, loop = STATE.govern_loop(self.args, "FIX builder", True)
+        self.assertEqual(stage, "FIX builder")
+        self.assertIsNone(loop)
+        stage, loop = STATE.govern_loop(self.args, "RUN reviewer", False)
+        self.assertEqual(stage, "RUN reviewer")
+        self.assertIsNone(loop)
         self.assertEqual(
-            stage,
-            "ESCALATE builder-reviewer loop cap reached; attempts=3; limit=3",
+            STATE.verified_preflight_stage(self.args, {
+                "stage": "RUN reviewer",
+                "loop": {
+                    "attempt": 3, "capped": True,
+                    "kind": "builder-reviewer", "limit": 3,
+                },
+            }),
+            "RUN reviewer",
         )
-        self.assertEqual(loop["kind"], "builder-reviewer")
 
         ticket.write_text("# T-110\n\nState: Building\n", encoding="utf-8")
         with mock.patch.object(STATE, "contract_repair_attempt", return_value=3):
