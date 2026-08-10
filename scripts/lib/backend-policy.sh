@@ -189,65 +189,139 @@ else:
 PY
 }
 
-factory_prepare_claude_probe_config() {
-  python3 - "$1/.credentials.json" "$2/.credentials.json" <<'PY'
+factory_prepare_claude_config() {
+  python3 - "$1/.credentials.json" "$2/.credentials.json" \
+    "$HOME/.factory/claude-oauth-token" <<'PY'
+import json
 import os
 import pathlib
+import re
 import stat
 import sys
+import time
 
-source, destination = map(pathlib.Path, sys.argv[1:])
+source, destination, token_path = map(pathlib.Path, sys.argv[1:])
 
 def refuse(reason):
     print(reason)
     raise SystemExit(1)
 
-try:
-    source_info = source.lstat()
-except FileNotFoundError:
-    refuse("claude_credential_missing")
-except OSError:
-    refuse("claude_credential_unreadable")
+token_present = token_path.exists() or token_path.is_symlink()
+if token_present:
+    try:
+        source_info = token_path.lstat()
+        source_root_info = token_path.parent.lstat()
+        if (
+            not token_path.is_absolute()
+            or not stat.S_ISDIR(source_root_info.st_mode)
+            or source_root_info.st_uid != os.geteuid()
+            or stat.S_IMODE(source_root_info.st_mode) != 0o700
+            or token_path.is_symlink()
+            or not stat.S_ISREG(source_info.st_mode)
+            or source_info.st_uid != os.geteuid()
+            or stat.S_IMODE(source_info.st_mode) != 0o600
+            or source_info.st_nlink != 1
+            or source_info.st_size > 4096
+        ):
+            raise ValueError
+        source_fd = os.open(
+            token_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        )
+        with os.fdopen(source_fd, "r", encoding="utf-8") as stream:
+            opened = os.fstat(stream.fileno())
+            token = stream.read(4097).strip()
+            after = os.fstat(stream.fileno())
+        identity = lambda value: (
+            value.st_dev,
+            value.st_ino,
+            value.st_mode,
+            value.st_nlink,
+            value.st_uid,
+            value.st_size,
+            value.st_mtime_ns,
+        )
+        if (
+            identity(source_info) != identity(opened)
+            or identity(opened) != identity(after)
+            or not re.fullmatch(r"sk-ant-oat01-[A-Za-z0-9_-]{80,}", token)
+        ):
+            raise ValueError
+        expires_at = (
+            source_info.st_mtime_ns // 1_000_000
+            + 365 * 24 * 60 * 60 * 1000
+        )
+        if expires_at <= int(time.time() * 1000) + 300_000:
+            raise ValueError
+        data = (
+            json.dumps(
+                {
+                    "claudeAiOauth": {
+                        "accessToken": token,
+                        "expiresAt": expires_at,
+                        "refreshToken": "",
+                        "refreshTokenExpiresAt": expires_at,
+                        "scopes": ["user:inference"],
+                        "subscriptionType": "team",
+                    }
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n"
+        ).encode()
+    except (OSError, UnicodeError, ValueError):
+        refuse("claude_subscription_token_unsafe")
+else:
+    try:
+        source_info = source.lstat()
+    except FileNotFoundError:
+        refuse("claude_credential_missing")
+    except OSError:
+        refuse("claude_credential_unreadable")
+    mode = stat.S_IMODE(source_info.st_mode)
+    if source.is_symlink():
+        refuse("claude_credential_symlink")
+    if not stat.S_ISREG(source_info.st_mode):
+        refuse("claude_credential_nonregular")
+    if source_info.st_uid != os.geteuid():
+        refuse("claude_credential_foreign_owner")
+    if source_info.st_nlink != 1:
+        refuse("claude_credential_hardlinked")
+    if mode & 0o077:
+        refuse(f"claude_credential_mode_{mode:04o}")
+    if source_info.st_size > 1_000_000:
+        refuse("claude_credential_oversized")
+    try:
+        source_fd = os.open(
+            source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        )
+    except OSError:
+        refuse("claude_credential_changed")
+    try:
+        opened = os.fstat(source_fd)
+        if (
+            (opened.st_dev, opened.st_ino)
+            != (source_info.st_dev, source_info.st_ino)
+            or not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
+        ):
+            refuse("claude_credential_changed")
+        data = os.read(source_fd, 1_000_001)
+    finally:
+        os.close(source_fd)
+    if len(data) > 1_000_000:
+        refuse("claude_credential_oversized")
+
 try:
     destination_root_info = destination.parent.lstat()
 except OSError:
     refuse("claude_probe_config_unsafe")
-mode = stat.S_IMODE(source_info.st_mode)
-if source.is_symlink():
-    refuse("claude_credential_symlink")
-if not stat.S_ISREG(source_info.st_mode):
-    refuse("claude_credential_nonregular")
-if source_info.st_uid != os.geteuid():
-    refuse("claude_credential_foreign_owner")
-if source_info.st_nlink != 1:
-    refuse("claude_credential_hardlinked")
-if mode & 0o077:
-    refuse(f"claude_credential_mode_{mode:04o}")
-if source_info.st_size > 1_000_000:
-    refuse("claude_credential_oversized")
 if (
     not stat.S_ISDIR(destination_root_info.st_mode)
     or destination_root_info.st_uid != os.geteuid()
     or stat.S_IMODE(destination_root_info.st_mode) & 0o077
 ):
     refuse("claude_probe_config_unsafe")
-try:
-    source_fd = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-except OSError:
-    refuse("claude_credential_changed")
-try:
-    opened = os.fstat(source_fd)
-    if (
-        (opened.st_dev, opened.st_ino) != (source_info.st_dev, source_info.st_ino)
-        or not stat.S_ISREG(opened.st_mode)
-        or opened.st_nlink != 1
-    ):
-        refuse("claude_credential_changed")
-    data = os.read(source_fd, 1_000_001)
-finally:
-    os.close(source_fd)
-if len(data) > 1_000_000:
-    refuse("claude_credential_oversized")
 destination_fd = os.open(
     destination,
     os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
@@ -416,7 +490,7 @@ factory_probe_adapter() {
         done
       fi
       if [[ "$PROBE_REASON" == "unclassified" ]]; then
-        if ! credential_reason="$(factory_prepare_claude_probe_config \
+        if ! credential_reason="$(factory_prepare_claude_config \
             "$claude_config_dir" "$claude_probe_config")"; then
           PROBE_STATE="INVALID"
           PROBE_REASON="${credential_reason:-credential_invalid}"
