@@ -12611,6 +12611,58 @@ class FactoryControllerTest(unittest.TestCase):
             ],
         )
 
+    def test_controller_derives_worktree_root_without_new_launcher_args(
+        self,
+    ) -> None:
+        launcher = (
+            ROOT / "integrations/hermes/bin/factory-launch"
+        ).read_text(encoding="utf-8")
+        reconcile = launcher.split("  reconcile)", 1)[1].split("\n    ;;", 1)[0]
+        self.assertNotIn("--worktree-root", reconcile)
+        self.assertNotIn("CONTROLLER_WORKTREE_ROOT", reconcile)
+
+        with patch.dict(os.environ, {"FACTORY_RELEASE_PATH": ""}):
+            self.assertIsNone(CONTROL.Controller(self.args).worktree_root)
+        home = self.root / "home"
+        release = home / ".factory/kits/releases" / ("b" * 40)
+        release.mkdir(parents=True)
+        self.args.release_path = release
+        with patch.dict(
+            os.environ, {
+                "FACTORY_RELEASE_PATH": str(release),
+                "HOME": str(home),
+            },
+        ):
+            self.assertEqual(
+                CONTROL.Controller(self.args).worktree_root,
+                home / ".factory/worktrees/relay",
+            )
+            explicit = self.root / "explicit"
+            self.args.worktree_root = explicit
+            self.assertEqual(CONTROL.Controller(self.args).worktree_root, explicit)
+            self.args.worktree_root = None
+            os.environ["FACTORY_RELEASE_PATH"] = str(release) + ".moved"
+            self.assertIsNone(CONTROL.Controller(self.args).worktree_root)
+
+        foreign = self.root / "foreign/releases" / ("c" * 40)
+        foreign.mkdir(parents=True)
+        self.args.release_path = foreign
+        with patch.dict(os.environ, {"FACTORY_RELEASE_PATH": str(foreign)}):
+            self.assertIsNone(CONTROL.Controller(self.args).worktree_root)
+
+        with tempfile.TemporaryDirectory(
+            prefix="nysa-sf-qualification.", dir="/private/tmp",
+        ) as directory:
+            lane = Path(directory).resolve()
+            release = lane / "releases" / ("d" * 40)
+            release.mkdir(parents=True)
+            self.args.release_path = release
+            with patch.dict(os.environ, {"FACTORY_RELEASE_PATH": str(release)}):
+                self.assertEqual(
+                    CONTROL.Controller(self.args).worktree_root,
+                    lane / "worktrees/relay",
+                )
+
     def test_qualification_parks_checkpoint_under_durable_controller_state(self) -> None:
         run = lambda *command, cwd=None: subprocess.run(
             command, cwd=cwd, text=True, capture_output=True, check=True

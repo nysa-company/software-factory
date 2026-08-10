@@ -408,6 +408,24 @@ class Controller:
         self.release_path = args.release_path.resolve(strict=True)
         self.state = safe_directory(args.state_dir)
         worktree_root = getattr(args, "worktree_root", None)
+        if (
+            worktree_root is None
+            and os.environ.get("FACTORY_RELEASE_PATH") == str(self.release_path)
+            and SHA.fullmatch(self.release_path.name)
+        ):
+            release_root = self.release_path.parent
+            lane_root = release_root.parent
+            if release_root == Path.home() / ".factory/kits/releases":
+                worktree_root = Path.home() / ".factory/worktrees" / self.project
+            elif (
+                release_root.name == "releases"
+                and lane_root.parent == Path("/private/tmp")
+                and re.fullmatch(
+                    r"nysa-sf-qualification[.][A-Za-z0-9._-]+",
+                    lane_root.name,
+                )
+            ):
+                worktree_root = lane_root / "worktrees" / self.project
         self.worktree_root = Path(worktree_root) if worktree_root else None
         self.claims = self.state / "claims"
         safe_directory(self.claims, create=True)

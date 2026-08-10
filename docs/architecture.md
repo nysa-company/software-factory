@@ -657,8 +657,11 @@ the next reconciliation holds the dispatch admission lock and removes only a
 clean exact `cell-1..cell-6` worktree with no remaining claim, dispatch lease,
 or active run. Dirty, claimed, leased, active, foreign-branch, and ambiguous
 cells remain untouched; Git branches and remote refs are never deleted. The
-sealed launcher supplies the exact product or qualification worktree root, so
-reclamation cannot search or mutate unrelated worktrees.
+current controllers derive the exact product or qualification worktree root
+from the existing authenticated release path identity; new launcher
+revisions never add controller arguments that a sealed active release may not
+parse. Reclamation therefore cannot search or mutate unrelated worktrees
+without breaking cross-release launcher compatibility.
 Contract 1.8 certification requires exactly one `PREVIEW_PROVIDER`. A `none`
 provider also requires a strict nonempty `NONVISUAL_PATHS` policy, and every
 selected ticket must declare exact Builder-owned files wholly inside it before
