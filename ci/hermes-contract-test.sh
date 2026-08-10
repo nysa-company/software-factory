@@ -2928,7 +2928,7 @@ PY
 cp -R "$ROOT/roles" "$RELEASE_C/"
 cp -R "$ROOT/scripts/lib" "$RELEASE_C/scripts/"
 cp -R "$ROOT/scripts/adapters" "$RELEASE_C/scripts/"
-for helper in preflight.sh next-stage.sh run-agent.sh ticket-state.sh ticket-pr.py ledger-view.py envelope-control.py reorder-test-fixes.sh dispatch-lease.sh dispatch-lease-heartbeat.py dispatch-plan.py model-control.sh model-manager.py model-router.py; do
+for helper in preflight.sh next-stage.sh run-agent.sh ticket-state.sh ticket-pr.py ledger-view.py envelope-control.py reorder-test-fixes.sh dispatch-lease.sh dispatch-lease-heartbeat.py dispatch-plan.py ticket-readiness.py model-control.sh model-manager.py model-router.py; do
   cp -p "$ROOT/scripts/$helper" "$RELEASE_C/scripts/$helper"
 done
 cp -p "$ROOT/scripts/model-routing/catalog-v1.json" \
@@ -2984,6 +2984,11 @@ Initiative: I-777
 Priority: normal
 
 ## Log
+Product-Decisions: frozen
+Builder ownership: README.md only
+Fixture-Seams: none
+Authentication-Seams: none
+Protected-Test-Conflicts: none
 TICKET
 done
 cat > "$LAUNCH_PRODUCT/factory/initiatives/I-777.md" <<'INITIATIVE'
