@@ -5363,3 +5363,16 @@ The durable authorization event precedes the atomic marker advance, making
 either crash edge replayable without a journal. Refusal is ticket-local: the
 controller persists the block before best-effort resource cleanup and continues
 to schedule healthy siblings even when that cleanup is temporarily unavailable.
+
+## 2026-08-10 — Decision 379: Reconciliation boundaries cross exact release suffixes
+
+Category: Reliability
+
+A preserved reconciliation marker may precede both a same-release passport
+refresh and an authorized Factory upgrade. The successor controller advances
+it only across one unique authenticated v2 suffix whose first edge binds the
+marker release, head, and passport digest; every edge is contiguous across
+release, head, protected base, and route; release history is exact; and the
+final edge and parent anchors bind the current passport. The existing unchanged
+run snapshot, clean cell, sealed passport, exact remote, durable authorization,
+and ticket-local refusal requirements remain mandatory.

@@ -12063,6 +12063,10 @@ class FactoryControllerTest(unittest.TestCase):
         marker = CONTROL.read(controller.reconciliation_marker(ticket))
         current = {
             **old,
+            "factory_release_history": [{
+                "contract_version": "1.8.0",
+                "factory_sha": self.release.name,
+            }],
             "head_sha": "f" * 40,
             "passport_sha256": "1" * 64,
             "parent_digest": old["passport_sha256"],
@@ -12227,6 +12231,146 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertNotIn("lease_released", claims[0])
         self.assertEqual(reconciled, ["T-111"])
         self.assertEqual(by_ticket["T-111"]["status"], "waiting")
+
+    def test_reconciliation_marker_accepts_exact_release_suffix(self) -> None:
+        source = CONTROL.Controller(self.args)
+        target_release = self.root / ("9" * 40)
+        target_release.mkdir()
+        target_args = copy.copy(self.args)
+        target_args.release_path = target_release
+        passports = self.state / "passports"
+        passports.mkdir(mode=0o700)
+
+        for ticket, route_migrated in (("T-120", False), ("T-121", True)):
+            cell = self.root / f"cell-release-suffix-{ticket}"
+            subprocess.run(["git", "init", "-q", str(cell)], check=True)
+            old = {
+                "branch": f"ticket/{ticket}",
+                "factory_sha": self.release.name,
+                "head_sha": "b" * 40,
+                "passport_sha256": "c" * 64,
+                "protected_base_sha": "d" * 40,
+                "route_plan_sha256": "e" * 64,
+                "ticket": ticket,
+            }
+            passport_path = passports / f"{ticket}.json"
+            CONTROL.write(passport_path, old)
+            claim = {
+                "branch": f"ticket/{ticket}", "lease": "a" * 64,
+                "priority": "normal", "publication_lease": "",
+                "receipt": "", "role": "", "schema": CONTROL.CLAIM_SCHEMA,
+                "status": "claimed", "ticket": ticket,
+                "worktree": str(cell),
+            }
+            source.mark_reconciling(claim)
+            marker = CONTROL.read(source.reconciliation_marker(ticket))
+            refresh = {
+                "from_factory_sha": self.release.name,
+                "from_head_sha": old["head_sha"],
+                "from_passport_file_sha256": "2" * 64,
+                "from_passport_sha256": old["passport_sha256"],
+                "from_protected_base_sha": old["protected_base_sha"],
+                "from_route_plan_sha256": old["route_plan_sha256"],
+                "schema": CONTROL.PASSPORT_MIGRATION_SCHEMA,
+                "to_factory_sha": self.release.name,
+                "to_head_sha": "f" * 40,
+                "to_protected_base_sha": "3" * 40,
+                "to_route_plan_sha256": "4" * 64,
+            }
+            release = {
+                "from_factory_sha": self.release.name,
+                "from_head_sha": refresh["to_head_sha"],
+                "from_passport_file_sha256": "6" * 64,
+                "from_passport_sha256": "5" * 64,
+                "from_protected_base_sha": refresh["to_protected_base_sha"],
+                "from_route_plan_sha256": refresh["to_route_plan_sha256"],
+                "schema": CONTROL.PASSPORT_MIGRATION_SCHEMA,
+                "to_factory_sha": target_release.name,
+                "to_head_sha": refresh["to_head_sha"],
+                "to_protected_base_sha": refresh["to_protected_base_sha"],
+                "to_route_plan_sha256": refresh["to_route_plan_sha256"],
+            }
+            migrations = [refresh, release]
+            current = {
+                **old,
+                "factory_release_history": [
+                    {
+                        "contract_version": "1.8.0",
+                        "factory_sha": self.release.name,
+                    },
+                    {
+                        "contract_version": "1.8.0",
+                        "factory_sha": target_release.name,
+                    },
+                ],
+                "factory_sha": target_release.name,
+                "head_sha": release["to_head_sha"],
+                "migration_history": migrations,
+                "parent_digest": release["from_passport_sha256"],
+                "parent_file_sha256": release["from_passport_file_sha256"],
+                "passport_sha256": "1" * 64,
+                "protected_base_sha": release["to_protected_base_sha"],
+                "route_plan_sha256": release["to_route_plan_sha256"],
+            }
+            if route_migrated:
+                route = {
+                    "from_factory_sha": target_release.name,
+                    "from_head_sha": current["head_sha"],
+                    "from_passport_file_sha256": "a" * 64,
+                    "from_passport_sha256": "8" * 64,
+                    "from_protected_base_sha": current["protected_base_sha"],
+                    "from_route_plan_sha256": current["route_plan_sha256"],
+                    "schema": CONTROL.PASSPORT_MIGRATION_SCHEMA,
+                    "to_factory_sha": target_release.name,
+                    "to_head_sha": "7" * 40,
+                    "to_protected_base_sha": current["protected_base_sha"],
+                    "to_route_plan_sha256": "9" * 64,
+                }
+                migrations = [*migrations, route]
+                current.update({
+                    "head_sha": route["to_head_sha"],
+                    "migration_history": migrations,
+                    "parent_digest": route["from_passport_sha256"],
+                    "parent_file_sha256": route["from_passport_file_sha256"],
+                    "passport_sha256": "0" * 64,
+                    "route_plan_sha256": route["to_route_plan_sha256"],
+                })
+            CONTROL.write(passport_path, current)
+            target = CONTROL.Controller(target_args)
+            target.remote_passport_valid = lambda _claim: True
+
+            target.mark_reconciling(claim)
+
+            advanced = CONTROL.read(target.reconciliation_marker(ticket))
+            self.assertEqual(advanced["factory_sha"], target_release.name)
+            self.assertEqual(advanced["head_sha"], current["head_sha"])
+            invalid = (
+                {**current, "migration_history": [refresh, *migrations]},
+                {
+                    **current,
+                    "migration_history": [
+                        refresh,
+                        {**release, "from_head_sha": "0" * 40},
+                        *migrations[2:],
+                    ],
+                },
+                {
+                    **current,
+                    "factory_release_history": current[
+                        "factory_release_history"
+                    ][:-1],
+                },
+                {
+                    **current,
+                    "migration_history": [{
+                        **refresh, "from_passport_sha256": "f" * 64,
+                    }, *migrations[1:]],
+                },
+            )
+            for candidate in invalid:
+                self.assertFalse(target.reconciliation_boundary_successor(
+                    claim, marker, advanced, candidate,
+                ))
 
     def test_worker_error_recovers_from_exact_reconciliation_boundary(self) -> None:
         controller = CONTROL.Controller(self.args)
