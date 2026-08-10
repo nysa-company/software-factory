@@ -5307,3 +5307,15 @@ lane path policy all validate. The complete migration list must still preserve
 Factory, protected-base, route, release-history, and final passport continuity.
 A bare, foreign, failed, cancelled, ambiguous, or policy-violating gap remains
 invalid, and the validator writes no recovery state.
+
+## 2026-08-10 — Decision 375: Provider pinning locks durable qualification authority
+
+Category: Trust boundary
+
+Owner-global provider pinning binds an isolated activation's exact
+`controller_state_path` to its owner authority, and a takeover activation to
+its exact owner project controller, before acquiring the existing nonblocking
+reconcile lock. It deduplicates locks shared by retained roots or takeover and
+production authority, and does not invent a disposable-root controller
+directory. Missing, foreign, or mismatched authority refuses; an idle retained
+lane permits pinning and a live qualification controller remains a hard stop.
