@@ -467,7 +467,7 @@ def compatible(candidate: dict[str, str], projects: list[dict[str, Any]]) -> lis
     return [dict(zip(keys, value)) for value in sorted(values)]
 
 
-def qualification_controllers() -> dict[str, list[Path]]:
+def qualification_controllers(home_factory: Path) -> dict[str, list[Path]]:
     base = Path("/private/tmp")
     if (
         os.environ.get("FACTORY_TEST_MODE") == "1"
@@ -490,8 +490,26 @@ def qualification_controllers() -> dict[str, list[Path]]:
         read_json(environment, "qualification environment")
         controllers = []
         for active in sorted(projects.glob("*/active.json"), key=str):
-            secure_regular(active, "qualification active record")
-            controller = active.parent / "controller"
+            _, activation = read_json(active, "qualification active record")
+            project = active.parent.name
+            if (
+                not isinstance(activation, dict)
+                or activation.get("project") != project
+            ):
+                raise PinError("qualification active record is invalid")
+            if activation.get("qualification_mode") == "isolated":
+                controller = home_factory / "qualification" / project / "controller"
+                valid = activation.get("controller_state_path") == str(controller)
+            elif activation.get("qualification_mode") == "takeover":
+                controller = home_factory / "kits" / "projects" / project / "controller"
+                valid = (
+                    activation.get("takeover_kits_root") == str(home_factory / "kits")
+                    and "controller_state_path" not in activation
+                )
+            else:
+                valid = False
+            if not valid:
+                raise PinError("qualification active record is invalid")
             secure_directory(controller, "qualification controller")
             controllers.append(controller / "reconcile.lock")
         if controllers:
@@ -660,15 +678,20 @@ def operation_guard(home_factory: Path, kits_root: Path) -> Iterator[list[dict[s
         if project_directories(kits_root) != initial_projects:
             raise PinError("managed project inventory changed")
         initial = active_projects(kits_root)
+        controller_locks = {}
         for project in initial_projects:
             controller = project / "controller"
             if controller.exists() or controller.is_symlink():
                 secure_directory(controller, "controller state")
-                stack.enter_context(flock(controller / "reconcile.lock", "controller reconcile lock"))
-        qualification = qualification_controllers()
+                controller_locks[controller / "reconcile.lock"] = "controller reconcile lock"
+        qualification = qualification_controllers(home_factory)
         for controllers in qualification.values():
             for lock in controllers:
-                stack.enter_context(flock(lock, "qualification controller lock"))
+                controller_locks.setdefault(lock, "qualification controller lock")
+        for lock, label in sorted(
+            controller_locks.items(), key=lambda item: str(item[0])
+        ):
+            stack.enter_context(flock(lock, label))
         for product in sorted({item["product_path"] for item in initial}):
             factory = Path(product) / "factory"
             secure_directory(factory, "active product Factory state")

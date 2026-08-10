@@ -431,11 +431,36 @@ exit 2
         self.plan()
         (root / "environment.json").write_text("{}")
         (root / "environment.json").chmod(0o600)
-        controller = root / "projects/relay/controller"
+        project = root / "projects/relay"
+        project.mkdir(parents=True)
+        controller = self.factory / "qualification/relay/controller"
         controller.mkdir(parents=True)
-        active = controller.parent / "active.json"
-        active.write_text("{}")
+        active = project / "active.json"
+        active.write_text(json.dumps({
+            "project": "relay", "qualification_mode": "isolated",
+            "controller_state_path": str(controller),
+        }))
         active.chmod(0o600)
+        duplicate = self.qualifications / "nysa-sf-qualification.duplicate"
+        duplicate_project = duplicate / "projects/relay"
+        duplicate_project.mkdir(parents=True)
+        shutil.copy2(marker, duplicate / "marker.json")
+        shutil.copy2(root / "environment.json", duplicate / "environment.json")
+        shutil.copy2(active, duplicate_project / "active.json")
+        takeover = self.qualifications / "nysa-sf-qualification.takeover"
+        takeover_project = takeover / "projects/takeover"
+        takeover_project.mkdir(parents=True)
+        shutil.copy2(marker, takeover / "marker.json")
+        shutil.copy2(root / "environment.json", takeover / "environment.json")
+        takeover_controller = self.kits / "projects/takeover/controller"
+        takeover_controller.mkdir(parents=True)
+        takeover_active = takeover_project / "active.json"
+        takeover_active.write_text(json.dumps({
+            "project": "takeover", "qualification_mode": "takeover",
+            "takeover_kits_root": str(self.kits),
+        }))
+        takeover_active.chmod(0o600)
+        self.plan()
         lock = controller / "reconcile.lock"
         descriptor = os.open(lock, os.O_CREAT | os.O_RDWR, 0o600)
         try:
@@ -443,6 +468,12 @@ exit 2
             self.assertNotEqual(self.command("plan").returncode, 0)
         finally:
             os.close(descriptor)
+
+        active.write_text(json.dumps({
+            "project": "relay", "qualification_mode": "isolated",
+            "controller_state_path": str(project / "controller"),
+        }))
+        self.assertNotEqual(self.command("plan").returncode, 0)
 
     def test_pin_lock_collision_is_nonblocking(self) -> None:
         lock = self.factory / ".provider-cli-pin.lock"
