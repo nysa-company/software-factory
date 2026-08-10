@@ -119,10 +119,12 @@
         "helper": "scripts/factory-controller.py",
         "grammars": [
           "pause --ticket <T-NNN> --issue <software-factory-issue-url> --json",
-          "resume --ticket <T-NNN> --factory-sha <FULL_SHA> --json"
+          "resume --ticket <T-NNN> --factory-sha <FULL_SHA> --json",
+          "authorize-round plan --ticket <T-NNN> --role spec-linter --round <N> --operator-id <ID> --json",
+          "authorize-round apply --ticket <T-NNN> --role spec-linter --round <N> --operator-id <ID> --approve-hash <HASH> --json"
         ],
         "output_schema": "nysa.software-factory.controller/v1",
-        "authority": "records one exact passport-bound pause or explicitly reconstructs that ticket without scanning historical passports"
+        "authority": "records one exact passport-bound pause, explicitly reconstructs that ticket without scanning historical passports, or plans and applies one exact semantic-round authorization child"
       },
       "qualification": {
         "contract_version": "1.8.0",

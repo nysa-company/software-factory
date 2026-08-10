@@ -53,6 +53,7 @@ QUALIFICATION_SCHEMA = "nysa.software-factory.qualification/v2"
 TICKET = re.compile(r"^T-[0-9]+$")
 SHA = re.compile(r"^[0-9a-f]{40}$")
 DIGEST = re.compile(r"^[0-9a-f]{64}$")
+OPERATOR_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 SAFE_MODEL_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 SAFE_MODEL_TEXT = re.compile(r"^[^\x00-\x1f\x7f]{0,500}$")
 MODEL_RESOLUTION_ERROR_SCHEMA = (
@@ -607,6 +608,7 @@ class Controller:
 
     def transition_receipt(
         self, claim: dict[str, Any], *, allow_prior: bool = False,
+        record: bool = True,
     ) -> dict[str, Any] | None:
         path = self.state / f"{claim['ticket']}.json"
         if not path.exists() and not path.is_symlink():
@@ -616,11 +618,12 @@ class Controller:
         except (
             ControllerError, json.JSONDecodeError, OSError, UnicodeError,
         ):
-            self.invalid_transition_tickets.add(claim["ticket"])
-            self.event_once(
-                "transition_receipt_invalid", claim["ticket"],
-                reason_code="receipt_unreadable",
-            )
+            if record:
+                self.invalid_transition_tickets.add(claim["ticket"])
+                self.event_once(
+                    "transition_receipt_invalid", claim["ticket"],
+                    reason_code="receipt_unreadable",
+                )
             return None
         digest = value.get("receipt_sha256", "")
         immutable = {
@@ -632,11 +635,12 @@ class Controller:
             or DIGEST.fullmatch(digest) is None
             or digest != hashlib.sha256(canonical_document(immutable)).hexdigest()
         ):
-            self.invalid_transition_tickets.add(claim["ticket"])
-            self.event_once(
-                "transition_receipt_invalid", claim["ticket"],
-                reason_code="receipt_digest_invalid",
-            )
+            if record:
+                self.invalid_transition_tickets.add(claim["ticket"])
+                self.event_once(
+                    "transition_receipt_invalid", claim["ticket"],
+                    reason_code="receipt_digest_invalid",
+                )
             return None
         factory_sha = value.get("factory_sha", "")
         if any((
@@ -649,20 +653,22 @@ class Controller:
             value.get("contract_version") != "1.8.0",
             not isinstance(value.get("consumed"), bool),
         )):
-            self.invalid_transition_tickets.add(claim["ticket"])
-            self.event_once(
-                "transition_receipt_invalid", claim["ticket"],
-                reason_code="receipt_identity_invalid",
-            )
+            if record:
+                self.invalid_transition_tickets.add(claim["ticket"])
+                self.event_once(
+                    "transition_receipt_invalid", claim["ticket"],
+                    reason_code="receipt_identity_invalid",
+                )
             return None
         if factory_sha != self.release_path.name:
-            self.prior_transition_tickets.add(claim["ticket"])
-            self.event_once(
-                "prior_kit_transition_receipt_observed", claim["ticket"],
-                active_factory_sha=self.release_path.name,
-                receipt_factory_sha=factory_sha,
-                transition_receipt_sha256=digest,
-            )
+            if record:
+                self.prior_transition_tickets.add(claim["ticket"])
+                self.event_once(
+                    "prior_kit_transition_receipt_observed", claim["ticket"],
+                    active_factory_sha=self.release_path.name,
+                    receipt_factory_sha=factory_sha,
+                    transition_receipt_sha256=digest,
+                )
             return value if allow_prior else None
         return value
 
@@ -2387,41 +2393,45 @@ class Controller:
             finally:
                 os.close(descriptor)
 
+    def valid_claim_document(self, path: Path, value: dict[str, Any]) -> bool:
+        lease = value.get("lease")
+        return not (
+            value.get("schema") != CLAIM_SCHEMA
+            or path.name != f"{value.get('ticket')}.json"
+            or not TICKET.fullmatch(value.get("ticket", ""))
+            or (
+                not isinstance(lease, str)
+                or (
+                    DIGEST.fullmatch(lease) is None
+                    and value.get("parked") is not True
+                )
+            )
+            or not Path(value.get("worktree", "")).is_absolute()
+            or (
+                value.get("parked") not in {None, True}
+                or (
+                    value.get("parked") is True
+                    and (
+                        Path(value["worktree"]).name != value["ticket"]
+                        or Path(value["worktree"]).parent.name != "parked"
+                    )
+                )
+            )
+            or value.get("status") not in {
+                "claimed", "running", "waiting", "blocked", "budget",
+            }
+            or (
+                "recovery_attempt" in value
+                and not self.valid_recovery_attempt(value["recovery_attempt"])
+            )
+        )
+
     def load_claims(self) -> list[dict[str, Any]]:
         result = []
         for path in sorted(self.claims.glob("T-*.json")):
             value = read(path)
             lease = value.get("lease")
-            if (
-                value.get("schema") != CLAIM_SCHEMA
-                or path.name != f"{value.get('ticket')}.json"
-                or not TICKET.fullmatch(value.get("ticket", ""))
-                or (
-                    not isinstance(lease, str)
-                    or (
-                        DIGEST.fullmatch(lease) is None
-                        and value.get("parked") is not True
-                    )
-                )
-                or not Path(value.get("worktree", "")).is_absolute()
-                or (
-                    value.get("parked") not in {None, True}
-                    or (
-                        value.get("parked") is True
-                        and (
-                            Path(value["worktree"]).name != value["ticket"]
-                            or Path(value["worktree"]).parent.name != "parked"
-                        )
-                    )
-                )
-                or value.get("status") not in {
-                    "claimed", "running", "waiting", "blocked", "budget",
-                }
-                or (
-                    "recovery_attempt" in value
-                    and not self.valid_recovery_attempt(value["recovery_attempt"])
-                )
-            ):
+            if not self.valid_claim_document(path, value):
                 raise ControllerError("controller claim is malformed")
             if lease and DIGEST.fullmatch(lease) is None:
                 self.invalid_transition_tickets.add(value["ticket"])
@@ -6403,6 +6413,243 @@ class Controller:
             return None, ""
         return local, ""
 
+    def semantic_authorization_plan(
+        self, ticket: str, role: str, semantic_round: int, operator_id: str,
+    ) -> tuple[dict[str, Any], dict[str, Any], str, str]:
+        if (
+            not TICKET.fullmatch(ticket)
+            or role != "spec-linter"
+            or semantic_round != 3
+            or not OPERATOR_ID.fullmatch(operator_id)
+            or operator_id == "auto"
+        ):
+            raise ControllerError("semantic authorization request is invalid")
+        claim_path = self.claim_path(ticket)
+        try:
+            claim = read(claim_path)
+        except (
+            ControllerError, FileNotFoundError, json.JSONDecodeError, OSError,
+            UnicodeError,
+        ) as error:
+            raise ControllerError(
+                "semantic authorization authority is unavailable"
+            ) from error
+        if (
+            not self.valid_claim_document(claim_path, claim)
+            or not DIGEST.fullmatch(claim.get("lease", ""))
+            or not Path(claim["worktree"]).exists()
+        ):
+            raise ControllerError("semantic authorization authority is unavailable")
+        transition = self.transition_receipt(claim, record=False)
+        passport = self.authenticated_operator_passport(ticket)
+        line = f"OPERATOR AUTHORIZATION: {role} round {semantic_round}"
+        wait = (
+            semantic_authorization_wait(transition.get("stage", ""))
+            if transition is not None else None
+        )
+        passport_path = self.state / "passports" / f"{ticket}.json"
+        if (
+            claim.get("status") != "waiting"
+            or claim.get("blocked_reason") != SEMANTIC_BLOCK_REASON
+            or claim.get("receipt")
+            or claim.get("role")
+            or claim.get("publication_lease")
+            or self.role_active(claim)
+            or transition is None
+            or transition.get("factory_sha") != self.release_path.name
+            or transition.get("consumed") is not False
+            or transition.get("role") is not None
+            or transition.get("loop") != {
+                "attempt": semantic_round - 1, "capped": False,
+                "kind": "planner-spec-linter", "limit": 3,
+            }
+            or wait != (line, semantic_round)
+            or not DIGEST.fullmatch(transition.get("receipt_sha256", ""))
+            or passport is None
+            or passport.get("ticket") != ticket
+            or passport.get("project") != self.project
+            or passport.get("contract_version") != "1.8.0"
+            or passport.get("factory_sha") != self.release_path.name
+            or passport.get("branch") != claim.get("branch")
+            or transition.get("head_sha") != passport.get("head_sha")
+            or transition.get("passport_sha256")
+            != hashlib.sha256(passport_path.read_bytes()).hexdigest()
+            or transition.get("route_plan_sha256")
+            != passport.get("route_plan_sha256")
+        ):
+            raise ControllerError("semantic authorization authority is unavailable")
+        ticket_path = f"factory/tickets/{ticket}.md"
+        before = self.cell_git(
+            claim, "show", f"{passport['head_sha']}:{ticket_path}",
+        )
+        if before.returncode:
+            raise ControllerError("semantic authorization ticket is unavailable")
+        old_lines = before.stdout.splitlines()
+        if (
+            old_lines.count(line) != 0
+            or len(re.findall(
+                r"^\s*SPEC-LINT:\s*FAIL(?:\s+—\s+.*)?\s*$",
+                before.stdout, re.I | re.M,
+            )) != semantic_round - 1
+        ):
+            raise ControllerError("semantic authorization ticket is invalid")
+        after = before.stdout + ("" if before.stdout.endswith("\n") else "\n") + line + "\n"
+        ticket_file = Path(claim["worktree"]) / ticket_path
+        try:
+            ticket_info = ticket_file.lstat()
+        except OSError as error:
+            raise ControllerError("semantic authorization ticket is unsafe") from error
+        if (
+            not stat.S_ISREG(ticket_info.st_mode)
+            or ticket_info.st_uid != os.geteuid()
+            or ticket_info.st_nlink != 1
+        ):
+            raise ControllerError("semantic authorization ticket is unsafe")
+        local = self.cell_git(claim, "rev-parse", "HEAD").stdout.strip()
+        branch = self.cell_git(
+            claim, "symbolic-ref", "--quiet", "--short", "HEAD",
+        )
+        dirty = self.cell_git(claim, "status", "--porcelain=v1", "-z")
+        entries = [item for item in dirty.stdout.split("\0") if item]
+        partial = (
+            local == passport["head_sha"]
+            and len(entries) == 1
+            and entries[0][:2] in {" M", "M ", "MM"}
+            and entries[0][3:] == ticket_path
+            and ticket_file.read_text(encoding="utf-8") == after
+        )
+        remote_status, observed, remote = self.remote_cell_head_status(claim)
+        if (
+            branch.returncode
+            or branch.stdout.strip() != claim["branch"]
+            or dirty.returncode
+        ):
+            raise ControllerError("semantic authorization cell is invalid")
+        if local == passport["head_sha"]:
+            if entries and not partial:
+                raise ControllerError("semantic authorization cell is dirty")
+            if not (
+                remote_status == "pushed"
+                and observed == remote == passport["head_sha"]
+            ):
+                raise ControllerError("semantic authorization remote moved")
+            observed_status = "prepared" if partial else "planned"
+        else:
+            current = self.cell_git(claim, "show", f"{local}:{ticket_path}")
+            if (
+                entries
+                or current.returncode
+                or hashlib.sha256(current.stdout.encode()).hexdigest()
+                != hashlib.sha256(after.encode()).hexdigest()
+                or not self.exact_ticket_commit(
+                    claim, passport["head_sha"], local, authorization=True,
+                )
+            ):
+                raise ControllerError("semantic authorization commit is invalid")
+            if remote_status == "pushed" and observed == remote == local:
+                observed_status = "applied"
+            elif (
+                remote_status == "resume_commit_not_pushed"
+                and observed == local and remote == passport["head_sha"]
+            ):
+                observed_status = "commit_not_pushed"
+            else:
+                raise ControllerError("semantic authorization remote moved")
+        plan = {
+            "authorization_line": line,
+            "branch": claim["branch"],
+            "claim_sha256": hashlib.sha256(canonical_document(claim)).hexdigest(),
+            "factory_sha": self.release_path.name,
+            "operator_id": operator_id,
+            "parent_sha": passport["head_sha"],
+            "passport_sha256": passport["passport_sha256"],
+            "project": self.project,
+            "role": role,
+            "schema": SCHEMA,
+            "semantic_round": semantic_round,
+            "ticket": ticket,
+            "ticket_after_sha256": hashlib.sha256(after.encode()).hexdigest(),
+            "ticket_before_sha256": hashlib.sha256(before.stdout.encode()).hexdigest(),
+            "transition_receipt_sha256": transition["receipt_sha256"],
+            "worktree": claim["worktree"],
+        }
+        plan["approval_hash"] = hashlib.sha256(canonical_document(plan)).hexdigest()
+        return plan, claim, after, observed_status
+
+    def plan_semantic_authorization(
+        self, ticket: str, role: str, semantic_round: int, operator_id: str,
+    ) -> dict[str, Any]:
+        plan, _claim, _after, observed_status = self.semantic_authorization_plan(
+            ticket, role, semantic_round, operator_id,
+        )
+        return {**plan, "status": observed_status}
+
+    def apply_semantic_authorization(
+        self, ticket: str, role: str, semantic_round: int, operator_id: str,
+        approve_hash: str,
+    ) -> dict[str, Any]:
+        plan, claim, after, observed_status = self.semantic_authorization_plan(
+            ticket, role, semantic_round, operator_id,
+        )
+        if (
+            not DIGEST.fullmatch(approve_hash)
+            or approve_hash != plan["approval_hash"]
+        ):
+            raise ControllerError("semantic authorization approval hash does not match")
+        if observed_status == "applied":
+            head = self.cell_git(claim, "rev-parse", "HEAD").stdout.strip()
+            return {
+                "approval_hash": approve_hash, "authorization_head": head,
+                "schema": SCHEMA, "status": "applied", "ticket": ticket,
+            }
+        ticket_path = f"factory/tickets/{ticket}.md"
+        if observed_status in {"planned", "prepared"}:
+            path = Path(claim["worktree"]) / ticket_path
+            info = path.lstat()
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_uid != os.geteuid()
+                or info.st_nlink != 1
+            ):
+                raise ControllerError("semantic authorization ticket is unsafe")
+            if observed_status == "planned":
+                path.write_text(after, encoding="utf-8")
+            added = self.cell_git(claim, "add", "--", ticket_path)
+            committed = self.cell_git(
+                claim, "-c", f"user.name={operator_id}",
+                "-c", "user.email=operator@local", "-c", "commit.gpgsign=false",
+                "commit", "-m",
+                f"Authorize {role} round {semantic_round} for {ticket}",
+                "--", ticket_path,
+            )
+            if added.returncode or committed.returncode:
+                raise ControllerError("semantic authorization commit failed")
+        head = self.cell_git(claim, "rev-parse", "HEAD").stdout.strip()
+        if not self.exact_ticket_commit(
+            claim, plan["parent_sha"], head, authorization=True,
+        ):
+            raise ControllerError("semantic authorization commit is invalid")
+        status, observed, remote = self.remote_cell_head_status(claim)
+        if (
+            status == "resume_commit_not_pushed"
+            and observed == head and remote == plan["parent_sha"]
+        ):
+            pushed = self.cell_git(
+                claim, "push", "--porcelain", "origin",
+                f"HEAD:refs/heads/{claim['branch']}",
+            )
+            status, observed, remote = self.remote_cell_head_status(claim)
+            if pushed.returncode and not (
+                status == "pushed" and observed == remote == head
+            ):
+                raise ControllerError("semantic authorization push failed")
+        if status != "pushed" or observed != remote or remote != head:
+            raise ControllerError("semantic authorization push failed")
+        return {
+            "approval_hash": approve_hash, "authorization_head": head,
+            "schema": SCHEMA, "status": "applied", "ticket": ticket,
+        }
+
     def stranded_semantic_evidence(
         self, claim: dict[str, Any], terminal: dict[str, str],
         passport: dict[str, Any],
@@ -9475,12 +9722,19 @@ def main() -> None:
     parser.add_argument("--state-dir", required=True, type=Path)
     parser.add_argument("--worktree-root", type=Path)
     parser.add_argument(
-        "--action", choices=("reconcile", "pause", "resume"),
+        "--action", choices=(
+            "reconcile", "pause", "resume",
+            "authorize-round-plan", "authorize-round-apply",
+        ),
         default="reconcile",
     )
     parser.add_argument("--ticket", default="")
     parser.add_argument("--issue", default="")
     parser.add_argument("--factory-sha", default="")
+    parser.add_argument("--role", default="")
+    parser.add_argument("--semantic-round", default=0, type=int)
+    parser.add_argument("--operator-id", default="")
+    parser.add_argument("--approve-hash", default="")
     args = parser.parse_args()
     lock_descriptor = -1
     try:
@@ -9488,10 +9742,27 @@ def main() -> None:
             raise ControllerError("invalid project")
         if (
             (args.action == "reconcile" and any((
-                args.ticket, args.issue, args.factory_sha,
+                args.ticket, args.issue, args.factory_sha, args.role,
+                args.semantic_round, args.operator_id, args.approve_hash,
             )))
-            or (args.action == "pause" and (args.factory_sha or not args.issue))
-            or (args.action == "resume" and (args.issue or not args.factory_sha))
+            or (args.action == "pause" and any((
+                args.factory_sha, args.role, args.semantic_round,
+                args.operator_id, args.approve_hash, not args.issue,
+            )))
+            or (args.action == "resume" and any((
+                args.issue, args.role, args.semantic_round,
+                args.operator_id, args.approve_hash, not args.factory_sha,
+            )))
+            or (
+                args.action in {"authorize-round-plan", "authorize-round-apply"}
+                and any((
+                    args.issue, args.factory_sha, not args.ticket,
+                    not args.role, not args.semantic_round,
+                    not args.operator_id,
+                    args.action == "authorize-round-plan" and args.approve_hash,
+                    args.action == "authorize-round-apply" and not args.approve_hash,
+                ))
+            )
         ):
             raise ControllerError("controller action arguments are invalid")
         state = safe_directory(args.state_dir)
@@ -9510,6 +9781,15 @@ def main() -> None:
             result = controller.pause_ticket(args.ticket, args.issue)
         elif args.action == "resume":
             result = controller.resume_ticket(args.ticket, args.factory_sha)
+        elif args.action == "authorize-round-plan":
+            result = controller.plan_semantic_authorization(
+                args.ticket, args.role, args.semantic_round, args.operator_id,
+            )
+        elif args.action == "authorize-round-apply":
+            result = controller.apply_semantic_authorization(
+                args.ticket, args.role, args.semantic_round, args.operator_id,
+                args.approve_hash,
+            )
         else:
             if args.ticket:
                 raise ControllerError("reconcile does not accept a ticket")
