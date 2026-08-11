@@ -7864,6 +7864,218 @@ class FactoryControllerTest(unittest.TestCase):
         )
         self.assertEqual(claim["recovery_attempt"]["count"], 3)
 
+    def test_receipt_bound_recovery_wait_is_free_and_ticket_local(self) -> None:
+        receipt = "b" * 64
+
+        def waiting_recovery(controller, items):
+            claim = items[0]
+            controller.save_claim(claim)
+            controller.wait_for_recovery_receipt(claim)
+
+        controller = CONTROL.Controller(self.args)
+        claim = self.recovery_claim()
+        claim.update(receipt=receipt, role="planner", lease_released=True)
+        controller.save_claim(claim)
+        controller.operator_transition = lambda _claim: {
+            "consumed": False, "receipt_sha256": receipt,
+        }
+        for _ in range(7):
+            controller.recover_each(
+                [claim], lambda items: waiting_recovery(controller, items),
+                "targeted-repair",
+            )
+        self.assertNotIn("recovery_attempt", claim)
+
+        restarted = CONTROL.Controller(self.args)
+        persisted = restarted.load_claims()[0]
+        restarted.operator_transition = controller.operator_transition
+        for _ in range(2):
+            restarted.recover_each(
+                [persisted], lambda items: waiting_recovery(restarted, items),
+                "targeted-repair",
+            )
+        self.assertNotIn("recovery_attempt", persisted)
+
+        for name, current in (
+            ("stale", None),
+            ("consumed", {"consumed": True, "receipt_sha256": receipt}),
+            ("mismatched", {
+                "consumed": False, "receipt_sha256": "c" * 64,
+            }),
+        ):
+            with self.subTest(invalid_wait=name):
+                invalid = self.recovery_claim(f"T-11{len(name)}")
+                invalid.update(
+                    receipt=receipt, role="planner", lease_released=True,
+                )
+                controller.operator_transition = lambda _claim, value=current: value
+                controller.withdraw_publication = lambda _claim: None
+                for _ in range(CONTROL.RECOVERY_ATTEMPT_LIMIT):
+                    controller.recover_each(
+                        [invalid],
+                        lambda items: waiting_recovery(controller, items),
+                        "targeted-repair",
+                    )
+                self.assertEqual(
+                    invalid["blocked_reason"],
+                    "recovery-abandoned:targeted-repair",
+                )
+                self.assertEqual(
+                    invalid["recovery_attempt"]["count"],
+                    CONTROL.RECOVERY_ATTEMPT_LIMIT,
+                )
+
+        uncertain = self.recovery_claim("T-113")
+        uncertain.update(
+            receipt=receipt, role="planner", lease_released=True,
+        )
+        checks = iter((
+            {"consumed": False, "receipt_sha256": receipt},
+            CONTROL.ControllerError("transition revalidation failed"),
+        ))
+
+        def uncertain_transition(_claim):
+            result = next(checks)
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+        controller.operator_transition = uncertain_transition
+        controller.recover_each(
+            [uncertain], lambda items: waiting_recovery(controller, items),
+            "targeted-repair",
+        )
+        self.assertEqual(
+            (uncertain["recovery_attempt"]["phase"],
+             uncertain["recovery_attempt"]["count"]),
+            ("settled", 1),
+        )
+
+        sibling = self.recovery_claim("T-112")
+        sibling.update(receipt="d" * 64, role="builder", lease_released=True)
+        claim.pop("recovery_attempt", None)
+        controller.operator_transition = lambda item: (
+            {"consumed": False, "receipt_sha256": receipt}
+            if item["ticket"] == claim["ticket"] else None
+        )
+
+        def concurrent_recovery(items):
+            item = items[0]
+            controller.save_claim(item)
+            if item["ticket"] == claim["ticket"]:
+                controller.wait_for_recovery_receipt(item)
+
+        controller.recover_each(
+            [claim, sibling], concurrent_recovery, "targeted-repair",
+            concurrent=True,
+        )
+        self.assertNotIn("recovery_attempt", claim)
+        self.assertEqual(sibling["recovery_attempt"]["count"], 1)
+
+    def test_receipt_bound_wait_is_durable_before_recovery_returns(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        receipt = "b" * 64
+        claim = self.recovery_claim()
+        claim.update(receipt=receipt, role="planner", lease_released=True)
+        controller.operator_transition = lambda _claim: {
+            "consumed": False, "receipt_sha256": receipt,
+        }
+
+        controller.recover_each(
+            [claim],
+            lambda _items: (_ for _ in ()).throw(
+                CONTROL.ControllerError("genuine failure")
+            ),
+            "targeted-repair",
+        )
+        prior = dict(claim["recovery_attempt"])
+        self.assertEqual((prior["phase"], prior["count"]), ("settled", 1))
+
+        def crash_after_wait(items):
+            item = items[0]
+            controller.save_claim(item)
+            self.assertTrue(controller.wait_for_recovery_receipt(item))
+            raise KeyboardInterrupt("crash after wait recognition")
+
+        with self.assertRaisesRegex(KeyboardInterrupt, "wait recognition"):
+            controller.recover_each(
+                [claim], crash_after_wait, "targeted-repair",
+            )
+        self.assertEqual(
+            CONTROL.read(controller.claim_path(claim["ticket"]))[
+                "recovery_attempt"
+            ],
+            prior,
+        )
+
+        restarted = CONTROL.Controller(self.args)
+        persisted = restarted.load_claims()[0]
+        restarted.operator_transition = controller.operator_transition
+
+        def wait_again(items):
+            item = items[0]
+            restarted.save_claim(item)
+            self.assertTrue(restarted.wait_for_recovery_receipt(item))
+
+        restarted.recover_each(
+            [persisted], wait_again, "targeted-repair",
+        )
+        self.assertEqual(persisted["recovery_attempt"], prior)
+
+    def test_contract_block_operator_wait_does_not_spend_attempts(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        claim = self.recovery_claim()
+        receipt = "b" * 64
+        claim.update(
+            receipt=receipt, role="planner", lease_released=True,
+        )
+        ticket = Path(claim["worktree"]) / "factory/tickets/T-110.md"
+        ticket.write_text(
+            "State: Blocked-Escalated\n"
+            "OPERATOR ANSWER: Preserve the exact seam.\n"
+            f"OPERATOR ANSWER RECEIPT: {receipt}\n",
+            encoding="utf-8",
+        )
+        (self.state / "passports").mkdir(mode=0o700)
+        CONTROL.write(self.state / "passports/T-110.json", {"ticket": "T-110"})
+        controller.save_claim(claim)
+        controller.restore_recorded_contract_repair = lambda _claim: False
+        controller.restore_contract_blocker = lambda _claim: None
+        controller.terminal_for_receipt = lambda *_args: {
+            "exit_status": "12", "role_exit": "role_exit_contract_blocked",
+            "run_id": "contract-block",
+        }
+        controller.direct_model_identity_candidate = lambda *_args: False
+        controller.remote_passport_valid = lambda _claim: True
+        controller.operator_transition = lambda _claim: {
+            "consumed": False, "receipt_sha256": receipt,
+        }
+
+        def ensure(item, _label):
+            item["lease"] = "c" * 64
+            item.pop("lease_released", None)
+            controller.save_claim(item)
+
+        def release(item):
+            item["lease_released"] = True
+            controller.save_claim(item)
+
+        controller.ensure_lease = ensure
+        controller.release_ticket_lease = release
+        controller.json_call = lambda *args, **_kwargs: (
+            {"status": "blocked"}
+            if args[:2] == ("state-machine", "block") else self.fail(args)
+        )
+        for _ in range(7):
+            controller.recover_each(
+                [claim], controller.recover_repaired_failures,
+                "targeted-repair",
+            )
+        self.assertNotIn("recovery_attempt", claim)
+        self.assertNotIn("recovery_attempt", CONTROL.read(
+            controller.claim_path("T-110")
+        ))
+
     def test_recovery_limit_resets_on_error_and_authenticated_head_change(self) -> None:
         controller = CONTROL.Controller(self.args)
         claim = self.recovery_claim()

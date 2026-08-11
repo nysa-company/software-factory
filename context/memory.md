@@ -150,6 +150,12 @@ everything the Factory actually enforces lives here.
   Exact resume directives and reconciler-authored writes do not advance it;
   accepted same-blocker decisions survive overlapping saves, while rejected
   moves stay visible in Linear and typed sync health.
+- Recovery ticks spent waiting for a mandated operator edge do not consume the
+  three-attempt no-progress budget. Only the ticket-local thread context may
+  signal that outcome, and the shared boundary accepts it only while the exact
+  current transition receipt remains digest-valid and unconsumed. Recognition
+  durably restores the prior attempt before returning; stale, consumed,
+  mismatched, failed, and sibling evidence still settles normally.
 - Doctor folds the latest contract-resume refusal or recovery per ticket. Every
   structurally valid `resume_*` reason remains a visible warning without a
   duplicated allowlist; malformed or tampered controller evidence remains an
@@ -5497,3 +5503,17 @@ before maintenance or certification. Every accepted invocation returns one
 closed report. It performs no fetch, mutation, Doctor/model/provider probe,
 authorization, certification, or activation; active runtime diagnosis remains
 on the existing status and Doctor boundaries.
+
+## 2026-08-11 — Decision 388: Receipt-bound operator waits are uncharged
+
+Category: Reliability
+
+The bounded recovery budget counts genuine no-progress attempts, not the human
+interval required by a sealed operator-edge sequence. A recovery may signal a
+wait only through its ticket's thread-local recovery context while the exact
+current transition receipt is digest-valid and unconsumed. Receipt recognition
+durably restores the prior attempt state before returning, and the shared
+recovery boundary revalidates it after the call, so restart and repeated waiting
+ticks remain free without widening any individual selector. Consumed, stale,
+mismatched, failed, or cross-ticket signals settle normally and still abandon
+at three identical outcomes.

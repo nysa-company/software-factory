@@ -1183,7 +1183,12 @@ receipt, qualification generation, passport, run evidence, Git head, and exact
 ticket bytes. Three identical no-progress outcomes leave a lease-free
 `recovery-abandoned:<name>` claim and emit one digest-only event. A changed
 authenticated input or outcome starts a new count; an unchanged abandoned
-claim is never recovered again. The attempt retains the exact pre-recovery
+claim is never recovered again. A recovery may instead report one uncharged
+wait only through its ticket's thread-local context while the exact current
+transition receipt remains digest-valid and unconsumed. Receipt recognition
+durably restores the prior attempt state before returning; the shared recovery
+boundary then rechecks that receipt. Stale, consumed, mismatched, failed, or
+sibling evidence settles normally. The attempt retains the exact pre-recovery
 blocked reason, so changed authenticated evidence or a successor release
 restores the real recovery selector instead of leaving the abandonment label
 as a dead end. Claims that are blocked, waiting, or budget limited release any
