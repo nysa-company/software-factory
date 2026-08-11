@@ -561,27 +561,50 @@ validate; otherwise it restores the previous generation.
 
 ## Real-Hermes canary
 
-A real canary has not yet been run. Do not use contract-test success as a
-substitute.
+Generate the credential-free canary beside a clean candidate checkout. The
+preparation command validates all inputs before creating state and reports
+PREVIEW_PROVIDER, NONVISUAL_PATHS, capacity, path-length, explicit disabled
+Linear state, Hermes binary, SHA/tree, and isolated provider-pin scope errors
+together:
 
-1. Create a dedicated sandbox product repository and separate profile, for
-   example `~/.hermes/profiles/factory-canary`. Give it its own project slug,
-   factory state, tickets, ledger, and registry.
-2. Install `SOUL.md` and `skills/factory-dispatch/SKILL.md` from the candidate
-   release into the canary profile. Adapt the factory gateway LaunchAgent with
-   a distinct label and `--profile factory-canary`.
-3. Do not copy the production profile's `.env`, secret files, board mapping,
-   ledger, registry, or LaunchAgent. Use no credentials when possible; if a
-   probe requires one, create a separate least-privilege sandbox credential.
-4. Point the canary registry's `PRODUCT_ROOT` only at the sandbox product.
-   Registry files are data and must contain no secrets.
-5. Start the canary with the real installed Hermes binary and its normal
-   profile-loading/LaunchAgent mechanism. Mock only task adapters and external
-   actions.
-6. Through Hermes, verify `contract --json`, `doctor --json`, preflight,
-   `next-stage`, and one mock role launch. Confirm the run manifest names the
-   candidate SHA/tree and physical release.
-7. Stop and remove the canary LaunchAgent after capturing redacted evidence.
+```bash
+python3 scripts/real-hermes-canary.py prepare \
+  --factory-root "$CANDIDATE_REPO" \
+  --sha "$(git -C "$CANDIDATE_REPO" rev-parse HEAD)" \
+  --hermes-bin /absolute/path/to/hermes \
+  --root /private/tmp/nysa-sf-canary.release-id
+
+python3 scripts/real-hermes-canary.py check \
+  --factory-root "$CANDIDATE_REPO" \
+  --sha "$(git -C "$CANDIDATE_REPO" rev-parse HEAD)" \
+  --hermes-bin /absolute/path/to/hermes \
+  --root /private/tmp/nysa-sf-canary.release-id
+```
+
+`prepare` is safe for Linux generation fixtures and starts no runtime. On the
+macOS execution host, run the same command with action `run` only after the
+normal canary maintenance boundary is approved. It installs, certifies, and
+activates inside the marked root, then starts a distinct real-Hermes
+LaunchAgent. The generated hook selects sequencing from the candidate contract:
+Contract 1.8 uses the candidate's sealed state machine and carries its exact
+transition receipt into preflight and the mock Planner; supported older
+contracts retain their sealed `next-stage` path. The hook records redacted
+contract, doctor, sequencing, preflight, manifest, and phase timing evidence,
+releases its lease, and unloads the canary LaunchAgent.
+
+The only provider-pin exception is the existing test-mode check, bound to the
+non-installed launcher and local isolated canonical origin. Production
+preview-provider and provider-pin enforcement are unchanged. The workflow
+copies no production profile, registry, LaunchAgent, credential, or Linear
+mapping and invokes no external provider. Repeating it with the exact same
+root and candidate reuses the validated descriptors and completed evidence;
+changed descriptors fail closed. Partial runtime may resume only when an
+owner-only attempt marker binds the root identity and exact candidate. A retry
+archives the prior failure before starting Hermes, and completion is accepted
+only when its digest inventory validates the candidate-bound contract, Doctor,
+hook payload, released lease, certification, mock Planner manifest, transition
+receipt, Hermes version, and startup timing evidence; a bare completion marker
+never skips the canary.
 
 Run the full canary for the first cutover and any compatibility-sensitive
 change. Compatible releases may use contract tests plus doctor probes only

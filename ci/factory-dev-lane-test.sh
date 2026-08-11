@@ -17,6 +17,10 @@ cleanup() {
     chmod -R u+w "$CURSOR_LANE" 2>/dev/null || true
     rm -rf -- "$CURSOR_LANE"
   fi
+  if [[ "${CANARY_ROOT:-}" == /private/tmp/nysa-sf-canary.test.* ]]; then
+    chmod -R u+w "$CANARY_ROOT" 2>/dev/null || true
+    rm -rf -- "$CANARY_ROOT"
+  fi
   chmod -R u+w "$TMP" 2>/dev/null || true
   rm -rf "$TMP"
 }
@@ -3670,5 +3674,290 @@ grep -qx -- 'enabled' "$cursor_root/home/cursor-args" ||
 expect_failure "reused cursor approval hash" cursor_env bash "$LANE" cursor-run \
   --root "$cursor_root" --approve-hash "$approval_hash"
 clean_cmd "$cursor_root"
+
+# The real-Hermes canary bootstrap prepares only isolated, credential-free
+# descriptors in CI. It never installs, activates, launches Hermes, or invokes
+# a provider in this fixture.
+CANARY_SOURCE="$TMP/canary-source"
+git clone -q --no-local "$ROOT" "$CANARY_SOURCE"
+CANARY_SHA="$(git -C "$CANARY_SOURCE" rev-parse HEAD)"
+CANARY_HERMES="$TMP/hermes"
+cat >"$CANARY_HERMES" <<'EOF'
+#!/bin/sh
+printf '%s\n' 'Hermes Agent v0.18.2 (2026.7.7.2)'
+EOF
+chmod 700 "$CANARY_HERMES"
+CANARY_ROOT="$(mktemp -d /private/tmp/nysa-sf-canary.test.XXXXXX)"
+rmdir "$CANARY_ROOT"
+python3 "$ROOT/scripts/real-hermes-canary.py" prepare \
+  --factory-root "$CANARY_SOURCE" --root "$CANARY_ROOT" \
+  --hermes-bin "$CANARY_HERMES" --sha "$CANARY_SHA" >"$OUT"
+grep -q '"status":"ready"' "$OUT" || fail "real-Hermes bootstrap was not ready"
+CANARY_LEGACY_HOOK="$TMP/legacy-canary-hook"
+python3 - "$CANARY_ROOT" "$ROOT/scripts/real-hermes-canary.py" "$CANARY_LEGACY_HOOK" <<'PY'
+import importlib.util, json, pathlib, sys
+root=pathlib.Path(sys.argv[1])
+hook=(root/"home/.hermes/profiles"/json.loads((root/"marker.json").read_text())["project"]/
+      "hooks/run-factory-canary.sh").read_text()
+assert "run_launcher state-machine --ticket" in hook
+assert "--receipt \"$receipt\"" in hook
+assert "run_launcher next-stage" not in hook
+assert "contract 1.8 transitions" not in hook
+driver=(root/"run.sh").read_text()
+assert "FACTORY_KIT_TEST_SKIP_PROVIDER_CLI_PIN=1" in driver
+assert "provider-concurrency plan --sha" in driver and "--capacity 2" in driver
+assert "launchctl bootstrap" in driver and "evidence/hook-complete" in driver
+project=(root/"product/factory/PROJECT.env").read_text().splitlines()
+assert project.count("PREVIEW_PROVIDER=none") == 1
+assert project.count("NONVISUAL_PATHS=app/") == 1
+assert project.count("MAX_CONCURRENT_TICKETS=2") == 1
+assert json.loads((root/"product/factory/linear-state.json").read_text())["enabled"] is False
+assert not (root/"product/factory/runs").exists()
+assert not (root/"product/factory/.active-runs").exists()
+spec=importlib.util.spec_from_file_location("canary",sys.argv[2])
+module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+legacy=module.render_hook(root,"legacy", "a"*40, "b"*40, "1.6.0")
+assert "run_launcher next-stage --ticket" in legacy
+assert "run_launcher state-machine" not in legacy
+assert "--receipt \"$receipt\"" not in legacy
+pathlib.Path(sys.argv[3]).write_text(legacy)
+pathlib.Path(sys.argv[3]).chmod(0o700)
+PY
+mkdir -p "$CANARY_ROOT/evidence"
+: >"$CANARY_ROOT/evidence/hook-complete"
+expect_failure "forged real-Hermes completion" \
+  python3 "$ROOT/scripts/real-hermes-canary.py" check \
+    --factory-root "$CANARY_SOURCE" --root "$CANARY_ROOT" \
+    --hermes-bin "$CANARY_HERMES" --sha "$CANARY_SHA"
+grep -q 'completion evidence has no exact attempt marker' "$OUT" ||
+  fail "real-Hermes check accepted a forged completion marker"
+rm -rf "$CANARY_ROOT/evidence"
+mkdir -p "$CANARY_ROOT/product/factory/runs"
+: >"$CANARY_ROOT/product/factory/runs/unowned.meta"
+expect_failure "runtime without a canary attempt" \
+  python3 "$ROOT/scripts/real-hermes-canary.py" check \
+    --factory-root "$CANARY_SOURCE" --root "$CANARY_ROOT" \
+    --hermes-bin "$CANARY_HERMES" --sha "$CANARY_SHA"
+grep -q 'runtime state exists before canary start: runs' "$OUT" ||
+  fail "real-Hermes check accepted runtime without an attempt"
+rm -rf "$CANARY_ROOT/product/factory/runs"
+python3 - "$CANARY_ROOT" "$ROOT/scripts/real-hermes-canary.py" <<'PY'
+import importlib.util,json,pathlib,sys
+root=pathlib.Path(sys.argv[1])
+spec=importlib.util.spec_from_file_location("canary",sys.argv[2])
+module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+expected=json.loads((root/"marker.json").read_text())
+module.write(root/"attempt.json",module.canonical(module.attempt_value(root,expected)))
+assert module.validate_attempt(root,expected)
+PY
+mkdir -p "$CANARY_ROOT/evidence"
+: >"$CANARY_ROOT/evidence/hook-complete"
+expect_failure "forged completion with an exact attempt" \
+  python3 "$ROOT/scripts/real-hermes-canary.py" check \
+    --factory-root "$CANARY_SOURCE" --root "$CANARY_ROOT" \
+    --hermes-bin "$CANARY_HERMES" --sha "$CANARY_SHA"
+grep -q 'canary completion evidence is invalid' "$OUT" ||
+  fail "real-Hermes check accepted a bare completion for an exact attempt"
+rm -rf "$CANARY_ROOT/evidence"
+CANARY_WRAPPER="$CANARY_ROOT/home/.factory/bin/factory-launch"
+cp "$CANARY_WRAPPER" "$TMP/canary-wrapper.real"
+cat >"$CANARY_WRAPPER" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+: "${CANARY_STUB_ROOT:?}" "${CANARY_STUB_CONTRACT:?}" \
+  "${CANARY_STUB_SHA:?}" "${CANARY_STUB_TREE:?}" "${CANARY_STUB_TRACE:?}"
+project="$1" command="$2"; shift 2
+printf '%s %s %s\n' "$project" "$command" "$*" >>"$CANARY_STUB_TRACE"
+lease="$(printf lease | shasum -a 256 | awk '{print $1}')"
+receipt="$(printf receipt | shasum -a 256 | awk '{print $1}')"
+case "$command" in
+  contract)
+    printf '{"contract_version":"%s"}\n' "$CANARY_STUB_CONTRACT"
+    ;;
+  doctor)
+    printf '{"checks":{"kit":{"full_sha":"%s"},"kit_pin":{"matches_kit":true}},"overall_status":"pass"}\n' \
+      "$CANARY_STUB_SHA"
+    ;;
+  claim)
+    printf '{"lease_id":"%s"}\n' "$lease"
+    ;;
+  models)
+    printf '{"status":"pinned"}\n'
+    ;;
+  state-machine)
+    [[ "$CANARY_STUB_CONTRACT" == 1.8.0 ]]
+    if [[ -n "${CANARY_STUB_FAIL_FILE:-}" && ! -e "$CANARY_STUB_FAIL_FILE" ]]; then
+      : >"$CANARY_STUB_FAIL_FILE"
+      exit 42
+    fi
+    printf '{"receipt":"%s","role":"planner","stage":"RUN planner"}\n' "$receipt"
+    ;;
+  next-stage)
+    [[ "$CANARY_STUB_CONTRACT" == 1.6.0 ]]
+    printf '{"detail":"planner"}\n'
+    ;;
+  preflight|run)
+    received=""
+    args=("$@")
+    for ((index=0; index<${#args[@]}; index++)); do
+      [[ "${args[$index]}" != --receipt ]] || received="${args[$((index+1))]}"
+    done
+    if [[ "$CANARY_STUB_CONTRACT" == 1.8.0 ]]; then
+      [[ "$received" == "$receipt" ]]
+    else
+      [[ -z "$received" ]]
+    fi
+    if [[ "$command" == run ]]; then
+      mkdir -p "$CANARY_STUB_ROOT/product/factory/runs"
+      cat >"$CANARY_STUB_ROOT/product/factory/runs/stub.meta" <<EOF
+adapter=mock
+contract_version=$CANARY_STUB_CONTRACT
+kit_sha=$CANARY_STUB_SHA
+kit_tree=$CANARY_STUB_TREE
+phase=completed
+physical_kit_path=$CANARY_STUB_ROOT/home/.factory/kits/releases/$CANARY_STUB_SHA
+product_tree=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+role=planner
+ticket=T-900001
+ticket_kit_sha=$CANARY_STUB_SHA
+transition_receipt_sha256=$received
+EOF
+      printf 'mock planner complete\n'
+    else
+      printf '{"status":"pass"}\n'
+    fi
+    ;;
+  release)
+    printf '{"expired":false,"released":true,"ticket":"T-900001"}\n'
+    ;;
+  *) exit 64 ;;
+esac
+STUB
+chmod 700 "$CANARY_WRAPPER"
+CANARY_HOOK="$CANARY_ROOT/home/.hermes/profiles/factory-canary-${CANARY_SHA:0:12}/hooks/run-factory-canary.sh"
+expect_failure "first generated hook attempt" env \
+  CANARY_STUB_ROOT="$CANARY_ROOT" CANARY_STUB_CONTRACT=1.8.0 \
+  CANARY_STUB_SHA="$CANARY_SHA" \
+  CANARY_STUB_TREE="$(git -C "$CANARY_SOURCE" rev-parse "$CANARY_SHA^{tree}")" \
+  CANARY_STUB_TRACE="$TMP/canary-1.8.trace" \
+  CANARY_STUB_FAIL_FILE="$TMP/fail-first-state-machine" \
+  bash "$CANARY_HOOK" <<<'{"event":"on_session_start"}'
+[[ -f "$CANARY_ROOT/evidence/failure" && -f "$CANARY_ROOT/evidence/hook-start" ]] ||
+  fail "failed generated hook omitted retry evidence"
+python3 - "$CANARY_ROOT" "$ROOT/scripts/real-hermes-canary.py" <<'PY'
+import importlib.util,pathlib,sys
+root=pathlib.Path(sys.argv[1])
+spec=importlib.util.spec_from_file_location("canary",sys.argv[2])
+module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+module.retire_failed_attempt(root)
+assert not (root/"evidence/failure").exists()
+assert not (root/"evidence/hook-start").exists()
+archives=list((root/"evidence/prior-failures").glob("*.txt"))
+assert len(archives) == 1 and "status=42" in archives[0].read_text()
+PY
+: >"$TMP/canary-1.8.trace"
+CANARY_STUB_ROOT="$CANARY_ROOT" CANARY_STUB_CONTRACT=1.8.0 \
+  CANARY_STUB_SHA="$CANARY_SHA" \
+  CANARY_STUB_TREE="$(git -C "$CANARY_SOURCE" rev-parse "$CANARY_SHA^{tree}")" \
+  CANARY_STUB_TRACE="$TMP/canary-1.8.trace" \
+  bash "$CANARY_HOOK" <<<'{"event":"on_session_start"}' >"$OUT"
+python3 - "$TMP/canary-1.8.trace" <<'PY'
+import hashlib,pathlib,sys
+lines=pathlib.Path(sys.argv[1]).read_text().splitlines()
+commands=[line.split()[1] for line in lines]
+assert commands == ["contract","doctor","claim","models","state-machine","preflight","run","release"], commands
+receipt=hashlib.sha256(b"receipt").hexdigest()
+assert f"--receipt {receipt}" in lines[5]
+assert f"--receipt {receipt}" in lines[6]
+PY
+python3 - "$CANARY_ROOT" "$ROOT/scripts/real-hermes-canary.py" <<'PY'
+import importlib.util,json,pathlib,sys
+root=pathlib.Path(sys.argv[1]); evidence=root/"evidence"
+spec=importlib.util.spec_from_file_location("canary",sys.argv[2])
+module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+expected=json.loads((root/"marker.json").read_text())
+certification={
+    "contract_version":expected["contract_version"], "kit_sha":expected["factory_sha"],
+    "kit_tree":expected["factory_tree"], "product_path":str(root/"product"),
+    "product_sha":"f"*40, "product_tree":"e"*40, "project":expected["project"],
+    "receipt_id":"c"*64, "status":"pass",
+}
+(evidence/"certification-summary.json").write_text(json.dumps(certification)+"\n")
+(evidence/"hermes-version.txt").write_text(expected["hermes_version"]+"\n")
+(root/"timings.csv").write_text("hermes-start,1\nhermes-hook,1\n")
+assert module.validate_completion(root,expected)
+PY
+rm -rf "$CANARY_ROOT/evidence" "$CANARY_ROOT/product/factory/runs"
+rm "$CANARY_ROOT/timings.csv"
+CANARY_STUB_ROOT="$CANARY_ROOT" CANARY_STUB_CONTRACT=1.6.0 \
+  CANARY_STUB_SHA="$(printf '%040d' 0 | tr 0 a)" \
+  CANARY_STUB_TREE="$(printf '%040d' 0 | tr 0 b)" \
+  CANARY_STUB_TRACE="$TMP/canary-1.6.trace" \
+  bash "$CANARY_LEGACY_HOOK" <<<'{"event":"on_session_start"}' >"$OUT"
+python3 - "$TMP/canary-1.6.trace" <<'PY'
+import pathlib,sys
+lines=pathlib.Path(sys.argv[1]).read_text().splitlines()
+commands=[line.split()[1] for line in lines]
+assert commands == ["contract","doctor","claim","models","next-stage","preflight","run","release"], commands
+assert all("--receipt" not in line for line in lines)
+PY
+rm -rf "$CANARY_ROOT/evidence" "$CANARY_ROOT/product/factory/runs"
+cp "$TMP/canary-wrapper.real" "$CANARY_WRAPPER"
+CANARY_DESCRIPTORS="$(cksum "$CANARY_ROOT/descriptor-digests.json")"
+python3 "$ROOT/scripts/real-hermes-canary.py" prepare \
+  --factory-root "$CANARY_SOURCE" --root "$CANARY_ROOT" \
+  --hermes-bin "$CANARY_HERMES" --sha "$CANARY_SHA" >"$OUT"
+[[ "$(cksum "$CANARY_ROOT/descriptor-digests.json")" == "$CANARY_DESCRIPTORS" ]] ||
+  fail "real-Hermes bootstrap was not idempotent"
+python3 "$ROOT/scripts/real-hermes-canary.py" check \
+  --factory-root "$CANARY_SOURCE" --root "$CANARY_ROOT" \
+  --hermes-bin "$CANARY_HERMES" --sha "$CANARY_SHA" >"$OUT"
+grep -q '"status":"ready"' "$OUT" || fail "real-Hermes bootstrap check failed"
+python3 - "$CANARY_ROOT/product/factory/PROJECT.env" <<'PY'
+import pathlib,sys
+path=pathlib.Path(sys.argv[1])
+lines=[]
+for line in path.read_text().splitlines():
+    if line == "PREVIEW_PROVIDER=none": continue
+    lines.append("MAX_CONCURRENT_TICKETS=1" if line == "MAX_CONCURRENT_TICKETS=2" else line)
+path.write_text("\n".join(lines)+"\n")
+PY
+rm "$CANARY_ROOT/product/factory/linear-state.json"
+printf 'PRODUCT_ROOT=/private/tmp/wrong-root\n' > \
+  "$CANARY_ROOT/home/.hermes/profiles/factory-canary-${CANARY_SHA:0:12}/projects/factory-canary-${CANARY_SHA:0:12}.env"
+git -C "$CANARY_ROOT/product" remote set-url origin https://github.com/local/unsafe.git
+expect_failure "aggregate generated descriptor refusal" \
+  python3 "$ROOT/scripts/real-hermes-canary.py" check \
+    --factory-root "$CANARY_SOURCE" --root "$CANARY_ROOT" \
+    --hermes-bin "$CANARY_HERMES" --sha "$CANARY_SHA"
+grep -q 'PROJECT.env requires exactly PREVIEW_PROVIDER=none' "$OUT" ||
+  fail "real-Hermes check omitted preview drift"
+grep -q 'PROJECT.env requires exactly MAX_CONCURRENT_TICKETS=2' "$OUT" ||
+  fail "real-Hermes check omitted capacity drift"
+grep -q 'explicit disabled Linear state is missing' "$OUT" ||
+  fail "real-Hermes check omitted Linear-state drift"
+grep -q 'product canonical origin is not the isolated local origin' "$OUT" ||
+  fail "real-Hermes check omitted local-origin drift"
+grep -q 'projects/factory-canary-' "$OUT" ||
+  fail "real-Hermes check omitted profile/root drift"
+[[ ! -e "$CANARY_ROOT/product/factory/runs" &&
+   ! -e "$CANARY_ROOT/product/factory/.dispatch-leases" ]] ||
+  fail "refused real-Hermes descriptors created runtime state"
+
+CANARY_BAD_SOURCE="$TMP/canary-bad-source"
+git clone -q --no-local "$ROOT" "$CANARY_BAD_SOURCE"
+: >"$CANARY_BAD_SOURCE/untracked-drift"
+CANARY_BAD_ROOT="/private/tmp/nysa-sf-canary.$(printf '%050d' 0)"
+expect_failure "aggregate real-Hermes input refusal" \
+  python3 "$ROOT/scripts/real-hermes-canary.py" prepare \
+    --factory-root "$CANARY_BAD_SOURCE" --root "$CANARY_BAD_ROOT" \
+    --hermes-bin "$TMP/missing-hermes"
+grep -q 'Factory candidate must be clean' "$OUT" ||
+  fail "real-Hermes bootstrap omitted candidate drift"
+grep -q 'canary root is too long' "$OUT" ||
+  fail "real-Hermes bootstrap omitted path-length drift"
+grep -q 'Hermes binary must be an absolute regular file' "$OUT" ||
+  fail "real-Hermes bootstrap omitted Hermes drift"
+[[ ! -e "$CANARY_BAD_ROOT" ]] || fail "refused real-Hermes bootstrap created runtime state"
 
 printf 'PASS: isolated factory development lane\n'
