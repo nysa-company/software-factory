@@ -5456,3 +5456,12 @@ remote-diverged, malformed, or newly advanced input retires that attempt only
 after its lease is released or made visible on the blocked claim. Cancellation,
 completion, and nonblocked status filters run only after this ticket-local lease
 accounting boundary.
+
+## 2026-08-11 — Decision 384: Dispatch filters ineligible work before dependency truth
+
+Category: Performance
+
+Dispatch still parses dependency syntax for every considered ticket, but it
+resolves protected dependency-terminal truth only after authenticated operator
+projection leaves the ticket Ready or resumable under the selected Kit-SHA.
+Every eligible candidate retains the complete protected dependency check.

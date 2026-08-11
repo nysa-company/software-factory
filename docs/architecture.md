@@ -1926,6 +1926,10 @@ reports all unusable readiness, including typed temporary unavailability, as an
 error. The controller returns a bounded ticket result (`waiting` for temporary,
 `error` for permanent) while preserving its no-claim behavior, and submits
 existing pinned claims before starting new production admission.
+Dependency syntax remains validated for every considered ticket. Protected
+dependency-terminal truth is resolved only after the authenticated effective
+state is Ready or resumable and any ticket Kit-SHA matches the selected kit;
+every eligible candidate still receives the complete dependency check.
 Qualification continues to require Done for every selected
 target and does not count Canceled as completion.
 
