@@ -781,7 +781,7 @@ PY
 }
 
 narrator_bundle_stage() {
-  local narrator_runs="$1"
+  local narrator_runs="$1" authorization_line authorization_count
   local attestation="$CONTENT_ROOT/factory/attestations/$TICKET/bundle.json"
   if [[ "$narrator_runs" -eq 0 ]]; then
     emit_stage "RUN narrator"
@@ -792,8 +792,18 @@ narrator_bundle_stage() {
        ! evidence_bundle_is_valid; then
     if [[ "$narrator_runs" -eq 1 ]]; then
       emit_stage "RUN narrator"
+    elif [[ "$narrator_runs" -gt 1 ]]; then
+      authorization_line="OPERATOR AUTHORIZATION: narrator round $((narrator_runs + 1))"
+      authorization_count="$(grep -Fxc "$authorization_line" "$TICKET_FILE" || true)"
+      if [[ "$authorization_count" -eq 1 ]]; then
+        emit_stage "RUN narrator"
+      elif [[ "$authorization_count" -eq 0 ]]; then
+        emit_stage "AWAIT-OPERATOR semantic-round authorization required; add exact line: $authorization_line"
+      else
+        emit_stage "AWAIT-OPERATOR semantic-round authorization invalid; keep exactly one line: $authorization_line"
+      fi
     else
-      echo "ESCALATE evidence bundle remained invalid after one Narrator retry"
+      emit_stage "REFUSE Narrator run count is invalid"
     fi
   else
     echo "AWAIT-OPERATOR bundle posted; operator approval + merge is the next step"

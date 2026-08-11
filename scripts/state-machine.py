@@ -3121,10 +3121,21 @@ def govern_loop(
         if attempt:
             kind = "contract-repair"
             cap_stage = stage.startswith("FIX ")
+    narrator_wait = re.fullmatch(
+        r"AWAIT-OPERATOR semantic-round authorization "
+        r"(?:required; add exact line|invalid; keep exactly one line): "
+        r"OPERATOR AUTHORIZATION: narrator round ([1-9][0-9]*)",
+        stage,
+    )
+    if not kind and narrator_wait is not None:
+        kind = "narrator-bundle"
+        attempt = int(narrator_wait[1]) - 1
+        cap_stage = True
     if not kind:
         return stage, None
     authorization_role = (
-        "spec-linter" if kind == "planner-spec-linter" else stage_role(stage)
+        "spec-linter" if kind == "planner-spec-linter" else
+        "narrator" if kind == "narrator-bundle" else stage_role(stage)
     )
     authorization_round = attempt + 1
     authorization_line = (
@@ -3138,15 +3149,17 @@ def govern_loop(
         or kind == "contract-repair"
         and cap_stage
         and attempt >= LOOP_LIMIT
+        or kind == "narrator-bundle" and cap_stage and attempt >= 2
     )
     matches = text.splitlines().count(authorization_line)
     authorized = authorization_required and matches == 1
-    capped = authorization_required and attempt >= LOOP_LIMIT and not authorized
+    limit = 2 if kind == "narrator-bundle" else LOOP_LIMIT
+    capped = authorization_required and attempt >= limit and not authorized
     loop = {
         "attempt": attempt,
         "capped": capped,
         "kind": kind,
-        "limit": LOOP_LIMIT,
+        "limit": limit,
     }
     if authorization_required and not authorized:
         if matches == 0:

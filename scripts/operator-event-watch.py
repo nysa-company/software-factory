@@ -279,7 +279,9 @@ def action_event(
         if (
             type(semantic_round) is not int
             or semantic_round < 3
-            or role not in {"planner", "spec-linter", "test-author", "builder"}
+            or role not in {
+                "planner", "spec-linter", "test-author", "builder", "narrator",
+            }
             or "question" in source
             or not re.fullmatch(r"[0-9a-f]{40}", source.get("head_sha", ""))
             or (

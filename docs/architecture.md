@@ -715,7 +715,10 @@ before a claim, lease, or provider attempt.
 Narrator admission additionally requires every Railway preview deployment
 linked by the trusted bot comment to report the exact reviewed repository,
 branch, and commit; stale or unavailable identity waits without a role charge
-and becomes one typed timeout. A product-configured preview preflight runs only
+and becomes one typed timeout. The sealed `ticket-control retry-preview` action
+may restart only that exact expired wait against its unchanged pushed head,
+receipt, passport, and released lease; it resets no evidence and ordinary
+reconciliation still requires the preview identity to pass. A product-configured preview preflight runs only
 after that identity passes. Its bounded JSON result must bind the same head;
 `wait` remains uncharged, `fail` blocks before Narrator, and missing, unsafe, or
 malformed evidence refuses. Products without the optional hook retain exact-SHA
@@ -1387,8 +1390,12 @@ lease; closeout PR creation is never terminal evidence.
 Before bundle attestation, the sequencer checks the Narrator artifact for the
 same required sections and approval question as the trusted attestation path.
 When that artifact is structurally invalid and no bundle attestation exists,
-exactly one additional Narrator run is allowed; another invalid result
-escalates instead of entering operator approval.
+one additional Narrator run is allowed. Every later correction waits without a
+provider for the exact next `OPERATOR AUTHORIZATION: narrator round <N>` line
+and reuses the same ticket-only plan/apply and passport-import boundary as
+other semantic rounds. One line grants only that round; stale, duplicate,
+wrong-role, or unrelated changes remain blocked instead of entering operator
+approval.
 
 The Done receipt always binds the hash of the complete projected ledger. Its
 closeout commit includes `factory/ledger.csv` only when projection changes the

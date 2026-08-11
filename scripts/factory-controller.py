@@ -107,7 +107,7 @@ SEMANTIC_AUTHORIZATION_WAIT = re.compile(
     r"^AWAIT-OPERATOR semantic-round authorization "
     r"(?:required; add exact line|invalid; keep exactly one line): "
     r"(OPERATOR AUTHORIZATION: "
-    r"(planner|spec-linter|test-author|builder) round ([1-9][0-9]*))$"
+    r"(planner|spec-linter|test-author|builder|narrator) round ([1-9][0-9]*))$"
 )
 T198_FACTORY_SHA = "f165a5851dd0b0e84922b57735f26a586e967c66"
 T198_RUN_ID = "1786262312-97243"
@@ -201,10 +201,15 @@ def semantic_authorization_context(
     if (
         set(loop) != {"attempt", "capped", "kind", "limit"}
         or loop.get("attempt") != attempt
-        or loop.get("limit") != 3
-        or loop.get("capped") is not (attempt >= 3)
-        or kind not in {"planner-spec-linter", "contract-repair"}
+        or kind not in {
+            "planner-spec-linter", "contract-repair", "narrator-bundle",
+        }
+        or loop.get("limit") != (2 if kind == "narrator-bundle" else 3)
+        or loop.get("capped") is not (
+            attempt >= (2 if kind == "narrator-bundle" else 3)
+        )
         or kind == "planner-spec-linter" and role != "spec-linter"
+        or kind == "narrator-bundle" and role != "narrator"
     ):
         return None
     return line, role, semantic_round, kind
@@ -7553,7 +7558,7 @@ class Controller:
         return (
             old.returncode == new.returncode == 0
             and (
-                semantic_kind == "contract-repair"
+                semantic_kind != "planner-spec-linter"
                 or len(re.findall(
                     r"^\s*SPEC-LINT:\s*FAIL(?:\s+—\s+.*)?\s*$",
                     old.stdout, re.I | re.M,
@@ -7760,12 +7765,85 @@ class Controller:
             raise ControllerError(f"{label} worktree is unsafe")
         return worktree
 
+    def retry_preview_timeout(
+        self, ticket: str, operator_id: str,
+    ) -> dict[str, Any]:
+        if (
+            not TICKET.fullmatch(ticket)
+            or not OPERATOR_ID.fullmatch(operator_id)
+            or operator_id == "auto"
+        ):
+            raise ControllerError("preview timeout retry request is invalid")
+        claim = self.operator_control_claim(ticket, "preview timeout retry")
+        transition = self.operator_transition(claim)
+        passport = self.authenticated_operator_passport(ticket)
+        passport_path = self.state / "passports" / f"{ticket}.json"
+        status, local, remote = self.remote_cell_head_status(claim)
+        dirty = self.cell_git(
+            claim, "status", "--porcelain=v1", "-z",
+        ).stdout
+        started = claim.get("preview_wait_started_epoch")
+        now = int(time.time())
+        if (
+            claim.get("status") != "blocked"
+            or claim.get("blocked_reason") != "preview-identity-timeout"
+            or claim.get("receipt")
+            or claim.get("role")
+            or claim.get("publication_lease")
+            or claim.get("lease_released") is not True
+            or self.role_active(claim)
+            or transition is None
+            or transition.get("factory_sha") != self.release_path.name
+            or transition.get("consumed") is not False
+            or transition.get("stage") != "RUN narrator"
+            or transition.get("role") != "narrator"
+            or not DIGEST.fullmatch(transition.get("receipt_sha256", ""))
+            or passport is None
+            or passport.get("ticket") != ticket
+            or passport.get("project") != self.project
+            or passport.get("contract_version") != "1.8.0"
+            or passport.get("factory_sha") != self.release_path.name
+            or passport.get("branch") != claim.get("branch")
+            or transition.get("head_sha") != passport.get("head_sha")
+            or claim.get("preview_wait_head") != transition.get("head_sha")
+            or transition.get("passport_sha256")
+            != hashlib.sha256(passport_path.read_bytes()).hexdigest()
+            or transition.get("route_plan_sha256")
+            != passport.get("route_plan_sha256")
+            or isinstance(started, bool)
+            or not isinstance(started, int)
+            or started > now
+            or now - started < PREVIEW_IDENTITY_WAIT_SECONDS
+            or status != "pushed"
+            or local != remote
+            or local != transition.get("head_sha")
+            or dirty
+            or not self.ticket_release_current(claim)
+            or not self.remote_passport_valid(claim)
+        ):
+            raise ControllerError("preview timeout retry authority is unavailable")
+        claim["preview_wait_started_epoch"] = now
+        claim["status"] = "claimed"
+        claim.pop("blocked_reason", None)
+        self.save_claim(claim)
+        self.event(
+            "preview_identity_timeout_retry_authorized", ticket,
+            expected=local, operator_id=operator_id,
+            transition_receipt_sha256=transition["receipt_sha256"],
+        )
+        return {
+            "expected": local, "schema": SCHEMA,
+            "status": "retry-authorized", "ticket": ticket,
+        }
+
     def semantic_authorization_plan(
         self, ticket: str, role: str, semantic_round: int, operator_id: str,
     ) -> tuple[dict[str, Any], dict[str, Any], str, str]:
         if (
             not TICKET.fullmatch(ticket)
-            or role not in {"planner", "spec-linter", "test-author", "builder"}
+            or role not in {
+                "planner", "spec-linter", "test-author", "builder", "narrator",
+            }
             or semantic_round < 3
             or not OPERATOR_ID.fullmatch(operator_id)
             or operator_id == "auto"
@@ -11535,6 +11613,7 @@ def main() -> None:
     parser.add_argument(
         "--action", choices=(
             "reconcile", "pause", "resume",
+            "preview-timeout-retry",
             "authorize-round-plan", "authorize-round-apply",
             "reviewer-void-plan", "reviewer-void-apply",
         ),
@@ -11569,6 +11648,14 @@ def main() -> None:
                 args.run_ordinal, args.operator_id, args.approve_hash,
                 not args.factory_sha,
             )))
+            or (
+                args.action == "preview-timeout-retry"
+                and any((
+                    args.issue, args.factory_sha, not args.ticket, args.role,
+                    args.semantic_round, args.run_ordinal,
+                    not args.operator_id, args.approve_hash,
+                ))
+            )
             or (
                 args.action in {"authorize-round-plan", "authorize-round-apply"}
                 and any((
@@ -11607,6 +11694,10 @@ def main() -> None:
             result = controller.pause_ticket(args.ticket, args.issue)
         elif args.action == "resume":
             result = controller.resume_ticket(args.ticket, args.factory_sha)
+        elif args.action == "preview-timeout-retry":
+            result = controller.retry_preview_timeout(
+                args.ticket, args.operator_id,
+            )
         elif args.action == "authorize-round-plan":
             result = controller.plan_semantic_authorization(
                 args.ticket, args.role, args.semantic_round, args.operator_id,

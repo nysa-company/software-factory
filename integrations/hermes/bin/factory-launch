@@ -1355,10 +1355,18 @@ PY
             "$3" =~ ^T-[0-9]+$ && "$4" == "--factory-sha" &&
             "$5" =~ ^[0-9a-f]{40}$ && "$6" == "--json" ]]; then
       CONTROL_ARGS=(--action resume --ticket "$3" --factory-sha "$5")
+    elif [[ $# -eq 6 && "$1" == "retry-preview" &&
+            "$2" == "--ticket" && "$3" =~ ^T-[0-9]+$ &&
+            "$4" == "--operator-id" &&
+            "$5" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$ &&
+            "$5" != "auto" && "$6" == "--json" ]]; then
+      CONTROL_ARGS=(
+        --action preview-timeout-retry --ticket "$3" --operator-id "$5"
+      )
     elif [[ $# -eq 11 && "$1" == "authorize-round" && "$2" == "plan" &&
             "$3" == "--ticket" && "$4" =~ ^T-[0-9]+$ &&
             "$5" == "--role" &&
-            "$6" =~ ^(planner|spec-linter|test-author|builder)$ &&
+            "$6" =~ ^(planner|spec-linter|test-author|builder|narrator)$ &&
             "$7" == "--round" && "$8" =~ ^[1-9][0-9]*$ &&
             "$9" == "--operator-id" &&
             "${10}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$ &&
@@ -1370,7 +1378,7 @@ PY
     elif [[ $# -eq 13 && "$1" == "authorize-round" && "$2" == "apply" &&
             "$3" == "--ticket" && "$4" =~ ^T-[0-9]+$ &&
             "$5" == "--role" &&
-            "$6" =~ ^(planner|spec-linter|test-author|builder)$ &&
+            "$6" =~ ^(planner|spec-linter|test-author|builder|narrator)$ &&
             "$7" == "--round" && "$8" =~ ^[1-9][0-9]*$ &&
             "$9" == "--operator-id" &&
             "${10}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$ &&

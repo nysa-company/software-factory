@@ -5569,3 +5569,27 @@ it before ordinary reconciliation. Each exact line authorizes only that round.
 Older, duplicate, wrong-role, malformed, unrelated, dirty, unpushed, or
 receipt/passport-mismatched changes remain blocked. Builder–Reviewer remains
 budget-only and receives no semantic override.
+
+## 2026-08-11 — Decision 392: Narrator corrections share exact-round authority
+
+Category: Reliability
+
+One invalid unattested bundle still receives one automatic Narrator correction.
+Every later invalid bundle becomes a provider-free semantic wait for the exact
+next Narrator round. The existing ticket-only authorization plan/apply,
+same-release passport migration, event projection, and ordinary reconciliation
+boundaries are reused; no new lifecycle or decision channel exists. Each line
+grants only that round, while stale, duplicate, wrong-role, unrelated, dirty,
+unpushed, or receipt/passport-mismatched changes remain blocked.
+
+## 2026-08-11 — Decision 393: Preview timeouts retry the same evidence boundary
+
+Category: Reliability
+
+An expired preview-identity wait may be retried on the same ticket without a
+recut only through the sealed ticket-control action. The controller requires
+the exact blocked reason, released lease, current unconsumed Narrator receipt,
+authenticated passport, unchanged pushed head, clean worktree, current release,
+and elapsed timeout before resetting the wait start. It grants no role, lease,
+provider attempt, preview identity, or approval; ordinary reconciliation must
+still observe the exact deployment evidence.

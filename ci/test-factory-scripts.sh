@@ -3316,8 +3316,25 @@ BUNDLE
 INVALID_BUNDLE_OK=1
 expect_stage "RUN narrator" "$INVALID_BUNDLE_ROOT" T-502 || INVALID_BUNDLE_OK=0
 ledger_row T-502 narrator >> "$INVALID_BUNDLE_ROOT/factory/ledger.csv"
-expect_stage "ESCALATE evidence bundle remained invalid after one Narrator retry" \
+expect_stage "AWAIT-OPERATOR semantic-round authorization required; add exact line: OPERATOR AUTHORIZATION: narrator round 3" \
   "$INVALID_BUNDLE_ROOT" T-502 || INVALID_BUNDLE_OK=0
+printf '%s\n' 'OPERATOR AUTHORIZATION: narrator round 3' >> \
+  "$INVALID_BUNDLE_ROOT/factory/tickets/T-502.md"
+expect_stage "RUN narrator" "$INVALID_BUNDLE_ROOT" T-502 || INVALID_BUNDLE_OK=0
+ledger_row T-502 narrator >> "$INVALID_BUNDLE_ROOT/factory/ledger.csv"
+expect_stage "AWAIT-OPERATOR semantic-round authorization required; add exact line: OPERATOR AUTHORIZATION: narrator round 4" \
+  "$INVALID_BUNDLE_ROOT" T-502 || INVALID_BUNDLE_OK=0
+printf '%s\n' \
+  'OPERATOR AUTHORIZATION: narrator round 4' \
+  'OPERATOR AUTHORIZATION: narrator round 4' >> \
+  "$INVALID_BUNDLE_ROOT/factory/tickets/T-502.md"
+expect_stage "AWAIT-OPERATOR semantic-round authorization invalid; keep exactly one line: OPERATOR AUTHORIZATION: narrator round 4" \
+  "$INVALID_BUNDLE_ROOT" T-502 || INVALID_BUNDLE_OK=0
+sed '$d' "$INVALID_BUNDLE_ROOT/factory/tickets/T-502.md" > \
+  "$TMP/narrator-authorization-ticket"
+mv "$TMP/narrator-authorization-ticket" \
+  "$INVALID_BUNDLE_ROOT/factory/tickets/T-502.md"
+expect_stage "RUN narrator" "$INVALID_BUNDLE_ROOT" T-502 || INVALID_BUNDLE_OK=0
 cat > "$INVALID_BUNDLE_ROOT/factory/tickets/T-502-bundle.md" <<'BUNDLE'
 # What this does
 # Preview
@@ -3330,7 +3347,7 @@ Approve to merge?
 BUNDLE
 expect_stage "AWAIT-OPERATOR" "$INVALID_BUNDLE_ROOT" T-502 || INVALID_BUNDLE_OK=0
 [[ "$INVALID_BUNDLE_OK" -eq 1 ]] &&
-  pass "sequencer permits one invalid evidence-bundle retry"
+  pass "sequencer requires one exact authorization for every later Narrator correction"
 
 # A sealed base refresh invalidates the old reviewer approval and narrator.
 REFRESH_ROOT="$TMP/refresh-sequence"
