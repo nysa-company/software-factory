@@ -1483,6 +1483,8 @@ class FactoryControllerTest(unittest.TestCase):
 
     def semantic_wait_fixture(
         self, name: str, ticket: str = "T-110", *, duplicates: bool = False,
+        role: str = "spec-linter", semantic_round: int = 3,
+        semantic_kind: str = "planner-spec-linter",
     ) -> tuple[CONTROL.Controller, dict, Path, dict, dict]:
         cell = self.root / name
         remote = self.root / f"{name}.git"
@@ -1495,10 +1497,19 @@ class FactoryControllerTest(unittest.TestCase):
         route_path = cell / f"factory/route-plans/{ticket}.json"
         ticket_path.parent.mkdir(parents=True)
         route_path.parent.mkdir(parents=True)
-        authorization = "OPERATOR AUTHORIZATION: spec-linter round 3\n"
+        authorization = (
+            f"OPERATOR AUTHORIZATION: {role} round {semantic_round}\n"
+        )
+        spec_failures = (
+            "".join(
+                f"SPEC-LINT: FAIL — {index}\n"
+                for index in range(1, semantic_round)
+            )
+            if semantic_kind == "planner-spec-linter" else ""
+        )
         ticket_path.write_text(
             f"# {ticket}\n\nState: Planning\nKit-SHA: {self.release.name}\n"
-            "SPEC-LINT: FAIL — first\nSPEC-LINT: FAIL — second\n"
+            + spec_failures
             + (authorization + authorization.rstrip("\n") if duplicates else ""),
             encoding="utf-8",
         )
@@ -1565,17 +1576,20 @@ class FactoryControllerTest(unittest.TestCase):
         PASSPORT.write_atomic(passport_path, passport)
         stage = (
             "AWAIT-OPERATOR semantic-round authorization invalid; keep exactly "
-            "one line: OPERATOR AUTHORIZATION: spec-linter round 3"
+            f"one line: OPERATOR AUTHORIZATION: {role} round {semantic_round}"
             if duplicates else
             "AWAIT-OPERATOR semantic-round authorization required; add exact "
-            "line: OPERATOR AUTHORIZATION: spec-linter round 3"
+            f"line: OPERATOR AUTHORIZATION: {role} round {semantic_round}"
         )
         transition = {
             "branch": f"ticket/{ticket}", "consumed": False,
             "contract_version": "1.8.0", "factory_sha": self.release.name,
             "head_sha": head,
-            "loop": {"attempt": 2, "capped": False,
-                     "kind": "planner-spec-linter", "limit": 3},
+            "loop": {
+                "attempt": semantic_round - 1,
+                "capped": semantic_round - 1 >= 3,
+                "kind": semantic_kind, "limit": 3,
+            },
             "passport_sha256": hashlib.sha256(passport_path.read_bytes()).hexdigest(),
             "project": "relay", "role": None,
             "route_plan_sha256": route_digest,
@@ -1590,7 +1604,9 @@ class FactoryControllerTest(unittest.TestCase):
         ).hexdigest()
         CONTROL.write(self.state / f"{ticket}.json", transition)
         claim = {
-            "blocked_reason": CONTROL.SEMANTIC_BLOCK_REASON,
+            "blocked_reason": CONTROL.semantic_block_reason(
+                role, semantic_round,
+            ),
             "branch": f"ticket/{ticket}", "lease": "2" * 64,
             "priority": "normal", "publication_lease": "", "receipt": "",
             "role": "", "schema": CONTROL.CLAIM_SCHEMA, "status": "waiting",
@@ -14766,9 +14782,11 @@ class FactoryControllerTest(unittest.TestCase):
             "pause --ticket <T-NNN> --issue "
             "<software-factory-issue-url> --json",
             "resume --ticket <T-NNN> --factory-sha <FULL_SHA> --json",
-            "authorize-round plan --ticket <T-NNN> --role spec-linter "
+            "authorize-round plan --ticket <T-NNN> --role "
+            "<planner|spec-linter|test-author|builder> "
             "--round <N> --operator-id <ID> --json",
-            "authorize-round apply --ticket <T-NNN> --role spec-linter "
+            "authorize-round apply --ticket <T-NNN> --role "
+            "<planner|spec-linter|test-author|builder> "
             "--round <N> --operator-id <ID> --approve-hash <HASH> --json",
             "reviewer-void plan --ticket <T-NNN> --run <N> "
             "--operator-id <ID> --json",
@@ -16165,6 +16183,69 @@ class FactoryControllerTest(unittest.TestCase):
             ).stdout.strip(),
             unsafe_head,
         )
+
+    def test_semantic_authorization_continues_later_and_contract_rounds(
+        self,
+    ) -> None:
+        cases = (
+            ("later-spec", "T-218", "spec-linter", 4,
+             "planner-spec-linter"),
+            ("contract-builder", "T-219", "builder", 4,
+             "contract-repair"),
+        )
+        for name, ticket, role, semantic_round, kind in cases:
+            with self.subTest(kind=kind):
+                controller, claim, _cell, passport, _transition = (
+                    self.semantic_wait_fixture(
+                        name, ticket, role=role,
+                        semantic_round=semantic_round, semantic_kind=kind,
+                    )
+                )
+                plan = controller.plan_semantic_authorization(
+                    ticket, role, semantic_round, "operator",
+                )
+                self.assertEqual(plan["semantic_kind"], kind)
+                result = controller.apply_semantic_authorization(
+                    ticket, role, semantic_round, "operator",
+                    plan["approval_hash"],
+                )
+                head = result["authorization_head"]
+                self.assertTrue(controller.exact_ticket_commit(
+                    claim, passport["head_sha"], head,
+                    authorization=True, authorization_role=role,
+                    semantic_round=semantic_round, semantic_kind=kind,
+                ))
+                controller.ensure_lease = lambda *_args: None
+
+                def json_call(*args, **_kwargs):
+                    if args[:2] == ("passport", "migrate"):
+                        migrated = self.migrate_semantic_wait_passport(
+                            controller, claim,
+                        )
+                        return {
+                            "passport": migrated["passport_sha256"],
+                            "status": "ok",
+                        }
+                    if args[:2] == ("passport", "validate"):
+                        current = self.validate_semantic_passport(claim)
+                        return {
+                            "passport": current["passport_sha256"],
+                            "status": "ok",
+                        }
+                    raise AssertionError(args)
+
+                controller.json_call = json_call
+                controller.recover_semantic_authorizations([claim])
+                self.assertEqual(claim["status"], "claimed")
+                imported = [
+                    CONTROL.read(path) for path in controller.events.glob("*.json")
+                    if CONTROL.read(path).get("event")
+                    == "semantic_round_authorization_imported"
+                    and CONTROL.read(path).get("ticket") == ticket
+                ]
+                self.assertEqual(len(imported), 1)
+                self.assertEqual(imported[0]["role"], role)
+                self.assertEqual(imported[0]["semantic_round"], semantic_round)
 
     def test_reviewer_void_plan_apply_and_import_are_exact_and_replayable(
         self,

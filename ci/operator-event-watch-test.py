@@ -167,12 +167,22 @@ class OperatorEventWatchTest(unittest.TestCase):
                         action["question"],
                     )
 
-        invalid = self.source(
+        later = self.source(
             "semantic_round_authorization_wait", head_sha="a" * 40,
-            role="spec-linter",
+            role="builder",
             semantic_round=4,
             transition_receipt_sha256="b" * 64,
         )
+        projected = WATCH.action_event(
+            later, self.state, "relay", "1-a.json",
+        )
+        self.assertEqual(projected["role"], "builder")
+        self.assertIn(
+            "OPERATOR AUTHORIZATION: builder round 4",
+            projected["question"],
+        )
+
+        invalid = dict(later, semantic_round=2)
         with self.assertRaisesRegex(
             WATCH.WatchError, "semantic-round authorization context is invalid",
         ):

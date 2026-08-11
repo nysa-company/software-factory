@@ -106,9 +106,9 @@ EMERGENCY_TERMINAL_RECONCILIATION_SCHEMA = (
 SEMANTIC_AUTHORIZATION_WAIT = re.compile(
     r"^AWAIT-OPERATOR semantic-round authorization "
     r"(?:required; add exact line|invalid; keep exactly one line): "
-    r"(OPERATOR AUTHORIZATION: spec-linter round ([1-9][0-9]*))$"
+    r"(OPERATOR AUTHORIZATION: "
+    r"(planner|spec-linter|test-author|builder) round ([1-9][0-9]*))$"
 )
-SEMANTIC_BLOCK_REASON = "semantic-round-authorization:spec-linter:3"
 T198_FACTORY_SHA = "f165a5851dd0b0e84922b57735f26a586e967c66"
 T198_RUN_ID = "1786262312-97243"
 T198_RECEIPT = "baa1255fbb0dcc5be2cfa7315ba7610af6fffbb427e1d13e8ebe0fa24ac87aa7"
@@ -184,9 +184,34 @@ def safe_error(error: BaseException) -> str:
     return " ".join(detail.split())[:500] or "recovery refused"
 
 
-def semantic_authorization_wait(stage: str) -> tuple[str, int] | None:
+def semantic_authorization_wait(stage: str) -> tuple[str, str, int] | None:
     match = SEMANTIC_AUTHORIZATION_WAIT.fullmatch(stage)
-    return (match[1], int(match[2])) if match else None
+    return (match[1], match[2], int(match[3])) if match else None
+
+
+def semantic_authorization_context(
+    stage: str, loop: Any,
+) -> tuple[str, str, int, str] | None:
+    wait = semantic_authorization_wait(stage)
+    if wait is None or not isinstance(loop, dict):
+        return None
+    line, role, semantic_round = wait
+    kind = loop.get("kind")
+    attempt = semantic_round - 1
+    if (
+        set(loop) != {"attempt", "capped", "kind", "limit"}
+        or loop.get("attempt") != attempt
+        or loop.get("limit") != 3
+        or loop.get("capped") is not (attempt >= 3)
+        or kind not in {"planner-spec-linter", "contract-repair"}
+        or kind == "planner-spec-linter" and role != "spec-linter"
+    ):
+        return None
+    return line, role, semantic_round, kind
+
+
+def semantic_block_reason(role: str, semantic_round: int) -> str:
+    return f"semantic-round-authorization:{role}:{semantic_round}"
 
 
 def semantic_authorization_event(
@@ -197,8 +222,8 @@ def semantic_authorization_event(
         return None
     invalid = reason_code is not None or " authorization invalid;" in stage
     details: dict[str, Any] = {
-        "head_sha": head, "role": "spec-linter",
-        "semantic_round": wait[1],
+        "head_sha": head, "role": wait[1],
+        "semantic_round": wait[2],
         "transition_receipt_sha256": receipt,
     }
     if invalid:
@@ -2103,8 +2128,9 @@ class Controller:
             claim["status"] not in {"blocked", "budget"}
             and not (
                 claim["status"] == "waiting"
-                and claim.get("blocked_reason")
-                == SEMANTIC_BLOCK_REASON
+                and str(claim.get("blocked_reason", "")).startswith(
+                    "semantic-round-authorization:"
+                )
             )
         )
 
@@ -7481,7 +7507,8 @@ class Controller:
 
     def exact_ticket_commit(
         self, claim: dict[str, Any], before: str, after: str, *,
-        authorization: bool = False,
+        authorization: bool = False, authorization_role: str = "spec-linter",
+        semantic_round: int = 3, semantic_kind: str = "planner-spec-linter",
     ) -> bool:
         ticket_path = f"factory/tickets/{claim['ticket']}.md"
         parents = self.cell_git(claim, "show", "-s", "--format=%P", after)
@@ -7501,7 +7528,10 @@ class Controller:
             return True
         old = self.cell_git(claim, "show", f"{before}:{ticket_path}")
         new = self.cell_git(claim, "show", f"{after}:{ticket_path}")
-        authorization_line = "OPERATOR AUTHORIZATION: spec-linter round 3"
+        authorization_line = (
+            f"OPERATOR AUTHORIZATION: {authorization_role} "
+            f"round {semantic_round}"
+        )
         required = authorization_line + "\n"
         exact_lines = lambda text: [
             line[:-1] if line.endswith("\n") else line
@@ -7522,10 +7552,13 @@ class Controller:
         }
         return (
             old.returncode == new.returncode == 0
-            and len(re.findall(
-                r"^\s*SPEC-LINT:\s*FAIL(?:\s+—\s+.*)?\s*$",
-                old.stdout, re.I | re.M,
-            )) == 2
+            and (
+                semantic_kind == "contract-repair"
+                or len(re.findall(
+                    r"^\s*SPEC-LINT:\s*FAIL(?:\s+—\s+.*)?\s*$",
+                    old.stdout, re.I | re.M,
+                )) == semantic_round - 1
+            )
             and new_count == 1
             and (
                 old_count == 0
@@ -7538,6 +7571,8 @@ class Controller:
 
     def semantic_authorization_head(
         self, claim: dict[str, Any], passport: dict[str, Any],
+        role: str = "spec-linter", semantic_round: int = 3,
+        semantic_kind: str = "planner-spec-linter",
     ) -> tuple[str | None, str]:
         local = self.cell_git(claim, "rev-parse", "HEAD").stdout.strip()
         branch = self.cell_git(
@@ -7556,7 +7591,8 @@ class Controller:
             or local == passport.get("head_sha")
             or not self.exact_ticket_commit(
                 claim, passport.get("head_sha", ""), local,
-                authorization=True,
+                authorization=True, authorization_role=role,
+                semantic_round=semantic_round, semantic_kind=semantic_kind,
             )
         ):
             return None, "authorization_content_invalid"
@@ -7729,8 +7765,8 @@ class Controller:
     ) -> tuple[dict[str, Any], dict[str, Any], str, str]:
         if (
             not TICKET.fullmatch(ticket)
-            or role != "spec-linter"
-            or semantic_round != 3
+            or role not in {"planner", "spec-linter", "test-author", "builder"}
+            or semantic_round < 3
             or not OPERATOR_ID.fullmatch(operator_id)
             or operator_id == "auto"
         ):
@@ -7741,14 +7777,17 @@ class Controller:
         transition = self.transition_receipt(claim, record=False)
         passport = self.authenticated_operator_passport(ticket)
         line = f"OPERATOR AUTHORIZATION: {role} round {semantic_round}"
-        wait = (
-            semantic_authorization_wait(transition.get("stage", ""))
+        context = (
+            semantic_authorization_context(
+                transition.get("stage", ""), transition.get("loop"),
+            )
             if transition is not None else None
         )
         passport_path = self.state / "passports" / f"{ticket}.json"
         if (
             claim.get("status") != "waiting"
-            or claim.get("blocked_reason") != SEMANTIC_BLOCK_REASON
+            or claim.get("blocked_reason")
+            != semantic_block_reason(role, semantic_round)
             or claim.get("receipt")
             or claim.get("role")
             or claim.get("publication_lease")
@@ -7757,11 +7796,8 @@ class Controller:
             or transition.get("factory_sha") != self.release_path.name
             or transition.get("consumed") is not False
             or transition.get("role") is not None
-            or transition.get("loop") != {
-                "attempt": semantic_round - 1, "capped": False,
-                "kind": "planner-spec-linter", "limit": 3,
-            }
-            or wait != (line, semantic_round)
+            or context is None
+            or context[:3] != (line, role, semantic_round)
             or not DIGEST.fullmatch(transition.get("receipt_sha256", ""))
             or passport is None
             or passport.get("ticket") != ticket
@@ -7785,7 +7821,8 @@ class Controller:
         old_lines = before.stdout.splitlines()
         if (
             old_lines.count(line) != 0
-            or len(re.findall(
+            or context[3] == "planner-spec-linter"
+            and len(re.findall(
                 r"^\s*SPEC-LINT:\s*FAIL(?:\s+—\s+.*)?\s*$",
                 before.stdout, re.I | re.M,
             )) != semantic_round - 1
@@ -7796,6 +7833,8 @@ class Controller:
             claim, passport, after,
             lambda parent, child: self.exact_ticket_commit(
                 claim, parent, child, authorization=True,
+                authorization_role=role, semantic_round=semantic_round,
+                semantic_kind=context[3],
             ),
             "semantic authorization",
         )
@@ -7810,6 +7849,7 @@ class Controller:
             "project": self.project,
             "role": role,
             "schema": SCHEMA,
+            "semantic_kind": context[3],
             "semantic_round": semantic_round,
             "ticket": ticket,
             "ticket_after_sha256": hashlib.sha256(after.encode()).hexdigest(),
@@ -7845,6 +7885,8 @@ class Controller:
             f"Authorize {role} round {semantic_round} for {ticket}",
             lambda parent, child: self.exact_ticket_commit(
                 claim, parent, child, authorization=True,
+                authorization_role=role, semantic_round=semantic_round,
+                semantic_kind=plan["semantic_kind"],
             ),
             "semantic authorization",
         )
@@ -8501,8 +8543,9 @@ class Controller:
             if (
                 claim.get("status") not in {"claimed", "waiting"}
                 or claim.get("status") == "waiting"
-                and claim.get("blocked_reason")
-                != SEMANTIC_BLOCK_REASON
+                and not str(claim.get("blocked_reason", "")).startswith(
+                    "semantic-round-authorization:"
+                )
                 or claim.get("status") == "claimed"
                 and claim.get("blocked_reason") is not None
                 or claim.get("receipt")
@@ -8516,22 +8559,24 @@ class Controller:
             except ControllerError:
                 continue
             transition = self.operator_transition(claim)
+            context = (
+                semantic_authorization_context(
+                    transition.get("stage", ""), transition.get("loop"),
+                )
+                if transition is not None else None
+            )
             if (
                 transition is None
                 or transition.get("factory_sha") != self.release_path.name
                 or transition.get("consumed") is not False
                 or transition.get("role") is not None
-                or transition.get("loop") != {
-                    "attempt": 2, "capped": False,
-                    "kind": "planner-spec-linter", "limit": 3,
-                }
-                or semantic_authorization_wait(
-                    transition.get("stage", "")
-                ) != (
-                    "OPERATOR AUTHORIZATION: spec-linter round 3", 3,
-                )
+                or context is None
+                or claim.get("status") == "waiting"
+                and claim.get("blocked_reason")
+                != semantic_block_reason(context[1], context[2])
             ):
                 continue
+            _line, role, semantic_round, semantic_kind = context
             passport = self.authenticated_operator_passport(claim["ticket"])
             if (
                 passport is None
@@ -8585,7 +8630,9 @@ class Controller:
                     )
                     or not self.exact_ticket_commit(
                         claim, transition.get("head_sha", ""), target,
-                        authorization=True,
+                        authorization=True, authorization_role=role,
+                        semantic_round=semantic_round,
+                        semantic_kind=semantic_kind,
                     )
                     or not passport_head_lineage(
                         passport, transition.get("head_sha", ""),
@@ -8595,7 +8642,8 @@ class Controller:
                     continue
                 self.event_once(
                     "semantic_round_authorization_imported", claim["ticket"],
-                    head_sha=target, role="spec-linter", semantic_round=3,
+                    head_sha=target, role=role,
+                    semantic_round=semantic_round,
                 )
                 claim.update(status="claimed")
                 claim.pop("blocked_reason", None)
@@ -8604,7 +8652,7 @@ class Controller:
             if local == passport.get("head_sha") and not dirty:
                 continue
             target, reason_code = self.semantic_authorization_head(
-                claim, passport,
+                claim, passport, role, semantic_round, semantic_kind,
             )
             if (
                 transition.get("passport_sha256") != passport_file
@@ -8642,7 +8690,7 @@ class Controller:
                 )
             self.event_once(
                 "semantic_round_authorization_imported", claim["ticket"],
-                head_sha=target, role="spec-linter", semantic_round=3,
+                head_sha=target, role=role, semantic_round=semantic_round,
             )
             claim.update(status="claimed")
             claim.pop("blocked_reason", None)
@@ -10509,8 +10557,9 @@ class Controller:
             loop = transition.get("loop")
             if (
                 not semantic_authorization_wait(stage)
-                and claim.get("blocked_reason")
-                == SEMANTIC_BLOCK_REASON
+                and str(claim.get("blocked_reason", "")).startswith(
+                    "semantic-round-authorization:"
+                )
             ):
                 claim.pop("blocked_reason", None)
                 self.save_claim(claim)
@@ -10733,7 +10782,11 @@ class Controller:
                     receipt,
                 ) if semantic_authorization_wait(stage) is not None else None
                 if semantic_event is not None:
-                    claim["blocked_reason"] = SEMANTIC_BLOCK_REASON
+                    wait = semantic_authorization_wait(stage)
+                    assert wait is not None
+                    claim["blocked_reason"] = semantic_block_reason(
+                        wait[1], wait[2],
+                    )
                     self.save_claim(claim)
                     event, dedupe, details = semantic_event
                     self.event_once(

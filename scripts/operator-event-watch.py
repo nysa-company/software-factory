@@ -44,17 +44,14 @@ RECOVERY_KINDS = frozenset({
     "reviewer-run-void", "semantic-round-authorization", "terminal-export",
 })
 RECOVERY_ATTEMPT_LIMIT = 3
-SEMANTIC_AUTHORIZATION_QUESTION = (
-    "Append exactly `OPERATOR AUTHORIZATION: spec-linter round 3` to the ticket."
-)
 SEMANTIC_INVALID_QUESTIONS = {
     "authorization_count_invalid": (
         "Create and push a ticket-only correction commit that keeps exactly one "
-        "final `OPERATOR AUTHORIZATION: spec-linter round 3` line."
+        "final `{line}` line."
     ),
     "authorization_content_invalid": (
         "Amend the ticket-only commit to keep exactly one final "
-        "`OPERATOR AUTHORIZATION: spec-linter round 3` line."
+        "`{line}` line."
     ),
     "branch_invalid": "Restore the recorded ticket branch before retrying.",
     "commit_not_pushed": "Push the exact ticket-only authorization commit.",
@@ -278,9 +275,11 @@ def action_event(
         "semantic_round_authorization_wait",
     }:
         semantic_round = source.get("semantic_round")
+        role = source.get("role")
         if (
-            semantic_round != 3
-            or source.get("role") != "spec-linter"
+            type(semantic_round) is not int
+            or semantic_round < 3
+            or role not in {"planner", "spec-linter", "test-author", "builder"}
             or "question" in source
             or not re.fullmatch(r"[0-9a-f]{40}", source.get("head_sha", ""))
             or (
@@ -293,6 +292,7 @@ def action_event(
             )
         ):
             raise WatchError("semantic-round authorization context is invalid")
+        line = f"OPERATOR AUTHORIZATION: {role} round {semantic_round}"
         action = "semantic_round_authorization"
         reason = (
             "semantic_round_authorization_invalid"
@@ -300,9 +300,11 @@ def action_event(
             else "semantic_round_authorization_required"
         )
         if event == "semantic_round_authorization_invalid":
-            question = SEMANTIC_INVALID_QUESTIONS[source["reason_code"]]
+            question = SEMANTIC_INVALID_QUESTIONS[source["reason_code"]].format(
+                line=line,
+            )
         else:
-            question = SEMANTIC_AUTHORIZATION_QUESTION
+            question = f"Append exactly `{line}` to the ticket."
     elif event == "state_machine_escalated":
         action = "blocked_escalated"
         reason = source.get("detail", "state_machine_escalation")
@@ -436,10 +438,6 @@ def action_event(
         "question": (
             question
             if action == "semantic_round_authorization"
-            and question in {
-                SEMANTIC_AUTHORIZATION_QUESTION,
-                *SEMANTIC_INVALID_QUESTIONS.values(),
-            }
             else safe_text(question)
         ),
         "reason": safe_text(reason),

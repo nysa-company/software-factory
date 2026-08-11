@@ -3123,36 +3123,41 @@ def govern_loop(
             cap_stage = stage.startswith("FIX ")
     if not kind:
         return stage, None
-    capped = cap_stage and attempt >= LOOP_LIMIT
+    authorization_role = (
+        "spec-linter" if kind == "planner-spec-linter" else stage_role(stage)
+    )
+    authorization_round = attempt + 1
+    authorization_line = (
+        f"OPERATOR AUTHORIZATION: {authorization_role} "
+        f"round {authorization_round}"
+    )
+    authorization_required = (
+        kind == "planner-spec-linter"
+        and attempt >= LOOP_LIMIT - 1
+        and stage in {"RUN planner", "RUN spec-linter"}
+        or kind == "contract-repair"
+        and cap_stage
+        and attempt >= LOOP_LIMIT
+    )
+    matches = text.splitlines().count(authorization_line)
+    authorized = authorization_required and matches == 1
+    capped = authorization_required and attempt >= LOOP_LIMIT and not authorized
     loop = {
         "attempt": attempt,
         "capped": capped,
         "kind": kind,
         "limit": LOOP_LIMIT,
     }
-    if capped:
-        stage = (
-            f"ESCALATE {kind} loop cap reached; "
-            f"attempts={attempt}; limit={LOOP_LIMIT}"
-        )
-    elif (
-        kind == "planner-spec-linter"
-        and attempt == LOOP_LIMIT - 1
-        and stage in {"RUN planner", "RUN spec-linter"}
-    ):
-        required = (
-            f"OPERATOR AUTHORIZATION: spec-linter round {attempt + 1}"
-        )
-        matches = text.split("\n").count(required)
+    if authorization_required and not authorized:
         if matches == 0:
             stage = (
                 "AWAIT-OPERATOR semantic-round authorization required; "
-                f"add exact line: {required}"
+                f"add exact line: {authorization_line}"
             )
-        elif matches != 1:
+        else:
             stage = (
                 "AWAIT-OPERATOR semantic-round authorization invalid; "
-                f"keep exactly one line: {required}"
+                f"keep exactly one line: {authorization_line}"
             )
     return stage, loop
 

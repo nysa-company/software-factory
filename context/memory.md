@@ -5556,3 +5556,16 @@ its parent-linked successor and sealed preflight are the only reopening path.
 Restart adopts that exact successor, while unrelated bytes, protected-test
 changes, dirty or divergent state, active work, and mismatched evidence remain
 blocked without provider execution.
+
+## 2026-08-11 — Decision 391: Semantic caps authorize only the exact next round
+
+Category: Reliability
+
+Planner–Spec-linter and authenticated contract-repair loops no longer require a
+ticket recut after their ordinary cap. The state machine emits a provider-free
+wait for the exact next role and round; the existing plan/apply control writes
+one ticket-only authorization child, and same-release passport recovery imports
+it before ordinary reconciliation. Each exact line authorizes only that round.
+Older, duplicate, wrong-role, malformed, unrelated, dirty, unpushed, or
+receipt/passport-mismatched changes remain blocked. Builder–Reviewer remains
+budget-only and receives no semantic override.
