@@ -12059,6 +12059,445 @@ class FactoryControllerTest(unittest.TestCase):
         controller.recover_interrupted_claims([claim])
         self.assertEqual(claim["status"], "claimed")
 
+    def test_changed_state_machine_refusal_is_readmitted_ticket_locally(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        ticket = "T-110"
+        branch = f"ticket/{ticket}"
+        cell = self.root / "cell-refusal"
+        subprocess.run(["git", "init", "-q", "-b", branch, str(cell)], check=True)
+        ticket_path = cell / f"factory/tickets/{ticket}.md"
+        route_path = cell / f"factory/route-plans/{ticket}.json"
+        ticket_path.parent.mkdir(parents=True)
+        route_path.parent.mkdir(parents=True)
+        ticket_path.write_text("State: Review\nKit-SHA: " + self.release.name + "\n")
+        route_path.write_text(json.dumps({
+            "kit_sha": self.release.name, "ticket": ticket,
+        }) + "\n")
+        subprocess.run(["git", "-C", str(cell), "add", "."], check=True)
+        subprocess.run([
+            "git", "-C", str(cell), "-c", "user.name=Factory",
+            "-c", "user.email=factory@example.invalid", "commit", "-qm", "ticket",
+        ], check=True)
+        head = subprocess.run(
+            ["git", "-C", str(cell), "rev-parse", "HEAD"], text=True,
+            capture_output=True, check=True,
+        ).stdout.strip()
+        tree = subprocess.run(
+            ["git", "-C", str(cell), "rev-parse", "HEAD^{tree}"], text=True,
+            capture_output=True, check=True,
+        ).stdout.strip()
+        ticket_blob = subprocess.run(
+            ["git", "-C", str(cell), "rev-parse", f"HEAD:factory/tickets/{ticket}.md"],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+        protected = head
+        subprocess.run([
+            "git", "-C", str(cell), "update-ref", "refs/remotes/origin/main", head,
+        ], check=True)
+        old_base = "e" * 40
+        route_digest = hashlib.sha256(route_path.read_bytes()).hexdigest()
+        key = self.state / "passport.key"
+        key.write_bytes(b"k" * 32)
+        key.chmod(0o600)
+        passport = PASSPORT.authenticate({
+            "branch": branch, "contract_version": "1.8.0",
+            "current_state": "Review", "factory_sha": self.release.name,
+            "head_sha": head, "project": "relay", "publication_state": "validating",
+            "protected_base_sha": old_base,
+            "route_plan_sha256": route_digest,
+            "schema": "nysa.software-factory.ticket-passport/v1", "ticket": ticket,
+        }, key.read_bytes())
+        passports = self.state / "passports"
+        passports.mkdir(mode=0o700)
+        passport_path = passports / f"{ticket}.json"
+        PASSPORT.write_atomic(passport_path, passport)
+        passport_file = hashlib.sha256(passport_path.read_bytes()).hexdigest()
+
+        def refusal(
+            base: str | None, stage: str = "REFUSE refused protected input",
+        ) -> dict:
+            value = {
+                "branch": branch, "consumed": False, "contract_version": "1.8.0",
+                "evidence_sha256": "1" * 64, "factory_sha": self.release.name,
+                "head_sha": head, "head_tree": tree, "lease_sha256": "2" * 64,
+                "loop": None, "nonce": "3" * 32, "passport_sha256": passport_file,
+                "product_origin_sha256": "4" * 64, "project": "relay",
+                "role": None,
+                "route_plan_sha256": route_digest,
+                "schema": "nysa.software-factory.transition-receipt/v1",
+                "stage": stage, "ticket": ticket, "ticket_blob": ticket_blob,
+            }
+            if base is not None:
+                value["protected_base_sha"] = base
+            value["receipt_sha256"] = hashlib.sha256(STATE.canonical({
+                key: item for key, item in value.items()
+                if key not in {"consumed", "consumed_at_epoch", "receipt_sha256"}
+            })).hexdigest()
+            CONTROL.write(self.state / f"{ticket}.json", value)
+            return value
+
+        claim = {
+            "blocked_reason": "state-machine-refusal", "branch": branch,
+            "lease": "", "parked": True, "priority": "normal",
+            "publication_lease": "", "receipt": "", "role": "",
+            "schema": CONTROL.CLAIM_SCHEMA, "status": "blocked", "ticket": ticket,
+            "worktree": str(cell),
+        }
+        sibling = {**claim, "status": "claimed", "ticket": "T-111"}
+        controller.ticket_release_current = lambda _claim: True
+        controller.remote_passport_valid = lambda _claim: True
+        calls = []
+        controller.json_call = lambda *args, **_kwargs: calls.append(args)
+
+        for name, prepare in (
+            ("unchanged", lambda: refusal(protected)),
+            ("malformed", lambda: refusal("")),
+            ("dirty", lambda: (refusal(old_base), (cell / "dirty").write_text("x"))),
+            ("foreign", lambda: (refusal(old_base), passport.update(branch="ticket/T-999"))),
+        ):
+            with self.subTest(name=name):
+                claim.update(status="blocked", blocked_reason="state-machine-refusal")
+                prepare()
+                if name == "foreign":
+                    PASSPORT.write_atomic(passport_path, PASSPORT.authenticate({
+                        key: item for key, item in passport.items()
+                        if key not in {"authentication_sha256", "passport_sha256"}
+                    }, key.read_bytes()))
+                controller.recover_changed_state_machine_refusals([claim], protected)
+                self.assertEqual(claim["status"], "blocked")
+                self.assertEqual(calls, [])
+                (cell / "dirty").unlink(missing_ok=True)
+                passport["branch"] = branch
+                PASSPORT.write_atomic(passport_path, passport)
+
+        refused = refusal(None)
+        self.assertNotIn("protected_base_sha", refused)
+        controller.remote_passport_valid = lambda _claim: False
+        controller.recover_changed_state_machine_refusals([claim], protected)
+        self.assertEqual(claim["status"], "blocked")
+        self.assertEqual(calls, [])
+        controller.remote_passport_valid = lambda _claim: True
+        lease = "5" * 64
+
+        def accepted_transition(refused, accepted_lease, nonce):
+            current = refusal(
+                protected,
+                "REFUSE dependency refresh required; "
+                f"dependencies=T-109; protected-main={protected}",
+            )
+            current.update(
+                lease_sha256=hashlib.sha256(accepted_lease.encode()).hexdigest(),
+                parent_digest=refused["receipt_sha256"], nonce=nonce,
+            )
+            current["receipt_sha256"] = hashlib.sha256(STATE.canonical({
+                key: item for key, item in current.items()
+                if key not in {"consumed", "consumed_at_epoch", "receipt_sha256"}
+            })).hexdigest()
+            CONTROL.write(self.state / f"{ticket}.json", current)
+            return state_transition(
+                current["stage"], current["receipt_sha256"], ticket,
+            )
+
+        def failed_cleanup(*arguments, **_kwargs):
+            if arguments[0] == "claim":
+                return {"lease_id": lease, "schema_version": 1, "ticket": ticket}
+            if arguments[0] == "state-machine":
+                return state_transition(refused["stage"], refused["receipt_sha256"], ticket)
+            if arguments[0] == "release":
+                raise CONTROL.ControllerError("lease cleanup unavailable")
+            self.fail(arguments)
+
+        controller.json_call = failed_cleanup
+        controller.recover_changed_state_machine_refusals([claim], protected)
+        self.assertEqual(claim["status"], "blocked")
+        self.assertEqual(claim["lease"], lease)
+        self.assertEqual(
+            CONTROL.read(controller.claim_path(ticket))["lease"], lease,
+        )
+        claim["lease"] = ""
+
+        def json_call(*arguments, **_kwargs):
+            calls.append(arguments)
+            if arguments[0] == "claim":
+                return {"lease_id": lease, "schema_version": 1, "ticket": ticket}
+            if arguments[0] == "state-machine":
+                return accepted_transition(refused, lease, "6" * 32)
+            self.fail(arguments)
+
+        controller.json_call = json_call
+        controller.recover_changed_state_machine_refusals(
+            [claim, sibling], protected,
+        )
+
+        self.assertEqual(claim["status"], "claimed")
+        self.assertNotIn("blocked_reason", claim)
+        self.assertEqual(claim["lease"], lease)
+        self.assertEqual(sibling["status"], "claimed")
+        self.assertEqual([call[0] for call in calls], ["claim", "state-machine"])
+
+        attempt_path = self.state / f"refusal-readmission-{ticket}.json"
+        real_write = CONTROL.write
+        for boundary, crash_after_receipt in (
+            ("lease-acquired", False), ("child-receipt", True),
+        ):
+            with self.subTest(interruption=boundary):
+                attempt_path.unlink(missing_ok=True)
+                refused = refusal(None)
+                interrupted_lease = (
+                    "7" * 64 if not crash_after_receipt else "8" * 64
+                )
+                records = {}
+                claim.update(
+                    blocked_reason="state-machine-refusal", lease="",
+                    receipt="", role="", status="blocked",
+                )
+                claim.pop("lease_released", None)
+                CONTROL.write(controller.claim_path(ticket), claim)
+
+                def interrupted_call(*arguments, **_kwargs):
+                    if arguments[0] == "claim":
+                        records[ticket] = {"lease_id": interrupted_lease}
+                        return {
+                            "lease_id": interrupted_lease,
+                            "schema_version": 1, "ticket": ticket,
+                        }
+                    if arguments[0] == "state-machine":
+                        return accepted_transition(
+                            refused, interrupted_lease, "9" * 32,
+                        )
+                    self.fail(arguments)
+
+                interrupted = CONTROL.Controller(self.args)
+                interrupted.ticket_release_current = lambda _claim: True
+                interrupted.remote_passport_valid = lambda _claim: True
+                interrupted.dispatcher_lease_records = lambda: records
+                interrupted.json_call = interrupted_call
+                if crash_after_receipt:
+                    interrupted.save_claim = lambda _claim: (_ for _ in ()).throw(
+                        KeyboardInterrupt("crash after child receipt")
+                    )
+                    crash = self.assertRaisesRegex(
+                        KeyboardInterrupt, "crash after child receipt",
+                    )
+                else:
+                    def interrupted_write(path, value):
+                        if path == attempt_path and value.get("lease"):
+                            raise KeyboardInterrupt("crash after lease acquisition")
+                        real_write(path, value)
+
+                    crash = self.assertRaisesRegex(
+                        KeyboardInterrupt, "crash after lease acquisition",
+                    )
+                with crash:
+                    if crash_after_receipt:
+                        interrupted.recover_changed_state_machine_refusals(
+                            [claim], protected,
+                        )
+                    else:
+                        with patch.object(
+                            CONTROL, "write", side_effect=interrupted_write,
+                        ):
+                            interrupted.recover_changed_state_machine_refusals(
+                                [claim], protected,
+                            )
+                persisted = CONTROL.read(controller.claim_path(ticket))
+                self.assertEqual(persisted["status"], "blocked")
+                claim.clear()
+                claim.update(persisted)
+                self.assertEqual(CONTROL.read(attempt_path)["lease"], (
+                    interrupted_lease if crash_after_receipt else ""
+                ))
+
+                restarted = CONTROL.Controller(self.args)
+                restarted.ticket_release_current = lambda _claim: True
+                restarted.remote_passport_valid = lambda _claim: True
+                restarted.dispatcher_lease_records = lambda: records
+
+                def adopt(*arguments, **_kwargs):
+                    if not crash_after_receipt and arguments[0] == "state-machine":
+                        return accepted_transition(
+                            refused, interrupted_lease, "a" * 32,
+                        )
+                    self.fail(f"restart unexpectedly called launcher: {arguments}")
+
+                restarted.json_call = adopt
+                restarted.recover_changed_state_machine_refusals(
+                    [claim], protected,
+                )
+                self.assertEqual(claim["status"], "claimed")
+                self.assertEqual(claim["lease"], interrupted_lease)
+                self.assertFalse(attempt_path.exists())
+
+        for index, invalidation in enumerate((
+            "dirty", "remote-diverged", "protected-main-advanced",
+        ), 11):
+            with self.subTest(interrupted_invalidation=invalidation):
+                attempt_path.unlink(missing_ok=True)
+                refused = refusal(None)
+                interrupted_lease = f"{index:064x}"
+                records = {}
+                claim.update(
+                    blocked_reason="state-machine-refusal", lease="",
+                    receipt="", role="", status="blocked",
+                )
+                claim.pop("lease_released", None)
+                CONTROL.write(controller.claim_path(ticket), claim)
+
+                def acquire(*arguments, **_kwargs):
+                    if arguments[0] == "claim":
+                        records[ticket] = {"lease_id": interrupted_lease}
+                        return {
+                            "lease_id": interrupted_lease,
+                            "schema_version": 1, "ticket": ticket,
+                        }
+                    self.fail(arguments)
+
+                interrupted = CONTROL.Controller(self.args)
+                interrupted.ticket_release_current = lambda _claim: True
+                interrupted.remote_passport_valid = lambda _claim: True
+                interrupted.dispatcher_lease_records = lambda: records
+                interrupted.json_call = acquire
+
+                def interrupt_marker_write(path, value):
+                    if path == attempt_path and value.get("lease"):
+                        raise KeyboardInterrupt("crash after lease acquisition")
+                    real_write(path, value)
+
+                with self.assertRaisesRegex(
+                    KeyboardInterrupt, "crash after lease acquisition",
+                ):
+                    with patch.object(
+                        CONTROL, "write", side_effect=interrupt_marker_write,
+                    ):
+                        interrupted.recover_changed_state_machine_refusals(
+                            [claim], protected,
+                        )
+                if invalidation == "dirty":
+                    (cell / "dirty").write_text("dirty", encoding="utf-8")
+
+                released = []
+                restarted = CONTROL.Controller(self.args)
+                restarted.ticket_release_current = lambda _claim: True
+                restarted.remote_passport_valid = lambda _claim: (
+                    invalidation != "remote-diverged"
+                )
+                restarted.dispatcher_lease_records = lambda: records
+
+                def release(*arguments, **_kwargs):
+                    if arguments[0] == "release":
+                        released.append(arguments)
+                        if invalidation == "remote-diverged":
+                            raise CONTROL.ControllerError(
+                                "lease cleanup unavailable"
+                            )
+                        records.pop(ticket)
+                        return {"released": True, "ticket": ticket}
+                    self.fail(arguments)
+
+                restarted.json_call = release
+                restarted.recover_changed_state_machine_refusals(
+                    [claim],
+                    "f" * 40
+                    if invalidation == "protected-main-advanced" else protected,
+                )
+                self.assertEqual(claim["status"], "blocked")
+                self.assertEqual(len(released), 1)
+                if invalidation == "remote-diverged":
+                    self.assertEqual(claim["lease"], interrupted_lease)
+                    self.assertEqual(
+                        CONTROL.read(controller.claim_path(ticket))["lease"],
+                        interrupted_lease,
+                    )
+                    self.assertIn(ticket, records)
+                else:
+                    self.assertNotIn(ticket, records)
+                self.assertFalse(attempt_path.exists())
+                (cell / "dirty").unlink(missing_ok=True)
+
+        for index, invalidation in enumerate(("canceled", "terminal"), 21):
+            with self.subTest(prefilter_invalidation=invalidation):
+                attempt_path.unlink(missing_ok=True)
+                refusal(None)
+                interrupted_lease = f"{index:064x}"
+                records = {}
+                claim.update(
+                    blocked_reason="state-machine-refusal", lease="",
+                    receipt="", role="", status="blocked",
+                )
+                claim.pop("lease_released", None)
+                CONTROL.write(controller.claim_path(ticket), claim)
+
+                def acquire(*arguments, **_kwargs):
+                    if arguments[0] == "claim":
+                        records[ticket] = {"lease_id": interrupted_lease}
+                        return {
+                            "lease_id": interrupted_lease,
+                            "schema_version": 1, "ticket": ticket,
+                        }
+                    self.fail(arguments)
+
+                interrupted = CONTROL.Controller(self.args)
+                interrupted.ticket_release_current = lambda _claim: True
+                interrupted.remote_passport_valid = lambda _claim: True
+                interrupted.dispatcher_lease_records = lambda: records
+                interrupted.json_call = acquire
+
+                def interrupt_marker_write(path, value):
+                    if path == attempt_path and value.get("lease"):
+                        raise KeyboardInterrupt("crash after lease acquisition")
+                    real_write(path, value)
+
+                with self.assertRaisesRegex(
+                    KeyboardInterrupt, "crash after lease acquisition",
+                ):
+                    with patch.object(
+                        CONTROL, "write", side_effect=interrupt_marker_write,
+                    ):
+                        interrupted.recover_changed_state_machine_refusals(
+                            [claim], protected,
+                        )
+                if invalidation == "terminal":
+                    claim["status"] = "claimed"
+                    CONTROL.write(controller.claim_path(ticket), claim)
+
+                restarted = CONTROL.Controller(self.args)
+                restarted.dispatcher_lease_records = lambda: records
+                restarted.product_ticket_canceled = lambda *_args: (
+                    invalidation == "canceled"
+                )
+                restarted.product_ticket_done = lambda _ticket: (
+                    invalidation == "terminal"
+                )
+
+                def release(*arguments, **_kwargs):
+                    if arguments[0] == "release":
+                        if invalidation == "canceled":
+                            raise CONTROL.ControllerError(
+                                "lease cleanup unavailable"
+                            )
+                        records.pop(ticket)
+                        return {"released": True, "ticket": ticket}
+                    self.fail(arguments)
+
+                restarted.json_call = release
+                pending = restarted.reconcile_refusal_readmission_markers(
+                    [claim], protected,
+                )
+                if invalidation == "canceled":
+                    self.assertEqual(pending, {ticket})
+                    self.assertEqual(claim["status"], "blocked")
+                    self.assertEqual(
+                        claim["blocked_reason"],
+                        "state-machine-refusal-cleanup",
+                    )
+                    self.assertEqual(claim["lease"], interrupted_lease)
+                    self.assertIn(ticket, records)
+                else:
+                    self.assertEqual(pending, set())
+                    self.assertEqual(claim["status"], "claimed")
+                    self.assertNotIn(ticket, records)
+                self.assertFalse(attempt_path.exists())
+
     def test_reconciliation_marker_accepts_exact_passport_successor(self) -> None:
         controller = CONTROL.Controller(self.args)
         ticket = "T-110"

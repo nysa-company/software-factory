@@ -407,6 +407,11 @@ class StateMachineTest(unittest.TestCase):
         self.assertIn(protected, receipt["stage"])
 
     def test_exact_refusal_is_bound_to_a_transition_receipt(self) -> None:
+        protected = run("git", "rev-parse", "HEAD", cwd=self.product)
+        run(
+            "git", "update-ref", "refs/remotes/origin/main", protected,
+            cwd=self.product,
+        )
         kit = self.root / "kit"
         (kit / "scripts").mkdir(parents=True)
         (kit / "scripts/next-stage.sh").write_text(
@@ -423,10 +428,9 @@ class StateMachineTest(unittest.TestCase):
             result["stage"],
             "REFUSE refresh receipt was not committed directly after its merge",
         )
-        self.assertEqual(
-            STATE.safe_receipt(self.state_dir / "T-110.json")["receipt_sha256"],
-            result["receipt"],
-        )
+        receipt = STATE.safe_receipt(self.state_dir / "T-110.json")
+        self.assertEqual(receipt["protected_base_sha"], protected)
+        self.assertEqual(receipt["receipt_sha256"], result["receipt"])
 
     def test_role_stage_is_resolved_once_before_transition_receipt(self) -> None:
         receipt = "b" * 64
@@ -1817,11 +1821,14 @@ class StateMachineTest(unittest.TestCase):
         fixture = self.product / "apps/api/tests/example.test.ts"
         fixture.parent.mkdir(parents=True)
         fixture.write_text("export const expected = 'expected-literal';\n")
+        sibling_fixture = self.product / "apps/api/tests/sibling.test.ts"
+        sibling_fixture.write_text("export const expected = 'sibling-literal';\n")
         ticket.write_text(
             "# T-110\n\nState: Planning\n"
             "Product-Decisions: frozen\n"
             "Builder ownership: README.md only\n"
-            "Fixture-Seams: apps/api/tests/example.test.ts\n"
+            "Fixture-Seams: apps/api/tests/example.test.ts, "
+            "apps/api/tests/sibling.test.ts\n"
             "Authentication-Seams: none\n"
             "Protected-Test-Conflicts: none\n",
             encoding="utf-8",
@@ -1831,8 +1838,8 @@ class StateMachineTest(unittest.TestCase):
         rulings = self.product / "factory/rulings.md"
         rulings.write_text("# Rulings\n\nT-100: preserve prior ruling.\n")
         run(
-            "git", "add", str(ticket), str(rulings), str(fixture), str(project),
-            cwd=self.product,
+            "git", "add", str(ticket), str(rulings), str(fixture),
+            str(sibling_fixture), str(project), cwd=self.product,
         )
         run("git", "commit", "-qm", "add operator fields", cwd=self.product)
         base = run("git", "rev-parse", "HEAD", cwd=self.product)
@@ -1843,7 +1850,10 @@ class StateMachineTest(unittest.TestCase):
             "protected_base_sha": base,
             "ticket": "T-110",
         }
-        entry = "apps/api/tests/example.test.ts => expected-literal"
+        entry = (
+            "apps/api/tests/example.test.ts => expected-literal, "
+            "apps/api/tests/sibling.test.ts => sibling-literal"
+        )
 
         def commit_resume() -> str:
             ticket.write_text(
@@ -2095,9 +2105,24 @@ class StateMachineTest(unittest.TestCase):
             "ticket": "T-110",
         }
         relative = "apps/api/tests/example.test.ts"
-        entry = f"{relative} => expected-literal"
+        entry = (
+            f"{relative} => expected-literal, "
+            f"{relative} => alternate-literal"
+        )
+        before = ticket.read_text(encoding="utf-8")
+        self.assertFalse(STATE.safe_operator_context(
+            self.args,
+            before,
+            before.replace("Fixture-Seams: none", f"Fixture-Seams: {relative}")
+            .replace(
+                "Protected-Test-Conflicts: none",
+                "Protected-Test-Conflicts: apps/api/src/server.ts => export, "
+                f"{relative} => expected-literal",
+            ),
+            base,
+        ))
         ticket.write_text(
-            ticket.read_text(encoding="utf-8")
+            before
             .replace("Fixture-Seams: none", f"Fixture-Seams: {relative}")
             .replace(
                 "Protected-Test-Conflicts: none",
@@ -2248,6 +2273,25 @@ class StateMachineTest(unittest.TestCase):
             prior,
             prior.replace("Prior blocker decision.", "Stale blocker decision."),
         ))
+
+        conflicts = (
+            "Protected-Test-Conflicts: apps/api/tests/one.test.ts => one, "
+            "apps/api/tests/two.test.ts => two\n"
+        )
+        for label, changed in {
+            "removed": "Protected-Test-Conflicts: apps/api/tests/one.test.ts => one\n",
+            "reordered": (
+                "Protected-Test-Conflicts: apps/api/tests/two.test.ts => two, "
+                "apps/api/tests/one.test.ts => one\n"
+            ),
+            "duplicated": conflicts.replace(
+                "\n", ", apps/api/tests/two.test.ts => two\n"
+            ),
+        }.items():
+            with self.subTest(conflicts=label):
+                self.assertFalse(STATE.safe_operator_context(
+                    self.args, conflicts, changed,
+                ))
 
         invalid = {
             "wrong-receipt": answer.replace(self.args.receipt, "c" * 64),

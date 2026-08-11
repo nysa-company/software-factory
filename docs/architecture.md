@@ -597,6 +597,24 @@ Conflicting evidence is persisted as a ticket-local block before best-effort
 resource cleanup and cannot prevent healthy siblings from reconciling. The
 marker is consumed after ordinary worker completion, making recovery one-use
 and idempotent.
+An idle parked current-release `state-machine-refusal` may also re-enter only
+after authenticated protected main changes from the base bound by its refusal
+receipt, or by the receipt-bound passport for legacy receipts. The controller
+requires the unchanged roleless claim, receipt inputs, current route and
+passport, clean exact branch, current tracking ref, and exact remote passport,
+then asks the ordinary state machine for a different parent-linked transition.
+Only that accepted result updates the claim; an unchanged refusal or malformed,
+dirty, foreign, paused, active, or remote-divergent input remains blocked. A
+ticket-local prepared marker precedes temporary lease acquisition. On restart,
+that exact marker adopts only the ticket's dispatcher lease and its parent-linked
+child receipt, so crashes on either side of the state-machine write are
+idempotent. The lease is released on refusal, and a cleanup failure is persisted
+on that same claim so it cannot consume sibling capacity invisibly. If later
+validation invalidates a prepared attempt, its exact ticket lease is likewise
+released, or persisted on the blocked claim for ordinary inactive cleanup,
+before the marker is retired. Marker reconciliation precedes cancellation,
+completion, and claim-status filtering; failed cleanup therefore retains a
+fail-closed claim instead of orphaning capacity when those filters run.
 Authenticated passports preserve completed roles, charges, Factory/base
 lineage, and publication state across disposable-cell relocation, controller
 restart, and Factory migration. Four PRs may validate concurrently; one
@@ -1948,10 +1966,11 @@ unknown checks and unowned declarations fail before Builder.
 An escalated blocker may carry one direct, ticket-only operator-context commit
 before its byte-exact resume commit. The context commit appends or exactly
 replaces one bounded single-line `OPERATOR ANSWER` paired with the current
-blocked receipt. It may also append one validated protected-test conflict and
-only the matching tracked path in `Fixture-Seams` when that path is inside the
+blocked receipt. It may also append one or more ordered, unique validated
+protected-test conflicts. At most one matching tracked path may still be
+appended to `Fixture-Seams` for the final conflict when that path is inside the
 authenticated protected `PROJECT.env` `TEST_PATHS`; complete ticket readiness
-still applies. The answer is non-contract
+still applies to every conflict. The answer is non-contract
 repair context: it cannot change State, kit, route, contract, provider,
 application, test, or CI authority, and it grants no ownership beyond the
 existing receipt-bound repair role. Multiple answers, stale receipts, broader
