@@ -925,6 +925,311 @@ else
   fail "publication seals contents before rename and manifests last"
 fi
 
+preflight_setup_blocked_json() {
+  python3 - "$1" <<'PY'
+import json, sys
+raw = sys.argv[1]
+assert len(raw.splitlines()) == 1
+value = json.loads(raw)
+assert set(value) == {
+    "authorizations_required", "blockers", "certification", "factory",
+    "ownership_conflicts", "product", "project", "schema", "status", "tickets",
+}
+assert value["schema"] == "nysa.software-factory.operator-preflight-report/v1"
+assert value["status"] == "blocked"
+assert value["blockers"] == [{
+    "reason_code": "preflight_setup_invalid", "scope": "preflight",
+}]
+PY
+}
+
+PRODUCT_PREFLIGHT="$(make_product product-preflight)"
+set_pin "$PRODUCT_PREFLIGHT" "$SHA_A"
+cat > "$PRODUCT_PREFLIGHT/factory/tickets/T-001.md" <<'EOF'
+State: Ready
+Product-Decisions: frozen
+Builder ownership: app/one.js only
+Fixture-Seams: factory/certify.sh
+Authentication-Seams: factory/certify.sh
+Protected-Test-Conflicts: none
+EOF
+cat > "$PRODUCT_PREFLIGHT/factory/tickets/T-002.md" <<'EOF'
+State: Ready
+Product-Decisions: frozen
+Builder ownership: app/two.js only
+Fixture-Seams: factory/certify.sh
+Authentication-Seams: factory/certify.sh
+Protected-Test-Conflicts: none
+EOF
+cat > "$PRODUCT_PREFLIGHT/factory/tickets/T-003.md" <<'EOF'
+State: Backlog
+Product-Decisions: frozen
+Builder ownership: app/three.js only
+Fixture-Seams: factory/certify.sh
+Authentication-Seams: factory/certify.sh
+Protected-Test-Conflicts: none
+EOF
+python3 - "$PRODUCT_PREFLIGHT/factory/certification-plan.json" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+value = json.loads(path.read_text())
+value["phases"][0]["network"] = "required"
+path.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n")
+PY
+commit_all "$PRODUCT_PREFLIGHT" "prepare operator preflight fixture"
+push_main "$PRODUCT_PREFLIGHT"
+PREFLIGHT_BAD_MANIFEST_OUTPUT="$(run_kit preflight-report --project preflight \
+  --product "$PRODUCT_PREFLIGHT" --sha "$(printf 'c%.0s' {1..40})" \
+  --ticket T-001 --json 2>&1)"
+PREFLIGHT_BAD_MANIFEST_STATUS=$?
+if [[ "$PREFLIGHT_BAD_MANIFEST_STATUS" -eq 2 ]] &&
+   preflight_setup_blocked_json "$PREFLIGHT_BAD_MANIFEST_OUTPUT"; then
+  pass "preflight report closes invalid manifest failures as blocked JSON"
+else
+  fail "preflight report closes invalid manifest failures as blocked JSON" \
+    "$PREFLIGHT_BAD_MANIFEST_OUTPUT"
+fi
+printf '%s\n' invalid > "$PRODUCT_PREFLIGHT/factory/KIT_PIN"
+PREFLIGHT_BAD_PIN_OUTPUT="$(run_kit preflight-report --project preflight \
+  --product "$PRODUCT_PREFLIGHT" --sha "$SHA_A" --ticket T-001 --json 2>&1)"
+PREFLIGHT_BAD_PIN_STATUS=$?
+printf '%s\n' "$SHA_A" > "$PRODUCT_PREFLIGHT/factory/KIT_PIN"
+if [[ "$PREFLIGHT_BAD_PIN_STATUS" -eq 2 ]] &&
+   preflight_setup_blocked_json "$PREFLIGHT_BAD_PIN_OUTPUT"; then
+  pass "preflight report closes invalid pin failures as blocked JSON"
+else
+  fail "preflight report closes invalid pin failures as blocked JSON" \
+    "$PREFLIGHT_BAD_PIN_OUTPUT"
+fi
+cp "$PRODUCT_PREFLIGHT/factory/PROJECT.env" "$TMP/preflight-project-env"
+awk '!/^CERTIFY_SCRIPT=/' "$TMP/preflight-project-env" > \
+  "$PRODUCT_PREFLIGHT/factory/PROJECT.env"
+PREFLIGHT_BAD_CERTIFY_OUTPUT="$(run_kit preflight-report --project preflight \
+  --product "$PRODUCT_PREFLIGHT" --sha "$SHA_A" --ticket T-001 --json 2>&1)"
+PREFLIGHT_BAD_CERTIFY_STATUS=$?
+mv "$TMP/preflight-project-env" "$PRODUCT_PREFLIGHT/factory/PROJECT.env"
+if [[ "$PREFLIGHT_BAD_CERTIFY_STATUS" -eq 2 ]] &&
+   preflight_setup_blocked_json "$PREFLIGHT_BAD_CERTIFY_OUTPUT"; then
+  pass "preflight report closes missing CERTIFY_SCRIPT as blocked JSON"
+else
+  fail "preflight report closes missing CERTIFY_SCRIPT as blocked JSON" \
+    "$PREFLIGHT_BAD_CERTIFY_OUTPUT"
+fi
+PREFLIGHT_BAD_SETUP_OUTPUT="$(run_kit preflight-report --project preflight \
+  --product "$TMP/missing-preflight-product" --sha "$SHA_A" \
+  --ticket T-001 --json 2>&1)"
+PREFLIGHT_BAD_SETUP_STATUS=$?
+if [[ "$PREFLIGHT_BAD_SETUP_STATUS" -eq 2 ]] &&
+   preflight_setup_blocked_json "$PREFLIGHT_BAD_SETUP_OUTPUT"; then
+  pass "preflight report closes reporter setup failures as blocked JSON"
+else
+  fail "preflight report closes reporter setup failures as blocked JSON" \
+    "$PREFLIGHT_BAD_SETUP_OUTPUT"
+fi
+PREFLIGHT_STATE_BEFORE="$(state_snapshot)"
+PREFLIGHT_HEAD_BEFORE="$(git -C "$PRODUCT_PREFLIGHT" rev-parse HEAD HEAD^{tree})"
+PREFLIGHT_AUTH_OUTPUT="$(run_kit preflight-report --project preflight \
+  --product "$PRODUCT_PREFLIGHT" --sha "$SHA_A" \
+  --ticket T-001 --ticket T-002 --json 2>&1)"
+PREFLIGHT_AUTH_STATUS=$?
+if [[ "$PREFLIGHT_AUTH_STATUS" -eq 3 ]] &&
+   python3 - "$PREFLIGHT_AUTH_OUTPUT" <<'PY'
+import json, sys
+value = json.loads(sys.argv[1])
+assert value["schema"] == "nysa.software-factory.operator-preflight-report/v1"
+assert value["status"] == "authorization-required"
+assert value["blockers"] == []
+assert value["authorizations_required"] == ["certification_network_review"]
+assert value["certification"]["runtime"]["status"] == "pass"
+assert value["product"]["head_equals_remote_main"] is True
+assert value["product"]["identity_stable"] is True
+assert value["product"]["kit_pin"] == value["factory"]["sha"]
+assert all(item["status"] == "pass" for item in value["tickets"])
+assert all(item["state_ready"] is True for item in value["tickets"])
+assert value["ownership_conflicts"] == []
+PY
+then
+  pass "preflight report requests reviewed network before certification"
+else
+  fail "preflight report requests reviewed network before certification" \
+    "$PREFLIGHT_AUTH_OUTPUT"
+fi
+printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n" v99.99.99' > "$STUB_BIN/node"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n" 99.99.99' > "$STUB_BIN/npm"
+chmod +x "$STUB_BIN/node" "$STUB_BIN/npm"
+export FACTORY_KIT_CERTIFICATION_NETWORK_REVIEWED=1
+PREFLIGHT_RUNTIME_OUTPUT="$(run_kit preflight-report --project preflight \
+  --product "$PRODUCT_PREFLIGHT" --sha "$SHA_A" --ticket T-001 --json 2>&1)"
+PREFLIGHT_RUNTIME_STATUS=$?
+unset FACTORY_KIT_CERTIFICATION_NETWORK_REVIEWED
+rm -f "$STUB_BIN/node" "$STUB_BIN/npm"
+if [[ "$PREFLIGHT_RUNTIME_STATUS" -eq 2 ]] &&
+   python3 - "$PREFLIGHT_RUNTIME_OUTPUT" <<'PY'
+import json, sys
+value = json.loads(sys.argv[1])
+assert value["status"] == "blocked"
+assert value["certification"]["runtime"]["status"] == "blocked"
+assert value["certification"]["runtime"]["observed"] == {
+    "node": "v99.99.99", "npm": "99.99.99",
+}
+assert value["blockers"] == [{
+    "reason_code": "runtime_tuple_mismatch", "scope": "certification",
+}]
+PY
+then
+  pass "preflight report blocks the wrong Node/npm PATH tuple"
+else
+  fail "preflight report blocks the wrong Node/npm PATH tuple" \
+    "$PREFLIGHT_RUNTIME_OUTPUT"
+fi
+export FACTORY_KIT_CERTIFICATION_NETWORK_REVIEWED=1
+PREFLIGHT_PASS_OUTPUT="$(run_kit preflight-report --project preflight \
+  --product "$PRODUCT_PREFLIGHT" --sha "$SHA_A" \
+  --ticket T-001 --ticket T-002 --json 2>&1)"
+PREFLIGHT_PASS_STATUS=$?
+unset FACTORY_KIT_CERTIFICATION_NETWORK_REVIEWED
+if [[ "$PREFLIGHT_PASS_STATUS" -eq 0 ]] &&
+   python3 - "$PREFLIGHT_PASS_OUTPUT" "$SHA_A" <<'PY'
+import json, sys
+value = json.loads(sys.argv[1])
+assert value["status"] == "pass"
+assert value["factory"]["sha"] == sys.argv[2]
+assert value["certification"]["network_review"]["status"] == "pass"
+PY
+   [[ "$PREFLIGHT_STATE_BEFORE" == "$(state_snapshot)" ]] &&
+   [[ "$PREFLIGHT_HEAD_BEFORE" == \
+      "$(git -C "$PRODUCT_PREFLIGHT" rev-parse HEAD HEAD^{tree})" ]] &&
+   [[ -z "$(git -C "$PRODUCT_PREFLIGHT" status --porcelain --untracked-files=all)" ]]; then
+  pass "preflight report passes exact inputs without mutating product or owner state"
+else
+  fail "preflight report passes exact inputs without mutating product or owner state" \
+    "$PREFLIGHT_PASS_OUTPUT"
+fi
+PREFLIGHT_PUSH_ORIGIN="$(git -C "$PRODUCT_PREFLIGHT" remote get-url --push origin)"
+PREFLIGHT_FETCH_ONLY="$TMP/preflight-fetch-only.git"
+git init --bare -q "$PREFLIGHT_FETCH_ONLY"
+git -C "$PRODUCT_PREFLIGHT" remote set-url origin "$PREFLIGHT_FETCH_ONLY"
+git -C "$PRODUCT_PREFLIGHT" remote set-url --push origin "$PREFLIGHT_PUSH_ORIGIN"
+export FACTORY_KIT_CERTIFICATION_NETWORK_REVIEWED=1
+PREFLIGHT_AUTHORITY_OUTPUT="$(run_kit preflight-report --project preflight \
+  --product "$PRODUCT_PREFLIGHT" --sha "$SHA_A" --ticket T-001 --json 2>&1)"
+PREFLIGHT_AUTHORITY_STATUS=$?
+unset FACTORY_KIT_CERTIFICATION_NETWORK_REVIEWED
+if [[ "$PREFLIGHT_AUTHORITY_STATUS" -eq 0 ]] &&
+   python3 - "$PREFLIGHT_AUTHORITY_OUTPUT" <<'PY'
+import json, sys
+value = json.loads(sys.argv[1])
+assert value["status"] == "pass"
+assert value["product"]["sha"] == value["product"]["remote_main_sha"]
+PY
+then
+  pass "preflight report binds remote-main evidence to validated push authority"
+else
+  fail "preflight report binds remote-main evidence to validated push authority" \
+    "$PREFLIGHT_AUTHORITY_OUTPUT"
+fi
+export FACTORY_KIT_CERTIFICATION_NETWORK_REVIEWED=1
+PREFLIGHT_BACKLOG_OUTPUT="$(run_kit preflight-report --project preflight \
+  --product "$PRODUCT_PREFLIGHT" --sha "$SHA_A" --ticket T-003 --json 2>&1)"
+PREFLIGHT_BACKLOG_STATUS=$?
+unset FACTORY_KIT_CERTIFICATION_NETWORK_REVIEWED
+if [[ "$PREFLIGHT_BACKLOG_STATUS" -eq 2 ]] &&
+   python3 - "$PREFLIGHT_BACKLOG_OUTPUT" <<'PY'
+import json, sys
+value = json.loads(sys.argv[1])
+assert value["status"] == "blocked"
+assert value["tickets"] == [{
+    "builder_paths": [], "state_ready": False, "status": "blocked",
+    "ticket": "T-003",
+}]
+assert value["blockers"] == [{
+    "reason_code": "ticket_readiness_invalid", "scope": "T-003",
+}]
+PY
+then
+  pass "preflight report requires selected tickets to be Ready"
+else
+  fail "preflight report requires selected tickets to be Ready" \
+    "$PREFLIGHT_BACKLOG_OUTPUT"
+fi
+sed 's|Builder ownership: app/two.js only|Builder ownership: app/one.js only|' \
+  "$PRODUCT_PREFLIGHT/factory/tickets/T-002.md" > "$TMP/preflight-conflict-ticket"
+mv "$TMP/preflight-conflict-ticket" "$PRODUCT_PREFLIGHT/factory/tickets/T-002.md"
+commit_all "$PRODUCT_PREFLIGHT" "create preflight ownership conflict"
+push_main "$PRODUCT_PREFLIGHT"
+export FACTORY_KIT_CERTIFICATION_NETWORK_REVIEWED=1
+PREFLIGHT_CONFLICT_OUTPUT="$(run_kit preflight-report --project preflight \
+  --product "$PRODUCT_PREFLIGHT" --sha "$SHA_A" \
+  --ticket T-001 --ticket T-002 --json 2>&1)"
+PREFLIGHT_CONFLICT_STATUS=$?
+unset FACTORY_KIT_CERTIFICATION_NETWORK_REVIEWED
+if [[ "$PREFLIGHT_CONFLICT_STATUS" -eq 2 ]] &&
+   python3 - "$PREFLIGHT_CONFLICT_OUTPUT" <<'PY'
+import json, sys
+value = json.loads(sys.argv[1])
+assert value["status"] == "blocked"
+assert value["ownership_conflicts"] == [
+    {"path": "app/one.js", "tickets": ["T-001", "T-002"]}
+]
+assert {item["reason_code"] for item in value["blockers"]} == {
+    "builder_ownership_conflict"
+}
+PY
+then
+  pass "preflight report blocks pairwise Builder ownership conflicts"
+else
+  fail "preflight report blocks pairwise Builder ownership conflicts" \
+    "$PREFLIGHT_CONFLICT_OUTPUT"
+fi
+PREFLIGHT_REAL_GIT="$(command -v git)"
+PREFLIGHT_MUTATION_COUNTER="$TMP/preflight-git-counter"
+cat > "$STUB_BIN/git" <<'EOF'
+#!/usr/bin/env bash
+set -eu
+ls_remote=0
+for argument in "$@"; do
+  [[ "$argument" == "ls-remote" ]] && ls_remote=1
+done
+if [[ "$ls_remote" -eq 1 ]]; then
+  count=0
+  [[ ! -f "$PREFLIGHT_MUTATION_COUNTER" ]] ||
+    count="$(cat "$PREFLIGHT_MUTATION_COUNTER")"
+  count=$((count + 1))
+  printf '%s\n' "$count" > "$PREFLIGHT_MUTATION_COUNTER"
+  if [[ "$count" -eq 2 ]]; then
+    "$PREFLIGHT_REAL_GIT" -C "$PREFLIGHT_MUTATION_PRODUCT" \
+      commit --allow-empty -qm "concurrent preflight mutation"
+  fi
+fi
+exec "$PREFLIGHT_REAL_GIT" "$@"
+EOF
+chmod +x "$STUB_BIN/git"
+export PREFLIGHT_REAL_GIT PREFLIGHT_MUTATION_COUNTER
+export PREFLIGHT_MUTATION_PRODUCT="$PRODUCT_PREFLIGHT"
+export FACTORY_KIT_CERTIFICATION_NETWORK_REVIEWED=1
+PREFLIGHT_MUTATION_OUTPUT="$(run_kit preflight-report --project preflight \
+  --product "$PRODUCT_PREFLIGHT" --sha "$SHA_A" --ticket T-001 --json 2>&1)"
+PREFLIGHT_MUTATION_STATUS=$?
+unset FACTORY_KIT_CERTIFICATION_NETWORK_REVIEWED PREFLIGHT_MUTATION_PRODUCT
+unset PREFLIGHT_REAL_GIT PREFLIGHT_MUTATION_COUNTER
+rm -f "$STUB_BIN/git"
+if [[ "$PREFLIGHT_MUTATION_STATUS" -eq 2 ]] &&
+   python3 - "$PREFLIGHT_MUTATION_OUTPUT" <<'PY'
+import json, sys
+value = json.loads(sys.argv[1])
+assert value["status"] == "blocked"
+assert value["product"]["identity_stable"] is False
+assert "identity_changed" in {
+    item["reason_code"] for item in value["blockers"]
+}
+PY
+then
+  pass "preflight report blocks a product identity change during evidence reads"
+else
+  fail "preflight report blocks a product identity change during evidence reads" \
+    "$PREFLIGHT_MUTATION_OUTPUT"
+fi
+
 PRODUCT_ONE="$(make_product product-one)"
 set_pin "$PRODUCT_ONE" "$SHA_A"
 printf '%s\n' 'PREVIEW_PROVIDER=none' >> "$PRODUCT_ONE/factory/PROJECT.env"

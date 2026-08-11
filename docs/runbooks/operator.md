@@ -271,6 +271,33 @@ Kimi K2.6 remains disabled experimental through Claude CLI/OpenRouter/Moonshot.
 No live or billed pilot has run. Rotate the credential before a pilot; direct
 same-UID token exposure remains until a broker or OS isolation is used.
 
+## Certification operator preflight
+
+Before maintenance or certification, run the candidate Factory's read-only
+report against the exact intended cohort:
+
+```bash
+bash scripts/factory-kit.sh preflight-report \
+  --project <project> --product <absolute-product-path> --sha <full-kit-sha> \
+  --ticket <T-NNN> [--ticket <T-NNN>] --json
+```
+
+The closed JSON report verifies the manifest-backed candidate identity, clean
+product `main` at the exact read-only `ls-remote` result from the validated push
+authority, matching identity snapshots around all evidence reads, candidate
+pin, current Node/npm PATH tuple, certification network declaration, each
+ticket's existing readiness contract, and pairwise Builder ownership. Every
+accepted invocation emits exactly one report: `pass` exits 0,
+`authorization-required` exits 3, and `blocked` exits 2. A required network
+phase is not auto-approved: review the named phases, then explicitly rerun the
+same command and later certification with
+`FACTORY_KIT_CERTIFICATION_NETWORK_REVIEWED=1` only when warranted.
+
+The report does not run Doctor or model/provider probes, fetch, write state,
+publish maintenance, certify, activate, or make the operator decision. Use the
+existing `status --json`, Doctor, and provider controls for active runtime and
+transaction diagnosis.
+
 ## Preflight failed before launch
 
 - Notice: the dispatcher escalates with `PREFLIGHT FAIL` output from the launcher's `preflight` route — no pinned safe route, adapter contract/version mismatch, budget headroom, git state, or ticket not Ready.
