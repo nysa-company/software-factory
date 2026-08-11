@@ -2071,8 +2071,29 @@ class Controller:
     def save_claim(self, claim: dict[str, Any]) -> None:
         context = getattr(self.recovery_context, "value", None)
         if context and context["ticket"] == claim.get("ticket"):
-            claim["recovery_attempt"] = dict(context["attempt"])
+            if context["attempt"] is None:
+                claim.pop("recovery_attempt", None)
+            else:
+                claim["recovery_attempt"] = dict(context["attempt"])
         write(self.claim_path(claim["ticket"]), claim)
+
+    def wait_for_recovery_receipt(self, claim: dict[str, Any]) -> bool:
+        context = getattr(self.recovery_context, "value", None)
+        if context is None or context.get("ticket") != claim.get("ticket"):
+            return False
+        receipt = claim.get("receipt", "")
+        current = self.operator_transition(claim)
+        if (
+            not DIGEST.fullmatch(receipt)
+            or current is None
+            or current.get("receipt_sha256") != receipt
+            or current.get("consumed") is not False
+        ):
+            return False
+        context["attempt"] = context["prior_attempt"]
+        context["waiting_receipt_sha256"] = receipt
+        self.save_claim(claim)
+        return True
 
     @staticmethod
     def valid_recovery_attempt(value: Any) -> bool:
@@ -6173,12 +6194,16 @@ class Controller:
             before_lease = claim.get("lease", "")
             before_released = claim.get("lease_released") is True
             prepared: dict[str, Any] = {}
+            prior_attempt: dict[str, Any] | None = None
             context_set = False
             error_detail = ""
+            waiting_receipt = ""
             try:
                 if self.recovery_blocked(claim, name):
                     return
                 prior = claim.get("recovery_attempt", {})
+                if prior:
+                    prior_attempt = dict(prior)
                 prepared = {
                     "count": prior.get("count", 0),
                     "factory_sha": self.release_path.name,
@@ -6194,7 +6219,9 @@ class Controller:
                     ),
                 }
                 self.recovery_context.value = {
-                    "attempt": prepared, "ticket": claim["ticket"],
+                    "attempt": prepared,
+                    "prior_attempt": prior_attempt,
+                    "ticket": claim["ticket"],
                 }
                 context_set = True
                 recovery([claim])
@@ -6217,6 +6244,9 @@ class Controller:
                 )
             finally:
                 if context_set:
+                    waiting_receipt = self.recovery_context.value.get(
+                        "waiting_receipt_sha256", ""
+                    )
                     self.recovery_context.value = None
             if prepared and error_detail and claim.get("recovery_attempt") == prepared:
                 try:
@@ -6231,7 +6261,34 @@ class Controller:
                 else:
                     claim["recovery_attempt"] = dict(prepared)
                     self.save_claim(claim)
-            attempted = bool(prepared) and claim.get("recovery_attempt") == prepared
+            waiting = False
+            if waiting_receipt and not error_detail:
+                try:
+                    current = self.operator_transition(claim)
+                    waiting = (
+                        claim.get("receipt") == waiting_receipt
+                        and current is not None
+                        and current.get("receipt_sha256") == waiting_receipt
+                        and current.get("consumed") is False
+                    )
+                except (
+                    ControllerError, json.JSONDecodeError, OSError,
+                    subprocess.SubprocessError, UnicodeError,
+                ):
+                    waiting = False
+                if not waiting:
+                    claim["recovery_attempt"] = dict(prepared)
+                    try:
+                        self.save_claim(claim)
+                    except (
+                        ControllerError, json.JSONDecodeError, OSError,
+                        subprocess.SubprocessError, UnicodeError,
+                    ):
+                        pass
+            attempted = (
+                not waiting and bool(prepared)
+                and claim.get("recovery_attempt") == prepared
+            )
             if attempted and claim.get("status") in {"blocked", "budget", "waiting"}:
                 try:
                     self.settle_recovery_attempt(claim, error_detail)
@@ -8821,6 +8878,7 @@ class Controller:
                     ticket_text, claim["receipt"]
                 )
                 if directive_status == "waiting":
+                    self.wait_for_recovery_receipt(claim)
                     continue
                 if directive_status != "ready":
                     self.record_contract_resume_refusal(
@@ -8861,6 +8919,7 @@ class Controller:
                         )
                         continue
                 if resumed.get("status") == "waiting":
+                    self.wait_for_recovery_receipt(claim)
                     continue
                 if resumed.get("status") != "ready":
                     raise ControllerError(
