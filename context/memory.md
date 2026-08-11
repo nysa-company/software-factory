@@ -19,6 +19,11 @@ The enforced contract state, authoritative over the summary above. The Current t
 section carries only what the SessionStart hook injects (8 lines, 1200 characters);
 everything the Factory actually enforces lives here.
 
+- One receipt-bound operator context commit may append one or more ordered,
+  unique protected-test conflicts when every new path is inside the
+  authenticated protected `TEST_PATHS` and the complete ticket remains ready.
+  Existing conflicts remain an exact prefix. The existing optional single
+  matching `Fixture-Seams` append remains limited to the final new conflict.
 - Contract 1.8 emergency closeout is a narrow plan/apply authority for one
   exact already-merged ticket. It binds an open GitHub issue, explicit owner,
   bounded request window, protected-main tree/ticket state, exact PR and green
@@ -5409,3 +5414,15 @@ internal failures; the reporter publishes bounded metadata, deduplicates by
 reason-code fingerprint, and records completion only after GitHub succeeds.
 Unknown failures and raw output remain local, and reporting cannot mutate or
 block Factory lifecycle state.
+
+## 2026-08-10 — Decision 382: Exact protected-test conflicts may be batched
+
+Category: Reliability
+
+One operator decision may append one or more ordered, unique protected-test
+conflicts in one ticket-only context commit. Every new conflict path must remain
+inside the authenticated protected `TEST_PATHS`, and complete ticket readiness
+still validates parser shape and Test-author ownership. Existing conflicts stay
+an exact prefix; removal, replacement, reordering, duplication, unrelated
+ticket changes, and broader fixture ownership remain refused. The existing
+optional single `Fixture-Seams` append remains tied to the final new conflict.

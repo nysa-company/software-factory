@@ -1948,10 +1948,11 @@ unknown checks and unowned declarations fail before Builder.
 An escalated blocker may carry one direct, ticket-only operator-context commit
 before its byte-exact resume commit. The context commit appends or exactly
 replaces one bounded single-line `OPERATOR ANSWER` paired with the current
-blocked receipt. It may also append one validated protected-test conflict and
-only the matching tracked path in `Fixture-Seams` when that path is inside the
+blocked receipt. It may also append one or more ordered, unique validated
+protected-test conflicts. At most one matching tracked path may still be
+appended to `Fixture-Seams` for the final conflict when that path is inside the
 authenticated protected `PROJECT.env` `TEST_PATHS`; complete ticket readiness
-still applies. The answer is non-contract
+still applies to every conflict. The answer is non-contract
 repair context: it cannot change State, kit, route, contract, provider,
 application, test, or CI authority, and it grants no ownership beyond the
 existing receipt-bound repair role. Multiple answers, stale receipts, broader

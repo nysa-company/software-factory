@@ -859,16 +859,15 @@ def safe_operator_context(
     expected = before
     before_conflicts = entries(conflict_pattern, before)
     after_conflicts = entries(conflict_pattern, after)
-    conflict = ""
+    conflicts: list[str] = []
     if before_conflicts != after_conflicts:
         if (
             before_conflicts is None
             or after_conflicts is None
-            or after_conflicts[:-1] != before_conflicts
-            or len(after_conflicts) != len(before_conflicts) + 1
+            or after_conflicts[:len(before_conflicts)] != before_conflicts
         ):
             return False
-        conflict = after_conflicts[-1]
+        conflicts = after_conflicts[len(before_conflicts):]
         expected = conflict_pattern.sub(
             lambda _match: (
                 f"Protected-Test-Conflicts: {conflict_pattern.findall(after)[0]}"
@@ -876,7 +875,6 @@ def safe_operator_context(
             expected,
             count=1,
         )
-        conflict_path = conflict.partition(" => ")[0]
         if not SHA.fullmatch(protected_head):
             return False
         try:
@@ -885,20 +883,22 @@ def safe_operator_context(
             ))
         except StateError:
             return False
-        if not any(
-            conflict_path == root.rstrip("/")
-            or conflict_path.startswith(root.rstrip("/") + "/")
-            for root in test_paths
-        ):
-            return False
+        for conflict in conflicts:
+            conflict_path = conflict.partition(" => ")[0]
+            if not any(
+                conflict_path == root.rstrip("/")
+                or conflict_path.startswith(root.rstrip("/") + "/")
+                for root in test_paths
+            ):
+                return False
 
     before_fixtures = entries(fixture_pattern, before)
     after_fixtures = entries(fixture_pattern, after)
     fixture_added = False
     if before_fixtures != after_fixtures:
-        conflict_path = conflict.partition(" => ")[0]
+        conflict_path = conflicts[-1].partition(" => ")[0] if conflicts else ""
         if (
-            not conflict
+            not conflicts
             or before_fixtures is None
             or after_fixtures is None
             or after_fixtures[:-1] != before_fixtures
@@ -962,9 +962,9 @@ def safe_operator_context(
     elif before_answers:
         return False
 
-    if after != expected or not (conflict or fixture_added or answer_changed):
+    if after != expected or not (conflicts or fixture_added or answer_changed):
         return False
-    if not conflict:
+    if not conflicts:
         return answer_changed
 
     readiness = subprocess.run(
