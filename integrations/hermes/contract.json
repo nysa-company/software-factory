@@ -164,6 +164,7 @@
           "[--lease <opaque-lease-id>]",
           "--workdir",
           "<absolute-product-worktree>",
+          "[--expected-head <full-sha>]",
           "--json"
         ],
         "output_schema": "nysa.software-factory.state-machine/v1",

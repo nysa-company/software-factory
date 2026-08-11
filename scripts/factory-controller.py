@@ -77,6 +77,10 @@ CONTRACT_RESUME_REFUSALS = frozenset({
     "resume_parent_not_migrated",
     "resume_receipt_mismatch",
 })
+PREFLIGHT_CORRECTION_FIELDS = (
+    "Product-Decisions", "Builder ownership", "Fixture-Seams",
+    "Authentication-Seams",
+)
 INFLIGHT_STATES = frozenset({
     "Ready", "Planning", "Building", "Review", "Awaiting Approval",
     "Approved", "Blocked-Escalated",
@@ -6396,6 +6400,302 @@ class Controller:
             for claim in claims:
                 recover(claim)
 
+    def preflight_refusal_events(
+        self, ticket: str, receipt: str,
+    ) -> set[str]:
+        matches = set()
+        for path in self.events.glob("*.json"):
+            value = read(path)
+            digest = value.get("event_sha256", "")
+            unsigned = dict(value)
+            unsigned.pop("event_sha256", None)
+            if digest != hashlib.sha256(canonical(unsigned).encode()).hexdigest():
+                raise ControllerError("controller event evidence is invalid")
+            if (
+                value.get("schema") == EVENT_SCHEMA
+                and value.get("event") == "preflight_refused"
+                and value.get("factory_sha") == self.release_path.name
+                and value.get("ticket") == ticket
+                and value.get("transition_receipt_sha256") == receipt
+                and (
+                    not self.qualification
+                    or (
+                        value.get("qualification_generation")
+                        == self.qualification["generation"]
+                        and value.get("qualification_manifest_sha256")
+                        == self.qualification_manifest_sha256
+                    )
+                )
+            ):
+                matches.add(digest)
+        return matches
+
+    def preflight_correction_valid(
+        self, claim: dict[str, Any], source: str, target: str,
+        receipt: str, events: set[str],
+    ) -> bool:
+        relative = f"factory/tickets/{claim['ticket']}.md"
+
+        def git(*arguments: str) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                ["git", "-C", claim["worktree"], *arguments],
+                text=True, capture_output=True, check=False, timeout=120,
+            )
+
+        ancestry = git("rev-list", "--parents", "-n", "1", target)
+        changed = git("diff", "--name-only", f"{source}..{target}")
+        before = git("show", f"{source}:{relative}")
+        after = git("show", f"{target}:{relative}")
+        if (
+            any(item.returncode for item in (ancestry, changed, before, after))
+            or ancestry.stdout.split() != [target, source]
+            or changed.stdout.splitlines() != [relative]
+        ):
+            return False
+        expected = before.stdout
+        changed_field = False
+        for name in PREFLIGHT_CORRECTION_FIELDS:
+            pattern = re.compile(
+                rf"^{re.escape(name)}:[^\r\n]*$", re.IGNORECASE | re.MULTILINE,
+            )
+            old = pattern.findall(before.stdout)
+            new = pattern.findall(after.stdout)
+            if len(old) != 1 or len(new) != 1:
+                return False
+            if old != new:
+                expected = pattern.sub(new[0], expected, count=1)
+                changed_field = True
+        receipt_pattern = re.compile(
+            r"^OPERATOR PREFLIGHT RECEIPT: ([0-9a-f]{64})$", re.MULTILINE,
+        )
+        event_pattern = re.compile(
+            r"^OPERATOR PREFLIGHT FAILURE EVENT: ([0-9a-f]{64})$", re.MULTILINE,
+        )
+        old_receipts = receipt_pattern.findall(before.stdout)
+        old_events = event_pattern.findall(before.stdout)
+        new_receipts = receipt_pattern.findall(after.stdout)
+        new_events = event_pattern.findall(after.stdout)
+        if (
+            len(old_receipts) not in {0, 1}
+            or len(old_events) != len(old_receipts)
+            or new_receipts != [receipt]
+            or len(new_events) != 1
+            or new_events[0] not in events
+            or not changed_field
+        ):
+            return False
+        if old_receipts:
+            expected = receipt_pattern.sub(
+                f"OPERATOR PREFLIGHT RECEIPT: {receipt}", expected, count=1,
+            )
+            expected = event_pattern.sub(
+                f"OPERATOR PREFLIGHT FAILURE EVENT: {new_events[0]}",
+                expected, count=1,
+            )
+        else:
+            expected = (
+                expected.rstrip("\n")
+                + f"\n\nOPERATOR PREFLIGHT RECEIPT: {receipt}\n"
+                + "OPERATOR PREFLIGHT FAILURE EVENT: "
+                + f"{new_events[0]}\n"
+            )
+        if after.stdout != expected:
+            return False
+        readiness = subprocess.run(
+            [
+                sys.executable, "-I", "-S",
+                str(self.release_path / "scripts/ticket-readiness.py"),
+                "--ticket", claim["ticket"], "--workdir", claim["worktree"],
+            ],
+            text=True, capture_output=True, check=False, timeout=120,
+        )
+        return (
+            readiness.returncode == 0
+            and readiness.stdout.strip() == "READINESS PASS"
+        )
+
+    def recover_passport_preflight_blocks(
+        self, claims: list[dict[str, Any]],
+    ) -> None:
+        for claim in claims:
+            if (
+                claim.get("status") != "blocked"
+                or claim.get("blocked_reason") != "preflight"
+                or claim.get("publication_lease")
+                or claim.get("lease_released") is not True
+                or claim.get("receipt", "") not in {""} and not DIGEST.fullmatch(
+                    claim.get("receipt", "")
+                )
+                or claim.get("role", "") not in {"", "planner"}
+                or self.role_active(claim)
+            ):
+                continue
+            try:
+                transition = self.operator_transition(claim)
+                passport = self.authenticated_operator_passport(claim["ticket"])
+                if transition is None or passport is None:
+                    continue
+                receipt = transition.get("receipt_sha256", "")
+                source = transition.get("head_sha", "")
+                passport_path = (
+                    self.state / "passports" / f"{claim['ticket']}.json"
+                )
+                events = self.preflight_refusal_events(claim["ticket"], receipt)
+                failure_receipt = receipt
+                successor_issued = False
+                parent = transition.get("parent_digest", "")
+                if not events and DIGEST.fullmatch(parent):
+                    parent_events = self.preflight_refusal_events(
+                        claim["ticket"], parent,
+                    )
+                    if (
+                        parent_events
+                        and claim.get("receipt", "") in {parent, receipt}
+                    ):
+                        events = parent_events
+                        failure_receipt = parent
+                        successor_issued = True
+                if (
+                    transition.get("stage") != "RUN planner"
+                    or transition.get("role") != "planner"
+                    or transition.get("consumed") is not False
+                    or not DIGEST.fullmatch(receipt)
+                    or not SHA.fullmatch(source)
+                    or not DIGEST.fullmatch(
+                        transition.get("passport_sha256", "")
+                    )
+                    or passport.get("branch") != claim.get("branch")
+                    or passport.get("factory_sha") != self.release_path.name
+                    or not passport_head_lineage(passport, source)
+                    or not events
+                    or claim.get("receipt", "")
+                    not in {"", failure_receipt, receipt}
+                    or claim.get("role", "") not in {"", "planner"}
+                ):
+                    continue
+                if passport.get("head_sha") == source:
+                    if transition["passport_sha256"] != hashlib.sha256(
+                        passport_path.read_bytes()
+                    ).hexdigest():
+                        continue
+                else:
+                    edges = [
+                        item for item in passport.get("migration_history", [])
+                        if valid_v2_migration(item)
+                        and item["from_head_sha"] == source
+                        and item["from_passport_file_sha256"]
+                        == transition["passport_sha256"]
+                        and item["from_route_plan_sha256"]
+                        == transition.get("route_plan_sha256")
+                    ]
+                    if len(edges) != 1:
+                        continue
+                if not claim.get("receipt") or successor_issued:
+                    claim.update(receipt=receipt, role="planner")
+                    self.save_claim(claim)
+                head_status, local_head, _remote_head = (
+                    self.remote_cell_head_status(claim)
+                )
+                if head_status != "pushed":
+                    continue
+                if not successor_issued and local_head == source:
+                    self.wait_for_recovery_receipt(claim)
+                    continue
+                if (
+                    not successor_issued
+                    and not self.preflight_correction_valid(
+                        claim, source, local_head, receipt, events,
+                    )
+                ):
+                    self.event_once(
+                        "passport_preflight_correction_refused",
+                        claim["ticket"], correction_head=local_head,
+                        transition_receipt_sha256=receipt,
+                    )
+                    self.wait_for_recovery_receipt(claim)
+                    continue
+                if successor_issued and (
+                    local_head != source or not self.remote_passport_valid(claim)
+                ):
+                    continue
+                self.ensure_lease(claim, "preflight-retry")
+                head_status, checked_head, _remote_head = (
+                    self.remote_cell_head_status(claim)
+                )
+                if head_status != "pushed" or checked_head != local_head:
+                    self.release_ticket_lease(claim)
+                    continue
+                predecessor = receipt
+                result = self.json_call(
+                    "state-machine", "--ticket", claim["ticket"],
+                    "--lease", claim["lease"], "--workdir", claim["worktree"],
+                    "--expected-head", local_head, "--json", timeout=None,
+                )
+                current = self.operator_transition(claim)
+                if (
+                    not valid_transition_evidence(result, claim["ticket"])
+                    or result.get("stage") != "RUN planner"
+                    or current is None
+                    or current.get("receipt_sha256") != result.get("receipt")
+                    or (
+                        current.get("receipt_sha256") == predecessor
+                        and current.get("parent_digest") != failure_receipt
+                    )
+                    or (
+                        current.get("receipt_sha256") != predecessor
+                        and current.get("parent_digest") != predecessor
+                    )
+                    or current.get("head_sha") != local_head
+                    or current.get("consumed") is not False
+                    or current.get("lease_sha256")
+                    != hashlib.sha256(claim["lease"].encode()).hexdigest()
+                    or not self.remote_passport_valid(claim)
+                ):
+                    raise ControllerError(
+                        "passport preflight successor is invalid"
+                    )
+                claim.update(receipt=current["receipt_sha256"], role="planner")
+                self.save_claim(claim)
+                preflight = self.json_call(
+                    "preflight", "--ticket", claim["ticket"],
+                    "--role", "planner", "--lease", claim["lease"],
+                    "--receipt", claim["receipt"], "--workdir",
+                    claim["worktree"], "--json", allow=(0, 1),
+                )
+                if (
+                    preflight.get("status") != "ok"
+                    or preflight.get("exit_code") != 0
+                ):
+                    evidence = self.preflight_refusal_evidence(preflight)
+                    self.event(
+                        "preflight_refused", claim["ticket"], **evidence,
+                        transition_receipt_sha256=claim["receipt"],
+                    )
+                    self.release_ticket_lease(claim)
+                    self.wait_for_recovery_receipt(claim)
+                    continue
+            except (
+                ControllerError, json.JSONDecodeError, OSError,
+                subprocess.SubprocessError, UnicodeError,
+            ):
+                if (
+                    DIGEST.fullmatch(claim.get("lease", ""))
+                    and claim.get("lease_released") is not True
+                    and not self.role_active(claim)
+                ):
+                    self.release_ticket_lease(claim)
+                continue
+            claim.update(receipt="", role="", status="claimed")
+            claim.pop("blocked_reason", None)
+            claim.pop("lease_released", None)
+            self.save_claim(claim)
+            self.event_once(
+                "passport_preflight_recovered", claim["ticket"],
+                correction_head=local_head,
+                refused_receipt_sha256=failure_receipt,
+                transition_receipt_sha256=current["receipt_sha256"],
+            )
+
     def recover_preflight_blocks(self, claims: list[dict[str, Any]]) -> None:
         for claim in claims:
             receipt_path = self.state / f"{claim['ticket']}.json"
@@ -10783,6 +11083,13 @@ class Controller:
             [
                 claim for claim in existing
                 if claim["ticket"] not in self.prior_transition_tickets
+            ], self.recover_passport_preflight_blocks,
+            "preflight-retry", concurrent=True,
+        )
+        self.recover_each(
+            [
+                claim for claim in existing
+                if claim["ticket"] not in self.prior_transition_tickets
             ], self.recover_preflight_blocks, "preflight-retry",
             concurrent=True,
         )
@@ -11015,6 +11322,13 @@ class Controller:
                         if claim["ticket"] not in self.prior_transition_tickets
                     ], self.recover_passportless_route_migrations,
                     "passportless-route-migration",
+                )
+                self.recover_each(
+                    [
+                        claim for claim in idle
+                        if claim["ticket"] not in self.prior_transition_tickets
+                    ], self.recover_passport_preflight_blocks,
+                    "preflight-retry", concurrent=True,
                 )
                 self.recover_each(
                     [

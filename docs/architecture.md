@@ -1110,6 +1110,15 @@ bounded event. Malformed or oversized refusal output creates a distinct
 fail-closed evidence block. Only a pass reopens ordinary Planner
 reconciliation. Passport, terminal, submitted, dirty, drifted, unlisted, and
 stale-route claims remain closed.
+An idle passport-bearing Planner preflight block keeps its exact current
+unconsumed receipt and accepts only one pushed direct child changing that
+ticket's four readiness-owned fields. The child names the refused receipt and
+signed failure event, preserves every other byte including protected-test
+authority, and must pass the existing readiness validator. The ordinary state
+machine is bound to that checked head, issues the parent-linked successor, and
+sealed preflight alone reopens the claim. Restart adopts that exact successor;
+unrelated paths, rewritten ancestry, dirty or remote-divergent cells, active
+work, and mismatched passport/event evidence remain blocked.
 The same provider-free retry accepts a controller `worker-error` only at that
 exact preflight boundary. It additionally verifies the prior receipt digest,
 lease digest, ticket blob, head/tree, route bytes, current Factory SHA, single

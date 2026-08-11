@@ -3169,12 +3169,16 @@ def core(
     origin = os.environ.get("FACTORY_CERTIFIED_PRODUCT_ORIGIN", "")
     if not origin or any(character in origin for character in "\n\r\t"):
         raise StateError("certified product origin is unavailable")
+    head = git(workdir, "rev-parse", "HEAD")
+    expected_head = getattr(args, "expected_head", "")
+    if expected_head and head != expected_head:
+        raise StateError("state-machine moved from expected head")
     value = {
         "branch": branch,
         "contract_version": args.contract_version,
         "evidence_sha256": ticket_evidence_digest(factory, args.ticket),
         "factory_sha": args.factory_sha,
-        "head_sha": git(workdir, "rev-parse", "HEAD"),
+        "head_sha": head,
         "head_tree": git(workdir, "rev-parse", "HEAD^{tree}"),
         "lease_sha256": (
             hashlib.sha256(args.lease.encode()).hexdigest()
@@ -3482,8 +3486,7 @@ def migrate_passport(args: argparse.Namespace) -> None:
     passport = args.state_dir / "passports" / f"{args.ticket}.json"
     if not passport.exists() and not passport.is_symlink():
         return
-    result = subprocess.run(
-        [
+    command = [
             __import__("sys").executable,
             "-B",
             str(args.kit_dir / "scripts" / "ticket-passport.py"),
@@ -3496,7 +3499,12 @@ def migrate_passport(args: argparse.Namespace) -> None:
             "--factory-sha", args.factory_sha,
             "--project", args.project,
             "--publication-state", "preserve",
-        ],
+        ]
+    expected_head = getattr(args, "expected_head", "")
+    if expected_head:
+        command.extend(("--expected-head", expected_head))
+    result = subprocess.run(
+        command,
         text=True,
         capture_output=True,
         check=False,
@@ -3507,6 +3515,9 @@ def migrate_passport(args: argparse.Namespace) -> None:
 
 
 def next_transition(args: argparse.Namespace) -> dict[str, Any]:
+    expected_head = getattr(args, "expected_head", "")
+    if expected_head and git(args.workdir, "rev-parse", "HEAD") != expected_head:
+        raise StateError("state-machine moved from expected head")
     current = current_state(args.workdir, args.ticket)
     if current.casefold() in {"backlog", "blocked-escalated"}:
         run_helper(
@@ -3850,6 +3861,7 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--ticket", required=True)
     value.add_argument("--contract-version", required=True)
     value.add_argument("--factory-sha", required=True)
+    value.add_argument("--expected-head", default="")
     value.add_argument("--project", required=True)
     value.add_argument("--lease", default="")
     value.add_argument("--receipt", default="")
@@ -3865,6 +3877,13 @@ def main() -> None:
             not TICKET.fullmatch(args.ticket)
             or args.contract_version != "1.8.0"
             or not SHA.fullmatch(args.factory_sha)
+            or (
+                args.expected_head
+                and (
+                    args.action != "next"
+                    or not SHA.fullmatch(args.expected_head)
+                )
+            )
             or (args.receipt and not DIGEST.fullmatch(args.receipt))
             or (args.role and not ROLE.fullmatch(args.role))
             or (

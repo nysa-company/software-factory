@@ -725,6 +725,10 @@ everything the Factory actually enforces lives here.
   qualification. Qualification retains its selected-ticket and sealed-artifact
   checks; every lane still requires the exact idle claim, clean remote-equal
   cell, current route, released lease, and absence of run evidence.
+- Passport-bearing Planner-preflight recovery accepts one receipt-and-event-
+  bound direct ticket child changing only readiness-owned fields. It preserves
+  protected-test authority, uses ordinary expected-head state-machine and
+  preflight calls, and adopts an already parent-linked successor after restart.
 - Linear quota cooldowns are shared by the hash of the resolved credential,
   not by product map. Reconcilers using one account make zero API calls until
   the common cooldown expires; legacy releases must remain unloaded or use a
@@ -5524,7 +5528,7 @@ ticks remain free without widening any individual selector. Consumed, stale,
 mismatched, failed, or cross-ticket signals settle normally and still abandon
 at three identical outcomes.
 
-## 2026-08-11 — Decision 385: Operator context validates before migration
+## 2026-08-11 — Decision 389: Operator context validates before migration
 
 Category: Reliability
 
@@ -5539,3 +5543,16 @@ the exact context from the authenticated final migration edge and backfills it
 once only after the current remote passport agrees. The receipt-bound waiting
 outcome remains outside the bounded recovery-attempt budget; only passport
 migration and resume create durable lifecycle state.
+
+## 2026-08-11 — Decision 390: Preflight corrections retain role evidence
+
+Category: Reliability
+
+A passport-bearing Planner preflight refusal may continue on the same ticket
+only through one pushed direct child that changes readiness-owned fields and
+names the exact unconsumed receipt plus signed refusal event. The existing
+readiness validator runs before an expected-head ordinary state-machine call;
+its parent-linked successor and sealed preflight are the only reopening path.
+Restart adopts that exact successor, while unrelated bytes, protected-test
+changes, dirty or divergent state, active work, and mismatched evidence remain
+blocked without provider execution.
