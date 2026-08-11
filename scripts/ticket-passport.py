@@ -2747,6 +2747,12 @@ def migrate(args: argparse.Namespace, secret: bytes) -> dict[str, Any]:
     destination = passports / f"{args.ticket}.json"
     previous, parent_raw = load_passport(destination, secret)
     current = identity(args)
+    expected_head = getattr(args, "expected_head", "")
+    if expected_head and (
+        current["head_sha"] != expected_head
+        or git(args.workdir, "status", "--porcelain=v1", "-z")
+    ):
+        raise PassportError("passport migration moved from expected head")
     protected = git(args.factory_root, "rev-parse", "origin/main")
     publication = (
         previous.get("publication_state", "none")
@@ -2877,6 +2883,14 @@ def migrate(args: argparse.Namespace, secret: bytes) -> dict[str, Any]:
         "schema": SCHEMA,
     }
     signed = authenticate(value, secret)
+    if expected_head and (
+        identity(args) != current
+        or git(args.workdir, "status", "--porcelain=v1", "-z")
+        or ticket_state(args.workdir, args.ticket) != current_ticket_state
+        or route_digest(args.workdir, args.ticket) != current_route
+        or git(args.factory_root, "rev-parse", "origin/main") != protected
+    ):
+        raise PassportError("passport migration moved from expected head")
     write_atomic(destination, signed)
     return signed
 
@@ -2899,6 +2913,7 @@ def main() -> None:
     parser.add_argument("--project", required=True)
     parser.add_argument("--receipt", default="")
     parser.add_argument("--run-id", default="")
+    parser.add_argument("--expected-head", default="")
     parser.add_argument(
         "--publication-state",
         choices=(
@@ -2913,6 +2928,13 @@ def main() -> None:
             not TICKET.fullmatch(args.ticket)
             or args.contract_version != "1.8.0"
             or not SHA.fullmatch(args.factory_sha)
+            or (
+                args.expected_head
+                and (
+                    args.action != "migrate"
+                    or not SHA.fullmatch(args.expected_head)
+                )
+            )
             or (
                 args.action in {
                     "authorize-lineage", "correct-converged-success", "export",

@@ -952,8 +952,13 @@ When a pushed operator edge is ahead of the authenticated blocked passport,
 the state machine validates the exact context-only commit or complete
 context-plus-resume chain before passport migration. Invalid receipt binding,
 ancestry, content, paths, or directives therefore leaves the prior recoverable
-passport head unchanged. The check is read-only and is repeated after restart;
-ordinary passport migration and resume still provide the durable commit points.
+passport head unchanged. The sealed migration binds the head returned by that
+check and rechecks the same clean identity, ticket state, route, and protected
+base immediately before its atomic write. After a crash, the authenticated last
+migration edge reconstructs the exact validation; a current remote passport
+backfills the migration event once, while an answer-only wait remains
+uncharged. Ordinary passport migration and resume still provide the durable
+commit points.
 If a prior candidate instead left an expired lease file while the migrated
 successor claim is parked
 and lease-free, the controller first authenticates the exact current passport,

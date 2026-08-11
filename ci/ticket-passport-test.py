@@ -132,6 +132,65 @@ class TicketPassportTest(unittest.TestCase):
             release.set()
             self.assertEqual(creator.result(timeout=2), reader.result(timeout=2))
 
+    def test_migrate_preserves_passport_when_expected_head_moves(self) -> None:
+        secret = PASSPORT.key(self.state_dir)
+        issued = STATE.issue(self.state_args, "RUN planner")
+        self.state_args.receipt = issued["receipt_sha256"]
+        STATE.verify(self.state_args, consume=True)
+        self.terminal(
+            "planner", "planner", issued["receipt_sha256"], "a" * 40,
+        )
+        self.passport_args.receipt = issued["receipt_sha256"]
+        prior = PASSPORT.export(self.passport_args, secret)
+        expected = prior["head_sha"]
+        ticket = self.product / "factory/tickets/T-110.md"
+        ticket.write_text(
+            ticket.read_text(encoding="utf-8") + "\nOPERATOR ANSWER: later\n",
+            encoding="utf-8",
+        )
+        run("git", "add", str(ticket), cwd=self.product)
+        run("git", "commit", "-qm", "advance after check", cwd=self.product)
+        self.passport_args.expected_head = expected
+
+        with self.assertRaisesRegex(PASSPORT.PassportError, "expected head"):
+            PASSPORT.migrate(self.passport_args, secret)
+        self.assertEqual(
+            PASSPORT.load_passport(
+                self.state_dir / "passports/T-110.json", secret,
+            )[0],
+            prior,
+        )
+
+        run("git", "reset", "--hard", expected, cwd=self.product)
+        self.passport_args.publication_state = "repair"
+        route_digest = PASSPORT.route_digest
+        checked = False
+
+        def dirty_after_route(*args):
+            nonlocal checked
+            digest = route_digest(*args)
+            if not checked:
+                checked = True
+                ticket.write_text(
+                    ticket.read_text(encoding="utf-8") + "\ndirty race\n",
+                    encoding="utf-8",
+                )
+            return digest
+
+        with (
+            mock.patch.object(
+                PASSPORT, "route_digest", side_effect=dirty_after_route,
+            ),
+            self.assertRaisesRegex(PASSPORT.PassportError, "expected head"),
+        ):
+            PASSPORT.migrate(self.passport_args, secret)
+        self.assertEqual(
+            PASSPORT.load_passport(
+                self.state_dir / "passports/T-110.json", secret,
+            )[0],
+            prior,
+        )
+
     def terminal(
         self,
         run_id: str,

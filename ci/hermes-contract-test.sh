@@ -2613,6 +2613,27 @@ run_launcher launchtest passport verify-model-identity-success \
 [[ "$BAD_PASSPORT_IDENTITY_RC" -eq 2 ]] ||
   fail "model-identity passport verification accepted a missing run identifier"
 
+PASSPORT_EXPECTED_HEAD="$(git -C "$RUN_WORKTREE_PHYS" rev-parse HEAD)"
+run_launcher launchtest passport migrate --ticket T-123 \
+  --publication-state preserve --workdir "$RUN_WORKTREE_PHYS" \
+  --expected-head "$PASSPORT_EXPECTED_HEAD" --json \
+  > "$TMP/passport-expected-head.json"
+python3 - "$TMP/passport-expected-head.json" "$PASSPORT_EXPECTED_HEAD" <<'PY'
+import json
+import sys
+
+arguments = json.load(open(sys.argv[1], encoding="utf-8"))["arguments"]
+assert arguments[0] == "migrate", arguments
+assert arguments[arguments.index("--expected-head") + 1] == sys.argv[2], arguments
+PY
+BAD_EXPECTED_HEAD_RC=0
+run_launcher launchtest passport migrate --ticket T-123 \
+  --publication-state preserve --workdir "$RUN_WORKTREE_PHYS" \
+  --expected-head not-a-sha --json \
+  > "$TMP/bad-passport-expected-head.out" 2>&1 || BAD_EXPECTED_HEAD_RC=$?
+[[ "$BAD_EXPECTED_HEAD_RC" -eq 1 ]] ||
+  fail "passport migration accepted malformed expected head"
+
 expect_bad_model() {
   local label="$1" rc=0
   shift
@@ -3656,6 +3677,9 @@ assert commands["state-machine"]["output_schema"] == \
     "nysa.software-factory.state-machine/v1"
 assert commands["passport"]["output_schema"] == \
     "nysa.software-factory.ticket-passport/v1"
+assert commands["passport"]["grammars"][1].endswith(
+    "[--expected-head <full-sha>] --json"
+)
 assert commands["publication"]["output_schema"] == \
     "nysa.software-factory.publication-lease/v1"
 assert commands["publication-repair"]["output_schema"] == \

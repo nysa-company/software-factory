@@ -837,16 +837,10 @@ class Controller:
                 raise ControllerError("controller event evidence is invalid")
             inventory.append(value)
 
-        def emit(
-            name: str, ticket: str, *,
-            dedupe_fields: tuple[str, ...] | None = None,
-            **details: Any,
-        ) -> None:
-            match_details = (
-                {key: details[key] for key in dedupe_fields}
-                if dedupe_fields is not None else details
-            )
-            found = any(
+        def recorded(
+            name: str, ticket: str, details: dict[str, Any],
+        ) -> bool:
+            return any(
                 value.get("event") == name
                 and value.get("factory_sha") == self.release_path.name
                 and value.get("ticket") == ticket
@@ -861,11 +855,21 @@ class Controller:
                 )
                 and all(
                     value.get(key) == item
-                    for key, item in match_details.items()
+                    for key, item in details.items()
                 )
                 for value in inventory
             )
-            if found:
+
+        def emit(
+            name: str, ticket: str, *,
+            dedupe_fields: tuple[str, ...] | None = None,
+            **details: Any,
+        ) -> None:
+            match_details = (
+                {key: details[key] for key in dedupe_fields}
+                if dedupe_fields is not None else details
+            )
+            if recorded(name, ticket, match_details):
                 return
             self.event(name, ticket, **details)
             inventory.append({
@@ -958,6 +962,62 @@ class Controller:
             if claim.get("status") != "blocked":
                 continue
             blocked_reason = claim.get("blocked_reason", "")
+            terminal = (
+                self.terminal_for_receipt(ticket, claim.get("receipt", ""))
+                if blocked_reason == "role-failure" else None
+            )
+            migration_event = {
+                "failed_run_id": terminal.get("run_id") if terminal else "",
+            }
+            if (
+                terminal is not None
+                and terminal.get("ticket") == ticket
+                and terminal.get("role") == claim.get("role")
+                and terminal.get("transition_receipt_sha256")
+                == claim.get("receipt")
+                and terminal.get("exit_status") == "12"
+                and terminal.get("role_exit") == "role_exit_contract_blocked"
+                and re.fullmatch(
+                    r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}",
+                    terminal.get("run_id", ""),
+                )
+                and not recorded(
+                    "contract_block_passport_migrated", ticket,
+                    migration_event,
+                )
+            ):
+                try:
+                    passport = self.authenticated_operator_passport(ticket)
+                    remote_valid = self.remote_passport_valid(claim)
+                    checked = self.json_call(
+                        "state-machine", "repair-check", "--ticket", ticket,
+                        "--receipt", claim["receipt"], "--workdir",
+                        claim["worktree"], "--json", allow=(0, 1),
+                    )
+                except (
+                    ControllerError, json.JSONDecodeError, OSError,
+                    subprocess.SubprocessError, UnicodeError,
+                ):
+                    passport = None
+                    remote_valid = False
+                    checked = {}
+                if (
+                    passport is not None
+                    and remote_valid
+                    and passport.get("branch") == claim.get("branch")
+                    and passport.get("factory_sha") == self.release_path.name
+                    and checked.get("action") == "repair-check"
+                    and checked.get("head") == passport.get("head_sha")
+                    and checked.get("role") == claim.get("role")
+                    and checked.get("schema")
+                    == "nysa.software-factory.state-machine/v1"
+                    and checked.get("status") in {"ready", "waiting"}
+                    and checked.get("ticket") == ticket
+                ):
+                    emit(
+                        "contract_block_passport_migrated", ticket,
+                        **migration_event,
+                    )
             fallback_refusal = re.fullmatch(
                 r"qualification-fallback-refused:"
                 r"(readiness|manifest|attempt_count|handoff|route_policy|provenance|unknown):"
@@ -3895,16 +3955,19 @@ class Controller:
         )
 
     def migrate_passport(
-        self, claim: dict[str, Any], publication: str
+        self, claim: dict[str, Any], publication: str, expected_head: str = "",
     ) -> dict[str, Any]:
         path = self.state / "passports" / f"{claim['ticket']}.json"
         if not path.exists():
             return {}
-        return self.json_call(
+        arguments = [
             "passport", "migrate", "--ticket", claim["ticket"],
             "--publication-state", publication,
-            "--workdir", claim["worktree"], "--json",
-        )
+            "--workdir", claim["worktree"],
+        ]
+        if expected_head:
+            arguments.extend(("--expected-head", expected_head))
+        return self.json_call(*arguments, "--json")
 
     def correct_converged_success(
         self, claim: dict[str, Any], terminal: dict[str, str]
@@ -8788,7 +8851,9 @@ class Controller:
                             raise ControllerError(
                                 "contract repair validation is invalid"
                             )
-                        self.migrate_passport(claim, "preserve")
+                        self.migrate_passport(
+                            claim, "preserve", checked["head"],
+                        )
                         migrated = True
                         if not self.remote_passport_valid(claim):
                             continue
@@ -8798,7 +8863,7 @@ class Controller:
                     ):
                         continue
                 if migrated:
-                    self.event(
+                    self.event_once(
                         "contract_block_passport_migrated", claim["ticket"],
                         failed_run_id=terminal.get("run_id"),
                     )

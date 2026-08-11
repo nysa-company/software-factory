@@ -3790,17 +3790,29 @@ def repair_check_transition(args: argparse.Namespace) -> dict[str, Any]:
         repair_role = operator_resume_role(args, passport, role)
         status = "ready"
     except ContractResumeError as resume_error:
+        context_head = prior_head
+        migrations = passport.get("migration_history", [])
+        edge = migrations[-1] if isinstance(migrations, list) and migrations else {}
+        if (
+            current_head == prior_head
+            and isinstance(edge, dict)
+            and edge.get("schema") == PASSPORT_MIGRATION_SCHEMA
+            and edge.get("to_factory_sha") == passport.get("factory_sha")
+            and edge.get("to_head_sha") == current_head
+            and SHA.fullmatch(edge.get("from_head_sha", ""))
+        ):
+            context_head = edge["from_head_sha"]
         ancestry = git(
             args.workdir, "rev-list", "--parents", "-n", "1", current_head
         ).split()
         changed = git(
-            args.workdir, "diff", "--name-only", f"{prior_head}..{current_head}"
+            args.workdir, "diff", "--name-only", f"{context_head}..{current_head}"
         ).splitlines() if (
             len(ancestry) == 2
-            and ancestry == [current_head, prior_head]
+            and ancestry == [current_head, context_head]
         ) else []
         before = (
-            git(args.workdir, "show", f"{prior_head}:{relative}") + "\n"
+            git(args.workdir, "show", f"{context_head}:{relative}") + "\n"
             if changed == [relative] else ""
         )
         after = (

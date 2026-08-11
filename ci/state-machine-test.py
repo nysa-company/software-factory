@@ -2139,6 +2139,19 @@ class StateMachineTest(unittest.TestCase):
         self.assertEqual(waiting["status"], "waiting")
         self.assertEqual(waiting["head"], answer_head)
 
+        passport.update(
+            head_sha=answer_head,
+            migration_history=[{
+                "from_head_sha": base,
+                "schema": STATE.PASSPORT_MIGRATION_SCHEMA,
+                "to_factory_sha": self.args.factory_sha,
+                "to_head_sha": answer_head,
+            }],
+        )
+        recovered_wait = check()
+        self.assertEqual(recovered_wait["status"], "waiting")
+        self.assertEqual(recovered_wait["head"], answer_head)
+
         ticket.write_text(
             ticket.read_text(encoding="utf-8").rstrip()
             + "\n\nOPERATOR RESUME: planner\n"
@@ -2149,13 +2162,6 @@ class StateMachineTest(unittest.TestCase):
         run("git", "commit", "-qm", "resume canonical operator answer", cwd=self.product)
         fast = check()
         self.assertEqual(fast["status"], "ready")
-        passport.update(
-            head_sha=answer_head,
-            migration_history=[{
-                "from_head_sha": base,
-                "to_head_sha": answer_head,
-            }],
-        )
         canonical = check()
         self.assertEqual(canonical["status"], "ready")
 

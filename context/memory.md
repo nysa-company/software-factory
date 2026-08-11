@@ -26,6 +26,10 @@ everything the Factory actually enforces lives here.
   matching `Fixture-Seams` append remains limited to the final new conflict.
   A pushed context or resume edge is validated before passport migration, so
   invalid operator input retains the prior authenticated recovery boundary.
+  That migration is bound to the checked head and rechecks its clean identity,
+  ticket state, route, and protected base before writing. Restart reconstructs
+  the exact signed migration edge and backfills its event only after the remote
+  passport agrees; an answer-only operator wait remains uncharged.
 - Contract 1.8 emergency closeout is a narrow plan/apply authority for one
   exact already-merged ticket. It binds an open GitHub issue, explicit owner,
   bounded request window, protected-main tree/ticket state, exact PR and green
@@ -5528,5 +5532,10 @@ A contract-block recovery validates a pushed context-only edge or complete
 context-plus-resume chain through the state machine before advancing its
 authenticated passport. Malformed answers, receipts, ancestry, directives,
 paths, dirty worktrees, and remote drift therefore retain the prior passport
-head. The read-only validation may repeat after restart; only the existing
-passport migration and resume operations create durable state.
+head. The sealed passport migration accepts the read-only check's exact head,
+then rechecks the same clean identity, ticket state, route, and protected base
+before its atomic write. If event emission is interrupted, restart reconstructs
+the exact context from the authenticated final migration edge and backfills it
+once only after the current remote passport agrees. The receipt-bound waiting
+outcome remains outside the bounded recovery-attempt budget; only passport
+migration and resume create durable lifecycle state.
