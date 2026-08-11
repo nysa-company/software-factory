@@ -60,7 +60,10 @@ def secure_directory(
         raise ConfigError(f"{label} is unsafe")
 
 
-def secure_regular(path: Path, label: str, *, owner_only: bool = True) -> bytes:
+def secure_regular(
+    path: Path, label: str, *, owner_only: bool = True,
+    max_size: int | None = MAX_JSON,
+) -> bytes:
     info = path.lstat()
     if (
         not path.is_absolute()
@@ -68,7 +71,7 @@ def secure_regular(path: Path, label: str, *, owner_only: bool = True) -> bytes:
         or not stat.S_ISREG(info.st_mode)
         or info.st_uid != os.geteuid()
         or info.st_nlink != 1
-        or info.st_size > MAX_JSON
+        or (max_size is not None and info.st_size > max_size)
         or stat.S_IMODE(info.st_mode) & (0o077 if owner_only else 0o022)
     ):
         raise ConfigError(f"{label} is unsafe")
@@ -83,7 +86,7 @@ def secure_regular(path: Path, label: str, *, owner_only: bool = True) -> bytes:
             raise ConfigError(f"{label} changed while opening")
         with os.fdopen(descriptor, "rb") as handle:
             descriptor = -1
-            return handle.read(MAX_JSON + 1)
+            return b"" if max_size is None else handle.read(max_size + 1)
     finally:
         if descriptor >= 0:
             os.close(descriptor)
@@ -251,7 +254,7 @@ def validate_database(database: Path, *, require_idle: bool) -> None:
         if require_idle:
             return
         raise ConfigError("provider database is missing")
-    secure_regular(database, "provider database")
+    secure_regular(database, "provider database", max_size=None)
     connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
     try:
         connection.execute("PRAGMA query_only=ON")

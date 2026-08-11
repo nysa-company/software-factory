@@ -3077,10 +3077,27 @@ class Controller:
         claims = {item["ticket"]: item for item in self.load_claims()}
         claim = claims.get(ticket)
         settled_blocker = self.settled_contract_blocker(claim) if claim else None
+        missing_terminal = bool(
+            claim
+            and claim.get("status") == "blocked"
+            and claim.get("blocked_reason") == "missing-terminal"
+            and DIGEST.fullmatch(claim.get("receipt", ""))
+            and claim.get("role") in {
+                "planner", "spec-linter", "test-author", "builder",
+                "reviewer", "narrator",
+            }
+            and claim.get("lease_released") is True
+            and not claim.get("publication_lease")
+            and not self.role_active(claim)
+            and self.terminal_for_receipt(
+                claim["ticket"], claim["receipt"]
+            ) is None
+        )
         if (
             claim
             and (claim.get("receipt") or claim.get("role"))
             and settled_blocker is None
+            and not missing_terminal
         ):
             raise ControllerError("ticket pause requires a pre-provider boundary")
         passport = read(path)

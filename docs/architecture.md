@@ -273,7 +273,11 @@ Contract 1.8 additionally exposes `ticket-control pause|resume`: pause requires
 one exact Software Factory issue URL, removes only one idle passport-bound
 claim, releases its lease, and records an owner-only repro intent bound to its
 Factory SHA, head, passport, run snapshot, lifecycle state, Resume-State, and
-claim status. The signed checkpoint retains only idle `claimed`, `waiting`,
+claim status. An idle `missing-terminal` claim with a canonical receipt,
+released lease, known role, no active role, and no terminal evidence is also a
+valid issue-bound pause; the run snapshot makes a later terminal publication
+invalidate resume rather than replay the role. The signed checkpoint retains
+only idle `claimed`, `waiting`,
 `blocked`, or `budget` status; a budget pause also binds the exact budget
 digest. Resume-State is required for `Blocked-Escalated`; other lifecycle
 states retain either JSON null or an allowed existing resume overlay. Resume requires the
@@ -1742,7 +1746,10 @@ coordinator state, and per-attempt runtime roots covering every enabled Cursor,
 Claude Code, and Codex route. Doctor, certification, activation, and role
 pre-admission all refuse when that configuration is absent, incomplete,
 drifted, or below ticket capacity; they never silently serialize a multi-ticket
-release. Contract 1.6 and Contract 1.8 capacity one retain the fail-closed
+release. Canonical JSON policy and activation inputs keep their bounded size;
+the growing SQLite provider database instead retains its owner/type/link and
+schema-identity checks without inheriting that JSON payload ceiling. Contract
+1.6 and Contract 1.8 capacity one retain the fail-closed
 legacy path. Only an exact API route selected by the owner-only Contract 1.6
 activation file may use the API-isolated runtime.
 The legacy global ledger remains an additional serialization and accounting

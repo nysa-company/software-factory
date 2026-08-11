@@ -19,6 +19,9 @@ The enforced contract state, authoritative over the summary above. The Current t
 section carries only what the SessionStart hook injects (8 lines, 1200 characters);
 everything the Factory actually enforces lives here.
 
+- Provider SQLite growth is not capped by JSON input limits. An idle
+  pre-provider `missing-terminal` claim may use only issue-bound pause/resume,
+  with a run snapshot preventing delayed-terminal replay.
 - One receipt-bound operator context commit may append one or more ordered,
   unique protected-test conflicts when every new path is inside the
   authenticated protected `TEST_PATHS` and the complete ticket remains ready.
@@ -5610,3 +5613,15 @@ Partial runtime is resumable only behind an owner-only attempt marker bound to
 that identity. Retries content-address and retire prior failure evidence before
 Hermes starts, while a structured completion marker binds the exact retained
 evidence; marker presence alone never authorizes skipping the live hook.
+
+## 2026-08-11 — Decision 395: Provider ledger growth and pre-provider launch refusal stay recoverable
+
+Category: Reliability
+
+Provider concurrency keeps bounded JSON policy and activation inputs, while its
+SQLite lifecycle database is validated by owner, type, link, identity, and
+schema without the JSON payload-size ceiling. If a role exits before producing
+any terminal evidence, issue-bound pause accepts only the exact idle
+`missing-terminal` receipt/role boundary. Its run snapshot makes a later
+terminal publication invalidate resume, so the successor release can clear a
+proven no-provider launch without replaying a delayed terminal.
