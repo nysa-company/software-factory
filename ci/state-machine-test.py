@@ -380,6 +380,33 @@ class StateMachineTest(unittest.TestCase):
         self.assertIn("OPERATOR AUTHORIZATION: spec-linter round 4", governed)
         self.assertTrue(loop["capped"])
 
+    def test_later_narrator_correction_wait_binds_exact_round(self) -> None:
+        ticket = self.product / "factory/tickets/T-110.md"
+        required = (
+            "AWAIT-OPERATOR semantic-round authorization required; add exact "
+            "line: OPERATOR AUTHORIZATION: narrator round 3"
+        )
+        ticket.write_text("# T-110\n\nState: Review\n", encoding="utf-8")
+        stage, loop = STATE.govern_loop(self.args, required, False)
+        self.assertEqual(stage, required)
+        self.assertEqual(loop, {
+            "attempt": 2, "capped": True,
+            "kind": "narrator-bundle", "limit": 2,
+        })
+
+        invalid = required.replace(
+            "required; add exact line", "invalid; keep exactly one line",
+        )
+        ticket.write_text(
+            "# T-110\n\nState: Review\n"
+            "OPERATOR AUTHORIZATION: narrator round 3\n"
+            "OPERATOR AUTHORIZATION: narrator round 3\n",
+            encoding="utf-8",
+        )
+        stage, loop = STATE.govern_loop(self.args, invalid, False)
+        self.assertEqual(stage, invalid)
+        self.assertTrue(loop["capped"])
+
     def test_unmerged_dependency_waits_without_consuming_a_role_receipt(self) -> None:
         ticket = self.product / "factory/tickets/T-110.md"
         ticket.write_text(
@@ -762,7 +789,8 @@ class StateMachineTest(unittest.TestCase):
                 "reviewer round 1: APPROVE\n",
                 invalid_bundle,
                 False,
-                "ESCALATE evidence bundle remained invalid after one Narrator retry",
+                "AWAIT-OPERATOR semantic-round authorization required; add exact "
+                "line: OPERATOR AUTHORIZATION: narrator round 3",
             ),
         )
 

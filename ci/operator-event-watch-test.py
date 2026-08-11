@@ -181,6 +181,14 @@ class OperatorEventWatchTest(unittest.TestCase):
             "OPERATOR AUTHORIZATION: builder round 4",
             projected["question"],
         )
+        narrator = WATCH.action_event(
+            dict(later, role="narrator", semantic_round=3),
+            self.state, "relay", "1-a.json",
+        )
+        self.assertIn(
+            "OPERATOR AUTHORIZATION: narrator round 3",
+            narrator["question"],
+        )
 
         invalid = dict(later, semantic_round=2)
         with self.assertRaisesRegex(

@@ -1587,8 +1587,11 @@ class FactoryControllerTest(unittest.TestCase):
             "head_sha": head,
             "loop": {
                 "attempt": semantic_round - 1,
-                "capped": semantic_round - 1 >= 3,
-                "kind": semantic_kind, "limit": 3,
+                "capped": semantic_round - 1 >= (
+                    2 if semantic_kind == "narrator-bundle" else 3
+                ),
+                "kind": semantic_kind,
+                "limit": 2 if semantic_kind == "narrator-bundle" else 3,
             },
             "passport_sha256": hashlib.sha256(passport_path.read_bytes()).hexdigest(),
             "project": "relay", "role": None,
@@ -2595,6 +2598,64 @@ class FactoryControllerTest(unittest.TestCase):
             self.assertFalse(controller.wait_for_preview_identity(claim, changed))
         self.assertEqual(claim["status"], "blocked")
         self.assertEqual(claim["blocked_reason"], "preview-identity-timeout")
+
+    def test_preview_timeout_retry_is_exact_and_provider_free(self) -> None:
+        controller, claim, cell, passport, transition = (
+            self.semantic_wait_fixture("preview-timeout-retry", "T-221")
+        )
+        transition.pop("loop", None)
+        transition.update(role="narrator", stage="RUN narrator")
+        transition["receipt_sha256"] = hashlib.sha256(
+            CONTROL.canonical_document({
+                key: value for key, value in transition.items()
+                if key not in {"consumed", "receipt_sha256"}
+            })
+        ).hexdigest()
+        CONTROL.write(self.state / "T-221.json", transition)
+        claim.update(
+            blocked_reason="preview-identity-timeout",
+            lease_released=True,
+            preview_wait_head=passport["head_sha"],
+            preview_wait_started_epoch=0,
+            status="blocked",
+        )
+        controller.save_claim(claim)
+        controller.remote_passport_valid = lambda *_args: True
+        controller.event = lambda name, *_args, **_kwargs: self.assertEqual(
+            name, "preview_identity_timeout_retry_authorized",
+        )
+
+        before = controller.claim_path("T-221").read_bytes()
+        with (
+            patch.object(CONTROL.time, "time", return_value=800),
+            self.assertRaisesRegex(
+                CONTROL.ControllerError, "authority is unavailable",
+            ),
+        ):
+            controller.retry_preview_timeout("T-221", "operator")
+        self.assertEqual(controller.claim_path("T-221").read_bytes(), before)
+
+        dirty = cell / "untracked"
+        dirty.write_text("dirty\n", encoding="utf-8")
+        with (
+            patch.object(CONTROL.time, "time", return_value=1000),
+            self.assertRaisesRegex(
+                CONTROL.ControllerError, "authority is unavailable",
+            ),
+        ):
+            controller.retry_preview_timeout("T-221", "operator")
+        dirty.unlink()
+        with patch.object(CONTROL.time, "time", return_value=1000):
+            result = controller.retry_preview_timeout("T-221", "operator")
+        self.assertEqual(result, {
+            "expected": passport["head_sha"], "schema": CONTROL.SCHEMA,
+            "status": "retry-authorized", "ticket": "T-221",
+        })
+        retried = CONTROL.read(controller.claim_path("T-221"))
+        self.assertEqual(retried["status"], "claimed")
+        self.assertNotIn("blocked_reason", retried)
+        self.assertEqual(retried["preview_wait_started_epoch"], 1000)
+        self.assertTrue(retried["lease_released"])
 
     def test_exact_terminal_request_recovers_only_terminal_controller_error(self) -> None:
         controller = CONTROL.Controller(self.args)
@@ -14775,6 +14836,7 @@ class FactoryControllerTest(unittest.TestCase):
         )["launcher"]["commands"]["ticket-control"]
         self.assertIn('"$4" == "--issue"', launcher)
         self.assertIn('"$4" == "--factory-sha"', launcher)
+        self.assertIn('"$1" == "retry-preview"', launcher)
         self.assertIn('"$1" == "authorize-round"', launcher)
         self.assertIn('"$1" == "reviewer-void"', launcher)
         self.assertIn('"${11}" == "--approve-hash"', launcher)
@@ -14782,11 +14844,12 @@ class FactoryControllerTest(unittest.TestCase):
             "pause --ticket <T-NNN> --issue "
             "<software-factory-issue-url> --json",
             "resume --ticket <T-NNN> --factory-sha <FULL_SHA> --json",
+            "retry-preview --ticket <T-NNN> --operator-id <ID> --json",
             "authorize-round plan --ticket <T-NNN> --role "
-            "<planner|spec-linter|test-author|builder> "
+            "<planner|spec-linter|test-author|builder|narrator> "
             "--round <N> --operator-id <ID> --json",
             "authorize-round apply --ticket <T-NNN> --role "
-            "<planner|spec-linter|test-author|builder> "
+            "<planner|spec-linter|test-author|builder|narrator> "
             "--round <N> --operator-id <ID> --approve-hash <HASH> --json",
             "reviewer-void plan --ticket <T-NNN> --run <N> "
             "--operator-id <ID> --json",
@@ -16192,6 +16255,8 @@ class FactoryControllerTest(unittest.TestCase):
              "planner-spec-linter"),
             ("contract-builder", "T-219", "builder", 4,
              "contract-repair"),
+            ("narrator-bundle", "T-220", "narrator", 3,
+             "narrator-bundle"),
         )
         for name, ticket, role, semantic_round, kind in cases:
             with self.subTest(kind=kind):

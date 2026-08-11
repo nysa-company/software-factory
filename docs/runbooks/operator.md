@@ -106,7 +106,7 @@ an in-flight manifest or backdate an override.
 ## Failed deploy / broken staging
 
 - Notice: staging URL errors, or a Narrator bundle says "preview broken".
-- Do: check Railway's dashboard for the failing deploy log; the usual fix is reverting the last merged PR per `docs/operations/rollback-drill.md`. If staging is down but no recent merge happened, restart the Railway service from its dashboard.
+- Do: check Railway's dashboard for the failing deploy log; the usual fix is reverting the last merged PR per `docs/operations/rollback-drill.md`. If staging is down but no recent merge happened, restart the Railway service from its dashboard. When the Factory has already emitted `preview-identity-timeout` and the same pushed head should be checked again, run `factory-launch <project> ticket-control retry-preview --ticket <T-NNN> --operator-id <ID> --json`; it extends only that exact wait and does not waive preview evidence.
 - Don't: approve anything while staging is broken — bundles can't be verified.
 
 ## Leaked secret (a key appears in a file, log, or commit)
@@ -161,7 +161,7 @@ an in-flight manifest or backdate an override.
 
 ## A semantic loop reached its next-round authorization boundary
 
-- Notice: after two Spec-linter FAIL verdicts, and before every later Planner–Spec-linter round, `next-stage` returns provider-free `AWAIT-OPERATOR` with the exact next `OPERATOR AUTHORIZATION: spec-linter round <N>` line. Contract repair does the same before its fourth and every later `FIX <role>` attempt. A duplicate or malformed attempt produces a typed correction action without launching a provider.
+- Notice: after two Spec-linter FAIL verdicts, and before every later Planner–Spec-linter round, `next-stage` returns provider-free `AWAIT-OPERATOR` with the exact next `OPERATOR AUTHORIZATION: spec-linter round <N>` line. Contract repair does the same before its fourth and every later `FIX <role>` attempt. After the one automatic Narrator bundle correction, every later invalid bundle waits for the exact next Narrator round. A duplicate or malformed attempt produces a typed correction action without launching a provider.
 - Do: if one more cycle is warranted, use the exact role and round from the watcher: `factory-launch <project> ticket-control authorize-round plan --ticket <T-NNN> --role <role> --round <N> --operator-id <ID> --json`, review its identities, then run the matching `authorize-round apply` with `--approve-hash <HASH>`. The controller writes and pushes one ticket-only child; ordinary reconciliation imports it. Each line grants only that next round.
 - Don't: add commentary to the authorization line, authorize a different role or round, change another path, or infer authorization. Reviewer remains governed by its budget-only review loop and has no semantic-round authorization gate.
 
