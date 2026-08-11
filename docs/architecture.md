@@ -557,6 +557,14 @@ same-name Projects are nonblocking diagnostics and are never mutated. Doctor
 lists the canonical mapped Project IDs and URLs, exposes those bounded
 warnings, and keeps reconciliation failures visible in its Linear health
 output.
+Automatic GitHub defect reporting is an optional production sidecar, never a
+controller dependency. The controller marks only explicit internal invariant
+failures with a stable reason code; the reporter accepts a fixed allowlist of
+those codes, publishes only bounded identity metadata, and deduplicates by a
+reason-code fingerprint. Unknown, product, operator, budget, and external
+failures remain local evidence for ordinary triage. GitHub failure leaves the
+event pending for the next reporter run and cannot change a claim, lease,
+passport, ticket state, or controller result.
 Planner preflight validates the complete pinned route contract without
 repeating machine probes; the role runner re-verifies only its selected route
 immediately before provider admission.

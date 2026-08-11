@@ -32,6 +32,13 @@ assert SPEC and SPEC.loader
 CONTROL = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(CONTROL)
 
+REPORTER_SPEC = importlib.util.spec_from_file_location(
+    "factory_incident_reporter", ROOT / "scripts/factory-incident-reporter.py"
+)
+assert REPORTER_SPEC and REPORTER_SPEC.loader
+REPORTER = importlib.util.module_from_spec(REPORTER_SPEC)
+REPORTER_SPEC.loader.exec_module(REPORTER)
+
 PASSPORT_SPEC = importlib.util.spec_from_file_location(
     "ticket_passport_for_controller_test", ROOT / "scripts/ticket-passport.py"
 )
@@ -95,6 +102,23 @@ class FactoryControllerTest(unittest.TestCase):
         with template.open("rb") as handle:
             job = plistlib.load(handle)
         self.assertEqual(job["ProcessType"], "Interactive")
+
+    def test_incident_reporter_launch_agent_is_opt_in_and_separate(self) -> None:
+        template = ROOT / "scripts/launchd/com.factory.incident-reporter.plist.template"
+        text = template.read_text(encoding="utf-8")
+        with io.BytesIO(
+            text.replace("__HOME__", "/Users/test")
+            .replace("__PROJECT_SLUG__", "relay")
+            .replace("__ISSUE_REPO__", "nysa-company/software-factory")
+            .encode()
+        ) as stream:
+            job = plistlib.load(stream)
+        self.assertEqual(job["StartInterval"], 60)
+        self.assertEqual(job["ProgramArguments"], [
+            "/Users/test/.factory/bin/factory-launch", "relay",
+            "incident-report", "--repo", "nysa-company/software-factory",
+            "--json",
+        ])
 
     def test_busy_is_byte_identical_before_controller_construction(self) -> None:
         for directory in ("claims", "passports", ".dispatch-leases"):
@@ -15864,6 +15888,92 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(events, [(("post_merge_check_wait", "T-110"), {
             "reason": "required post-merge check is pending: ci",
         })])
+
+
+class IncidentReporterTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.state = Path(self.temporary.name) / "controller"
+        self.events = self.state / "events"
+        self.events.mkdir(parents=True, mode=0o700)
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def write_event(self, ordinal: int, *, reportable: bool = True) -> None:
+        value = {
+            "error": "api_key=do-not-publish",
+            "event": "ticket_worker_failed",
+            "factory_sha": "a" * 40,
+            "failure_class": "factory_defect" if reportable else "unknown",
+            "observed_at_epoch_ns": ordinal,
+            "reason_code": "controller_worker_exception",
+            "schema": "nysa.software-factory.controller-event/v1",
+            "ticket": f"T-{ordinal}",
+        }
+        value["event_sha256"] = hashlib.sha256(
+            REPORTER.canonical({
+                key: item for key, item in value.items()
+                if key != "event_sha256"
+            }).encode()
+        ).hexdigest()
+        path = self.events / f"{ordinal}-aaaaaaaaaaaaaaaa.json"
+        path.write_text(REPORTER.canonical(value) + "\n", encoding="utf-8")
+        path.chmod(0o600)
+
+    def test_reporter_creates_once_comments_on_recurrence_and_sanitizes(self) -> None:
+        self.write_event(1)
+        self.write_event(2, reportable=False)
+        issue_body = ""
+        created = 0
+        commented = 0
+
+        def run(command, **_kwargs):
+            nonlocal issue_body, created, commented
+            if command[1:4] == ("api", "--method", "GET"):
+                items = [] if not issue_body else [{
+                    "body": issue_body, "number": 42,
+                }]
+                return subprocess.CompletedProcess(
+                    command, 0, json.dumps({"items": items}), ""
+                )
+            body_path = Path(command[command.index("--body-file") + 1])
+            body = body_path.read_text(encoding="utf-8")
+            if command[1:3] == ("issue", "create"):
+                created += 1
+                issue_body = body
+            elif command[1:3] == ("issue", "comment"):
+                commented += 1
+            return subprocess.CompletedProcess(command, 0, "ok\n", "")
+
+        with patch.object(REPORTER.subprocess, "run", side_effect=run):
+            first = REPORTER.report(
+                self.state, "nysa-company/software-factory", "relay"
+            )
+            self.write_event(3)
+            second = REPORTER.report(
+                self.state, "nysa-company/software-factory", "relay"
+            )
+            third = REPORTER.report(
+                self.state, "nysa-company/software-factory", "relay"
+            )
+
+        self.assertEqual([first["published"], second["published"], third["published"]], [1, 1, 0])
+        self.assertEqual((created, commented), (1, 1))
+        self.assertIn("sf-incident-fingerprint", issue_body)
+        self.assertNotIn("do-not-publish", issue_body)
+
+    def test_reporter_leaves_github_failure_pending(self) -> None:
+        self.write_event(1)
+        failure = subprocess.CompletedProcess(("gh",), 1, "", "unavailable")
+        with (
+            patch.object(REPORTER.subprocess, "run", return_value=failure),
+            self.assertRaisesRegex(REPORTER.ReportError, "GitHub command failed"),
+        ):
+            REPORTER.report(
+                self.state, "nysa-company/software-factory", "relay"
+            )
+        self.assertFalse((self.state / "incident-reporter.json").exists())
 
 
 if __name__ == "__main__":

@@ -106,6 +106,13 @@
         "output_schema": "nysa.software-factory.controller/v1",
         "authority": "non-overlapping non-agent reconciliation claims up to four disposable cells, executes only receipt-authorized actions, persists restart-safe claims, and immediately resolves each terminal event"
       },
+      "incident-report": {
+        "contract_version": "1.8.0",
+        "helper": "scripts/factory-incident-reporter.py",
+        "grammar": "--repo <owner/repository> --json",
+        "output_schema": "nysa.software-factory.incident-reporter/v1",
+        "authority": "production-only opt-in reporting of explicitly classified Factory defects; reads sanitized controller metadata, deduplicates by stable fingerprint, and creates or comments on GitHub issues without changing lane state"
+      },
       "watch": {
         "contract_version": "1.8.0",
         "helper": "scripts/operator-event-watch.py",
@@ -831,6 +838,7 @@
     "templates/profile/skills/factory-dispatch/SKILL.md",
     "templates/profile/skills/factory-supervisor/SKILL.md",
     "scripts/launchd/com.factory.controller.plist.template",
+    "scripts/launchd/com.factory.incident-reporter.plist.template",
     "scripts/launchd/com.factory.linear-sync.plist.template",
     "templates/launchd/com.nysa.hermes-factory-gateway.plist",
     "templates/launchd/com.nysa.hermes-dashboard.plist",
@@ -840,6 +848,7 @@
     "scripts/next-stage.sh",
     "scripts/state-machine.py",
     "scripts/factory-controller.py",
+    "scripts/factory-incident-reporter.py",
     "scripts/ticket-readiness.py",
     "scripts/ticket-passport.py",
     "scripts/publication-lease.py",
@@ -916,6 +925,11 @@
       "label": "com.factory.controller.<project>",
       "schedule_seconds": 15,
       "scope": "one registered product; non-overlapping one-shot reconciliation"
+    },
+    "incident_reporter": {
+      "label": "com.factory.incident-reporter.<project>",
+      "schedule_seconds": 60,
+      "scope": "one explicitly opted-in production project and one configured GitHub issue repository"
     },
     "linear_sync": {
       "label": "com.factory.linear-sync.<project>",
