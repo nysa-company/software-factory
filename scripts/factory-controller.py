@@ -8724,19 +8724,20 @@ class Controller:
                         head_status, local_head, remote_head = (
                             self.remote_cell_head_status(claim)
                         )
+                        try:
+                            ticket_text = (
+                                Path(claim["worktree"]) / "factory" / "tickets"
+                                / f"{claim['ticket']}.md"
+                            ).read_text(encoding="utf-8")
+                        except (FileNotFoundError, OSError):
+                            ticket_text = ""
+                        directive_status = self.contract_resume_directive_status(
+                            ticket_text, claim["receipt"]
+                        )
                         if head_status != "pushed":
-                            try:
-                                ticket_text = (
-                                    Path(claim["worktree"]) / "factory" / "tickets"
-                                    / f"{claim['ticket']}.md"
-                                ).read_text(encoding="utf-8")
-                            except (FileNotFoundError, OSError):
-                                ticket_text = ""
                             if (
                                 head_status in CONTRACT_RESUME_REFUSALS
-                                and self.contract_resume_directive_status(
-                                    ticket_text, claim["receipt"]
-                                ) != "waiting"
+                                and directive_status != "waiting"
                             ):
                                 self.record_contract_resume_refusal(
                                     claim, head_status, {
@@ -8745,6 +8746,48 @@ class Controller:
                                     },
                                 )
                             continue
+                        if directive_status not in {"ready", "waiting"}:
+                            self.record_contract_resume_refusal(
+                                claim, directive_status, {
+                                    "local_head": local_head,
+                                    "remote_head": remote_head,
+                                },
+                            )
+                            continue
+                        checked = self.json_call(
+                            "state-machine", "repair-check",
+                            "--ticket", claim["ticket"],
+                            "--receipt", claim["receipt"],
+                            "--workdir", claim["worktree"], "--json",
+                            allow=(0, 1),
+                        )
+                        if checked.get("status") == "error":
+                            reason_code = checked.get("reason_code")
+                            if reason_code in CONTRACT_RESUME_REFUSALS:
+                                self.record_contract_resume_refusal(
+                                    claim, reason_code, {
+                                        key: checked[key]
+                                        for key in (
+                                            "actual_bytes", "changed_path_count",
+                                            "expected_bytes", "first_differing_line",
+                                            "offending_parent",
+                                        )
+                                        if key in checked
+                                    },
+                                )
+                                continue
+                        if (
+                            checked.get("action") != "repair-check"
+                            or checked.get("head") != local_head
+                            or checked.get("role") != claim["role"]
+                            or checked.get("schema")
+                            != "nysa.software-factory.state-machine/v1"
+                            or checked.get("status") != directive_status
+                            or checked.get("ticket") != claim["ticket"]
+                        ):
+                            raise ControllerError(
+                                "contract repair validation is invalid"
+                            )
                         self.migrate_passport(claim, "preserve")
                         migrated = True
                         if not self.remote_passport_valid(claim):

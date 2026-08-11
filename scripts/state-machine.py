@@ -3780,10 +3780,56 @@ def resume_transition(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def repair_check_transition(args: argparse.Namespace) -> dict[str, Any]:
+    role = contract_blocked_receipt(args)
+    passport, _ = authenticated_passport(args)
+    relative = f"factory/tickets/{args.ticket}.md"
+    prior_head = passport.get("head_sha", "")
+    current_head = git(args.workdir, "rev-parse", "HEAD")
+    try:
+        repair_role = operator_resume_role(args, passport, role)
+        status = "ready"
+    except ContractResumeError as resume_error:
+        ancestry = git(
+            args.workdir, "rev-list", "--parents", "-n", "1", current_head
+        ).split()
+        changed = git(
+            args.workdir, "diff", "--name-only", f"{prior_head}..{current_head}"
+        ).splitlines() if (
+            len(ancestry) == 2
+            and ancestry == [current_head, prior_head]
+        ) else []
+        before = (
+            git(args.workdir, "show", f"{prior_head}:{relative}") + "\n"
+            if changed == [relative] else ""
+        )
+        after = (
+            git(args.workdir, "show", f"{current_head}:{relative}") + "\n"
+            if before else ""
+        )
+        if not safe_operator_context(
+            args, before, after, passport.get("protected_base_sha", "")
+        ):
+            raise resume_error
+        repair_role = ""
+        status = "waiting"
+    return {
+        "action": "repair-check",
+        "head": current_head,
+        "repair_role": repair_role,
+        "role": role,
+        "schema": SCHEMA,
+        "status": status,
+        "ticket": args.ticket,
+    }
+
+
 def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser()
     value.add_argument(
-        "action", choices=("next", "verify", "consume", "block", "resume")
+        "action", choices=(
+            "next", "verify", "consume", "block", "repair-check", "resume",
+        )
     )
     value.add_argument("--factory-root", required=True, type=Path)
     value.add_argument("--workdir", required=True, type=Path)
@@ -3809,7 +3855,10 @@ def main() -> None:
             or not SHA.fullmatch(args.factory_sha)
             or (args.receipt and not DIGEST.fullmatch(args.receipt))
             or (args.role and not ROLE.fullmatch(args.role))
-            or (args.action in {"block", "resume"} and not args.receipt)
+            or (
+                args.action in {"block", "repair-check", "resume"}
+                and not args.receipt
+            )
             or (args.action == "block" and not args.lease)
         ):
             raise StateError("invalid state-machine arguments")
@@ -3821,6 +3870,8 @@ def main() -> None:
             result = next_transition(args)
         elif args.action == "block":
             result = block_transition(args)
+        elif args.action == "repair-check":
+            result = repair_check_transition(args)
         elif args.action == "resume":
             result = resume_transition(args)
         else:

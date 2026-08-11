@@ -1490,7 +1490,7 @@ PY
           "${10}" == "--json" ]]; then
       STATE_ACTION="$1" TICKET="$3" LEASE_ID="$5"
       TRANSITION_RECEIPT="$7" TICKET_WORKDIR="$9"
-    elif [[ "${1:-}" == "resume" && $# -eq 8 &&
+    elif [[ "${1:-}" =~ ^(repair-check|resume)$ && $# -eq 8 &&
             "$2" == "--ticket" && "$4" == "--receipt" &&
             "$6" == "--workdir" && "$8" == "--json" ]]; then
       STATE_ACTION="$1" TICKET="$3" LEASE_ID=""

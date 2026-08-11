@@ -24,6 +24,8 @@ everything the Factory actually enforces lives here.
   authenticated protected `TEST_PATHS` and the complete ticket remains ready.
   Existing conflicts remain an exact prefix. The existing optional single
   matching `Fixture-Seams` append remains limited to the final new conflict.
+  A pushed context or resume edge is validated before passport migration, so
+  invalid operator input retains the prior authenticated recovery boundary.
 - Contract 1.8 emergency closeout is a narrow plan/apply authority for one
   exact already-merged ticket. It binds an open GitHub issue, explicit owner,
   bounded request window, protected-main tree/ticket state, exact PR and green
@@ -5517,3 +5519,14 @@ recovery boundary revalidates it after the call, so restart and repeated waiting
 ticks remain free without widening any individual selector. Consumed, stale,
 mismatched, failed, or cross-ticket signals settle normally and still abandon
 at three identical outcomes.
+
+## 2026-08-11 — Decision 385: Operator context validates before migration
+
+Category: Reliability
+
+A contract-block recovery validates a pushed context-only edge or complete
+context-plus-resume chain through the state machine before advancing its
+authenticated passport. Malformed answers, receipts, ancestry, directives,
+paths, dirty worktrees, and remote drift therefore retain the prior passport
+head. The read-only validation may repeat after restart; only the existing
+passport migration and resume operations create durable state.

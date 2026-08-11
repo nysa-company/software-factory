@@ -2066,6 +2066,99 @@ class StateMachineTest(unittest.TestCase):
         self.assertEqual(raised.exception.reason_code, "resume_parent_not_migrated")
         self.assertEqual(raised.exception.evidence["offending_parent"], unsafe_head)
 
+    def test_repair_check_validates_context_before_passport_migration(self) -> None:
+        self.args.receipt = "b" * 64
+        ticket = self.product / "factory/tickets/T-110.md"
+        ticket.write_text(
+            "# T-110\n\nState: Blocked-Escalated\n"
+            "Resume-State: Planning\n\n"
+            "ROLE-ESCALATE: CONTRACT-BLOCKED\n"
+            f"Kit-SHA: {self.args.factory_sha}\n",
+            encoding="utf-8",
+        )
+        run("git", "add", str(ticket), cwd=self.product)
+        run("git", "commit", "-qm", "record contract blocker", cwd=self.product)
+        base = run("git", "rev-parse", "HEAD", cwd=self.product)
+        passport = {
+            "branch": "ticket/T-110",
+            "factory_sha": self.args.factory_sha,
+            "head_sha": base,
+            "ticket": "T-110",
+        }
+
+        def check() -> dict:
+            with (
+                mock.patch.object(
+                    STATE, "contract_blocked_receipt", return_value="planner"
+                ),
+                mock.patch.object(
+                    STATE, "authenticated_passport",
+                    return_value=(passport, b"k" * 32),
+                ),
+            ):
+                return STATE.repair_check_transition(self.args)
+
+        answer = (
+            "OPERATOR ANSWER: Preserve the authenticated decision.\n"
+            f"OPERATOR ANSWER RECEIPT: {self.args.receipt}\n"
+        )
+        ticket.write_text(
+            ticket.read_text(encoding="utf-8").replace(
+                "ROLE-ESCALATE: CONTRACT-BLOCKED\n", answer
+                + "ROLE-ESCALATE: CONTRACT-BLOCKED\n",
+            ),
+            encoding="utf-8",
+        )
+        run("git", "add", str(ticket), cwd=self.product)
+        run("git", "commit", "-qm", "misplace operator answer", cwd=self.product)
+        offending = run("git", "rev-parse", "HEAD", cwd=self.product)
+        ticket.write_text(
+            ticket.read_text(encoding="utf-8").rstrip()
+            + "\n\nOPERATOR RESUME: planner\n"
+            + f"OPERATOR RESUME RECEIPT: {self.args.receipt}\n",
+            encoding="utf-8",
+        )
+        run("git", "add", str(ticket), cwd=self.product)
+        run("git", "commit", "-qm", "resume malformed operator answer", cwd=self.product)
+        with self.assertRaises(STATE.ContractResumeError) as raised:
+            check()
+        self.assertEqual(raised.exception.reason_code, "resume_parent_not_migrated")
+        self.assertEqual(raised.exception.evidence["offending_parent"], offending)
+        self.assertEqual(passport["head_sha"], base)
+
+        run("git", "reset", "--hard", base, cwd=self.product)
+        ticket.write_text(
+            ticket.read_text(encoding="utf-8").rstrip()
+            + "\n\n" + answer,
+            encoding="utf-8",
+        )
+        run("git", "add", str(ticket), cwd=self.product)
+        run("git", "commit", "-qm", "record canonical operator answer", cwd=self.product)
+        answer_head = run("git", "rev-parse", "HEAD", cwd=self.product)
+        waiting = check()
+        self.assertEqual(waiting["status"], "waiting")
+        self.assertEqual(waiting["head"], answer_head)
+
+        ticket.write_text(
+            ticket.read_text(encoding="utf-8").rstrip()
+            + "\n\nOPERATOR RESUME: planner\n"
+            + f"OPERATOR RESUME RECEIPT: {self.args.receipt}\n",
+            encoding="utf-8",
+        )
+        run("git", "add", str(ticket), cwd=self.product)
+        run("git", "commit", "-qm", "resume canonical operator answer", cwd=self.product)
+        fast = check()
+        self.assertEqual(fast["status"], "ready")
+        passport.update(
+            head_sha=answer_head,
+            migration_history=[{
+                "from_head_sha": base,
+                "to_head_sha": answer_head,
+            }],
+        )
+        canonical = check()
+        self.assertEqual(canonical["status"], "ready")
+
     def test_operator_resume_accepts_coupled_conflict_fixture_and_answer(self) -> None:
         self.args.receipt = "b" * 64
         ticket = self.product / "factory/tickets/T-110.md"
