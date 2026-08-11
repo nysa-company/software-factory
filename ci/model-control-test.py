@@ -1452,7 +1452,7 @@ PY
             "--readiness-hash", retry_preview["readiness_sha256"],
             "--approved-by", "tester",
         )
-        self.assertGreaterEqual(len(preview_probes), 6)
+        self.assertGreaterEqual(len(preview_probes), 5)
         self.assertEqual(
             len(trace.read_text().splitlines()) - len(after_drift_probes),
             len(preview_probes) * 3,

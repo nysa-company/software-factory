@@ -457,6 +457,8 @@ mkdir -p "$KIT_REPO/scripts/model-routing"
 cp "$ROOT/scripts/model-manager.py" "$ROOT/scripts/model-router.py" \
   "$ROOT/scripts/certification-runner.py" \
   "$ROOT/scripts/certification-preflight.py" \
+  "$ROOT/scripts/operator-preflight-report.py" \
+  "$ROOT/scripts/ticket-readiness.py" \
   "$KIT_REPO/scripts/"
 cp "$ROOT/scripts/lib/certification_plan.py" \
   "$ROOT/scripts/lib/certification_cache.py" \
