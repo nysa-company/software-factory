@@ -127,8 +127,8 @@
         "grammars": [
           "pause --ticket <T-NNN> --issue <software-factory-issue-url> --json",
           "resume --ticket <T-NNN> --factory-sha <FULL_SHA> --json",
-          "authorize-round plan --ticket <T-NNN> --role spec-linter --round <N> --operator-id <ID> --json",
-          "authorize-round apply --ticket <T-NNN> --role spec-linter --round <N> --operator-id <ID> --approve-hash <HASH> --json",
+          "authorize-round plan --ticket <T-NNN> --role <planner|spec-linter|test-author|builder> --round <N> --operator-id <ID> --json",
+          "authorize-round apply --ticket <T-NNN> --role <planner|spec-linter|test-author|builder> --round <N> --operator-id <ID> --approve-hash <HASH> --json",
           "reviewer-void plan --ticket <T-NNN> --run <N> --operator-id <ID> --json",
           "reviewer-void apply --ticket <T-NNN> --run <N> --operator-id <ID> --approve-hash <HASH> --json"
         ],

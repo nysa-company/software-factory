@@ -1357,7 +1357,8 @@ PY
       CONTROL_ARGS=(--action resume --ticket "$3" --factory-sha "$5")
     elif [[ $# -eq 11 && "$1" == "authorize-round" && "$2" == "plan" &&
             "$3" == "--ticket" && "$4" =~ ^T-[0-9]+$ &&
-            "$5" == "--role" && "$6" == "spec-linter" &&
+            "$5" == "--role" &&
+            "$6" =~ ^(planner|spec-linter|test-author|builder)$ &&
             "$7" == "--round" && "$8" =~ ^[1-9][0-9]*$ &&
             "$9" == "--operator-id" &&
             "${10}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$ &&
@@ -1368,7 +1369,8 @@ PY
       )
     elif [[ $# -eq 13 && "$1" == "authorize-round" && "$2" == "apply" &&
             "$3" == "--ticket" && "$4" =~ ^T-[0-9]+$ &&
-            "$5" == "--role" && "$6" == "spec-linter" &&
+            "$5" == "--role" &&
+            "$6" =~ ^(planner|spec-linter|test-author|builder)$ &&
             "$7" == "--round" && "$8" =~ ^[1-9][0-9]*$ &&
             "$9" == "--operator-id" &&
             "${10}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$ &&

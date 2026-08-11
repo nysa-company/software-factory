@@ -1139,9 +1139,14 @@ Reviewer reconciliation, operator resume materialization, and qualification
 backlog return. Planner/Spec-linter, Builder/Reviewer, and authenticated
 contract-repair loops derive their attempt number from existing durable ticket
 or signed repair evidence. Each transition receipt binds that number and the
-controller appends it as a typed event; a third failed lap resolves to
-`ESCALATE` before another provider launch. Repair replays keep the coarse
-business state for Linear compatibility but are no longer invisible.
+controller appends it as a typed event. Planner/Spec-linter waits before round
+three and every later round; contract repair waits before the fourth and every
+later repair. One exact ticket-only `OPERATOR AUTHORIZATION: <role> round <N>`
+line permits only that next round through the existing plan/apply control and
+passport migration boundary. Missing, duplicate, stale-round, wrong-role, or
+unrelated changes remain provider-free waits or typed refusals. Builder/Reviewer
+remains budget-only. Repair replays keep the coarse business state for Linear
+compatibility but are no longer invisible.
 The first task-submitted terminal failed Cursor attempt for a protected
 qualification keeps its claim and authenticated evidence while the controller
 appends the existing same-family direct-CLI fallback and resumes the same

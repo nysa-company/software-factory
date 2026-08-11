@@ -219,7 +219,7 @@ class StateMachineTest(unittest.TestCase):
         with self.assertRaisesRegex(STATE.StateError, "unsupported transition"):
             STATE.stage_role("FIX builder-or-test-author")
 
-    def test_spec_lint_stops_at_three_and_reviewer_remains_budget_only(self) -> None:
+    def test_spec_lint_waits_for_each_round_after_three(self) -> None:
         ticket = self.product / "factory/tickets/T-110.md"
         ticket.write_text(
             "# T-110\n\nState: Planning\n"
@@ -231,7 +231,8 @@ class StateMachineTest(unittest.TestCase):
         stage, loop = STATE.govern_loop(self.args, "RUN planner", False)
         self.assertEqual(
             stage,
-            "ESCALATE planner-spec-linter loop cap reached; attempts=3; limit=3",
+            "AWAIT-OPERATOR semantic-round authorization required; add exact "
+            "line: OPERATOR AUTHORIZATION: spec-linter round 4",
         )
         self.assertEqual(loop, {
             "attempt": 3, "capped": True,
@@ -272,6 +273,25 @@ class StateMachineTest(unittest.TestCase):
             "attempt": 3, "capped": False,
             "kind": "contract-repair", "limit": 3,
         })
+
+        ticket.write_text("# T-110\n\nState: Building\n", encoding="utf-8")
+        with mock.patch.object(STATE, "contract_repair_attempt", return_value=3):
+            stage, loop = STATE.govern_loop(self.args, "FIX builder", True)
+        self.assertEqual(
+            stage,
+            "AWAIT-OPERATOR semantic-round authorization required; add exact "
+            "line: OPERATOR AUTHORIZATION: builder round 4",
+        )
+        self.assertTrue(loop["capped"])
+        ticket.write_text(
+            "# T-110\n\nState: Building\n"
+            "OPERATOR AUTHORIZATION: builder round 4\n",
+            encoding="utf-8",
+        )
+        with mock.patch.object(STATE, "contract_repair_attempt", return_value=3):
+            stage, loop = STATE.govern_loop(self.args, "FIX builder", True)
+        self.assertEqual(stage, "FIX builder")
+        self.assertFalse(loop["capped"])
 
     def test_third_spec_lint_round_waits_for_one_exact_authorization(self) -> None:
         ticket = self.product / "factory/tickets/T-110.md"
@@ -347,7 +367,17 @@ class StateMachineTest(unittest.TestCase):
             encoding="utf-8",
         )
         governed, loop = STATE.govern_loop(self.args, "RUN planner", False)
-        self.assertTrue(governed.startswith("ESCALATE planner-spec-linter loop cap"))
+        self.assertEqual(governed, "RUN planner")
+        self.assertFalse(loop["capped"])
+
+        ticket.write_text(
+            prefix
+            + "SPEC-LINT: FAIL — three\n"
+            + authorization,
+            encoding="utf-8",
+        )
+        governed, loop = STATE.govern_loop(self.args, "RUN planner", False)
+        self.assertIn("OPERATOR AUTHORIZATION: spec-linter round 4", governed)
         self.assertTrue(loop["capped"])
 
     def test_unmerged_dependency_waits_without_consuming_a_role_receipt(self) -> None:

@@ -159,11 +159,11 @@ an in-flight manifest or backdate an override.
 - Do: keep KILL published and run `scripts/kill-switch.sh`. After recorded process groups drain, it quarantines only a safe, unchanged owner whose PID is absent or has a different process start identity. Re-run doctor and preflight, reconcile manifests and active claims, then remove KILL only when accounting and control state agree.
 - Don't: delete or rename `factory/.provider.lock` by hand. A live, malformed, changed, symlinked, hard-linked, or otherwise ambiguous lock is deliberately retained for inspection; ordinary launch never steals it and the ownership token must not be printed.
 
-## Spec-linter reached the round-three authorization boundary
+## A semantic loop reached its next-round authorization boundary
 
-- Notice: after two Spec-linter FAIL verdicts, `next-stage` returns provider-free `AWAIT-OPERATOR` and the watcher asks for exactly `OPERATOR AUTHORIZATION: spec-linter round 3`. A duplicate or malformed attempt produces a typed correction action without launching a provider.
-- Do: if one final cycle is warranted, run `factory-launch <project> ticket-control authorize-round plan --ticket <T-NNN> --role spec-linter --round 3 --operator-id <ID> --json`, review its exact identities, then run the matching `authorize-round apply` command with `--approve-hash <HASH>`. The controller writes and pushes the single ticket-only child and ordinary reconciliation imports it. If duplicate exact lines already exist at the authenticated wait head, retain the existing correction procedure; this command only grants a missing round-three line.
-- Don't: add commentary to the authorization line, authorize another role or round, change another path, or let the dispatcher infer authorization. The third FAIL reaches the absolute planner–Spec-linter cap; no round-four override exists. Reviewer remains governed by its budget-only review loop and has no semantic-round authorization gate.
+- Notice: after two Spec-linter FAIL verdicts, and before every later Planner–Spec-linter round, `next-stage` returns provider-free `AWAIT-OPERATOR` with the exact next `OPERATOR AUTHORIZATION: spec-linter round <N>` line. Contract repair does the same before its fourth and every later `FIX <role>` attempt. A duplicate or malformed attempt produces a typed correction action without launching a provider.
+- Do: if one more cycle is warranted, use the exact role and round from the watcher: `factory-launch <project> ticket-control authorize-round plan --ticket <T-NNN> --role <role> --round <N> --operator-id <ID> --json`, review its identities, then run the matching `authorize-round apply` with `--approve-hash <HASH>`. The controller writes and pushes one ticket-only child; ordinary reconciliation imports it. Each line grants only that next round.
+- Don't: add commentary to the authorization line, authorize a different role or round, change another path, or infer authorization. Reviewer remains governed by its budget-only review loop and has no semantic-round authorization gate.
 
 ## One successful Reviewer run is a duplicate
 
