@@ -185,6 +185,7 @@ usage() {
 Usage:
   $PROGRAM install   --sha FULL_SHA [--repo KIT_REPO] [--origin ORIGIN]
   $PROGRAM certify   --project SLUG --product PRODUCT_REPO --sha FULL_SHA
+  $PROGRAM preflight-report --project SLUG --product PRODUCT_REPO --sha FULL_SHA --ticket T-NNN [--ticket T-NNN] --json
   $PROGRAM plan      --project SLUG --product PRODUCT_REPO --sha FULL_SHA [--receipt FILE]
   $PROGRAM pause     --project SLUG --product PRODUCT_REPO
   $PROGRAM linear-sync-service ACTION --project SLUG --product PRODUCT_REPO
@@ -4073,12 +4074,117 @@ PY
   fi
 }
 
+cmd_preflight_report() {
+  local slug="$1" product="$2" sha="$3" product_top pin manifest_values
+  local kit_tree release contract network_reviewed origin ticket
+  local -a ticket_args=()
+  shift 3
+  validate_slug "$slug" || return $?
+  validate_sha "$sha" || return $?
+  validate_managed_layout "$slug" || return $?
+  product_top="$(absolute_dir "$product")" || return $?
+  manifest_values="$(verify_release_from_manifest "$sha")" || return $?
+  kit_tree="$(printf '%s' "$manifest_values" | awk -F'\t' '{print $1}')" ||
+    return $?
+  release="$(printf '%s' "$manifest_values" | awk -F'\t' '{print $3}')" ||
+    return $?
+  contract="$(contract_version "$release")" || return $?
+  pin="$(strict_product_pin "$product_top")" || return $?
+  origin="$(product_origin "$product_top")" || return $?
+  certify_script_path "$product_top" >/dev/null || return $?
+  network_reviewed="${FACTORY_KIT_CERTIFICATION_NETWORK_REVIEWED:-0}"
+  for ticket in "$@"; do
+    [[ "$ticket" =~ ^T-[0-9]+$ ]] || return 1
+    ticket_args[${#ticket_args[@]}]="--ticket"
+    ticket_args[${#ticket_args[@]}]="$ticket"
+  done
+  python3 -B "$release/scripts/operator-preflight-report.py" \
+    --project "$slug" --product "$product_top" \
+    --factory-sha "$sha" --factory-tree "$kit_tree" \
+    --contract-version "$contract" --product-pin "$pin" \
+    --product-origin "$origin" \
+    --network-reviewed "$network_reviewed" "${ticket_args[@]}"
+}
+
+preflight_report_blocked_json() {
+  python3 - <<'PY'
+import json
+print(json.dumps({
+    "authorizations_required": [],
+    "blockers": [{
+        "reason_code": "preflight_setup_invalid", "scope": "preflight",
+    }],
+    "certification": {
+        "network_review": {
+            "required": None, "required_phases": [], "reviewed": False,
+            "status": "blocked",
+        },
+        "plan_sha256": None,
+        "runtime": {
+            "expected": {"node": None, "npm": None},
+            "observed": {"node": None, "npm": None},
+            "status": "blocked",
+        },
+    },
+    "factory": {"contract_version": None, "sha": None, "tree": None},
+    "ownership_conflicts": [],
+    "product": {
+        "branch": None, "clean": None, "head_equals_remote_main": False,
+        "identity_stable": False, "kit_pin": None, "path": None,
+        "remote_main_sha": None, "sha": None, "tree": None,
+    },
+    "project": None,
+    "schema": "nysa.software-factory.operator-preflight-report/v1",
+    "status": "blocked",
+    "tickets": [],
+}, ensure_ascii=True, sort_keys=True, separators=(",", ":")))
+PY
+}
+
+preflight_report_output_valid() {
+  local output="$1" status="$2"
+  printf '%s' "$output" | python3 -c '
+import json, sys
+try:
+    value = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(1)
+expected = {
+    "authorizations_required", "blockers", "certification", "factory",
+    "ownership_conflicts", "product", "project", "schema", "status", "tickets",
+}
+statuses = {"0": "pass", "2": "blocked", "3": "authorization-required"}
+if (
+    not isinstance(value, dict)
+    or set(value) != expected
+    or value.get("schema") != "nysa.software-factory.operator-preflight-report/v1"
+    or value.get("status") != statuses.get(sys.argv[1])
+):
+    raise SystemExit(1)
+' "$status"
+}
+
+cmd_preflight_report_json() {
+  local output status
+  if output="$(cmd_preflight_report "$@" 2>/dev/null)"; then
+    status=0
+  else
+    status=$?
+  fi
+  if [[ "$status" =~ ^(0|2|3)$ ]] &&
+     preflight_report_output_valid "$output" "$status" >/dev/null 2>&1; then
+    printf '%s\n' "$output"
+    return "$status"
+  fi
+  preflight_report_blocked_json
+  return 2
+}
+
 require_command git
 require_command python3
 require_command shasum
 require_command tar
 validate_test_mode
-validate_managed_roots
 
 [[ $# -gt 0 ]] || { usage >&2; exit 2; }
 COMMAND="$1"
@@ -4091,6 +4197,7 @@ PROJECT=""
 PRODUCT=""
 RECEIPT=""
 TICKET=""
+TICKETS=()
 CAPACITY=""
 APPROVE_HASH=""
 RUNTIME_BIN=""
@@ -4109,7 +4216,12 @@ while [[ $# -gt 0 ]]; do
     --project|--slug) [[ $# -ge 2 ]] || die "$1 requires a value"; PROJECT="$2"; shift 2 ;;
     --product|--product-repo) [[ $# -ge 2 ]] || die "$1 requires a value"; PRODUCT="$2"; shift 2 ;;
     --receipt) [[ $# -ge 2 ]] || die "$1 requires a value"; RECEIPT="$2"; shift 2 ;;
-    --ticket) [[ $# -ge 2 ]] || die "$1 requires a value"; TICKET="$2"; shift 2 ;;
+    --ticket)
+      [[ $# -ge 2 ]] || die "$1 requires a value"
+      TICKET="$2"
+      TICKETS[${#TICKETS[@]}]="$2"
+      shift 2
+      ;;
     --capacity) [[ $# -ge 2 ]] || die "$1 requires a value"; CAPACITY="$2"; shift 2 ;;
     --approve-hash) [[ $# -ge 2 ]] || die "$1 requires a value"; APPROVE_HASH="$2"; shift 2 ;;
     --runtime-bin) [[ $# -ge 2 ]] || die "$1 requires a value"; RUNTIME_BIN="$2"; shift 2 ;;
@@ -4124,6 +4236,8 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+[[ "$COMMAND" == "preflight-report" ]] || validate_managed_roots
+
 case "$COMMAND" in
   install)
     [[ -n "$SHA" ]] || SHA="${POSITIONALS[0]:-}"
@@ -4137,6 +4251,14 @@ case "$COMMAND" in
     [[ -n "$SHA" ]] || SHA="${POSITIONALS[2]:-}"
     [[ -n "$PROJECT" && -n "$PRODUCT" && -n "$SHA" ]] || { usage >&2; exit 2; }
     cmd_certify "$PROJECT" "$PRODUCT" "$SHA"
+    ;;
+  preflight-report)
+    [[ -n "$PROJECT" && -n "$PRODUCT" && -n "$SHA" &&
+       ${#TICKETS[@]} -gt 0 && "$JSON" -eq 1 &&
+       ${#POSITIONALS[@]} -eq 0 && "$REPO" == "$SCRIPT_ROOT" &&
+       -z "$ORIGIN_OVERRIDE$RECEIPT$CAPACITY$APPROVE_HASH$RUNTIME_BIN" ]] ||
+      { usage >&2; exit 2; }
+    cmd_preflight_report_json "$PROJECT" "$PRODUCT" "$SHA" "${TICKETS[@]}"
     ;;
   plan)
     [[ -n "$PROJECT" ]] || PROJECT="${POSITIONALS[0]:-}"

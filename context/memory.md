@@ -6,7 +6,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 
 - Product-agnostic factory kit; product repositories carry only their factory state and CI integration.
 - Durable decisions use repository-local numbering beginning at Decision 1.
-- Stable operating truth lives in `docs/`; prompts, templates, and evidence stay colocated with consumers.
+- Stable operating truth lives in `docs/`; prompts, templates, and evidence stay colocated with consumers. The operator preflight report is read-only and makes network review explicit before certification.
 - Nysa Agents baseline v3 as a toolkit; `bash ci/test-all.sh` is the unconditional full command.
 - Live products resolve sealed exact-SHA releases under `~/.factory/kits` via `~/.factory/bin/factory-launch`.
 - Model routing is portfolio policy; routes pin at the ticket boundary and change only via the Contract 1.4 journal flow. One profile resolution shares model-independent native-adapter readiness across its routes and runs independent probes in bounded parallel; Cursor readiness stays model-specific. Sealed Cursor inventory verifies the exact configured CLI identity in an empty disposable owner-only home before copying credentials, then accepts only its bounded certified structure.
@@ -5484,3 +5484,16 @@ Profile resolution runs its independent adapter checks in batches of at most
 five and aggregates their private result files only after every worker is
 reaped. Route order, disabled-route behavior, typed evidence, native sharing,
 and adapter-specific credential isolation remain unchanged.
+
+## 2026-08-11 — Decision 387: Operator preflight is evidence, not orchestration
+
+Category: Performance
+
+One deterministic read-only report verifies the exact sealed Factory and clean
+product-main identity at the validated push authority, matching product
+snapshots around all evidence reads, certification runtime tuple and
+network-review need, selected-ticket readiness, and pairwise Builder ownership
+before maintenance or certification. Every accepted invocation returns one
+closed report. It performs no fetch, mutation, Doctor/model/provider probe,
+authorization, certification, or activation; active runtime diagnosis remains
+on the existing status and Doctor boundaries.
