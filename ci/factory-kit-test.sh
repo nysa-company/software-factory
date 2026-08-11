@@ -465,8 +465,12 @@ cp "$ROOT/integrations/hermes/bin/factory-launch" \
   "$KIT_REPO/integrations/hermes/bin/factory-launch"
 cp "$ROOT/integrations/hermes/contract.json" "$KIT_REPO/integrations/hermes/contract.json"
 cp "$ROOT/scripts/linear-sync-service.py" "$KIT_REPO/scripts/linear-sync-service.py"
+cp "$ROOT/scripts/factory-incident-reporter.py" \
+  "$KIT_REPO/scripts/factory-incident-reporter.py"
 cp "$ROOT/scripts/launchd/com.factory.linear-sync.plist.template" \
   "$KIT_REPO/scripts/launchd/com.factory.linear-sync.plist.template"
+cp "$ROOT/scripts/launchd/com.factory.incident-reporter.plist.template" \
+  "$KIT_REPO/scripts/launchd/com.factory.incident-reporter.plist.template"
 chmod +x "$KIT_REPO/integrations/hermes/bin/factory-launch"
 cp "$ROOT/scripts/model-routing/catalog-v1.json" \
   "$ROOT/scripts/model-routing/profiles-v1.json" \

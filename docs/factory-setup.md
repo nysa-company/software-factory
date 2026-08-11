@@ -174,6 +174,12 @@ until expiry.
   project, home, and product paths and load it as a separate LaunchAgent.
   Keep its `Interactive` process type: macOS background QoS can exhaust the
   unchanged bounded provider-readiness probes before ticket work starts.
+- To opt into automatic Software Factory defect issues, instantiate
+  `scripts/launchd/com.factory.incident-reporter.plist.template` with the exact
+  home, project, and Factory issue repository and load it as a separate
+  LaunchAgent. Installing that job is standing authorization for its narrow
+  external write. It accepts only the release-owned reportable reason-code
+  allowlist, sends no raw logs, and never participates in reconciliation.
 - Pre-promotion live qualification uses the owner-only sealed environment
   prepared by `scripts/qualification-environment.py`; it does not replace the
   installed launcher or production activation record. Its generated marker

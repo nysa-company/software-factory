@@ -3973,6 +3973,7 @@ assert "receipt_id" in contract["launcher"]["active_record"]["contract_1_2_recei
 assert "product path/tree" in contract["launcher"]["active_record"]["contract_1_2_receipt_binding"]
 for surface in [
     "scripts/factory-controller.py",
+    "scripts/factory-incident-reporter.py",
     "scripts/qualification-environment.py",
     "scripts/state-machine.py",
     "scripts/emergency-admit.py",
@@ -3982,6 +3983,7 @@ for surface in [
     "scripts/ci-rerun.py",
     "scripts/ticket-readiness.py",
     "scripts/launchd/com.factory.controller.plist.template",
+    "scripts/launchd/com.factory.incident-reporter.plist.template",
     "scripts/launchd/com.factory.linear-sync.plist.template",
     "scripts/provider-coordinator.py",
     "scripts/provider-cli-runtime.py",
@@ -4289,6 +4291,22 @@ assert linear["ProgramArguments"] == [
     "/Users/test/.factory/bin/factory-launch", "alpha", "linear-sync"
 ]
 assert "__KIT_DIR__" not in linear_text
+
+incident_template = pathlib.Path(
+    root, "scripts/launchd/com.factory.incident-reporter.plist.template"
+)
+incident_text = incident_template.read_text(encoding="utf-8")
+incident = plistlib.loads(
+    incident_text.replace("__HOME__", "/Users/test")
+    .replace("__PROJECT_SLUG__", "alpha")
+    .replace("__ISSUE_REPO__", "nysa-company/software-factory")
+    .encode()
+)
+assert incident["ProgramArguments"] == [
+    "/Users/test/.factory/bin/factory-launch", "alpha", "incident-report",
+    "--repo", "nysa-company/software-factory", "--json",
+]
+assert incident["StartInterval"] == 60
 PY
 
 python3 "$ROOT/ci/linear-sync-service-test.py"

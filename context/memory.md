@@ -61,6 +61,11 @@ everything the Factory actually enforces lives here.
   transactionally under maintenance; activation and rollback change only the
   validated active release pointer. Doctor rejects legacy release-pinned
   arguments or a load state inconsistent with the persisted service state.
+- Automatic Factory defect reporting is an optional production LaunchAgent
+  behind the stable launcher. It accepts only release-owned, explicitly typed
+  internal defect codes, publishes bounded sanitized metadata to one configured
+  GitHub repository, and deduplicates by stable fingerprint. Unknown failures
+  remain manual triage, and reporter or GitHub failure never changes lane state.
 - Stable launcher revisions never add optional arguments to an active
   controller parser. Current controllers derive optional capabilities from
   the existing authenticated release path, while older sealed releases ignore
@@ -5393,3 +5398,14 @@ current parent-linked receipt before removing the ticket-local prior-receipt
 exclusion. The recovery itself grants no role. A crash, lost response, restart,
 or maintenance race therefore remains replayable without provider or
 publication authority.
+
+## 2026-08-10 — Decision 381: Defect reporting stays outside reconciliation
+
+Category: Reliability
+
+Automatic GitHub reporting is an opt-in production sidecar invoked through the
+stable launcher. The controller classifies only a fixed set of high-confidence
+internal failures; the reporter publishes bounded metadata, deduplicates by
+reason-code fingerprint, and records completion only after GitHub succeeds.
+Unknown failures and raw output remain local, and reporting cannot mutate or
+block Factory lifecycle state.

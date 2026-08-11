@@ -111,6 +111,12 @@ class ControllerError(ValueError):
     pass
 
 
+class FactoryDefect(ControllerError):
+    def __init__(self, reason_code: str, message: str):
+        super().__init__(message)
+        self.reason_code = reason_code
+
+
 class ModelIdentityEvidenceError(ControllerError):
     pass
 
@@ -10120,7 +10126,10 @@ class Controller:
             if stage.startswith("REFUSE"):
                 self.block(claim, "state-machine-refusal")
                 return {"status": "blocked", "ticket": claim["ticket"]}
-            raise ControllerError(f"unsupported deterministic stage: {stage}")
+            raise FactoryDefect(
+                "unsupported_deterministic_stage",
+                f"unsupported deterministic stage: {stage}",
+            )
         except (ControllerError, json.JSONDecodeError, OSError, subprocess.SubprocessError) as error:
             claim["status"] = "blocked"
             claim["blocked_reason"] = "controller-error"
@@ -10128,7 +10137,18 @@ class Controller:
             self.withdraw_publication(claim)
             if not self.role_active(claim):
                 self.release_ticket_lease(claim)
-            self.event("controller_error", claim["ticket"], error=str(error))
+            self.event(
+                "controller_error", claim["ticket"],
+                error=safe_error(error),
+                failure_class=(
+                    "factory_defect" if isinstance(error, FactoryDefect)
+                    else "unknown"
+                ),
+                reason_code=(
+                    error.reason_code if isinstance(error, FactoryDefect)
+                    else "controller_reconciliation_error"
+                ),
+            )
             return {"status": "error", "ticket": claim["ticket"], "error": str(error)}
 
     def reconcile_ticket_until_wait(self, claim: dict[str, Any]) -> dict[str, str]:
@@ -10537,7 +10557,9 @@ class Controller:
                         self.event(
                             "ticket_worker_failed",
                             claim["ticket"],
-                            error=str(error),
+                            error=safe_error(error),
+                            failure_class="factory_defect",
+                            reason_code="controller_worker_exception",
                         )
                         item = {
                             "error": str(error),
