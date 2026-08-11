@@ -85,6 +85,14 @@ class StateMachineTest(unittest.TestCase):
         for role, rule in prompts.items():
             self.assertIn(rule, (ROOT / "roles" / f"{role}.md").read_text())
 
+    def test_expected_head_refuses_state_machine_snapshot_drift(self) -> None:
+        self.args.expected_head = "a" * 40
+        with (
+            mock.patch.object(STATE, "git", return_value="b" * 40),
+            self.assertRaisesRegex(STATE.StateError, "expected head"),
+        ):
+            STATE.next_transition(self.args)
+
     def test_role_prompts_reject_unproducible_generated_values(self) -> None:
         prompts = {
             "planner": "evaluate its first generated value",

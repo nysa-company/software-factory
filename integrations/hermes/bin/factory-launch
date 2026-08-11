@@ -1483,7 +1483,7 @@ PY
   state-machine)
     [[ "$ACTIVE_CONTRACT" == "1.8.0" ]] ||
       die "deterministic state-machine requires contract 1.8.0"
-    STATE_ACTION="next" TRANSITION_RECEIPT=""
+    STATE_ACTION="next" STATE_EXPECTED_HEAD="" TRANSITION_RECEIPT=""
     if [[ "${1:-}" == "block" && $# -eq 10 &&
           "$2" == "--ticket" && "$4" == "--lease" &&
           "$6" == "--receipt" && "$8" == "--workdir" &&
@@ -1495,6 +1495,11 @@ PY
             "$6" == "--workdir" && "$8" == "--json" ]]; then
       STATE_ACTION="$1" TICKET="$3" LEASE_ID=""
       TRANSITION_RECEIPT="$5" TICKET_WORKDIR="$7"
+    elif [[ $# -eq 9 && "$1" == "--ticket" && "$3" == "--lease" &&
+            "$5" == "--workdir" && "$7" == "--expected-head" &&
+            "$9" == "--json" ]]; then
+      TICKET="$2" LEASE_ID="$4" TICKET_WORKDIR="$6"
+      STATE_EXPECTED_HEAD="$8"
     else
       validate_ticket_command "$@"
     fi
@@ -1504,6 +1509,8 @@ PY
       die "invalid transition receipt"
     [[ -z "$LEASE_ID" || "$LEASE_ID" =~ ^[0-9a-f]{64}$ ]] ||
       die "invalid dispatcher lease"
+    [[ -z "$STATE_EXPECTED_HEAD" || "$STATE_EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]] ||
+      die "invalid expected state-machine head"
     resolve_product_workdir "$TICKET_WORKDIR"
     validate_ticket_worktree "$TICKET"
     TICKET_WORKDIR="$RESOLVED_WORKDIR"
@@ -1526,6 +1533,8 @@ PY
     [[ -z "$LEASE_ID" ]] || STATE_ARGS+=(--lease "$LEASE_ID")
     [[ -z "$TRANSITION_RECEIPT" ]] ||
       STATE_ARGS+=(--receipt "$TRANSITION_RECEIPT")
+    [[ -z "$STATE_EXPECTED_HEAD" ]] ||
+      STATE_ARGS+=(--expected-head "$STATE_EXPECTED_HEAD")
     cleanup_runtime
     trap - EXIT HUP INT TERM
     exec "${HELPER_ENV[@]}" "$PYTHON_BIN" -I -S \

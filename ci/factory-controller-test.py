@@ -3678,6 +3678,184 @@ class FactoryControllerTest(unittest.TestCase):
         controller.run_role(malformed, "planner", "c" * 64, [])
         self.assertEqual(malformed["blocked_reason"], "preflight-evidence")
 
+    def test_passport_preflight_correction_reissues_exact_planner_receipt(
+        self,
+    ) -> None:
+        ticket = "T-110"
+        ticket_path = self.product / f"factory/tickets/{ticket}.md"
+        ticket_path.parent.mkdir(parents=True)
+        existing = self.product / "apps/existing.test.ts"
+        existing.parent.mkdir()
+        existing.write_text("test\n", encoding="utf-8")
+        ticket_path.write_text(
+            f"# {ticket}\n\nState: Planning\n"
+            "Product-Decisions: frozen\n"
+            "Builder ownership: apps/feature.ts only\n"
+            "Fixture-Seams: apps/planned.test.ts\n"
+            "Authentication-Seams: apps/existing.test.ts\n"
+            "Protected-Test-Conflicts: none\n",
+            encoding="utf-8",
+        )
+        subprocess.run(
+            ["git", "init", "-q", "-b", f"ticket/{ticket}"],
+            cwd=self.product, check=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "Test"], cwd=self.product,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.email", "test@example.invalid"],
+            cwd=self.product, check=True,
+        )
+        subprocess.run(["git", "add", "."], cwd=self.product, check=True)
+        subprocess.run(
+            ["git", "commit", "-qm", "role-authored contract"],
+            cwd=self.product, check=True,
+        )
+        source = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=self.product, text=True,
+            capture_output=True, check=True,
+        ).stdout.strip()
+        self.operator_passport(
+            ticket, "Planning", "none", head_sha=source,
+        )
+        passport_path = self.state / f"passports/{ticket}.json"
+        transition = {
+            "branch": f"ticket/{ticket}", "consumed": False,
+            "contract_version": "1.8.0", "factory_sha": self.release.name,
+            "head_sha": source,
+            "lease_sha256": hashlib.sha256(("a" * 64).encode()).hexdigest(),
+            "passport_sha256": hashlib.sha256(
+                passport_path.read_bytes()
+            ).hexdigest(),
+            "project": "relay", "role": "planner",
+            "route_plan_sha256": "d" * 64,
+            "schema": "nysa.software-factory.transition-receipt/v1",
+            "stage": "RUN planner", "ticket": ticket,
+        }
+        transition["receipt_sha256"] = hashlib.sha256(STATE.canonical({
+            key: value for key, value in transition.items()
+            if key not in {"consumed", "receipt_sha256"}
+        })).hexdigest()
+        CONTROL.write(self.state / f"{ticket}.json", transition)
+        controller = CONTROL.Controller(self.args)
+        controller.event(
+            "preflight_refused", ticket,
+            preflight_exit_code=1,
+            preflight_failure_lines=["PREFLIGHT FAIL: planned fixture"],
+            preflight_output_sha256="e" * 64,
+            preflight_reason_code="deterministic_refusal",
+            transition_receipt_sha256=transition["receipt_sha256"],
+        )
+        event = next(controller.events.glob("*.json"))
+        event_digest = CONTROL.read(event)["event_sha256"]
+        claim = {
+            "blocked_reason": "preflight", "branch": f"ticket/{ticket}",
+            "lease": "a" * 64, "lease_released": True,
+            "publication_lease": "", "receipt": "", "role": "",
+            "schema": CONTROL.CLAIM_SCHEMA, "status": "blocked",
+            "ticket": ticket, "worktree": str(self.product),
+        }
+        controller.remote_cell_head_status = lambda _claim: (
+            "pushed", source, source,
+        )
+        for _tick in range(7):
+            controller.recover_each(
+                [claim], controller.recover_passport_preflight_blocks,
+                "preflight-retry",
+            )
+        self.assertNotIn("recovery_attempt", claim)
+        self.assertEqual(claim["receipt"], transition["receipt_sha256"])
+        corrected = ticket_path.read_text(encoding="utf-8").replace(
+            "Fixture-Seams: apps/planned.test.ts",
+            "Fixture-Seams: apps/existing.test.ts",
+        ) + (
+            f"\nOPERATOR PREFLIGHT RECEIPT: {transition['receipt_sha256']}\n"
+            f"OPERATOR PREFLIGHT FAILURE EVENT: {event_digest}\n"
+        )
+        ticket_path.write_text(corrected, encoding="utf-8")
+        subprocess.run(["git", "add", str(ticket_path)], cwd=self.product, check=True)
+        subprocess.run(
+            ["git", "commit", "-qm", "correct preflight contract"],
+            cwd=self.product, check=True,
+        )
+        target = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=self.product, text=True,
+            capture_output=True, check=True,
+        ).stdout.strip()
+        (self.release / "scripts").mkdir()
+        shutil.copy(ROOT / "scripts/ticket-readiness.py", self.release / "scripts")
+        self.assertTrue(controller.preflight_correction_valid(
+            claim, source, target, transition["receipt_sha256"], {event_digest},
+        ))
+
+        calls = []
+        state_calls = 0
+
+        class InjectedCrash(BaseException):
+            pass
+
+        def json_call(*arguments, **_kwargs):
+            nonlocal state_calls
+            calls.append(arguments[0])
+            if arguments[0] == "claim":
+                lease = "b" * 64 if state_calls == 0 else "c" * 64
+                return {
+                    "lease_id": lease, "schema_version": 1,
+                    "ticket": ticket,
+                }
+            if arguments[0] == "state-machine":
+                state_calls += 1
+                self.operator_passport(
+                    ticket, "Planning", "none", head_sha=target,
+                )
+                current = CONTROL.read(self.state / f"{ticket}.json")
+                successor = {
+                    **current, "head_sha": target,
+                    "lease_sha256": hashlib.sha256(
+                        claim["lease"].encode()
+                    ).hexdigest(),
+                    "parent_digest": current["receipt_sha256"],
+                    "passport_sha256": hashlib.sha256(
+                        passport_path.read_bytes()
+                    ).hexdigest(),
+                }
+                successor["receipt_sha256"] = hashlib.sha256(STATE.canonical({
+                    key: value for key, value in successor.items()
+                    if key not in {"consumed", "receipt_sha256"}
+                })).hexdigest()
+                CONTROL.write(self.state / f"{ticket}.json", successor)
+                if state_calls == 1:
+                    raise InjectedCrash("after successor receipt")
+                return state_transition(
+                    "RUN planner", successor["receipt_sha256"], ticket,
+                )
+            if arguments[0] == "preflight":
+                return {"exit_code": 0, "status": "ok"}
+            raise AssertionError(arguments)
+
+        controller.json_call = json_call
+        controller.remote_cell_head_status = lambda _claim: (
+            "pushed", target, target,
+        )
+        controller.remote_passport_valid = lambda _claim: True
+        with self.assertRaisesRegex(InjectedCrash, "successor receipt"):
+            controller.recover_passport_preflight_blocks([claim])
+        self.assertEqual(claim["receipt"], transition["receipt_sha256"])
+        claim["lease_released"] = True
+        controller.recover_passport_preflight_blocks([claim])
+        self.assertEqual(claim["status"], "claimed")
+        self.assertEqual(claim["receipt"], "")
+        self.assertEqual(calls, [
+            "claim", "state-machine", "claim", "state-machine", "preflight",
+        ])
+        recovered = [
+            CONTROL.read(path) for path in controller.events.glob("*.json")
+            if CONTROL.read(path).get("event") == "passport_preflight_recovered"
+        ]
+        self.assertEqual(len(recovered), 1)
+
     def test_corrected_passportless_preflight_block_reopens_fail_closed(self) -> None:
         tickets = ["T-110", "T-111", "T-112"]
         (self.product / "factory/PROJECT.env").write_text(

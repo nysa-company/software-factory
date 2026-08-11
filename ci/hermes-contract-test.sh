@@ -319,6 +319,12 @@ import sys
 
 print(json.dumps({"arguments": sys.argv[1:]}))
 PY
+  cat > "$release/scripts/state-machine.py" <<'PY'
+import json
+import sys
+
+print(json.dumps({"arguments": sys.argv[1:]}))
+PY
   cat > "$release/scripts/ticket-attest.py" <<'PY'
 import json
 import sys
@@ -2572,6 +2578,23 @@ run_launcher launchtest ticket-attest --ticket T-123 --lease "$REPLAY_LEASE" \
   > "$TMP/dependency-refresh-no-receipt.out" 2>&1 || ORDINARY_NO_RECEIPT_RC=$?
 [[ "$ORDINARY_NO_RECEIPT_RC" -eq 1 ]] ||
   fail "ordinary dependency refresh stopped requiring its one-use receipt"
+STATE_EXPECTED_HEAD="$(git -C "$RUN_WORKTREE_PHYS" rev-parse HEAD)"
+run_launcher launchtest state-machine --ticket T-123 --lease "$REPLAY_LEASE" \
+  --workdir "$RUN_WORKTREE_PHYS" --expected-head "$STATE_EXPECTED_HEAD" --json \
+  > "$TMP/state-machine-expected-head.json"
+python3 - "$TMP/state-machine-expected-head.json" "$STATE_EXPECTED_HEAD" <<'PY'
+import json
+import sys
+
+arguments = json.load(open(sys.argv[1], encoding="utf-8"))["arguments"]
+assert arguments[arguments.index("--expected-head") + 1] == sys.argv[2], arguments
+PY
+BAD_STATE_HEAD_RC=0
+run_launcher launchtest state-machine --ticket T-123 --lease "$REPLAY_LEASE" \
+  --workdir "$RUN_WORKTREE_PHYS" --expected-head not-a-sha --json \
+  > "$TMP/bad-state-machine-head.out" 2>&1 || BAD_STATE_HEAD_RC=$?
+[[ "$BAD_STATE_HEAD_RC" -eq 1 ]] ||
+  fail "state-machine accepted malformed expected head"
 run_launcher launchtest release --ticket T-123 --lease "$REPLAY_LEASE" \
   > "$TMP/replay-release.json"
 assert_helper_confinement "$MODEL_HELPER_ENV" absent present
@@ -3675,6 +3698,7 @@ assert commands["qualification"]["output_schema"] == \
     "nysa.software-factory.qualification-report/v1"
 assert commands["state-machine"]["output_schema"] == \
     "nysa.software-factory.state-machine/v1"
+assert "[--expected-head <full-sha>]" in commands["state-machine"]["arguments"]
 assert commands["passport"]["output_schema"] == \
     "nysa.software-factory.ticket-passport/v1"
 assert commands["passport"]["grammars"][1].endswith(

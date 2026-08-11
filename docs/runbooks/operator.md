@@ -302,6 +302,13 @@ transaction diagnosis.
 
 - Notice: the dispatcher escalates with `PREFLIGHT FAIL` output from the launcher's `preflight` route — no pinned safe route, adapter contract/version mismatch, budget headroom, git state, or ticket not Ready.
 - Do: read each FAIL line. Common fixes: inspect `models status --json` and `models plan --json`; run `scripts/adapters/contract-test.sh --routes`; reconcile pinned CLI versions in `~/.factory/global.env`; authenticate the affected account route without printing credentials; raise `DAILY_CAP_USD` or `GLOBAL_DAILY_CAP_USD` if the projected reserve no longer fits; clean and sync the repo to `main`; confirm the ticket is Ready. Re-run preflight through `~/.factory/bin/factory-launch <project> preflight` before resuming.
+- If the blocked ticket already has a passport, make one direct ticket-only
+  commit that changes only `Product-Decisions`, `Builder ownership`,
+  `Fixture-Seams`, or `Authentication-Seams`, and append the exact
+  `OPERATOR PREFLIGHT RECEIPT: <receipt>` and
+  `OPERATOR PREFLIGHT FAILURE EVENT: <event_sha256>` lines reported by the
+  controller. Push that exact head; ordinary reconciliation validates and
+  retries it without another provider run.
 - Don't: tell the dispatcher to launch anyway — every FAIL is predictable at kickoff and will block mid-pipeline.
 
 ## Trusted approval and close-out PR
