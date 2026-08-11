@@ -464,13 +464,15 @@ PROFILE_RESULT="$(PATH="$STUB_BIN:$PATH" FACTORY_CURSOR_FALLBACK_ENABLED=1 \
     done
   ' _ "$ROOT/scripts/lib/backend-policy.sh" "$PROFILE_PLAN")"
 PROFILE_PROBE_COUNT="$(wc -l < "$PROFILE_TRACE" | tr -d ' ')"
-if [[ "$PROFILE_PROBE_COUNT" == "6" &&
+if [[ "$PROFILE_PROBE_COUNT" == "4" &&
+      "$(grep -c '^codex|' "$PROFILE_TRACE")" == "1" &&
+      "$(grep -c '^claude-code|' "$PROFILE_TRACE")" == "1" &&
       "$PROFILE_RESULT" == *"planner:claude-code:anthropic:sonnet"* &&
       "$PROFILE_RESULT" == *"spec-linter:codex:openai:gpt-5.6-terra"* &&
       "$(printf '%s\n' "$PROFILE_RESULT" | wc -l | tr -d ' ')" == "6" ]]; then
-  pass "profile resolution probes unique routes and selects all family-split roles"
+  pass "profile resolution shares native readiness and selects all family-split roles"
 else
-  fail "profile resolution probes unique routes and selects all family-split roles" \
+  fail "profile resolution shares native readiness and selects all family-split roles" \
     "probes=$PROFILE_PROBE_COUNT result=$PROFILE_RESULT"
 fi
 
@@ -638,7 +640,7 @@ DISABLED_RESULT="$(PATH="$STUB_BIN:$PATH" FACTORY_CURSOR_FALLBACK_ENABLED=1 \
       factory_select_model_role "$2" planner &&
       echo "$FACTORY_SELECTED_ROUTE_ID"
   ' _ "$ROOT/scripts/lib/backend-policy.sh" "$DISABLED_PLAN")"
-if [[ "$(wc -l < "$DISABLED_TRACE" | tr -d ' ')" == "5" &&
+if [[ "$(wc -l < "$DISABLED_TRACE" | tr -d ' ')" == "3" &&
       "$DISABLED_RESULT" == "codex-gpt-5.6-sol" &&
       "$(< "$DISABLED_TRACE")" != *"cursor-openai|gpt-5.6-sol-high"* ]]; then
   pass "disabled route is unavailable without a CLI probe"

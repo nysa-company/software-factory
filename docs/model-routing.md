@@ -68,6 +68,9 @@ narrow window retains the exact authenticated claim and records a ticket-bound
 incident without starting a provider; admission does not invent partial
 worktree/branch cleanup authority. A temporary outage waits without claiming,
 while invalid or unknown evidence creates a ticket-bound admission incident.
+Within one profile resolution, routes that share the same native Codex or
+Claude adapter also share that adapter's model-independent version, contract,
+and authentication result. Cursor route checks remain model-specific.
 Model-control errors expose only the strictly validated
 per-route readiness table (`state`, typed reason, adapter version, and reported
 identity); resolver stderr and unsafe probe detail are never returned. Doctor

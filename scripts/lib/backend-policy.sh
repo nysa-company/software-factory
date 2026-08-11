@@ -725,6 +725,8 @@ factory_resolve_model_profile() {
   local profile_id="$1" output_plan="$2" disabled="${3:-}" readiness_output="${4:-}"
   local tmp probes rows readiness plan_tmp readiness_tmp route_id adapter selection expected
   local disabled_route state reason version reported
+  local codex_state="" codex_reason="" codex_version="" codex_reported=""
+  local claude_state="" claude_reason="" claude_version="" claude_reported=""
   FACTORY_RESOLVE_ERROR=""
   [[ -n "$profile_id" && -n "$output_plan" ]] || {
     FACTORY_RESOLVE_ERROR="invalid_resolution_arguments"
@@ -797,7 +799,39 @@ PY
       version=""
       reported=""
     else
-      factory_probe_adapter "$adapter" "$selection"
+      case "$adapter" in
+        codex)
+          if [[ -n "$codex_state" ]]; then
+            PROBE_STATE="$codex_state"
+            PROBE_REASON="$codex_reason"
+            PROBE_VERSION="$codex_version"
+            PROBE_MODEL=""
+            PROBE_REPORTED_IDENTITY="$codex_reported"
+          else
+            factory_probe_adapter "$adapter" "$selection"
+            codex_state="$PROBE_STATE"
+            codex_reason="$PROBE_REASON"
+            codex_version="$PROBE_VERSION"
+            codex_reported="$PROBE_REPORTED_IDENTITY"
+          fi
+          ;;
+        claude-code)
+          if [[ -n "$claude_state" ]]; then
+            PROBE_STATE="$claude_state"
+            PROBE_REASON="$claude_reason"
+            PROBE_VERSION="$claude_version"
+            PROBE_MODEL=""
+            PROBE_REPORTED_IDENTITY="$claude_reported"
+          else
+            factory_probe_adapter "$adapter" "$selection"
+            claude_state="$PROBE_STATE"
+            claude_reason="$PROBE_REASON"
+            claude_version="$PROBE_VERSION"
+            claude_reported="$PROBE_REPORTED_IDENTITY"
+          fi
+          ;;
+        *) factory_probe_adapter "$adapter" "$selection" ;;
+      esac
       state="$PROBE_STATE"
       reason="$PROBE_REASON"
       version="$PROBE_VERSION"

@@ -9,7 +9,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Stable operating truth lives in `docs/`; prompts, templates, and evidence stay colocated with consumers.
 - Nysa Agents baseline v3 as a toolkit; `bash ci/test-all.sh` is the unconditional full command.
 - Live products resolve sealed exact-SHA releases under `~/.factory/kits` via `~/.factory/bin/factory-launch`.
-- Model routing is portfolio policy; routes pin at the ticket boundary and change only via the Contract 1.4 journal flow. Sealed Cursor inventory verifies the exact configured CLI identity in an empty disposable owner-only home before copying credentials, then accepts only its bounded certified structure.
+- Model routing is portfolio policy; routes pin at the ticket boundary and change only via the Contract 1.4 journal flow. One profile resolution shares model-independent native-adapter readiness across its routes; Cursor readiness stays model-specific. Sealed Cursor inventory verifies the exact configured CLI identity in an empty disposable owner-only home before copying credentials, then accepts only its bounded certified structure.
 - The only emergency recovery is the receipt-bound `OPERATOR RESUME` ticket commit. No generic lifecycle bypass is approved.
 - **Contract rules below in Operating contract are authoritative**; this summary is only what the session hook can inject.
 
@@ -5465,3 +5465,13 @@ Dispatch still parses dependency syntax for every considered ticket, but it
 resolves protected dependency-terminal truth only after authenticated operator
 projection leaves the ticket Ready or resumable under the selected Kit-SHA.
 Every eligible candidate retains the complete protected dependency check.
+
+## 2026-08-11 — Decision 385: Native route probes share one readiness result
+
+Category: Performance
+
+One profile resolution probes each native Codex or Claude adapter once because
+their version, CLI contract, and authentication checks do not depend on the
+route's model selection. Every route still receives explicit readiness
+evidence, disabled routes remain independently unavailable without a probe,
+and Cursor route readiness remains model-specific.
