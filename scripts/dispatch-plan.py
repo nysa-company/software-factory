@@ -525,6 +525,18 @@ def candidates(
                 "ticket": path.stem,
             })
             continue
+        operator = operator_fields(mapping, path.stem)
+        effective = apply_operator_fields(text, operator)
+        ticket_pin = field(effective, "Kit-SHA")
+        if ticket_pin and ticket_pin != pin:
+            continue
+        state = field(effective, "State").lower()
+        resumable = (
+            operator.get("state_base") == "blocked-escalated"
+            and state in ("planning", "building", "review")
+        )
+        if state != "ready" and not resumable:
+            continue
         if qualification_state is not None:
             unresolved = any(
                 item not in qualification_state["terminal"]
@@ -539,18 +551,6 @@ def candidates(
                     unresolved = True
                     break
         if unresolved:
-            continue
-        operator = operator_fields(mapping, path.stem)
-        effective = apply_operator_fields(text, operator)
-        ticket_pin = field(effective, "Kit-SHA")
-        if ticket_pin and ticket_pin != pin:
-            continue
-        state = field(effective, "State").lower()
-        resumable = (
-            operator.get("state_base") == "blocked-escalated"
-            and state in ("planning", "building", "review")
-        )
-        if state != "ready" and not resumable:
             continue
         if not readiness_executable(factory.parent, path.stem):
             refusals.append({

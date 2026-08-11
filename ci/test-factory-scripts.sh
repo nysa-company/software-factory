@@ -464,14 +464,79 @@ PROFILE_RESULT="$(PATH="$STUB_BIN:$PATH" FACTORY_CURSOR_FALLBACK_ENABLED=1 \
     done
   ' _ "$ROOT/scripts/lib/backend-policy.sh" "$PROFILE_PLAN")"
 PROFILE_PROBE_COUNT="$(wc -l < "$PROFILE_TRACE" | tr -d ' ')"
-if [[ "$PROFILE_PROBE_COUNT" == "6" &&
+if [[ "$PROFILE_PROBE_COUNT" == "4" &&
+      "$(grep -c '^codex|' "$PROFILE_TRACE")" == "1" &&
+      "$(grep -c '^claude-code|' "$PROFILE_TRACE")" == "1" &&
       "$PROFILE_RESULT" == *"planner:claude-code:anthropic:sonnet"* &&
       "$PROFILE_RESULT" == *"spec-linter:codex:openai:gpt-5.6-terra"* &&
       "$(printf '%s\n' "$PROFILE_RESULT" | wc -l | tr -d ' ')" == "6" ]]; then
-  pass "profile resolution probes unique routes and selects all family-split roles"
+  pass "profile resolution shares native readiness and selects all family-split roles"
 else
-  fail "profile resolution probes unique routes and selects all family-split roles" \
+  fail "profile resolution shares native readiness and selects all family-split roles" \
     "probes=$PROFILE_PROBE_COUNT result=$PROFILE_RESULT"
+fi
+
+PARALLEL_PLAN_ONE="$TMP/parallel-plan-one.json"
+PARALLEL_PLAN_TWO="$TMP/parallel-plan-two.json"
+PARALLEL_READINESS_ONE="$TMP/parallel-readiness-one.json"
+PARALLEL_READINESS_TWO="$TMP/parallel-readiness-two.json"
+PARALLEL_TRACE="$TMP/parallel-probes.trace"
+: > "$PARALLEL_TRACE"
+PARALLEL_RESULT="$(/bin/bash -u -c '
+  source "$1"
+  trace="$6"
+  probe_order=forward
+  factory_probe_adapter() {
+    local adapter="$1" selection="${2:-}" delay=1
+    case "$probe_order:$adapter:$selection" in
+      forward:codex:*|forward:cursor-anthropic:claude-fable-5-thinking-medium|reverse:claude-code:*|reverse:cursor-openai:*) delay=2 ;;
+    esac
+    sleep "$delay"
+    printf "%s|%s|%s\n" "$probe_order" "$adapter" "$selection" >> "$trace"
+    PROBE_STATE=READY
+    PROBE_REASON=mock_ready
+    PROBE_VERSION=test
+    PROBE_MODEL=""
+    PROBE_REPORTED_IDENTITY=""
+    case "$adapter" in
+      cursor-*)
+        PROBE_MODEL="$selection"
+        PROBE_REPORTED_IDENTITY="$(factory_model_report_name "$selection")"
+        ;;
+    esac
+  }
+  SECONDS=0
+  factory_resolve_model_profile cursor-balanced-v2 "$2" "" "$3" || exit
+  first=$SECONDS
+  probe_order=reverse
+  SECONDS=0
+  factory_resolve_model_profile cursor-balanced-v2 "$4" "" "$5" || exit
+  second=$SECONDS
+  cmp -s "$2" "$4" && cmp -s "$3" "$5" || exit
+  printf "%s:%s\n" "$first" "$second"
+' _ "$ROOT/scripts/lib/backend-policy.sh" \
+  "$PARALLEL_PLAN_ONE" "$PARALLEL_READINESS_ONE" \
+  "$PARALLEL_PLAN_TWO" "$PARALLEL_READINESS_TWO" "$PARALLEL_TRACE")"
+PARALLEL_EVIDENCE="$(python3 - "$PARALLEL_READINESS_ONE" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    readiness = json.load(handle)
+if len(readiness) != 7 or any(value["state"] != "READY" for value in readiness.values()):
+    raise SystemExit(2)
+print("ready")
+PY
+)"
+if [[ "$PARALLEL_RESULT" =~ ^[0-9]+:[0-9]+$ &&
+      "${PARALLEL_RESULT%%:*}" -lt 5 && "${PARALLEL_RESULT#*:}" -lt 5 &&
+      "$(grep -c '^forward|' "$PARALLEL_TRACE")" == "5" &&
+      "$(grep -c '^reverse|' "$PARALLEL_TRACE")" == "5" &&
+      "$PARALLEL_EVIDENCE" == "ready" ]]; then
+  pass "profile readiness runs five isolated probes concurrently and aggregates deterministically"
+else
+  fail "profile readiness runs five isolated probes concurrently and aggregates deterministically" \
+    "elapsed=$PARALLEL_RESULT probes=$(wc -l < "$PARALLEL_TRACE" | tr -d ' ') evidence=$PARALLEL_EVIDENCE"
 fi
 
 CLAUDE_AUTH_ROOT="$TMP/claude-auth-readiness"
@@ -638,7 +703,7 @@ DISABLED_RESULT="$(PATH="$STUB_BIN:$PATH" FACTORY_CURSOR_FALLBACK_ENABLED=1 \
       factory_select_model_role "$2" planner &&
       echo "$FACTORY_SELECTED_ROUTE_ID"
   ' _ "$ROOT/scripts/lib/backend-policy.sh" "$DISABLED_PLAN")"
-if [[ "$(wc -l < "$DISABLED_TRACE" | tr -d ' ')" == "5" &&
+if [[ "$(wc -l < "$DISABLED_TRACE" | tr -d ' ')" == "3" &&
       "$DISABLED_RESULT" == "codex-gpt-5.6-sol" &&
       "$(< "$DISABLED_TRACE")" != *"cursor-openai|gpt-5.6-sol-high"* ]]; then
   pass "disabled route is unavailable without a CLI probe"

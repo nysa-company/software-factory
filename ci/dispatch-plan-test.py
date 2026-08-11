@@ -420,6 +420,45 @@ class DispatchPlanTest(unittest.TestCase):
         self.assertIn("T-100", {item["ticket"] for item in selected})
         self.assertEqual(refusals, [])
 
+    def test_ineligible_cohort_skips_protected_dependency_validation(self):
+        for number in range(500, 564):
+            self.ticket(f"T-{number}", "normal", "Backlog")
+            path = self.product / f"factory/tickets/T-{number}.md"
+            path.write_text(path.read_text() + "Depends-On: T-999\n")
+        self.write_mapping(states={"T-300": "Ready"})
+        effective = self.product / "factory/tickets/T-300.md"
+        effective.write_text(effective.read_text() + "Depends-On: T-997\n")
+        stale = self.product / "factory/tickets/T-400.md"
+        stale.write_text(
+            stale.read_text() + f"Kit-SHA: {'b' * 40}\nDepends-On: T-996\n"
+        )
+        eligible = self.product / "factory/tickets/T-200.md"
+        eligible.write_text(eligible.read_text() + "Depends-On: T-998\n")
+
+        def protected_dependency(_product, dependency):
+            if dependency == "T-998":
+                raise DISPATCH.ValidationError("not terminal")
+
+        with mock.patch.object(
+            DISPATCH,
+            "protected_dependency",
+            side_effect=protected_dependency,
+        ) as protected:
+            selected, refusals = DISPATCH.candidates(
+                self.product / "factory",
+                DISPATCH.load_mapping(self.mapping),
+                set(),
+            )
+
+        self.assertEqual(protected.call_args_list, [
+            mock.call(self.product, "T-998"),
+            mock.call(self.product, "T-997"),
+        ])
+        selected_tickets = {item["ticket"] for item in selected}
+        self.assertNotIn("T-200", selected_tickets)
+        self.assertIn("T-300", selected_tickets)
+        self.assertEqual(refusals, [])
+
     def test_malformed_non_goal_dependency_is_named_without_blocking_siblings(self):
         ticket = self.product / "factory/tickets/T-300.md"
         ticket.write_text(

@@ -719,12 +719,15 @@ factory_resolve_role() {
   return 0
 }
 
-# Resolve a complete profile from non-task readiness probes. Each catalog route
-# is probed once, even when several roles share it.
+# Resolve a complete profile from non-task readiness probes. Native adapters
+# share model-independent readiness; every remaining route is probed once.
 factory_resolve_model_profile() {
   local profile_id="$1" output_plan="$2" disabled="${3:-}" readiness_output="${4:-}"
-  local tmp probes rows readiness plan_tmp readiness_tmp route_id adapter selection expected
-  local disabled_route state reason version reported
+  local tmp probes rows readiness probe_routes plan_tmp readiness_tmp
+  local route_id adapter selection expected disabled_route
+  local probe_result new_probe pid probe_failed=0 probe_number=0 probe_count=0
+  local codex_result="" claude_result=""
+  local -a probe_pids=()
   FACTORY_RESOLVE_ERROR=""
   [[ -n "$profile_id" && -n "$output_plan" ]] || {
     FACTORY_RESOLVE_ERROR="invalid_resolution_arguments"
@@ -740,8 +743,9 @@ factory_resolve_model_profile() {
   }
   probes="$tmp/probes.json"
   rows="$tmp/probes.tsv"
-  readiness="$tmp/readiness.tsv"
-  : > "$readiness"
+  readiness="$tmp/readiness.json"
+  probe_routes="$tmp/probe-routes.tsv"
+  : > "$probe_routes"
 
   if [[ -n "${FACTORY_MODEL_STATE_ROOT:-}" && -n "${FACTORY_PROJECT:-}" &&
         -n "$FACTORY_MODEL_POLICY_FILE" ]]; then
@@ -787,38 +791,92 @@ PY
 
   while IFS=$'\t' read -r route_id adapter selection expected; do
     [[ -n "$route_id" ]] || continue
+    probe_number=$((probe_number + 1))
+    probe_result="$tmp/probe-$probe_number.tsv"
+    new_probe=0
     disabled_route=0
     case ",$(printf '%s' "$disabled" | tr '[:space:]' ',')," in
       *",$route_id,"*) disabled_route=1 ;;
     esac
     if [[ "$disabled_route" == "1" ]]; then
-      state="UNAVAILABLE"
-      reason="credits_exhausted"
-      version=""
-      reported=""
+      printf 'UNAVAILABLE\tcredits_exhausted\t\t\n' > "$probe_result"
     else
-      factory_probe_adapter "$adapter" "$selection"
-      state="$PROBE_STATE"
-      reason="$PROBE_REASON"
-      version="$PROBE_VERSION"
-      reported="$PROBE_REPORTED_IDENTITY"
-      if [[ "$state" == "READY" && "$reported" != "$expected" ]]; then
-        state="INVALID"
-        reason="reported_identity_mismatch"
+      case "$adapter" in
+        codex)
+          if [[ -n "$codex_result" ]]; then
+            probe_result="$codex_result"
+          else
+            codex_result="$probe_result"
+            new_probe=1
+          fi
+          ;;
+        claude-code)
+          if [[ -n "$claude_result" ]]; then
+            probe_result="$claude_result"
+          else
+            claude_result="$probe_result"
+            new_probe=1
+          fi
+          ;;
+        *) new_probe=1 ;;
+      esac
+      if [[ "$new_probe" == "1" ]]; then
+        (
+          umask 077
+          factory_probe_adapter "$adapter" "$selection" || exit 2
+          printf '%s\t%s\t%s\t%s\n' \
+            "$PROBE_STATE" "$PROBE_REASON" "$PROBE_VERSION" \
+            "$PROBE_REPORTED_IDENTITY" > "$probe_result"
+        ) &
+        probe_pids[$probe_count]=$!
+        probe_count=$((probe_count + 1))
+        if [[ "$probe_count" -eq 5 ]]; then
+          for pid in "${probe_pids[@]}"; do
+            wait "$pid" || probe_failed=1
+          done
+          probe_pids=()
+          probe_count=0
+        fi
       fi
     fi
-    printf '%s\t%s\t%s\t%s\t%s\n' \
-      "$route_id" "$state" "$reason" "$version" "$reported" >> "$readiness"
+    printf '%s\t%s\t%s\n' \
+      "$route_id" "$probe_result" "$expected" >> "$probe_routes"
   done < "$rows"
+  if [[ "$probe_count" -gt 0 ]]; then
+    for pid in "${probe_pids[@]}"; do
+      wait "$pid" || probe_failed=1
+    done
+  fi
+  if [[ "$probe_failed" != "0" ]]; then
+    rm -rf "$tmp"
+    FACTORY_RESOLVE_ERROR="readiness_probe_failed"
+    return 2
+  fi
 
-  if ! python3 - "$readiness" "$tmp/readiness.json" <<'PY'
+  if ! python3 - "$probe_routes" "$readiness" <<'PY'
 import json
+import pathlib
 import sys
 
+routes = pathlib.Path(sys.argv[1])
+output = pathlib.Path(sys.argv[2])
 result = {}
-with open(sys.argv[1], encoding="utf-8") as handle:
-    for line in handle:
-        route_id, state, reason, version, reported = line.rstrip("\n").split("\t")
+with routes.open(encoding="utf-8") as source:
+    for line in source:
+        values = line.rstrip("\n").split("\t")
+        if len(values) != 3:
+            raise SystemExit(2)
+        route_id, result_path, expected = values
+        raw = pathlib.Path(result_path).read_text(encoding="utf-8")
+        if not raw.endswith("\n") or raw.count("\n") != 1:
+            raise SystemExit(2)
+        values = raw[:-1].split("\t")
+        if len(values) != 4:
+            raise SystemExit(2)
+        state, reason, version, reported = values
+        if state == "READY" and reported != expected:
+            state = "INVALID"
+            reason = "reported_identity_mismatch"
         if route_id in result:
             raise SystemExit(2)
         result[route_id] = {
@@ -827,7 +885,7 @@ with open(sys.argv[1], encoding="utf-8") as handle:
             "reported_identity": reported,
             "state": state,
         }
-with open(sys.argv[2], "w", encoding="utf-8") as handle:
+with output.open("w", encoding="utf-8") as handle:
     json.dump(result, handle, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     handle.write("\n")
 PY
@@ -842,7 +900,7 @@ PY
       FACTORY_RESOLVE_ERROR="readiness_output_temporary_file_failed"
       return 2
     }
-    cp "$tmp/readiness.json" "$readiness_tmp" &&
+    cp "$readiness" "$readiness_tmp" &&
       chmod 0600 "$readiness_tmp" &&
       mv -f "$readiness_tmp" "$readiness_output" || {
         rm -f "$readiness_tmp"
@@ -863,17 +921,17 @@ PY
       --state-root "$FACTORY_MODEL_STATE_ROOT" --project "$FACTORY_PROJECT"
       --catalog "$FACTORY_MODEL_CATALOG" --profiles-file "$FACTORY_MODEL_PROFILES"
       --policy-file "$FACTORY_MODEL_POLICY_FILE"
-      --readiness "$(cat "$tmp/readiness.json")")
+      --readiness "$(cat "$readiness")")
     [[ "$profile_id" == "project-policy" ]] ||
       resolve_command+=(--profile "$profile_id")
   else
     resolve_command=(python3 -B "$FACTORY_MODEL_ROUTER" resolve "$profile_id"
-      "$tmp/readiness.json" --catalog "$FACTORY_MODEL_CATALOG"
+      "$readiness" --catalog "$FACTORY_MODEL_CATALOG"
       --profiles "$FACTORY_MODEL_PROFILES")
   fi
   if ! "${resolve_command[@]}" > "$plan_tmp" 2>/dev/null; then
     rm -f "$plan_tmp"
-    if python3 - "$tmp/readiness.json" <<'PY'
+    if python3 - "$readiness" <<'PY'
 import json
 import sys
 
