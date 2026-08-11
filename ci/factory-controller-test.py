@@ -449,6 +449,87 @@ class FactoryControllerTest(unittest.TestCase):
             role_passport,
         )
 
+    def test_contract_block_migration_event_backfills_after_crash(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        ticket = "T-110"
+        head = "c" * 40
+        receipt = self.operator_transition(
+            ticket, "RUN planner", "planner", consumed=True,
+        )
+        self.operator_passport(
+            ticket, "Blocked-Escalated", "none", receipt,
+            head_sha=head,
+        )
+        claim = {
+            "blocked_reason": "role-failure",
+            "branch": f"ticket/{ticket}", "lease": "a" * 64,
+            "receipt": receipt, "role": "planner", "status": "blocked",
+            "ticket": ticket, "worktree": str(self.product),
+        }
+        controller.terminal_for_receipt = lambda *_args: {
+            "exit_status": "12", "role": "planner",
+            "role_exit": "role_exit_contract_blocked",
+            "run_id": "contract-block", "ticket": ticket,
+            "transition_receipt_sha256": receipt,
+        }
+        controller.json_call = lambda *_args, **_kwargs: {
+            "action": "repair-check", "head": head, "role": "planner",
+            "schema": "nysa.software-factory.state-machine/v1",
+            "status": "waiting", "ticket": ticket,
+        }
+        ticket_path = self.product / "factory/tickets/T-110.md"
+        ticket_path.parent.mkdir(parents=True, exist_ok=True)
+        ticket_path.write_text(
+            "# T-110\n\nState: Blocked-Escalated\n"
+            "OPERATOR ANSWER: Preserve this context.\n"
+            f"OPERATOR ANSWER RECEIPT: {receipt}\n",
+            encoding="utf-8",
+        )
+        controller.restore_recorded_contract_repair = lambda _claim: False
+        controller.restore_contract_blocker = lambda _claim: None
+        controller.role_active = lambda _claim: False
+        controller.direct_model_identity_candidate = lambda *_args: False
+        controller.remote_cell_head_status = lambda _claim: (
+            "pushed", head, head,
+        )
+        migrated = False
+        controller.remote_passport_valid = lambda _claim: migrated
+
+        def migrate(_claim, publication, expected_head):
+            nonlocal migrated
+            self.assertEqual((publication, expected_head), ("preserve", head))
+            migrated = True
+
+        controller.migrate_passport = migrate
+
+        class InjectedCrash(BaseException):
+            pass
+
+        with (
+            patch.object(controller, "event", side_effect=InjectedCrash),
+            self.assertRaises(InjectedCrash),
+        ):
+            controller.recover_repaired_failures([claim])
+
+        self.assertTrue(migrated)
+        controller.remote_passport_valid = lambda _claim: False
+        controller.recover_operator_action_events([claim])
+        self.assertEqual(list(controller.events.glob("*.json")), [])
+        controller.remote_passport_valid = lambda _claim: True
+        controller.recover_operator_action_events([claim])
+        restarted = CONTROL.Controller(self.args)
+        restarted.terminal_for_receipt = controller.terminal_for_receipt
+        restarted.json_call = controller.json_call
+        restarted.remote_passport_valid = controller.remote_passport_valid
+        restarted.recover_operator_action_events([claim])
+        events = [
+            CONTROL.read(path) for path in controller.events.glob("*.json")
+            if CONTROL.read(path).get("event")
+            == "contract_block_passport_migrated"
+        ]
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["failed_run_id"], "contract-block")
+
     def test_multi_kit_receipts_leave_terminal_inert_and_sibling_runnable(
         self,
     ) -> None:
@@ -5012,6 +5093,13 @@ class FactoryControllerTest(unittest.TestCase):
 
         def json_call(*args, **_kwargs):
             calls.append(args)
+            if args[:2] == ("state-machine", "repair-check"):
+                return {
+                    "action": "repair-check", "head": "c" * 40,
+                    "role": "planner",
+                    "schema": "nysa.software-factory.state-machine/v1",
+                    "status": "ready", "ticket": "T-110",
+                }
             if args[:2] == ("state-machine", "block"):
                 return {"status": "blocked"}
             return {}
@@ -9493,14 +9581,21 @@ class FactoryControllerTest(unittest.TestCase):
         controller.remote_cell_head_status = lambda _claim: next(remote_heads)
         controller.ensure_lease = lambda *_args: calls.append(("ensure-lease",))
 
-        def migrate(_claim, publication):
-            calls.append(("migrate", publication))
+        def migrate(_claim, publication, expected_head=""):
+            calls.append(("migrate", publication, expected_head))
 
         controller.migrate_passport = migrate
         controller.event = lambda name, *_args, **_kwargs: calls.append((name,))
 
         def json_call(*args, **_kwargs):
             calls.append(args)
+            if args[:2] == ("state-machine", "repair-check"):
+                return {
+                    "action": "repair-check", "head": "c" * 40,
+                    "role": claim["role"],
+                    "schema": "nysa.software-factory.state-machine/v1",
+                    "status": "ready", "ticket": "T-110",
+                }
             if args[:2] == ("state-machine", "block"):
                 return {"status": "blocked"}
             if args[:2] == ("state-machine", "resume"):
@@ -9517,13 +9612,101 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(claim["status"], "claimed")
         self.assertEqual(claim["receipt"], "")
         self.assertEqual(claim["role"], "")
-        self.assertEqual(calls.count(("migrate", "preserve")), 1)
+        self.assertEqual(
+            calls.count(("migrate", "preserve", "c" * 40)), 1,
+        )
         self.assertEqual(
             calls.count(("contract_block_passport_migrated",)), 1
         )
         self.assertEqual(
             calls.count(("contract_blocker_recovered",)), 1
         )
+
+    def test_contract_block_refuses_invalid_context_before_migration(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "cell-invalid-contract-context"
+        (cell / "factory/tickets").mkdir(parents=True)
+        receipt = "b" * 64
+        base = "c" * 40
+        offending = "d" * 40
+        tip = "e" * 40
+        ticket = cell / "factory/tickets/T-110.md"
+        ticket.write_text(
+            "# T-110\n\nState: Blocked-Escalated\n"
+            "OPERATOR ANSWER: misplaced\n"
+            f"OPERATOR ANSWER RECEIPT: {receipt}\n"
+            "ROLE-ESCALATE: CONTRACT-BLOCKED\n"
+            "OPERATOR RESUME: planner\n"
+            f"OPERATOR RESUME RECEIPT: {receipt}\n",
+            encoding="utf-8",
+        )
+        claim = {
+            "branch": "ticket/T-110", "lease": "a" * 64,
+            "publication_lease": "", "receipt": receipt, "role": "planner",
+            "schema": CONTROL.CLAIM_SCHEMA, "status": "blocked",
+            "ticket": "T-110", "worktree": str(cell),
+        }
+        sibling = {
+            "branch": "ticket/T-111", "lease": "f" * 64,
+            "publication_lease": "", "receipt": "", "role": "",
+            "schema": CONTROL.CLAIM_SCHEMA, "status": "claimed",
+            "ticket": "T-111", "worktree": str(self.root / "cell-sibling"),
+        }
+        sibling_before = dict(sibling)
+        controller.save_claim(claim)
+        passports = self.state / "passports"
+        passports.mkdir(mode=0o700)
+        passport_path = passports / "T-110.json"
+        CONTROL.write(passport_path, {
+            "branch": claim["branch"], "head_sha": base,
+            "passport_sha256": "1" * 64, "publication_state": "none",
+        })
+        passport_before = passport_path.read_bytes()
+        (self.product / "factory/runs/contract-invalid.meta").write_text(
+            "run_id=contract-invalid\nphase=completed\n"
+            "ticket=T-110\nrole=planner\n"
+            "accounting_state=abandoned_conservative\n"
+            "task_submitted=1\nexit_status=12\n"
+            "role_exit=role_exit_contract_blocked\n"
+            f"transition_receipt_sha256={receipt}\n",
+            encoding="utf-8",
+        )
+        controller.restore_recorded_contract_repair = lambda _claim: False
+        controller.restore_contract_blocker = lambda _claim: False
+        controller.role_active = lambda _claim: False
+        controller.remote_passport_valid = lambda _claim: False
+        controller.remote_cell_head_status = lambda _claim: (
+            "pushed", tip, tip,
+        )
+        migrations = []
+        controller.migrate_passport = lambda *_args: migrations.append("migrate")
+        refusals = []
+        controller.event_once = (
+            lambda name, ticket_id, **details:
+            refusals.append((name, ticket_id, details))
+        )
+
+        def json_call(*args, **_kwargs):
+            self.assertEqual(args[:2], ("state-machine", "repair-check"))
+            return {
+                "offending_parent": offending,
+                "reason_code": "resume_parent_not_migrated",
+                "status": "error",
+            }
+
+        controller.json_call = json_call
+        controller.recover_repaired_failures([claim, sibling])
+
+        self.assertEqual(migrations, [])
+        self.assertEqual(passport_path.read_bytes(), passport_before)
+        self.assertEqual(claim["status"], "blocked")
+        self.assertEqual(claim["receipt"], receipt)
+        self.assertEqual(sibling, sibling_before)
+        self.assertEqual(refusals[0][0:2], ("contract_resume_refused", "T-110"))
+        self.assertEqual(
+            refusals[0][2]["reason_code"], "resume_parent_not_migrated"
+        )
+        self.assertEqual(refusals[0][2]["offending_parent"], offending)
 
     def test_submission_failure_retries_only_after_release_upgrade(self) -> None:
         controller = CONTROL.Controller(self.args)

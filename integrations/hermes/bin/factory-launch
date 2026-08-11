@@ -1490,7 +1490,7 @@ PY
           "${10}" == "--json" ]]; then
       STATE_ACTION="$1" TICKET="$3" LEASE_ID="$5"
       TRANSITION_RECEIPT="$7" TICKET_WORKDIR="$9"
-    elif [[ "${1:-}" == "resume" && $# -eq 8 &&
+    elif [[ "${1:-}" =~ ^(repair-check|resume)$ && $# -eq 8 &&
             "$2" == "--ticket" && "$4" == "--receipt" &&
             "$6" == "--workdir" && "$8" == "--json" ]]; then
       STATE_ACTION="$1" TICKET="$3" LEASE_ID=""
@@ -1598,7 +1598,8 @@ PY
     [[ "$ACTIVE_CONTRACT" == "1.8.0" ]] ||
       die "portable passports require contract 1.8.0"
     PASSPORT_ACTION="${1:-}"
-    PASSPORT_RECEIPT="" PASSPORT_PUBLICATION="preserve" PASSPORT_RUN_ID=""
+    PASSPORT_EXPECTED_HEAD="" PASSPORT_RECEIPT=""
+    PASSPORT_PUBLICATION="preserve" PASSPORT_RUN_ID=""
     if [[ "$PASSPORT_ACTION" == "export" && $# -eq 10 &&
           "$2" == "--ticket" && "$4" == "--receipt" &&
           "$6" == "--publication-state" && "$8" == "--workdir" &&
@@ -1621,12 +1622,18 @@ PY
         die "invalid transition receipt"
       [[ "$PASSPORT_RUN_ID" =~ ^[A-Za-z0-9._-]{1,200}$ ]] ||
         die "invalid run identifier"
-    elif [[ "$PASSPORT_ACTION" == "migrate" && $# -eq 8 &&
+    elif [[ "$PASSPORT_ACTION" == "migrate" && ( $# -eq 8 || $# -eq 10 ) &&
             "$2" == "--ticket" && "$4" == "--publication-state" &&
-            "$6" == "--workdir" && "$8" == "--json" ]]; then
+            "$6" == "--workdir" &&
+            ( $# -eq 8 && "$8" == "--json" ||
+              $# -eq 10 && "$8" == "--expected-head" &&
+              "${10}" == "--json" ) ]]; then
       TICKET="$3" PASSPORT_PUBLICATION="$5" TICKET_WORKDIR="$7"
+      [[ $# -eq 8 ]] || PASSPORT_EXPECTED_HEAD="$9"
       [[ "$PASSPORT_PUBLICATION" =~ ^(preserve|none|validating|ready|merge-pending|merged|repair)$ ]] ||
         die "invalid publication state"
+      [[ -z "$PASSPORT_EXPECTED_HEAD" || "$PASSPORT_EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]] ||
+        die "invalid expected passport head"
     elif [[ "$PASSPORT_ACTION" == "validate" && $# -eq 6 &&
             "$2" == "--ticket" && "$4" == "--workdir" && "$6" == "--json" ]]; then
       TICKET="$3" TICKET_WORKDIR="$5"
@@ -1665,6 +1672,8 @@ PY
       )
     elif [[ "$PASSPORT_ACTION" == "migrate" ]]; then
       PASSPORT_ARGS+=(--publication-state "$PASSPORT_PUBLICATION")
+      [[ -z "$PASSPORT_EXPECTED_HEAD" ]] ||
+        PASSPORT_ARGS+=(--expected-head "$PASSPORT_EXPECTED_HEAD")
     fi
     cleanup_runtime
     trap - EXIT HUP INT TERM

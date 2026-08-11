@@ -947,8 +947,20 @@ terminal passport export uses the same contiguous v2 lineage proof before the
 controller may invoke block recovery; ordinary exports still require raw Git
 ancestry. A live current exact-ticket lease is validated
 independently; an absent old lease may therefore be replaced without weakening
-receipt, terminal, passport, or current ownership checks. If a prior candidate
-instead left an expired lease file while the migrated successor claim is parked
+receipt, terminal, passport, or current ownership checks.
+When a pushed operator edge is ahead of the authenticated blocked passport,
+the state machine validates the exact context-only commit or complete
+context-plus-resume chain before passport migration. Invalid receipt binding,
+ancestry, content, paths, or directives therefore leaves the prior recoverable
+passport head unchanged. The sealed migration binds the head returned by that
+check and rechecks the same clean identity, ticket state, route, and protected
+base immediately before its atomic write. After a crash, the authenticated last
+migration edge reconstructs the exact validation; a current remote passport
+backfills the migration event once, while an answer-only wait remains
+uncharged. Ordinary passport migration and resume still provide the durable
+commit points.
+If a prior candidate instead left an expired lease file while the migrated
+successor claim is parked
 and lease-free, the controller first authenticates the exact current passport,
 route, branch, and remote head. The sealed lease helper then rechecks and
 removes only that expired lease under the ordinary launch/lease locks before a

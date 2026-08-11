@@ -189,7 +189,7 @@
         "helper": "scripts/ticket-passport.py",
         "grammars": [
           "export --ticket <T-NNN> --receipt <lowercase-sha256> --publication-state <none|validating|ready|merge-pending|merged|repair> --workdir <exact-ticket-worktree> --json",
-          "migrate --ticket <T-NNN> --publication-state <preserve|none|validating|ready|merge-pending|merged|repair> --workdir <exact-clean-ticket-worktree> --json",
+          "migrate --ticket <T-NNN> --publication-state <preserve|none|validating|ready|merge-pending|merged|repair> --workdir <exact-clean-ticket-worktree> [--expected-head <full-sha>] --json",
           "recover-model-identity-success --ticket <T-NNN> --receipt <lowercase-sha256> --run-id <safe-run-id> --workdir <exact-ticket-worktree> --json (Contract 1.8)",
           "validate --ticket <T-NNN> --workdir <exact-clean-ticket-worktree> --json"
         ],
