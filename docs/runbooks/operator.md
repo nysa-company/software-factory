@@ -691,6 +691,19 @@ If a dispatcher lease is stale, keep maintenance published and run
 <T-NNN>`. Recovery refuses while any role run is recorded. Never delete or
 replace the lease by hand.
 
+If an idle parked ticket reports `state-machine-refusal` and protected main has
+since changed, run ordinary reconcile before using ticket pause/resume. The
+controller retries only when the refusal receipt (or its authenticated legacy
+passport) binds the prior protected base and every ticket-local branch,
+passport, route, run, and remote invariant is unchanged. An unchanged refusal,
+dirty cell, remote drift, malformed evidence, active role, or pause stays
+blocked. An interrupted retry is resumed from its ticket-local prepared marker,
+exact dispatcher lease, and parent-linked child receipt; do not edit or remove
+those records by hand. If input becomes unsafe before restart, reconcile retires
+the marker and releases the lease, or records the lease on the blocked claim for
+ordinary cleanup. Cancellation, completion, or another status change cannot
+remove that claim until the marker-backed lease is accounted for.
+
 The planned control-plane outage starts when maintenance is created and ends
 when maintenance is removed. Target: 5 minutes or less. An inactive replacement
 can prepare, certify, and canary before cutover; an active in-place host remains

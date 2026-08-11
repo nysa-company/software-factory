@@ -3169,7 +3169,7 @@ def core(
     origin = os.environ.get("FACTORY_CERTIFIED_PRODUCT_ORIGIN", "")
     if not origin or any(character in origin for character in "\n\r\t"):
         raise StateError("certified product origin is unavailable")
-    return {
+    value = {
         "branch": branch,
         "contract_version": args.contract_version,
         "evidence_sha256": ticket_evidence_digest(factory, args.ticket),
@@ -3201,6 +3201,9 @@ def core(
             workdir, "rev-parse", f"HEAD:factory/tickets/{args.ticket}.md"
         ),
     }
+    if stage.startswith("REFUSE "):
+        value["protected_base_sha"] = protected_base_sha(args)
+    return value
 
 
 def issue(

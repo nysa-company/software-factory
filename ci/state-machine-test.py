@@ -407,6 +407,11 @@ class StateMachineTest(unittest.TestCase):
         self.assertIn(protected, receipt["stage"])
 
     def test_exact_refusal_is_bound_to_a_transition_receipt(self) -> None:
+        protected = run("git", "rev-parse", "HEAD", cwd=self.product)
+        run(
+            "git", "update-ref", "refs/remotes/origin/main", protected,
+            cwd=self.product,
+        )
         kit = self.root / "kit"
         (kit / "scripts").mkdir(parents=True)
         (kit / "scripts/next-stage.sh").write_text(
@@ -423,10 +428,9 @@ class StateMachineTest(unittest.TestCase):
             result["stage"],
             "REFUSE refresh receipt was not committed directly after its merge",
         )
-        self.assertEqual(
-            STATE.safe_receipt(self.state_dir / "T-110.json")["receipt_sha256"],
-            result["receipt"],
-        )
+        receipt = STATE.safe_receipt(self.state_dir / "T-110.json")
+        self.assertEqual(receipt["protected_base_sha"], protected)
+        self.assertEqual(receipt["receipt_sha256"], result["receipt"])
 
     def test_role_stage_is_resolved_once_before_transition_receipt(self) -> None:
         receipt = "b" * 64

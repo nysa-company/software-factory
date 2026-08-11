@@ -167,6 +167,16 @@ everything the Factory actually enforces lives here.
   authenticated prior evidence stays available only to existing typed
   cross-release recovery. Historical receipts remain immutable, and terminal
   claims retire before the cache is inspected.
+- A parked current-release state-machine refusal may retry only when its
+  authenticated receipt, or the exact receipt-bound legacy passport, proves
+  protected main changed while the roleless claim, branch, route, passport,
+  run evidence, and remote head stayed exact. Ordinary state-machine acceptance
+  precedes claim readmission. A durable ticket-local prepared marker makes lease
+  acquisition and accepted child-receipt adoption restart-safe; unsafe input
+  remains ticket-local and blocked, and invalidating a prepared attempt must
+  release its exact lease or persist it on that claim before retiring the marker.
+  This reconciliation precedes cancellation, completion, and status filtering;
+  incomplete cleanup retains the claim fail closed.
 - An active contract repair with no owner success may follow one exact
   authenticated forward passport migration after an operator preflight fix.
   The old signed record is archived, the active record is rebound without
@@ -5426,3 +5436,23 @@ still validates parser shape and Test-author ownership. Existing conflicts stay
 an exact prefix; removal, replacement, reordering, duplication, unrelated
 ticket changes, and broader fixture ownership remain refused. The existing
 optional single `Fixture-Seams` append remains tied to the final new conflict.
+
+## 2026-08-10 — Decision 383: Changed protected input readmits exact refusals
+
+Category: Reliability
+
+An idle parked current-release `state-machine-refusal` may re-enter ordinary
+scheduling only when its authenticated refusal receipt directly binds an older
+protected base, or its exact receipt-bound legacy passport does. The roleless
+claim, receipt inputs, clean branch, current route/passport, run evidence,
+tracking ref, and remote head must remain exact. The ordinary state machine
+must return a different parent-linked transition before the claim changes;
+unchanged or unsafe inputs remain blocked, and temporary-lease cleanup cannot
+silently reduce healthy sibling capacity. A prepared marker written before
+lease acquisition binds the exact refusal and protected input; after interruption
+it may adopt only that ticket's dispatcher lease and exact parent-linked child
+receipt before completing the unchanged claim update. Later dirty, foreign,
+remote-diverged, malformed, or newly advanced input retires that attempt only
+after its lease is released or made visible on the blocked claim. Cancellation,
+completion, and nonblocked status filters run only after this ticket-local lease
+accounting boundary.

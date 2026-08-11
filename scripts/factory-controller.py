@@ -49,6 +49,9 @@ from route_evidence import (  # noqa: E402
 SCHEMA = "nysa.software-factory.controller/v1"
 CLAIM_SCHEMA = "nysa.software-factory.controller-claim/v1"
 EVENT_SCHEMA = "nysa.software-factory.controller-event/v1"
+REFUSAL_READMISSION_SCHEMA = (
+    "nysa.software-factory.refusal-readmission-attempt/v1"
+)
 QUALIFICATION_SCHEMA = "nysa.software-factory.qualification/v2"
 TICKET = re.compile(r"^T-[0-9]+$")
 SHA = re.compile(r"^[0-9a-f]{40}$")
@@ -5510,6 +5513,372 @@ class Controller:
                 claim["ticket"],
             )
 
+    def retire_refusal_readmission_attempt(
+        self, claim: dict[str, Any], path: Path,
+    ) -> bool:
+        if not path.exists() and not path.is_symlink():
+            return True
+        try:
+            record = self.dispatcher_lease_records().get(claim["ticket"])
+        except (
+            ControllerError, json.JSONDecodeError, OSError, UnicodeError,
+        ):
+            return False
+        released = True
+        if record is not None:
+            lease = record["lease_id"]
+            releasable = (
+                claim.get("parked") is True
+                and not claim.get("receipt")
+                and not claim.get("role")
+                and not claim.get("publication_lease")
+                and not self.role_active(claim)
+            )
+            if releasable:
+                try:
+                    self.json_call(
+                        "release", "--ticket", claim["ticket"],
+                        "--lease", lease,
+                    )
+                except (
+                    ControllerError, json.JSONDecodeError, OSError,
+                    subprocess.SubprocessError, UnicodeError,
+                ):
+                    releasable = False
+            if not releasable:
+                retained = claim.get("lease", "")
+                if (
+                    DIGEST.fullmatch(retained)
+                    and claim.get("lease_released") is not True
+                    and retained != lease
+                ):
+                    return False
+                claim.update(
+                    blocked_reason="state-machine-refusal-cleanup",
+                    lease=lease, status="blocked",
+                )
+                claim.pop("lease_released", None)
+                try:
+                    self.save_claim(claim)
+                except OSError:
+                    return False
+                released = False
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            return False
+        return released
+
+    def reconcile_refusal_readmission_markers(
+        self, claims: list[dict[str, Any]], protected_main: str | None,
+    ) -> set[str]:
+        pending: set[str] = set()
+        for claim in claims:
+            path = self.state / f"refusal-readmission-{claim['ticket']}.json"
+            if not path.exists() and not path.is_symlink():
+                continue
+            candidate = (
+                claim.get("status") == "blocked"
+                and claim.get("blocked_reason") == "state-machine-refusal"
+                and claim.get("parked") is True
+                and not claim.get("receipt")
+                and not claim.get("role")
+                and not claim.get("publication_lease")
+            )
+            canceled = (
+                candidate
+                and protected_main is not None
+                and self.product_ticket_canceled(
+                    claim["ticket"], protected_main,
+                )
+            )
+            if (
+                not candidate
+                or canceled
+                or self.product_ticket_done(claim["ticket"])
+            ) and not self.retire_refusal_readmission_attempt(claim, path):
+                pending.add(claim["ticket"])
+        return pending
+
+    def recover_changed_state_machine_refusals(
+        self, claims: list[dict[str, Any]], protected_main: str | None,
+    ) -> None:
+        for claim in claims:
+            lease = ""
+            attempt_path = (
+                self.state / f"refusal-readmission-{claim['ticket']}.json"
+            )
+            if claim.get("status") != "blocked":
+                self.retire_refusal_readmission_attempt(claim, attempt_path)
+                continue
+            if protected_main is None or not SHA.fullmatch(protected_main):
+                self.retire_refusal_readmission_attempt(claim, attempt_path)
+                continue
+            passport_path = self.state / "passports" / f"{claim['ticket']}.json"
+            released = (
+                claim.get("lease") == "" and "lease_released" not in claim
+                or DIGEST.fullmatch(claim.get("lease", "")) is not None
+                and claim.get("lease_released") is True
+            )
+            if (
+                claim.get("status") != "blocked"
+                or claim.get("blocked_reason") != "state-machine-refusal"
+                or claim.get("parked") is not True
+                or not released
+                or claim.get("receipt")
+                or claim.get("role")
+                or claim.get("publication_lease")
+                or self.role_active(claim)
+                or self.pause_path(claim["ticket"]).exists()
+                or self.reconciliation_marker(claim["ticket"]).exists()
+                or not passport_path.exists()
+                or not self.ticket_release_current(claim)
+            ):
+                self.retire_refusal_readmission_attempt(claim, attempt_path)
+                continue
+            ticket_path = f"factory/tickets/{claim['ticket']}.md"
+            try:
+                current = self.transition_receipt(claim, record=False)
+                attempt = read(attempt_path) if attempt_path.exists() else None
+                if attempt is not None and (
+                    set(attempt) != {
+                        "factory_sha", "lease", "protected_base_sha",
+                        "refusal", "refused_protected_base_sha", "schema",
+                        "ticket",
+                    }
+                    or attempt.get("schema") != REFUSAL_READMISSION_SCHEMA
+                    or attempt.get("factory_sha") != self.release_path.name
+                    or attempt.get("ticket") != claim["ticket"]
+                    or attempt.get("protected_base_sha") != protected_main
+                    or not isinstance(attempt.get("refusal"), dict)
+                    or not isinstance(attempt.get("lease"), str)
+                    or attempt.get("lease") != ""
+                    and not DIGEST.fullmatch(attempt["lease"])
+                ):
+                    self.retire_refusal_readmission_attempt(claim, attempt_path)
+                    continue
+                receipt = attempt["refusal"] if attempt is not None else current
+                passport = self.authenticated_operator_passport(claim["ticket"])
+                head = self.cell_git(claim, "rev-parse", "HEAD")
+                tree = self.cell_git(claim, "rev-parse", "HEAD^{tree}")
+                ticket_blob = self.cell_git(
+                    claim, "rev-parse", f"HEAD:{ticket_path}",
+                )
+                branch = self.cell_git(
+                    claim, "symbolic-ref", "--quiet", "--short", "HEAD",
+                )
+                tracking = self.cell_git(
+                    claim, "rev-parse", "--verify",
+                    "refs/remotes/origin/main^{commit}",
+                )
+                status = self.cell_git(claim, "status", "--porcelain=v1", "-z")
+                route_digest = hashlib.sha256(
+                    self.route_path(claim).read_bytes()
+                ).hexdigest()
+                passport_file = hashlib.sha256(
+                    passport_path.read_bytes()
+                ).hexdigest()
+            except (
+                ControllerError, FileNotFoundError, json.JSONDecodeError,
+                OSError, subprocess.SubprocessError, UnicodeError,
+            ):
+                self.retire_refusal_readmission_attempt(claim, attempt_path)
+                continue
+            refused_base = (
+                receipt.get("protected_base_sha", "")
+                if receipt is not None and "protected_base_sha" in receipt
+                else passport.get("protected_base_sha", "")
+                if passport is not None else ""
+            )
+            if (
+                receipt is None
+                or current is None
+                or passport is None
+                or receipt.get("schema")
+                != "nysa.software-factory.transition-receipt/v1"
+                or receipt.get("ticket") != claim["ticket"]
+                or receipt.get("branch") != claim["branch"]
+                or receipt.get("project") != self.project
+                or receipt.get("contract_version") != "1.8.0"
+                or receipt.get("receipt_sha256") != hashlib.sha256(
+                    canonical_document({
+                        key: item for key, item in receipt.items()
+                        if key not in {
+                            "consumed", "consumed_at_epoch", "receipt_sha256",
+                        }
+                    })
+                ).hexdigest()
+                or receipt.get("factory_sha") != self.release_path.name
+                or not receipt.get("stage", "").startswith("REFUSE ")
+                or receipt.get("consumed") is not False
+                or receipt.get("role") is not None
+                or receipt.get("loop") is not None
+                or not SHA.fullmatch(refused_base)
+                or refused_base == protected_main
+                or receipt.get("head_sha") != passport.get("head_sha")
+                or receipt.get("head_sha") != head.stdout.strip()
+                or receipt.get("head_tree") != tree.stdout.strip()
+                or receipt.get("ticket_blob") != ticket_blob.stdout.strip()
+                or receipt.get("route_plan_sha256") != route_digest
+                or receipt.get("route_plan_sha256")
+                != passport.get("route_plan_sha256")
+                or receipt.get("passport_sha256") != passport_file
+                or passport.get("factory_sha") != self.release_path.name
+                or passport.get("branch") != claim["branch"]
+                or branch.stdout.strip() != claim["branch"]
+                or tracking.stdout.strip() != protected_main
+                or any(item.returncode for item in (
+                    head, tree, ticket_blob, branch, tracking, status,
+                ))
+                or status.stdout
+            ):
+                self.retire_refusal_readmission_attempt(claim, attempt_path)
+                continue
+            expected_attempt = {
+                "factory_sha": self.release_path.name,
+                "lease": attempt["lease"] if attempt is not None else "",
+                "protected_base_sha": protected_main,
+                "refusal": receipt,
+                "refused_protected_base_sha": refused_base,
+                "schema": REFUSAL_READMISSION_SCHEMA,
+                "ticket": claim["ticket"],
+            }
+            if attempt is not None and attempt != expected_attempt:
+                self.retire_refusal_readmission_attempt(claim, attempt_path)
+                continue
+            try:
+                if not self.remote_passport_valid(claim):
+                    self.retire_refusal_readmission_attempt(claim, attempt_path)
+                    continue
+                records = self.dispatcher_lease_records()
+                record = records.get(claim["ticket"])
+                if attempt is None:
+                    if record is not None:
+                        continue
+                    attempt = expected_attempt
+                    write(attempt_path, attempt)
+                lease = attempt["lease"]
+                child = (
+                    current is not None
+                    and current.get("receipt_sha256")
+                    != receipt.get("receipt_sha256")
+                )
+                if lease:
+                    if record is None:
+                        if child:
+                            self.retire_refusal_readmission_attempt(
+                                claim, attempt_path,
+                            )
+                            continue
+                        lease = ""
+                    elif record.get("lease_id") != lease:
+                        self.retire_refusal_readmission_attempt(
+                            claim, attempt_path,
+                        )
+                        continue
+                elif record is not None:
+                    lease = record["lease_id"]
+                if not lease:
+                    leased = self.json_call(
+                        "claim", "--ticket", claim["ticket"],
+                    )
+                    lease = leased.get("lease_id", "")
+                    if (
+                        leased.get("schema_version") != 1
+                        or leased.get("ticket") != claim["ticket"]
+                        or not DIGEST.fullmatch(lease)
+                    ):
+                        raise ControllerError(
+                            "state-machine refusal lease is invalid"
+                        )
+                if attempt["lease"] != lease:
+                    attempt["lease"] = lease
+                    write(attempt_path, attempt)
+                transition = None
+                if not child:
+                    transition = self.json_call(
+                        "state-machine", "--ticket", claim["ticket"],
+                        "--lease", lease, "--workdir", claim["worktree"],
+                        "--json", timeout=None,
+                    )
+                    current = self.transition_receipt(claim, record=False)
+                stage = current.get("stage", "") if current is not None else ""
+                evidence = transition or {
+                    "action": stage.partition(" ")[0],
+                    "detail": stage.partition(" ")[2] or None,
+                    "loop": current.get("loop") if current is not None else None,
+                    "receipt": (
+                        current.get("receipt_sha256", "")
+                        if current is not None else ""
+                    ),
+                    "role": current.get("role") if current is not None else None,
+                    "schema": "nysa.software-factory.state-machine/v1",
+                    "stage": stage, "status": "ok", "ticket": claim["ticket"],
+                }
+                if (
+                    not valid_transition_evidence(evidence, claim["ticket"])
+                    or current is None
+                    or evidence.get("receipt") != current.get("receipt_sha256")
+                    or current.get("parent_digest")
+                    != receipt.get("receipt_sha256")
+                    or current.get("stage") == receipt.get("stage")
+                    or current.get("factory_sha") != self.release_path.name
+                    or current.get("head_sha") != receipt.get("head_sha")
+                    or current.get("head_tree") != receipt.get("head_tree")
+                    or current.get("ticket_blob") != receipt.get("ticket_blob")
+                    or current.get("route_plan_sha256")
+                    != receipt.get("route_plan_sha256")
+                    or current.get("product_origin_sha256")
+                    != receipt.get("product_origin_sha256")
+                    or current.get("evidence_sha256")
+                    != receipt.get("evidence_sha256")
+                    or (
+                        current.get("stage", "").startswith("REFUSE ")
+                        and current.get("protected_base_sha") != protected_main
+                    )
+                    or current.get("lease_sha256")
+                    != hashlib.sha256(lease.encode()).hexdigest()
+                    or current.get("consumed") is not False
+                ):
+                    raise ControllerError(
+                        "changed state-machine refusal was not accepted"
+                    )
+            except (
+                ControllerError, json.JSONDecodeError, OSError,
+                subprocess.SubprocessError, UnicodeError,
+            ):
+                try:
+                    if DIGEST.fullmatch(lease):
+                        self.json_call(
+                            "release", "--ticket", claim["ticket"],
+                            "--lease", lease,
+                        )
+                        attempt["lease"] = ""
+                        write(attempt_path, attempt)
+                except (
+                    ControllerError, json.JSONDecodeError, OSError,
+                    subprocess.SubprocessError, UnicodeError,
+                ):
+                    claim.update(lease=lease)
+                    claim.pop("lease_released", None)
+                    self.save_claim(claim)
+                continue
+            claim.update(lease=lease, receipt="", role="", status="claimed")
+            claim.pop("lease_released", None)
+            claim.pop("blocked_reason", None)
+            self.save_claim(claim)
+            try:
+                attempt_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            self.event_once(
+                "state_machine_refusal_readmitted", claim["ticket"],
+                from_protected_base_sha=refused_base,
+                protected_base_sha=protected_main,
+                refused_receipt_sha256=receipt["receipt_sha256"],
+                transition_receipt_sha256=current["receipt_sha256"],
+            )
+
     def recover_missing_terminals(self, claims: list[dict[str, Any]]) -> None:
         for claim in claims:
             if (
@@ -10180,16 +10549,32 @@ class Controller:
                 "status": "error",
             }
         protected_main = self.cancellation_authority(existing)
+        marker_cleanup_pending = self.reconcile_refusal_readmission_markers(
+            existing, protected_main,
+        )
         if self.qualification:
             tickets = set(self.qualification["tickets"])
             for claim in existing:
                 if claim["ticket"] not in tickets:
                     self.withdraw_publication(claim)
-            existing = [claim for claim in existing if claim["ticket"] in tickets]
-        existing = self.retire_canceled_claims(existing, protected_main)
+            existing = [
+                claim for claim in existing
+                if claim["ticket"] in tickets
+                or claim["ticket"] in marker_cleanup_pending
+            ]
+        cancellable = [
+            claim for claim in existing
+            if claim["ticket"] not in marker_cleanup_pending
+        ]
+        retained = self.retire_canceled_claims(cancellable, protected_main)
+        existing = [
+            claim for claim in existing
+            if claim["ticket"] in marker_cleanup_pending or claim in retained
+        ]
         self.quarantine_invalid_transition_claims(existing)
         completed = [
             claim for claim in existing
+            if claim["ticket"] not in marker_cleanup_pending
             if claim["ticket"] not in self.invalid_transition_tickets
             if self.product_ticket_done(claim["ticket"])
         ]
@@ -10203,6 +10588,7 @@ class Controller:
                 self.operator_transition(claim)
         self.quarantine_invalid_transition_claims(existing)
         self.release_inactive_ticket_leases(existing)
+        self.recover_changed_state_machine_refusals(existing, protected_main)
         self.recover_operator_action_events([
             claim for claim in existing
             if claim["ticket"] not in self.invalid_transition_tickets
