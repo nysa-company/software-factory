@@ -12486,7 +12486,6 @@ class FactoryControllerTest(unittest.TestCase):
             "blocked_reason": "missing-terminal",
             "branch": f"ticket/{ticket}",
             "lease": "",
-            "lease_released": True,
             "parked": True,
             "priority": "normal",
             "publication_lease": "",
@@ -12506,12 +12505,18 @@ class FactoryControllerTest(unittest.TestCase):
         controller.role_active = lambda _claim: False
         controller.terminal_for_receipt = lambda *_args: None
         controller.ticket_release_current = lambda _claim: True
+        controller.dispatcher_lease_records = lambda: {ticket: {}}
         controller.json_call = lambda *args, **_kwargs: {
             "lease_id": "e" * 64,
             "schema_version": 1,
             "ticket": ticket,
         }
 
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "pre-provider boundary"
+        ):
+            controller.pause_ticket(ticket, FACTORY_ISSUE)
+        controller.dispatcher_lease_records = lambda: {}
         self.assertEqual(
             controller.pause_ticket(ticket, FACTORY_ISSUE)["status"], "paused"
         )

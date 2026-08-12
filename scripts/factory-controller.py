@@ -3086,13 +3086,17 @@ class Controller:
                 "planner", "spec-linter", "test-author", "builder",
                 "reviewer", "narrator",
             }
-            and claim.get("lease_released") is True
             and not claim.get("publication_lease")
             and not self.role_active(claim)
             and self.terminal_for_receipt(
                 claim["ticket"], claim["receipt"]
             ) is None
         )
+        if missing_terminal:
+            missing_terminal = (
+                claim.get("lease") == ""
+                and claim["ticket"] not in self.dispatcher_lease_records()
+            )
         if (
             claim
             and (claim.get("receipt") or claim.get("role"))
