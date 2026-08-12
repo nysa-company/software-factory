@@ -5637,3 +5637,16 @@ journal and receipt remain the authority; the target reruns sandboxed repository
 and secret checks and binds the exact source, target, paths, and diff digest into
 a fresh receipt. Deleted, renamed, executable, configuration, dependency,
 classifier, legacy, ambiguous, or drifted inputs retain full certification.
+
+## 2026-08-11 — Decision 397: Provider pinning accepts growing SQLite ledgers
+
+Category: Reliability
+
+Provider CLI pinning keeps the bounded JSON limit for configuration, receipts,
+and journals, but validates SQLite provider databases without that payload-size
+ceiling. Owner, type, symlink, hard-link, mode, open-race, SQLite identity, and
+idle-work checks remain fail-closed. This matches provider concurrency and
+prevents normal terminal-attempt history growth from blocking a release upgrade.
+Issue-bound pause also recognizes a parked pre-provider missing-terminal only
+when its claim has no lease and the authoritative dispatcher has no lease record;
+the normal parking step may remove its transient `lease_released` field.
