@@ -38,6 +38,12 @@ TMP="$(cd "$TMP" && pwd -P)"
 STUB_BIN="$TMP/bin"
 FAILURES=0
 mkdir -p "$STUB_BIN"
+FACTORY_SCRIPT_HOME="$TMP/home"
+mkdir -m 700 "$FACTORY_SCRIPT_HOME" "$FACTORY_SCRIPT_HOME/.cursor"
+printf '%s\n' '{}' > "$FACTORY_SCRIPT_HOME/.cursor/auth.json"
+printf '%s\n' '{}' > "$FACTORY_SCRIPT_HOME/.cursor/cli-config.json"
+chmod 600 "$FACTORY_SCRIPT_HOME/.cursor/auth.json" "$FACTORY_SCRIPT_HOME/.cursor/cli-config.json"
+export HOME="$FACTORY_SCRIPT_HOME"
 
 cleanup() {
   trap - EXIT HUP INT TERM
@@ -245,12 +251,6 @@ ln -s "$ROOT" "$TMP/kit-link"
 LINKED_RUN_AGENT="$TMP/kit-link/scripts/run-agent.sh"
 
 if [[ "$SUBSET" == "model-policy" ]]; then
-MODEL_POLICY_HOME="$TMP/model-policy-home"
-mkdir -m 700 "$MODEL_POLICY_HOME" "$MODEL_POLICY_HOME/.cursor"
-printf '%s\n' '{}' > "$MODEL_POLICY_HOME/.cursor/auth.json"
-printf '%s\n' '{}' > "$MODEL_POLICY_HOME/.cursor/cli-config.json"
-chmod 600 "$MODEL_POLICY_HOME/.cursor/auth.json" "$MODEL_POLICY_HOME/.cursor/cli-config.json"
-export HOME="$MODEL_POLICY_HOME"
 printf 'GLOBAL_DAILY_CAP_USD=50.00\n' > "$TMP/global-minimal.env"
 printf 'CODEX_USD_PER_MTOK_IN=1.00\n' > "$TMP/global-partial-pricing.env"
 GLOBAL_CONFIG_RESET="$(GLOBAL_DAILY_CAP_USD=999 FACTORY_PROBE_CODEX=stale \
