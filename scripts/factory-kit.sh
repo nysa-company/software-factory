@@ -186,6 +186,8 @@ usage() {
 Usage:
   $PROGRAM install   --sha FULL_SHA [--repo KIT_REPO] [--origin ORIGIN]
   $PROGRAM certify   --project SLUG --product PRODUCT_REPO --sha FULL_SHA
+  $PROGRAM bootstrap --project SLUG --product PRODUCT_REPO --sha FULL_SHA [--repo KIT_REPO]
+  $PROGRAM bootstrap-status --project SLUG --sha FULL_SHA [--json]
   $PROGRAM preflight-report --project SLUG --product PRODUCT_REPO --sha FULL_SHA --ticket T-NNN [--ticket T-NNN] --json
   $PROGRAM plan      --project SLUG --product PRODUCT_REPO --sha FULL_SHA [--receipt FILE]
   $PROGRAM pause     --project SLUG --product PRODUCT_REPO
@@ -3111,6 +3113,118 @@ cmd_operator() {
 
 active_file_for() { printf '%s/%s/active.json\n' "$PROJECTS_DIR" "$1"; }
 journal_dir_for() { printf '%s/%s/activation-journal\n' "$PROJECTS_DIR" "$1"; }
+bootstrap_journal_for() {
+  printf '%s/%s/release-journal/%s.json\n' "$PROJECTS_DIR" "$1" "$2"
+}
+
+bootstrap_journal_update() {
+  local journal="$1" project="$2" product="$3" sha="$4" product_sha="$5"
+  local product_tree="$6" phase="$7" status="$8" detail="${9:-}"
+  python3 - "$journal" "$project" "$product" "$sha" "$product_sha" \
+    "$product_tree" "$phase" "$status" "$detail" <<'PY' | atomic_json_from_stdin "$journal"
+import hashlib, json, os, pathlib, sys, time
+(path_raw, project, product, factory_sha, product_sha, product_tree,
+ phase, status, detail) = sys.argv[1:]
+path = pathlib.Path(path_raw)
+observed = time.time()
+
+def canonical(value):
+    return (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
+
+identity = {
+    "factory_sha": factory_sha,
+    "product_path": product,
+    "product_sha": product_sha,
+    "product_tree": product_tree,
+    "project": project,
+}
+if path.exists() or path.is_symlink():
+    info = path.lstat()
+    if (
+        path.is_symlink() or not path.is_file() or info.st_uid != os.geteuid()
+        or info.st_nlink != 1 or info.st_mode & 0o077
+    ):
+        raise SystemExit("bootstrap release journal is unsafe")
+    value = json.loads(path.read_text(encoding="utf-8"))
+    body = {key: item for key, item in value.items() if key != "record_sha256"}
+    if (
+        value.get("schema") != "nysa.software-factory.bootstrap-release-journal/v1"
+        or value.get("identity") != identity
+        or value.get("record_sha256") != hashlib.sha256(canonical(body)).hexdigest()
+        or not isinstance(value.get("events"), list)
+        or not isinstance(value.get("phases"), dict)
+    ):
+        raise SystemExit("bootstrap release journal is invalid")
+else:
+    value = {
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(observed)),
+        "events": [],
+        "identity": identity,
+        "phases": {},
+        "schema": "nysa.software-factory.bootstrap-release-journal/v1",
+    }
+event = {
+    "observed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(observed)),
+    "observed_epoch_ms": int(observed * 1000),
+    "phase": phase,
+    "status": status,
+}
+if detail:
+    event["detail"] = detail
+if not value["events"] or value["events"][-1] != event:
+    value["events"].append(event)
+value["phases"][phase] = event
+value["updated_at"] = event["observed_at"]
+body = {key: item for key, item in value.items() if key != "record_sha256"}
+value = {**body, "record_sha256": hashlib.sha256(canonical(body)).hexdigest()}
+print(json.dumps(value))
+PY
+}
+
+bootstrap_journal_validate() {
+  local journal="$1" project="$2" sha="$3" product="${4:-}"
+  local product_sha="${5:-}" product_tree="${6:-}"
+  python3 - "$journal" "$project" "$sha" "$product" "$product_sha" \
+    "$product_tree" <<'PY'
+import hashlib, json, os, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+project, factory_sha, product, product_sha, product_tree = sys.argv[2:]
+info = path.lstat()
+if (
+    path.is_symlink() or not path.is_file() or info.st_uid != os.geteuid()
+    or info.st_nlink != 1 or info.st_mode & 0o077
+):
+    raise SystemExit("bootstrap release journal is unsafe")
+value = json.loads(path.read_text(encoding="utf-8"))
+body = {key: item for key, item in value.items() if key != "record_sha256"}
+canonical = (json.dumps(body, sort_keys=True, separators=(",", ":")) + "\n").encode()
+identity = value.get("identity", {})
+if (
+    value.get("schema") != "nysa.software-factory.bootstrap-release-journal/v1"
+    or identity.get("project") != project
+    or identity.get("factory_sha") != factory_sha
+    or (product and identity != {
+        "factory_sha": factory_sha,
+        "product_path": product,
+        "product_sha": product_sha,
+        "product_tree": product_tree,
+        "project": project,
+    })
+    or value.get("record_sha256") != hashlib.sha256(canonical).hexdigest()
+    or not isinstance(value.get("events"), list)
+    or not isinstance(value.get("phases"), dict)
+):
+    raise SystemExit("bootstrap release journal is invalid")
+PY
+}
+
+bootstrap_phase_status() {
+  json_get "$1" "phases.$2.status" 2>/dev/null || true
+}
+
+bootstrap_phase_detail() {
+  json_get "$1" "phases.$2.detail" 2>/dev/null || true
+}
 
 certification_active_binding() {
   local slug="$1" product="$2" origin="$3" active journal_dir
@@ -3392,11 +3506,20 @@ set_journal_phase() {
 import json, sys, time
 path, phase = sys.argv[1:]
 value = json.load(open(path))
+observed = time.time()
 value["phase"] = phase
-value["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+value["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(observed))
 history = value.setdefault("phase_history", [])
 if not history or history[-1] != phase:
     history.append(phase)
+events = value.setdefault("phase_events", [])
+event = {
+    "observed_at": value["updated_at"],
+    "observed_epoch_ms": int(observed * 1000),
+    "phase": phase,
+}
+if not events or events[-1].get("phase") != phase:
+    events.append(event)
 print(json.dumps(value))
 PY
   if [[ "${FACTORY_KIT_FAIL_AFTER_PHASE:-}" == "$phase" ]]; then
@@ -3820,6 +3943,159 @@ PY
   say "$receipt"
 }
 
+cmd_bootstrap() {
+  local slug="$1" product="$2" sha="$3" source="$4" origin_override="$5"
+  local product_top product_git_sha product_git_tree journal journal_dir
+  local receipt active open phase
+  validate_slug "$slug"
+  validate_sha "$sha"
+  ensure_managed_directories "$slug"
+  product_top="$(absolute_dir "$product")"
+  require_production_product_shape "$product_top"
+  require_clean_product "$product_top"
+  [[ "$(strict_product_pin "$product_top")" == "$sha" ]] ||
+    die "product pin does not match bootstrap release SHA"
+  product_git_sha="$(product_sha "$product_top")"
+  product_git_tree="$(product_tree "$product_top")"
+  journal_dir="$PROJECTS_DIR/$slug/release-journal"
+  safe_create_directory "$journal_dir"
+  journal="$(bootstrap_journal_for "$slug" "$sha")"
+  active="$(active_file_for "$slug")"
+  if [[ -f "$active" && "$(json_get "$active" kit_sha)" != "$sha" ]]; then
+    die "bootstrap is only for an initial release; use the upgrade runbook for an active project"
+  fi
+  if [[ ! -e "$journal" && ! -L "$journal" ]]; then
+    bootstrap_journal_update "$journal" "$slug" "$product_top" "$sha" \
+      "$product_git_sha" "$product_git_tree" bootstrap started
+  else
+    bootstrap_journal_validate "$journal" "$slug" "$sha" "$product_top" \
+      "$product_git_sha" "$product_git_tree" ||
+      die "bootstrap release journal is invalid"
+    if [[ "$(bootstrap_phase_status "$journal" bootstrap)" == "pass" ]]; then
+      verify_release_from_manifest "$sha" >/dev/null
+      receipt="$(bootstrap_phase_detail "$journal" certify)"
+      validate_receipt "$receipt" "$slug" "$product_top" "$sha" ""
+      [[ -f "$active" && "$(json_get "$active" kit_sha)" == "$sha" &&
+         "$(json_get "$active" product_sha)" == "$product_git_sha" &&
+         "$(json_get "$active" product_tree)" == "$product_git_tree" ]] ||
+        die "completed bootstrap active record is invalid"
+      say "BOOTSTRAP OK: project=$slug sha=$sha"
+      say "TRACE: $journal"
+      say "MAINTENANCE remains published for external health and route-migration approval"
+      return
+    fi
+    bootstrap_journal_update "$journal" "$slug" "$product_top" "$sha" \
+      "$product_git_sha" "$product_git_tree" bootstrap resumed
+  fi
+
+  phase="$(bootstrap_phase_status "$journal" install)"
+  if [[ "$phase" != "pass" ]]; then
+    bootstrap_journal_update "$journal" "$slug" "$product_top" "$sha" \
+      "$product_git_sha" "$product_git_tree" install started
+    cmd_install "$sha" "$source" "$origin_override"
+    bootstrap_journal_update "$journal" "$slug" "$product_top" "$sha" \
+      "$product_git_sha" "$product_git_tree" install pass \
+      "$MANIFESTS_DIR/$sha.json"
+  else
+    verify_release_from_manifest "$sha" >/dev/null
+  fi
+  if [[ "${FACTORY_KIT_TEST_FAIL_BOOTSTRAP_AFTER_PHASE:-}" == "install" ]]; then
+    [[ "${FACTORY_KIT_TEST_MODE:-0}" == "1" ]] ||
+      die "bootstrap fault injection requires FACTORY_KIT_TEST_MODE"
+    die "injected bootstrap failure after install"
+  fi
+
+  phase="$(bootstrap_phase_status "$journal" certify)"
+  receipt="$(bootstrap_phase_detail "$journal" certify)"
+  if [[ "$phase" != "pass" ]]; then
+    if [[ -z "$receipt" ]]; then
+      receipt="$(find_receipt "$slug" "$sha" 2>/dev/null || true)"
+    fi
+    if [[ -z "$receipt" ]] || ! (
+      trap - EXIT HUP INT TERM
+      HELD_LOCKS="" TEMP_PATHS=""
+      validate_receipt "$receipt" "$slug" "$product_top" "$sha" "" \
+        >/dev/null 2>&1
+    ); then
+      bootstrap_journal_update "$journal" "$slug" "$product_top" "$sha" \
+        "$product_git_sha" "$product_git_tree" certify started
+      cmd_certify "$slug" "$product_top" "$sha"
+      receipt="$(find_receipt "$slug" "$sha")" ||
+        die "bootstrap certification did not publish a receipt"
+    fi
+    validate_receipt "$receipt" "$slug" "$product_top" "$sha" ""
+    bootstrap_journal_update "$journal" "$slug" "$product_top" "$sha" \
+      "$product_git_sha" "$product_git_tree" certify pass "$receipt"
+  else
+    [[ -n "$receipt" ]] || die "bootstrap certification receipt is missing from journal"
+    validate_receipt "$receipt" "$slug" "$product_top" "$sha" ""
+  fi
+  if [[ "${FACTORY_KIT_TEST_FAIL_BOOTSTRAP_AFTER_PHASE:-}" == "certify" ]]; then
+    [[ "${FACTORY_KIT_TEST_MODE:-0}" == "1" ]] ||
+      die "bootstrap fault injection requires FACTORY_KIT_TEST_MODE"
+    die "injected bootstrap failure after certify"
+  fi
+
+  phase="$(bootstrap_phase_status "$journal" pause)"
+  if [[ "$phase" != "pass" ]]; then
+    bootstrap_journal_update "$journal" "$slug" "$product_top" "$sha" \
+      "$product_git_sha" "$product_git_tree" pause started
+    cmd_pause "$slug" "$product_top"
+    bootstrap_journal_update "$journal" "$slug" "$product_top" "$sha" \
+      "$product_git_sha" "$product_git_tree" pause pass
+  fi
+  if [[ "${FACTORY_KIT_TEST_FAIL_BOOTSTRAP_AFTER_PHASE:-}" == "pause" ]]; then
+    [[ "${FACTORY_KIT_TEST_MODE:-0}" == "1" ]] ||
+      die "bootstrap fault injection requires FACTORY_KIT_TEST_MODE"
+    die "injected bootstrap failure after pause"
+  fi
+
+  phase="$(bootstrap_phase_status "$journal" activate)"
+  if [[ "$phase" != "pass" ]]; then
+    bootstrap_journal_update "$journal" "$slug" "$product_top" "$sha" \
+      "$product_git_sha" "$product_git_tree" activate started
+    open="$(latest_open_journal "$(journal_dir_for "$slug")")" ||
+      die "activation journal is invalid"
+    if [[ -n "$open" ]]; then
+      cmd_reconcile "$slug" "$product_top"
+    elif [[ ! -f "$active" ]]; then
+      cmd_activate "$slug" "$product_top" "$sha" "$receipt"
+    fi
+    [[ -f "$active" && "$(json_get "$active" kit_sha)" == "$sha" &&
+       "$(json_get "$active" product_sha)" == "$product_git_sha" &&
+       "$(json_get "$active" product_tree)" == "$product_git_tree" ]] ||
+      die "bootstrap activation did not commit the exact certified release"
+    bootstrap_journal_update "$journal" "$slug" "$product_top" "$sha" \
+      "$product_git_sha" "$product_git_tree" activate pass "$active"
+  fi
+  [[ -f "$active" && "$(json_get "$active" kit_sha)" == "$sha" &&
+     "$(json_get "$active" product_sha)" == "$product_git_sha" &&
+     "$(json_get "$active" product_tree)" == "$product_git_tree" ]] ||
+    die "bootstrap activation did not commit the exact certified release"
+  bootstrap_journal_update "$journal" "$slug" "$product_top" "$sha" \
+    "$product_git_sha" "$product_git_tree" bootstrap pass
+  say "BOOTSTRAP OK: project=$slug sha=$sha"
+  say "TRACE: $journal"
+  say "MAINTENANCE remains published for external health and route-migration approval"
+}
+
+cmd_bootstrap_status() {
+  local slug="$1" sha="$2" json="$3" journal
+  validate_slug "$slug"
+  validate_sha "$sha"
+  journal="$(bootstrap_journal_for "$slug" "$sha")"
+  [[ -f "$journal" && ! -L "$journal" ]] ||
+    die "bootstrap release journal not found"
+  bootstrap_journal_validate "$journal" "$slug" "$sha" ||
+    die "bootstrap release journal is invalid"
+  if [[ "$json" -eq 1 ]]; then
+    cat "$journal"
+  else
+    say "BOOTSTRAP: $(bootstrap_phase_status "$journal" bootstrap)"
+    say "TRACE: $journal"
+  fi
+}
+
 resolve_receipt() {
   local requested="$1" slug="$2" sha="$3" receipt_dir absolute_receipt
   if [[ -n "$requested" ]]; then
@@ -3889,7 +4165,7 @@ create_journal() {
     "$(json_get "$receipt" runtime_tuple)" "$contract" "$previous" \
     "$generation" "$product" "$release" "$(now_iso)" "$receipt" \
     "$receipt_hash" "$transaction" <<'PY' | atomic_json_from_stdin "$journal"
-import json, os, sys
+import json, os, sys, time
 (active_path, slug, sha, tree, receipt_id, product_sha, product_tree,
  runtime_tuple, contract,
  previous, generation, product_path, release_path, timestamp, receipt_path,
@@ -3921,6 +4197,11 @@ journal = {
     "generation": int(generation),
     "phase": "prepared",
     "phase_history": ["prepared"],
+    "phase_events": [{
+        "observed_at": timestamp,
+        "observed_epoch_ms": int(time.time() * 1000),
+        "phase": "prepared",
+    }],
     "created_at": timestamp,
     "updated_at": timestamp,
     "previous_record": previous_record,
@@ -4502,6 +4783,21 @@ case "$COMMAND" in
     [[ -n "$SHA" ]] || SHA="${POSITIONALS[2]:-}"
     [[ -n "$PROJECT" && -n "$PRODUCT" && -n "$SHA" ]] || { usage >&2; exit 2; }
     cmd_certify "$PROJECT" "$PRODUCT" "$SHA"
+    ;;
+  bootstrap)
+    [[ -n "$PROJECT" ]] || PROJECT="${POSITIONALS[0]:-}"
+    [[ -n "$PRODUCT" ]] || PRODUCT="${POSITIONALS[1]:-}"
+    [[ -n "$SHA" ]] || SHA="${POSITIONALS[2]:-}"
+    [[ -n "$PROJECT" && -n "$PRODUCT" && -n "$SHA" && "$JSON" -eq 0 ]] ||
+      { usage >&2; exit 2; }
+    cmd_bootstrap "$PROJECT" "$PRODUCT" "$SHA" "$REPO" "$ORIGIN_OVERRIDE"
+    ;;
+  bootstrap-status)
+    [[ -n "$PROJECT" ]] || PROJECT="${POSITIONALS[0]:-}"
+    [[ -n "$SHA" ]] || SHA="${POSITIONALS[1]:-}"
+    [[ -n "$PROJECT" && -n "$SHA" && -z "$PRODUCT$RECEIPT$ORIGIN_OVERRIDE" &&
+       "$REPO" == "$SCRIPT_ROOT" ]] || { usage >&2; exit 2; }
+    cmd_bootstrap_status "$PROJECT" "$SHA" "$JSON"
     ;;
   preflight-report)
     [[ -n "$PROJECT" && -n "$PRODUCT" && -n "$SHA" &&

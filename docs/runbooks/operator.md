@@ -619,8 +619,11 @@ transaction diagnosis.
    product's configured local PostgreSQL endpoint. For Contract 1.8 capacity
    above one, preview and apply the exact owner-local provider configuration
    only after maintenance and complete provider/lease drain, as described in
-   `docs/factory-setup.md`. Then certify that exact protected-main SHA and tree
-   from the clean canonical product path. Record the receipt ID and expiry.
+   `docs/factory-setup.md`. For an active-project upgrade, certify that exact
+   protected-main SHA and tree from the clean canonical product path and record
+   the receipt ID and expiry. For a new project with no `active.json`, leave
+   certification to the resumable `bootstrap` command in step 14 so one signed
+   trace covers install through activation.
    Any later product commit or protected-main tree drift invalidates that
    receipt; land the complete final tree and recertify instead of attempting
    activation with stale evidence.
@@ -638,21 +641,41 @@ transaction diagnosis.
     with its runs, leases, and provider work drained. Confirm the old dispatcher
     is stopped; if that cannot be proven, revoke its execution access before
     proceeding.
-12. Run `factory-kit.sh plan`. It must report `No files were changed.`
+12. For an active-project upgrade, run `factory-kit.sh plan`. It must report
+   `No files were changed.` A new project has no prior generation to plan.
 13. Stop only the product factory profile and reconciler. Leave the dashboard
-   and primary Hermes profile alone.
-14. Run `factory-kit.sh activate`. There is no scheduled operator-facing
-   service to migrate anymore — `factory/operator-map.json` is computed on
-   demand from ticket state and consumed receipts, not synced by a
-   LaunchAgent. Restart the other factory services, then collect doctor JSON,
-   sandbox smoke, PID, and repeated health probes. Tests alone are not
-   production closure evidence; bind these observations and timestamps to the
-   exact protected SHA.
-15. For an authorized in-flight cutover, keep maintenance while reviewing each
-   sealed `models migrate-plan`, then remove maintenance and apply only its
-   operator-approved `models migrate`; claim fresh leases afterward. Without
-   in-flight tickets, remove maintenance only after every acceptance check
-   passes.
+   and primary Hermes profile alone. On a new project keep them disabled.
+14. For an active-project upgrade, run `factory-kit.sh activate`. For a new
+   Contract 1.9 project, run the bounded resumable path instead:
+
+   ```bash
+   bash scripts/factory-kit.sh bootstrap --project <project> \
+     --product <absolute-product-path> --sha <candidate> \
+     --repo <absolute-clean-kit-checkout>
+   bash scripts/factory-kit.sh bootstrap-status --project <project> \
+     --sha <candidate> --json
+   ```
+
+   `bootstrap` reuses the existing install, certify, pause, and activate gates;
+   it does not bypass them. Its owner-only signed trace resumes an interrupted
+   phase and refuses to replace an already-active release. Both activation
+   paths leave maintenance published. There is no scheduled operator-facing
+   sync service: Contract 1.9 accepts `factory/operator-map.json` lifecycle
+   overlays only when they match exact open receipts, while Git retains durable
+   Ready/Canceled state. Restart the other factory services only after the
+   checks below, then collect doctor JSON, sandbox smoke, PID, and repeated
+   health probes. Tests alone are not production closure evidence; bind these
+   observations and timestamps to the exact protected SHA.
+15. For an authorized Contract 1.9 in-flight cutover, keep maintenance while
+   collecting one `models migrate-batch-plan` preview for one to four exact
+   ticket/worktree pairs. Review its protected-main and per-ticket bindings,
+   then remove maintenance and apply only the returned hash with
+   `models migrate-batch`. The existing per-ticket migration remains the
+   authority for every child; partial results are independently retriable from
+   the signed batch journal. Older contracts or a larger cohort retain the
+   individual `models migrate-plan`/approved `models migrate` procedure. Claim
+   fresh leases afterward. Without in-flight tickets, remove maintenance only
+   after every acceptance check passes.
 
 If a named unmerged ticket already has a prior-kit bundle, complete its sealed,
 operator-approved route migration before issuing or consuming a receipt for the

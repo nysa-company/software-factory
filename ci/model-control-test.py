@@ -21,6 +21,8 @@ class ModelControlTest(unittest.TestCase):
         self.base = Path(self.temporary.name).resolve()
         self.state = self.base / "state"
         self.state.mkdir()
+        self.controller_state = self.base / "controller"
+        self.controller_state.mkdir(mode=0o700)
         self.product = self.base / "product"
         self.remote = self.base / "product.git"
         self.workdir = self.base / "ticket-T-901"
@@ -32,6 +34,7 @@ class ModelControlTest(unittest.TestCase):
         (self.product / "factory" / "PROJECT.env").write_text(
             "GH_REPO=nysa-company/model-control-test\n"
             "TICKET_BRANCH_PREFIX=ticket/\n"
+            "MAX_CONCURRENT_TICKETS=3\n"
         )
         (self.product / "factory" / "tickets" / "T-901.md").write_text(
             "# T-901\n\nState: Ready\n"
@@ -90,6 +93,7 @@ class ModelControlTest(unittest.TestCase):
             "FACTORY_TEST_MODE": "1",
             "FACTORY_TRUSTED_TEST_HARNESS": "1",
             "FACTORY_MODEL_STATE_ROOT": str(self.state),
+            "FACTORY_CONTROLLER_STATE_DIR": str(self.controller_state),
             "FACTORY_PROJECT": "model-control-test",
             "FACTORY_ROOT": str(self.product),
             "FACTORY_GLOBAL_ENV": str(self.global_env),
@@ -1018,7 +1022,7 @@ PY
             run_environment = run_environment or environment
             command = [str(release / "scripts" / "model-control.sh"), *args]
             input_text = None
-            if args[0] == "migrate":
+            if args[0] in {"migrate", "migrate-batch"}:
                 command = [
                     "/bin/bash", "-c", 'exec 9<&0; exec "$@"', "_", *command,
                 ]
@@ -1035,7 +1039,7 @@ PY
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
             )
-            if result.returncode and check:
+            if check and (result.returncode or not result.stdout.strip()):
                 self.fail("sealed model-control failed: %s %s" % (
                     result.stdout, result.stderr
                 ))
@@ -1590,6 +1594,161 @@ PY
             replay_head,
         )
         self.assertEqual(network_trace.read_text().splitlines().count("push"), 4)
+
+        batch_arguments = (
+            "--ticket", "T-901", "--workdir", str(self.workdir),
+            "--ticket", "T-902", "--workdir", str(sibling_workdir),
+        )
+        duplicate_batch = migrate(
+            "migrate-batch-plan",
+            "--ticket", "T-901", "--workdir", str(self.workdir),
+            "--ticket", "T-901", "--workdir", str(self.workdir),
+            check=False,
+        )
+        self.assertEqual(duplicate_batch.returncode, 2)
+        self.assertIn("tickets must be unique", duplicate_batch.stdout)
+        oversized_arguments = tuple(
+            argument
+            for number in range(910, 915)
+            for argument in (
+                "--ticket", f"T-{number}", "--workdir", str(self.workdir),
+            )
+        )
+        oversized_batch = migrate(
+            "migrate-batch-plan", *oversized_arguments, check=False,
+        )
+        self.assertEqual(oversized_batch.returncode, 2)
+        self.assertIn("one to four tickets", oversized_batch.stdout)
+        batch_preview = migrate("migrate-batch-plan", *batch_arguments)
+        self.assertEqual(
+            batch_preview["schema"],
+            "nysa.software-factory.model-migration-batch-preview/v1",
+        )
+        self.assertEqual(batch_preview["max_workers"], 2)
+        self.assertEqual(
+            [item["ticket"] for item in batch_preview["items"]],
+            ["T-901", "T-902"],
+        )
+        self.assertRegex(batch_preview["approval_sha256"], r"^[0-9a-f]{64}$")
+        self.assertFalse((self.controller_state / "migration-batches").exists())
+        automatic_approver = migrate(
+            "migrate-batch", "--approve-hash", batch_preview["approval_sha256"],
+            "--approved-by", "auto", *batch_arguments, check=False,
+        )
+        self.assertEqual(automatic_approver.returncode, 2)
+        self.assertIn("approver is invalid", automatic_approver.stdout)
+        refused_batch = migrate(
+            "migrate-batch", "--approve-hash", "f" * 64,
+            "--approved-by", "tester", *batch_arguments, check=False,
+        )
+        self.assertEqual(refused_batch.returncode, 2)
+        self.assertIn("does not match preview", refused_batch.stdout)
+        self.assertEqual(
+            subprocess.check_output(
+                ["git", "-C", str(sibling_workdir), "rev-parse", "HEAD"],
+                text=True,
+            ).strip(),
+            sibling_head,
+        )
+        sibling_drift = subprocess.check_output(
+            [
+                "git", "-C", str(sibling_workdir), "-c", "user.name=test",
+                "-c", "user.email=test@example.com", "commit-tree", "HEAD^{tree}",
+                "-p", sibling_head, "-m", "batch drift fixture",
+            ],
+            text=True,
+        ).strip()
+        subprocess.run(
+            [
+                "git", "-C", str(sibling_workdir), "push", str(self.remote),
+                f"{sibling_drift}:refs/heads/ticket/T-902",
+            ],
+            check=True,
+        )
+        drifted_batch = migrate(
+            "migrate-batch", "--approve-hash", batch_preview["approval_sha256"],
+            "--approved-by", "tester", *batch_arguments,
+            check=False,
+        )
+        self.assertEqual(drifted_batch.returncode, 2)
+        drifted_value = json.loads(drifted_batch.stdout)
+        self.assertEqual(
+            [item["ticket"] for item in drifted_value["failed"]], ["T-902"],
+        )
+        batch_journal = (
+            self.controller_state / "migration-batches"
+            / f"{batch_preview['approval_sha256']}.json"
+        )
+        partial = json.loads(batch_journal.read_text())
+        self.assertEqual(partial["status"], "in_progress")
+        self.assertEqual(set(partial["results"]), {"T-901"})
+        subprocess.run(
+            [
+                "git", "--git-dir", str(self.remote), "update-ref",
+                "refs/heads/ticket/T-902", sibling_head, sibling_drift,
+            ],
+            check=True,
+        )
+        interrupted_batch = migrate(
+            "migrate-batch", "--approve-hash", batch_preview["approval_sha256"],
+            "--approved-by", "tester", *batch_arguments,
+            run_environment={
+                **environment,
+                "FACTORY_TEST_BATCH_FAIL_AFTER_SUCCESS": "1",
+            },
+            check=False,
+        )
+        self.assertEqual(interrupted_batch.returncode, 2)
+        self.assertIn("injected migration batch interruption", interrupted_batch.stdout)
+        partial = json.loads(batch_journal.read_text())
+        self.assertEqual(partial["status"], "in_progress")
+        self.assertEqual(set(partial["results"]), {"T-901"})
+        resumed_batch = migrate(
+            "migrate-batch", "--approve-hash", batch_preview["approval_sha256"],
+            "--approved-by", "tester", *batch_arguments,
+        )
+        self.assertEqual(resumed_batch["status"], "pass")
+        self.assertEqual(set(resumed_batch["results"]), {"T-901", "T-902"})
+        sibling_migrated_head = resumed_batch["results"]["T-902"]["commit_sha"]
+        self.assertEqual(
+            subprocess.check_output(
+                ["git", "--git-dir", str(self.remote), "rev-parse", "refs/heads/ticket/T-902"],
+                text=True,
+            ).strip(),
+            sibling_migrated_head,
+        )
+        self.assertEqual(
+            json.loads(sibling_route.read_text())["kit_sha"], self.kit_sha,
+        )
+        push_count = network_trace.read_text().splitlines().count("push")
+        replayed_batch = migrate(
+            "migrate-batch", "--approve-hash", batch_preview["approval_sha256"],
+            "--approved-by", "tester", *batch_arguments,
+        )
+        self.assertEqual(replayed_batch, resumed_batch)
+        self.assertEqual(
+            network_trace.read_text().splitlines().count("push"), push_count,
+        )
+        journal_raw = batch_journal.read_text()
+        altered = json.loads(journal_raw)
+        altered["results"]["T-902"]["commit_sha"] = "0" * 40
+        batch_journal.write_text(json.dumps(altered) + "\n")
+        tampered = migrate(
+            "migrate-batch", "--approve-hash", batch_preview["approval_sha256"],
+            "--approved-by", "tester", *batch_arguments, check=False,
+        )
+        self.assertEqual(tampered.returncode, 2)
+        self.assertIn("journal is invalid", tampered.stdout)
+        batch_journal.write_text(journal_raw)
+        batch_journal.chmod(0o644)
+        unsafe_journal = migrate(
+            "migrate-batch", "--approve-hash", batch_preview["approval_sha256"],
+            "--approved-by", "tester", *batch_arguments, check=False,
+        )
+        self.assertEqual(unsafe_journal.returncode, 2)
+        self.assertIn("journal is unsafe", unsafe_journal.stdout)
+        batch_journal.chmod(0o600)
+
         bundle = self.workdir / "factory/attestations/T-901/bundle.json"
         bundle.parent.mkdir(parents=True)
         bundle.write_text(json.dumps({"kit_sha": "b" * 40}) + "\n")

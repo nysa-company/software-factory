@@ -23,7 +23,9 @@ The default state root is `~/.factory/kits`. Tests may override it with
     ├── receipts/<receipt-id>.json
     └── projects/<project>/
         ├── active.json
-        └── activation-journal/<generation>-<sha>.json
+        ├── activation-journal/<generation>-<sha>.json
+        ├── controller/migration-batches/<approval-sha>.json
+        └── release-journal/<factory-sha>.json
 ```
 
 - `factory-launch` is the bootstrap trust root. Replace it only as an explicit
@@ -54,10 +56,11 @@ release. Roles select only their tuple from that plan and never re-resolve;
 each run re-probes only that exact route. Blocked and resumed tickets retain
 the same affinity.
 
-Activation does not migrate ticket leases. Before activation, the operator
-must verify that no nonterminal ticket is leased to a different SHA. The
-current release manager rejects live run records but does not scan non-running
-ticket state, so this operator check is required.
+Activation does not migrate ticket leases. It scans the canonical product,
+local and tracking ticket refs, and live remote ticket refs; every nonterminal
+old-kit lease needs exact protected in-flight authorization. Contract 1.9 can
+then migrate up to four authorized ticket worktrees as one approval-bound,
+independently retriable batch after activation.
 
 Run manifests record the kit SHA/tree, product tree, durable ticket `Kit-SHA`,
 contract version, and physical kit path. The opaque dispatcher lease ID is a
@@ -68,7 +71,7 @@ the current run-manifest format does not copy that ID into each manifest.
 
 ## Public Hermes contract
 
-Contract versions `1.0.0` through `1.8.0` certify Hermes Agent `0.18.2`, build
+Contract versions `1.0.0` through `1.9.0` certify Hermes Agent `0.18.2`, build
 `2026.7.7.2`. The canonical manifest is
 `integrations/hermes/contract.json`.
 
@@ -94,7 +97,7 @@ service to install, disable, or embed a release path in.
 Under Contracts 1.5 through 1.7, pass the exact role returned by `next-stage` to `preflight`;
 the launcher rejects roleless preflight so its envelope cannot differ from the
 one reserved by `run`.
-Under Contract 1.8, callers do not invoke `next-stage` directly. The
+Under Contracts 1.8 and 1.9, callers do not invoke `next-stage` directly. The
 non-agent controller obtains a one-use `state-machine` receipt and supplies it
 unchanged to execution and ticket attestations. It runs provider-free
 preflight once on the Planner receipt after the state machine enters Planning;
@@ -116,6 +119,8 @@ Model policy is task-free and sealed:
 ~/.factory/bin/factory-launch <project> models pin --ticket T-123 --workdir /absolute/ticket-worktree --json
 ~/.factory/bin/factory-launch <project> models migrate-plan --ticket T-123 --workdir /absolute/ticket-worktree --json
 ~/.factory/bin/factory-launch <project> models migrate --ticket T-123 --workdir /absolute/ticket-worktree --approve-hash <preview-hash> --readiness-hash <preview-readiness-hash> --approved-by <operator-id> --json
+~/.factory/bin/factory-launch <project> models migrate-batch-plan --ticket T-123 --workdir /absolute/ticket-worktree --ticket T-124 --workdir /absolute/second-ticket-worktree --json
+~/.factory/bin/factory-launch <project> models migrate-batch --approve-hash <batch-approval-hash> --approved-by <operator-id> --ticket T-123 --workdir /absolute/ticket-worktree --ticket T-124 --workdir /absolute/second-ticket-worktree --json
 ~/.factory/bin/factory-launch <project> models fallback-plan --ticket T-123 --failed-run <run-id> --workdir /absolute/ticket-worktree --reason credits_exhausted --json
 ~/.factory/bin/factory-launch <project> models fallback-auto --ticket T-123 --failed-run <run-id> --workdir /absolute/ticket-worktree --reason provider_unavailable --json
 ```
@@ -163,7 +168,7 @@ the policy covers every enabled Cursor, Claude Code, and Codex route at no less
 than ticket capacity. Older contracts and capacity one keep the serialized
 provider lock; malformed policy never enables parallel work.
 
-Contract 1.8 caps controller capacity at four. Tickets are identified by
+Contracts 1.8 and 1.9 cap controller capacity at four. Tickets are identified by
 product, ticket, branch, and authenticated passport; numbered cells are
 disposable worktrees. A 15-second non-overlapping LaunchAgent and terminal-run
 watch call `reconcile`. Four PRs may validate concurrently while one renewable
@@ -172,7 +177,35 @@ either an acyclic ordered three-ticket cohort at capacity three or four
 independent tickets at capacity four. Both forms require exact passports,
 charges, restart and relocation events, protected checks, PR heads, merge
 commits, and protected-main attestations. Only the four-ticket form asserts
-overlapping PR validation.
+overlapping PR validation. Contract 1.9 replaces external board authority with
+one-use receipts: an operator-map entry is accepted only with its exact open
+receipt, and Ready/Canceled lifecycle truth is recoverable from the canonical
+ticket branch. Canceled is terminal and can be materialized only from Backlog.
+
+For an initial Contract 1.9 product activation, the release manager can resume
+the existing install, certify, pause, and activate gates under one signed
+phase trace:
+
+```bash
+bash scripts/factory-kit.sh bootstrap --project <project> \
+  --product /absolute/product --sha <factory-sha> --repo /absolute/factory
+bash scripts/factory-kit.sh bootstrap-status --project <project> \
+  --sha <factory-sha> --json
+```
+
+The command is intentionally unavailable for replacing an active release. It
+leaves maintenance published for external health checks, model activation, and
+any approved route migration. A retry reuses only the exact bound journal,
+receipt, product SHA/tree, and active record; completed replay is read-only.
+
+After an authorized in-flight activation, `migrate-batch-plan` binds one to
+four unique ticket branches, worktree heads, compact migration/readiness
+previews, protected-main snapshot, Factory SHA, and the configured ticket
+capacity into one approval hash. `migrate-batch` runs those existing per-ticket
+migrations with at most that capacity. Each child retains its own remote
+authority and compare-and-swap push checks; a partial or crash-lost batch is
+resumed from its owner-only signed journal, and a completed replay performs no
+push.
 
 For the installed Contract 1.8 macOS production lane, `doctor --json` verifies
 that exact managed LaunchAgent, rejects an explicit native disabled override,

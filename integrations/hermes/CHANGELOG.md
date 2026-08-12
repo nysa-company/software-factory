@@ -27,6 +27,19 @@ helper output are not compatibility promises.
 - Extends every hardcoded contract-version whitelist to accept 1.9.0 in
   addition to 1.8.0; Contract 1.9 carries forward every Contract 1.8 command,
   grammar, and authority unchanged except for the Linear removal above.
+- Requires every Contract 1.9 operator-map lifecycle overlay to match its exact
+  open one-use receipt. Ready and Backlog-to-Canceled decisions are also
+  materialized and pushed on the canonical ticket branch; Canceled is durable,
+  terminal, and never a factory-owned transition target.
+- Adds `models migrate-batch-plan` and `models migrate-batch` for one to four
+  exact ticket worktrees. One approval binds the protected-main snapshot and
+  every compact migration/readiness preview; existing per-ticket remote/CAS
+  checks remain authoritative, and a signed owner-only journal resumes partial
+  or crash-lost results without replaying completed pushes.
+- Adds the release-manager-only `bootstrap` and `bootstrap-status` commands for
+  initial product activation. The signed trace sequences the existing install,
+  certify, pause, and activate gates, resumes exact phases after interruption,
+  leaves maintenance published, and cannot replace an active release.
 
 ## 1.8.0 — 2026-07-27
 

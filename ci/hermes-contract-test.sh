@@ -285,6 +285,7 @@ PY
   cp "$ROOT/scripts/dispatch-lease.sh" "$release/scripts/dispatch-lease.sh"
   cp "$ROOT/scripts/lib/dispatch-leases.sh" "$release/scripts/lib/dispatch-leases.sh"
   cp "$ROOT/scripts/model-control.sh" "$release/scripts/model-control-real.sh"
+  cp "$ROOT/scripts/model-migration-batch.py" "$release/scripts/model-migration-batch.py"
   cp "$ROOT/scripts/model-manager.py" "$release/scripts/model-manager.py"
   cp "$ROOT/scripts/model-router.py" "$release/scripts/model-router.py"
   cp "$ROOT/scripts/envelope-control.py" "$release/scripts/envelope-control.py"
@@ -455,7 +456,7 @@ EOF
     "$release/scripts/preflight.sh" \
     "$release/scripts/next-stage.sh" "$release/scripts/run-agent.sh" \
     "$release/scripts/reorder-test-fixes.sh" "$release/scripts/model-control.sh" \
-    "$release/scripts/model-control-real.sh" \
+    "$release/scripts/model-control-real.sh" "$release/scripts/model-migration-batch.py" \
     "$release/scripts/dispatch-lease.sh" "$release/scripts/operator-event-watch.py"
   chmod +x "$release/scripts/ticket-attest.sh"
 }
@@ -2434,6 +2435,11 @@ expect_bad_model missing-migration-readiness migrate --ticket T-123 \
 expect_bad_model pin-batch-duplicate pin-batch \
   --ticket T-123 --workdir "$RUN_WORKTREE_PHYS" \
   --ticket T-123 --workdir "$RUN_WORKTREE_PHYS" --json
+expect_bad_model contract-18-migrate-batch-plan migrate-batch-plan \
+  --ticket T-123 --workdir "$RUN_WORKTREE_PHYS" --json
+expect_bad_model contract-18-migrate-batch migrate-batch \
+  --approve-hash aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  --approved-by operator-1 --ticket T-123 --workdir "$RUN_WORKTREE_PHYS" --json
 
 mv "$KITS_ROOT/projects/launchtest/routing" \
   "$KITS_ROOT/projects/launchtest/routing-real"
@@ -3427,6 +3433,8 @@ assert commands["models"]["grammars"] == [
     "pin --ticket <T-NNN> --workdir <exact-ticket-worktree> --json",
     "migrate-plan --ticket <T-NNN> --workdir <exact-clean-ticket-worktree> [--include-journal] --json",
     "migrate --ticket <T-NNN> --workdir <exact-clean-ticket-worktree> --approve-hash <lowercase-sha256> --readiness-hash <lowercase-sha256> --approved-by <safe-id> --json",
+    "migrate-batch-plan [--ticket <T-NNN> --workdir <exact-clean-ticket-worktree>]... --json (one to four unique tickets, Contract 1.9)",
+    "migrate-batch --approve-hash <lowercase-sha256> --approved-by <safe-id> [--ticket <T-NNN> --workdir <exact-clean-ticket-worktree>]... --json (one to four unique tickets, Contract 1.9)",
     "qualification-readiness --json (qualification launcher, Contract 1.8)",
     "fallback-plan --ticket <T-NNN> --failed-run <safe-run-id> --workdir <exact-ticket-worktree> --reason <credits_exhausted|provider_unavailable> --json",
     "fallback-auto --ticket <T-NNN> --failed-run <safe-run-id> --workdir <exact-ticket-worktree> --reason <credits_exhausted|provider_unavailable> --json",
@@ -3454,11 +3462,12 @@ assert commands["models"]["maintenance"] == {
     "allowed": [
         "profiles", "status", "inventory", "policy-candidates", "policy-preview",
         "reviewer-exception-contract", "ticket-status", "plan",
-        "migrate-plan", "qualification-readiness", "fallback-plan",
+        "migrate-plan", "migrate-batch-plan", "qualification-readiness",
+        "fallback-plan",
     ],
     "refused": [
         "activate", "disable", "enable", "policy-apply", "pin", "migrate",
-        "fallback-auto", "fallback",
+        "migrate-batch", "fallback-auto", "fallback",
     ],
 }
 assert commands["preflight"]["arguments"] == [
@@ -3730,6 +3739,7 @@ for surface in [
     "worker/image-lock.json",
     "worker/provider-worker.mjs",
     "scripts/model-control.sh",
+    "scripts/model-migration-batch.py",
     "scripts/operator-cli.py",
     "scripts/model-manager.py",
     "scripts/model-router.py",

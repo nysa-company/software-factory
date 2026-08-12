@@ -5692,3 +5692,23 @@ wrapper records exact wrapper/heartbeat identities and applies bounded
 TERM-to-KILL shutdown, which the kill switch can replay after the provider
 group is already absent. This closes issues #551 and #565 without a lifecycle
 bypass or manual ticket-state authority.
+
+## 2026-08-12 — Decision 400: Contract 1.9 release truth is recoverable and batch work is resumable
+
+Category: Reliability
+
+Contract 1.9 operator-map lifecycle overlays are accepted only with the exact
+open one-use receipt. Ready and Backlog-to-Canceled decisions also materialize
+and push on the canonical ticket branch, so map or controller loss cannot erase
+their lifecycle truth; Canceled is terminal and never a factory-owned target.
+Initial product activation may use one signed owner-only bootstrap trace across
+the unchanged install, certify, pause, and activate gates. It resumes exact
+phases, is read-only after completion, leaves maintenance published, and cannot
+replace an active release. Authorized release migrations may bind one to four
+exact worktrees and compact previews to one protected-main approval, then run
+the existing per-ticket CAS transactions at configured capacity. A signed
+batch journal retains independent successes across failure, crash-after-push,
+and replay. The complete CI registry remains four groups: ticket PR moved from
+group 3 to group 2 and model fallback from group 1 to group 3 against the
+protected-main macOS suite baseline of 466/406/377/370 seconds, preserving the
+466-second critical-path target without removing coverage.

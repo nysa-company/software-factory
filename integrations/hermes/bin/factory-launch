@@ -1976,6 +1976,37 @@ PY
         MODEL_ARGS=("$MODEL_ACTION" --scope-type "$MODEL_SCOPE_TYPE" --scope-id "$MODEL_SCOPE_ID")
         MODEL_MUTATION=1
         ;;
+      migrate-batch-plan|migrate-batch)
+        [[ "$CONTRACT_VERSION" == "1.9.0" ]] ||
+          die "model route migration batches require contract 1.9.0"
+        [[ "${!#}" == "--json" ]] || usage
+        set -- "${@:1:$(($# - 1))}"
+        shift
+        MODEL_ARGS=("$MODEL_ACTION")
+        MODEL_BATCH_COUNT=0
+        if [[ "$MODEL_ACTION" == "migrate-batch" ]]; then
+          [[ $# -ge 4 && "$1" == "--approve-hash" &&
+             "$3" == "--approved-by" ]] || usage
+          [[ "$2" =~ ^[0-9a-f]{64}$ ]] ||
+            die "invalid migration batch approval hash"
+          [[ "$4" =~ ^[a-z0-9][a-z0-9._-]{0,127}$ && "$4" != "auto" ]] ||
+            die "invalid migration batch approver identifier"
+          MODEL_ARGS+=(--approve-hash "$2" --approved-by "$4")
+          shift 4
+          MODEL_MUTATION=1
+        fi
+        while [[ $# -gt 0 ]]; do
+          [[ $# -ge 4 && "$1" == "--ticket" && "$3" == "--workdir" ]] || usage
+          [[ "$2" =~ ^T-[0-9]+$ ]] || die "invalid ticket identifier"
+          resolve_product_workdir "$4"
+          validate_ticket_worktree "$2"
+          MODEL_ARGS+=(--ticket "$2" --workdir "$RESOLVED_WORKDIR")
+          MODEL_BATCH_COUNT=$((MODEL_BATCH_COUNT + 1))
+          shift 4
+        done
+        [[ "$MODEL_BATCH_COUNT" -ge 1 && "$MODEL_BATCH_COUNT" -le 4 ]] || usage
+        add_certified_origin_env
+        ;;
       migrate-plan)
         [[ "$CONTRACT_VERSION" == "1.4.0" || "$CONTRACT_VERSION" == "1.5.0" ||
            "$CONTRACT_VERSION" == "1.6.0" || "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ||

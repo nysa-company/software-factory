@@ -85,9 +85,11 @@ priority, and model-fallback approval) is a one-use receipt issued by
 T-NNN]`. The receipt is anchored in the controller's state directory, is
 projected into the gitignored `factory/operator-map.json` that ticket
 sequencing reads, and gets a zero-authority audit copy under
-`factory/receipts/<T>/` committed in the product checkout. The map is a
-projection with nothing behind it, so there is no sync delay or staleness to
-wait on.
+`factory/receipts/<T>/` committed in the product checkout. Under Contract 1.9,
+a map entry is usable only while its exact receipt remains open; editing the
+map cannot manufacture authority. Ready and Canceled are also pushed to the
+canonical ticket branch, so Git can recover those lifecycle decisions after
+local controller or map loss.
 
 The operator owns the decisions a human should make:
 
@@ -112,6 +114,8 @@ The compact board flow is:
 - Building contains test-author and builder work.
 - Review contains reviewer and Narrator/evidence work.
 - Blocked-Escalated is reachable from any active phase.
+- Canceled is a durable terminal withdrawal reachable only from Backlog and
+  never starts planning or manufactures execution evidence.
 - Approved means the operator authorized the change; Done means merge and
   staging deployment were also confirmed.
 
