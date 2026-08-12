@@ -1610,7 +1610,8 @@ resolve_product_publication_cherry_pick() {
   [[ "$resolved" -ge 1 ]] ||
     return 1
   git -C "$work" -c user.name='Factory Dev Lane' \
-    -c user.email=factory-dev@local cherry-pick --continue >/dev/null
+    -c user.email=factory-dev@local -c core.editor=true \
+    cherry-pick --continue >/dev/null
 }
 
 write_product_publication_replay() {
