@@ -3223,11 +3223,11 @@ Approve to merge?
 BUNDLE
 expect_stage "AWAIT-OPERATOR" "$WALK" T-500 || WALK_OK=0
 printf '%s\n' \
-  '{"tickets":{"T-500":{"operator":{"state":"Approved","approval":"Linear","state_base":"awaiting approval"}}}}' \
-  > "$WALK/factory/linear-map.json"
+  '{"tickets":{"T-500":{"operator":{"state":"Approved","approval":"Receipt","state_base":"awaiting approval"}}}}' \
+  > "$WALK/factory/operator-map.json"
 expect_stage "REFUSE contract 1.2 has no trusted bundle-attestation path for approval" \
   "$WALK" T-500 || WALK_OK=0
-rm "$WALK/factory/linear-map.json"
+rm "$WALK/factory/operator-map.json"
 printf 'Operator-Approval: Linear because the operator said so\n' >> \
   "$WALK/factory/tickets/T-500.md"
 expect_stage "REFUSE contract 1.2 has no trusted bundle-attestation path for approval" \
