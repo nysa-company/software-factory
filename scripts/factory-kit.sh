@@ -204,6 +204,8 @@ Usage:
   $PROGRAM runtime-pin --product PRODUCT_REPO --runtime-bin NODE_BIN_DIR
   $PROGRAM provider-concurrency ACTION --sha FULL_SHA --capacity 2..4 [--approve-hash HASH]
   $PROGRAM provider-cli-pin ACTION --sha FULL_SHA [--claude-bin ABS --codex-bin ABS --cursor-bin ABS --operator-id ID] [--approve-hash HASH]
+  $PROGRAM release setup --project SLUG --product PRODUCT_REPO --sha FULL_SHA --profile ID --operator-id ID [--repo KIT_REPO] [--runtime-bin NODE_BIN_DIR] [--claude-bin ABS --codex-bin ABS --cursor-bin ABS] [--ticket-workdir T-NNN ABS]
+  $PROGRAM release resume --project SLUG --sha FULL_SHA --approve-hash HASH --approved-by ID
 
 FACTORY_KITS_ROOT overrides the default state root (~/.factory/kits).
 EOF
@@ -4726,6 +4728,37 @@ cmd_preflight_report_json() {
   return 2
 }
 
+cmd_release_setup() {
+  local project="$1" product="$2" sha="$3" repo="$4" profile="$5" operator="$6"
+  local runtime="$7" claude="$8" codex="$9" cursor="${10}"
+  shift 10
+  local -a arguments=(
+    --kits-root "$KITS_ROOT" setup --project "$project" --product "$product"
+    --sha "$sha" --repo "$repo" --profile "$profile" --operator-id "$operator"
+  )
+  [[ -z "$runtime" ]] || arguments+=(--runtime-bin "$runtime")
+  [[ -z "$claude" ]] || arguments+=(--claude-bin "$claude")
+  [[ -z "$codex" ]] || arguments+=(--codex-bin "$codex")
+  [[ -z "$cursor" ]] || arguments+=(--cursor-bin "$cursor")
+  while [[ $# -gt 0 ]]; do
+    arguments+=(--ticket-workdir "$1" "$2")
+    shift 2
+  done
+  python3 -I -S "$SCRIPT_ROOT/scripts/release-transaction.py" "${arguments[@]}"
+}
+
+cmd_release_resume() {
+  local project="$1" sha="$2" approval="$3" approver="$4" values release helper
+  validate_sha "$sha"
+  values="$(verify_release_from_manifest "$sha")"
+  release="$(printf '%s' "$values" | awk -F'\t' '{print $3}')"
+  helper="$release/scripts/release-transaction.py"
+  [[ -f "$helper" && ! -L "$helper" ]] || die "sealed release transaction helper is missing"
+  python3 -I -S "$helper" --kits-root "$KITS_ROOT" resume \
+    --project "$project" --sha "$sha" --approve-hash "$approval" \
+    --approved-by "$approver"
+}
+
 require_command git
 require_command python3
 require_command shasum
@@ -4751,6 +4784,8 @@ CLAUDE_BIN=""
 CODEX_BIN=""
 CURSOR_BIN=""
 OPERATOR_ID=""
+PROFILE=""
+APPROVED_BY=""
 STAGE=""
 PRIORITY_NAME=""
 PREVIEW_HASH=""
@@ -4759,6 +4794,7 @@ REASON=""
 EXPIRES_MINUTES=""
 JSON=0
 POSITIONALS=()
+TICKET_WORKDIRS=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -4781,6 +4817,14 @@ while [[ $# -gt 0 ]]; do
     --codex-bin) [[ $# -ge 2 ]] || die "$1 requires a value"; CODEX_BIN="$2"; shift 2 ;;
     --cursor-bin) [[ $# -ge 2 ]] || die "$1 requires a value"; CURSOR_BIN="$2"; shift 2 ;;
     --operator-id) [[ $# -ge 2 ]] || die "$1 requires a value"; OPERATOR_ID="$2"; shift 2 ;;
+    --profile) [[ $# -ge 2 ]] || die "$1 requires a value"; PROFILE="$2"; shift 2 ;;
+    --approved-by) [[ $# -ge 2 ]] || die "$1 requires a value"; APPROVED_BY="$2"; shift 2 ;;
+    --ticket-workdir)
+      [[ $# -ge 3 ]] || die "$1 requires a ticket and workdir"
+      TICKET_WORKDIRS[${#TICKET_WORKDIRS[@]}]="$2"
+      TICKET_WORKDIRS[${#TICKET_WORKDIRS[@]}]="$3"
+      shift 3
+      ;;
     --stage) [[ $# -ge 2 ]] || die "$1 requires a value"; STAGE="$2"; shift 2 ;;
     --priority) [[ $# -ge 2 ]] || die "$1 requires a value"; PRIORITY_NAME="$2"; shift 2 ;;
     --preview-hash) [[ $# -ge 2 ]] || die "$1 requires a value"; PREVIEW_HASH="$2"; shift 2 ;;
@@ -4793,6 +4837,12 @@ while [[ $# -gt 0 ]]; do
     *) POSITIONALS[${#POSITIONALS[@]}]="$1"; shift ;;
   esac
 done
+
+if [[ "$COMMAND" != "release" && (
+      -n "$PROFILE$APPROVED_BY" || ${#TICKET_WORKDIRS[@]} -ne 0
+    ) ]]; then
+  die "release-only option used with $COMMAND"
+fi
 
 [[ "$COMMAND" == "preflight-report" ]] || validate_managed_roots
 
@@ -4907,6 +4957,32 @@ case "$COMMAND" in
       { usage >&2; exit 2; }
     cmd_provider_cli_pin "$ACTION" "$SHA" "$CLAUDE_BIN" "$CODEX_BIN" \
       "$CURSOR_BIN" "$OPERATOR_ID" "$APPROVE_HASH"
+    ;;
+  release)
+    ACTION="${POSITIONALS[0]:-}"
+    if [[ "$ACTION" == "setup" ]]; then
+      [[ ${#POSITIONALS[@]} -eq 1 && -n "$PROJECT" && -n "$PRODUCT" &&
+         -n "$SHA" && -n "$PROFILE" && -n "$OPERATOR_ID" &&
+         -z "$APPROVED_BY$APPROVE_HASH$ORIGIN_OVERRIDE$RECEIPT$TICKET$CAPACITY" &&
+         -z "$STAGE$PRIORITY_NAME$PREVIEW_HASH$FAILED_RUN$REASON$EXPIRES_MINUTES" &&
+         ${#TICKETS[@]} -eq 0 && "$JSON" -eq 0 &&
+         ${#TICKET_WORKDIRS[@]} -le 8 && $((${#TICKET_WORKDIRS[@]} % 2)) -eq 0 ]] ||
+        { usage >&2; exit 2; }
+      cmd_release_setup "$PROJECT" "$PRODUCT" "$SHA" "$REPO" "$PROFILE" \
+        "$OPERATOR_ID" "$RUNTIME_BIN" "$CLAUDE_BIN" "$CODEX_BIN" "$CURSOR_BIN" \
+        "${TICKET_WORKDIRS[@]}"
+    elif [[ "$ACTION" == "resume" ]]; then
+      [[ ${#POSITIONALS[@]} -eq 1 && -n "$PROJECT" && -n "$SHA" &&
+         -n "$APPROVE_HASH" && -n "$APPROVED_BY" && -z "$PRODUCT$PROFILE$OPERATOR_ID" &&
+         -z "$RUNTIME_BIN$CLAUDE_BIN$CODEX_BIN$CURSOR_BIN$ORIGIN_OVERRIDE$RECEIPT$TICKET$CAPACITY" &&
+         -z "$STAGE$PRIORITY_NAME$PREVIEW_HASH$FAILED_RUN$REASON$EXPIRES_MINUTES" &&
+         ${#TICKETS[@]} -eq 0 && "$JSON" -eq 0 &&
+         ${#TICKET_WORKDIRS[@]} -eq 0 && "$REPO" == "$SCRIPT_ROOT" ]] ||
+        { usage >&2; exit 2; }
+      cmd_release_resume "$PROJECT" "$SHA" "$APPROVE_HASH" "$APPROVED_BY"
+    else
+      { usage >&2; exit 2; }
+    fi
     ;;
   prune) die "automatic prune is intentionally not implemented" ;;
   *) usage >&2; die "unknown command: $COMMAND" ;;
