@@ -2442,7 +2442,7 @@ validate_receipt_snapshot() {
   contract="$(contract_version "$release")"
   [[ "$contract" == "$(json_get "$receipt" contract_version)" ]] ||
     die "Hermes contract version drifted"
-  runtime_tuple="$(json_get "$receipt" runtime_tuple)"
+  runtime_tuple="$(json_get "$receipt" runtime_tuple 2>/dev/null || true)"
   if [[ -e "$product_top/factory/certification-plan.json" || \
         -L "$product_top/factory/certification-plan.json" || \
         -n "$runtime_tuple" ]]; then
@@ -4162,7 +4162,7 @@ create_journal() {
   receipt_hash="$(file_hash "$receipt")"
   python3 - "$active" "$slug" "$sha" "$tree" "$receipt_id" \
     "$(json_get "$receipt" product_sha)" "$(json_get "$receipt" product_tree)" \
-    "$(json_get "$receipt" runtime_tuple)" "$contract" "$previous" \
+    "$(json_get "$receipt" runtime_tuple 2>/dev/null || true)" "$contract" "$previous" \
     "$generation" "$product" "$release" "$(now_iso)" "$receipt" \
     "$receipt_hash" "$transaction" <<'PY' | atomic_json_from_stdin "$journal"
 import json, os, sys, time

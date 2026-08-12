@@ -2782,6 +2782,35 @@ then
 else
   fail "bootstrap JSON status identifies the completed candidate" "$LAST_OUTPUT"
 fi
+PRODUCT_BOOTSTRAP_LEGACY="$(make_product product-bootstrap-legacy)"
+git -C "$PRODUCT_BOOTSTRAP_LEGACY" rm -q factory/certification-plan.json
+cat > "$PRODUCT_BOOTSTRAP_LEGACY/factory/certify.sh" <<'EOF'
+#!/usr/bin/env bash
+set -eu
+[[ "$HOME" == *factory-kit-certification* ]]
+[[ "$FACTORY_KIT_RELEASE" == *factory-kit-certification*/release ]]
+EOF
+set_pin "$PRODUCT_BOOTSTRAP_LEGACY" "$SHA_A"
+set_ticket_lease "$PRODUCT_BOOTSTRAP_LEGACY" "$SHA_A"
+commit_all "$PRODUCT_BOOTSTRAP_LEGACY" "prepare legacy bootstrap product"
+push_main "$PRODUCT_BOOTSTRAP_LEGACY"
+expect_success "bootstrap accepts product without an optional runtime tuple" \
+  bootstrap --project bootstrap-legacy --product "$PRODUCT_BOOTSTRAP_LEGACY" \
+  --sha "$SHA_A" --repo "$KIT_REPO"
+LEGACY_ACTIVE="$STATE/projects/bootstrap-legacy/active.json"
+LEGACY_RECEIPT="$STATE/receipts/consumed/$(json_value "$LEGACY_ACTIVE" receipt_id).json"
+if python3 - "$LEGACY_ACTIVE" "$LEGACY_RECEIPT" <<'PY'
+import json, pathlib, sys
+active = json.loads(pathlib.Path(sys.argv[1]).read_text())
+receipt = json.loads(pathlib.Path(sys.argv[2]).read_text())
+assert "runtime_tuple" not in active
+assert "runtime_tuple" not in receipt
+PY
+then
+  pass "legacy bootstrap preserves absent optional runtime tuple"
+else
+  fail "legacy bootstrap preserves absent optional runtime tuple"
+fi
 cp "$BOOTSTRAP_JOURNAL" "$TMP/bootstrap-journal.saved"
 chmod u+w "$BOOTSTRAP_JOURNAL"
 python3 - "$BOOTSTRAP_JOURNAL" <<'PY'
