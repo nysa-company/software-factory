@@ -75,95 +75,41 @@ python3 "$KIT_DIR/scripts/lib/effective_ticket.py" \
 OPERATOR_VERSION="$(<"$OPERATOR_VERSION_FILE")"
 
 if [[ "$ACTION" == "materialize" ]]; then
-  python3 - "$TICKET_FILE" "$TMP" <<'PY'
-import re
+  python3 - "$KIT_DIR/scripts/lib" "$TICKET_FILE" "$TMP" <<'PY'
 import sys
 from pathlib import Path
 
-current_path, effective_path = map(Path, sys.argv[1:])
+sys.path.insert(0, sys.argv[1])
+from ticket_state_transition import TransitionError, validate_materialization
 
-current_text = current_path.read_text()
-effective_text = effective_path.read_text()
-
-def field(text, name):
-    match = re.search(rf"^{re.escape(name)}:\s*(.+)$", text, re.MULTILINE | re.IGNORECASE)
-    return match.group(1).strip() if match else ""
-
-current_state = field(current_text, "State").lower()
-effective_state = field(effective_text, "State").lower()
-if not current_state or not effective_state:
-    raise SystemExit("ticket has no State field")
-if current_state != effective_state and effective_state in {"awaiting approval", "done"}:
-    raise SystemExit(
-        f"evidence-sensitive state requires a dedicated attestation: {effective_state}"
+current_path, effective_path = map(Path, sys.argv[2:])
+try:
+    validate_materialization(
+        current_path.read_text(),
+        effective_path.read_text(),
     )
-current_approval = field(current_text, "Operator-Approval")
-effective_approval = field(effective_text, "Operator-Approval")
-if (
-    current_state in {"awaiting approval", "approved"}
-    or effective_state in {"awaiting approval", "approved"}
-    or current_approval
-    or effective_approval
-):
-    raise SystemExit(
-        "approval materialization requires the unavailable dedicated bundle-attestation path"
-    )
-resume_state = field(current_text, "Resume-State").lower()
-legal_resume = (
-    current_state == "blocked-escalated"
-    and effective_state == resume_state
-    and effective_state in {"backlog", "ready", "planning", "building", "review"}
-)
-legal_ready = current_state == "backlog" and effective_state == "ready"
-if current_state != effective_state and not (legal_ready or legal_resume):
-    raise SystemExit("operator overlay cannot materialize a factory-owned state transition")
+except TransitionError as error:
+    raise SystemExit(str(error))
 PY
 elif [[ "$ACTION" == "transition" ]]; then
   cmp -s "$TMP" "$TICKET_FILE" || {
     echo "pending operator fields require materialization before factory transition" >&2
     exit 1
   }
-  python3 - "$TMP" "$STATE" "$CONTRACT_VERSION" <<'PY'
-import re
+  python3 - "$KIT_DIR/scripts/lib" "$TMP" "$STATE" "$CONTRACT_VERSION" <<'PY'
 import sys
 from pathlib import Path
 
-path, target, contract = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
-text = path.read_text()
-match = re.search(r"^State:\s*(.+)$", text, re.MULTILINE | re.IGNORECASE)
-if not match:
-    raise SystemExit("ticket has no State field")
-current = match.group(1).strip().lower()
-target_key = target.strip().lower()
-states = {
-    "ready": "Ready", "planning": "Planning", "building": "Building", "review": "Review",
-    "awaiting approval": "Awaiting Approval", "blocked-escalated": "Blocked-Escalated",
-    "approved": "Approved", "done": "Done",
-}
-if target_key not in states:
-    raise SystemExit(f"illegal factory transition target: {target_key}")
-text = re.sub(
-    r"^State:\s*.*$", f"State: {states[target_key]}", text,
-    count=1, flags=re.MULTILINE | re.IGNORECASE,
-)
-if target_key == "blocked-escalated" and contract in {"1.7.0", "1.8.0"}:
-    resume = f"Resume-State: {states[current]}"
-    resume_fields = re.findall(
-        r"^Resume-State:\s*.*$", text, re.MULTILINE | re.IGNORECASE,
+sys.path.insert(0, sys.argv[1])
+from ticket_state_transition import TransitionError, apply_factory_transition
+
+path, target, contract = Path(sys.argv[2]), sys.argv[3], sys.argv[4]
+try:
+    path.write_text(
+        apply_factory_transition(path.read_text(), target, contract)
     )
-    if len(resume_fields) > 1:
-        raise SystemExit("ticket contains duplicate Resume-State fields")
-    if resume_fields:
-        text = re.sub(
-            r"^Resume-State:\s*.*$", resume, text,
-            count=1, flags=re.MULTILINE | re.IGNORECASE,
-        )
-    else:
-        text = re.sub(
-            r"^(State:\s*.*)$", rf"\1\n{resume}", text,
-            count=1, flags=re.MULTILINE | re.IGNORECASE,
-        )
-path.write_text(text)
+except TransitionError as error:
+    raise SystemExit(str(error))
 PY
 elif [[ "$ACTION" == "reviewer-reconcile" ]]; then
   cmp -s "$TMP" "$TICKET_FILE" || {
@@ -272,40 +218,22 @@ ticket_path.write_text(re.sub(
 PY
 fi
 
-python3 - "$INITIAL_STATE" "$ACTION" "$TMP" <<'PY'
-import re
+python3 - "$KIT_DIR/scripts/lib" "$INITIAL_STATE" "$ACTION" "$TMP" <<'PY'
 import sys
 from pathlib import Path
 
-initial, action, path = sys.argv[1].strip().lower(), sys.argv[2], Path(sys.argv[3])
-states = re.findall(
-    r"^State:\s*(.*?)\s*$", path.read_text(), re.IGNORECASE | re.MULTILINE,
+sys.path.insert(0, sys.argv[1])
+from ticket_state_transition import (
+    TransitionError,
+    exact_state,
+    validate_action_transition,
 )
-if len(states) != 1:
-    raise SystemExit("ticket State field is ambiguous")
-final = states[0].lower()
-allowed = {
-    "materialize": {
-        ("backlog", "ready"),
-        *(("blocked-escalated", state) for state in (
-            "backlog", "ready", "planning", "building", "review",
-        )),
-    },
-    "transition": {
-        ("ready", "planning"), ("planning", "building"),
-        ("building", "review"), ("review", "building"),
-        *((state, "blocked-escalated") for state in (
-            "ready", "planning", "building", "review",
-            "awaiting approval", "approved",
-        )),
-    },
-    "reviewer-reconcile": {("review", "building")},
-    "qualification-backlog": {
-        ("planning", "backlog"), ("building", "backlog"),
-    },
-}
-if initial != final and (initial, final) not in allowed[action]:
-    raise SystemExit(f"illegal {action} transition: {initial} -> {final}")
+
+initial, action, path = sys.argv[2].strip().lower(), sys.argv[3], Path(sys.argv[4])
+try:
+    validate_action_transition(action, initial, exact_state(path.read_text()))
+except TransitionError as error:
+    raise SystemExit(str(error))
 PY
 
 CHANGED=0

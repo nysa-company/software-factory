@@ -42,7 +42,11 @@ set_group() {
   fi
   STATE="$next_state"
   GROUP="$next"
-  SUITES="$next_suites"
+  for suite in $next_suites; do
+    if [[ " $SUITES " != *" $suite "* ]]; then
+      SUITES="${SUITES:+$SUITES }$suite"
+    fi
+  done
 }
 
 while IFS= read -r -d '' status && IFS= read -r -d '' path; do
@@ -51,6 +55,23 @@ while IFS= read -r -d '' status && IFS= read -r -d '' path; do
     docs/*|README.md|TODOS.md|context/memory.md|AGENTS.md|CLAUDE.md|\
       .github/pull_request_template.md|integrations/hermes/CHANGELOG.md|\
       conformance/SHAKEDOWN-REPORT.md)
+      ;;
+    ci/factory-controller-test.py)
+      set_group targeted state-machine "factory-controller"
+      ;;
+    ci/state-machine-test.py|scripts/state-machine.py)
+      set_group targeted state-machine "state-machine"
+      ;;
+    ci/ticket-state-test.sh)
+      set_group targeted state-machine "ticket-state"
+      ;;
+    ci/ticket-transition-policy-test.py|\
+      scripts/lib/ticket_state_transition.py)
+      set_group targeted state-machine "ticket-transition-policy"
+      ;;
+    scripts/ticket-state.sh)
+      set_group targeted state-machine \
+        "ticket-state ticket-transition-policy"
       ;;
     scripts/linear-sync.py)
       set_group targeted linear "linear"
