@@ -3772,7 +3772,7 @@ case "$command" in
     printf '{"status":"pinned"}\n'
     ;;
   state-machine)
-    [[ "$CANARY_STUB_CONTRACT" == 1.8.0 ]]
+    [[ "$CANARY_STUB_CONTRACT" == 1.8.0 || "$CANARY_STUB_CONTRACT" == 1.9.0 ]]
     if [[ -n "${CANARY_STUB_FAIL_FILE:-}" && ! -e "$CANARY_STUB_FAIL_FILE" ]]; then
       : >"$CANARY_STUB_FAIL_FILE"
       exit 42
@@ -3789,7 +3789,7 @@ case "$command" in
     for ((index=0; index<${#args[@]}; index++)); do
       [[ "${args[$index]}" != --receipt ]] || received="${args[$((index+1))]}"
     done
-    if [[ "$CANARY_STUB_CONTRACT" == 1.8.0 ]]; then
+    if [[ "$CANARY_STUB_CONTRACT" == 1.8.0 || "$CANARY_STUB_CONTRACT" == 1.9.0 ]]; then
       [[ "$received" == "$receipt" ]]
     else
       [[ -z "$received" ]]
@@ -3823,7 +3823,7 @@ STUB
 chmod 700 "$CANARY_WRAPPER"
 CANARY_HOOK="$CANARY_ROOT/home/.hermes/profiles/factory-canary-${CANARY_SHA:0:12}/hooks/run-factory-canary.sh"
 expect_failure "first generated hook attempt" env \
-  CANARY_STUB_ROOT="$CANARY_ROOT" CANARY_STUB_CONTRACT=1.8.0 \
+  CANARY_STUB_ROOT="$CANARY_ROOT" CANARY_STUB_CONTRACT=1.9.0 \
   CANARY_STUB_SHA="$CANARY_SHA" \
   CANARY_STUB_TREE="$(git -C "$CANARY_SOURCE" rev-parse "$CANARY_SHA^{tree}")" \
   CANARY_STUB_TRACE="$TMP/canary-1.8.trace" \
@@ -3843,7 +3843,7 @@ archives=list((root/"evidence/prior-failures").glob("*.txt"))
 assert len(archives) == 1 and "status=42" in archives[0].read_text()
 PY
 : >"$TMP/canary-1.8.trace"
-CANARY_STUB_ROOT="$CANARY_ROOT" CANARY_STUB_CONTRACT=1.8.0 \
+CANARY_STUB_ROOT="$CANARY_ROOT" CANARY_STUB_CONTRACT=1.9.0 \
   CANARY_STUB_SHA="$CANARY_SHA" \
   CANARY_STUB_TREE="$(git -C "$CANARY_SOURCE" rev-parse "$CANARY_SHA^{tree}")" \
   CANARY_STUB_TRACE="$TMP/canary-1.8.trace" \
