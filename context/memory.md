@@ -5731,3 +5731,16 @@ and restores maintenance while retaining the barrier on failure. Completed or
 crash-lost work replays from owner-only signed journals. The operating target
 is setup process start through first controller-observed Planning state in less
 than 15 minutes, excluding human approval-review time.
+
+## 2026-08-12 — Decision 402: Hermes will be removed at one host-wide Contract 2 boundary
+
+Category: Decision
+
+Hermes is not part of the target Software Factory runtime. Contract 2 will move
+the launcher and manifest into Factory-owned paths, delete the profile,
+registry, services, prompts, canary, diagnostics, and current operator guidance,
+and rely only on the native controller plus existing provider CLIs. Because one
+machine-global launcher serves every project, the first cutover must extend the
+signed release transaction to drain and migrate every active project together,
+persist a Contract 2 floor, and fix forward after that no-return phase; immutable
+historical releases and evidence remain readable but cannot become active.
