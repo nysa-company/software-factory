@@ -3211,6 +3211,10 @@ try:
     source_tree = source.get("product_tree")
     source_evidence = source.get("product_certification_evidence")
     result = source_evidence.get("result") if isinstance(source_evidence, dict) else None
+    source_runtime = dict(runtime) if isinstance(runtime, dict) else None
+    if source_runtime is not None:
+        source_runtime["product_sha"] = source_sha
+        source_runtime["product_tree"] = source_tree
     result_raw = (
         json.dumps(result, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
         + "\n"
@@ -3230,7 +3234,7 @@ try:
         or source.get("product_path") != product
         or source.get("product_origin") != origin
         or source.get("contract_version") != contract
-        or source.get("runtime_tuple") != runtime
+        or source.get("runtime_tuple") != source_runtime
         or source.get("hashes") != {
             "kit_pin": kit_pin_hash, "project_env": project_env_hash
         }
@@ -3251,7 +3255,7 @@ try:
         or result.get("product_sha") != source_sha
         or result.get("product_tree") != source_tree
         or result.get("contract_version") != contract
-        or result.get("runtime_tuple") != runtime
+        or result.get("runtime_tuple") != source_runtime
         or not isinstance(result.get("phases"), list)
         or not result["phases"]
         or any(phase.get("exit_status") != 0 for phase in result["phases"])

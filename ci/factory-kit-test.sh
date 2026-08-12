@@ -2665,7 +2665,8 @@ if [[ "$(json_value "$REPLAY_RECEIPT" product_certification_evidence.mode)" == "
       "$(json_value "$REPLAY_RECEIPT" checks.product_certification)" == "reused" ]]; then
   pass "ticket-control replay skips the full product suite"
 else
-  fail "ticket-control replay skips the full product suite"
+  fail "ticket-control replay skips the full product suite" \
+    "mode=$(json_value "$REPLAY_RECEIPT" product_certification_evidence.mode), check=$(json_value "$REPLAY_RECEIPT" checks.product_certification), trace=$(tr '\n' ',' < "$CERTIFICATION_TRACE")"
 fi
 expect_success "ticket-control replay receipt revalidates for activation" \
   pause --project replay --product "$PRODUCT_REPLAY"
