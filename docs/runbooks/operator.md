@@ -53,8 +53,15 @@ in that action; never relaunch a role or move Factory-owned state by hand.
   `factory-launch <project> ticket-control pause --ticket T-NNN --issue <issue-url> --json`.
   The sealed controller releases its lease and retains an owner-only repro
   record; sibling tickets continue.
-- After a successor Factory has migrated the passport, resume deliberately with
+- After the successor Factory and any approved route migration are ready,
+  resume deliberately with
   `factory-launch <project> ticket-control resume --ticket T-NNN --factory-sha <full-sha> --json`.
+- A v2 pause at the pre-route head may resume through exactly one pushed,
+  Factory-authored ticket-and-route migration child. The resume command binds
+  that head while migrating the passport, revalidates the signed pause and
+  authenticated lineage, then claims capacity. Arbitrary descendants, remote
+  drift, extra paths, legacy v1 pauses, and changed lifecycle or run evidence
+  still refuse.
 - Do not move Markdown or operator-map state by hand. A missing issue, changed
   passport/state, active role, or different target Factory refuses cleanly.
 

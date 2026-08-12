@@ -3073,13 +3073,17 @@ class Controller:
                 "planner", "spec-linter", "test-author", "builder",
                 "reviewer", "narrator",
             }
-            and claim.get("lease_released") is True
             and not claim.get("publication_lease")
             and not self.role_active(claim)
             and self.terminal_for_receipt(
                 claim["ticket"], claim["receipt"]
             ) is None
         )
+        if missing_terminal:
+            missing_terminal = (
+                claim.get("lease") == ""
+                and claim["ticket"] not in self.dispatcher_lease_records()
+            )
         if (
             claim
             and (claim.get("receipt") or claim.get("role"))
@@ -3232,6 +3236,46 @@ class Controller:
             item.get("from_passport_sha256")
             for item in lineage if isinstance(item, dict)
         )
+        branch = intent.get("branch", "")
+        worktrees = self.worktrees_by_branch().get(f"refs/heads/{branch}", [])
+        probe = {
+            "branch": branch, "ticket": ticket,
+            "worktree": intent.get("worktree", ""),
+        }
+        remote_status, local_head, remote_head = (
+            self.remote_cell_head_status(probe)
+            if (
+                not legacy
+                and len(worktrees) == 1
+                and worktrees[0] == probe["worktree"]
+            )
+            else ("remote_unavailable", "", "")
+        )
+        route_migration = (
+            not legacy
+            and SHA.fullmatch(intent.get("head_sha", "")) is not None
+            and SHA.fullmatch(local_head) is not None
+            and local_head != intent.get("head_sha")
+            and remote_status == "pushed"
+            and remote_head == local_head
+            and self.ticket_release_current(probe)
+            and self.exact_route_migration_commit(
+                probe, intent["head_sha"], local_head,
+            )
+        )
+        passport_position_matches = (
+            (
+                passport.get("head_sha") == intent.get("head_sha")
+                and passport.get("factory_sha") in {
+                    factory_sha, intent.get("passport_factory_sha"),
+                }
+            )
+            or (
+                route_migration
+                and passport.get("head_sha") == local_head
+                and passport.get("factory_sha") == factory_sha
+            )
+        )
         if (
             intent.get("schema") not in {
                 "nysa.software-factory.ticket-pause/v1",
@@ -3243,11 +3287,8 @@ class Controller:
             or intent.get("passport_sha256") not in authorized_passports
             or passport.get("ticket") != ticket
             or passport.get("branch") != intent.get("branch")
-            or passport.get("head_sha") != intent.get("head_sha")
-            or passport.get("factory_sha") != factory_sha
-            or intent.get("worktree") not in self.worktrees_by_branch().get(
-                f"refs/heads/{intent.get('branch')}", []
-            )
+            or not passport_position_matches
+            or intent.get("worktree") not in worktrees
             or self.claim_path(ticket).exists()
             or (
                 not legacy
@@ -3261,6 +3302,49 @@ class Controller:
                     or intent.get("run_snapshot_sha256")
                     != self.ticket_run_snapshot(ticket)
                     or not DIGEST.fullmatch(intent_digest)
+                )
+            )
+        ):
+            raise ControllerError("ticket resume intent does not match the passport")
+        if route_migration and passport.get("head_sha") != local_head:
+            migrated = self.migrate_passport(
+                probe, "preserve", expected_head=local_head,
+            )
+            passport = read(passport_path)
+            if (
+                migrated.get("status") != "ok"
+                or migrated.get("passport") != passport.get("passport_sha256")
+            ):
+                raise ControllerError("ticket resume passport migration failed")
+        lineage = passport.get("migration_history", [])
+        authorized_passports = {passport.get("passport_sha256")}
+        authorized_passports.update(
+            item.get("from_passport_sha256")
+            for item in lineage if isinstance(item, dict)
+        )
+        current_state = passport.get("current_state")
+        expected_head = local_head if route_migration else intent.get("head_sha")
+        if (
+            current_state not in INFLIGHT_STATES
+            or passport.get("publication_state") == "merged"
+            or self.product_ticket_done(ticket)
+            or passport.get("ticket") != ticket
+            or passport.get("branch") != branch
+            or passport.get("factory_sha") != factory_sha
+            or passport.get("head_sha") != expected_head
+            or not passport_head_lineage(passport, intent.get("head_sha", ""))
+            or intent.get("passport_sha256") not in authorized_passports
+            or intent.get("current_state") != current_state
+            or passport.get("current_stage") != intent.get("current_stage")
+            or self.claim_path(ticket).exists()
+            or (
+                not legacy
+                and (
+                    intent.get("resume_state") != self.resume_state(
+                        intent["worktree"], ticket, current_state
+                    )
+                    or intent.get("run_snapshot_sha256")
+                    != self.ticket_run_snapshot(ticket)
                 )
             )
         ):

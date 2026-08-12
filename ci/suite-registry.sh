@@ -56,6 +56,7 @@ suite_registry() {
   "$callback" reorder-test-fixes "reorder test-fixes suite" bash "$ROOT/ci/reorder-test-fixes-test.sh"
   "$callback" preflight "preflight suite" bash "$ROOT/ci/preflight-test.sh"
   "$callback" ticket-state "ticket-state suite" bash "$ROOT/ci/ticket-state-test.sh"
+  "$callback" ticket-transition-policy "exhaustive ticket transition policy suite" python3 "$ROOT/ci/ticket-transition-policy-test.py"
   "$callback" ticket-attest "ticket attestation suite" python3 "$ROOT/ci/ticket-attest-test.py"
   "$callback" legacy-closeout "legacy closeout suite" python3 "$ROOT/ci/legacy-closeout-test.py"
   "$callback" terminal-backfill "terminal backfill suite" python3 "$ROOT/ci/terminal-backfill-test.py"

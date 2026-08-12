@@ -22,13 +22,13 @@ suite_shard_for() {
 # per-suite durations in recent protected-main runs when a group drifts.
 suite_group_for() {
   case "$1" in
-    factory-scripts|model-fallback|qualification-environment|protected-merge-reconciliation|terminal-backfill|state-machine)
+    factory-controller|factory-scripts|model-fallback|qualification-environment|protected-merge-reconciliation|terminal-backfill|state-machine|ticket-passport)
       printf '1\n'
       ;;
     emergency-admit|hermes-contract|preflight|provider-cli-runtime|provider-coordinator|provider-credential-broker|provider-recovery|provider-executor|factory-dev-lane)
       printf '2\n'
       ;;
-    factory-kit|ticket-pr|provider-activation|model-control)
+    factory-kit|ticket-pr|provider-activation|model-control|ticket-transition-policy)
       printf '3\n'
       ;;
     *)

@@ -99,7 +99,9 @@ def secure_directory(path: Path, label: str, *, writable: bool = True) -> None:
         raise PinError(f"{label} is unsafe")
 
 
-def secure_regular(path: Path, label: str, *, maximum: int = MAX_JSON) -> bytes:
+def secure_regular(
+    path: Path, label: str, *, maximum: int | None = MAX_JSON
+) -> bytes:
     try:
         info = path.lstat()
     except OSError as error:
@@ -107,7 +109,8 @@ def secure_regular(path: Path, label: str, *, maximum: int = MAX_JSON) -> bytes:
     if (
         not path.is_absolute() or path.is_symlink() or not stat.S_ISREG(info.st_mode)
         or info.st_uid != os.geteuid() or info.st_nlink != 1
-        or stat.S_IMODE(info.st_mode) & 0o022 or info.st_size > maximum
+        or stat.S_IMODE(info.st_mode) & 0o022
+        or (maximum is not None and info.st_size > maximum)
     ):
         raise PinError(f"{label} is unsafe")
     descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
@@ -115,10 +118,10 @@ def secure_regular(path: Path, label: str, *, maximum: int = MAX_JSON) -> bytes:
         opened = os.fstat(descriptor)
         if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
             raise PinError(f"{label} changed while opening")
-        raw = os.read(descriptor, maximum + 1)
+        raw = b"" if maximum is None else os.read(descriptor, maximum + 1)
     finally:
         os.close(descriptor)
-    if len(raw) > maximum:
+    if maximum is not None and len(raw) > maximum:
         raise PinError(f"{label} is oversized")
     return raw
 
@@ -539,7 +542,7 @@ def validate_maintenance(project: dict[str, Any]) -> None:
 
 
 def database(path: Path, application: int, version: int) -> sqlite3.Connection:
-    secure_regular(path, "provider database")
+    secure_regular(path, "provider database", maximum=None)
     connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     connection.execute("PRAGMA query_only=ON")
     if (

@@ -419,6 +419,25 @@ exit 2
         connection.close()
         self.assertNotEqual(self.command("plan").returncode, 0)
 
+    def test_growing_provider_ledger_remains_pinnable(self) -> None:
+        accounting = self.factory / "accounting"
+        accounting.mkdir()
+        path = accounting / "state-v2.sqlite3"
+        connection = sqlite3.connect(path)
+        connection.executescript("""
+            PRAGMA application_id = 1314476867;
+            PRAGMA user_version = 2;
+            CREATE TABLE attempts(state TEXT);
+            CREATE TABLE legacy_intervals(value TEXT);
+            CREATE TABLE padding(value BLOB);
+        """)
+        connection.execute("INSERT INTO padding VALUES(zeroblob(1100000))")
+        connection.commit()
+        connection.close()
+        path.chmod(0o600)
+        self.assertGreater(path.stat().st_size, 1_000_000)
+        self.plan()
+
     def test_incomplete_qualification_is_ignored_but_live_controller_blocks(self) -> None:
         root = self.qualifications / "nysa-sf-qualification.fixture"
         root.mkdir()

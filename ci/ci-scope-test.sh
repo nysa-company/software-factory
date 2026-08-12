@@ -172,7 +172,10 @@ mkdir -p "$SELECT_REPO/ci" "$SELECT_REPO/docs" "$SELECT_REPO/scripts/lib" \
   "$SELECT_REPO/conformance/app/tests" "$SELECT_REPO/envelope" "$SELECT_REPO/roles"
 cp "$SELECTOR" "$LIGHTWEIGHT" "$SELECT_REPO/ci/"
 for path in \
+  ci/factory-controller-test.py ci/state-machine-test.py ci/ticket-state-test.sh \
+  ci/ticket-transition-policy-test.py \
   scripts/operator-console.py scripts/operator-snapshot.py \
+  scripts/state-machine.py scripts/lib/ticket_state_transition.py \
   scripts/adapters/claude-kimi.sh scripts/lib/claude-kimi-output.py \
   scripts/lib/claude-kimi-secret.py scripts/lib/failed_attempt_handoff.py \
   scripts/reorder-test-fixes.sh scripts/lib/reorder_test_fixes.py \
@@ -198,6 +201,28 @@ selection_case() {
 
 POLICY="ci-scope immutability artifact-policy"
 selection_case docs/guide.md "metadata|inert metadata|" "metadata selection"
+selection_case ci/factory-controller-test.py \
+  "targeted|state-machine|factory-controller $POLICY" \
+  "controller test selection"
+selection_case ci/state-machine-test.py \
+  "targeted|state-machine|state-machine $POLICY" \
+  "state-machine test selection"
+selection_case ci/ticket-state-test.sh \
+  "targeted|state-machine|ticket-state $POLICY" \
+  "ticket-state test selection"
+selection_case ci/ticket-transition-policy-test.py \
+  "targeted|state-machine|ticket-transition-policy $POLICY" \
+  "ticket transition policy test selection"
+selection_case scripts/state-machine.py \
+  "targeted|state-machine|state-machine $POLICY" \
+  "state-machine implementation selection"
+selection_case scripts/ticket-state.sh \
+  "targeted|state-machine|ticket-state ticket-transition-policy $POLICY" \
+  "ticket-state implementation selection"
+selection_case scripts/lib/ticket_state_transition.py \
+  "targeted|state-machine|ticket-transition-policy $POLICY" \
+  "ticket transition policy selection"
+selection_case "targeted|linear|linear $POLICY" "linear selection"
 selection_case scripts/operator-console.py "targeted|operator-console|operator-console $POLICY" "operator console selection"
 selection_case scripts/operator-snapshot.py "targeted|operator-console|operator-console $POLICY" "operator snapshot selection"
 selection_case scripts/adapters/claude-kimi.sh "targeted|claude-kimi|claude-kimi $POLICY" "adapter wrapper selection"
@@ -211,11 +236,20 @@ selection_case conformance/app/tests/server.test.js "targeted|conformance|confor
 
 for path in scripts/lib/effective_ticket.py scripts/ledger-view.py scripts/attempt-cancel.py \
   scripts/operator-state.py integrations/operator-console/app.js scripts/model-router.py \
-  scripts/envelope-control.py scripts/dispatch-lease.sh scripts/ticket-state.sh \
+  scripts/envelope-control.py scripts/dispatch-lease.sh \
   scripts/legacy-closeout.py conformance/app/package.json conformance/app/app.js \
   scripts/run-agent.sh roles/builder.md ci/test-all.sh; do
   selection_case "$path" "full|unknown or shared path|" "unsafe path $path"
 done
+
+STATE_MACHINE_BASE="$(git -C "$SELECT_REPO" rev-parse HEAD)"
+printf 'state machine\n' >> "$SELECT_REPO/scripts/state-machine.py"
+printf 'ticket state\n' >> "$SELECT_REPO/scripts/ticket-state.sh"
+STATE_MACHINE_HEAD="$(commit_all "$SELECT_REPO" "combined state machine")"
+expect_selection \
+  "targeted|state-machine|state-machine ticket-state ticket-transition-policy $POLICY" \
+  "$SELECT_REPO" "$STATE_MACHINE_BASE" "$STATE_MACHINE_HEAD" \
+  "combined state-machine selection"
 
 MIXED_BASE="$(git -C "$SELECT_REPO" rev-parse HEAD)"
 printf 'mixed\n' >> "$SELECT_REPO/scripts/adapters/claude-kimi.sh"

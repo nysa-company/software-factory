@@ -5733,6 +5733,24 @@ Validation: focused before/after-approval refresh, repeated generation,
 restart, sibling, exact-cap, foreign-Factory, and ordinary-override regressions
 are green. A sealed qualification canary remains required before closure.
 
+## FI-20260811-220 — Paused route migrations deadlocked resume
+
+Status: Focused pause, passport, and route regressions green; protected CI pending
+Priority: P0 (#561)
+Area: issue-bound ticket pause/resume
+Owner: Factory
+Impact: an approved successor route migration moved the clean remote branch,
+while resume still required the passport and signed pause to share the old
+head. Migrating the passport first inverted the mismatch, so neither supported
+order could resume the ticket.
+Smallest repair: let v2 resume consume exactly one direct, pushed,
+Factory-authored ticket-and-route migration child, bind it as the expected
+passport migration head, and revalidate every signed pause and authenticated
+lineage field before claiming capacity. Do not widen v1 or arbitrary ancestry.
+Validation: same-head cutover, exact route child, wrong shape, remote drift,
+migration refusal, legacy refusal, post-migration capacity failure, retry
+idempotence, and neighboring route-recovery paths are covered.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

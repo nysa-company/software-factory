@@ -12371,6 +12371,107 @@ class FactoryControllerTest(unittest.TestCase):
         with self.assertRaisesRegex(CONTROL.ControllerError, "idle passport"):
             controller.pause_ticket(ticket, FACTORY_ISSUE)
 
+    def test_ticket_control_pause_resume_covers_every_inflight_state(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        passports = self.state / "passports"
+        passports.mkdir(mode=0o700)
+        worktrees = {}
+        cases = (
+            ("Ready", "claimed", None),
+            ("Planning", "claimed", None),
+            ("Building", "claimed", None),
+            ("Review", "waiting", None),
+            ("Awaiting Approval", "waiting", None),
+            ("Approved", "waiting", None),
+            ("Blocked-Escalated", "blocked", "Planning"),
+        )
+        expected_statuses = {}
+
+        for index, (state, status, resume_state) in enumerate(cases, 301):
+            ticket = f"T-{index}"
+            branch = f"ticket/{ticket}"
+            cell = self.root / f"ticket-control-{index}"
+            ticket_path = cell / "factory/tickets" / f"{ticket}.md"
+            ticket_path.parent.mkdir(parents=True)
+            ticket_path.write_text(
+                f"State: {state}\n"
+                + (f"Resume-State: {resume_state}\n" if resume_state else ""),
+                encoding="utf-8",
+            )
+            passport = {
+                "branch": branch,
+                "current_stage": "ESCALATE planner",
+                "current_state": state,
+                "factory_sha": self.release.name,
+                "head_sha": f"{index % 16:x}" * 40,
+                "migration_history": [],
+                "passport_sha256": f"{(index + 1) % 16:x}" * 64,
+                "ticket": ticket,
+            }
+            CONTROL.write(passports / f"{ticket}.json", passport)
+            controller.save_claim({
+                "branch": branch,
+                "lease": f"{(index + 2) % 16:x}" * 64,
+                "priority": "normal",
+                "publication_lease": "",
+                "receipt": "",
+                "role": "",
+                "schema": CONTROL.CLAIM_SCHEMA,
+                "status": status,
+                "ticket": ticket,
+                "worktree": str(cell),
+            })
+            worktrees[f"refs/heads/{branch}"] = [str(cell)]
+            expected_statuses[ticket] = status
+
+        controller.worktrees_by_branch = lambda: worktrees
+        controller.remote_passport_valid = lambda _claim: True
+        controller.park_claim = lambda _claim: True
+        controller.ticket_release_current = lambda _claim: True
+
+        def launcher(*args, **_kwargs):
+            if args[0] == "claim":
+                ticket = args[args.index("--ticket") + 1]
+                return {
+                    "lease_id": hashlib.sha256(ticket.encode()).hexdigest(),
+                    "schema_version": 1,
+                    "ticket": ticket,
+                }
+            if args[0] == "release":
+                return {}
+            raise AssertionError(args)
+
+        controller.json_call = launcher
+        for index, (state, _status, resume_state) in enumerate(cases, 301):
+            ticket = f"T-{index}"
+            ticket_path = (
+                self.root / f"ticket-control-{index}"
+                / "factory/tickets" / f"{ticket}.md"
+            )
+            with self.subTest(state=state):
+                self.assertEqual(
+                    controller.pause_ticket(ticket, FACTORY_ISSUE)["status"],
+                    "paused",
+                )
+                pause = CONTROL.read(controller.pause_path(ticket))
+                self.assertEqual(pause["current_state"], state)
+                self.assertEqual(pause["resume_state"], resume_state)
+                self.assertFalse(controller.claim_path(ticket).exists())
+
+                self.assertEqual(
+                    controller.resume_ticket(ticket, self.release.name)["status"],
+                    "resumed",
+                )
+                resumed = CONTROL.read(controller.claim_path(ticket))
+                self.assertEqual(resumed["status"], expected_statuses[ticket])
+                self.assertRegex(resumed["lease"], CONTROL.DIGEST)
+                self.assertFalse(controller.pause_path(ticket).exists())
+                self.assertEqual(
+                    ticket_path.read_text(encoding="utf-8"),
+                    f"State: {state}\n"
+                    + (f"Resume-State: {resume_state}\n" if resume_state else ""),
+                )
+
     def test_ticket_control_reconstructs_only_settled_contract_blocker(self) -> None:
         controller = CONTROL.Controller(self.args)
         ticket = "T-110"
@@ -12480,7 +12581,6 @@ class FactoryControllerTest(unittest.TestCase):
             "blocked_reason": "missing-terminal",
             "branch": f"ticket/{ticket}",
             "lease": "",
-            "lease_released": True,
             "parked": True,
             "priority": "normal",
             "publication_lease": "",
@@ -12500,12 +12600,18 @@ class FactoryControllerTest(unittest.TestCase):
         controller.role_active = lambda _claim: False
         controller.terminal_for_receipt = lambda *_args: None
         controller.ticket_release_current = lambda _claim: True
+        controller.dispatcher_lease_records = lambda: {ticket: {}}
         controller.json_call = lambda *args, **_kwargs: {
             "lease_id": "e" * 64,
             "schema_version": 1,
             "ticket": ticket,
         }
 
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "pre-provider boundary"
+        ):
+            controller.pause_ticket(ticket, FACTORY_ISSUE)
+        controller.dispatcher_lease_records = lambda: {}
         self.assertEqual(
             controller.pause_ticket(ticket, FACTORY_ISSUE)["status"], "paused"
         )
@@ -12688,6 +12794,143 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(resumed["lease"], "1" * 64)
         self.assertEqual(resumed["status"], "claimed")
         self.assertFalse(restarted.pause_path(ticket).exists())
+
+    def test_pause_resume_accepts_only_one_exact_route_migration_child(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        ticket = "T-110"
+        source_factory = "9" * 40
+        pause_head = "b" * 40
+        route_head = "d" * 40
+        cell = self.root / "cell-paused-route"
+        (cell / "factory/tickets").mkdir(parents=True)
+        (cell / "factory/tickets/T-110.md").write_text(
+            f"State: Building\nKit-SHA: {source_factory}\n", encoding="utf-8",
+        )
+        passport_path = self.state / "passports/T-110.json"
+        passport_path.parent.mkdir(mode=0o700)
+        paused_passport = {
+            "branch": f"ticket/{ticket}",
+            "current_stage": "RUN builder",
+            "current_state": "Building",
+            "factory_sha": source_factory,
+            "head_sha": pause_head,
+            "migration_history": [],
+            "passport_sha256": "c" * 64,
+            "publication_state": "none",
+            "ticket": ticket,
+        }
+        CONTROL.write(passport_path, paused_passport)
+        controller.worktrees_by_branch = lambda: {
+            f"refs/heads/ticket/{ticket}": [str(cell)]
+        }
+        controller.remote_passport_valid = lambda _claim: True
+        controller.pause_ticket(ticket, FACTORY_ISSUE)
+        pause = CONTROL.read(controller.pause_path(ticket))
+
+        controller.ticket_release_current = lambda _claim: True
+        controller.remote_cell_head_status = lambda _claim: (
+            "pushed", route_head, route_head,
+        )
+        migrations = []
+
+        controller.exact_route_migration_commit = lambda *_args: False
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "does not match the passport"
+        ):
+            controller.resume_ticket(ticket, self.release.name)
+        self.assertEqual(migrations, [])
+
+        controller.exact_route_migration_commit = lambda *_args: True
+        controller.remote_cell_head_status = lambda _claim: (
+            "remote_unavailable", route_head, "",
+        )
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "does not match the passport"
+        ):
+            controller.resume_ticket(ticket, self.release.name)
+
+        migrated_passport = {
+            **paused_passport,
+            "factory_sha": self.release.name,
+            "head_sha": route_head,
+            "migration_history": [{
+                "from_factory_sha": source_factory,
+                "from_head_sha": pause_head,
+                "from_passport_file_sha256": "e" * 64,
+                "from_passport_sha256": paused_passport["passport_sha256"],
+                "from_protected_base_sha": "f" * 40,
+                "from_route_plan_sha256": "1" * 64,
+                "schema": CONTROL.PASSPORT_MIGRATION_SCHEMA,
+                "to_factory_sha": self.release.name,
+                "to_head_sha": route_head,
+                "to_protected_base_sha": "f" * 40,
+                "to_route_plan_sha256": "2" * 64,
+            }],
+            "parent_digest": paused_passport["passport_sha256"],
+            "parent_file_sha256": "e" * 64,
+            "passport_sha256": "3" * 64,
+            "protected_base_sha": "f" * 40,
+            "route_plan_sha256": "2" * 64,
+        }
+        CONTROL.write(passport_path, migrated_passport)
+        CONTROL.write(controller.pause_path(ticket), {
+            **pause, "schema": "nysa.software-factory.ticket-pause/v1",
+        })
+        controller.remote_cell_head_status = lambda _claim: (
+            "pushed", route_head, route_head,
+        )
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "does not match the passport"
+        ):
+            controller.resume_ticket(ticket, self.release.name)
+
+        CONTROL.write(passport_path, paused_passport)
+        CONTROL.write(controller.pause_path(ticket), pause)
+        controller.migrate_passport = lambda *_args, **_kwargs: {
+            "status": "error"
+        }
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "passport migration failed"
+        ):
+            controller.resume_ticket(ticket, self.release.name)
+        self.assertTrue(controller.pause_path(ticket).exists())
+
+        def migrate(_claim, publication, expected_head=""):
+            self.assertEqual((publication, expected_head), ("preserve", route_head))
+            migrations.append(expected_head)
+            CONTROL.write(passport_path, migrated_passport)
+            return {
+                "passport": migrated_passport["passport_sha256"],
+                "status": "ok",
+            }
+
+        lease_attempts = 0
+
+        def ensure_lease(claim, _reason):
+            nonlocal lease_attempts
+            lease_attempts += 1
+            if lease_attempts == 1:
+                raise CONTROL.ControllerError("ticket capacity is full")
+            claim["lease"] = "4" * 64
+
+        controller.migrate_passport = migrate
+        controller.ensure_lease = ensure_lease
+        with self.assertRaisesRegex(CONTROL.ControllerError, "capacity is full"):
+            controller.resume_ticket(ticket, self.release.name)
+        self.assertEqual(migrations, [route_head])
+        self.assertEqual(CONTROL.read(passport_path)["head_sha"], route_head)
+        self.assertTrue(controller.pause_path(ticket).exists())
+        self.assertFalse(controller.claim_path(ticket).exists())
+
+        self.assertEqual(
+            controller.resume_ticket(ticket, self.release.name)["status"],
+            "resumed",
+        )
+        self.assertEqual(migrations, [route_head])
+        self.assertEqual(
+            CONTROL.read(controller.claim_path(ticket))["lease"], "4" * 64,
+        )
+        self.assertFalse(controller.pause_path(ticket).exists())
 
     def test_interrupted_receipt_free_claim_recovers_once_from_marker(self) -> None:
         controller = CONTROL.Controller(self.args)

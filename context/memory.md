@@ -10,7 +10,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Nysa Agents baseline v3 as a toolkit; `bash ci/test-all.sh` is the unconditional full command.
 - Live products resolve sealed exact-SHA releases under `~/.factory/kits` via `~/.factory/bin/factory-launch`.
 - Model routing is portfolio policy; routes pin at the ticket boundary and change only via the Contract 1.4 journal flow. One profile resolution shares model-independent native-adapter readiness across its routes and runs independent probes in bounded parallel; Cursor readiness stays model-specific. Sealed Cursor inventory verifies the exact configured CLI identity in an empty disposable owner-only home before copying credentials, then accepts only its bounded certified structure.
-- Linear is removed (Decision 397); the six operator authorities are one-use receipts via `factory-kit.sh operator ACTION`. The only emergency recovery is the receipt-bound `OPERATOR RESUME` ticket commit. No generic lifecycle bypass is approved.
+- Linear is removed (Decision 398); the six operator authorities are one-use receipts via `factory-kit.sh operator ACTION`. The only emergency recovery is the receipt-bound `OPERATOR RESUME` ticket commit. No generic lifecycle bypass is approved.
 - **Contract rules below in Operating contract are authoritative**; this summary is only what the session hook can inject.
 
 ## Operating contract
@@ -33,6 +33,11 @@ everything the Factory actually enforces lives here.
   ticket state, route, and protected base before writing. Restart reconstructs
   the exact signed migration edge and backfills its event only after the remote
   passport agrees; an answer-only operator wait remains uncharged.
+- A signed v2 ticket pause may resume across one exact pushed
+  `Software Factory <factory@local>` route-migration child. Resume owns the
+  expected-head passport migration and revalidates pause state, stage, run
+  snapshot, lineage, route, remote, and capacity; v1 pauses and any other
+  descendant remain closed.
 - Contract 1.8 emergency closeout is a narrow plan/apply authority for one
   exact already-merged ticket. It binds an open GitHub issue, explicit owner,
   bounded request window, protected-main tree/ticket state, exact PR and green
@@ -5638,7 +5643,20 @@ and secret checks and binds the exact source, target, paths, and diff digest int
 a fresh receipt. Deleted, renamed, executable, configuration, dependency,
 classifier, legacy, ambiguous, or drifted inputs retain full certification.
 
-## 2026-08-11 — Decision 397: Linear is removed; the six operator authorities become one-use receipts
+## 2026-08-11 — Decision 397: Provider pinning accepts growing SQLite ledgers
+
+Category: Reliability
+
+Provider CLI pinning keeps the bounded JSON limit for configuration, receipts,
+and journals, but validates SQLite provider databases without that payload-size
+ceiling. Owner, type, symlink, hard-link, mode, open-race, SQLite identity, and
+idle-work checks remain fail-closed. This matches provider concurrency and
+prevents normal terminal-attempt history growth from blocking a release upgrade.
+Issue-bound pause also recognizes a parked pre-provider missing-terminal only
+when its claim has no lease and the authoritative dispatcher has no lease record;
+the normal parking step may remove its transient `lease_released` field.
+
+## 2026-08-11 — Decision 398: Linear is removed; the six operator authorities become one-use receipts
 
 Category: Decision
 
@@ -5661,4 +5679,3 @@ this design (accepted trade-off); it is Git- and receipt-only, verified by
 reading protected main and the ledger. This supersedes every prior Log entry
 describing Linear as live authority, board, or sync target; those entries
 stand as history and are not rewritten.
-

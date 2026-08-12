@@ -38,8 +38,13 @@ check_suite() {
     factory-scripts) expected_command="$ROOT/ci/test-factory-scripts.sh"; expected_group=1 ;;
     hermes-contract) expected_command="$ROOT/ci/hermes-contract-test.sh"; expected_group=2 ;;
     factory-kit) expected_command="$ROOT/ci/factory-kit-test.sh"; expected_group=3 ;;
+    factory-controller|ticket-passport) expected_group=1 ;;
+    ticket-transition-policy) expected_group=3 ;;
   esac
-  if [[ -n "$expected_command" && ( "$3" != "bash" || "$4" != "$expected_command" || "$group" != "$expected_group" ) ]]; then
+  if [[ -n "$expected_group" && "$group" != "$expected_group" ]]; then
+    fail "$id no longer has its timing-balanced group $expected_group"
+  fi
+  if [[ -n "$expected_command" && ( "$3" != "bash" || "$4" != "$expected_command" ) ]]; then
     fail "$id no longer preserves its canonical sequential lifecycle command in its pinned group"
   fi
 }
