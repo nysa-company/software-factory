@@ -1933,10 +1933,9 @@ cat > "$LAUNCH_PRODUCT/.gitignore" <<'EOF'
 factory/*-helper.env
 factory/runs/
 factory/runtime-ledger.csv
-factory/linear-map.json
-factory/.linear-sync.lock
-factory/.linear-sync-cycle.lock
-factory/.linear-operator-clears/
+factory/operator-map.json
+factory/.operator-map.lock
+factory/.operator-clears/
 factory/.active-runs/
 factory/.provider.lock/
 factory/.dispatch-leases/
@@ -2803,13 +2802,17 @@ git -C "$LAUNCH_PRODUCT" add factory/tickets/T-77{7,8,9}.md \
 git -C "$LAUNCH_PRODUCT" commit -qm "seed contract 1.2 ticket"
 git -C "$LAUNCH_PRODUCT" push -q origin main
 write_active "$SHA_C" "$REAL_TREE" "$RELEASE_C"
-python3 - "$LAUNCH_PRODUCT/factory/linear-map.json" <<'PY'
+python3 - "$LAUNCH_PRODUCT/factory/operator-map.json" <<'PY'
 import datetime
 import json
 import sys
 now = datetime.datetime.now(datetime.timezone.utc).isoformat()
 with open(sys.argv[1], "w", encoding="utf-8") as handle:
-    json.dump({"_sync": {"last_success_at": now}, "tickets": {}}, handle)
+    json.dump(
+        {"_config": None, "_sync": {"last_success_at": now},
+         "initiatives": {}, "tickets": {}},
+        handle,
+    )
     handle.write("\n")
 PY
 run_launcher launchtest dispatch-plan --shadow --json > "$TMP/dispatch-shadow.json"

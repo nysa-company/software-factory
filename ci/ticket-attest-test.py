@@ -2035,10 +2035,11 @@ else:
         )
         self.env["FAKE_WORKDIR"] = str(self.workdir)
         self.controller_state = self.temp / "controller"
-        self.controller_state.mkdir(mode=0o700)
+        self.controller_state.mkdir(mode=0o700, exist_ok=True)
+        self.controller_state.chmod(0o700)
         self.controller_state = self.controller_state.resolve()
-        (self.controller_state / "passports").mkdir(mode=0o700)
-        (self.controller_state / "claims").mkdir(mode=0o700)
+        (self.controller_state / "passports").mkdir(mode=0o700, exist_ok=True)
+        (self.controller_state / "claims").mkdir(mode=0o700, exist_ok=True)
         self.env.update({
             "FACTORY_CONTROLLER_STATE_DIR": str(self.controller_state),
             "FACTORY_PROJECT": "test-product",

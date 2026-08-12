@@ -118,7 +118,7 @@ def validate_inputs(args: argparse.Namespace) -> tuple[Path, Path, Path, str, st
                 (factory / "integrations/hermes/contract.json").read_text(encoding="utf-8")
             )
             contract = contract_data.get("contract_version", "")
-            if contract not in {f"1.{minor}.0" for minor in range(5, 9)}:
+            if contract not in {f"1.{minor}.0" for minor in range(5, 10)}:
                 failures.append("candidate Hermes contract is unsupported by the canary")
             if 2 not in contract_data.get("concurrency", {}).get("enabled_values", []):
                 failures.append("candidate contract does not permit canary ticket capacity 2")
@@ -304,7 +304,7 @@ def validate_completion(root: Path, expected: dict) -> bool:
         "contract.json", "doctor.json", "hermes-hook-payload.sha256",
         "hook-start", "lease.sha256", "manifest-summary.json", "model-pin.json",
         "preflight.json", "release.json",
-        "transition.json" if expected["contract_version"] == "1.8.0" else "next-stage.json",
+        "transition.json" if expected["contract_version"] in {"1.8.0", "1.9.0"} else "next-stage.json",
     }
     if set(files) != required:
         raise Refusal("canary completion evidence inventory is incomplete")
@@ -331,13 +331,13 @@ def validate_completion(root: Path, expected: dict) -> bool:
         or manifest.get("contract_version") != expected["contract_version"]
         or not hex40.fullmatch(manifest.get("product_tree", ""))
         or (
-            expected["contract_version"] == "1.8.0"
+            expected["contract_version"] in {"1.8.0", "1.9.0"}
             and not hex64.fullmatch(receipt)
         )
-        or (expected["contract_version"] != "1.8.0" and receipt)
+        or (expected["contract_version"] not in {"1.8.0", "1.9.0"} and receipt)
     ):
         raise Refusal("canary mock Planner manifest evidence is invalid")
-    if expected["contract_version"] == "1.8.0":
+    if expected["contract_version"] in {"1.8.0", "1.9.0"}:
         transition = json.loads(
             (evidence / "transition.json").read_text(encoding="utf-8")
         )
@@ -389,7 +389,7 @@ def render_hook(root: Path, project: str, sha: str, tree: str, contract: str) ->
     release = root / f"home/.factory/kits/releases/{sha}"
     worktree = root / "worktrees/T-900001"
     evidence = root / "evidence"
-    if contract == "1.8.0":
+    if contract in {"1.8.0", "1.9.0"}:
         sequence = f"""run_launcher state-machine --ticket \"$ticket\" --lease \"$lease\" \\
   --workdir \"$worktree\" --json > \"$evidence/transition.json\"
 role=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["role"])' \"$evidence/transition.json\")
