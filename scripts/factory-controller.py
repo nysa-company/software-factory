@@ -10778,10 +10778,9 @@ class Controller:
                         "--attest-only", "--json",
                     )
                 except ControllerError as error:
-                    if str(error).startswith((
-                        "ticket-attest: stale_linear_approval:",
-                        "ticket-attest: stale_operator_approval:",
-                    )):
+                    if str(error).startswith(
+                        "ticket-attest: stale_operator_approval:"
+                    ):
                         self.mark_prepublication_retry(claim, pr)
                     raise
                 if (
