@@ -5625,3 +5625,15 @@ any terminal evidence, issue-bound pause accepts only the exact idle
 `missing-terminal` receipt/role boundary. Its run snapshot makes a later
 terminal publication invalidate resume, so the successor release can clear a
 proven no-provider launch without replaying a delayed terminal.
+
+## 2026-08-11 — Decision 396: Ticket-only descendants reuse measured certification
+
+Category: Performance
+
+After an exact Factory generation has one active, fully measured product
+certification, a nonempty descendant changing only added or modified canonical
+ticket Markdown may reuse that suite result. The committed source activation
+journal and receipt remain the authority; the target reruns sandboxed repository
+and secret checks and binds the exact source, target, paths, and diff digest into
+a fresh receipt. Deleted, renamed, executable, configuration, dependency,
+classifier, legacy, ambiguous, or drifted inputs retain full certification.

@@ -18,7 +18,7 @@ CANONICAL_GITHUB_ORIGIN="github.com/nysa-company/software-factory"
 RECEIPT_SCHEMA=2
 INSTALL_MANIFEST_SCHEMA=1
 SUITE_EVIDENCE_SCHEMA=2
-CERTIFICATION_TOOL_VERSION=5
+CERTIFICATION_TOOL_VERSION=6
 # Bump whenever run_kit_checks_isolated command composition or semantics change.
 KIT_SUITE_DEFINITION="factory-kit-suite-v2"
 DEFAULT_RECEIPT_TTL="${FACTORY_KIT_RECEIPT_TTL_SECONDS:-86400}"
@@ -34,6 +34,7 @@ PREPARED_PRODUCT=""
 ISOLATED_HOME=""
 PRODUCT_CERTIFICATION_EVIDENCE=""
 PRODUCT_CERTIFICATION_EVIDENCE_DIGEST=""
+PRODUCT_CERTIFICATION_REPLAY_EVIDENCE=""
 PRODUCT_CERTIFICATION_HOST_LOAD_START=""
 PRODUCT_CERTIFICATION_HOST_LOAD_END=""
 CERTIFICATION_CACHE_INPUT=""
@@ -2491,6 +2492,13 @@ validate_receipt_snapshot() {
   esac
   case "$(json_get "$receipt" product_certification_evidence.mode)" in
     legacy) ;;
+    ticket-control-replay)
+      ticket_control_certification_replay validate "$receipt" "$slug" \
+        "$product_top" "$(json_get "$receipt" product_origin)" "$sha" \
+        "$expected_tree" "$product_git_sha" "$product_git_tree" "$contract" \
+        "$runtime_tuple" "$kit_pin_hash" "$project_env_hash" >/dev/null ||
+        die "ticket-control product certification replay evidence is invalid"
+      ;;
     measured)
       python3 - "$receipt" "$sha" "$expected_tree" "$product_git_sha" \
         "$product_git_tree" "$contract" "$runtime_tuple" <<'PY' || die "measured product certification evidence is invalid"
@@ -2558,7 +2566,9 @@ PY
      "$(json_get "$receipt" checks.repo_check)" == "pass" &&
      "$(json_get "$receipt" checks.secret_scan)" == "pass" &&
      "$(json_get "$receipt" checks.provider_concurrency)" == "pass" &&
-     "$(json_get "$receipt" checks.product_certification)" == "pass" ]] ||
+     ( "$(json_get "$receipt" checks.product_certification)" == "pass" ||
+       ( "$(json_get "$receipt" product_certification_evidence.mode)" == "ticket-control-replay" &&
+         "$(json_get "$receipt" checks.product_certification)" == "reused" ) ) ]] ||
     die "receipt is missing required passing checks"
 }
 
@@ -3126,6 +3136,191 @@ print(generation)
 PY
 }
 
+ticket_control_certification_replay() {
+  local mode="$1" receipt="$2" slug="$3" product="$4" origin="$5"
+  local sha="$6" kit_tree="$7" product_sha="$8" product_git_tree="$9"
+  local contract="${10}" runtime_tuple="${11}" kit_pin_hash="${12}"
+  local project_env_hash="${13}"
+  python3 - "$mode" "$receipt" "$(active_file_for "$slug")" \
+    "$(journal_dir_for "$slug")" "$slug" "$product" "$origin" "$sha" \
+    "$kit_tree" "$product_sha" "$product_git_tree" "$contract" \
+    "$runtime_tuple" "$kit_pin_hash" "$project_env_hash" \
+    "$PROVIDER_CONCURRENCY_EVIDENCE" "$CERTIFICATION_TOOL_VERSION" \
+    "$RECEIPT_SCHEMA" "$(host_name)" "$(uname -s)" "$(uname -m)" <<'PY'
+import hashlib, json, pathlib, re, stat, subprocess, sys
+
+(mode, receipt_path, active_path, journal_dir, project, product, origin,
+ factory_sha, factory_tree, target_sha, target_tree, contract, runtime_raw,
+ kit_pin_hash, project_env_hash, provider_raw, tool_version, receipt_schema,
+ host, os_name, architecture) = sys.argv[1:]
+runtime = json.loads(runtime_raw) if runtime_raw else None
+provider = json.loads(provider_raw)
+hex64 = re.compile(r"[0-9a-f]{64}")
+
+def load_regular(path):
+    path = pathlib.Path(path)
+    value = path.lstat()
+    if stat.S_ISLNK(value.st_mode) or not stat.S_ISREG(value.st_mode):
+        raise ValueError
+    return json.loads(path.read_text(encoding="utf-8"))
+
+def journal_for(generation):
+    matches = list(pathlib.Path(journal_dir).glob(f"{generation:020d}-*.json"))
+    if len(matches) != 1:
+        raise ValueError
+    return load_regular(matches[0])
+
+def git_bytes(*args):
+    return subprocess.check_output(["git", "-C", product, *args])
+
+try:
+    supplied = None
+    if mode == "create":
+        active = load_regular(active_path)
+        generation = active.get("generation")
+        if not isinstance(generation, int) or isinstance(generation, bool):
+            raise ValueError
+    elif mode == "validate":
+        supplied = load_regular(receipt_path).get("product_certification_evidence")
+        generation = supplied.get("source_generation")
+        if not isinstance(generation, int) or isinstance(generation, bool):
+            raise ValueError
+        active = None
+    else:
+        raise ValueError
+
+    journal = journal_for(generation)
+    candidate = journal.get("candidate_record")
+    source = journal.get("receipt_snapshot")
+    source_hash = journal.get("receipt_hash")
+    canonical_source = (
+        json.dumps(source, sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode()
+    if (
+        journal.get("phase") != "committed"
+        or journal.get("generation") != generation
+        or journal.get("project") != project
+        or not isinstance(candidate, dict)
+        or not isinstance(source, dict)
+        or source_hash != hashlib.sha256(canonical_source).hexdigest()
+        or (active is not None and candidate != active)
+    ):
+        raise ValueError
+
+    source_sha = source.get("product_sha")
+    source_tree = source.get("product_tree")
+    source_evidence = source.get("product_certification_evidence")
+    result = source_evidence.get("result") if isinstance(source_evidence, dict) else None
+    result_raw = (
+        json.dumps(result, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        + "\n"
+    ).encode()
+    if (
+        candidate.get("product_sha") != source_sha
+        or candidate.get("product_tree") != source_tree
+        or candidate.get("receipt_id") != source.get("receipt_id")
+        or candidate.get("kit_sha") != factory_sha
+        or candidate.get("kit_tree") != factory_tree
+        or source.get("schema_version") != int(receipt_schema)
+        or source.get("certification_tool_version") != int(tool_version)
+        or source.get("status") != "pass"
+        or source.get("project") != project
+        or source.get("kit_sha") != factory_sha
+        or source.get("kit_tree") != factory_tree
+        or source.get("product_path") != product
+        or source.get("product_origin") != origin
+        or source.get("contract_version") != contract
+        or source.get("runtime_tuple") != runtime
+        or source.get("hashes") != {
+            "kit_pin": kit_pin_hash, "project_env": project_env_hash
+        }
+        or source.get("provider_concurrency_evidence") != provider
+        or source.get("host") != host
+        or source.get("os") != os_name
+        or source.get("architecture") != architecture
+        or not isinstance(source_sha, str)
+        or not isinstance(source_tree, str)
+        or source_evidence.get("mode") != "measured"
+        or not hex64.fullmatch(source_evidence.get("digest", ""))
+        or source_evidence["digest"] != hashlib.sha256(result_raw).hexdigest()
+        or not isinstance(result, dict)
+        or result.get("schema") != "nysa.software-factory.certification-result/v1"
+        or result.get("status") != "pass"
+        or result.get("factory_sha") != factory_sha
+        or result.get("factory_tree") != factory_tree
+        or result.get("product_sha") != source_sha
+        or result.get("product_tree") != source_tree
+        or result.get("contract_version") != contract
+        or result.get("runtime_tuple") != runtime
+        or not isinstance(result.get("phases"), list)
+        or not result["phases"]
+        or any(phase.get("exit_status") != 0 for phase in result["phases"])
+    ):
+        raise ValueError
+
+    if git_bytes("rev-parse", "HEAD").decode().strip() != target_sha:
+        raise ValueError
+    if git_bytes("rev-parse", "HEAD^{tree}").decode().strip() != target_tree:
+        raise ValueError
+    if git_bytes("status", "--porcelain", "--untracked-files=all"):
+        raise ValueError
+    if source_sha == target_sha:
+        raise ValueError
+    if subprocess.run(
+        ["git", "-C", product, "merge-base", "--is-ancestor", source_sha, target_sha],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    ).returncode:
+        raise ValueError
+
+    raw = git_bytes(
+        "diff", "--name-status", "--no-renames", "-z", source_sha, target_sha, "--"
+    )
+    parts = raw.split(b"\0")
+    if not raw or parts[-1] != b"" or len(parts) % 2 != 1:
+        raise ValueError
+    changed = []
+    for index in range(0, len(parts) - 1, 2):
+        status_value = parts[index].decode("ascii")
+        path = parts[index + 1].decode("utf-8")
+        if status_value not in {"A", "M"} or not re.fullmatch(
+            r"factory/tickets/T-[0-9]+\.md", path
+        ):
+            raise ValueError
+        entry = git_bytes("ls-tree", "-z", target_sha, "--", path)
+        meta, separator, listed = entry.partition(b"\t")
+        fields = meta.decode("ascii").split()
+        if (
+            separator != b"\t" or listed != path.encode() + b"\0"
+            or len(fields) != 3 or fields[0] != "100644" or fields[1] != "blob"
+        ):
+            raise ValueError
+        changed.append(path)
+    if not changed or len(changed) != len(set(changed)):
+        raise ValueError
+
+    expected = {
+        "changed_paths": changed,
+        "diff_sha256": hashlib.sha256(raw).hexdigest(),
+        "mode": "ticket-control-replay",
+        "policy": "ticket-markdown-v1",
+        "source_certification_evidence_digest": source_evidence["digest"],
+        "source_generation": generation,
+        "source_product_sha": source_sha,
+        "source_product_tree": source_tree,
+        "source_receipt_hash": source_hash,
+        "source_receipt_id": source["receipt_id"],
+        "target_product_sha": target_sha,
+        "target_product_tree": target_tree,
+    }
+    if supplied is not None and supplied != expected:
+        raise ValueError
+except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError,
+        subprocess.CalledProcessError, UnicodeError):
+    raise SystemExit(1)
+print(json.dumps(expected, sort_keys=True, separators=(",", ":")))
+PY
+}
+
 latest_open_journal() {
   local directory="$1"
   if [[ ! -d "$directory" ]]; then
@@ -3355,7 +3550,7 @@ cmd_certify() {
   local kit_pin_hash project_env_hash kit_origin lock evidence_values evidence_id
   local evidence_digest evidence_created evidence_expires evidence_source suite_reused
   local refresh_source refresh_mode refresh_remote_id active_binding_hash
-  local preflight runtime_tuple
+  local preflight runtime_tuple replay_evidence
   validate_slug "$slug"
   validate_sha "$sha"
   validate_suite_evidence_ttl
@@ -3379,6 +3574,8 @@ cmd_certify() {
   product_git_sha="$(product_sha "$product_top")"
   product_git_tree="$(product_tree "$product_top")"
   product_repo="$(product_origin "$product_top")"
+  kit_pin_hash="$(file_hash "$product_top/factory/KIT_PIN")"
+  project_env_hash="$(file_hash "$product_top/factory/PROJECT.env")"
   previous_generation="$(certification_active_binding \
     "$slug" "$product_top" "$product_repo")" ||
     die "certification_preflight_product_binding: active product binding failed"
@@ -3455,14 +3652,33 @@ cmd_certify() {
   release_lock "$lock"
   prepare_pinned_scanner "$product_top" "$PREPARED_PRODUCT" "$workspace/tmp" ||
     die "could not stage the product's pinned scanner for isolated certification"
-  run_product_certification "$PREPARED_PRODUCT" "$script" "$sha" "$writable" \
-    "$workspace" "$product_top" "$release" "$product_git_tree" \
-    "$product_git_sha" "$kit_tree" "$contract" "$runtime_tuple" ||
-    die "product certification failed"
-  record_certification_trace "product-certification"
+  PRODUCT_CERTIFICATION_REPLAY_EVIDENCE=""
+  replay_evidence="$workspace/product-certification-replay.json"
+  if ticket_control_certification_replay create /dev/null "$slug" \
+      "$product_top" "$product_repo" "$sha" "$kit_tree" "$product_git_sha" \
+      "$product_git_tree" "$contract" "$runtime_tuple" "$kit_pin_hash" \
+      "$project_env_hash" >"$replay_evidence"; then
+    chmod 600 "$replay_evidence"
+    PRODUCT_CERTIFICATION_REPLAY_EVIDENCE="$replay_evidence"
+    PRODUCT_CERTIFICATION_HOST_LOAD_START="$(product_certification_host_load)"
+    run_kit_checks_isolated "$PREPARED_PRODUCT" "$ISOLATED_HOME" \
+      "$workspace/tmp" "$workspace" "certification" "platform-smoke" \
+      "$product_top" "$release" ||
+      die "ticket-control certification policy checks failed"
+    PRODUCT_CERTIFICATION_HOST_LOAD_END="$(product_certification_host_load)"
+    record_certification_trace "product-certification:ticket-control-replay"
+  else
+    run_product_certification "$PREPARED_PRODUCT" "$script" "$sha" "$writable" \
+      "$workspace" "$product_top" "$release" "$product_git_tree" \
+      "$product_git_sha" "$kit_tree" "$contract" "$runtime_tuple" ||
+      die "product certification failed"
+    record_certification_trace "product-certification"
+  fi
   verify_release_from_manifest "$sha" >/dev/null
   require_provider_cli_pin_ready "$sha"
   require_clean_product "$product_top"
+  [[ "$(product_sha "$product_top")" == "$product_git_sha" ]] ||
+    die "product commit changed during certification"
   [[ "$(product_tree "$product_top")" == "$product_git_tree" ]] ||
     die "product tree changed during certification"
 
@@ -3473,8 +3689,6 @@ cmd_certify() {
   [[ "$expires" -le "$evidence_expires" ]] || expires="$evidence_expires"
   [[ "$expires" -gt "$created" ]] ||
     die "kit-suite evidence expired during product certification"
-  kit_pin_hash="$(file_hash "$product_top/factory/KIT_PIN")"
-  project_env_hash="$(file_hash "$product_top/factory/PROJECT.env")"
   [[ "$(file_hash "$(active_file_for "$slug")")" == "$active_binding_hash" ]] ||
     die "certification preflight binding changed during product phases"
   receipt_id="$(printf '%s\n' "$slug|$sha|$kit_tree|$product_git_tree|$created|$previous_generation|$CERTIFICATION_TOOL_VERSION|$(random_nonce)" |
@@ -3491,6 +3705,7 @@ cmd_certify() {
     "$KIT_SUITE_DEFINITION" "$suite_reused" "$release" "$evidence_source" \
     "$PRODUCT_CERTIFICATION_EVIDENCE" \
     "$PRODUCT_CERTIFICATION_EVIDENCE_DIGEST" \
+    "$PRODUCT_CERTIFICATION_REPLAY_EVIDENCE" \
     "$PROVIDER_CONCURRENCY_EVIDENCE" \
     "$runtime_tuple" "$PRODUCT_CERTIFICATION_HOST_LOAD_START" \
     "$PRODUCT_CERTIFICATION_HOST_LOAD_END" \
@@ -3501,10 +3716,13 @@ import json, sys, time
  created, expires, receipt_id, previous_generation, tool_version, evidence_id,
  evidence_digest, evidence_created, evidence_expires, evidence_ttl,
  suite_definition, suite_reused, release, evidence_source,
- product_evidence_path, product_evidence_digest,
+ product_evidence_path, product_evidence_digest, replay_evidence_path,
  provider_concurrency_evidence, runtime_tuple, load_start, load_end) = sys.argv[1:]
 product_evidence = {"mode": "legacy"}
-if product_evidence_path:
+if replay_evidence_path:
+    with open(replay_evidence_path, encoding="utf-8") as stream:
+        product_evidence = json.load(stream)
+elif product_evidence_path:
     with open(product_evidence_path, encoding="utf-8") as stream:
         product_evidence = {
             "digest": product_evidence_digest,
@@ -3569,7 +3787,9 @@ value = {
         "repo_check": "pass",
         "secret_scan": "pass",
         "provider_concurrency": "pass",
-        "product_certification": "pass",
+        "product_certification": (
+            "reused" if replay_evidence_path else "pass"
+        ),
         "release_tree": "pass",
         "product_tree": "pass",
         "pin_and_config": "pass",
