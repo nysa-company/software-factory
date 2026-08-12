@@ -692,6 +692,22 @@ PY
 )" || die "active release contract manifest is invalid"
 [[ "$RELEASE_CONTRACT" == "$ACTIVE_CONTRACT" ]] ||
   die "active record and release contract disagree"
+PROJECT_RUNTIME_ROOT="$KITS_ROOT/projects/$PROJECT/runtime"
+PROJECT_RUNTIME_BIN="$PROJECT_RUNTIME_ROOT/bin"
+PROJECT_RUNTIME_JOURNAL="$PROJECT_RUNTIME_ROOT/runtime-pin-journal.json"
+if [[ "$QUALIFICATION_LAUNCHER" != "1" &&
+      -n "$ACTIVE_RUNTIME_NODE$ACTIVE_RUNTIME_NPM" &&
+      ( -e "$PROJECT_RUNTIME_JOURNAL" || -L "$PROJECT_RUNTIME_JOURNAL" ) ]]; then
+  require_managed_directory "$PROJECT_RUNTIME_ROOT" "project runtime root"
+  require_managed_directory "$PROJECT_RUNTIME_BIN" "project runtime bin"
+  require_managed_file "$PROJECT_RUNTIME_JOURNAL" "project runtime journal"
+  "$PYTHON_BIN" -I -S "$RELEASE_PATH/scripts/owner-runtime-pin.py" check \
+    --journal "$PROJECT_RUNTIME_JOURNAL" >/dev/null ||
+    die "project runtime pin no longer matches its approved transaction"
+  SAFE_PATH="$PROJECT_RUNTIME_BIN:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+  PATH="$SAFE_PATH"
+  export PATH
+fi
 if [[ "$QUALIFICATION_LAUNCHER" == "1" && "$ACTIVE_RUNTIME_TUPLE" != "{}" ]]; then
   FACTORY_CERTIFICATION_TUPLE="$ACTIVE_RUNTIME_TUPLE" \
     "$PYTHON_BIN" -I "$RELEASE_PATH/scripts/certification-preflight.py" \
