@@ -8,6 +8,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import plistlib
 import shutil
 import subprocess
 import tempfile
@@ -33,8 +34,15 @@ class ReleaseTransactionTest(unittest.TestCase):
         self.kits = self.root / "kits"
         (self.kits / "projects/relay/release-plans/journals").mkdir(parents=True)
         self.sha = "a" * 40
+        self.registry = self.root / "registry.env"
+        self.registry.write_text(f"PRODUCT_ROOT={self.product}\n")
+        self.registry.chmod(0o600)
         self.body = {
             "children": {
+                "launcher": {
+                    "action": "reuse", "path": str(self.root / "launcher"),
+                    "sha256": "5" * 64,
+                },
                 "migration": None,
                 "model": {
                     "profile_hash": "b" * 64,
@@ -55,6 +63,7 @@ class ReleaseTransactionTest(unittest.TestCase):
             "identity": {
                 "capacity": 1,
                 "contract_version": "1.9.0",
+                "controller": {"platform": "test", "status": "not-applicable"},
                 "factory_origin": str(self.root / "factory-origin"),
                 "factory_sha": self.sha,
                 "factory_tree": "e" * 40,
@@ -64,6 +73,10 @@ class ReleaseTransactionTest(unittest.TestCase):
                 "product_path": str(self.product),
                 "product_sha": "f" * 40,
                 "product_tree": "1" * 40,
+                "registry": {
+                    "path": str(self.registry),
+                    "sha256": RELEASE.file_digest(self.registry),
+                },
                 "runtime": {
                     "evidence": {"path": str(self.root / "runtime")},
                     "plan_sha256": "2" * 64,
@@ -214,6 +227,9 @@ class ReleaseTransactionTest(unittest.TestCase):
             mock.patch.object(RELEASE, "run"),
             mock.patch.object(RELEASE, "contract", return_value="1.9.0"),
             mock.patch.object(RELEASE, "prepare_runtime", return_value=runtime),
+            mock.patch.object(RELEASE, "prepare_registry", return_value=self.plan["identity"]["registry"]),
+            mock.patch.object(RELEASE, "prepare_controller", return_value=self.plan["identity"]["controller"]),
+            mock.patch.object(RELEASE, "launcher_plan", return_value=self.plan["children"]["launcher"]),
             mock.patch.object(RELEASE, "capacity", return_value=2),
             mock.patch.object(RELEASE, "child_plan", return_value=(concurrency, cli)),
         ):
@@ -252,6 +268,9 @@ class ReleaseTransactionTest(unittest.TestCase):
             mock.patch.object(RELEASE, "run"),
             mock.patch.object(RELEASE, "contract", return_value="1.9.0"),
             mock.patch.object(RELEASE, "prepare_runtime", return_value=runtime),
+            mock.patch.object(RELEASE, "prepare_registry", return_value=self.plan["identity"]["registry"]),
+            mock.patch.object(RELEASE, "prepare_controller", return_value=self.plan["identity"]["controller"]),
+            mock.patch.object(RELEASE, "launcher_plan", return_value=self.plan["children"]["launcher"]),
             mock.patch.object(RELEASE, "capacity", return_value=1),
             mock.patch.object(RELEASE, "child_plan", return_value=(reuse, reuse)),
             mock.patch.object(RELEASE, "find_receipt", return_value=(
@@ -309,6 +328,7 @@ class ReleaseTransactionTest(unittest.TestCase):
         body = {key: value for key, value in self.plan.items() if key != "approval_sha256"}
         body["stage"] = "prerequisites"
         body["children"] = {
+            "launcher": self.plan["children"]["launcher"],
             "provider_cli": {"action": "apply", "plan": {"approval_sha256": "6" * 64}},
             "provider_concurrency": {"action": "reuse"},
         }
@@ -405,29 +425,142 @@ class ReleaseTransactionTest(unittest.TestCase):
             "plan": {"approval_sha256": "2" * 64}, "status": "completed",
         })
         product_identity = ("f" * 40, "1" * 40, str(self.root / "product-origin"))
+        home = self.root / "home"
+        launcher = home / ".factory/bin/factory-launch"
+        launcher.parent.mkdir(parents=True)
+        launcher.write_text("launcher")
+        launcher.chmod(0o700)
+        plan = json.loads(json.dumps(self.plan))
+        plan["children"]["launcher"] = {
+            "action": "reuse", "path": str(launcher),
+            "sha256": RELEASE.file_digest(launcher),
+        }
         with (
+            mock.patch.object(RELEASE.Path, "home", return_value=home),
             mock.patch.object(RELEASE, "clean_identity", return_value=product_identity),
             mock.patch.object(RELEASE, "contract", return_value="1.9.0"),
             mock.patch.object(RELEASE, "run_json", return_value={"status": "pass"}),
         ):
-            RELEASE.validate_live_basis(self.kits, self.plan)
+            RELEASE.validate_live_basis(self.kits, plan)
         drifted = ("f" * 40, "9" * 40, str(self.root / "product-origin"))
         with (
+            mock.patch.object(RELEASE.Path, "home", return_value=home),
             mock.patch.object(RELEASE, "clean_identity", return_value=drifted),
             mock.patch.object(RELEASE, "contract", return_value="1.9.0"),
         ):
             with self.assertRaisesRegex(RELEASE.ReleaseError, "product changed"):
-                RELEASE.validate_live_basis(self.kits, self.plan)
+                RELEASE.validate_live_basis(self.kits, plan)
         value = json.loads(runtime_journal.read_text())
         value["plan"]["approval_sha256"] = "8" * 64
         runtime_journal.write_text(json.dumps(value))
         runtime_journal.chmod(0o600)
         with (
+            mock.patch.object(RELEASE.Path, "home", return_value=home),
             mock.patch.object(RELEASE, "clean_identity", return_value=product_identity),
             mock.patch.object(RELEASE, "contract", return_value="1.9.0"),
         ):
             with self.assertRaisesRegex(RELEASE.ReleaseError, "runtime changed"):
-                RELEASE.validate_live_basis(self.kits, self.plan)
+                RELEASE.validate_live_basis(self.kits, plan)
+
+    def test_profile_registry_and_controller_job_are_exact_and_non_overwriting(self) -> None:
+        home = self.root / "home"
+        home.mkdir()
+        with mock.patch.object(RELEASE.Path, "home", return_value=home):
+            registry = RELEASE.prepare_registry("relay", self.product)
+            self.assertEqual(RELEASE.prepare_registry("relay", self.product), registry)
+            registry_path = Path(registry["path"])
+            registry_path.write_text("PRODUCT_ROOT=/foreign\n")
+            with self.assertRaisesRegex(RELEASE.ReleaseError, "project registry conflicts"):
+                RELEASE.prepare_registry("relay", self.product)
+
+            with mock.patch.object(RELEASE.sys, "platform", "darwin"):
+                controller = RELEASE.prepare_controller("relay", self.product)
+                self.assertEqual(RELEASE.prepare_controller("relay", self.product), controller)
+                payload = plistlib.loads(Path(controller["path"]).read_bytes())
+                self.assertEqual(payload["ProcessType"], "Interactive")
+                Path(controller["path"]).write_text("foreign")
+                with self.assertRaisesRegex(RELEASE.ReleaseError, "controller job conflicts"):
+                    RELEASE.prepare_controller("relay", self.product)
+
+    def test_controller_enable_loads_the_bound_job_before_dispatch(self) -> None:
+        home = self.root / "home"
+        (home / "Library/LaunchAgents").mkdir(parents=True)
+        controller_path = home / "Library/LaunchAgents/com.factory.controller.relay.plist"
+        with mock.patch.object(RELEASE.Path, "home", return_value=home):
+            raw = RELEASE.controller_payload("relay", self.product)
+            RELEASE.atomic_bytes(controller_path, raw)
+            plan = json.loads(json.dumps(self.plan))
+            plan["identity"]["controller"] = {
+                "label": "com.factory.controller.relay", "path": str(controller_path),
+                "platform": "darwin", "sha256": RELEASE.hashlib.sha256(raw).hexdigest(),
+            }
+            statuses = [
+                subprocess.CompletedProcess([], 1, "", ""),
+                subprocess.CompletedProcess([], 0, "", ""),
+                subprocess.CompletedProcess([], 0, "", ""),
+            ]
+            with (
+                mock.patch.object(RELEASE, "run") as enable,
+                mock.patch.object(RELEASE.Path, "is_file", return_value=True),
+                mock.patch.object(RELEASE.os, "access", return_value=True),
+                mock.patch.object(RELEASE.subprocess, "run", side_effect=statuses) as native,
+            ):
+                RELEASE.ensure_controller(plan)
+        enable.assert_called_once()
+        self.assertEqual(native.call_count, 3)
+        self.assertIn("bootstrap", native.call_args_list[1].args[0])
+
+    def test_launcher_pin_is_exact_recoverable_and_keeps_a_rollback(self) -> None:
+        home = self.root / "home"
+        target = home / ".factory/bin/factory-launch"
+        target.parent.mkdir(parents=True)
+        target.write_text("old launcher\n")
+        target.chmod(0o700)
+        release = self.root / "release"
+        candidate = release / "integrations/hermes/bin/factory-launch"
+        candidate.parent.mkdir(parents=True)
+        candidate.write_text("new launcher\n")
+        candidate.chmod(0o555)
+        with mock.patch.object(RELEASE.Path, "home", return_value=home):
+            plan = RELEASE.launcher_plan(release, self.kits)
+            self.assertEqual(plan["action"], "apply")
+            result = RELEASE.apply_launcher_plan(plan, release, self.kits)
+            self.assertEqual(result["status"], "applied")
+            self.assertEqual(target.read_bytes(), candidate.read_bytes())
+            rollback = home / ".factory/launcher-rollbacks" / (
+                f"{plan['approval_sha256']}.factory-launch"
+            )
+            self.assertEqual(rollback.read_text(), "old launcher\n")
+            self.assertEqual(
+                RELEASE.apply_launcher_plan(plan, release, self.kits)["status"],
+                "replayed",
+            )
+            journal = RELEASE.safe_state(
+                home / ".factory/launcher-pin-journal.json", "launcher pin journal",
+            )
+            self.assertEqual(journal["status"], "completed")
+            candidate.chmod(0o755)
+            candidate.write_text("changed candidate\n")
+            candidate.chmod(0o555)
+            with self.assertRaisesRegex(RELEASE.ReleaseError, "launcher pin"):
+                RELEASE.apply_launcher_plan(plan, release, self.kits)
+
+    def test_launcher_pin_refuses_any_unpaused_active_factory(self) -> None:
+        home = self.root / "home"
+        home.mkdir()
+        release = self.root / "release"
+        candidate = release / "integrations/hermes/bin/factory-launch"
+        candidate.parent.mkdir(parents=True)
+        candidate.write_text("candidate\n")
+        candidate.chmod(0o555)
+        active = self.kits / "projects/live/active.json"
+        active.parent.mkdir()
+        RELEASE.atomic_json(active, {"product_path": str(self.product)})
+        with mock.patch.object(RELEASE.Path, "home", return_value=home):
+            plan = RELEASE.launcher_plan(release, self.kits)
+            with self.assertRaisesRegex(RELEASE.ReleaseError, "live is not in maintenance"):
+                RELEASE.apply_launcher_plan(plan, release, self.kits)
+        self.assertFalse((home / ".factory/bin/factory-launch").exists())
 
 
 if __name__ == "__main__":

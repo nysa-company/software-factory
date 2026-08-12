@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import plistlib
 import re
 import stat
 import subprocess
@@ -30,6 +31,18 @@ TICKET = re.compile(r"T-[0-9]+\Z")
 
 class ReleaseError(ValueError):
     pass
+
+
+def account_home() -> Path:
+    override = os.environ.get("FACTORY_RELEASE_TEST_HOME", "")
+    if override:
+        if os.environ.get("FACTORY_KIT_TEST_MODE") != "1":
+            raise ReleaseError("release test home is forbidden outside Factory test mode")
+        path = Path(override)
+        if not path.is_absolute():
+            raise ReleaseError("release test home is invalid")
+        return secure_directory(path.resolve(strict=True))
+    return Path.home().resolve(strict=True)
 
 
 def canonical(value: Any) -> bytes:
@@ -83,14 +96,14 @@ def safe_state(path: Path, label: str) -> dict[str, Any]:
     return value
 
 
-def atomic_json(path: Path, value: dict[str, Any]) -> None:
+def atomic_bytes(path: Path, value: bytes, mode: int = 0o600) -> None:
     secure_directory(path.parent, create=True)
     descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
-        os.fchmod(descriptor, 0o600)
+        os.fchmod(descriptor, mode)
         with os.fdopen(descriptor, "wb") as stream:
             descriptor = -1
-            stream.write(canonical(value))
+            stream.write(value)
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
@@ -106,6 +119,268 @@ def atomic_json(path: Path, value: dict[str, Any]) -> None:
             os.unlink(temporary)
         except FileNotFoundError:
             pass
+
+
+def atomic_json(path: Path, value: dict[str, Any]) -> None:
+    atomic_bytes(path, canonical(value))
+
+
+def secure_regular_bytes(path: Path, label: str, *, executable: bool = False) -> bytes:
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode) or before.st_uid != os.geteuid()
+            or before.st_nlink != 1 or stat.S_IMODE(before.st_mode) & 0o022
+            or before.st_size > 10_000_000
+            or executable and not stat.S_IMODE(before.st_mode) & 0o100
+        ):
+            raise ReleaseError(f"{label} is unsafe")
+        chunks = []
+        remaining = before.st_size
+        while remaining:
+            chunk = os.read(descriptor, min(remaining, 1_048_576))
+            if not chunk:
+                raise ReleaseError(f"{label} changed while reading")
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        after = os.fstat(descriptor)
+        if (
+            (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+            != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+        ):
+            raise ReleaseError(f"{label} changed while reading")
+        return b"".join(chunks)
+    finally:
+        os.close(descriptor)
+
+
+def exact_local_file(path: Path, expected: bytes, label: str) -> str:
+    if path.exists() or path.is_symlink():
+        if secure_regular_bytes(path, label) != expected:
+            raise ReleaseError(f"{label} conflicts with this release")
+    else:
+        atomic_bytes(path, expected)
+    return hashlib.sha256(expected).hexdigest()
+
+
+def prepare_registry(project: str, product: Path) -> dict[str, Any]:
+    profile = account_home() / ".hermes/profiles/factory"
+    projects = secure_directory(profile / "projects", create=True)
+    path = projects / f"{project}.env"
+    raw = f"PRODUCT_ROOT={product}\n".encode()
+    return {"path": str(path), "sha256": exact_local_file(path, raw, "project registry")}
+
+
+def controller_payload(project: str, product: Path) -> bytes:
+    home = account_home()
+    label = f"com.factory.controller.{project}"
+    value = {
+        "Label": label,
+        "ProcessType": "Interactive",
+        "ProgramArguments": [
+            str(home / ".factory/bin/factory-launch"), project, "reconcile", "--json",
+        ],
+        "RunAtLoad": True,
+        "StandardErrorPath": str(home / f".factory/logs/{project}-controller.error.log"),
+        "StandardOutPath": str(home / f".factory/logs/{project}-controller.log"),
+        "StartInterval": 15,
+        "WatchPaths": [str(product / "factory/runs")],
+    }
+    return plistlib.dumps(value, fmt=plistlib.FMT_XML, sort_keys=True)
+
+
+def prepare_controller(project: str, product: Path) -> dict[str, Any]:
+    if sys.platform != "darwin" or os.environ.get("FACTORY_KIT_TEST_MODE") == "1":
+        return {"platform": sys.platform, "status": "not-applicable"}
+    root = secure_directory(account_home() / "Library/LaunchAgents", create=True)
+    path = root / f"com.factory.controller.{project}.plist"
+    raw = controller_payload(project, product)
+    return {
+        "label": f"com.factory.controller.{project}", "path": str(path),
+        "platform": "darwin", "sha256": exact_local_file(path, raw, "controller job"),
+    }
+
+
+def active_inventory(kits_root: Path) -> list[dict[str, Any]]:
+    projects = secure_directory(kits_root / "projects", create=True)
+    values = []
+    for root in sorted(projects.iterdir()):
+        if root.is_symlink() or not root.is_dir():
+            raise ReleaseError("Factory project state is unsafe")
+        active = root / "active.json"
+        if not active.exists() and not active.is_symlink():
+            continue
+        record = safe_state(active, "active release")
+        product = Path(str(record.get("product_path", "")))
+        if not PROJECT.fullmatch(root.name) or not product.is_absolute():
+            raise ReleaseError("active Factory project identity is invalid")
+        values.append({
+            "active_sha256": file_digest(active), "product": str(product),
+            "project": root.name,
+        })
+    return values
+
+
+def validate_launcher_plan(value: dict[str, Any]) -> None:
+    body = {key: item for key, item in value.items() if key != "approval_sha256"}
+    if (
+        set(value) != {
+            "action", "active_projects", "approval_sha256", "candidate",
+            "previous_sha256", "schema", "target",
+        }
+        or value.get("schema") != "nysa.software-factory.owner-launcher-pin-plan/v1"
+        or value.get("action") != "apply"
+        or value.get("approval_sha256") != digest(body)
+        or not isinstance(value.get("active_projects"), list)
+        or not isinstance(value.get("candidate"), dict)
+        or set(value["candidate"]) != {"path", "sha256"}
+        or not Path(str(value["candidate"].get("path", ""))).is_absolute()
+        or not DIGEST.fullmatch(str(value["candidate"].get("sha256", "")))
+        or not Path(str(value.get("target", ""))).is_absolute()
+        or value.get("previous_sha256") is not None
+        and not DIGEST.fullmatch(str(value.get("previous_sha256", "")))
+    ):
+        raise ReleaseError("launcher pin plan is invalid")
+    projects = value["active_projects"]
+    if len({item.get("project") for item in projects if isinstance(item, dict)}) != len(projects):
+        raise ReleaseError("launcher pin plan is invalid")
+    for item in projects:
+        if (
+            not isinstance(item, dict)
+            or set(item) != {"active_sha256", "product", "project"}
+            or not DIGEST.fullmatch(str(item.get("active_sha256", "")))
+            or not Path(str(item.get("product", ""))).is_absolute()
+            or not PROJECT.fullmatch(str(item.get("project", "")))
+        ):
+            raise ReleaseError("launcher pin plan is invalid")
+
+
+def launcher_plan(release: Path, kits_root: Path) -> dict[str, Any]:
+    candidate = release / "integrations/hermes/bin/factory-launch"
+    target = account_home() / ".factory/bin/factory-launch"
+    secure_directory(target.parent, create=True)
+    candidate_sha = hashlib.sha256(
+        secure_regular_bytes(candidate, "sealed launcher candidate", executable=True)
+    ).hexdigest()
+    previous = None
+    if target.exists() or target.is_symlink():
+        previous = hashlib.sha256(
+            secure_regular_bytes(target, "installed launcher", executable=True)
+        ).hexdigest()
+    if previous == candidate_sha:
+        return {"action": "reuse", "path": str(target), "sha256": candidate_sha}
+    body = {
+        "action": "apply", "active_projects": active_inventory(kits_root),
+        "candidate": {"path": str(candidate), "sha256": candidate_sha},
+        "previous_sha256": previous,
+        "schema": "nysa.software-factory.owner-launcher-pin-plan/v1",
+        "target": str(target),
+    }
+    return {**body, "approval_sha256": digest(body)}
+
+
+def _apply_launcher_plan_locked(
+    value: dict[str, Any], release: Path, kits_root: Path,
+) -> dict[str, Any]:
+    validate_launcher_plan(value)
+    current_plan = launcher_plan(release, kits_root)
+    replay = current_plan.get("action") == "reuse"
+    if replay:
+        if current_plan["sha256"] != value["candidate"]["sha256"]:
+            raise ReleaseError("launcher pin target changed")
+    elif current_plan != value:
+        raise ReleaseError("launcher pin basis changed after approval")
+    kit = release / "scripts/factory-kit.sh"
+    if not replay:
+        for item in value["active_projects"]:
+            product = Path(item["product"])
+            if not (product / "factory/MAINTENANCE").is_file():
+                raise ReleaseError(f"active project {item['project']} is not in maintenance")
+            run(
+                ["bash", str(kit), "pause", "--project", item["project"],
+                 "--product", str(product)], f"active project drain for {item['project']}",
+                environment=command_environment(kits_root),
+            )
+    target = Path(value["target"])
+    candidate = Path(value["candidate"]["path"])
+    root = secure_directory(target.parent.parent, create=True)
+    journal_path = root / "launcher-pin-journal.json"
+    journal = None
+    if journal_path.exists() or journal_path.is_symlink():
+        journal = safe_state(journal_path, "launcher pin journal")
+        unsigned = {key: item for key, item in journal.items() if key != "record_sha256"}
+        if (
+            journal.get("schema") != "nysa.software-factory.owner-launcher-pin-journal/v1"
+            or journal.get("status") not in {"applying", "completed"}
+            or journal.get("record_sha256") != digest(unsigned)
+        ):
+            raise ReleaseError("launcher pin journal is invalid")
+        if journal.get("plan") != value:
+            if journal.get("status") != "completed":
+                raise ReleaseError("launcher pin transaction is incomplete")
+            journal = None
+    if journal is None:
+        journal = {
+            "plan": value,
+            "schema": "nysa.software-factory.owner-launcher-pin-journal/v1",
+            "status": "applying",
+        }
+        atomic_json(journal_path, {**journal, "record_sha256": digest(journal)})
+    current_bytes = (
+        secure_regular_bytes(target, "installed launcher", executable=True)
+        if target.exists() else None
+    )
+    current = hashlib.sha256(current_bytes).hexdigest() if current_bytes is not None else None
+    if current not in {value["previous_sha256"], value["candidate"]["sha256"]}:
+        raise ReleaseError("launcher pin target changed")
+    if current != value["candidate"]["sha256"]:
+        rollback = secure_directory(root / "launcher-rollbacks", create=True) / (
+            f"{value['approval_sha256']}.factory-launch"
+        )
+        if current is not None and not rollback.exists():
+            atomic_bytes(rollback, current_bytes, 0o700)
+        atomic_bytes(
+            target, secure_regular_bytes(candidate, "sealed launcher candidate", executable=True),
+            0o700,
+        )
+    if hashlib.sha256(
+        secure_regular_bytes(target, "installed launcher", executable=True)
+    ).hexdigest() != value["candidate"]["sha256"]:
+        raise ReleaseError("launcher pin verification failed")
+    completed = {
+        "plan": value,
+        "schema": "nysa.software-factory.owner-launcher-pin-journal/v1",
+        "status": "completed",
+    }
+    atomic_json(journal_path, {**completed, "record_sha256": digest(completed)})
+    return {
+        "action": "reuse", "path": str(target),
+        "sha256": value["candidate"]["sha256"],
+        "status": "replayed" if replay else "applied",
+    }
+
+
+def apply_launcher_plan(
+    value: dict[str, Any], release: Path, kits_root: Path,
+) -> dict[str, Any]:
+    validate_launcher_plan(value)
+    root = secure_directory(Path(value["target"]).parent.parent, create=True)
+    descriptor = os.open(
+        root / ".launcher-pin.lock",
+        os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600,
+    )
+    try:
+        info = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+            or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) & 0o077
+        ):
+            raise ReleaseError("launcher pin lock is unsafe")
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        return _apply_launcher_plan_locked(value, release, kits_root)
+    finally:
+        os.close(descriptor)
 
 
 def run(
@@ -321,9 +596,9 @@ def validate_plan(value: dict[str, Any]) -> None:
     ):
         raise ReleaseError("release plan is invalid")
     identity_keys = {
-        "capacity", "contract_version", "factory_origin", "factory_sha",
+        "capacity", "contract_version", "controller", "factory_origin", "factory_sha",
         "factory_tree", "mode", "previous", "product_origin", "product_path", "product_sha",
-        "product_tree", "runtime",
+        "product_tree", "registry", "runtime",
     }
     request_keys = {
         "cli_paths", "migrations", "operator_id", "product", "profile", "project",
@@ -331,6 +606,8 @@ def validate_plan(value: dict[str, Any]) -> None:
     }
     runtime = identity.get("runtime")
     evidence = runtime.get("evidence") if isinstance(runtime, dict) else None
+    registry = identity.get("registry")
+    controller = identity.get("controller")
     migrations = request.get("migrations")
     cli_paths = request.get("cli_paths")
     if (
@@ -357,6 +634,23 @@ def validate_plan(value: dict[str, Any]) -> None:
         or not DIGEST.fullmatch(str(runtime.get("plan_sha256", "")))
         or not isinstance(evidence, dict)
         or not Path(str(evidence.get("path", ""))).is_absolute()
+        or not isinstance(registry, dict) or set(registry) != {"path", "sha256"}
+        or not Path(str(registry.get("path", ""))).is_absolute()
+        or not DIGEST.fullmatch(str(registry.get("sha256", "")))
+        or not isinstance(controller, dict)
+        or (
+            controller.get("status") == "not-applicable" and
+            set(controller) != {"platform", "status"}
+        )
+        or (
+            controller.get("status") != "not-applicable" and (
+                set(controller) != {"label", "path", "platform", "sha256"}
+                or controller.get("platform") != "darwin"
+                or controller.get("label") != f"com.factory.controller.{request.get('project')}"
+                or not Path(str(controller.get("path", ""))).is_absolute()
+                or not DIGEST.fullmatch(str(controller.get("sha256", "")))
+            )
+        )
         or (identity["mode"] == "new" and identity.get("previous") is not None)
         or (identity["mode"] == "upgrade" and not isinstance(identity.get("previous"), dict))
     ):
@@ -380,13 +674,26 @@ def validate_plan(value: dict[str, Any]) -> None:
         tickets.add(item["ticket"])
     provider_cli = children.get("provider_cli")
     provider_concurrency = children.get("provider_concurrency")
+    launcher = children.get("launcher")
     if (
+        not isinstance(launcher, dict)
+        or launcher.get("action") not in {"apply", "reuse"}
+        or (launcher.get("action") == "apply" and (
+            not DIGEST.fullmatch(str(launcher.get("approval_sha256", "")))
+        ))
+        or (launcher.get("action") == "reuse" and (
+            not Path(str(launcher.get("path", ""))).is_absolute()
+            or not DIGEST.fullmatch(str(launcher.get("sha256", "")))
+        ))
+        or
         not isinstance(provider_cli, dict)
         or provider_cli.get("action") not in {"apply", "reuse"}
         or not isinstance(provider_concurrency, dict)
         or provider_concurrency.get("action") not in {"apply", "reuse", "not-required"}
     ):
         raise ReleaseError("release plan is invalid")
+    if launcher["action"] == "apply":
+        validate_launcher_plan(launcher)
     for child in (provider_cli, provider_concurrency):
         if child["action"] == "apply" and (
             not isinstance(child.get("plan"), dict)
@@ -395,13 +702,15 @@ def validate_plan(value: dict[str, Any]) -> None:
             raise ReleaseError("release plan is invalid")
     if value["stage"] == "prerequisites":
         if (
-            set(children) != {"provider_cli", "provider_concurrency"}
-            or "apply" not in {provider_cli["action"], provider_concurrency["action"]}
+            set(children) != {"launcher", "provider_cli", "provider_concurrency"}
+            or "apply" not in {
+                launcher["action"], provider_cli["action"], provider_concurrency["action"],
+            }
         ):
             raise ReleaseError("release plan is invalid")
     else:
         if set(children) != {
-            "migration", "model", "provider_cli", "provider_concurrency",
+            "launcher", "migration", "model", "provider_cli", "provider_concurrency",
             "qualification", "receipt",
         }:
             raise ReleaseError("release plan is invalid")
@@ -409,7 +718,9 @@ def validate_plan(value: dict[str, Any]) -> None:
         receipt = children.get("receipt")
         migration = children.get("migration")
         if (
-            "apply" in {provider_cli["action"], provider_concurrency["action"]}
+            "apply" in {
+                launcher["action"], provider_cli["action"], provider_concurrency["action"],
+            }
             or
             not isinstance(model, dict)
             or model.get("profile_id") != request["profile"]
@@ -558,6 +869,8 @@ def setup(args: argparse.Namespace) -> dict[str, Any]:
     sealed_kit = release / "scripts/factory-kit.sh"
     release_contract = contract(release)
     runtime = prepare_runtime(release, product, kits_root, project, args.runtime_bin)
+    registry = prepare_registry(project, product)
+    controller = prepare_controller(project, product)
     runtime_bin = Path(str(runtime["evidence"]["path"]))
     active = kits_root / "projects" / project / "active.json"
     previous = None
@@ -573,6 +886,7 @@ def setup(args: argparse.Namespace) -> dict[str, Any]:
              "--product", str(product)], "release maintenance entry",
             environment=command_environment(kits_root, runtime_bin),
         )
+    launcher = launcher_plan(release, kits_root)
     cli_paths = {
         key: str(value.resolve(strict=True)) for key, value in {
             "claude": args.claude_bin, "codex": args.codex_bin,
@@ -594,17 +908,25 @@ def setup(args: argparse.Namespace) -> dict[str, Any]:
     }
     identity = {
         "capacity": capacity(product), "contract_version": release_contract,
+        "controller": controller,
         "factory_origin": factory_origin, "factory_sha": sha,
         "factory_tree": factory_tree, "mode": mode,
         "previous": previous,
         "product_origin": product_origin, "product_path": str(product),
         "product_sha": product_sha, "product_tree": product_tree,
+        "registry": registry,
         "runtime": runtime,
     }
     now = int(time.time())
-    if concurrency["action"] == "apply" or cli["action"] == "apply":
+    if (
+        launcher["action"] == "apply" or concurrency["action"] == "apply"
+        or cli["action"] == "apply"
+    ):
         plan = seal_plan({
-            "children": {"provider_cli": cli, "provider_concurrency": concurrency},
+            "children": {
+                "launcher": launcher, "provider_cli": cli,
+                "provider_concurrency": concurrency,
+            },
             "created_epoch": now, "expires_epoch": now + 7200,
             "identity": identity, "request": request, "schema": PLAN_SCHEMA,
             "stage": "prerequisites", "status": "approval-required",
@@ -634,6 +956,7 @@ def setup(args: argparse.Namespace) -> dict[str, Any]:
         plan = seal_plan({
             "children": {
                 "migration": migration, "model": model,
+                "launcher": launcher,
                 "provider_cli": cli, "provider_concurrency": concurrency,
                 "qualification": qualification,
                 "receipt": {
@@ -724,6 +1047,9 @@ def apply_prerequisites(plan: dict[str, Any], kits_root: Path, approved_by: str)
     release = kits_root / "releases" / request["sha"]
     kit = release / "scripts/factory-kit.sh"
     environment = command_environment(kits_root)
+    launcher = plan["children"]["launcher"]
+    if launcher["action"] == "apply":
+        apply_launcher_plan(launcher, release, kits_root)
     concurrency = plan["children"]["provider_concurrency"]
     if concurrency["action"] == "apply":
         child = concurrency["plan"]
@@ -774,6 +1100,47 @@ def validate_live_basis(kits_root: Path, plan: dict[str, Any]) -> None:
     release = kits_root / "releases" / identity["factory_sha"]
     if contract(release) != identity["contract_version"]:
         raise ReleaseError("installed release changed after setup")
+    launcher = plan["children"]["launcher"]
+    installed_launcher = account_home() / ".factory/bin/factory-launch"
+    expected_launcher = (
+        launcher["sha256"] if launcher["action"] == "reuse"
+        else launcher["candidate"]["sha256"]
+    )
+    observed_launcher = None
+    if installed_launcher.exists() or installed_launcher.is_symlink():
+        if installed_launcher.is_symlink():
+            raise ReleaseError("installed launcher changed after setup")
+        observed_launcher = hashlib.sha256(secure_regular_bytes(
+            installed_launcher, "installed launcher", executable=True,
+        )).hexdigest()
+    allowed_launchers = {expected_launcher}
+    if plan["stage"] == "prerequisites" and launcher["action"] == "apply":
+        allowed_launchers.add(launcher["previous_sha256"])
+    if observed_launcher not in allowed_launchers:
+        raise ReleaseError("installed launcher changed after setup")
+    registry = identity["registry"]
+    expected_registry = f"PRODUCT_ROOT={product}\n".encode()
+    if (
+        not Path(registry["path"]).exists() or Path(registry["path"]).is_symlink()
+        or
+        hashlib.sha256(expected_registry).hexdigest() != registry["sha256"]
+        or exact_local_file(
+            Path(registry["path"]), expected_registry, "project registry"
+        ) != registry["sha256"]
+    ):
+        raise ReleaseError("project registry changed after setup")
+    controller = identity["controller"]
+    if controller.get("status") != "not-applicable":
+        expected_controller = controller_payload(plan["request"]["project"], product)
+        if (
+            not Path(controller["path"]).exists() or Path(controller["path"]).is_symlink()
+            or
+            hashlib.sha256(expected_controller).hexdigest() != controller["sha256"]
+            or exact_local_file(
+                Path(controller["path"]), expected_controller, "controller job"
+            ) != controller["sha256"]
+        ):
+            raise ReleaseError("controller job changed after setup")
     runtime_journal = (
         kits_root / "projects" / plan["request"]["project"] / "runtime"
         / "runtime-pin-journal.json"
@@ -858,6 +1225,41 @@ def doctor(launcher: Path, plan: dict[str, Any], environment: dict[str, str]) ->
     )
 
 
+def ensure_controller(plan: dict[str, Any]) -> None:
+    controller = plan["identity"]["controller"]
+    if controller.get("status") == "not-applicable":
+        return
+    path = Path(controller["path"])
+    expected = controller_payload(
+        plan["request"]["project"], Path(plan["identity"]["product_path"]),
+    )
+    if exact_local_file(path, expected, "controller job") != controller["sha256"]:
+        raise ReleaseError("controller job changed after setup")
+    secure_directory(account_home() / ".factory/logs", create=True)
+    launchctl = Path("/bin/launchctl")
+    if not launchctl.is_file() or not os.access(launchctl, os.X_OK):
+        raise ReleaseError("native controller service manager is unavailable")
+    domain = f"gui/{os.getuid()}"
+    service = f"{domain}/{controller['label']}"
+    prefix = [str(launchctl), "asuser", str(os.getuid()), str(launchctl)]
+    run(prefix + ["enable", service], "controller enable")
+    current = subprocess.run(
+        prefix + ["print", service], stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL, check=False, timeout=30,
+    )
+    if current.returncode:
+        subprocess.run(
+            prefix + ["bootstrap", domain, str(path)], stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, check=False, timeout=30,
+        )
+    current = subprocess.run(
+        prefix + ["print", service], stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL, check=False, timeout=30,
+    )
+    if current.returncode:
+        raise ReleaseError("controller service did not load")
+
+
 def migration_complete(kits_root: Path, plan: dict[str, Any], approved_by: str) -> bool:
     migration = plan["children"]["migration"]
     if migration is None:
@@ -898,7 +1300,7 @@ def apply_activation(
     product = Path(request["product"])
     release = kits_root / "releases" / request["sha"]
     kit = release / "scripts/factory-kit.sh"
-    launcher = Path.home().resolve() / ".factory/bin/factory-launch"
+    launcher = account_home() / ".factory/bin/factory-launch"
     runtime = Path(plan["identity"]["runtime"]["evidence"]["path"])
     environment = launcher_environment(kits_root, runtime)
     value = safe_state(journal, "release journal") if journal.exists() else None
@@ -983,6 +1385,8 @@ def apply_activation(
             arguments.append("--json")
             run_json(arguments, "ticket migration batch", environment=environment)
         journal_update(journal, plan, "migrated", "pass")
+        ensure_controller(plan)
+        journal_update(journal, plan, "controller_enabled", "pass")
         doctor(launcher, plan, environment)
         journal_update(journal, plan, "doctor_pass", "pass")
         marker = product / "factory/KILL"
