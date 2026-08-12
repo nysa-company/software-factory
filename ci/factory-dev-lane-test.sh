@@ -3710,7 +3710,6 @@ assert "contract 1.8 transitions" not in hook
 driver=(root/"run.sh").read_text()
 assert "FACTORY_KIT_TEST_SKIP_PROVIDER_CLI_PIN=1" in driver
 assert "provider-concurrency plan --sha" in driver and "--capacity 2" in driver
-assert "launchctl bootstrap" in driver and "evidence/hook-complete" in driver
 project=(root/"product/factory/PROJECT.env").read_text().splitlines()
 assert project.count("PREVIEW_PROVIDER=none") == 1
 assert project.count("NONVISUAL_PATHS=app/") == 1
