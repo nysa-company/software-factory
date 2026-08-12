@@ -273,7 +273,11 @@ Contract 1.8 additionally exposes `ticket-control pause|resume`: pause requires
 one exact Software Factory issue URL, removes only one idle passport-bound
 claim, releases its lease, and records an owner-only repro intent bound to its
 Factory SHA, head, passport, run snapshot, lifecycle state, Resume-State, and
-claim status. The signed checkpoint retains only idle `claimed`, `waiting`,
+claim status. An idle `missing-terminal` claim with a canonical receipt,
+released lease, known role, no active role, and no terminal evidence is also a
+valid issue-bound pause; the run snapshot makes a later terminal publication
+invalidate resume rather than replay the role. The signed checkpoint retains
+only idle `claimed`, `waiting`,
 `blocked`, or `budget` status; a budget pause also binds the exact budget
 digest. Resume-State is required for `Blocked-Escalated`; other lifecycle
 states retain either JSON null or an allowed existing resume overlay. Resume requires the
@@ -1703,7 +1707,10 @@ coordinator state, and per-attempt runtime roots covering every enabled Cursor,
 Claude Code, and Codex route. Doctor, certification, activation, and role
 pre-admission all refuse when that configuration is absent, incomplete,
 drifted, or below ticket capacity; they never silently serialize a multi-ticket
-release. Contract 1.6 and Contract 1.8 capacity one retain the fail-closed
+release. Canonical JSON policy and activation inputs keep their bounded size;
+the growing SQLite provider database instead retains its owner/type/link and
+schema-identity checks without inheriting that JSON payload ceiling. Contract
+1.6 and Contract 1.8 capacity one retain the fail-closed
 legacy path. Only an exact API route selected by the owner-only Contract 1.6
 activation file may use the API-isolated runtime.
 The legacy global ledger remains an additional serialization and accounting
@@ -1769,8 +1776,19 @@ consumption, or journal creation. A matching candidate manifest is still
 qualification-only authority and is never silently ignored in production.
 Installation and certification serialize the kit-suite evidence decision under
 the install lock. Certification may reuse an unexpired passing suite result for
-the exact unchanged sealed release, but always reruns product certification and
-all product, config, receipt, and activation validation. Fresh certification
+the exact unchanged sealed release. When the current active generation was
+fully measured by the same certification tool and exact Factory SHA/tree,
+certification may also reuse that product-suite result for a nonempty descendant
+whose complete diff only adds or modifies regular canonical
+`factory/tickets/T-NNN.md` files. The committed source activation journal, its
+receipt hash, measured result digest, product identity, Contract/runtime tuple,
+pin/config hashes, provider-concurrency evidence, and host identity must all
+match. The target still runs the sandboxed product repository and secret checks;
+the new receipt binds the source generation/receipt/evidence, target SHA/tree,
+closed changed-path list, and raw diff digest. Deleted, renamed, noncanonical,
+executable, configuration, dependency, classifier, ambiguous, or otherwise
+ineligible changes fall back to full product certification. All other product,
+config, receipt, and activation validation remains unchanged. Fresh certification
 refreshes evidence only after the isolated suite, tracked-tree check, and sealed
 release verification pass. Install first proves the SHA is on `origin/main`
 and binds exact successful protected main CI. The installed launcher labels
@@ -1814,7 +1832,8 @@ and are independently validated, size/count/TTL bounded, authenticated, and
 atomically published under a cache lock. Missing, interrupted, stale,
 ambiguous, malformed, symlinked, or tampered evidence is a miss; it never
 restores undeclared side effects. Exact protected Factory CI proof and full
-product certification remain authoritative.
+product certification remain authoritative outside the closed ticket-control
+replay case.
 The v2 DAG also binds exact Node and npm identities plus each phase's declared
 and granted network capability. Required network without command-scoped review
 fails before spawn; a reviewed opt-in does not broaden denied phases. Redacted

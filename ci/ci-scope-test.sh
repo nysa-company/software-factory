@@ -44,11 +44,11 @@ WORKFLOW="$ROOT/.github/workflows/ci.yml"
 }
 [[ "$(grep -Fc 'group: ${{ fromJSON(needs.scope.outputs.groups) }}' "$WORKFLOW")" -eq 2 &&
     "$(grep -Fc -- '--group "${{ matrix.group }}"' "$WORKFLOW")" -eq 2 &&
-    "$(grep -Fc 'groups=[1,2,3,4]' "$WORKFLOW")" -eq 1 &&
+    "$(grep -Fc 'groups=[1,2,3,4]' "$WORKFLOW")" -eq 2 &&
     "$(grep -Fc 'groups=["pr"]' "$WORKFLOW")" -eq 2 &&
     "$(grep -Fc 'name: linux-group-${{ matrix.group }}' "$WORKFLOW")" -eq 1 &&
     "$(grep -Fc 'name: macos-bash-3-group-${{ matrix.group }}' "$WORKFLOW")" -eq 1 ]] || {
-  echo "FAIL: only main may expand Linux and macOS into four complete-suite groups" >&2
+  echo "FAIL: shared pull requests and main must expand into four complete-suite groups" >&2
   exit 1
 }
 [[ "$(grep -Fc 'name: linux-${{ matrix.shard }}' "$WORKFLOW")" -eq 1 &&

@@ -18,7 +18,7 @@ import time
 
 
 SHA = re.compile(r"[0-9a-f]{40}")
-ROOT = re.compile(r"/private/tmp/nysa-sf-canary\.[A-Za-z0-9._-]+")
+ROOT = re.compile(r"/(?:private/)?tmp/nysa-sf-canary\.[A-Za-z0-9._-]+")
 PROJECT = re.compile(r"[a-z0-9][a-z0-9-]{0,62}")
 CURSOR_DATA_PATH_LIMIT = 75
 CURSOR_ATTEMPT_PLACEHOLDER = "0000000000-0000000-cli"
@@ -86,7 +86,7 @@ def validate_inputs(args: argparse.Namespace) -> tuple[Path, Path, Path, str, st
     if not factory.is_dir() or factory.is_symlink():
         failures.append("Factory root must be an existing non-symlink directory")
     if not ROOT.fullmatch(str(root)):
-        failures.append("canary root must match /private/tmp/nysa-sf-canary.<id>")
+        failures.append("canary root must match /tmp/nysa-sf-canary.<id>")
     if len(str(root / "c" / CURSOR_ATTEMPT_PLACEHOLDER / "data")) > CURSOR_DATA_PATH_LIMIT:
         failures.append("canary root is too long for isolated Cursor scratch")
     if any(overlaps(root, path.resolve(strict=False)) for path in protected_paths(home)):

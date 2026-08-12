@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -299,6 +300,23 @@ cleanup_cli_runtime
             + "\n"
         )
         self.assertEqual(self.command("check", check=False).returncode, 2)
+
+    def test_check_accepts_database_larger_than_json_limit(self) -> None:
+        self.apply()
+        database = self.state / "accounting/state-v2.sqlite3"
+        with sqlite3.connect(database) as connection:
+            connection.execute(
+                "INSERT INTO metadata(key, value) VALUES (?, ?)",
+                ("growth-proof", "x" * 1_100_000),
+            )
+        self.assertGreater(database.stat().st_size, 1_000_000)
+        self.assertEqual(json.loads(self.command("check").stdout)["status"], "ready")
+
+        policy = self.state / "provider-policy.json"
+        policy.write_bytes(policy.read_bytes() + b" " * 1_000_000)
+        refused = self.command("check", check=False)
+        self.assertEqual(refused.returncode, 2)
+        self.assertIn("provider policy is unsafe", refused.stderr)
 
     def test_check_accepts_a_distinct_short_cli_runtime_root(self) -> None:
         self.apply()

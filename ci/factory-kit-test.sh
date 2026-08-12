@@ -1748,7 +1748,7 @@ fi
 RECEIPT_STALE="$(printf '%s\n' "$LAST_OUTPUT" | awk '/^\// {value=$0} END {print value}')"
 RECEIPT_STALE_ID="$(json_value "$RECEIPT_STALE" receipt_id)"
 if [[ "$(basename "$RECEIPT_STALE")" == "$RECEIPT_STALE_ID.json" &&
-      "$(json_value "$RECEIPT_STALE" certification_tool_version)" == "5" &&
+      "$(json_value "$RECEIPT_STALE" certification_tool_version)" == "6" &&
       "$(json_value "$RECEIPT_STALE" provider_concurrency_evidence.status)" == "not-required" &&
       "$(json_value "$RECEIPT_STALE" provider_concurrency_evidence.factory_sha)" == "$SHA_A" &&
       "$(json_value "$RECEIPT_STALE" provider_concurrency_evidence.factory_tree)" == "$(git -C "$KIT_REPO" rev-parse "$SHA_A^{tree}")" &&
@@ -2595,6 +2595,60 @@ AFTER_READ_ONLY="$(state_snapshot)"
 [[ "$BEFORE_READ_ONLY" == "$AFTER_READ_ONLY" ]] &&
   pass "plan and status do not mutate managed state" ||
   fail "plan and status do not mutate managed state"
+
+PRODUCT_REPLAY="$(make_product product-replay)"
+set_pin "$PRODUCT_REPLAY" "$SHA_A"
+set_ticket_lease "$PRODUCT_REPLAY" "$SHA_A"
+commit_all "$PRODUCT_REPLAY" "prepare replay product"
+push_main "$PRODUCT_REPLAY"
+expect_success "replay product certifies fully once" \
+  certify --project replay --product "$PRODUCT_REPLAY" --sha "$SHA_A"
+REPLAY_BASE_RECEIPT="$(printf '%s\n' "$LAST_OUTPUT" | awk '/^\// {value=$0} END {print value}')"
+expect_success "replay product enters maintenance" \
+  pause --project replay --product "$PRODUCT_REPLAY"
+expect_success "replay product activates its measured receipt" \
+  activate --project replay --product "$PRODUCT_REPLAY" --sha "$SHA_A" \
+  --receipt "$REPLAY_BASE_RECEIPT"
+
+printf '%s\n' 'Planning note: control-only update.' \
+  >> "$PRODUCT_REPLAY/factory/tickets/T-002.md"
+commit_all "$PRODUCT_REPLAY" "update ticket control only"
+push_main "$PRODUCT_REPLAY"
+CERTIFICATION_TRACE="$TMP/replay-certification.trace"
+export FACTORY_KIT_TEST_CERTIFICATION_TRACE="$CERTIFICATION_TRACE"
+: > "$CERTIFICATION_TRACE"
+expect_success "ticket-control descendant reuses measured product certification" \
+  certify --project replay --product "$PRODUCT_REPLAY" --sha "$SHA_A"
+REPLAY_RECEIPT="$(printf '%s\n' "$LAST_OUTPUT" | awk '/^\// {value=$0} END {print value}')"
+if [[ "$(json_value "$REPLAY_RECEIPT" product_certification_evidence.mode)" == "ticket-control-replay" &&
+      "$(json_value "$REPLAY_RECEIPT" checks.product_certification)" == "reused" ]]; then
+  pass "ticket-control replay skips the full product suite"
+else
+  fail "ticket-control replay skips the full product suite" \
+    "mode=$(json_value "$REPLAY_RECEIPT" product_certification_evidence.mode), check=$(json_value "$REPLAY_RECEIPT" checks.product_certification), trace=$(tr '\n' ',' < "$CERTIFICATION_TRACE")"
+fi
+expect_success "ticket-control replay receipt revalidates for activation" \
+  pause --project replay --product "$PRODUCT_REPLAY"
+expect_success "ticket-control replay activates" \
+  activate --project replay --product "$PRODUCT_REPLAY" --sha "$SHA_A" \
+  --receipt "$REPLAY_RECEIPT"
+
+printf '%s\n' '# executable change must recertify' \
+  >> "$PRODUCT_REPLAY/scripts/secret-scan"
+commit_all "$PRODUCT_REPLAY" "change executable product input"
+push_main "$PRODUCT_REPLAY"
+: > "$CERTIFICATION_TRACE"
+expect_success "executable descendant falls back to full product certification" \
+  certify --project replay --product "$PRODUCT_REPLAY" --sha "$SHA_A"
+REPLAY_FALLBACK_RECEIPT="$(printf '%s\n' "$LAST_OUTPUT" | awk '/^\// {value=$0} END {print value}')"
+if grep -qx 'product-certification' "$CERTIFICATION_TRACE" &&
+   ! grep -q 'ticket-control-replay' "$CERTIFICATION_TRACE" &&
+   [[ "$(json_value "$REPLAY_FALLBACK_RECEIPT" product_certification_evidence.mode)" == "measured" ]]; then
+  pass "non-ticket changes retain full product certification"
+else
+  fail "non-ticket changes retain full product certification"
+fi
+unset FACTORY_KIT_TEST_CERTIFICATION_TRACE
 
 expect_failure "invalid slug cannot traverse project state" status --project "../alpha"
 expect_failure "automatic prune remains unavailable" prune

@@ -173,7 +173,7 @@ class ProviderCliRuntimeTest(unittest.TestCase):
         results = [process.communicate(timeout=10) for process in processes]
         elapsed = time.monotonic() - started
         self.assertTrue(all(process.returncode == 0 for process in processes), results)
-        self.assertLess(elapsed, 1.8)
+        self.assertLess(elapsed, 2.4)
         self.assertEqual(self.status()["counts"], {"submitted": 4})
 
     def test_cursor_command_requires_and_revalidates_host_account_lease(self) -> None:

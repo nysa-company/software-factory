@@ -339,7 +339,14 @@ product checkout.
   closed and never launches the complete suite locally. Expired certification
   evidence follows the same remote-proof and local-smoke refresh path.
   Repeated certification of the exact unchanged sealed release may reuse it,
-  while product certification and all product/config/receipt checks still run.
+  while product/config/receipt checks still run. After one full measured product
+  certification is active, a later descendant on the same exact Factory may
+  reuse that product-suite evidence only when the entire diff adds or modifies
+  regular canonical `factory/tickets/T-NNN.md` files. The Factory still runs the
+  product's repository and secret checks in the certification sandbox and binds
+  the source receipt plus exact diff into the new receipt. Deletions, renames,
+  other paths, changed configuration/runtime/provider bindings, legacy evidence,
+  or malformed state automatically retain full product certification.
   Set `FACTORY_KIT_SUITE_EVIDENCE_TTL_SECONDS` only as explicit machine policy;
   changing it forces a fresh suite and caps the product receipt to that proof.
   A product that has independent validation branches may call the sealed
@@ -376,7 +383,8 @@ product checkout.
   logs, application tests, policy, security, configuration, and undeclared side
   effects are never persisted or restored. Tuple, product, plan, dependency,
   command, runner, network, expiry, size, type, mode, containment, or digest
-  drift produces a cache miss while full product certification still runs.
+  drift produces a cache miss while full product certification still runs,
+  except for the independently validated ticket-control replay above.
   Hit evidence reports saved phase wall time separately from cache lookup,
   manifest rehash, and restoration overhead.
 

@@ -12455,6 +12455,79 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(resumed["status"], "blocked")
         self.assertEqual((resumed["receipt"], resumed["role"]), ("", ""))
 
+    def test_ticket_control_pauses_preprovider_missing_terminal(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        ticket = "T-110"
+        receipt = "b" * 64
+        cell = self.root / "parked" / ticket
+        (cell / "factory/tickets").mkdir(parents=True)
+        (cell / "factory/tickets" / f"{ticket}.md").write_text(
+            "State: Building\n", encoding="utf-8",
+        )
+        passports = self.state / "passports"
+        passports.mkdir(mode=0o700)
+        CONTROL.write(passports / f"{ticket}.json", {
+            "branch": f"ticket/{ticket}",
+            "current_stage": "RUN builder",
+            "current_state": "Building",
+            "factory_sha": self.release.name,
+            "head_sha": "c" * 40,
+            "migration_history": [],
+            "passport_sha256": "d" * 64,
+            "ticket": ticket,
+        })
+        claim = {
+            "blocked_reason": "missing-terminal",
+            "branch": f"ticket/{ticket}",
+            "lease": "",
+            "lease_released": True,
+            "parked": True,
+            "priority": "normal",
+            "publication_lease": "",
+            "receipt": receipt,
+            "role": "builder",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "blocked",
+            "ticket": ticket,
+            "worktree": str(cell),
+        }
+        controller.save_claim(claim)
+        controller.worktrees_by_branch = lambda: {
+            f"refs/heads/ticket/{ticket}": [str(cell)]
+        }
+        controller.remote_passport_valid = lambda _claim: True
+        controller.park_claim = lambda _claim: True
+        controller.role_active = lambda _claim: False
+        controller.terminal_for_receipt = lambda *_args: None
+        controller.ticket_release_current = lambda _claim: True
+        controller.json_call = lambda *args, **_kwargs: {
+            "lease_id": "e" * 64,
+            "schema_version": 1,
+            "ticket": ticket,
+        }
+
+        self.assertEqual(
+            controller.pause_ticket(ticket, FACTORY_ISSUE)["status"], "paused"
+        )
+        late = self.product / "factory/runs/late.meta"
+        late.write_text(
+            f"ticket={ticket}\ntransition_receipt_sha256={receipt}\n",
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "does not match the passport"
+        ):
+            controller.resume_ticket(ticket, self.release.name)
+        late.unlink()
+
+        self.assertEqual(
+            controller.resume_ticket(ticket, self.release.name)["status"],
+            "resumed",
+        )
+        resumed = CONTROL.read(controller.claim_path(ticket))
+        self.assertEqual(resumed["status"], "claimed")
+        self.assertEqual((resumed["receipt"], resumed["role"]), ("", ""))
+
     def test_pause_resume_state_boundary_survives_restart_and_cutover(self) -> None:
         controller = CONTROL.Controller(self.args)
         ticket = "T-110"

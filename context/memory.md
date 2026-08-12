@@ -10,7 +10,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Nysa Agents baseline v3 as a toolkit; `bash ci/test-all.sh` is the unconditional full command.
 - Live products resolve sealed exact-SHA releases under `~/.factory/kits` via `~/.factory/bin/factory-launch`.
 - Model routing is portfolio policy; routes pin at the ticket boundary and change only via the Contract 1.4 journal flow. One profile resolution shares model-independent native-adapter readiness across its routes and runs independent probes in bounded parallel; Cursor readiness stays model-specific. Sealed Cursor inventory verifies the exact configured CLI identity in an empty disposable owner-only home before copying credentials, then accepts only its bounded certified structure.
-- Linear is removed (Decision 395); the six operator authorities are one-use receipts via `factory-kit.sh operator ACTION`. The only emergency recovery is the receipt-bound `OPERATOR RESUME` ticket commit. No generic lifecycle bypass is approved.
+- Linear is removed (Decision 397); the six operator authorities are one-use receipts via `factory-kit.sh operator ACTION`. The only emergency recovery is the receipt-bound `OPERATOR RESUME` ticket commit. No generic lifecycle bypass is approved.
 - **Contract rules below in Operating contract are authoritative**; this summary is only what the session hook can inject.
 
 ## Operating contract
@@ -19,6 +19,9 @@ The enforced contract state, authoritative over the summary above. The Current t
 section carries only what the SessionStart hook injects (8 lines, 1200 characters);
 everything the Factory actually enforces lives here.
 
+- Provider SQLite growth is not capped by JSON input limits. An idle
+  pre-provider `missing-terminal` claim may use only issue-bound pause/resume,
+  with a run snapshot preventing delayed-terminal replay.
 - One receipt-bound operator context commit may append one or more ordered,
   unique protected-test conflicts when every new path is inside the
   authenticated protected `TEST_PATHS` and the complete ticket remains ready.
@@ -5611,7 +5614,31 @@ that identity. Retries content-address and retire prior failure evidence before
 Hermes starts, while a structured completion marker binds the exact retained
 evidence; marker presence alone never authorizes skipping the live hook.
 
-## 2026-08-11 — Decision 395: Linear is removed; the six operator authorities become one-use receipts
+## 2026-08-11 — Decision 395: Provider ledger growth and pre-provider launch refusal stay recoverable
+
+Category: Reliability
+
+Provider concurrency keeps bounded JSON policy and activation inputs, while its
+SQLite lifecycle database is validated by owner, type, link, identity, and
+schema without the JSON payload-size ceiling. If a role exits before producing
+any terminal evidence, issue-bound pause accepts only the exact idle
+`missing-terminal` receipt/role boundary. Its run snapshot makes a later
+terminal publication invalidate resume, so the successor release can clear a
+proven no-provider launch without replaying a delayed terminal.
+
+## 2026-08-11 — Decision 396: Ticket-only descendants reuse measured certification
+
+Category: Performance
+
+After an exact Factory generation has one active, fully measured product
+certification, a nonempty descendant changing only added or modified canonical
+ticket Markdown may reuse that suite result. The committed source activation
+journal and receipt remain the authority; the target reruns sandboxed repository
+and secret checks and binds the exact source, target, paths, and diff digest into
+a fresh receipt. Deleted, renamed, executable, configuration, dependency,
+classifier, legacy, ambiguous, or drifted inputs retain full certification.
+
+## 2026-08-11 — Decision 397: Linear is removed; the six operator authorities become one-use receipts
 
 Category: Decision
 
@@ -5634,3 +5661,4 @@ this design (accepted trade-off); it is Git- and receipt-only, verified by
 reading protected main and the ledger. This supersedes every prior Log entry
 describing Linear as live authority, board, or sync target; those entries
 stand as history and are not rewritten.
+

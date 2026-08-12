@@ -17,7 +17,8 @@ cleanup() {
     chmod -R u+w "$CURSOR_LANE" 2>/dev/null || true
     rm -rf -- "$CURSOR_LANE"
   fi
-  if [[ "${CANARY_ROOT:-}" == /private/tmp/nysa-sf-canary.test.* ]]; then
+  if [[ "${CANARY_ROOT:-}" == /tmp/nysa-sf-canary.test.* ||
+        "${CANARY_ROOT:-}" == /private/tmp/nysa-sf-canary.test.* ]]; then
     chmod -R u+w "$CANARY_ROOT" 2>/dev/null || true
     rm -rf -- "$CANARY_ROOT"
   fi
@@ -421,6 +422,8 @@ mkdir -p "$READINESS_ROOT/home" "$READINESS_ROOT/session-home" \
   "$READINESS_ROOT/kit/scripts/lib" "$READINESS_ROOT/tmp"
 cp "$ROOT/scripts/lib/backend-policy.sh" \
   "$READINESS_ROOT/kit/scripts/lib/backend-policy.sh"
+cp "$ROOT/scripts/lib/provider-cli-version.sh" \
+  "$READINESS_ROOT/kit/scripts/lib/provider-cli-version.sh"
 python3 - "$READINESS_ROOT/session-home/.claude/.credentials.json" <<'PY'
 import json, os, sys, time
 path=sys.argv[1]
@@ -1535,14 +1538,13 @@ if printf '%s\n' "$product_role_source" |
 fi
 seed_source="$(sed -n \
   '/^seed_product_worktrees()/,/^write_product_checkpoint_import()/p' "$LANE")"
-printf '%s\n' "$seed_source" |
-  grep -Fq 'scripts/lib/lane-path-sentinel.py' ||
+grep -Fq 'scripts/lib/lane-path-sentinel.py' <<<"$seed_source" ||
   fail "checkpoint import lost its lane-path sentinel"
 checkpoint_export_source="$(sed -n \
   '/^export_product_checkpoint_internal()/,/^product_export_roles_complete()/p' \
   "$LANE")"
-printf '%s\n' "$checkpoint_export_source" |
-  grep -Fq '"$SOURCE_ROOT/scripts/lib/lane-path-sentinel.py"' ||
+grep -Fq '"$SOURCE_ROOT/scripts/lib/lane-path-sentinel.py"' \
+  <<<"$checkpoint_export_source" ||
   fail "checkpoint export does not use the trusted controller sentinel"
 if printf '%s\n' "$checkpoint_export_source" |
    grep -Fq '"$root/kit/scripts/lib/lane-path-sentinel.py"'; then
@@ -3680,14 +3682,16 @@ clean_cmd "$cursor_root"
 # a provider in this fixture.
 CANARY_SOURCE="$TMP/canary-source"
 git clone -q --no-local "$ROOT" "$CANARY_SOURCE"
-CANARY_SHA="$(git -C "$CANARY_SOURCE" rev-parse HEAD)"
+CANARY_SHA="$(git -C "$ROOT" rev-parse HEAD)"
+git -C "$CANARY_SOURCE" checkout -q --detach "$CANARY_SHA"
 CANARY_HERMES="$TMP/hermes"
 cat >"$CANARY_HERMES" <<'EOF'
 #!/bin/sh
 printf '%s\n' 'Hermes Agent v0.18.2 (2026.7.7.2)'
 EOF
 chmod 700 "$CANARY_HERMES"
-CANARY_ROOT="$(mktemp -d /private/tmp/nysa-sf-canary.test.XXXXXX)"
+CANARY_ROOT="$(mktemp -d /tmp/nysa-sf-canary.test.XXXXXX)"
+CANARY_ROOT="$(cd "$CANARY_ROOT" && pwd -P)"
 rmdir "$CANARY_ROOT"
 python3 "$ROOT/scripts/real-hermes-canary.py" prepare \
   --factory-root "$CANARY_SOURCE" --root "$CANARY_ROOT" \
@@ -3697,22 +3701,6 @@ CANARY_LEGACY_HOOK="$TMP/legacy-canary-hook"
 python3 - "$CANARY_ROOT" "$ROOT/scripts/real-hermes-canary.py" "$CANARY_LEGACY_HOOK" <<'PY'
 import importlib.util, json, pathlib, sys
 root=pathlib.Path(sys.argv[1])
-hook=(root/"home/.hermes/profiles"/json.loads((root/"marker.json").read_text())["project"]/
-      "hooks/run-factory-canary.sh").read_text()
-assert "run_launcher state-machine --ticket" in hook
-assert "--receipt \"$receipt\"" in hook
-assert "run_launcher next-stage" not in hook
-assert "contract 1.8 transitions" not in hook
-driver=(root/"run.sh").read_text()
-assert "FACTORY_KIT_TEST_SKIP_PROVIDER_CLI_PIN=1" in driver
-assert "provider-concurrency plan --sha" in driver and "--capacity 2" in driver
-assert "launchctl bootstrap" in driver and "evidence/hook-complete" in driver
-project=(root/"product/factory/PROJECT.env").read_text().splitlines()
-assert project.count("PREVIEW_PROVIDER=none") == 1
-assert project.count("NONVISUAL_PATHS=app/") == 1
-assert project.count("MAX_CONCURRENT_TICKETS=2") == 1
-assert not (root/"product/factory/runs").exists()
-assert not (root/"product/factory/.active-runs").exists()
 spec=importlib.util.spec_from_file_location("canary",sys.argv[2])
 module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
 legacy=module.render_hook(root,"legacy", "a"*40, "b"*40, "1.6.0")

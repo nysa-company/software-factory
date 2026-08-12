@@ -21,6 +21,7 @@ jobs:
     outputs:
       behavioral: ${{ steps.classify.outputs.behavioral }}
       base: ${{ steps.classify.outputs.base }}
+      full: ${{ steps.classify.outputs.full }}
       groups: ${{ steps.classify.outputs.groups }}
     steps:
       - uses: actions/checkout@v5
@@ -34,13 +35,22 @@ jobs:
           echo "base=$BASE_SHA" >> "$GITHUB_OUTPUT"
           if test "$GITHUB_EVENT_NAME" = push; then
             echo "behavioral=true" >> "$GITHUB_OUTPUT"
+            echo "full=true" >> "$GITHUB_OUTPUT"
             echo 'groups=[1,2,3,4]' >> "$GITHUB_OUTPUT"
           elif bash ci/lightweight-change.sh "$BASE_SHA" "$GITHUB_SHA"; then
             echo "behavioral=false" >> "$GITHUB_OUTPUT"
+            echo "full=false" >> "$GITHUB_OUTPUT"
             echo 'groups=["pr"]' >> "$GITHUB_OUTPUT"
           else
             echo "behavioral=true" >> "$GITHUB_OUTPUT"
-            echo 'groups=["pr"]' >> "$GITHUB_OUTPUT"
+            selection="$(bash ci/changed-test-suites.sh "$BASE_SHA" "$GITHUB_SHA")"
+            if [[ "$selection" == full\|* ]]; then
+              echo "full=true" >> "$GITHUB_OUTPUT"
+              echo 'groups=[1,2,3,4]' >> "$GITHUB_OUTPUT"
+            else
+              echo "full=false" >> "$GITHUB_OUTPUT"
+              echo 'groups=["pr"]' >> "$GITHUB_OUTPUT"
+            fi
           fi
 
   # Repository policy is diff-scoped, not group-scoped: run it once instead of
@@ -83,12 +93,12 @@ jobs:
         with:
           python-version: "3.12"
       - name: targeted or deferred pull-request verification
-        if: github.event_name == 'pull_request' && needs.scope.outputs.behavioral == 'true'
+        if: github.event_name == 'pull_request' && needs.scope.outputs.behavioral == 'true' && needs.scope.outputs.full != 'true'
         env:
           BASE_SHA: ${{ needs.scope.outputs.base }}
         run: CI_SUMMARY_FILE="$GITHUB_STEP_SUMMARY" bash ci/test-all.sh --changed-or-defer "$BASE_SHA" "$GITHUB_SHA"
-      - name: complete main verification
-        if: github.event_name == 'push'
+      - name: complete verification
+        if: github.event_name == 'push' || (github.event_name == 'pull_request' && needs.scope.outputs.full == 'true')
         env:
           BASE_REF: origin/main
           CI_FORCE_FULL: "1"
@@ -123,12 +133,12 @@ jobs:
             fi
           fi
       - name: targeted or deferred pull-request verification under system Bash
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && needs.scope.outputs.full != 'true'
         env:
           BASE_SHA: ${{ needs.scope.outputs.base }}
         run: CI_SUMMARY_FILE="$GITHUB_STEP_SUMMARY" /bin/bash ci/test-all.sh --changed-or-defer "$BASE_SHA" "$GITHUB_SHA"
-      - name: complete main suite under system Bash
-        if: github.event_name == 'push'
+      - name: complete suite under system Bash
+        if: github.event_name == 'push' || (github.event_name == 'pull_request' && needs.scope.outputs.full == 'true')
         env:
           CI_FORCE_FULL: "1"
         run: CI_SUMMARY_FILE="$GITHUB_STEP_SUMMARY" /bin/bash ci/test-all.sh --group "${{ matrix.group }}"
