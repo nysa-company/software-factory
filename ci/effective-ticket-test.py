@@ -12,12 +12,15 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts" / "lib"))
 
 from effective_ticket import (  # noqa: E402
+    authoritative_operator_fields,
     apply_operator_fields,
     committed_ticket,
+    operator_action,
     operator_fields,
     operator_version,
 )
 from legacy_closeout import certified_legacy_terminal  # noqa: E402
+import operator_receipt  # noqa: E402
 
 BASE_TICKET = """# T-700: Overlay test
 
@@ -32,6 +35,84 @@ Priority: normal
 
 
 class EffectiveTicketTests(unittest.TestCase):
+    def test_contract_19_requires_exact_receipt_for_every_operator_action(self):
+        operators = {
+            "ready": ({"state": "Ready", "state_base": "backlog"}, {}),
+            "cancel": ({"state": "Canceled", "state_base": "backlog"}, {}),
+            "resume": (
+                {"state": "Building", "state_base": "blocked-escalated"},
+                {"resume_stage": "Building"},
+            ),
+            "priority": ({"priority": "high"}, {"priority": "high"}),
+            "approve": (
+                {
+                    "state": "Approved", "state_base": "awaiting approval",
+                    "approval": "Receipt",
+                },
+                {"bundle_attestation_blob": "a" * 40},
+            ),
+        }
+        with tempfile.TemporaryDirectory() as temp:
+            state = Path(temp).resolve() / "state"
+            state.mkdir(mode=0o700)
+            for action, (operator, payload) in operators.items():
+                with self.subTest(action=action):
+                    receipt = operator_receipt.issue(
+                        state, "T-700", action, payload,
+                    )
+                    projected = {
+                        **operator,
+                        "observed_at": receipt["issued_at"],
+                        "receipt_sha256": receipt["receipt_sha256"],
+                    }
+                    mapping = {"tickets": {"T-700": {"operator": projected}}}
+                    resolved = authoritative_operator_fields(
+                        mapping, "T-700", "1.9.0", state,
+                    )
+                    self.assertEqual(resolved, projected)
+                    self.assertEqual(operator_action(resolved)[0], action)
+
+    def test_contract_19_rejects_missing_forged_consumed_and_misbound_receipts(self):
+        with tempfile.TemporaryDirectory() as temp:
+            state = Path(temp).resolve() / "state"
+            state.mkdir(mode=0o700)
+            receipt = operator_receipt.issue(
+                state, "T-700", "priority", {"priority": "high"},
+            )
+            base = {
+                "priority": "high", "observed_at": receipt["issued_at"],
+                "receipt_sha256": receipt["receipt_sha256"],
+            }
+            cases = (
+                ({"priority": "high"}, "lacks a receipt"),
+                ({**base, "receipt_sha256": "f" * 64}, "unavailable"),
+                ({**base, "priority": "low"}, "unavailable"),
+            )
+            for operator, error in cases:
+                with self.subTest(error=error), self.assertRaisesRegex(
+                    ValueError, error,
+                ):
+                    authoritative_operator_fields(
+                        {"tickets": {"T-700": {"operator": operator}}},
+                        "T-700", "1.9.0", state,
+                    )
+            operator_receipt.verify_consume_exact(
+                state, "T-700", "priority", receipt["receipt_sha256"],
+            )
+            with self.assertRaisesRegex(ValueError, "unavailable"):
+                authoritative_operator_fields(
+                    {"tickets": {"T-700": {"operator": base}}},
+                    "T-700", "1.9.0", state,
+                )
+
+    def test_contract_18_retains_legacy_overlay_compatibility(self):
+        mapping = {"tickets": {"T-700": {"operator": {"priority": "high"}}}}
+        self.assertEqual(
+            authoritative_operator_fields(
+                mapping, "T-700", "1.8.0", None,
+            ),
+            {"priority": "high"},
+        )
     def test_certified_legacy_done_requires_an_unchanged_ancestor_blob(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             repo = Path(temp_dir) / "product"

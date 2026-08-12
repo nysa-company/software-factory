@@ -25,6 +25,7 @@ SPEC = importlib.util.spec_from_file_location("dispatch_plan", HELPER)
 assert SPEC and SPEC.loader
 DISPATCH = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(DISPATCH)
+import operator_receipt  # noqa: E402
 
 
 def run(*command, cwd=None):
@@ -239,13 +240,20 @@ class DispatchPlanTest(unittest.TestCase):
         run("git", "commit", "-qm", "authorize pre-provider reset", cwd=self.product)
         run("git", "push", "-q", "origin", "main", cwd=self.product)
 
-    def command(self, action, expected=0, operator_map=None):
+    def command(
+        self, action, expected=0, operator_map=None,
+        contract=None, controller_state=None,
+    ):
         environment = {
             **os.environ,
             "FACTORY_CERTIFIED_PRODUCT_ORIGIN": str(self.remote),
         }
         if operator_map is not None:
             environment["FACTORY_OPERATOR_MAP"] = str(operator_map)
+        if contract is not None:
+            environment["FACTORY_RELEASE_CONTRACT_VERSION"] = contract
+        if controller_state is not None:
+            environment["FACTORY_CONTROLLER_STATE_DIR"] = str(controller_state)
         result = subprocess.run(
             [
                 sys.executable, str(HELPER),
@@ -276,6 +284,85 @@ class DispatchPlanTest(unittest.TestCase):
         value = self.command("shadow", operator_map=external)
         self.assertEqual(value["ticket"], "T-200")
         self.assertEqual(value["status"], "SHADOW")
+
+    def test_contract_19_dispatch_requires_exact_open_operator_receipt(self):
+        state = self.root / "controller"
+        state.mkdir(mode=0o700)
+        receipt = operator_receipt.issue(state, "T-300", "ready", {})
+        operator = {
+            "state": "Ready", "state_base": "backlog",
+            "observed_at": receipt["issued_at"],
+            "receipt_sha256": receipt["receipt_sha256"],
+        }
+        mapping = {"tickets": {"T-300": {"operator": operator}}}
+        self.mapping.write_text(json.dumps(mapping) + "\n")
+        environment = {
+            "FACTORY_RELEASE_CONTRACT_VERSION": "1.9.0",
+            "FACTORY_CONTROLLER_STATE_DIR": str(state),
+        }
+        with mock.patch.dict(os.environ, environment):
+            selected, _ = DISPATCH.candidates(
+                self.product / "factory", DISPATCH.load_mapping(self.mapping), set(),
+            )
+        self.assertIn("T-300", {item["ticket"] for item in selected})
+
+        for mutation in ("forged", "consumed", "missing-state"):
+            with self.subTest(mutation=mutation):
+                operator["receipt_sha256"] = (
+                    "f" * 64 if mutation == "forged"
+                    else receipt["receipt_sha256"]
+                )
+                self.mapping.write_text(json.dumps(mapping) + "\n")
+                if mutation == "consumed" and operator_receipt.peek_exact(
+                    state, "T-300", "ready", receipt["receipt_sha256"],
+                ):
+                    operator_receipt.verify_consume_exact(
+                        state, "T-300", "ready", receipt["receipt_sha256"],
+                    )
+                environment["FACTORY_CONTROLLER_STATE_DIR"] = (
+                    str(self.root / "missing") if mutation == "missing-state"
+                    else str(state)
+                )
+                with (
+                    mock.patch.dict(os.environ, environment),
+                    self.assertRaises((ValueError, OSError)),
+                ):
+                    DISPATCH.candidates(
+                        self.product / "factory",
+                        DISPATCH.load_mapping(self.mapping), set(),
+                    )
+
+    def test_durable_pre_dispatch_branch_is_truth_without_operator_map(self):
+        self.write_mapping()
+        self.ticket("T-500", "normal", "Backlog")
+        run("git", "add", "factory/tickets/T-500.md", cwd=self.product)
+        run("git", "commit", "-qm", "add cancellation fixture", cwd=self.product)
+        run("git", "push", "-q", "origin", "main", cwd=self.product)
+        for ticket, state in (("T-300", "Ready"), ("T-500", "Canceled")):
+            branch = f"ticket/{ticket}"
+            cell = self.root / f"durable-{ticket}"
+            run(
+                "git", "worktree", "add", "-q", "-b", branch, str(cell),
+                cwd=self.product,
+            )
+            path = cell / f"factory/tickets/{ticket}.md"
+            path.write_text(
+                path.read_text().replace("State: Backlog", f"State: {state}")
+            )
+            run("git", "add", str(path), cwd=cell)
+            run("git", "commit", "-qm", f"durable {state}", cwd=cell)
+            run("git", "push", "-qu", "origin", branch, cwd=cell)
+            run(
+                "git", "worktree", "remove", "--force", str(cell),
+                cwd=self.product,
+            )
+
+        selected, _ = DISPATCH.candidates(
+            self.product / "factory", DISPATCH.load_mapping(self.mapping), set(),
+        )
+        selected_tickets = {item["ticket"] for item in selected}
+        self.assertIn("T-300", selected_tickets)
+        self.assertNotIn("T-500", selected_tickets)
 
     def test_readiness_refusal_is_ticket_local(self):
         ticket = self.product / "factory/tickets/T-200.md"

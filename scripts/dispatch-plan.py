@@ -19,9 +19,9 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
 from effective_ticket import (  # noqa: E402
+    authoritative_operator_fields,
     apply_operator_fields,
     load_mapping,
-    operator_fields,
     ticket_branch_prefix,
 )
 from legacy_closeout import (  # noqa: E402
@@ -465,6 +465,11 @@ def candidates(
     tickets = factory / "tickets"
     safe_directory(tickets, "ticket directory")
     pin = safe_file(factory / "KIT_PIN", "kit pin", 100).strip()
+    prefix = ticket_branch_prefix(factory)
+    refs = set(git(
+        factory.parent, "for-each-ref", "--format=%(refname)",
+        "refs/heads", "refs/remotes/origin",
+    ).splitlines())
     if not re.fullmatch(r"[0-9a-f]{40}", pin):
         raise DispatchError("kit pin is invalid")
     for path in sorted(tickets.glob("T-*.md")):
@@ -477,6 +482,20 @@ def candidates(
         ):
             continue
         text = safe_file(path, f"ticket {path.stem}")
+        if field(text, "State").casefold() == "backlog":
+            for source in (
+                f"refs/remotes/origin/{prefix}{path.stem}",
+                f"refs/heads/{prefix}{path.stem}",
+            ):
+                if source not in refs:
+                    continue
+                durable = git(
+                    factory.parent, "show",
+                    f"{source}:factory/tickets/{path.stem}.md", check=False,
+                )
+                if field(durable, "State").casefold() in {"ready", "canceled"}:
+                    text = durable
+                    break
         if field(text, "State").casefold() in {"canceled", "done"}:
             continue
         try:
@@ -490,7 +509,12 @@ def candidates(
                 "ticket": path.stem,
             })
             continue
-        operator = operator_fields(mapping, path.stem)
+        operator = authoritative_operator_fields(
+            mapping,
+            path.stem,
+            os.environ.get("FACTORY_RELEASE_CONTRACT_VERSION"),
+            os.environ.get("FACTORY_CONTROLLER_STATE_DIR"),
+        )
         effective = apply_operator_fields(text, operator)
         ticket_pin = field(effective, "Kit-SHA")
         if ticket_pin and ticket_pin != pin:

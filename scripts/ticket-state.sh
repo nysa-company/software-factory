@@ -70,11 +70,14 @@ PRODUCT_REMOTE="$(factory_capture_product_remote "$PRODUCT_ROOT" "$FACTORY_TRUST
 
 TMP="$(mktemp "${TMPDIR:-/tmp}/ticket-state.XXXXXX")"
 OPERATOR_VERSION_FILE="$(mktemp "${TMPDIR:-/tmp}/ticket-state-version.XXXXXX")"
-trap 'rm -f "$TMP" "$OPERATOR_VERSION_FILE"' EXIT
+OPERATOR_ACTION_FILE="$(mktemp "${TMPDIR:-/tmp}/ticket-state-action.XXXXXX")"
+trap 'rm -f "$TMP" "$OPERATOR_VERSION_FILE" "$OPERATOR_ACTION_FILE"' EXIT
 python3 "$KIT_DIR/scripts/lib/effective_ticket.py" \
   --ticket-file "$TICKET_FILE" --operator-map "$MAP" --ticket "$TICKET" \
-  --operator-version-file "$OPERATOR_VERSION_FILE" > "$TMP"
+  --operator-version-file "$OPERATOR_VERSION_FILE" \
+  --operator-action-file "$OPERATOR_ACTION_FILE" > "$TMP"
 OPERATOR_VERSION="$(<"$OPERATOR_VERSION_FILE")"
+OPERATOR_ACTION="$(<"$OPERATOR_ACTION_FILE")"
 
 if [[ "$ACTION" == "materialize" ]]; then
   python3 - "$KIT_DIR/scripts/lib" "$TICKET_FILE" "$TMP" <<'PY'
@@ -262,7 +265,8 @@ factory_update_tracking_ref "$WORKDIR" "$BRANCH" "$LOCAL_HEAD" "$TRACKING_HEAD" 
   exit 1
 }
 
-python3 - "$KIT_DIR/scripts/lib" "$MAP" "$TICKET" "$OPERATOR_VERSION" <<'PY'
+python3 - "$KIT_DIR/scripts/lib" "$MAP" "$TICKET" "$OPERATOR_VERSION" \
+  "$OPERATOR_ACTION" "$CONTRACT_VERSION" "${FACTORY_TRANSITION_STATE_DIR:-}" <<'PY'
 import fcntl
 import json
 import os
@@ -271,9 +275,13 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, sys.argv[1])
-from effective_ticket import operator_version
+from effective_ticket import operator_action, operator_version
+import operator_receipt
 
-path, ticket, expected = Path(sys.argv[2]), sys.argv[3], sys.argv[4]
+path, ticket, expected, action, contract, state_dir = (
+    Path(sys.argv[2]), sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6],
+    sys.argv[7],
+)
 if not path.is_file():
     raise SystemExit(0)
 intents = path.parent / ".operator-clears"
@@ -302,6 +310,14 @@ with lock.open("a") as handle:
     current = operator_version(entry.get("operator") or {})
     if current != expected:
         raise SystemExit(0)
+    operator = entry.get("operator") or {}
+    if contract == "1.9.0" and action:
+        current_action, binding = operator_action(operator)
+        if current_action != action:
+            raise SystemExit("operator action changed during materialization")
+        operator_receipt.verify_consume_exact(
+            Path(state_dir), ticket, action, operator["receipt_sha256"], binding,
+        )
     entry.pop("operator", None)
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     with os.fdopen(fd, "w") as output:

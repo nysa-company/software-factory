@@ -20,6 +20,7 @@ FACTORY_TARGET_STATES = {
 ALLOWED_TRANSITIONS = {
     "materialize": {
         ("backlog", "ready"),
+        ("backlog", "canceled"),
         *(("blocked-escalated", state) for state in (
             "backlog", "ready", "planning", "building", "review",
         )),
@@ -100,7 +101,10 @@ def validate_materialization(current_text: str, effective_text: str) -> None:
         }
     )
     legal_ready = current_state == "backlog" and effective_state == "ready"
-    if current_state != effective_state and not (legal_ready or legal_resume):
+    legal_cancel = current_state == "backlog" and effective_state == "canceled"
+    if current_state != effective_state and not (
+        legal_ready or legal_cancel or legal_resume
+    ):
         raise TransitionError(
             "operator overlay cannot materialize a factory-owned state transition"
         )

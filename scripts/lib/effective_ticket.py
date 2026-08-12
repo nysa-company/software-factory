@@ -10,6 +10,7 @@ import unicodedata
 from pathlib import Path
 
 from legacy_closeout import ValidationError, protected_terminal
+import operator_receipt
 
 MATERIALIZED_OPERATOR_FIELDS = ("priority", "initiative", "state", "approval")
 OPERATOR_METADATA_FIELDS = ("state_base", "observed_at", "receipt_sha256")
@@ -112,6 +113,48 @@ def operator_fields(mapping, ticket_id):
     if operator is None:
         return {}
     return validate_operator(operator)
+
+
+def operator_action(operator):
+    """Return the one command represented by a Contract 1.9 projection."""
+    validate_operator(operator)
+    material = set(operator) - {"observed_at", "receipt_sha256"}
+    if material == {"state", "state_base"}:
+        pair = (operator["state"], operator["state_base"])
+        if pair == ("Ready", "backlog"):
+            return "ready", {}
+        if pair == ("Canceled", "backlog"):
+            return "cancel", {}
+        if pair[1] == "blocked-escalated" and pair[0] not in {
+            "Blocked-Escalated", "Done", "Canceled",
+        }:
+            return "resume", {"resume_stage": pair[0]}
+    elif material == {"priority"}:
+        return "priority", {"priority": operator["priority"]}
+    elif material == {"state", "state_base", "approval"} and (
+        operator["state"], operator["state_base"], operator["approval"]
+    ) == ("Approved", "awaiting approval", "Receipt"):
+        return "approve", {}
+    raise ValueError("operator overlay does not represent one action")
+
+
+def authoritative_operator_fields(
+    mapping, ticket_id, contract_version=None, state_dir=None,
+):
+    operator = operator_fields(mapping, ticket_id)
+    if not operator or contract_version != "1.9.0":
+        return operator
+    if "observed_at" not in operator or "receipt_sha256" not in operator:
+        raise ValueError("Contract 1.9 operator overlay lacks a receipt")
+    path = Path(state_dir or "")
+    if not path.is_absolute():
+        raise ValueError("Contract 1.9 operator receipt state is unavailable")
+    action, binding = operator_action(operator)
+    if operator_receipt.peek_exact(
+        path, ticket_id, action, operator["receipt_sha256"], binding,
+    ) is None:
+        raise ValueError("Contract 1.9 operator receipt is unavailable")
+    return operator
 
 
 def operator_version(operator):
@@ -241,6 +284,8 @@ def main():
     parser.add_argument("--terminal-basis", action="store_true")
     parser.add_argument("--ticket", required=True)
     parser.add_argument("--operator-version-file")
+    parser.add_argument("--operator-action-file")
+    parser.add_argument("--state-dir")
     args = parser.parse_args()
     if not re.fullmatch(r"T-\d+", args.ticket):
         parser.error("invalid ticket identifier")
@@ -250,6 +295,8 @@ def main():
             or args.ticket_file
             or args.operator_map
             or args.operator_version_file
+            or args.operator_action_file
+            or args.state_dir
             or (args.terminal_main and args.terminal_basis)
         ):
             parser.error("terminal lookup requires only --factory-dir and --ticket")
@@ -267,9 +314,25 @@ def main():
         parser.error("--ticket-file and --operator-map are required")
     text = Path(args.ticket_file).read_text()
     mapping = load_mapping(Path(args.operator_map))
-    operator = operator_fields(mapping, args.ticket)
+    contract = __import__("os").environ.get(
+        "FACTORY_RELEASE_CONTRACT_VERSION", ""
+    )
+    state_dir = args.state_dir or __import__("os").environ.get(
+        "FACTORY_TRANSITION_STATE_DIR",
+        __import__("os").environ.get("FACTORY_CONTROLLER_STATE_DIR", ""),
+    )
+    operator = authoritative_operator_fields(
+        mapping, args.ticket, contract, state_dir,
+    )
     if args.operator_version_file:
         Path(args.operator_version_file).write_text(operator_version(operator) + "\n")
+    if args.operator_action_file:
+        Path(args.operator_action_file).write_text(
+            (
+                operator_action(operator)[0]
+                if operator and contract == "1.9.0" else ""
+            ) + "\n"
+        )
     print(apply_operator_fields(text, operator), end="")
 
 

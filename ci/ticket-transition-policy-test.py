@@ -43,6 +43,7 @@ CANONICAL = {
 EXPECTED = {
     "materialize": {
         ("backlog", "ready"),
+        ("backlog", "canceled"),
         *(("blocked-escalated", target) for target in (
             "backlog", "ready", "planning", "building", "review",
         )),

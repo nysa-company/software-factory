@@ -10,7 +10,9 @@ a zero-authority audit copy under factory/receipts/ in the product checkout.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+import fcntl
 import hashlib
 import json
 import os
@@ -25,6 +27,9 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
 import operator_receipt  # noqa: E402
 from operator_receipt import OperatorReceiptError  # noqa: E402
+from effective_ticket import (  # noqa: E402
+    committed_ticket, operator_action, ticket_branch_prefix, validate_operator,
+)
 
 MAP_TOP_LEVEL = ("_config", "_sync", "initiatives", "tickets")
 PRIORITIES = ("none", "urgent", "high", "normal", "low")
@@ -37,6 +42,10 @@ FALLBACK_REASONS = (
     "provider_unavailable",
 )
 FALLBACK_SCHEMA = "model-fallback-receipt-approval/v1"
+CONTRACT_VERSION = json.loads(
+    (Path(__file__).resolve().parents[1] / "integrations/hermes/contract.json")
+    .read_text(encoding="utf-8")
+)["contract_version"]
 
 
 class OperatorCliError(ValueError):
@@ -92,6 +101,52 @@ def write_map(path: Path, value: dict) -> None:
         raise
 
 
+@contextmanager
+def map_lock(path: Path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.parent / ".operator-map.lock"
+    descriptor = os.open(
+        lock_path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600,
+    )
+    try:
+        info = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or info.st_nlink != 1
+            or stat.S_IMODE(info.st_mode) != 0o600
+        ):
+            raise OperatorCliError("operator map lock is unsafe")
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(descriptor)
+
+
+@contextmanager
+def action_lock(state_dir: Path):
+    # ponytail: one project-wide lock; split by ticket only if operator throughput
+    # becomes measurable, because correctness matters more than command parallelism.
+    state_dir = operator_receipt.safe_state_dir(state_dir)
+    descriptor = os.open(
+        state_dir / ".operator-apply-lock",
+        os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600,
+    )
+    try:
+        info = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or info.st_nlink != 1
+            or stat.S_IMODE(info.st_mode) != 0o600
+        ):
+            raise OperatorCliError("operator apply lock is unsafe")
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(descriptor)
+
+
 def ticket_entry(mapping: dict, ticket: str) -> dict:
     tickets = mapping.setdefault("tickets", {})
     entry = tickets.setdefault(ticket, {})
@@ -100,14 +155,106 @@ def ticket_entry(mapping: dict, ticket: str) -> dict:
 
 
 def committed_state(product: Path, ticket: str) -> str:
-    ticket_path = product / "factory" / "tickets" / f"{ticket}.md"
-    if not ticket_path.is_file() or ticket_path.is_symlink():
+    text, _source = committed_ticket(product / "factory", ticket)
+    if text is None:
         raise OperatorCliError(f"ticket file is missing: {ticket}")
-    for line in ticket_path.read_text(encoding="utf-8").splitlines():
+    for line in text.splitlines():
         key, _, rest = line.partition(":")
         if key.strip().lower() == "state":
             return rest.strip().lower()
     raise OperatorCliError(f"ticket has no State field: {ticket}")
+
+
+def git(product: Path, *arguments: str, check: bool = True) -> str:
+    result = subprocess.run(
+        ["git", "-C", str(product), *arguments],
+        text=True, capture_output=True, check=False, timeout=120,
+    )
+    if check and result.returncode:
+        raise OperatorCliError(result.stderr.strip() or "Git operation failed")
+    return result.stdout.strip()
+
+
+def git_succeeds(product: Path, *arguments: str) -> bool:
+    return subprocess.run(
+        ["git", "-C", str(product), *arguments],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        check=False, timeout=120,
+    ).returncode == 0
+
+
+def materialize_pre_dispatch(
+    product: Path, state_dir: Path, map_path: Path, receipt: dict,
+) -> None:
+    ticket = receipt["ticket"]
+    if git(product, "symbolic-ref", "--quiet", "--short", "HEAD") != "main":
+        raise OperatorCliError("operator lifecycle write requires the main checkout")
+    if git(product, "status", "--porcelain=v1", "-z"):
+        raise OperatorCliError("operator lifecycle write requires a clean checkout")
+    origins = git(product, "remote", "get-url", "--push", "--all", "origin").splitlines()
+    if len(origins) != 1 or not origins[0]:
+        raise OperatorCliError("operator lifecycle write requires one push destination")
+    prefix = ticket_branch_prefix(product / "factory")
+    branch = f"{prefix}{ticket}"
+    git(product, "fetch", "--quiet", "origin", "+main:refs/remotes/origin/main")
+    git(
+        product, "fetch", "--quiet", "origin",
+        f"+refs/heads/{branch}:refs/remotes/origin/{branch}", check=False,
+    )
+    remote_branch = f"refs/remotes/origin/{branch}"
+    local_branch = f"refs/heads/{branch}"
+    if git_succeeds(product, "show-ref", "--verify", "--quiet", remote_branch):
+        base = remote_branch
+    elif git_succeeds(product, "show-ref", "--verify", "--quiet", local_branch):
+        base = local_branch
+    else:
+        base = "refs/remotes/origin/main"
+    worktree = Path(tempfile.mkdtemp(prefix=f"operator-{ticket}-", dir=state_dir))
+    added = False
+    try:
+        git(product, "worktree", "add", "--force", "-B", branch, str(worktree), base)
+        added = True
+        audit = audit_copy(worktree, receipt)
+        git(worktree, "add", "--", str(audit.relative_to(worktree)))
+        commit = subprocess.run(
+            [
+                "git", "-C", str(worktree), "-c", "user.name=Factory Operator",
+                "-c", "user.email=operator@local", "commit", "--quiet", "-m",
+                f"{ticket}: operator {receipt['action']} receipt {receipt['sequence']}",
+                "--", str(audit.relative_to(worktree)),
+            ],
+            text=True, capture_output=True, check=False, timeout=120,
+        )
+        if commit.returncode and "nothing to commit" not in (
+            commit.stdout + commit.stderr
+        ):
+            raise OperatorCliError(commit.stderr.strip() or "git commit failed")
+        environment = {
+            **os.environ,
+            "FACTORY_ROOT": str(product),
+            "FACTORY_OPERATOR_MAP": str(map_path),
+            "FACTORY_RELEASE_CONTRACT_VERSION": CONTRACT_VERSION,
+            "FACTORY_TRANSITION_STATE_DIR": str(state_dir),
+            "FACTORY_CERTIFIED_PRODUCT_ORIGIN": origins[0],
+        }
+        result = subprocess.run(
+            [
+                "/bin/bash", str(Path(__file__).with_name("ticket-state.sh")),
+                "--ticket", ticket, "--workdir", str(worktree),
+                "--action", "materialize",
+            ],
+            text=True, capture_output=True, check=False, timeout=300,
+            env=environment,
+        )
+        if result.returncode:
+            raise OperatorCliError(result.stderr.strip() or result.stdout.strip())
+    finally:
+        if added:
+            git(product, "worktree", "remove", "--force", str(worktree), check=False)
+        try:
+            worktree.rmdir()
+        except OSError:
+            pass
 
 
 def bundle_attestation_blob(product: Path, ticket: str) -> str:
@@ -178,32 +325,22 @@ def stamp_sync(mapping: dict, ticket: str | None) -> None:
         sync.setdefault("selected_ticket_success_at", {})[ticket] = now
 
 
-def project(entry: dict, operator: dict) -> None:
-    existing = entry.get("operator")
-    merged = dict(existing) if isinstance(existing, dict) else {}
-    merged.update(operator)
-    entry["operator"] = merged
-
-
-def cmd_ticket_action(args: argparse.Namespace) -> dict:
+def _cmd_ticket_action(args: argparse.Namespace) -> dict:
     product = Path(args.product).resolve()
     state_dir = Path(args.state_dir)
     map_path = operator_map_path(product)
-    mapping = load_map(map_path)
-    entry = ticket_entry(mapping, args.ticket)
     current = committed_state(product, args.ticket)
-    now = utc_now()
     action = args.command
     payload: dict = {}
-    operator: dict = {"observed_at": now}
+    operator: dict = {}
     if action == "ready":
-        if current != "backlog":
+        if current not in {"backlog", "ready"}:
             raise OperatorCliError(
                 f"ready requires a Backlog ticket; {args.ticket} is {current}"
             )
         operator.update({"state": "Ready", "state_base": "backlog"})
     elif action == "cancel":
-        if current != "backlog":
+        if current not in {"backlog", "canceled"}:
             raise OperatorCliError(
                 f"cancel requires a Backlog ticket; {args.ticket} is {current}"
             )
@@ -238,13 +375,60 @@ def cmd_ticket_action(args: argparse.Namespace) -> dict:
         operator["priority"] = args.priority
     else:
         raise OperatorCliError(f"unknown action: {action}")
-    receipt = operator_receipt.issue(state_dir, args.ticket, action, payload)
-    if action == "approve":
-        operator["receipt_sha256"] = receipt["receipt_sha256"]
-        operator["observed_at"] = receipt["issued_at"]
-    project(entry, operator)
-    stamp_sync(mapping, args.ticket)
-    write_map(map_path, mapping)
+    with map_lock(map_path):
+        mapping = load_map(map_path)
+        entry = ticket_entry(mapping, args.ticket)
+        existing = entry.get("operator")
+        if (
+            not existing
+            and action in {"ready", "cancel"}
+            and current == {"ready": "ready", "cancel": "canceled"}[action]
+        ):
+            raise OperatorCliError(
+                f"{args.ticket} already has durable state {current}"
+            )
+        if existing:
+            try:
+                existing_action, existing_binding = operator_action(existing)
+            except ValueError as error:
+                raise OperatorCliError("operator map has an invalid pending action") from error
+            if existing_action != action or existing_binding != payload:
+                raise OperatorCliError(
+                    f"{args.ticket} already has a pending operator action"
+                )
+            receipt = operator_receipt.read_exact(
+                state_dir, args.ticket, action,
+                existing.get("receipt_sha256", ""), payload,
+            )
+            if receipt is None:
+                raise OperatorCliError("pending operator receipt is unavailable")
+            if receipt["consumed"]:
+                target = {"ready": "ready", "cancel": "canceled"}.get(action)
+                if current != target:
+                    raise OperatorCliError("pending operator receipt was already consumed")
+                entry.pop("operator", None)
+                stamp_sync(mapping, args.ticket)
+                write_map(map_path, mapping)
+                return receipt
+        else:
+            receipt = operator_receipt.issue(
+                state_dir, args.ticket, action, payload,
+            )
+        operator.update({
+            "observed_at": receipt["issued_at"],
+            "receipt_sha256": receipt["receipt_sha256"],
+        })
+        validate_operator(operator)
+        entry["operator"] = operator
+        stamp_sync(mapping, args.ticket)
+        write_map(map_path, mapping)
+    if action in {"ready", "cancel"} and CONTRACT_VERSION == "1.9.0":
+        materialize_pre_dispatch(product, state_dir, map_path, receipt)
+        path = (
+            state_dir / "operator-receipts" / args.ticket
+            / f"{action}-{receipt['sequence']}.json"
+        )
+        return operator_receipt.safe_receipt(path)
     path = audit_copy(product, receipt)
     commit_audit(
         product, path,
@@ -253,40 +437,46 @@ def cmd_ticket_action(args: argparse.Namespace) -> dict:
     return receipt
 
 
+def cmd_ticket_action(args: argparse.Namespace) -> dict:
+    with action_lock(Path(args.state_dir)):
+        return _cmd_ticket_action(args)
+
+
 def cmd_fallback_approve(args: argparse.Namespace) -> dict:
     product = Path(args.product).resolve()
     state_dir = Path(args.state_dir)
     map_path = operator_map_path(product)
-    mapping = load_map(map_path)
-    entry = ticket_entry(mapping, args.ticket)
     if args.reason not in FALLBACK_REASONS:
         raise OperatorCliError(f"fallback reason is invalid: {args.reason}")
     if not operator_receipt.DIGEST.fullmatch(args.preview_hash or ""):
         raise OperatorCliError("fallback preview hash is invalid")
-    receipt = operator_receipt.issue(
-        state_dir, args.ticket, "fallback",
-        {
-            "preview_sha256": args.preview_hash,
-            "failed_run_id": args.failed_run,
-            "reason": args.reason,
-        },
-    )
     expires = (
         datetime.now(timezone.utc) + timedelta(minutes=args.expires_minutes)
     ).isoformat(timespec="seconds").replace("+00:00", "Z")
-    entry["model_fallback_approval"] = {
-        "approval_hash": args.preview_hash,
-        "expires_at": expires,
-        "failed_run_id": args.failed_run,
-        "nonce": secrets.token_hex(16),
-        "observed_at": receipt["issued_at"],
-        "operator_id": args.operator_id or os.environ.get("USER", "operator"),
-        "reason": args.reason,
-        "receipt_sha256": receipt["receipt_sha256"],
-        "schema": FALLBACK_SCHEMA,
-    }
-    stamp_sync(mapping, args.ticket)
-    write_map(map_path, mapping)
+    with action_lock(state_dir), map_lock(map_path):
+        mapping = load_map(map_path)
+        entry = ticket_entry(mapping, args.ticket)
+        receipt = operator_receipt.issue(
+            state_dir, args.ticket, "fallback",
+            {
+                "preview_sha256": args.preview_hash,
+                "failed_run_id": args.failed_run,
+                "reason": args.reason,
+            },
+        )
+        entry["model_fallback_approval"] = {
+            "approval_hash": args.preview_hash,
+            "expires_at": expires,
+            "failed_run_id": args.failed_run,
+            "nonce": secrets.token_hex(16),
+            "observed_at": receipt["issued_at"],
+            "operator_id": args.operator_id or os.environ.get("USER", "operator"),
+            "reason": args.reason,
+            "receipt_sha256": receipt["receipt_sha256"],
+            "schema": FALLBACK_SCHEMA,
+        }
+        stamp_sync(mapping, args.ticket)
+        write_map(map_path, mapping)
     path = audit_copy(product, receipt)
     commit_audit(
         product, path,
@@ -298,11 +488,12 @@ def cmd_fallback_approve(args: argparse.Namespace) -> dict:
 def cmd_init(args: argparse.Namespace) -> dict:
     product = Path(args.product).resolve()
     map_path = operator_map_path(product)
-    mapping = load_map(map_path)
-    committed_state(product, args.ticket)
-    ticket_entry(mapping, args.ticket)
-    stamp_sync(mapping, args.ticket)
-    write_map(map_path, mapping)
+    with action_lock(Path(args.state_dir)), map_lock(map_path):
+        mapping = load_map(map_path)
+        committed_state(product, args.ticket)
+        ticket_entry(mapping, args.ticket)
+        stamp_sync(mapping, args.ticket)
+        write_map(map_path, mapping)
     return {"ticket": args.ticket, "initialized": True}
 
 

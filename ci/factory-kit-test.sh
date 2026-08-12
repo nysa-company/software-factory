@@ -2134,15 +2134,20 @@ ACTIVE_ALPHA="$STATE/projects/alpha/active.json"
   fail "first active generation is release a"
 
 OPERATOR_PRODUCT="$TMP/operator-product"
+OPERATOR_REMOTE="$TMP/operator-product.git"
 mkdir -p "$OPERATOR_PRODUCT/factory/tickets"
-git -C "$OPERATOR_PRODUCT" init -q
+git init --bare -q "$OPERATOR_REMOTE"
+git -C "$OPERATOR_PRODUCT" init -q -b main
 git -C "$OPERATOR_PRODUCT" config user.name "Factory Test"
 git -C "$OPERATOR_PRODUCT" config user.email "test@local"
-printf '%s\n' 'factory/operator-map.json' > "$OPERATOR_PRODUCT/.gitignore"
+git -C "$OPERATOR_PRODUCT" remote add origin "$OPERATOR_REMOTE"
+printf '%s\n' 'factory/operator-map.json' 'factory/.operator-map.lock' \
+  'factory/.operator-clears/' > "$OPERATOR_PRODUCT/.gitignore"
 printf '%s\n' '# T-777' 'State: Backlog' 'Priority: normal' > \
   "$OPERATOR_PRODUCT/factory/tickets/T-777.md"
 git -C "$OPERATOR_PRODUCT" add -A
 git -C "$OPERATOR_PRODUCT" commit -q -m "seed backlog ticket for operator authority"
+git -C "$OPERATOR_PRODUCT" push -qu origin main
 expect_success "operator ready issues a one-use receipt and projects the map" \
   operator ready --project alpha --product "$OPERATOR_PRODUCT" --ticket T-777
 python3 - "$STATE/projects/alpha/controller" "$OPERATOR_PRODUCT" <<'PY'
@@ -2151,21 +2156,29 @@ state, product = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
 receipt_path = state / "operator-receipts/T-777/ready-1.json"
 receipt = json.loads(receipt_path.read_text())
 assert receipt["schema"] == "nysa.software-factory.operator-receipt/v1"
-assert receipt["consumed"] is False
+assert receipt["consumed"] is True
 mapping = json.loads((product / "factory/operator-map.json").read_text())
 assert sorted(mapping) == ["_config", "_sync", "initiatives", "tickets"]
-operator = mapping["tickets"]["T-777"]["operator"]
-assert operator["state"] == "Ready"
-assert operator["state_base"] == "backlog"
-audit = json.loads(
-    (product / "factory/receipts/T-777/ready-1.json").read_text()
-)
+assert "operator" not in mapping["tickets"]["T-777"]
+import subprocess
+audit = json.loads(subprocess.run([
+    "git", "-C", str(product), "show",
+    "refs/remotes/origin/ticket/T-777:factory/receipts/T-777/ready-1.json",
+], check=True, capture_output=True, text=True).stdout)
 assert audit["audit"] == "no-authority"
 assert "nonce" not in audit
 assert audit["receipt_sha256"] == receipt["receipt_sha256"]
+ticket = subprocess.run([
+    "git", "-C", str(product), "show",
+    "refs/remotes/origin/ticket/T-777:factory/tickets/T-777.md",
+], check=True, capture_output=True, text=True).stdout
+assert "State: Ready" in ticket
 PY
+expect_success "operator priority remains a pending one-use receipt" \
+  operator priority --project alpha --product "$OPERATOR_PRODUCT" \
+  --ticket T-777 --priority high
 expect_success "operator pending lists the open receipt" \
-  operator pending --project alpha --product "$PRODUCT_ONE"
+  operator pending --project alpha --product "$OPERATOR_PRODUCT"
 [[ "$LAST_OUTPUT" == *'"ticket": "T-777"'* ]] &&
   pass "pending output names the open receipt" ||
   fail "pending output names the open receipt" "$LAST_OUTPUT"

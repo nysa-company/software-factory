@@ -1468,6 +1468,10 @@ PY
       require_managed_directory "$WORKTREE_PARENT" "trusted worktree parent"
       require_managed_directory "$WORKTREE_ROOT" "trusted project worktree root"
     fi
+    if [[ "$ACTIVE_CONTRACT" == "1.8.0" || "$ACTIVE_CONTRACT" == "1.9.0" ]]; then
+      controller_state_dir
+      HELPER_ENV+=("FACTORY_CONTROLLER_STATE_DIR=$CONTROLLER_STATE_DIR")
+    fi
     add_certified_origin_env
     cleanup_runtime
     trap - EXIT HUP INT TERM
