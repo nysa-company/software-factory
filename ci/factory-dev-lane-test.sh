@@ -3683,7 +3683,8 @@ clean_cmd "$cursor_root"
 # a provider in this fixture.
 CANARY_SOURCE="$TMP/canary-source"
 git clone -q --no-local "$ROOT" "$CANARY_SOURCE"
-CANARY_SHA="$(git -C "$CANARY_SOURCE" rev-parse HEAD)"
+CANARY_SHA="$(git -C "$ROOT" rev-parse HEAD)"
+git -C "$CANARY_SOURCE" checkout -q --detach "$CANARY_SHA"
 CANARY_HERMES="$TMP/hermes"
 cat >"$CANARY_HERMES" <<'EOF'
 #!/bin/sh

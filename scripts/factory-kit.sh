@@ -722,7 +722,10 @@ acquire_lock() {
     if [[ ! -e "$lock" && ! -L "$lock" ]]; then
       continue
     fi
-    [[ -d "$lock" && ! -L "$lock" ]] || die "$label lock path is unsafe"
+    if [[ ! -d "$lock" || -L "$lock" ]]; then
+      [[ ! -e "$lock" && ! -L "$lock" ]] && continue
+      die "$label lock path is unsafe"
+    fi
     [[ ! -L "$lock/owner" ]] || die "$label lock owner is unsafe"
     owner_pid="$(awk -F= '$1=="pid" {print $2; exit}' "$lock/owner" 2>/dev/null || true)"
     owner_start="$(awk -F= '$1=="process_start" {print substr($0,index($0,"=")+1); exit}' "$lock/owner" 2>/dev/null || true)"
