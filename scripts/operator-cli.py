@@ -488,7 +488,7 @@ def cmd_fallback_approve(args: argparse.Namespace) -> dict:
 def cmd_init(args: argparse.Namespace) -> dict:
     product = Path(args.product).resolve()
     map_path = operator_map_path(product)
-    with action_lock(Path(args.state_dir)), map_lock(map_path):
+    with map_lock(map_path):
         mapping = load_map(map_path)
         committed_state(product, args.ticket)
         ticket_entry(mapping, args.ticket)
