@@ -3077,7 +3077,6 @@ class Controller:
         claims = {item["ticket"]: item for item in self.load_claims()}
         claim = claims.get(ticket)
         settled_blocker = self.settled_contract_blocker(claim) if claim else None
-        dispatcher_leases = self.dispatcher_lease_records() if claim else {}
         missing_terminal = bool(
             claim
             and claim.get("status") == "blocked"
@@ -3087,14 +3086,17 @@ class Controller:
                 "planner", "spec-linter", "test-author", "builder",
                 "reviewer", "narrator",
             }
-            and claim.get("lease") == ""
-            and claim["ticket"] not in dispatcher_leases
             and not claim.get("publication_lease")
             and not self.role_active(claim)
             and self.terminal_for_receipt(
                 claim["ticket"], claim["receipt"]
             ) is None
         )
+        if missing_terminal:
+            missing_terminal = (
+                claim.get("lease") == ""
+                and claim["ticket"] not in self.dispatcher_lease_records()
+            )
         if (
             claim
             and (claim.get("receipt") or claim.get("role"))
