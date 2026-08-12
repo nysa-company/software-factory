@@ -17,7 +17,8 @@ cleanup() {
     chmod -R u+w "$CURSOR_LANE" 2>/dev/null || true
     rm -rf -- "$CURSOR_LANE"
   fi
-  if [[ "${CANARY_ROOT:-}" == /private/tmp/nysa-sf-canary.test.* ]]; then
+  if [[ "${CANARY_ROOT:-}" == /tmp/nysa-sf-canary.test.* ||
+        "${CANARY_ROOT:-}" == /private/tmp/nysa-sf-canary.test.* ]]; then
     chmod -R u+w "$CANARY_ROOT" 2>/dev/null || true
     rm -rf -- "$CANARY_ROOT"
   fi
@@ -421,6 +422,8 @@ mkdir -p "$READINESS_ROOT/home" "$READINESS_ROOT/session-home" \
   "$READINESS_ROOT/kit/scripts/lib" "$READINESS_ROOT/tmp"
 cp "$ROOT/scripts/lib/backend-policy.sh" \
   "$READINESS_ROOT/kit/scripts/lib/backend-policy.sh"
+cp "$ROOT/scripts/lib/provider-cli-version.sh" \
+  "$READINESS_ROOT/kit/scripts/lib/provider-cli-version.sh"
 python3 - "$READINESS_ROOT/session-home/.claude/.credentials.json" <<'PY'
 import json, os, sys, time
 path=sys.argv[1]
@@ -3687,7 +3690,7 @@ cat >"$CANARY_HERMES" <<'EOF'
 printf '%s\n' 'Hermes Agent v0.18.2 (2026.7.7.2)'
 EOF
 chmod 700 "$CANARY_HERMES"
-CANARY_ROOT="$(mktemp -d /private/tmp/nysa-sf-canary.test.XXXXXX)"
+CANARY_ROOT="$(mktemp -d /tmp/nysa-sf-canary.test.XXXXXX)"
 rmdir "$CANARY_ROOT"
 python3 "$ROOT/scripts/real-hermes-canary.py" prepare \
   --factory-root "$CANARY_SOURCE" --root "$CANARY_ROOT" \
