@@ -2675,6 +2675,19 @@ else
 fi
 unset FACTORY_KIT_TEST_CERTIFICATION_TRACE
 
+PRODUCT_BOOTSTRAP_UNSAFE="$(make_product product-bootstrap-unsafe)"
+set_pin "$PRODUCT_BOOTSTRAP_UNSAFE" "$SHA_A"
+set_ticket_lease "$PRODUCT_BOOTSTRAP_UNSAFE" "$SHA_A"
+commit_all "$PRODUCT_BOOTSTRAP_UNSAFE" "prepare unsafe bootstrap product"
+push_main "$PRODUCT_BOOTSTRAP_UNSAFE"
+mkdir "$PRODUCT_BOOTSTRAP_UNSAFE/factory/runs"
+chmod 777 "$PRODUCT_BOOTSTRAP_UNSAFE/factory/runs"
+expect_failure "bootstrap rejects a broadly writable empty-run authority" \
+  bootstrap --project bootstrap-unsafe --product "$PRODUCT_BOOTSTRAP_UNSAFE" \
+  --sha "$SHA_A" --repo "$KIT_REPO"
+[[ "$LAST_OUTPUT" == *"product runtime directory is unsafe"* ]] ||
+  fail "bootstrap reports the unsafe empty-run authority" "$LAST_OUTPUT"
+
 PRODUCT_BOOTSTRAP="$(make_product product-bootstrap)"
 set_pin "$PRODUCT_BOOTSTRAP" "$SHA_A"
 set_ticket_lease "$PRODUCT_BOOTSTRAP" "$SHA_A"
@@ -2686,6 +2699,21 @@ expect_failure "bootstrap interruption preserves installed release progress" \
   --sha "$SHA_A" --repo "$KIT_REPO"
 unset FACTORY_KIT_TEST_FAIL_BOOTSTRAP_AFTER_PHASE
 BOOTSTRAP_JOURNAL="$STATE/projects/bootstrap/release-journal/$SHA_A.json"
+if python3 - "$PRODUCT_BOOTSTRAP" <<'PY'
+import os, pathlib, stat, sys
+root = pathlib.Path(sys.argv[1])
+for relative in ("factory/runs", "factory/.active-runs"):
+    path = root / relative
+    info = path.lstat()
+    assert not path.is_symlink() and stat.S_ISDIR(info.st_mode)
+    assert info.st_uid == os.geteuid() and stat.S_IMODE(info.st_mode) == 0o700
+    assert not any(path.iterdir())
+PY
+then
+  pass "bootstrap provisions secure empty-run authority"
+else
+  fail "bootstrap provisions secure empty-run authority"
+fi
 if [[ "$(json_value "$BOOTSTRAP_JOURNAL" phases.install.status)" == "pass" &&
       "$(project_receipt_count bootstrap "$SHA_A")" == "0" ]]; then
   pass "install checkpoint resumes before certification"

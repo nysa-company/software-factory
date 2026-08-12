@@ -1643,6 +1643,30 @@ require_production_product_shape() {
     die "production product contains qualification-only factory/QUALIFICATION.json"
 }
 
+ensure_product_runtime_directories() {
+  local product="$1" relative
+  for relative in factory/runs factory/.active-runs; do
+    git -C "$product" check-ignore -q --no-index "$relative/.factory-bootstrap-probe" ||
+      die "bootstrap requires $relative/ to be gitignored"
+  done
+  python3 - "$product" <<'PY' || die "product runtime directory is unsafe"
+import os, pathlib, stat, sys
+root = pathlib.Path(sys.argv[1]).resolve(strict=True)
+for relative in ("factory/runs", "factory/.active-runs"):
+    path = root / relative
+    try:
+        path.mkdir(mode=0o700)
+    except FileExistsError:
+        pass
+    info = path.lstat()
+    if (
+        path.is_symlink() or not stat.S_ISDIR(info.st_mode)
+        or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) & 0o022
+    ):
+        raise SystemExit(1)
+PY
+}
+
 product_tree() {
   git -C "$1" rev-parse 'HEAD^{tree}' 2>/dev/null ||
     die "product is not a Git repository"
@@ -3955,6 +3979,8 @@ cmd_bootstrap() {
   require_clean_product "$product_top"
   [[ "$(strict_product_pin "$product_top")" == "$sha" ]] ||
     die "product pin does not match bootstrap release SHA"
+  ensure_product_runtime_directories "$product_top"
+  require_clean_product "$product_top"
   product_git_sha="$(product_sha "$product_top")"
   product_git_tree="$(product_tree "$product_top")"
   journal_dir="$PROJECTS_DIR/$slug/release-journal"
