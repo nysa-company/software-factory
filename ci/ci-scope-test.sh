@@ -222,7 +222,6 @@ selection_case scripts/ticket-state.sh \
 selection_case scripts/lib/ticket_state_transition.py \
   "targeted|state-machine|ticket-transition-policy $POLICY" \
   "ticket transition policy selection"
-selection_case "targeted|linear|linear $POLICY" "linear selection"
 selection_case scripts/operator-console.py "targeted|operator-console|operator-console $POLICY" "operator console selection"
 selection_case scripts/operator-snapshot.py "targeted|operator-console|operator-console $POLICY" "operator snapshot selection"
 selection_case scripts/adapters/claude-kimi.sh "targeted|claude-kimi|claude-kimi $POLICY" "adapter wrapper selection"
