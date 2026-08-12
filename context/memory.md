@@ -33,6 +33,11 @@ everything the Factory actually enforces lives here.
   ticket state, route, and protected base before writing. Restart reconstructs
   the exact signed migration edge and backfills its event only after the remote
   passport agrees; an answer-only operator wait remains uncharged.
+- A signed v2 ticket pause may resume across one exact pushed
+  `Software Factory <factory@local>` route-migration child. Resume owns the
+  expected-head passport migration and revalidates pause state, stage, run
+  snapshot, lineage, route, remote, and capacity; v1 pauses and any other
+  descendant remain closed.
 - Contract 1.8 emergency closeout is a narrow plan/apply authority for one
   exact already-merged ticket. It binds an open GitHub issue, explicit owner,
   bounded request window, protected-main tree/ticket state, exact PR and green

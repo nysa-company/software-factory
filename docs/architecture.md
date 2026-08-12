@@ -285,8 +285,15 @@ operator to name the exact active Factory
 SHA, validates the state, passport lineage, remote branch, unique worktree,
 recorded claim status, and target release before reacquiring one lease, then
 archives the repro record. Backlog, canceled, merged, and Done tickets are
-never pause/resume targets. Startup and interrupted-reconciliation recovery
-never turn paused or historical repro records into runnable claims.
+never pause/resume targets. A v2 pause may cross exactly one direct, pushed,
+Factory-authored route-migration child that changes only its ticket and route
+journal. Resume binds that child as the expected passport-migration head,
+rechecks the signed pause, authenticated passport lineage, remote identity,
+lifecycle and run snapshot, and remains retryable if capacity acquisition
+fails after migration. Legacy v1 pauses, arbitrary descendants, extra paths,
+wrong authors, or remote drift are not widened. Startup and
+interrupted-reconciliation recovery never turn paused or historical repro
+records into runnable claims.
 Contract 1.8 also exposes a channel-neutral `watch --json` read boundary over
 the selected project's canonical controller events. It projects only bounded,
 redacted operator actions for contract or lifecycle escalation, approval,
