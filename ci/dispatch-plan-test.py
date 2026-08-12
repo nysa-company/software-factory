@@ -142,7 +142,8 @@ class DispatchPlanTest(unittest.TestCase):
         return tickets
 
     def write_contract_18_qualification(
-        self, target=4, dependencies=None, successor=False
+        self, target=4, dependencies=None, successor=False,
+        contract_version="1.8.0",
     ):
         tickets = [f"T-{number}" for number in range(110, 110 + target)]
         for ticket in tickets:
@@ -158,7 +159,7 @@ class DispatchPlanTest(unittest.TestCase):
         manifest = {
             "budget_usd": "300.000000" if successor else "100.000000",
             "capacity": target,
-            "contract_version": "1.8.0",
+            "contract_version": contract_version,
             "factory_sha": "a" * 40,
             "generation": 1,
             "per_run_budget_usd": "10.000000" if successor else "2.000000",
@@ -966,6 +967,33 @@ class DispatchPlanTest(unittest.TestCase):
         self.assertEqual(value["capacity"], 4)
         self.assertEqual(value["dependencies"], {ticket: () for ticket in tickets})
         self.assertEqual(value["done"], 0)
+
+    def test_current_contract_qualifications_accept_only_supported_versions(self):
+        for contract in ("1.8.0", "1.9.0"):
+            with self.subTest(contract=contract):
+                self.write_contract_18_qualification(
+                    contract_version=contract,
+                )
+                with mock.patch.object(
+                    DISPATCH, "protected_terminal",
+                    side_effect=DISPATCH.ValidationError("not done"),
+                ):
+                    value = DISPATCH.qualification(
+                        self.product, self.product / "factory", 4
+                    )
+                self.assertEqual(value["contract_version"], contract)
+
+        for contract in ("1.7.0", "2.0.0"):
+            with self.subTest(contract=contract):
+                self.write_contract_18_qualification(
+                    contract_version=contract,
+                )
+                with self.assertRaisesRegex(
+                    DISPATCH.DispatchError, "qualification manifest is invalid",
+                ):
+                    DISPATCH.qualification(
+                        self.product, self.product / "factory", 4
+                    )
 
     def test_claim_rechecks_presealed_ticket_blob_before_worktree(self):
         self.write_contract_18_qualification()

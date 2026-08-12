@@ -219,12 +219,12 @@ class FactoryControllerTest(unittest.TestCase):
     def operator_transition(
         self, ticket: str, stage: str, role: str | None = None,
         consumed: bool = False, factory_sha: str | None = None,
-        head_sha: str | None = None,
+        head_sha: str | None = None, contract_version: str = "1.8.0",
     ) -> str:
         value = {
             "branch": f"ticket/{ticket}",
             "consumed": consumed,
-            "contract_version": "1.8.0",
+            "contract_version": contract_version,
             "factory_sha": factory_sha or self.release.name,
             "head_sha": head_sha or "b" * 40,
             "project": "relay",
@@ -244,6 +244,7 @@ class FactoryControllerTest(unittest.TestCase):
         self, ticket: str, current_state: str, publication_state: str,
         transition_receipt_sha256: str = "", head_sha: str | None = None,
         branch: str | None = None, factory_sha: str | None = None,
+        contract_version: str = "1.8.0",
     ) -> str:
         key_path = self.state / "passport.key"
         if not key_path.exists():
@@ -251,7 +252,7 @@ class FactoryControllerTest(unittest.TestCase):
             key_path.chmod(0o600)
         body = {
             "branch": branch or f"ticket/{ticket}",
-            "contract_version": "1.8.0",
+            "contract_version": contract_version,
             "current_state": current_state,
             "factory_sha": factory_sha or self.release.name,
             "project": "relay",
@@ -287,6 +288,49 @@ class FactoryControllerTest(unittest.TestCase):
             argparse.Namespace(state_dir=self.state, ticket=ticket)
         )
         self.assertEqual(state_passport["passport_sha256"], digest)
+
+    def test_controller_accepts_only_current_contract_receipts_and_passports(
+        self,
+    ) -> None:
+        ticket = "T-110"
+        claim = {"branch": f"ticket/{ticket}", "ticket": ticket}
+        for contract in ("1.8.0", "1.9.0"):
+            with self.subTest(contract=contract):
+                receipt = self.operator_transition(
+                    ticket, "RUN planner", role="planner",
+                    contract_version=contract,
+                )
+                passport = self.operator_passport(
+                    ticket, "Planning", "none", receipt,
+                    contract_version=contract,
+                )
+                controller = CONTROL.Controller(self.args)
+                self.assertEqual(
+                    controller.transition_receipt(claim)["contract_version"],
+                    contract,
+                )
+                self.assertEqual(
+                    controller.authenticated_operator_passport(ticket)[
+                        "contract_version"
+                    ],
+                    contract,
+                )
+
+        for contract in ("1.7.0", "2.0.0"):
+            with self.subTest(contract=contract):
+                self.operator_transition(
+                    ticket, "RUN planner", role="planner",
+                    contract_version=contract,
+                )
+                self.operator_passport(
+                    ticket, "Planning", "none", contract_version=contract,
+                )
+                controller = CONTROL.Controller(self.args)
+                self.assertIsNone(controller.transition_receipt(claim))
+                with self.assertRaisesRegex(
+                    CONTROL.ControllerError, "passport identity is invalid",
+                ):
+                    controller.authenticated_operator_passport(ticket)
 
     def test_operator_events_backfill_each_durable_crash_boundary_once(self) -> None:
         controller = CONTROL.Controller(self.args)

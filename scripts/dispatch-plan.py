@@ -34,6 +34,7 @@ from legacy_closeout import (  # noqa: E402
 SCHEMA = "nysa.software-factory.dispatch-plan/v1"
 QUALIFICATION_SCHEMA = "nysa.software-factory.qualification/v1"
 QUALIFICATION_SCHEMA_V2 = "nysa.software-factory.qualification/v2"
+QUALIFICATION_CONTRACTS = frozenset({"1.8.0", "1.9.0"})
 PREPROVIDER_RESET_SCHEMA = "nysa.software-factory.preprovider-branch-resets/v1"
 TICKET = re.compile(r"^T-([0-9]+)$")
 SHA = re.compile(r"^[0-9a-f]{40}$")
@@ -173,7 +174,7 @@ def qualification(
         pin = safe_file(factory / "KIT_PIN", "kit pin", 100).strip()
         if (
             set(value) != keys
-            or value.get("contract_version") != "1.8.0"
+            or value.get("contract_version") not in QUALIFICATION_CONTRACTS
             or value.get("factory_sha") != pin
             or not isinstance(value.get("generation"), int)
             or isinstance(value.get("generation"), bool)
