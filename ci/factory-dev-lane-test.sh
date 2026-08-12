@@ -1538,14 +1538,13 @@ if printf '%s\n' "$product_role_source" |
 fi
 seed_source="$(sed -n \
   '/^seed_product_worktrees()/,/^write_product_checkpoint_import()/p' "$LANE")"
-printf '%s\n' "$seed_source" |
-  grep -Fq 'scripts/lib/lane-path-sentinel.py' ||
+grep -Fq 'scripts/lib/lane-path-sentinel.py' <<<"$seed_source" ||
   fail "checkpoint import lost its lane-path sentinel"
 checkpoint_export_source="$(sed -n \
   '/^export_product_checkpoint_internal()/,/^product_export_roles_complete()/p' \
   "$LANE")"
-printf '%s\n' "$checkpoint_export_source" |
-  grep -Fq '"$SOURCE_ROOT/scripts/lib/lane-path-sentinel.py"' ||
+grep -Fq '"$SOURCE_ROOT/scripts/lib/lane-path-sentinel.py"' \
+  <<<"$checkpoint_export_source" ||
   fail "checkpoint export does not use the trusted controller sentinel"
 if printf '%s\n' "$checkpoint_export_source" |
    grep -Fq '"$root/kit/scripts/lib/lane-path-sentinel.py"'; then
