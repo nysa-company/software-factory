@@ -473,7 +473,7 @@ import hashlib,json,os,pathlib,sys
 evidence,attempt,destination=map(pathlib.Path,sys.argv[1:])
 names={{"contract.json","doctor.json","hermes-hook-payload.sha256","hook-start","lease.sha256",
        "manifest-summary.json","model-pin.json","preflight.json","release.json",
-       "transition.json" if "{contract}" == "1.8.0" else "next-stage.json"}}
+       "transition.json" if "{contract}" in ("1.8.0", "1.9.0") else "next-stage.json"}}
 digest=lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
 value={{
     "attempt_sha256":digest(attempt),
