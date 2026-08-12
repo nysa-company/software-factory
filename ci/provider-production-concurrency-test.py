@@ -897,7 +897,7 @@ esac
             "FACTORY_PROVIDER_DB": str(self.state / "accounting/state-v2.sqlite3"),
             "FACTORY_PROVIDER_POLICY": str(self.state / "provider-policy.json"),
             "FACTORY_CLI_RUNTIME_ROOT": str(self.root),
-            "FACTORY_RELEASE_CONTRACT_VERSION": "1.8.0",
+            "FACTORY_RELEASE_CONTRACT_VERSION": "1.9.0",
             "HOME": str(self.home),
             "PATH": f"{binary_root}:{os.environ['PATH']}",
         }

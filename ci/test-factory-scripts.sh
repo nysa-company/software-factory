@@ -955,18 +955,18 @@ SEALED_STAGE="$(env \
   FACTORY_RELEASE_SHA="$KIT_SHA" \
   FACTORY_RELEASE_TREE="$SEALED_TREE" \
   FACTORY_RELEASE_PATH="$SEALED_RELEASE" \
-  FACTORY_RELEASE_CONTRACT_VERSION=1.8.0 \
+  FACTORY_RELEASE_CONTRACT_VERSION=1.9.0 \
   "$SEALED_RELEASE/scripts/next-stage.sh" --ticket T-190 2>&1)"
 SEALED_TRANSITION="$(env \
   FACTORY_CERTIFIED_PRODUCT_ORIGIN="$SEALED_ORIGIN" \
   FACTORY_RELEASE_SHA="$KIT_SHA" \
   FACTORY_RELEASE_TREE="$SEALED_TREE" \
   FACTORY_RELEASE_PATH="$SEALED_RELEASE" \
-  FACTORY_RELEASE_CONTRACT_VERSION=1.8.0 \
+  FACTORY_RELEASE_CONTRACT_VERSION=1.9.0 \
   python3 "$SEALED_RELEASE/scripts/state-machine.py" next \
     --factory-root "$SEALED_PRODUCT" --workdir "$SEALED_PRODUCT" \
     --kit-dir "$SEALED_RELEASE" --state-dir "$SEALED_STATE" \
-    --ticket T-190 --contract-version 1.8.0 --factory-sha "$KIT_SHA" \
+    --ticket T-190 --contract-version 1.9.0 --factory-sha "$KIT_SHA" \
     --project sealed)"
 SEALED_RECEIPT="$(python3 -c \
   'import json,sys; print(json.load(sys.stdin)["receipt"])' \
@@ -976,7 +976,7 @@ env \
   python3 "$SEALED_RELEASE/scripts/state-machine.py" consume \
     --factory-root "$SEALED_PRODUCT" --workdir "$SEALED_PRODUCT" \
     --kit-dir "$SEALED_RELEASE" --state-dir "$SEALED_STATE" \
-    --ticket T-190 --contract-version 1.8.0 --factory-sha "$KIT_SHA" \
+    --ticket T-190 --contract-version 1.9.0 --factory-sha "$KIT_SHA" \
     --project sealed --receipt "$SEALED_RECEIPT" --role planner >/dev/null
 SEALED_RUN_STATUS=0
 env \
@@ -992,7 +992,7 @@ env \
   FACTORY_RELEASE_SHA="$KIT_SHA" \
   FACTORY_RELEASE_TREE="$SEALED_TREE" \
   FACTORY_RELEASE_PATH="$SEALED_RELEASE" \
-  FACTORY_RELEASE_CONTRACT_VERSION=1.8.0 \
+  FACTORY_RELEASE_CONTRACT_VERSION=1.9.0 \
   "$SEALED_RELEASE/scripts/run-agent.sh" \
     --role planner --ticket T-190 -- "sealed run" >/dev/null 2>&1 ||
   SEALED_RUN_STATUS=$?
@@ -1001,7 +1001,7 @@ SEALED_AFTER="$(env \
   FACTORY_RELEASE_SHA="$KIT_SHA" \
   FACTORY_RELEASE_TREE="$SEALED_TREE" \
   FACTORY_RELEASE_PATH="$SEALED_RELEASE" \
-  FACTORY_RELEASE_CONTRACT_VERSION=1.8.0 \
+  FACTORY_RELEASE_CONTRACT_VERSION=1.9.0 \
   "$SEALED_RELEASE/scripts/next-stage.sh" --ticket T-190 2>&1)"
 SEALED_META="$(ls "$SEALED_PRODUCT/factory/runs/"*.meta 2>/dev/null || true)"
 if [[ "$SEALED_STAGE" == "RUN planner" &&
@@ -1012,7 +1012,7 @@ if [[ "$SEALED_STAGE" == "RUN planner" &&
    grep -q "^kit_sha=$KIT_SHA$" "$SEALED_META" &&
    grep -q "^kit_tree=$SEALED_TREE$" "$SEALED_META" &&
    grep -q "^ticket_kit_sha=$KIT_SHA$" "$SEALED_META" &&
-   grep -q '^contract_version=1.8.0$' "$SEALED_META" &&
+   grep -q '^contract_version=1.9.0$' "$SEALED_META" &&
    grep -q "^physical_kit_path=$SEALED_RELEASE$" "$SEALED_META" &&
    grep -q '^kit_provenance_mode=sealed$' "$SEALED_META" &&
    grep -q '^kit_provenance_scope=qualification-candidate$' "$SEALED_META" &&
@@ -1075,11 +1075,11 @@ CURSOR_TRANSITION="$(env \
   FACTORY_CERTIFIED_PRODUCT_ORIGIN="$SEALED_ORIGIN" \
   FACTORY_RELEASE_SHA="$KIT_SHA" FACTORY_RELEASE_TREE="$SEALED_TREE" \
   FACTORY_RELEASE_PATH="$SEALED_RELEASE" \
-  FACTORY_RELEASE_CONTRACT_VERSION=1.8.0 \
+  FACTORY_RELEASE_CONTRACT_VERSION=1.9.0 \
   python3 "$SEALED_RELEASE/scripts/state-machine.py" next \
     --factory-root "$SEALED_PRODUCT" --workdir "$SEALED_PRODUCT" \
     --kit-dir "$SEALED_RELEASE" --state-dir "$SEALED_STATE" \
-    --ticket T-190 --contract-version 1.8.0 --factory-sha "$KIT_SHA" \
+    --ticket T-190 --contract-version 1.9.0 --factory-sha "$KIT_SHA" \
     --project sealed)"
 CURSOR_RECEIPT="$(python3 -c \
   'import json,sys; print(json.load(sys.stdin)["receipt"])' \
@@ -1088,7 +1088,7 @@ env FACTORY_CERTIFIED_PRODUCT_ORIGIN="$SEALED_ORIGIN" \
   python3 "$SEALED_RELEASE/scripts/state-machine.py" consume \
     --factory-root "$SEALED_PRODUCT" --workdir "$SEALED_PRODUCT" \
     --kit-dir "$SEALED_RELEASE" --state-dir "$SEALED_STATE" \
-    --ticket T-190 --contract-version 1.8.0 --factory-sha "$KIT_SHA" \
+    --ticket T-190 --contract-version 1.9.0 --factory-sha "$KIT_SHA" \
     --project sealed --receipt "$CURSOR_RECEIPT" --role spec-linter >/dev/null
 CURSOR_RUN_STATUS=0
 CURSOR_RUN_OUTPUT="$TMP/sealed-cursor-run.out"
@@ -1110,7 +1110,7 @@ env \
   FACTORY_KIT_TRUST_SCOPE=qualification-candidate \
   FACTORY_RELEASE_SHA="$KIT_SHA" FACTORY_RELEASE_TREE="$SEALED_TREE" \
   FACTORY_RELEASE_PATH="$SEALED_RELEASE" \
-  FACTORY_RELEASE_CONTRACT_VERSION=1.8.0 \
+  FACTORY_RELEASE_CONTRACT_VERSION=1.9.0 \
   FACTORY_CURSOR_FALLBACK_ENABLED=1 CURSOR_AGENT_VERSION=2026.07.test \
   CURSOR_AGENT_BIN="$CURSOR_AGENT_WRAPPER" \
   FACTORY_PROBE_CURSOR_ANTHROPIC=READY:test \
@@ -1602,7 +1602,7 @@ if PATH="$STUB_BIN:$PATH" FACTORY_ROOT="$FALLBACK" \
      grep -q "^kit_tree=$KIT_TREE$" "$FALLBACK_META" &&
      grep -q "^product_tree=$FALLBACK_PRODUCT_TREE$" "$FALLBACK_META" &&
      grep -q "^ticket_kit_sha=$KIT_SHA$" "$FALLBACK_META" &&
-     grep -q '^contract_version=1.8.0$' "$FALLBACK_META" &&
+     grep -q '^contract_version=1.9.0$' "$FALLBACK_META" &&
      grep -q "^physical_kit_path=$PHYSICAL_KIT_PATH$" "$FALLBACK_META"; then
     pass "unavailable primary selects one redacted Cursor task"
   else

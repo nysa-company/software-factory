@@ -7193,7 +7193,7 @@ class FactoryControllerTest(unittest.TestCase):
             "FACTORY_GLOBAL_ENV": str(global_env),
             "FACTORY_MODEL_STATE_ROOT": str(model_state),
             "FACTORY_PROJECT": "relay", "FACTORY_ROOT": str(product),
-            "FACTORY_RELEASE_CONTRACT_VERSION": "1.8.0",
+            "FACTORY_RELEASE_CONTRACT_VERSION": "1.9.0",
             "FACTORY_RELEASE_PATH": str(release),
             "FACTORY_RELEASE_SHA": target,
             "FACTORY_RELEASE_TREE": release_tree,

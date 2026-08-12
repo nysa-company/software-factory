@@ -276,7 +276,7 @@ PY
 import pathlib, sys
 path, contract = pathlib.Path(sys.argv[1]), sys.argv[2]
 text = path.read_text()
-old = 'CONTRACT_VERSION="${FACTORY_RELEASE_CONTRACT_VERSION:-1.8.0}"'
+old = 'CONTRACT_VERSION="${FACTORY_RELEASE_CONTRACT_VERSION:-1.9.0}"'
 new = f'CONTRACT_VERSION="${{FACTORY_RELEASE_CONTRACT_VERSION:-{contract}}}"'
 if text.count(old) != 1:
     raise SystemExit("factory-doctor contract fixture is ambiguous")

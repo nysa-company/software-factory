@@ -3,7 +3,7 @@
 # Public interface: factory-doctor.sh [--json] [--project <slug>]
 set -u
 
-CONTRACT_VERSION="${FACTORY_RELEASE_CONTRACT_VERSION:-1.8.0}"
+CONTRACT_VERSION="${FACTORY_RELEASE_CONTRACT_VERSION:-1.9.0}"
 DOCTOR_SCHEMA="nysa.software-factory.hermes-doctor/v1"
 SUPPORTED_HERMES_AGENT="0.18.2"
 SUPPORTED_HERMES_BUILD="2026.7.7.2"
@@ -705,7 +705,7 @@ if [[ "${FACTORY_TRUSTED_TEST_HARNESS:-0}" == "1" ]]; then
   [[ -z "${FACTORY_DOCTOR_LAUNCHCTL:-}" ]] ||
     CONTROLLER_LAUNCHCTL="$FACTORY_DOCTOR_LAUNCHCTL"
 fi
-if [[ "$CONTRACT_VERSION" == "1.8.0" &&
+if [[ ( "$CONTRACT_VERSION" == "1.8.0" || "$CONTRACT_VERSION" == "1.9.0" ) &&
       "${FACTORY_KIT_TRUST_SCOPE:-}" == "production-certified" &&
       "${FACTORY_TEST_MODE:-0}" != "1" &&
       "$CONTROLLER_PLATFORM" == "Darwin" ]]; then
@@ -1174,7 +1174,7 @@ PROVIDER_LEGACY_INTERVALS=0
 PROVIDER_CONCURRENCY_REQUIRED=false
 PROVIDER_CONCURRENCY_READY=false
 if [[ ( "$CONTRACT_VERSION" == "1.6.0" || "$CONTRACT_VERSION" == "1.7.0" ||
-        "$CONTRACT_VERSION" == "1.8.0" ) &&
+        "$CONTRACT_VERSION" == "1.8.0" || "$CONTRACT_VERSION" == "1.9.0" ) &&
       -n "${FACTORY_PROVIDER_ACTIVATION:-}" &&
       -f "${FACTORY_PROVIDER_ACTIVATION:-}" ]]; then
   PROVIDER_ACTIVATED=true
@@ -1297,7 +1297,7 @@ PY
     PROVIDER_RUNTIME_STATUS="error"
   fi
 fi
-if [[ "$CONTRACT_VERSION" == "1.8.0" &&
+if [[ ( "$CONTRACT_VERSION" == "1.8.0" || "$CONTRACT_VERSION" == "1.9.0" ) &&
       "$MAX_CONCURRENT_TICKETS" =~ ^[0-9]+$ &&
       "$MAX_CONCURRENT_TICKETS" -gt 1 ]]; then
   PROVIDER_CONCURRENCY_REQUIRED=true

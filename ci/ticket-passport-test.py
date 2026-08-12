@@ -78,7 +78,7 @@ class TicketPassportTest(unittest.TestCase):
         run("git", "symbolic-ref", "HEAD", "refs/heads/main", cwd=self.remote)
         self.state_dir = STATE.safe_state_dir(self.root / "controller")
         self.state_args = argparse.Namespace(
-            contract_version="1.8.0",
+            contract_version="1.9.0",
             factory_root=self.product,
             factory_sha="a" * 40,
             kit_dir=ROOT,
@@ -93,7 +93,7 @@ class TicketPassportTest(unittest.TestCase):
         )
         self.passport_args = argparse.Namespace(
             action="export",
-            contract_version="1.8.0",
+            contract_version="1.9.0",
             factory_root=self.product,
             factory_sha="a" * 40,
             project="relay",
@@ -224,7 +224,7 @@ class TicketPassportTest(unittest.TestCase):
             "role_exit=ok\n"
             f"role_head_before={run('git', 'rev-parse', 'HEAD', cwd=self.product)}\n"
             f"kit_sha={factory_sha}\n"
-            "contract_version=1.8.0\n"
+            "contract_version=1.9.0\n"
             f"transition_receipt_sha256={receipt}\n"
             f"output_sha256={output}\n",
             encoding="utf-8",
@@ -289,7 +289,7 @@ class TicketPassportTest(unittest.TestCase):
             "role_branch_before=ticket/T-110\n"
             f"role_head_before={head_before}\n"
             f"kit_sha={'a' * 40}\n"
-            "contract_version=1.8.0\n"
+            "contract_version=1.9.0\n"
             f"transition_receipt_sha256={receipt}\n"
             f"output_sha256={output_digest}\n"
             "progress_events=\n"
@@ -365,7 +365,7 @@ class TicketPassportTest(unittest.TestCase):
             "role_branch_before=ticket/T-110\n"
             f"role_head_before={head_before}\n"
             f"kit_sha={'a' * 40}\n"
-            "contract_version=1.8.0\n"
+            "contract_version=1.9.0\n"
             f"transition_receipt_sha256={receipt}\n"
             f"output_sha256={output_digest}\n"
             "progress_events=2\n"
@@ -439,7 +439,7 @@ class TicketPassportTest(unittest.TestCase):
             "provider_attempt_id=attempt-direct\nrole_exit=provider_failed\n"
             "role_branch_before=ticket/T-110\n"
             f"role_head_before={head_before}\nrole_remote_before={head_before}\n"
-            f"kit_sha={'a' * 40}\ncontract_version=1.8.0\n"
+            f"kit_sha={'a' * 40}\ncontract_version=1.9.0\n"
             f"transition_receipt_sha256={receipt}\n"
             f"output_sha256={output_digest}\nprogress_events=2\n"
             f"progress_journal_sha256={hashlib.sha256(progress.read_bytes()).hexdigest()}\n"
@@ -630,7 +630,7 @@ class TicketPassportTest(unittest.TestCase):
                     receipt = {
                         **PASSPORT.identity(self.passport_args),
                         "consumed": True,
-                        "contract_version": "1.8.0",
+                        "contract_version": "1.9.0",
                         "factory_sha": "a" * 40,
                         "passport_sha256": None if role == "planner" else "8" * 64,
                         "role": role,
@@ -1030,7 +1030,7 @@ class TicketPassportTest(unittest.TestCase):
 
         transition_state = STATE.safe_state_dir(self.root / "run-state")
         transition_args = argparse.Namespace(
-            contract_version="1.8.0",
+            contract_version="1.9.0",
             factory_root=self.product,
             factory_sha=factory_sha,
             kit_dir=release,
@@ -1053,7 +1053,7 @@ class TicketPassportTest(unittest.TestCase):
             "FACTORY_CERTIFIED_PRODUCT_ORIGIN": str(self.remote),
             "FACTORY_GLOBAL_ENV": str(self.root / "missing-global.env"),
             "FACTORY_PROJECT": "output-test",
-            "FACTORY_RELEASE_CONTRACT_VERSION": "1.8.0",
+            "FACTORY_RELEASE_CONTRACT_VERSION": "1.9.0",
             "FACTORY_RELEASE_PATH": str(release),
             "FACTORY_RELEASE_SHA": factory_sha,
             "FACTORY_RELEASE_TREE": release_tree,
@@ -1984,7 +1984,7 @@ class TicketPassportTest(unittest.TestCase):
             "role_exit=role_exit_push_failed\n"
             f"role_head_before={old_head}\n"
             f"kit_sha={'a' * 40}\n"
-            "contract_version=1.8.0\n"
+            "contract_version=1.9.0\n"
             f"transition_receipt_sha256={repair['receipt_sha256']}\n"
             f"output_sha256={output_digest}\n",
             encoding="utf-8",
@@ -2126,7 +2126,7 @@ class TicketPassportTest(unittest.TestCase):
             "role_exit=role_exit_push_failed\n"
             f"role_head_before={old_head}\n"
             f"kit_sha={'a' * 40}\n"
-            "contract_version=1.8.0\n"
+            "contract_version=1.9.0\n"
             f"transition_receipt_sha256={repair['receipt_sha256']}\n"
             f"output_sha256={output_digest}\n",
             encoding="utf-8",
@@ -2136,8 +2136,8 @@ class TicketPassportTest(unittest.TestCase):
         previous = PASSPORT.migrate(self.passport_args, secret)
         self.assertEqual(previous["factory_sha"], "b" * 40)
         self.assertEqual(previous["factory_release_history"], [
-            {"contract_version": "1.8.0", "factory_sha": "a" * 40},
-            {"contract_version": "1.8.0", "factory_sha": "b" * 40},
+            {"contract_version": "1.9.0", "factory_sha": "a" * 40},
+            {"contract_version": "1.9.0", "factory_sha": "b" * 40},
         ])
 
         run("git", "reset", "--hard", replay_base, cwd=self.product)
@@ -2361,7 +2361,7 @@ class TicketPassportTest(unittest.TestCase):
         self.assertEqual(previous["factory_sha"], "b" * 40)
         self.assertEqual(previous["head_sha"], old_head)
         self.assertIn(
-            {"contract_version": "1.8.0", "factory_sha": "a" * 40},
+            {"contract_version": "1.9.0", "factory_sha": "a" * 40},
             previous["factory_release_history"],
         )
         self.state_args.factory_sha = "b" * 40
