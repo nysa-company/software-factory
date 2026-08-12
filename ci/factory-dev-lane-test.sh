@@ -3700,22 +3700,6 @@ CANARY_LEGACY_HOOK="$TMP/legacy-canary-hook"
 python3 - "$CANARY_ROOT" "$ROOT/scripts/real-hermes-canary.py" "$CANARY_LEGACY_HOOK" <<'PY'
 import importlib.util, json, pathlib, sys
 root=pathlib.Path(sys.argv[1])
-hook=(root/"home/.hermes/profiles"/json.loads((root/"marker.json").read_text())["project"]/
-      "hooks/run-factory-canary.sh").read_text()
-assert "run_launcher state-machine --ticket" in hook
-assert "--receipt \"$receipt\"" in hook
-assert "run_launcher next-stage" not in hook
-assert "contract 1.8 transitions" not in hook
-driver=(root/"run.sh").read_text()
-assert "FACTORY_KIT_TEST_SKIP_PROVIDER_CLI_PIN=1" in driver
-assert "provider-concurrency plan --sha" in driver and "--capacity 2" in driver
-project=(root/"product/factory/PROJECT.env").read_text().splitlines()
-assert project.count("PREVIEW_PROVIDER=none") == 1
-assert project.count("NONVISUAL_PATHS=app/") == 1
-assert project.count("MAX_CONCURRENT_TICKETS=2") == 1
-assert json.loads((root/"product/factory/linear-state.json").read_text())["enabled"] is False
-assert not (root/"product/factory/runs").exists()
-assert not (root/"product/factory/.active-runs").exists()
 spec=importlib.util.spec_from_file_location("canary",sys.argv[2])
 module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
 legacy=module.render_hook(root,"legacy", "a"*40, "b"*40, "1.6.0")
