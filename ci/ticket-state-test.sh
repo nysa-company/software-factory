@@ -109,7 +109,9 @@ PY
 ticket_state \
   --ticket T-700 --workdir "$PRODUCT" --action transition --state Planning >/dev/null
 grep -q '^State: Planning$' "$PRODUCT/factory/tickets/T-700.md"
-TEST_CONTRACT=1.7.0 ticket_state --ticket T-700 --workdir "$PRODUCT" --action transition \
+# Keep the integration boundary on the active contract; the pure policy matrix
+# separately exercises every Resume-State contract retained by the writer.
+TEST_CONTRACT=1.9.0 ticket_state --ticket T-700 --workdir "$PRODUCT" --action transition \
   --state Blocked-Escalated >/dev/null
 grep -q '^State: Blocked-Escalated$' "$PRODUCT/factory/tickets/T-700.md"
 grep -q '^Resume-State: Planning$' "$PRODUCT/factory/tickets/T-700.md"
@@ -273,12 +275,12 @@ printf '%s\n' 'APPROVE' > "$PRODUCT/factory/runs/reviewer.out"
 REVIEW_DIGEST="$(shasum -a 256 "$PRODUCT/factory/runs/reviewer.out" | awk '{print $1}')"
 printf '%s\n' \
   'run_id=reviewer' 'ticket=T-700' 'role=reviewer' 'adapter=codex' \
-  'contract_version=1.7.0' 'phase=completed' 'accounting_state=completed' \
+  'contract_version=1.9.0' 'phase=completed' 'accounting_state=completed' \
   'exit_status=0' 'role_exit=ok' "role_head_before=$REVIEW_HEAD" \
   "role_remote_before=$REVIEW_HEAD" "output_sha256=$REVIEW_DIGEST" \
   'started_at=2026-07-27T00:00:00Z' \
   > "$PRODUCT/factory/runs/reviewer.meta"
-TEST_CONTRACT=1.7.0 ticket_state --ticket T-700 --workdir "$PRODUCT" \
+TEST_CONTRACT=1.9.0 ticket_state --ticket T-700 --workdir "$PRODUCT" \
   --action reviewer-reconcile >/dev/null
 grep -qx 'reviewer round 1: APPROVE' "$PRODUCT/factory/tickets/T-700.md"
 
@@ -289,12 +291,12 @@ printf '%s\n' 'REQUEST CHANGES' 'FIX-OWNER: builder' \
 REVIEW_DIGEST="$(shasum -a 256 "$PRODUCT/factory/runs/reviewer-2.out" | awk '{print $1}')"
 printf '%s\n' \
   'run_id=reviewer-2' 'ticket=T-700' 'role=reviewer' 'adapter=codex' \
-  'contract_version=1.7.0' 'phase=completed' 'accounting_state=completed' \
+  'contract_version=1.9.0' 'phase=completed' 'accounting_state=completed' \
   'exit_status=0' 'role_exit=ok' "role_head_before=$REVIEW_HEAD" \
   "role_remote_before=$REVIEW_HEAD" "output_sha256=$REVIEW_DIGEST" \
   'started_at=2026-07-27T00:01:00Z' \
   > "$PRODUCT/factory/runs/reviewer-2.meta"
-TEST_CONTRACT=1.7.0 ticket_state --ticket T-700 --workdir "$PRODUCT" \
+TEST_CONTRACT=1.9.0 ticket_state --ticket T-700 --workdir "$PRODUCT" \
   --action reviewer-reconcile >/dev/null
 grep -q '^State: Building$' "$PRODUCT/factory/tickets/T-700.md"
 grep -qx 'reviewer round 2: REQUEST CHANGES' \
@@ -397,7 +399,7 @@ mkdir -p "$PRODUCT/factory/runs"
 PINNED_KIT_SHA="$(git -C "$ROOT" rev-parse HEAD)"
 printf '%s\n' \
   'run_id=blocked-run' 'ticket=T-700' 'role=builder' \
-  'contract_version=1.7.0' 'phase=completed' \
+  'contract_version=1.9.0' 'phase=completed' \
   'accounting_state=abandoned_conservative' \
   'reserved_usd=10.00' 'effective_cost=10.00' \
   'cost_basis=conservative_reservation' \
@@ -405,7 +407,7 @@ printf '%s\n' \
   'kit_sha=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' \
   'started_at=2026-07-25T00:00:00Z' \
   > "$PRODUCT/factory/runs/blocked.meta"
-if TEST_CONTRACT=1.7.0 ticket_state --ticket T-700 --workdir "$PRODUCT" \
+if TEST_CONTRACT=1.9.0 ticket_state --ticket T-700 --workdir "$PRODUCT" \
     --action qualification-backlog --role builder >/dev/null 2>&1; then
   echo "FAIL: qualification accepted a role from an unpinned Factory SHA" >&2
   exit 1
@@ -413,7 +415,7 @@ fi
 sed -i.bak "s/^kit_sha=.*/kit_sha=$PINNED_KIT_SHA/" \
   "$PRODUCT/factory/runs/blocked.meta"
 rm "$PRODUCT/factory/runs/blocked.meta.bak"
-TEST_CONTRACT=1.7.0 ticket_state --ticket T-700 --workdir "$PRODUCT" \
+TEST_CONTRACT=1.9.0 ticket_state --ticket T-700 --workdir "$PRODUCT" \
   --action qualification-backlog --role builder >/dev/null
 grep -q '^State: Backlog$' "$PRODUCT/factory/tickets/T-700.md"
 git --git-dir="$REMOTE" show refs/heads/ticket/T-700:factory/tickets/T-700.md |
@@ -428,7 +430,7 @@ mv "$TMP/ticket" "$PRODUCT/factory/tickets/T-700.md"
 git -C "$PRODUCT" add factory/tickets/T-700.md
 git -C "$PRODUCT" -c user.name=test -c user.email=test@example.com \
   commit -qm "indented spec failure fixture"
-TEST_CONTRACT=1.7.0 ticket_state --ticket T-700 --workdir "$PRODUCT" \
+TEST_CONTRACT=1.9.0 ticket_state --ticket T-700 --workdir "$PRODUCT" \
   --action qualification-backlog >/dev/null
 grep -q '^State: Backlog$' "$PRODUCT/factory/tickets/T-700.md"
 
