@@ -175,6 +175,27 @@ running**. Never bypass a preflight failure.
 
 Read the [product brief](docs/product-brief.md), [architecture](docs/architecture.md), and [factory setup checklist](docs/factory-setup.md). Copy the required templates into the product repo, fill the blanks, run the validator, then start with the [walking skeleton](docs/operations/walking-skeleton.md). Do not create a ticket backlog before its staging URL works.
 
+For a Contract 1.9 production release, use the two release verbs instead of
+manually sequencing host setup, certification, activation, model selection,
+and migration:
+
+```bash
+bash scripts/factory-kit.sh release setup \
+  --project relay --product /absolute/relay --repo /absolute/software-factory \
+  --sha <factory-sha> --profile openai-priority-v1 --operator-id <operator-id>
+bash scripts/factory-kit.sh release resume \
+  --project relay --sha <factory-sha> \
+  --approve-hash <approval_sha256> --approved-by <operator-id>
+```
+
+`setup` installs and validates immutable inputs, prepares the project-local
+runtime, registry, and controller job, and returns one exact approval plan.
+`resume` applies only that stored hash and resumes crash-lost phases. If a
+machine-wide launcher/provider prerequisite needs changing, the first resume
+returns a second receipt-bound activation plan; review that new hash and run
+the same resume verb again. This keeps certification and activation authority
+separate without adding another command. A completed replay is read-only.
+
 For the complete transition and ownership rules, see
 [`docs/workflows/ticket-flow.md`](docs/workflows/ticket-flow.md) and
 [`docs/runbooks/operator.md`](docs/runbooks/operator.md).

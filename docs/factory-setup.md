@@ -161,6 +161,15 @@ product checkout.
   launcher PATH. Run it before readiness or qualification preparation; those
   gates, certification, activation, and launch still independently fail closed
   on tuple drift.
+- The Contract 1.9 `release setup` path does not use the global links above.
+  It reads the same reviewed v2 declaration, accepts exactly one compatible
+  physical runtime (or one explicit `--runtime-bin`), and writes an exact
+  project-local Node/npm/npx transaction under
+  `~/.factory/kits/projects/<project>/runtime/`. The production launcher
+  verifies that signed transaction before prepending only that project's bin
+  directory. Zero or multiple compatible candidates are a refusal; setup does
+  not install Node, source shell profiles, or infer a version from ambient
+  PATH.
 - Create the dedicated factory profile at
   `~/.hermes/profiles/factory`. Install the canonical `SOUL.md` and
   `skills/factory-dispatch/SKILL.md` from `integrations/hermes/templates/`.

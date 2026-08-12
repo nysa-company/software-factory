@@ -5712,3 +5712,22 @@ and replay. The complete CI registry remains four groups: ticket PR moved from
 group 3 to group 2 and model fallback from group 1 to group 3 against the
 protected-main macOS suite baseline of 466/406/377/370 seconds, preserving the
 466-second critical-path target without removing coverage.
+
+## 2026-08-12 — Decision 401: Contract 1.9 release operation has two resumable verbs
+
+Category: Reliability
+
+`factory-kit.sh release setup` and `release resume` replace manual host-release
+orchestration without weakening its approval boundaries. Setup binds exact
+Factory/product trees, active generation, a project-local certification-plan
+runtime, stable launcher and provider prerequisite plans, project registry,
+controller job, model profile, one-use certification receipt, and any approved
+one-to-four-ticket migration cohort. When global prerequisites change, the
+first resume applies only their embedded hashes and emits a separate
+receipt-bound activation hash; the same resume verb consumes that second hash.
+Activation keeps a signed dispatch barrier while maintenance is absent, loads
+the exact controller only after model/migration completion and Doctor success,
+and restores maintenance while retaining the barrier on failure. Completed or
+crash-lost work replays from owner-only signed journals. The operating target
+is setup process start through first controller-observed Planning state in less
+than 15 minutes, excluding human approval-review time.

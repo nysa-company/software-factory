@@ -564,6 +564,53 @@ transaction diagnosis.
 
 ## Preparing and activating a release
 
+For Contract 1.9, prefer the bounded two-command transaction below. The
+numbered manual procedure remains the recovery/reference path for older
+contracts and unusual host migration work.
+
+```bash
+bash scripts/factory-kit.sh release setup \
+  --project <project> --product <absolute-product-path> \
+  --repo <absolute-clean-factory-checkout> --sha <candidate> \
+  --profile <profile-id> --operator-id <operator-id> \
+  [--runtime-bin <absolute-node-bin>] \
+  [--claude-bin <absolute-claude> --codex-bin <absolute-codex> \
+   --cursor-bin <absolute-agent>] \
+  [--ticket-workdir T-NNN <absolute-worktree> ...]
+
+bash scripts/factory-kit.sh release resume \
+  --project <project> --sha <candidate> \
+  --approve-hash <approval_sha256> --approved-by <operator-id>
+```
+
+`release setup` requires clean exact Factory and product Git trees, an exact
+product `KIT_PIN`, Contract 1.9, and a reviewed certification-plan runtime. It
+installs the sealed candidate, prepares a project-local runtime, the
+path-only project registry, and the exact macOS controller plist, then binds
+Factory/product SHA and tree, active generation, runtime binaries, provider
+plans, model profile, receipt, and any one-to-four ticket migration previews
+into an owner-only plan. It never chooses tickets or advances ticket state.
+
+If the stable launcher or provider settings must change, setup first returns a
+`prerequisites` plan. Review it, ensure every listed active factory is already
+in maintenance and drained, and run resume. That resume applies only the
+embedded child hashes, certifies the product, and returns the second
+`activation` plan whose hash binds the fresh one-use certification receipt.
+Review that returned hash and run the same resume verb again. When prerequisites
+already match, setup returns the activation plan directly, so only one resume
+is needed.
+
+Activation keeps a durable dispatch barrier while maintenance is removed,
+activates the exact model hash, replays the approved migration batch, loads the
+bound controller job, requires Doctor to pass, and removes the barrier last.
+Any cutover failure republishes maintenance and leaves dispatch stopped. A
+retry with the same hash resumes the signed journal; changed product, runtime,
+launcher, registry, controller, active generation, receipt, model, or migration
+evidence is refused. Measure the automation target from setup process start to
+the first controller-observed `Planning` ticket, excluding only the human time
+spent reviewing an emitted hash; the production objective is less than 15
+minutes.
+
 1. Use a clean kit checkout whose remote is the canonical
    `github.com/nysa-company/software-factory` identity. SSH host aliases are
    intentionally not trusted and `--origin` does not override a mismatched

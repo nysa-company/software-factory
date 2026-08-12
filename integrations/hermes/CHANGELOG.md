@@ -40,6 +40,15 @@ helper output are not compatibility promises.
   initial product activation. The signed trace sequences the existing install,
   certify, pause, and activate gates, resumes exact phases after interruption,
   leaves maintenance published, and cannot replace an active release.
+- Adds the release-manager-only `release setup` and `release resume` verbs.
+  Setup binds the sealed Factory/product/runtime/provider/model/migration and
+  host-service inputs to an exact approval hash; resume uses the existing
+  child validators and signed journals, keeps dispatch durably stopped across
+  cutover, and is idempotent after lost responses.
+- Adds project-local exact Node/npm/npx pin transactions for certification-plan
+  v2 products. A production launcher with that receipt verifies the physical
+  executable hashes and versions before selecting the project runtime; legacy
+  active releases retain the prior global runtime behavior.
 
 ## 1.8.0 — 2026-07-27
 
