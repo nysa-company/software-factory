@@ -1,6 +1,6 @@
 {
   "contract": "nysa.software-factory.hermes",
-  "contract_version": "1.8.0",
+  "contract_version": "1.9.0",
   "doctor_schema": "nysa.software-factory.hermes-doctor/v1",
   "preflight_schema": "nysa.software-factory.preflight/v1",
   "next_stage_schema": "nysa.software-factory.next-stage/v1",
@@ -89,13 +89,6 @@
           "--json"
         ],
         "output_schema": "nysa.software-factory.hermes-doctor/v1"
-      },
-      "linear-sync": {
-        "contract_version": "1.8.0",
-        "arguments": [],
-        "helper": "scripts/linear-sync.py",
-        "authority": "one scheduled full-board reconciliation for the selected production project",
-        "security": "fresh environment with only HOME, PATH, TMPDIR, and FACTORY_ROOT; credentials are resolved by the helper from owner-local stores"
       },
       "reconcile": {
         "contract_version": "1.8.0",
@@ -354,7 +347,7 @@
           "exact argument order with no arbitrary manager, catalog, profile-file, or profile-override paths",
           "pin workdir uses the launcher's exact physical ticket worktree validation",
           "fallback uses a dedicated exact-worktree validator that permits only helper-validated partial changes",
-          "fallback consumes one exact unexpired Linear operator approval bound to its preview hash",
+          "fallback consumes one exact unexpired operator fallback receipt bound to its preview hash",
           "only fallback and migration GitHub HTTPS network operations receive the profile GH_TOKEN through an inherited descriptor; model probes and every other task-free action remain credential-free",
           "only pin receives the receipt-bound FACTORY_CERTIFIED_PRODUCT_ORIGIN",
           "task-bearing adapters do not inherit FACTORY_MODEL_STATE_ROOT or FACTORY_PROJECT"
@@ -841,7 +834,6 @@
     "templates/profile/skills/factory-supervisor/SKILL.md",
     "scripts/launchd/com.factory.controller.plist.template",
     "scripts/launchd/com.factory.incident-reporter.plist.template",
-    "scripts/launchd/com.factory.linear-sync.plist.template",
     "templates/launchd/com.nysa.hermes-factory-gateway.plist",
     "templates/launchd/com.nysa.hermes-dashboard.plist",
     "scripts/factory-doctor.sh",
@@ -898,7 +890,7 @@
     "scripts/ticket-pr.py",
     "scripts/lib/dispatch-leases.sh",
     "scripts/factory-kit.sh",
-    "scripts/linear-sync-service.py",
+    "scripts/operator-cli.py",
     "scripts/kill-switch.sh",
     "scripts/reorder-test-fixes.sh",
     "scripts/model-control.sh",
@@ -915,6 +907,7 @@
     "scripts/lib/failed_attempt_handoff.py",
     "scripts/lib/kit-pin.sh",
     "scripts/lib/model-fallback-approval.py",
+    "scripts/lib/operator_receipt.py",
     "scripts/lib/plain-config.sh",
     "scripts/lib/product-remote.sh",
     "scripts/model-routing/catalog-v1.json",
@@ -932,11 +925,6 @@
       "label": "com.factory.incident-reporter.<project>",
       "schedule_seconds": 60,
       "scope": "one explicitly opted-in production project and one configured GitHub issue repository"
-    },
-    "linear_sync": {
-      "label": "com.factory.linear-sync.<project>",
-      "schedule_seconds": 180,
-      "scope": "one explicitly enabled or disabled registered production product through the stable launcher"
     },
     "gateway": {
       "label": "com.nysa.hermes-factory-gateway",

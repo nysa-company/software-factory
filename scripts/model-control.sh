@@ -167,7 +167,7 @@ PY
   json_error "FACTORY_MODEL_STATE_ROOT must be an existing physical directory"
 [[ -n "${FACTORY_PROJECT:-}" ]] ||
   json_error "FACTORY_PROJECT is required"
-OPERATOR_MAP="${FACTORY_OPERATOR_MAP:-$FACTORY_ROOT/factory/linear-map.json}"
+OPERATOR_MAP="${FACTORY_OPERATOR_MAP:-$FACTORY_ROOT/factory/operator-map.json}"
 
 manager() {
   local -a policy_args=()
@@ -715,7 +715,8 @@ PY
        "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.5.0" ||
        "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.6.0" ||
        "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.7.0" ||
-       "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.8.0" ]] ||
+       "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.8.0" ||
+       "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.9.0" ]] ||
       json_error "route migration requires contract 1.4.0 or newer"
     if [[ "$command_name" == "migrate" ]]; then
       [[ "$approve_hash" =~ ^[0-9a-f]{64}$ ]] ||
@@ -926,11 +927,13 @@ PY
        "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.5.0" ||
        "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.6.0" ||
        "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.7.0" ||
-       "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.8.0" ]] ||
+       "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.8.0" ||
+       "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.9.0" ]] ||
       json_error "mid-ticket fallback requires contract 1.4.0 or newer"
     if [[ "$command_name" == "fallback-auto" &&
           "${FACTORY_RELEASE_CONTRACT_VERSION:-}" != "1.7.0" &&
-          "${FACTORY_RELEASE_CONTRACT_VERSION:-}" != "1.8.0" ]]; then
+          "${FACTORY_RELEASE_CONTRACT_VERSION:-}" != "1.8.0" &&
+          "${FACTORY_RELEASE_CONTRACT_VERSION:-}" != "1.9.0" ]]; then
       json_error "automatic qualification fallback requires contract 1.7.0"
     fi
     [[ "$failed_run" =~ ^[A-Za-z0-9._-]{1,200}$ ]] ||
@@ -1117,20 +1120,20 @@ if (
     value.get("recovered") is not True
     or not isinstance(receipt, dict)
     or not re.fullmatch(r"[0-9a-f]{64}", receipt.get("approval_hash", ""))
-    or not re.fullmatch(r"[A-Za-z0-9._:-]{1,200}", receipt.get("comment_id", ""))
+    or not re.fullmatch(r"[0-9a-f]{64}", receipt.get("receipt_sha256", ""))
 ):
     raise SystemExit(2)
-print(receipt["approval_hash"] + "\t" + receipt["comment_id"])
+print(receipt["approval_hash"] + "\t" + receipt["receipt_sha256"])
 PY
 )" || {
         rm -f "$recovery_file" "$approval_file"
         json_error "exact unexpired or previously consumed fallback approval is required"
       }
-      IFS=$'\t' read -r approval_hash approval_comment_id <<< "$recovery_values"
+      IFS=$'\t' read -r approval_hash approval_receipt_sha256 <<< "$recovery_values"
       python3 -B "$KIT_DIR/scripts/lib/model-fallback-approval.py" verify-consumed \
         --operator-map "$OPERATOR_MAP" \
         --ticket "$ticket" --failed-run "$failed_run" --reason "$reason" \
-        --approval-hash "$approval_hash" --comment-id "$approval_comment_id" \
+        --approval-hash "$approval_hash" --receipt-sha256 "$approval_receipt_sha256" \
         >/dev/null || {
           rm -f "$recovery_file" "$approval_file"
           json_error "committed fallback approval consumption is not recorded"
@@ -1158,13 +1161,15 @@ PY
       rm -f "$apply_file" "$approval_file"
       json_error "fallback apply failed"
     fi
+    [[ "${FACTORY_CONTROLLER_STATE_DIR:-}" == /* ]] ||
+      json_error "FACTORY_CONTROLLER_STATE_DIR is required to consume a fallback approval"
     commit_sha="$(push_exact_head "$workdir" "$CONTROL_BRANCH" \
       "$CONTROL_REMOTE" "$expected_remote_head")"
     python3 -B "$KIT_DIR/scripts/lib/model-fallback-approval.py" consume \
     --operator-map "$OPERATOR_MAP" \
       --ticket "$ticket" --failed-run "$failed_run" --reason "$reason" \
-      --approval-hash "$approval_hash" >/dev/null ||
-      json_error "fallback committed but Linear approval consumption requires reconciliation"
+      --approval-hash "$approval_hash" --state-dir "$FACTORY_CONTROLLER_STATE_DIR" >/dev/null ||
+      json_error "fallback committed but operator approval receipt consumption requires reconciliation"
     rmdir "$FALLBACK_LAUNCH_LOCK"
     FALLBACK_LAUNCH_LOCK=""
     python3 - "$apply_file" "$commit_sha" <<'PY'

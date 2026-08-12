@@ -10,7 +10,7 @@ Durable product and operating truth lives under `docs/`:
 - [factory-development-lane.md](factory-development-lane.md) — isolated mock and explicitly approved Cursor lifecycle for fast factory iteration.
 - [git-flow.md](git-flow.md) — branch, PR, merge, and protection policy.
 - [ai-review.md](ai-review.md) — local pre-publication AI review rubric.
-- [workflows/](workflows/) — ticket, Linear, and evidence workflows.
+- [workflows/](workflows/) — ticket and evidence workflows.
 - [runbooks/](runbooks/) — operator recovery procedures.
 - [runbooks/factory-continuous-improvement-session-prompt.md](runbooks/factory-continuous-improvement-session-prompt.md) — reusable evidence-first prompt for improving deterministic four-ticket delivery without changing a frozen candidate.
 - [operations/](operations/) — hosting, rollback, and walking-skeleton guidance.

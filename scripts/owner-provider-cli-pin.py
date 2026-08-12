@@ -384,7 +384,7 @@ def release_identity(
     version = contract.get("contract_version") if isinstance(contract, dict) else None
     if (
         not isinstance(version, str) or not SAFE_VERSION.fullmatch(version)
-        or (candidate and version != "1.8.0")
+        or (candidate and version not in ("1.8.0", "1.9.0"))
     ):
         raise PinError("sealed release contract is incompatible")
     for relative in REQUIRED_RELEASE_FILES:

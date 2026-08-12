@@ -3,7 +3,6 @@
 
 suite_registry() {
   local callback="$1"
-  "$callback" linear "Linear reconciler regression suite" python3 "$ROOT/ci/linear-sync-test.py"
   "$callback" operator-receipt "one-use operator receipt suite" python3 "$ROOT/ci/operator-receipt-test.py"
   "$callback" operator-cli "operator authority CLI suite" python3 "$ROOT/ci/operator-cli-test.py"
   "$callback" effective-ticket "effective ticket overlay suite" python3 "$ROOT/ci/effective-ticket-test.py"

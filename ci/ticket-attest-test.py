@@ -30,6 +30,9 @@ SPEC = importlib.util.spec_from_file_location("ticket_attest", SCRIPT)
 TICKET_ATTEST = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(TICKET_ATTEST)
 
+sys.path.insert(0, str(ROOT / "scripts" / "lib"))
+import operator_receipt  # noqa: E402
+
 
 def command(*args, cwd=None, env=None, check=True):
     result = subprocess.run(
@@ -88,7 +91,7 @@ class TicketAttestTests(unittest.TestCase):
             "AUTO_MERGE_METHOD=squash\nTEST_PATHS=tests/\n"
         )
         (self.product / ".gitignore").write_text(
-            "factory/runs/\nfactory/runtime-ledger.csv\nfactory/linear-map.json\n"
+            "factory/runs/\nfactory/runtime-ledger.csv\nfactory/operator-map.json\n"
         )
         ledger_header = (
             "date,time,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status,"
@@ -165,12 +168,17 @@ class TicketAttestTests(unittest.TestCase):
         self.write_runs()
         self.install_fake_gh()
         self.write_state()
+        # operator_receipt refuses unresolved paths (macOS /var symlinks).
+        self.controller = Path(os.path.realpath(self.temp)) / "controller"
+        self.controller.mkdir(mode=0o700)
+        self.controller.chmod(0o700)
         self.env = dict(os.environ)
         self.env.update({
             "PATH": f"{self.bin}:{os.environ['PATH']}",
             "FACTORY_ROOT": str(self.product),
             "FACTORY_CERTIFIED_PRODUCT_ORIGIN": str(self.remote),
             "FACTORY_RELEASE_SHA": KIT_SHA,
+            "FACTORY_CONTROLLER_STATE_DIR": str(self.controller),
             "FAKE_GH_STATE": str(self.state),
             "FAKE_WORKDIR": str(self.product),
         })
@@ -201,24 +209,9 @@ class TicketAttestTests(unittest.TestCase):
             )
         self.assertCountEqual([run["role"] for run in runs], ["reviewer", "narrator"])
 
-    def test_terminal_linear_sync_runs_only_after_protected_validation(self):
-        order = []
-        linear = {
-            "identifier": "SF-700",
-            "issue_id": "issue-700",
-            "source_ref": "refs/remotes/origin/main",
-            "state": "Done",
-            "state_id": "state-done",
-            "updated": True,
-        }
-
+    def test_terminal_finalize_records_basis_only_after_protected_validation(self):
         def terminal(*_args):
-            order.append("terminal")
             return {"basis": "attested-done", "ticket": "T-700"}
-
-        def execute(*_args, **_kwargs):
-            order.append("linear")
-            return subprocess.CompletedProcess([], 0, json.dumps(linear), "")
 
         def git(*args, **_kwargs):
             output = "b" * 40 + "\n" if "rev-parse" in args else ""
@@ -226,18 +219,17 @@ class TicketAttestTests(unittest.TestCase):
 
         with (
             patch.object(TICKET_ATTEST, "protected_terminal", side_effect=terminal),
-            patch.object(TICKET_ATTEST, "run", side_effect=execute),
             patch.object(TICKET_ATTEST, "git", side_effect=git),
         ):
             result = TICKET_ATTEST.finalize_terminal(
                 self.product, self.product, str(self.remote), "T-700", "attested-done"
             )
 
-        self.assertEqual(order, ["terminal", "linear"])
-        self.assertEqual(result["linear"], linear)
-        self.assertEqual(result["protected_main"], "b" * 40)
+        self.assertEqual(
+            result, {"basis": "attested-done", "protected_main": "b" * 40}
+        )
 
-    def test_terminal_linear_sync_refuses_when_protected_validation_fails(self):
+    def test_terminal_finalize_refuses_when_protected_validation_fails(self):
         def git(*_args, **_kwargs):
             return subprocess.CompletedProcess([], 0, "", "")
 
@@ -247,13 +239,28 @@ class TicketAttestTests(unittest.TestCase):
                 TICKET_ATTEST, "protected_terminal",
                 side_effect=TICKET_ATTEST.ValidationError("missing terminal"),
             ),
-            patch.object(TICKET_ATTEST, "run") as execute,
             self.assertRaisesRegex(TICKET_ATTEST.Refusal, "protected terminal"),
         ):
             TICKET_ATTEST.finalize_terminal(
                 self.product, self.product, str(self.remote), "T-700", "attested-done"
             )
-        execute.assert_not_called()
+
+    def test_terminal_finalize_refuses_wrong_basis(self):
+        def terminal(*_args):
+            return {"basis": "attested-done", "ticket": "T-700"}
+
+        def git(*_args, **_kwargs):
+            return subprocess.CompletedProcess([], 0, "", "")
+
+        with (
+            patch.object(TICKET_ATTEST, "protected_terminal", side_effect=terminal),
+            patch.object(TICKET_ATTEST, "git", side_effect=git),
+            self.assertRaisesRegex(TICKET_ATTEST.Refusal, "wrong basis"),
+        ):
+            TICKET_ATTEST.finalize_terminal(
+                self.product, self.product, str(self.remote), "T-700",
+                "attested-emergency-closeout",
+            )
 
     def test_terminal_controller_event_is_append_once(self):
         state = self.temp / "controller-events"
@@ -262,11 +269,6 @@ class TicketAttestTests(unittest.TestCase):
         terminal = {
             "basis": "attested-emergency-closeout",
             "protected_main": "b" * 40,
-            "linear": {
-                "identifier": "SF-700",
-                "issue_id": "issue-700",
-                "state_id": "state-done",
-            },
         }
         with patch.dict(os.environ, {"FACTORY_CONTROLLER_STATE_DIR": str(state)}):
             TICKET_ATTEST.record_terminal_controller_event(
@@ -284,13 +286,14 @@ class TicketAttestTests(unittest.TestCase):
             value, ensure_ascii=True, sort_keys=True, separators=(",", ":"),
         ).encode()
         self.assertEqual(digest, hashlib.sha256(encoded).hexdigest())
-        self.assertEqual(value["event"], "linear_terminal_synced")
+        self.assertEqual(value["event"], "operator_terminal_recorded")
         self.assertEqual(value["terminal_basis"], "attested-emergency-closeout")
+        self.assertEqual(value["protected_main"], "b" * 40)
 
     def test_overlay_consumption_uses_launcher_bound_operator_map(self):
         external = self.temp / "operator-map.json"
         operator = {
-            "approval": "Linear",
+            "approval": "Receipt",
             "initiative": "I-1",
             "priority": "normal",
             "state": "Approved",
@@ -306,7 +309,7 @@ class TicketAttestTests(unittest.TestCase):
         self.assertNotIn(
             "operator", json.loads(external.read_text())["tickets"]["T-700"]
         )
-        self.assertFalse((self.product / "factory/linear-map.json").exists())
+        self.assertFalse((self.product / "factory/operator-map.json").exists())
 
     def tearDown(self):
         shutil.rmtree(self.temp)
@@ -597,18 +600,54 @@ else:
         self.commit("refresh narrator evidence")
         command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
 
-    def approval_overlay(self, stale=False):
-        stamp = "2020-01-01T00:00:00Z" if stale else "2099-01-01T00:00:00Z"
-        (self.product / "factory/linear-map.json").write_text(json.dumps({
+    def issue_approve_receipt(self, *, issued_at="2099-01-01T00:00:00Z", blob=None):
+        if blob is None:
+            blob = command(
+                "git", "hash-object", "factory/attestations/T-700/bundle.json",
+                cwd=self.product,
+            ).stdout.strip()
+        value = operator_receipt.issue(
+            self.controller, "T-700", "approve",
+            {"bundle_attestation_blob": blob},
+        )
+        # Deterministic freshness: rewrite issued_at and re-sign the digest so
+        # the receipt is strictly newer than any real bundle attestation.
+        immutable = {
+            key: item for key, item in value.items()
+            if key not in {"consumed", "consumed_at_epoch", "receipt_sha256"}
+        }
+        immutable["issued_at"] = issued_at
+        immutable["receipt_sha256"] = hashlib.sha256(
+            operator_receipt.canonical(immutable)
+        ).hexdigest()
+        immutable["consumed"] = False
+        path = (
+            self.controller / "operator-receipts" / "T-700"
+            / f"approve-{value['sequence']}.json"
+        )
+        path.write_text(json.dumps(immutable, indent=2, sort_keys=True) + "\n")
+        return immutable
+
+    def write_operator_overlay(self, stamp, digest):
+        (self.product / "factory/operator-map.json").write_text(json.dumps({
             "tickets": {"T-700": {"operator": {
-                "state": "Approved", "approval": "Linear",
+                "state": "Approved", "approval": "Receipt",
                 "state_base": "awaiting approval",
-                "observed_at": stamp, "linear_updated_at": stamp,
+                "observed_at": stamp, "receipt_sha256": digest,
             }}},
         }))
 
+    def approval_overlay(self, stale=False):
+        if stale:
+            # Refused on observed_at before any receipt lookup happens.
+            self.write_operator_overlay("2020-01-01T00:00:00Z", "0" * 64)
+            return
+        stamp = "2099-01-01T00:00:00Z"
+        receipt = self.issue_approve_receipt(issued_at=stamp)
+        self.write_operator_overlay(stamp, receipt["receipt_sha256"])
+
     def project_approval_overlay(self):
-        (self.product / "factory/linear-map.json").write_text(json.dumps({
+        (self.product / "factory/operator-map.json").write_text(json.dumps({
             "tickets": {"T-700": {"operator": {
                 "initiative": "I-1", "priority": "normal",
             }}},
@@ -637,7 +676,7 @@ else:
         self.bundle()
         result = self.attest("approval")
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("exact Linear", result.stderr)
+        self.assertIn("exact operator", result.stderr)
         self.assertNotIn("Traceback", result.stderr)
 
     def test_bundle_accepts_completed_conservative_cursor_accounting(self):
@@ -679,6 +718,82 @@ else:
         self.bundle()
         self.approval_overlay(stale=True)
         self.assertIn("not newer", self.attest("approval").stderr)
+
+    def test_approval_without_state_dir_receipt_is_refused(self):
+        self.bundle()
+        self.write_operator_overlay("2099-01-01T00:00:00Z", "1" * 64)
+        result = self.attest("approval")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("stale_operator_approval", result.stderr)
+        self.assertIn("no unconsumed operator approval", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_approval_refuses_receipt_bound_to_other_attestation(self):
+        self.bundle()
+        receipt = self.issue_approve_receipt(blob="0" * 40)
+        self.write_operator_overlay(
+            "2099-01-01T00:00:00Z", receipt["receipt_sha256"],
+        )
+        result = self.attest("approval")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("no unconsumed operator approval", result.stderr)
+
+    def test_approval_refuses_already_consumed_receipt(self):
+        self.bundle()
+        receipt = self.issue_approve_receipt()
+        operator_receipt.verify_consume(self.controller, "T-700", "approve")
+        self.write_operator_overlay(
+            "2099-01-01T00:00:00Z", receipt["receipt_sha256"],
+        )
+        result = self.attest("approval")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("no unconsumed operator approval", result.stderr)
+
+    def test_second_approval_after_consumption_is_refused(self):
+        self.bundle()
+        self.approval_overlay()
+        self.assertEqual(self.attest("approval").returncode, 0)
+        approval = self.product / "factory/attestations/T-700/approval.json"
+        digest = json.loads(approval.read_text())["receipt_sha256"]
+        self.write_operator_overlay("2099-01-01T00:00:00Z", digest)
+        result = self.attest("approval")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("no unconsumed operator approve receipt", result.stderr)
+
+    def test_historical_linear_approval_validates_through_continuation(self):
+        self.bundle()
+        self.approval_overlay()
+        phase_one = self.attest("approval", attest_only=True)
+        self.assertEqual(phase_one.returncode, 0, phase_one.stderr)
+        approval = self.product / "factory/attestations/T-700/approval.json"
+        value = json.loads(approval.read_text())
+        value.pop("receipt_sha256")
+        value["linear_updated_at"] = value["observed_at"]
+        approval.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+        ticket = self.product / "factory/tickets/T-700.md"
+        ticket.write_text(ticket.read_text().replace(
+            "Operator-Approval: Receipt", "Operator-Approval: Linear",
+        ))
+        command("git", "add", "-A", cwd=self.product)
+        command(
+            "git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+            "commit", "--amend", "-qm", "T-700: attest operator approval",
+            cwd=self.product,
+        )
+        command(
+            "git", "push", "-q", "--force", "origin", "ticket/T-700",
+            cwd=self.product,
+        )
+        self.project_approval_overlay()
+        result = self.attest("approval")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        second = json.loads(result.stdout)
+        self.assertEqual(second["action"], "approval")
+        self.assertTrue(second["auto_merge"])
+        self.assertIn(
+            "Operator-Approval: Linear",
+            (self.product / "factory/tickets/T-700.md").read_text(),
+        )
 
     def test_merge_method_is_required_and_allowlisted(self):
         project = self.product / "factory/PROJECT.env"
@@ -942,7 +1057,7 @@ else:
         self.approval_overlay()
         self.write_state(merge_fail=True)
         self.assertIn("auto-merge", self.attest("approval").stderr)
-        mapping = json.loads((self.product / "factory/linear-map.json").read_text())
+        mapping = json.loads((self.product / "factory/operator-map.json").read_text())
         self.assertIn("operator", mapping["tickets"]["T-700"])
         self.write_state()
         self.assertEqual(self.attest("approval").returncode, 0)
@@ -986,7 +1101,7 @@ else:
         self.assertEqual(result["head"], self.head())
         self.assertTrue(result["auto_merge"])
         operator = json.loads(
-            (self.product / "factory/linear-map.json").read_text()
+            (self.product / "factory/operator-map.json").read_text()
         )["tickets"]["T-700"]["operator"]
         self.assertEqual(operator, {"initiative": "I-1", "priority": "normal"})
 
@@ -996,17 +1111,17 @@ else:
         phase_one = self.attest("approval", attest_only=True)
         self.assertEqual(phase_one.returncode, 0, phase_one.stderr)
         mapping = json.loads(
-            (self.product / "factory/linear-map.json").read_text()
+            (self.product / "factory/operator-map.json").read_text()
         )
         mapping["tickets"]["T-700"]["operator"].pop("approval")
-        (self.product / "factory/linear-map.json").write_text(
+        (self.product / "factory/operator-map.json").write_text(
             json.dumps(mapping)
         )
 
         refused = self.attest("approval")
 
         self.assertNotEqual(refused.returncode, 0)
-        self.assertIn("exact Linear", refused.stderr)
+        self.assertIn("exact operator", refused.stderr)
 
     def test_approval_retry_rejects_tampered_receipt_or_later_head(self):
         self.bundle()
@@ -1044,9 +1159,9 @@ else:
         self.approval_overlay()
         self.assertEqual(self.attest("approval").returncode, 0)
         self.approval_overlay()
-        mapping = json.loads((self.product / "factory/linear-map.json").read_text())
+        mapping = json.loads((self.product / "factory/operator-map.json").read_text())
         mapping["tickets"]["T-700"]["operator"]["priority"] = "urgent"
-        (self.product / "factory/linear-map.json").write_text(json.dumps(mapping))
+        (self.product / "factory/operator-map.json").write_text(json.dumps(mapping))
         old_head = self.head()
         approval = self.product / "factory/attestations/T-700/approval.json"
         old_approval_blob = command(
@@ -1095,7 +1210,7 @@ else:
         ).stdout.split()
         self.assertEqual(parents, [receipt["merge_head"], old_head, base_head])
         self.assertFalse(json.loads(self.state.read_text())["auto_merge"])
-        operator = json.loads((self.product / "factory/linear-map.json").read_text())["tickets"]["T-700"]["operator"]
+        operator = json.loads((self.product / "factory/operator-map.json").read_text())["tickets"]["T-700"]["operator"]
         self.assertEqual(operator, {"priority": "urgent"})
         self.assertIn("post-refresh Reviewer", self.attest("bundle").stderr)
         refreshed = self.head()
@@ -1401,9 +1516,9 @@ else:
             )
             self.assertEqual(
                 json.loads(
-                    (self.product / "factory/linear-map.json").read_text()
+                    (self.product / "factory/operator-map.json").read_text()
                 )["tickets"]["T-700"]["operator"]["approval"],
-                "Linear",
+                "Receipt",
             )
             os.environ.pop("FACTORY_TRANSITION_STAGE", None)
             os.environ.pop("FACTORY_TRANSITION_RECEIPT_SHA256", None)

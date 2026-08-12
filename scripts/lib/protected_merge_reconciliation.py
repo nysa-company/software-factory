@@ -9,6 +9,7 @@ from pathlib import Path, PurePosixPath
 
 from legacy_closeout import (
     NORMAL_APPROVAL_KEYS,
+    NORMAL_APPROVAL_KEYS_RECEIPT,
     NORMAL_BUNDLE_KEYS,
     ValidationError,
     blob_at,
@@ -255,7 +256,12 @@ def _validate_source_evidence(repo, ticket, receipt, original):
     if (approval is not None) is not expected_approval:
         raise ValidationError(f"{ticket} original approval presence does not match source state")
     if approval is not None:
-        exact(approval, NORMAL_APPROVAL_KEYS, f"{ticket} approval attestation")
+        exact(
+            approval,
+            NORMAL_APPROVAL_KEYS_RECEIPT if "receipt_sha256" in approval
+            else NORMAL_APPROVAL_KEYS,
+            f"{ticket} approval attestation",
+        )
     if (
         one_field(source_ticket, "State") != receipt["source_state"]
         or one_field(source_ticket, "Kit-SHA") != receipt["source_kit_sha"]

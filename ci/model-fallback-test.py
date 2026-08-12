@@ -321,12 +321,12 @@ class FallbackTest(unittest.TestCase):
         approval = Path(self.temp.name) / "approval.json"
         approval.write_text(json.dumps({
             "approval_hash": preview["approval_hash"],
-            "comment_id": "linear-comment-1",
+            "receipt_sha256": "c" * 64,
             "failed_run_id": "run-failed-1",
             "nonce": preview["nonce"],
-            "operator_id": "linear-user-1",
+            "operator_id": "operator-user-1",
             "reason": "credits_exhausted",
-            "schema": "model-fallback-linear-approval/v1",
+            "schema": "model-fallback-receipt-approval/v1",
         }))
         applied = self.command("apply", "--approval", str(approval))
         self.assertEqual(git(self.repo, "rev-parse", "HEAD"), applied["commit_sha"])
@@ -356,8 +356,8 @@ class FallbackTest(unittest.TestCase):
         consumed_recovery = self.command("recover")
         self.assertTrue(consumed_recovery["recovered"])
         self.assertEqual(
-            consumed_recovery["approval_receipt"]["comment_id"],
-            "linear-comment-1",
+            consumed_recovery["approval_receipt"]["receipt_sha256"],
+            "c" * 64,
         )
         self.assertEqual(
             len(json.loads(
@@ -741,12 +741,12 @@ class FallbackTest(unittest.TestCase):
         approval = Path(self.temp.name) / "approval-with-commit.json"
         approval.write_text(json.dumps({
             "approval_hash": preview["approval_hash"],
-            "comment_id": "linear-comment-2",
+            "receipt_sha256": "d" * 64,
             "failed_run_id": "run-failed-1",
             "nonce": preview["nonce"],
-            "operator_id": "linear-user-1",
+            "operator_id": "operator-user-1",
             "reason": "credits_exhausted",
-            "schema": "model-fallback-linear-approval/v1",
+            "schema": "model-fallback-receipt-approval/v1",
         }))
         applied = self.command("apply", "--approval", str(approval))
 

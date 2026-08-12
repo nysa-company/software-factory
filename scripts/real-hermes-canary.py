@@ -184,7 +184,6 @@ def marker_value(
         "hermes_bin": str(hermes),
         "hermes_sha256": digest(hermes),
         "hermes_version": hermes_version,
-        "linear": "disabled",
         "project": project,
         "root": str(root),
         "schema": SCHEMA,
@@ -646,11 +645,6 @@ WORKTREES_DIR={root}/worktrees
 set -eu
 npm --prefix app test
 """, 0o755)
-    write(product / "factory/linear-state.json", canonical({
-        "enabled": False,
-        "reason": "credential-free-canary",
-        "schema": "nysa.software-factory.canary-linear/v1",
-    }), 0o644)
     write(product / "factory/initiatives/I-900001.md", """# I-900001 — Isolated canary
 
 This local-only initiative exists solely to exercise the candidate release.
@@ -679,7 +673,7 @@ Plan one no-op compatibility check for the isolated conformance product.
 1. The mock Planner completes through the exact candidate launcher.
 """, 0o644)
     write(product / ".gitignore", """factory/MAINTENANCE
-factory/linear-map.json
+factory/operator-map.json
 factory/runs/
 factory/.active-runs/
 factory/.dispatch-leases/
@@ -697,9 +691,8 @@ app/data/
     command("git", "init", "--bare", str(root / "product-origin.git"))
     command("git", "remote", "add", "origin", str(root / "product-origin.git"), cwd=product)
     command("git", "push", "-u", "origin", "main", cwd=product)
-    write(product / "factory/linear-map.json", canonical({
-        "_sync": {"last_success_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())},
-        "tickets": {},
+    write(product / "factory/operator-map.json", canonical({
+        "_config": None, "_sync": {}, "initiatives": {}, "tickets": {},
     }), 0o600)
     worktree = root / "worktrees/T-900001"
     command("git", "worktree", "add", "-b", "ticket/T-900001", str(worktree), "main", cwd=product)
@@ -744,7 +737,6 @@ description: Credential-free isolated real-Hermes release compatibility check
         str(path.relative_to(root)): digest(path)
         for path in (
             product / "factory/PROJECT.env",
-            product / "factory/linear-state.json",
             product / "factory/tickets/T-900001.md",
             profile / f"projects/{project}.env",
             profile / "SOUL.md",
@@ -774,7 +766,6 @@ def check(root: Path, expected: dict, resume: bool = False) -> dict:
     project = expected["project"]
     required_tracked = {
         "product/factory/PROJECT.env",
-        "product/factory/linear-state.json",
         "product/factory/tickets/T-900001.md",
         f"home/.hermes/profiles/{project}/projects/{project}.env",
         f"home/.hermes/profiles/{project}/SOUL.md",
@@ -805,18 +796,6 @@ def check(root: Path, expected: dict, resume: bool = False) -> dict:
     for line in sorted(required):
         if text.splitlines().count(line) != 1:
             failures.append(f"PROJECT.env requires exactly {line}")
-    try:
-        linear_state = json.loads(
-            (root / "product/factory/linear-state.json").read_text(encoding="utf-8")
-        )
-        if linear_state != {
-            "enabled": False,
-            "reason": "credential-free-canary",
-            "schema": "nysa.software-factory.canary-linear/v1",
-        }:
-            failures.append("explicit disabled Linear state is invalid")
-    except (OSError, ValueError, json.JSONDecodeError):
-        failures.append("explicit disabled Linear state is missing")
     try:
         if command("git", "remote", "get-url", "origin", cwd=root / "product") != str(
             root / "product-origin.git"
@@ -855,7 +834,6 @@ def check(root: Path, expected: dict, resume: bool = False) -> dict:
     return {
         "factory_sha": expected["factory_sha"],
         "factory_tree": expected["factory_tree"],
-        "linear": "disabled",
         "project": expected["project"],
         "root": expected["root"],
         "status": "complete" if complete else "ready",

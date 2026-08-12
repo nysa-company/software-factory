@@ -67,12 +67,17 @@ NORMAL_BUNDLE_KEYS = {
     "reviewer_run_id", "narrator_run_id", "kit_sha", "policy_hash",
     "route_plan_path", "route_plan_blob", "route_plan_sha256", "attested_at",
 }
+# Historical approvals carry linear_updated_at (Linear-era operator channel)
+# and validate forever; receipt-era approvals bind an operator receipt digest.
 NORMAL_APPROVAL_KEYS = {
     "schema", "ticket", "repository", "branch", "parent_head",
     "reviewed_sha", "bundle_blob", "bundle_attestation_blob", "pr_number",
     "operator_version", "linear_updated_at", "observed_at", "kit_sha",
     "auto_merge_method", "attested_at",
 }
+NORMAL_APPROVAL_KEYS_RECEIPT = (
+    NORMAL_APPROVAL_KEYS - {"linear_updated_at"}
+) | {"receipt_sha256"}
 NORMAL_DONE_KEYS = {
     "schema", "ticket", "repository", "pr_number", "approved_pr_head",
     "reviewed_sha", "bundle_blob", "bundle_attestation_blob",
@@ -598,7 +603,13 @@ def _normal_terminal(repo, ticket, ref):
     if not all(present):
         raise ValidationError("protected main has a partial normal attestation chain")
     exact(bundle, NORMAL_BUNDLE_KEYS, "bundle attestation")
-    exact(approval, NORMAL_APPROVAL_KEYS, "approval attestation")
+    approval_is_receipt = "receipt_sha256" in approval
+    exact(
+        approval,
+        NORMAL_APPROVAL_KEYS_RECEIPT if approval_is_receipt
+        else NORMAL_APPROVAL_KEYS,
+        "approval attestation",
+    )
     exact(done, NORMAL_DONE_KEYS, "Done attestation")
     exact(done.get("ledger"), NORMAL_LEDGER_KEYS, "Done ledger projection")
     repository = repository_from_project(repo, ref)
@@ -655,7 +666,13 @@ def _normal_terminal(repo, ticket, ref):
     timestamp(bundle["attested_at"], "bundle attested_at")
     bundle_time = timestamp(bundle["attested_at"], "bundle attested_at")
     observed = timestamp(approval["observed_at"], "approval observed_at")
-    updated = timestamp(approval["linear_updated_at"], "approval linear_updated_at")
+    if approval_is_receipt:
+        digest(approval["receipt_sha256"], "approval receipt_sha256")
+        updated = observed
+    else:
+        updated = timestamp(
+            approval["linear_updated_at"], "approval linear_updated_at"
+        )
     merged = timestamp(done["merged_at"], "Done merged_at")
     attested = timestamp(done["attested_at"], "Done attested_at")
     if (
@@ -673,8 +690,9 @@ def _normal_terminal(repo, ticket, ref):
     ticket_text = text_at(repo, ref, f"factory/tickets/{ticket}.md")
     if ticket_text is None or one_field(ticket_text, "State").lower() != "done":
         raise ValidationError("normal terminal ticket is not Done")
-    if one_field(ticket_text, "Operator-Approval").lower() != "linear":
-        raise ValidationError("normal terminal ticket lacks Linear approval")
+    expected_approval = "receipt" if approval_is_receipt else "linear"
+    if one_field(ticket_text, "Operator-Approval").lower() != expected_approval:
+        raise ValidationError("normal terminal ticket lacks operator approval")
     route_plan_text = normal_route_plan(
         repo, ref, ticket, bundle, done, ticket_text,
     )

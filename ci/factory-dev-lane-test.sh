@@ -3711,7 +3711,6 @@ project=(root/"product/factory/PROJECT.env").read_text().splitlines()
 assert project.count("PREVIEW_PROVIDER=none") == 1
 assert project.count("NONVISUAL_PATHS=app/") == 1
 assert project.count("MAX_CONCURRENT_TICKETS=2") == 1
-assert json.loads((root/"product/factory/linear-state.json").read_text())["enabled"] is False
 assert not (root/"product/factory/runs").exists()
 assert not (root/"product/factory/.active-runs").exists()
 spec=importlib.util.spec_from_file_location("canary",sys.argv[2])
@@ -3922,7 +3921,6 @@ for line in path.read_text().splitlines():
     lines.append("MAX_CONCURRENT_TICKETS=1" if line == "MAX_CONCURRENT_TICKETS=2" else line)
 path.write_text("\n".join(lines)+"\n")
 PY
-rm "$CANARY_ROOT/product/factory/linear-state.json"
 printf 'PRODUCT_ROOT=/private/tmp/wrong-root\n' > \
   "$CANARY_ROOT/home/.hermes/profiles/factory-canary-${CANARY_SHA:0:12}/projects/factory-canary-${CANARY_SHA:0:12}.env"
 git -C "$CANARY_ROOT/product" remote set-url origin https://github.com/local/unsafe.git
@@ -3934,8 +3932,6 @@ grep -q 'PROJECT.env requires exactly PREVIEW_PROVIDER=none' "$OUT" ||
   fail "real-Hermes check omitted preview drift"
 grep -q 'PROJECT.env requires exactly MAX_CONCURRENT_TICKETS=2' "$OUT" ||
   fail "real-Hermes check omitted capacity drift"
-grep -q 'explicit disabled Linear state is missing' "$OUT" ||
-  fail "real-Hermes check omitted Linear-state drift"
 grep -q 'product canonical origin is not the isolated local origin' "$OUT" ||
   fail "real-Hermes check omitted local-origin drift"
 grep -q 'projects/factory-canary-' "$OUT" ||

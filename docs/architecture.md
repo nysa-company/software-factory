@@ -11,13 +11,13 @@ The kit is installed as immutable exact-SHA releases and shared by every product
 ```
 
 - **Kit:** scripts, adapters and version pins, role contracts, workflows, runbooks, and CI templates. Fixes land through reviewed PRs, but a merge does not activate them.
-- **Product repository:** `factory/` state (including initiatives and tickets), product documentation, instantiated CI, GitHub rules, and deploy credentials. All products share the Software Factory Linear team; each initiative gets a Linear Project.
+- **Product repository:** `factory/` state (including initiatives and tickets), product documentation, instantiated CI, GitHub rules, and deploy credentials. There is no external board; every initiative is its own `factory/initiatives/I-NNN.md` file.
 - **`factory/KIT_PIN`:** exactly one lowercase, full 40-character kit SHA. Production requires a protected-main, successful-CI installed release; a sealed qualification may instead bind one clean local candidate SHA/tree. External products fail closed when the pin is missing, malformed, or different from the physical release.
 - **`factory/PROJECT.env`:** product name, exact `GH_REPO`, protected test paths, worktree location, ticket branch prefix, contract-1.3 `DONE_REQUIRED_CHECKS` (a unique comma-separated list of exact post-merge status/check names), required `AUTO_MERGE_METHOD` (`squash`, `merge`, or `rebase`), optional repository-contained `PREVIEW_PREFLIGHT_SCRIPT`, and optional fail-closed `NONVISUAL_PATHS` directory prefixes.
 
 Per-product limits live in each product's `ENVELOPE.env`; the machine limit in `~/.factory/global.env` caps aggregate spend.
 
-Runtime accounting is immutable per run: `factory/runs/<run_id>.meta` records the reservation, durable pre-GO marker, terminal state, cost, and basis. Preflight and the first normal Linear reconciliation durably initialize the ignored `factory/runs/` root before reducing accounting. The reducer opens that root without following symlinks and accepts only regular, single-link manifests. For backward readability, a legacy durable reservation immediately followed by its terminal row reduces to the terminal row; other duplicate run IDs still fail closed. The ignored `factory/runtime-ledger.csv` is a deterministic effective view over those manifests and tracked `factory/ledger.csv`; only launcher command `project-ledger` writes the tracked ledger from a clean `chore/tNNN-closeout` worktree after every product run is terminal and accounted. Projection refuses any active or ambiguous claim under `factory/.active-runs/` and any `factory/runs/*.pid` record; operators must reconcile those records before close-out rather than guess whether a process is stale.
+Runtime accounting is immutable per run: `factory/runs/<run_id>.meta` records the reservation, durable pre-GO marker, terminal state, cost, and basis. Preflight and the first normal reconciliation durably initialize the ignored `factory/runs/` root before reducing accounting. The reducer opens that root without following symlinks and accepts only regular, single-link manifests. For backward readability, a legacy durable reservation immediately followed by its terminal row reduces to the terminal row; other duplicate run IDs still fail closed. The ignored `factory/runtime-ledger.csv` is a deterministic effective view over those manifests and tracked `factory/ledger.csv`; only launcher command `project-ledger` writes the tracked ledger from a clean `chore/tNNN-closeout` worktree after every product run is terminal and accounted. Projection refuses any active or ambiguous claim under `factory/.active-runs/` and any `factory/runs/*.pid` record; operators must reconcile those records before close-out rather than guess whether a process is stale.
 Runtime-ledger refresh stages its atomic replacement inside the ignored real
 runs directory so concurrent refreshes never create an untracked registered
 checkout boundary.
@@ -518,45 +518,7 @@ Before interpreting any transition, the controller validates the complete
 state-machine envelope: schema, status, ticket, action, detail, receipt digest,
 typed stage, and exact stage-to-role mapping. Any mutation blocks and releases
 the lease before provider or publication work.
-Linear reconciliation retries transient server responses and quota responses
-reported as HTTP `400`/`429` or GraphQL errors at most twice. Short retry
-delays are clamped to 0 through 30 seconds. Exhaustion persists one typed
-cooldown of at most one hour, deriving Linear's nested millisecond duration
-when present. The canonical owner-only record is keyed by credential identity,
-and every scheduled or exact-ticket entry point makes zero Linear calls until
-it expires. Other semantic GraphQL errors remain fail-closed for the next
-reconciliation cycle.
-Description projection compares a narrow canonical Markdown form that covers
-Linear's ordered-list indentation, continuation, renumbering, inline-code, and
-fence-boundary round trips. Nested-list structure, fenced content, and unknown
-or meaning-changing edits remain distinct and are restored from Git.
-The full-board Linear cycle owns a cycle lock, while each map mutation owns only
-a short map lock. One paginated team issue inventory and one Project inventory
-serve every mapped ticket and initiative; a full issue/comment read occurs only
-when the latest comment changes inside the bounded approval window. Canceled
-issues remain available by exact mapped ID but cannot be adopted by title. A
-ticket-state consumer first writes a durable operator-version-bound clear
-intent, so a stale full-board snapshot cannot restore consumed authority.
-Unsafe admission remains fail-closed, but identical inputs update one durable
-incident and emit only bounded reminders while already authenticated claims
-continue reconciling. During ordinary admission, malformed dependency syntax is
-isolated to that exact ticket and reported in controller results, events, and
-incident evidence while eligible siblings continue. The same defect in a
-selected qualification ticket remains globally fail-closed for the sealed
-cohort. A null operator initiative remains authoritative, but if it removes a
-Ready ticket's effective initiative, admission emits a named
-`initiative_missing` refusal while eligible siblings continue. Linear Project
-reconciliation adopts one exact durable initiative marker and refuses missing
-mapped Projects, changed mapped markers, foreign-team mappings, duplicate
-markers, and marker-bearing identity conflicts before ticket projection. A
-legacy mapped Project with the exact committed name, team, and no marker-like
-line may receive the canonical marker after an unchanged exact-Project re-read;
-the non-retried update preserves all prior content and a later sweep recovers
-an applied response timeout. Once that mapped identity is durable, unmarked
-same-name Projects are nonblocking diagnostics and are never mutated. Doctor
-lists the canonical mapped Project IDs and URLs, exposes those bounded
-warnings, and keeps reconciliation failures visible in its Linear health
-output.
+Operator authority is expressed entirely through one-use receipts (`scripts/lib/operator_receipt.py`, issued by `scripts/operator-cli.py`), anchored in the controller's state directory. There is no external system to reconcile, poll, or retry against, so there is no scheduled cycle, quota cooldown, or comment/description sync to describe: `factory/operator-map.json` is computed on demand from committed ticket state and consumed receipts, each map mutation owns only a short map lock, and staleness has no meaning for a pure projection. During ordinary admission, malformed dependency syntax is isolated to that exact ticket and reported in controller results, events, and incident evidence while eligible siblings continue. The same defect in a selected qualification ticket remains globally fail-closed for the sealed cohort. A missing operator initiative remains authoritative, but if it removes a Ready ticket's effective initiative, admission emits a named `initiative_missing` refusal while eligible siblings continue. Initiative assignment is a direct ticket-only Git commit setting `Initiative:` — there is no external Project object to mark, adopt, or reconcile.
 Automatic GitHub defect reporting is an optional production sidecar, never a
 controller dependency. The controller marks only explicit internal invariant
 failures with a stable reason code; the reporter accepts a fixed allowlist of
@@ -660,9 +622,9 @@ foreign owner, or permissive runtime directory refuses. Every selected
 unfinished ticket must also use exact `Product-Decisions: frozen` metadata.
 A cohort containing one selected ticket that depends on another is rejected in
 favor of sequential generations. Fresh isolated preparation requires one
-explicit owner-only canonical Linear map seed. It authenticates the seed's
+explicit owner-only canonical operator map seed. It authenticates the seed's
 path, mode, structure, and digest, rejects secret-bearing fields, and copies it
-once to `~/.factory/qualification/<project>/operator/linear-map.json` before
+once to `~/.factory/qualification/<project>/operator/operator-map.json` before
 initializing exactly the selected tickets. The mutable map, reconciliation
 locks and clear intents, and runtime ledger stay under that operator directory;
 the receipt and active record bind their exact paths, and the sealed launcher
@@ -876,7 +838,7 @@ may bridge a changed head only through a complete linear chain of those
 authenticated successful roles whose commits satisfy the sealed per-role path
 policy; a missing, cancelled, foreign, failed, merged, or bare Git edge refuses.
 An ordinary or unbound launcher continues to require a clean, current `main`
-checkout. The helper also binds the canonical live Linear map and revalidates
+checkout. The helper also binds the canonical live operator map and revalidates
 it on every launch, so ticket-state
 logic consumes the same approval overlay as production. Before sealing, every
 selected ticket blob in that control tree must equal the protected
@@ -938,7 +900,7 @@ authenticated passport names the prior release. The controller binds a fresh
 exact-ticket lease, migrates that passport in place, and returns the claim to
 deterministic reconciliation. A contract blocker remains blocked until the
 consumed transition receipt, unique terminal role evidence, passport lineage,
-and exact Linear resume state agree. Across a release migration, the state
+and exact ticket-recorded resume state agree. Across a release migration, the state
 machine accepts the historical receipt only when the current authenticated
 passport orders both releases, contains the exact immutable charge and
 manifest digest, has no successful evidence for that receipt, and the old head
@@ -991,12 +953,11 @@ exact repair-owner and blocked-receipt directive pair, or replaces the one
 visible pair for a later blocker, without changing any other path:
 `OPERATOR RESUME: <role>` and
 `OPERATOR RESUME RECEIPT: <transition-receipt-sha256>`.
-Linear records the blocked-state timestamp once per substantive blocker. Exact
+The ticket records the blocked-state timestamp once per substantive blocker. Exact
 resume directive lines do not create a new blocker identity, and later
-reconciler-authored writes cannot advance that baseline. A validated operator
-decision for the same blocker wins over a concurrent reconciler snapshot; a
-rejected move remains visible in Linear and in typed sync health instead of
-being silently patched back.
+non-operator writes cannot advance that baseline. A validated operator
+decision for the same blocker wins; a rejected move remains visible on the
+ticket log instead of being silently patched back.
 The state machine selects the unique receipt-directive commit whose single
 parent is an authenticated head in the current passport or its v2 migration
 history, whose resulting ticket contains the exact visible role-and-receipt
@@ -1006,8 +967,8 @@ equal the exact current consumed blocker receipt. A missing pair, an older
 receipt, zero or multiple actual in-window authorizations, more than one
 visible directive, merge commits, malformed additions or replacements,
 multi-path changes, or unrelated head drift fail closed; neither a historical
-role directive nor a stale Linear resume state can authorize a later provider
-call. Candidate discovery follows commits that changed either directive line,
+role directive nor a stale ticket-recorded resume state can authorize a later
+provider call. Candidate discovery follows commits that changed either directive line,
 so an otherwise exact ticket-only role correction may preserve the receipt.
 During idempotent block recovery, that one validated commit may be the
 direct child of the authenticated passport head: repair validation stays bound
@@ -1148,8 +1109,8 @@ later repair. One exact ticket-only `OPERATOR AUTHORIZATION: <role> round <N>`
 line permits only that next round through the existing plan/apply control and
 passport migration boundary. Missing, duplicate, stale-round, wrong-role, or
 unrelated changes remain provider-free waits or typed refusals. Builder/Reviewer
-remains budget-only. Repair replays keep the coarse business state for Linear
-compatibility but are no longer invisible.
+remains budget-only. Repair replays keep the coarse business state for
+operator legibility but are no longer invisible.
 The first task-submitted terminal failed Cursor attempt for a protected
 qualification keeps its claim and authenticated evidence while the controller
 appends the existing same-family direct-CLI fallback and resumes the same
@@ -1265,8 +1226,8 @@ protected mutation remain forbidden.
 See [hermes-integration.md](hermes-integration.md) for the schemas and commands.
 
 Ticket content is read from the launcher's validated ticket worktree, while
-controls and the Linear operator overlay remain anchored to the registered
-product root. Linear projection reads the committed exact ticket branch rather
+controls and the operator map overlay remain anchored to the registered
+product root. Operator-map projection reads the committed exact ticket branch rather
 than a dirty checkout. Contract 1.2 ticket routes reject tracked or untracked
 worktree dirt before any helper runs. `ticket-state` is the only launcher path that
 materializes operator fields or commits a factory-owned role-stage transition.
@@ -1292,16 +1253,16 @@ or excessive evidence. The subsequent approval head is validated by one shared
 ticket-PR/attestation helper: it must be the direct child of the exact bundle
 attestation commit, change only the current ticket and a newly added ordinary
 approval receipt, preserve all ticket text except the sealed
-Awaiting Approval → Approved/Linear transformation, and bind the same reviewed
+Awaiting Approval → Approved receipt transformation, and bind the same reviewed
 SHA, repository, branch, Kit-SHA, PR, bundle blobs, merge method, and ordered
 timestamps. A later sealed successor may append a validated release-migration
 route commit and replace only the ticket's Kit-SHA; the approval and bundle
 receipts, bundle document, and all other approved ticket text remain
-byte-identical. Phase two may use that immutable approval receipt after Linear
-projects the transient approval overlay away; partial overlays still refuse.
+byte-identical. Phase two may use that immutable approval receipt after the
+operator map projects the transient approval overlay away; partial overlays still refuse.
 Even when the deterministic stage reports that auto-merge was requested, the
 controller reasserts and verifies the exact GitHub request under the active
-publication lease before waiting for merge. `approval` consumes only a newer exact Linear
+publication lease before waiting for merge. `approval` consumes only a newer exact operator-map
 Awaiting Approval → Approved overlay, commits the approval attestation, and
 requests normal protected GitHub auto-merge for that exact PR head. `done`
 requires the exact merged commit on authoritative `origin/main`, all configured
@@ -1314,11 +1275,11 @@ An authenticated merged passport enters closeout before dependency refresh,
 even when a prior wait already released its publication lease.
 An open closeout PR is a controller wait. After it merges, retrying `done`
 revalidates the exact protected-main Done receipt, ledger, original merge and
-checks, and closeout merge, then projects only the mapped issue's state to
-Linear Done and re-reads that exact issue. The controller records one
-idempotent terminal-sync event before it emits completion and releases the
-ticket. Missing mapping, API failure, or unconfirmed Done leaves the claim
-retryable; stale prepublication dependency logic is never reopened.
+checks, and closeout merge. The controller records one idempotent
+`operator_terminal_recorded` event (`{protected_main, terminal_basis}`) before
+it emits completion and releases the ticket — Done has no external witness;
+this is Git- and receipt-only. An unconfirmed Done leaves the claim retryable;
+stale prepublication dependency logic is never reopened.
 For qualification, validated protected-main Done is authoritative even when
 the sealed registered checkout remains intentionally detached with a
 nonterminal ticket. That target is excluded from admission and cannot be
@@ -1435,14 +1396,14 @@ pause, including an exact idle budget pause, with no lease or publication
 capability.
 Its SHA-256 apply reuses the ordinary ledger projection, closeout branch, push,
 PR, and protected auto-merge. It records a distinct terminal receipt rather
-than synthesizing bundle or Linear approval. Exact operator-built work may use
+than synthesizing bundle or operator approval. Exact operator-built work may use
 an explicitly passportless basis only when protected main says it was built
 outside the Factory and controller claim/passport records are both absent.
 Retries accept only the already-committed receipt and original approval hash;
 the terminal reader independently revalidates commit topology, authorized
 paths, source ticket blob, receipt digest, timestamps, and ledger containment. A
-merged emergency closeout uses the same protected-terminal-first exact Linear
-Done projection as ordinary closeout.
+merged emergency closeout uses the same protected-terminal-first exact Done
+projection as ordinary closeout.
 One versioned extension may also retire exactly one bundle-only partial chain
 whose internally validated bundle names a kit other than the active closeout
 kit. The plan binds its exact protected-main path, blob, and prior kit; apply
@@ -1661,7 +1622,7 @@ A one-time Contract 1.2 migration may instead use the separate
 satisfy ordinary bundle, approval, Done, or route-plan attestations. The local
 `scripts/legacy-closeout.py` generator reads immutable Git evidence and GitHub
 PR/check metadata, requires settled Reviewer/Narrator accounting, and performs
-no commit, push, merge, or Linear mutation. Its exact authorization and
+no commit, push, or merge. Its exact authorization and
 complete receipt batch remain inert until the operator manually merges the one
 protected product PR containing the receipts, terminal ticket projections,
 and target pin. Review sources use `legacy-reviewed`. The pre-four-job
@@ -1706,7 +1667,7 @@ baseline; only a strictly later remote move may resume it.
 Every accepted state overlay is also bound to the exact committed ticket text
 from which it was ingested. A later ticket commit invalidates that overlay
 before effective-state projection, so a repeated block is published even when
-Linear still shows the prior resumed coarse state. Legacy unbound overlays are
+the operator map still shows the prior resumed coarse state. Legacy unbound overlays are
 cleared once and must be re-observed.
 
 Before the first role, `models pin` resolves one exact six-role plan and records
@@ -1715,7 +1676,7 @@ later preflight, sequencer call, and run refuses a different physical kit SHA;
 roles read only their active journal resolution. A run re-probes only that exact
 route and never silently retries a task-bearing process. Contract 1.4 may
 migrate the v1 plan and append a fallback revision only after an eligible
-terminal GO attempt, one-use Linear approval, validated partial-work snapshot,
+terminal GO attempt, one-use operator approval, validated partial-work snapshot,
 and full family-history resolution. Activation does not migrate pins or
 journals automatically. Contract 1.8 resolves machine readiness once before
 concurrent ticket execution, then pins one to four clean ticket branches from
@@ -1789,7 +1750,7 @@ the sole caller that advances work through state-machine receipts. Concurrent
 admission wakeups serialize on a process-scoped lock in the generation-wide
 worktree coordinator, not the product launch lock. Candidate and dependency
 resolution therefore occurs before the product launch boundary. A selected
-claim then revalidates the clean registered checkout, unchanged Linear map,
+claim then revalidates the clean registered checkout, unchanged operator map,
 control markers, live capacity, and exact ticket identity while holding the
 launch and dispatcher-lease locks. Slow or empty admission scans cannot starve
 an independent role launch or lease release.
@@ -1884,23 +1845,10 @@ An activated contract 1.2, 1.3, or 1.4 keeps that receipt as the runtime destina
 binding for trusted ticket and role pushes. Its `product_origin` is the sole
 certified `origin` push URL, which may differ from the fetch URL.
 
-The per-product scheduled Linear LaunchAgent contains only the stable launcher,
-project slug, and `linear-sync` command. The launcher resolves and validates the
-active release once, then starts that release's sync helper in a fresh
-credential-free environment; the helper obtains the owner-local Linear
-credential itself. `factory-kit linear-sync-service enable|disable` is the sole
-service migration boundary: it publishes maintenance, drains work and both
-current and legacy Linear cycle locks, atomically replaces the plist, persists the matching
-native launchd state, verifies the
-fixed arguments, and restores the previous plist and load state on failure. If
-launchd has no product override, the command first adopts ownership by writing
-and verifying an explicit enabled override. That committed semantic no-op is
-reported separately and becomes the rollback baseline; an indeterminate
-adoption stops before plist or load-state migration. A later failure restores
-the exact prior plist bytes, mode, loaded arguments, and explicit-enabled
-baseline rather than pretending the absent override was restored.
-Activation and rollback move only the active release pointer, so an unchanged
-scheduled definition follows either transition without a second service edit.
+There is no per-product scheduled sync LaunchAgent anymore. `factory/operator-map.json`
+is computed on demand from committed ticket state and consumed operator
+receipts, not synced by a background service, so activation and rollback have
+no scheduled-service migration boundary to carry.
 
 Activation uses `factory/MAINTENANCE` and the same launch lock as role startup.
 Launch checks occur before locking, after locking, and before the task GO
@@ -1927,23 +1875,21 @@ lease cleanup remains ticket-local and cannot stop sibling reconciliation.
 Malformed parked lease evidence is loaded only into the existing invalid-ticket
 quarantine and cannot enter recovery, admission, or scheduling.
 New admission checks the clean registered product ticket's base State before
-applying any Linear operator overlay. Done and Canceled tickets therefore stay
+applying any operator-map overlay. Done and Canceled tickets therefore stay
 inert after claim retirement even when a stale resume overlay or retained
 ticket branch still exists. A refusal after candidate selection reports that
 exact ticket; failures before selection remain lane-scoped. Parked worktrees
 and retained branches are neither trusted nor rewritten by this rule.
-Qualification reconciliation performs one sealed dispatch shadow with a
-300-second selected-ticket Linear age limit immediately after loading durable
-claims and before cancellation, terminal, passport, preflight, or upgrade
-recovery. A stale or invalid result records one bounded admission incident and
-stops the sweep with no recovery, claim, model, or provider mutation. The
-operator uses the existing sealed qualification `--restore`; the controller
-receives no Linear API or timestamp-writing authority. Restore reinitializes
-every selected ticket, including entries that were previously complete but
-have aged past the admission limit. A fresh `SHADOW` or
-`WAIT` enters the unchanged flow, and the later real claim still re-reads the
-map under its normal 600-second contract. Production does not run this
-qualification headroom check.
+Qualification reconciliation performs one sealed dispatch shadow immediately
+after loading durable claims and before cancellation, terminal, passport,
+preflight, or upgrade recovery. Because the operator map is a pure projection
+with no external system, staleness has no meaning here anymore: an invalid
+result records one bounded admission incident and stops the sweep with no
+recovery, claim, model, or provider mutation. The operator uses the existing
+sealed qualification `--restore` to reinitialize every selected ticket. A
+fresh `SHADOW` or `WAIT` enters the unchanged flow, and the later real claim
+still re-reads the map under its normal 600-second contract. Production does
+not run this qualification headroom check.
 Production candidate selection runs the existing provider-free ticket
 readiness contract for every otherwise eligible ticket before either shadow or
 claim may succeed. A refusal, malformed success, helper error, or timeout is a
@@ -1978,8 +1924,7 @@ The activation journal advances through `prepared`,
 pre-switch interruptions and either validates/commits or restores post-switch
 interruptions. The service-named phases are transaction checkpoints; the
 current script does not itself manage `launchctl` or perform the external
-health smoke. This excludes the separate, explicit `linear-sync-service`
-maintenance command; ordinary activation and rollback never own launchd.
+health smoke.
 
 Rollback restores the previous activation record and sealed tree but keeps
 `MAINTENANCE`. The protected product `KIT_PIN` must then be reverted and the

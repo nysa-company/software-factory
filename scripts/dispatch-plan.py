@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import datetime as dt
 import fcntl
 import json
 import os
@@ -368,64 +367,29 @@ def preprovider_reset_authorizations(
     return result
 
 
-def fresh_linear_timestamp(value: Any, maximum_age: int, label: str) -> dt.datetime:
-    if not isinstance(value, str):
-        raise DispatchError(f"{label} timestamp is missing")
-    try:
-        observed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError as exc:
-        raise DispatchError(f"{label} timestamp is invalid") from exc
-    if observed.tzinfo is None:
-        observed = observed.replace(tzinfo=dt.timezone.utc)
-    age = (dt.datetime.now(dt.timezone.utc) - observed).total_seconds()
-    if age < -60 or age > maximum_age:
-        raise DispatchError(f"{label} is stale")
-    return observed
-
-
-def fresh_mapping(
-    path: Path, maximum_age: int, selected_tickets: list[str] | None = None,
+def operator_mapping(
+    path: Path, selected_tickets: list[str] | None = None,
 ) -> dict[str, Any]:
-    raw = safe_file(path, "Linear operator map")
+    raw = safe_file(path, "operator map")
     value = json.loads(raw)
     if not isinstance(value, dict):
-        raise DispatchError("Linear operator map is invalid")
-    sync = value.get("_sync")
-    if not isinstance(sync, dict):
-        raise DispatchError("Linear reconciliation metadata is missing")
+        raise DispatchError("operator map is invalid")
     if selected_tickets:
-        selected = sync.get("selected_ticket_success_at")
         tickets = value.get("tickets")
-        if not isinstance(selected, dict) or not isinstance(tickets, dict):
-            raise DispatchError("selected-ticket Linear reconciliation is missing")
+        if tickets is not None and not isinstance(tickets, dict):
+            raise DispatchError("operator map tickets are invalid")
         for ticket in selected_tickets:
-            entry = tickets.get(ticket)
-            operator = entry.get("operator") if isinstance(entry, dict) else None
+            entry = (tickets or {}).get(ticket)
+            if entry is None:
+                continue
             if (
                 not isinstance(entry, dict)
                 or entry.get("operator_fields_initialized") is not True
-                or not isinstance(operator, dict)
+                or not isinstance(entry.get("operator"), dict)
             ):
                 raise DispatchError(
-                    f"selected-ticket Linear reconciliation is missing: {ticket}"
+                    f"selected-ticket operator projection is invalid: {ticket}"
                 )
-            fresh_linear_timestamp(
-                selected.get(ticket), maximum_age,
-                f"selected-ticket Linear reconciliation for {ticket}",
-            )
-            fresh_linear_timestamp(
-                operator.get("observed_at"), maximum_age,
-                f"selected-ticket Linear observation for {ticket}",
-            )
-        return value
-    error = sync.get("_last_error") or sync.get("last_error")
-    if error:
-        if str(error).startswith("linear_rate_limited retry_after_seconds="):
-            raise DispatchError(str(error))
-        raise DispatchError("Linear reconciliation reports an error")
-    fresh_linear_timestamp(
-        sync.get("last_success_at"), maximum_age, "Linear reconciliation"
-    )
     return value
 
 
@@ -993,7 +957,6 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--factory-root", required=True, type=Path)
     parser.add_argument("--worktree-root", required=True, type=Path)
-    parser.add_argument("--max-linear-age", type=int, default=600)
     parser.add_argument("--lease-ttl", type=int, default=900)
     parser.add_argument("--exclude-ticket", action="append", default=[])
     parser.add_argument("action", choices=("shadow", "claim"))
@@ -1023,10 +986,10 @@ def main() -> None:
             raise DispatchError("registered product checkout is dirty")
         git(product, "fetch", "--quiet", "origin", "+main:refs/remotes/origin/main")
         mapping_path = Path(os.environ.get(
-            "FACTORY_OPERATOR_MAP", factory / "linear-map.json"
+            "FACTORY_OPERATOR_MAP", factory / "operator-map.json"
         ))
         if not mapping_path.is_absolute():
-            raise DispatchError("Linear operator map path is invalid")
+            raise DispatchError("operator map path is invalid")
         maximum = capacity(factory)
         qualification_state = qualification(product, factory, maximum)
         validate_qualification_ticket_sources(product, qualification_state)
@@ -1053,9 +1016,7 @@ def main() -> None:
         selected_tickets = (
             qualification_state["tickets"] if qualification_state else None
         )
-        mapping = fresh_mapping(
-            mapping_path, args.max_linear_age, selected_tickets,
-        )
+        mapping = operator_mapping(mapping_path, selected_tickets)
         if qualification_state is not None:
             maximum = qualification_state["capacity"]
             if qualification_state["done"] == qualification_state["target_done"]:
@@ -1114,10 +1075,6 @@ def main() -> None:
             raise DispatchError("factory control blocks dispatch")
         if git(product, "status", "--porcelain=v1", "-z"):
             raise DispatchError("registered product checkout changed during selection")
-        if fresh_mapping(
-            mapping_path, args.max_linear_age, selected_tickets,
-        ) != mapping:
-            raise DispatchError("Linear reconciliation changed during selection")
         lease_dir.mkdir(mode=0o700, exist_ok=True)
         safe_directory(lease_dir, "dispatcher lease directory")
         current_leased, current_lease_ids = lease_records(lease_dir)

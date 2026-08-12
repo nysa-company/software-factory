@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Materialize Linear-owned fields or commit one legal factory-owned state move.
+# Materialize operator-owned fields or commit one legal factory-owned state move.
 set -euo pipefail
 export PYTHONDONTWRITEBYTECODE=1
 
@@ -23,12 +23,14 @@ done
 [[ -z "$ROLE" || "$ACTION" == "qualification-backlog" ]] ||
   { echo "--role is valid only for qualification backlog return" >&2; exit 2; }
 [[ "$ACTION" != "reviewer-reconcile" ||
-   "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ]] || {
+   "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ||
+   "$CONTRACT_VERSION" == "1.9.0" ]] || {
   echo "reviewer reconciliation requires contract 1.7.0" >&2
   exit 1
 }
 [[ "$ACTION" != "qualification-backlog" ||
-   "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ]] || {
+   "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ||
+   "$CONTRACT_VERSION" == "1.9.0" ]] || {
   echo "qualification backlog return requires contract 1.7.0" >&2
   exit 1
 }
@@ -40,7 +42,7 @@ unset FACTORY_TRUSTED_PRODUCT_ORIGIN
 readonly FACTORY_TRUSTED_PRODUCT_ORIGIN="${FACTORY_CERTIFIED_PRODUCT_ORIGIN:-}"
 unset FACTORY_CERTIFIED_PRODUCT_ORIGIN
 PRODUCT_ROOT="${FACTORY_ROOT:-$WORKDIR}"
-MAP="${FACTORY_OPERATOR_MAP:-$PRODUCT_ROOT/factory/linear-map.json}"
+MAP="${FACTORY_OPERATOR_MAP:-$PRODUCT_ROOT/factory/operator-map.json}"
 TICKET_FILE="$WORKDIR/factory/tickets/$TICKET.md"
 [[ -f "$TICKET_FILE" ]] || { echo "ticket file missing from worktree" >&2; exit 1; }
 INITIAL_STATE="$(python3 - "$TICKET_FILE" <<'PY'
@@ -146,7 +148,7 @@ text = re.sub(
     r"^State:\s*.*$", f"State: {states[target_key]}", text,
     count=1, flags=re.MULTILINE | re.IGNORECASE,
 )
-if target_key == "blocked-escalated" and contract in {"1.7.0", "1.8.0"}:
+if target_key == "blocked-escalated" and contract in {"1.7.0", "1.8.0", "1.9.0"}:
     resume = f"Resume-State: {states[current]}"
     resume_fields = re.findall(
         r"^Resume-State:\s*.*$", text, re.MULTILINE | re.IGNORECASE,
@@ -346,7 +348,7 @@ from effective_ticket import operator_version
 path, ticket, expected = Path(sys.argv[2]), sys.argv[3], sys.argv[4]
 if not path.is_file():
     raise SystemExit(0)
-intents = path.parent / ".linear-operator-clears"
+intents = path.parent / ".operator-clears"
 intents.mkdir(mode=0o700, exist_ok=True)
 intent = intents / f"{ticket}-{expected}.json"
 if not intent.exists():
@@ -358,13 +360,13 @@ if not intent.exists():
         with os.fdopen(fd, "w") as output:
             json.dump({
                 "operator_version": expected,
-                "schema": "linear-operator-clear/v1",
+                "schema": "operator-clear/v1",
                 "ticket": ticket,
             }, output, sort_keys=True, separators=(",", ":"))
             output.write("\n")
             output.flush()
             os.fsync(output.fileno())
-lock = path.parent / ".linear-sync.lock"
+lock = path.parent / ".operator-map.lock"
 with lock.open("a") as handle:
     fcntl.flock(handle, fcntl.LOCK_EX)
     data = json.loads(path.read_text())

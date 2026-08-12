@@ -125,7 +125,7 @@ def main() -> None:
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
 
-    if args.contract_version not in {"1.7.0", "1.8.0"}:
+    if args.contract_version not in {"1.7.0", "1.8.0", "1.9.0"}:
         raise SystemExit("reviewer reconciliation requires contract 1.7.0")
     if not re.fullmatch(r"T-[0-9]+", args.ticket):
         raise SystemExit("invalid ticket")
@@ -193,7 +193,7 @@ def main() -> None:
             continue
         output = manifest.with_suffix(".out")
         if (
-            value.get("contract_version") not in {"1.7.0", "1.8.0"}
+            value.get("contract_version") not in {"1.7.0", "1.8.0", "1.9.0"}
             or value.get("role_exit") != "ok"
             or not regular(output)
         ):

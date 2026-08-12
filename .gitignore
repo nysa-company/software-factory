@@ -9,6 +9,9 @@ factory/KILL
 **/factory/.linear-sync.lock
 **/factory/.linear-sync-cycle.lock
 **/factory/.linear-operator-clears/
+**/factory/operator-map.json
+**/factory/.operator-map.lock
+**/factory/.operator-clears/
 **/factory/MAINTENANCE
 **/factory/.launch.lock/
 **/factory/.provider.lock/

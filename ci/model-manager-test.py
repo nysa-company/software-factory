@@ -487,7 +487,7 @@ class ModelManagerTest(unittest.TestCase):
         self.assertTrue(contract["ticket_scoped"])
         self.assertTrue(contract["one_use"])
         self.assertEqual(
-            contract["approval"], "exact one-use Linear fallback approval"
+            contract["approval"], "exact one-use operator fallback approval receipt"
         )
 
         policy = self.model_policy()

@@ -205,8 +205,8 @@ ceiling. Registration is not durable ticket ownership: at most four
 ticket-scoped workers may run, and a portable ticket passport may move one
 ticket to a successor sandbox. The source must be a clean isolated worktree;
 the canonical Nysa checkout is refused. The lane clones it into a private
-product, replaces its remote with a local bare origin, and has no GitHub or
-Linear route.
+product, replaces its remote with a local bare origin, and has no GitHub
+route.
 Fresh planning resets each selected ticket to `Ready` and removes prior
 canonical Spec-lint verdict, Reviewer verdict, and repair-owner control lines
 before the new role sequence begins. Historical prose and quoted signed-review
@@ -349,4 +349,4 @@ bash scripts/factory-dev-lane.sh clean --root <root>
 
 Cleanup accepts only the original owner-only lane directory beneath its creation `TMPDIR`, with an unchanged owner, inode, device, marker, and permissions. Failed runs are retained for diagnosis.
 
-Before any isolated attempt, every runtime input is checked lexically and physically beneath the validated lane root and against the production denylist. The lane refuses canonical Nysa, production factory, production Hermes, and LaunchAgent paths. It creates no production receipt or activation record, has no Linear or GitHub integration, and cannot become a production release. The normal protected-main CI, sealed installation, live Cursor canary, product certification, registration, activation, and legacy serialized-provider path remain unchanged.
+Before any isolated attempt, every runtime input is checked lexically and physically beneath the validated lane root and against the production denylist. The lane refuses canonical Nysa, production factory, production Hermes, and LaunchAgent paths. It creates no production receipt or activation record, has no GitHub integration, and cannot become a production release. The normal protected-main CI, sealed installation, live Cursor canary, product certification, registration, activation, and legacy serialized-provider path remain unchanged.

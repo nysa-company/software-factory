@@ -1099,6 +1099,7 @@ factory/.launch.lock/
 factory/.provider.lock/
 factory/.ledger.lock/
 factory/linear-map.json
+factory/operator-map.json
 app/data/
 EOF
   mkdir -p "$root/product/.cursor"

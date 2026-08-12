@@ -52,9 +52,6 @@ while IFS= read -r -d '' status && IFS= read -r -d '' path; do
       .github/pull_request_template.md|integrations/hermes/CHANGELOG.md|\
       conformance/SHAKEDOWN-REPORT.md)
       ;;
-    scripts/linear-sync.py)
-      set_group targeted linear "linear"
-      ;;
     scripts/operator-console.py|scripts/operator-snapshot.py)
       set_group targeted operator-console "operator-console"
       ;;

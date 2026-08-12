@@ -122,9 +122,11 @@ Contract 1.4 fallback:
    remote state, accounting, current route-journal head, and model readiness.
 2. It excludes the exact failed route and resolves the failed role plus every
    remaining role.
-3. The operator posts the generated one-line approval comment in Linear.
-4. Normal Linear sync records the authenticated author and a 15-minute,
-   one-use approval.
+3. The operator runs
+   `factory-kit.sh operator fallback-approve --project <project> --product <path> --ticket T-123 --preview-hash <hash> --failed-run <run-id> --reason <reason>`,
+   which issues a 15-minute, one-use receipt.
+4. The receipt projects into `factory/operator-map.json` and a zero-authority
+   audit copy is written under `factory/receipts/T-123/`.
 5. `models fallback` revalidates everything, preserves only role-authorized
    partial work, appends a route-journal revision, commits and pushes the
    handoff, then consumes the approval.
@@ -239,7 +241,7 @@ Legacy revisions containing full prior resolutions remain valid.
   --workdir /absolute/ticket-worktree \
   --reason credits_exhausted --json
 
-# After posting the exact Linear approval and running normal Linear sync:
+# After the operator fallback-approve receipt above is issued:
 ~/.factory/bin/factory-launch <project> models fallback \
   --ticket T-123 --failed-run <run-id> \
   --workdir /absolute/ticket-worktree \

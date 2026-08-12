@@ -627,7 +627,7 @@ print(json.dumps([{
         ).stdout.strip()
         ticket = ticket_path.read_text().replace(
             "State: Awaiting Approval",
-            "State: Approved\nOperator-Approval: Linear",
+            "State: Approved\nOperator-Approval: Receipt",
             1,
         )
         if mode == "ticket-drift":
@@ -648,7 +648,7 @@ print(json.dumps([{
             "bundle_attestation_blob": bundle_attestation_blob,
             "pr_number": 7,
             "operator_version": "2" * 64,
-            "linear_updated_at": "2026-07-20T02:00:00Z",
+            "receipt_sha256": "3" * 64,
             "observed_at": "2026-07-20T02:01:00Z",
             "kit_sha": approval_kit_sha,
             "auto_merge_method": "squash",
@@ -673,7 +673,7 @@ print(json.dumps([{
             (self.product / "approval-side-effect.txt").write_text("not trusted\n")
         elif mode not in {"valid", "tampered-receipt", "ticket-drift"}:
             raise ValueError(mode)
-        self.commit_and_push("attest Linear approval")
+        self.commit_and_push("attest Receipt approval")
         return route_plan, journal, approval_kit_sha
 
     def publication_command(self, expected=0):

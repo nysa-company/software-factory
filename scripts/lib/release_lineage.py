@@ -164,7 +164,7 @@ def successor_release_lineage(
         for item in history
         if isinstance(item, dict)
         and set(item) == {"contract_version", "factory_sha"}
-        and item.get("contract_version") == "1.8.0"
+        and item.get("contract_version") in ("1.8.0", "1.9.0")
         and SHA.fullmatch(item.get("factory_sha", ""))
     ]
     if (

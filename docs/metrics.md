@@ -6,15 +6,15 @@ What gets measured per ticket, where it comes from, and what it gates. Weekly re
 
 | Field | Source |
 |---|---|
-| ticket id | Markdown filename; Linear identifier stored in `linear-map.json` |
+| ticket id | Markdown filename (`T-NNN`) |
 | cost_usd | sum of effective rows for the ticket (`factory/runtime-ledger.csv`) |
 | attempts | count of builder runs in the ledger |
 | review_rounds | reviewer comments on the PR (0–2) |
-| cycle_time | reconciled Linear Ready timestamp → factory Done log timestamp |
-| operator_minutes | operator self-report in the Linear approval comment |
+| cycle_time | ready receipt timestamp → factory Done log timestamp |
+| operator_minutes | operator self-report on the ticket log at approval |
 | escalated | did the ticket ever enter Blocked-Escalated (boolean + reason) |
 | escaped_defect | a later bug ticket links back to this Done ticket (boolean, retroactive) |
-| external | Markdown `External:` field projected as the Linear `external` label |
+| external | Markdown `External:` field |
 | prompt versions | logged per run in the ledger |
 | run identity | `run_id` joins the ledger row to its atomic `factory/runs/<run_id>.meta` manifest |
 | route provenance | pinned catalog/profile/policy hashes plus transport, gateway, inference provider, family, account route, selection ID, reported identity, adapter, effort, and adapter version from the ticket route plan and run manifest |

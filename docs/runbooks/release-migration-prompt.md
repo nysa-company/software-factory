@@ -115,17 +115,17 @@ this exact order:
    or LaunchAgent into it." | "No compatibility-sensitive surface changed;
    record the exact diff-based skip justification."}}
 11. On a replacement cutover, re-confirm the old host remains in maintenance
-    with its controller and provider work drained. Prove its dispatcher and
-    Linear reconciler are stopped; otherwise revoke their execution access.
-    Only then transfer the ignored production `factory/linear-map.json`
-    securely to the same canonical path with owner-only permissions. Never
-    print, commit, or copy it into the canary.
+    with its controller and provider work drained. Prove its dispatcher is
+    stopped; otherwise revoke its execution access. Only then transfer the
+    ignored production `factory/operator-map.json` securely to the same
+    canonical path with owner-only permissions. Never print, commit, or copy
+    it into the canary.
 12. Immediately before activation, fetch canonical protected main again and
     require its SHA and tracked tree to match the certification receipt. Drift
     requires a new branch, protected merge, and certification. Run
     `factory-kit.sh plan`; require `No files were changed.` Stop only the
     product factory profile and reconciler, leaving the dashboard and primary
-    Hermes profile running. Activate while dispatch and Linear remain stopped.
+    Hermes profile running. Activate while dispatch remains stopped.
     Collect activation journal, doctor JSON, sandbox smoke, PID, and repeated
     health probes. A failure keeps maintenance published and uses
     `factory-kit.sh reconcile`; never edit `active.json` or the journal.
@@ -135,8 +135,8 @@ this exact order:
     `PER_TICKET_BUDGET_USD={{PER_TICKET_BUDGET_USD}}`. T-024, T-030, and T-031
     must resolve as protected-main Done through the complete reconciliation
     batch; do not run `models migrate`, repin, or ordinary Done closeout for
-    them. Start Linear reconciliation, require fresh sync and healthy doctor,
-    then remove maintenance and start dispatch.
+    them. Require a healthy doctor, then remove maintenance and start
+    dispatch.
 
 Prove the release with exactly one real ticket:
 
@@ -146,14 +146,15 @@ Prove the release with exactly one real ticket:
     on `ticket/T-032`; then require the normal Spec-linter gate. Do not claim
     another ticket until T-032 is protected-main Done.
 15. Run the complete trusted lifecycle: Planner, Spec-linter, Test-author,
-    Builder, exact-head GitHub CI, Reviewer, Narrator, Linear approval,
-    protected product merge, post-merge checks, and trusted Done closeout.
+    Builder, exact-head GitHub CI, Reviewer, Narrator, operator receipt-bound
+    approval, protected product merge, post-merge checks, and trusted Done
+    closeout.
     Use only `~/.factory/bin/factory-launch {{PROJECT_SLUG}}`; never bypass a
     refusal or manufacture evidence.
 16. Accept the rollout only when T-032 is valid protected-main Done, its ledger
-    and manifests reconcile, Linear is fresh, doctor is healthy, and no run,
-    claim, or lease remains. Only then may the operator stage up to four
-    non-overlapping Ready tickets.
+    and manifests reconcile, doctor is healthy, and no run, claim, or lease
+    remains. Only then may the operator stage up to four non-overlapping
+    Ready tickets.
 
 Hard rules: no local factory full CI or AI review; GitHub owns complete factory
 verification. Any launcher refusal, doctor warning, mutation drift, incomplete

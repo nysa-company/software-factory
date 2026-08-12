@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read committed ticket content with Linear-owned operator fields overlaid."""
+"""Read committed ticket content with operator-owned fields overlaid."""
 
 import argparse
 import hashlib
@@ -12,7 +12,7 @@ from pathlib import Path
 from legacy_closeout import ValidationError, protected_terminal
 
 MATERIALIZED_OPERATOR_FIELDS = ("priority", "initiative", "state", "approval")
-OPERATOR_METADATA_FIELDS = ("state_base", "observed_at", "linear_updated_at")
+OPERATOR_METADATA_FIELDS = ("state_base", "observed_at", "receipt_sha256")
 OPERATOR_FIELDS = frozenset(MATERIALIZED_OPERATOR_FIELDS + OPERATOR_METADATA_FIELDS)
 PRIORITIES = frozenset(("none", "urgent", "high", "normal", "low"))
 STATES = {
@@ -51,8 +51,6 @@ def validate_operator(operator):
     if unknown:
         raise ValueError(f"operator overlay contains unknown fields: {', '.join(unknown)}")
     for name, value in operator.items():
-        if name == "linear_updated_at" and value is None:
-            continue
         if name == "initiative" and value is None:
             continue
         safe_operator_string(name, value)
@@ -68,10 +66,14 @@ def validate_operator(operator):
         raise ValueError("operator state is invalid")
     if "state_base" in operator and operator["state_base"] not in STATES.values():
         raise ValueError("operator state_base is invalid")
-    if "approval" in operator and operator["approval"] != "Linear":
+    if "approval" in operator and operator["approval"] != "Receipt":
         raise ValueError("operator approval is invalid")
-    if (operator.get("state") == "Approved") != (operator.get("approval") == "Linear"):
-        raise ValueError("operator Approved state and Linear approval must appear together")
+    if "receipt_sha256" in operator and not re.fullmatch(
+        r"[0-9a-f]{64}", operator["receipt_sha256"]
+    ):
+        raise ValueError("operator receipt_sha256 is invalid")
+    if (operator.get("state") == "Approved") != (operator.get("approval") == "Receipt"):
+        raise ValueError("operator Approved state and Receipt approval must appear together")
     return operator
 
 

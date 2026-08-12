@@ -24,7 +24,7 @@ Why: T-009's PR preview served a web bundle still pointing at the production API
 
 ## Non-interactive access (project token)
 
-Mint a least-privilege Railway project token once via the dashboard (Settings → Tokens), scoped to this product's services only. Store it at `~/.hermes/secrets/railway-token`, `chmod 600`, mirroring the existing `~/.hermes/secrets/linear-api-key` convention (see `scripts/linear-sync.py:35`).
+Mint a least-privilege Railway project token once via the dashboard (Settings → Tokens), scoped to this product's services only. Store it at `~/.hermes/secrets/railway-token`, `chmod 600`, following the same owner-only `~/.hermes/secrets/` convention used for every other Factory-managed credential.
 
 Usage: export it as `RAILWAY_TOKEN` for the `railway` CLI so redeploys and variable changes never wait on an operator browser session. Never commit it, never print it.
 

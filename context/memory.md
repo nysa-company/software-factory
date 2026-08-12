@@ -10,7 +10,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Nysa Agents baseline v3 as a toolkit; `bash ci/test-all.sh` is the unconditional full command.
 - Live products resolve sealed exact-SHA releases under `~/.factory/kits` via `~/.factory/bin/factory-launch`.
 - Model routing is portfolio policy; routes pin at the ticket boundary and change only via the Contract 1.4 journal flow. One profile resolution shares model-independent native-adapter readiness across its routes and runs independent probes in bounded parallel; Cursor readiness stays model-specific. Sealed Cursor inventory verifies the exact configured CLI identity in an empty disposable owner-only home before copying credentials, then accepts only its bounded certified structure.
-- The only emergency recovery is the receipt-bound `OPERATOR RESUME` ticket commit. No generic lifecycle bypass is approved.
+- Linear is removed (Decision 395); the six operator authorities are one-use receipts via `factory-kit.sh operator ACTION`. The only emergency recovery is the receipt-bound `OPERATOR RESUME` ticket commit. No generic lifecycle bypass is approved.
 - **Contract rules below in Operating contract are authoritative**; this summary is only what the session hook can inject.
 
 ## Operating contract
@@ -5610,3 +5610,27 @@ Partial runtime is resumable only behind an owner-only attempt marker bound to
 that identity. Retries content-address and retire prior failure evidence before
 Hermes starts, while a structured completion marker binds the exact retained
 evidence; marker presence alone never authorizes skipping the live hook.
+
+## 2026-08-11 — Decision 395: Linear is removed; the six operator authorities become one-use receipts
+
+Category: Decision
+
+Linear ingestion, scheduled sync, and board authority are removed (contract
+1.8.0 → 1.9.0, receipt-only live gates). The six operator authorities (ready,
+approve, resume, cancel, priority, model-fallback approval) are now one-use
+receipts issued by `scripts/operator-cli.py` via `factory-kit.sh operator
+ACTION`, anchored in the controller state directory with digest+nonce,
+consume-under-flock, fail-closed semantics. Each verb also projects the
+decision into the gitignored `factory/operator-map.json` (formerly
+`factory/linear-map.json`; same `{_config, _sync, initiatives, tickets}`
+shape) and writes a zero-authority audit copy under `factory/receipts/<T>/`
+in the product checkout. The map is a pure projection with nothing behind
+it, so `_sync` freshness/staleness gating is deleted wherever it gated
+behavior; a missing tickets entry now defaults benignly rather than refusing.
+There are deliberately no push notifications — `operator-event-watch --json`
+remains the hook for adding a notifier later, and `operator pending`
+replaces glancing at a board. Done closeout has no external witness under
+this design (accepted trade-off); it is Git- and receipt-only, verified by
+reading protected main and the ledger. This supersedes every prior Log entry
+describing Linear as live authority, board, or sync target; those entries
+stand as history and are not rewritten.

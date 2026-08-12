@@ -154,11 +154,11 @@ class FactoryControllerTest(unittest.TestCase):
     def test_terminal_event_is_idempotent_across_restart(self) -> None:
         controller = CONTROL.Controller(self.args)
         details = {"protected_main": "b" * 40, "terminal_basis": "attested-done"}
-        controller.event_once("linear_terminal_synced", "T-110", **details)
-        controller.event_once("linear_terminal_synced", "T-110", **details)
+        controller.event_once("operator_terminal_recorded", "T-110", **details)
+        controller.event_once("operator_terminal_recorded", "T-110", **details)
         matching = [
             json.loads(path.read_text()) for path in controller.events.glob("*.json")
-            if json.loads(path.read_text()).get("event") == "linear_terminal_synced"
+            if json.loads(path.read_text()).get("event") == "operator_terminal_recorded"
         ]
         self.assertEqual(len(matching), 1)
 
@@ -2113,7 +2113,7 @@ class FactoryControllerTest(unittest.TestCase):
         ):
             controller.claim_new([])
 
-    def test_qualification_linear_preflight_blocks_before_recovery_once(self) -> None:
+    def test_qualification_preflight_blocks_before_recovery_once(self) -> None:
         controller = self.qualification_controller()
         calls = []
 
@@ -2122,7 +2122,7 @@ class FactoryControllerTest(unittest.TestCase):
             return {
                 "action": "ESCALATE",
                 "error": (
-                    "selected-ticket Linear reconciliation for T-110 is stale"
+                    "selected-ticket operator projection is invalid: T-110"
                 ),
                 "reason_code": "unsafe_state",
                 "schema": "nysa.software-factory.dispatch-plan/v1",
@@ -2138,11 +2138,8 @@ class FactoryControllerTest(unittest.TestCase):
         second = controller.reconcile()
 
         expected = {
-            "error": (
-                "qualification Linear freshness requires the supported sealed "
-                "environment restore"
-            ),
-            "reason_code": "qualification_linear_restore_required",
+            "error": "qualification admission preflight failed",
+            "reason_code": "qualification_admission_preflight_failed",
             "status": "error",
         }
         self.assertEqual(first["results"], [expected])
@@ -2151,15 +2148,12 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(first["status"], "error")
         self.assertEqual(
             calls[0],
-            ((
-                "dispatch-plan", "--shadow", "--max-linear-age", "300",
-                "--json",
-            ), {"allow": (0, 2)}),
+            (("dispatch-plan", "--shadow", "--json"), {"allow": (0, 2)}),
         )
         incident = CONTROL.read(self.state / "admission-incident.json")
         self.assertEqual(incident["count"], 2)
         self.assertEqual(
-            incident["reason_code"], "qualification_linear_restore_required",
+            incident["reason_code"], "qualification_admission_preflight_failed",
         )
         events = [
             CONTROL.read(path) for path in controller.events.glob("*.json")
@@ -2167,7 +2161,7 @@ class FactoryControllerTest(unittest.TestCase):
         ]
         self.assertEqual(len(events), 1)
 
-    def test_qualification_linear_preflight_accepts_fresh_shadow_and_wait(self) -> None:
+    def test_qualification_preflight_accepts_shadow_and_wait(self) -> None:
         class ExistingFlowReached(Exception):
             pass
 
@@ -2194,7 +2188,7 @@ class FactoryControllerTest(unittest.TestCase):
                 with self.assertRaises(ExistingFlowReached):
                     controller.reconcile()
 
-    def test_production_reconcile_skips_qualification_linear_preflight(self) -> None:
+    def test_production_reconcile_skips_qualification_preflight(self) -> None:
         class ExistingFlowReached(Exception):
             pass
 
@@ -2209,7 +2203,7 @@ class FactoryControllerTest(unittest.TestCase):
         with self.assertRaises(ExistingFlowReached):
             controller.reconcile()
 
-    def test_qualification_linear_preflight_rejects_malformed_status_pair(self) -> None:
+    def test_qualification_preflight_rejects_malformed_status_pair(self) -> None:
         controller = self.qualification_controller()
         controller.json_call = lambda *_args, **_kwargs: {
             "action": "WAIT",
@@ -7419,7 +7413,7 @@ class FactoryControllerTest(unittest.TestCase):
                 parent_digest=stale["receipt_sha256"],
                 passport_sha256=current_file,
                 route_plan_sha256=migrated_route,
-                stage="AWAIT-OPERATOR Linear approval observed",
+                stage="AWAIT-OPERATOR operator approval observed",
             )
             value.pop("receipt_sha256")
             value["receipt_sha256"] = hashlib.sha256(STATE.canonical({
@@ -7564,7 +7558,7 @@ class FactoryControllerTest(unittest.TestCase):
             "role": None,
             "route_plan_sha256": route,
             "schema": "nysa.software-factory.transition-receipt/v1",
-            "stage": "AWAIT-OPERATOR bundle attested; await Linear approval",
+            "stage": "AWAIT-OPERATOR bundle attested; await operator approval",
             "ticket": ticket,
         }
         value["receipt_sha256"] = hashlib.sha256(STATE.canonical({
@@ -7616,7 +7610,7 @@ class FactoryControllerTest(unittest.TestCase):
                 parent_digest=stale["receipt_sha256"],
                 passport_sha256=passport_file,
                 route_plan_sha256="d" * 64,
-                stage="AWAIT-OPERATOR Linear approval observed",
+                stage="AWAIT-OPERATOR operator approval observed",
             )
             value.pop("receipt_sha256")
             value["receipt_sha256"] = hashlib.sha256(STATE.canonical({
@@ -7627,7 +7621,7 @@ class FactoryControllerTest(unittest.TestCase):
             })).hexdigest()
             CONTROL.write(self.state / f"{ticket}.json", value)
             return state_transition(
-                "AWAIT-OPERATOR Linear approval observed",
+                "AWAIT-OPERATOR operator approval observed",
                 value["receipt_sha256"], ticket,
             )
 
@@ -7730,7 +7724,7 @@ class FactoryControllerTest(unittest.TestCase):
                 parent_digest=stale["receipt_sha256"],
                 passport_sha256=passport_file,
                 route_plan_sha256="d" * 64,
-                stage="AWAIT-OPERATOR Linear approval observed",
+                stage="AWAIT-OPERATOR operator approval observed",
             )
             value.pop("receipt_sha256")
             value["receipt_sha256"] = hashlib.sha256(STATE.canonical({
@@ -7861,7 +7855,7 @@ class FactoryControllerTest(unittest.TestCase):
                     parent_digest=parent,
                     passport_sha256=current_file,
                     route_plan_sha256="d" * 64,
-                    stage="AWAIT-OPERATOR Linear approval observed",
+                    stage="AWAIT-OPERATOR operator approval observed",
                 )
                 if ticket == "T-112":
                     stale["lease_sha256"] = "0" * 64
@@ -12248,7 +12242,7 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertIn("remote Building", incident["error"])
 
         controller.record_admission_failure(
-            CONTROL.ControllerError("Linear reconciliation is stale"), []
+            CONTROL.ControllerError("operator projection is invalid"), []
         )
         self.assertEqual(
             [name for name, _ in events],
@@ -14525,7 +14519,7 @@ class FactoryControllerTest(unittest.TestCase):
         }
         stages = iter((
             state_transition(
-                "AWAIT-OPERATOR Linear approval observed", "b" * 64
+                "AWAIT-OPERATOR operator approval observed", "b" * 64
             ),
             state_transition(
                 "AWAIT-MERGE approval attested; "
@@ -14607,7 +14601,7 @@ class FactoryControllerTest(unittest.TestCase):
         )
         controller.json_call = lambda *arguments, **_kwargs: (
             state_transition(
-                "AWAIT-OPERATOR Linear approval observed", "b" * 64
+                "AWAIT-OPERATOR operator approval observed", "b" * 64
             )
             if arguments[0] == "state-machine"
             else {"pr_number": 24, "status": "failed"}
@@ -14664,13 +14658,13 @@ class FactoryControllerTest(unittest.TestCase):
         def json_call(*arguments, **_kwargs):
             if arguments[0] == "state-machine":
                 return state_transition(
-                    "AWAIT-OPERATOR Linear approval observed", "b" * 64
+                    "AWAIT-OPERATOR operator approval observed", "b" * 64
                 )
             if arguments[0] == "ticket-pr":
                 return {"head": head, "pr_number": 24, "status": "ready"}
             if arguments[0] == "ticket-attest":
                 raise CONTROL.ControllerError(
-                    "ticket-attest: stale_linear_approval: Linear approval "
+                    "ticket-attest: stale_operator_approval: operator approval "
                     "is not newer than the bundle attestation"
                 )
             raise AssertionError(arguments)
@@ -16968,7 +16962,7 @@ class FactoryControllerTest(unittest.TestCase):
             "pending_ticket": "T-174",
         })])
 
-    def test_closeout_records_exact_terminal_linear_evidence_once(self) -> None:
+    def test_closeout_records_exact_terminal_evidence_once(self) -> None:
         controller = CONTROL.Controller(self.args)
         cell = self.root / "cells/cell-1"
         cell.mkdir(parents=True)
@@ -16980,14 +16974,6 @@ class FactoryControllerTest(unittest.TestCase):
             "terminal": {
                 "basis": "attested-done",
                 "protected_main": "b" * 40,
-                "linear": {
-                    "identifier": "SF-110",
-                    "issue_id": "issue-110",
-                    "source_ref": "refs/remotes/origin/main",
-                    "state": "Done",
-                    "state_id": "state-done",
-                    "updated": True,
-                },
             },
         }
 
@@ -16998,15 +16984,12 @@ class FactoryControllerTest(unittest.TestCase):
                 "worktree": str(cell),
             }))
 
-        self.assertEqual(events, [(('linear_terminal_synced', 'T-110'), {
-            "linear_identifier": "SF-110",
-            "linear_issue_id": "issue-110",
-            "linear_state_id": "state-done",
+        self.assertEqual(events, [(('operator_terminal_recorded', 'T-110'), {
             "protected_main": "b" * 40,
             "terminal_basis": "attested-done",
         })])
 
-    def test_closeout_refuses_merged_without_terminal_linear_evidence(self) -> None:
+    def test_closeout_refuses_merged_without_terminal_evidence(self) -> None:
         controller = CONTROL.Controller(self.args)
         cell = self.root / "cells/cell-1"
         cell.mkdir(parents=True)
@@ -17017,7 +17000,7 @@ class FactoryControllerTest(unittest.TestCase):
 
         with (
             patch.object(CONTROL.subprocess, "run"),
-            self.assertRaisesRegex(CONTROL.ControllerError, "terminal Linear"),
+            self.assertRaisesRegex(CONTROL.ControllerError, "protected terminal"),
         ):
             controller.closeout({
                 "lease": "a" * 64,

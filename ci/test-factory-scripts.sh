@@ -4534,7 +4534,7 @@ if [[ "$ROLE_PROTECTED_STATUS" -eq 11 &&
      grep -q '^State: Done$' &&
    git -C "$ROLE_EXIT_WORKTREE" show \
      "$ROLE_PROTECTED_DIAGNOSTIC:factory/tickets/T-610.md" |
-     grep -q '^Operator-Approval: Linear$' &&
+     grep -q '^Operator-Approval: Receipt$' &&
    grep -q 'role_exit_protected_ticket_mutation' "$TMP/role-protected.out" &&
    grep -q '^role_exit=role_exit_protected_ticket_mutation$' "$ROLE_PROTECTED_META" &&
    grep -q '^effective_cost=0.42$' "$ROLE_PROTECTED_META" &&

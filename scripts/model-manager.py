@@ -1094,7 +1094,7 @@ def run(args):
     if args.command == "reviewer-exception-contract":
         return {
             "normal_policy_allowed": False,
-            "approval": "exact one-use Linear fallback approval",
+            "approval": "exact one-use operator fallback approval receipt",
             "binding": [
                 "ticket",
                 "failed_run",

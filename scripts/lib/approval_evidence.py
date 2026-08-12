@@ -21,12 +21,18 @@ BUNDLE_BASE_KEYS = {
     "reviewer_run_id", "narrator_run_id", "kit_sha", "policy_hash",
     "route_plan_path", "route_plan_blob", "route_plan_sha256", "attested_at",
 }
-APPROVAL_KEYS = {
+# Historical approvals (attested while Linear was the operator channel) carry
+# linear_updated_at and an Operator-Approval: Linear header; they validate
+# forever. Live approvals bind a one-use operator receipt digest instead.
+APPROVAL_KEYS_LINEAR = {
     "schema", "ticket", "repository", "branch", "parent_head",
     "reviewed_sha", "bundle_blob", "bundle_attestation_blob", "pr_number",
     "operator_version", "linear_updated_at", "observed_at", "kit_sha",
     "auto_merge_method", "attested_at",
 }
+APPROVAL_KEYS_RECEIPT = (
+    APPROVAL_KEYS_LINEAR - {"linear_updated_at"}
+) | {"receipt_sha256"}
 OID = re.compile(r"[0-9a-f]{40}")
 DIGEST = re.compile(r"[0-9a-f]{64}")
 
@@ -195,7 +201,7 @@ def _replace_field(text: str, name: str, value: str) -> str:
     return pattern.sub(f"{name}: {value}", text, count=1)
 
 
-def _expected_approved_ticket(parent_text: str) -> str:
+def _expected_approved_ticket(parent_text: str, approval_label: str) -> str:
     states = re.findall(r"^State:\s*(.*?)\s*$", parent_text, re.I | re.M)
     if len(states) != 1 or states[0].casefold() != "awaiting approval":
         raise ApprovalEvidenceError("approval parent is not Awaiting Approval")
@@ -204,10 +210,10 @@ def _expected_approved_ticket(parent_text: str) -> str:
     if len(approvals) > 1:
         raise ApprovalEvidenceError("approval parent has ambiguous operator approval")
     if approvals:
-        text = _replace_field(text, "Operator-Approval", "Linear")
+        text = _replace_field(text, "Operator-Approval", approval_label)
     else:
         text = re.sub(
-            r"^(State:.*)$", r"\1\nOperator-Approval: Linear", text,
+            r"^(State:.*)$", rf"\1\nOperator-Approval: {approval_label}", text,
             count=1, flags=re.M,
         )
     return re.sub(
@@ -230,8 +236,18 @@ def validate_approval_attestation(
     ).splitlines()
     parent_ticket = _git_raw(workdir, "show", f"{parent}:{ticket_path}")
     current_ticket = _git_raw(workdir, "show", f"{head}:{ticket_path}")
+    if "linear_updated_at" in value:
+        expected_keys = APPROVAL_KEYS_LINEAR
+        approval_label = "Linear"
+        binding_valid = _timestamp(
+            value.get("linear_updated_at"), "Linear approval update"
+        ) > _timestamp(bundle_att.get("attested_at"), "bundle attestation")
+    else:
+        expected_keys = APPROVAL_KEYS_RECEIPT
+        approval_label = "Receipt"
+        binding_valid = bool(DIGEST.fullmatch(value.get("receipt_sha256", "")))
     if (
-        set(value) != APPROVAL_KEYS
+        set(value) != expected_keys
         or value.get("schema") != "nysa.software-factory.ticket-approval/v1"
         or value.get("ticket") != ticket
         or value.get("repository") != repo
@@ -245,8 +261,7 @@ def validate_approval_attestation(
         or not DIGEST.fullmatch(value.get("operator_version", ""))
         or _timestamp(value.get("observed_at"), "approval observation")
         <= _timestamp(bundle_att.get("attested_at"), "bundle attestation")
-        or _timestamp(value.get("linear_updated_at"), "Linear approval update")
-        <= _timestamp(bundle_att.get("attested_at"), "bundle attestation")
+        or not binding_valid
         or value.get("parent_head") != parent
         or value.get("bundle_attestation_blob")
         != _blob_at(workdir, parent, bundle_path)
@@ -254,7 +269,7 @@ def validate_approval_attestation(
         != value.get("bundle_attestation_blob")
         or set(statuses) != {f"M\t{ticket_path}", f"A\t{approval_path}"}
         or _mode_at(workdir, head, approval_path) != "100644"
-        or current_ticket != _expected_approved_ticket(parent_ticket)
+        or current_ticket != _expected_approved_ticket(parent_ticket, approval_label)
     ):
         raise ApprovalEvidenceError(
             "existing approval attestation or approval commit is invalid"

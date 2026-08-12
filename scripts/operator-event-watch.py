@@ -268,8 +268,8 @@ def action_event(
     action = ""
     if event == "awaiting_approval":
         action = "awaiting_approval"
-        reason = "linear_approval_required"
-        question = source.get("question", "Approve this ticket to merge in Linear.")
+        reason = "operator_approval_required"
+        question = source.get("question", "Approve this ticket to merge.")
     elif event in {
         "semantic_round_authorization_invalid",
         "semantic_round_authorization_wait",
@@ -310,7 +310,7 @@ def action_event(
     elif event == "state_machine_escalated":
         action = "blocked_escalated"
         reason = source.get("detail", "state_machine_escalation")
-        question = "Resolve the escalation before authorizing a resume in Linear."
+        question = "Resolve the escalation before authorizing a resume."
     elif event == "ticket_blocked":
         if source.get("reason") == "state-machine-escalation":
             return None

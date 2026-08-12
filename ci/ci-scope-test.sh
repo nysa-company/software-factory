@@ -172,7 +172,7 @@ mkdir -p "$SELECT_REPO/ci" "$SELECT_REPO/docs" "$SELECT_REPO/scripts/lib" \
   "$SELECT_REPO/conformance/app/tests" "$SELECT_REPO/envelope" "$SELECT_REPO/roles"
 cp "$SELECTOR" "$LIGHTWEIGHT" "$SELECT_REPO/ci/"
 for path in \
-  scripts/linear-sync.py scripts/operator-console.py scripts/operator-snapshot.py \
+  scripts/operator-console.py scripts/operator-snapshot.py \
   scripts/adapters/claude-kimi.sh scripts/lib/claude-kimi-output.py \
   scripts/lib/claude-kimi-secret.py scripts/lib/failed_attempt_handoff.py \
   scripts/reorder-test-fixes.sh scripts/lib/reorder_test_fixes.py \
@@ -198,7 +198,6 @@ selection_case() {
 
 POLICY="ci-scope immutability artifact-policy"
 selection_case docs/guide.md "metadata|inert metadata|" "metadata selection"
-selection_case scripts/linear-sync.py "targeted|linear|linear $POLICY" "linear selection"
 selection_case scripts/operator-console.py "targeted|operator-console|operator-console $POLICY" "operator console selection"
 selection_case scripts/operator-snapshot.py "targeted|operator-console|operator-console $POLICY" "operator snapshot selection"
 selection_case scripts/adapters/claude-kimi.sh "targeted|claude-kimi|claude-kimi $POLICY" "adapter wrapper selection"
@@ -219,7 +218,7 @@ for path in scripts/lib/effective_ticket.py scripts/ledger-view.py scripts/attem
 done
 
 MIXED_BASE="$(git -C "$SELECT_REPO" rev-parse HEAD)"
-printf 'mixed\n' >> "$SELECT_REPO/scripts/linear-sync.py"
+printf 'mixed\n' >> "$SELECT_REPO/scripts/adapters/claude-kimi.sh"
 printf 'mixed\n' >> "$SELECT_REPO/scripts/operator-snapshot.py"
 MIXED_HEAD="$(commit_all "$SELECT_REPO" "mixed components")"
 expect_selection "full|multiple components|" "$SELECT_REPO" "$MIXED_BASE" "$MIXED_HEAD" "mixed selection"
@@ -230,7 +229,7 @@ expect_selection "full|added, deleted, renamed, or type-changed path|" \
   "$SELECT_REPO" "$UNKNOWN_BASE" "$UNKNOWN_HEAD" "new path selection"
 
 DELETE_BASE="$(git -C "$SELECT_REPO" rev-parse HEAD)"
-git -C "$SELECT_REPO" rm -q scripts/linear-sync.py
+git -C "$SELECT_REPO" rm -q scripts/adapters/claude-kimi.sh
 DELETE_HEAD="$(commit_all "$SELECT_REPO" "deleted path")"
 expect_selection "full|added, deleted, renamed, or type-changed path|" \
   "$SELECT_REPO" "$DELETE_BASE" "$DELETE_HEAD" "deleted path selection"
