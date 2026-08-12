@@ -362,7 +362,7 @@ exit 2
         project = self.kits / "projects/relay"
         project.mkdir()
         (project / "active.json").write_text(json.dumps({
-            "contract_version": "1.8.0", "kit_sha": SHA, "kit_tree": TREE,
+            "contract_version": "1.9.0", "kit_sha": SHA, "kit_tree": TREE,
             "product_path": str(product), "project": "relay", "release_path": str(self.release),
         }))
         (project / "active.json").chmod(0o600)
@@ -556,7 +556,7 @@ exit 2
         project.mkdir()
         active = project / "active.json"
         active.write_text(json.dumps({
-            "contract_version": "1.8.0", "kit_sha": SHA, "kit_tree": TREE,
+            "contract_version": "1.9.0", "kit_sha": SHA, "kit_tree": TREE,
             "product_path": str(product), "project": "authority-a",
             "release_path": str(self.release),
         }))

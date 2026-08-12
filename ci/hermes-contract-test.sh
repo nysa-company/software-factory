@@ -741,7 +741,7 @@ with open(path, encoding="utf-8") as handle:
 
 assert data["schema"] == "nysa.software-factory.hermes-doctor/v1"
 assert data["schema_version"] == 1
-assert data["contract_version"] == "1.8.0"
+assert data["contract_version"] == "1.9.0"
 assert data["overall_status"] == "warning"
 assert data["project"] == "relay"
 checks = data["checks"]
