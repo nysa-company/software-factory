@@ -3691,6 +3691,7 @@ printf '%s\n' 'Hermes Agent v0.18.2 (2026.7.7.2)'
 EOF
 chmod 700 "$CANARY_HERMES"
 CANARY_ROOT="$(mktemp -d /tmp/nysa-sf-canary.test.XXXXXX)"
+CANARY_ROOT="$(cd "$CANARY_ROOT" && pwd -P)"
 rmdir "$CANARY_ROOT"
 python3 "$ROOT/scripts/real-hermes-canary.py" prepare \
   --factory-root "$CANARY_SOURCE" --root "$CANARY_ROOT" \
