@@ -216,6 +216,7 @@ RUN_PGID=""
 RUN_GROUP_ACTIVE=0
 RUN_GROUP_TERMINATED=1
 RUN_PID_FILE=""
+RUN_WRAPPER_FILE=""
 RUN_READY_FILE=""
 RUN_GO_FILE=""
 RUN_GATE_FILE=""
@@ -260,6 +261,8 @@ CANCELLATION_REASON=""
 CANCELLATION_PREVIEW_HASH=""
 CANCELLATION_ACCEPTED=0
 LEASE_HEARTBEAT_PID=""
+LEASE_HEARTBEAT_PGID=""
+LEASE_HEARTBEAT_START=""
 LEASE_HEARTBEAT_FAILED=0
 CLI_ATTEMPT_ID=""
 CLI_ATTEMPT_ACTIVE=0
@@ -409,12 +412,17 @@ registered_status_after_run() {
   local status relative line
   status="$("$FACTORY_TRUSTED_GIT_BIN" -C "$REPO_ROOT" \
     status --porcelain --untracked-files=all 2>/dev/null)" || return 1
-  if [[ "$ADAPTER_BOUNDARY_STOPPED" -eq 0 ]]; then
+  if [[ "$ADAPTER_BOUNDARY_STOPPED" -eq 0 &&
+        ! ( "$TASK_SUBMITTED" -eq 1 && -f "$FACTORY_DIR/MAINTENANCE" ) ]]; then
     printf '%s' "$status"
     return 0
   fi
-  [[ -n "$ADAPTER_BOUNDARY_STOP_PATH" ]] || return 1
-  relative="$ADAPTER_BOUNDARY_STOP_PATH"
+  if [[ "$ADAPTER_BOUNDARY_STOPPED" -eq 1 ]]; then
+    [[ -n "$ADAPTER_BOUNDARY_STOP_PATH" ]] || return 1
+    relative="$ADAPTER_BOUNDARY_STOP_PATH"
+  else
+    relative="factory/MAINTENANCE"
+  fi
   while IFS= read -r line; do
     if [[ "${#line}" -ge 4 && "${line:3}" == "$relative" ]]; then
       printf '%s' "$status"
@@ -852,10 +860,26 @@ stop_before_adapter_gate() {
   return 0
 }
 
+record_lease_heartbeat() {
+  [[ -n "${RUN_ID:-}" && -n "$LEASE_HEARTBEAT_PID" && -z "$RUN_WRAPPER_FILE" ]] || return 0
+  RUN_WRAPPER_FILE="$RUNS_DIR/$RUN_ID.wrapper"
+  {
+    echo "run_id=$RUN_ID"
+    echo "wrapper_pid=$$"
+    echo "wrapper_process_start=$(process_start_identity "$$")"
+    echo "heartbeat_pid=$LEASE_HEARTBEAT_PID"
+    echo "heartbeat_pgid=$LEASE_HEARTBEAT_PGID"
+    echo "heartbeat_process_start=$LEASE_HEARTBEAT_START"
+  } | python3 "$KIT_DIR/scripts/lib/durable-file.py" write "$RUN_WRAPPER_FILE"
+}
+
 start_lease_heartbeat() {
-  local interval=300
+  local interval=300 pgid started
   [[ -n "$DISPATCH_LEASE_ID" ]] || return 0
-  [[ -z "$LEASE_HEARTBEAT_PID" ]] || return 0
+  if [[ -n "$LEASE_HEARTBEAT_PID" ]]; then
+    record_lease_heartbeat
+    return
+  fi
   if [[ "${FACTORY_TEST_MODE:-0}" == 1 &&
         "${FACTORY_TRUSTED_TEST_HARNESS:-0}" == 1 &&
         "${FACTORY_TEST_LEASE_HEARTBEAT_SECONDS:-}" =~ ^[1-9][0-9]*$ &&
@@ -867,18 +891,76 @@ start_lease_heartbeat() {
     --factory-root "$REPO_ROOT" --ticket "$TICKET" \
     --lease "$DISPATCH_LEASE_ID" --interval "$interval" &
   LEASE_HEARTBEAT_PID=$!
+  for _heartbeat_try in $(seq 1 100); do
+    started="$(process_start_identity "$LEASE_HEARTBEAT_PID")"
+    pgid="$(ps -o pgid= -p "$LEASE_HEARTBEAT_PID" 2>/dev/null | awk '{$1=$1; print; exit}')"
+    if [[ -n "$started" && "$pgid" == "$LEASE_HEARTBEAT_PID" ]]; then
+      LEASE_HEARTBEAT_START="$started"
+      LEASE_HEARTBEAT_PGID="$pgid"
+      record_lease_heartbeat || {
+        echo "dispatcher lease heartbeat ownership could not be recorded" >&2
+        kill -TERM -- "-$LEASE_HEARTBEAT_PGID" 2>/dev/null || true
+        wait "$LEASE_HEARTBEAT_PID" 2>/dev/null || true
+        LEASE_HEARTBEAT_PID=""
+        LEASE_HEARTBEAT_PGID=""
+        LEASE_HEARTBEAT_START=""
+        RUN_WRAPPER_FILE=""
+        return 1
+      }
+      return 0
+    fi
+    kill -0 "$LEASE_HEARTBEAT_PID" 2>/dev/null || break
+    sleep 0.01
+  done
+  echo "dispatcher lease heartbeat identity could not be established" >&2
+  kill -TERM "$LEASE_HEARTBEAT_PID" 2>/dev/null || true
+  wait "$LEASE_HEARTBEAT_PID" 2>/dev/null || true
+  LEASE_HEARTBEAT_PID=""
+  return 1
 }
 
 stop_lease_heartbeat() {
-  local status=0
+  local status=0 current_start current_pgid requested=0
   [[ -n "$LEASE_HEARTBEAT_PID" ]] || return 0
-  kill -TERM "$LEASE_HEARTBEAT_PID" 2>/dev/null || true
+  current_start="$(process_start_identity "$LEASE_HEARTBEAT_PID")"
+  current_pgid="$(ps -o pgid= -p "$LEASE_HEARTBEAT_PID" 2>/dev/null | awk '{$1=$1; print; exit}')"
+  if kill -0 "$LEASE_HEARTBEAT_PID" 2>/dev/null; then
+    if [[ -z "$LEASE_HEARTBEAT_START" || "$current_start" != "$LEASE_HEARTBEAT_START" ||
+          "$current_pgid" != "$LEASE_HEARTBEAT_PGID" ||
+          "$LEASE_HEARTBEAT_PGID" != "$LEASE_HEARTBEAT_PID" ]]; then
+      echo "dispatcher lease heartbeat identity changed; refusing signal" >&2
+      LEASE_HEARTBEAT_FAILED=1
+      return 1
+    fi
+    requested=1
+    kill -TERM -- "-$LEASE_HEARTBEAT_PGID" 2>/dev/null || true
+    for _heartbeat_stop_try in $(seq 1 100); do
+      kill -0 "$LEASE_HEARTBEAT_PID" 2>/dev/null || break
+      sleep 0.02
+    done
+    if kill -0 "$LEASE_HEARTBEAT_PID" 2>/dev/null; then
+      current_start="$(process_start_identity "$LEASE_HEARTBEAT_PID")"
+      current_pgid="$(ps -o pgid= -p "$LEASE_HEARTBEAT_PID" 2>/dev/null | awk '{$1=$1; print; exit}')"
+      if [[ "$current_start" != "$LEASE_HEARTBEAT_START" ||
+            "$current_pgid" != "$LEASE_HEARTBEAT_PGID" ]]; then
+        echo "dispatcher lease heartbeat identity changed before escalation" >&2
+        LEASE_HEARTBEAT_FAILED=1
+        return 1
+      fi
+      kill -KILL -- "-$LEASE_HEARTBEAT_PGID" 2>/dev/null || true
+    fi
+  fi
   wait "$LEASE_HEARTBEAT_PID" 2>/dev/null || status=$?
   LEASE_HEARTBEAT_PID=""
-  if [[ "$status" -ne 0 ]]; then
+  LEASE_HEARTBEAT_PGID=""
+  LEASE_HEARTBEAT_START=""
+  if [[ "$status" -ne 0 &&
+        ( "$requested" -ne 1 || ( "$status" -ne 137 && "$status" -ne 143 ) ) ]]; then
     LEASE_HEARTBEAT_FAILED=1
     return 1
   fi
+  [[ -z "$RUN_WRAPPER_FILE" ]] || rm -f "$RUN_WRAPPER_FILE"
+  RUN_WRAPPER_FILE=""
 }
 
 verify_control_interval_integrity() {
@@ -1467,6 +1549,10 @@ cleanup() {
       echo "WARNING: retaining $RUN_PID_FILE because the process group survived cleanup" >&2
     fi
   fi
+  if [[ -n "$RUN_WRAPPER_FILE" && -z "$LEASE_HEARTBEAT_PID" ]]; then
+    rm -f "$RUN_WRAPPER_FILE"
+    RUN_WRAPPER_FILE=""
+  fi
   [[ -z "$RUN_READY_FILE" ]] || rm -f "$RUN_READY_FILE"
   [[ -z "$RUN_GO_FILE" ]] || rm -f "$RUN_GO_FILE"
   [[ -z "$RUN_GATE_FILE" ]] || rm -f "$RUN_GATE_FILE"
@@ -1642,6 +1728,11 @@ if ! factory_dispatch_require_lease "$REPO_ROOT" "$TICKET" "$DISPATCH_LEASE_ID";
   echo "$FACTORY_DISPATCH_LEASE_ERROR; no task was submitted" >&2
   exit 7
 fi
+ensure_runs_directory || {
+  echo "run manifest directory could not be durably established" >&2
+  exit 3
+}
+RUN_ID="$(date +%s)-$$"
 # Keep the claim alive while route resolution, launch locking, and provider
 # admission are queued. Later calls are idempotent and retain the same worker.
 start_lease_heartbeat
@@ -1652,10 +1743,6 @@ if [[ -z "${FACTORY_TICKET_KIT_SHA:-}" ]]; then
   TICKET_AFFINITY_WAS_MISSING=1
   FACTORY_TICKET_KIT_SHA="$FACTORY_KIT_SHA"
 fi
-ensure_runs_directory || {
-  echo "run manifest directory could not be durably established" >&2
-  exit 3
-}
 if [[ -z "${FACTORY_LEDGER:-}" ]] && ! refresh_runtime_ledger; then
   echo "effective ledger could not be reduced; no task was submitted" >&2
   exit 3
@@ -1968,7 +2055,6 @@ fi
 GLOBAL_LEDGER_HEADER="date,time,repo,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status,run_id,provider_family,model_id,selection_reason,cost_basis,adapter_version"
 LEGACY_GLOBAL_HEADER="date,time,repo,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status"
 PARTIAL_GLOBAL_HEADER="$LEGACY_GLOBAL_HEADER,run_id,provider_family"
-RUN_ID="$(date +%s)-$$"
 MANIFEST="$RUNS_DIR/$RUN_ID.meta"
 CANCEL_REQUEST_FILE="$RUNS_DIR/$RUN_ID.cancel-request.json"
 RUN_STARTED_AT="$(date -u +%FT%TZ)"

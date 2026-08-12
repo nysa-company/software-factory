@@ -662,7 +662,7 @@ everything the Factory actually enforces lives here.
 - Contracts 1.2 through 1.6 reject dirty exact ticket worktrees before ordinary ticket helpers. Contract 1.2 treats approval overlays as unsupported stops; contracts 1.3 through 1.6 consume merge approval only through an unchanged evidence-bound approval attestation.
 - Operator overlays may materialize only kickoff and declared non-sensitive resume state changes; factory phases remain transition-owned. Git-backed Linear projection uses exact ticket refs then committed HEAD, never uncommitted checkout content.
 - Canceled is a terminal non-execution ticket state for operator-withdrawn or superseded Backlog work. Linear may authorize Backlog to Canceled; the durable ticket records the reason and replacement without manufacturing run or approval evidence.
-- Dispatcher lease renewal uses only the short dispatcher-state lock. It validates exact ownership and checks KILL/MAINTENANCE before and after mutation, so a provider holding the launch lock cannot starve an ordinary heartbeat while control-plane stops remain fail-closed.
+- Dispatcher lease renewal uses only the short dispatcher-state lock. It validates exact ownership and checks KILL before and after mutation; maintenance blocks new claims/roles while authenticated renewals continue only to drain. Heartbeats use isolated process groups, lock-free signal handlers, bounded identity-checked shutdown, and wrapper-owned kill-switch records.
 - Provider-lock owners are bound to wrapper PID, process start, and a private token. Ordinary launch debounces transient owner-liveness misses but never reclaims stale or unsafe ownership; normal release atomically renames an owned lock before cleanup, and only the kill switch may quarantine a provably stale unchanged lock after KILL publication and recorded-process drain.
 - Open-source factory frameworks remain references, not replacement control planes: any adopted execution or sandbox component stays behind `factory-launch`, while sequencing, budgets, role separation, Git authority, evidence, and operator approval remain factory-owned. The first justified experiment is a pinned SWE-ReX local-container backend for one non-production role; E2B or Daytona becomes relevant only if that canary proves local isolation insufficient.
 - The operator activates model profiles by exact preview hash and may add narrow TTL-bound `credits_exhausted` overrides; subscription quota telemetry is incomplete. Ticket pinning commits and pushes Kit-SHA plus the exact six-role plan atomically. Post-submission retry remains forbidden; an eligible failed GO attempt may instead create one authenticated append-only fallback revision.
@@ -5679,3 +5679,16 @@ this design (accepted trade-off); it is Git- and receipt-only, verified by
 reading protected main and the ledger. This supersedes every prior Log entry
 describing Linear as live authority, board, or sync target; those entries
 stand as history and are not rewritten.
+
+## 2026-08-12 — Decision 399: Maintenance drains leases and heartbeat shutdown is bounded
+
+Category: Reliability
+
+Maintenance continues to block claims and new role submission, but an exact
+authenticated dispatcher lease may renew until its already-running role
+terminalizes and releases. KILL remains a pre/post-renewal refusal. Dispatcher
+heartbeats use lock-free signal handling and isolated process groups; the role
+wrapper records exact wrapper/heartbeat identities and applies bounded
+TERM-to-KILL shutdown, which the kill switch can replay after the provider
+group is already absent. This closes issues #551 and #565 without a lifecycle
+bypass or manual ticket-state authority.

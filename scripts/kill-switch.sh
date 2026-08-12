@@ -25,6 +25,51 @@ source "$KIT_DIR/scripts/lib/dispatch-leases.sh"
 DISPATCH_LOCK="$(factory_dispatch_lock_dir "$REPO_ROOT")"
 HELD_DISPATCH_LOCK=0
 
+process_start_identity() {
+  ps -o lstart= -p "$1" 2>/dev/null | awk '{$1=$1; print; exit}'
+}
+
+terminate_exact_process() {
+  local pid="$1" expected_start="$2" expected_pgid="$3" label="$4"
+  local current_start current_pgid state target
+  [[ "$pid" =~ ^[1-9][0-9]*$ && -n "$expected_start" ]] || return 1
+  current_start="$(process_start_identity "$pid")"
+  [[ -n "$current_start" ]] || return 0
+  state="$(ps -o stat= -p "$pid" 2>/dev/null | awk '{$1=$1; print; exit}')"
+  [[ "$state" != Z* ]] || return 0
+  current_pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | awk '{$1=$1; print; exit}')"
+  if [[ "$current_start" != "$expected_start" ||
+        ( -n "$expected_pgid" && ( "$expected_pgid" != "$pid" ||
+          "$current_pgid" != "$expected_pgid" ) ) ]]; then
+    echo "WARNING: refusing stale or mismatched $label identity: pid=$pid" >&2
+    return 1
+  fi
+  target="$pid"
+  [[ -z "$expected_pgid" ]] || target="-$expected_pgid"
+  kill -TERM -- "$target" 2>/dev/null || true
+  for _stop_try in $(seq 1 100); do
+    current_start="$(process_start_identity "$pid")"
+    state="$(ps -o stat= -p "$pid" 2>/dev/null | awk '{$1=$1; print; exit}')"
+    [[ -z "$current_start" || "$state" == Z* ]] && return 0
+    sleep 0.02
+  done
+  current_pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | awk '{$1=$1; print; exit}')"
+  if [[ "$current_start" != "$expected_start" ||
+        ( -n "$expected_pgid" && "$current_pgid" != "$expected_pgid" ) ]]; then
+    echo "WARNING: refusing changed $label identity before escalation: pid=$pid" >&2
+    return 1
+  fi
+  kill -KILL -- "$target" 2>/dev/null || true
+  for _stop_try in $(seq 1 100); do
+    current_start="$(process_start_identity "$pid")"
+    state="$(ps -o stat= -p "$pid" 2>/dev/null | awk '{$1=$1; print; exit}')"
+    [[ -z "$current_start" || "$state" == Z* ]] && return 0
+    sleep 0.02
+  done
+  echo "WARNING: exact $label survived bounded shutdown: pid=$pid" >&2
+  return 1
+}
+
 cleanup_launch_lock() {
   [[ "$HELD_DISPATCH_LOCK" -eq 0 ]] || rmdir "$DISPATCH_LOCK" 2>/dev/null || true
   [[ "$HELD_LAUNCH_LOCK" -eq 0 ]] || rmdir "$LAUNCH_LOCK" 2>/dev/null || true
@@ -84,6 +129,44 @@ if [[ -d "$RUNS_DIR" ]]; then
       echo "WARNING: malformed factory PID record retained: $pidfile" >&2
     fi
     [[ "$REMOVE_PID_FILE" -eq 0 ]] || rm -f "$pidfile"
+  done
+fi
+
+if [[ -d "$RUNS_DIR" ]]; then
+  for wrapper_file in "$RUNS_DIR"/*.wrapper; do
+    [[ -e "$wrapper_file" ]] || continue
+    if [[ ! -f "$wrapper_file" || -L "$wrapper_file" ||
+          "$(wc -l < "$wrapper_file" | tr -d ' ')" -ne 6 ]] ||
+       ! grep -Eq '^run_id=[A-Za-z0-9._-]{1,200}$' "$wrapper_file" ||
+       ! grep -Eq '^wrapper_pid=[1-9][0-9]*$' "$wrapper_file" ||
+       ! grep -Eq '^wrapper_process_start=.+$' "$wrapper_file" ||
+       ! grep -Eq '^heartbeat_pid=[1-9][0-9]*$' "$wrapper_file" ||
+       ! grep -Eq '^heartbeat_pgid=[1-9][0-9]*$' "$wrapper_file" ||
+       ! grep -Eq '^heartbeat_process_start=.+$' "$wrapper_file"; then
+      echo "WARNING: malformed factory wrapper record retained: $wrapper_file" >&2
+      continue
+    fi
+    WRAPPER_RUN_ID="$(sed -n 's/^run_id=//p' "$wrapper_file" | awk 'NR==1 {print; exit}')"
+    WRAPPER_PID="$(sed -n 's/^wrapper_pid=//p' "$wrapper_file" | awk 'NR==1 {print; exit}')"
+    WRAPPER_PROCESS_START="$(sed -n 's/^wrapper_process_start=//p' "$wrapper_file" | awk 'NR==1 {print; exit}')"
+    HEARTBEAT_PID="$(sed -n 's/^heartbeat_pid=//p' "$wrapper_file" | awk 'NR==1 {print; exit}')"
+    HEARTBEAT_PGID="$(sed -n 's/^heartbeat_pgid=//p' "$wrapper_file" | awk 'NR==1 {print; exit}')"
+    HEARTBEAT_PROCESS_START="$(sed -n 's/^heartbeat_process_start=//p' "$wrapper_file" | awk 'NR==1 {print; exit}')"
+    if [[ "$WRAPPER_RUN_ID" != "$(basename "$wrapper_file" .wrapper)" ]]; then
+      echo "WARNING: malformed factory wrapper record retained: $wrapper_file" >&2
+      continue
+    fi
+    if ! terminate_exact_process "$HEARTBEAT_PID" "$HEARTBEAT_PROCESS_START" \
+        "$HEARTBEAT_PGID" "dispatcher heartbeat"; then
+      echo "WARNING: dispatcher heartbeat retained for operator reconciliation: $wrapper_file" >&2
+      continue
+    fi
+    if terminate_exact_process "$WRAPPER_PID" "$WRAPPER_PROCESS_START" "" \
+        "run wrapper"; then
+      rm -f "$wrapper_file" "$RUNS_DIR/$WRAPPER_RUN_ID.pid"
+    else
+      echo "WARNING: run wrapper retained for operator reconciliation: $wrapper_file" >&2
+    fi
   done
 fi
 

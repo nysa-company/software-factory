@@ -79,7 +79,6 @@ acquire "$LEASE_LOCK" "dispatcher lease" || exit 8
 HELD_LEASE=1
 if [[ "$OPERATION" == "renew" ]]; then
   [[ ! -e "$FACTORY_DIR/KILL" ]] || { echo "KILL file present; lease refused" >&2; exit 4; }
-  [[ ! -e "$FACTORY_DIR/MAINTENANCE" ]] || { echo "MAINTENANCE file present; lease refused" >&2; exit 4; }
 fi
 
 case "$OPERATION" in
@@ -175,7 +174,6 @@ finally:
 print(json.dumps(record, sort_keys=True))
 PY
     [[ ! -e "$FACTORY_DIR/KILL" ]] || { echo "KILL file appeared during renewal; lease refused" >&2; exit 4; }
-    [[ ! -e "$FACTORY_DIR/MAINTENANCE" ]] || { echo "MAINTENANCE file appeared during renewal; lease refused" >&2; exit 4; }
     ;;
   release|release-expired)
     [[ "$LEASE_ID" =~ ^[0-9a-f]{64}$ ]] || { echo "release requires a canonical --lease" >&2; exit 2; }
