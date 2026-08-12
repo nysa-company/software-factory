@@ -106,7 +106,7 @@ fi
 
 LEASE_EXPIRY_BEFORE="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["expires_epoch"])' \
   "$PRODUCT/factory/.dispatch-leases/$FIRST_TICKET.json")"
-MOCK_SLEEP=2 FACTORY_DISPATCH_LEASE_ID="$FIRST_ID" FACTORY_ROOT="$PRODUCT" \
+MOCK_SLEEP=5 FACTORY_DISPATCH_LEASE_ID="$FIRST_ID" FACTORY_ROOT="$PRODUCT" \
   FACTORY_GLOBAL_ENV="$TMP/no-global.env" FACTORY_TEST_MODE=1 \
   FACTORY_TRUSTED_TEST_HARNESS=1 FACTORY_ADAPTER_OVERRIDE=mock \
   FACTORY_TEST_LEASE_HEARTBEAT_SECONDS=1 \
@@ -116,22 +116,58 @@ for _try in $(seq 1 200); do
   compgen -G "$PRODUCT/factory/.active-runs/$FIRST_TICKET.*.lock" >/dev/null && break
   sleep 0.02
 done
-LIVE_RELEASE_RC=0
-FACTORY_ROOT="$PRODUCT" "$LEASE" release --ticket "$FIRST_TICKET" --lease "$FIRST_ID" \
-  > "$TMP/live-release.out" 2>&1 || LIVE_RELEASE_RC=$?
+SUBMITTED=0
+for _try in $(seq 1 1200); do
+  if compgen -G "$PRODUCT/factory/runs/.*.submitted" >/dev/null; then
+    SUBMITTED=1
+    break
+  fi
+  sleep 0.02
+done
+[[ "$SUBMITTED" -eq 0 ]] || touch "$PRODUCT/factory/MAINTENANCE"
 RUN_RC=0
 wait "$RUN_PID" || RUN_RC=$?
+[[ "$SUBMITTED" -eq 0 ]] || rm "$PRODUCT/factory/MAINTENANCE"
 LEASE_EXPIRY_AFTER="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["expires_epoch"])' \
   "$PRODUCT/factory/.dispatch-leases/$FIRST_TICKET.json")"
-if [[ "$RUN_RC" -eq 0 &&
-      ( "$LIVE_RELEASE_RC" -eq 7 || "$LIVE_RELEASE_RC" -eq 8 ) &&
+if [[ "$SUBMITTED" -eq 1 && "$RUN_RC" -eq 0 &&
       "$LEASE_EXPIRY_AFTER" -gt "$LEASE_EXPIRY_BEFORE" ]] &&
    grep -q "mock adapter ran task" "$TMP/bounded-run.out" &&
    ! grep -q "lease leaked" "$TMP/bounded-run.out"; then
-  pass "live role renews its lease without giving the adapter lease capability"
+  pass "maintenance drains a live role without giving the adapter lease capability"
 else
-  fail "live role renews its lease without giving the adapter lease capability" \
-    "run=$RUN_RC release=$LIVE_RELEASE_RC before=$LEASE_EXPIRY_BEFORE after=$LEASE_EXPIRY_AFTER"
+  fail "maintenance drains a live role without giving the adapter lease capability" \
+    "submitted=$SUBMITTED run=$RUN_RC before=$LEASE_EXPIRY_BEFORE after=$LEASE_EXPIRY_AFTER"
+fi
+
+STUBBORN_STARTED="$(date +%s)"
+STUBBORN_RC=0
+MOCK_SLEEP=1 FACTORY_DISPATCH_LEASE_ID="$SECOND_ID" FACTORY_ROOT="$PRODUCT" \
+  FACTORY_GLOBAL_ENV="$TMP/no-global.env" FACTORY_TEST_MODE=1 \
+  FACTORY_TRUSTED_TEST_HARNESS=1 FACTORY_ADAPTER_OVERRIDE=mock \
+  FACTORY_TEST_LEASE_HEARTBEAT_SECONDS=1 \
+  FACTORY_TEST_LEASE_HEARTBEAT_IGNORE_TERM=1 \
+  "$RUN" --role planner --ticket "$SECOND_TICKET" -- "stubborn heartbeat" \
+  > "$TMP/stubborn-heartbeat.out" 2>&1 || STUBBORN_RC=$?
+STUBBORN_ELAPSED=$(( $(date +%s) - STUBBORN_STARTED ))
+STUBBORN_TERMINALS="$(python3 - "$PRODUCT/factory/runs" "$SECOND_TICKET" <<'PY'
+import pathlib, sys
+root, ticket = pathlib.Path(sys.argv[1]), sys.argv[2]
+count = 0
+for path in root.glob("*.meta"):
+    fields = dict(line.split("=", 1) for line in path.read_text().splitlines() if "=" in line)
+    count += fields.get("ticket") == ticket and fields.get("phase") == "completed"
+print(count)
+PY
+)"
+if [[ "$STUBBORN_RC" -eq 0 && "$STUBBORN_ELAPSED" -lt 20 &&
+      "$STUBBORN_TERMINALS" -eq 1 &&
+      ! -e "$PRODUCT/factory/runs/"*.wrapper &&
+      ! -e "$PRODUCT/factory/.active-runs/$SECOND_TICKET.planner.lock" ]]; then
+  pass "nonresponsive heartbeat is killed within a bounded wait and terminalizes once"
+else
+  fail "nonresponsive heartbeat is killed within a bounded wait and terminalizes once" \
+    "status=$STUBBORN_RC elapsed=$STUBBORN_ELAPSED terminals=$STUBBORN_TERMINALS"
 fi
 
 python3 - "$PRODUCT/factory/.dispatch-leases/$FIRST_TICKET.json" <<'PY'
@@ -177,10 +213,10 @@ FACTORY_ROOT="$PRODUCT" "$LEASE" renew --ticket "$FIRST_TICKET" --lease "$FIRST_
   >/dev/null 2>&1 || BLOCKED_BUSY_RENEW_RC=$?
 rm "$PRODUCT/factory/MAINTENANCE"
 rmdir "$PRODUCT/factory/.launch.lock"
-if [[ "$BLOCKED_BUSY_RENEW_RC" -eq 4 ]]; then
-  pass "maintenance still blocks renewal while the launch lock is busy"
+if [[ "$BLOCKED_BUSY_RENEW_RC" -eq 0 ]]; then
+  pass "maintenance permits exact renewal while the launch lock is busy"
 else
-  fail "maintenance still blocks renewal while the launch lock is busy" "status=$BLOCKED_BUSY_RENEW_RC"
+  fail "maintenance permits exact renewal while the launch lock is busy" "status=$BLOCKED_BUSY_RENEW_RC"
 fi
 
 FACTORY_ROOT="$PRODUCT" "$LEASE" release --ticket "$FIRST_TICKET" --lease "$FIRST_ID" >/dev/null
@@ -245,17 +281,17 @@ fi
 
 touch "$PRODUCT/factory/MAINTENANCE"
 RENEW_RC=0
-FACTORY_ROOT="$PRODUCT" "$LEASE" renew --ticket "$SECOND_TICKET" --lease "$SECOND_ID" >/dev/null 2>&1 || RENEW_RC=$?
+FACTORY_ROOT="$PRODUCT" "$LEASE" renew --ticket "$THIRD_TICKET" --lease "$THIRD_ID" >/dev/null 2>&1 || RENEW_RC=$?
 FACTORY_ROOT="$PRODUCT" "$LEASE" release --ticket "$SECOND_TICKET" --lease "$SECOND_ID" >/dev/null
 FACTORY_ROOT="$PRODUCT" "$LEASE" release --ticket "$THIRD_TICKET" --lease "$THIRD_ID" >/dev/null
 FACTORY_ROOT="$PRODUCT" "$LEASE" release --ticket "$FOURTH_TICKET" --lease "$FOURTH_ID" >/dev/null
 FACTORY_ROOT="$PRODUCT" "$LEASE" release --ticket "$FIFTH_TICKET" --lease "$FIFTH_ID" >/dev/null
 FACTORY_ROOT="$PRODUCT" "$LEASE" release --ticket "$SIXTH_TICKET" --lease "$SIXTH_ID" >/dev/null
 FACTORY_ROOT="$PRODUCT" "$LEASE" release --ticket T-908 --lease "$RECLAIMED_ID" >/dev/null
-if [[ "$RENEW_RC" -eq 4 && -z "$(find "$PRODUCT/factory/.dispatch-leases" -type f -print -quit)" ]]; then
-  pass "maintenance blocks renewal while permitting lease drain"
+if [[ "$RENEW_RC" -eq 0 && -z "$(find "$PRODUCT/factory/.dispatch-leases" -type f -print -quit)" ]]; then
+  pass "maintenance permits exact renewal and lease drain"
 else
-  fail "maintenance blocks renewal while permitting lease drain"
+  fail "maintenance permits exact renewal and lease drain"
 fi
 rm "$PRODUCT/factory/MAINTENANCE"
 
@@ -318,6 +354,64 @@ else
   fail "duplicate lease identity makes allocation fail closed" "status=$DUPLICATE_LEASE_RC"
 fi
 rm -f "$PRODUCT/factory/.dispatch-leases/"*.json
+
+CHAIN_ROOT="$TMP/kill-wrapper-chain"
+mkdir -p "$CHAIN_ROOT/factory/runs"
+python3 -c 'import os,signal,time; os.setsid(); signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)' &
+CHAIN_HEARTBEAT_PID=$!
+for _try in $(seq 1 100); do
+  CHAIN_HEARTBEAT_PGID="$(ps -o pgid= -p "$CHAIN_HEARTBEAT_PID" 2>/dev/null | tr -d ' ')"
+  [[ "$CHAIN_HEARTBEAT_PGID" == "$CHAIN_HEARTBEAT_PID" ]] && break
+  sleep 0.01
+done
+python3 -c 'import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)' &
+CHAIN_WRAPPER_PID=$!
+python3 -c 'import time; time.sleep(30)' &
+CHAIN_SIBLING_PID=$!
+CHAIN_HEARTBEAT_START="$(ps -o lstart= -p "$CHAIN_HEARTBEAT_PID" | awk '{$1=$1; print; exit}')"
+CHAIN_WRAPPER_START="$(ps -o lstart= -p "$CHAIN_WRAPPER_PID" | awk '{$1=$1; print; exit}')"
+printf 'run_id=orphan-chain\nticket=T-901\npid=99999999\npgid=99999999\nprocess_start=absent\n' \
+  > "$CHAIN_ROOT/factory/runs/orphan-chain.meta"
+printf 'pid=99999999\npgid=99999999\nrun_id=orphan-chain\nprocess_start=absent\n' \
+  > "$CHAIN_ROOT/factory/runs/orphan-chain.pid"
+printf 'run_id=orphan-chain\nwrapper_pid=%s\nwrapper_process_start=%s\nheartbeat_pid=%s\nheartbeat_pgid=%s\nheartbeat_process_start=%s\n' \
+  "$CHAIN_WRAPPER_PID" "$CHAIN_WRAPPER_START" "$CHAIN_HEARTBEAT_PID" \
+  "$CHAIN_HEARTBEAT_PGID" "$CHAIN_HEARTBEAT_START" \
+  > "$CHAIN_ROOT/factory/runs/orphan-chain.wrapper"
+FACTORY_SKIP_SCHEDULE_STOP=1 "$KILL" "$CHAIN_ROOT" > "$TMP/kill-wrapper-chain.out" 2>&1
+wait "$CHAIN_HEARTBEAT_PID" 2>/dev/null || true
+wait "$CHAIN_WRAPPER_PID" 2>/dev/null || true
+if [[ ! -e "$CHAIN_ROOT/factory/runs/orphan-chain.wrapper" &&
+      ! -e "$CHAIN_ROOT/factory/runs/orphan-chain.pid" ]] &&
+   kill -0 "$CHAIN_SIBLING_PID" 2>/dev/null; then
+  pass "kill switch stops only the exact wrapper and heartbeat after provider identity is gone"
+else
+  fail "kill switch stops only the exact wrapper and heartbeat after provider identity is gone"
+fi
+FACTORY_SKIP_SCHEDULE_STOP=1 "$KILL" "$CHAIN_ROOT" >/dev/null
+kill -TERM "$CHAIN_SIBLING_PID" 2>/dev/null || true
+wait "$CHAIN_SIBLING_PID" 2>/dev/null || true
+[[ ! -e "$CHAIN_ROOT/factory/runs/orphan-chain.wrapper" ]] &&
+  pass "kill-switch replay keeps the drained wrapper chain absent" ||
+  fail "kill-switch replay keeps the drained wrapper chain absent"
+
+STALE_WRAPPER_ROOT="$TMP/stale-wrapper"
+mkdir -p "$STALE_WRAPPER_ROOT/factory/runs"
+python3 -c 'import time; time.sleep(30)' &
+STALE_WRAPPER_PID=$!
+printf 'run_id=stale-wrapper\nwrapper_pid=%s\nwrapper_process_start=not-the-real-start\nheartbeat_pid=99999999\nheartbeat_pgid=99999999\nheartbeat_process_start=absent\n' \
+  "$STALE_WRAPPER_PID" > "$STALE_WRAPPER_ROOT/factory/runs/stale-wrapper.wrapper"
+FACTORY_SKIP_SCHEDULE_STOP=1 "$KILL" "$STALE_WRAPPER_ROOT" \
+  > "$TMP/stale-wrapper.out" 2>&1
+if kill -0 "$STALE_WRAPPER_PID" 2>/dev/null &&
+   [[ -f "$STALE_WRAPPER_ROOT/factory/runs/stale-wrapper.wrapper" ]] &&
+   grep -q "refusing stale or mismatched run wrapper identity" "$TMP/stale-wrapper.out"; then
+  pass "kill switch refuses a stale wrapper identity"
+else
+  fail "kill switch refuses a stale wrapper identity"
+fi
+kill -TERM "$STALE_WRAPPER_PID" 2>/dev/null || true
+wait "$STALE_WRAPPER_PID" 2>/dev/null || true
 
 FACTORY_ROOT="$PRODUCT" "$LEASE" claim --ticket T-903 >/dev/null
 FACTORY_SKIP_SCHEDULE_STOP=1 "$KILL" "$PRODUCT" >/dev/null

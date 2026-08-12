@@ -1734,13 +1734,16 @@ status reporting. A broker-stage failure or controller signal releases its
 slot only after the token is revoked and the broker reports no request in
 flight; otherwise the full reservation remains active. The executor likewise
 publishes a successful result only after removing its bound container.
-Maintenance blocks claims and
-renewals while allowing matching owners to release; activation and rollback
-refuse until every lease drains. The kill switch clears only validated safe
-lease state after stopping recorded runs.
+Maintenance blocks claims and new role submission while exact authenticated
+owners may renew and release solely to drain; activation and rollback refuse
+until every lease drains. The kill switch clears only validated safe lease
+state after stopping recorded runs.
 Renewal serializes only on the dispatcher lease lock, not the provider launch
-lock; matching ownership and pre/post mutation control checks keep maintenance
-and kill fail-closed while unrelated provider entry cannot starve a heartbeat.
+lock; matching ownership and pre/post mutation KILL checks remain fail-closed
+while unrelated provider entry cannot starve a heartbeat. Each heartbeat owns
+an isolated process group, uses lock-free signal handling, and publishes its
+PID/start identity beside the wrapper so ordinary completion and the kill
+switch can apply bounded TERM-to-KILL shutdown without PID-reuse risk.
 
 The Contract 1.6/1.7 Hermes supervisor is deliberately one-shot: one invocation
 asks the stable launcher for one deterministic claim, starts at most one

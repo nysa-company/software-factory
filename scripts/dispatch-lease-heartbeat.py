@@ -7,7 +7,7 @@ from pathlib import Path
 import signal
 import subprocess
 import sys
-import threading
+import time
 
 
 def main() -> int:
@@ -21,12 +21,28 @@ def main() -> int:
     if not 1 <= args.interval <= 300:
         raise SystemExit("heartbeat interval must be from 1 through 300 seconds")
 
-    stopped = threading.Event()
+    os.setsid()
+    stopped = False
+
+    def stop(_signum, _frame):
+        nonlocal stopped
+        stopped = True
+
+    handler = stop
+    if (os.environ.get("FACTORY_TEST_MODE") == "1" and
+            os.environ.get("FACTORY_TRUSTED_TEST_HARNESS") == "1" and
+            os.environ.get("FACTORY_TEST_LEASE_HEARTBEAT_IGNORE_TERM") == "1"):
+        handler = signal.SIG_IGN
     for selected in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
-        signal.signal(selected, lambda _signum, _frame: stopped.set())
+        signal.signal(selected, handler)
     environment = os.environ.copy()
     environment["FACTORY_ROOT"] = str(args.factory_root)
-    while not stopped.wait(args.interval):
+    deadline = time.monotonic() + args.interval
+    while not stopped:
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            time.sleep(min(remaining, 0.1))
+            continue
         result = subprocess.run(
             ["bash", str(args.renew_script), "renew", "--ticket", args.ticket,
              "--lease", args.lease],
@@ -35,6 +51,7 @@ def main() -> int:
         )
         if result.returncode:
             return result.returncode
+        deadline = time.monotonic() + args.interval
     return 0
 
 
