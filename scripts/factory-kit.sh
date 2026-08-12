@@ -4970,7 +4970,7 @@ case "$COMMAND" in
         { usage >&2; exit 2; }
       cmd_release_setup "$PROJECT" "$PRODUCT" "$SHA" "$REPO" "$PROFILE" \
         "$OPERATOR_ID" "$RUNTIME_BIN" "$CLAUDE_BIN" "$CODEX_BIN" "$CURSOR_BIN" \
-        "${TICKET_WORKDIRS[@]}"
+        ${TICKET_WORKDIRS[@]+"${TICKET_WORKDIRS[@]}"}
     elif [[ "$ACTION" == "resume" ]]; then
       [[ ${#POSITIONALS[@]} -eq 1 && -n "$PROJECT" && -n "$SHA" &&
          -n "$APPROVE_HASH" && -n "$APPROVED_BY" && -z "$PRODUCT$PROFILE$OPERATOR_ID" &&

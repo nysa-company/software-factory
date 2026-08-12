@@ -313,6 +313,30 @@ class ReleaseTransactionTest(unittest.TestCase):
         self.assertEqual(forwarded[2:4], ["setup", "--project"])
         self.assertEqual(forwarded[-3:], ["--ticket-workdir", "T-1", str(self.root / "worktree")])
 
+    def test_public_setup_command_accepts_no_migration_tickets(self) -> None:
+        copy = self.root / "wrapper-no-tickets"
+        (copy / "scripts/lib").mkdir(parents=True)
+        shutil.copy2(ROOT / "scripts/factory-kit.sh", copy / "scripts/factory-kit.sh")
+        shutil.copy2(
+            ROOT / "scripts/lib/dispatch-leases.sh",
+            copy / "scripts/lib/dispatch-leases.sh",
+        )
+        (copy / "scripts/release-transaction.py").write_text(
+            "import json,sys\nprint(json.dumps(sys.argv[1:]))\n"
+        )
+        result = subprocess.run(
+            [
+                "bash", str(copy / "scripts/factory-kit.sh"), "release", "setup",
+                "--project", "relay", "--product", str(self.product),
+                "--sha", self.sha, "--repo", str(self.root / "repo"),
+                "--profile", "openai-priority-v1", "--operator-id", "tester",
+            ],
+            text=True, capture_output=True, check=False,
+            env={**os.environ, "FACTORY_KITS_ROOT": str(self.root / "state")},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("--ticket-workdir", json.loads(result.stdout))
+
     def test_release_only_options_are_rejected_elsewhere(self) -> None:
         result = subprocess.run(
             ["bash", str(ROOT / "scripts/factory-kit.sh"), "status", "--project",
