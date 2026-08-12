@@ -208,10 +208,10 @@ Preserve these Contract 1.8 boundaries:
   promotion, and Nysa activation remain explicit external inputs. They are
   not autonomous controller decisions.
 
-External systems are variable inputs. GitHub latency, provider latency, and
-Linear timing do not make routing nondeterministic: the controller must convert
-their authenticated observations into typed evidence and let the sole state
-machine resolve the result.
+External systems are variable inputs. GitHub latency and provider latency do
+not make routing nondeterministic: the controller must convert their
+authenticated observations into typed evidence and let the sole state machine
+resolve the result.
 
 ## Lessons that must not regress
 

@@ -75,7 +75,6 @@ Contract versions `1.0.0` through `1.8.0` certify Hermes Agent `0.18.2`, build
 ```bash
 ~/.factory/bin/factory-launch <project> contract --json
 ~/.factory/bin/factory-launch <project> doctor --json
-~/.factory/bin/factory-launch <project> linear-sync
 ~/.factory/bin/factory-launch <project> reconcile --json
 ~/.factory/bin/factory-launch <project> qualification --json
 ~/.factory/bin/factory-launch <project> dispatch-plan --shadow --json
@@ -88,10 +87,9 @@ Contract versions `1.0.0` through `1.8.0` certify Hermes Agent `0.18.2`, build
 ~/.factory/bin/factory-launch <project> project-ledger --ticket T-123 --workdir /absolute/chore-worktree --json
 ```
 
-Contract 1.8's `linear-sync` has no caller arguments. The per-product
-LaunchAgent owns this route; operators install or disable that service through the transactional
-`factory-kit.sh linear-sync-service` maintenance command rather than embedding
-a release path in the plist.
+There is no scheduled sync route in the contract anymore. Operator authority
+is issued on demand through `factory-kit.sh operator ACTION`; there is no
+service to install, disable, or embed a release path in.
 
 Under Contracts 1.5 through 1.7, pass the exact role returned by `next-stage` to `preflight`;
 the launcher rejects roleless preflight so its envelope cannot differ from the
@@ -103,7 +101,7 @@ preflight once on the Planner receipt after the state machine enters Planning;
 later roles retain their valid evidence and do not repeat kickoff preflight.
 Receipt-bound `block` and `resume` actions are controller-only: they move an
 authenticated contract blocker to `Blocked-Escalated`, wait for the exact
-Linear resume state, and reopen only that failed role without replaying
+ticket-recorded resume state, and reopen only that failed role without replaying
 successful evidence.
 
 Model policy is task-free and sealed:
@@ -137,7 +135,7 @@ drive automatic activation.
 
 Contract 1.4 adds explicit v1-plan migration and operator-approved mid-ticket
 fallback. The exact failed route is excluded, prior contributor-family history
-is enforced, and a one-use Linear comment binds the validated partial-work
+is enforced, and a one-use operator fallback-approval receipt binds the validated partial-work
 snapshot and append-only journal revision. See
 [model-routing.md](model-routing.md) for the role priorities and complete flow.
 
@@ -200,7 +198,7 @@ drained installed controller, current provider
 activation, source Factory binding, and authenticated selected-ticket
 passports. The linked worktree is based on exact protected main and needs no
 standalone setup pull request. Its sealed helper environment binds the
-canonical live Linear map. It reuses the canonical controller and provider
+canonical live operator map. It reuses the canonical controller and provider
 state in place under the same reconciliation lock while keeping the sealed
 candidate and disposable worktrees isolated. It neither copies passports nor
 installs or activates the candidate in the production kit registry. The successor reducer
@@ -346,8 +344,9 @@ projecting or committing twice.
 After that PR merges, `next-stage` returns `COMPLETE` only when the strengthened
 effective-ticket reader validates attested Done on protected main. The
 dispatcher then invokes the existing trusted lease `release`; PR creation or
-an auto-merge request alone never releases it. Linear sync projects that same
-protected-main Done state.
+an auto-merge request alone never releases it. The controller records one
+`operator_terminal_recorded` event from that same protected-main Done state —
+there is no external witness for it.
 
 The release also contains one non-launcher migration utility,
 `scripts/legacy-closeout.py`, for the bounded Contract 1.2 backlog present at
@@ -356,8 +355,8 @@ surface. From an exact protected-main basis it validates trusted Git/GitHub
 history, app-bound successful checks, settled accounting, classification,
 cutoff, and an exact request, then deterministically writes a distinct
 `factory/migrations/contract-1.3/` authorization/receipt batch, terminal ticket
-projections, and target pin. It never commits, pushes, merges, uses auto-merge,
-or mutates Linear. The batch is authoritative only after the operator manually
+projections, and target pin. It never commits, pushes, merges, or uses auto-merge.
+The batch is authoritative only after the operator manually
 merges the single protected product PR. The same internal validator is used by
 effective-ticket reading, `next-stage`, and activation; plain Done and partial
 or conflicting evidence are invalid.
@@ -563,9 +562,8 @@ validate; otherwise it restores the previous generation.
 
 Generate the credential-free canary beside a clean candidate checkout. The
 preparation command validates all inputs before creating state and reports
-PREVIEW_PROVIDER, NONVISUAL_PATHS, capacity, path-length, explicit disabled
-Linear state, Hermes binary, SHA/tree, and isolated provider-pin scope errors
-together:
+PREVIEW_PROVIDER, NONVISUAL_PATHS, capacity, path-length, Hermes binary,
+SHA/tree, and isolated provider-pin scope errors together:
 
 ```bash
 python3 scripts/real-hermes-canary.py prepare \
@@ -595,8 +593,8 @@ releases its lease, and unloads the canary LaunchAgent.
 The only provider-pin exception is the existing test-mode check, bound to the
 non-installed launcher and local isolated canonical origin. Production
 preview-provider and provider-pin enforcement are unchanged. The workflow
-copies no production profile, registry, LaunchAgent, credential, or Linear
-mapping and invokes no external provider. Repeating it with the exact same
+copies no production profile, registry, LaunchAgent, or credential and
+invokes no external provider. Repeating it with the exact same
 root and candidate reuses the validated descriptors and completed evidence;
 changed descriptors fail closed. Partial runtime may resume only when an
 owner-only attempt marker binds the root identity and exact candidate. A retry
@@ -635,7 +633,7 @@ Acceptance requires a redacted, timestamped record of:
 - separate canary profile/LaunchAgent identity, real Hermes version, launcher
   contract result, doctor JSON, sequencer result, and mock-run provenance;
 - maintenance publication, drain confirmation, journal phase history,
-  `active.json` generation, service PIDs, Linear sync freshness, and repeated
+  `active.json` generation, service PIDs, and repeated
   health probes;
 - outage duration and, for the drill, known-bits restore time plus full
   rollback RTO;

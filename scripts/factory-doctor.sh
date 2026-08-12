@@ -3,7 +3,7 @@
 # Public interface: factory-doctor.sh [--json] [--project <slug>]
 set -u
 
-CONTRACT_VERSION="${FACTORY_RELEASE_CONTRACT_VERSION:-1.8.0}"
+CONTRACT_VERSION="${FACTORY_RELEASE_CONTRACT_VERSION:-1.9.0}"
 DOCTOR_SCHEMA="nysa.software-factory.hermes-doctor/v1"
 SUPPORTED_HERMES_AGENT="0.18.2"
 SUPPORTED_HERMES_BUILD="2026.7.7.2"
@@ -12,7 +12,6 @@ JSON_MODE=0
 PROJECT="${FACTORY_PROJECT:-relay}"
 PROFILE_DIR="${HERMES_FACTORY_PROFILE:-$HOME/.hermes/profiles/factory}"
 REGISTRY="${HERMES_PROJECT_REGISTRY:-}"
-LINEAR_FRESH_SECONDS="${FACTORY_LINEAR_FRESH_SECONDS:-600}"
 PROBE_TIMEOUT_SECONDS="${FACTORY_DOCTOR_TIMEOUT_SECONDS:-5}"
 KIT_DIR_OVERRIDE=""
 PRODUCT_ROOT_OVERRIDE=""
@@ -73,8 +72,8 @@ if [[ ! "$PROJECT" =~ ^[A-Za-z0-9._-]+$ ]]; then
   echo "invalid project slug" >&2
   exit 2
 fi
-if [[ ! "$LINEAR_FRESH_SECONDS" =~ ^[0-9]+$ ]] || [[ ! "$PROBE_TIMEOUT_SECONDS" =~ ^[0-9]+$ ]]; then
-  echo "freshness and timeout values must be non-negative integers" >&2
+if [[ ! "$PROBE_TIMEOUT_SECONDS" =~ ^[0-9]+$ ]]; then
+  echo "timeout value must be a non-negative integer" >&2
   exit 2
 fi
 if [[ -z "$REGISTRY" ]]; then
@@ -283,7 +282,6 @@ FACTORY_DIR=""
 MAINTENANCE="false"
 LAUNCH_LOCK="false"
 LEDGER_LOCK="false"
-LINEAR_LOCK="false"
 GLOBAL_LEDGER_LOCK="false"
 PROVIDER_LOCK="false"
 PROVIDER_LOCK_STATE="absent"
@@ -300,7 +298,6 @@ if [[ -n "$PRODUCT_ROOT" ]]; then
   [[ -e "$FACTORY_DIR/MAINTENANCE" ]] && MAINTENANCE="true"
   [[ -e "$FACTORY_DIR/.launch.lock" ]] && LAUNCH_LOCK="true"
   [[ -e "$FACTORY_DIR/.ledger.lock" ]] && LEDGER_LOCK="true"
-  [[ -e "$FACTORY_DIR/.linear-sync.lock" ]] && LINEAR_LOCK="true"
   [[ -e "$HOME/.factory/.ledger.lock" ]] && GLOBAL_LEDGER_LOCK="true"
   if [[ -e "$FACTORY_DIR/.provider.lock" || -L "$FACTORY_DIR/.provider.lock" ]]; then
     PROVIDER_LOCK="true"
@@ -415,7 +412,7 @@ fi
 RUNTIME_STATUS="${RUNTIME_STATUS:-ok}"
 if [[ "$RUNTIME_STATUS" != "error" ]] &&
    [[ "$MAINTENANCE" == "true" || "$LAUNCH_LOCK" == "true" ||
-      "$LEDGER_LOCK" == "true" || "$LINEAR_LOCK" == "true" ||
+      "$LEDGER_LOCK" == "true" ||
       "$GLOBAL_LEDGER_LOCK" == "true" || "$PROVIDER_LOCK" == "true" ||
       "$ACTIVE_RECORDS" -gt 0 ||
       "$DISPATCH_LEASES" -gt 0 ]]; then
@@ -708,7 +705,7 @@ if [[ "${FACTORY_TRUSTED_TEST_HARNESS:-0}" == "1" ]]; then
   [[ -z "${FACTORY_DOCTOR_LAUNCHCTL:-}" ]] ||
     CONTROLLER_LAUNCHCTL="$FACTORY_DOCTOR_LAUNCHCTL"
 fi
-if [[ "$CONTRACT_VERSION" == "1.8.0" &&
+if [[ ( "$CONTRACT_VERSION" == "1.8.0" || "$CONTRACT_VERSION" == "1.9.0" ) &&
       "${FACTORY_KIT_TRUST_SCOPE:-}" == "production-certified" &&
       "${FACTORY_TEST_MODE:-0}" != "1" &&
       "$CONTROLLER_PLATFORM" == "Darwin" ]]; then
@@ -1156,327 +1153,15 @@ PY
 fi
 
 GH_PRESENT="false"
-LINEAR_PRESENT="false"
 if [[ ${GH_TOKEN+x} == x ]]; then
   GH_PRESENT="true"
 elif [[ -f "$PROFILE_DIR/.env" ]] &&
      grep -qE '^[[:space:]]*(export[[:space:]]+)?GH_TOKEN[[:space:]]*=' "$PROFILE_DIR/.env" 2>/dev/null; then
   GH_PRESENT="true"
 fi
-if [[ ${LINEAR_API_KEY+x} == x ]]; then
-  LINEAR_PRESENT="true"
-elif [[ -s "$HOME/.hermes/secrets/linear-api-key" ]]; then
-  LINEAR_PRESENT="true"
-fi
 CREDENTIAL_STATUS="ok"
-if [[ "$GH_PRESENT" != "true" || "$LINEAR_PRESENT" != "true" ]]; then
+if [[ "$GH_PRESENT" != "true" ]]; then
   CREDENTIAL_STATUS="warning"
-fi
-
-LINEAR_STATUS="unknown"
-LINEAR_LAST_SUCCESS=""
-LINEAR_AGE=""
-LINEAR_LAST_ERROR=""
-LINEAR_PROJECTS_JSON="[]"
-LINEAR_PROJECT_CONFLICT_JSON="null"
-LINEAR_PROJECT_WARNINGS_JSON="[]"
-LINEAR_MAP=""
-if [[ -n "$FACTORY_DIR" ]]; then
-  LINEAR_MAP="${FACTORY_OPERATOR_MAP:-$FACTORY_DIR/linear-map.json}"
-fi
-if [[ -n "$LINEAR_MAP" && -f "$LINEAR_MAP" ]]; then
-  LINEAR_DATA="$("$PYTHON_BIN" - "$LINEAR_MAP" "$LINEAR_FRESH_SECONDS" <<'PY'
-import datetime as dt
-import json
-import re
-import sys
-
-path, fresh = sys.argv[1], int(sys.argv[2])
-try:
-    with open(path, encoding="utf-8") as handle:
-        data = json.load(handle)
-    sync = data.get("_sync") or {}
-    success = sync.get("last_success_at") or ""
-    error = str(sync.get("_last_error") or sync.get("last_error") or "")
-    error = re.sub(
-        r"(?im)(authorization\s*:\s*)(?:bearer|basic|token)?\s*[^\r\n]*",
-        lambda match: match.group(1) + "[redacted]",
-        error,
-    )
-    error = re.sub(r"(?i)\b[A-Za-z][A-Za-z0-9+.-]*://[^\s]+", "[redacted-url]", error)
-    sensitive = r"[A-Za-z0-9_.-]*(?:key|token|secret|password|url|dsn|conn|auth)[A-Za-z0-9_.-]*"
-    quoted = re.compile(
-        rf"(?is)(?P<prefix>[\"']?{sensitive}[\"']?\s*[:=]\s*)"
-        rf"(?P<quote>[\"'])(?:\\.|(?!(?P=quote)).)*(?P=quote)"
-    )
-    error = quoted.sub(lambda match: match.group("prefix") + "[redacted]", error)
-    error = re.sub(
-        rf"(?im)^(\s*[\"']?{sensitive}[\"']?\s*[:=]\s*).*$",
-        lambda match: match.group(1) + "[redacted]",
-        error,
-    )
-    error = error.replace("\r", " ").replace("\n", " ")
-    initiatives = data.get("initiatives") or {}
-    if not isinstance(initiatives, dict):
-        raise ValueError
-    projects = []
-    for initiative, entry in sorted(initiatives.items()):
-        if not re.fullmatch(r"I-[0-9]+", initiative) or not isinstance(entry, dict):
-            raise ValueError
-        project_id = entry.get("project_id")
-        project_url = entry.get("project_url")
-        if project_id is None:
-            continue
-        if not isinstance(project_id, str) or not re.fullmatch(r"[A-Za-z0-9-]+", project_id):
-            raise ValueError
-        if (
-            project_url is not None
-            and (
-                not isinstance(project_url, str)
-                or not re.fullmatch(r"https://linear\.app/[^\s\x00-\x1f\x7f]+", project_url)
-            )
-        ):
-            raise ValueError
-        projects.append({
-            "initiative": initiative,
-            "project_id": project_id,
-            "project_url": project_url,
-        })
-    def identity_record(value, reasons, *, minimum_candidates=0):
-        if (
-            not isinstance(value, dict)
-            or value.get("schema") != "nysa.software-factory.linear-project-identity-conflict/v1"
-            or not re.fullmatch(r"I-[0-9]+", str(value.get("initiative") or ""))
-            or value.get("reason") not in reasons
-            or not isinstance(value.get("candidates"), list)
-            or not minimum_candidates <= len(value["candidates"]) <= 250
-        ):
-            raise ValueError
-        candidates = []
-        seen = set()
-        for candidate in value["candidates"]:
-            if not isinstance(candidate, dict):
-                raise ValueError
-            project_id = candidate.get("project_id")
-            project_url = candidate.get("project_url")
-            if not isinstance(project_id, str) or not re.fullmatch(
-                r"[A-Za-z0-9-]{1,200}", project_id
-            ):
-                raise ValueError
-            if (
-                project_url is not None
-                and (
-                    not isinstance(project_url, str)
-                    or not re.fullmatch(
-                        r"https://linear\.app/[^\s\x00-\x1f\x7f]+", project_url
-                    )
-                )
-            ):
-                raise ValueError
-            if project_id in seen:
-                raise ValueError
-            seen.add(project_id)
-            candidates.append({"project_id": project_id, "project_url": project_url})
-        observed_at = value.get("observed_at")
-        if not isinstance(observed_at, str) or len(observed_at) > 64:
-            raise ValueError
-        observed = dt.datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
-        if observed.tzinfo is None:
-            raise ValueError
-        return {
-            "schema": value["schema"],
-            "initiative": value["initiative"],
-            "reason": value["reason"],
-            "candidates": sorted(candidates, key=lambda item: item["project_id"]),
-            "observed_at": observed_at,
-        }
-
-    conflict = sync.get("project_identity_conflict")
-    if conflict is not None:
-        conflict = identity_record(conflict, {
-            "conflicting_project_identity",
-            "durable_project_foreign_team",
-            "mapped_project_changed_before_backfill",
-            "mapped_project_foreign_team",
-            "mapped_project_marker_invalid",
-            "mapped_project_name_mismatch",
-            "mapped_project_unavailable",
-            "multiple_durable_identities",
-            "unmarked_same_name_project",
-        })
-    raw_warnings = sync.get("project_identity_warnings") or []
-    if not isinstance(raw_warnings, list) or len(raw_warnings) > 250:
-        raise ValueError
-    warnings = [
-        identity_record(
-            warning, {"unmarked_same_name_project"}, minimum_candidates=2
-        )
-        for warning in raw_warnings
-    ]
-    if len({warning["initiative"] for warning in warnings}) != len(warnings):
-        raise ValueError
-    warnings.sort(key=lambda warning: warning["initiative"])
-    age = ""
-    status = "warning" if error or warnings else "unknown"
-    if success:
-        parsed = dt.datetime.fromisoformat(success.replace("Z", "+00:00"))
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=dt.timezone.utc)
-        age = max(0, int((dt.datetime.now(dt.timezone.utc) - parsed).total_seconds()))
-        status = "ok" if age <= fresh and not error and not warnings else "warning"
-    print(status)
-    print(success)
-    print(age)
-    print(error)
-    print(json.dumps(projects, sort_keys=True, separators=(",", ":")))
-    print(json.dumps(conflict, sort_keys=True, separators=(",", ":")))
-    print(json.dumps(warnings, sort_keys=True, separators=(",", ":")))
-except Exception:
-    print("error")
-    print("")
-    print("")
-    print("invalid Linear sync metadata")
-    print("[]")
-    print("null")
-    print("[]")
-PY
-)"
-  LINEAR_STATUS="$(printf '%s\n' "$LINEAR_DATA" | awk 'NR == 1 { print; exit }')"
-  LINEAR_LAST_SUCCESS="$(printf '%s\n' "$LINEAR_DATA" | awk 'NR == 2 { print; exit }')"
-  LINEAR_AGE="$(printf '%s\n' "$LINEAR_DATA" | awk 'NR == 3 { print; exit }')"
-  LINEAR_LAST_ERROR="$(printf '%s\n' "$LINEAR_DATA" | awk 'NR == 4 { print; exit }' | sanitize)"
-  LINEAR_PROJECTS_JSON="$(printf '%s\n' "$LINEAR_DATA" | awk 'NR == 5 { print; exit }')"
-  LINEAR_PROJECT_CONFLICT_JSON="$(printf '%s\n' "$LINEAR_DATA" | awk 'NR == 6 { print; exit }')"
-  LINEAR_PROJECT_WARNINGS_JSON="$(printf '%s\n' "$LINEAR_DATA" | awk 'NR == 7 { print; exit }')"
-fi
-
-LINEAR_SERVICE_STATUS="not_applicable"
-LINEAR_SERVICE_STATE="unavailable"
-LINEAR_SERVICE_LOADED="false"
-LINEAR_SERVICE_ARGUMENTS_OK="false"
-LINEAR_SERVICE_QUERY_OK="false"
-LINEAR_SERVICE_PLIST=""
-LAUNCHCTL_BIN="/bin/launchctl"
-if [[ -n "${FACTORY_DOCTOR_TEST_LAUNCHCTL:-}" ]]; then
-  if [[ "${FACTORY_TRUSTED_TEST_HARNESS:-0}" != "1" ]]; then
-    LINEAR_SERVICE_STATUS="error"
-    LAUNCHCTL_BIN=""
-  else
-    LAUNCHCTL_BIN="$FACTORY_DOCTOR_TEST_LAUNCHCTL"
-  fi
-fi
-if [[ "$CONTRACT_VERSION" == "1.8.0" &&
-      "${FACTORY_KIT_TRUST_SCOPE:-}" != "qualification-candidate" ]] &&
-   [[ "$(uname -s 2>/dev/null)" == "Darwin" ||
-      -n "${FACTORY_DOCTOR_TEST_LAUNCHCTL:-}" ]]; then
-  LINEAR_SERVICE_STATUS="error"
-  LINEAR_SERVICE_PLIST="$HOME/Library/LaunchAgents/com.factory.linear-sync.$PROJECT.plist"
-  LINEAR_SERVICE_LABEL="com.factory.linear-sync.$PROJECT"
-  LINEAR_SERVICE_DOMAIN="gui/$(id -u)"
-  LINEAR_SERVICE_TARGET="$LINEAR_SERVICE_DOMAIN/$LINEAR_SERVICE_LABEL"
-  EXPECTED_LINEAR_LAUNCHER="$HOME/.factory/bin/factory-launch"
-  if [[ -x "$LAUNCHCTL_BIN" && -f "$EXPECTED_LINEAR_LAUNCHER" &&
-        ! -L "$EXPECTED_LINEAR_LAUNCHER" && -x "$EXPECTED_LINEAR_LAUNCHER" &&
-        -f "$KIT_DIR/integrations/hermes/bin/factory-launch" &&
-        ! -L "$KIT_DIR/integrations/hermes/bin/factory-launch" ]] &&
-     cmp -s "$EXPECTED_LINEAR_LAUNCHER" \
-       "$KIT_DIR/integrations/hermes/bin/factory-launch" &&
-     [[ -f "$LINEAR_SERVICE_PLIST" &&
-        ! -L "$LINEAR_SERVICE_PLIST" ]] &&
-     "$PYTHON_BIN" -I -S - "$LINEAR_SERVICE_PLIST" "$LINEAR_SERVICE_LABEL" \
-       "$EXPECTED_LINEAR_LAUNCHER" "$PROJECT" "$PRODUCT_ROOT" <<'PY'
-import os, plistlib, stat, sys
-path, label, launcher, project, product = sys.argv[1:]
-info = os.lstat(path)
-if (os.path.realpath(path) != path or not stat.S_ISREG(info.st_mode)
-        or info.st_uid != os.geteuid()
-        or info.st_mode & 0o022):
-    raise SystemExit(1)
-with open(path, "rb") as stream:
-    value = plistlib.load(stream)
-expected = {
-    "Label": label,
-    "ProgramArguments": [launcher, project, "linear-sync"],
-    "StartInterval": 180,
-    "RunAtLoad": True,
-    "StandardOutPath": os.path.join(product, "factory/linear-sync.log"),
-    "StandardErrorPath": os.path.join(product, "factory/linear-sync.err.log"),
-}
-raise SystemExit(0 if value == expected else 1)
-PY
-  then
-    DISABLED_OUTPUT="$($LAUNCHCTL_BIN print-disabled "$LINEAR_SERVICE_DOMAIN" 2>/dev/null || true)"
-    printf '%s\n' "$DISABLED_OUTPUT" > "$TMP/linear-disabled.txt"
-    LINEAR_SERVICE_STATE="$($PYTHON_BIN -I -S - \
-        "$TMP/linear-disabled.txt" "$LINEAR_SERVICE_LABEL" <<'PY'
-import re, sys
-path, label = sys.argv[1:]
-states = {}
-opened = closed = False
-for line in open(path, encoding="utf-8", errors="replace"):
-    if not line.strip():
-        continue
-    if not opened:
-        if not re.fullmatch(r"\s*disabled services\s*=\s*\{\s*", line):
-            raise SystemExit(1)
-        opened = True
-        continue
-    if re.fullmatch(r"\s*\}\s*", line):
-        if closed:
-            raise SystemExit(1)
-        closed = True
-        continue
-    if closed:
-        raise SystemExit(1)
-    match = re.fullmatch(
-        r'\s*"([^"\r\n]+)"\s*=>\s*(enabled|disabled|true|false)\s*', line
-    )
-    if match is None or match.group(1) in states:
-        raise SystemExit(1)
-    states[match.group(1)] = match.group(2)
-if not opened or not closed:
-    raise SystemExit(1)
-state = states.get(label)
-if state in {"enabled", "false"}:
-    print("enabled")
-elif state in {"disabled", "true"}:
-    print("disabled")
-else:
-    print("unspecified")
-PY
-    )" || LINEAR_SERVICE_STATE="unavailable"
-    LINEAR_SERVICE_QUERY_RC=0
-    LINEAR_SERVICE_OUTPUT="$($LAUNCHCTL_BIN print "$LINEAR_SERVICE_TARGET" 2>/dev/null)" || \
-      LINEAR_SERVICE_QUERY_RC=$?
-    if [[ "$LINEAR_SERVICE_QUERY_RC" -eq 0 ]]; then
-      LINEAR_SERVICE_QUERY_OK="true"
-      LINEAR_SERVICE_LOADED="true"
-      printf '%s' "$LINEAR_SERVICE_OUTPUT" > "$TMP/linear-service.txt"
-      if "$PYTHON_BIN" -I -S - "$TMP/linear-service.txt" \
-          "$EXPECTED_LINEAR_LAUNCHER" "$PROJECT" linear-sync <<'PY'
-import re, sys
-path, *expected = sys.argv[1:]
-text = open(path, encoding="utf-8", errors="replace").read()
-matches = re.findall(r"^\s*arguments = \{\n(.*?)^\s*\}\s*$", text, re.M | re.S)
-actual = [line.strip() for line in matches[0].splitlines() if line.strip()] if len(matches) == 1 else []
-raise SystemExit(0 if actual == expected else 1)
-PY
-      then
-        LINEAR_SERVICE_ARGUMENTS_OK="true"
-      fi
-    elif [[ "$LINEAR_SERVICE_QUERY_RC" -eq 113 ]]; then
-      LINEAR_SERVICE_QUERY_OK="true"
-    fi
-    if [[ "$LINEAR_SERVICE_QUERY_OK" == "true" &&
-          "$LINEAR_SERVICE_STATE" == "enabled" &&
-          "$LINEAR_SERVICE_LOADED" == "true" &&
-          "$LINEAR_SERVICE_ARGUMENTS_OK" == "true" ]] ||
-       [[ "$LINEAR_SERVICE_QUERY_OK" == "true" &&
-          "$LINEAR_SERVICE_STATE" == "disabled" &&
-          "$LINEAR_SERVICE_LOADED" == "false" ]]; then
-      LINEAR_SERVICE_STATUS="ok"
-    fi
-  fi
 fi
 
 PROVIDER_RUNTIME_STATUS="ok"
@@ -1489,7 +1174,7 @@ PROVIDER_LEGACY_INTERVALS=0
 PROVIDER_CONCURRENCY_REQUIRED=false
 PROVIDER_CONCURRENCY_READY=false
 if [[ ( "$CONTRACT_VERSION" == "1.6.0" || "$CONTRACT_VERSION" == "1.7.0" ||
-        "$CONTRACT_VERSION" == "1.8.0" ) &&
+        "$CONTRACT_VERSION" == "1.8.0" || "$CONTRACT_VERSION" == "1.9.0" ) &&
       -n "${FACTORY_PROVIDER_ACTIVATION:-}" &&
       -f "${FACTORY_PROVIDER_ACTIVATION:-}" ]]; then
   PROVIDER_ACTIVATED=true
@@ -1612,7 +1297,7 @@ PY
     PROVIDER_RUNTIME_STATUS="error"
   fi
 fi
-if [[ "$CONTRACT_VERSION" == "1.8.0" &&
+if [[ ( "$CONTRACT_VERSION" == "1.8.0" || "$CONTRACT_VERSION" == "1.9.0" ) &&
       "$MAX_CONCURRENT_TICKETS" =~ ^[0-9]+$ &&
       "$MAX_CONCURRENT_TICKETS" -gt 1 ]]; then
   PROVIDER_CONCURRENCY_REQUIRED=true
@@ -1637,8 +1322,7 @@ fi
 
 OVERALL_STATUS="ok"
 for check_status in "$REGISTRY_STATUS" "$KIT_STATUS" "$PIN_STATUS" "$RUNTIME_STATUS" \
-                    "$HERMES_STATUS" "$CLI_STATUS" "$CREDENTIAL_STATUS" "$LINEAR_STATUS" \
-                    "$LINEAR_SERVICE_STATUS" \
+                    "$HERMES_STATUS" "$CLI_STATUS" "$CREDENTIAL_STATUS" \
                     "$PROVIDER_RUNTIME_STATUS" "$CONTRACT_RESUME_STATUS" \
                     "$TRANSITION_RECEIPT_STATUS" "$CONTROLLER_STATUS" \
                     "$FALLBACK_READINESS_STATUS" "$MODEL_READINESS_STATUS" \
@@ -1658,23 +1342,16 @@ OUTPUT_KIT_DIR="$(printf '%s' "$KIT_DIR" | sanitize)"
 OUTPUT_PRODUCT_ROOT="$(printf '%s' "$PRODUCT_ROOT" | sanitize)"
 OUTPUT_PIN_FILE="$(printf '%s' "$PIN_FILE" | sanitize)"
 OUTPUT_FACTORY_DIR="$(printf '%s' "$FACTORY_DIR" | sanitize)"
-OUTPUT_LINEAR_MAP="$(printf '%s' "$LINEAR_MAP" | sanitize)"
 
 export CONTRACT_VERSION DOCTOR_SCHEMA PROJECT REGISTRY_STATUS
 export OUTPUT_PROFILE_DIR OUTPUT_REGISTRY OUTPUT_KIT_DIR OUTPUT_PRODUCT_ROOT
 export KIT_STATUS KIT_SHA PIN_STATUS OUTPUT_PIN_FILE PIN_SHA PIN_VALID PIN_MATCHES
-export RUNTIME_STATUS OUTPUT_FACTORY_DIR MAINTENANCE LAUNCH_LOCK LEDGER_LOCK LINEAR_LOCK GLOBAL_LEDGER_LOCK
+export RUNTIME_STATUS OUTPUT_FACTORY_DIR MAINTENANCE LAUNCH_LOCK LEDGER_LOCK GLOBAL_LEDGER_LOCK
 export PROVIDER_LOCK PROVIDER_LOCK_STATE
 export ACTIVE_RECORDS ACTIVE_RUNS STALE_RUNS MALFORMED_RUNS
 export MAX_CONCURRENT_TICKETS DISPATCH_LEASES STALE_DISPATCH_LEASES MALFORMED_DISPATCH_LEASES LEASE_FILE
 export HERMES_STATUS HERMES_PATH HERMES_VERSION CLI_STATUS CLI_FILE
-export CREDENTIAL_STATUS GH_PRESENT LINEAR_PRESENT
-export LINEAR_STATUS OUTPUT_LINEAR_MAP LINEAR_LAST_SUCCESS LINEAR_AGE LINEAR_LAST_ERROR
-export LINEAR_PROJECTS_JSON
-export LINEAR_PROJECT_CONFLICT_JSON
-export LINEAR_PROJECT_WARNINGS_JSON
-export LINEAR_SERVICE_STATUS LINEAR_SERVICE_STATE LINEAR_SERVICE_LOADED
-export LINEAR_SERVICE_ARGUMENTS_OK
+export CREDENTIAL_STATUS GH_PRESENT
 export PROVIDER_RUNTIME_STATUS PROVIDER_ACTIVATED PROVIDER_ACTIVE_ATTEMPTS
 export PROVIDER_EXECUTION_MODE
 export PROVIDER_ACTIVE_TOKENS PROVIDER_UNKNOWN_WORKERS PROVIDER_LEGACY_INTERVALS
@@ -1762,7 +1439,6 @@ document = {
             "locks": {
                 "launch": boolean("LAUNCH_LOCK"),
                 "ledger": boolean("LEDGER_LOCK"),
-                "linear_sync": boolean("LINEAR_LOCK"),
                 "global_ledger": boolean("GLOBAL_LEDGER_LOCK"),
                 "provider": boolean("PROVIDER_LOCK"),
             },
@@ -1804,27 +1480,6 @@ document = {
             "validated_authentication": False,
             "presence": {
                 "github": boolean("GH_PRESENT"),
-                "linear": boolean("LINEAR_PRESENT"),
-            },
-        },
-        "linear_sync": {
-            "status": os.environ["LINEAR_STATUS"],
-            "path": optional("OUTPUT_LINEAR_MAP"),
-            "last_success_at": optional("LINEAR_LAST_SUCCESS"),
-            "age_seconds": number("LINEAR_AGE"),
-            "last_error": optional("LINEAR_LAST_ERROR"),
-            "projects": json.loads(os.environ["LINEAR_PROJECTS_JSON"]),
-            "project_identity_conflict": json.loads(
-                os.environ["LINEAR_PROJECT_CONFLICT_JSON"]
-            ),
-            "project_identity_warnings": json.loads(
-                os.environ["LINEAR_PROJECT_WARNINGS_JSON"]
-            ),
-            "service": {
-                "status": os.environ["LINEAR_SERVICE_STATUS"],
-                "state": os.environ["LINEAR_SERVICE_STATE"],
-                "loaded": boolean("LINEAR_SERVICE_LOADED"),
-                "arguments_match": boolean("LINEAR_SERVICE_ARGUMENTS_OK"),
             },
         },
         "contract_resume": {
@@ -1863,21 +1518,18 @@ else
   echo "Kit [$KIT_STATUS]: ${KIT_SHA:-unavailable}"
   echo "KIT_PIN [$PIN_STATUS]: ${PIN_SHA:-missing or invalid}"
   echo "Runtime [$RUNTIME_STATUS]: maintenance=$MAINTENANCE active=$ACTIVE_RUNS stale=$STALE_RUNS malformed=$MALFORMED_RUNS concurrency=$MAX_CONCURRENT_TICKETS leases=$DISPATCH_LEASES"
-  echo "Locks: launch=$LAUNCH_LOCK ledger=$LEDGER_LOCK linear_sync=$LINEAR_LOCK global_ledger=$GLOBAL_LEDGER_LOCK provider=$PROVIDER_LOCK provider_state=$PROVIDER_LOCK_STATE"
+  echo "Locks: launch=$LAUNCH_LOCK ledger=$LEDGER_LOCK global_ledger=$GLOBAL_LEDGER_LOCK provider=$PROVIDER_LOCK provider_state=$PROVIDER_LOCK_STATE"
   echo "Hermes [$HERMES_STATUS]: ${HERMES_VERSION:-unavailable} (${HERMES_PATH:-not found})"
   while IFS="$(printf '\t')" read -r cli_name cli_item_status cli_path cli_version; do
     echo "CLI $cli_name [$cli_item_status]: ${cli_version:-unavailable} (${cli_path:-not found})"
   done < "$CLI_FILE"
   echo "Provider CLI pins [$PROVIDER_CLI_PIN_STATUS]"
-  echo "Credentials [$CREDENTIAL_STATUS]: github=$GH_PRESENT linear=$LINEAR_PRESENT (presence only; authentication not validated)"
+  echo "Credentials [$CREDENTIAL_STATUS]: github=$GH_PRESENT (presence only; authentication not validated)"
   echo "Isolated provider [$PROVIDER_RUNTIME_STATUS]: activated=$PROVIDER_ACTIVATED concurrency_required=$PROVIDER_CONCURRENCY_REQUIRED concurrency_ready=$PROVIDER_CONCURRENCY_READY mode=${PROVIDER_EXECUTION_MODE:-none} attempts=$PROVIDER_ACTIVE_ATTEMPTS tokens=$PROVIDER_ACTIVE_TOKENS unknown_workers=$PROVIDER_UNKNOWN_WORKERS legacy=$PROVIDER_LEGACY_INTERVALS"
-  echo "Linear sync [$LINEAR_STATUS]: age_seconds=${LINEAR_AGE:-unknown} last_success=${LINEAR_LAST_SUCCESS:-unknown} project_identity_warnings=$($PYTHON_BIN -c 'import json,sys; print(len(json.loads(sys.argv[1])))' "$LINEAR_PROJECT_WARNINGS_JSON")"
-  echo "Linear service [$LINEAR_SERVICE_STATUS]: state=$LINEAR_SERVICE_STATE loaded=$LINEAR_SERVICE_LOADED arguments_match=$LINEAR_SERVICE_ARGUMENTS_OK"
   echo "Contract resume [$CONTRACT_RESUME_STATUS]: incidents=$("$PYTHON_BIN" -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$CONTRACT_RESUME_FILE")"
   echo "Transition receipts [$TRANSITION_RECEIPT_STATUS]: incidents=$("$PYTHON_BIN" -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$TRANSITION_RECEIPT_FILE")"
   echo "Controller [$CONTROLLER_STATUS]: state=$CONTROLLER_SERVICE_STATE last_exit=${CONTROLLER_LAST_EXIT_STATUS:-none}"
   echo "Model readiness [$MODEL_READINESS_STATUS]"
-  [[ -z "$LINEAR_LAST_ERROR" ]] || echo "Linear last error: $LINEAR_LAST_ERROR"
 fi
 
 [[ "$OVERALL_STATUS" == "error" ]] && exit 1

@@ -118,7 +118,7 @@ def validate_inputs(args: argparse.Namespace) -> tuple[Path, Path, Path, str, st
                 (factory / "integrations/hermes/contract.json").read_text(encoding="utf-8")
             )
             contract = contract_data.get("contract_version", "")
-            if contract not in {f"1.{minor}.0" for minor in range(5, 9)}:
+            if contract not in {f"1.{minor}.0" for minor in range(5, 10)}:
                 failures.append("candidate Hermes contract is unsupported by the canary")
             if 2 not in contract_data.get("concurrency", {}).get("enabled_values", []):
                 failures.append("candidate contract does not permit canary ticket capacity 2")
@@ -184,7 +184,6 @@ def marker_value(
         "hermes_bin": str(hermes),
         "hermes_sha256": digest(hermes),
         "hermes_version": hermes_version,
-        "linear": "disabled",
         "project": project,
         "root": str(root),
         "schema": SCHEMA,
@@ -305,7 +304,7 @@ def validate_completion(root: Path, expected: dict) -> bool:
         "contract.json", "doctor.json", "hermes-hook-payload.sha256",
         "hook-start", "lease.sha256", "manifest-summary.json", "model-pin.json",
         "preflight.json", "release.json",
-        "transition.json" if expected["contract_version"] == "1.8.0" else "next-stage.json",
+        "transition.json" if expected["contract_version"] in {"1.8.0", "1.9.0"} else "next-stage.json",
     }
     if set(files) != required:
         raise Refusal("canary completion evidence inventory is incomplete")
@@ -332,13 +331,13 @@ def validate_completion(root: Path, expected: dict) -> bool:
         or manifest.get("contract_version") != expected["contract_version"]
         or not hex40.fullmatch(manifest.get("product_tree", ""))
         or (
-            expected["contract_version"] == "1.8.0"
+            expected["contract_version"] in {"1.8.0", "1.9.0"}
             and not hex64.fullmatch(receipt)
         )
-        or (expected["contract_version"] != "1.8.0" and receipt)
+        or (expected["contract_version"] not in {"1.8.0", "1.9.0"} and receipt)
     ):
         raise Refusal("canary mock Planner manifest evidence is invalid")
-    if expected["contract_version"] == "1.8.0":
+    if expected["contract_version"] in {"1.8.0", "1.9.0"}:
         transition = json.loads(
             (evidence / "transition.json").read_text(encoding="utf-8")
         )
@@ -390,7 +389,7 @@ def render_hook(root: Path, project: str, sha: str, tree: str, contract: str) ->
     release = root / f"home/.factory/kits/releases/{sha}"
     worktree = root / "worktrees/T-900001"
     evidence = root / "evidence"
-    if contract == "1.8.0":
+    if contract in {"1.8.0", "1.9.0"}:
         sequence = f"""run_launcher state-machine --ticket \"$ticket\" --lease \"$lease\" \\
   --workdir \"$worktree\" --json > \"$evidence/transition.json\"
 role=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["role"])' \"$evidence/transition.json\")
@@ -474,7 +473,7 @@ import hashlib,json,os,pathlib,sys
 evidence,attempt,destination=map(pathlib.Path,sys.argv[1:])
 names={{"contract.json","doctor.json","hermes-hook-payload.sha256","hook-start","lease.sha256",
        "manifest-summary.json","model-pin.json","preflight.json","release.json",
-       "transition.json" if "{contract}" == "1.8.0" else "next-stage.json"}}
+       "transition.json" if "{contract}" in ("1.8.0", "1.9.0") else "next-stage.json"}}
 digest=lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
 value={{
     "attempt_sha256":digest(attempt),
@@ -646,11 +645,6 @@ WORKTREES_DIR={root}/worktrees
 set -eu
 npm --prefix app test
 """, 0o755)
-    write(product / "factory/linear-state.json", canonical({
-        "enabled": False,
-        "reason": "credential-free-canary",
-        "schema": "nysa.software-factory.canary-linear/v1",
-    }), 0o644)
     write(product / "factory/initiatives/I-900001.md", """# I-900001 — Isolated canary
 
 This local-only initiative exists solely to exercise the candidate release.
@@ -679,7 +673,7 @@ Plan one no-op compatibility check for the isolated conformance product.
 1. The mock Planner completes through the exact candidate launcher.
 """, 0o644)
     write(product / ".gitignore", """factory/MAINTENANCE
-factory/linear-map.json
+factory/operator-map.json
 factory/runs/
 factory/.active-runs/
 factory/.dispatch-leases/
@@ -697,9 +691,8 @@ app/data/
     command("git", "init", "--bare", str(root / "product-origin.git"))
     command("git", "remote", "add", "origin", str(root / "product-origin.git"), cwd=product)
     command("git", "push", "-u", "origin", "main", cwd=product)
-    write(product / "factory/linear-map.json", canonical({
-        "_sync": {"last_success_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())},
-        "tickets": {},
+    write(product / "factory/operator-map.json", canonical({
+        "_config": None, "_sync": {}, "initiatives": {}, "tickets": {},
     }), 0o600)
     worktree = root / "worktrees/T-900001"
     command("git", "worktree", "add", "-b", "ticket/T-900001", str(worktree), "main", cwd=product)
@@ -744,7 +737,6 @@ description: Credential-free isolated real-Hermes release compatibility check
         str(path.relative_to(root)): digest(path)
         for path in (
             product / "factory/PROJECT.env",
-            product / "factory/linear-state.json",
             product / "factory/tickets/T-900001.md",
             profile / f"projects/{project}.env",
             profile / "SOUL.md",
@@ -774,7 +766,6 @@ def check(root: Path, expected: dict, resume: bool = False) -> dict:
     project = expected["project"]
     required_tracked = {
         "product/factory/PROJECT.env",
-        "product/factory/linear-state.json",
         "product/factory/tickets/T-900001.md",
         f"home/.hermes/profiles/{project}/projects/{project}.env",
         f"home/.hermes/profiles/{project}/SOUL.md",
@@ -805,18 +796,6 @@ def check(root: Path, expected: dict, resume: bool = False) -> dict:
     for line in sorted(required):
         if text.splitlines().count(line) != 1:
             failures.append(f"PROJECT.env requires exactly {line}")
-    try:
-        linear_state = json.loads(
-            (root / "product/factory/linear-state.json").read_text(encoding="utf-8")
-        )
-        if linear_state != {
-            "enabled": False,
-            "reason": "credential-free-canary",
-            "schema": "nysa.software-factory.canary-linear/v1",
-        }:
-            failures.append("explicit disabled Linear state is invalid")
-    except (OSError, ValueError, json.JSONDecodeError):
-        failures.append("explicit disabled Linear state is missing")
     try:
         if command("git", "remote", "get-url", "origin", cwd=root / "product") != str(
             root / "product-origin.git"
@@ -855,7 +834,6 @@ def check(root: Path, expected: dict, resume: bool = False) -> dict:
     return {
         "factory_sha": expected["factory_sha"],
         "factory_tree": expected["factory_tree"],
-        "linear": "disabled",
         "project": expected["project"],
         "root": expected["root"],
         "status": "complete" if complete else "ready",

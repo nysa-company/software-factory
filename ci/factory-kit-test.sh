@@ -466,11 +466,8 @@ cp "$ROOT/scripts/lib/certification_plan.py" \
 cp "$ROOT/integrations/hermes/bin/factory-launch" \
   "$KIT_REPO/integrations/hermes/bin/factory-launch"
 cp "$ROOT/integrations/hermes/contract.json" "$KIT_REPO/integrations/hermes/contract.json"
-cp "$ROOT/scripts/linear-sync-service.py" "$KIT_REPO/scripts/linear-sync-service.py"
 cp "$ROOT/scripts/factory-incident-reporter.py" \
   "$KIT_REPO/scripts/factory-incident-reporter.py"
-cp "$ROOT/scripts/launchd/com.factory.linear-sync.plist.template" \
-  "$KIT_REPO/scripts/launchd/com.factory.linear-sync.plist.template"
 cp "$ROOT/scripts/launchd/com.factory.incident-reporter.plist.template" \
   "$KIT_REPO/scripts/launchd/com.factory.incident-reporter.plist.template"
 chmod +x "$KIT_REPO/integrations/hermes/bin/factory-launch"
@@ -2136,82 +2133,44 @@ ACTIVE_ALPHA="$STATE/projects/alpha/active.json"
   pass "first active generation is release a" ||
   fail "first active generation is release a"
 
-SERVICE_HOME="$TMP/service-home"
-SERVICE_STATE="$TMP/linear-service-state.json"
-SERVICE_LAUNCHCTL="$TMP/linear-service-launchctl"
-mkdir -p "$SERVICE_HOME/.factory/bin"
-cp "$STATE/releases/$SHA_A/integrations/hermes/bin/factory-launch" \
-  "$SERVICE_HOME/.factory/bin/factory-launch"
-chmod 700 "$SERVICE_HOME/.factory/bin/factory-launch"
-printf '%s\n' '{"arguments":[],"loaded":false,"state":"enabled"}' > "$SERVICE_STATE"
-cat > "$SERVICE_LAUNCHCTL" <<'PY'
-#!/usr/bin/env python3
-import json, os, plistlib, sys
-path = os.environ["FACTORY_KIT_TEST_LINEAR_SERVICE_STATE"]
-state = json.load(open(path, encoding="utf-8"))
-command, *arguments = sys.argv[1:]
-if command == "print-disabled":
-    print('disabled services = {')
-    print(f'  "com.factory.linear-sync.alpha" => {state["state"]}')
-    print('}')
-elif command == "print":
-    if not state["loaded"]:
-        raise SystemExit(113)
-    print(arguments[0] + " = {")
-    print("  arguments = {")
-    for item in state["arguments"]:
-        print("    " + item)
-    print("  }")
-    print("}")
-elif command == "bootout":
-    if not state["loaded"]:
-        raise SystemExit(113)
-    state["loaded"] = False
-elif command in ("enable", "disable"):
-    state["state"] = command + "d"
-elif command == "bootstrap":
-    with open(arguments[1], "rb") as stream:
-        state["arguments"] = plistlib.load(stream)["ProgramArguments"]
-    state["loaded"] = True
-else:
-    raise SystemExit(2)
-with open(path, "w", encoding="utf-8") as stream:
-    json.dump(state, stream, sort_keys=True)
+OPERATOR_PRODUCT="$TMP/operator-product"
+mkdir -p "$OPERATOR_PRODUCT/factory/tickets"
+git -C "$OPERATOR_PRODUCT" init -q
+git -C "$OPERATOR_PRODUCT" config user.name "Factory Test"
+git -C "$OPERATOR_PRODUCT" config user.email "test@local"
+printf '%s\n' 'factory/operator-map.json' > "$OPERATOR_PRODUCT/.gitignore"
+printf '%s\n' '# T-777' 'State: Backlog' 'Priority: normal' > \
+  "$OPERATOR_PRODUCT/factory/tickets/T-777.md"
+git -C "$OPERATOR_PRODUCT" add -A
+git -C "$OPERATOR_PRODUCT" commit -q -m "seed backlog ticket for operator authority"
+expect_success "operator ready issues a one-use receipt and projects the map" \
+  operator ready --project alpha --product "$OPERATOR_PRODUCT" --ticket T-777
+python3 - "$STATE/projects/alpha/controller" "$OPERATOR_PRODUCT" <<'PY'
+import json, pathlib, sys
+state, product = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+receipt_path = state / "operator-receipts/T-777/ready-1.json"
+receipt = json.loads(receipt_path.read_text())
+assert receipt["schema"] == "nysa.software-factory.operator-receipt/v1"
+assert receipt["consumed"] is False
+mapping = json.loads((product / "factory/operator-map.json").read_text())
+assert sorted(mapping) == ["_config", "_sync", "initiatives", "tickets"]
+operator = mapping["tickets"]["T-777"]["operator"]
+assert operator["state"] == "Ready"
+assert operator["state_base"] == "backlog"
+audit = json.loads(
+    (product / "factory/receipts/T-777/ready-1.json").read_text()
+)
+assert audit["audit"] == "no-authority"
+assert "nonce" not in audit
+assert audit["receipt_sha256"] == receipt["receipt_sha256"]
 PY
-chmod 700 "$SERVICE_LAUNCHCTL"
-HOME="$SERVICE_HOME" FACTORY_KIT_TEST_LAUNCHCTL="$SERVICE_LAUNCHCTL" \
-  FACTORY_KIT_TEST_LINEAR_SERVICE_STATE="$SERVICE_STATE" \
-  expect_success "stable Linear service is enabled through the maintenance boundary" \
-    linear-sync-service enable --project alpha --product "$PRODUCT_ONE"
-python3 - "$SERVICE_STATE" "$SERVICE_HOME" "$PRODUCT_ONE" <<'PY'
-import json, plistlib, pathlib, sys
-state_path, home, product = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3])
-launcher = home / ".factory/bin/factory-launch"
-expected = [str(launcher), "alpha", "linear-sync"]
-assert json.loads(state_path.read_text()) == {
-    "arguments": expected, "loaded": True, "state": "enabled",
-}
-with open(home / "Library/LaunchAgents/com.factory.linear-sync.alpha.plist", "rb") as stream:
-    value = plistlib.load(stream)
-assert value["ProgramArguments"] == expected
-assert value["StandardOutPath"] == str(product / "factory/linear-sync.log")
-PY
-HOME="$SERVICE_HOME" FACTORY_KIT_TEST_LAUNCHCTL="$SERVICE_LAUNCHCTL" \
-  FACTORY_KIT_TEST_LINEAR_SERVICE_STATE="$SERVICE_STATE" \
-  expect_success "stable Linear service is explicitly disabled and unloaded" \
-    linear-sync-service disable --project alpha --product "$PRODUCT_ONE"
-python3 - "$SERVICE_STATE" <<'PY'
-import json, sys
-state = json.load(open(sys.argv[1], encoding="utf-8"))
-assert state["state"] == "disabled"
-assert state["loaded"] is False
-PY
-printf '{}\n' > "$PRODUCT_ONE/factory/QUALIFICATION.json"
-HOME="$SERVICE_HOME" FACTORY_KIT_TEST_LAUNCHCTL="$SERVICE_LAUNCHCTL" \
-  FACTORY_KIT_TEST_LINEAR_SERVICE_STATE="$SERVICE_STATE" \
-  expect_failure "qualification products cannot own a scheduled Linear service" \
-    linear-sync-service enable --project alpha --product "$PRODUCT_ONE"
-rm "$PRODUCT_ONE/factory/QUALIFICATION.json"
+expect_success "operator pending lists the open receipt" \
+  operator pending --project alpha --product "$PRODUCT_ONE"
+[[ "$LAST_OUTPUT" == *'"ticket": "T-777"'* ]] &&
+  pass "pending output names the open receipt" ||
+  fail "pending output names the open receipt" "$LAST_OUTPUT"
+expect_failure "operator approve refuses a ticket outside Awaiting Approval" \
+  operator approve --project alpha --product "$PRODUCT_ONE" --ticket T-777
 
 NONCANONICAL_PRODUCT="$TMP/product-one-noncanonical"
 git -C "$PRODUCT_ONE" worktree add -q --detach "$NONCANONICAL_PRODUCT" main

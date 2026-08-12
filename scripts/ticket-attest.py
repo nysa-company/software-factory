@@ -28,6 +28,7 @@ from refresh_semantics import (  # noqa: E402
     retained_control_paths,
 )
 from narrator_evidence import trusted_narrator_evidence_paths  # noqa: E402
+import operator_receipt  # noqa: E402
 from approval_evidence import (  # noqa: E402
     ApprovalEvidenceError,
     validate_approval_continuation as validate_shared_approval_continuation,
@@ -1256,7 +1257,7 @@ def protected_approval_evidence(
     ).stdout
     if (
         field(approved_ticket, "State").lower() != "approved"
-        or field(approved_ticket, "Operator-Approval").lower() != "linear"
+        or field(approved_ticket, "Operator-Approval").lower() not in {"linear", "receipt"}
     ):
         raise Refusal("merged PR head does not contain the attested Approved ticket")
     return bundle_att, approval_att, approval_head, (
@@ -2085,7 +2086,7 @@ def validate_closeout_commit(
     text = (workdir / "factory" / "tickets" / f"{ticket}.md").read_text()
     if (
         field(text, "State").lower() != "done"
-        or field(text, "Operator-Approval").lower() != "linear"
+        or field(text, "Operator-Approval").lower() not in {"linear", "receipt"}
     ):
         raise Refusal("existing closeout commit lacks the attested Done ticket")
     return parent
@@ -2121,11 +2122,18 @@ def commit_push(product, workdir, remote, branch, message, paths):
 
 def operator_map_path(product):
     path = Path(os.environ.get(
-        "FACTORY_OPERATOR_MAP", product / "factory/linear-map.json"
+        "FACTORY_OPERATOR_MAP", product / "factory/operator-map.json"
     ))
     if not path.is_absolute():
         raise Refusal("operator map path is invalid")
     return path
+
+
+def operator_receipt_state_dir():
+    state = Path(os.environ.get("FACTORY_CONTROLLER_STATE_DIR", ""))
+    if not state.is_absolute():
+        raise Refusal("trusted controller state is unavailable")
+    return state
 
 
 def consume_overlay(product, ticket, expected_version):
@@ -2142,7 +2150,7 @@ def consume_overlay(product, ticket, expected_version):
     if actual != expected_version:
         raise Refusal("operator overlay changed before consumption")
     entry.pop("operator", None)
-    fd, temporary = tempfile.mkstemp(prefix=".linear-map.", dir=path.parent)
+    fd, temporary = tempfile.mkstemp(prefix=".operator-map.", dir=path.parent)
     with os.fdopen(fd, "w") as output:
         json.dump(data, output, indent=2, sort_keys=True)
         output.write("\n")
@@ -2159,13 +2167,13 @@ def stale_approval_overlay_version(product, ticket):
     if not (
         operator
         and operator.get("state") == "Approved"
-        and operator.get("approval") == "Linear"
+        and operator.get("approval") == "Receipt"
         and operator.get("state_base") == "awaiting approval"
     ):
         return None
     return hashlib.sha256(json.dumps(
         {key: operator[key] for key in (
-            "state", "approval", "state_base", "observed_at", "linear_updated_at",
+            "state", "approval", "state_base", "observed_at", "receipt_sha256",
         ) if key in operator},
         sort_keys=True, separators=(",", ":"),
     ).encode()).hexdigest()
@@ -2178,11 +2186,11 @@ def consume_stale_approval_overlay(product, ticket, expected_version):
     actual = stale_approval_overlay_version(product, ticket)
     if actual != expected_version:
         raise Refusal("stale approval overlay changed before consumption")
-    for key in ("state", "approval", "state_base", "observed_at", "linear_updated_at"):
+    for key in ("state", "approval", "state_base", "observed_at", "receipt_sha256"):
         operator.pop(key, None)
     if not operator:
         data.get("tickets", {}).get(ticket, {}).pop("operator", None)
-    fd, temporary = tempfile.mkstemp(prefix=".linear-map.", dir=path.parent)
+    fd, temporary = tempfile.mkstemp(prefix=".operator-map.", dir=path.parent)
     with os.fdopen(fd, "w") as output:
         json.dump(data, output, indent=2, sort_keys=True)
         output.write("\n")
@@ -2816,7 +2824,7 @@ def dependency_refresh(args, product, workdir, prefix, remote, kit_sha):
             if (
                 not re.fullmatch(r"[0-9a-f]{64}", transition)
                 or not valid_oid(factory_sha)
-                or contract_version != "1.8.0"
+                or contract_version not in ("1.8.0", "1.9.0")
             ):
                 raise Refusal(
                     "trusted dependency conflict evidence is unavailable"
@@ -3116,16 +3124,16 @@ def approval(args, product, workdir, repo, prefix, remote, kit_sha, method):
     existing_approval = json.loads(approval_path.read_text()) if approval_path.exists() else None
     exact_overlay = (
         operator.get("state") == "Approved"
-        and operator.get("approval") == "Linear"
+        and operator.get("approval") == "Receipt"
         and operator.get("state_base") == "awaiting approval"
     )
     projected_overlay = not any(
         key in operator for key in ("state", "approval", "state_base")
     )
     if not exact_overlay and not (existing_approval and projected_overlay):
-        raise Refusal("exact Linear Awaiting Approval -> Approved overlay is required")
+        raise Refusal("exact operator Awaiting Approval -> Approved overlay is required")
     if attest_only and not exact_overlay:
-        raise Refusal("exact Linear approval overlay is required for phase-one attestation")
+        raise Refusal("exact operator approval overlay is required for phase-one attestation")
     if existing_approval:
         reviewed = existing_approval.get("reviewed_sha", "")
         try:
@@ -3154,12 +3162,27 @@ def approval(args, product, workdir, repo, prefix, remote, kit_sha, method):
             bundle_value, args.ticket, repo, branch, kit_sha, workdir,
         )
         observed = timestamp(operator.get("observed_at"), "approval observation")
-        updated = timestamp(operator.get("linear_updated_at"), "Linear approval update")
         attested = timestamp(bundle_att.get("attested_at"), "bundle attestation")
-        if observed <= attested or updated <= attested:
+        if observed <= attested:
             raise Refusal(
-                "stale_linear_approval: Linear approval is not newer than "
+                "stale_operator_approval: operator approval is not newer than "
                 "the bundle attestation"
+            )
+        attestation_blob = git(
+            workdir, "hash-object", str(attestation_path)
+        ).stdout.strip()
+        receipt = operator_receipt.peek(
+            operator_receipt_state_dir(), args.ticket, "approve",
+            {"bundle_attestation_blob": attestation_blob},
+        )
+        if (
+            receipt is None
+            or receipt["receipt_sha256"] != operator.get("receipt_sha256")
+            or timestamp(receipt["issued_at"], "approval receipt") <= attested
+        ):
+            raise Refusal(
+                "stale_operator_approval: no unconsumed operator approval "
+                "receipt binds the current bundle attestation"
             )
         version = hashlib.sha256(json.dumps(
             {
@@ -3208,9 +3231,9 @@ def approval(args, product, workdir, repo, prefix, remote, kit_sha, method):
         validate_bundle_commit(workdir, args.ticket, bundle_att, head)
         text = replace_field(text, "State", "Approved")
         if re.search(r"^Operator-Approval:", text, re.I | re.M):
-            text = replace_field(text, "Operator-Approval", "Linear")
+            text = replace_field(text, "Operator-Approval", "Receipt")
         else:
-            text = re.sub(r"^(State:.*)$", r"\1\nOperator-Approval: Linear", text, count=1, flags=re.M)
+            text = re.sub(r"^(State:.*)$", r"\1\nOperator-Approval: Receipt", text, count=1, flags=re.M)
         text = check_item(text, "Operator approved")
         ticket_path.write_text(text)
         approval_att = {
@@ -3224,7 +3247,7 @@ def approval(args, product, workdir, repo, prefix, remote, kit_sha, method):
             "bundle_attestation_blob": git(workdir, "hash-object", str(attestation_path)).stdout.strip(),
             "pr_number": pr["number"],
             "operator_version": version,
-            "linear_updated_at": operator["linear_updated_at"],
+            "receipt_sha256": operator["receipt_sha256"],
             "observed_at": operator["observed_at"],
             "kit_sha": kit_sha,
             "auto_merge_method": method,
@@ -3232,7 +3255,7 @@ def approval(args, product, workdir, repo, prefix, remote, kit_sha, method):
         }
         write_json(approval_path, approval_att)
         head = commit_push(
-            product, workdir, remote, branch, f"{args.ticket}: attest Linear approval",
+            product, workdir, remote, branch, f"{args.ticket}: attest operator approval",
             (ticket_path, approval_path),
         )
         validate_approval_attestation(
@@ -3288,6 +3311,14 @@ def approval(args, product, workdir, repo, prefix, remote, kit_sha, method):
     ):
         raise Refusal("GitHub did not confirm auto-merge for the exact approved head")
     if exact_overlay:
+        operator_receipt.verify_consume(
+            operator_receipt_state_dir(), args.ticket, "approve",
+            {
+                "bundle_attestation_blob": git(
+                    workdir, "hash-object", str(attestation_path)
+                ).stdout.strip(),
+            },
+        )
         consume_overlay(product, args.ticket, version)
     return {"action": "approval", "head": head, "pr_number": current["number"], "auto_merge": True}
 
@@ -3303,34 +3334,11 @@ def finalize_terminal(product, workdir, remote, ticket, expected_basis):
         raise Refusal(f"protected terminal validation failed: {error}") from error
     if terminal.get("basis") != expected_basis:
         raise Refusal("protected terminal evidence has the wrong basis")
-    sync = run([
-        sys.executable, "-I", "-S", str(Path(__file__).with_name("linear-sync.py")),
-        "--factory-root", str(product), "--ticket", ticket, "--terminal",
-    ])
-    try:
-        linear = json.loads(sync.stdout)
-    except json.JSONDecodeError as error:
-        raise Refusal("Linear terminal sync returned invalid evidence") from error
-    if (
-        not isinstance(linear, dict)
-        or set(linear) != {
-            "identifier", "issue_id", "source_ref", "state", "state_id", "updated",
-        }
-        or not isinstance(linear["identifier"], str)
-        or not linear["identifier"]
-        or not isinstance(linear["issue_id"], str)
-        or not linear["issue_id"]
-        or linear["source_ref"] != "refs/remotes/origin/main"
-        or linear["state"] != "Done"
-        or not isinstance(linear["state_id"], str)
-        or not linear["state_id"]
-        or not isinstance(linear["updated"], bool)
-    ):
-        raise Refusal("Linear terminal sync did not confirm exact Done")
+    # No external witness: the protected-main terminal validation above is the
+    # closeout evidence (deliberate trade-off recorded with the Linear removal).
     return {
         "basis": terminal["basis"],
         "protected_main": git(workdir, "rev-parse", "origin/main").stdout.strip(),
-        "linear": linear,
     }
 
 
@@ -3356,11 +3364,7 @@ def record_terminal_controller_event(ticket, kit_sha, terminal):
         or stat.S_IMODE(info.st_mode) != 0o700
     ):
         raise Refusal("trusted controller event directory is unsafe")
-    linear = terminal["linear"]
     details = {
-        "linear_identifier": linear["identifier"],
-        "linear_issue_id": linear["issue_id"],
-        "linear_state_id": linear["state_id"],
         "protected_main": terminal["protected_main"],
         "terminal_basis": terminal["basis"],
     }
@@ -3384,14 +3388,14 @@ def record_terminal_controller_event(ticket, kit_sha, terminal):
             raise Refusal("controller event evidence is invalid")
         if (
             event.get("schema") == "nysa.software-factory.controller-event/v1"
-            and event.get("event") == "linear_terminal_synced"
+            and event.get("event") == "operator_terminal_recorded"
             and event.get("factory_sha") == kit_sha
             and event.get("ticket") == ticket
             and all(event.get(name) == value for name, value in details.items())
         ):
             return
     value = {
-        "event": "linear_terminal_synced",
+        "event": "operator_terminal_recorded",
         "factory_sha": kit_sha,
         "observed_at_epoch_ns": time.time_ns(),
         "schema": "nysa.software-factory.controller-event/v1",
@@ -3749,7 +3753,7 @@ def done(
     successful = successful_post_merge_checks(repo, merge, checks)
     if (
         field(text, "State").lower() != "approved"
-        or field(text, "Operator-Approval").lower() != "linear"
+        or field(text, "Operator-Approval").lower() not in {"linear", "receipt"}
     ) and not retry:
         raise Refusal("closeout requires an Approved ticket on protected main")
     if retry:

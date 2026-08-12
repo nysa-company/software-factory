@@ -77,7 +77,7 @@ class OperatorEventWatchTest(unittest.TestCase):
         self.write(self.source("ticket_released"))
         self.write(self.source(
             "awaiting_approval", passport_sha256="b" * 64,
-            question="Approve this ticket to merge in Linear.",
+            question="Approve this ticket to merge.",
         ))
         self.write(self.source("budget_wait", passport_sha256="c" * 64))
         first = self.run_watch("--limit", "2", "--idle-timeout-seconds", "1")

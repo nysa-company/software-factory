@@ -5,6 +5,29 @@ machine-readable schemas, status categories, exit codes, profile/skill
 locations, and supported Hermes versions. Human diagnostics and internal
 helper output are not compatibility promises.
 
+## 1.9.0 — 2026-08-11
+
+- Removes the Linear integration entirely: the `linear-sync` route, its
+  LaunchAgent, Doctor's Linear checks, and the credential-broker path for the
+  Linear API key are gone.
+- Replaces Linear as the source of the six operator authorities (ready,
+  approve, resume, cancel, priority, model-fallback approval) with one-use
+  operator receipts anchored in the controller state directory, issued
+  through a new factory-kit operator CLI that also projects the decision into
+  the operator map and writes a zero-authority audit copy into the product
+  checkout.
+- Renames the operator map from `factory/linear-map.json` to
+  `factory/operator-map.json` (`FACTORY_OPERATOR_MAP` override unchanged);
+  the isolated-qualification operator state path follows the same rename.
+- Renames the `AWAIT-OPERATOR` stage strings and the controller/operator-watch
+  event names that referenced Linear to their operator-receipt equivalents.
+- Replaces `linear_updated_at` with a bound `receipt_sha256` in new
+  `approval.json` and `model_fallback_approval` evidence; historical
+  Linear-evidence validation for already-terminal tickets is unchanged.
+- Extends every hardcoded contract-version whitelist to accept 1.9.0 in
+  addition to 1.8.0; Contract 1.9 carries forward every Contract 1.8 command,
+  grammar, and authority unchanged except for the Linear removal above.
+
 ## 1.8.0 — 2026-07-27
 
 - Adds a zero-argument production `linear-sync` route through the stable

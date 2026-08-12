@@ -72,7 +72,7 @@ def parse_review(raw: str, contract_version: str) -> tuple[str, str]:
         ))
     ]
     owner = ""
-    if contract_version in {"1.7.0", "1.8.0"}:
+    if contract_version in {"1.7.0", "1.8.0", "1.9.0"}:
         if verdict == "REQUEST CHANGES" and len(owners) != 1:
             raise ValueError("contract 1.7 request changes requires exactly one FIX-OWNER")
         if verdict == "APPROVE" and owners:

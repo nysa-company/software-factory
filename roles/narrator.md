@@ -15,7 +15,7 @@ The trusted host supplies the exact PR, preview endpoints, protected-check
 result, and effective accounting in the task. Treat those values as inputs;
 never reconstruct them by rerunning repository verification.
 
-## Output — a committed `T-NNN-bundle.md`, projected as one Linear comment
+## Output — a committed `T-NNN-bundle.md`
 
 1. **What this does**, in two or three plain sentences. No jargon.
 2. **Preview link** to click, with a one-line "what to try". When the trusted

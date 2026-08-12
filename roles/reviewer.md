@@ -34,7 +34,7 @@ without any `FIX-OWNER` line.
   contract disagreement instead of inventing a repair.
 - You cannot push commits. Suggestions go in comments.
 - A trivially-passing or contract-dodging test is a **reject on round 1** — that's the failure mode you exist to catch.
-- Do not edit State, Initiative, Priority, or operator-owned fields. The dispatcher records stage movement and Linear receives the projected verdict.
+- Do not edit State, Initiative, Priority, or operator-owned fields. The dispatcher records stage movement and the projected verdict lands in `factory/operator-map.json`.
 - Leave the branch, HEAD, and worktree exactly as you found them. Any local mutation is rejected by the wrapper; review output belongs in the review system.
 
 ## Worked example (regression check)

@@ -899,7 +899,7 @@ expect_stage() {
   fi
   certified_origin="$(git -C "$root" remote get-url --push origin 2>/dev/null || true)"
   contract="${TEST_CONTRACT_VERSION:-1.2.0}"
-  if [[ "$contract" == "1.8.0" ]]; then
+  if [[ "$contract" == "1.8.0" || "$contract" == "1.9.0" ]]; then
     actual="$(FACTORY_ROOT="$root" FACTORY_LEDGER="$root/factory/ledger.csv" \
       FACTORY_CERTIFIED_PRODUCT_ORIGIN="$certified_origin" \
       FACTORY_RELEASE_SHA="$KIT_SHA" FACTORY_RELEASE_TREE="$SEALED_TREE" \
@@ -955,18 +955,18 @@ SEALED_STAGE="$(env \
   FACTORY_RELEASE_SHA="$KIT_SHA" \
   FACTORY_RELEASE_TREE="$SEALED_TREE" \
   FACTORY_RELEASE_PATH="$SEALED_RELEASE" \
-  FACTORY_RELEASE_CONTRACT_VERSION=1.8.0 \
+  FACTORY_RELEASE_CONTRACT_VERSION=1.9.0 \
   "$SEALED_RELEASE/scripts/next-stage.sh" --ticket T-190 2>&1)"
 SEALED_TRANSITION="$(env \
   FACTORY_CERTIFIED_PRODUCT_ORIGIN="$SEALED_ORIGIN" \
   FACTORY_RELEASE_SHA="$KIT_SHA" \
   FACTORY_RELEASE_TREE="$SEALED_TREE" \
   FACTORY_RELEASE_PATH="$SEALED_RELEASE" \
-  FACTORY_RELEASE_CONTRACT_VERSION=1.8.0 \
+  FACTORY_RELEASE_CONTRACT_VERSION=1.9.0 \
   python3 "$SEALED_RELEASE/scripts/state-machine.py" next \
     --factory-root "$SEALED_PRODUCT" --workdir "$SEALED_PRODUCT" \
     --kit-dir "$SEALED_RELEASE" --state-dir "$SEALED_STATE" \
-    --ticket T-190 --contract-version 1.8.0 --factory-sha "$KIT_SHA" \
+    --ticket T-190 --contract-version 1.9.0 --factory-sha "$KIT_SHA" \
     --project sealed)"
 SEALED_RECEIPT="$(python3 -c \
   'import json,sys; print(json.load(sys.stdin)["receipt"])' \
@@ -976,7 +976,7 @@ env \
   python3 "$SEALED_RELEASE/scripts/state-machine.py" consume \
     --factory-root "$SEALED_PRODUCT" --workdir "$SEALED_PRODUCT" \
     --kit-dir "$SEALED_RELEASE" --state-dir "$SEALED_STATE" \
-    --ticket T-190 --contract-version 1.8.0 --factory-sha "$KIT_SHA" \
+    --ticket T-190 --contract-version 1.9.0 --factory-sha "$KIT_SHA" \
     --project sealed --receipt "$SEALED_RECEIPT" --role planner >/dev/null
 SEALED_RUN_STATUS=0
 env \
@@ -992,7 +992,7 @@ env \
   FACTORY_RELEASE_SHA="$KIT_SHA" \
   FACTORY_RELEASE_TREE="$SEALED_TREE" \
   FACTORY_RELEASE_PATH="$SEALED_RELEASE" \
-  FACTORY_RELEASE_CONTRACT_VERSION=1.8.0 \
+  FACTORY_RELEASE_CONTRACT_VERSION=1.9.0 \
   "$SEALED_RELEASE/scripts/run-agent.sh" \
     --role planner --ticket T-190 -- "sealed run" >/dev/null 2>&1 ||
   SEALED_RUN_STATUS=$?
@@ -1001,7 +1001,7 @@ SEALED_AFTER="$(env \
   FACTORY_RELEASE_SHA="$KIT_SHA" \
   FACTORY_RELEASE_TREE="$SEALED_TREE" \
   FACTORY_RELEASE_PATH="$SEALED_RELEASE" \
-  FACTORY_RELEASE_CONTRACT_VERSION=1.8.0 \
+  FACTORY_RELEASE_CONTRACT_VERSION=1.9.0 \
   "$SEALED_RELEASE/scripts/next-stage.sh" --ticket T-190 2>&1)"
 SEALED_META="$(ls "$SEALED_PRODUCT/factory/runs/"*.meta 2>/dev/null || true)"
 if [[ "$SEALED_STAGE" == "RUN planner" &&
@@ -1012,7 +1012,7 @@ if [[ "$SEALED_STAGE" == "RUN planner" &&
    grep -q "^kit_sha=$KIT_SHA$" "$SEALED_META" &&
    grep -q "^kit_tree=$SEALED_TREE$" "$SEALED_META" &&
    grep -q "^ticket_kit_sha=$KIT_SHA$" "$SEALED_META" &&
-   grep -q '^contract_version=1.8.0$' "$SEALED_META" &&
+   grep -q '^contract_version=1.9.0$' "$SEALED_META" &&
    grep -q "^physical_kit_path=$SEALED_RELEASE$" "$SEALED_META" &&
    grep -q '^kit_provenance_mode=sealed$' "$SEALED_META" &&
    grep -q '^kit_provenance_scope=qualification-candidate$' "$SEALED_META" &&
@@ -1075,11 +1075,11 @@ CURSOR_TRANSITION="$(env \
   FACTORY_CERTIFIED_PRODUCT_ORIGIN="$SEALED_ORIGIN" \
   FACTORY_RELEASE_SHA="$KIT_SHA" FACTORY_RELEASE_TREE="$SEALED_TREE" \
   FACTORY_RELEASE_PATH="$SEALED_RELEASE" \
-  FACTORY_RELEASE_CONTRACT_VERSION=1.8.0 \
+  FACTORY_RELEASE_CONTRACT_VERSION=1.9.0 \
   python3 "$SEALED_RELEASE/scripts/state-machine.py" next \
     --factory-root "$SEALED_PRODUCT" --workdir "$SEALED_PRODUCT" \
     --kit-dir "$SEALED_RELEASE" --state-dir "$SEALED_STATE" \
-    --ticket T-190 --contract-version 1.8.0 --factory-sha "$KIT_SHA" \
+    --ticket T-190 --contract-version 1.9.0 --factory-sha "$KIT_SHA" \
     --project sealed)"
 CURSOR_RECEIPT="$(python3 -c \
   'import json,sys; print(json.load(sys.stdin)["receipt"])' \
@@ -1088,7 +1088,7 @@ env FACTORY_CERTIFIED_PRODUCT_ORIGIN="$SEALED_ORIGIN" \
   python3 "$SEALED_RELEASE/scripts/state-machine.py" consume \
     --factory-root "$SEALED_PRODUCT" --workdir "$SEALED_PRODUCT" \
     --kit-dir "$SEALED_RELEASE" --state-dir "$SEALED_STATE" \
-    --ticket T-190 --contract-version 1.8.0 --factory-sha "$KIT_SHA" \
+    --ticket T-190 --contract-version 1.9.0 --factory-sha "$KIT_SHA" \
     --project sealed --receipt "$CURSOR_RECEIPT" --role spec-linter >/dev/null
 CURSOR_RUN_STATUS=0
 CURSOR_RUN_OUTPUT="$TMP/sealed-cursor-run.out"
@@ -1110,7 +1110,7 @@ env \
   FACTORY_KIT_TRUST_SCOPE=qualification-candidate \
   FACTORY_RELEASE_SHA="$KIT_SHA" FACTORY_RELEASE_TREE="$SEALED_TREE" \
   FACTORY_RELEASE_PATH="$SEALED_RELEASE" \
-  FACTORY_RELEASE_CONTRACT_VERSION=1.8.0 \
+  FACTORY_RELEASE_CONTRACT_VERSION=1.9.0 \
   FACTORY_CURSOR_FALLBACK_ENABLED=1 CURSOR_AGENT_VERSION=2026.07.test \
   CURSOR_AGENT_BIN="$CURSOR_AGENT_WRAPPER" \
   FACTORY_PROBE_CURSOR_ANTHROPIC=READY:test \
@@ -1602,7 +1602,7 @@ if PATH="$STUB_BIN:$PATH" FACTORY_ROOT="$FALLBACK" \
      grep -q "^kit_tree=$KIT_TREE$" "$FALLBACK_META" &&
      grep -q "^product_tree=$FALLBACK_PRODUCT_TREE$" "$FALLBACK_META" &&
      grep -q "^ticket_kit_sha=$KIT_SHA$" "$FALLBACK_META" &&
-     grep -q '^contract_version=1.8.0$' "$FALLBACK_META" &&
+     grep -q '^contract_version=1.9.0$' "$FALLBACK_META" &&
      grep -q "^physical_kit_path=$PHYSICAL_KIT_PATH$" "$FALLBACK_META"; then
     pass "unavailable primary selects one redacted Cursor task"
   else
@@ -2725,9 +2725,9 @@ if TEST_CONTRACT_VERSION=1.7.0 expect_stage "FIX test-author" "$OWNED_FIX" T-302
       pass "contract 1.7 sequences explicit dual-owner repairs"
   fi
 fi
-if TEST_CONTRACT_VERSION=1.8.0 expect_stage "FIX planner" "$OWNED_FIX_18" T-302; then
+if TEST_CONTRACT_VERSION=1.9.0 expect_stage "FIX planner" "$OWNED_FIX_18" T-302; then
   ledger_row T-302 planner >> "$OWNED_FIX_18/factory/ledger.csv"
-  TEST_CONTRACT_VERSION=1.8.0 expect_stage \
+  TEST_CONTRACT_VERSION=1.9.0 expect_stage \
     "REFUSE Planner repair did not open one authenticated test-first contract epoch" \
     "$OWNED_FIX_18" T-302 &&
     pass "contract 1.8 refuses late Test-author work without a new epoch"
@@ -2738,11 +2738,11 @@ if TEST_CONTRACT_VERSION=1.8.0 expect_stage "FIX planner" "$OWNED_FIX_18" T-302;
   git -C "$OWNED_FIX_18" add factory/tickets/T-302.md
   git -C "$OWNED_FIX_18" -c user.name=test -c user.email=test@example.com \
     commit -qm "open test-first repair epoch"
-  if TEST_CONTRACT_VERSION=1.8.0 expect_stage "FIX test-author" "$OWNED_FIX_18" T-302; then
+  if TEST_CONTRACT_VERSION=1.9.0 expect_stage "FIX test-author" "$OWNED_FIX_18" T-302; then
     ledger_row T-302 test-author >> "$OWNED_FIX_18/factory/ledger.csv"
-    if TEST_CONTRACT_VERSION=1.8.0 expect_stage "FIX builder" "$OWNED_FIX_18" T-302; then
+    if TEST_CONTRACT_VERSION=1.9.0 expect_stage "FIX builder" "$OWNED_FIX_18" T-302; then
       ledger_row T-302 builder >> "$OWNED_FIX_18/factory/ledger.csv"
-      TEST_CONTRACT_VERSION=1.8.0 expect_stage "RUN reviewer" "$OWNED_FIX_18" T-302 &&
+      TEST_CONTRACT_VERSION=1.9.0 expect_stage "RUN reviewer" "$OWNED_FIX_18" T-302 &&
         pass "contract 1.8 sequences a test-first dual-owner repair epoch"
     fi
   fi
@@ -2760,7 +2760,7 @@ write_envelope "$TEST_ONLY_FIX" no-git
 printf '%s\n' '# T-304' 'reviewer round 1: REQUEST CHANGES' \
   'reviewer round 1 FIX-OWNER: test-author' > \
   "$TEST_ONLY_FIX/factory/tickets/T-304.md"
-TEST_CONTRACT_VERSION=1.8.0 expect_stage "FIX planner" "$TEST_ONLY_FIX" T-304 &&
+TEST_CONTRACT_VERSION=1.9.0 expect_stage "FIX planner" "$TEST_ONLY_FIX" T-304 &&
   pass "contract 1.8 opens an epoch before a single-owner Test-author repair"
 
 MISSING_OWNER="$TMP/missing-fix-owner"
@@ -3132,12 +3132,12 @@ for role in planner spec-linter test-author builder reviewer narrator; do
     "$POST_BUDGET_ROOT/factory/runs/$run_id.meta"
 done
 POST_BUDGET_OK=1
-TEST_CONTRACT_VERSION=1.8.0 expect_stage \
+TEST_CONTRACT_VERSION=1.9.0 expect_stage \
   "AWAIT-OPERATOR bundle posted" "$POST_BUDGET_ROOT" T-532 || \
   POST_BUDGET_OK=0
 printf '# What this does\n' > \
   "$POST_BUDGET_ROOT/factory/tickets/T-532-bundle.md"
-TEST_CONTRACT_VERSION=1.8.0 expect_stage \
+TEST_CONTRACT_VERSION=1.9.0 expect_stage \
   "AWAIT_BUDGET ticket budget exhausted" "$POST_BUDGET_ROOT" T-532 || \
   POST_BUDGET_OK=0
 write_ticket "$POST_BUDGET_ROOT" T-533 Ready
@@ -3154,7 +3154,7 @@ META
 git -C "$POST_BUDGET_ROOT" add factory/tickets/T-533.md
 git -C "$POST_BUDGET_ROOT" -c user.name=test -c user.email=test@example.com \
   commit -qm "provider-budget fixture"
-TEST_CONTRACT_VERSION=1.8.0 expect_stage \
+TEST_CONTRACT_VERSION=1.9.0 expect_stage \
   "AWAIT_BUDGET ticket budget exhausted" "$POST_BUDGET_ROOT" T-533 || \
   POST_BUDGET_OK=0
 if [[ "$POST_BUDGET_OK" -eq 1 ]]; then
@@ -3223,11 +3223,11 @@ Approve to merge?
 BUNDLE
 expect_stage "AWAIT-OPERATOR" "$WALK" T-500 || WALK_OK=0
 printf '%s\n' \
-  '{"tickets":{"T-500":{"operator":{"state":"Approved","approval":"Linear","state_base":"awaiting approval"}}}}' \
-  > "$WALK/factory/linear-map.json"
+  '{"tickets":{"T-500":{"operator":{"state":"Approved","approval":"Receipt","state_base":"awaiting approval"}}}}' \
+  > "$WALK/factory/operator-map.json"
 expect_stage "REFUSE contract 1.2 has no trusted bundle-attestation path for approval" \
   "$WALK" T-500 || WALK_OK=0
-rm "$WALK/factory/linear-map.json"
+rm "$WALK/factory/operator-map.json"
 printf 'Operator-Approval: Linear because the operator said so\n' >> \
   "$WALK/factory/tickets/T-500.md"
 expect_stage "REFUSE contract 1.2 has no trusted bundle-attestation path for approval" \
@@ -3601,7 +3601,7 @@ fi
 REFRESH_RESERVE_ROOT="$TMP/refresh-revalidation-reserve"
 write_envelope "$REFRESH_RESERVE_ROOT"
 cat > "$REFRESH_RESERVE_ROOT/factory/QUALIFICATION.json" <<JSON
-{"budget_usd":"300.000000","capacity":3,"contract_version":"1.8.0","factory_sha":"$KIT_SHA","generation":1,"mode":"successor","per_run_budget_usd":"10.000000","per_ticket_budget_usd":"100.000000","schema":"nysa.software-factory.qualification/v2","source_factory_sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","target_done":3,"tickets":["T-540","T-541","T-542"]}
+{"budget_usd":"300.000000","capacity":3,"contract_version":"1.9.0","factory_sha":"$KIT_SHA","generation":1,"mode":"successor","per_run_budget_usd":"10.000000","per_ticket_budget_usd":"100.000000","schema":"nysa.software-factory.qualification/v2","source_factory_sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","target_done":3,"tickets":["T-540","T-541","T-542"]}
 JSON
 cat > "$REFRESH_RESERVE_ROOT/factory/tickets/T-540.md" <<TICKET
 # T-540
@@ -3671,9 +3671,9 @@ kit_sha=$KIT_SHA
 META
 done
 REFRESH_RESERVE_OK=1
-TEST_CONTRACT_VERSION=1.8.0 expect_stage \
+TEST_CONTRACT_VERSION=1.9.0 expect_stage \
   "RUN reviewer" "$REFRESH_RESERVE_ROOT" T-540 || REFRESH_RESERVE_OK=0
-TEST_CONTRACT_VERSION=1.8.0 expect_stage \
+TEST_CONTRACT_VERSION=1.9.0 expect_stage \
   "RUN reviewer" "$REFRESH_RESERVE_ROOT" T-540 || REFRESH_RESERVE_OK=0
 cat > "$REFRESH_RESERVE_ROOT/factory/runs/reserve-reviewer-failed.meta" <<META
 run_id=reserve-reviewer-failed
@@ -3685,7 +3685,7 @@ exit_status=5
 role_exit=budget
 kit_sha=$KIT_SHA
 META
-TEST_CONTRACT_VERSION=1.8.0 expect_stage \
+TEST_CONTRACT_VERSION=1.9.0 expect_stage \
   "AWAIT_BUDGET protected-base revalidation budget reserved" \
   "$REFRESH_RESERVE_ROOT" T-540 || REFRESH_RESERVE_OK=0
 rm "$REFRESH_RESERVE_ROOT/factory/runs/reserve-reviewer-failed.meta"
@@ -3724,7 +3724,7 @@ PY
 git -C "$REFRESH_RESERVE_ROOT" add factory/attestations/T-540/refresh.json
 git -C "$REFRESH_RESERVE_ROOT" -c user.name=test -c user.email=test@example.com \
   commit -qm "forge discontinuous refresh reserve"
-TEST_CONTRACT_VERSION=1.8.0 expect_stage \
+TEST_CONTRACT_VERSION=1.9.0 expect_stage \
   "REFUSE malformed refresh receipt" "$REFRESH_RESERVE_ROOT" T-540 || \
   REFRESH_RESERVE_OK=0
 
@@ -3749,7 +3749,7 @@ PY
 git -C "$REFRESH_RESERVE_ROOT" add factory/attestations/T-540/refresh.json
 git -C "$REFRESH_RESERVE_ROOT" -c user.name=test -c user.email=test@example.com \
   commit -qm "forge reset refresh reserve"
-TEST_CONTRACT_VERSION=1.8.0 expect_stage \
+TEST_CONTRACT_VERSION=1.9.0 expect_stage \
   "REFUSE malformed refresh receipt" "$REFRESH_RESERVE_ROOT" T-540 || \
   REFRESH_RESERVE_OK=0
 
@@ -3776,7 +3776,7 @@ PY
 git -C "$REFRESH_RESERVE_ROOT" add factory/attestations/T-540/refresh.json
 git -C "$REFRESH_RESERVE_ROOT" -c user.name=test -c user.email=test@example.com \
   commit -qm "legacy refresh has no reserve" || REFRESH_RESERVE_OK=0
-TEST_CONTRACT_VERSION=1.8.0 expect_stage \
+TEST_CONTRACT_VERSION=1.9.0 expect_stage \
   "AWAIT_BUDGET protected-base revalidation budget reserved" \
   "$REFRESH_RESERVE_ROOT" T-540 || REFRESH_RESERVE_OK=0
 if [[ "$REFRESH_RESERVE_OK" -eq 1 ]]; then
@@ -3860,7 +3860,7 @@ git -C "$ORPHAN_REFRESH_ROOT" add \
   factory/attestations/T-512/refresh.json
 git -C "$ORPHAN_REFRESH_ROOT" -c user.name=test -c user.email=test@example.com \
   commit -qm "record orphan control refresh"
-if TEST_CONTRACT_VERSION=1.8.0 \
+if TEST_CONTRACT_VERSION=1.9.0 \
    expect_stage "RUN reviewer" "$ORPHAN_REFRESH_ROOT" T-512; then
   pass "control-only refresh invalidates orphaned role evidence"
 fi
@@ -4534,7 +4534,7 @@ if [[ "$ROLE_PROTECTED_STATUS" -eq 11 &&
      grep -q '^State: Done$' &&
    git -C "$ROLE_EXIT_WORKTREE" show \
      "$ROLE_PROTECTED_DIAGNOSTIC:factory/tickets/T-610.md" |
-     grep -q '^Operator-Approval: Linear$' &&
+     grep -q '^Operator-Approval: Receipt$' &&
    grep -q 'role_exit_protected_ticket_mutation' "$TMP/role-protected.out" &&
    grep -q '^role_exit=role_exit_protected_ticket_mutation$' "$ROLE_PROTECTED_META" &&
    grep -q '^effective_cost=0.42$' "$ROLE_PROTECTED_META" &&

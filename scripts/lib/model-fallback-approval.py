@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate and consume one-use Linear model-fallback approvals."""
+"""Validate and consume one-use operator model-fallback approvals."""
 
 import argparse
 import datetime as dt
@@ -8,7 +8,11 @@ import os
 from pathlib import Path
 import re
 import stat
+import sys
 import tempfile
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import operator_receipt  # noqa: E402
 
 
 SHA256 = re.compile(r"[0-9a-f]{64}\Z")
@@ -19,11 +23,9 @@ REASONS = frozenset((
     "provider_unavailable",
 ))
 APPROVAL_KEYS = frozenset((
-    "approval_hash", "comment_id", "expires_at", "failed_run_id",
-    "linear_created_at", "linear_updated_at", "nonce", "observed_at",
-    "operator_id", "operator_name", "reason", "schema",
+    "approval_hash", "expires_at", "failed_run_id", "nonce", "observed_at",
+    "operator_id", "reason", "receipt_sha256", "schema",
 ))
-LINEAR_TIMESTAMP_SKEW = dt.timedelta(seconds=1)
 
 
 class ApprovalError(ValueError):
@@ -61,27 +63,24 @@ def validate(value, ticket, failed_run, reason, approval_hash=None, now=None):
     if not isinstance(value, dict) or set(value) != APPROVAL_KEYS:
         raise ApprovalError("fallback approval has invalid fields")
     if (
-        value.get("schema") != "model-fallback-linear-approval/v1"
+        value.get("schema") != "model-fallback-receipt-approval/v1"
         or not SHA256.fullmatch(value.get("approval_hash", ""))
+        or not SHA256.fullmatch(value.get("receipt_sha256", ""))
         or not RUN_ID.fullmatch(value.get("failed_run_id", ""))
         or value.get("failed_run_id") != failed_run
         or value.get("reason") != reason
         or reason not in REASONS
         or not re.fullmatch(r"[0-9a-f]{32}", value.get("nonce", ""))
-        or not isinstance(value.get("comment_id"), str)
-        or not value["comment_id"]
         or not isinstance(value.get("operator_id"), str)
         or not value["operator_id"]
     ):
         raise ApprovalError("fallback approval identity does not match")
     if approval_hash is not None and value["approval_hash"] != approval_hash:
         raise ApprovalError("fallback approval hash does not match preview")
-    created = timestamp(value.get("linear_created_at"), "Linear creation")
-    updated = timestamp(value.get("linear_updated_at"), "Linear update")
-    observed = timestamp(value.get("observed_at"), "approval observation")
+    timestamp(value.get("observed_at"), "approval observation")
     expires = timestamp(value.get("expires_at"), "approval expiry")
     current = now or dt.datetime.now(dt.timezone.utc)
-    if updated + LINEAR_TIMESTAMP_SKEW < created or observed < updated or current > expires:
+    if current > expires:
         raise ApprovalError("fallback approval is stale or expired")
     if not TICKET.fullmatch(ticket):
         raise ApprovalError("ticket identifier is invalid")
@@ -100,10 +99,10 @@ def approval_from_map(mapping, ticket, failed_run, reason, approval_hash=None, n
         approval_hash,
         now,
     )
-    consumed = entry.get("consumed_model_fallback_comment_ids", [])
+    consumed = entry.get("consumed_model_fallback_receipt_ids", [])
     if not isinstance(consumed, list) or any(not isinstance(item, str) for item in consumed):
         raise ApprovalError("consumed approval history is invalid")
-    if approval["comment_id"] in consumed:
+    if approval["receipt_sha256"] in consumed:
         raise ApprovalError("fallback approval was already consumed")
     return approval
 
@@ -125,36 +124,42 @@ def atomic_write(path, value, mode):
             pass
 
 
-def consume(mapping, path, mode, ticket, approval):
+def consume(mapping, path, mode, ticket, approval, state_dir):
+    try:
+        operator_receipt.verify_consume(
+            state_dir, ticket, "fallback",
+            {"preview_sha256": approval["approval_hash"]},
+        )
+    except operator_receipt.OperatorReceiptError as exc:
+        raise ApprovalError(f"authoritative fallback receipt was not consumed: {exc}") from exc
     entry = mapping["tickets"][ticket]
-    consumed = list(entry.get("consumed_model_fallback_comment_ids", []))
-    consumed.append(approval["comment_id"])
-    entry["consumed_model_fallback_comment_ids"] = consumed
+    consumed = list(entry.get("consumed_model_fallback_receipt_ids", []))
+    consumed.append(approval["receipt_sha256"])
+    entry["consumed_model_fallback_receipt_ids"] = consumed
     entry.pop("model_fallback_approval", None)
     atomic_write(path, mapping, mode)
 
 
-def verify_consumed(mapping, ticket, comment_id, approval_hash):
+def verify_consumed(mapping, ticket, receipt_sha256, approval_hash):
     if (
         not TICKET.fullmatch(ticket)
-        or not isinstance(comment_id, str)
-        or not comment_id
+        or not SHA256.fullmatch(receipt_sha256 or "")
         or not SHA256.fullmatch(approval_hash or "")
     ):
         raise ApprovalError("consumed approval identity is invalid")
     entry = mapping["tickets"].get(ticket)
     if not isinstance(entry, dict):
         raise ApprovalError("ticket is absent from operator map")
-    consumed = entry.get("consumed_model_fallback_comment_ids", [])
+    consumed = entry.get("consumed_model_fallback_receipt_ids", [])
     if (
         not isinstance(consumed, list)
         or any(not isinstance(item, str) for item in consumed)
-        or comment_id not in consumed
+        or receipt_sha256 not in consumed
     ):
         raise ApprovalError("committed fallback approval is not recorded as consumed")
     return {
         "approval_hash": approval_hash,
-        "comment_id": comment_id,
+        "receipt_sha256": receipt_sha256,
         "schema": "model-fallback-consumed-approval/v1",
     }
 
@@ -167,14 +172,15 @@ def main(argv=None):
     parser.add_argument("--failed-run", required=True)
     parser.add_argument("--reason", required=True, choices=sorted(REASONS))
     parser.add_argument("--approval-hash")
-    parser.add_argument("--comment-id")
+    parser.add_argument("--receipt-sha256")
+    parser.add_argument("--state-dir")
     args = parser.parse_args(argv)
     path = Path(args.operator_map)
     mapping, mode = load_map(path)
     if args.action == "verify-consumed":
         print(json.dumps(
             verify_consumed(
-                mapping, args.ticket, args.comment_id, args.approval_hash
+                mapping, args.ticket, args.receipt_sha256, args.approval_hash
             ),
             sort_keys=True,
             separators=(",", ":"),
@@ -186,14 +192,16 @@ def main(argv=None):
     if args.action == "consume":
         if args.approval_hash is None:
             parser.error("consume requires --approval-hash")
-        consume(mapping, path, mode, args.ticket, approval)
+        if not args.state_dir:
+            parser.error("consume requires --state-dir")
+        consume(mapping, path, mode, args.ticket, approval, Path(args.state_dir))
     print(json.dumps({
         "approval_hash": approval["approval_hash"],
-        "comment_id": approval["comment_id"],
         "failed_run_id": approval["failed_run_id"],
         "nonce": approval["nonce"],
         "operator_id": approval["operator_id"],
         "reason": approval["reason"],
+        "receipt_sha256": approval["receipt_sha256"],
         "schema": approval["schema"],
     }, sort_keys=True, separators=(",", ":")))
 

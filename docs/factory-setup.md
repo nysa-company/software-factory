@@ -8,8 +8,8 @@ Read [architecture.md](architecture.md) first. It defines the kit/product bounda
 
 - Create the product repo as a **sibling folder** (never nested inside another repo). Do NOT copy kit scripts into it — the engine model in `docs/architecture.md` is the contract.
 - Create `factory/` with: `ENVELOPE.md` (filled from `envelope/ENVELOPE.template.md`), `ENVELOPE.env`, `PROJECT.env`, `KIT_PIN`, an executable certification script, and empty `initiatives/` and `tickets/` directories.
-- Ignore `factory/linear-map.json`, `factory/.linear-sync.lock`, `factory/.envelope.lock/`, `factory/envelope-overrides/`, and `factory/envelope-override-consumptions/`; they are runtime operator state and must never dirty the registered checkout.
-- Ignore `factory/runs/`, `factory/.active-runs/`, `factory/.provider.lock/`, and `factory/runtime-ledger.csv`; preflight or the first normal Linear reconciliation durably initializes the real, no-follow runs root, manifests are atomic local run truth, claims and the provider lock are runtime exclusion state, and the CSV is their rebuildable view over the tracked durable ledger.
+- Ignore `factory/operator-map.json`, `factory/.envelope.lock/`, `factory/envelope-overrides/`, and `factory/envelope-override-consumptions/`; they are runtime operator state and must never dirty the registered checkout.
+- Ignore `factory/runs/`, `factory/.active-runs/`, `factory/.provider.lock/`, and `factory/runtime-ledger.csv`; preflight or the first normal reconciliation durably initializes the real, no-follow runs root, manifests are atomic local run truth, claims and the provider lock are runtime exclusion state, and the CSV is their rebuildable view over the tracked durable ledger.
 - Write exactly one lowercase, full 40-character SHA to `factory/KIT_PIN`. External products never use an abbreviated SHA or the in-kit conformance exception.
 - Add one repository-contained executable path to `factory/PROJECT.env`, for example `CERTIFY_SCRIPT=factory/certify.sh`. The script must run the product checks without changing the tracked product tree.
 - Declare exactly one `PREVIEW_PROVIDER=railway` or `PREVIEW_PROVIDER=none`. `none` is allowed only with narrow `NONVISUAL_PATHS`; each ready ticket must also declare exact `Builder ownership: path[, path] only` so qualification can prove the work cannot require a missing preview before any provider call.
@@ -80,39 +80,31 @@ Fill every blank in `factory/ENVELOPE.md`: per-ticket budget (USD and max turns)
 - Keep Kimi disabled. No live or billed pilot has run. Before any pilot, rotate its credential and address the residual same-UID token exposure with a credential broker or OS isolation.
 - Secrets live only in GitHub Actions secrets and the hosting platform. No `.env` in git, ever.
 
-## Step 4 — Linear
+## Step 4 — Operator authority
 
-Set up the shared Software Factory team per `docs/workflows/linear.md`: compact phase-level workflow states, the factory issue template, risk/external labels, and one Linear Project per file in `factory/initiatives/`.
+There is no external board to set up. The six operator authorities (ready,
+approve, resume, cancel, priority, model-fallback approval) are one-use
+receipts issued by
+`bash scripts/factory-kit.sh operator ACTION --project SLUG --product REPO [--ticket T-NNN]`,
+anchored in the controller state directory (`$PROJECTS_DIR/<slug>/controller`).
+Each verb issues the receipt, projects the decision into the gitignored
+`factory/operator-map.json` that ticket sequencing reads, and writes a
+zero-authority audit copy under `factory/receipts/<T>/` committed in the
+product checkout. The map is a pure projection with nothing behind it — there
+is no setup step, service, or credential to install for it, and no
+sync/freshness concept to configure. Git owns execution details; the operator
+owns priority, Ready, approval, unblock, and initiative (set directly on the
+ticket via `Initiative:`). There is no push notification by design; run
+`operator pending` to see what needs you, or consume `operator-event-watch --json`
+if you want to build one later.
 
-Run `scripts/linear-sync.py --factory-root <product-repo> --setup` once to create or verify the team, states, labels, and Projects. After the selected release and stable launcher are active, install and explicitly enable the per-product three-minute job with `bash scripts/factory-kit.sh linear-sync-service enable --project <project> --product <absolute-product-path>`. Use `disable` for a product that must remain inactive; disabled means persistently disabled and unloaded, not merely absent from `launchctl print`. Linear owns operator priority, Ready, approval, unblock, and Project membership; Git owns execution details. The reconciler is asynchronous so Linear never sits in the sequencer control path. Mint the Linear API key (`~/.hermes/secrets/linear-api-key`) from the on-call operator's own account, since that's the account Linear auto-assigns and notifies on Awaiting Approval and Blocked-Escalated tickets.
-
-Fresh-map recovery adopts only Projects with one durable initiative identity and
-fails on ambiguity or an unidentified same-name Project. A pre-marker mapped
-Project is backfilled only when its exact ID still exists, its team and
-Git-owned name match, it has no marker-like line, no other Project carries the
-initiative marker, and an immediate re-read is unchanged. The update prepends
-the marker without changing prior content and is never retried in the same
-sweep; a later sweep observes an update whose response was lost. Once the
-mapped marker exists, unmarked same-name duplicates warn in Doctor but are not
-mutated or allowed to redirect tickets. Project name and marker content are
-Factory-owned; operators retain Project status and target date. For a new selected
-ticket after setup, use `scripts/linear-sync.py --factory-root <product-repo>
---ticket T-NNN --initialize`; qualification preparation invokes that bounded
-path for every selected ticket against its bound lane-local map. Fresh isolated
-preparation requires `--operator-map-seed <absolute-owner-only-linear-map.json>`
-(or `FACTORY_QUALIFICATION_OPERATOR_MAP_SEED`) and fails closed if the seed is
+Fresh qualification preparation for every selected ticket requires
+`--operator-map-seed <absolute-owner-only-operator-map.json>` (or
+`FACTORY_QUALIFICATION_OPERATOR_MAP_SEED`) and fails closed if the seed is
 absent, ambiguous, unsafe, malformed, or contains secret-bearing fields. It
 copies the validated seed into owner-only qualification authority, where the
 mutable map, locks, clear intents, and runtime ledger remain outside the sealed
-product checkout. Each selected initialization records a bounded create intent
-before mutation, persists a returned issue identity before observation, and
-never repeats an uncertain create. It confirms the exact intended Project and
-complete non-canceled state before persisting the issue's operator observation,
-consumes only its matching one-use clear, and does not inventory historical
-issues. A Linear rate limit is
-persisted canonically as `linear_rate_limited retry_after_seconds=N`, shared by
-credential identity, and keeps provider admission closed without API calls
-until expiry.
+product checkout.
 
 ## Step 5 — Hermes release boundary
 
@@ -192,13 +184,13 @@ until expiry.
   local-only linked product worktree based on current protected main, with only
   the candidate pin, successor manifest, and selected-ticket dependency edits.
   Its sealed helper environment binds the canonical live
-  Linear map. It validates and reuses canonical authenticated passports
+  operator map. It validates and reuses canonical authenticated passports
   and provider accounting under their existing lock rather than copying them.
   A fresh isolated worktree may omit ignored runtime directories; the preparer
   alone creates physical owner-only `factory/runs/`. It rejects noncanonical
   selected-ticket freeze metadata and any selected dependency pair before
   sealing, so the restart barrier cannot wait forever. Supply its canonical
-  owner-local Linear map with `--operator-map-seed`; the preparer binds a
+  owner-local operator map with `--operator-map-seed`; the preparer binds a
   lane-local copy and runtime ledger, initializes only the selected cohort,
   and proves the product is still clean before it publishes the environment.
   Preparation is serialized per project. A retry reruns live readiness and
@@ -215,7 +207,7 @@ until expiry.
   isolated attempt scratch. `--upgrade` is limited to a fresh isolated
   qualification; a takeover binds one frozen candidate. A successor upgrade
   also requires an authenticated source-rooted passport for every selected
-  ticket before it changes operator state, initializes Linear, seals the
+  ticket before it changes operator state, initializes the operator map, seals the
   release, or replaces activation. If any selected ticket is candidate-native
   or has no source passport, has malformed migration history, or carries
   pre-activation charge/completion evidence from the candidate or evidence from
@@ -287,21 +279,6 @@ until expiry.
   command fails; do not remove the rollback artifact or resume the lane.
   Certification and activation refuse any byte mismatch; never patch the
   installed launcher independently.
-
-- Migrate each legacy release-pinned Linear LaunchAgent exactly once after its
-  product has activated this release. Keep maintenance published and run the
-  matching `linear-sync-service enable` or `disable` command. The command
-  drains both known Linear lock generations, snapshots the prior plist and
-  load/disable state, and rolls back automatically
-  on any bootout, write, enable/disable, bootstrap, or verification failure,
-  and leaves maintenance in place. An absent native override is first
-  normalized to verified explicit-enabled ownership and reported as
-  `LINEAR SYNC SERVICE OWNERSHIP ADOPTED`; that committed semantic no-op is the
-  rollback baseline even if the later migration fails. If adoption cannot be
-  verified, no plist or load-state migration is attempted and maintenance must
-  remain. Do not hand-render the plist or call
-  `launchctl` as part of activation. Verify Doctor reports either an enabled,
-  loaded stable route or a disabled, unloaded stable route before resuming.
 
 - For a release migration, merge the protected product PR containing
   `factory/KIT_PIN` and the complete canonical
@@ -453,7 +430,7 @@ All boxes checked = the factory may start. Any box unchecked = it may not.
 - [ ] Console spend caps set on the primary providers; Cursor usage controls reviewed before fallback is enabled
 - [ ] Provider/account-route, Cursor, and product-runtime credentials are separated; none are committed
 - [ ] No secrets in git history (`git log -p | grep -i` for key patterns, or a scanner)
-- [ ] Linear board matches `docs/workflows/linear.md`; initiative Projects and ticket template installed; `scripts/linear-sync.py --setup` run; Doctor reports the intended explicit `com.factory.linear-sync` state and stable-launcher arguments; enabled products are loaded; sync health is current
+- [ ] Initiative and ticket templates installed under `factory/initiatives/` and `factory/tickets/`; `operator pending` returns cleanly against an empty controller state dir
 - [ ] Branch protection on; test-immutability check is a required status
 - [ ] `GH_REPO`, `DONE_REQUIRED_CHECKS`, and `AUTO_MERGE_METHOD` exactly match the protected repository, required post-merge contexts, and enabled merge strategy; GitHub auto-merge is enabled without bypass permissions
 - [ ] Staging deploy works; preview deploys work on PRs
@@ -461,7 +438,7 @@ All boxes checked = the factory may start. Any box unchecked = it may not.
 - [ ] Walking skeleton merged; operator has clicked the staging URL
 - [ ] Kill switch tested: `scripts/kill-switch.sh` stops a live run
 - [ ] Metrics ledger file exists and the run wrapper writes to it
-- [ ] `factory/runs/`, `factory/.active-runs/`, `factory/.provider.lock/`, and `factory/runtime-ledger.csv` are ignored; preflight or the first normal Linear reconciliation creates the durable real runs root; and `project-ledger` can deterministically project it from a clean close-out worktree only after every active or ambiguous claim and `factory/runs/*.pid` record is reconciled
+- [ ] `factory/runs/`, `factory/.active-runs/`, `factory/.provider.lock/`, and `factory/runtime-ledger.csv` are ignored; preflight or the first normal reconciliation creates the durable real runs root; and `project-ledger` can deterministically project it from a clean close-out worktree only after every active or ambiguous claim and `factory/runs/*.pid` record is reconciled
 - [ ] A duplicate ticket-and-role launch refuses an existing claim without creating a manifest, and malformed telemetry retains the full reservation
 - [ ] Contract 1.8 multi-ticket products report provider concurrency ready in
       doctor, cover Cursor, Claude Code, and Codex at ticket capacity, and use

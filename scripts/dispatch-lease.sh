@@ -18,8 +18,9 @@ done
   exit 2
 }
 [[ "$OPERATION" != "release-expired" ||
-   "${FACTORY_RELEASE_CONTRACT_VERSION:-${FACTORY_HERMES_CONTRACT_VERSION:-}}" == "1.8.0" ]] || {
-  echo "expired lease recovery requires contract 1.8.0" >&2
+   "${FACTORY_RELEASE_CONTRACT_VERSION:-${FACTORY_HERMES_CONTRACT_VERSION:-}}" == "1.8.0" ||
+   "${FACTORY_RELEASE_CONTRACT_VERSION:-${FACTORY_HERMES_CONTRACT_VERSION:-}}" == "1.9.0" ]] || {
+  echo "expired lease recovery requires contract 1.8.0 or 1.9.0" >&2
   exit 3
 }
 [[ "$TICKET" =~ ^T-[0-9]+$ ]] || { echo "invalid ticket identifier" >&2; exit 2; }

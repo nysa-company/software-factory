@@ -44,10 +44,10 @@ leases with disjoint worktrees and serialized provider intervals. Prioritize:
 
 ## Open-source evaluation follow-ups
 
-- Pilot one pinned SWE-ReX local-container backend for a non-production role behind `factory-launch`; keep budgets, timeouts, manifests, commits, pushes, protected-test checks, sequencing, and Linear updates outside it, and prove kill, crash, telemetry-loss, and mutation behavior before product use.
+- Pilot one pinned SWE-ReX local-container backend for a non-production role behind `factory-launch`; keep budgets, timeouts, manifests, commits, pushes, protected-test checks, sequencing, and Linear updates outside it, and prove kill, crash, telemetry-loss, and mutation behavior before product use. (Superseded by Decision 395: Linear is removed; read "Linear updates" as operator-map/receipt updates.)
 - Compare E2B or Daytona with the same canary only if the local-container pilot cannot close the documented same-UID isolation gap.
 - When implementing trusted approval and close-out, evaluate Flow-Next-style requirement-to-evidence traceability and in-toto/SLSA-shaped provenance fields before inventing a factory-specific evidence schema.
-- Reuse Open SWE-style deterministic trigger IDs and short-lived GitHub credentials in the Hermes supervisor only where they preserve Linear and factory authority; adopt metaswarm review rubrics only when an observed review gap justifies them.
+- Reuse Open SWE-style deterministic trigger IDs and short-lived GitHub credentials in the Hermes supervisor only where they preserve Linear and factory authority; adopt metaswarm review rubrics only when an observed review gap justifies them. (Superseded by Decision 395: Linear is removed; read "Linear and factory authority" as receipt-bound operator and factory authority.)
 
 ## External review feedback pilot
 

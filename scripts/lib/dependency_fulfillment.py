@@ -79,7 +79,7 @@ def _validate_documents(repo, ref, authorization, receipts):
     exact(authorization, AUTH_KEYS, "dependency fulfillment authorization")
     if (
         authorization["schema"] != AUTH_SCHEMA
-        or authorization["candidate_contract"] != "1.8.0"
+        or authorization["candidate_contract"] not in ("1.8.0", "1.9.0")
         or repository_from_project(repo, ref) != authorization["repository"]
     ):
         raise ValidationError("dependency fulfillment authorization identity is invalid")
@@ -219,7 +219,7 @@ def _validate_documents(repo, ref, authorization, receipts):
             or receipt["ticket"] != ticket
             or receipt["repository"] != authorization["repository"]
             or receipt["target_kit_sha"] != authorization["target_kit_sha"]
-            or receipt["candidate_contract"] != "1.8.0"
+            or receipt["candidate_contract"] not in ("1.8.0", "1.9.0")
             or receipt["source_state"] != "Backlog"
             or receipt["authorization_blob"] != authorization_blob
             or receipt["cutoff"] != authorization["cutoff"]

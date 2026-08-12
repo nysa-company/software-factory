@@ -286,7 +286,7 @@ class ModelControlTest(unittest.TestCase):
             ("attempt_count", "failed run still has a process record token=DO-NOT-LEAK"),
             ("handoff", "remote branch is missing or ambiguous token=DO-NOT-LEAK"),
             ("route_policy", "provider family violates route policy token=DO-NOT-LEAK"),
-            ("provenance", "Linear approval does not match current evidence token=DO-NOT-LEAK"),
+            ("provenance", "operator approval does not match current evidence token=DO-NOT-LEAK"),
             ("route_policy", "role-boundary policy is invalid token=DO-NOT-LEAK"),
             ("route_policy", "provider identities are invalid token=DO-NOT-LEAK"),
             ("handoff", "ticket content is not UTF-8 token=DO-NOT-LEAK"),
@@ -326,7 +326,7 @@ class ModelControlTest(unittest.TestCase):
             "FACTORY_RELEASE_PATH": str(release),
             "FACTORY_RELEASE_SHA": self.kit_sha,
             "FACTORY_RELEASE_TREE": release_tree,
-            "FACTORY_RELEASE_CONTRACT_VERSION": "1.8.0",
+            "FACTORY_RELEASE_CONTRACT_VERSION": "1.9.0",
         }
         before_head = subprocess.check_output(
             ["git", "-C", str(self.workdir), "rev-parse", "HEAD"], text=True,
@@ -1004,7 +1004,7 @@ PY
             **self.environment,
             "FACTORY_CERTIFIED_PRODUCT_ORIGIN": network_url,
             "FACTORY_PROBE_TRACE": str(trace),
-            "FACTORY_RELEASE_CONTRACT_VERSION": "1.8.0",
+            "FACTORY_RELEASE_CONTRACT_VERSION": "1.9.0",
             "FACTORY_RELEASE_PATH": str(release),
             "FACTORY_RELEASE_SHA": self.kit_sha,
             "FACTORY_RELEASE_TREE": release_tree,

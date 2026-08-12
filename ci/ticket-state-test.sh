@@ -2,8 +2,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-git -C "$ROOT" check-ignore -q --no-index conformance/factory/linear-map.json || {
-  echo "FAIL: Linear operator overlay is not ignored" >&2
+git -C "$ROOT" check-ignore -q --no-index conformance/factory/operator-map.json || {
+  echo "FAIL: operator overlay is not ignored" >&2
   exit 1
 }
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/ticket-state-test.XXXXXX")"
@@ -18,10 +18,10 @@ State: Backlog
 Initiative: I-001
 Priority: none
 EOF
-cat > "$PRODUCT/factory/linear-map.json" <<'EOF'
+cat > "$PRODUCT/factory/operator-map.json" <<'EOF'
 {"tickets":{"T-700":{"operator":{"state":"Ready","priority":"high","observed_at":"2026-07-15T00:00:00Z"}}}}
 EOF
-printf 'factory/linear-map.json\nfactory/.linear-sync.lock\nfactory/.linear-sync-cycle.lock\nfactory/.linear-operator-clears/\n' > "$PRODUCT/.gitignore"
+printf 'factory/operator-map.json\nfactory/.operator-map.lock\nfactory/.operator-clears/\n' > "$PRODUCT/.gitignore"
 git -C "$PRODUCT" init -q -b ticket/T-700
 git -C "$PRODUCT" add .gitignore factory
 git -C "$PRODUCT" -c user.name=test -c user.email=test@example.com commit -qm fixture
@@ -30,7 +30,7 @@ git -C "$PRODUCT" remote add origin "$REMOTE"
 git -C "$PRODUCT" push -q -u origin ticket/T-700
 cat > "$REMOTE/hooks/pre-receive" <<EOF
 #!/usr/bin/env bash
-python3 - '$PRODUCT/factory/linear-map.json' '$TMP/volatile-refreshed' <<'PY'
+python3 - '$PRODUCT/factory/operator-map.json' '$TMP/volatile-refreshed' <<'PY'
 import json, sys
 from pathlib import Path
 path, marker = map(Path, sys.argv[1:])
@@ -38,7 +38,6 @@ data = json.loads(path.read_text())
 operator = data["tickets"]["T-700"].get("operator")
 if operator:
     operator["observed_at"] = "2026-07-15T00:01:00Z"
-    operator["linear_updated_at"] = "2026-07-15T00:01:00Z"
     path.write_text(json.dumps(data, sort_keys=True) + "\n")
     marker.touch()
 PY
@@ -56,25 +55,25 @@ ticket_state \
 [[ -f "$TMP/volatile-refreshed" ]]
 grep -q '^State: Ready$' "$PRODUCT/factory/tickets/T-700.md"
 grep -q '^Priority: high$' "$PRODUCT/factory/tickets/T-700.md"
-python3 - "$PRODUCT/factory/linear-map.json" <<'PY'
+python3 - "$PRODUCT/factory/operator-map.json" <<'PY'
 import json, sys
 assert "operator" not in json.load(open(sys.argv[1]))["tickets"]["T-700"]
 PY
 
 printf '{"tickets":{"T-700":{"operator":{"initiative":null}}}}\n' \
-  > "$PRODUCT/factory/linear-map.json"
+  > "$PRODUCT/factory/operator-map.json"
 ticket_state --ticket T-700 --workdir "$PRODUCT" --action materialize >/dev/null
 ! grep -q '^Initiative:' "$PRODUCT/factory/tickets/T-700.md"
 git --git-dir="$REMOTE" show \
   "refs/heads/ticket/T-700:factory/tickets/T-700.md" | \
   grep -qv '^Initiative:'
-python3 - "$PRODUCT/factory/linear-map.json" <<'PY'
+python3 - "$PRODUCT/factory/operator-map.json" <<'PY'
 import json, sys
 assert "operator" not in json.load(open(sys.argv[1]))["tickets"]["T-700"]
 PY
 
 printf '{"tickets":{"T-700":{"operator":{"state":"Building","state_base":"ready"}}}}\n' \
-  > "$PRODUCT/factory/linear-map.json"
+  > "$PRODUCT/factory/operator-map.json"
 BEFORE="$(git -C "$PRODUCT" rev-parse HEAD)"
 if ticket_state --ticket T-700 --workdir "$PRODUCT" --action materialize \
   >/dev/null 2>&1; then
@@ -85,7 +84,7 @@ fi
 [[ "$(git --git-dir="$REMOTE" rev-parse refs/heads/ticket/T-700)" == "$BEFORE" ]]
 
 printf '{"tickets":{"T-700":{"operator":{"priority":"low"}}}}\n' \
-  > "$PRODUCT/factory/linear-map.json"
+  > "$PRODUCT/factory/operator-map.json"
 BEFORE="$(git -C "$PRODUCT" rev-parse HEAD)"
 if ticket_state --ticket T-700 --workdir "$PRODUCT" --action transition \
   --state Planning >/dev/null 2>&1; then
@@ -94,7 +93,7 @@ if ticket_state --ticket T-700 --workdir "$PRODUCT" --action transition \
 fi
 [[ "$(git -C "$PRODUCT" rev-parse HEAD)" == "$BEFORE" ]]
 [[ "$(git --git-dir="$REMOTE" rev-parse refs/heads/ticket/T-700)" == "$BEFORE" ]]
-python3 - "$PRODUCT/factory/linear-map.json" <<'PY'
+python3 - "$PRODUCT/factory/operator-map.json" <<'PY'
 import json, sys
 assert json.load(open(sys.argv[1]))["tickets"]["T-700"]["operator"] == {
     "priority": "low"
@@ -102,7 +101,7 @@ assert json.load(open(sys.argv[1]))["tickets"]["T-700"]["operator"] == {
 PY
 ticket_state --ticket T-700 --workdir "$PRODUCT" --action materialize >/dev/null
 grep -q '^Priority: low$' "$PRODUCT/factory/tickets/T-700.md"
-python3 - "$PRODUCT/factory/linear-map.json" <<'PY'
+python3 - "$PRODUCT/factory/operator-map.json" <<'PY'
 import json, sys
 assert "operator" not in json.load(open(sys.argv[1]))["tickets"]["T-700"]
 PY
@@ -115,7 +114,7 @@ TEST_CONTRACT=1.7.0 ticket_state --ticket T-700 --workdir "$PRODUCT" --action tr
 grep -q '^State: Blocked-Escalated$' "$PRODUCT/factory/tickets/T-700.md"
 grep -q '^Resume-State: Planning$' "$PRODUCT/factory/tickets/T-700.md"
 printf '{"tickets":{"T-700":{"operator":{"state":"Planning","state_base":"blocked-escalated"}}}}\n' \
-  > "$PRODUCT/factory/linear-map.json"
+  > "$PRODUCT/factory/operator-map.json"
 ticket_state --ticket T-700 --workdir "$PRODUCT" --action materialize >/dev/null
 grep -q '^State: Planning$' "$PRODUCT/factory/tickets/T-700.md"
 BEFORE="$(git -C "$PRODUCT" rev-parse HEAD)"
@@ -156,7 +155,7 @@ git -C "$PRODUCT" push -q "$REMOTE" HEAD:refs/heads/ticket/T-700
 BEFORE="$(git -C "$PRODUCT" rev-parse HEAD)"
 for target in "Awaiting Approval" Done; do
   printf '{"tickets":{"T-700":{"operator":{"state":"%s"}}}}\n' "$target" \
-    > "$PRODUCT/factory/linear-map.json"
+    > "$PRODUCT/factory/operator-map.json"
   if ticket_state --ticket T-700 --workdir "$PRODUCT" --action materialize \
     >/dev/null 2>&1; then
     echo "FAIL: evidence-sensitive overlay state $target was materialized" >&2
@@ -167,8 +166,8 @@ for target in "Awaiting Approval" Done; do
   [[ "$(git --git-dir="$REMOTE" rev-parse refs/heads/ticket/T-700)" == "$BEFORE" ]]
 done
 
-printf '{"tickets":{"T-700":{"operator":{"approval":"Linear"}}}}\n' \
-  > "$PRODUCT/factory/linear-map.json"
+printf '{"tickets":{"T-700":{"operator":{"approval":"Receipt"}}}}\n' \
+  > "$PRODUCT/factory/operator-map.json"
 if ticket_state --ticket T-700 --workdir "$PRODUCT" --action materialize \
   >/dev/null 2>&1; then
   echo "FAIL: approval-only overlay was materialized" >&2
@@ -179,8 +178,8 @@ grep -q '^State: Review$' "$PRODUCT/factory/tickets/T-700.md"
 [[ "$(git -C "$PRODUCT" rev-parse HEAD)" == "$BEFORE" ]]
 [[ "$(git --git-dir="$REMOTE" rev-parse refs/heads/ticket/T-700)" == "$BEFORE" ]]
 
-printf '{"tickets":{"T-700":{"operator":{"state":"Approved","approval":"Linear"}}}}\n' \
-  > "$PRODUCT/factory/linear-map.json"
+printf '{"tickets":{"T-700":{"operator":{"state":"Approved","approval":"Receipt"}}}}\n' \
+  > "$PRODUCT/factory/operator-map.json"
 if ticket_state --ticket T-700 --workdir "$PRODUCT" --action materialize \
   >/dev/null 2>&1; then
   echo "FAIL: Review -> Approved overlay was materialized" >&2
@@ -200,7 +199,7 @@ git -C "$PRODUCT" -c user.name=test -c user.email=test@example.com \
 git -C "$PRODUCT" push -q "$REMOTE" HEAD:refs/heads/ticket/T-700
 BEFORE="$(git -C "$PRODUCT" rev-parse HEAD)"
 printf '{"tickets":{"T-700":{"operator":{"priority":"normal"}}}}\n' \
-  > "$PRODUCT/factory/linear-map.json"
+  > "$PRODUCT/factory/operator-map.json"
 if ticket_state --ticket T-700 --workdir "$PRODUCT" --action materialize \
   >/dev/null 2>&1; then
   echo "FAIL: already-Awaiting ticket accepted unrelated materialization" >&2
@@ -211,8 +210,8 @@ grep -q '^Priority: low$' "$PRODUCT/factory/tickets/T-700.md"
 [[ "$(git -C "$PRODUCT" rev-parse HEAD)" == "$BEFORE" ]]
 [[ "$(git --git-dir="$REMOTE" rev-parse refs/heads/ticket/T-700)" == "$BEFORE" ]]
 
-printf '{"tickets":{"T-700":{"operator":{"state":"Approved","approval":"Linear"}}}}\n' \
-  > "$PRODUCT/factory/linear-map.json"
+printf '{"tickets":{"T-700":{"operator":{"state":"Approved","approval":"Receipt"}}}}\n' \
+  > "$PRODUCT/factory/operator-map.json"
 if ticket_state --ticket T-700 --workdir "$PRODUCT" --action materialize \
   >/dev/null 2>&1; then
   echo "FAIL: approval was materialized without a dedicated bundle attestation" >&2
@@ -222,11 +221,11 @@ grep -q '^State: Awaiting Approval$' "$PRODUCT/factory/tickets/T-700.md"
 ! grep -q '^Operator-Approval:' "$PRODUCT/factory/tickets/T-700.md"
 [[ "$(git -C "$PRODUCT" rev-parse HEAD)" == "$BEFORE" ]]
 [[ "$(git --git-dir="$REMOTE" rev-parse refs/heads/ticket/T-700)" == "$BEFORE" ]]
-python3 - "$PRODUCT/factory/linear-map.json" <<'PY'
+python3 - "$PRODUCT/factory/operator-map.json" <<'PY'
 import json, sys
 
 operator = json.load(open(sys.argv[1]))["tickets"]["T-700"].get("operator")
-assert operator == {"state": "Approved", "approval": "Linear"}
+assert operator == {"state": "Approved", "approval": "Receipt"}
 PY
 
 grep -vE '^(Operator-Approval|Resume-State):' \
@@ -239,7 +238,7 @@ git -C "$PRODUCT" -c user.name=test -c user.email=test@example.com \
   commit -qm "blocked resume fixture"
 git -C "$PRODUCT" push -q "$REMOTE" HEAD:refs/heads/ticket/T-700
 printf '{"tickets":{"T-700":{"operator":{"state":"Planning","state_base":"blocked-escalated"}}}}\n' \
-  > "$PRODUCT/factory/linear-map.json"
+  > "$PRODUCT/factory/operator-map.json"
 BEFORE="$(git -C "$PRODUCT" rev-parse HEAD)"
 if ticket_state --ticket T-700 --workdir "$PRODUCT" --action materialize \
   >/dev/null 2>&1; then
@@ -249,15 +248,15 @@ fi
 [[ "$(git -C "$PRODUCT" rev-parse HEAD)" == "$BEFORE" ]]
 [[ "$(git --git-dir="$REMOTE" rev-parse refs/heads/ticket/T-700)" == "$BEFORE" ]]
 printf '{"tickets":{"T-700":{"operator":{"state":"Building","state_base":"blocked-escalated"}}}}\n' \
-  > "$PRODUCT/factory/linear-map.json"
+  > "$PRODUCT/factory/operator-map.json"
 ticket_state --ticket T-700 --workdir "$PRODUCT" --action materialize >/dev/null
 grep -q '^State: Building$' "$PRODUCT/factory/tickets/T-700.md"
-python3 - "$PRODUCT/factory/linear-map.json" <<'PY'
+python3 - "$PRODUCT/factory/operator-map.json" <<'PY'
 import json, sys
 assert "operator" not in json.load(open(sys.argv[1]))["tickets"]["T-700"]
 PY
 
-printf '{"tickets":{"T-700":{}}}\n' > "$PRODUCT/factory/linear-map.json"
+printf '{"tickets":{"T-700":{}}}\n' > "$PRODUCT/factory/operator-map.json"
 
 # Reviewer reconciliation without a portable checkpoint must work under the
 # host Bash, including macOS Bash 3.2 with nounset enabled.

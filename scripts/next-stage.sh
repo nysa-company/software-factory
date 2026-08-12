@@ -46,7 +46,7 @@ source "$KIT_DIR/scripts/lib/kit-pin.sh"
 source "$KIT_DIR/scripts/lib/dispatch-leases.sh"
 REPO_ROOT="${FACTORY_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")}"
 FACTORY_DIR="$REPO_ROOT/factory"
-OPERATOR_MAP="${FACTORY_OPERATOR_MAP:-$FACTORY_DIR/linear-map.json}"
+OPERATOR_MAP="${FACTORY_OPERATOR_MAP:-$FACTORY_DIR/operator-map.json}"
 CONTENT_ROOT="${WORKDIR:-$REPO_ROOT}"
 if ! factory_validate_runtime_overrides; then
   echo "REFUSE $FACTORY_RUNTIME_OVERRIDE_ERROR"
@@ -128,11 +128,11 @@ python3 "$KIT_DIR/scripts/lib/effective_ticket.py" \
 TICKET_FILE="$EFFECTIVE_TICKET"
 CONTRACT_VERSION="${FACTORY_RELEASE_CONTRACT_VERSION:-${FACTORY_HERMES_CONTRACT_VERSION:-1.2.0}}"
 if [[ -n "$ROLE_EVIDENCE" ]]; then
-  [[ "$CONTRACT_VERSION" == "1.8.0" ]] || {
+  [[ "$CONTRACT_VERSION" == "1.8.0" || "$CONTRACT_VERSION" == "1.9.0" ]] || {
     echo "REFUSE authenticated role evidence requires contract 1.8"
     exit 1
   }
-  python3 - "$ROLE_EVIDENCE" "$TICKET" <<'PY' || {
+  python3 - "$ROLE_EVIDENCE" "$TICKET" "$CONTRACT_VERSION" <<'PY' || {
 import json
 import os
 import pathlib
@@ -176,7 +176,7 @@ for item in records:
     if (
         not isinstance(item, dict)
         or set(item) != expected
-        or item.get("contract_version") != "1.8.0"
+        or item.get("contract_version") != sys.argv[3]
         or not sha.fullmatch(item.get("factory_sha", ""))
         or not sha.fullmatch(item.get("head_before", ""))
         or not digest.fullmatch(item.get("manifest_sha256", ""))
@@ -212,7 +212,8 @@ fi
 TERMINAL_BASIS=""
 if [[ "$CONTRACT_VERSION" == "1.3.0" || "$CONTRACT_VERSION" == "1.4.0" ||
       "$CONTRACT_VERSION" == "1.5.0" || "$CONTRACT_VERSION" == "1.6.0" ||
-      "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ]]; then
+      "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ||
+      "$CONTRACT_VERSION" == "1.9.0" ]]; then
   TERMINAL_BASIS="$(python3 "$KIT_DIR/scripts/lib/effective_ticket.py" \
     --factory-dir "$CONTENT_ROOT/factory" --ticket "$TICKET" \
     --terminal-basis 2>/dev/null || true)"
@@ -499,7 +500,8 @@ if [[ -n "$TERMINAL_BASIS" ]]; then
 fi
 if [[ "$CONTRACT_VERSION" == "1.3.0" || "$CONTRACT_VERSION" == "1.4.0" ||
       "$CONTRACT_VERSION" == "1.5.0" || "$CONTRACT_VERSION" == "1.6.0" ||
-      "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ]]; then
+      "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ||
+      "$CONTRACT_VERSION" == "1.9.0" ]]; then
   EFFECTIVE_STATE="$(awk -F: 'tolower($1)=="state" {sub(/^[^:]*:[[:space:]]*/, ""); print tolower($0); exit}' "$TICKET_FILE")"
   COMMITTED_STATE="$(awk -F: 'tolower($1)=="state" {sub(/^[^:]*:[[:space:]]*/, ""); print tolower($0); exit}' "$COMMITTED_TICKET_FILE")"
   if [[ "$COMMITTED_STATE" == "done" ]]; then
@@ -507,7 +509,7 @@ if [[ "$CONTRACT_VERSION" == "1.3.0" || "$CONTRACT_VERSION" == "1.4.0" ||
     exit 0
   fi
   if [[ "$EFFECTIVE_STATE" == "approved" && "$COMMITTED_STATE" == "awaiting approval" ]]; then
-    echo "AWAIT-OPERATOR Linear approval observed; trusted approval attestation is required"
+    echo "AWAIT-OPERATOR operator approval observed; trusted approval attestation is required"
     exit 0
   fi
   if [[ "$COMMITTED_STATE" == "approved" ]]; then
@@ -521,7 +523,7 @@ except FileNotFoundError:
 operator = value.get("tickets", {}).get(sys.argv[2], {}).get("operator") or {}
 if not (
     operator.get("state") == "Approved"
-    and operator.get("approval") == "Linear"
+    and operator.get("approval") == "Receipt"
     and operator.get("state_base") == "awaiting approval"
 ):
     raise SystemExit(1)
@@ -545,7 +547,7 @@ PY
     exit 0
   fi
   if [[ "$COMMITTED_STATE" == "awaiting approval" ]]; then
-    echo "AWAIT-OPERATOR bundle attested; await Linear approval"
+    echo "AWAIT-OPERATOR bundle attested; await operator approval"
     exit 0
   fi
 fi
@@ -578,7 +580,7 @@ emit_stage() {
       exit 0
     fi
   fi
-  if [[ "$CONTRACT_VERSION" == "1.8.0" &&
+  if [[ ( "$CONTRACT_VERSION" == "1.8.0" || "$CONTRACT_VERSION" == "1.9.0" ) &&
         ( "$stage" == RUN\ * || "$stage" == FIX\ * ) ]]; then
     budget_stage="$(python3 -B "$KIT_DIR/scripts/budget-stage.py" \
       "$REPO_ROOT" "$TICKET" "$FACTORY_RELEASE_SHA" "$stage" \
@@ -601,7 +603,7 @@ emit_stage() {
   exit 0
 }
 
-if [[ "$CONTRACT_VERSION" == "1.8.0" ]]; then
+if [[ "$CONTRACT_VERSION" == "1.8.0" || "$CONTRACT_VERSION" == "1.9.0" ]]; then
   if [[ -n "${FACTORY_TRANSITION_STATE_DIR:-}" ]]; then
     REPAIR_STAGE="$(python3 -B "$KIT_DIR/scripts/publication-repair.py" stage \
       --factory-root "$REPO_ROOT" --workdir "$CONTENT_ROOT" \
@@ -1206,7 +1208,8 @@ IFS='|' read -r FIX_PLANNER FIX_BUILDER FIX_TEST_AUTHOR FIX_BUILDER_AFTER_TEST F
 LATEST_VERDICT=""
 LATEST_FIX_OWNER=""
 CONTRACT17_FIX_ACTION=""
-if [[ ( "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ) &&
+if [[ ( "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ||
+        "$CONTRACT_VERSION" == "1.9.0" ) &&
       "$VERDICTS" -gt 0 ]]; then
   OWNER_DATA="$(python3 - "$TICKET_FILE" <<'PY'
 import re
@@ -1252,7 +1255,8 @@ PY
   IFS='|' read -r LATEST_VERDICT LATEST_FIX_OWNER <<<"$OWNER_DATA"
 fi
 
-if [[ ( "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ) &&
+if [[ ( "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ||
+        "$CONTRACT_VERSION" == "1.9.0" ) &&
       "$LATEST_VERDICT" == "REQUEST CHANGES" ]]; then
   case "$LATEST_FIX_OWNER" in
     builder)
@@ -1263,7 +1267,7 @@ if [[ ( "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ) &&
       fi
       ;;
     test-author)
-      if [[ "$CONTRACT_VERSION" == "1.8.0" && "$FIX_PLANNER" -eq 0 ]]; then
+      if [[ ( "$CONTRACT_VERSION" == "1.8.0" || "$CONTRACT_VERSION" == "1.9.0" ) && "$FIX_PLANNER" -eq 0 ]]; then
         CONTRACT17_FIX_ACTION="FIX planner"
       elif [[ "$FIX_TEST_AUTHOR" -eq 0 ]]; then
         CONTRACT17_FIX_ACTION="FIX test-author"
@@ -1272,7 +1276,7 @@ if [[ ( "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ) &&
       fi
       ;;
     both)
-      if [[ "$CONTRACT_VERSION" == "1.8.0" && "$FIX_PLANNER" -eq 0 ]]; then
+      if [[ ( "$CONTRACT_VERSION" == "1.8.0" || "$CONTRACT_VERSION" == "1.9.0" ) && "$FIX_PLANNER" -eq 0 ]]; then
         CONTRACT17_FIX_ACTION="FIX planner"
       elif [[ "$FIX_TEST_AUTHOR" -eq 0 ]]; then
         CONTRACT17_FIX_ACTION="FIX test-author"
@@ -1320,7 +1324,8 @@ if [[ "$REFRESH_ACTIVE" -eq 1 && "$REFRESH_PRESERVE_REVIEW" -eq 0 ]]; then
   # an approval from the invalidated generation cannot short-circuit it.
 elif [[ "$A" -ge 1 &&
         ( ( "$CONTRACT_VERSION" != "1.7.0" &&
-            "$CONTRACT_VERSION" != "1.8.0" ) ||
+            "$CONTRACT_VERSION" != "1.8.0" &&
+            "$CONTRACT_VERSION" != "1.9.0" ) ||
           "$LATEST_VERDICT" == "APPROVE" ) ]]; then
   if [[ "$REFRESH_ACTIVE" -eq 1 &&
         "$REFRESH_PRESERVE_REVIEW" -eq 1 &&
@@ -1330,10 +1335,11 @@ elif [[ "$A" -ge 1 &&
   if [[ "$CHECKPOINT_AWAIT_REOPENED" -eq 1 && "$LOCAL_N" -eq 0 ]]; then
     emit_stage "RUN narrator"
   fi
-  # Approval is evidence-sensitive: an ignored Linear overlay may inform the
-  # future bundle-attestation path. Contract 1.2 stops before that boundary.
+  # Approval is evidence-sensitive: an ignored operator overlay may inform the
+  # future bundle-attestation path. Contract 1.2 stops before that boundary;
+  # it refuses both live Receipt headers and historical Linear-era headers.
   if [[ "$CONTRACT_VERSION" == "1.2.0" ]] &&
-     grep -qiE '^Operator-Approval:[[:space:]]*Linear[[:space:]]*$' "$TICKET_FILE"; then
+     grep -qiE '^Operator-Approval:[[:space:]]*(Linear|Receipt)[[:space:]]*$' "$TICKET_FILE"; then
     echo "REFUSE contract 1.2 has no trusted bundle-attestation path for approval"
     exit 1
   fi
@@ -1345,7 +1351,7 @@ elif [[ "$A" -ge 1 &&
   exit 0
 fi
 
-if [[ "$CONTRACT_VERSION" == "1.8.0" &&
+if [[ ( "$CONTRACT_VERSION" == "1.8.0" || "$CONTRACT_VERSION" == "1.9.0" ) &&
       ( "$LATEST_FIX_OWNER" == "test-author" || "$LATEST_FIX_OWNER" == "both" ) &&
       "$FIX_PLANNER" -eq 1 && "$CONTRACT17_FIX_ACTION" != "FIX planner" ]]; then
   python3 - "$TICKET_WORKTREE_ROOT" "$SOURCE_TICKET_FILE" "$COMMITTED_HEAD" <<'PY' || {

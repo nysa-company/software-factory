@@ -24,7 +24,7 @@ The reconciled Markdown ticket in Building with its acceptance criteria and froz
 - For every required serialized test command, verify that setup, reset, and teardown delete non-cascading dependent rows before their parent, including every sibling dependent table named by the contract. Do not add redundant cleanup for an exact `ON DELETE CASCADE`. If the minimal cleanup correction is outside the exact protected-test scope, preserve every already committed valid test and treat the contract as blocked; never broaden ownership yourself.
 - For each declared `Protected-Test-Conflicts: <test path> => <literal>` entry, change only that exact protected test inside `Fixture-Seams` and keep its allowlist fail-closed. A missing, malformed, or differently owned source-boundary conflict blocks the contract; never broaden the allowlist or ownership.
 - For that contract blocker, stop immediately. Commit the exact ambiguity to the ticket log with one standalone `ROLE-ESCALATE: CONTRACT-BLOCKED` line, then end your response with that same standalone line. A blocker discovered at any point supersedes normal completion; do not complete the tests after it.
-- Do not edit State, Initiative, Priority, or operator-owned fields. The dispatcher records stage movement and Linear receives the projected result.
+- Do not edit State, Initiative, Priority, or operator-owned fields. The dispatcher records stage movement and the projected result lands in `factory/operator-map.json`.
 - Commit all test and ticket-log changes on the current ticket branch before exiting. A successful run with no new commit or a dirty worktree is rejected by the wrapper.
 - When the current branch contains an authenticated
   `dependency-refresh/v2` receipt and the state machine assigns

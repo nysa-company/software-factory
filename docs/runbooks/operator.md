@@ -36,6 +36,14 @@ in that action; never relaunch a role or move Factory-owned state by hand.
   the next reconcile reconstructs that one event from the exact authenticated
   claim, transition, passport, and terminal evidence. Do not create a manual
   substitute; restart with the last watcher cursor.
+- There is no push notification (no Slack/email/desktop alert) — that is a
+  deliberate decision, not a gap. `watch --json` is the hook for adding a
+  notifier later; today it only feeds a supervised terminal or your own
+  consumer. To check what needs you right now instead of glancing at a board,
+  run
+  `bash scripts/factory-kit.sh operator pending --project <project> --product <absolute-product-path>`.
+  It lists tickets sitting in Awaiting Approval or Blocked-Escalated plus any
+  open (issued but not yet consumed) operator receipts.
 
 ## Park a ticket on a Factory defect
 
@@ -54,7 +62,7 @@ in that action; never relaunch a role or move Factory-owned state by hand.
   authenticated lineage, then claims capacity. Arbitrary descendants, remote
   drift, extra paths, legacy v1 pauses, and changed lifecycle or run evidence
   still refuse.
-- Do not move Markdown or Linear state by hand. A missing issue, changed
+- Do not move Markdown or operator-map state by hand. A missing issue, changed
   passport/state, active role, or different target Factory refuses cleanly.
 
 ## Runaway spend
@@ -178,11 +186,18 @@ an in-flight manifest or backdate an override.
 - Do: choose the duplicate ledger ordinal and run `factory-launch <project> ticket-control reviewer-void plan --ticket <T-NNN> --run <N> --operator-id <ID> --json`. Review the selected run identities and approval hash, then run the matching `reviewer-void apply` command with `--approve-hash <HASH>`. The controller pushes one ticket-only child containing exactly `OPERATOR NOTE: reviewer run N void — duplicate`; ordinary reconciliation imports it without launching a provider.
 - Don't: infer the ordinal, edit the parked cell, add a generic operator note, void a failed or already-voided row, or reuse the command when zero or multiple successful rows are unmatched. Those cases require new evidence or a separate repair.
 
-## Linear, GitHub, or Railway down
+## GitHub or Railway down
 
-- Do: if Linear is down, in-flight factory work continues from the ticket files, but do not expect a new priority, Ready, approval, or unblock action to take effect until sync recovers. Check `_sync.last_success_at`, `_sync.last_error`, and `_sync.last_rejected` in the machine-local `factory/linear-map.json`. GitHub or Railway outages still pause the stages that depend on them.
-- Don't: edit factory-owned Linear descriptions or force local state to imitate an operator transition that has not been ingested.
-- Note: on a new product, the first normal Linear reconciliation may durably initialize the missing real `factory/runs/` directory. A file, symlink, or other invalid entry at that path is an integrity failure, not something sync replaces.
+- Do: `factory/operator-map.json` is a local projection with no external
+  system behind it, so there is nothing to wait on for staleness — an
+  operator action lands as soon as its receipt is issued. GitHub or Railway
+  outages still pause the stages that depend on them.
+- Don't: hand-edit the operator map or force local state to imitate an
+  operator transition that has no matching receipt.
+- Note: on a new product, the first normal reconciliation may durably
+  initialize the missing real `factory/runs/` directory. A file, symlink, or
+  other invalid entry at that path is an integrity failure, not something
+  sync replaces.
 
 ## Broken connector (external sends failing)
 
@@ -192,7 +207,7 @@ an in-flight manifest or backdate an override.
 ## Restore from backup
 
 - Postgres (staging): Railway dashboard → database → Backups → restore. Staging data is disposable; fixtures re-seed it.
-- Board: restore the product repo first. Markdown and the ledger are the durable execution record; `scripts/linear-sync.py --setup` plus a normal sync recreates Projects/issues and mappings. Linear remains authoritative only for operator-owned priority, Project membership, Ready, approval, and unblock actions.
+- Board: restore the product repo first. Markdown and the ledger are the durable execution record. `factory/operator-map.json` is a gitignored local projection with no external system behind it — delete it and let the next reconciliation regenerate it from ticket files and the consumed receipts under `factory/receipts/`; nothing durable is lost.
 
 ## Model portfolio control
 
@@ -255,10 +270,16 @@ The ordinary preview is compact; add `--include-journal` before `--json` only
 when the complete authenticated candidate is needed for diagnostics. For a later
 eligible failure:
 
-1. Run `fallback-plan` and post its exact `linear_comment` as a Linear comment.
-2. Run the normal Linear sync so the signed-in comment author and 15-minute,
-   one-use approval are recorded in `factory/linear-map.json`.
-3. Run the same command with `fallback` instead of `fallback-plan`.
+1. Run `fallback-plan` and note its exact `preview_hash`.
+2. Run
+   `bash scripts/factory-kit.sh operator fallback-approve --project <project> --product <absolute-product-path> --ticket T-123 --preview-hash <preview_hash> --failed-run <run-id> --reason credits_exhausted`
+   (`--reason` also accepts `budget_exhausted`, `operator_requested`, or
+   `provider_unavailable`; `--expires-minutes` defaults to 60). This issues a
+   one-use operator receipt, projects the `model_fallback_approval` decision
+   into `factory/operator-map.json`, and writes the zero-authority audit copy
+   under `factory/receipts/T-123/`.
+3. Run the same `models` command with `fallback` instead of `fallback-plan`;
+   it consumes the receipt by its `receipt_sha256`.
 
 The apply step refuses active provider/accounting locks, Git or evidence drift,
 unapproved paths, protected ticket-field changes, secrets, and unsafe files. It
@@ -320,9 +341,17 @@ transaction diagnosis.
 
 ## Trusted approval and close-out PR
 
-- Notice: under contract 1.3, move only Awaiting Approval → Approved in Linear after reviewing the exact bundle. The trusted approval action commits the binding and requests protected GitHub auto-merge. If it refuses stale evidence, a changed head, conflicts, unavailable auto-merge, or failed checks, investigate the named condition; never manually imitate the attestation.
-- Notice: if main advances, use sealed `ticket-attest --action refresh` on the exact ticket worktree. It disables stale auto-merge, merges protected main without force, retires the old receipts, and makes fresh Reviewer, Narrator, bundle, and Linear approval evidence mandatory.
+- Notice: under contract 1.3+, after the bundle is attested and Awaiting Approval, make the one business decision by reviewing the exact bundle yourself and running
+  `bash scripts/factory-kit.sh operator approve --project <project> --product <absolute-product-path> --ticket T-123`.
+  This requires a machine with the controller state dir (`$PROJECTS_DIR/<project>/controller`) — approvals cannot be issued from an arbitrary checkout. The command binds the one-use operator receipt to the attested bundle blob and requests protected GitHub auto-merge. If it refuses stale evidence, a changed head, conflicts, unavailable auto-merge, or failed checks, investigate the named condition; never manually imitate the attestation.
+- Notice: if main advances, use sealed `ticket-attest --action refresh` on the exact ticket worktree. It disables stale auto-merge, merges protected main without force, retires the old receipts, and makes fresh Reviewer, Narrator, bundle, and operator approval evidence mandatory.
 - Notice: after the ticket PR merges, the dispatcher opens `chore/tNNN-closeout` from current `origin/main` and invokes `ticket-attest --action done`. It verifies the merge and configured post-merge contexts, projects the ledger once, commits Done plus closeout evidence, creates or reuses the exact factory-owned closeout PR, and requests protected auto-merge. No operator approval or manual GitHub merge is required. After protected main contains valid Done, sequencing returns `COMPLETE` and the dispatcher releases the lease. Projection refuses any active or ambiguous claim.
+- Note: Done closeout no longer has an external witness. Under the removed
+  Linear integration, the projected board move to Done was a second,
+  independently observable record; now closeout is Git- and receipt-only. This
+  is an accepted trade-off of the removal, not an oversight — verify Done the
+  same way you verify anything else here, by reading protected `main` and the
+  ledger, not by checking a board.
 - Emergency only: for an already-merged ticket that cannot satisfy normal approval evidence, create one owner-only request naming an open GitHub issue, operator, 20+ character reason, and a current `issued_at`/`expires_at` window of at most 24 hours. Run sealed `ticket-attest --action emergency-plan --request <absolute.json>` from the clean `chore/tNNN-closeout` worktree, review its exact PR/check/main/passport basis, then run `emergency-apply` with the returned `approval_sha256`. Apply reuses the ordinary ledger projection and protected closeout PR; it never fabricates bundle or approval evidence. An authenticated target may use either its exact idle blocked claim or a controller-signed pause bound to the same ticket, head, state, passport, and open Factory issue. A passportless target is accepted only when protected main explicitly identifies it as `Assignee: operator (built outside the software factory)` and no runtime claim, passport, or pause exists. Every use needs its own issue and exact plan-hash approval.
 - Emergency role admission only: stop the controller at an idle exact claim, then create an owner-only `nysa.software-factory.emergency-role-admission-request/v1` naming one open Factory issue, non-`auto` operator, 20–500 character reason, and current expiry of at most 24 hours. Run sealed `emergency-admit plan` with the exact ticket, role, receipt, worktree, and request; review every bound identity and approve only its returned SHA-256. Run `emergency-admit apply` with the same inputs and that hash, then restart ordinary reconciliation. The launcher uses this authorization only if normal receipt consumption rejects and only before provider submission. Confirm one `emergency_admission_archived` event names the resulting run and passport charge. A changed, consumed, or capped receipt, claim, head, route, passport, lease, issue, maintenance state, active run, publication authority, or plan hash must be investigated rather than overridden.
 - Do: reconcile claims and PID records under maintenance before retrying; never delete one based only on its age. Confirm the factory-owned close-out PR entered protected auto-merge; do not supply another business approval or manual merge.
@@ -508,7 +537,7 @@ transaction diagnosis.
 ## Release doctor reports warning or error
 
 - Notice: `~/.factory/bin/factory-launch <project> doctor --json` returns a
-  warning/error status, stale Linear sync, a pin mismatch, maintenance, a
+  warning/error status, a pin mismatch, maintenance, a
   lock, active/stale run records, a failed installed production controller, or
   unsupported Hermes/CLI information. On Contract 1.8 macOS production, read
   `checks.controller.state`: `running` and `idle_clean` are healthy;
@@ -516,7 +545,7 @@ transaction diagnosis.
   errors.
 - Do: treat `error` as a dispatch stop. A warning requires operator review,
   not automatic repair. Confirm the selected full SHA, physical release,
-  `KIT_PIN`, maintenance state, run PIDs, CLI versions, and Linear freshness.
+  `KIT_PIN`, maintenance state, run PIDs, and CLI versions.
   For a controller error, inspect the managed LaunchAgent, native disabled
   override, and local logs; correct the supported installed route or
   underlying launch failure, then let the next scheduled reconciliation
@@ -612,28 +641,13 @@ transaction diagnosis.
 12. Run `factory-kit.sh plan`. It must report `No files were changed.`
 13. Stop only the product factory profile and reconciler. Leave the dashboard
    and primary Hermes profile alone.
-14. Run `factory-kit.sh activate`. While maintenance remains, migrate the
-   scheduled Linear service once with `factory-kit.sh linear-sync-service
-   enable|disable --project <project> --product <absolute-product-path>` using
-   the product's intended state. Do not call `launchctl` from activation or
-   hand-edit the plist. If the native override was absent, retain the separate
-   `LINEAR SYNC SERVICE OWNERSHIP ADOPTED` evidence: the command has committed
-   a verified explicit-enabled semantic no-op before starting the migration,
-   and that explicit state is the rollback baseline. An adoption failure or
-   indeterminate readback means no later migration was attempted; leave
-   maintenance in place. After successful adoption, any migration failure
-   restores the exact prior plist bytes, mode, load state, arguments, and the
-   explicit-enabled baseline. Restart the other factory services, then collect
-   doctor JSON, sandbox smoke, PID, Linear freshness, and repeated health
-   probes. Doctor must show enabled plus loaded with the exact stable arguments,
-   or disabled plus unloaded; legacy release paths are a failed cutover.
-   Retain the before/after plist digest, native disable/load observations, and
-   process list. For an enabled product, honor any shared credential cooldown,
-   then observe at least two complete three-minute cycles with advancing
-   `_sync.last_success_at`, no new rate-limit response, and no release-pinned
-   process. For a disabled product, observe the same window with no loaded
-   process or new sync log entry. Tests alone are not production closure
-   evidence; bind these observations and timestamps to the exact protected SHA.
+14. Run `factory-kit.sh activate`. There is no scheduled operator-facing
+   service to migrate anymore — `factory/operator-map.json` is computed on
+   demand from ticket state and consumed receipts, not synced by a
+   LaunchAgent. Restart the other factory services, then collect doctor JSON,
+   sandbox smoke, PID, and repeated health probes. Tests alone are not
+   production closure evidence; bind these observations and timestamps to the
+   exact protected SHA.
 15. For an authorized in-flight cutover, keep maintenance while reviewing each
    sealed `models migrate-plan`, then remove maintenance and apply only its
    operator-approved `models migrate`; claim fresh leases afterward. Without
@@ -778,8 +792,7 @@ alone was 5m50s and its full maintenance interval was longer.
 ## Failed cutover or release rollback
 
 - Notice: doctor returns an error, the factory profile does not stay healthy,
-  Linear freshness fails to recover, or the sandbox smoke does not execute
-  through the expected release.
+  or the sandbox smoke does not execute through the expected release.
 - Do: leave `MAINTENANCE` present and stop only the product's factory profile
   and reconciler. If the activation transaction is interrupted, run
   `factory-kit.sh reconcile` first and follow its terminal result.
@@ -791,13 +804,6 @@ alone was 5m50s and its full maintenance interval was longer.
 - Do: prove the previous release can read candidate-written state, restart the
   factory-only services, rerun doctor and sandbox smoke, then remove
   maintenance.
-- Do: leave the stable Linear plist unchanged across an ordinary Factory
-  rollback. Its next invocation follows the restored active pointer. If the
-  one-time service migration itself failed, rely on its automatic restoration
-  and compare the exact prior plist, explicit enable/disable state, and loaded
-  state before taking any further action. If the command separately reported
-  ownership adoption, verify explicit enabled rather than absence from the
-  override map; adoption is not undone or described as an unspecified state.
 - Target: restore known bits within 5 minutes and complete the full rollback
   within 30 minutes of the failed-health decision. Full rollback ends only
   after the pin revert is merged, previous tuple and state compatibility are
@@ -842,12 +848,18 @@ These run in your interactive session — never inside the loop. The factory's o
 
 **gstack planning suite (already installed under `~/.claude/skills/gstack/`).** Interactive-only by its own design (its preamble blocks headless runs). Useful for instantiation-scale documents: `/office-hours` and `/plan-ceo-review` to pressure-test scope, `/plan-eng-review` for an engine spec, `/spec` for authoring a single rich ticket. Treat their output as draft input to the Planner, not as a frozen contract — the Planner still owns the ticket and the spec-linter still lints it.
 
-## Linear initiatives and approvals
+## Operator initiatives and approvals
 
-- Create the durable initiative record first at `factory/initiatives/I-NNN.md`; the reconciler creates the Linear Project. Set its status and target date in Linear.
-- Assign an issue to a different initiative by changing its Linear Project. The next successful pull updates the ignored operator overlay; trusted materialization updates `Initiative:` on the ticket branch. Removing all Project membership clears the effective initiative and makes preflight ineligible until the issue is assigned again.
-- Prioritize by setting priority and moving Backlog → Ready. Wait for sync health to advance before dispatching.
-- Contract 1.2 stops in Review. Under contract 1.3, wait for trusted bundle attestation to create Awaiting Approval, then make the one business decision by moving it to Approved in Linear. Do not click a separate GitHub approval or bypass protection; the trusted approval attestation requests auto-merge. Done appears only after the protected closeout commit merges.
+- Create the durable initiative record first at `factory/initiatives/I-NNN.md` with its status and target date. There is no external board to create or sync a matching object in; set `Initiative: I-NNN` directly on the ticket.
+- Reassign a ticket to a different initiative with a direct ticket-only commit that changes only `Initiative:`. This is Git-authored state, not an operator-map projection — there is no external system to round-trip through anymore. Clearing the field removes the effective initiative and makes preflight ineligible until the ticket is assigned again.
+- Prioritize with
+  `bash scripts/factory-kit.sh operator priority --project <project> --product <absolute-product-path> --ticket T-123 --priority <none|urgent|high|normal|low>`,
+  then move it to Ready with
+  `bash scripts/factory-kit.sh operator ready --project <project> --product <absolute-product-path> --ticket T-123`.
+  Both take effect immediately once the receipt is issued — the operator map is a local projection with no external system, so there is no sync-health delay to wait on before dispatching.
+- Contract 1.2 stops in Review. Under contract 1.3+, wait for trusted bundle attestation to create Awaiting Approval, then make the one business decision by running
+  `bash scripts/factory-kit.sh operator approve --project <project> --product <absolute-product-path> --ticket T-123`
+  from a machine with the controller state dir. Do not click a separate GitHub approval or bypass protection; the trusted approval attestation requests auto-merge. Done appears only after the protected closeout commit merges.
 - Resume an escalated contract blocker in two pushed commits when an operator
   answer is needed. First append one ticket-local
   `OPERATOR ANSWER: <single-line-answer>` (at most 4096 UTF-8 bytes) and
@@ -859,7 +871,7 @@ These run in your interactive session — never inside the loop. The factory's o
   path already covered by protected `PROJECT.env` `TEST_PATHS` to
   `Fixture-Seams`. The complete ticket must pass readiness. Change no other
   ticket bytes or path. Push it, leave
-  Linear blocked, and wait for `contract_block_passport_migrated` when the
+  the ticket Blocked-Escalated, and wait for `contract_block_passport_migrated` when the
   controller records that event. Then make and push a ticket-only commit
   containing exactly `OPERATOR RESUME: <role>` and
   `OPERATOR RESUME RECEIPT: <current-blocked-receipt-sha256>`, replacing the one
@@ -872,7 +884,8 @@ These run in your interactive session — never inside the loop. The factory's o
   that one direct non-merge, receipt-bound context commit; every broader or
   longer chain stops as `resume_parent_not_migrated`. `factory/rulings.md`
   remains outside this exception.
-  Finally move Linear from Blocked-Escalated to the ticket's `Resume-State:`.
+  Finally run
+  `bash scripts/factory-kit.sh operator resume --project <project> --product <absolute-product-path> --ticket T-123 --stage <Resume-State>`.
   A missing, stale, mismatched, partial, unpushed, over-full, or otherwise
   illegal decision is rejected; `doctor --json` reports it under
   `checks.contract_resume.incidents` with a typed reason. Doctor preserves the

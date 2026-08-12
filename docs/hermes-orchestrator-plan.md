@@ -14,8 +14,9 @@ Phase 0 records the reviews that the executing thread must obtain.
 Use Hermes as a thin supervisor for factory-controlled ticket dispatch while
 keeping the existing ownership boundaries:
 
-- Linear remains the only operator-facing board and authority for priority,
-  Ready, approval, and unblock decisions.
+- The operator, through one-use receipts (`factory-kit.sh operator ACTION`),
+  remains the only authority for priority, Ready, approval, and unblock
+  decisions. There is no external board.
 - The software factory remains the authority for eligibility, capacity,
   ticket leases, sequencing, budgets, worktree validity, role launches,
   maintenance, activation, rollback, and escalation.
@@ -39,8 +40,8 @@ launcher resolves one sealed release and rejects an invalid ticket branch or
 worktree.
 
 Ticket selection is still initiated by an operator/session rather than a
-durable supervisor. Linear is already reconciled asynchronously into product
-Markdown records and must remain outside the synchronous execution path.
+durable supervisor. Operator receipts are read into `factory/operator-map.json`
+on demand and must remain outside the synchronous execution path.
 
 Hermes Kanban is not part of the live product workflow. Do not copy Nysa or
 Relay tickets into it. Historical conformance tasks on a Hermes board are not
@@ -49,7 +50,7 @@ an orchestration dependency.
 ## Target flow
 
 ```text
-Linear operator decision
+operator receipt (factory-kit.sh operator ACTION)
         |
         v
 existing per-product reconciler
@@ -80,7 +81,7 @@ versioned launcher JSON produced from locally reconciled factory state.
 
 ## Non-goals
 
-- Do not replace Linear with Hermes Kanban.
+- Do not replace the operator receipt flow with Hermes Kanban.
 - Do not add a second gateway, queue database, orchestration web service, merge
   queue, or long-lived integration branch.
 - Do not let Hermes read or write lease files, activation records, ledgers,
@@ -115,8 +116,8 @@ the implementation PR:
      it.
 
 Resolve disagreements in the plan before implementation. Any recommendation
-that gives Hermes authority currently owned by the factory or Linear is a stop
-condition.
+that gives Hermes authority currently owned by the factory or the operator is
+a stop condition.
 
 ## Phase 1 — Freeze the supervisor contract
 
@@ -140,7 +141,7 @@ It returns one of these actions:
 
 The implementation, not Hermes, must:
 
-- require fresh Linear reconciliation before selecting new work;
+- require a fresh read of `factory/operator-map.json` before selecting new work;
 - consider only tickets whose locally recorded state is `Ready` or an
   explicitly resumable factory state;
 - apply a documented deterministic ordering using locally reconciled priority
@@ -206,8 +207,8 @@ operation proves that a separate supervisor adds no useful boundary.
 Use one existing Hermes cron/gateway job per supervised product. Do not add a
 second daemon.
 
-- Run after the existing Linear reconciliation interval, initially every three
-  minutes.
+- Run on a short fixed interval, initially every three minutes; there is no
+  external reconciliation cycle to wait on.
 - Start with `nysa-app` only; add Relay only after the pilot proves isolation.
 - Make duplicate wakeups harmless through the factory's atomic claim and
   Hermes live-session check.
@@ -225,9 +226,10 @@ failure, timeout, budget stop, maintenance state, activation state, and unknown
 action as terminal for that attempt. It never selects a fallback path itself.
 
 - `AWAIT-OPERATOR`: finish close-out preparation, release execution capacity
-  only after no matching role run is active, and wait for Linear approval.
-- `BLOCKED`/`ESCALATE`: project a concise reason through the normal ticket/Linear
-  path, release only when the factory permits it, and stop.
+  only after no matching role run is active, and wait for the operator's
+  `operator approve` receipt.
+- `BLOCKED`/`ESCALATE`: project a concise reason through the normal ticket log,
+  release only when the factory permits it, and stop.
 - Hermes crash before a role launch: a duplicate wakeup must observe the atomic
   claim and refuse duplicate execution.
 - Hermes crash during a role run: the active-run record remains authoritative;
@@ -244,7 +246,7 @@ action as terminal for that attempt. It never selects a fallback path itself.
 Add the smallest tests proving:
 
 - fresh Ready tickets are selected deterministically;
-- stale Linear state cannot start a new ticket;
+- an invalid or unreadable operator map cannot start a new ticket;
 - duplicate wakeups produce one claim and one dispatcher;
 - a duplicate ticket claim fails;
 - capacity one starts only one ticket;
@@ -310,7 +312,7 @@ If the defect is in the activated factory contract rather than the Hermes job:
 3. restore the protected previous product pin/tree;
 4. run formal factory rollback when a committed previous generation exists;
 5. restore the previous factory profile/job bundle;
-6. verify contract, doctor, Linear freshness, worktree state, budgets, and both
+6. verify contract, doctor, worktree state, budgets, and both
    Nysa and Relay health before clearing maintenance.
 
 Never resolve an orchestration incident by deleting a lease, PID record,
@@ -336,7 +338,7 @@ worktrees are factory-owned before starting manual work.
 
 The orchestrator is ready for normal Nysa use only when:
 
-- Linear is still the only live board;
+- the operator, through receipts, is still the only source of priority/Ready/approval/unblock decisions;
 - Hermes makes no eligibility, sequencing, safety, budget, approval, activation,
   or recovery decision independently of the launcher;
 - disabling one Hermes job immediately returns the system to manual dispatch;

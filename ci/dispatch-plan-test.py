@@ -51,7 +51,7 @@ class DispatchPlanTest(unittest.TestCase):
         )
         (factory / "KIT_PIN").write_text("a" * 40 + "\n")
         (self.product / ".gitignore").write_text(
-            "factory/linear-map.json\nfactory/.dispatch-leases/\n"
+            "factory/operator-map.json\nfactory/.dispatch-leases/\n"
             "factory/.dispatch-leases.lock/\nfactory/.launch.lock/\n"
         )
         self.ticket("T-100", "normal", "Ready")
@@ -62,7 +62,7 @@ class DispatchPlanTest(unittest.TestCase):
         run("git", "commit", "-qm", "seed", cwd=self.product)
         run("git", "remote", "add", "origin", str(self.remote), cwd=self.product)
         run("git", "push", "-qu", "origin", "main", cwd=self.product)
-        self.mapping = factory / "linear-map.json"
+        self.mapping = factory / "operator-map.json"
         self.write_mapping()
         self.worktrees = self.root / "worktrees"
         self.worktrees.mkdir(mode=0o700)
@@ -82,8 +82,8 @@ class DispatchPlanTest(unittest.TestCase):
             "Protected-Test-Conflicts: none\n"
         )
 
-    def write_mapping(self, age=0, states=None):
-        observed = dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=age)
+    def write_mapping(self, states=None):
+        observed = dt.datetime.now(dt.timezone.utc)
         tickets = {}
         for ticket, state in (states or {}).items():
             tickets[ticket] = {
@@ -110,15 +110,9 @@ class DispatchPlanTest(unittest.TestCase):
             + "\n"
         )
 
-    def write_qualification_mapping(self, tickets, age=0):
-        self.write_mapping(
-            age=age, states={ticket: "Ready" for ticket in tickets}
-        )
+    def write_qualification_mapping(self, tickets):
+        self.write_mapping(states={ticket: "Ready" for ticket in tickets})
         mapping = json.loads(self.mapping.read_text())
-        observed = mapping["_sync"]["last_success_at"]
-        mapping["_sync"]["selected_ticket_success_at"] = {
-            ticket: observed for ticket in tickets
-        }
         for ticket in tickets:
             mapping["tickets"][ticket]["operator_fields_initialized"] = True
         self.mapping.write_text(json.dumps(mapping) + "\n")
@@ -642,12 +636,7 @@ class DispatchPlanTest(unittest.TestCase):
         self.assertEqual(resumed["ticket"], "T-200")
         self.assertEqual(Path(resumed["worktree"]), new_cell)
 
-    def test_stale_reconciliation_maintenance_and_dirty_root_refuse(self):
-        self.write_mapping(age=601)
-        stale = self.command("shadow", expected=2)
-        self.assertIn("stale", stale["error"])
-        self.assertNotIn("ticket", stale)
-        self.write_mapping()
+    def test_maintenance_and_dirty_root_refuse(self):
         (self.product / "factory/MAINTENANCE").touch()
         self.assertIn("blocks dispatch", self.command("claim", expected=2)["error"])
         (self.product / "factory/MAINTENANCE").unlink()
@@ -790,7 +779,7 @@ class DispatchPlanTest(unittest.TestCase):
         ).splitlines()
         self.assertIn("T-110: materialize ticket state", subjects)
 
-    def test_stale_linear_map_cannot_deadlock_authorized_control_reset(self):
+    def test_invalid_operator_map_cannot_deadlock_authorized_control_reset(self):
         tickets = self.write_contract_18_qualification()
         ticket = self.product / "factory/tickets/T-110.md"
         ticket.write_text(ticket.read_text() + "Merge-Policy: auto\n")
@@ -805,13 +794,16 @@ class DispatchPlanTest(unittest.TestCase):
         run("git", "commit", "-qm", "correct protected merge policy", cwd=self.product)
         run("git", "push", "-q", "origin", "main", cwd=self.product)
         self.authorize_preprovider_reset(old_head)
-        self.write_qualification_mapping(tickets, age=1000)
+        self.write_qualification_mapping(tickets)
+        mapping = json.loads(self.mapping.read_text())
+        mapping["tickets"]["T-110"]["operator_fields_initialized"] = False
+        self.mapping.write_text(json.dumps(mapping) + "\n")
 
-        stale = self.command("claim", expected=2)
+        invalid = self.command("claim", expected=2)
 
         self.assertEqual(
-            stale["error"],
-            "selected-ticket Linear reconciliation for T-110 is stale",
+            invalid["error"],
+            "selected-ticket operator projection is invalid: T-110",
         )
         remote_head = run(
             "git", "ls-remote", "--heads", str(self.remote), "ticket/T-110"
@@ -822,23 +814,24 @@ class DispatchPlanTest(unittest.TestCase):
         value = self.command("claim")
         self.assertEqual(value["ticket"], "T-110")
 
-    def test_qualification_uses_fresh_exact_ticket_sync_without_history_sweep(self):
+    def test_qualification_operator_map_is_local_projection_without_staleness(self):
         tickets = self.write_contract_18_qualification()
         run("git", "add", ".", cwd=self.product)
-        run("git", "commit", "-qm", "prepare exact-sync qualification", cwd=self.product)
+        run("git", "commit", "-qm", "prepare projection qualification", cwd=self.product)
         run("git", "push", "-q", "origin", "main", cwd=self.product)
-        self.write_mapping(
-            age=1000, states={ticket: "Ready" for ticket in tickets},
-        )
+        self.write_qualification_mapping(tickets)
         mapping = json.loads(self.mapping.read_text())
-        now = dt.datetime.now(dt.timezone.utc).isoformat()
-        mapping["_sync"].update({
-            "last_error": "linear_rate_limited retry_after_seconds=900",
-            "selected_ticket_success_at": {ticket: now for ticket in tickets},
-        })
+        stale = (
+            dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=100_000)
+        ).isoformat()
+        mapping["_sync"] = {
+            "last_error": "operator projection noise",
+            "last_success_at": stale,
+        }
         for ticket in tickets:
-            mapping["tickets"][ticket]["operator_fields_initialized"] = True
-            mapping["tickets"][ticket]["operator"]["observed_at"] = now
+            mapping["tickets"][ticket]["operator"]["observed_at"] = stale
+        # A ticket without a projection entry defaults benignly: no overrides.
+        mapping["tickets"].pop(tickets[-1])
         self.mapping.write_text(json.dumps(mapping) + "\n")
 
         value = self.command("shadow")
@@ -847,28 +840,14 @@ class DispatchPlanTest(unittest.TestCase):
         self.assertEqual(value["status"], "SHADOW")
 
         cases = {
-            "missing": lambda item: item["_sync"][
-                "selected_ticket_success_at"
-            ].pop(tickets[-1]),
-            "malformed": lambda item: item["_sync"][
-                "selected_ticket_success_at"
-            ].update({tickets[-1]: "not-a-time"}),
-            "stale": lambda item: item["_sync"][
-                "selected_ticket_success_at"
-            ].update({
-                tickets[-1]: (
-                    dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=1000)
-                ).isoformat(),
-            }),
-            "stale-observation": lambda item: item["tickets"][tickets[-1]][
-                "operator"
-            ].update({
-                "observed_at": (
-                    dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=1000)
-                ).isoformat(),
-            }),
-            "uninitialized": lambda item: item["tickets"][tickets[-1]].update(
+            "uninitialized": lambda item: item["tickets"][tickets[0]].update(
                 operator_fields_initialized=False
+            ),
+            "operator-missing": lambda item: item["tickets"][tickets[0]].pop(
+                "operator"
+            ),
+            "entry-not-object": lambda item: item["tickets"].update(
+                {tickets[0]: "not-an-object"}
             ),
         }
         for label, mutate in cases.items():
@@ -877,7 +856,10 @@ class DispatchPlanTest(unittest.TestCase):
                 mutate(unhealthy)
                 self.mapping.write_text(json.dumps(unhealthy) + "\n")
                 refused = self.command("shadow", expected=2)
-                self.assertIn("selected-ticket Linear", refused["error"])
+                self.assertIn(
+                    "selected-ticket operator projection is invalid",
+                    refused["error"],
+                )
 
     def test_authorized_reset_rejects_non_control_ticket_drift(self):
         self.write_contract_18_qualification()

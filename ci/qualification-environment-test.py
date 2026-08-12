@@ -95,37 +95,19 @@ class QualificationEnvironmentTest(unittest.TestCase):
             ROOT / "scripts/qualification-reducer.py",
             self.factory / "scripts/qualification-reducer.py",
         )
-        linear_sync = self.factory / "scripts/linear-sync.py"
-        linear_sync.write_text("""#!/usr/bin/env python3
-import argparse, json, os
-from pathlib import Path
-parser = argparse.ArgumentParser()
-parser.add_argument('--factory-root')
-parser.add_argument('--ticket')
-parser.add_argument('--initialize', action='store_true')
-args = parser.parse_args()
-mapping_path = Path(os.environ['FACTORY_OPERATOR_MAP'])
-mapping = json.loads(mapping_path.read_text())
-entry = mapping['tickets'].setdefault(args.ticket, {})
-entry.setdefault('issue_id', 'issue-' + args.ticket)
-entry.setdefault('identifier', 'SF-' + args.ticket.split('-')[1])
-entry['operator_fields_initialized'] = True
-entry['operator'] = {
-    'observed_at': '2026-08-07T00:00:00+00:00', 'priority': 'none',
-}
-selected = mapping['_sync'].setdefault('selected_ticket_success_at', {})
-selected[args.ticket] = '2026-08-07T00:00:00+00:00'
-mapping_path.write_text(json.dumps(mapping, sort_keys=True) + '\\n')
-mapping_path.chmod(0o600)
-lock = mapping_path.parent / '.linear-sync-cycle.lock'
-lock.touch(mode=0o600, exist_ok=True)
-lock.chmod(0o600)
-ledger = Path(os.environ['FACTORY_LEDGER'])
-ledger.write_text('ticket,role,cost_usd,exit_status\\n')
-ledger.chmod(0o600)
-""", encoding="utf-8")
-        linear_sync.chmod(0o755)
+        shutil.copy2(
+            ROOT / "scripts/operator-cli.py",
+            self.factory / "scripts/operator-cli.py",
+        )
+        shutil.copy2(
+            ROOT / "scripts/ledger-view.py",
+            self.factory / "scripts/ledger-view.py",
+        )
         (self.factory / "scripts/lib").mkdir()
+        shutil.copy2(
+            ROOT / "scripts/lib/operator_receipt.py",
+            self.factory / "scripts/lib/operator_receipt.py",
+        )
         shutil.copy2(
             ROOT / "scripts/certification-preflight.py",
             self.factory / "scripts/certification-preflight.py",
@@ -189,6 +171,11 @@ ledger.chmod(0o600)
         (self.product / "factory/PROJECT.env").write_text(
             "PREVIEW_PROVIDER=railway\n", encoding="utf-8",
         )
+        (self.product / "factory/ledger.csv").write_text(
+            "date,time,ticket,role,adapter,prompt_version,turns,cost_usd,"
+            "exit_status\n",
+            encoding="utf-8",
+        )
         (self.product / ".gitignore").write_text(
             "factory/runs/\n", encoding="utf-8",
         )
@@ -229,7 +216,7 @@ ledger.chmod(0o600)
             self.product, "git", "update-ref", "refs/remotes/origin/main",
             run(self.product, "git", "rev-parse", "HEAD"),
         )
-        self.operator_seed = self.workspace / "linear-map-seed.json"
+        self.operator_seed = self.workspace / "operator-map-seed.json"
         ENVIRONMENT.write(self.operator_seed, {
             "_config": {
                 "labels": {}, "states": {}, "team_id": "team-id",
@@ -342,7 +329,7 @@ ledger.chmod(0o600)
         receipt = ENVIRONMENT.read(
             self.root / "receipts" / f"{active['receipt_id']}.json"
         )
-        operator_map = authority / "operator/linear-map.json"
+        operator_map = authority / "operator/operator-map.json"
         runtime_ledger = authority / "operator/runtime-ledger.csv"
         self.assertEqual(active["operator_map_path"], str(operator_map))
         self.assertEqual(active["runtime_ledger_path"], str(runtime_ledger))
@@ -356,10 +343,7 @@ ledger.chmod(0o600)
         )
         self.assertTrue(runtime_ledger.is_file())
         self.assertEqual(run(self.product, "git", "status", "--porcelain"), "")
-        for relative in (
-            "linear-map.json", ".linear-sync-cycle.lock",
-            ".linear-sync.lock", ".linear-operator-clears", "runtime-ledger.csv",
-        ):
+        for relative in ("operator-map.json", "runtime-ledger.csv"):
             self.assertFalse((self.product / "factory" / relative).exists())
         runs = self.product / "factory/runs"
         self.assertTrue(runs.is_dir())
@@ -481,8 +465,10 @@ ledger.chmod(0o600)
         self.assertEqual(configuration_lock.stat().st_mode & 0o777, 0o600)
         with (
             mock.patch.object(
-                ENVIRONMENT, "initialize_selected_linear",
-                side_effect=AssertionError("complete replay must not call Linear"),
+                ENVIRONMENT, "initialize_selected_operator",
+                side_effect=AssertionError(
+                    "complete replay must not initialize operator state"
+                ),
             ),
             mock.patch.object(
                 ENVIRONMENT, "qualification_fallback_readiness",
@@ -655,8 +641,10 @@ ledger.chmod(0o600)
         controller.rmdir()
         with (
             mock.patch.object(
-                ENVIRONMENT, "initialize_selected_linear",
-                side_effect=AssertionError("refusal must precede Linear"),
+                ENVIRONMENT, "initialize_selected_operator",
+                side_effect=AssertionError(
+                    "refusal must precede operator initialization"
+                ),
             ),
             self.assertRaisesRegex(
                 ENVIRONMENT.EnvironmentError, "preparation state is torn",
@@ -670,8 +658,10 @@ ledger.chmod(0o600)
         ENVIRONMENT.write(active, {"status": "running"})
         with (
             mock.patch.object(
-                ENVIRONMENT, "initialize_selected_linear",
-                side_effect=AssertionError("refusal must precede Linear"),
+                ENVIRONMENT, "initialize_selected_operator",
+                side_effect=AssertionError(
+                    "refusal must precede operator initialization"
+                ),
             ),
             self.assertRaisesRegex(
                 ENVIRONMENT.EnvironmentError, "controller is active",
@@ -685,8 +675,10 @@ ledger.chmod(0o600)
         missing.rmdir()
         with (
             mock.patch.object(
-                ENVIRONMENT, "initialize_selected_linear",
-                side_effect=AssertionError("refusal must precede Linear"),
+                ENVIRONMENT, "initialize_selected_operator",
+                side_effect=AssertionError(
+                    "refusal must precede operator initialization"
+                ),
             ),
             self.assertRaisesRegex(
                 ENVIRONMENT.EnvironmentError, "preparation state is torn",
@@ -701,8 +693,10 @@ ledger.chmod(0o600)
         snapshot.chmod(0o600)
         with (
             mock.patch.object(
-                ENVIRONMENT, "initialize_selected_linear",
-                side_effect=AssertionError("refusal must precede Linear"),
+                ENVIRONMENT, "initialize_selected_operator",
+                side_effect=AssertionError(
+                    "refusal must precede operator initialization"
+                ),
             ),
             self.assertRaisesRegex(
                 ENVIRONMENT.EnvironmentError, "preparation artifact changed",
@@ -711,7 +705,7 @@ ledger.chmod(0o600)
             ENVIRONMENT.prepare(args)
         self.assertEqual(snapshot.read_bytes(), b"CHANGED=true\n")
 
-    def test_prepare_refuses_provider_gap_before_linear_or_repair(self) -> None:
+    def test_prepare_refuses_provider_gap_before_operator_init_or_repair(self) -> None:
         args = argparse.Namespace(
             factory_root=self.factory, product_root=self.product,
             project="relay", root=self.root,
@@ -735,8 +729,10 @@ ledger.chmod(0o600)
         policy.unlink()
         with (
             mock.patch.object(
-                ENVIRONMENT, "initialize_selected_linear",
-                side_effect=AssertionError("refusal must precede Linear"),
+                ENVIRONMENT, "initialize_selected_operator",
+                side_effect=AssertionError(
+                    "refusal must precede operator initialization"
+                ),
             ),
             self.assertRaisesRegex(
                 ENVIRONMENT.EnvironmentError, "preparation state is torn",
@@ -827,9 +823,9 @@ ledger.chmod(0o600)
         )
         foreign = self.home / ".factory/qualification/foreign/operator"
         foreign.mkdir(parents=True, mode=0o700)
-        foreign_map = foreign / "linear-map.json"
+        foreign_map = foreign / "operator-map.json"
         foreign_ledger = foreign / "runtime-ledger.csv"
-        shutil.copyfile(authority / "operator/linear-map.json", foreign_map)
+        shutil.copyfile(authority / "operator/operator-map.json", foreign_map)
         shutil.copyfile(authority / "operator/runtime-ledger.csv", foreign_ledger)
         foreign_map.chmod(0o600)
         foreign_ledger.chmod(0o600)
@@ -899,7 +895,7 @@ ledger.chmod(0o600)
         malformed = self.workspace / "malformed-map.json"
         ENVIRONMENT.write(malformed, {"tickets": {}})
         with self.assertRaisesRegex(
-            ENVIRONMENT.EnvironmentError, "Linear map is malformed",
+            ENVIRONMENT.EnvironmentError, "operator map is malformed",
         ):
             ENVIRONMENT.prepare(argparse.Namespace(
                 **vars(args), operator_map_seed=malformed,
@@ -936,7 +932,7 @@ ledger.chmod(0o600)
         )
         authority = self.home / ".factory/qualification/relay"
 
-        def interrupt(_factory, _product, map_path, _ledger_path):
+        def interrupt(_factory, _product, map_path, _ledger_path, _state_dir):
             mapping = ENVIRONMENT.read(map_path)
             mapping["tickets"]["T-101"] = {
                 "identifier": "SF-101", "issue_id": "issue-T-101",
@@ -949,7 +945,7 @@ ledger.chmod(0o600)
 
         with (
             mock.patch.object(
-                ENVIRONMENT, "initialize_selected_linear", side_effect=interrupt,
+                ENVIRONMENT, "initialize_selected_operator", side_effect=interrupt,
             ),
             mock.patch.object(ENVIRONMENT, "prepare_provider") as provider,
             self.assertRaisesRegex(
@@ -961,14 +957,14 @@ ledger.chmod(0o600)
         self.assertFalse((self.root / "marker.json").exists())
         self.assertTrue((authority / "operator-bootstrap.json").is_file())
         self.assertEqual(
-            ENVIRONMENT.read(authority / "operator/linear-map.json")["tickets"]
+            ENVIRONMENT.read(authority / "operator/operator-map.json")["tickets"]
             ["T-101"]["issue_id"],
             "issue-T-101",
         )
 
         self.operator_seed.unlink()
         value = ENVIRONMENT.prepare(args)
-        mapping = ENVIRONMENT.read(authority / "operator/linear-map.json")
+        mapping = ENVIRONMENT.read(authority / "operator/operator-map.json")
         self.assertEqual(value["status"], "prepared")
         self.assertEqual(mapping["tickets"]["T-101"]["issue_id"], "issue-T-101")
         self.assertEqual(len(mapping["tickets"]), 3)
@@ -980,7 +976,7 @@ ledger.chmod(0o600)
             project="relay", root=self.root,
         )
 
-        def interrupt(_factory, _product, map_path, _ledger_path):
+        def interrupt(_factory, _product, map_path, _ledger_path, _state_dir):
             mapping = ENVIRONMENT.read(map_path)
             mapping["tickets"]["T-101"] = {
                 "identifier": "SF-101", "issue_id": "issue-T-101",
@@ -993,7 +989,7 @@ ledger.chmod(0o600)
 
         with (
             mock.patch.object(
-                ENVIRONMENT, "initialize_selected_linear", side_effect=interrupt,
+                ENVIRONMENT, "initialize_selected_operator", side_effect=interrupt,
             ),
             self.assertRaisesRegex(ENVIRONMENT.EnvironmentError, "interruption"),
         ):
@@ -1004,9 +1000,12 @@ ledger.chmod(0o600)
 
         ENVIRONMENT.prepare(args)
         lane_map = ENVIRONMENT.read(
-            self.home / ".factory/qualification/relay/operator/linear-map.json"
+            self.home / ".factory/qualification/relay/operator/operator-map.json"
         )
-        self.assertNotIn("last_success_at", lane_map["_sync"])
+        self.assertNotEqual(
+            lane_map["_sync"].get("last_success_at"),
+            "2026-08-07T01:00:00+00:00",
+        )
         self.assertEqual(lane_map["tickets"]["T-101"]["issue_id"], "issue-T-101")
 
     def test_second_operator_cycle_remains_outside_product(self) -> None:
@@ -1015,13 +1014,10 @@ ledger.chmod(0o600)
             project="relay", root=self.root,
         ))
         operator = Path(value["authority_root"]) / "operator"
-        mapping = ENVIRONMENT.read(operator / "linear-map.json")
+        mapping = ENVIRONMENT.read(operator / "operator-map.json")
         mapping["_sync"]["last_success_at"] = "2026-08-07T00:01:00+00:00"
-        ENVIRONMENT.replace(operator / "linear-map.json", mapping)
-        clears = operator / ".linear-operator-clears"
-        clears.mkdir(mode=0o700)
-        ENVIRONMENT.write(clears / "T-101.json", {"ticket": "T-101"})
-        self.assertTrue((operator / ".linear-sync-cycle.lock").is_file())
+        ENVIRONMENT.replace(operator / "operator-map.json", mapping)
+        self.assertTrue((operator / "runtime-ledger.csv").is_file())
         self.assertEqual(run(self.product, "git", "status", "--porcelain"), "")
 
     def test_rejects_unsafe_runtime_root_and_noncanonical_contracts(self) -> None:
@@ -1143,8 +1139,8 @@ ledger.chmod(0o600)
                     ENVIRONMENT.qualification_manifest(self.product, self.sha)
         path.write_text(json.dumps(original) + "\n")
 
-    def test_selected_linear_refreshes_already_initialized_cohort(self) -> None:
-        mapping = self.workspace / "selected-linear-map.json"
+    def test_selected_operator_refreshes_already_initialized_cohort(self) -> None:
+        mapping = self.workspace / "selected-operator-map.json"
         ENVIRONMENT.write(mapping, {
             "_config": {},
             "_sync": {"selected_ticket_success_at": {
@@ -1165,30 +1161,30 @@ ledger.chmod(0o600)
             },
         })
         ledger = self.workspace / "selected-runtime-ledger.csv"
+        state_dir = self.workspace / "selected-controller"
         completed = subprocess.CompletedProcess([], 0, "", "")
-        def refresh(*_args, **_kwargs):
-            value = ENVIRONMENT.read(mapping)
-            ticket = _args[0][-2]
-            value["_sync"].setdefault("selected_ticket_success_at", {})[ticket] = (
-                "2026-08-07T00:00:00+00:00"
-            )
-            ENVIRONMENT.replace(mapping, value)
-            return completed
         with mock.patch.object(
-            ENVIRONMENT.subprocess, "run", side_effect=refresh,
+            ENVIRONMENT.subprocess, "run", return_value=completed,
         ) as invoked:
-            ENVIRONMENT.initialize_selected_linear(
-                self.factory, self.product, mapping, ledger, refresh=True,
+            ENVIRONMENT.initialize_selected_operator(
+                self.factory, self.product, mapping, ledger, state_dir,
+                refresh=True,
             )
-        self.assertEqual(invoked.call_count, 3)
+        self.assertEqual(invoked.call_count, 4)
         self.assertEqual(
-            [call.args[0][-2:] for call in invoked.call_args_list],
-            [["T-101", "--initialize"], ["T-102", "--initialize"],
-             ["T-103", "--initialize"]],
+            [call.args[0][-2:] for call in invoked.call_args_list[:3]],
+            [["--ticket", "T-101"], ["--ticket", "T-102"],
+             ["--ticket", "T-103"]],
+        )
+        self.assertEqual(
+            invoked.call_args_list[3].args[0][-2:],
+            ["--runtime-ledger", str(ledger)],
         )
         for call in invoked.call_args_list:
             self.assertEqual(call.kwargs["env"]["FACTORY_OPERATOR_MAP"], str(mapping))
-            self.assertEqual(call.kwargs["env"]["FACTORY_LEDGER"], str(ledger))
+            self.assertEqual(
+                call.kwargs["env"]["FACTORY_CONTROLLER_STATE_DIR"], str(state_dir),
+            )
 
     def test_rejects_ticket_blob_that_dispatch_would_not_use(self) -> None:
         ticket = self.product / "factory/tickets/T-101.md"
@@ -1323,7 +1319,7 @@ ledger.chmod(0o600)
             source_sha + "\n", encoding="utf-8",
         )
         (self.product / ".gitignore").write_text(
-            "factory/linear-map.json\n", encoding="utf-8",
+            "factory/operator-map.json\n", encoding="utf-8",
         )
         for ticket in tickets:
             (self.product / f"factory/tickets/{ticket}.md").write_text(
@@ -1349,7 +1345,7 @@ ledger.chmod(0o600)
             self.product, "git", "worktree", "add", "-q", "--detach",
             str(source_product), protected_sha,
         )
-        operator_map = source_product / "factory/linear-map.json"
+        operator_map = source_product / "factory/operator-map.json"
         ENVIRONMENT.write(operator_map, {"last_success_at": "2026-07-31T12:00:00Z"})
         (self.product / "shared-policy.txt").write_text(
             "protected control change\n", encoding="utf-8",
@@ -1507,7 +1503,7 @@ ledger.chmod(0o600)
         self.assertEqual(active["qualification_mode"], "takeover")
         self.assertEqual(active["takeover_kits_root"], str(kits))
         self.assertEqual(active["operator_map_path"], str(operator_map.resolve()))
-        self.assertFalse((self.product / "factory/linear-map.json").exists())
+        self.assertFalse((self.product / "factory/operator-map.json").exists())
         self.assertFalse((self.root / "provider").exists())
         self.assertFalse((self.root / "projects/relay/controller").exists())
 
@@ -2379,8 +2375,8 @@ ledger.chmod(0o600)
                 side_effect=AssertionError("operator state must not change"),
             ),
             mock.patch.object(
-                ENVIRONMENT, "initialize_selected_linear",
-                side_effect=AssertionError("Linear must not run"),
+                ENVIRONMENT, "initialize_selected_operator",
+                side_effect=AssertionError("operator initialization must not run"),
             ),
             mock.patch.object(
                 ENVIRONMENT, "materialize",
@@ -2437,8 +2433,8 @@ ledger.chmod(0o600)
                 return_value={"ticket": "T-110"},
             ),
             mock.patch.object(
-                ENVIRONMENT, "initialize_selected_linear",
-                side_effect=AssertionError("Linear must not run"),
+                ENVIRONMENT, "initialize_selected_operator",
+                side_effect=AssertionError("operator initialization must not run"),
             ),
             self.assertRaisesRegex(
                 ENVIRONMENT.EnvironmentError,
@@ -2528,8 +2524,8 @@ ledger.chmod(0o600)
                 (Path(base) / name).chmod(0o700)
         shutil.rmtree(self.root)
         with mock.patch.object(
-            ENVIRONMENT, "initialize_selected_linear",
-            wraps=ENVIRONMENT.initialize_selected_linear,
+            ENVIRONMENT, "initialize_selected_operator",
+            wraps=ENVIRONMENT.initialize_selected_operator,
         ) as initialize:
             restored = ENVIRONMENT.prepare(argparse.Namespace(
                 **vars(args), restore=True,

@@ -44,10 +44,11 @@ def write_json(path, value):
     path.write_text(json.dumps(value, indent=2) + "\n")
 
 
-class ProtectedMergeReconciliationTests(unittest.TestCase):
-    """Exercise the one-time batch through real Git and a deterministic gh stub."""
+class _ReconciliationFixture:
+    """Shared evidence-building helpers, parameterized by approval variant."""
 
     maxDiff = None
+    APPROVAL_VARIANT = "linear"
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(
@@ -143,7 +144,7 @@ class ProtectedMergeReconciliationTests(unittest.TestCase):
     def _approval_attestation(self, ticket, reviewed, bundle_head, source_kit, pr):
         bundle = self.repo / f"factory/tickets/{ticket}-bundle.md"
         attestation = self.repo / f"factory/attestations/{ticket}/bundle.json"
-        return {
+        approval = {
             "schema": "nysa.software-factory.ticket-approval/v1",
             "ticket": ticket,
             "repository": "acme/widget",
@@ -154,12 +155,16 @@ class ProtectedMergeReconciliationTests(unittest.TestCase):
             "bundle_attestation_blob": self.hash_object(attestation),
             "pr_number": pr,
             "operator_version": "1",
-            "linear_updated_at": self.cutoff,
             "observed_at": self.cutoff,
             "kit_sha": source_kit,
             "auto_merge_method": "squash",
             "attested_at": self.cutoff,
         }
+        if self.APPROVAL_VARIANT == "receipt":
+            approval["receipt_sha256"] = "b" * 64
+        else:
+            approval["linear_updated_at"] = self.cutoff
+        return approval
 
     def _build_evidence(self):
         (self.repo / "factory/tickets").mkdir(parents=True)
@@ -659,6 +664,34 @@ class ProtectedMergeReconciliationTests(unittest.TestCase):
         self.publish(unbound={"factory/rulings.md": "# Rulings\n"})
         with self.assertRaises(ValidationError):
             reconciliation_batch(self.repo)
+
+
+class ProtectedMergeReconciliationTests(_ReconciliationFixture, unittest.TestCase):
+    """Historical Linear-era approval evidence (linear_updated_at) — keep forever."""
+
+
+class ProtectedMergeReconciliationReceiptApprovalTests(
+    _ReconciliationFixture, unittest.TestCase,
+):
+    """Receipt-era twin: same approved-source scenario with receipt_sha256."""
+
+    APPROVAL_VARIANT = "receipt"
+
+    def test_exact_batch_validates_with_receipt_approval_variant(self):
+        self.publish()
+        batch = reconciliation_batch(self.repo)
+        self.assertEqual(list(batch), list(TICKETS))
+        self.assertEqual(
+            {value["basis"] for value in batch.values()},
+            {"validated-protected-merge-reconciliation"},
+        )
+        for ticket in TICKETS:
+            self.assertEqual(
+                protected_terminal(self.repo, ticket)["basis"],
+                "validated-protected-merge-reconciliation",
+            )
+        self.assertIsNotNone(self.receipts["T-031"]["approval_attestation_blob"])
+
 
 if __name__ == "__main__":
     unittest.main()

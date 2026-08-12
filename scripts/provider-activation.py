@@ -133,7 +133,7 @@ def main() -> None:
     parser.add_argument("--config", required=True, type=Path)
     parser.add_argument("--policy", type=Path)
     parser.add_argument(
-        "--contract-version", required=True, choices=("1.6.0", "1.7.0", "1.8.0")
+        "--contract-version", required=True, choices=("1.6.0", "1.7.0", "1.8.0", "1.9.0")
     )
     selection = parser.add_mutually_exclusive_group(required=True)
     selection.add_argument("--route-id")
@@ -166,7 +166,7 @@ def main() -> None:
             route_validator = valid_v1_route
             execution_mode = "api-isolated-v1"
         elif schema == SCHEMA_V2:
-            if args.contract_version not in {"1.7.0", "1.8.0"}:
+            if args.contract_version not in {"1.7.0", "1.8.0", "1.9.0"}:
                 raise ActivationError("contract 1.6 does not support CLI activation")
             if (
                 set(value)

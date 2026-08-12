@@ -1,6 +1,6 @@
 # Software Factory Kit
 
-A product-agnostic kit for running an AI software factory: agents plan, build, review, and document work on a Linear board; a human sets priorities and approves from evidence bundles, never from diffs.
+A product-agnostic kit for running an AI software factory: agents plan, build, review, and document work in Git; a human sets priorities and approves from evidence bundles, never from diffs, through one-use operator receipts.
 
 Built July 2026 for the Nysa project, factored out so any product can use it. Design decisions and their history live in the [Nysa product repository](https://github.com/nysa-company/nysa/blob/main/deliverables/2026-07-11-autonomous-software-factory-brief.md).
 
@@ -62,8 +62,8 @@ preview hashes: preview first, then explicitly apply the exact preview.
 Changing an active attempt never rewrites its budget or prior accounting.
 Cancel it, account it conservatively, approve the new envelope/model policy,
 and restart at the same role boundary. A same-family Reviewer is never a
-normal policy option; it requires an exact ticket-scoped, one-use Linear
-fallback exception.
+normal policy option; it requires an exact ticket-scoped, one-use operator
+fallback-approval exception.
 
 ## Core rules (enforced by the kit, not by prompts)
 
@@ -73,30 +73,36 @@ fallback exception.
 4. Test author and reviewer run on a different model family than the builder.
 5. Two review rounds, then the ticket escalates to a human with a plain-language note.
 6. One role attempt submits its task to at most one agent process. Any
-   mid-ticket route change requires the Contract 1.4+ journal and one-use Linear
-   approval flow.
+   mid-ticket route change requires the Contract 1.4+ journal and one-use
+   operator approval flow.
 
-## How Linear and Markdown work together
+## How operator receipts and Markdown work together
 
-Linear is the visual board and the operator's decision surface. Git is the
-durable execution record. Every `factory/initiatives/I-NNN.md` file maps to a
-Linear Project, and every `factory/tickets/T-NNN.md` file maps to a Linear
-issue. A per-product `com.factory.linear-sync.*` job reconciles them every
-three minutes through the stable launcher, so activation and rollback change
-only the validated active release pointer rather than the LaunchAgent.
+Git is the durable execution record, and now the only one — there is no
+external board. Every operator decision (ready, approve, resume, cancel,
+priority, and model-fallback approval) is a one-use receipt issued by
+`factory-kit.sh operator <action> --project SLUG --product REPO [--ticket
+T-NNN]`. The receipt is anchored in the controller's state directory, is
+projected into the gitignored `factory/operator-map.json` that ticket
+sequencing reads, and gets a zero-authority audit copy under
+`factory/receipts/<T>/` committed in the product checkout. The map is a
+projection with nothing behind it, so there is no sync delay or staleness to
+wait on.
 
-Linear owns the decisions a human should make:
+The operator owns the decisions a human should make:
 
-- issue priority and initiative/Project membership;
+- ticket priority and initiative;
 - Backlog → Ready;
 - Awaiting Approval → Approved;
 - the agreed resume stage for a Blocked-Escalated ticket;
-- Project status and target date.
+- initiative status and target date, recorded directly in
+  `factory/initiatives/I-NNN.md` — there is no external Project object to
+  keep in sync.
 
 Markdown owns acceptance criteria, the frozen contract, factory-stage
 movement, machine-readable verdicts, logs, evidence bundles, costs, and final
-Done close-out. Editing factory-owned text or moving an issue through agent
-stages directly in Linear is corrected on the next sync.
+Done close-out. Editing factory-owned text or moving a stage by hand instead
+of through a receipt is rejected on the next reconciliation.
 
 The compact board flow is:
 
@@ -117,32 +123,33 @@ creating a column for every agent.
 The factory needs you at four points:
 
 1. **Choose the work.** Ensure the durable initiative and ticket files exist.
-   The reconciler creates and maps their Linear Project and issue. Creating an
-   unrelated issue only in Linear does not create a runnable factory ticket.
-2. **Prioritize it.** Set the Linear priority and Project, then move Backlog →
-   Ready. Wait for the sync-health timestamp in `factory/linear-map.json` to
-   advance.
+   There is no external board to create or map anything in — a ticket file
+   under `factory/tickets/` is a runnable ticket by itself.
+2. **Prioritize it.** Run `operator priority`, then `operator ready`. Both
+   take effect as soon as the receipt is issued; there is no sync-health
+   timestamp to wait on.
 3. **Resolve exceptions.** Read Blocked-Escalated notes, decide the requested
-   question, set `Resume-State:` in the ticket record, and move the Linear
-   issue to that agreed phase.
+   question, set `Resume-State:` in the ticket record, and run
+   `operator resume --stage <Resume-State>`.
 4. **Approve the result.** In Awaiting Approval, read the evidence bundle and
-   open the preview. Move the issue to Approved only when it is safe to merge,
-   or send it back with a concrete reason. Done is recorded after merge and
-   staging confirmation.
+   open the preview. Run `operator approve` only when it is safe to merge, or
+   send it back with a concrete reason instead. Done is recorded after merge
+   and staging confirmation.
 
 Contract 1.2 still stops in Review. Contracts 1.3 through 1.5 implement the fourth step
 through the trusted `ticket-attest` command: it attests the exact bundle,
-consumes the one Linear approval, requests protected auto-merge, and records
-Done only after merge-commit deployment checks and closeout accounting pass.
+consumes the one operator receipt-bound approval, requests protected
+auto-merge, and records Done only after merge-commit deployment checks and
+closeout accounting pass.
 It also auto-merges the protected factory-owned closeout PR and releases any
 dispatcher lease only after attested Done reaches main, so the normal operator
 actions remain Ready and Approved.
 
 ## Does moving a ticket to Ready start the factory?
 
-**Not by itself in the current installation.** Moving a mapped Linear issue to
-Ready is reconciled into its Markdown ticket within about three minutes, but
-the installed job is a reconciler, not an autonomous dispatcher.
+**Not by itself.** Running `operator ready` issues the receipt and updates the
+operator map immediately — there is no external system or reconciliation
+delay — but nothing autonomously dispatches from that alone.
 
 After the Ready transition is visible locally, a dispatcher session must:
 
@@ -165,6 +172,5 @@ running**. Never bypass a preflight failure.
 Read the [product brief](docs/product-brief.md), [architecture](docs/architecture.md), and [factory setup checklist](docs/factory-setup.md). Copy the required templates into the product repo, fill the blanks, run the validator, then start with the [walking skeleton](docs/operations/walking-skeleton.md). Do not create a ticket backlog before its staging URL works.
 
 For the complete transition and ownership rules, see
-[`docs/workflows/linear.md`](docs/workflows/linear.md),
-[`docs/workflows/ticket-flow.md`](docs/workflows/ticket-flow.md), and
+[`docs/workflows/ticket-flow.md`](docs/workflows/ticket-flow.md) and
 [`docs/runbooks/operator.md`](docs/runbooks/operator.md).

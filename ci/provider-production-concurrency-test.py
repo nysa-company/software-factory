@@ -861,18 +861,18 @@ esac
         launcher.parent.mkdir(parents=True)
         launcher.write_bytes((ROOT / "integrations/hermes/bin/factory-launch").read_bytes())
         launcher.chmod(0o700)
-        label = "com.factory.linear-sync.relay"
+        label = "com.factory.legacy-relay.relay"
         launch_agents = self.home / "Library/LaunchAgents"
         launch_agents.mkdir(parents=True)
         service = launch_agents / f"{label}.plist"
         with service.open("wb") as stream:
             plistlib.dump({
                 "Label": label,
-                "ProgramArguments": [str(launcher), "relay", "linear-sync"],
+                "ProgramArguments": [str(launcher), "relay", "legacy-relay"],
                 "StartInterval": 180,
                 "RunAtLoad": True,
-                "StandardOutPath": str(product / "factory/linear-sync.log"),
-                "StandardErrorPath": str(product / "factory/linear-sync.err.log"),
+                "StandardOutPath": str(product / "factory/legacy-relay.log"),
+                "StandardErrorPath": str(product / "factory/legacy-relay.err.log"),
             }, stream)
         launchctl = self.root / "launchctl"
         launchctl.write_text(
@@ -881,7 +881,7 @@ esac
             f"print-disabled) printf '%s\\n' 'disabled services = {{' "
             f"'  \"{label}\" => enabled' '}}' ;;\n"
             "print) printf '%s\\n' 'arguments = {' "
-            f"'  {launcher}' '  relay' '  linear-sync' '}}' ;;\n"
+            f"'  {launcher}' '  relay' '  legacy-relay' '}}' ;;\n"
             "*) exit 2 ;;\n"
             "esac\n"
         )
@@ -897,7 +897,7 @@ esac
             "FACTORY_PROVIDER_DB": str(self.state / "accounting/state-v2.sqlite3"),
             "FACTORY_PROVIDER_POLICY": str(self.state / "provider-policy.json"),
             "FACTORY_CLI_RUNTIME_ROOT": str(self.root),
-            "FACTORY_RELEASE_CONTRACT_VERSION": "1.8.0",
+            "FACTORY_RELEASE_CONTRACT_VERSION": "1.9.0",
             "HOME": str(self.home),
             "PATH": f"{binary_root}:{os.environ['PATH']}",
         }

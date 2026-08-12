@@ -251,7 +251,7 @@ def prepare(product, request_path):
         raise ValidationError("request repository does not match product configuration")
     oid(request["target_kit_sha"], "dependency fulfillment target kit")
     if (
-        request["candidate_contract"] != "1.8.0"
+        request["candidate_contract"] not in ("1.8.0", "1.9.0")
         or text_at(repo, basis_commit, "factory/KIT_PIN")
         == request["target_kit_sha"] + "\n"
     ):
@@ -297,7 +297,7 @@ def prepare(product, request_path):
         "schema": AUTH_SCHEMA,
         "repository": request["repository"],
         "target_kit_sha": request["target_kit_sha"],
-        "candidate_contract": "1.8.0",
+        "candidate_contract": request["candidate_contract"],
         "cutoff": request["cutoff"],
         "protected_main_basis": basis,
         "required_checks": required,
@@ -366,7 +366,7 @@ def prepare(product, request_path):
             "ticket": ticket,
             "repository": request["repository"],
             "target_kit_sha": request["target_kit_sha"],
-            "candidate_contract": "1.8.0",
+            "candidate_contract": request["candidate_contract"],
             "source_state": "Backlog",
             "source_ticket_blob": evidence[ticket]["source_ticket_blob"],
             "pr": evidence[ticket]["pr"],

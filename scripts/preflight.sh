@@ -21,7 +21,7 @@ done
 KIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 REPO_ROOT="${FACTORY_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")}"
 FACTORY_DIR="$REPO_ROOT/factory"
-OPERATOR_MAP="${FACTORY_OPERATOR_MAP:-$FACTORY_DIR/linear-map.json}"
+OPERATOR_MAP="${FACTORY_OPERATOR_MAP:-$FACTORY_DIR/operator-map.json}"
 CONTENT_ROOT="${WORKDIR:-$REPO_ROOT}"
 LEDGER="${FACTORY_LEDGER:-$FACTORY_DIR/runtime-ledger.csv}"
 ENV_FILE="${FACTORY_ENVELOPE:-$FACTORY_DIR/ENVELOPE.env}"
@@ -89,7 +89,8 @@ if ! factory_dispatch_require_lease "$REPO_ROOT" "$TICKET" "$LEASE_ID"; then
   exit 1
 fi
 
-if [[ "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.8.0" ]]; then
+if [[ "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.8.0" ||
+      "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.9.0" ]]; then
   if [[ -z "$WORKDIR" ]] ||
      ! python3 -B "$KIT_DIR/scripts/ticket-readiness.py" \
        --ticket "$TICKET" --workdir "$CONTENT_ROOT"; then
@@ -319,8 +320,12 @@ fi
 # authorizes an earlier repair owner beneath the visible coarse state. The
 # installed launcher constructs FACTORY_VERIFIED_TRANSITION_STAGE only from
 # state-machine receipt verification inside its empty helper environment.
+case "${FACTORY_RELEASE_CONTRACT_VERSION:-}" in
+  1.8.0|1.9.0) CONTRACT_HAS_STATE_MACHINE=1 ;;
+  *) CONTRACT_HAS_STATE_MACHINE=0 ;;
+esac
 EXPECTED_STATE="Ready"
-if [[ "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.8.0" &&
+if [[ "$CONTRACT_HAS_STATE_MACHINE" -eq 1 &&
       "$ROLE" == "planner" ]]; then
   EXPECTED_STATE="Planning"
 fi
@@ -330,13 +335,13 @@ if [[ ! -f "$TICKET_FILE" ]]; then
 elif grep -qE "^State: $EXPECTED_STATE$" "$TICKET_FILE"; then
   pass "ticket $TICKET is $EXPECTED_STATE"
   STATE_ACCEPTED=1
-elif [[ "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.8.0" &&
+elif [[ "$CONTRACT_HAS_STATE_MACHINE" -eq 1 &&
         "$ROLE" == "planner" &&
         "${FACTORY_VERIFIED_TRANSITION_STAGE:-}" == "FIX planner" ]]; then
   STATE="$(grep -m1 '^State:' "$TICKET_FILE" 2>/dev/null || echo 'State: unknown')"
   pass "ticket $TICKET $STATE is authorized by the verified FIX planner transition"
   STATE_ACCEPTED=1
-elif [[ "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.8.0" &&
+elif [[ "$CONTRACT_HAS_STATE_MACHINE" -eq 1 &&
         "$ROLE" == "planner" &&
         "${FACTORY_VERIFIED_TRANSITION_STAGE:-}" == "CATCHUP planner" ]] &&
      grep -qE '^State: (Building|Review)$' "$TICKET_FILE"; then
@@ -356,13 +361,6 @@ if [[ "$STATE_ACCEPTED" -eq 1 ]]; then
   else
     pass "ticket belongs to initiative $INITIATIVE"
   fi
-fi
-
-LINEAR_MAP="$OPERATOR_MAP"
-if [[ -f "$LINEAR_MAP" ]] && grep -q '"last_success_at":[[:space:]]*"[^"]' "$LINEAR_MAP"; then
-  pass "Linear reconciliation has a recorded successful pull"
-else
-  warn "no successful Linear reconciliation recorded — verify board sync before trusting a new operator action"
 fi
 
 # (f) GH_TOKEN — warn only

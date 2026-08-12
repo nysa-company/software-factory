@@ -370,7 +370,7 @@ def preview(args):
         "resolution": result["resolution"],
         "schema": "ticket-model-fallback-preview/v1",
         "snapshot_digest": result["handoff"].snapshot_digest,
-        "linear_comment": (
+        "operator_comment": (
             f"FACTORY MODEL FALLBACK APPROVAL: {result['approval_hash']} "
             f"RUN: {args.failed_run} REASON: {args.reason} "
             f"NONCE: {result['nonce']}"
@@ -614,7 +614,7 @@ def apply(args):
         return recovered
     result = calculate(args, approval["nonce"])
     if approval.get("approval_hash") != result["approval_hash"]:
-        raise FallbackError("Linear approval does not match the current fallback preview")
+        raise FallbackError("operator approval receipt does not match the current fallback preview")
     return apply_result(args, approval, result)
 
 
@@ -755,7 +755,7 @@ def main():
     elif args.github_token_stdin:
         raise FallbackError("github credential supplied for a non-GitHub remote")
     if args.action == "apply" and not args.approval:
-        raise FallbackError("apply requires a Linear approval")
+        raise FallbackError("apply requires an operator approval receipt")
     if args.action == "preview":
         value = preview(args)
     elif args.action == "recover":

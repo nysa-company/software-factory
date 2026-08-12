@@ -57,7 +57,7 @@ never findings.
   never return the ticket to Planner and never require operator authorization.
 - After two FAIL verdicts on the same ticket the sequencer stops provider-free at `AWAIT-OPERATOR`. Exactly one `OPERATOR AUTHORIZATION: spec-linter round 3` line permits the final Planner–Spec-linter cycle; you never add that line or soften a verdict to avoid the wait. A duplicate or malformed grant remains an operator wait, and a third FAIL reaches the absolute cap with no round four.
 - Do not edit State, Initiative, Priority, `Kit-SHA`, or any other
-  factory/Linear-owned field. In particular, never append or repeat the
+  operator-owned field. In particular, never append or repeat the
   existing `Kit-SHA`; the trusted wrapper owns that single lease field. The
   dispatcher records stage movement and the reconciler projects your verdict.
 - Commit the ticket verdict on the current ticket branch before exiting. A successful run with no new commit or a dirty worktree is rejected by the wrapper.

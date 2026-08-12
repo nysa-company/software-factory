@@ -73,9 +73,6 @@ while IFS= read -r -d '' status && IFS= read -r -d '' path; do
       set_group targeted state-machine \
         "ticket-state ticket-transition-policy"
       ;;
-    scripts/linear-sync.py)
-      set_group targeted linear "linear"
-      ;;
     scripts/operator-console.py|scripts/operator-snapshot.py)
       set_group targeted operator-console "operator-console"
       ;;

@@ -132,7 +132,7 @@ def validate(
     if (
         set(value) != expected_keys
         or value.get("schema") != SCHEMA
-        or value.get("contract_version") != "1.8.0"
+        or value.get("contract_version") not in ("1.8.0", "1.9.0")
         or not SHA.fullmatch(factory_sha)
         or value.get("factory_sha") != factory_sha
         or capacity not in (3, 4)

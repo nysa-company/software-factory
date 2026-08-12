@@ -990,7 +990,7 @@ class Controller:
                 emit(
                     "awaiting_approval", ticket,
                     passport_sha256=passport_digest,
-                    question="Approve this ticket to merge in Linear.",
+                    question="Approve this ticket to merge.",
                 )
                 continue
             if claim.get("status") != "blocked":
@@ -2629,11 +2629,9 @@ class Controller:
     ) -> dict[str, str] | None:
         if not self.qualification:
             return None
-        value: dict[str, Any] = {}
         try:
             value = self.json_call(
-                "dispatch-plan", "--shadow", "--max-linear-age", "300",
-                "--json", allow=(0, 2),
+                "dispatch-plan", "--shadow", "--json", allow=(0, 2),
             )
             pair = (value.get("status"), value.get("action"))
             valid = (
@@ -2661,21 +2659,10 @@ class Controller:
             if pair != ("error", "ESCALATE"):
                 return None
         except (ControllerError, OSError, subprocess.SubprocessError):
-            value = {}
-        detail = value.get("error", "")
-        restore = isinstance(detail, str) and detail.startswith(
-            "selected-ticket Linear "
-        )
+            pass
         failure = {
-            "error": (
-                "qualification Linear freshness requires the supported sealed "
-                "environment restore"
-                if restore else "qualification admission preflight failed"
-            ),
-            "reason_code": (
-                "qualification_linear_restore_required"
-                if restore else "qualification_admission_preflight_failed"
-            ),
+            "error": "qualification admission preflight failed",
+            "reason_code": "qualification_admission_preflight_failed",
             "status": "error",
         }
         self.record_admission_failure(
@@ -10492,29 +10479,16 @@ class Controller:
         if value.get("closeout_pr_state") != "MERGED":
             return False
         terminal = value.get("terminal")
-        linear = terminal.get("linear") if isinstance(terminal, dict) else None
         if (
             not isinstance(terminal, dict)
             or terminal.get("basis") not in {
                 "attested-done", "attested-emergency-closeout",
             }
             or not SHA.fullmatch(terminal.get("protected_main", ""))
-            or not isinstance(linear, dict)
-            or linear.get("state") != "Done"
-            or linear.get("source_ref") != "refs/remotes/origin/main"
-            or not isinstance(linear.get("identifier"), str)
-            or not linear["identifier"]
-            or not isinstance(linear.get("issue_id"), str)
-            or not linear["issue_id"]
-            or not isinstance(linear.get("state_id"), str)
-            or not linear["state_id"]
         ):
-            raise ControllerError("closeout lacks exact protected terminal Linear evidence")
+            raise ControllerError("closeout lacks exact protected terminal evidence")
         self.event_once(
-            "linear_terminal_synced", ticket,
-            linear_identifier=linear["identifier"],
-            linear_issue_id=linear["issue_id"],
-            linear_state_id=linear["state_id"],
+            "operator_terminal_recorded", ticket,
             protected_main=terminal["protected_main"],
             terminal_basis=terminal["basis"],
         )
@@ -10757,7 +10731,7 @@ class Controller:
                 )
                 return {"status": "maintenance", "ticket": claim["ticket"]}
             if not (
-                stage.startswith("AWAIT-OPERATOR Linear approval observed")
+                stage.startswith("AWAIT-OPERATOR operator approval observed")
                 or stage.startswith("AWAIT-MERGE protected auto-merge requested")
             ):
                 self.withdraw_publication(claim)
@@ -10881,10 +10855,10 @@ class Controller:
                 self.event_once(
                     "awaiting_approval", claim["ticket"],
                     passport_sha256=self.passport_sha256(claim["ticket"]),
-                    question="Approve this ticket to merge in Linear.",
+                    question="Approve this ticket to merge.",
                 )
                 return {"status": "progressed", "ticket": claim["ticket"]}
-            if stage.startswith("AWAIT-OPERATOR Linear approval observed"):
+            if stage.startswith("AWAIT-OPERATOR operator approval observed"):
                 if claim.get("publication_lease"):
                     self.release_publication(claim)
                 pr = self.ticket_pr(claim, receipt)
@@ -10906,7 +10880,7 @@ class Controller:
                     )
                 except ControllerError as error:
                     if str(error).startswith(
-                        "ticket-attest: stale_linear_approval:"
+                        "ticket-attest: stale_operator_approval:"
                     ):
                         self.mark_prepublication_retry(claim, pr)
                     raise
