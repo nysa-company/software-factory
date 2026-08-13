@@ -560,6 +560,15 @@ class ReleaseTransactionTest(unittest.TestCase):
         checked.assert_called_once()
         replanned.assert_not_called()
 
+    def test_isolated_launcher_forwards_only_explicit_local_origin_evidence(self) -> None:
+        launcher = (ROOT / "integrations/hermes/bin/factory-launch").read_text()
+        self.assertIn('"${FACTORY_KIT_TEST_MODE:-0}" == "1"', launcher)
+        self.assertIn('"${FACTORY_KIT_CANONICAL_ORIGIN:-}" == /*', launcher)
+        self.assertIn(
+            '"FACTORY_KIT_CANONICAL_ORIGIN=$FACTORY_KIT_CANONICAL_ORIGIN"',
+            launcher,
+        )
+
     def test_profile_registry_and_controller_job_are_exact_and_non_overwriting(self) -> None:
         home = self.root / "home"
         home.mkdir()
