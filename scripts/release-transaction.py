@@ -518,6 +518,8 @@ def ticket_inventory(product: Path) -> list[dict[str, str]]:
     secure_directory(directory)
     result = []
     for path in sorted(directory.glob("T-*.md")):
+        if re.fullmatch(r"T-[0-9]{3}-bundle\.md", path.name):
+            continue
         ticket = path.stem
         if not TICKET.fullmatch(ticket):
             raise ReleaseError("product ticket filename is invalid")

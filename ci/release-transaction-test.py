@@ -629,6 +629,7 @@ class ReleaseTransactionTest(unittest.TestCase):
         tickets = self.product / "factory/tickets"
         tickets.mkdir()
         (tickets / "T-126.md").write_text("# T-126\n\nState: Ready\n")
+        (tickets / "T-126-bundle.md").write_text("# T-126 evidence\n")
         with mock.patch.object(RELEASE, "git", return_value="7" * 40):
             inventory = RELEASE.ticket_inventory(self.product)
         self.assertEqual(inventory, [{
