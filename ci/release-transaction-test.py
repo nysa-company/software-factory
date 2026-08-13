@@ -337,6 +337,20 @@ class ReleaseTransactionTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("--ticket-workdir", json.loads(result.stdout))
 
+    def test_protected_check_fixture_matches_slurped_check_run_shape(self) -> None:
+        result = subprocess.run(
+            [
+                str(ROOT / "ci/fixtures/gh-protected-checks"), "api",
+                "--paginate", "--slurp",
+                f"repos/nysa-company/software-factory/commits/{self.sha}/check-runs?per_page=100",
+            ],
+            text=True, capture_output=True, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        pages = json.loads(result.stdout)
+        self.assertEqual(pages[0]["check_runs"][0]["name"], "ci")
+        self.assertEqual(pages[0]["check_runs"][0]["app"]["id"], 7)
+
     def test_release_only_options_are_rejected_elsewhere(self) -> None:
         result = subprocess.run(
             ["bash", str(ROOT / "scripts/factory-kit.sh"), "status", "--project",

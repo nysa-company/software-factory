@@ -18,7 +18,7 @@ case "$endpoint" in
     printf '%s\n' '[{"contexts":[],"checks":[]}]'
     ;;
   repos/nysa-company/software-factory/commits/*/check-runs\?*)
-    printf '%s\n' '[[{"check_runs":[{"id":1,"name":"ci","status":"completed","conclusion":"success","app":{"id":7}}]}]]'
+    printf '%s\n' '[{"check_runs":[{"id":1,"name":"ci","status":"completed","conclusion":"success","app":{"id":7}}]}]'
     ;;
   repos/nysa-company/software-factory/commits/*/statuses\?*)
     printf '%s\n' '[[]]'
