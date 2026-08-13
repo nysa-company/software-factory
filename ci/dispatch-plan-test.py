@@ -1070,7 +1070,7 @@ class DispatchPlanTest(unittest.TestCase):
                     )
                 self.assertEqual(value["contract_version"], contract)
 
-        for contract in ("1.7.0", "2.0.0"):
+        for contract in ("1.7.0", "1.9.0"):
             with self.subTest(contract=contract):
                 self.write_contract_18_qualification(
                     contract_version=contract,
