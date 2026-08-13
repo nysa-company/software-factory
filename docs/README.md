@@ -6,7 +6,8 @@ Durable product and operating truth lives under `docs/`:
 - [architecture.md](architecture.md) — engine boundaries, role flow, budgets, and trust model.
 - [model-routing.md](model-routing.md) — primary and secondary routes, profiles, mid-ticket fallback, family separation, and operator commands.
 - [factory-setup.md](factory-setup.md) — product-instantiation checklist and validator.
-- [hermes-integration.md](hermes-integration.md) — immutable kit releases, public Hermes contract, certification, canary, activation, recovery, rollback, and retention.
+- [factory-runtime.md](factory-runtime.md) — immutable kit releases, public Factory contract, native scheduling, certification, qualification, activation, recovery, rollback, and retention.
+- [factory-contract-changelog.md](factory-contract-changelog.md) — public contract history and migration notes.
 - [factory-development-lane.md](factory-development-lane.md) — isolated mock and explicitly approved Cursor lifecycle for fast factory iteration.
 - [git-flow.md](git-flow.md) — branch, PR, merge, and protection policy.
 - [ai-review.md](ai-review.md) — local pre-publication AI review rubric.

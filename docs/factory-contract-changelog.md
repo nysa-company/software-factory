@@ -1,9 +1,27 @@
-# Hermes compatibility changelog
+# Factory contract changelog
 
-The contract version covers only the public launcher commands and arguments,
-machine-readable schemas, status categories, exit codes, profile/skill
-locations, and supported Hermes versions. Human diagnostics and internal
-helper output are not compatibility promises.
+The contract version covers the public launcher commands and arguments,
+machine-readable schemas, status categories, exit codes, release paths, and
+machine-local runtime boundary. Human diagnostics and internal helper output
+are not compatibility promises.
+
+## 2.0.0 — 2026-08-12
+
+- Makes the Factory own its launcher, manifest, scheduler, diagnostics,
+  qualification boundary, and project discovery directly.
+- Moves the launcher source to `scripts/factory-launch` and the public manifest
+  to `factory-contract.json`; the installed entry point remains
+  `~/.factory/bin/factory-launch`.
+- Removes the external executable and version check, profile, duplicate project
+  registry, prompt skills, gateway and dashboard services, legacy canary, and
+  every associated environment override.
+- Makes `projects/<project>/active.json.product_path` the sole product binding.
+- Changes Doctor to `nysa.software-factory.doctor/v2` and removes obsolete
+  integration and profile fields.
+- Uses the pinned GitHub CLI for the narrow GitHub HTTPS credential path and
+  preserves the existing inherited-descriptor boundary.
+- Replaces the legacy contract suite and shard names with Factory-owned names
+  and adds a static gate against reintroducing the removed runtime.
 
 ## 1.9.0 — 2026-08-11
 
@@ -321,6 +339,6 @@ helper output are not compatibility promises.
 - Minor releases may add optional JSON fields or launcher commands while
   retaining existing behavior.
 - Major releases may remove or reinterpret public fields, arguments,
-  categories, or exit codes and require an explicit profile migration.
-- Any change to a compatibility-sensitive surface listed in `contract.json`
+  categories, or exit codes and require an explicit release migration.
+- Any change to a compatibility-sensitive surface listed in `factory-contract.json`
   must update this changelog and either preserve or bump the contract version.

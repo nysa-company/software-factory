@@ -239,7 +239,7 @@ def verify(
     if (
         set(manifest) != manifest_keys
         or manifest.get("schema") != MANIFEST_SCHEMA
-        or manifest.get("contract_version") not in ("1.8.0", "1.9.0")
+        or manifest.get("contract_version") not in ("1.8.0", "2.0.0")
         or manifest.get("capacity") not in (3, 4)
         or target_done not in (3, 4)
         or target_done > manifest.get("capacity")
@@ -369,14 +369,14 @@ def verify(
         history_shas = {
             item.get("factory_sha") for item in history or []
             if isinstance(item, dict)
-            and item.get("contract_version") in ("1.8.0", "1.9.0")
+            and item.get("contract_version") in ("1.8.0", "2.0.0")
             and SHA.fullmatch(item.get("factory_sha", ""))
         }
         if (
             passport.get("ticket") != ticket
             or passport.get("factory_sha")
             != (source_factory_sha if emergency else factory_sha)
-            or passport.get("contract_version") not in ("1.8.0", "1.9.0")
+            or passport.get("contract_version") not in ("1.8.0", "2.0.0")
             or (not emergency and passport.get("publication_state") != "merged")
             or not isinstance(history, list)
             or len(history_shas) != len(history)
@@ -397,7 +397,7 @@ def verify(
                 or item["charge_micro_usd"] < 0
                 or item["charge_micro_usd"] > per_run_cap
                 or item.get("factory_sha") not in history_shas
-                or item.get("contract_version") not in ("1.8.0", "1.9.0")
+                or item.get("contract_version") not in ("1.8.0", "2.0.0")
                 or not DIGEST.fullmatch(item.get("manifest_sha256", ""))
                 for item in charges
             )
@@ -429,7 +429,7 @@ def verify(
             or len(role_heads) != len(set(role_heads))
             or any(
                 item.get("factory_sha") not in history_shas
-                or item.get("contract_version") not in ("1.8.0", "1.9.0")
+                or item.get("contract_version") not in ("1.8.0", "2.0.0")
                 or not SHA.fullmatch(item.get("head_before", ""))
                 or not DIGEST.fullmatch(item.get("transition_receipt_sha256", ""))
                 for item in completed

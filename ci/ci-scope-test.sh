@@ -35,6 +35,7 @@ WORKFLOW="$ROOT/.github/workflows/ci.yml"
 [[ "$(grep -Fc 'scripts/repo-check' "$WORKFLOW")" -eq 1 &&
     "$(grep -Fc 'scripts/secret-scan' "$WORKFLOW")" -eq 1 &&
     "$(grep -Fc 'scripts/artifact-check --base "$BASE_SHA"' "$WORKFLOW")" -eq 1 &&
+    "$(grep -Fc 'python3 ci/no-"her""mes"-dependency-test.py' "$WORKFLOW")" -eq 1 &&
     "$(grep -Fc 'needs: [scope, policy, linux, macos-bash-3]' "$WORKFLOW")" -eq 1 &&
     "$(grep -c '^    if: always()$' "$WORKFLOW")" -eq 1 &&
     "$(grep -Fc 'POLICY_RESULT: ${{ needs.policy.result }}' "$WORKFLOW")" -eq 1 &&
@@ -58,8 +59,8 @@ WORKFLOW="$ROOT/.github/workflows/ci.yml"
   echo "FAIL: stable release-evidence shard contexts must aggregate every platform group" >&2
   exit 1
 }
-for job in linux-factory linux-hermes linux-release \
-  macos-bash-3-factory macos-bash-3-hermes macos-bash-3-release; do
+for job in linux-factory linux-contract linux-release \
+  macos-bash-3-factory macos-bash-3-contract macos-bash-3-release; do
   grep -q "\"$job\"" "$ROOT/scripts/factory-kit.sh" || {
     echo "FAIL: release evidence must require $job" >&2
     exit 1
@@ -107,14 +108,14 @@ expect_selection() {
 REPO="$TMP/main"
 new_repo "$REPO"
 mkdir -p "$REPO/docs" "$REPO/context" "$REPO/.github/workflows" \
-  "$REPO/integrations/hermes" "$REPO/conformance/app" "$REPO/roles" "$REPO/scripts"
+  "$REPO/conformance/app" "$REPO/roles" "$REPO/scripts"
 printf 'initial\n' > "$REPO/docs/guide.md"
 printf 'initial\n' > "$REPO/README.md"
 printf 'initial\n' > "$REPO/context/memory.md"
 printf 'initial\n' > "$REPO/AGENTS.md"
 printf '@AGENTS.md\n' > "$REPO/CLAUDE.md"
 printf 'initial\n' > "$REPO/.github/pull_request_template.md"
-printf 'initial\n' > "$REPO/integrations/hermes/CHANGELOG.md"
+printf 'initial\n' > "$REPO/docs/factory-contract-changelog.md"
 printf 'initial\n' > "$REPO/conformance/SHAKEDOWN-REPORT.md"
 printf 'initial\n' > "$REPO/conformance/app/app.js"
 printf 'initial\n' > "$REPO/roles/builder.md"
@@ -123,7 +124,7 @@ printf 'initial\n' > "$REPO/.github/workflows/ci.yml"
 BASE="$(commit_all "$REPO" "initial")"
 
 for path in docs/guide.md README.md context/memory.md AGENTS.md CLAUDE.md \
-  .github/pull_request_template.md integrations/hermes/CHANGELOG.md \
+  .github/pull_request_template.md docs/factory-contract-changelog.md \
   conformance/SHAKEDOWN-REPORT.md; do
   printf 'metadata update\n' >> "$REPO/$path"
 done
@@ -199,7 +200,7 @@ selection_case() {
   expect_selection "$expected" "$SELECT_REPO" "$base" "$head" "$label"
 }
 
-POLICY="ci-scope immutability artifact-policy"
+POLICY="ci-scope immutability artifact-policy external-runtime-dependency"
 selection_case docs/guide.md "metadata|inert metadata|" "metadata selection"
 selection_case ci/factory-controller-test.py \
   "targeted|state-machine|factory-controller $POLICY" \
@@ -228,8 +229,8 @@ selection_case scripts/adapters/claude-kimi.sh "targeted|claude-kimi|claude-kimi
 selection_case scripts/lib/claude-kimi-output.py "targeted|claude-kimi|claude-kimi $POLICY" "adapter output selection"
 selection_case scripts/lib/claude-kimi-secret.py "targeted|claude-kimi|claude-kimi $POLICY" "adapter secret selection"
 selection_case scripts/lib/failed_attempt_handoff.py "targeted|failed-handoff|failed-handoff model-fallback $POLICY" "handoff selection"
-selection_case scripts/reorder-test-fixes.sh "targeted|reorder-test-fixes|reorder-test-fixes hermes-contract $POLICY" "reorder wrapper selection"
-selection_case scripts/lib/reorder_test_fixes.py "targeted|reorder-test-fixes|reorder-test-fixes hermes-contract $POLICY" "reorder implementation selection"
+selection_case scripts/reorder-test-fixes.sh "targeted|reorder-test-fixes|reorder-test-fixes factory-contract $POLICY" "reorder wrapper selection"
+selection_case scripts/lib/reorder_test_fixes.py "targeted|reorder-test-fixes|reorder-test-fixes factory-contract $POLICY" "reorder implementation selection"
 selection_case conformance/app/server.js "targeted|conformance|conformance $POLICY" "conformance server selection"
 selection_case conformance/app/tests/server.test.js "targeted|conformance|conformance $POLICY" "conformance test selection"
 
@@ -305,13 +306,14 @@ cp "$ROOT/ci/suite-groups.sh" "$RUNNER/ci/"
 printf '%s\n' '#!/usr/bin/env bash' 'suite_registry() {' \
   '  local callback="$1"' \
   '  "$callback" factory-scripts "factory suite" bash "$ROOT/ci/pass.sh"' \
-  '  "$callback" hermes-contract "hermes suite" bash "$ROOT/ci/pass.sh"' \
+  '  "$callback" factory-contract "contract suite" bash "$ROOT/ci/pass.sh"' \
   '  "$callback" factory-kit "kit suite" bash "$ROOT/ci/pass.sh"' \
   '  "$callback" pass "pass suite" bash "$ROOT/ci/pass.sh"' \
   '  "$callback" fail "fail suite" bash "$ROOT/ci/fail.sh"' \
   '  "$callback" ci-scope "scope suite" bash "$ROOT/ci/pass.sh"' \
   '  "$callback" immutability "immutability suite" bash "$ROOT/ci/pass.sh"' \
   '  "$callback" artifact-policy "artifact suite" bash "$ROOT/ci/pass.sh"' \
+  '  "$callback" external-runtime-dependency "runtime dependency suite" bash "$ROOT/ci/pass.sh"' \
   '}' > "$RUNNER/ci/suite-registry.sh"
 printf '%s\n' '#!/usr/bin/env bash' \
   'ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"' \
@@ -351,8 +353,8 @@ shard_case() {
     exit 1
   fi
 }
-shard_case factory 'PASS: factory suite' 'PASS: hermes suite'
-shard_case hermes 'PASS: hermes suite' 'PASS: factory suite'
+shard_case factory 'PASS: factory suite' 'PASS: contract suite'
+shard_case contract 'PASS: contract suite' 'PASS: factory suite'
 shard_case release 'PASS: pass suite' 'PASS: factory suite'
 status=0
 (cd "$RUNNER" && bash ci/test-all.sh --shard unknown >/dev/null 2>&1) || status=$?
@@ -366,8 +368,8 @@ group_case() {
     exit 1
   fi
 }
-group_case 1 'PASS: factory suite' 'PASS: hermes suite'
-group_case 2 'PASS: hermes suite' 'PASS: factory suite'
+group_case 1 'PASS: factory suite' 'PASS: contract suite'
+group_case 2 'PASS: contract suite' 'PASS: factory suite'
 group_case 3 'PASS: kit suite' 'PASS: factory suite'
 group_case 4 'PASS: pass suite' 'PASS: factory suite'
 status=0

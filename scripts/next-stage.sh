@@ -126,9 +126,9 @@ python3 "$KIT_DIR/scripts/lib/effective_ticket.py" \
     exit 1
   }
 TICKET_FILE="$EFFECTIVE_TICKET"
-CONTRACT_VERSION="${FACTORY_RELEASE_CONTRACT_VERSION:-${FACTORY_HERMES_CONTRACT_VERSION:-1.2.0}}"
+CONTRACT_VERSION="${FACTORY_RELEASE_CONTRACT_VERSION:-${FACTORY_CONTRACT_VERSION:-1.2.0}}"
 if [[ -n "$ROLE_EVIDENCE" ]]; then
-  [[ "$CONTRACT_VERSION" == "1.8.0" || "$CONTRACT_VERSION" == "1.9.0" ]] || {
+  [[ "$CONTRACT_VERSION" == "1.8.0" || "$CONTRACT_VERSION" == "2.0.0" ]] || {
     echo "REFUSE authenticated role evidence requires contract 1.8"
     exit 1
   }
@@ -213,7 +213,7 @@ TERMINAL_BASIS=""
 if [[ "$CONTRACT_VERSION" == "1.3.0" || "$CONTRACT_VERSION" == "1.4.0" ||
       "$CONTRACT_VERSION" == "1.5.0" || "$CONTRACT_VERSION" == "1.6.0" ||
       "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ||
-      "$CONTRACT_VERSION" == "1.9.0" ]]; then
+      "$CONTRACT_VERSION" == "2.0.0" ]]; then
   TERMINAL_BASIS="$(python3 "$KIT_DIR/scripts/lib/effective_ticket.py" \
     --factory-dir "$CONTENT_ROOT/factory" --ticket "$TICKET" \
     --terminal-basis 2>/dev/null || true)"
@@ -501,7 +501,7 @@ fi
 if [[ "$CONTRACT_VERSION" == "1.3.0" || "$CONTRACT_VERSION" == "1.4.0" ||
       "$CONTRACT_VERSION" == "1.5.0" || "$CONTRACT_VERSION" == "1.6.0" ||
       "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ||
-      "$CONTRACT_VERSION" == "1.9.0" ]]; then
+      "$CONTRACT_VERSION" == "2.0.0" ]]; then
   EFFECTIVE_STATE="$(awk -F: 'tolower($1)=="state" {sub(/^[^:]*:[[:space:]]*/, ""); print tolower($0); exit}' "$TICKET_FILE")"
   COMMITTED_STATE="$(awk -F: 'tolower($1)=="state" {sub(/^[^:]*:[[:space:]]*/, ""); print tolower($0); exit}' "$COMMITTED_TICKET_FILE")"
   if [[ "$COMMITTED_STATE" == "done" ]]; then
@@ -580,7 +580,7 @@ emit_stage() {
       exit 0
     fi
   fi
-  if [[ ( "$CONTRACT_VERSION" == "1.8.0" || "$CONTRACT_VERSION" == "1.9.0" ) &&
+  if [[ ( "$CONTRACT_VERSION" == "1.8.0" || "$CONTRACT_VERSION" == "2.0.0" ) &&
         ( "$stage" == RUN\ * || "$stage" == FIX\ * ) ]]; then
     budget_stage="$(python3 -B "$KIT_DIR/scripts/budget-stage.py" \
       "$REPO_ROOT" "$TICKET" "$FACTORY_RELEASE_SHA" "$stage" \
@@ -603,7 +603,7 @@ emit_stage() {
   exit 0
 }
 
-if [[ "$CONTRACT_VERSION" == "1.8.0" || "$CONTRACT_VERSION" == "1.9.0" ]]; then
+if [[ "$CONTRACT_VERSION" == "1.8.0" || "$CONTRACT_VERSION" == "2.0.0" ]]; then
   if [[ -n "${FACTORY_TRANSITION_STATE_DIR:-}" ]]; then
     REPAIR_STAGE="$(python3 -B "$KIT_DIR/scripts/publication-repair.py" stage \
       --factory-root "$REPO_ROOT" --workdir "$CONTENT_ROOT" \
@@ -1209,7 +1209,7 @@ LATEST_VERDICT=""
 LATEST_FIX_OWNER=""
 CONTRACT17_FIX_ACTION=""
 if [[ ( "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ||
-        "$CONTRACT_VERSION" == "1.9.0" ) &&
+        "$CONTRACT_VERSION" == "2.0.0" ) &&
       "$VERDICTS" -gt 0 ]]; then
   OWNER_DATA="$(python3 - "$TICKET_FILE" <<'PY'
 import re
@@ -1256,7 +1256,7 @@ PY
 fi
 
 if [[ ( "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ||
-        "$CONTRACT_VERSION" == "1.9.0" ) &&
+        "$CONTRACT_VERSION" == "2.0.0" ) &&
       "$LATEST_VERDICT" == "REQUEST CHANGES" ]]; then
   case "$LATEST_FIX_OWNER" in
     builder)
@@ -1267,7 +1267,7 @@ if [[ ( "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ||
       fi
       ;;
     test-author)
-      if [[ ( "$CONTRACT_VERSION" == "1.8.0" || "$CONTRACT_VERSION" == "1.9.0" ) && "$FIX_PLANNER" -eq 0 ]]; then
+      if [[ ( "$CONTRACT_VERSION" == "1.8.0" || "$CONTRACT_VERSION" == "2.0.0" ) && "$FIX_PLANNER" -eq 0 ]]; then
         CONTRACT17_FIX_ACTION="FIX planner"
       elif [[ "$FIX_TEST_AUTHOR" -eq 0 ]]; then
         CONTRACT17_FIX_ACTION="FIX test-author"
@@ -1276,7 +1276,7 @@ if [[ ( "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ||
       fi
       ;;
     both)
-      if [[ ( "$CONTRACT_VERSION" == "1.8.0" || "$CONTRACT_VERSION" == "1.9.0" ) && "$FIX_PLANNER" -eq 0 ]]; then
+      if [[ ( "$CONTRACT_VERSION" == "1.8.0" || "$CONTRACT_VERSION" == "2.0.0" ) && "$FIX_PLANNER" -eq 0 ]]; then
         CONTRACT17_FIX_ACTION="FIX planner"
       elif [[ "$FIX_TEST_AUTHOR" -eq 0 ]]; then
         CONTRACT17_FIX_ACTION="FIX test-author"
@@ -1325,7 +1325,7 @@ if [[ "$REFRESH_ACTIVE" -eq 1 && "$REFRESH_PRESERVE_REVIEW" -eq 0 ]]; then
 elif [[ "$A" -ge 1 &&
         ( ( "$CONTRACT_VERSION" != "1.7.0" &&
             "$CONTRACT_VERSION" != "1.8.0" &&
-            "$CONTRACT_VERSION" != "1.9.0" ) ||
+            "$CONTRACT_VERSION" != "2.0.0" ) ||
           "$LATEST_VERDICT" == "APPROVE" ) ]]; then
   if [[ "$REFRESH_ACTIVE" -eq 1 &&
         "$REFRESH_PRESERVE_REVIEW" -eq 1 &&
@@ -1351,7 +1351,7 @@ elif [[ "$A" -ge 1 &&
   exit 0
 fi
 
-if [[ ( "$CONTRACT_VERSION" == "1.8.0" || "$CONTRACT_VERSION" == "1.9.0" ) &&
+if [[ ( "$CONTRACT_VERSION" == "1.8.0" || "$CONTRACT_VERSION" == "2.0.0" ) &&
       ( "$LATEST_FIX_OWNER" == "test-author" || "$LATEST_FIX_OWNER" == "both" ) &&
       "$FIX_PLANNER" -eq 1 && "$CONTRACT17_FIX_ACTION" != "FIX planner" ]]; then
   python3 - "$TICKET_WORKTREE_ROOT" "$SOURCE_TICKET_FILE" "$COMMITTED_HEAD" <<'PY' || {

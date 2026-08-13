@@ -1,39 +1,17 @@
 {
-  "contract": "nysa.software-factory.hermes",
-  "contract_version": "1.9.0",
-  "doctor_schema": "nysa.software-factory.hermes-doctor/v1",
+  "contract": "nysa.software-factory",
+  "contract_version": "2.0.0",
+  "doctor_schema": "nysa.software-factory.doctor/v2",
   "preflight_schema": "nysa.software-factory.preflight/v1",
   "next_stage_schema": "nysa.software-factory.next-stage/v1",
   "state_machine_schema": "nysa.software-factory.state-machine/v1",
-  "supported_hermes": [
-    {
-      "agent_version": "0.18.2",
-      "build_version": "2026.7.7.2",
-      "compatibility": "certified"
-    }
-  ],
-  "profile": {
-    "default_name": "factory",
-    "default_path": "~/.hermes/profiles/factory",
-    "project_registry": "projects/<project>.env",
-    "required_registry_keys": [
-      "PRODUCT_ROOT"
-    ],
-    "observed_ignored_registry_keys": [
-      "KIT_DIR"
-    ],
-    "soul": "SOUL.md",
-    "dispatcher_skill": "skills/factory-dispatch/SKILL.md (deprecated compatibility only)",
-    "supervisor_skill": "skills/factory-supervisor/SKILL.md (deprecated compatibility only)"
-  },
   "launcher": {
     "path": "~/.factory/bin/factory-launch",
-    "source": "integrations/hermes/bin/factory-launch",
+    "source": "scripts/factory-launch",
     "trust_root": {
       "account_home_source": "pwd.getpwuid(os.getuid()).pw_dir",
       "installed_physical_path": "<account-home>/.factory/bin/factory-launch",
       "production_kits_root": "<account-home>/.factory/kits",
-      "production_profile_root": "<account-home>/.hermes/profiles/factory",
       "caller_home_and_root_overrides": "ignored or refused",
       "repository_test_mode": "explicit isolated roots allowed only from a non-installed launcher path"
     },
@@ -88,7 +66,7 @@
         "arguments": [
           "--json"
         ],
-        "output_schema": "nysa.software-factory.hermes-doctor/v1"
+        "output_schema": "nysa.software-factory.doctor/v2"
       },
       "reconcile": {
         "contract_version": "1.8.0",
@@ -263,8 +241,8 @@
           "pin --ticket <T-NNN> --workdir <exact-ticket-worktree> --json",
           "migrate-plan --ticket <T-NNN> --workdir <exact-clean-ticket-worktree> [--include-journal] --json",
           "migrate --ticket <T-NNN> --workdir <exact-clean-ticket-worktree> --approve-hash <lowercase-sha256> --readiness-hash <lowercase-sha256> --approved-by <safe-id> --json",
-          "migrate-batch-plan [--ticket <T-NNN> --workdir <exact-clean-ticket-worktree>]... --json (one to four unique tickets, Contract 1.9)",
-          "migrate-batch --approve-hash <lowercase-sha256> --approved-by <safe-id> [--ticket <T-NNN> --workdir <exact-clean-ticket-worktree>]... --json (one to four unique tickets, Contract 1.9)",
+          "migrate-batch-plan [--ticket <T-NNN> --workdir <exact-clean-ticket-worktree>]... --json (one to four unique tickets, Contract 2.0)",
+          "migrate-batch --approve-hash <lowercase-sha256> --approved-by <safe-id> [--ticket <T-NNN> --workdir <exact-clean-ticket-worktree>]... --json (one to four unique tickets, Contract 2.0)",
           "qualification-readiness --json (qualification launcher, Contract 1.8)",
           "fallback-plan --ticket <T-NNN> --failed-run <safe-run-id> --workdir <exact-ticket-worktree> --reason <credits_exhausted|provider_unavailable> --json",
           "fallback-auto --ticket <T-NNN> --failed-run <safe-run-id> --workdir <exact-ticket-worktree> --reason <credits_exhausted|provider_unavailable> --json",
@@ -354,7 +332,7 @@
           "pin workdir uses the launcher's exact physical ticket worktree validation",
           "fallback uses a dedicated exact-worktree validator that permits only helper-validated partial changes",
           "fallback consumes one exact unexpired operator fallback receipt bound to its preview hash",
-          "only fallback and migration GitHub HTTPS network operations receive the profile GH_TOKEN through an inherited descriptor; model probes and every other task-free action remain credential-free",
+          "fallback and migration GitHub HTTPS operations use only the ownership-validated fixed gh auth git-credential helper under the account home; ambient token and Git configuration variables are scrubbed",
           "only pin receives the receipt-bound FACTORY_CERTIFIED_PRODUCT_ORIGIN",
           "task-bearing adapters do not inherit FACTORY_MODEL_STATE_ROOT or FACTORY_PROJECT"
         ]
@@ -512,7 +490,7 @@
           "emergency-apply requires the exact plan hash and reuses the ordinary protected closeout PR and ledger projection without synthesizing approval evidence",
           "a valid existing closeout commit is retryable without another projection or commit",
           "all pushes use the certification receipt product origin",
-          "GitHub credentials come only from the trusted Hermes profile"
+          "GitHub credentials come only from the validated GitHub CLI credential store"
         ]
       },
       "project-ledger": {
@@ -628,6 +606,7 @@
       "HOME",
       "PATH",
       "TMPDIR",
+      "GH_PROMPT_DISABLED",
       "FACTORY_ROOT",
       "FACTORY_RELEASE_SHA",
       "FACTORY_RELEASE_TREE",
@@ -658,17 +637,8 @@
       "FACTORY_CLI_RUNTIME_ROOT",
       "FACTORY_CURSOR_ACCOUNT_DB",
       "FACTORY_PROVIDER_BROKER_URL",
-      "FACTORY_PROVIDER_BROKER_CA",
-      "GH_TOKEN"
+      "FACTORY_PROVIDER_BROKER_CA"
     ],
-    "helper_optional_credentials": {
-      "GH_TOKEN": {
-        "source": "$HERMES_FACTORY_PROFILE/.env",
-        "assignment": "exactly one optional GH_TOKEN assignment parsed as data",
-        "file_policy": "owner-owned regular non-symlink file with mode 0600",
-        "caller_value_ignored": true
-      }
-    },
     "helper_safe_path": "$HOME/.factory/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
     "active_record": {
       "path": "$FACTORY_KITS_ROOT/projects/<project>/active.json",
@@ -835,15 +805,11 @@
     "2": "invalid invocation"
   },
   "compatibility_sensitive_surfaces": [
-    "contract.json",
-    "bin/factory-launch",
-    "templates/profile/SOUL.md",
-    "templates/profile/skills/factory-dispatch/SKILL.md",
-    "templates/profile/skills/factory-supervisor/SKILL.md",
+    "factory-contract.json",
+    "scripts/factory-launch",
+    "scripts/release-transaction.py",
     "scripts/launchd/com.factory.controller.plist.template",
     "scripts/launchd/com.factory.incident-reporter.plist.template",
-    "templates/launchd/com.nysa.hermes-factory-gateway.plist",
-    "templates/launchd/com.nysa.hermes-dashboard.plist",
     "scripts/factory-doctor.sh",
     "roles/dispatcher.md",
     "scripts/preflight.sh",
@@ -935,21 +901,13 @@
       "label": "com.factory.incident-reporter.<project>",
       "schedule_seconds": 60,
       "scope": "one explicitly opted-in production project and one configured GitHub issue repository"
-    },
-    "gateway": {
-      "label": "com.nysa.hermes-factory-gateway",
-      "scope": "factory profile only"
-    },
-    "dashboard": {
-      "label": "com.nysa.hermes-dashboard",
-      "scope": "machine-wide dashboard"
     }
   },
   "security": {
     "credential_reporting": "presence-only",
     "credential_values_forbidden": true,
     "credential_bearing_urls_forbidden": true,
-    "profile_credential_source": "mode-0600 $HERMES_FACTORY_PROFILE/.env parsed as data and never sourced",
+    "github_credential_source": "validated fixed-path gh auth git-credential using the account credential store",
     "launch_agent_secrets_forbidden": true,
     "public_redaction": [
       "Authorization headers and bearer/basic/token values",

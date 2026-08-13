@@ -7,7 +7,9 @@ import argparse
 import http.client
 import importlib.util
 import json
+import os
 from pathlib import Path
+import stat
 import tempfile
 import threading
 import unittest
@@ -26,14 +28,16 @@ class OperatorConsoleTest(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name).resolve()
         self.registry_dir = self.root / "projects"
-        self.registry_dir.mkdir()
-        self.home = self.root / "home"
-        self.home.mkdir()
+        self.registry_dir.mkdir(mode=0o700)
         for project in ("alpha", "bravo"):
-            (self.registry_dir / f"{project}.env").write_text(
-                f"KIT_DIR={self.root}/kit\nPRODUCT_ROOT={self.root}/{project}\n",
+            directory = self.registry_dir / project
+            directory.mkdir(mode=0o700)
+            active = directory / "active.json"
+            active.write_text(
+                json.dumps({"project": project, "product_path": f"/not/used/{project}"}),
                 encoding="utf-8",
             )
+            active.chmod(0o600)
         self.log = self.root / "launcher.log"
         self.launcher = self.root / "factory-launch"
         self.launcher.write_text(
@@ -52,7 +56,7 @@ class OperatorConsoleTest(unittest.TestCase):
         self.temporary.cleanup()
 
     def registry(self):
-        return CONSOLE.ProjectRegistry(self.registry_dir, home=self.home)
+        return CONSOLE.ProjectRegistry(self.registry_dir)
 
     def invocations(self):
         if not self.log.exists():
@@ -99,18 +103,65 @@ class OperatorConsoleTest(unittest.TestCase):
         self.assertIn("Path=/", cookie_header)
         return cookie_header.split(";", 1)[0]
 
-    def test_registry_parses_data_and_rejects_unsafe_entries(self):
+    def test_registry_discovers_only_valid_active_records(self):
         self.assertEqual(self.registry().projects(), ["alpha", "bravo"])
-        (self.registry_dir / "escape.env").write_text(
-            "PRODUCT_ROOT=../../escape\n", encoding="utf-8"
-        )
-        with self.assertRaisesRegex(CONSOLE.RegistryError, "absolute"):
+        inactive = self.registry_dir / "inactive"
+        inactive.mkdir(mode=0o700)
+        self.assertEqual(self.registry().projects(), ["alpha", "bravo"])
+
+        active = self.registry_dir / "alpha" / "active.json"
+        active.write_text('{"project":"alpha","project":"bravo"}', encoding="utf-8")
+        active.chmod(0o600)
+        with self.assertRaisesRegex(CONSOLE.RegistryError, "invalid"):
             self.registry().projects()
-        (self.registry_dir / "escape.env").unlink()
-        (self.registry_dir / "bad name.env").write_text(
-            f"PRODUCT_ROOT={self.root}/alpha\n", encoding="utf-8"
-        )
-        with self.assertRaisesRegex(CONSOLE.RegistryError, "filename"):
+
+    def test_registry_rejects_unsafe_active_record_metadata(self):
+        active = self.registry_dir / "alpha" / "active.json"
+        active.chmod(0o644)
+        with self.assertRaisesRegex(CONSOLE.RegistryError, "unsafe"):
+            self.registry().projects()
+        active.chmod(0o600)
+
+        active.write_text("x" * (CONSOLE.MAX_ACTIVE_RECORD_BYTES + 1), encoding="utf-8")
+        active.chmod(0o600)
+        with self.assertRaisesRegex(CONSOLE.RegistryError, "unsafe"):
+            self.registry().projects()
+        active.write_text('{"project":"alpha"}', encoding="utf-8")
+        active.chmod(0o600)
+
+        alias = self.root / "active-alias.json"
+        os.link(active, alias)
+        with self.assertRaisesRegex(CONSOLE.RegistryError, "unsafe"):
+            self.registry().projects()
+        alias.unlink()
+
+        target = self.root / "active-target.json"
+        target.write_text('{"project":"alpha"}', encoding="utf-8")
+        target.chmod(0o600)
+        active.unlink()
+        active.symlink_to(target)
+        with self.assertRaisesRegex(CONSOLE.RegistryError, "unsafe"):
+            self.registry().projects()
+
+    def test_registry_rejects_slug_mismatch_and_unsafe_directory(self):
+        active = self.registry_dir / "alpha" / "active.json"
+        active.write_text('{"project":"bravo"}', encoding="utf-8")
+        active.chmod(0o600)
+        with self.assertRaisesRegex(CONSOLE.RegistryError, "does not match"):
+            self.registry().projects()
+
+        active.write_text('{"project":"alpha"}', encoding="utf-8")
+        active.chmod(0o600)
+        project = self.registry_dir / "alpha"
+        project.chmod(stat.S_IRWXU | stat.S_IWGRP)
+        with self.assertRaisesRegex(CONSOLE.RegistryError, "directory is unsafe"):
+            self.registry().projects()
+        project.chmod(0o700)
+
+        physical = self.root / "alpha-physical"
+        project.rename(physical)
+        project.symlink_to(physical, target_is_directory=True)
+        with self.assertRaisesRegex(CONSOLE.RegistryError, "directory is unsafe"):
             self.registry().projects()
 
     def test_non_loopback_bind_is_rejected(self):

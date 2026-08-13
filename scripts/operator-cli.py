@@ -43,7 +43,7 @@ FALLBACK_REASONS = (
 )
 FALLBACK_SCHEMA = "model-fallback-receipt-approval/v1"
 CONTRACT_VERSION = json.loads(
-    (Path(__file__).resolve().parents[1] / "integrations/hermes/contract.json")
+    (Path(__file__).resolve().parents[1] / "factory-contract.json")
     .read_text(encoding="utf-8")
 )["contract_version"]
 
@@ -422,7 +422,7 @@ def _cmd_ticket_action(args: argparse.Namespace) -> dict:
         entry["operator"] = operator
         stamp_sync(mapping, args.ticket)
         write_map(map_path, mapping)
-    if action in {"ready", "cancel"} and CONTRACT_VERSION == "1.9.0":
+    if action in {"ready", "cancel"} and CONTRACT_VERSION == "2.0.0":
         materialize_pre_dispatch(product, state_dir, map_path, receipt)
         path = (
             state_dir / "operator-receipts" / args.ticket

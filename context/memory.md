@@ -8,7 +8,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Durable decisions use repository-local numbering beginning at Decision 1.
 - Stable operating truth lives in `docs/`; prompts, templates, and evidence stay colocated with consumers. The operator preflight report is read-only and makes network review explicit before certification.
 - Nysa Agents baseline v3 as a toolkit; `bash ci/test-all.sh` is the unconditional full command.
-- Live products resolve sealed exact-SHA releases under `~/.factory/kits` via `~/.factory/bin/factory-launch`.
+- Contract 2 live products resolve sealed exact-SHA releases from owner-only `active.json` records under `~/.factory/kits` via `~/.factory/bin/factory-launch`; the native controller is the only scheduler.
 - Model routing is portfolio policy; routes pin at the ticket boundary and change only via the Contract 1.4 journal flow. One profile resolution shares model-independent native-adapter readiness across its routes and runs independent probes in bounded parallel; Cursor readiness stays model-specific. Sealed Cursor inventory verifies the exact configured CLI identity in an empty disposable owner-only home before copying credentials, then accepts only its bounded certified structure.
 - Linear is removed (Decision 398); the six operator authorities are one-use receipts via `factory-kit.sh operator ACTION`. The only emergency recovery is the receipt-bound `OPERATOR RESUME` ticket commit. No generic lifecycle bypass is approved.
 - **Contract rules below in Operating contract are authoritative**; this summary is only what the session hook can inject.
@@ -18,6 +18,13 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 The enforced contract state, authoritative over the summary above. The Current truth
 section carries only what the SessionStart hook injects (8 lines, 1200 characters);
 everything the Factory actually enforces lives here.
+
+- Contract 2 owns the complete runtime boundary. A machine-wide reservation
+  drains and binds every active project before the global launcher changes;
+  direct project mutation is refused until the exact cutover completes or is
+  explicitly aborted before mutation. The no-return floor is monotonic,
+  in-progress cutovers globally block dispatch, and crash recovery fixes
+  forward from authenticated journals while preserving preexisting maintenance.
 
 - Provider SQLite growth is not capped by JSON input limits. An idle
   pre-provider `missing-terminal` claim may use only issue-bound pause/resume,
@@ -648,7 +655,7 @@ everything the Factory actually enforces lives here.
 - Backward-compatible ledger reduction collapses a legacy durable reservation followed by its identity-matching terminal row; every other conflicting duplicate run ID fails closed.
 - Product and machine runtime configuration is parsed as whitelisted data, never sourced as shell. Budget values are positive and coherent, and an explicit global-ledger path must be absolute before any probe, manifest, or task.
 - Provider output and same-UID filesystem state are untrusted: durable GO precedes the adapter gate, the runs root and records are opened without following replacement links, output is captured on a wrapper-held descriptor, and only bounded adapter telemetry is consumed, with full-reservation fallback. A product-level control lock serializes provider intervals; any new or changed sibling manifest, persistent claim, owned manifest, global-ledger, or registered-checkout mutation fails the role. Hostile same-UID prevention requires OS isolation; the portable wrapper promises detection, conservative accounting, and no advancement instead.
-- Hermes contract 1.6 changes its omitted capacity default to four and expands its active bound to six while preserving active 1.0–1.5 defaults and bounds.
+- Contract 1.6 changes its omitted capacity default to four and expands its active bound to six while preserving active 1.0–1.5 defaults and bounds.
 - Fresh ticket worktrees are created from protected main and pass through trusted materialization before preflight so their exact remote branch exists. Linear Project removal is represented explicitly in the ignored overlay and clears the effective initiative until reassignment.
 - Contract 1.6 ticket PRs wait on required exact-head GitHub checks without launching a role, expose completed failures to Reviewer, and revalidate successful checks plus Reviewer lineage before Narrator. Any later Builder or Test-author run forces a fresh Reviewer.
 - The stable launcher executes the Contract 1.6 `ticket-pr.py` helper with its fixed isolated Python interpreter, never the shell-only helper path; launcher-level contract coverage guards this boundary.
@@ -667,7 +674,7 @@ everything the Factory actually enforces lives here.
 - Open-source factory frameworks remain references, not replacement control planes: any adopted execution or sandbox component stays behind `factory-launch`, while sequencing, budgets, role separation, Git authority, evidence, and operator approval remain factory-owned. The first justified experiment is a pinned SWE-ReX local-container backend for one non-production role; E2B or Daytona becomes relevant only if that canary proves local isolation insufficient.
 - The operator activates model profiles by exact preview hash and may add narrow TTL-bound `credits_exhausted` overrides; subscription quota telemetry is incomplete. Ticket pinning commits and pushes Kit-SHA plus the exact six-role plan atomically. Post-submission retry remains forbidden; an eligible failed GO attempt may instead create one authenticated append-only fallback revision.
 - Kimi K2.6 is disabled experimental through Claude CLI/OpenRouter/Moonshot, appears in no profile, and has not had a live or billed pilot. Credential rotation is required before a pilot, and direct same-UID token exposure remains without a broker or OS isolation.
-- Route-journal provenance can support future provider/family/model budgets, but none are implemented and the ledger schema is unchanged. Model management, fallback, and evidence-bound ticket attestations are integrated under Hermes contract 1.4.
+- Route-journal provenance can support future provider/family/model budgets, but none are implemented and the ledger schema is unchanged. Model management, fallback, and evidence-bound ticket attestations are integrated under Factory contract 1.4.
 - The Contract 1.3 cutover has two independent one-time formats: legacy-closeout for the exact authorized Contract 1.2 batch and terminal-backfill for the exact authorized pre-contract terminal-Done batch. Both are separate from normal attestations and route plans, become authoritative only through one manual protected product merge, and use the same fail-closed protected-main terminal reader; plain Done never suffices.
 - Protected-merge reconciliation is a separate migration-only complete-batch adoption path for already-merged product changes whose old evidence cannot be refreshed safely. Its generated authorization, exact receipts, Done/Migration projections, target pin, and companions are bound atomically by one manual protected product merge. The reconciliation evidence and terminal projections remain immutable afterward; later authorized releases may evolve `KIT_PIN` and companion paths without invalidating that historical proof.
 - T-013 through T-016 alone use the audited aggregate-check legacy class because their PRs predate separate policy/app-test jobs; every other reviewed legacy ticket still requires all four authentic app-bound checks.
@@ -5731,3 +5738,28 @@ and restores maintenance while retaining the barrier on failure. Completed or
 crash-lost work replays from owner-only signed journals. The operating target
 is setup process start through first controller-observed Planning state in less
 than 15 minutes, excluding human approval-review time.
+
+## 2026-08-12 — Decision 402: Hermes will be removed at one host-wide Contract 2 boundary
+
+Category: Decision
+
+Hermes is not part of the target Software Factory runtime. Contract 2 will move
+the launcher and manifest into Factory-owned paths, delete the profile,
+registry, services, prompts, canary, diagnostics, and current operator guidance,
+and rely only on the native controller plus existing provider CLIs. Because one
+machine-global launcher serves every project, the first cutover must extend the
+signed release transaction to drain and migrate every active project together,
+persist a Contract 2 floor, and fix forward after that no-return phase; immutable
+historical releases and evidence remain readable but cannot become active.
+
+## 2026-08-12 — Decision 403: Contract 2 removes Hermes from the active runtime
+
+Category: System change
+
+The host runtime, launcher, service jobs, registry, qualification environment,
+operator console, credential flow, CI, and current documentation no longer use
+Hermes. The signed release transaction now reserves the whole host, migrates
+every active project, persists a monotonic Contract 2 floor and global dispatch
+barrier, retires the old profile and jobs only after native Doctor success, and
+supports exact pre-mutation abort plus journaled fix-forward replay. Historical
+evidence remains readable; a static registered suite prevents reintroduction.

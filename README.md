@@ -46,8 +46,8 @@ profile alternatives, family rules, approval flow, and operator commands.
 
 ## Local multi-project console
 
-Contract 1.5 adds a loopback-only control console for every project registered
-in the factory profile:
+The loopback-only control console discovers every project from owner-only
+`~/.factory/kits/projects/<slug>/active.json` records:
 
 ```bash
 python3 scripts/operator-console.py
@@ -175,7 +175,7 @@ running**. Never bypass a preflight failure.
 
 Read the [product brief](docs/product-brief.md), [architecture](docs/architecture.md), and [factory setup checklist](docs/factory-setup.md). Copy the required templates into the product repo, fill the blanks, run the validator, then start with the [walking skeleton](docs/operations/walking-skeleton.md). Do not create a ticket backlog before its staging URL works.
 
-For a Contract 1.9 production release, use the two release verbs instead of
+For a Contract 2.0 production release, use the two release verbs instead of
 manually sequencing host setup, certification, activation, model selection,
 and migration:
 
@@ -189,7 +189,8 @@ bash scripts/factory-kit.sh release resume \
 ```
 
 `setup` installs and validates immutable inputs, prepares the project-local
-runtime, registry, and controller job, and returns one exact approval plan.
+runtime roots and controller job, binds the committed ticket inventory, and
+returns one exact approval plan.
 `resume` applies only that stored hash and resumes crash-lost phases. If a
 machine-wide launcher/provider prerequisite needs changing, the first resume
 returns a second receipt-bound activation plan; review that new hash and run

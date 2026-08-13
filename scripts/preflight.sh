@@ -90,7 +90,7 @@ if ! factory_dispatch_require_lease "$REPO_ROOT" "$TICKET" "$LEASE_ID"; then
 fi
 
 if [[ "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.8.0" ||
-      "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.9.0" ]]; then
+      "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "2.0.0" ]]; then
   if [[ -z "$WORKDIR" ]] ||
      ! python3 -B "$KIT_DIR/scripts/ticket-readiness.py" \
        --ticket "$TICKET" --workdir "$CONTENT_ROOT"; then
@@ -321,7 +321,7 @@ fi
 # installed launcher constructs FACTORY_VERIFIED_TRANSITION_STAGE only from
 # state-machine receipt verification inside its empty helper environment.
 case "${FACTORY_RELEASE_CONTRACT_VERSION:-}" in
-  1.8.0|1.9.0) CONTRACT_HAS_STATE_MACHINE=1 ;;
+  1.8.0|2.0.0) CONTRACT_HAS_STATE_MACHINE=1 ;;
   *) CONTRACT_HAS_STATE_MACHINE=0 ;;
 esac
 EXPECTED_STATE="Ready"
@@ -361,15 +361,6 @@ if [[ "$STATE_ACCEPTED" -eq 1 ]]; then
   else
     pass "ticket belongs to initiative $INITIATIVE"
   fi
-fi
-
-# (f) GH_TOKEN — warn only
-if [[ -n "${GH_TOKEN:-}" ]]; then
-  pass "GH_TOKEN available (environment)"
-elif [[ -f "$HOME/.hermes/profiles/factory/.env" ]] && grep -qE '^GH_TOKEN=' "$HOME/.hermes/profiles/factory/.env" 2>/dev/null; then
-  pass "GH_TOKEN available (~/.hermes/profiles/factory/.env)"
-else
-  warn "GH_TOKEN not set — PR and CI status checks may fail"
 fi
 
 if [[ $FAIL -eq 0 ]]; then

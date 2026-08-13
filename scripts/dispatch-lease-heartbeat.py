@@ -49,6 +49,10 @@ def main() -> int:
             env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             check=False, timeout=30,
         )
+        if stopped and result.returncode in {
+            -signal.SIGTERM, 128 + signal.SIGTERM,
+        }:
+            return 0
         if result.returncode:
             return result.returncode
         deadline = time.monotonic() + args.interval

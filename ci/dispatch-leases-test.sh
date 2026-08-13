@@ -10,7 +10,7 @@ KILL="$ROOT/scripts/kill-switch.sh"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/dispatch-leases-test.XXXXXX")"
 PRODUCT="$TMP/product"
 FAILURES=0
-export FACTORY_HERMES_CONTRACT_VERSION=1.6.0
+export FACTORY_CONTRACT_VERSION=1.6.0
 
 cleanup() { rm -rf "$TMP"; }
 trap cleanup EXIT HUP INT TERM
@@ -187,6 +187,55 @@ else
   fail "stale lease blocks work until its owner renews" "stale=$STALE_STAGE renewed=$RENEWED_STAGE"
 fi
 
+HEARTBEAT_READY="$TMP/heartbeat-renew-started"
+HEARTBEAT_RENEW="$TMP/heartbeat-renew.sh"
+printf '%s\n' '#!/usr/bin/env bash' \
+  'touch "$HEARTBEAT_READY"' \
+  'sleep 30' > "$HEARTBEAT_RENEW"
+chmod 700 "$HEARTBEAT_RENEW"
+HEARTBEAT_READY="$HEARTBEAT_READY" python3 "$ROOT/scripts/dispatch-lease-heartbeat.py" \
+  --renew-script "$HEARTBEAT_RENEW" --factory-root "$PRODUCT" \
+  --ticket "$FIRST_TICKET" --lease "$FIRST_ID" --interval 1 &
+HEARTBEAT_PID=$!
+for _try in $(seq 1 500); do
+  [[ -f "$HEARTBEAT_READY" ]] && break
+  sleep 0.02
+done
+kill -TERM -- "-$HEARTBEAT_PID" 2>/dev/null || true
+HEARTBEAT_RC=0
+wait "$HEARTBEAT_PID" || HEARTBEAT_RC=$?
+if [[ -f "$HEARTBEAT_READY" && "$HEARTBEAT_RC" -eq 0 ]]; then
+  pass "heartbeat stop during renewal exits cleanly"
+else
+  fail "heartbeat stop during renewal exits cleanly" "status=$HEARTBEAT_RC"
+fi
+
+HEARTBEAT_FAILURE_READY="$TMP/heartbeat-failure-started"
+HEARTBEAT_FAILURE_RENEW="$TMP/heartbeat-failure.sh"
+printf '%s\n' '#!/usr/bin/env bash' \
+  'touch "$HEARTBEAT_FAILURE_READY"' \
+  'sleep 1' \
+  'exit 8' > "$HEARTBEAT_FAILURE_RENEW"
+chmod 700 "$HEARTBEAT_FAILURE_RENEW"
+HEARTBEAT_FAILURE_READY="$HEARTBEAT_FAILURE_READY" \
+  python3 "$ROOT/scripts/dispatch-lease-heartbeat.py" \
+  --renew-script "$HEARTBEAT_FAILURE_RENEW" --factory-root "$PRODUCT" \
+  --ticket "$FIRST_TICKET" --lease "$FIRST_ID" --interval 1 &
+HEARTBEAT_FAILURE_PID=$!
+for _try in $(seq 1 500); do
+  [[ -f "$HEARTBEAT_FAILURE_READY" ]] && break
+  sleep 0.02
+done
+kill -TERM "$HEARTBEAT_FAILURE_PID" 2>/dev/null || true
+HEARTBEAT_FAILURE_RC=0
+wait "$HEARTBEAT_FAILURE_PID" || HEARTBEAT_FAILURE_RC=$?
+if [[ -f "$HEARTBEAT_FAILURE_READY" && "$HEARTBEAT_FAILURE_RC" -eq 8 ]]; then
+  pass "heartbeat stop preserves an ordinary renewal failure"
+else
+  fail "heartbeat stop preserves an ordinary renewal failure" \
+    "status=$HEARTBEAT_FAILURE_RC"
+fi
+
 mkdir "$PRODUCT/factory/.launch.lock"
 BUSY_RENEW_RC=0
 FACTORY_ROOT="$PRODUCT" "$LEASE" renew --ticket "$FIRST_TICKET" --lease "$FIRST_ID" \
@@ -254,16 +303,16 @@ fi
 cp "$PRODUCT/factory/PROJECT.env" "$TMP/project-before-expired.env"
 printf '%s\n' 'MAX_CONCURRENT_TICKETS=4' > "$PRODUCT/factory/PROJECT.env"
 LIVE_EXPIRED_RC=0
-FACTORY_RELEASE_CONTRACT_VERSION=1.9.0 FACTORY_ROOT="$PRODUCT" \
+FACTORY_RELEASE_CONTRACT_VERSION=2.0.0 FACTORY_ROOT="$PRODUCT" \
   "$LEASE" release-expired --ticket "$THIRD_TICKET" --lease "$THIRD_ID" \
   > "$TMP/live-expired.out" 2>&1 || LIVE_EXPIRED_RC=$?
 WRONG_EXPIRED_RC=0
-FACTORY_RELEASE_CONTRACT_VERSION=1.9.0 FACTORY_ROOT="$PRODUCT" \
+FACTORY_RELEASE_CONTRACT_VERSION=2.0.0 FACTORY_ROOT="$PRODUCT" \
   "$LEASE" release-expired --ticket "$SECOND_TICKET" \
   --lease 0000000000000000000000000000000000000000000000000000000000000000 \
   > "$TMP/wrong-expired.out" 2>&1 || WRONG_EXPIRED_RC=$?
 EXPIRED_RELEASE="$(
-  FACTORY_RELEASE_CONTRACT_VERSION=1.9.0 FACTORY_ROOT="$PRODUCT" \
+  FACTORY_RELEASE_CONTRACT_VERSION=2.0.0 FACTORY_ROOT="$PRODUCT" \
     "$LEASE" release-expired --ticket "$SECOND_TICKET" --lease "$SECOND_ID"
 )"
 mv "$TMP/project-before-expired.env" "$PRODUCT/factory/PROJECT.env"
@@ -308,16 +357,16 @@ printf '%s\n' 'MAX_CONCURRENT_TICKETS=7' > "$PRODUCT/factory/PROJECT.env"
 INVALID_RC=0
 FACTORY_ROOT="$PRODUCT" "$LEASE" claim --ticket T-903 >/dev/null 2>&1 || INVALID_RC=$?
 [[ "$INVALID_RC" -eq 3 ]] && pass "invalid concurrency configuration fails closed" || fail "invalid concurrency configuration fails closed" "status=$INVALID_RC"
-FACTORY_HERMES_CONTRACT_VERSION=1.5.0
-export FACTORY_HERMES_CONTRACT_VERSION
+FACTORY_CONTRACT_VERSION=1.5.0
+export FACTORY_CONTRACT_VERSION
 printf '%s\n' 'MAX_CONCURRENT_TICKETS=5' > "$PRODUCT/factory/PROJECT.env"
 LEGACY_INVALID_RC=0
 FACTORY_ROOT="$PRODUCT" "$LEASE" claim --ticket T-903 >/dev/null 2>&1 || LEGACY_INVALID_RC=$?
 [[ "$LEGACY_INVALID_RC" -eq 3 ]] &&
   pass "Contract 1.5 retains the 1 through 4 capacity bound" ||
   fail "Contract 1.5 retains the 1 through 4 capacity bound" "status=$LEGACY_INVALID_RC"
-FACTORY_HERMES_CONTRACT_VERSION=1.6.0
-export FACTORY_HERMES_CONTRACT_VERSION
+FACTORY_CONTRACT_VERSION=1.6.0
+export FACTORY_CONTRACT_VERSION
 printf '%s\n' 'MAX_CONCURRENT_TICKETS=6' > "$PRODUCT/factory/PROJECT.env"
 mv "$PRODUCT/factory/PROJECT.env" "$PRODUCT/factory/PROJECT.env.real"
 ln -s PROJECT.env.real "$PRODUCT/factory/PROJECT.env"

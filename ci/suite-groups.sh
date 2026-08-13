@@ -8,8 +8,8 @@ suite_shard_for() {
     factory-scripts|provider-executor|provider-activation|provider-artifact-controller)
       printf 'factory\n'
       ;;
-    emergency-admit|hermes-contract|preflight|ticket-attest|provider-cli-runtime|provider-coordinator|provider-credential-broker|provider-recovery)
-      printf 'hermes\n'
+    emergency-admit|external-runtime-dependency|factory-contract|preflight|ticket-attest|provider-cli-runtime|provider-coordinator|provider-credential-broker|provider-recovery)
+      printf 'contract\n'
       ;;
     *)
       printf 'release\n'
@@ -25,7 +25,7 @@ suite_group_for() {
     factory-controller|factory-scripts|qualification-environment|protected-merge-reconciliation|terminal-backfill|state-machine|ticket-passport)
       printf '1\n'
       ;;
-    emergency-admit|hermes-contract|preflight|provider-cli-runtime|provider-coordinator|provider-credential-broker|provider-recovery|provider-executor|factory-dev-lane|ticket-pr)
+    emergency-admit|external-runtime-dependency|factory-contract|preflight|provider-cli-runtime|provider-coordinator|provider-credential-broker|provider-recovery|provider-executor|factory-dev-lane|ticket-pr)
       printf '2\n'
       ;;
     factory-kit|model-fallback|provider-activation|model-control|ticket-transition-policy)

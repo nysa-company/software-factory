@@ -107,10 +107,9 @@ The Reviewer same-family exception is intentionally unavailable through normal
 policy. `reviewer-exception-contract` reports that a future implementation must
 be ticket-scoped and one-use; normal validation is not weakened.
 
-Hermes integration note: the launcher and contract are deliberately unchanged
-in this change. A later Hermes release can map authenticated API methods to
-these model-control commands and must pass preview/current hashes through
-without rewriting them.
+Factory runtime note: the installed launcher maps only its fixed authenticated
+grammar to these model-control commands and passes preview/current hashes
+through without rewriting them.
 
 ## Fallback after a run has started
 
@@ -224,7 +223,7 @@ No-change revisions bind the prior resolution by SHA-256 instead of copying it;
 full refreshed evidence is recorded only when its physical identity changes.
 Legacy revisions containing full prior resolutions remain valid.
 
-Contract 1.9 may preview one to four authorized ticket worktrees together with
+Contract 2.0 may preview one to four authorized ticket worktrees together with
 `models migrate-batch-plan`. Its approval hash binds the protected-main
 snapshot and every ticket's branch, head, worktree, migration preview, and
 readiness digest. `models migrate-batch` applies the existing per-ticket
@@ -244,7 +243,7 @@ retried without discarding successful siblings or repeating completed pushes.
 ~/.factory/bin/factory-launch <project> models pin \
   --ticket T-123 --workdir /absolute/ticket-worktree --json
 
-# Preview and apply a bounded Contract 1.9 release-migration batch.
+# Preview and apply a bounded Contract 2.0 release-migration batch.
 ~/.factory/bin/factory-launch <project> models migrate-batch-plan \
   --ticket T-123 --workdir /absolute/ticket-worktree \
   --ticket T-124 --workdir /absolute/second-worktree --json
@@ -271,9 +270,9 @@ reasons. Logic errors, test failures, unsafe worktree changes, stale evidence,
 and ambiguous accounting do not authorize a model fallback.
 
 For a certified `https://github.com/...` product origin, fallback and route
-migration receive the trusted Hermes profile token only for their exact
-`ls-remote`, push, and remote verification subprocesses through
-`gh auth git-credential`. The token is
-removed before model readiness runs and is never placed in a URL, argument,
-repository configuration, fallback journal, or role environment. SSH and local
-remotes keep their existing credential-free path.
+migration give their exact `ls-remote`, push, and remote-verification Git
+subprocesses the ownership-validated `gh auth git-credential` helper. They use
+the fixed physical account credential store without extracting or forwarding a
+token. No credential is placed in a URL, argument, repository configuration,
+fallback journal, or role environment. SSH and local remotes keep their
+existing credential-free path.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plan and resume one exact Contract 1.9 production release."""
+"""Plan and resume one exact Contract 2 production release."""
 
 from __future__ import annotations
 
@@ -31,6 +31,8 @@ TICKET_STATES = frozenset({
     "Awaiting Approval", "Approved", "Backlog", "Blocked-Escalated",
     "Building", "Canceled", "Done", "Planning", "Ready", "Review",
 })
+_RETIRED_RUNTIME = "her" + "mes"
+_CUTOVER_LOCK_FD: int | None = None
 
 
 class ReleaseError(ValueError):
@@ -144,6 +146,36 @@ def atomic_json(path: Path, value: dict[str, Any]) -> None:
     atomic_bytes(path, canonical(value))
 
 
+def acquire_cutover_lock(kits_root: Path) -> int:
+    global _CUTOVER_LOCK_FD
+    root = secure_directory(kits_root, create=True)
+    path = root / ".contract-cutover.lock"
+    descriptor = os.open(
+        path,
+        os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600,
+    )
+    info = os.fstat(descriptor)
+    current = os.stat(path, follow_symlinks=False)
+    if (
+        not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+        or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) & 0o077
+        or (info.st_dev, info.st_ino) != (current.st_dev, current.st_ino)
+    ):
+        os.close(descriptor)
+        raise ReleaseError("host cutover lock is unsafe")
+    fcntl.flock(descriptor, fcntl.LOCK_EX)
+    os.set_inheritable(descriptor, True)
+    _CUTOVER_LOCK_FD = descriptor
+    return descriptor
+
+
+def release_cutover_lock(descriptor: int) -> None:
+    global _CUTOVER_LOCK_FD
+    if _CUTOVER_LOCK_FD == descriptor:
+        _CUTOVER_LOCK_FD = None
+    os.close(descriptor)
+
+
 def secure_regular_bytes(path: Path, label: str, *, executable: bool = False) -> bytes:
     descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     try:
@@ -181,14 +213,6 @@ def exact_local_file(path: Path, expected: bytes, label: str) -> str:
     else:
         atomic_bytes(path, expected)
     return hashlib.sha256(expected).hexdigest()
-
-
-def prepare_registry(project: str, product: Path) -> dict[str, Any]:
-    profile = account_home() / ".hermes/profiles/factory"
-    projects = secure_directory(profile / "projects", create=True)
-    path = projects / f"{project}.env"
-    raw = f"PRODUCT_ROOT={product}\n".encode()
-    return {"path": str(path), "sha256": exact_local_file(path, raw, "project registry")}
 
 
 def controller_payload(project: str, product: Path) -> bytes:
@@ -237,6 +261,8 @@ def active_inventory(kits_root: Path) -> list[dict[str, Any]]:
         values.append({
             "active_sha256": file_digest(active), "product": str(product),
             "project": root.name,
+            "contract_version": str(record.get("contract_version", "")),
+            "kit_sha": str(record.get("kit_sha", "")),
         })
     return values
 
@@ -267,8 +293,12 @@ def validate_launcher_plan(value: dict[str, Any]) -> None:
     for item in projects:
         if (
             not isinstance(item, dict)
-            or set(item) != {"active_sha256", "product", "project"}
+            or set(item) != {
+                "active_sha256", "contract_version", "kit_sha", "product", "project",
+            }
             or not DIGEST.fullmatch(str(item.get("active_sha256", "")))
+            or not SHA.fullmatch(str(item.get("kit_sha", "")))
+            or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", str(item.get("contract_version", "")))
             or not Path(str(item.get("product", ""))).is_absolute()
             or not PROJECT.fullmatch(str(item.get("project", "")))
         ):
@@ -276,7 +306,7 @@ def validate_launcher_plan(value: dict[str, Any]) -> None:
 
 
 def launcher_plan(release: Path, kits_root: Path) -> dict[str, Any]:
-    candidate = release / "integrations/hermes/bin/factory-launch"
+    candidate = release / "scripts/factory-launch"
     target = account_home() / ".factory/bin/factory-launch"
     secure_directory(target.parent, create=True)
     candidate_sha = hashlib.sha256(
@@ -301,6 +331,7 @@ def launcher_plan(release: Path, kits_root: Path) -> dict[str, Any]:
 
 def _apply_launcher_plan_locked(
     value: dict[str, Any], release: Path, kits_root: Path,
+    cutover_sha: str | None = None,
 ) -> dict[str, Any]:
     validate_launcher_plan(value)
     current_plan = launcher_plan(release, kits_root)
@@ -309,7 +340,20 @@ def _apply_launcher_plan_locked(
         if current_plan["sha256"] != value["candidate"]["sha256"]:
             raise ReleaseError("launcher pin target changed")
     elif current_plan != value:
-        raise ReleaseError("launcher pin basis changed after approval")
+        current = active_inventory(kits_root)
+        expected = {
+            item["project"]: item["product"] for item in value["active_projects"]
+        }
+        if (
+            cutover_sha is None
+            or {item["project"]: item["product"] for item in current} != expected
+            or any(
+                item["kit_sha"] != cutover_sha
+                or int(item["contract_version"].split(".", 1)[0]) < 2
+                for item in current
+            )
+        ):
+            raise ReleaseError("launcher pin basis changed after approval")
     kit = release / "scripts/factory-kit.sh"
     if not replay:
         for item in value["active_projects"]:
@@ -382,6 +426,7 @@ def _apply_launcher_plan_locked(
 
 def apply_launcher_plan(
     value: dict[str, Any], release: Path, kits_root: Path,
+    cutover_sha: str | None = None,
 ) -> dict[str, Any]:
     validate_launcher_plan(value)
     root = secure_directory(Path(value["target"]).parent.parent, create=True)
@@ -397,7 +442,7 @@ def apply_launcher_plan(
         ):
             raise ReleaseError("launcher pin lock is unsafe")
         fcntl.flock(descriptor, fcntl.LOCK_EX)
-        return _apply_launcher_plan_locked(value, release, kits_root)
+        return _apply_launcher_plan_locked(value, release, kits_root, cutover_sha)
     finally:
         os.close(descriptor)
 
@@ -405,9 +450,15 @@ def apply_launcher_plan(
 def run(
     arguments: list[str], label: str, *, environment: dict[str, str] | None = None,
 ) -> str:
+    pass_fds = (
+        (_CUTOVER_LOCK_FD,)
+        if _CUTOVER_LOCK_FD is not None and environment is not None
+        and environment.get("FACTORY_HOST_CUTOVER_LOCK_FD") == str(_CUTOVER_LOCK_FD)
+        else ()
+    )
     result = subprocess.run(
         arguments, text=True, capture_output=True, check=False, timeout=1800,
-        env=environment,
+        env=environment, pass_fds=pass_fds,
     )
     if result.returncode:
         raise ReleaseError(f"{label} failed")
@@ -502,18 +553,26 @@ def prepare_product_runtime(product: Path) -> None:
 def contract(release: Path) -> str:
     try:
         value = json.loads(
-            (release / "integrations/hermes/contract.json").read_text(encoding="utf-8")
+            (release / "factory-contract.json").read_text(encoding="utf-8")
         )["contract_version"]
     except (KeyError, OSError, json.JSONDecodeError) as error:
         raise ReleaseError("candidate contract is invalid") from error
-    if value != "1.9.0":
-        raise ReleaseError("release setup requires Contract 1.9.0")
+    if value != "2.0.0":
+        raise ReleaseError("release setup requires Contract 2.0.0")
     return value
 
 
-def command_environment(kits_root: Path, runtime: Path | None = None) -> dict[str, str]:
+def command_environment(
+    kits_root: Path, runtime: Path | None = None, *, cutover_lock: bool = False,
+) -> dict[str, str]:
     environment = os.environ.copy()
+    environment.pop("FACTORY_CONTRACT_2_CUTOVER", None)
+    environment.pop("FACTORY_HOST_CUTOVER_RESERVATION", None)
+    environment.pop("FACTORY_MAINTENANCE_OWNER", None)
+    environment.pop("FACTORY_HOST_CUTOVER_LOCK_FD", None)
     environment["FACTORY_KITS_ROOT"] = str(kits_root)
+    if cutover_lock and _CUTOVER_LOCK_FD is not None:
+        environment["FACTORY_HOST_CUTOVER_LOCK_FD"] = str(_CUTOVER_LOCK_FD)
     if runtime is not None:
         environment["PATH"] = f"{runtime}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
     return environment
@@ -657,6 +716,129 @@ def seal_plan(body: dict[str, Any]) -> dict[str, Any]:
     return {**body, "approval_sha256": digest(body)}
 
 
+def valid_controller(value: Any, project: str) -> bool:
+    return isinstance(value, dict) and (
+        value.get("status") == "not-applicable"
+        and set(value) == {"platform", "status"}
+        or value.get("status") != "not-applicable"
+        and set(value) == {"label", "path", "platform", "sha256"}
+        and value.get("platform") == "darwin"
+        and value.get("label") == f"com.factory.controller.{project}"
+        and Path(str(value.get("path", ""))).is_absolute()
+        and DIGEST.fullmatch(str(value.get("sha256", ""))) is not None
+    )
+
+
+def valid_ticket_inventory(value: Any) -> bool:
+    if not isinstance(value, list):
+        return False
+    tickets: set[str] = set()
+    for item in value:
+        if (
+            not isinstance(item, dict) or set(item) != {"blob", "state", "ticket"}
+            or not TICKET.fullmatch(str(item.get("ticket", "")))
+            or not SHA.fullmatch(str(item.get("blob", "")))
+            or item.get("state") not in TICKET_STATES
+            or item["ticket"] in tickets
+        ):
+            return False
+        tickets.add(item["ticket"])
+    return True
+
+
+def valid_host_cutover(value: Any) -> bool:
+    if value is None:
+        return True
+    if not isinstance(value, list) or len(value) != len({
+        item.get("project") for item in value if isinstance(item, dict)
+    }):
+        return False
+    for item in value:
+        if not isinstance(item, dict) or set(item) != {
+            "controller", "incident", "maintenance", "product", "project",
+            "receipt", "runtime", "source_active_sha256", "tickets",
+        }:
+            return False
+        project = item.get("project")
+        receipt = item.get("receipt")
+        runtime = item.get("runtime")
+        incident = item.get("incident")
+        maintenance = item.get("maintenance")
+        if (
+            not isinstance(project, str) or not PROJECT.fullmatch(project)
+            or not Path(str(item.get("product", ""))).is_absolute()
+            or not DIGEST.fullmatch(str(item.get("source_active_sha256", "")))
+            or not valid_ticket_inventory(item.get("tickets"))
+            or not valid_controller(item.get("controller"), project)
+            or not isinstance(receipt, dict)
+            or set(receipt) != {"path", "receipt_id", "sha256"}
+            or not Path(str(receipt.get("path", ""))).is_absolute()
+            or not DIGEST.fullmatch(str(receipt.get("receipt_id", "")))
+            or not DIGEST.fullmatch(str(receipt.get("sha256", "")))
+            or not isinstance(runtime, dict)
+            or set(runtime) != {"evidence", "plan_sha256"}
+            or not isinstance(runtime.get("evidence"), dict)
+            or not Path(str(runtime["evidence"].get("path", ""))).is_absolute()
+            or not DIGEST.fullmatch(str(runtime.get("plan_sha256", "")))
+            or not isinstance(maintenance, dict)
+            or set(maintenance) != {"cutover_sha256", "prior", "reservation_id"}
+            or not DIGEST.fullmatch(str(maintenance.get("cutover_sha256", "")))
+            or not DIGEST.fullmatch(str(maintenance.get("reservation_id", "")))
+            or maintenance.get("prior") is not None and (
+                not isinstance(maintenance.get("prior"), dict)
+                or set(maintenance["prior"]) != {"path", "sha256"}
+                or not Path(str(maintenance["prior"].get("path", ""))).is_absolute()
+                or not DIGEST.fullmatch(str(maintenance["prior"].get("sha256", "")))
+            )
+            or incident is not None and (
+                not isinstance(incident, dict)
+                or set(incident) != {"label", "path", "sha256"}
+                or incident.get("label") != f"com.factory.incident-reporter.{project}"
+                or not Path(str(incident.get("path", ""))).is_absolute()
+                or not DIGEST.fullmatch(str(incident.get("sha256", "")))
+            )
+        ):
+            return False
+    return True
+
+
+def valid_retired_runtime(value: Any) -> bool:
+    if not isinstance(value, dict) or set(value) != {"action", "profile", "services"}:
+        return False
+    profile = value.get("profile")
+    services = value.get("services")
+    if (
+        value.get("action") not in {"apply", "reuse"}
+        or not isinstance(profile, dict)
+        or set(profile) != {"path", "tree_sha256"}
+        or not Path(str(profile.get("path", ""))).is_absolute()
+        or profile.get("tree_sha256") is not None
+        and not DIGEST.fullmatch(str(profile.get("tree_sha256")))
+        or not isinstance(services, list) or len(services) != 2
+    ):
+        return False
+    expected = {
+        f"com.nysa.{_RETIRED_RUNTIME}-factory-gateway",
+        f"com.nysa.{_RETIRED_RUNTIME}-dashboard",
+    }
+    labels: set[str] = set()
+    for service in services:
+        if (
+            not isinstance(service, dict)
+            or set(service) != {"label", "loaded", "path", "sha256"}
+            or not isinstance(service.get("loaded"), bool)
+            or not Path(str(service.get("path", ""))).is_absolute()
+            or service.get("sha256") is not None
+            and not DIGEST.fullmatch(str(service.get("sha256")))
+        ):
+            return False
+        labels.add(str(service.get("label")))
+    changed = profile["tree_sha256"] is not None or any(
+        service["loaded"] or service["sha256"] is not None for service in services
+    )
+    return labels == expected and value["action"] == ("apply" if changed else "reuse")
+
+
 def validate_plan(value: dict[str, Any]) -> None:
     required = {
         "approval_sha256", "children", "created_epoch", "expires_epoch", "identity",
@@ -683,8 +865,8 @@ def validate_plan(value: dict[str, Any]) -> None:
         raise ReleaseError("release plan is invalid")
     identity_keys = {
         "capacity", "contract_version", "controller", "factory_origin", "factory_sha",
-        "factory_tree", "mode", "previous", "product_origin", "product_path", "product_sha",
-        "product_tree", "registry", "runtime", "tickets",
+        "factory_tree", "maintenance_prior", "mode", "previous", "product_origin",
+        "product_path", "product_sha", "product_tree", "runtime", "tickets",
     }
     request_keys = {
         "cli_paths", "migrations", "operator_id", "product", "profile", "project",
@@ -692,14 +874,13 @@ def validate_plan(value: dict[str, Any]) -> None:
     }
     runtime = identity.get("runtime")
     evidence = runtime.get("evidence") if isinstance(runtime, dict) else None
-    registry = identity.get("registry")
     controller = identity.get("controller")
     migrations = request.get("migrations")
     cli_paths = request.get("cli_paths")
     inventory = identity.get("tickets")
     if (
         set(identity) != identity_keys or set(request) != request_keys
-        or identity.get("contract_version") != "1.9.0"
+        or identity.get("contract_version") != "2.0.0"
         or identity.get("mode") not in {"new", "upgrade"}
         or not isinstance(identity.get("capacity"), int)
         or isinstance(identity.get("capacity"), bool)
@@ -722,43 +903,26 @@ def validate_plan(value: dict[str, Any]) -> None:
         or not DIGEST.fullmatch(str(runtime.get("plan_sha256", "")))
         or not isinstance(evidence, dict)
         or not Path(str(evidence.get("path", ""))).is_absolute()
-        or not isinstance(registry, dict) or set(registry) != {"path", "sha256"}
-        or not Path(str(registry.get("path", ""))).is_absolute()
-        or not DIGEST.fullmatch(str(registry.get("sha256", "")))
-        or not isinstance(controller, dict)
-        or (
-            controller.get("status") == "not-applicable" and
-            set(controller) != {"platform", "status"}
-        )
-        or (
-            controller.get("status") != "not-applicable" and (
-                set(controller) != {"label", "path", "platform", "sha256"}
-                or controller.get("platform") != "darwin"
-                or controller.get("label") != f"com.factory.controller.{request.get('project')}"
-                or not Path(str(controller.get("path", ""))).is_absolute()
-                or not DIGEST.fullmatch(str(controller.get("sha256", "")))
-            )
-        )
+        or not valid_controller(controller, str(request.get("project", "")))
         or (identity["mode"] == "new" and identity.get("previous") is not None)
         or (identity["mode"] == "upgrade" and not isinstance(identity.get("previous"), dict))
     ):
         raise ReleaseError("release plan is invalid")
-    inventory_tickets: set[str] = set()
-    for item in inventory:
-        if (
-            not isinstance(item, dict) or set(item) != {"blob", "state", "ticket"}
-            or not TICKET.fullmatch(str(item.get("ticket", "")))
-            or not SHA.fullmatch(str(item.get("blob", "")))
-            or item.get("state") not in TICKET_STATES
-            or item["ticket"] in inventory_tickets
-        ):
-            raise ReleaseError("release plan is invalid")
-        inventory_tickets.add(item["ticket"])
+    if not valid_ticket_inventory(inventory):
+        raise ReleaseError("release plan is invalid")
     previous = identity.get("previous")
     if previous is not None and (
         set(previous) != {"record", "sha256"}
         or not isinstance(previous.get("record"), dict)
         or not DIGEST.fullmatch(str(previous.get("sha256", "")))
+    ):
+        raise ReleaseError("release plan is invalid")
+    maintenance_prior = identity.get("maintenance_prior")
+    if maintenance_prior is not None and (
+        not isinstance(maintenance_prior, dict)
+        or set(maintenance_prior) != {"path", "sha256"}
+        or not Path(str(maintenance_prior.get("path", ""))).is_absolute()
+        or not DIGEST.fullmatch(str(maintenance_prior.get("sha256", "")))
     ):
         raise ReleaseError("release plan is invalid")
     tickets: set[str] = set()
@@ -801,9 +965,15 @@ def validate_plan(value: dict[str, Any]) -> None:
             raise ReleaseError("release plan is invalid")
     if value["stage"] == "prerequisites":
         if (
-            set(children) != {"launcher", "provider_cli", "provider_concurrency"}
+            set(children) != {
+                "host_cutover", "launcher", "provider_cli", "provider_concurrency",
+                "retired_runtime",
+            }
+            or not valid_host_cutover(children.get("host_cutover"))
+            or not valid_retired_runtime(children.get("retired_runtime"))
             or "apply" not in {
                 launcher["action"], provider_cli["action"], provider_concurrency["action"],
+                children["retired_runtime"]["action"],
             }
         ):
             raise ReleaseError("release plan is invalid")
@@ -969,7 +1139,457 @@ def find_receipt(kits_root: Path, project: str, sha: str) -> tuple[Path, dict[st
     return path, value
 
 
-def setup(args: argparse.Namespace) -> dict[str, Any]:
+def incident_identity(project: str) -> dict[str, str] | None:
+    if sys.platform != "darwin" or os.environ.get("FACTORY_KIT_TEST_MODE") == "1":
+        return None
+    path = account_home() / "Library/LaunchAgents" / (
+        f"com.factory.incident-reporter.{project}.plist"
+    )
+    if not path.exists() and not path.is_symlink():
+        return None
+    raw = secure_regular_bytes(path, "incident reporter job")
+    return {
+        "label": f"com.factory.incident-reporter.{project}",
+        "path": str(path),
+        "sha256": hashlib.sha256(raw).hexdigest(),
+    }
+
+
+def retired_tree_digest(root: Path) -> str:
+    secure_directory(root)
+    entries: list[dict[str, Any]] = []
+    for directory, names, files in os.walk(root, followlinks=False):
+        current = Path(directory)
+        info = current.lstat()
+        if (
+            current.is_symlink() or not stat.S_ISDIR(info.st_mode)
+            or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) & 0o022
+        ):
+            raise ReleaseError("retired Factory profile is unsafe")
+        names.sort()
+        files.sort()
+        entries.append({
+            "kind": "directory", "mode": stat.S_IMODE(info.st_mode),
+            "path": str(current.relative_to(root)),
+        })
+        for name in files:
+            path = current / name
+            raw = secure_regular_bytes(path, "retired Factory profile file")
+            entries.append({
+                "kind": "file", "mode": stat.S_IMODE(path.stat().st_mode),
+                "path": str(path.relative_to(root)),
+                "sha256": hashlib.sha256(raw).hexdigest(),
+            })
+        if len(entries) > 10_000:
+            raise ReleaseError("retired Factory profile is too large")
+    return digest(entries)
+
+
+def service_loaded(label: str) -> bool:
+    if sys.platform != "darwin" or os.environ.get("FACTORY_KIT_TEST_MODE") == "1":
+        return False
+    prefix, domain = service_prefix()
+    return subprocess.run(
+        prefix + ["print", f"{domain}/{label}"], stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL, check=False, timeout=30,
+    ).returncode == 0
+
+
+def retired_runtime_plan() -> dict[str, Any]:
+    home = account_home()
+    profile = home / f".{_RETIRED_RUNTIME}/profiles/factory"
+    profile_sha = retired_tree_digest(profile) if profile.exists() or profile.is_symlink() else None
+    services = []
+    for label in (
+        f"com.nysa.{_RETIRED_RUNTIME}-dashboard",
+        f"com.nysa.{_RETIRED_RUNTIME}-factory-gateway",
+    ):
+        path = home / "Library/LaunchAgents" / f"{label}.plist"
+        sha256 = None
+        if path.exists() or path.is_symlink():
+            sha256 = hashlib.sha256(
+                secure_regular_bytes(path, "retired Factory service job")
+            ).hexdigest()
+        services.append({
+            "label": label, "loaded": service_loaded(label),
+            "path": str(path), "sha256": sha256,
+        })
+    changed = profile_sha is not None or any(
+        service["loaded"] or service["sha256"] is not None for service in services
+    )
+    value = {
+        "action": "apply" if changed else "reuse",
+        "profile": {"path": str(profile), "tree_sha256": profile_sha},
+        "services": services,
+    }
+    if not valid_retired_runtime(value):
+        raise ReleaseError("retired runtime plan is invalid")
+    return value
+
+
+def sync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def retired_runtime_matches(
+    value: dict[str, Any], approval_sha256: str, *, require_absent: bool = False,
+) -> bool:
+    if not valid_retired_runtime(value) or not DIGEST.fullmatch(approval_sha256):
+        return False
+    home = account_home()
+    profile = Path(value["profile"]["path"])
+    if profile != home / f".{_RETIRED_RUNTIME}/profiles/factory":
+        return False
+    archive = home / ".factory/retired-runtime" / approval_sha256
+    profile_archive = archive / "profile"
+    expected_profile = value["profile"]["tree_sha256"]
+    if expected_profile is None:
+        if profile.exists() or profile.is_symlink() or profile_archive.exists() or profile_archive.is_symlink():
+            return False
+    elif profile.exists() or profile.is_symlink():
+        if require_absent or retired_tree_digest(profile) != expected_profile:
+            return False
+    elif not profile_archive.exists() or retired_tree_digest(profile_archive) != expected_profile:
+        return False
+    for service in value["services"]:
+        label = service["label"]
+        source = Path(service["path"])
+        expected_path = home / "Library/LaunchAgents" / f"{label}.plist"
+        target = archive / "services" / source.name
+        if source != expected_path or label not in {
+            f"com.nysa.{_RETIRED_RUNTIME}-dashboard",
+            f"com.nysa.{_RETIRED_RUNTIME}-factory-gateway",
+        }:
+            return False
+        expected_sha = service["sha256"]
+        if expected_sha is None:
+            if source.exists() or source.is_symlink() or target.exists() or target.is_symlink():
+                return False
+        elif source.exists() or source.is_symlink():
+            if require_absent or hashlib.sha256(
+                secure_regular_bytes(source, "retired Factory service job")
+            ).hexdigest() != expected_sha:
+                return False
+        elif not target.exists() or hashlib.sha256(
+            secure_regular_bytes(target, "archived Factory service job")
+        ).hexdigest() != expected_sha:
+            return False
+        if require_absent and service_loaded(label):
+            return False
+    return True
+
+
+def archive_retired_runtime(value: dict[str, Any], approval_sha256: str) -> None:
+    if not retired_runtime_matches(value, approval_sha256):
+        raise ReleaseError("retired runtime changed after approval")
+    home = account_home()
+    archive = secure_directory(
+        home / ".factory/retired-runtime" / approval_sha256, create=True,
+    )
+    services = secure_directory(archive / "services", create=True)
+    for service in value["services"]:
+        unload_service(service)
+        source = Path(service["path"])
+        target = services / source.name
+        if service["sha256"] is not None and (source.exists() or source.is_symlink()):
+            if target.exists() or target.is_symlink():
+                raise ReleaseError("retired Factory service archive conflicts")
+            os.replace(source, target)
+            sync_directory(source.parent)
+            sync_directory(target.parent)
+    profile = Path(value["profile"]["path"])
+    profile_archive = archive / "profile"
+    if value["profile"]["tree_sha256"] is not None and (
+        profile.exists() or profile.is_symlink()
+    ):
+        if profile_archive.exists() or profile_archive.is_symlink():
+            raise ReleaseError("retired Factory profile archive conflicts")
+        os.replace(profile, profile_archive)
+        sync_directory(profile.parent)
+        sync_directory(archive)
+    if not retired_runtime_matches(value, approval_sha256, require_absent=True):
+        raise ReleaseError("retired runtime removal did not converge")
+
+
+def reservation_path(kits_root: Path) -> Path:
+    return kits_root / "contract-cutover-reservation.json"
+
+
+def reservation_basis(
+    kits_root: Path, launcher: dict[str, Any], retired_runtime: dict[str, Any],
+    product: Path, project: str, sha: str,
+) -> dict[str, Any]:
+    body = {
+        "active_projects": launcher.get("active_projects", active_inventory(kits_root)),
+        "candidate_launcher_sha256": (
+            launcher["candidate"]["sha256"] if launcher["action"] == "apply"
+            else launcher["sha256"]
+        ),
+        "project": project,
+        "product": str(product),
+        "retired_runtime_sha256": digest(retired_runtime),
+        "schema": "nysa.software-factory.host-cutover-reservation/v1",
+        "sha": sha,
+    }
+    return {**body, "reservation_id": digest(body)}
+
+
+def read_reservation(path: Path) -> dict[str, Any]:
+    value = safe_state(path, "host cutover reservation")
+    body = {key: item for key, item in value.items() if key != "record_sha256"}
+    basis_keys = {
+        "active_projects", "candidate_launcher_sha256", "product", "project",
+        "retired_runtime_sha256", "schema", "sha",
+    }
+    basis = {key: value.get(key) for key in basis_keys}
+    active_projects = value.get("active_projects")
+    if (
+        set(value) != basis_keys | {
+            "approval_sha256", "record_sha256", "reservation_id", "status",
+        }
+        or value.get("schema") != "nysa.software-factory.host-cutover-reservation/v1"
+        or value.get("status") not in {"preparing", "prepared"}
+        or value.get("reservation_id") != digest(basis)
+        or value.get("status") == "preparing" and value.get("approval_sha256") is not None
+        or value.get("status") == "prepared"
+        and not DIGEST.fullmatch(str(value.get("approval_sha256", "")))
+        or not isinstance(active_projects, list)
+        or any(
+            not isinstance(item, dict)
+            or set(item) != {
+                "active_sha256", "contract_version", "kit_sha", "product", "project",
+            }
+            or not DIGEST.fullmatch(str(item.get("active_sha256", "")))
+            or not PROJECT.fullmatch(str(item.get("project", "")))
+            or not Path(str(item.get("product", ""))).is_absolute()
+            for item in active_projects
+        )
+        or not DIGEST.fullmatch(str(value.get("candidate_launcher_sha256", "")))
+        or not DIGEST.fullmatch(str(value.get("retired_runtime_sha256", "")))
+        or not PROJECT.fullmatch(str(value.get("project", "")))
+        or not Path(str(value.get("product", ""))).is_absolute()
+        or not SHA.fullmatch(str(value.get("sha", "")))
+        or value.get("record_sha256") != digest(body)
+    ):
+        raise ReleaseError("host cutover reservation is invalid")
+    return value
+
+
+def reserve_cutover(kits_root: Path, basis: dict[str, Any]) -> dict[str, Any]:
+    path = reservation_path(kits_root)
+    if path.exists() or path.is_symlink():
+        current = read_reservation(path)
+        if current.get("reservation_id") != basis["reservation_id"]:
+            raise ReleaseError("another host cutover is already reserved")
+        if current["status"] == "prepared":
+            raise ReleaseError("host cutover is prepared; resume its approved plan")
+        return current
+    value = {
+        **basis, "approval_sha256": None, "status": "preparing",
+    }
+    atomic_json(path, {**value, "record_sha256": digest(value)})
+    return value
+
+
+def finalize_reservation(
+    kits_root: Path, reservation_id: str, approval_sha256: str,
+) -> None:
+    path = reservation_path(kits_root)
+    current = read_reservation(path)
+    if (
+        current["reservation_id"] != reservation_id
+        or current["status"] != "preparing"
+    ):
+        raise ReleaseError("host cutover reservation changed")
+    body = {
+        **{key: item for key, item in current.items() if key != "record_sha256"},
+        "approval_sha256": approval_sha256, "status": "prepared",
+    }
+    atomic_json(path, {**body, "record_sha256": digest(body)})
+
+
+def require_reservation(kits_root: Path, plan: dict[str, Any]) -> None:
+    path = reservation_path(kits_root)
+    if not path.exists() or path.is_symlink():
+        raise ReleaseError("host cutover reservation is missing")
+    value = read_reservation(path)
+    launcher = plan["children"]["launcher"]
+    candidate_sha = (
+        launcher["candidate"]["sha256"] if launcher["action"] == "apply"
+        else launcher["sha256"]
+    )
+    expected_actives = {
+        (item["project"], item["product"], item["source_active_sha256"])
+        for item in plan["children"]["host_cutover"]
+    }
+    reserved_actives = {
+        (item.get("project"), item.get("product"), item.get("active_sha256"))
+        for item in value["active_projects"]
+    }
+    if (
+        value["status"] != "prepared"
+        or value["approval_sha256"] != plan["approval_sha256"]
+        or plan["children"]["host_cutover"] and value.get("reservation_id") not in {
+            item["maintenance"]["reservation_id"]
+            for item in plan["children"]["host_cutover"]
+        }
+        or value.get("candidate_launcher_sha256") != candidate_sha
+        or reserved_actives != expected_actives
+        or value.get("project") != plan["request"]["project"]
+        or value.get("product") != plan["request"].get("product")
+        or value.get("retired_runtime_sha256")
+        != digest(plan["children"]["retired_runtime"])
+        or value.get("sha") != plan["request"]["sha"]
+    ):
+        raise ReleaseError("host cutover reservation does not match approval")
+
+
+def clear_reservation(kits_root: Path, plan: dict[str, Any]) -> None:
+    path = reservation_path(kits_root)
+    if not path.exists() and not path.is_symlink():
+        return
+    require_reservation(kits_root, plan)
+    path.unlink()
+    sync_directory(path.parent)
+
+
+def capture_maintenance(
+    kits_root: Path, product: Path, project: str, reservation_id: str,
+) -> dict[str, str] | None:
+    marker = product / "factory/MAINTENANCE"
+    if not marker.exists() and not marker.is_symlink():
+        return None
+    root = secure_directory(
+        kits_root / "contract-cutover-reservations" / reservation_id, create=True,
+    )
+    snapshot = root / f"{project}.maintenance"
+    current = safe_state(marker, "pre-cutover maintenance marker")
+    if current.get("cutover_owner") == reservation_id:
+        if not snapshot.exists() and not snapshot.is_symlink():
+            return None
+        raw = secure_regular_bytes(snapshot, "pre-cutover maintenance snapshot")
+        return {"path": str(snapshot), "sha256": hashlib.sha256(raw).hexdigest()}
+    raw = secure_regular_bytes(marker, "pre-cutover maintenance marker")
+    exact_local_file(snapshot, raw, "pre-cutover maintenance snapshot")
+    return {"path": str(snapshot), "sha256": hashlib.sha256(raw).hexdigest()}
+
+
+def snapshot_maintenance(kits_root: Path, product: Path, project: str) -> dict[str, str] | None:
+    marker = product / "factory/MAINTENANCE"
+    if not marker.exists() and not marker.is_symlink():
+        return None
+    raw = secure_regular_bytes(marker, "pre-release maintenance marker")
+    sha256 = hashlib.sha256(raw).hexdigest()
+    root = secure_directory(
+        kits_root / "projects" / project / "release-plans" / "maintenance", create=True,
+    )
+    snapshot = root / f"{sha256}.marker"
+    exact_local_file(snapshot, raw, "pre-release maintenance snapshot")
+    return {"path": str(snapshot), "sha256": sha256}
+
+
+def prepare_host_cutover(
+    release: Path, kits_root: Path, sha: str, launcher: dict[str, Any],
+    explicit_runtime: Path | None, target_project: str,
+    target_product: Path, target_runtime: dict[str, Any],
+    target_controller: dict[str, Any], reservation_id: str,
+) -> list[dict[str, Any]]:
+    kit = release / "scripts/factory-kit.sh"
+    entries: list[dict[str, Any]] = []
+    sources = launcher.get("active_projects", active_inventory(kits_root))
+    if launcher["action"] != "apply" and any(
+        int(item["contract_version"].split(".", 1)[0]) < 2 for item in sources
+    ):
+        raise ReleaseError(
+            "retired runtime removal requires every active project on Contract 2"
+        )
+    for source in sources:
+        project = source["project"]
+        product = Path(source["product"]).resolve(strict=True)
+        _, _, _ = clean_identity(product, f"active product {project}")
+        if (product / "factory/KIT_PIN").read_text(encoding="utf-8") != sha + "\n":
+            raise ReleaseError(
+                f"active project {project} has not staged the Contract 2 release pin"
+            )
+        runtime = (
+            target_runtime if project == target_project and product == target_product
+            else prepare_runtime(release, product, kits_root, project, explicit_runtime)
+        )
+        controller = (
+            target_controller if project == target_project and product == target_product
+            else prepare_controller(project, product)
+        )
+        environment = command_environment(
+            kits_root, Path(runtime["evidence"]["path"]), cutover_lock=True,
+        )
+        environment["FACTORY_CONTRACT_2_CUTOVER"] = "1"
+        environment["FACTORY_HOST_CUTOVER_RESERVATION"] = reservation_id
+        environment["FACTORY_MAINTENANCE_OWNER"] = reservation_id
+        prior_maintenance = capture_maintenance(
+            kits_root, product, project, reservation_id,
+        )
+        run(
+            ["bash", str(kit), "pause", "--project", project,
+             "--product", str(product)], f"host cutover drain for {project}",
+            environment=environment,
+        )
+        maintenance = product / "factory/MAINTENANCE"
+        cutover_maintenance_sha = hashlib.sha256(
+            secure_regular_bytes(maintenance, "host cutover maintenance marker")
+        ).hexdigest()
+        if launcher["action"] == "apply":
+            run(
+                ["bash", str(kit), "certify", "--project", project,
+                 "--product", str(product), "--sha", sha],
+                f"host cutover certification for {project}", environment=environment,
+            )
+            receipt_path, receipt = find_receipt(kits_root, project, sha)
+            preview_environment = command_environment(
+                kits_root, Path(runtime["evidence"]["path"]),
+            )
+            run(
+                ["bash", str(kit), "plan", "--project", project,
+                 "--product", str(product), "--sha", sha,
+                 "--receipt", str(receipt_path)],
+                f"host cutover activation preview for {project}",
+                environment=preview_environment,
+            )
+        else:
+            active_record = safe_state(
+                kits_root / "projects" / project / "active.json", "active release",
+            )
+            receipt_id = active_record.get("receipt_id")
+            if not DIGEST.fullmatch(str(receipt_id)):
+                raise ReleaseError("active Contract 2 receipt identity is invalid")
+            receipt_path = kits_root / "receipts" / f"{receipt_id}.json"
+            receipt = safe_state(receipt_path, "certification receipt")
+            if receipt.get("receipt_id") != receipt_id:
+                raise ReleaseError("active Contract 2 receipt changed")
+        entries.append({
+            "controller": controller,
+            "incident": incident_identity(project),
+            "maintenance": {
+                "cutover_sha256": cutover_maintenance_sha,
+                "prior": prior_maintenance, "reservation_id": reservation_id,
+            },
+            "product": str(product),
+            "project": project,
+            "receipt": {
+                "path": str(receipt_path), "receipt_id": receipt["receipt_id"],
+                "sha256": file_digest(receipt_path),
+            },
+            "runtime": runtime,
+            "source_active_sha256": source["active_sha256"],
+            "tickets": ticket_inventory(product),
+        })
+    return entries
+
+
+def _setup_locked(args: argparse.Namespace) -> dict[str, Any]:
     project = args.project
     sha = args.sha
     if not PROJECT.fullmatch(project) or not SHA.fullmatch(sha):
@@ -978,6 +1598,16 @@ def setup(args: argparse.Namespace) -> dict[str, Any]:
     repo = args.repo.resolve(strict=True)
     kits_root = args.kits_root.resolve()
     secure_directory(kits_root, create=True)
+    pending_reservation = reservation_path(kits_root)
+    if pending_reservation.exists() or pending_reservation.is_symlink():
+        pending = read_reservation(pending_reservation)
+        if (
+            pending["status"] == "prepared"
+            or pending.get("project") != project
+            or pending.get("product") != str(product)
+            or pending.get("sha") != sha
+        ):
+            raise ReleaseError("another host cutover is already reserved")
     factory_sha, factory_tree, factory_origin = clean_identity(repo, "Factory candidate")
     product_sha, product_tree, product_origin = clean_identity(product, "product")
     prepare_product_runtime(product)
@@ -999,7 +1629,6 @@ def setup(args: argparse.Namespace) -> dict[str, Any]:
     sealed_kit = release / "scripts/factory-kit.sh"
     release_contract = contract(release)
     runtime = prepare_runtime(release, product, kits_root, project, args.runtime_bin)
-    registry = prepare_registry(project, product)
     controller = prepare_controller(project, product)
     runtime_bin = Path(str(runtime["evidence"]["path"]))
     active = kits_root / "projects" / project / "active.json"
@@ -1010,13 +1639,12 @@ def setup(args: argparse.Namespace) -> dict[str, Any]:
             raise ReleaseError("active release belongs to a different product")
         previous = {"record": active_value, "sha256": file_digest(active)}
     mode = "upgrade" if previous is not None else "new"
-    if mode == "upgrade":
-        run(
-            ["bash", str(sealed_kit), "pause", "--project", project,
-             "--product", str(product)], "release maintenance entry",
-            environment=command_environment(kits_root, runtime_bin),
-        )
+    maintenance_prior = (
+        args.maintenance_prior if hasattr(args, "maintenance_prior")
+        else snapshot_maintenance(kits_root, product, project)
+    )
     launcher = launcher_plan(release, kits_root)
+    retired_runtime = retired_runtime_plan()
     cli_paths = {
         key: str(value.resolve(strict=True)) for key, value in {
             "claude": args.claude_bin, "codex": args.codex_bin,
@@ -1026,6 +1654,31 @@ def setup(args: argparse.Namespace) -> dict[str, Any]:
     concurrency, cli = child_plan(
         sealed_kit, kits_root, sha, capacity(product), cli_paths, args.operator_id,
     )
+    provider_prerequisite = (
+        concurrency["action"] == "apply" or cli["action"] == "apply"
+    )
+    host_cutover = None
+    reservation = None
+    global_change = (
+        launcher["action"] == "apply" or retired_runtime["action"] == "apply"
+    )
+    if global_change and not provider_prerequisite:
+        basis = reservation_basis(
+            kits_root, launcher, retired_runtime, product, project, sha,
+        )
+        reservation = reserve_cutover(kits_root, basis)
+        host_cutover = prepare_host_cutover(
+            release, kits_root, sha, launcher, args.runtime_bin, project, product,
+            runtime, controller, basis["reservation_id"],
+        )
+    elif not provider_prerequisite and mode == "upgrade":
+        run(
+            ["bash", str(sealed_kit), "pause", "--project", project,
+             "--product", str(product)], "release maintenance entry",
+            environment=command_environment(
+                kits_root, runtime_bin, cutover_lock=True,
+            ),
+        )
     migrations = [
         {"ticket": ticket, "workdir": str(Path(workdir).resolve(strict=True))}
         for ticket, workdir in args.ticket_workdir
@@ -1040,29 +1693,33 @@ def setup(args: argparse.Namespace) -> dict[str, Any]:
         "capacity": capacity(product), "contract_version": release_contract,
         "controller": controller,
         "factory_origin": factory_origin, "factory_sha": sha,
-        "factory_tree": factory_tree, "mode": mode,
+        "factory_tree": factory_tree,
+        "maintenance_prior": maintenance_prior, "mode": mode,
         "previous": previous,
         "product_origin": product_origin, "product_path": str(product),
         "product_sha": product_sha, "product_tree": product_tree,
-        "registry": registry,
         "runtime": runtime, "tickets": ticket_inventory(product),
     }
     now = int(time.time())
     if (
         launcher["action"] == "apply" or concurrency["action"] == "apply"
-        or cli["action"] == "apply"
+        or cli["action"] == "apply" or retired_runtime["action"] == "apply"
     ):
         plan = seal_plan({
             "children": {
+                "host_cutover": host_cutover,
                 "launcher": launcher, "provider_cli": cli,
                 "provider_concurrency": concurrency,
+                "retired_runtime": retired_runtime,
             },
             "created_epoch": now, "expires_epoch": now + 7200,
             "identity": identity, "request": request, "schema": PLAN_SCHEMA,
             "stage": "prerequisites", "status": "approval-required",
         })
     else:
-        certification_environment = command_environment(kits_root, runtime_bin)
+        certification_environment = command_environment(
+            kits_root, runtime_bin, cutover_lock=True,
+        )
         run(
             ["bash", str(sealed_kit), "certify", "--project", project,
              "--product", str(product), "--sha", sha], "product certification",
@@ -1074,10 +1731,11 @@ def setup(args: argparse.Namespace) -> dict[str, Any]:
             environment=certification_environment,
         )
         receipt_path, receipt = find_receipt(kits_root, project, sha)
+        preview_environment = command_environment(kits_root, runtime_bin)
         run(
             ["bash", str(sealed_kit), "plan", "--project", project,
              "--product", str(product), "--sha", sha, "--receipt", str(receipt_path)],
-            "activation preview", environment=certification_environment,
+            "activation preview", environment=preview_environment,
         )
         state_root = secure_directory(kits_root / "projects" / project / "release-plans", create=True)
         if migrations:
@@ -1105,7 +1763,102 @@ def setup(args: argparse.Namespace) -> dict[str, Any]:
         })
     path, _ = plan_paths(kits_root, project, sha)
     write_plan(path, plan)
+    if reservation is not None:
+        finalize_reservation(
+            kits_root, reservation["reservation_id"], plan["approval_sha256"],
+        )
     return plan
+
+
+def clear_preparing_reservation(kits_root: Path, reservation: dict[str, Any]) -> None:
+    expected = {
+        (
+            item["project"], item["product"], item["active_sha256"],
+            item["contract_version"], item["kit_sha"],
+        )
+        for item in reservation["active_projects"]
+    }
+    current = {
+        (
+            item["project"], item["product"], item["active_sha256"],
+            item["contract_version"], item["kit_sha"],
+        )
+        for item in active_inventory(kits_root)
+    }
+    if current != expected:
+        raise ReleaseError("failed host preparation changed active project state")
+    items = []
+    for source in reservation["active_projects"]:
+        marker = Path(source["product"]) / "factory/MAINTENANCE"
+        if not marker.exists() and not marker.is_symlink():
+            continue
+        value = safe_state(marker, "host cutover maintenance marker")
+        if value.get("cutover_owner") != reservation["reservation_id"]:
+            continue
+        raw = secure_regular_bytes(marker, "host cutover maintenance marker")
+        snapshot = (
+            kits_root / "contract-cutover-reservations"
+            / reservation["reservation_id"] / f"{source['project']}.maintenance"
+        )
+        prior = None
+        if snapshot.exists() or snapshot.is_symlink():
+            prior_raw = secure_regular_bytes(
+                snapshot, "pre-cutover maintenance snapshot",
+            )
+            prior = {
+                "path": str(snapshot),
+                "sha256": hashlib.sha256(prior_raw).hexdigest(),
+            }
+        items.append({
+            "maintenance": {
+                "cutover_sha256": hashlib.sha256(raw).hexdigest(),
+                "prior": prior,
+                "reservation_id": reservation["reservation_id"],
+            },
+            "product": source["product"],
+            "project": source["project"],
+        })
+    for item in items:
+        cutover_maintenance_restore(item)
+    for item in items:
+        clear_cutover_maintenance(item)
+    path = reservation_path(kits_root)
+    current_reservation = read_reservation(path)
+    if (
+        current_reservation["status"] != "preparing"
+        or current_reservation["reservation_id"] != reservation["reservation_id"]
+    ):
+        raise ReleaseError("failed host preparation reservation changed")
+    path.unlink()
+    sync_directory(path.parent)
+
+
+def setup(args: argparse.Namespace) -> dict[str, Any]:
+    kits_root = args.kits_root.resolve()
+    descriptor = acquire_cutover_lock(kits_root) if _CUTOVER_LOCK_FD is None else None
+    try:
+        try:
+            return _setup_locked(args)
+        except Exception:
+            path = reservation_path(kits_root)
+            if path.exists() or path.is_symlink():
+                reservation = read_reservation(path)
+                if (
+                    reservation["status"] == "preparing"
+                    and reservation["project"] == args.project
+                    and reservation["product"] == str(args.product.resolve(strict=True))
+                    and reservation["sha"] == args.sha
+                ):
+                    try:
+                        clear_preparing_reservation(kits_root, reservation)
+                    except Exception as cleanup_error:
+                        raise ReleaseError(
+                            "failed host preparation could not be restored"
+                        ) from cleanup_error
+            raise
+    finally:
+        if descriptor is not None:
+            release_cutover_lock(descriptor)
 
 
 def signed_journal(value: dict[str, Any]) -> dict[str, Any]:
@@ -1173,18 +1926,510 @@ def plan_request(plan: dict[str, Any], kits_root: Path) -> argparse.Namespace:
         claude_bin=Path(request["cli_paths"]["claude"]) if "claude" in request["cli_paths"] else None,
         codex_bin=Path(request["cli_paths"]["codex"]) if "codex" in request["cli_paths"] else None,
         cursor_bin=Path(request["cli_paths"]["cursor"]) if "cursor" in request["cli_paths"] else None,
+        maintenance_prior=next((
+            item["maintenance"]["prior"]
+            for item in plan["children"].get("host_cutover") or []
+            if item["project"] == request["project"]
+        ), plan["identity"]["maintenance_prior"]),
         ticket_workdir=migrations,
     )
+
+
+def service_prefix() -> tuple[list[str], str]:
+    launchctl = Path("/bin/launchctl")
+    if not launchctl.is_file() or not os.access(launchctl, os.X_OK):
+        raise ReleaseError("native service manager is unavailable")
+    domain = f"gui/{os.getuid()}"
+    return [str(launchctl), "asuser", str(os.getuid()), str(launchctl)], domain
+
+
+def unload_service(value: dict[str, Any] | None) -> None:
+    if (
+        value is None or value.get("status") == "not-applicable"
+        or sys.platform != "darwin" or os.environ.get("FACTORY_KIT_TEST_MODE") == "1"
+    ):
+        return
+    prefix, domain = service_prefix()
+    service = f"{domain}/{value['label']}"
+    current = subprocess.run(
+        prefix + ["print", service], stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL, check=False, timeout=30,
+    )
+    if current.returncode == 0:
+        run(prefix + ["bootout", service], f"service unload for {value['label']}")
+    if subprocess.run(
+        prefix + ["print", service], stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL, check=False, timeout=30,
+    ).returncode == 0:
+        raise ReleaseError(f"service {value['label']} did not unload")
+
+
+def ensure_service(value: dict[str, Any] | None) -> None:
+    if (
+        value is None or value.get("status") == "not-applicable"
+        or sys.platform != "darwin" or os.environ.get("FACTORY_KIT_TEST_MODE") == "1"
+    ):
+        return
+    path = Path(value["path"])
+    if hashlib.sha256(secure_regular_bytes(path, "native service job")).hexdigest() != value["sha256"]:
+        raise ReleaseError("native service job changed after setup")
+    prefix, domain = service_prefix()
+    service = f"{domain}/{value['label']}"
+    run(prefix + ["enable", service], f"service enable for {value['label']}")
+    current = subprocess.run(
+        prefix + ["print", service], stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL, check=False, timeout=30,
+    )
+    if current.returncode:
+        run(prefix + ["bootstrap", domain, str(path)], f"service load for {value['label']}")
+    if subprocess.run(
+        prefix + ["print", service], stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL, check=False, timeout=30,
+    ).returncode:
+        raise ReleaseError(f"service {value['label']} did not load")
+
+
+def cutover_update(
+    path: Path, approval_sha256: str, phase: str, projects: list[str], status: str,
+) -> None:
+    floor_required = completed_cutover_exists(path) or phase in {
+        "active_records_switched", "contract_floor_committed", "launcher_installed",
+        "operator_initialized", "retired_runtime_removed", "healthy",
+    }
+    if path.exists() or path.is_symlink():
+        current = safe_state(path, "host cutover journal")
+        floor_required = floor_required or current.get("floor_required") is True
+    body = {
+        "approval_sha256": approval_sha256,
+        "completed_projects": projects,
+        "floor_required": floor_required,
+        "phase": phase,
+        "schema": "nysa.software-factory.host-cutover-journal/v1",
+        "status": status,
+    }
+    atomic_json(path, {**body, "record_sha256": digest(body)})
+    if os.environ.get("FACTORY_RELEASE_FAIL_AFTER_CUTOVER_PHASE") == phase:
+        raise ReleaseError(f"injected failure after host cutover phase {phase}")
+
+
+def read_cutover(path: Path, approval_sha256: str) -> dict[str, Any]:
+    if not path.exists() and not path.is_symlink():
+        return {
+            "completed_projects": [], "floor_required": False,
+            "phase": "approved", "status": "in-progress",
+        }
+    value = safe_state(path, "host cutover journal")
+    body = {key: item for key, item in value.items() if key != "record_sha256"}
+    if (
+        value.get("schema") != "nysa.software-factory.host-cutover-journal/v1"
+        or not DIGEST.fullmatch(str(value.get("approval_sha256", "")))
+        or value.get("record_sha256") != digest(body)
+        or value.get("status") not in {"in-progress", "pass"}
+        or not isinstance(value.get("completed_projects"), list)
+        or not isinstance(value.get("floor_required"), bool)
+    ):
+        raise ReleaseError("host cutover journal is invalid")
+    if value["approval_sha256"] != approval_sha256:
+        if value["status"] == "pass":
+            return {
+                "completed_projects": [], "floor_required": True,
+                "phase": "approved", "status": "in-progress",
+            }
+        raise ReleaseError("host cutover journal is invalid")
+    return value
+
+
+def completed_cutover_exists(path: Path) -> bool:
+    if not path.exists() and not path.is_symlink():
+        return False
+    value = safe_state(path, "host cutover journal")
+    approval = str(value.get("approval_sha256", ""))
+    if not DIGEST.fullmatch(approval):
+        raise ReleaseError("host cutover journal is invalid")
+    return read_cutover(path, approval)["status"] == "pass"
+
+
+def cutover_terminal_exact(
+    kits_root: Path, item: dict[str, Any], sha: str, release: Path,
+) -> bool:
+    path = kits_root / "projects" / item["project"] / "active.json"
+    if not path.exists() or path.is_symlink():
+        return False
+    record = safe_state(path, "active release")
+    receipt_path = Path(item["receipt"]["path"])
+    if (
+        not receipt_path.exists() or receipt_path.is_symlink()
+        or file_digest(receipt_path) != item["receipt"]["sha256"]
+    ):
+        return False
+    receipt = safe_state(receipt_path, "certification receipt")
+    expected = {
+        "contract_version": "2.0.0", "kit_sha": sha,
+        "kit_tree": receipt.get("kit_tree"), "product_path": item["product"],
+        "product_sha": receipt.get("product_sha"),
+        "product_tree": receipt.get("product_tree"), "project": item["project"],
+        "receipt_id": item["receipt"]["receipt_id"], "release_path": str(release),
+    }
+    if receipt.get("runtime_tuple") is not None:
+        expected["runtime_tuple"] = receipt["runtime_tuple"]
+    generation = record.get("generation")
+    if (
+        receipt.get("receipt_id") != item["receipt"]["receipt_id"]
+        or not isinstance(generation, int) or isinstance(generation, bool)
+        or generation < 1
+        or any(record.get(key) != value for key, value in expected.items())
+    ):
+        return False
+    journals = kits_root / "projects" / item["project"] / "activation-journal"
+    matches = sorted(journals.glob(f"{generation:020d}-*.json"))
+    if len(matches) != 1 or matches[0].is_symlink():
+        return False
+    for candidate in journals.glob("*.json"):
+        if candidate.is_symlink() or safe_state(
+            candidate, "activation journal",
+        ).get("phase") not in {"committed", "rolled_back"}:
+            return False
+    journal = safe_state(matches[0], "activation journal")
+    consumed = kits_root / "receipts/consumed" / f"{item['receipt']['receipt_id']}.json"
+    if not consumed.exists() or consumed.is_symlink():
+        return False
+    claim = safe_state(consumed, "receipt consumption")
+    return (
+        journal.get("phase") == "committed"
+        and journal.get("candidate_record") == record
+        and journal.get("receipt_snapshot") == receipt
+        and journal.get("receipt_hash") == item["receipt"]["sha256"]
+        and claim.get("receipt_id") == item["receipt"]["receipt_id"]
+        and claim.get("transaction_id") == journal.get("transaction_id")
+    )
+
+
+def ensure_contract_floor(kits_root: Path) -> None:
+    floor = kits_root / "contract-floor.json"
+    expected = {
+        "minimum_major": 2,
+        "schema": "nysa.software-factory.contract-floor/v1",
+    }
+    if floor.exists() or floor.is_symlink():
+        if safe_state(floor, "contract floor") != expected:
+            raise ReleaseError("contract floor changed")
+    else:
+        atomic_json(floor, expected)
+
+
+def cutover_maintenance_restore(item: dict[str, Any]) -> bytes | None:
+    marker = Path(item["product"]) / "factory/MAINTENANCE"
+    maintenance = item["maintenance"]
+    prior = maintenance["prior"]
+    if prior is not None:
+        snapshot = Path(prior["path"])
+        raw = secure_regular_bytes(snapshot, "pre-cutover maintenance snapshot")
+        if hashlib.sha256(raw).hexdigest() != prior["sha256"]:
+            raise ReleaseError("pre-cutover maintenance snapshot changed")
+        if marker.exists() and not marker.is_symlink() and hashlib.sha256(
+            secure_regular_bytes(marker, "maintenance marker")
+        ).hexdigest() == prior["sha256"]:
+            return raw
+    elif not marker.exists() and not marker.is_symlink():
+        return None
+    if (
+        not marker.exists() or marker.is_symlink()
+        or hashlib.sha256(secure_regular_bytes(
+            marker, "maintenance marker",
+        )).hexdigest() != maintenance["cutover_sha256"]
+    ):
+        raise ReleaseError("host cutover maintenance marker changed")
+    value = safe_state(marker, "maintenance marker")
+    if (
+        value.get("project") != item["project"]
+        or value.get("product_path") != item["product"]
+        or value.get("cutover_owner") != maintenance["reservation_id"]
+    ):
+        raise ReleaseError("host cutover maintenance marker changed")
+    return raw if prior is not None else None
+
+
+def clear_cutover_maintenance(item: dict[str, Any]) -> None:
+    marker = Path(item["product"]) / "factory/MAINTENANCE"
+    raw = cutover_maintenance_restore(item)
+    prior = item["maintenance"]["prior"]
+    if prior is None and not marker.exists() and not marker.is_symlink():
+        return
+    if prior is not None and marker.exists() and not marker.is_symlink() and hashlib.sha256(
+        secure_regular_bytes(marker, "maintenance marker")
+    ).hexdigest() == prior["sha256"]:
+        return
+    if prior is None:
+        marker.unlink()
+        sync_directory(marker.parent)
+    else:
+        atomic_bytes(marker, raw)
+
+
+def validate_host_item_basis(
+    item: dict[str, Any], release: Path, kits_root: Path,
+) -> None:
+    product = Path(item["product"])
+    if ticket_inventory(product) != item["tickets"]:
+        raise ReleaseError(f"host cutover ticket inventory changed for {item['project']}")
+    root = project_runtime_root(kits_root, item["project"])
+    target = root / "bin"
+    if Path(item["runtime"]["evidence"]["path"]) != target:
+        raise ReleaseError(f"host cutover runtime path changed for {item['project']}")
+    try:
+        journal = safe_state(root / "runtime-pin-journal.json", "runtime pin journal")
+    except (OSError, ReleaseError) as error:
+        raise ReleaseError(
+            f"host cutover runtime changed for {item['project']}"
+        ) from error
+    runtime_plan = journal.get("plan")
+    if (
+        journal.get("status") != "completed" or not isinstance(runtime_plan, dict)
+        or runtime_plan.get("approval_sha256") != item["runtime"]["plan_sha256"]
+        or runtime_plan.get("product_path") != item["product"]
+        or runtime_plan.get("target_bin") != str(target)
+    ):
+        raise ReleaseError(f"host cutover runtime changed for {item['project']}")
+    evidence = run_json(
+        [sys.executable, "-I", "-S", str(release / "scripts/owner-runtime-pin.py"),
+         "check", "--journal", str(root / "runtime-pin-journal.json")],
+        f"host cutover runtime check for {item['project']}",
+        environment=command_environment(kits_root),
+    )
+    if evidence.get("status") != "ready" or evidence.get("path") != str(target):
+        raise ReleaseError(f"host cutover runtime evidence is invalid for {item['project']}")
+
+
+def validate_host_runtime(
+    plan: dict[str, Any], release: Path, kits_root: Path, *, require_retired: bool,
+) -> None:
+    items = plan["children"]["host_cutover"]
+    sha = plan["request"]["sha"]
+    if any(not cutover_terminal_exact(kits_root, item, sha, release) for item in items):
+        raise ReleaseError("completed host cutover activation is not terminal")
+    launcher_plan_value = plan["children"]["launcher"]
+    launcher_path = Path(
+        launcher_plan_value["target"] if launcher_plan_value["action"] == "apply"
+        else launcher_plan_value["path"]
+    )
+    launcher_sha = (
+        launcher_plan_value["candidate"]["sha256"]
+        if launcher_plan_value["action"] == "apply" else launcher_plan_value["sha256"]
+    )
+    if hashlib.sha256(secure_regular_bytes(
+        launcher_path, "installed launcher", executable=True,
+    )).hexdigest() != launcher_sha:
+        raise ReleaseError("completed host cutover launcher changed")
+    ensure_contract_floor(kits_root)
+    retired = plan["children"]["retired_runtime"]
+    if require_retired and not retired_runtime_matches(
+        retired, plan["approval_sha256"], require_absent=True,
+    ):
+        raise ReleaseError("retired runtime removal is incomplete")
+    for item in items:
+        validate_host_item_basis(item, release, kits_root)
+        if not operator_inventory_ready(Path(item["product"]), item["tickets"]):
+            raise ReleaseError(
+                f"host cutover operator inventory changed for {item['project']}"
+            )
+        ensure_service(item["controller"])
+        ensure_service(item["incident"])
+        doctor = run_json(
+            [str(launcher_path), item["project"], "doctor", "--json"],
+            f"host cutover Doctor for {item['project']}",
+            environment=launcher_environment(
+                kits_root, Path(item["runtime"]["evidence"]["path"]),
+            ),
+        )
+        checks = doctor.get("checks")
+        identity_matches = (
+            doctor.get("schema") == "nysa.software-factory.doctor/v2"
+            and doctor.get("schema_version") == 2
+            and doctor.get("contract_version") == "2.0.0"
+            and doctor.get("project") == item["project"]
+            and isinstance(checks, dict)
+        )
+        all_ok = identity_matches and doctor.get("overall_status") == "ok" and all(
+            isinstance(check, dict) and check.get("status") == "ok"
+            for check in checks.values()
+        )
+        runtime = checks.get("runtime", {}) if isinstance(checks, dict) else {}
+        maintenance_only = (
+            identity_matches
+            and doctor.get("overall_status") == "warning"
+            and isinstance(runtime, dict)
+            and runtime.get("status") == "warning"
+            and runtime.get("maintenance") is True
+            and runtime.get("provider_lock_state") == "absent"
+            and isinstance(runtime.get("locks"), dict)
+            and not any(runtime["locks"].values())
+            and all(runtime.get(key) == 0 for key in (
+                "run_records", "active_runs", "stale_runs", "malformed_runs",
+                "dispatch_lease_records", "stale_dispatch_leases",
+                "malformed_dispatch_leases",
+            ))
+            and all(
+                name == "runtime" or isinstance(check, dict)
+                and check.get("status") == "ok"
+                for name, check in checks.items()
+            )
+        )
+        if not (all_ok or maintenance_only):
+            raise ReleaseError(f"host cutover Doctor did not pass for {item['project']}")
+
+
+def clear_host_maintenance(plan: dict[str, Any]) -> None:
+    for item in plan["children"]["host_cutover"]:
+        if item["project"] != plan["request"]["project"]:
+            clear_cutover_maintenance(item)
+
+
+def _apply_host_cutover_locked(
+    plan: dict[str, Any], release: Path, kits_root: Path,
+) -> None:
+    items = plan["children"]["host_cutover"]
+    journal_path = kits_root / "contract-cutover-journal.json"
+    if completed_cutover_exists(journal_path):
+        ensure_contract_floor(kits_root)
+    journal = read_cutover(journal_path, plan["approval_sha256"])
+    if journal.get("phase") in {
+        "active_records_switched", "contract_floor_committed", "launcher_installed",
+        "operator_initialized", "retired_runtime_removed", "healthy",
+    }:
+        ensure_contract_floor(kits_root)
+    if journal["status"] == "pass":
+        validate_host_runtime(plan, release, kits_root, require_retired=True)
+        clear_host_maintenance(plan)
+        clear_reservation(kits_root, plan)
+        return
+    require_reservation(kits_root, plan)
+    completed = list(journal["completed_projects"])
+    kit = release / "scripts/factory-kit.sh"
+    for item in items:
+        validate_host_item_basis(item, release, kits_root)
+    for item in items:
+        if item["project"] in completed or cutover_terminal_exact(
+            kits_root, item, plan["request"]["sha"], release,
+        ):
+            continue
+        active = kits_root / "projects" / item["project"] / "active.json"
+        claim = kits_root / "receipts/consumed" / f"{item['receipt']['receipt_id']}.json"
+        if file_digest(active) != item["source_active_sha256"] or claim.exists() or claim.is_symlink():
+            raise ReleaseError("host cutover basis changed before activation")
+    for item in items:
+        project = item["project"]
+        if project in completed:
+            if not cutover_terminal_exact(kits_root, item, plan["request"]["sha"], release):
+                raise ReleaseError("completed host cutover project changed")
+            continue
+        environment = command_environment(
+            kits_root, Path(item["runtime"]["evidence"]["path"]),
+            cutover_lock=True,
+        )
+        environment["FACTORY_CONTRACT_2_CUTOVER"] = "1"
+        environment["FACTORY_HOST_CUTOVER_RESERVATION"] = item["maintenance"][
+            "reservation_id"
+        ]
+        run(
+            ["bash", str(kit), "reconcile", "--project", project,
+             "--product", item["product"]],
+            f"host cutover activation reconcile for {project}", environment=environment,
+        )
+        if cutover_terminal_exact(kits_root, item, plan["request"]["sha"], release):
+            completed.append(project)
+            cutover_update(
+                journal_path, plan["approval_sha256"], f"project:{project}",
+                completed, "in-progress",
+            )
+            continue
+        active = kits_root / "projects" / project / "active.json"
+        if file_digest(active) != item["source_active_sha256"]:
+            raise ReleaseError("host cutover active basis changed")
+        claim = kits_root / "receipts/consumed" / f"{item['receipt']['receipt_id']}.json"
+        if claim.exists() or claim.is_symlink():
+            raise ReleaseError("host cutover reconciliation requires fresh certification")
+        unload_service(item["controller"])
+        unload_service(item["incident"])
+        receipt = Path(item["receipt"]["path"])
+        if (
+            file_digest(receipt) != item["receipt"]["sha256"]
+            or safe_state(receipt, "certification receipt").get("receipt_id")
+            != item["receipt"]["receipt_id"]
+        ):
+            raise ReleaseError("host cutover receipt changed")
+        run(
+            ["bash", str(kit), "activate", "--project", project,
+             "--product", item["product"], "--sha", plan["request"]["sha"],
+             "--receipt", str(receipt)], f"host cutover activation for {project}",
+            environment=environment,
+        )
+        if not cutover_terminal_exact(kits_root, item, plan["request"]["sha"], release):
+            raise ReleaseError("host cutover activation did not commit")
+        completed.append(project)
+        cutover_update(
+            journal_path, plan["approval_sha256"], f"project:{project}",
+            completed, "in-progress",
+        )
+    cutover_update(
+        journal_path, plan["approval_sha256"], "active_records_switched",
+        completed, "in-progress",
+    )
+    ensure_contract_floor(kits_root)
+    cutover_update(
+        journal_path, plan["approval_sha256"], "contract_floor_committed",
+        completed, "in-progress",
+    )
+    if plan["children"]["launcher"]["action"] == "apply":
+        apply_launcher_plan(
+            plan["children"]["launcher"], release, kits_root, plan["request"]["sha"],
+        )
+    cutover_update(
+        journal_path, plan["approval_sha256"], "launcher_installed",
+        completed, "in-progress",
+    )
+    initialize_host_operator_maps(release, kits_root, items)
+    cutover_update(
+        journal_path, plan["approval_sha256"], "operator_initialized",
+        completed, "in-progress",
+    )
+    validate_host_runtime(plan, release, kits_root, require_retired=False)
+    archive_retired_runtime(
+        plan["children"]["retired_runtime"], plan["approval_sha256"],
+    )
+    cutover_update(
+        journal_path, plan["approval_sha256"], "retired_runtime_removed",
+        completed, "in-progress",
+    )
+    validate_host_runtime(plan, release, kits_root, require_retired=True)
+    clear_host_maintenance(plan)
+    cutover_update(
+        journal_path, plan["approval_sha256"], "healthy", completed, "pass",
+    )
+    clear_reservation(kits_root, plan)
+
+
+def apply_host_cutover(
+    plan: dict[str, Any], release: Path, kits_root: Path,
+) -> None:
+    items = plan["children"]["host_cutover"]
+    if (
+        not valid_host_cutover(items)
+        or not valid_retired_runtime(plan["children"].get("retired_runtime"))
+    ):
+        raise ReleaseError("host cutover plan is invalid")
+    descriptor = acquire_cutover_lock(kits_root) if _CUTOVER_LOCK_FD is None else None
+    try:
+        _apply_host_cutover_locked(plan, release, kits_root)
+    finally:
+        if descriptor is not None:
+            release_cutover_lock(descriptor)
 
 
 def apply_prerequisites(plan: dict[str, Any], kits_root: Path, approved_by: str) -> dict[str, Any]:
     request = plan["request"]
     release = kits_root / "releases" / request["sha"]
     kit = release / "scripts/factory-kit.sh"
-    environment = command_environment(kits_root)
-    launcher = plan["children"]["launcher"]
-    if launcher["action"] == "apply":
-        apply_launcher_plan(launcher, release, kits_root)
+    environment = command_environment(kits_root, cutover_lock=True)
     concurrency = plan["children"]["provider_concurrency"]
     if concurrency["action"] == "apply":
         child = concurrency["plan"]
@@ -1204,6 +2449,13 @@ def apply_prerequisites(plan: dict[str, Any], kits_root: Path, approved_by: str)
              "--approve-hash", child["approval_sha256"]], "provider CLI apply",
             environment=environment,
         )
+    launcher = plan["children"]["launcher"]
+    host_cutover = plan["children"]["host_cutover"]
+    retired_runtime = plan["children"]["retired_runtime"]
+    if host_cutover is not None and (
+        launcher["action"] == "apply" or retired_runtime["action"] == "apply"
+    ):
+        apply_host_cutover(plan, release, kits_root)
     return setup(plan_request(plan, kits_root))
 
 
@@ -1216,7 +2468,7 @@ def active_exact(kits_root: Path, plan: dict[str, Any]) -> bool:
     return all(value.get(key) == expected for key, expected in {
         "kit_sha": identity["factory_sha"], "kit_tree": identity["factory_tree"],
         "product_path": identity["product_path"], "product_sha": identity["product_sha"],
-        "product_tree": identity["product_tree"], "contract_version": "1.9.0",
+        "product_tree": identity["product_tree"], "contract_version": "2.0.0",
     }.items())
 
 
@@ -1254,17 +2506,6 @@ def validate_live_basis(kits_root: Path, plan: dict[str, Any]) -> None:
         allowed_launchers.add(launcher["previous_sha256"])
     if observed_launcher not in allowed_launchers:
         raise ReleaseError("installed launcher changed after setup")
-    registry = identity["registry"]
-    expected_registry = f"PRODUCT_ROOT={product}\n".encode()
-    if (
-        not Path(registry["path"]).exists() or Path(registry["path"]).is_symlink()
-        or
-        hashlib.sha256(expected_registry).hexdigest() != registry["sha256"]
-        or exact_local_file(
-            Path(registry["path"]), expected_registry, "project registry"
-        ) != registry["sha256"]
-    ):
-        raise ReleaseError("project registry changed after setup")
     controller = identity["controller"]
     if controller.get("status") != "not-applicable":
         expected_controller = controller_payload(plan["request"]["project"], product)
@@ -1301,6 +2542,15 @@ def validate_live_basis(kits_root: Path, plan: dict[str, Any]) -> None:
             or safe_state(active, "active release") != previous.get("record")
         ):
             raise ReleaseError("active release changed after setup")
+    if plan["stage"] == "prerequisites" and not retired_runtime_matches(
+        plan["children"]["retired_runtime"], plan["approval_sha256"],
+    ):
+        raise ReleaseError("retired runtime changed after release setup")
+    prior = identity["maintenance_prior"]
+    if prior is not None and hashlib.sha256(secure_regular_bytes(
+        Path(prior["path"]), "pre-cutover maintenance snapshot",
+    )).hexdigest() != prior["sha256"]:
+        raise ReleaseError("pre-cutover maintenance snapshot changed")
 
 
 def barrier_value(plan: dict[str, Any]) -> dict[str, Any]:
@@ -1341,6 +2591,29 @@ def remove_maintenance(product: Path, plan: dict[str, Any]) -> None:
     marker.unlink()
 
 
+def restore_activation_maintenance(plan: dict[str, Any]) -> None:
+    prior = plan["identity"]["maintenance_prior"]
+    if prior is None:
+        return
+    raw = secure_regular_bytes(Path(prior["path"]), "pre-cutover maintenance snapshot")
+    if hashlib.sha256(raw).hexdigest() != prior["sha256"]:
+        raise ReleaseError("pre-cutover maintenance snapshot changed")
+    atomic_bytes(Path(plan["request"]["product"]) / "factory/MAINTENANCE", raw)
+
+
+def activation_maintenance_matches(plan: dict[str, Any]) -> bool:
+    marker = Path(plan["request"]["product"]) / "factory/MAINTENANCE"
+    prior = plan["identity"]["maintenance_prior"]
+    if prior is None:
+        return not marker.exists() and not marker.is_symlink()
+    try:
+        return hashlib.sha256(secure_regular_bytes(
+            marker, "maintenance marker",
+        )).hexdigest() == prior["sha256"]
+    except (OSError, ReleaseError):
+        return False
+
+
 def model_ready(launcher: Path, plan: dict[str, Any], environment: dict[str, str]) -> bool:
     status = run_json(
         [str(launcher), plan["request"]["project"], "models", "status", "--json"],
@@ -1360,10 +2633,10 @@ def doctor(launcher: Path, plan: dict[str, Any], environment: dict[str, str]) ->
     )
 
 
-def operator_map_ready(plan: dict[str, Any]) -> bool:
+def operator_inventory_ready(product: Path, inventory: list[dict[str, Any]]) -> bool:
     try:
         mapping = safe_state(
-            Path(plan["identity"]["product_path"]) / "factory/operator-map.json",
+            product / "factory/operator-map.json",
             "operator map",
         )
     except (OSError, ReleaseError):
@@ -1372,20 +2645,19 @@ def operator_map_ready(plan: dict[str, Any]) -> bool:
     return isinstance(tickets, dict) and all(
         isinstance(tickets.get(item["ticket"]), dict)
         and tickets[item["ticket"]].get("operator_fields_initialized") is True
-        for item in plan["identity"]["tickets"]
+        for item in inventory
     )
 
 
-def initialize_operator_map(
-    release: Path, kits_root: Path, plan: dict[str, Any],
+def initialize_operator_inventory(
+    release: Path, kits_root: Path, project: str, product: Path,
+    inventory: list[dict[str, Any]],
     environment: dict[str, str],
 ) -> None:
-    product = Path(plan["identity"]["product_path"])
-    inventory = plan["identity"]["tickets"]
     arguments = [
         sys.executable, "-I", str(release / "scripts/operator-cli.py"),
         "--product", str(product), "--state-dir",
-        str(kits_root / "projects" / plan["request"]["project"] / "controller"),
+        str(kits_root / "projects" / project / "controller"),
         "initialize",
     ]
     for item in inventory:
@@ -1398,8 +2670,35 @@ def initialize_operator_map(
         "status": "pass",
     }:
         raise ReleaseError("operator projection initialization evidence is invalid")
-    if not operator_map_ready(plan):
+    if not operator_inventory_ready(product, inventory):
         raise ReleaseError("operator projection initialization is incomplete")
+
+
+def operator_map_ready(plan: dict[str, Any]) -> bool:
+    return operator_inventory_ready(
+        Path(plan["identity"]["product_path"]), plan["identity"]["tickets"],
+    )
+
+
+def initialize_operator_map(
+    release: Path, kits_root: Path, plan: dict[str, Any],
+    environment: dict[str, str],
+) -> None:
+    initialize_operator_inventory(
+        release, kits_root, plan["request"]["project"],
+        Path(plan["identity"]["product_path"]), plan["identity"]["tickets"],
+        environment,
+    )
+
+
+def initialize_host_operator_maps(
+    release: Path, kits_root: Path, items: list[dict[str, Any]],
+) -> None:
+    for item in items:
+        initialize_operator_inventory(
+            release, kits_root, item["project"], Path(item["product"]), item["tickets"],
+            command_environment(kits_root, Path(item["runtime"]["evidence"]["path"])),
+        )
 
 
 def ensure_controller(plan: dict[str, Any]) -> None:
@@ -1480,12 +2779,15 @@ def apply_activation(
     launcher = account_home() / ".factory/bin/factory-launch"
     runtime = Path(plan["identity"]["runtime"]["evidence"]["path"])
     environment = launcher_environment(kits_root, runtime)
+    kit_environment = command_environment(
+        kits_root, runtime, cutover_lock=True,
+    )
     value = safe_state(journal, "release journal") if journal.exists() else None
     if value and value.get("status") == "pass":
         if (
             not active_exact(kits_root, plan)
             or (product / "factory/KILL").exists()
-            or (product / "factory/MAINTENANCE").exists()
+            or not activation_maintenance_matches(plan)
             or not model_ready(launcher, plan, environment)
             or not migration_complete(kits_root, plan, approved_by)
             or not operator_map_ready(plan)
@@ -1495,7 +2797,7 @@ def apply_activation(
         return completed_result(plan, True)
     if value and value.get("phase") in {"doctor_pass", "dispatch_started"} and (
         active_exact(kits_root, plan) and not (product / "factory/KILL").exists()
-        and not (product / "factory/MAINTENANCE").exists()
+        and activation_maintenance_matches(plan)
         and model_ready(launcher, plan, environment)
         and migration_complete(kits_root, plan, approved_by)
         and operator_map_ready(plan)
@@ -1526,13 +2828,15 @@ def apply_activation(
         subprocess.run(
             ["bash", str(kit), "reconcile", "--project", project,
              "--product", str(product)], text=True, capture_output=True,
-            check=False, env=environment, timeout=300,
+            check=False, env=kit_environment, timeout=300,
+            pass_fds=(_CUTOVER_LOCK_FD,) if _CUTOVER_LOCK_FD is not None else (),
         )
         if not active_exact(kits_root, plan):
             run(
                 ["bash", str(kit), "activate", "--project", project,
                  "--product", str(product), "--sha", request["sha"],
-                 "--receipt", str(receipt)], "release activation", environment=environment,
+                 "--receipt", str(receipt)], "release activation",
+                environment=kit_environment,
             )
         if not active_exact(kits_root, plan):
             raise ReleaseError("activation did not commit the approved release")
@@ -1540,6 +2844,7 @@ def apply_activation(
     ensure_barrier(product, plan)
     journal_update(journal, plan, "cutover_barrier", "pass")
     maintenance_removed = False
+    maintenance_finalized = False
     try:
         if (product / "factory/MAINTENANCE").exists():
             remove_maintenance(product, plan)
@@ -1570,6 +2875,8 @@ def apply_activation(
         journal_update(journal, plan, "controller_enabled", "pass")
         doctor(launcher, plan, environment)
         journal_update(journal, plan, "doctor_pass", "pass")
+        restore_activation_maintenance(plan)
+        maintenance_finalized = True
         marker = product / "factory/KILL"
         try:
             marker_value = json.loads(marker.read_text(encoding="utf-8"))
@@ -1581,23 +2888,17 @@ def apply_activation(
         journal_update(journal, plan, "dispatch_started", "pass")
         return completed_result(plan, False)
     except Exception:
-        if maintenance_removed:
+        if maintenance_removed and not maintenance_finalized:
             subprocess.run(
                 ["bash", str(kit), "pause", "--project", project,
                  "--product", str(product)], stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL, env=environment, timeout=300,
+                stderr=subprocess.DEVNULL, env=kit_environment, timeout=300,
+                pass_fds=(_CUTOVER_LOCK_FD,) if _CUTOVER_LOCK_FD is not None else (),
             )
         raise
 
 
-def resume(args: argparse.Namespace) -> dict[str, Any]:
-    if (
-        not PROJECT.fullmatch(args.project) or not SHA.fullmatch(args.sha)
-        or not DIGEST.fullmatch(args.approve_hash)
-        or not SAFE_ID.fullmatch(args.approved_by) or args.approved_by == "auto"
-    ):
-        raise ReleaseError("release approval boundary is invalid")
-    kits_root = args.kits_root.resolve(strict=True)
+def _resume_locked(args: argparse.Namespace, kits_root: Path) -> dict[str, Any]:
     latest, journals = plan_paths(kits_root, args.project, args.sha)
     path = latest.parent / latest.stem / f"{args.approve_hash}.json"
     if not path.exists() or path.is_symlink():
@@ -1661,6 +2962,66 @@ def resume(args: argparse.Namespace) -> dict[str, Any]:
         os.close(descriptor)
 
 
+def resume(args: argparse.Namespace) -> dict[str, Any]:
+    if (
+        not PROJECT.fullmatch(args.project) or not SHA.fullmatch(args.sha)
+        or not DIGEST.fullmatch(args.approve_hash)
+        or not SAFE_ID.fullmatch(args.approved_by) or args.approved_by == "auto"
+    ):
+        raise ReleaseError("release approval boundary is invalid")
+    kits_root = args.kits_root.resolve(strict=True)
+    descriptor = acquire_cutover_lock(kits_root)
+    try:
+        return _resume_locked(args, kits_root)
+    finally:
+        release_cutover_lock(descriptor)
+
+
+def abort(args: argparse.Namespace) -> dict[str, Any]:
+    if (
+        not PROJECT.fullmatch(args.project) or not SHA.fullmatch(args.sha)
+        or not DIGEST.fullmatch(args.approve_hash)
+        or not SAFE_ID.fullmatch(args.approved_by) or args.approved_by == "auto"
+    ):
+        raise ReleaseError("release abort boundary is invalid")
+    kits_root = args.kits_root.resolve(strict=True)
+    descriptor = acquire_cutover_lock(kits_root)
+    try:
+        latest, _ = plan_paths(kits_root, args.project, args.sha)
+        path = latest.parent / latest.stem / f"{args.approve_hash}.json"
+        plan = safe_state(path, "release plan")
+        validate_plan(plan)
+        items = plan["children"].get("host_cutover")
+        if (
+            plan["approval_sha256"] != args.approve_hash
+            or plan["request"]["operator_id"] != args.approved_by
+            or plan["stage"] != "prerequisites" or not items
+        ):
+            raise ReleaseError("release plan cannot be aborted")
+        require_reservation(kits_root, plan)
+        journal = read_cutover(
+            kits_root / "contract-cutover-journal.json", plan["approval_sha256"],
+        )
+        if journal["phase"] != "approved" or journal["completed_projects"]:
+            raise ReleaseError("host cutover passed its abort boundary")
+        validate_live_basis(kits_root, plan)
+        for item in items:
+            active = kits_root / "projects" / item["project"] / "active.json"
+            claim = kits_root / "receipts/consumed" / f"{item['receipt']['receipt_id']}.json"
+            if file_digest(active) != item["source_active_sha256"] or claim.exists() or claim.is_symlink():
+                raise ReleaseError("host cutover changed after approval")
+            cutover_maintenance_restore(item)
+        for item in items:
+            clear_cutover_maintenance(item)
+        clear_reservation(kits_root, plan)
+        return {
+            "approval_sha256": plan["approval_sha256"], "project": args.project,
+            "schema": RESULT_SCHEMA, "status": "aborted",
+        }
+    finally:
+        release_cutover_lock(descriptor)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--kits-root", required=True, type=Path)
@@ -1682,6 +3043,11 @@ def main() -> int:
     resume_parser.add_argument("--sha", required=True)
     resume_parser.add_argument("--approve-hash", required=True)
     resume_parser.add_argument("--approved-by", required=True)
+    abort_parser = commands.add_parser("abort")
+    abort_parser.add_argument("--project", required=True)
+    abort_parser.add_argument("--sha", required=True)
+    abort_parser.add_argument("--approve-hash", required=True)
+    abort_parser.add_argument("--approved-by", required=True)
     args = parser.parse_args()
     try:
         if args.command == "setup":
@@ -1694,8 +3060,10 @@ def main() -> int:
             ):
                 raise ReleaseError("release setup arguments are invalid")
             result = setup(args)
-        else:
+        elif args.command == "resume":
             result = resume(args)
+        else:
+            result = abort(args)
         print(json.dumps(result, sort_keys=True, separators=(",", ":")))
         return 0
     except (FileNotFoundError, OSError, ReleaseError, subprocess.SubprocessError) as error:

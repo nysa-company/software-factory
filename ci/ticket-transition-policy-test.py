@@ -64,7 +64,7 @@ EXPECTED = {
         ("building", "backlog"),
     },
 }
-RESUME_STATE_CONTRACTS = ("1.7.0", "1.8.0", "1.9.0")
+RESUME_STATE_CONTRACTS = ("1.7.0", "1.8.0", "2.0.0")
 
 
 class TicketTransitionPolicyTest(unittest.TestCase):

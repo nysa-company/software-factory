@@ -122,7 +122,7 @@ six fixed internal workers with private temporary roots; lifecycle cases that
 share launch, cancellation, Git, accounting, or cleanup state remain
 sequential inside one worker. Worker process groups are drained on failure or
 interruption, and successful logs are replayed in stable order. The
-Hermes-contract and factory-kit lifecycle suites remain sequential inside
+Factory-contract and factory-kit lifecycle suites remain sequential inside
 their own groups. A group is directly
 runnable as `bash ci/test-all.sh --group N`; an optional `--shard SHARD` narrows
 that group for local diagnosis. After all four groups succeed, three stable
@@ -262,10 +262,10 @@ Machine-local release state lives under `~/.factory/kits`:
   artifact entries explicitly admitted by certification plans. The product
   sandbox never receives this persistent path or its authentication key.
 
-The stable `~/.factory/bin/factory-launch` is the Hermes trust root. It parses
+The stable `~/.factory/bin/factory-launch` is the Factory trust root. It parses
 the selected `active.json` once, validates the full SHA, tree, contract,
 registered product, and exact physical release path, then uses only that
-release for the invocation. Contracts `1.0.0` through `1.8.0` expose machine-readable
+release for the invocation. Contract `2.0.0` exposes machine-readable
 `contract`, `doctor`, `preflight`, and `next-stage` commands. Contract `1.1.0`
 also adds bounded ticket `claim`, `renew`, and `release`. `run` and
 `reorder-test-fixes` cross the same launcher boundary but keep process output.
@@ -648,9 +648,9 @@ Qualification preparation is serialized per project and classifies the
 owner-local state as fresh, exact-incomplete, or exact-complete. Every retry
 reruns live fallback readiness, then creates or byte-validates the sealed
 release, pristine provider state, receipt, authority, activation, environment,
-and final profile registry in that order. Release materialization uses a
+and final `active.json` record in that order. Release materialization uses a
 same-directory temporary tree and rename; `environment.json` precedes the
-registry so a lost final response is replayable. Only an exact pristine prefix
+active record so a lost final response is replayable. Only an exact pristine prefix
 or complete lost-response state resumes. A changed artifact, missing
 predecessor, materialization remnant, active controller/provider, or unexpected
 entry refuses without deletion. This does not widen the signed safe-pause
@@ -1134,7 +1134,7 @@ tickets, tests, or Factory controls, it runs before terminal passport export;
 the resulting clean exact head then receives the failed charge through
 preserving passport migration.
 When the certified product origin is GitHub HTTPS, only fallback and route
-migration Git network subprocesses receive the trusted Hermes profile credential through
+migration Git network subprocesses receive the owner-authenticated GitHub credential through
 the host-scoped `gh auth git-credential` helper. Readiness probes, model
 adapters, local Git operations, URLs, arguments, repository configuration, and
 durable fallback evidence remain credential-free.
@@ -1234,7 +1234,7 @@ that left the rejected head checked out additionally require the existing
 protected in-flight rewrite authorization before passport migration can move
 back to the unchanged remote input. Same-release retry and acceptance of the
 protected mutation remain forbidden.
-See [hermes-integration.md](hermes-integration.md) for the schemas and commands.
+See [factory-runtime.md](factory-runtime.md) for the schemas and commands.
 
 Ticket content is read from the launcher's validated ticket worktree, while
 controls and the operator map overlay remain anchored to the registered
@@ -1745,7 +1745,7 @@ an isolated process group, uses lock-free signal handling, and publishes its
 PID/start identity beside the wrapper so ordinary completion and the kill
 switch can apply bounded TERM-to-KILL shutdown without PID-reuse risk.
 
-The Contract 1.6/1.7 Hermes supervisor is deliberately one-shot: one invocation
+The retired Contract 1.6/1.7 external supervisor was deliberately one-shot: one invocation
 asks the stable launcher for one deterministic claim, starts at most one
 ephemeral dispatcher child on `START`, and exits on `WAIT` or `ESCALATE`.
 Autonomous claiming requires configured capacity above one so the lease can be

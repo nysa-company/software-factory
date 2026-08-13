@@ -1,7 +1,7 @@
 # Local operator console
 
 Start the zero-dependency console with the installed trust-root launcher and
-the factory profile's project registry:
+the Factory's active project records:
 
 ```bash
 python3 scripts/operator-console.py
@@ -14,19 +14,20 @@ the bootstrap URL and session. The server rejects non-loopback binds, foreign
 Host/Origin values, unlisted routes, missing CSRF tokens, arbitrary paths, and
 browser-provided argument vectors.
 
-For an explicit profile or launcher installation:
+For an explicit Factory state or launcher installation:
 
 ```bash
 python3 scripts/operator-console.py \
-  --registry-dir "$HOME/.hermes/profiles/factory/projects" \
+  --projects-dir "$HOME/.factory/kits/projects" \
   --launcher "$HOME/.factory/bin/factory-launch"
 ```
 
-Registry `*.env` files are parsed as data, never sourced. Their filename is the
-only project selector sent by the browser; `PRODUCT_ROOT` and optional
-`KIT_DIR` are validated but never exposed. Each request revalidates the
-selected registry file and invokes a fresh fixed launcher command, so one
-project cannot provide paths or cached output for another.
+Each `<slug>/active.json` is used only to discover an active project slug. The
+record must be an owner-controlled, mode-0600 physical file and its `project`
+field must match the directory. Product and release paths remain the installed
+launcher's authority and are never read or exposed by the console. Each request
+revalidates the active records and invokes a fresh fixed launcher command, so
+one project cannot provide paths or cached output for another.
 
 ## Launcher integration
 

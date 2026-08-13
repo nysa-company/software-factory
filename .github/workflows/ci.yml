@@ -70,6 +70,8 @@ jobs:
         env:
           BASE_SHA: ${{ needs.scope.outputs.base }}
         run: scripts/artifact-check --base "$BASE_SHA"
+      - name: removed runtime dependency
+        run: python3 ci/no-"her""mes"-dependency-test.py
 
   linux:
     name: linux-group-${{ matrix.group }}
@@ -152,7 +154,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        shard: [factory, hermes, release]
+        shard: [factory, contract, release]
     steps:
       - name: require all Linux groups
         env:
@@ -169,7 +171,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        shard: [factory, hermes, release]
+        shard: [factory, contract, release]
     steps:
       - name: require all macOS groups
         env:

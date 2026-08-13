@@ -54,7 +54,7 @@ class StateMachineTest(unittest.TestCase):
         run("git", "commit", "-qm", "seed", cwd=self.product)
         self.state_dir = STATE.safe_state_dir(self.root / "controller")
         self.args = argparse.Namespace(
-            contract_version="1.9.0",
+            contract_version="2.0.0",
             factory_root=self.product,
             factory_sha="a" * 40,
             kit_dir=ROOT,
@@ -570,10 +570,9 @@ class StateMachineTest(unittest.TestCase):
     def test_resolver_receives_authenticated_passport_role_sequence(self) -> None:
         release = self.root / ("b" * 40)
         shutil.copytree(ROOT / "scripts", release / "scripts")
-        (release / "integrations/hermes").mkdir(parents=True)
         shutil.copy2(
-            ROOT / "integrations/hermes/contract.json",
-            release / "integrations/hermes/contract.json",
+            ROOT / "factory-contract.json",
+            release / "factory-contract.json",
         )
         release_tree = run(
             "/bin/bash", "-c",
@@ -622,7 +621,7 @@ class StateMachineTest(unittest.TestCase):
         def add_role(role: str) -> None:
             index = len(records) + 1
             records.append({
-                "contract_version": "1.9.0",
+                "contract_version": "2.0.0",
                 "factory_sha": f"{index:040x}",
                 "head_before": run("git", "rev-parse", "HEAD", cwd=self.product),
                 "manifest_sha256": f"{index:064x}",
@@ -636,7 +635,7 @@ class StateMachineTest(unittest.TestCase):
             body = {
                 "branch": "ticket/T-110",
                 "completed_role_evidence": records,
-                "contract_version": "1.9.0",
+                "contract_version": "2.0.0",
                 "factory_sha": self.args.factory_sha,
                 "head_sha": run("git", "rev-parse", "HEAD", cwd=self.product),
                 "project": "relay",
@@ -658,7 +657,7 @@ class StateMachineTest(unittest.TestCase):
         write_passport()
 
         with mock.patch.dict(os.environ, {
-            "FACTORY_RELEASE_CONTRACT_VERSION": "1.9.0",
+            "FACTORY_RELEASE_CONTRACT_VERSION": "2.0.0",
             "FACTORY_RELEASE_PATH": str(release),
             "FACTORY_RELEASE_TREE": release_tree,
             "FACTORY_LEDGER": str(ledger),
@@ -703,10 +702,9 @@ class StateMachineTest(unittest.TestCase):
     ) -> None:
         release = self.root / ("c" * 40)
         shutil.copytree(ROOT / "scripts", release / "scripts")
-        (release / "integrations/hermes").mkdir(parents=True)
         shutil.copy2(
-            ROOT / "integrations/hermes/contract.json",
-            release / "integrations/hermes/contract.json",
+            ROOT / "factory-contract.json",
+            release / "factory-contract.json",
         )
         release_tree = run(
             "/bin/bash", "-c",
@@ -858,7 +856,7 @@ class StateMachineTest(unittest.TestCase):
                 records = []
                 for index, role in enumerate(roles, 1):
                     records.append({
-                        "contract_version": "1.9.0",
+                        "contract_version": "2.0.0",
                         "factory_sha": f"{index:040x}",
                         "head_before": head,
                         "manifest_sha256": f"{index:064x}",
@@ -870,7 +868,7 @@ class StateMachineTest(unittest.TestCase):
                 body = {
                     "branch": "ticket/T-110",
                     "completed_role_evidence": records,
-                    "contract_version": "1.9.0",
+                    "contract_version": "2.0.0",
                     "factory_sha": self.args.factory_sha,
                     "head_sha": head,
                     "project": "relay",
@@ -887,7 +885,7 @@ class StateMachineTest(unittest.TestCase):
                 ).hexdigest()
                 STATE.write_atomic(passports / "T-110.json", signed)
                 with mock.patch.dict(os.environ, {
-                    "FACTORY_RELEASE_CONTRACT_VERSION": "1.9.0",
+                    "FACTORY_RELEASE_CONTRACT_VERSION": "2.0.0",
                     "FACTORY_RELEASE_PATH": str(release),
                     "FACTORY_RELEASE_TREE": release_tree,
                     "FACTORY_LEDGER": str(ledger),

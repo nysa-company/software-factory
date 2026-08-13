@@ -48,6 +48,15 @@ REASONS = frozenset((
     "budget_exhausted", "credits_exhausted", "operator_requested",
     "provider_unavailable",
 ))
+GITHUB_AUTH_ENVIRONMENT = (
+    "FACTORY_GITHUB_TOKEN_FD",
+    "GH_CONFIG_DIR",
+    "GH_ENTERPRISE_TOKEN",
+    "GH_HOST",
+    "GH_TOKEN",
+    "GITHUB_ENTERPRISE_TOKEN",
+    "GITHUB_TOKEN",
+)
 
 
 class FallbackError(ValueError):
@@ -69,17 +78,22 @@ def git(repo, *args, input_bytes=None, extra_env=None, git_auth=None):
         "GIT_CONFIG_GLOBAL": os.devnull,
         "GIT_TERMINAL_PROMPT": "0",
     }
-    environment.pop("GH_TOKEN", None)
     if extra_env:
         environment.update(extra_env)
+    for name in GITHUB_AUTH_ENVIRONMENT:
+        environment.pop(name, None)
     credential_args = []
     if git_auth is not None:
+        home = Path(environment.get("HOME", ""))
+        if not home.is_absolute():
+            raise FallbackError("github_credential_unavailable")
         credential_args = [
             "-c",
             "credential.https://github.com.helper="
             f"!{git_auth.helper} auth git-credential",
         ]
-        environment["GH_TOKEN"] = git_auth.token
+        environment["GH_CONFIG_DIR"] = str(home / ".config" / "gh")
+        environment["GH_PROMPT_DISABLED"] = "1"
     result = subprocess.run(
         [
             "git", "-C", str(repo),
@@ -719,7 +733,6 @@ def parser():
     value.add_argument("--readiness", required=True)
     value.add_argument("--remote", required=True)
     value.add_argument("--approval")
-    value.add_argument("--github-token-stdin", action="store_true")
     value.add_argument("--github-helper")
     value.add_argument(
         "--catalog", default=str(ROOT / "scripts/model-routing/catalog-v1.json")
@@ -737,23 +750,12 @@ def parser():
 def main():
     args = parser().parse_args()
     args.git_auth = None
-    if args.github_token_stdin != bool(args.github_helper):
-        raise FallbackError("github credential inputs are incomplete")
     if github_https_remote(args.remote):
-        if not args.github_token_stdin:
+        if not args.github_helper:
             raise FallbackError("github_credential_unavailable")
-        token = sys.stdin.buffer.read(65537)
-        if len(token) > 65536:
-            raise FallbackError("github credential is oversized")
-        try:
-            args.git_auth = GitHubHTTPSCredential(
-                helper=args.github_helper,
-                token=token.decode("utf-8", "strict"),
-            )
-        except UnicodeDecodeError as error:
-            raise FallbackError("github credential is invalid") from error
-    elif args.github_token_stdin:
-        raise FallbackError("github credential supplied for a non-GitHub remote")
+        args.git_auth = GitHubHTTPSCredential(helper=args.github_helper)
+    elif args.github_helper:
+        raise FallbackError("github credential helper supplied for a non-GitHub remote")
     if args.action == "apply" and not args.approval:
         raise FallbackError("apply requires an operator approval receipt")
     if args.action == "preview":

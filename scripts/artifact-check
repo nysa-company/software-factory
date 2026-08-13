@@ -66,7 +66,7 @@ def misplaced_document(path: str) -> bool:
 def self_test() -> None:
     assert misplaced_document("decision.md")
     assert not misplaced_document("docs/decision.md")
-    assert not misplaced_document("integrations/hermes/templates/profile/SOUL.md")
+    assert not misplaced_document("integrations/operator-console/README.md")
     assert not misplaced_document("roles/reviewer.md")
     assert not misplaced_document("context/memory.md")
     assert blocked("build/output.log")

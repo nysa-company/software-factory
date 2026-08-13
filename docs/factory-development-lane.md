@@ -218,7 +218,7 @@ sandbox before any provider role. The provider receives the host's Node 22
 toolchain read-only and ticket-local writable dependencies; installation
 failure or tracked-tree drift fails planning closed.
 Before each product role, the development scheduler uses the shared trusted
-ticket-state helper to enforce the Hermes phase sequence: Planner and
+ticket-state helper to enforce the Factory phase sequence: Planner and
 Spec-linter see Planning, Test-author and Builder see Building, and Reviewer
 and Narrator see Review. Any mismatch stops that ticket before provider GO.
 
@@ -349,4 +349,4 @@ bash scripts/factory-dev-lane.sh clean --root <root>
 
 Cleanup accepts only the original owner-only lane directory beneath its creation `TMPDIR`, with an unchanged owner, inode, device, marker, and permissions. Failed runs are retained for diagnosis.
 
-Before any isolated attempt, every runtime input is checked lexically and physically beneath the validated lane root and against the production denylist. The lane refuses canonical Nysa, production factory, production Hermes, and LaunchAgent paths. It creates no production receipt or activation record, has no GitHub integration, and cannot become a production release. The normal protected-main CI, sealed installation, live Cursor canary, product certification, registration, activation, and legacy serialized-provider path remain unchanged.
+Before any isolated attempt, every runtime input is checked lexically and physically beneath the validated lane root and against the production denylist. The lane refuses canonical Nysa, production Factory state, and LaunchAgent paths. It creates no production receipt or activation record, has no GitHub integration, and cannot become a production release. The normal protected-main CI, sealed installation, live Cursor canary, product certification, registration, activation, and legacy serialized-provider path remain unchanged.

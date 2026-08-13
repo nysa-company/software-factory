@@ -1,0 +1,445 @@
+#!/usr/bin/env bash
+# Focused Contract 2 launcher and Doctor boundary test.
+set -Eeuo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+LAUNCHER="$ROOT/scripts/factory-launch"
+DOCTOR="$ROOT/scripts/factory-doctor.sh"
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/factory-contract-test.XXXXXX")"
+TMP="$(cd "$TMP" && pwd -P)"
+TEST_HOME="$TMP/home"
+KITS_ROOT="$TEST_HOME/.factory/kits"
+PRODUCT="$TMP/product"
+TEST_BIN="$TEST_HOME/.factory/bin"
+LAUNCH_TMP="$TMP/launcher-tmp"
+PROJECT=contracttest
+RACE_PID=""
+QUALIFICATION_ROOT=""
+
+cleanup() {
+  if [[ -n "$RACE_PID" ]]; then
+    kill -TERM "$RACE_PID" 2>/dev/null || true
+    wait "$RACE_PID" 2>/dev/null || true
+  fi
+  if [[ -n "$QUALIFICATION_ROOT" ]]; then
+    chmod -R u+w "$QUALIFICATION_ROOT" 2>/dev/null || true
+    rm -rf "$QUALIFICATION_ROOT"
+  fi
+  chmod -R u+w "$TMP" 2>/dev/null || true
+  rm -rf "$TMP"
+}
+trap cleanup EXIT
+trap 'status=$?; echo "FAIL: unexpected command at line ${BASH_LINENO[0]:-$LINENO} (exit $status)" >&2; exit "$status"' ERR
+
+fail() {
+  echo "FAIL: $1" >&2
+  exit 1
+}
+
+assert_no_secret() {
+  ! grep -Fq 'caller-secret-must-not-pass' "$1" ||
+    fail "caller secret reached launcher output"
+}
+
+expect_refused() {
+  local label="$1" output="$TMP/refused-$1.out"
+  shift
+  if "$@" > "$output" 2>&1; then
+    fail "$label was accepted"
+  fi
+  assert_no_secret "$output"
+}
+
+tree_for_directory() {
+  local directory="$1" object_root index
+  object_root="$(mktemp -d "$TMP/tree.XXXXXX")"
+  index="$object_root/index"
+  git init --bare -q "$object_root/repo.git"
+  git --git-dir="$object_root/repo.git" config core.bare false
+  GIT_INDEX_FILE="$index" git --git-dir="$object_root/repo.git" \
+    --work-tree="$directory" read-tree --empty
+  GIT_INDEX_FILE="$index" git --git-dir="$object_root/repo.git" \
+    --work-tree="$directory" add -f -A -- .
+  GIT_INDEX_FILE="$index" git --git-dir="$object_root/repo.git" \
+    --work-tree="$directory" write-tree
+  rm -rf "$object_root"
+}
+
+create_release() {
+  local release="$1" marker="$2"
+  mkdir -p "$release/scripts/lib"
+  python3 - "$release/factory-contract.json" "$marker" <<'PY'
+import json
+import pathlib
+import sys
+
+path, marker = pathlib.Path(sys.argv[1]), sys.argv[2]
+value = {
+    "contract": "nysa.software-factory",
+    "contract_version": "2.0.0",
+    "doctor_schema": "nysa.software-factory.doctor/v2",
+    "fixture_release": marker,
+    "launcher": {
+        "source": "scripts/factory-launch",
+        "commands": {"run": {"role_whitelist": ["planner"]}},
+    },
+}
+path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+  cp "$DOCTOR" "$release/scripts/factory-doctor-real.sh"
+  cp "$ROOT/scripts/lib/dispatch-leases.sh" \
+    "$release/scripts/lib/dispatch-leases.sh"
+  cat > "$release/scripts/factory-doctor.sh" <<'EOF'
+#!/usr/bin/env bash
+env | LC_ALL=C sort > "$FACTORY_ROOT/factory/doctor-helper.env"
+exec /bin/bash "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/factory-doctor-real.sh" "$@"
+EOF
+  cat > "$release/scripts/model-control.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' '{"portfolio_id":"fixture","profile_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","profile_id":"fixture","schema":"model-resolution-plan/v1","selections":{"builder":{},"narrator":{},"planner":{},"reviewer":{},"spec-linter":{},"test-author":{}}}'
+EOF
+  chmod 700 "$release/scripts/factory-doctor.sh" \
+    "$release/scripts/factory-doctor-real.sh" \
+    "$release/scripts/model-control.sh"
+}
+
+write_binding() {
+  local sha="$1" tree="$2" release="$3" contract="${4:-2.0.0}"
+  local active="$KITS_ROOT/projects/$PROJECT/active.json"
+  RECEIPT_ID="$(python3 - "$sha" <<'PY'
+import hashlib
+import sys
+print(hashlib.sha256(sys.argv[1].encode()).hexdigest())
+PY
+)"
+  python3 - "$active" "$KITS_ROOT/receipts/$RECEIPT_ID.json" \
+    "$RECEIPT_ID" "$PROJECT" "$sha" "$tree" "$PRODUCT" "$PRODUCT_TREE" \
+    "$release" "$contract" <<'PY'
+import json
+import os
+import pathlib
+import sys
+
+(
+    active_path, receipt_path, receipt_id, project, kit_sha, kit_tree,
+    product_path, product_tree, release_path, contract,
+) = sys.argv[1:]
+receipt = {
+    "receipt_id": receipt_id,
+    "status": "pass",
+    "project": project,
+    "kit_sha": kit_sha,
+    "kit_tree": kit_tree,
+    "product_path": os.path.realpath(product_path),
+    "product_tree": product_tree,
+    "product_origin": "https://example.invalid/factory-product.git",
+    "contract_version": contract,
+}
+path = pathlib.Path(receipt_path)
+path.write_text(json.dumps(receipt, sort_keys=True) + "\n", encoding="utf-8")
+os.chmod(path, 0o600)
+active = {
+    "generation": 1,
+    "project": project,
+    "kit_sha": kit_sha,
+    "kit_tree": kit_tree,
+    "contract_version": contract,
+    "product_path": os.path.realpath(product_path),
+    "release_path": os.path.realpath(release_path),
+    "receipt_id": receipt_id,
+    "product_tree": product_tree,
+}
+path = pathlib.Path(active_path)
+temporary = path.with_suffix(".tmp")
+temporary.write_text(json.dumps(active, sort_keys=True) + "\n", encoding="utf-8")
+os.chmod(temporary, 0o600)
+os.replace(temporary, path)
+PY
+}
+
+run_launcher() {
+  mkdir -p "$LAUNCH_TMP"
+  HOME="$TEST_HOME" TMPDIR="$LAUNCH_TMP" \
+    FACTORY_LAUNCH_TEST_MODE=1 FACTORY_LAUNCH_TEST_HOME="$TEST_HOME" \
+    FACTORY_KITS_ROOT="$KITS_ROOT" \
+    CALLER_SENTINEL=caller-secret-must-not-pass \
+    GH_TOKEN=caller-secret-must-not-pass \
+    PYTHONPATH="$TMP/python-path-must-not-pass" \
+    GIT_CONFIG_GLOBAL="$TMP/git-config-must-not-pass" \
+    /bin/bash "$LAUNCHER" "$PROJECT" "$@"
+}
+
+mkdir -p "$TEST_BIN" "$LAUNCH_TMP" "$KITS_ROOT/projects/$PROJECT" \
+  "$KITS_ROOT/releases" "$KITS_ROOT/receipts" "$PRODUCT/factory"
+
+# Qualification roots are a macOS-only production boundary fixed under
+# /private/tmp. Linux still exercises the repository launcher below.
+if [[ "$(uname -s)" == Darwin ]]; then
+  QUALIFICATION_ROOT="$(mktemp -d /private/tmp/nysa-sf-qualification.launcher.XXXXXX)"
+  QUALIFICATION_SHA=9999999999999999999999999999999999999999
+  QUALIFICATION_LAUNCHER="$QUALIFICATION_ROOT/releases/$QUALIFICATION_SHA/scripts/factory-launch"
+  mkdir -p "$(dirname "$QUALIFICATION_LAUNCHER")" \
+    "$QUALIFICATION_ROOT/projects/qualification-test"
+  cp "$LAUNCHER" "$QUALIFICATION_LAUNCHER"
+  chmod 700 "$QUALIFICATION_LAUNCHER"
+  if HOME="$TEST_HOME" /bin/bash "$QUALIFICATION_LAUNCHER" \
+    qualification-test contract --json >"$TMP/qualification-launcher.out" 2>&1; then
+    fail "qualification launcher accepted an incomplete active binding"
+  fi
+  grep -q 'project active record is missing' "$TMP/qualification-launcher.out" ||
+    fail "qualification launcher did not recognize its sealed release path"
+fi
+
+for tool in git python3 ps; do
+  resolved="$(command -v "$tool")"
+  [[ "$resolved" == /* && -x "$resolved" ]] || fail "$tool is unavailable"
+  ln -s "$resolved" "$TEST_BIN/$tool"
+done
+for cli in factory claude codex agent gh; do
+  cat > "$TEST_BIN/$cli" <<'EOF'
+#!/usr/bin/env bash
+printf '%s fixture\n' "$(basename "$0")"
+EOF
+  chmod 700 "$TEST_BIN/$cli"
+done
+
+git -C "$PRODUCT" init -q -b main
+git -C "$PRODUCT" config user.name "Factory contract test"
+git -C "$PRODUCT" config user.email "factory-contract@example.invalid"
+printf 'fixture\n' > "$PRODUCT/README.md"
+printf 'MAX_CONCURRENT_TICKETS=1\n' > "$PRODUCT/factory/PROJECT.env"
+printf '%040d\n' 0 > "$PRODUCT/factory/KIT_PIN"
+git -C "$PRODUCT" add -A
+git -C "$PRODUCT" commit -qm "seed product"
+PRODUCT_TREE="$(git -C "$PRODUCT" rev-parse 'HEAD^{tree}')"
+
+SHA_A=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+SHA_B=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+RELEASE_A="$KITS_ROOT/releases/$SHA_A"
+RELEASE_B="$KITS_ROOT/releases/$SHA_B"
+create_release "$RELEASE_A" A
+create_release "$RELEASE_B" B
+TREE_A="$(tree_for_directory "$RELEASE_A")"
+TREE_B="$(tree_for_directory "$RELEASE_B")"
+
+python3 - "$KITS_ROOT/contract-floor.json" <<'PY'
+import json
+import os
+import pathlib
+import sys
+path = pathlib.Path(sys.argv[1])
+path.write_text(json.dumps({
+    "minimum_major": 2,
+    "schema": "nysa.software-factory.contract-floor/v1",
+}, sort_keys=True) + "\n", encoding="utf-8")
+os.chmod(path, 0o600)
+PY
+
+# The only accepted activation is the fixed owner-only active record.
+write_binding "$SHA_A" "$TREE_A" "$RELEASE_A"
+RECEIPT_A="$RECEIPT_ID"
+printf '%s\n' "$SHA_A" > "$PRODUCT/factory/KIT_PIN"
+run_launcher contract --json > "$TMP/contract-a.json"
+python3 - "$TMP/contract-a.json" <<'PY'
+import json
+import sys
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+assert value["contract_version"] == "2.0.0"
+assert value["fixture_release"] == "A"
+assert value["launcher"]["source"] == "scripts/factory-launch"
+PY
+
+ACTIVE="$KITS_ROOT/projects/$PROJECT/active.json"
+chmod 644 "$ACTIVE"
+expect_refused active-record-mode run_launcher contract --json
+chmod 600 "$ACTIVE"
+
+# The active record must match its exact certification receipt.
+python3 - "$KITS_ROOT/receipts/$RECEIPT_A.json" <<'PY'
+import json
+import sys
+path = sys.argv[1]
+value = json.load(open(path, encoding="utf-8"))
+value["kit_tree"] = "0" * 40
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(value, handle, sort_keys=True)
+    handle.write("\n")
+PY
+expect_refused receipt-mismatch run_launcher contract --json
+write_binding "$SHA_A" "$TREE_A" "$RELEASE_A"
+
+# The owner floor rejects pre-Contract-2 activations before helper selection.
+write_binding "$SHA_A" "$TREE_A" "$RELEASE_A" 1.8.0
+expect_refused contract-floor run_launcher contract --json
+write_binding "$SHA_A" "$TREE_A" "$RELEASE_A"
+
+# A completed host cutover makes a deleted floor fail closed.
+python3 - "$KITS_ROOT/contract-cutover-journal.json" <<'PY'
+import hashlib
+import json
+import os
+import pathlib
+import sys
+body = {
+    "approval_sha256": "a" * 64,
+    "completed_projects": ["contracttest"],
+    "floor_required": True,
+    "phase": "healthy",
+    "schema": "nysa.software-factory.host-cutover-journal/v1",
+    "status": "pass",
+}
+body["record_sha256"] = hashlib.sha256(
+    (json.dumps(body, sort_keys=True, separators=(",", ":")) + "\n").encode()
+).hexdigest()
+path = pathlib.Path(sys.argv[1])
+path.write_text(json.dumps(body, sort_keys=True) + "\n", encoding="utf-8")
+os.chmod(path, 0o600)
+PY
+rm "$KITS_ROOT/contract-floor.json"
+expect_refused missing-floor-after-cutover run_launcher contract --json
+python3 - "$KITS_ROOT/contract-floor.json" <<'PY'
+import json, os, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+path.write_text(json.dumps({
+    "minimum_major": 2,
+    "schema": "nysa.software-factory.contract-floor/v1",
+}, sort_keys=True) + "\n", encoding="utf-8")
+os.chmod(path, 0o600)
+PY
+python3 - "$KITS_ROOT/contract-cutover-journal.json" <<'PY'
+import hashlib, json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+value = json.loads(path.read_text())
+value.update(phase="launcher_installed", status="in-progress")
+value.pop("record_sha256")
+value["record_sha256"] = hashlib.sha256(
+    (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
+).hexdigest()
+path.write_text(json.dumps(value, sort_keys=True) + "\n")
+PY
+expect_refused host-cutover-barrier run_launcher preflight
+grep -q 'host cutover is in progress' "$TMP/refused-host-cutover-barrier.out" ||
+  fail "launcher did not report the host cutover barrier"
+python3 - "$KITS_ROOT/contract-cutover-journal.json" <<'PY'
+import hashlib, json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+value = json.loads(path.read_text())
+value.update(phase="healthy", status="pass")
+value.pop("record_sha256")
+value["record_sha256"] = hashlib.sha256(
+    (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
+).hexdigest()
+path.write_text(json.dumps(value, sort_keys=True) + "\n")
+PY
+
+# A sealed release is selected once and its complete tree must stay unchanged.
+touch "$RELEASE_A/unsealed-file"
+expect_refused release-tree run_launcher contract --json
+rm "$RELEASE_A/unsealed-file"
+
+PARSED_MARKER="$LAUNCH_TMP/active-parsed"
+PARSED_GATE="$LAUNCH_TMP/active-gate"
+HOME="$TEST_HOME" TMPDIR="$LAUNCH_TMP" \
+  FACTORY_LAUNCH_TEST_MODE=1 FACTORY_LAUNCH_TEST_HOME="$TEST_HOME" \
+  FACTORY_KITS_ROOT="$KITS_ROOT" \
+  FACTORY_LAUNCH_TEST_ACTIVE_PARSED_MARKER="$PARSED_MARKER" \
+  FACTORY_LAUNCH_TEST_ACTIVE_PARSED_GATE="$PARSED_GATE" \
+  /bin/bash "$LAUNCHER" "$PROJECT" contract --json \
+  > "$TMP/contract-race.json" 2> "$TMP/contract-race.err" &
+RACE_PID=$!
+for _try in $(seq 1 500); do
+  [[ -e "$PARSED_MARKER" ]] && break
+  sleep 0.01
+done
+[[ -e "$PARSED_MARKER" ]] || fail "launcher did not parse the active record"
+write_binding "$SHA_B" "$TREE_B" "$RELEASE_B"
+printf '%s\n' "$SHA_B" > "$PRODUCT/factory/KIT_PIN"
+touch "$PARSED_GATE"
+if ! wait "$RACE_PID"; then
+  RACE_PID=""
+  awk '{print}' "$TMP/contract-race.err" >&2
+  fail "fixed active-record launch failed"
+fi
+RACE_PID=""
+python3 - "$TMP/contract-race.json" <<'PY'
+import json
+import sys
+assert json.load(open(sys.argv[1], encoding="utf-8"))["fixture_release"] == "A"
+PY
+
+# Doctor is the selected Contract 2 helper and receives only the clean boundary.
+DOCTOR_RC=0
+run_launcher doctor --json > "$TMP/doctor.json" || DOCTOR_RC=$?
+assert_no_secret "$TMP/doctor.json"
+if [[ "$DOCTOR_RC" -ne 0 ]]; then
+  python3 - "$TMP/doctor.json" <<'PY' >&2
+import json
+import sys
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+print("Doctor error checks:", ", ".join(
+    name for name, check in value["checks"].items()
+    if check["status"] == "error"
+))
+PY
+  fail "Doctor rejected the valid Contract 2 binding"
+fi
+python3 - "$TMP/doctor.json" "$SHA_B" "$RELEASE_B" "$PRODUCT" <<'PY'
+import json
+import os
+import sys
+
+path, sha, release, product = sys.argv[1:]
+value = json.load(open(path, encoding="utf-8"))
+assert set(value) == {
+    "schema", "schema_version", "contract_version", "overall_status",
+    "project", "checks",
+}
+assert value["schema"] == "nysa.software-factory.doctor/v2"
+assert value["schema_version"] == 2
+assert value["contract_version"] == "2.0.0"
+assert value["project"] == "contracttest"
+checks = value["checks"]
+assert set(checks) == {
+    "active_binding", "kit", "kit_pin", "runtime", "clis",
+    "provider_cli_pins", "fallback_readiness", "model_readiness",
+    "credentials", "contract_resume", "transition_receipts", "controller",
+    "isolated_provider",
+}
+assert checks["active_binding"] == {
+    "status": "ok",
+    "kit_dir": os.path.realpath(release),
+    "product_root": os.path.realpath(product),
+}
+assert checks["kit"] == {"status": "ok", "full_sha": sha}
+assert checks["kit_pin"]["status"] == "ok"
+assert checks["kit_pin"]["matches_kit"] is True
+assert "registry" not in checks
+PY
+
+python3 - "$PRODUCT/factory/doctor-helper.env" "$SHA_B" "$TREE_B" \
+  "$RELEASE_B" "$PRODUCT" "$TEST_HOME" <<'PY'
+import os
+import sys
+
+path, sha, tree, release, product, home = sys.argv[1:]
+environment = {}
+for line in open(path, encoding="utf-8"):
+    key, _, value = line.rstrip("\n").partition("=")
+    environment[key] = value
+assert environment["HOME"] == os.path.realpath(home)
+assert environment["FACTORY_ROOT"] == os.path.realpath(product)
+assert environment["FACTORY_RELEASE_SHA"] == sha
+assert environment["FACTORY_RELEASE_TREE"] == tree
+assert environment["FACTORY_RELEASE_PATH"] == os.path.realpath(release)
+assert environment["FACTORY_RELEASE_CONTRACT_VERSION"] == "2.0.0"
+assert environment["FACTORY_KIT_TRUST_SCOPE"] == "production-certified"
+for forbidden in (
+    "CALLER_SENTINEL", "GH_TOKEN", "PYTHONPATH", "GIT_CONFIG_GLOBAL",
+    "FACTORY_KITS_ROOT", "FACTORY_LAUNCH_TEST_MODE",
+    "FACTORY_LAUNCH_TEST_HOME", "FACTORY_ACTIVE_RECORD",
+):
+    assert forbidden not in environment, forbidden
+assert "caller-secret-must-not-pass" not in "\n".join(environment.values())
+PY
+
+echo "PASS: Contract 2 launcher and Doctor boundary"

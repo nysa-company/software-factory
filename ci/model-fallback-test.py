@@ -218,7 +218,11 @@ class FallbackTest(unittest.TestCase):
             "--remote",
             "https://github.com/nysa-company/relay-factory.git",
             check=False,
-            environment={"GH_TOKEN": "ambient-token-must-be-ignored"},
+            environment={
+                "GH_CONFIG_DIR": "/tmp/untrusted-config",
+                "GH_TOKEN": "ambient-token-must-be-ignored",
+                "GITHUB_TOKEN": "ambient-token-must-be-ignored",
+            },
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("github_credential_unavailable", result.stderr)
@@ -239,22 +243,27 @@ class FallbackTest(unittest.TestCase):
             "#!/usr/bin/env python3\n"
             "import os, sys\n"
             "args = sys.argv[1:]\n"
+            "auth_names = ('GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', "
+            "'GITHUB_ENTERPRISE_TOKEN', 'GH_HOST')\n"
             "url = os.environ['TEST_GITHUB_URL']\n"
             "ssh = os.environ['TEST_GITHUB_SSH']\n"
             "network = 'ls-remote' in args and (url in args or ssh in args)\n"
             "if url in args and network:\n"
-            "    assert os.environ.get('GH_TOKEN') == 'fixture-token'\n"
+            "    assert all(name not in os.environ for name in auth_names)\n"
+            "    assert os.environ['GH_CONFIG_DIR'] == os.path.join(os.environ['HOME'], '.config', 'gh')\n"
             "    assert any('credential.https://github.com.helper=!' in x for x in args)\n"
+            "    if os.environ.get('TEST_GITHUB_AUTH_FAIL'):\n"
+            "        raise SystemExit(1)\n"
             "    args = [os.environ['TEST_LOCAL_REMOTE'] if x == url else x for x in args]\n"
             "    with open(os.environ['TEST_GIT_TRACE'], 'a') as handle:\n"
             "        handle.write('authenticated-remote-read\\n')\n"
             "elif ssh in args and network:\n"
-            "    assert 'GH_TOKEN' not in os.environ\n"
+            "    assert all(name not in os.environ for name in (*auth_names, 'GH_CONFIG_DIR'))\n"
             "    args = [os.environ['TEST_LOCAL_REMOTE'] if x == ssh else x for x in args]\n"
             "    with open(os.environ['TEST_GIT_TRACE'], 'a') as handle:\n"
             "        handle.write('credential-free-ssh-read\\n')\n"
             "else:\n"
-            "    assert 'GH_TOKEN' not in os.environ\n"
+            "    assert all(name not in os.environ for name in (*auth_names, 'GH_CONFIG_DIR'))\n"
             "os.execv('/usr/bin/git', ['/usr/bin/git', *args])\n"
         )
         wrapper.chmod(0o700)
@@ -266,15 +275,19 @@ class FallbackTest(unittest.TestCase):
             "TEST_GITHUB_SSH": ssh_url,
             "TEST_LOCAL_REMOTE": str(self.remote),
             "TEST_GIT_TRACE": str(trace),
+            "GH_CONFIG_DIR": "/tmp/untrusted-config",
+            "GH_ENTERPRISE_TOKEN": "ambient-enterprise-token",
+            "GH_HOST": "untrusted.example",
+            "GH_TOKEN": "ambient-token",
+            "GITHUB_ENTERPRISE_TOKEN": "ambient-github-enterprise-token",
+            "GITHUB_TOKEN": "ambient-github-token",
         }
         value = self.command(
             "preview",
             "--remote",
             url,
-            "--github-token-stdin",
             "--github-helper",
             str(helper),
-            input_text="fixture-token",
             environment=environment,
         )
         self.assertEqual(value["schema"], "ticket-model-fallback-preview/v1")
@@ -282,22 +295,20 @@ class FallbackTest(unittest.TestCase):
             trace.read_text().splitlines(),
             ["authenticated-remote-read", "authenticated-remote-read"],
         )
-        self.assertNotIn("fixture-token", json.dumps(value))
+        self.assertNotIn("ambient-token", json.dumps(value))
 
         before_head = git(self.repo, "rev-parse", "HEAD")
         refused = self.command(
             "preview",
             "--remote",
             url,
-            "--github-token-stdin",
             "--github-helper",
             str(helper),
-            input_text="invalid-token",
-            environment=environment,
+            environment={**environment, "TEST_GITHUB_AUTH_FAIL": "1"},
             check=False,
         )
         self.assertIn("github_https_authentication_failed", refused.stderr)
-        self.assertNotIn("invalid-token", refused.stderr)
+        self.assertNotIn("ambient-token", refused.stderr)
         self.assertEqual(git(self.repo, "rev-parse", "HEAD"), before_head)
 
         ssh_value = self.command(

@@ -85,13 +85,13 @@ class OwnerRuntimePinTest(unittest.TestCase):
         suffix = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
         self.assertIn(
             f'SAFE_PATH="$HOME/.factory/bin:{suffix}"',
-            (ROOT / "integrations/hermes/bin/factory-launch").read_text(),
+            (ROOT / "scripts/factory-launch").read_text(),
         )
         self.assertIn(
             f'SAFE_PATH_SUFFIX = "{suffix}"',
             (ROOT / "scripts/owner-runtime-pin.py").read_text(),
         )
-        launcher = (ROOT / "integrations/hermes/bin/factory-launch").read_text()
+        launcher = (ROOT / "scripts/factory-launch").read_text()
         self.assertIn('PROJECT_RUNTIME_ROOT="${KITS_ROOT%/*}/project-runtimes/$PROJECT"', launcher)
         self.assertIn('PROJECT_RUNTIME_BIN="$PROJECT_RUNTIME_ROOT/bin"', launcher)
         self.assertIn('owner-runtime-pin.py" check', launcher)

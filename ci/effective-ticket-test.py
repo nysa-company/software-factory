@@ -67,7 +67,7 @@ class EffectiveTicketTests(unittest.TestCase):
                     }
                     mapping = {"tickets": {"T-700": {"operator": projected}}}
                     resolved = authoritative_operator_fields(
-                        mapping, "T-700", "1.9.0", state,
+                        mapping, "T-700", "2.0.0", state,
                     )
                     self.assertEqual(resolved, projected)
                     self.assertEqual(operator_action(resolved)[0], action)
@@ -94,7 +94,7 @@ class EffectiveTicketTests(unittest.TestCase):
                 ):
                     authoritative_operator_fields(
                         {"tickets": {"T-700": {"operator": operator}}},
-                        "T-700", "1.9.0", state,
+                        "T-700", "2.0.0", state,
                     )
             operator_receipt.verify_consume_exact(
                 state, "T-700", "priority", receipt["receipt_sha256"],
@@ -102,7 +102,7 @@ class EffectiveTicketTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "unavailable"):
                 authoritative_operator_fields(
                     {"tickets": {"T-700": {"operator": base}}},
-                    "T-700", "1.9.0", state,
+                    "T-700", "2.0.0", state,
                 )
 
     def test_contract_18_retains_legacy_overlay_compatibility(self):

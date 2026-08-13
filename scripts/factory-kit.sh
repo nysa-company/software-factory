@@ -13,6 +13,10 @@ PROJECTS_DIR="$KITS_ROOT/projects"
 RECEIPTS_DIR="$KITS_ROOT/receipts"
 CONSUMED_DIR="$RECEIPTS_DIR/consumed"
 CERTIFICATION_ARTIFACTS_DIR="$KITS_ROOT/certification-artifacts"
+CONTRACT_FLOOR_FILE="$KITS_ROOT/contract-floor.json"
+CONTRACT_CUTOVER_JOURNAL="$KITS_ROOT/contract-cutover-journal.json"
+CONTRACT_CUTOVER_RESERVATION="$KITS_ROOT/contract-cutover-reservation.json"
+CONTRACT_CUTOVER_LOCK="$KITS_ROOT/.contract-cutover.lock"
 PROVIDER_STATE_ROOT="$(dirname "$KITS_ROOT")"
 CANONICAL_GITHUB_ORIGIN="github.com/nysa-company/software-factory"
 RECEIPT_SCHEMA=2
@@ -206,6 +210,7 @@ Usage:
   $PROGRAM provider-cli-pin ACTION --sha FULL_SHA [--claude-bin ABS --codex-bin ABS --cursor-bin ABS --operator-id ID] [--approve-hash HASH]
   $PROGRAM release setup --project SLUG --product PRODUCT_REPO --sha FULL_SHA --profile ID --operator-id ID [--repo KIT_REPO] [--runtime-bin NODE_BIN_DIR] [--claude-bin ABS --codex-bin ABS --cursor-bin ABS] [--ticket-workdir T-NNN ABS]
   $PROGRAM release resume --project SLUG --sha FULL_SHA --approve-hash HASH --approved-by ID
+  $PROGRAM release abort  --project SLUG --sha FULL_SHA --approve-hash HASH --approved-by ID
 
 FACTORY_KITS_ROOT overrides the default state root (~/.factory/kits).
 EOF
@@ -338,7 +343,7 @@ file_hash() {
 
 verify_installed_launcher_binding() {
   local release="$1" expected installed
-  expected="$release/integrations/hermes/bin/factory-launch"
+  expected="$release/scripts/factory-launch"
   if [[ "${FACTORY_KIT_TEST_MODE:-0}" == "1" ]]; then
     installed="${FACTORY_KIT_TEST_INSTALLED_LAUNCHER:-$expected}"
   else
@@ -352,8 +357,11 @@ verify_installed_launcher_binding() {
     die "installed factory-launch is missing or unsafe"
   reject_symlink_path_components "$installed" ||
     die "installed factory-launch path contains a symlink"
-  [[ "$(file_hash "$installed")" == "$(file_hash "$expected")" ]] ||
-    die "installed factory-launch does not match the sealed candidate; drain the lane and follow docs/factory-setup.md to atomically install the sealed launcher with a rollback copy"
+  if [[ "$(file_hash "$installed")" != "$(file_hash "$expected")" ]]; then
+    [[ "${FACTORY_CONTRACT_2_CUTOVER:-0}" == "1" &&
+       "$(contract_version "$release")" == "2.0.0" ]] ||
+      die "installed factory-launch does not match the sealed candidate; use the signed Contract 2 release transaction"
+  fi
 }
 
 verify_restrictive_regular_file() {
@@ -615,8 +623,8 @@ for job in jobs:
     if name and (name not in latest or int(job.get("id", 0)) > int(latest[name].get("id", 0))):
         latest[name] = job
 sharded = (
-    "linux-factory", "linux-hermes", "linux-release",
-    "macos-bash-3-factory", "macos-bash-3-hermes", "macos-bash-3-release",
+    "linux-factory", "linux-contract", "linux-release",
+    "macos-bash-3-factory", "macos-bash-3-contract", "macos-bash-3-release",
 )
 legacy = ("linux", "macos-bash-3")
 # A partial shard topology must never fall back to the legacy two-job proof.
@@ -1189,8 +1197,8 @@ verify_release_from_manifest() {
 
 contract_version() {
   local release="$1" value=""
-  if [[ -f "$release/integrations/hermes/contract.json" ]]; then
-    value="$(python3 - "$release/integrations/hermes/contract.json" <<'PY'
+  if [[ -f "$release/factory-contract.json" ]]; then
+    value="$(python3 - "$release/factory-contract.json" <<'PY'
 import json, sys
 try:
     value = json.load(open(sys.argv[1]))
@@ -1201,27 +1209,242 @@ for key in ("contract_version", "version", "schema_version"):
         print(value[key])
         break
 PY
-)" || die "invalid Hermes contract manifest"
-  elif [[ -f "$release/integrations/hermes/CONTRACT_VERSION" ]]; then
-    value="$(awk 'NF {print; exit}' "$release/integrations/hermes/CONTRACT_VERSION")"
-  elif [[ -f "$release/integrations/hermes/contract-version" ]]; then
-    value="$(awk 'NF {print; exit}' "$release/integrations/hermes/contract-version")"
+)" || die "invalid Factory contract manifest"
   else
-    value="1"
+    die "Factory contract manifest is missing"
   fi
   [[ "$value" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] ||
-    die "invalid Hermes contract version"
+    die "invalid Factory contract version"
   printf '%s\n' "$value"
+}
+
+require_contract_floor() {
+  local contract="$1" cutover_state=""
+  if [[ ! -e "$CONTRACT_FLOOR_FILE" && ! -L "$CONTRACT_FLOOR_FILE" ]]; then
+    [[ -e "$CONTRACT_CUTOVER_JOURNAL" || -L "$CONTRACT_CUTOVER_JOURNAL" ]] || return 0
+    verify_restrictive_regular_file "$CONTRACT_CUTOVER_JOURNAL" ||
+      die "host cutover journal is unsafe"
+    cutover_state="$(python3 - "$CONTRACT_CUTOVER_JOURNAL" <<'PY'
+import hashlib, json, os, re, stat, sys
+path = sys.argv[1]
+fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+try:
+    before = os.fstat(fd)
+    if (
+        not stat.S_ISREG(before.st_mode) or before.st_uid != os.geteuid()
+        or before.st_nlink != 1 or stat.S_IMODE(before.st_mode) != 0o600
+        or before.st_size > 2_000_000
+    ):
+        raise ValueError
+    raw = os.read(fd, before.st_size + 1)
+    after = os.fstat(fd)
+    if len(raw) != before.st_size or (
+        before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns
+    ) != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
+        raise ValueError
+finally:
+    os.close(fd)
+value = json.loads(raw.decode("utf-8", "strict"))
+body = {key: item for key, item in value.items() if key != "record_sha256"}
+record = hashlib.sha256(
+    (json.dumps(body, sort_keys=True, separators=(",", ":")) + "\n").encode()
+).hexdigest()
+if (
+    value.get("schema") != "nysa.software-factory.host-cutover-journal/v1"
+    or not re.fullmatch(r"[0-9a-f]{64}", str(value.get("approval_sha256", "")))
+    or value.get("record_sha256") != record
+    or value.get("status") not in {"in-progress", "pass"}
+):
+    raise SystemExit(1)
+required_phases = {
+    "active_records_switched", "contract_floor_committed",
+    "launcher_installed", "retired_runtime_removed", "healthy",
+}
+print(
+    "required" if value.get("floor_required") is True or
+    value["status"] == "pass" or value.get("phase") in required_phases
+    else "optional"
+)
+PY
+)" || die "host cutover journal is invalid"
+    [[ "$cutover_state" != "required" ]] ||
+      die "contract floor is missing after the host cutover no-return point"
+    return 0
+  fi
+  verify_restrictive_regular_file "$CONTRACT_FLOOR_FILE" ||
+    die "contract floor is unsafe"
+  python3 - "$CONTRACT_FLOOR_FILE" "$contract" <<'PY' ||
+import json, os, re, stat, sys
+path, contract = sys.argv[1:]
+def unique(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError
+        value[key] = item
+    return value
+fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+try:
+    before = os.fstat(fd)
+    if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.geteuid()
+            or before.st_nlink != 1 or stat.S_IMODE(before.st_mode) != 0o600
+            or before.st_size > 4096):
+        raise ValueError
+    raw = os.read(fd, before.st_size + 1)
+    after = os.fstat(fd)
+    if len(raw) != before.st_size or (before.st_dev, before.st_ino, before.st_size) != (
+            after.st_dev, after.st_ino, after.st_size):
+        raise ValueError
+finally:
+    os.close(fd)
+value = json.loads(raw.decode("utf-8", "strict"), object_pairs_hook=unique)
+if value != {"minimum_major": 2, "schema": "nysa.software-factory.contract-floor/v1"}:
+    raise SystemExit(1)
+match = re.fullmatch(r"([0-9]+)\.[0-9]+\.[0-9]+", contract)
+if not match or int(match.group(1)) < value["minimum_major"]:
+    raise SystemExit(1)
+PY
+    die "contract $contract is below the active Contract 2 floor"
+}
+
+require_host_cutover_access() {
+  local project="$1" requested="${FACTORY_HOST_CUTOVER_RESERVATION:-}" reservation=""
+  if [[ ! -e "$CONTRACT_CUTOVER_RESERVATION" &&
+        ! -L "$CONTRACT_CUTOVER_RESERVATION" ]]; then
+    return
+  fi
+  reservation="$(python3 - "$CONTRACT_CUTOVER_RESERVATION" "$project" <<'PY'
+import hashlib, json, os, re, stat, sys
+path, project = sys.argv[1:]
+def unique(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError
+        value[key] = item
+    return value
+fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+try:
+    before = os.fstat(fd)
+    if (
+        not stat.S_ISREG(before.st_mode) or before.st_uid != os.geteuid()
+        or before.st_nlink != 1 or stat.S_IMODE(before.st_mode) != 0o600
+        or before.st_size > 2_000_000
+    ):
+        raise ValueError
+    raw = os.read(fd, before.st_size + 1)
+    after = os.fstat(fd)
+    if len(raw) != before.st_size or (
+        before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns
+    ) != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
+        raise ValueError
+finally:
+    os.close(fd)
+value = json.loads(raw.decode("utf-8", "strict"), object_pairs_hook=unique)
+body = {key: item for key, item in value.items() if key != "record_sha256"}
+record = hashlib.sha256(
+    (json.dumps(body, sort_keys=True, separators=(",", ":")) + "\n").encode()
+).hexdigest()
+if (
+    value.get("schema") != "nysa.software-factory.host-cutover-reservation/v1"
+    or value.get("status") not in {"preparing", "prepared"}
+    or not re.fullmatch(r"[0-9a-f]{64}", str(value.get("reservation_id", "")))
+    or value.get("record_sha256") != record
+    or not any(
+        isinstance(item, dict) and item.get("project") == project
+        for item in value.get("active_projects", [])
+    )
+):
+    raise SystemExit(1)
+print(value["reservation_id"])
+PY
+)" || die "host cutover reservation is invalid"
+  [[ -n "$requested" && "$requested" == "$reservation" ]] ||
+    die "host cutover reservation blocks project mutation"
+}
+
+require_no_host_cutover() {
+  [[ ! -e "$CONTRACT_CUTOVER_RESERVATION" &&
+     ! -L "$CONTRACT_CUTOVER_RESERVATION" ]] ||
+    die "host cutover reservation blocks mutation"
+}
+
+host_cutover_mutation_requested() {
+  local action="${POSITIONALS[0]:-}"
+  case "$COMMAND" in
+    certify|bootstrap|pause|activate|reconcile|rollback|recover-lease|runtime-pin)
+      return 0
+      ;;
+    operator) [[ "$action" != "pending" ]] ;;
+    provider-concurrency|provider-cli-pin) [[ "$action" == "apply" ]] ;;
+    *) return 1 ;;
+  esac
+}
+
+lock_host_cutover_mutation() {
+  local inherited="${FACTORY_HOST_CUTOVER_LOCK_FD:-}"
+  safe_create_directory "$KITS_ROOT"
+  if [[ -n "$inherited" ]]; then
+    [[ "$inherited" =~ ^[0-9]+$ ]] || die "host cutover lock capability is invalid"
+    python3 -I -S - "$CONTRACT_CUTOVER_LOCK" "$inherited" <<'PY' ||
+import fcntl, os, stat, sys
+path, descriptor = sys.argv[1], int(sys.argv[2])
+current = os.stat(path, follow_symlinks=False)
+held = os.fstat(descriptor)
+if (
+    not stat.S_ISREG(held.st_mode) or held.st_uid != os.geteuid()
+    or held.st_nlink != 1 or stat.S_IMODE(held.st_mode) & 0o077
+    or (held.st_dev, held.st_ino) != (current.st_dev, current.st_ino)
+):
+    raise SystemExit(1)
+try:
+    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError:
+    raise SystemExit(1)
+PY
+      die "host cutover lock capability is invalid"
+    eval "exec ${inherited}>&-"
+    unset FACTORY_HOST_CUTOVER_LOCK_FD
+    return
+  fi
+  python3 -I -S - "$CONTRACT_CUTOVER_LOCK" "$SCRIPT_ROOT/scripts/factory-kit.sh" \
+    "${ORIGINAL_ARGUMENTS[@]}" <<'PY'
+import fcntl, os, stat, subprocess, sys
+path, script, *arguments = sys.argv[1:]
+descriptor = os.open(
+    path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600,
+)
+try:
+    held = os.fstat(descriptor)
+    current = os.stat(path, follow_symlinks=False)
+    if (
+        not stat.S_ISREG(held.st_mode) or held.st_uid != os.geteuid()
+        or held.st_nlink != 1 or stat.S_IMODE(held.st_mode) & 0o077
+        or (held.st_dev, held.st_ino) != (current.st_dev, current.st_ino)
+    ):
+        raise SystemExit("host cutover lock is unsafe")
+    fcntl.flock(descriptor, fcntl.LOCK_EX)
+    os.set_inheritable(descriptor, True)
+    environment = os.environ.copy()
+    environment["FACTORY_HOST_CUTOVER_LOCK_FD"] = str(descriptor)
+    raise SystemExit(subprocess.run(
+        ["/bin/bash", script, *arguments], env=environment,
+        pass_fds=(descriptor,), check=False,
+    ).returncode)
+finally:
+    os.close(descriptor)
+PY
+  exit $?
 }
 
 require_provider_concurrency_ready() {
   local product="$1" release="$2" contract="$3" sha="$4" tree="$5"
   local capacity="" output
-  if [[ "$contract" == "1.8.0" || "$contract" == "1.9.0" ]]; then
+  if [[ "$contract" == "1.8.0" || "$contract" == "2.0.0" ]]; then
     capacity="$(factory_dispatch_max_tickets "$product" "$contract" 2>/dev/null)" ||
       die "product ticket concurrency configuration is invalid"
   fi
-  if [[ ( "$contract" != "1.8.0" && "$contract" != "1.9.0" ) || "$capacity" -le 1 ]]; then
+  if [[ ( "$contract" != "1.8.0" && "$contract" != "2.0.0" ) || "$capacity" -le 1 ]]; then
     PROVIDER_CONCURRENCY_EVIDENCE="$(python3 - "$contract" "$capacity" "$sha" "$tree" <<'PY'
 import json, sys
 contract, capacity, sha, tree = sys.argv[1:]
@@ -1274,6 +1497,7 @@ cmd_provider_concurrency() {
     die "--approve-hash is valid only for provider-concurrency apply"
   [[ "$action" != "apply" || "$approval" =~ ^[0-9a-f]{64}$ ]] ||
     die "provider-concurrency apply requires an exact approval hash"
+  [[ "$action" != "apply" ]] || require_no_host_cutover
   validate_managed_roots
   verify_release_from_manifest "$sha" >/dev/null
   release="$RELEASES_DIR/$sha"
@@ -1359,6 +1583,7 @@ cmd_provider_cli_pin() {
   [[ "$action" == "plan" || "$approval" =~ ^[0-9a-f]{64}$ ]] ||
     die "provider-cli-pin apply requires an exact approval hash"
   if [[ "$action" == "apply" ]]; then
+    require_no_host_cutover
     python3 -I -S "$helper" --kits-root "$KITS_ROOT" --sha "$sha" \
       --tree "$tree" --release "$release" apply \
       --claude-bin "$claude_bin" --codex-bin "$codex_bin" \
@@ -1374,6 +1599,7 @@ cmd_provider_cli_pin() {
 
 cmd_runtime_pin() {
   local product="$1" runtime_bin="$2" product_top
+  require_no_host_cutover
   product_top="$(absolute_dir "$product")"
   [[ "$runtime_bin" == /* ]] || die "runtime bin path must be absolute"
   [[ -f "$SCRIPT_ROOT/scripts/owner-runtime-pin.py" &&
@@ -2467,7 +2693,8 @@ validate_receipt_snapshot() {
     die "PROJECT.env hash drifted since certification"
   contract="$(contract_version "$release")"
   [[ "$contract" == "$(json_get "$receipt" contract_version)" ]] ||
-    die "Hermes contract version drifted"
+    die "Factory contract version drifted"
+  require_contract_floor "$contract"
   runtime_tuple="$(json_get "$receipt" runtime_tuple 2>/dev/null || true)"
   if [[ -e "$product_top/factory/certification-plan.json" || \
         -L "$product_top/factory/certification-plan.json" || \
@@ -2693,18 +2920,23 @@ require_dispatch_drained() {
 maintenance_file_for() { printf '%s/factory/MAINTENANCE\n' "$1"; }
 
 write_maintenance_marker() {
-  local slug="$1" product="$2" marker
+  local slug="$1" product="$2" marker owner="${FACTORY_MAINTENANCE_OWNER:-}"
   marker="$(maintenance_file_for "$product")"
   [[ ! -L "$marker" ]] || die "MAINTENANCE may not be a symlink"
-  python3 - "$marker" "$slug" "$product" "$(now_iso)" <<'PY' | atomic_json_from_stdin "$marker"
+  [[ -z "$owner" || "$owner" =~ ^[0-9a-f]{64}$ ]] ||
+    die "maintenance owner is invalid"
+  python3 - "$marker" "$slug" "$product" "$(now_iso)" "$owner" <<'PY' | atomic_json_from_stdin "$marker"
 import json, sys
-marker, slug, product, timestamp = sys.argv[1:]
-print(json.dumps({
+marker, slug, product, timestamp, owner = sys.argv[1:]
+value = {
     "schema_version": 1,
     "project": slug,
     "product_path": product,
     "published_at": timestamp,
-}))
+}
+if owner:
+    value["cutover_owner"] = owner
+print(json.dumps(value))
 PY
 }
 
@@ -3075,6 +3307,7 @@ cmd_pause() {
   local slug="$1" product="$2" product_top launch_lock
   validate_slug "$slug"
   validate_managed_layout "$slug"
+  require_host_cutover_access "$slug"
   product_top="$(absolute_dir "$product")"
   [[ -d "$product_top/factory" && ! -L "$product_top/factory" ]] ||
     die "product factory directory is unsafe"
@@ -3133,6 +3366,7 @@ cmd_operator() {
       die "unknown operator action: $action"
       ;;
   esac
+  [[ "$action" == "pending" ]] || require_host_cutover_access "$slug"
   python3 -I "$SCRIPT_ROOT/scripts/operator-cli.py" \
     --product "$product_top" --state-dir "$state_dir" "${cli_args[@]}"
 }
@@ -3718,6 +3952,7 @@ cmd_certify() {
   local preflight runtime_tuple replay_evidence
   validate_slug "$slug"
   validate_sha "$sha"
+  require_host_cutover_access "$slug"
   validate_suite_evidence_ttl
   validate_managed_roots "$slug"
   safe_create_directory "$KITS_ROOT"
@@ -3976,6 +4211,7 @@ cmd_bootstrap() {
   validate_slug "$slug"
   validate_sha "$sha"
   ensure_managed_directories "$slug"
+  require_host_cutover_access "$slug"
   product_top="$(absolute_dir "$product")"
   require_production_product_shape "$product_top"
   require_clean_product "$product_top"
@@ -4251,6 +4487,7 @@ cmd_activate() {
   product_top="$(absolute_dir "$product")"
   require_production_product_shape "$product_top"
   ensure_managed_directories "$slug"
+  require_host_cutover_access "$slug"
   project_dir="$PROJECTS_DIR/$slug"
   journal_dir="$(journal_dir_for "$slug")"
   active="$(active_file_for "$slug")"
@@ -4284,6 +4521,7 @@ cmd_activate() {
   copy_receipt_snapshot "$receipt" "$snapshot"
   remember_temp "$snapshot"
   validate_receipt_snapshot "$snapshot" "$slug" "$product_top" "$sha" "$previous" "$receipt_id"
+  require_contract_floor "$(json_get "$snapshot" contract_version)"
   [[ ! -e "$CONSUMED_DIR/$receipt_id.json" && ! -L "$CONSUMED_DIR/$receipt_id.json" ]] ||
     die "certification receipt has already been consumed"
   launch_lock="$product_top/factory/.launch.lock"
@@ -4373,6 +4611,7 @@ cmd_reconcile() {
   local claim pre_pointer=0 valid=0
   validate_slug "$slug"
   ensure_managed_directories "$slug"
+  require_host_cutover_access "$slug"
   project_dir="$PROJECTS_DIR/$slug"
   journal_dir="$(journal_dir_for "$slug")"
   active="$(active_file_for "$slug")"
@@ -4445,6 +4684,7 @@ cmd_reconcile() {
       set_journal_phase "$journal" maintenance_published
       set_journal_phase "$journal" launch_drained
       set_journal_phase "$journal" services_stopped
+      require_contract_floor "$(json_get "$journal" candidate_record.contract_version)"
       switch_active_from_journal "$journal" "$active" candidate_record
       set_journal_phase "$journal" activation_record_switched
     fi
@@ -4455,6 +4695,7 @@ cmd_reconcile() {
     say "RECONCILE OK: committed interrupted activation"
   else
     rollback_sha="$(json_get "$journal" previous_record.kit_sha 2>/dev/null || true)"
+    require_contract_floor "$(json_get "$journal" previous_record.contract_version 2>/dev/null || true)"
     [[ -z "$rollback_sha" ]] || require_provider_cli_pin_ready "$rollback_sha"
     rollback_journal "$journal" "$active"
     say "RECONCILE OK: restored previous generation"
@@ -4487,6 +4728,7 @@ cmd_rollback() {
   local project_lock launch_lock previous_sha previous_tree previous_product_tree open
   validate_slug "$slug"
   ensure_managed_directories "$slug"
+  require_host_cutover_access "$slug"
   active="$(active_file_for "$slug")"
   journal_dir="$(journal_dir_for "$slug")"
   project_lock="$PROJECTS_DIR/$slug/.activation.lock"
@@ -4508,6 +4750,7 @@ cmd_rollback() {
   previous_tree="$(json_get "$journal" previous_record.kit_tree)"
   previous_product_tree="$(json_get "$journal" previous_record.product_tree)"
   validate_sha "$previous_sha"
+  require_contract_floor "$(json_get "$journal" previous_record.contract_version)"
   [[ "$(printf '%s' "$(verify_release_from_manifest "$previous_sha")" | awk -F'\t' '{print $1}')" == "$previous_tree" ]] ||
     die "previous release does not match its trusted install manifest"
 
@@ -4539,6 +4782,7 @@ cmd_recover_lease() {
   validate_slug "$slug"
   [[ "$ticket" =~ ^T-[0-9]+$ ]] || die "invalid ticket identifier"
   validate_managed_layout "$slug"
+  require_host_cutover_access "$slug"
   product_top="$(absolute_dir "$product")"
   launch_lock="$product_top/factory/.launch.lock"
   acquire_lock "$launch_lock" "product launch"
@@ -4759,6 +5003,18 @@ cmd_release_resume() {
     --approved-by "$approver"
 }
 
+cmd_release_abort() {
+  local project="$1" sha="$2" approval="$3" approver="$4" values release helper
+  validate_sha "$sha"
+  values="$(verify_release_from_manifest "$sha")"
+  release="$(printf '%s' "$values" | awk -F'\t' '{print $3}')"
+  helper="$release/scripts/release-transaction.py"
+  [[ -f "$helper" && ! -L "$helper" ]] || die "sealed release transaction helper is missing"
+  python3 -I -S "$helper" --kits-root "$KITS_ROOT" abort \
+    --project "$project" --sha "$sha" --approve-hash "$approval" \
+    --approved-by "$approver"
+}
+
 require_command git
 require_command python3
 require_command shasum
@@ -4766,6 +5022,7 @@ require_command tar
 validate_test_mode
 
 [[ $# -gt 0 ]] || { usage >&2; exit 2; }
+ORIGINAL_ARGUMENTS=("$@")
 COMMAND="$1"
 shift
 
@@ -4845,6 +5102,7 @@ if [[ "$COMMAND" != "release" && (
 fi
 
 [[ "$COMMAND" == "preflight-report" ]] || validate_managed_roots
+host_cutover_mutation_requested && lock_host_cutover_mutation
 
 case "$COMMAND" in
   install)
@@ -4971,7 +5229,7 @@ case "$COMMAND" in
       cmd_release_setup "$PROJECT" "$PRODUCT" "$SHA" "$REPO" "$PROFILE" \
         "$OPERATOR_ID" "$RUNTIME_BIN" "$CLAUDE_BIN" "$CODEX_BIN" "$CURSOR_BIN" \
         ${TICKET_WORKDIRS[@]+"${TICKET_WORKDIRS[@]}"}
-    elif [[ "$ACTION" == "resume" ]]; then
+    elif [[ "$ACTION" == "resume" || "$ACTION" == "abort" ]]; then
       [[ ${#POSITIONALS[@]} -eq 1 && -n "$PROJECT" && -n "$SHA" &&
          -n "$APPROVE_HASH" && -n "$APPROVED_BY" && -z "$PRODUCT$PROFILE$OPERATOR_ID" &&
          -z "$RUNTIME_BIN$CLAUDE_BIN$CODEX_BIN$CURSOR_BIN$ORIGIN_OVERRIDE$RECEIPT$TICKET$CAPACITY" &&
@@ -4979,7 +5237,11 @@ case "$COMMAND" in
          ${#TICKETS[@]} -eq 0 && "$JSON" -eq 0 &&
          ${#TICKET_WORKDIRS[@]} -eq 0 && "$REPO" == "$SCRIPT_ROOT" ]] ||
         { usage >&2; exit 2; }
-      cmd_release_resume "$PROJECT" "$SHA" "$APPROVE_HASH" "$APPROVED_BY"
+      if [[ "$ACTION" == "resume" ]]; then
+        cmd_release_resume "$PROJECT" "$SHA" "$APPROVE_HASH" "$APPROVED_BY"
+      else
+        cmd_release_abort "$PROJECT" "$SHA" "$APPROVE_HASH" "$APPROVED_BY"
+      fi
     else
       { usage >&2; exit 2; }
     fi

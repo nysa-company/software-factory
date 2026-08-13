@@ -67,7 +67,7 @@ def resolve(
         current = factory_sha or qualification.get("factory_sha")
         if (
             set(qualification) != expected
-            or qualification.get("contract_version") not in {"1.8.0", "1.9.0"}
+            or qualification.get("contract_version") not in {"1.8.0", "2.0.0"}
             or qualification.get("capacity") != 3
             or qualification.get("target_done") != 3
             or qualification.get("budget_usd") != "300.000000"

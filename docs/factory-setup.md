@@ -109,10 +109,10 @@ copies the validated seed into owner-only qualification authority, where the
 mutable map, locks, clear intents, and runtime ledger remain outside the sealed
 product checkout.
 
-## Step 5 — Hermes release boundary
+## Step 5 — Factory release boundary
 
 - Create `~/.factory/bin` and `~/.factory/kits`. Install
-  `integrations/hermes/bin/factory-launch` at
+  `scripts/factory-launch` at
   `~/.factory/bin/factory-launch` only through an explicit bootstrap or
   contract migration.
 - The launcher intentionally replaces caller `PATH` with its contract
@@ -161,7 +161,7 @@ product checkout.
   launcher PATH. Run it before readiness or qualification preparation; those
   gates, certification, activation, and launch still independently fail closed
   on tuple drift.
-- The Contract 1.9 `release setup` path does not use the global links above.
+- The Contract 2 `release setup` path does not use the global links above.
   It reads the same reviewed v2 declaration, accepts exactly one compatible
   physical runtime (or one explicit `--runtime-bin`), and writes an exact
   project-local Node/npm/npx transaction under
@@ -170,10 +170,7 @@ product checkout.
   directory. Zero or multiple compatible candidates are a refusal; setup does
   not install Node, source shell profiles, or infer a version from ambient
   PATH.
-- Create the dedicated factory profile at
-  `~/.hermes/profiles/factory`. Install the canonical `SOUL.md` and
-  `skills/factory-dispatch/SKILL.md` from `integrations/hermes/templates/`.
-- For Contracts 1.8 and 1.9, instantiate
+- For Contract 2.0, instantiate
   `scripts/launchd/com.factory.controller.plist.template` with the exact
   project, home, and product paths and load it as a separate LaunchAgent.
   Keep its `Interactive` process type: macOS background QoS can exhaust the
@@ -209,15 +206,16 @@ product checkout.
   resumes only a byte-exact pristine write prefix or a completed lost-response
   replay; it never deletes a torn, mismatched, unexpected, or active lane.
   The sealed release is renamed from a same-directory temporary tree, and the
-  environment record is durable before the final profile registry. Continue
+  environment record is durable before the final `active.json` authority. Continue
   to use `--restore` only for its existing signed safe-pause boundary; there is
   no partial-lane cleanup command.
   It also provisions the exact historical run artifacts named by those
   passports from its owner-only retained closure; any absent or altered
   manifest, output, or progress journal stops preparation before a paid role.
   The preparer also fails before admission when the chosen root is too long for Cursor's
-  isolated attempt scratch. `--upgrade` is limited to a fresh isolated
-  qualification; a takeover binds one frozen candidate. A successor upgrade
+  isolated attempt scratch. `--upgrade` accepts only the explicit authenticated
+  Contract 1.9-to-2.0 transition; other candidates require a fresh isolated
+  qualification. A takeover binds one frozen candidate. A successor upgrade
   also requires an authenticated source-rooted passport for every selected
   ticket before it changes operator state, initializes the operator map, seals the
   release, or replaces activation. If any selected ticket is candidate-native
@@ -246,51 +244,21 @@ product checkout.
   digest journal in the successor's durable controller is the only restart
   authority; do not remove it, edit claims, delete branches, or move worktrees
   by hand.
-- Add `~/.hermes/profiles/factory/projects/<project>.env` with
-  `PRODUCT_ROOT=<absolute-product-path>`. The stable launcher ignores `KIT_DIR`
-  from legacy registry files and resolves the active release itself. Registry
-  files contain paths only, never credentials.
-- Keep the factory gateway and machine dashboard as separate LaunchAgents.
-  Do not embed secret-bearing environment keys in either plist.
+- The securely opened, receipt-bound
+  `~/.factory/kits/projects/<project>/active.json.product_path` is the sole
+  product path authority. Do not create a second path mapping.
 - Install the pinned release:
 
   ```bash
   bash scripts/factory-kit.sh install --repo "$PWD" --sha "<full-sha>"
   ```
 
-- Before certification, compare the installed
-  `~/.factory/bin/factory-launch` with the sealed release copy. If they differ,
-  drain controller and provider work, retain the current launcher as the
-  rollback artifact, and atomically install the exact sealed executable. Only
-  after maintenance is published, controller pause has succeeded, and provider
-  status proves every attempt and reservation drained, run this fail-fast
-  native replacement against the installed release:
-
-  ```bash
-  (
-    set -eu
-    candidate="$HOME/.factory/kits/releases/<full-sha>/integrations/hermes/bin/factory-launch"
-    installed="$HOME/.factory/bin/factory-launch"
-    test -f "$candidate"
-    test ! -L "$candidate"
-    test -x "$candidate"
-    test -f "$installed"
-    test ! -L "$installed"
-    rollback="$(mktemp "$HOME/.factory/bin/factory-launch.rollback.XXXXXX")"
-    cp -p "$installed" "$rollback"
-    printf 'rollback=%s\n' "$rollback"
-    temporary="$(mktemp "$HOME/.factory/bin/.factory-launch.XXXXXX")"
-    trap 'rm -f "$temporary"' EXIT
-    install -m 700 "$candidate" "$temporary"
-    cmp -s "$candidate" "$temporary"
-    mv -f "$temporary" "$installed"
-  )
-  ```
-
-  Keep the printed `$rollback` path with the release evidence. Stop if any
-  command fails; do not remove the rollback artifact or resume the lane.
-  Certification and activation refuse any byte mismatch; never patch the
-  installed launcher independently.
+- Before Contract 2 certification, use the signed `factory-kit release
+  setup/resume` transaction. It inventories and drains every active product,
+  certifies and switches the full host, installs the exact sealed launcher,
+  and commits the Contract 2 floor before reloading native controllers. The
+  approval hash binds the prior and candidate launcher bytes; never replace
+  the installed launcher independently.
 
 - For a release migration, merge the protected product PR containing
   `factory/KIT_PIN` and the complete canonical
@@ -298,9 +266,9 @@ product checkout.
   certification. Fetch canonical protected main, require its exact SHA and
   tracked tree, and certify that exact protected-main tuple. Install the sealed
   release first. On an active host, publish maintenance, recover any named
-  stale dispatcher leases, drain controller and provider work, and install the
-  sealed launcher before the protected merge. On an inactive replacement,
-  keep dispatch disabled while installing the launcher and certifying; also
+  stale dispatcher leases, drain controller and provider work, and run the
+  signed host transaction after the protected merge. On an inactive replacement,
+  keep dispatch disabled while installing and certifying; also
   publish maintenance on the old active host and drain its controller and
   provider work before the protected merge, then preserve that maintenance
   through cutover. Activate only the exact certified tree. Any later product
@@ -309,7 +277,7 @@ product checkout.
   canonicalizes to
   `github.com/nysa-company/software-factory`.
 
-- Before certifying a Contract 1.8 product with
+- Before certifying a Contract 2 product with
   `MAX_CONCURRENT_TICKETS` above one, enter maintenance and drain every role,
   lease, provider attempt, and legacy interval. Preview the credential-free
   owner-local policy, review its exact routes and capacity, then apply only its
@@ -338,29 +306,20 @@ product checkout.
 - Certification records the exact policy digest, covered adapters and routes,
   ticket capacity, sealed Factory SHA/tree, and owner-local runtime directory
   identity. Activation and recutover recompute that evidence and refuse drift.
-- Certify the pinned release:
+- Use the Contract 2 release transaction for a new project or upgrade:
 
   ```bash
-  bash scripts/factory-kit.sh certify \
-    --project "<project>" --product "<absolute-product-path>" --sha "<full-sha>"
+  bash scripts/factory-kit.sh release setup --project "<project>" \
+    --product "<absolute-product-path>" --sha "<full-sha>" \
+    --repo "$PWD" --profile "<model-profile>" --operator-id "<operator-id>"
+  bash scripts/factory-kit.sh release resume --project "<project>" \
+    --sha "<full-sha>" --approve-hash "<approval-sha256>" \
+    --approved-by "<operator-id>"
   ```
 
-  For the first activation of a new Contract 1.9 project, use the resumable
-  orchestration after the exact product pin and runtime/provider prerequisites
-  are ready:
-
-  ```bash
-  bash scripts/factory-kit.sh bootstrap --project "<project>" \
-    --product "<absolute-product-path>" --sha "<full-sha>" --repo "$PWD"
-  bash scripts/factory-kit.sh bootstrap-status --project "<project>" \
-    --sha "<full-sha>" --json
-  ```
-
-  It runs the same install, certify, pause, and activate gates and records each
-  phase in an owner-only signed release journal. Retries resume the exact bound
-  candidate; completed replay is read-only. It refuses an already-active
-  different release and deliberately leaves maintenance in place for health,
-  model activation, and approved ticket migration.
+  Review each returned plan before resuming it. The transaction runs install,
+  certify, pause, qualification, and activation gates and records each phase in
+  an owner-only signed journal. Retries resume the exact bound candidate.
   A fresh install records 24-hour owner-only kit-suite evidence by default.
   Authenticated successful GitHub Actions evidence for the exact protected-main
   SHA and its full Linux, macOS, aggregate, and immutability jobs is mandatory;
@@ -422,10 +381,10 @@ product checkout.
   activate only with that profile's exact returned hash and an operator ID.
   `cursor-opus-v1` is the no-record default.
 
-- Create a separate sandbox product and Hermes canary profile. Do not copy the
-  production `.env`, secret files, registry, ledger, board mapping, or
-  LaunchAgent. Run the real-Hermes canary in
-  [hermes-integration.md](hermes-integration.md) before the first activation.
+- Create a separate sandbox product and sealed qualification environment. Do
+  not copy production secrets, state, ledgers, or LaunchAgents. Run the native
+  controller macOS smoke in [factory-runtime.md](factory-runtime.md) before the
+  first activation.
 
 ## Step 6 — CI and hosting
 
@@ -448,13 +407,13 @@ All boxes checked = the factory may start. Any box unchecked = it may not.
 - [ ] Product repo exists, sibling location, `factory/initiatives/` and `factory/tickets/` created (no kit code copied; only the three CI files)
 - [ ] `factory/KIT_PIN` contains exactly one lowercase full SHA; `factory/PROJECT.env` names an executable, repository-contained `CERTIFY_SCRIPT`
 - [ ] Exact-SHA release exists under `~/.factory/kits/releases/`, is sealed read-only, and has a current, unexpired tuple-bound receipt
-- [ ] The active contract 1.2/1.3/1.4 receipt remains owner-only mode `0600`; its certified product origin matches the single configured push destination
+- [ ] The active Contract 2 receipt and `active.json` remain owner-only mode `0600`; the receipt binds the exact project, product path/tree, Factory release, and single configured push destination
 - [ ] `~/.factory/bin/factory-launch`, the product-plan Node/npm/npx pins, and the receipt-bound exact provider CLI links are installed; `provider-cli-pin check` is ready, `contract --json` returns the expected version, `contract-test.sh --routes` passes, and `doctor --json` has no error category
 - [ ] `models profiles --json` and `models plan --json` were reviewed; the operator approved the exact profile hash, or explicitly retained default `cursor-opus-v1`
 - [ ] A clean sample ticket passed `models pin --ticket <T-NNN> --workdir <exact-worktree> --json`, creating one pushed commit containing both `Kit-SHA` and the exact six-role route plan
 - [ ] Kimi remains disabled and absent from every profile; no live/billed-pilot claim is recorded, and credential rotation plus broker/OS isolation are prerequisites to a pilot
-- [ ] Factory Hermes profile, project registry, and factory gateway LaunchAgent are separate from the dashboard and primary Hermes profile
-- [ ] Real-Hermes canary uses a separate profile/product and no copied production secrets; redacted evidence is recorded
+- [ ] `active.json.product_path` is the sole product registry and the native controller LaunchAgent resolves only the installed Factory launcher
+- [ ] Native controller smoke uses a separate qualification product and no copied production secrets; redacted evidence is recorded
 - [ ] `ENVELOPE.md` has no unfilled blanks
 - [ ] Console spend caps set on the primary providers; Cursor usage controls reviewed before fallback is enabled
 - [ ] Provider/account-route, Cursor, and product-runtime credentials are separated; none are committed

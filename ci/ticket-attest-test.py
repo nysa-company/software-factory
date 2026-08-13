@@ -46,7 +46,7 @@ def command(*args, cwd=None, env=None, check=True):
 class LauncherContractTests(unittest.TestCase):
     def test_launcher_binds_contract_version_to_ticket_attest_helper(self):
         launcher = (
-            ROOT / "integrations/hermes/bin/factory-launch"
+            ROOT / "scripts/factory-launch"
         ).read_text(encoding="utf-8")
         ticket_attest = launcher.split(
             "\n  ticket-attest)\n", 1,
@@ -58,7 +58,7 @@ class LauncherContractTests(unittest.TestCase):
 
     def test_launcher_confines_emergency_closeout_to_contract_18(self):
         launcher = (
-            ROOT / "integrations/hermes/bin/factory-launch"
+            ROOT / "scripts/factory-launch"
         ).read_text(encoding="utf-8")
         ticket_attest = launcher.split(
             "\n  ticket-attest)\n", 1,
@@ -2926,7 +2926,7 @@ else:
         terminal_env = dict(os.environ)
         terminal_env.update({
             "FACTORY_ROOT": str(self.product),
-            "FACTORY_HERMES_CONTRACT_VERSION": "1.3.0",
+            "FACTORY_CONTRACT_VERSION": "1.3.0",
         })
         pending = command(
             "bash", str(ROOT / "scripts/next-stage.sh"), "--ticket", "T-700",

@@ -63,7 +63,8 @@ suite_registry() {
   "$callback" terminal-backfill "terminal backfill suite" python3 "$ROOT/ci/terminal-backfill-test.py"
   "$callback" protected-merge-reconciliation "protected merge reconciliation suite" python3 "$ROOT/ci/protected-merge-reconciliation-test.py"
   "$callback" dependency-fulfillment "dependency fulfillment suite" python3 "$ROOT/ci/dependency-fulfillment-test.py"
-  "$callback" hermes-contract "Hermes contract suite" bash "$ROOT/ci/hermes-contract-test.sh"
+  "$callback" factory-contract "factory contract suite" bash "$ROOT/ci/factory-contract-test.sh"
+  "$callback" external-runtime-dependency "removed runtime dependency suite" python3 "$ROOT/ci/no-"her"mes-dependency-test.py"
   "$callback" factory-kit "factory kit release suite" bash "$ROOT/ci/factory-kit-test.sh"
   "$callback" factory-dev-lane "isolated factory development lane suite" bash "$ROOT/ci/factory-dev-lane-test.sh"
   "$callback" conformance "conformance app suite" run_conformance

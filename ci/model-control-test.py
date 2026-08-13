@@ -313,10 +313,9 @@ class ModelControlTest(unittest.TestCase):
         self.command("pin", "--ticket", "T-901", "--workdir", str(self.workdir))
         release = self.base / "release"
         shutil.copytree(ROOT / "scripts", release / "scripts")
-        (release / "integrations/hermes").mkdir(parents=True)
         shutil.copy2(
-            ROOT / "integrations/hermes/contract.json",
-            release / "integrations/hermes/contract.json",
+            ROOT / "factory-contract.json",
+            release / "factory-contract.json",
         )
         release_tree = subprocess.check_output(
             [
@@ -330,7 +329,7 @@ class ModelControlTest(unittest.TestCase):
             "FACTORY_RELEASE_PATH": str(release),
             "FACTORY_RELEASE_SHA": self.kit_sha,
             "FACTORY_RELEASE_TREE": release_tree,
-            "FACTORY_RELEASE_CONTRACT_VERSION": "1.9.0",
+            "FACTORY_RELEASE_CONTRACT_VERSION": "2.0.0",
         }
         before_head = subprocess.check_output(
             ["git", "-C", str(self.workdir), "rev-parse", "HEAD"], text=True,
@@ -909,7 +908,10 @@ class ModelControlTest(unittest.TestCase):
         backend.write_text(backend.read_text().replace(
             "factory_resolve_model_profile() {\n",
             '''factory_resolve_model_profile() {
-  if [[ ${GH_TOKEN+x} == x ]] || /bin/bash -c ': <&9' 2>/dev/null; then
+  if [[ ${GH_TOKEN+x} == x || ${GITHUB_TOKEN+x} == x ||
+        ${GH_ENTERPRISE_TOKEN+x} == x || ${GITHUB_ENTERPRISE_TOKEN+x} == x ||
+        ${GH_HOST+x} == x || ${GH_CONFIG_DIR+x} == x ]] ||
+     /bin/bash -c ': <&9' 2>/dev/null; then
     FACTORY_RESOLVE_ERROR="github_credential_leaked_to_readiness"
     return 2
   fi
@@ -945,10 +947,9 @@ PY
 ''',
             1,
         ))
-        (release / "integrations" / "hermes").mkdir(parents=True)
         shutil.copy2(
-            ROOT / "integrations" / "hermes" / "contract.json",
-            release / "integrations" / "hermes" / "contract.json",
+            ROOT / "factory-contract.json",
+            release / "factory-contract.json",
         )
         release_tree = subprocess.check_output(
             [
@@ -969,15 +970,36 @@ PY
         )
         tools = self.base / "migration-tools"
         tools.mkdir()
+        github_helper = (tools / "gh").resolve()
+        github_helper.write_text(
+            "#!/bin/sh\n"
+            "test \"$1 $2 $3 $4 $5\" = "
+            "'auth status --active --hostname github.com' || exit 90\n"
+            "test -z \"${GH_TOKEN:-}${GITHUB_TOKEN:-}${GH_ENTERPRISE_TOKEN:-}\" || exit 91\n"
+            "test -z \"${GITHUB_ENTERPRISE_TOKEN:-}${GH_HOST:-}\" || exit 92\n"
+            "test \"$GH_CONFIG_DIR\" = \"$HOME/.config/gh\" || exit 93\n"
+        )
+        github_helper.chmod(0o700)
+        github_home = self.base / "github-home"
+        github_config = github_home / ".config/gh"
+        github_config.mkdir(parents=True)
+        github_home.chmod(0o700)
+        (github_home / ".config").chmod(0o700)
+        github_config.chmod(0o700)
+        (github_config / "hosts.yml").write_text("github.com: {}\n")
+        (github_config / "hosts.yml").chmod(0o600)
         git_wrapper = tools / "git"
         git_wrapper.write_text(
             "#!/usr/bin/env python3\n"
             "import os, subprocess, sys\n"
             "args = sys.argv[1:]\n"
+            "auth_names = ('GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', "
+            "'GITHUB_ENTERPRISE_TOKEN', 'GH_HOST')\n"
             "url = os.environ['TEST_GITHUB_URL']\n"
             "network = url in args and ('push' in args or 'ls-remote' in args)\n"
             "if network:\n"
-            "    assert os.environ.get('GH_TOKEN') == 'fixture-token'\n"
+            "    assert all(name not in os.environ for name in auth_names)\n"
+            "    assert os.environ['GH_CONFIG_DIR'] == os.path.join(os.environ['HOME'], '.config', 'gh')\n"
             "    assert any('credential.https://github.com.helper=!' in x for x in args)\n"
             "    args = [os.environ['TEST_LOCAL_REMOTE'] if x == url else x for x in args]\n"
             "    operation = 'push' if 'push' in args else 'ls-remote'\n"
@@ -1000,7 +1022,7 @@ PY
             "            raise AssertionError('unknown push race')\n"
             "        subprocess.run(command, check=True)\n"
             "else:\n"
-            "    assert 'GH_TOKEN' not in os.environ\n"
+            "    assert all(name not in os.environ for name in (*auth_names, 'GH_CONFIG_DIR'))\n"
             "os.execv('/usr/bin/git', ['/usr/bin/git', *args])\n"
         )
         git_wrapper.chmod(0o700)
@@ -1008,34 +1030,32 @@ PY
             **self.environment,
             "FACTORY_CERTIFIED_PRODUCT_ORIGIN": network_url,
             "FACTORY_PROBE_TRACE": str(trace),
-            "FACTORY_RELEASE_CONTRACT_VERSION": "1.9.0",
+            "FACTORY_RELEASE_CONTRACT_VERSION": "2.0.0",
             "FACTORY_RELEASE_PATH": str(release),
             "FACTORY_RELEASE_SHA": self.kit_sha,
             "FACTORY_RELEASE_TREE": release_tree,
+            "FACTORY_TEST_GITHUB_HELPER": str(github_helper),
             "PATH": f"{tools}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
             "TEST_GITHUB_URL": network_url,
             "TEST_GIT_TRACE": str(network_trace),
             "TEST_LOCAL_REMOTE": str(self.remote),
+            "FACTORY_GITHUB_TOKEN_FD": "999",
+            "GH_CONFIG_DIR": "/tmp/untrusted-config",
+            "GH_ENTERPRISE_TOKEN": "ambient-enterprise-token",
+            "GH_HOST": "untrusted.example",
+            "GH_TOKEN": "ambient-token",
+            "GITHUB_ENTERPRISE_TOKEN": "ambient-github-enterprise-token",
+            "GITHUB_TOKEN": "ambient-github-token",
+            "HOME": str(github_home),
         }
 
         def migrate(*args, run_environment=None, check=True):
             run_environment = run_environment or environment
             command = [str(release / "scripts" / "model-control.sh"), *args]
-            input_text = None
-            if args[0] in {"migrate", "migrate-batch"}:
-                command = [
-                    "/bin/bash", "-c", 'exec 9<&0; exec "$@"', "_", *command,
-                ]
-                input_text = "fixture-token\n"
-                run_environment = {
-                    **run_environment,
-                    "FACTORY_GITHUB_TOKEN_FD": "9",
-                }
             result = subprocess.run(
                 command,
                 env=run_environment,
                 text=True,
-                input=input_text,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
             )
@@ -1044,6 +1064,16 @@ PY
                     result.stdout, result.stderr
                 ))
             return json.loads(result.stdout) if not result.returncode else result
+
+        github_config.chmod(0o777)
+        unsafe_store = migrate(
+            "migrate", "--ticket", "T-901", "--workdir", str(self.workdir),
+            "--approve-hash", "0" * 64, "--readiness-hash", "1" * 64,
+            "--approved-by", "tester", check=False,
+        )
+        self.assertEqual(unsafe_store.returncode, 2)
+        self.assertIn("credential helper is unsafe", unsafe_store.stdout)
+        github_config.chmod(0o700)
 
         preview = migrate(
             "migrate-plan", "--ticket", "T-901", "--workdir", str(self.workdir)

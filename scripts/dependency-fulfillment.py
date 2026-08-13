@@ -251,7 +251,7 @@ def prepare(product, request_path):
         raise ValidationError("request repository does not match product configuration")
     oid(request["target_kit_sha"], "dependency fulfillment target kit")
     if (
-        request["candidate_contract"] not in ("1.8.0", "1.9.0")
+        request["candidate_contract"] not in ("1.8.0", "2.0.0")
         or text_at(repo, basis_commit, "factory/KIT_PIN")
         == request["target_kit_sha"] + "\n"
     ):

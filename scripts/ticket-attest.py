@@ -2824,7 +2824,7 @@ def dependency_refresh(args, product, workdir, prefix, remote, kit_sha):
             if (
                 not re.fullmatch(r"[0-9a-f]{64}", transition)
                 or not valid_oid(factory_sha)
-                or contract_version not in ("1.8.0", "1.9.0")
+                or contract_version not in ("1.8.0", "2.0.0")
             ):
                 raise Refusal(
                     "trusted dependency conflict evidence is unavailable"

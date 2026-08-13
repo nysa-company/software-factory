@@ -498,7 +498,7 @@ Do not run or repeatedly rerun:
 - `bash ci/test-all.sh` without a changed/defer mode;
 - the monolithic `ci/test-factory-scripts.sh` suite;
 - broad local product CI;
-- a full Hermes suite;
+- the full Factory contract suite;
 - local AI review;
 - pixel-perfect/browser screenshot gates;
 - ad-hoc model readiness probes.

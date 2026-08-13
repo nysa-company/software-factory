@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare one sealed, non-production Contract 1.8 qualification release."""
+"""Prepare one sealed, non-production Factory qualification release."""
 
 from __future__ import annotations
 
@@ -51,6 +51,8 @@ FACTORY_ISSUE = re.compile(
 )
 CURSOR_DATA_PATH_LIMIT = 75
 CURSOR_ATTEMPT_PLACEHOLDER = "0000000000-0000000-cli"
+SUPPORTED_CONTRACTS = ("1.8.0", "1.9.0", "2.0.0")
+SUPPORTED_UPGRADES = {("1.9.0", "2.0.0")}
 
 
 class EnvironmentError(ValueError):
@@ -365,7 +367,7 @@ def qualification_lane(root_value: Path, project: str) -> dict[str, Any]:
     )
     if (
         active.get("project") != project
-        or active.get("contract_version") not in ("1.8.0", "1.9.0")
+        or active.get("contract_version") not in SUPPORTED_CONTRACTS
         or active.get("qualification_mode") != "isolated"
         or receipt.get("status") != "pass"
         or receipt.get("product_origin") is None
@@ -419,12 +421,26 @@ def qualification_lane(root_value: Path, project: str) -> dict[str, Any]:
     ):
         raise EnvironmentError("qualification operator authority path changed")
     identity = authority_identity(
-        project, kit_sha, kit_tree, product, active["product_sha"],
+        project, active["contract_version"], kit_sha, kit_tree, product,
+        active["product_sha"],
         active["product_tree"], receipt["product_origin"],
         active.get("runtime_tuple"), str(operator_map), str(runtime_ledger),
     )
-    if read(authority / "authority.json") != identity:
-        raise EnvironmentError("qualification authority does not match activation")
+    stored_identity = read(authority / "authority.json")
+    if stored_identity != identity:
+        legacy_identity = authority_identity(
+            project, "1.8.0", kit_sha, kit_tree, product,
+            active["product_sha"], active["product_tree"],
+            receipt["product_origin"], active.get("runtime_tuple"),
+            str(operator_map), str(runtime_ledger),
+        )
+        if (
+            active["contract_version"] != "1.9.0"
+            or stored_identity != legacy_identity
+        ):
+            raise EnvironmentError(
+                "qualification authority does not match activation"
+            )
     resumed_map, resumed_ledger = resume_operator_state(
         authority, identity, manifest["tickets"],
     )
@@ -632,7 +648,8 @@ def provider_drained(lane: dict[str, Any]) -> None:
     ):
         raise EnvironmentError("qualification has an active provider run")
     validate_provider(
-        lane["release"], lane["authority"], lane["manifest"]["capacity"]
+        lane["release"], lane["authority"], lane["manifest"]["capacity"],
+        lane["active"]["contract_version"],
     )
 
 
@@ -718,17 +735,15 @@ def lock_preparation(project: str) -> int:
     return descriptor
 
 
-def preparation_state(root: Path, authority: Path | None) -> str:
+def preparation_state(root: Path, authority: Path | None, project: str) -> str:
     authority_exists = bool(
         authority and (authority.exists() or authority.is_symlink())
     )
     if root.exists() or root.is_symlink():
         safe_directory(root)
         root_populated = any(root.iterdir())
-        complete = (
-            (root / "environment.json").exists()
-            or (root / "environment.json").is_symlink()
-        )
+        active = root / "projects" / project / "active.json"
+        complete = active.exists() or active.is_symlink()
     else:
         root_populated = False
         complete = False
@@ -762,6 +777,7 @@ def partial_authority_root(project: str) -> Path:
 
 def authority_identity(
     project: str,
+    contract: str,
     factory_sha: str,
     factory_tree: str,
     product: Path,
@@ -774,7 +790,7 @@ def authority_identity(
 ) -> dict[str, Any]:
     manifest = product / "factory/QUALIFICATION.json"
     value = {
-        "contract_version": "1.8.0",
+        "contract_version": contract,
         "controller_state_path": str(
             Path.home().resolve(strict=True)
             / ".factory/qualification" / project / "controller"
@@ -799,6 +815,67 @@ def authority_identity(
         value["runtime_ledger_path"] = runtime_ledger_path
     value["authority_sha256"] = hashlib.sha256(canonical(value)).hexdigest()
     return value
+
+
+def validate_upgrade_authority(
+    current: dict[str, Any], active: dict[str, Any], target: dict[str, Any],
+) -> None:
+    if current == target:
+        return
+    unsigned = dict(current)
+    digest = unsigned.pop("authority_sha256", "")
+    active_contract = active["contract_version"]
+    valid_contracts = {active_contract}
+    if active_contract == "1.9.0":
+        valid_contracts.add("1.8.0")
+    shared = (
+        "controller_state_path", "operator_map_path", "product_path",
+        "product_tree", "project", "provider_state_path", "runtime_ledger_path",
+    )
+    if (
+        digest != hashlib.sha256(canonical(unsigned)).hexdigest()
+        or current.get("schema") != AUTHORITY_SCHEMA
+        or current.get("contract_version") not in valid_contracts
+        or any(current.get(key) != active.get(key) for key in shared)
+        or current.get("factory_sha") != active.get("kit_sha")
+        or current.get("factory_tree") != active.get("kit_tree")
+        or (
+            "product_sha" in active
+            and current.get("product_sha") != active["product_sha"]
+        )
+    ):
+        raise EnvironmentError("existing qualification authority is invalid")
+
+
+def validate_upgrade_environment(
+    current: dict[str, Any], active: dict[str, Any], target: dict[str, Any],
+) -> None:
+    if current == target:
+        return
+    expected = {
+        "factory_sha": active["kit_sha"],
+        "factory_tree": active["kit_tree"],
+        "launcher": str(Path(active["release_path"]) / "scripts/factory-launch"),
+        "product_tree": active["product_tree"],
+        "project": active["project"],
+        "provider_policy_sha256": active["provider_policy_sha256"],
+        "qualification_mode": active["qualification_mode"],
+        "root": target["root"],
+        "schema": SCHEMA,
+    }
+    if (
+        current.get("status") not in {"prepared", "restored", "upgraded"}
+        or any(current.get(key) != value for key, value in expected.items())
+        or (
+            "product_sha" in active
+            and current.get("product_sha") != active["product_sha"]
+        )
+        or (
+            "runtime_tuple" in active
+            and current.get("runtime_tuple") != active["runtime_tuple"]
+        )
+    ):
+        raise EnvironmentError("existing qualification environment is invalid")
 
 
 def validate_paused_authority(
@@ -1347,7 +1424,9 @@ def validate_prepare_provider(
     return policy, activation, policy_hash
 
 
-def prepare_provider(release: Path, root: Path, capacity: int) -> str:
+def prepare_provider(
+    release: Path, root: Path, capacity: int, contract: str,
+) -> str:
     policy, activation, _ = validate_prepare_provider(release, root, capacity)
     provider = root / "provider"
     ensure_directory(provider)
@@ -1367,7 +1446,7 @@ def prepare_provider(release: Path, root: Path, capacity: int) -> str:
         str(release / "scripts/provider-activation.py"),
         "--config", str(activation_path),
         "--policy", str(policy_path),
-        "--contract-version", "1.8.0",
+        "--contract-version", contract,
         "--status",
     )
     command(
@@ -1377,11 +1456,12 @@ def prepare_provider(release: Path, root: Path, capacity: int) -> str:
         str(provider / "accounting/state-v2.sqlite3"),
         "status",
     )
-    return validate_provider(release, root, capacity, pristine=True)
+    return validate_provider(release, root, capacity, contract, pristine=True)
 
 
 def validate_provider(
-    release: Path, root: Path, capacity: int, *, pristine: bool = False,
+    release: Path, root: Path, capacity: int, contract: str,
+    *, pristine: bool = False,
 ) -> str:
     policy, activation, policy_hash = provider_configuration(release, capacity)
     provider = safe_directory(root / "provider")
@@ -1394,7 +1474,7 @@ def validate_provider(
         "/usr/bin/python3", str(release / "scripts/provider-activation.py"),
         "--config", str(provider / "provider-activation.json"),
         "--policy", str(provider / "provider-policy.json"),
-        "--contract-version", "1.8.0", "--status",
+        "--contract-version", contract, "--status",
     )
     status = json.loads(command(
         "/usr/bin/python3", str(release / "scripts/provider-coordinator.py"),
@@ -1708,7 +1788,7 @@ def takeover_source(
         or manifest.get("budget_usd") != "300.000000"
         or manifest.get("per_ticket_budget_usd") != "100.000000"
         or manifest.get("per_run_budget_usd") != "10.000000"
-        or manifest.get("contract_version") not in ("1.8.0", "1.9.0")
+        or manifest.get("contract_version") not in SUPPORTED_CONTRACTS
         or manifest.get("factory_sha")
         != command("git", "-C", str(factory), "rev-parse", "HEAD")
         or not SHA.fullmatch(manifest.get("source_factory_sha", ""))
@@ -1735,7 +1815,7 @@ def takeover_source(
         active.get("project") != source_project
         or not isinstance(source_product_path, str)
         or not Path(source_product_path).is_absolute()
-        or active.get("contract_version") not in ("1.8.0", "1.9.0")
+        or active.get("contract_version") not in SUPPORTED_CONTRACTS
         or active.get("kit_sha") != manifest["source_factory_sha"]
         or not SHA.fullmatch(active.get("kit_tree", ""))
         or not SHA.fullmatch(active.get("product_tree", ""))
@@ -1812,7 +1892,7 @@ def takeover_source(
         str(factory / "scripts/provider-activation.py"),
         "--config", str(activation_path),
         "--policy", str(policy_path),
-        "--contract-version", "1.8.0",
+        "--contract-version", manifest["contract_version"],
         "--status",
     )
     provider_status = json.loads(command(
@@ -2122,7 +2202,7 @@ def validate_successor_upgrade_cohort(
                 for item in history or []
                 if isinstance(item, dict)
                 and set(item) == {"contract_version", "factory_sha"}
-                and item.get("contract_version") in ("1.8.0", "1.9.0")
+                and item.get("contract_version") in SUPPORTED_CONTRACTS
                 and valid_sha(item.get("factory_sha"))
             ]
             charges = value.get("charge_records")
@@ -2150,7 +2230,7 @@ def validate_successor_upgrade_cohort(
             }
             core_valid = (
                 value.get("schema") == "nysa.software-factory.ticket-passport/v1"
-                and value.get("contract_version") in ("1.8.0", "1.9.0")
+                and value.get("contract_version") in SUPPORTED_CONTRACTS
                 and value.get("branch") == f"ticket/{ticket}"
                 and valid_sha(value.get("head_sha"))
                 and valid_sha(value.get("head_tree"))
@@ -2255,7 +2335,7 @@ def validate_successor_upgrade_cohort(
                     and isinstance(item.get("charge_micro_usd"), int)
                     and not isinstance(item["charge_micro_usd"], bool)
                     and item["charge_micro_usd"] >= 0
-                    and item.get("contract_version") in ("1.8.0", "1.9.0")
+                    and item.get("contract_version") in SUPPORTED_CONTRACTS
                     and item.get("factory_sha") in releases
                     and (
                         active_factory_sha == candidate
@@ -2272,7 +2352,7 @@ def validate_successor_upgrade_cohort(
                 and all(
                     isinstance(item, dict)
                     and set(item) == completed_keys
-                    and item.get("contract_version") in ("1.8.0", "1.9.0")
+                    and item.get("contract_version") in SUPPORTED_CONTRACTS
                     and item.get("factory_sha") in releases
                     and (
                         active_factory_sha == candidate
@@ -2542,7 +2622,7 @@ def validate_handoff_entry(
         or receipt.get("branch") != entry["branch"]
         or receipt.get("project") != source["active"]["project"]
         or receipt.get("factory_sha") != source["active"]["kit_sha"]
-        or receipt.get("contract_version") not in ("1.8.0", "1.9.0")
+        or receipt.get("contract_version") not in SUPPORTED_CONTRACTS
         or receipt.get("stage") != "RUN planner"
         or receipt.get("role") != "planner"
         or receipt.get("loop") is not None
@@ -2944,8 +3024,8 @@ def ensure_release(factory: Path, sha: str, tree: str, releases: Path) -> Path:
 
 def validate_prepare_root(root: Path, sha: str, project: str) -> None:
     allowed = {
-        "environment.json", "global.env", "marker.json", "profile",
-        "projects", "receipts", "releases",
+        "environment.json", "global.env", "marker.json", "projects",
+        "receipts", "releases",
     }
     if any(path.name not in allowed for path in root.iterdir()):
         raise EnvironmentError("partial qualification environment is invalid")
@@ -2964,20 +3044,6 @@ def validate_prepare_root(root: Path, sha: str, project: str) -> None:
             safe_directory(project_root)
             if any(path.name != "active.json" for path in project_root.iterdir()):
                 raise EnvironmentError("partial qualification activation is invalid")
-    profile = root / "profile"
-    if profile.exists() or profile.is_symlink():
-        safe_directory(profile)
-        if any(path.name != "projects" for path in profile.iterdir()):
-            raise EnvironmentError("partial qualification profile is invalid")
-        profile_projects = profile / "projects"
-        if profile_projects.exists() or profile_projects.is_symlink():
-            safe_directory(profile_projects)
-            if any(
-                path.name != f"{project}.env" for path in profile_projects.iterdir()
-            ):
-                raise EnvironmentError("partial qualification registry is invalid")
-
-
 def validate_authority_prepare_shape(authority: Path) -> None:
     allowed = {
         "authority.json", "controller", "operator", "operator-bootstrap.json",
@@ -3024,7 +3090,6 @@ def validate_prepare_phase(
         raise EnvironmentError("qualification preparation state is torn")
     structural = (
         root / "releases", root / "projects", root / "receipts",
-        root / "profile", root / "profile/projects",
         root / f"projects/{project}",
     )
     phases = structural + (
@@ -3043,7 +3108,6 @@ def validate_prepare_phase(
     ) or any(
         path.exists() or path.is_symlink() for path in (
             root / "environment.json", root / f"projects/{project}/active.json",
-            root / f"profile/projects/{project}.env",
         )
     ) or bool((root / "receipts").is_dir() and any((root / "receipts").iterdir()))
     if provider and not released or downstream and (
@@ -3084,33 +3148,29 @@ def validate_existing_publication_prefix(
     if authority is not None:
         paths.append(authority / "authority.json")
     paths.extend((
-        root / f"projects/{project}/active.json",
         root / "environment.json",
-        root / f"profile/projects/{project}.env",
+        root / f"projects/{project}/active.json",
     ))
     present = [
         bool(path and (path.exists() or path.is_symlink())) for path in paths
     ]
     if present != sorted(present, reverse=True):
         raise EnvironmentError("qualification preparation state is torn")
-    for path in paths[:-1]:
+    for path in paths:
         if path and (path.exists() or path.is_symlink()):
             value = read(path)
             if config_bytes(path) != canonical(value):
                 raise EnvironmentError("qualification preparation artifact changed")
-    registry = paths[-1]
-    if registry.exists() or registry.is_symlink():
-        config_bytes(registry)
 
 
 def validate_publication_prefix(
     receipt: Path, authority_state: Path | None, active: Path,
-    environment: Path, registry: Path,
+    environment: Path,
 ) -> None:
     paths = [receipt]
     if authority_state is not None:
         paths.append(authority_state)
-    paths.extend((active, environment, registry))
+    paths.extend((environment, active))
     present = [path.exists() or path.is_symlink() for path in paths]
     if present != sorted(present, reverse=True):
         raise EnvironmentError("qualification preparation state is torn")
@@ -3141,10 +3201,10 @@ def _prepare(args: argparse.Namespace) -> dict[str, Any]:
     if (product / "factory/KIT_PIN").read_text(encoding="utf-8") != sha + "\n":
         raise EnvironmentError("qualification product is not pinned to the candidate")
     contract = json.loads(
-        (factory / "integrations/hermes/contract.json").read_text(encoding="utf-8")
+        (factory / "factory-contract.json").read_text(encoding="utf-8")
     ).get("contract_version")
-    if contract not in ("1.8.0", "1.9.0"):
-        raise EnvironmentError("qualification requires Contract 1.8.0 or 1.9.0")
+    if contract not in SUPPORTED_CONTRACTS:
+        raise EnvironmentError("qualification requires a supported Factory Contract")
     manifest = qualification_manifest(product, sha)
     capacity = manifest["capacity"]
     validate_selected_contracts(product, manifest)
@@ -3176,13 +3236,16 @@ def _prepare(args: argparse.Namespace) -> dict[str, Any]:
         operator_map_path = str(qualification / args.project / "operator/operator-map.json")
         runtime_ledger_path = str(qualification / args.project / "operator/runtime-ledger.csv")
     identity = authority_identity(
-        args.project, sha, tree, product, product_sha, product_tree, origin,
+        args.project, contract, sha, tree, product, product_sha, product_tree, origin,
         runtime_tuple, operator_map_path, runtime_ledger_path,
     )
     expected_authority = None if takeover else Path.home().resolve(strict=True) / (
         f".factory/qualification/{args.project}"
     )
-    state = "restore" if restoring else preparation_state(root, expected_authority)
+    state = (
+        "restore" if restoring
+        else preparation_state(root, expected_authority, args.project)
+    )
     map_path: Path | None = None
     ledger_path: Path | None = None
     if not takeover:
@@ -3221,7 +3284,15 @@ def _prepare(args: argparse.Namespace) -> dict[str, Any]:
                     "qualification operator initialization dirtied product"
                 )
             controller = authority / "controller"
-            if read(authority / "authority.json") != identity:
+            durable_identity = read(authority / "authority.json")
+            legacy_identity = authority_identity(
+                args.project, "1.8.0", sha, tree, product, product_sha,
+                product_tree, origin, runtime_tuple, operator_map_path,
+                runtime_ledger_path,
+            )
+            if durable_identity != identity and (
+                contract != "1.9.0" or durable_identity != legacy_identity
+            ):
                 raise EnvironmentError("durable qualification authority changed")
             safe_directory(controller)
             validate_paused_authority(factory, product, controller, identity)
@@ -3286,11 +3357,8 @@ def _prepare(args: argparse.Namespace) -> dict[str, Any]:
     releases = root / "releases"
     projects = root / "projects"
     receipts = root / "receipts"
-    profile = root / "profile"
-    profile_projects = profile / "projects"
-    for path in (releases, projects, receipts, profile):
+    for path in (releases, projects, receipts):
         ensure_directory(path)
-    ensure_directory(profile_projects)
     project = projects / args.project
     ensure_directory(project)
     if restoring:
@@ -3300,15 +3368,8 @@ def _prepare(args: argparse.Namespace) -> dict[str, Any]:
     active = project / "active.json"
     marker = {"mode": "qualification", "schema": SCHEMA}
     if restoring:
-        release = releases / sha
-        if release.exists() or active.exists():
-            raise EnvironmentError("qualification environment already exists")
-        write(root / "marker.json", marker)
-        materialize(factory, sha, release)
-        if git_tree(release) != tree:
-            raise EnvironmentError(
-                "sealed qualification tree does not match the candidate"
-            )
+        write_exact(root / "marker.json", marker)
+        release = ensure_release(factory, sha, tree, releases)
     else:
         write_exact(root / "marker.json", marker)
         release = ensure_release(factory, sha, tree, releases)
@@ -3318,9 +3379,9 @@ def _prepare(args: argparse.Namespace) -> dict[str, Any]:
     provider_policy_sha256 = (
         takeover["provider_policy_sha256"]
         if takeover else (
-            validate_provider(release, authority, capacity)
+            validate_provider(release, authority, capacity, contract)
             if restoring else
-            prepare_provider(release, authority, capacity)
+            prepare_provider(release, authority, capacity, contract)
         )
     )
     qualification_mode = takeover["mode"] if takeover else "isolated"
@@ -3374,13 +3435,12 @@ def _prepare(args: argparse.Namespace) -> dict[str, Any]:
     else:
         active_value["controller_state_path"] = controller_state_path
         active_value["provider_state_path"] = provider_state_path
-    registry = profile_projects / f"{args.project}.env"
     result = bind_runtime_tuple({
         "factory_sha": sha,
         "factory_tree": tree,
         "authority_root": str(authority) if authority else None,
         "historical_pr_objects": historical_objects,
-        "launcher": str(release / "integrations/hermes/bin/factory-launch"),
+        "launcher": str(release / "scripts/factory-launch"),
         "product_sha": product_sha,
         "product_tree": product_tree,
         "project": args.project,
@@ -3392,21 +3452,20 @@ def _prepare(args: argparse.Namespace) -> dict[str, Any]:
     }, runtime_tuple)
     environment = root / "environment.json"
     if restoring:
-        write(receipt_path, receipt_value)
-        write(active, active_value)
-        write_bytes(registry, f"PRODUCT_ROOT={product}\n".encode())
-        write(environment, result)
+        validate_publication_prefix(receipt_path, None, active, environment)
+        write_exact(receipt_path, receipt_value)
+        write_exact(environment, result)
+        write_exact(active, active_value)
     else:
         authority_state = authority / "authority.json" if authority else None
         validate_publication_prefix(
-            receipt_path, authority_state, active, environment, registry,
+            receipt_path, authority_state, active, environment,
         )
         write_exact(receipt_path, receipt_value)
         if authority_state is not None:
             write_exact(authority_state, identity)
-        write_exact(active, active_value)
         write_exact(environment, result)
-        write_bytes_exact(registry, f"PRODUCT_ROOT={product}\n".encode())
+        write_exact(active, active_value)
     return result
 
 
@@ -3437,10 +3496,10 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
     if (product / "factory/KIT_PIN").read_text(encoding="utf-8") != sha + "\n":
         raise EnvironmentError("qualification product is not pinned to the candidate")
     contract = json.loads(
-        (factory / "integrations/hermes/contract.json").read_text(encoding="utf-8")
+        (factory / "factory-contract.json").read_text(encoding="utf-8")
     ).get("contract_version")
-    if contract not in ("1.8.0", "1.9.0"):
-        raise EnvironmentError("qualification requires Contract 1.8.0 or 1.9.0")
+    if contract not in SUPPORTED_CONTRACTS:
+        raise EnvironmentError("qualification requires a supported Factory Contract")
     manifest = qualification_manifest(product, sha)
     capacity = manifest["capacity"]
     validate_selected_contracts(product, manifest)
@@ -3468,11 +3527,16 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
     origin = product_origin(product)
     marker = read(root / "marker.json")
     qualification_mode = active.get("qualification_mode")
+    active_contract = active.get("contract_version")
     if (
         marker != {"mode": "qualification", "schema": SCHEMA}
         or active.get("project") != args.project
         or active.get("product_path") != str(product)
-        or active.get("contract_version") != contract
+        or active_contract not in SUPPORTED_CONTRACTS
+        or (
+            active_contract != contract
+            and (active_contract, contract) not in SUPPORTED_UPGRADES
+        )
         or not SHA.fullmatch(active.get("kit_sha", ""))
         or not isinstance(active.get("generation"), int)
         or isinstance(active.get("generation"), bool)
@@ -3482,6 +3546,28 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
         raise EnvironmentError("existing qualification activation is invalid")
     if qualification_mode == "takeover":
         raise EnvironmentError("takeover qualification requires one frozen candidate")
+    previous_receipt_id = active.get("receipt_id", "")
+    if not re.fullmatch(r"[0-9a-f]{64}", previous_receipt_id):
+        raise EnvironmentError("existing qualification activation is invalid")
+    previous_receipt = read(root / f"receipts/{previous_receipt_id}.json")
+    unsigned_receipt = dict(previous_receipt)
+    if (
+        unsigned_receipt.pop("receipt_id", "") != previous_receipt_id
+        or hashlib.sha256(canonical(unsigned_receipt)).hexdigest()
+        != previous_receipt_id
+        or previous_receipt.get("status") != "pass"
+        or any(
+            previous_receipt.get(key) != active.get(key)
+            for key in (
+                "contract_version", "controller_state_path",
+                "fallback_readiness_sha256", "kit_sha", "kit_tree",
+                "operator_map_path", "product_path", "product_tree", "project",
+                "provider_policy_sha256", "provider_state_path",
+                "qualification_mode", "runtime_ledger_path",
+            )
+        )
+    ):
+        raise EnvironmentError("existing qualification activation is invalid")
 
     authority = authority_root(args.project)
     controller = safe_directory(Path(active.get("controller_state_path", "")))
@@ -3507,9 +3593,36 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
     )
     validate_operator_map(read(operator_map_path))
     identity = authority_identity(
-        args.project, sha, tree, product, product_sha, product_tree, origin,
+        args.project, contract, sha, tree, product, product_sha, product_tree, origin,
         runtime_tuple, str(operator_map_path), str(runtime_ledger_path),
     )
+    validate_upgrade_authority(
+        read(authority / "authority.json"), active, identity,
+    )
+    if active_contract == contract and active["kit_sha"] == sha:
+        release = root / f"releases/{sha}"
+        if (
+            active.get("release_path") != str(release)
+            or not release.is_dir() or git_tree(release) != tree
+        ):
+            raise EnvironmentError("existing qualification activation is invalid")
+        result = bind_runtime_tuple({
+            "factory_sha": sha,
+            "factory_tree": tree,
+            "historical_pr_objects": historical_objects,
+            "launcher": str(release / "scripts/factory-launch"),
+            "product_sha": product_sha,
+            "product_tree": product_tree,
+            "project": args.project,
+            "provider_policy_sha256": active["provider_policy_sha256"],
+            "qualification_mode": qualification_mode,
+            "root": str(root),
+            "schema": SCHEMA,
+            "status": "upgraded",
+        }, runtime_tuple)
+        if read(root / "environment.json") != result:
+            raise EnvironmentError("existing qualification environment is invalid")
+        return result
     resume_operator_state(authority, identity, manifest["tickets"])
     lock = os.open(
         controller / "reconcile.lock",
@@ -3610,13 +3723,11 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
             "release_path": str(release),
             "runtime_ledger_path": str(runtime_ledger_path),
         }, runtime_tuple)
-        replace(active_path, next_active)
-        replace(authority / "authority.json", identity)
         result = bind_runtime_tuple({
             "factory_sha": sha,
             "factory_tree": tree,
             "historical_pr_objects": historical_objects,
-            "launcher": str(release / "integrations/hermes/bin/factory-launch"),
+            "launcher": str(release / "scripts/factory-launch"),
             "product_sha": product_sha,
             "product_tree": product_tree,
             "project": args.project,
@@ -3626,7 +3737,12 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
             "schema": SCHEMA,
             "status": "upgraded",
         }, runtime_tuple)
+        validate_upgrade_environment(
+            read(root / "environment.json"), active, result,
+        )
+        replace(authority / "authority.json", identity)
         replace(root / "environment.json", result)
+        replace(active_path, next_active)
         return result
     finally:
         os.close(lock)

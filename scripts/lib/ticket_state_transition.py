@@ -129,7 +129,7 @@ def apply_factory_transition(text: str, target: str, contract: str) -> str:
         count=1,
         flags=re.MULTILINE | re.IGNORECASE,
     )
-    if target_key == "blocked-escalated" and contract in {"1.7.0", "1.8.0", "1.9.0"}:
+    if target_key == "blocked-escalated" and contract in {"1.7.0", "1.8.0", "2.0.0"}:
         resume = f"Resume-State: {FACTORY_TARGET_STATES[current]}"
         resume_fields = re.findall(
             r"^Resume-State:\s*.*$",
