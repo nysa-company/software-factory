@@ -107,7 +107,8 @@ python3 scripts/envelope-control.py override-plan --factory-root /absolute/produ
 ## Local control console
 
 Run `python3 scripts/operator-console.py`, then open the one-use loopback URL.
-The project selector lists only validated factory registry entries. Workflow,
+The project selector lists only validated owner-controlled `active.json`
+records. Workflow,
 model candidates, effective envelope values, and daily spend are read through
 fixed Contract 1.5 launcher commands.
 
@@ -565,7 +566,7 @@ transaction diagnosis.
 
 ## Preparing and activating a release
 
-For Contract 1.9, prefer the bounded two-command transaction below. The
+For Contract 2.0, prefer the bounded two-command transaction below. The
 numbered manual procedure remains the recovery/reference path for older
 contracts and unusual host migration work.
 
@@ -585,10 +586,10 @@ bash scripts/factory-kit.sh release resume \
 ```
 
 `release setup` requires clean exact Factory and product Git trees, an exact
-product `KIT_PIN`, Contract 1.9, and a reviewed certification-plan runtime. It
+product `KIT_PIN`, Contract 2.0, and a reviewed certification-plan runtime. It
 installs the sealed candidate, prepares a project-local runtime, the
 ignored physical `factory/runs/` and `.active-runs/` roots, the path-only
-project registry, and the exact macOS controller plist, then binds
+`active.json.product_path` authority, and the exact macOS controller plist, then binds
 Factory/product SHA and tree, active generation, runtime binaries, provider
 plans, model profile, receipt, and any one-to-four ticket migration previews
 into an owner-only plan. It also binds every committed ticket blob and state,
@@ -610,7 +611,7 @@ the bound ticket inventory, loads the bound controller job, requires Doctor to
 pass, and removes the barrier last.
 Any cutover failure republishes maintenance and leaves dispatch stopped. A
 retry with the same hash resumes the signed journal; changed product, runtime,
-launcher, registry, controller, active generation, receipt, model, or migration
+launcher, active record, controller, receipt, model, or migration
 evidence is refused. Measure the automation target from setup process start to
 the first controller-observed `Planning` ticket, excluding only the human time
 spent reviewing an emitted hash; the production objective is less than 15
@@ -674,14 +675,14 @@ minutes.
    `docs/factory-setup.md`. For an active-project upgrade, certify that exact
    protected-main SHA and tree from the clean canonical product path and record
    the receipt ID and expiry. For a new project with no `active.json`, leave
-   certification to the resumable `bootstrap` command in step 14 so one signed
+   certification to the resumable release transaction in step 14 so one signed
    trace covers install through activation.
    Any later product commit or protected-main tree drift invalidates that
    receipt; land the complete final tree and recertify instead of attempting
    activation with stale evidence.
 8. Complete sealed qualification and the native controller macOS smoke with a
    separate sandbox product. Never copy production credentials, operator state,
-   registry, ledger, or LaunchAgent.
+   active records, ledger, or LaunchAgent.
 9. Confirm no active runs and no unauthorized nonterminal ticket with a
    different `Kit-SHA`. Activation scans committed local, tracking, and live
    remote ticket sources; a Done claim also requires a valid normal attestation

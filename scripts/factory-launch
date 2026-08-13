@@ -1267,7 +1267,6 @@ PY
         "FACTORY_LAUNCH_TEST_MODE=1"
         "FACTORY_LAUNCH_TEST_HOME=$HOME"
         "FACTORY_KITS_ROOT=$KITS_ROOT"
-        "HERMES_FACTORY_PROFILE=$PROFILE_DIR"
       )
     fi
     cleanup_runtime

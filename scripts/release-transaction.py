@@ -729,6 +729,23 @@ def valid_controller(value: Any, project: str) -> bool:
     )
 
 
+def valid_ticket_inventory(value: Any) -> bool:
+    if not isinstance(value, list):
+        return False
+    tickets: set[str] = set()
+    for item in value:
+        if (
+            not isinstance(item, dict) or set(item) != {"blob", "state", "ticket"}
+            or not TICKET.fullmatch(str(item.get("ticket", "")))
+            or not SHA.fullmatch(str(item.get("blob", "")))
+            or item.get("state") not in TICKET_STATES
+            or item["ticket"] in tickets
+        ):
+            return False
+        tickets.add(item["ticket"])
+    return True
+
+
 def valid_host_cutover(value: Any) -> bool:
     if value is None:
         return True
@@ -739,7 +756,7 @@ def valid_host_cutover(value: Any) -> bool:
     for item in value:
         if not isinstance(item, dict) or set(item) != {
             "controller", "incident", "maintenance", "product", "project",
-            "receipt", "runtime", "source_active_sha256",
+            "receipt", "runtime", "source_active_sha256", "tickets",
         }:
             return False
         project = item.get("project")
@@ -751,6 +768,7 @@ def valid_host_cutover(value: Any) -> bool:
             not isinstance(project, str) or not PROJECT.fullmatch(project)
             or not Path(str(item.get("product", ""))).is_absolute()
             or not DIGEST.fullmatch(str(item.get("source_active_sha256", "")))
+            or not valid_ticket_inventory(item.get("tickets"))
             or not valid_controller(item.get("controller"), project)
             or not isinstance(receipt, dict)
             or set(receipt) != {"path", "receipt_id", "sha256"}
@@ -890,17 +908,8 @@ def validate_plan(value: dict[str, Any]) -> None:
         or (identity["mode"] == "upgrade" and not isinstance(identity.get("previous"), dict))
     ):
         raise ReleaseError("release plan is invalid")
-    inventory_tickets: set[str] = set()
-    for item in inventory:
-        if (
-            not isinstance(item, dict) or set(item) != {"blob", "state", "ticket"}
-            or not TICKET.fullmatch(str(item.get("ticket", "")))
-            or not SHA.fullmatch(str(item.get("blob", "")))
-            or item.get("state") not in TICKET_STATES
-            or item["ticket"] in inventory_tickets
-        ):
-            raise ReleaseError("release plan is invalid")
-        inventory_tickets.add(item["ticket"])
+    if not valid_ticket_inventory(inventory):
+        raise ReleaseError("release plan is invalid")
     previous = identity.get("previous")
     if previous is not None and (
         set(previous) != {"record", "sha256"}
@@ -1575,6 +1584,7 @@ def prepare_host_cutover(
             },
             "runtime": runtime,
             "source_active_sha256": source["active_sha256"],
+            "tickets": ticket_inventory(product),
         })
     return entries
 
@@ -1920,7 +1930,7 @@ def plan_request(plan: dict[str, Any], kits_root: Path) -> argparse.Namespace:
             item["maintenance"]["prior"]
             for item in plan["children"].get("host_cutover") or []
             if item["project"] == request["project"]
-        ), None),
+        ), plan["identity"]["maintenance_prior"]),
         ticket_workdir=migrations,
     )
 
@@ -1984,7 +1994,7 @@ def cutover_update(
 ) -> None:
     floor_required = completed_cutover_exists(path) or phase in {
         "active_records_switched", "contract_floor_committed", "launcher_installed",
-        "retired_runtime_removed", "healthy",
+        "operator_initialized", "retired_runtime_removed", "healthy",
     }
     if path.exists() or path.is_symlink():
         current = safe_state(path, "host cutover journal")
@@ -2156,6 +2166,40 @@ def clear_cutover_maintenance(item: dict[str, Any]) -> None:
         atomic_bytes(marker, raw)
 
 
+def validate_host_item_basis(
+    item: dict[str, Any], release: Path, kits_root: Path,
+) -> None:
+    product = Path(item["product"])
+    if ticket_inventory(product) != item["tickets"]:
+        raise ReleaseError(f"host cutover ticket inventory changed for {item['project']}")
+    root = project_runtime_root(kits_root, item["project"])
+    target = root / "bin"
+    if Path(item["runtime"]["evidence"]["path"]) != target:
+        raise ReleaseError(f"host cutover runtime path changed for {item['project']}")
+    try:
+        journal = safe_state(root / "runtime-pin-journal.json", "runtime pin journal")
+    except (OSError, ReleaseError) as error:
+        raise ReleaseError(
+            f"host cutover runtime changed for {item['project']}"
+        ) from error
+    runtime_plan = journal.get("plan")
+    if (
+        journal.get("status") != "completed" or not isinstance(runtime_plan, dict)
+        or runtime_plan.get("approval_sha256") != item["runtime"]["plan_sha256"]
+        or runtime_plan.get("product_path") != item["product"]
+        or runtime_plan.get("target_bin") != str(target)
+    ):
+        raise ReleaseError(f"host cutover runtime changed for {item['project']}")
+    evidence = run_json(
+        [sys.executable, "-I", "-S", str(release / "scripts/owner-runtime-pin.py"),
+         "check", "--journal", str(root / "runtime-pin-journal.json")],
+        f"host cutover runtime check for {item['project']}",
+        environment=command_environment(kits_root),
+    )
+    if evidence.get("status") != "ready" or evidence.get("path") != str(target):
+        raise ReleaseError(f"host cutover runtime evidence is invalid for {item['project']}")
+
+
 def validate_host_runtime(
     plan: dict[str, Any], release: Path, kits_root: Path, *, require_retired: bool,
 ) -> None:
@@ -2183,6 +2227,11 @@ def validate_host_runtime(
     ):
         raise ReleaseError("retired runtime removal is incomplete")
     for item in items:
+        validate_host_item_basis(item, release, kits_root)
+        if not operator_inventory_ready(Path(item["product"]), item["tickets"]):
+            raise ReleaseError(
+                f"host cutover operator inventory changed for {item['project']}"
+            )
         ensure_service(item["controller"])
         ensure_service(item["incident"])
         doctor = run_json(
@@ -2245,7 +2294,7 @@ def _apply_host_cutover_locked(
     journal = read_cutover(journal_path, plan["approval_sha256"])
     if journal.get("phase") in {
         "active_records_switched", "contract_floor_committed", "launcher_installed",
-        "retired_runtime_removed", "healthy",
+        "operator_initialized", "retired_runtime_removed", "healthy",
     }:
         ensure_contract_floor(kits_root)
     if journal["status"] == "pass":
@@ -2256,6 +2305,8 @@ def _apply_host_cutover_locked(
     require_reservation(kits_root, plan)
     completed = list(journal["completed_projects"])
     kit = release / "scripts/factory-kit.sh"
+    for item in items:
+        validate_host_item_basis(item, release, kits_root)
     for item in items:
         if item["project"] in completed or cutover_terminal_exact(
             kits_root, item, plan["request"]["sha"], release,
@@ -2334,6 +2385,11 @@ def _apply_host_cutover_locked(
         )
     cutover_update(
         journal_path, plan["approval_sha256"], "launcher_installed",
+        completed, "in-progress",
+    )
+    initialize_host_operator_maps(release, kits_root, items)
+    cutover_update(
+        journal_path, plan["approval_sha256"], "operator_initialized",
         completed, "in-progress",
     )
     validate_host_runtime(plan, release, kits_root, require_retired=False)
@@ -2577,10 +2633,10 @@ def doctor(launcher: Path, plan: dict[str, Any], environment: dict[str, str]) ->
     )
 
 
-def operator_map_ready(plan: dict[str, Any]) -> bool:
+def operator_inventory_ready(product: Path, inventory: list[dict[str, Any]]) -> bool:
     try:
         mapping = safe_state(
-            Path(plan["identity"]["product_path"]) / "factory/operator-map.json",
+            product / "factory/operator-map.json",
             "operator map",
         )
     except (OSError, ReleaseError):
@@ -2589,20 +2645,19 @@ def operator_map_ready(plan: dict[str, Any]) -> bool:
     return isinstance(tickets, dict) and all(
         isinstance(tickets.get(item["ticket"]), dict)
         and tickets[item["ticket"]].get("operator_fields_initialized") is True
-        for item in plan["identity"]["tickets"]
+        for item in inventory
     )
 
 
-def initialize_operator_map(
-    release: Path, kits_root: Path, plan: dict[str, Any],
+def initialize_operator_inventory(
+    release: Path, kits_root: Path, project: str, product: Path,
+    inventory: list[dict[str, Any]],
     environment: dict[str, str],
 ) -> None:
-    product = Path(plan["identity"]["product_path"])
-    inventory = plan["identity"]["tickets"]
     arguments = [
         sys.executable, "-I", str(release / "scripts/operator-cli.py"),
         "--product", str(product), "--state-dir",
-        str(kits_root / "projects" / plan["request"]["project"] / "controller"),
+        str(kits_root / "projects" / project / "controller"),
         "initialize",
     ]
     for item in inventory:
@@ -2615,8 +2670,35 @@ def initialize_operator_map(
         "status": "pass",
     }:
         raise ReleaseError("operator projection initialization evidence is invalid")
-    if not operator_map_ready(plan):
+    if not operator_inventory_ready(product, inventory):
         raise ReleaseError("operator projection initialization is incomplete")
+
+
+def operator_map_ready(plan: dict[str, Any]) -> bool:
+    return operator_inventory_ready(
+        Path(plan["identity"]["product_path"]), plan["identity"]["tickets"],
+    )
+
+
+def initialize_operator_map(
+    release: Path, kits_root: Path, plan: dict[str, Any],
+    environment: dict[str, str],
+) -> None:
+    initialize_operator_inventory(
+        release, kits_root, plan["request"]["project"],
+        Path(plan["identity"]["product_path"]), plan["identity"]["tickets"],
+        environment,
+    )
+
+
+def initialize_host_operator_maps(
+    release: Path, kits_root: Path, items: list[dict[str, Any]],
+) -> None:
+    for item in items:
+        initialize_operator_inventory(
+            release, kits_root, item["project"], Path(item["product"]), item["tickets"],
+            command_environment(kits_root, Path(item["runtime"]["evidence"]["path"])),
+        )
 
 
 def ensure_controller(plan: dict[str, Any]) -> None:

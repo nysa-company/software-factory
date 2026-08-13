@@ -235,6 +235,7 @@ class ReleaseTransactionTest(unittest.TestCase):
             mock.patch.object(RELEASE, "active_exact", return_value=True),
             mock.patch.object(RELEASE, "model_ready", return_value=True),
             mock.patch.object(RELEASE, "doctor", return_value={"status": "pass"}),
+            mock.patch.object(RELEASE, "initialize_operator_map"),
             mock.patch.object(RELEASE, "ensure_controller"),
         ):
             result = RELEASE.apply_activation(
@@ -242,6 +243,14 @@ class ReleaseTransactionTest(unittest.TestCase):
             )
         self.assertEqual(result["status"], "pass")
         self.assertEqual(marker.read_bytes(), prior)
+
+    def test_prerequisite_replay_preserves_preexisting_maintenance(self) -> None:
+        plan = json.loads(json.dumps(self.plan))
+        prior = {"path": str(self.root / "snapshot"), "sha256": "9" * 64}
+        plan["identity"]["maintenance_prior"] = prior
+        plan["children"]["host_cutover"] = None
+        request = RELEASE.plan_request(plan, self.kits)
+        self.assertEqual(request.maintenance_prior, prior)
 
     def test_resume_rejects_wrong_hash_approver_and_expiry_before_apply(self) -> None:
         path, _ = RELEASE.plan_paths(self.kits, "relay", self.sha)
@@ -747,6 +756,61 @@ class ReleaseTransactionTest(unittest.TestCase):
         checked.assert_called_once()
         replanned.assert_not_called()
 
+    def test_host_cutover_refuses_sibling_runtime_drift_before_mutation(self) -> None:
+        active = self.kits / "projects/nysa/active.json"
+        active.parent.mkdir(parents=True)
+        RELEASE.atomic_json(active, {"project": "nysa"})
+        before = active.read_bytes()
+        item = {
+            "product": str(self.product), "project": "nysa", "tickets": [],
+            "runtime": {
+                "evidence": {
+                    "path": str(RELEASE.project_runtime_root(self.kits, "nysa") / "bin"),
+                },
+                "plan_sha256": "7" * 64,
+            },
+        }
+        with (
+            mock.patch.object(RELEASE, "ticket_inventory", return_value=[]),
+            self.assertRaisesRegex(RELEASE.ReleaseError, "runtime changed"),
+        ):
+            RELEASE.validate_host_item_basis(item, self.root / "release", self.kits)
+        self.assertEqual(active.read_bytes(), before)
+        self.assertFalse((self.kits / "contract-floor.json").exists())
+        source = (ROOT / "scripts/release-transaction.py").read_text()
+        apply = source.index("def _apply_host_cutover_locked")
+        self.assertLess(
+            source.index("validate_host_item_basis(item, release, kits_root)", apply),
+            source.index('f"host cutover activation reconcile for {project}"', apply),
+        )
+
+    def test_host_cutover_initializes_bound_sibling_ticket_inventory(self) -> None:
+        product = self.root / "sibling"
+        (product / "factory/tickets").mkdir(parents=True)
+        (product / "factory/tickets/T-1.md").write_text(
+            "# T-1\n\nState: Ready\nPriority: normal\n"
+        )
+        RELEASE.atomic_json(product / "factory/operator-map.json", {
+            "_config": None, "_sync": {}, "initiatives": {}, "tickets": {},
+        })
+        inventory = [{"blob": "3" * 40, "state": "Ready", "ticket": "T-1"}]
+        item = {
+            "product": str(product), "project": "nysa", "tickets": inventory,
+            "runtime": {"evidence": {"path": str(self.root / "runtime")}},
+        }
+        self.assertFalse(RELEASE.operator_inventory_ready(product, inventory))
+        RELEASE.initialize_host_operator_maps(ROOT, self.kits, [item])
+        self.assertTrue(RELEASE.operator_inventory_ready(product, inventory))
+        source = (ROOT / "scripts/release-transaction.py").read_text()
+        apply = source.index("def _apply_host_cutover_locked")
+        initialized = source.index(
+            "initialize_host_operator_maps(release, kits_root, items)", apply,
+        )
+        self.assertLess(
+            initialized,
+            source.index("validate_host_runtime(plan, release, kits_root", initialized),
+        )
+
     def test_isolated_launcher_forwards_only_explicit_local_origin_evidence(self) -> None:
         launcher = (ROOT / "scripts/factory-launch").read_text()
         controller = launcher[launcher.index("  reconcile)"):launcher.index("  incident-report)")]
@@ -756,6 +820,7 @@ class ReleaseTransactionTest(unittest.TestCase):
             '"FACTORY_KITS_ROOT=$KITS_ROOT"',
         ):
             self.assertIn(binding, controller)
+        self.assertNotIn("HER" + "MES_", controller)
         self.assertIn('exec "${CONTROLLER_ENV[@]}"', controller)
         self.assertIn('"${FACTORY_KIT_TEST_MODE:-0}" == "1"', launcher)
         self.assertIn('"${FACTORY_KIT_CANONICAL_ORIGIN:-}" == /*', launcher)
@@ -885,6 +950,9 @@ class ReleaseTransactionTest(unittest.TestCase):
         for index, project in enumerate(("relay", "nysa"), start=1):
             product = self.root / project
             (product / "factory").mkdir(parents=True)
+            RELEASE.atomic_json(product / "factory/operator-map.json", {
+                "_config": None, "_sync": {}, "initiatives": {}, "tickets": {},
+            })
             RELEASE.atomic_json(product / "factory/MAINTENANCE", {
                 "cutover_owner": reservation_id, "product_path": str(product),
                 "project": project, "published_at": "test", "schema_version": 1,
@@ -922,6 +990,7 @@ class ReleaseTransactionTest(unittest.TestCase):
                     "plan_sha256": str(index + 5) * 64,
                 },
                 "source_active_sha256": RELEASE.file_digest(active),
+                "tickets": [],
             })
         with (
             mock.patch.object(RELEASE, "account_home", return_value=home),
@@ -1044,6 +1113,8 @@ class ReleaseTransactionTest(unittest.TestCase):
             mock.patch.object(RELEASE, "run", side_effect=activate),
             mock.patch.object(RELEASE, "unload_service"),
             mock.patch.object(RELEASE, "ensure_service"),
+            mock.patch.object(RELEASE, "validate_host_item_basis"),
+            mock.patch.object(RELEASE, "initialize_host_operator_maps"),
             mock.patch.object(RELEASE, "apply_launcher_plan") as launcher,
             mock.patch.object(RELEASE, "run_json", side_effect=doctor),
             mock.patch.object(RELEASE, "account_home", return_value=home),
@@ -1059,6 +1130,7 @@ class ReleaseTransactionTest(unittest.TestCase):
                 RELEASE.apply_host_cutover(plan, release, self.kits)
             for phase in (
                 "active_records_switched", "contract_floor_committed", "launcher_installed",
+                "operator_initialized",
             ):
                 os.environ["FACTORY_RELEASE_FAIL_AFTER_CUTOVER_PHASE"] = phase
                 with self.assertRaisesRegex(RELEASE.ReleaseError, phase):
@@ -1310,6 +1382,7 @@ class ReleaseTransactionTest(unittest.TestCase):
             "product": str(product), "project": "relay",
             "receipt": {"receipt_id": receipt_id},
             "source_active_sha256": RELEASE.file_digest(active),
+            "tickets": [],
         }
         plan = {
             "approval_sha256": approval,
