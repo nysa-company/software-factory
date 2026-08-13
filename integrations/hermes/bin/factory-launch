@@ -704,7 +704,7 @@ if [[ "$QUALIFICATION_LAUNCHER" != "1" &&
   "$PYTHON_BIN" -I -S "$RELEASE_PATH/scripts/owner-runtime-pin.py" check \
     --journal "$PROJECT_RUNTIME_JOURNAL" >/dev/null ||
     die "project runtime pin no longer matches its approved transaction"
-  SAFE_PATH="$PROJECT_RUNTIME_BIN:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+  SAFE_PATH="$PROJECT_RUNTIME_BIN:$HOME/.factory/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
   PATH="$SAFE_PATH"
   export PATH
 fi

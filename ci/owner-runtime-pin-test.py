@@ -95,7 +95,7 @@ class OwnerRuntimePinTest(unittest.TestCase):
         self.assertIn('PROJECT_RUNTIME_ROOT="${KITS_ROOT%/*}/project-runtimes/$PROJECT"', launcher)
         self.assertIn('PROJECT_RUNTIME_BIN="$PROJECT_RUNTIME_ROOT/bin"', launcher)
         self.assertIn('owner-runtime-pin.py" check', launcher)
-        self.assertIn('SAFE_PATH="$PROJECT_RUNTIME_BIN:', launcher)
+        self.assertIn('SAFE_PATH="$PROJECT_RUNTIME_BIN:$HOME/.factory/bin:', launcher)
         safe_path = f"{self.home}/.factory/bin:{self.system}"
         for tool, expected in (
             ("node", "v22.22.0"), ("npm", "10.9.2"), ("npx", "10.9.2")
