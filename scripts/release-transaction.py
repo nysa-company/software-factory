@@ -27,6 +27,10 @@ DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 SAFE_ID = re.compile(r"[a-z0-9][a-z0-9._-]{0,127}\Z")
 PROJECT = re.compile(r"[a-z0-9][a-z0-9-]{0,62}\Z")
 TICKET = re.compile(r"T-[0-9]+\Z")
+TICKET_STATES = frozenset({
+    "Awaiting Approval", "Approved", "Backlog", "Blocked-Escalated",
+    "Building", "Canceled", "Done", "Planning", "Ready", "Review",
+})
 
 
 class ReleaseError(ValueError):
@@ -456,6 +460,33 @@ def capacity(product: Path) -> int:
     return values[0]
 
 
+def ticket_inventory(product: Path) -> list[dict[str, str]]:
+    directory = product / "factory/tickets"
+    if not directory.exists():
+        return []
+    secure_directory(directory)
+    result = []
+    for path in sorted(directory.glob("T-*.md")):
+        ticket = path.stem
+        if not TICKET.fullmatch(ticket):
+            raise ReleaseError("product ticket filename is invalid")
+        try:
+            text = secure_regular_bytes(path, f"ticket {ticket}").decode("utf-8")
+        except UnicodeError as error:
+            raise ReleaseError(f"ticket {ticket} is invalid") from error
+        states = re.findall(r"^State:\s*(.*?)\s*$", text, re.I | re.M)
+        state = next(
+            (candidate for candidate in TICKET_STATES
+             if len(states) == 1 and states[0].casefold() == candidate.casefold()),
+            None,
+        )
+        blob = git(product, "rev-parse", f"HEAD:factory/tickets/{path.name}")
+        if state is None or not SHA.fullmatch(blob):
+            raise ReleaseError(f"ticket {ticket} identity is invalid")
+        result.append({"blob": blob, "state": state, "ticket": ticket})
+    return result
+
+
 def contract(release: Path) -> str:
     try:
         value = json.loads(
@@ -641,7 +672,7 @@ def validate_plan(value: dict[str, Any]) -> None:
     identity_keys = {
         "capacity", "contract_version", "controller", "factory_origin", "factory_sha",
         "factory_tree", "mode", "previous", "product_origin", "product_path", "product_sha",
-        "product_tree", "registry", "runtime",
+        "product_tree", "registry", "runtime", "tickets",
     }
     request_keys = {
         "cli_paths", "migrations", "operator_id", "product", "profile", "project",
@@ -653,6 +684,7 @@ def validate_plan(value: dict[str, Any]) -> None:
     controller = identity.get("controller")
     migrations = request.get("migrations")
     cli_paths = request.get("cli_paths")
+    inventory = identity.get("tickets")
     if (
         set(identity) != identity_keys or set(request) != request_keys
         or identity.get("contract_version") != "1.9.0"
@@ -673,6 +705,7 @@ def validate_plan(value: dict[str, Any]) -> None:
         or not SAFE_ID.fullmatch(str(request.get("profile", "")))
         or not isinstance(cli_paths, dict) or set(cli_paths) - {"claude", "codex", "cursor"}
         or not isinstance(migrations, list) or not 0 <= len(migrations) <= 4
+        or not isinstance(inventory, list)
         or not isinstance(runtime, dict) or set(runtime) != {"evidence", "plan_sha256"}
         or not DIGEST.fullmatch(str(runtime.get("plan_sha256", "")))
         or not isinstance(evidence, dict)
@@ -698,6 +731,17 @@ def validate_plan(value: dict[str, Any]) -> None:
         or (identity["mode"] == "upgrade" and not isinstance(identity.get("previous"), dict))
     ):
         raise ReleaseError("release plan is invalid")
+    inventory_tickets: set[str] = set()
+    for item in inventory:
+        if (
+            not isinstance(item, dict) or set(item) != {"blob", "state", "ticket"}
+            or not TICKET.fullmatch(str(item.get("ticket", "")))
+            or not SHA.fullmatch(str(item.get("blob", "")))
+            or item.get("state") not in TICKET_STATES
+            or item["ticket"] in inventory_tickets
+        ):
+            raise ReleaseError("release plan is invalid")
+        inventory_tickets.add(item["ticket"])
     previous = identity.get("previous")
     if previous is not None and (
         set(previous) != {"record", "sha256"}
@@ -984,7 +1028,7 @@ def setup(args: argparse.Namespace) -> dict[str, Any]:
         "product_origin": product_origin, "product_path": str(product),
         "product_sha": product_sha, "product_tree": product_tree,
         "registry": registry,
-        "runtime": runtime,
+        "runtime": runtime, "tickets": ticket_inventory(product),
     }
     now = int(time.time())
     if (
@@ -1167,6 +1211,7 @@ def validate_live_basis(kits_root: Path, plan: dict[str, Any]) -> None:
         product_sha != identity["product_sha"]
         or product_tree != identity["product_tree"]
         or product_origin != identity["product_origin"]
+        or ticket_inventory(product) != identity["tickets"]
         or (product / "factory/KIT_PIN").read_text(encoding="utf-8")
         != identity["factory_sha"] + "\n"
     ):
@@ -1298,6 +1343,48 @@ def doctor(launcher: Path, plan: dict[str, Any], environment: dict[str, str]) ->
     )
 
 
+def operator_map_ready(plan: dict[str, Any]) -> bool:
+    try:
+        mapping = safe_state(
+            Path(plan["identity"]["product_path"]) / "factory/operator-map.json",
+            "operator map",
+        )
+    except (OSError, ReleaseError):
+        return False
+    tickets = mapping.get("tickets")
+    return isinstance(tickets, dict) and all(
+        isinstance(tickets.get(item["ticket"]), dict)
+        and tickets[item["ticket"]].get("operator_fields_initialized") is True
+        for item in plan["identity"]["tickets"]
+    )
+
+
+def initialize_operator_map(
+    release: Path, kits_root: Path, plan: dict[str, Any],
+    environment: dict[str, str],
+) -> None:
+    product = Path(plan["identity"]["product_path"])
+    inventory = plan["identity"]["tickets"]
+    arguments = [
+        sys.executable, "-I", str(release / "scripts/operator-cli.py"),
+        "--product", str(product), "--state-dir",
+        str(kits_root / "projects" / plan["request"]["project"] / "controller"),
+        "initialize",
+    ]
+    for item in inventory:
+        arguments.extend(["--ticket", item["ticket"]])
+    evidence = run_json(
+        arguments, "operator projection initialization", environment=environment,
+    )
+    if evidence != {
+        "initialized": sorted(item["ticket"] for item in inventory),
+        "status": "pass",
+    }:
+        raise ReleaseError("operator projection initialization evidence is invalid")
+    if not operator_map_ready(plan):
+        raise ReleaseError("operator projection initialization is incomplete")
+
+
 def ensure_controller(plan: dict[str, Any]) -> None:
     controller = plan["identity"]["controller"]
     if controller.get("status") == "not-applicable":
@@ -1384,6 +1471,7 @@ def apply_activation(
             or (product / "factory/MAINTENANCE").exists()
             or not model_ready(launcher, plan, environment)
             or not migration_complete(kits_root, plan, approved_by)
+            or not operator_map_ready(plan)
         ):
             raise ReleaseError("completed release evidence no longer matches runtime state")
         doctor(launcher, plan, environment)
@@ -1393,6 +1481,7 @@ def apply_activation(
         and not (product / "factory/MAINTENANCE").exists()
         and model_ready(launcher, plan, environment)
         and migration_complete(kits_root, plan, approved_by)
+        and operator_map_ready(plan)
     ):
         doctor(launcher, plan, environment)
         journal_update(journal, plan, "dispatch_started", "pass")
@@ -1458,6 +1547,8 @@ def apply_activation(
             arguments.append("--json")
             run_json(arguments, "ticket migration batch", environment=environment)
         journal_update(journal, plan, "migrated", "pass")
+        initialize_operator_map(release, kits_root, plan, environment)
+        journal_update(journal, plan, "operator_initialized", "pass")
         ensure_controller(plan)
         journal_update(journal, plan, "controller_enabled", "pass")
         doctor(launcher, plan, environment)

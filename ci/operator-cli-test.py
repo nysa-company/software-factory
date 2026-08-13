@@ -135,6 +135,30 @@ class OperatorCliTest(unittest.TestCase):
         self.commit_ticket("building")
         self.cli("ready", "--ticket", "T-1", expect=1)
 
+    def test_initialize_batches_exact_tickets_and_preserves_operator_fields(self) -> None:
+        self.write_ticket("T-2", "Ready")
+        self.commit_ticket("second ticket")
+        mapping = {
+            "_config": None, "_sync": {}, "initiatives": {},
+            "tickets": {"T-1": {
+                "operator": {"priority": "urgent"},
+                "operator_fields_initialized": True,
+            }},
+        }
+        (self.product / "factory/operator-map.json").write_text(
+            json.dumps(mapping) + "\n"
+        )
+        result = self.cli(
+            "initialize", "--ticket", "T-1", "--ticket", "T-2",
+        )
+        self.assertEqual(result, {"initialized": ["T-1", "T-2"], "status": "pass"})
+        observed = self.map_value()
+        self.assertEqual(
+            observed["tickets"]["T-1"]["operator"], {"priority": "urgent"},
+        )
+        self.assertTrue(observed["tickets"]["T-2"]["operator_fields_initialized"])
+        self.cli("initialize", "--ticket", "T-1", "--ticket", "T-1", expect=1)
+
     def test_cancel_projects_canceled(self) -> None:
         receipt = self.cli("cancel", "--ticket", "T-1")
         self.assertTrue(receipt["consumed"])

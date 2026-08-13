@@ -31,6 +31,9 @@ class ReleaseTransactionTest(unittest.TestCase):
         self.root = Path(self.temp.name).resolve()
         self.product = self.root / "product"
         (self.product / "factory").mkdir(parents=True)
+        RELEASE.atomic_json(self.product / "factory/operator-map.json", {
+            "_config": None, "_sync": {}, "initiatives": {}, "tickets": {},
+        })
         self.kits = self.root / "kits"
         (self.kits / "projects/relay/release-plans/journals").mkdir(parents=True)
         self.sha = "a" * 40
@@ -81,6 +84,7 @@ class ReleaseTransactionTest(unittest.TestCase):
                     "evidence": {"path": str(self.root / "runtime")},
                     "plan_sha256": "2" * 64,
                 },
+                "tickets": [],
             },
             "request": {
                 "cli_paths": {}, "migrations": [], "operator_id": "tester",
@@ -112,6 +116,14 @@ class ReleaseTransactionTest(unittest.TestCase):
                 candidate[first][second] = changed
                 with self.assertRaisesRegex(RELEASE.ReleaseError, "release plan is invalid"):
                     RELEASE.validate_plan(candidate)
+
+    def test_composite_plan_rejects_invalid_ticket_inventory(self) -> None:
+        body = json.loads(json.dumps(self.body))
+        body["identity"]["tickets"] = [{
+            "blob": "3" * 40, "state": "Invented", "ticket": "T-1",
+        }]
+        with self.assertRaisesRegex(RELEASE.ReleaseError, "release plan is invalid"):
+            RELEASE.validate_plan(RELEASE.seal_plan(body))
 
     def test_signed_phase_journal_rejects_tamper_and_orders_recovery(self) -> None:
         path = self.root / "journal.json"
@@ -518,6 +530,61 @@ class ReleaseTransactionTest(unittest.TestCase):
         self.assertEqual(model["profile_id"], "openai-priority-v1")
         self.assertRegex(model["profile_hash"], r"^[0-9a-f]{64}$")
         self.assertNotIn("QUALIFICATION", json.dumps(model))
+
+    def test_ticket_inventory_binds_committed_blob_and_state(self) -> None:
+        tickets = self.product / "factory/tickets"
+        tickets.mkdir()
+        (tickets / "T-126.md").write_text("# T-126\n\nState: Ready\n")
+        with mock.patch.object(RELEASE, "git", return_value="7" * 40):
+            inventory = RELEASE.ticket_inventory(self.product)
+        self.assertEqual(inventory, [{
+            "blob": "7" * 40, "state": "Ready", "ticket": "T-126",
+        }])
+        (tickets / "T-bad.md").write_text("State: Ready\n")
+        with (
+            mock.patch.object(RELEASE, "git", return_value="7" * 40),
+            self.assertRaisesRegex(RELEASE.ReleaseError, "filename"),
+        ):
+            RELEASE.ticket_inventory(self.product)
+
+    def test_release_initializes_every_bound_ticket_without_erasing_overlays(self) -> None:
+        tickets = self.product / "factory/tickets"
+        tickets.mkdir()
+        for ticket, state in (("T-1", "Ready"), ("T-2", "Done")):
+            (tickets / f"{ticket}.md").write_text(
+                f"# {ticket}\n\nState: {state}\nPriority: normal\n"
+            )
+        plan = json.loads(json.dumps(self.plan))
+        plan["identity"]["tickets"] = [
+            {"blob": "3" * 40, "state": "Ready", "ticket": "T-1"},
+            {"blob": "4" * 40, "state": "Done", "ticket": "T-2"},
+        ]
+        mapping = json.loads((self.product / "factory/operator-map.json").read_text())
+        mapping["tickets"]["T-1"] = {
+            "operator": {"priority": "urgent"},
+            "operator_fields_initialized": True,
+        }
+        RELEASE.atomic_json(self.product / "factory/operator-map.json", mapping)
+        RELEASE.initialize_operator_map(ROOT, self.kits, plan, os.environ.copy())
+        observed = RELEASE.safe_state(
+            self.product / "factory/operator-map.json", "operator map",
+        )
+        self.assertEqual(
+            observed["tickets"]["T-1"]["operator"], {"priority": "urgent"},
+        )
+        self.assertTrue(observed["tickets"]["T-2"]["operator_fields_initialized"])
+        self.assertTrue(RELEASE.operator_map_ready(plan))
+
+    def test_operator_initialization_precedes_controller_and_dispatch(self) -> None:
+        source = (ROOT / "scripts/release-transaction.py").read_text()
+        self.assertLess(
+            source.index("initialize_operator_map(release, kits_root, plan, environment)"),
+            source.index("ensure_controller(plan)"),
+        )
+        self.assertLess(
+            source.index("ensure_controller(plan)"),
+            source.index('marker.unlink()', source.index("ensure_controller(plan)")),
+        )
 
     def test_launcher_test_mode_retains_its_explicit_isolated_kits_root(self) -> None:
         home = self.root / "test-home"

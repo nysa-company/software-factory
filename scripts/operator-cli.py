@@ -497,6 +497,21 @@ def cmd_init(args: argparse.Namespace) -> dict:
     return {"ticket": args.ticket, "initialized": True}
 
 
+def cmd_initialize(args: argparse.Namespace) -> dict:
+    product = Path(args.product).resolve()
+    map_path = operator_map_path(product)
+    if len(args.ticket) != len(set(args.ticket)):
+        raise OperatorCliError("operator initialization tickets are duplicated")
+    with map_lock(map_path):
+        mapping = load_map(map_path)
+        for ticket in args.ticket:
+            committed_state(product, ticket)
+            ticket_entry(mapping, ticket)
+        stamp_sync(mapping, None)
+        write_map(map_path, mapping)
+    return {"initialized": sorted(args.ticket), "status": "pass"}
+
+
 def cmd_pending(args: argparse.Namespace) -> dict:
     product = Path(args.product).resolve()
     tickets_dir = product / "factory" / "tickets"
@@ -530,6 +545,8 @@ def main(argv: list[str] | None = None) -> int:
     for name in ("ready", "approve", "cancel", "init"):
         sub = commands.add_parser(name)
         sub.add_argument("--ticket", required=True)
+    initialize = commands.add_parser("initialize")
+    initialize.add_argument("--ticket", action="append", default=[])
     resume = commands.add_parser("resume")
     resume.add_argument("--ticket", required=True)
     resume.add_argument("--stage", required=True)
@@ -548,6 +565,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "pending":
             result = cmd_pending(args)
+        elif args.command == "initialize":
+            result = cmd_initialize(args)
         elif args.command == "init":
             result = cmd_init(args)
         elif args.command == "fallback-approve":

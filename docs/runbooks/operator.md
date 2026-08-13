@@ -589,7 +589,9 @@ installs the sealed candidate, prepares a project-local runtime, the
 path-only project registry, and the exact macOS controller plist, then binds
 Factory/product SHA and tree, active generation, runtime binaries, provider
 plans, model profile, receipt, and any one-to-four ticket migration previews
-into an owner-only plan. It never chooses tickets or advances ticket state.
+into an owner-only plan. It also binds every committed ticket blob and state,
+then idempotently initializes their local operator-map entries behind the
+dispatch barrier. It never chooses migration tickets or advances ticket state.
 
 If the stable launcher or provider settings must change, setup first returns a
 `prerequisites` plan. Review it, ensure every listed active factory is already
@@ -601,8 +603,9 @@ already match, setup returns the activation plan directly, so only one resume
 is needed.
 
 Activation keeps a durable dispatch barrier while maintenance is removed,
-activates the exact model hash, replays the approved migration batch, loads the
-bound controller job, requires Doctor to pass, and removes the barrier last.
+activates the exact model hash, replays the approved migration batch, initializes
+the bound ticket inventory, loads the bound controller job, requires Doctor to
+pass, and removes the barrier last.
 Any cutover failure republishes maintenance and leaves dispatch stopped. A
 retry with the same hash resumes the signed journal; changed product, runtime,
 launcher, registry, controller, active generation, receipt, model, or migration
