@@ -14,11 +14,16 @@ TEST_BIN="$TEST_HOME/.factory/bin"
 LAUNCH_TMP="$TMP/launcher-tmp"
 PROJECT=contracttest
 RACE_PID=""
+QUALIFICATION_ROOT=""
 
 cleanup() {
   if [[ -n "$RACE_PID" ]]; then
     kill -TERM "$RACE_PID" 2>/dev/null || true
     wait "$RACE_PID" 2>/dev/null || true
+  fi
+  if [[ -n "$QUALIFICATION_ROOT" ]]; then
+    chmod -R u+w "$QUALIFICATION_ROOT" 2>/dev/null || true
+    rm -rf "$QUALIFICATION_ROOT"
   fi
   chmod -R u+w "$TMP" 2>/dev/null || true
   rm -rf "$TMP"
@@ -167,6 +172,21 @@ run_launcher() {
 mkdir -p "$TEST_BIN" "$LAUNCH_TMP" "$KITS_ROOT/projects/$PROJECT" \
   "$KITS_ROOT/releases" "$KITS_ROOT/receipts" "$PRODUCT/factory"
 
+# The moved launcher recognizes its exact sealed qualification location.
+QUALIFICATION_ROOT="$(mktemp -d /private/tmp/nysa-sf-qualification.launcher.XXXXXX)"
+QUALIFICATION_SHA=9999999999999999999999999999999999999999
+QUALIFICATION_LAUNCHER="$QUALIFICATION_ROOT/releases/$QUALIFICATION_SHA/scripts/factory-launch"
+mkdir -p "$(dirname "$QUALIFICATION_LAUNCHER")" \
+  "$QUALIFICATION_ROOT/projects/qualification-test"
+cp "$LAUNCHER" "$QUALIFICATION_LAUNCHER"
+chmod 700 "$QUALIFICATION_LAUNCHER"
+if HOME="$TEST_HOME" /bin/bash "$QUALIFICATION_LAUNCHER" \
+  qualification-test contract --json >"$TMP/qualification-launcher.out" 2>&1; then
+  fail "qualification launcher accepted an incomplete active binding"
+fi
+grep -q 'project active record is missing' "$TMP/qualification-launcher.out" ||
+  fail "qualification launcher did not recognize its sealed release path"
+
 for tool in git python3 ps; do
   resolved="$(command -v "$tool")"
   [[ "$resolved" == /* && -x "$resolved" ]] || fail "$tool is unavailable"
@@ -249,6 +269,65 @@ write_binding "$SHA_A" "$TREE_A" "$RELEASE_A"
 write_binding "$SHA_A" "$TREE_A" "$RELEASE_A" 1.8.0
 expect_refused contract-floor run_launcher contract --json
 write_binding "$SHA_A" "$TREE_A" "$RELEASE_A"
+
+# A completed host cutover makes a deleted floor fail closed.
+python3 - "$KITS_ROOT/contract-cutover-journal.json" <<'PY'
+import hashlib
+import json
+import os
+import pathlib
+import sys
+body = {
+    "approval_sha256": "a" * 64,
+    "completed_projects": ["contracttest"],
+    "floor_required": True,
+    "phase": "healthy",
+    "schema": "nysa.software-factory.host-cutover-journal/v1",
+    "status": "pass",
+}
+body["record_sha256"] = hashlib.sha256(
+    (json.dumps(body, sort_keys=True, separators=(",", ":")) + "\n").encode()
+).hexdigest()
+path = pathlib.Path(sys.argv[1])
+path.write_text(json.dumps(body, sort_keys=True) + "\n", encoding="utf-8")
+os.chmod(path, 0o600)
+PY
+rm "$KITS_ROOT/contract-floor.json"
+expect_refused missing-floor-after-cutover run_launcher contract --json
+python3 - "$KITS_ROOT/contract-floor.json" <<'PY'
+import json, os, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+path.write_text(json.dumps({
+    "minimum_major": 2,
+    "schema": "nysa.software-factory.contract-floor/v1",
+}, sort_keys=True) + "\n", encoding="utf-8")
+os.chmod(path, 0o600)
+PY
+python3 - "$KITS_ROOT/contract-cutover-journal.json" <<'PY'
+import hashlib, json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+value = json.loads(path.read_text())
+value.update(phase="launcher_installed", status="in-progress")
+value.pop("record_sha256")
+value["record_sha256"] = hashlib.sha256(
+    (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
+).hexdigest()
+path.write_text(json.dumps(value, sort_keys=True) + "\n")
+PY
+expect_refused host-cutover-barrier run_launcher preflight
+grep -q 'host cutover is in progress' "$TMP/refused-host-cutover-barrier.out" ||
+  fail "launcher did not report the host cutover barrier"
+python3 - "$KITS_ROOT/contract-cutover-journal.json" <<'PY'
+import hashlib, json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+value = json.loads(path.read_text())
+value.update(phase="healthy", status="pass")
+value.pop("record_sha256")
+value["record_sha256"] = hashlib.sha256(
+    (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
+).hexdigest()
+path.write_text(json.dumps(value, sort_keys=True) + "\n")
+PY
 
 # A sealed release is selected once and its complete tree must stay unchanged.
 touch "$RELEASE_A/unsealed-file"

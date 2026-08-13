@@ -8,7 +8,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Durable decisions use repository-local numbering beginning at Decision 1.
 - Stable operating truth lives in `docs/`; prompts, templates, and evidence stay colocated with consumers. The operator preflight report is read-only and makes network review explicit before certification.
 - Nysa Agents baseline v3 as a toolkit; `bash ci/test-all.sh` is the unconditional full command.
-- Live products resolve sealed exact-SHA releases under `~/.factory/kits` via `~/.factory/bin/factory-launch`.
+- Contract 2 live products resolve sealed exact-SHA releases from owner-only `active.json` records under `~/.factory/kits` via `~/.factory/bin/factory-launch`; the native controller is the only scheduler.
 - Model routing is portfolio policy; routes pin at the ticket boundary and change only via the Contract 1.4 journal flow. One profile resolution shares model-independent native-adapter readiness across its routes and runs independent probes in bounded parallel; Cursor readiness stays model-specific. Sealed Cursor inventory verifies the exact configured CLI identity in an empty disposable owner-only home before copying credentials, then accepts only its bounded certified structure.
 - Linear is removed (Decision 398); the six operator authorities are one-use receipts via `factory-kit.sh operator ACTION`. The only emergency recovery is the receipt-bound `OPERATOR RESUME` ticket commit. No generic lifecycle bypass is approved.
 - **Contract rules below in Operating contract are authoritative**; this summary is only what the session hook can inject.
@@ -18,6 +18,13 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 The enforced contract state, authoritative over the summary above. The Current truth
 section carries only what the SessionStart hook injects (8 lines, 1200 characters);
 everything the Factory actually enforces lives here.
+
+- Contract 2 owns the complete runtime boundary. A machine-wide reservation
+  drains and binds every active project before the global launcher changes;
+  direct project mutation is refused until the exact cutover completes or is
+  explicitly aborted before mutation. The no-return floor is monotonic,
+  in-progress cutovers globally block dispatch, and crash recovery fixes
+  forward from authenticated journals while preserving preexisting maintenance.
 
 - Provider SQLite growth is not capped by JSON input limits. An idle
   pre-provider `missing-terminal` claim may use only issue-bound pause/resume,
@@ -5744,3 +5751,15 @@ machine-global launcher serves every project, the first cutover must extend the
 signed release transaction to drain and migrate every active project together,
 persist a Contract 2 floor, and fix forward after that no-return phase; immutable
 historical releases and evidence remain readable but cannot become active.
+
+## 2026-08-12 — Decision 403: Contract 2 removes Hermes from the active runtime
+
+Category: System change
+
+The host runtime, launcher, service jobs, registry, qualification environment,
+operator console, credential flow, CI, and current documentation no longer use
+Hermes. The signed release transaction now reserves the whole host, migrates
+every active project, persists a monotonic Contract 2 floor and global dispatch
+barrier, retires the old profile and jobs only after native Doctor success, and
+supports exact pre-mutation abort plus journaled fix-forward replay. Historical
+evidence remains readable; a static registered suite prevents reintroduction.

@@ -980,6 +980,14 @@ PY
             "test \"$GH_CONFIG_DIR\" = \"$HOME/.config/gh\" || exit 93\n"
         )
         github_helper.chmod(0o700)
+        github_home = self.base / "github-home"
+        github_config = github_home / ".config/gh"
+        github_config.mkdir(parents=True)
+        github_home.chmod(0o700)
+        (github_home / ".config").chmod(0o700)
+        github_config.chmod(0o700)
+        (github_config / "hosts.yml").write_text("github.com: {}\n")
+        (github_config / "hosts.yml").chmod(0o600)
         git_wrapper = tools / "git"
         git_wrapper.write_text(
             "#!/usr/bin/env python3\n"
@@ -1038,6 +1046,7 @@ PY
             "GH_TOKEN": "ambient-token",
             "GITHUB_ENTERPRISE_TOKEN": "ambient-github-enterprise-token",
             "GITHUB_TOKEN": "ambient-github-token",
+            "HOME": str(github_home),
         }
 
         def migrate(*args, run_environment=None, check=True):
@@ -1055,6 +1064,16 @@ PY
                     result.stdout, result.stderr
                 ))
             return json.loads(result.stdout) if not result.returncode else result
+
+        github_config.chmod(0o777)
+        unsafe_store = migrate(
+            "migrate", "--ticket", "T-901", "--workdir", str(self.workdir),
+            "--approve-hash", "0" * 64, "--readiness-hash", "1" * 64,
+            "--approved-by", "tester", check=False,
+        )
+        self.assertEqual(unsafe_store.returncode, 2)
+        self.assertIn("credential helper is unsafe", unsafe_store.stdout)
+        github_config.chmod(0o700)
 
         preview = migrate(
             "migrate-plan", "--ticket", "T-901", "--workdir", str(self.workdir)

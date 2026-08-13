@@ -70,7 +70,7 @@ if [[ "$SELF_PATH" == "$INSTALLED_LAUNCHER_PATH" ]]; then
   HOME="$ACCOUNT_HOME"
   RAW_KITS_ROOT="$ACCOUNT_HOME/.factory/kits"
 else
-  QUALIFICATION_RELEASE="$(cd "$(dirname "$SELF_PATH")/../../.." 2>/dev/null && pwd -P)"
+  QUALIFICATION_RELEASE="$(cd "$(dirname "$SELF_PATH")/.." 2>/dev/null && pwd -P)"
   QUALIFICATION_SHA="$(basename "$QUALIFICATION_RELEASE")"
   QUALIFICATION_ROOT="$(dirname "$(dirname "$QUALIFICATION_RELEASE")")"
   if [[ "$SELF_PATH" == "$QUALIFICATION_RELEASE/scripts/factory-launch" &&
@@ -203,13 +203,14 @@ require_managed_file "$ACTIVE_FILE" "project active record"
 # Open and parse active.json exactly once from its fixed managed path. Atomic
 # replacements after this point cannot change any selected runtime identity.
 ACTIVE_DATA="$("$PYTHON_BIN" -I -S - "$ACTIVE_FILE" "$PROJECT" \
-  "$KITS_ROOT/contract-floor.json" <<'PY'
+  "$KITS_ROOT/contract-floor.json" "$KITS_ROOT/contract-cutover-journal.json" <<'PY'
+import hashlib
 import json
 import os
 import stat
 import sys
 
-path, expected_project, floor_path = sys.argv[1:]
+path, expected_project, floor_path, cutover_path = sys.argv[1:]
 def unique(pairs):
     value = {}
     for key, item in pairs:
@@ -217,6 +218,28 @@ def unique(pairs):
             raise ValueError("duplicate key")
         value[key] = item
     return value
+
+def owner_json(candidate, maximum):
+    descriptor = os.open(candidate, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_uid != os.geteuid()
+            or before.st_nlink != 1
+            or stat.S_IMODE(before.st_mode) != 0o600
+            or before.st_size > maximum
+        ):
+            raise ValueError("unsafe owner state")
+        raw = os.read(descriptor, before.st_size + 1)
+        after = os.fstat(descriptor)
+        if len(raw) != before.st_size or (
+            before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns
+        ) != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
+            raise ValueError("changed owner state")
+        return json.loads(raw.decode("utf-8", "strict"), object_pairs_hook=unique)
+    finally:
+        os.close(descriptor)
 
 descriptor = -1
 try:
@@ -256,29 +279,34 @@ if any(key not in value for key in required):
 if value["project"] != expected_project:
     raise SystemExit(1)
 try:
-    if os.path.lexists(floor_path):
-        floor_descriptor = os.open(
-            floor_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-        )
-        metadata = os.fstat(floor_descriptor)
+    cutover_in_progress = False
+    cutover = None
+    if os.path.lexists(cutover_path):
+        cutover = owner_json(cutover_path, 2_000_000)
+        body = {key: item for key, item in cutover.items() if key != "record_sha256"}
+        record = hashlib.sha256(
+            (json.dumps(body, sort_keys=True, separators=(",", ":")) + "\n").encode()
+        ).hexdigest()
         if (
-            not stat.S_ISREG(metadata.st_mode)
-            or metadata.st_uid != os.geteuid()
-            or metadata.st_nlink != 1
-            or stat.S_IMODE(metadata.st_mode) != 0o600
-            or metadata.st_size > 4096
+            cutover.get("schema") != "nysa.software-factory.host-cutover-journal/v1"
+            or cutover.get("record_sha256") != record
+            or cutover.get("status") not in {"in-progress", "pass"}
         ):
-            raise ValueError("unsafe contract floor")
-        floor = json.loads(
-            os.read(floor_descriptor, metadata.st_size + 1).decode("utf-8", "strict"),
-            object_pairs_hook=unique,
-        )
-        os.close(floor_descriptor)
+            raise ValueError("invalid host cutover journal")
+        cutover_in_progress = cutover["status"] == "in-progress"
+    if os.path.lexists(floor_path):
+        floor = owner_json(floor_path, 4096)
         if floor != {
             "minimum_major": 2,
             "schema": "nysa.software-factory.contract-floor/v1",
         } or not value["contract_version"].startswith("2."):
             raise ValueError("active contract is below floor")
+    elif cutover is not None:
+        if cutover.get("floor_required") is True or cutover.get("status") == "pass" or cutover.get("phase") in {
+            "active_records_switched", "contract_floor_committed",
+            "launcher_installed", "retired_runtime_removed", "healthy",
+        }:
+            raise ValueError("contract floor is missing after host cutover")
 except Exception:
     raise SystemExit(1)
 for key in required:
@@ -328,6 +356,7 @@ print("\t".join((
     *[value[key] for key in required], *optional,
     json.dumps(runtime_tuple, sort_keys=True, separators=(",", ":")),
     runtime_tuple.get("node", "-"), runtime_tuple.get("npm", "-"),
+    "true" if cutover_in_progress else "false",
 )))
 PY
 )" || die "project active record is invalid"
@@ -358,7 +387,7 @@ IFS="$(printf '\t')" read -r ACTIVE_PROJECT KIT_SHA KIT_TREE ACTIVE_CONTRACT \
   ACTIVE_PRODUCT_SHA ACTIVE_CONTROLLER_STATE ACTIVE_PROVIDER_STATE \
   ACTIVE_FALLBACK_READINESS_SHA256 \
   ACTIVE_RUNTIME_TUPLE ACTIVE_RUNTIME_NODE \
-  ACTIVE_RUNTIME_NPM <<EOF
+  ACTIVE_RUNTIME_NPM HOST_CUTOVER_IN_PROGRESS <<EOF
 $ACTIVE_DATA
 EOF
 
@@ -407,6 +436,13 @@ case "$ACTIVE_CONTRACT" in
   2.0.0) CONTRACT_VERSION="$ACTIVE_CONTRACT" ;;
   *) die "active Factory contract is incompatible" ;;
 esac
+
+if [[ "$HOST_CUTOVER_IN_PROGRESS" == "true" ]]; then
+  case "$COMMAND" in
+    contract|doctor|reconcile|incident-report|watch) ;;
+    *) die "host cutover is in progress; command refused" ;;
+  esac
+fi
 
 if [[ "$QUALIFICATION_LAUNCHER" == "1" ]]; then
   [[ "$ACTIVE_FALLBACK_READINESS_SHA256" =~ ^[0-9a-f]{64}$ ]] ||

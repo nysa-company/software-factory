@@ -115,13 +115,28 @@ qualification result, runtime pins, provider CLI pins, concurrency state, and
 any approved ticket migrations. The signed release journal makes retries
 idempotent and refuses changed inputs.
 
+If a host cutover plan was never approved, abort that exact hash to restore its
+captured maintenance state and release the machine-wide reservation:
+
+```bash
+bash scripts/factory-kit.sh release abort \
+  --project <project> --sha <full-factory-sha> \
+  --approve-hash <approval-sha256> --approved-by <operator-id>
+```
+
+Abort is refused after the first project mutation; recovery is fix-forward from
+that point.
+
 Production upgrades require maintenance and a fully drained controller,
 dispatcher leases, provider attempts, broker tokens, and qualification
-consumer set. The transaction installs the exact sealed launcher bytes before
-switching the active record. A failed first Contract 2.0 cutover stays in
-maintenance for fix-forward; it never restores an unsupported release
-implicitly. Later Contract 2.x generations may use the ordinary authenticated
-rollback flow.
+consumer set. A machine-wide reservation prevents another setup or apply from
+racing the reviewed cutover. The transaction switches every exact active
+record, commits the Contract 2 floor, installs the sealed launcher, validates
+all native controllers with Doctor, retires the reviewed old Factory jobs and
+profile, then restores or clears only its own maintenance markers. A failed
+first Contract 2.0 cutover stays in maintenance for fix-forward; it never
+restores an unsupported release implicitly. Later Contract 2.x generations may
+use the ordinary authenticated rollback flow.
 
 ## Native scheduling
 
@@ -147,11 +162,11 @@ The launcher starts helpers under a fixed clean environment. Provider
 credentials remain in their existing owner-local stores and are never copied
 into product worktrees or durable evidence.
 
-For GitHub HTTPS mutations, the launcher uses the pinned `gh` CLI only for the
-specific migration or fallback operation that needs it. The token is captured
-without printing it, passed through an inherited file descriptor, removed from
-the general helper environment, and never written to argv, manifests, journals,
-or logs. Read-only and provider execution paths remain credential-free.
+For GitHub HTTPS mutations, the launcher uses one ownership- and mode-validated
+fixed `gh` executable only for the migration or fallback operation that needs
+it. The clean child environment uses the account's fixed `$HOME/.config/gh`
+credential store; it never extracts or forwards a token. Read-only and provider
+execution paths remain credential-free.
 
 Doctor reports only bounded readiness states. It never returns account data,
 credential values, command output, or credential-bearing URLs.

@@ -3599,6 +3599,30 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
     validate_upgrade_authority(
         read(authority / "authority.json"), active, identity,
     )
+    if active_contract == contract and active["kit_sha"] == sha:
+        release = root / f"releases/{sha}"
+        if (
+            active.get("release_path") != str(release)
+            or not release.is_dir() or git_tree(release) != tree
+        ):
+            raise EnvironmentError("existing qualification activation is invalid")
+        result = bind_runtime_tuple({
+            "factory_sha": sha,
+            "factory_tree": tree,
+            "historical_pr_objects": historical_objects,
+            "launcher": str(release / "scripts/factory-launch"),
+            "product_sha": product_sha,
+            "product_tree": product_tree,
+            "project": args.project,
+            "provider_policy_sha256": active["provider_policy_sha256"],
+            "qualification_mode": qualification_mode,
+            "root": str(root),
+            "schema": SCHEMA,
+            "status": "upgraded",
+        }, runtime_tuple)
+        if read(root / "environment.json") != result:
+            raise EnvironmentError("existing qualification environment is invalid")
+        return result
     resume_operator_state(authority, identity, manifest["tickets"])
     lock = os.open(
         controller / "reconcile.lock",

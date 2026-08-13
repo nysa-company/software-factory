@@ -306,29 +306,20 @@ product checkout.
 - Certification records the exact policy digest, covered adapters and routes,
   ticket capacity, sealed Factory SHA/tree, and owner-local runtime directory
   identity. Activation and recutover recompute that evidence and refuse drift.
-- Certify the pinned release:
+- Use the Contract 2 release transaction for a new project or upgrade:
 
   ```bash
-  bash scripts/factory-kit.sh certify \
-    --project "<project>" --product "<absolute-product-path>" --sha "<full-sha>"
+  bash scripts/factory-kit.sh release setup --project "<project>" \
+    --product "<absolute-product-path>" --sha "<full-sha>" \
+    --repo "$PWD" --profile "<model-profile>" --operator-id "<operator-id>"
+  bash scripts/factory-kit.sh release resume --project "<project>" \
+    --sha "<full-sha>" --approve-hash "<approval-sha256>" \
+    --approved-by "<operator-id>"
   ```
 
-  For the first activation of a new Contract 1.9 project, use the resumable
-  orchestration after the exact product pin and runtime/provider prerequisites
-  are ready:
-
-  ```bash
-  bash scripts/factory-kit.sh bootstrap --project "<project>" \
-    --product "<absolute-product-path>" --sha "<full-sha>" --repo "$PWD"
-  bash scripts/factory-kit.sh bootstrap-status --project "<project>" \
-    --sha "<full-sha>" --json
-  ```
-
-  It runs the same install, certify, pause, and activate gates and records each
-  phase in an owner-only signed release journal. Retries resume the exact bound
-  candidate; completed replay is read-only. It refuses an already-active
-  different release and deliberately leaves maintenance in place for health,
-  model activation, and approved ticket migration.
+  Review each returned plan before resuming it. The transaction runs install,
+  certify, pause, qualification, and activation gates and records each phase in
+  an owner-only signed journal. Retries resume the exact bound candidate.
   A fresh install records 24-hour owner-only kit-suite evidence by default.
   Authenticated successful GitHub Actions evidence for the exact protected-main
   SHA and its full Linux, macOS, aggregate, and immutability jobs is mandatory;

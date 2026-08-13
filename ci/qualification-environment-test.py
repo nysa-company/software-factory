@@ -1721,9 +1721,38 @@ class QualificationEnvironmentTest(unittest.TestCase):
         self.assertEqual(
             ENVIRONMENT.read(self.root / "environment.json")["status"], "upgraded",
         )
+        response_lost = False
+
+        def lose_response_after_active(path, value):
+            nonlocal response_lost
+            original_replace(path, value)
+            if not response_lost and path == active_path:
+                response_lost = True
+                raise ENVIRONMENT.EnvironmentError("simulated response loss after active switch")
+
+        with (
+            mock.patch.object(
+                ENVIRONMENT, "replace", side_effect=lose_response_after_active,
+            ),
+            self.assertRaisesRegex(
+                ENVIRONMENT.EnvironmentError, "response loss after active switch",
+            ),
+        ):
+            ENVIRONMENT.upgrade(argparse.Namespace(
+                **vars(args), global_env=replacement,
+            ))
+        active_before_replay = active_path.read_bytes()
+        receipts_before_replay = sorted(
+            path.name for path in (self.root / "receipts").iterdir()
+        )
         second = ENVIRONMENT.upgrade(argparse.Namespace(
             **vars(args), global_env=replacement,
         ))
+        self.assertEqual(active_path.read_bytes(), active_before_replay)
+        self.assertEqual(
+            sorted(path.name for path in (self.root / "receipts").iterdir()),
+            receipts_before_replay,
+        )
         active = json.loads(active_path.read_text())
         self.assertEqual(first["status"], "prepared")
         self.assertEqual(second["status"], "upgraded")

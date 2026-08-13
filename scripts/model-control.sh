@@ -297,6 +297,27 @@ if (
     raise SystemExit(3)
 config_dir = str(home / ".config" / "gh")
 try:
+    config_parent = home / ".config"
+    config = config_parent / "gh"
+    hosts = config / "hosts.yml"
+    for directory in (config_parent, config):
+        value = directory.lstat()
+        if (
+            directory.is_symlink() or not stat.S_ISDIR(value.st_mode)
+            or value.st_uid != os.geteuid()
+            or stat.S_IMODE(value.st_mode) & 0o022
+        ):
+            raise OSError
+    value = hosts.lstat()
+    if (
+        hosts.is_symlink() or not stat.S_ISREG(value.st_mode)
+        or value.st_uid != os.geteuid() or value.st_nlink != 1
+        or stat.S_IMODE(value.st_mode) & 0o077
+    ):
+        raise OSError
+except OSError:
+    raise SystemExit(3)
+try:
     result = subprocess.run(
         [path, "auth", "status", "--active", "--hostname", "github.com"],
         stdin=subprocess.DEVNULL,

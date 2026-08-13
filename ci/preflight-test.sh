@@ -786,7 +786,7 @@ else
   echo "PASS: ticket lease mismatch reached no backend probes"
 fi
 
-# --- GH_TOKEN warn-but-pass ---
+# --- Generic preflight does not depend on GitHub credentials. ---
 NOWARN="$TMP/nowarn"
 mkdir -p "$NOWARN"
 write_envelope "$NOWARN"
@@ -800,13 +800,13 @@ chmod 600 "$FAKE_HOME/.claude/.credentials.json"
 out="$(run_preflight "$NOWARN" "T-006" --home "$FAKE_HOME" --gh-token "")" || rc=$?
 rc="${rc:-0}"
 if [[ "$rc" -ne 0 ]]; then
-  echo "FAIL: GH_TOKEN warn-but-pass — expected exit 0, got $rc"
+  echo "FAIL: credential-free preflight — expected exit 0, got $rc"
   echo "$out"
   FAILURES=$((FAILURES + 1))
-elif grep -qF "WARN: GH_TOKEN not set" <<<"$out" && grep -qF "PREFLIGHT PASS" <<<"$out"; then
-  echo "PASS: GH_TOKEN warn-but-pass"
+elif ! grep -qF "GH_TOKEN" <<<"$out" && grep -qF "PREFLIGHT PASS" <<<"$out"; then
+  echo "PASS: credential-free preflight"
 else
-  echo "FAIL: GH_TOKEN warn-but-pass — missing WARN or PREFLIGHT PASS"
+  echo "FAIL: credential-free preflight — unexpected credential output or missing pass"
   echo "$out"
   FAILURES=$((FAILURES + 1))
 fi

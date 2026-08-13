@@ -2555,6 +2555,100 @@ printf '%s\n\n' "$SHA_A" > "$PRODUCT_ONE/factory/KIT_PIN"
 expect_failure "rollback rejects KIT_PIN blank-line extras" \
   rollback --project alpha --product "$PRODUCT_ONE"
 printf '%s\n' "$SHA_A" > "$PRODUCT_ONE/factory/KIT_PIN"
+python3 - "$STATE/contract-cutover-journal.json" <<'PY'
+import hashlib, json, os, pathlib, sys
+body = {
+    "approval_sha256": "a" * 64,
+    "completed_projects": ["alpha"],
+    "floor_required": True,
+    "phase": "healthy",
+    "schema": "nysa.software-factory.host-cutover-journal/v1",
+    "status": "pass",
+}
+body["record_sha256"] = hashlib.sha256(
+    (json.dumps(body, sort_keys=True, separators=(",", ":")) + "\n").encode()
+).hexdigest()
+path = pathlib.Path(sys.argv[1])
+path.write_text(json.dumps(body, sort_keys=True) + "\n")
+os.chmod(path, 0o600)
+PY
+RACE_LOCK_READY="$TMP/cutover-lock-ready"
+RACE_LOCK_RELEASE="$TMP/cutover-lock-release"
+python3 - "$STATE/.contract-cutover.lock" "$RACE_LOCK_READY" "$RACE_LOCK_RELEASE" <<'PY' &
+import fcntl, os, pathlib, time, sys
+path, ready, release = map(pathlib.Path, sys.argv[1:])
+descriptor = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+fcntl.flock(descriptor, fcntl.LOCK_EX)
+ready.touch()
+while not release.exists():
+    time.sleep(0.01)
+os.close(descriptor)
+PY
+LOCK_HOLDER_PID=$!
+for _i in $(seq 1 100); do
+  [[ -e "$RACE_LOCK_READY" ]] && break
+  sleep 0.01
+done
+exec 8<> "$STATE/.contract-cutover.lock"
+FACTORY_HOST_CUTOVER_LOCK_FD=8 expect_failure \
+  "an unlocked inherited descriptor cannot forge the host lock capability" \
+  pause --project alpha --product "$PRODUCT_ONE"
+[[ "$LAST_OUTPUT" == *"host cutover lock capability is invalid"* ]] ||
+  fail "fake host lock capability reports the exact boundary" "$LAST_OUTPUT"
+exec 8>&-
+run_kit pause --project alpha --product "$PRODUCT_ONE" \
+  > "$TMP/cutover-race.out" 2>&1 &
+FIRST_PID=$!
+sleep 0.1
+kill -0 "$FIRST_PID" 2>/dev/null &&
+  pass "public project mutation waits for the host cutover lock" ||
+  fail "public project mutation waits for the host cutover lock" \
+    "$(cat "$TMP/cutover-race.out")"
+python3 - "$STATE/contract-cutover-reservation.json" <<'PY'
+import hashlib, json, os, pathlib, sys
+body = {
+    "active_projects": [{"project": "alpha"}],
+    "approval_sha256": "b" * 64,
+    "reservation_id": "c" * 64,
+    "schema": "nysa.software-factory.host-cutover-reservation/v1",
+    "status": "prepared",
+}
+body["record_sha256"] = hashlib.sha256(
+    (json.dumps(body, sort_keys=True, separators=(",", ":")) + "\n").encode()
+).hexdigest()
+path = pathlib.Path(sys.argv[1])
+path.write_text(json.dumps(body, sort_keys=True) + "\n")
+os.chmod(path, 0o600)
+PY
+touch "$RACE_LOCK_RELEASE"
+wait "$LOCK_HOLDER_PID"
+if wait "$FIRST_PID"; then
+  fail "reservation publication wins the setup-versus-mutation race" \
+    "command unexpectedly succeeded"
+else
+  [[ "$(cat "$TMP/cutover-race.out")" == *"host cutover reservation blocks project mutation"* ]] &&
+    pass "reservation publication wins the setup-versus-mutation race" ||
+    fail "reservation publication wins the setup-versus-mutation race" \
+      "$(cat "$TMP/cutover-race.out")"
+fi
+FIRST_PID=""
+expect_failure "host reservation blocks direct project rollback" \
+  rollback --project alpha --product "$PRODUCT_ONE"
+[[ "$LAST_OUTPUT" == *"host cutover reservation blocks project mutation"* ]] ||
+  fail "rollback reports the host reservation boundary" "$LAST_OUTPUT"
+rm "$STATE/contract-cutover-reservation.json"
+rm -f "$STATE/contract-floor.json"
+expect_failure "rollback fails closed when a completed cutover loses its floor" \
+  rollback --project alpha --product "$PRODUCT_ONE"
+python3 - "$STATE/contract-floor.json" <<'PY'
+import json, os, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+path.write_text(json.dumps({
+    "minimum_major": 2,
+    "schema": "nysa.software-factory.contract-floor/v1",
+}, sort_keys=True) + "\n")
+os.chmod(path, 0o600)
+PY
 expect_success "rollback accepts normally committed previous product tree" \
   rollback --project alpha --product "$PRODUCT_ONE"
 if [[ "$(json_value "$ACTIVE_ALPHA" kit_sha)" == "$SHA_A" ]] &&

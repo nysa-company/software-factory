@@ -6,12 +6,14 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import multiprocessing
 import os
 from pathlib import Path
 import plistlib
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -23,6 +25,32 @@ SPEC = importlib.util.spec_from_file_location(
 assert SPEC and SPEC.loader
 RELEASE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(RELEASE)
+
+
+def cutover_lock_worker(
+    kits: str, marker: str, plan: dict[str, object], mode: str,
+) -> None:
+    def hold(*_args: object) -> None:
+        with Path(marker).open("a", encoding="utf-8") as stream:
+            stream.write(f"start:{plan['request']['project']}\n")
+        time.sleep(0.25)
+        with Path(marker).open("a", encoding="utf-8") as stream:
+            stream.write(f"end:{plan['request']['project']}\n")
+
+    if mode == "setup":
+        RELEASE._setup_locked = hold
+        RELEASE.setup(argparse.Namespace(
+            kits_root=Path(kits), request={"project": plan["request"]["project"]},
+        ))
+    elif mode == "resume":
+        RELEASE._resume_locked = hold
+        RELEASE.resume(argparse.Namespace(
+            approve_hash="8" * 64, approved_by="tester", kits_root=Path(kits),
+            project=plan["request"]["project"], sha="7" * 40,
+        ))
+    else:
+        RELEASE._apply_host_cutover_locked = hold
+        RELEASE.apply_host_cutover(plan, Path(kits), Path(kits))
 
 
 class ReleaseTransactionTest(unittest.TestCase):
@@ -67,6 +95,7 @@ class ReleaseTransactionTest(unittest.TestCase):
                 "factory_origin": str(self.root / "factory-origin"),
                 "factory_sha": self.sha,
                 "factory_tree": "e" * 40,
+                "maintenance_prior": None,
                 "mode": "new",
                 "previous": None,
                 "product_origin": str(self.root / "product-origin"),
@@ -90,6 +119,28 @@ class ReleaseTransactionTest(unittest.TestCase):
             "status": "approval-required",
         }
         self.plan = RELEASE.seal_plan(self.body)
+
+    def retired_runtime(self, home: Path, *, action: str = "reuse") -> dict[str, object]:
+        removed = "her" + "mes"
+        return {
+            "action": action,
+            "profile": {
+                "path": str(home / f".{removed}/profiles/factory"),
+                "tree_sha256": None,
+            },
+            "services": [
+                {
+                    "label": f"com.nysa.{removed}-dashboard", "loaded": False,
+                    "path": str(home / "Library/LaunchAgents" / f"com.nysa.{removed}-dashboard.plist"),
+                    "sha256": None,
+                },
+                {
+                    "label": f"com.nysa.{removed}-factory-gateway", "loaded": False,
+                    "path": str(home / "Library/LaunchAgents" / f"com.nysa.{removed}-factory-gateway.plist"),
+                    "sha256": None,
+                },
+            ],
+        }
 
     def tearDown(self) -> None:
         self.temp.cleanup()
@@ -162,6 +213,35 @@ class ReleaseTransactionTest(unittest.TestCase):
         self.assertEqual(value["status"], "pass")
         self.assertFalse((self.product / "factory/KILL").exists())
         self.assertFalse((self.product / "factory/MAINTENANCE").exists())
+
+    def test_activation_restores_preexisting_maintenance_exactly(self) -> None:
+        prior = b'{"incident":"operator"}\n'
+        snapshot = self.root / "preexisting-maintenance"
+        RELEASE.atomic_bytes(snapshot, prior)
+        marker = self.product / "factory/MAINTENANCE"
+        RELEASE.atomic_json(marker, {
+            "product_path": str(self.product), "project": "relay",
+        })
+        body = {key: value for key, value in self.plan.items() if key != "approval_sha256"}
+        body["identity"] = {
+            **body["identity"],
+            "maintenance_prior": {
+                "path": str(snapshot),
+                "sha256": RELEASE.hashlib.sha256(prior).hexdigest(),
+            },
+        }
+        plan = RELEASE.seal_plan(body)
+        with (
+            mock.patch.object(RELEASE, "active_exact", return_value=True),
+            mock.patch.object(RELEASE, "model_ready", return_value=True),
+            mock.patch.object(RELEASE, "doctor", return_value={"status": "pass"}),
+            mock.patch.object(RELEASE, "ensure_controller"),
+        ):
+            result = RELEASE.apply_activation(
+                plan, self.kits, "tester", self.root / "maintenance-restore-journal",
+            )
+        self.assertEqual(result["status"], "pass")
+        self.assertEqual(marker.read_bytes(), prior)
 
     def test_resume_rejects_wrong_hash_approver_and_expiry_before_apply(self) -> None:
         path, _ = RELEASE.plan_paths(self.kits, "relay", self.sha)
@@ -236,6 +316,10 @@ class ReleaseTransactionTest(unittest.TestCase):
             mock.patch.object(RELEASE, "prepare_product_runtime"),
             mock.patch.object(RELEASE, "prepare_controller", return_value=self.plan["identity"]["controller"]),
             mock.patch.object(RELEASE, "launcher_plan", return_value=self.plan["children"]["launcher"]),
+            mock.patch.object(
+                RELEASE, "retired_runtime_plan",
+                return_value=self.retired_runtime(self.root / "home"),
+            ),
             mock.patch.object(RELEASE, "capacity", return_value=2),
             mock.patch.object(RELEASE, "child_plan", return_value=(concurrency, cli)),
         ):
@@ -278,6 +362,10 @@ class ReleaseTransactionTest(unittest.TestCase):
             mock.patch.object(RELEASE, "prepare_product_runtime"),
             mock.patch.object(RELEASE, "prepare_controller", return_value=self.plan["identity"]["controller"]),
             mock.patch.object(RELEASE, "launcher_plan", return_value=self.plan["children"]["launcher"]),
+            mock.patch.object(
+                RELEASE, "retired_runtime_plan",
+                return_value=self.retired_runtime(self.root / "home"),
+            ),
             mock.patch.object(RELEASE, "capacity", return_value=1),
             mock.patch.object(RELEASE, "child_plan", return_value=(reuse, reuse)),
             mock.patch.object(RELEASE, "find_receipt", return_value=(
@@ -375,6 +463,7 @@ class ReleaseTransactionTest(unittest.TestCase):
             "launcher": self.plan["children"]["launcher"],
             "provider_cli": {"action": "apply", "plan": {"approval_sha256": "6" * 64}},
             "provider_concurrency": {"action": "reuse"},
+            "retired_runtime": self.retired_runtime(self.root / "home"),
         }
         prerequisite = RELEASE.seal_plan(body)
         RELEASE.write_plan(activation_path, prerequisite)
@@ -771,14 +860,36 @@ class ReleaseTransactionTest(unittest.TestCase):
                 RELEASE.apply_launcher_plan(plan, release, self.kits)
         self.assertFalse((home / ".factory/bin/factory-launch").exists())
 
-    def test_host_cutover_replays_after_each_active_switch_and_sets_floor(self) -> None:
+    def test_host_cutover_reconciles_children_retires_old_runtime_and_sets_floor(self) -> None:
         release = self.kits / "releases" / self.sha
         (release / "scripts").mkdir(parents=True)
         (release / "scripts/factory-kit.sh").write_text("#!/bin/sh\n")
+        home = self.root / "home"
+        launcher_path = home / ".factory/bin/factory-launch"
+        launcher_path.parent.mkdir(parents=True)
+        launcher_path.write_text("Contract 2 launcher\n")
+        launcher_path.chmod(0o700)
+        removed = "her" + "mes"
+        old_profile = home / f".{removed}/profiles/factory"
+        old_profile.mkdir(parents=True)
+        (old_profile / "SOUL.md").write_text("old Factory profile\n")
+        old_jobs = home / "Library/LaunchAgents"
+        old_jobs.mkdir(parents=True)
+        for suffix in ("dashboard", "factory-gateway"):
+            RELEASE.atomic_bytes(
+                old_jobs / f"com.nysa.{removed}-{suffix}.plist",
+                f"{suffix}\n".encode(),
+            )
+        reservation_id = "8" * 64
         items = []
         for index, project in enumerate(("relay", "nysa"), start=1):
             product = self.root / project
             (product / "factory").mkdir(parents=True)
+            RELEASE.atomic_json(product / "factory/MAINTENANCE", {
+                "cutover_owner": reservation_id, "product_path": str(product),
+                "project": project, "published_at": "test", "schema_version": 1,
+            })
+            maintenance_sha = RELEASE.file_digest(product / "factory/MAINTENANCE")
             active = self.kits / "projects" / project / "active.json"
             active.parent.mkdir(parents=True, exist_ok=True)
             RELEASE.atomic_json(active, {
@@ -787,10 +898,20 @@ class ReleaseTransactionTest(unittest.TestCase):
             })
             receipt = self.root / f"{project}-receipt.json"
             receipt_id = str(index + 2) * 64
-            RELEASE.atomic_json(receipt, {"receipt_id": receipt_id})
+            RELEASE.atomic_json(receipt, {
+                "contract_version": "2.0.0", "kit_sha": self.sha,
+                "kit_tree": str(index + 3) * 40,
+                "product_path": str(product), "product_sha": str(index + 5) * 40,
+                "product_tree": str(index + 6) * 40, "project": project,
+                "receipt_id": receipt_id,
+            })
             items.append({
                 "controller": {"platform": "test", "status": "not-applicable"},
                 "incident": None,
+                "maintenance": {
+                    "cutover_sha256": maintenance_sha, "prior": None,
+                    "reservation_id": reservation_id,
+                },
                 "product": str(product), "project": project,
                 "receipt": {
                     "path": str(receipt), "receipt_id": receipt_id,
@@ -802,52 +923,171 @@ class ReleaseTransactionTest(unittest.TestCase):
                 },
                 "source_active_sha256": RELEASE.file_digest(active),
             })
+        with (
+            mock.patch.object(RELEASE, "account_home", return_value=home),
+            mock.patch.dict(os.environ, {"FACTORY_KIT_TEST_MODE": "1"}),
+        ):
+            retired = RELEASE.retired_runtime_plan()
         plan = json.loads(json.dumps(self.plan))
         plan["approval_sha256"] = "9" * 64
         plan["request"]["sha"] = self.sha
+        plan["request"]["product"] = items[0]["product"]
         plan["children"] = {
             "host_cutover": items,
-            "launcher": {"action": "apply"},
+            "launcher": {
+                "action": "apply", "target": str(launcher_path),
+                "candidate": {"sha256": RELEASE.file_digest(launcher_path)},
+            },
+            "retired_runtime": retired,
         }
+        basis = RELEASE.reservation_basis(
+            self.kits, plan["children"]["launcher"], retired,
+            Path(items[0]["product"]), "relay", self.sha,
+        )
+        reservation_id = basis["reservation_id"]
+        for item in items:
+            maintenance = Path(item["product"]) / "factory/MAINTENANCE"
+            RELEASE.atomic_json(maintenance, {
+                "cutover_owner": reservation_id, "product_path": item["product"],
+                "project": item["project"], "published_at": "test", "schema_version": 1,
+            })
+            item["maintenance"].update(
+                cutover_sha256=RELEASE.file_digest(maintenance),
+                reservation_id=reservation_id,
+            )
+        reservation = {
+            **basis, "approval_sha256": plan["approval_sha256"], "status": "prepared",
+        }
+        RELEASE.atomic_json(
+            self.kits / "contract-cutover-reservation.json",
+            {**reservation, "record_sha256": RELEASE.digest(reservation)},
+        )
         activated = []
+        doctor_status = {"value": "warning", "maintenance_only": False}
 
         def activate(arguments: list[str], _label: str, **_kwargs: object) -> str:
             if "activate" not in arguments:
                 return ""
             project = arguments[arguments.index("--project") + 1]
             item = next(value for value in items if value["project"] == project)
+            receipt_value = RELEASE.safe_state(
+                Path(item["receipt"]["path"]), "certification receipt",
+            )
+            transaction = f"transaction-{project}"
+            record = {
+                "contract_version": "2.0.0", "generation": 2,
+                "kit_sha": self.sha, "kit_tree": receipt_value["kit_tree"],
+                "product_path": item["product"],
+                "product_sha": receipt_value["product_sha"],
+                "product_tree": receipt_value["product_tree"], "project": project,
+                "receipt_id": item["receipt"]["receipt_id"],
+                "release_path": str(release),
+            }
             RELEASE.atomic_json(
-                self.kits / "projects" / project / "active.json",
+                self.kits / "projects" / project / "active.json", record,
+            )
+            RELEASE.atomic_json(
+                self.kits / "projects" / project / "activation-journal"
+                / f"{2:020d}-{self.sha}.json",
                 {
-                    "contract_version": "2.0.0", "kit_sha": self.sha,
-                    "product_path": item["product"], "project": project,
+                    "candidate_record": record, "phase": "committed",
+                    "receipt_hash": item["receipt"]["sha256"],
+                    "receipt_snapshot": receipt_value, "transaction_id": transaction,
+                },
+            )
+            RELEASE.atomic_json(
+                self.kits / "receipts/consumed"
+                / f"{item['receipt']['receipt_id']}.json",
+                {
                     "receipt_id": item["receipt"]["receipt_id"],
+                    "transaction_id": transaction,
                 },
             )
             activated.append(project)
             return ""
+
+        def doctor(arguments: list[str], *_args: object, **_kwargs: object) -> dict[str, object]:
+            project = arguments[1]
+            item = next(value for value in items if value["project"] == project)
+            in_maintenance = (Path(item["product"]) / "factory/MAINTENANCE").exists()
+            if doctor_status["maintenance_only"] and in_maintenance:
+                checks = {
+                    "active_binding": {"status": "ok"},
+                    "runtime": {
+                        "active_runs": 0, "dispatch_lease_records": 0,
+                        "locks": {
+                            "global_ledger": False, "launch": False,
+                            "ledger": False, "provider": False,
+                        },
+                        "maintenance": True, "malformed_dispatch_leases": 0,
+                        "malformed_runs": 0, "provider_lock_state": "absent",
+                        "run_records": 0, "stale_dispatch_leases": 0,
+                        "stale_runs": 0, "status": "warning",
+                    },
+                }
+            else:
+                checks = {
+                    "active_binding": {"status": "ok"},
+                    "runtime": {"status": "ok"},
+                }
+            return {
+                "checks": checks, "contract_version": "2.0.0",
+                "overall_status": (
+                    doctor_status["value"]
+                    if not doctor_status["maintenance_only"] or in_maintenance else "ok"
+                ),
+                "project": project,
+                "schema": "nysa.software-factory.doctor/v2", "schema_version": 2,
+            }
 
         with (
             mock.patch.object(RELEASE, "run", side_effect=activate),
             mock.patch.object(RELEASE, "unload_service"),
             mock.patch.object(RELEASE, "ensure_service"),
             mock.patch.object(RELEASE, "apply_launcher_plan") as launcher,
-            mock.patch.object(RELEASE, "run_json", return_value={"overall_status": "warning"}),
-            mock.patch.object(
-                RELEASE, "account_home", return_value=self.root / "home",
-            ),
+            mock.patch.object(RELEASE, "run_json", side_effect=doctor),
+            mock.patch.object(RELEASE, "account_home", return_value=home),
             mock.patch.dict(
                 os.environ,
-                {"FACTORY_RELEASE_FAIL_AFTER_CUTOVER_PHASE": "project:relay"},
+                {
+                    "FACTORY_KIT_TEST_MODE": "1",
+                    "FACTORY_RELEASE_FAIL_AFTER_CUTOVER_PHASE": "project:relay",
+                },
             ),
         ):
             with self.assertRaisesRegex(RELEASE.ReleaseError, "project:relay"):
                 RELEASE.apply_host_cutover(plan, release, self.kits)
+            for phase in (
+                "active_records_switched", "contract_floor_committed", "launcher_installed",
+            ):
+                os.environ["FACTORY_RELEASE_FAIL_AFTER_CUTOVER_PHASE"] = phase
+                with self.assertRaisesRegex(RELEASE.ReleaseError, phase):
+                    RELEASE.apply_host_cutover(plan, release, self.kits)
+            os.environ.pop("FACTORY_RELEASE_FAIL_AFTER_CUTOVER_PHASE", None)
+            with self.assertRaisesRegex(RELEASE.ReleaseError, "Doctor did not pass"):
+                RELEASE.apply_host_cutover(plan, release, self.kits)
+            self.assertTrue((self.root / "relay/factory/MAINTENANCE").exists())
+            self.assertTrue((self.root / "nysa/factory/MAINTENANCE").exists())
+            self.assertTrue(old_profile.exists())
+            doctor_status["maintenance_only"] = True
+            for phase in ("retired_runtime_removed", "healthy"):
+                os.environ["FACTORY_RELEASE_FAIL_AFTER_CUTOVER_PHASE"] = phase
+                with self.assertRaisesRegex(RELEASE.ReleaseError, phase):
+                    RELEASE.apply_host_cutover(plan, release, self.kits)
             os.environ.pop("FACTORY_RELEASE_FAIL_AFTER_CUTOVER_PHASE", None)
             RELEASE.apply_host_cutover(plan, release, self.kits)
+            doctor_status.update(value="ok", maintenance_only=False)
+            (self.kits / "contract-floor.json").unlink()
             RELEASE.apply_host_cutover(plan, release, self.kits)
         self.assertEqual(activated, ["relay", "nysa"])
-        launcher.assert_called_once()
+        self.assertGreaterEqual(launcher.call_count, 2)
+        self.assertTrue((self.root / "relay/factory/MAINTENANCE").exists())
+        self.assertFalse((self.root / "nysa/factory/MAINTENANCE").exists())
+        self.assertFalse(old_profile.exists())
+        self.assertFalse(any(old_jobs.glob(f"com.nysa.{removed}-*.plist")))
+        archive = home / ".factory/retired-runtime" / plan["approval_sha256"]
+        self.assertTrue((archive / "profile/SOUL.md").is_file())
+        self.assertEqual(len(list((archive / "services").glob("*.plist"))), 2)
         self.assertEqual(
             RELEASE.safe_state(self.kits / "contract-floor.json", "contract floor"),
             {
@@ -861,6 +1101,285 @@ class ReleaseTransactionTest(unittest.TestCase):
             )["status"],
             "pass",
         )
+        relay_journal = (
+            self.kits / "projects/relay/activation-journal"
+            / f"{2:020d}-{self.sha}.json"
+        )
+        terminal = RELEASE.safe_state(relay_journal, "activation journal")
+        for phase in (
+            "prepared", "receipt_claimed", "maintenance_published", "launch_drained",
+            "services_stopped", "activation_record_switched",
+            "integration_bundle_switched", "services_started", "healthy",
+        ):
+            with self.subTest(interrupted_child_phase=phase):
+                RELEASE.atomic_json(relay_journal, {**terminal, "phase": phase})
+                self.assertFalse(RELEASE.cutover_terminal_exact(
+                    self.kits, items[0], self.sha, release,
+                ))
+        RELEASE.atomic_json(relay_journal, terminal)
+
+    def test_cutover_restores_an_exact_preexisting_maintenance_marker(self) -> None:
+        product = self.root / "paused-product"
+        (product / "factory").mkdir(parents=True)
+        prior = b'{"incident":"operator"}\n'
+        snapshot = self.root / "prior-maintenance"
+        RELEASE.atomic_bytes(snapshot, prior)
+        marker = product / "factory/MAINTENANCE"
+        reservation_id = "8" * 64
+        RELEASE.atomic_json(marker, {
+            "cutover_owner": reservation_id, "product_path": str(product),
+            "project": "paused", "schema_version": 1,
+        })
+        item = {
+            "maintenance": {
+                "cutover_sha256": RELEASE.file_digest(marker),
+                "prior": {
+                    "path": str(snapshot),
+                    "sha256": RELEASE.hashlib.sha256(prior).hexdigest(),
+                },
+                "reservation_id": reservation_id,
+            },
+            "product": str(product), "project": "paused",
+        }
+        RELEASE.clear_cutover_maintenance(item)
+        self.assertEqual(marker.read_bytes(), prior)
+        RELEASE.clear_cutover_maintenance(item)
+        self.assertEqual(marker.read_bytes(), prior)
+
+    def test_maintenance_capture_replays_for_absent_and_preexisting_markers(self) -> None:
+        reservation_id = "8" * 64
+        for prior in (None, b'{"incident":"operator"}\n'):
+            with self.subTest(prior=prior is not None):
+                product = self.root / ("prior" if prior else "absent")
+                (product / "factory").mkdir(parents=True)
+                marker = product / "factory/MAINTENANCE"
+                if prior is not None:
+                    RELEASE.atomic_bytes(marker, prior)
+                first = RELEASE.capture_maintenance(
+                    self.kits, product, product.name, reservation_id,
+                )
+                RELEASE.atomic_json(marker, {
+                    "cutover_owner": reservation_id, "product_path": str(product),
+                    "project": product.name, "schema_version": 1,
+                })
+                second = RELEASE.capture_maintenance(
+                    self.kits, product, product.name, reservation_id,
+                )
+                self.assertEqual(second, first)
+
+    def test_retired_service_unload_requires_the_label_to_disappear(self) -> None:
+        value = {"label": "com.factory.retired", "path": "/tmp/unused"}
+        statuses = [
+            subprocess.CompletedProcess([], 0),
+            subprocess.CompletedProcess([], 1),
+        ]
+        with (
+            mock.patch.object(RELEASE.sys, "platform", "darwin"),
+            mock.patch.object(RELEASE, "service_prefix", return_value=(["launchctl"], "gui/1")),
+            mock.patch.object(RELEASE.subprocess, "run", side_effect=statuses),
+            mock.patch.object(RELEASE, "run") as bootout,
+        ):
+            RELEASE.unload_service(value)
+        bootout.assert_called_once()
+        with (
+            mock.patch.object(RELEASE.sys, "platform", "darwin"),
+            mock.patch.object(RELEASE, "service_prefix", return_value=(["launchctl"], "gui/1")),
+            mock.patch.object(RELEASE.subprocess, "run", side_effect=[
+                subprocess.CompletedProcess([], 0), subprocess.CompletedProcess([], 0),
+            ]),
+            mock.patch.object(RELEASE, "run"),
+            self.assertRaisesRegex(RELEASE.ReleaseError, "did not unload"),
+        ):
+            RELEASE.unload_service(value)
+
+    def test_machine_cutover_lock_serializes_project_transactions(self) -> None:
+        marker = self.root / "lock-order"
+        retired = self.retired_runtime(self.root / "home")
+        plans = []
+        for project in ("relay", "nysa", "third"):
+            plans.append({
+                "children": {"host_cutover": [], "retired_runtime": retired},
+                "request": {"project": project},
+            })
+        context = multiprocessing.get_context("spawn")
+        processes = [
+            context.Process(
+                target=cutover_lock_worker,
+                args=(str(self.kits), str(marker), plan, mode),
+            )
+            for plan, mode in zip(plans, ("setup", "resume", "apply"), strict=True)
+        ]
+        for process in processes:
+            process.start()
+        for process in processes:
+            process.join(10)
+            self.assertEqual(process.exitcode, 0)
+        lines = marker.read_text().splitlines()
+        self.assertEqual(len(lines), 6)
+        for index in range(0, len(lines), 2):
+            self.assertEqual(lines[index].split(":", 1)[0], "start")
+            self.assertEqual(
+                lines[index + 1], "end:" + lines[index].split(":", 1)[1],
+            )
+
+    def test_machine_lock_capability_is_scoped_to_sealed_mutation_children(self) -> None:
+        descriptor = RELEASE.acquire_cutover_lock(self.kits)
+        try:
+            ordinary = RELEASE.command_environment(self.kits)
+            mutation = RELEASE.command_environment(self.kits, cutover_lock=True)
+            self.assertNotIn("FACTORY_HOST_CUTOVER_LOCK_FD", ordinary)
+            self.assertEqual(
+                mutation["FACTORY_HOST_CUTOVER_LOCK_FD"], str(descriptor),
+            )
+            with mock.patch.object(
+                RELEASE.subprocess, "run",
+                return_value=subprocess.CompletedProcess([], 0, "", ""),
+            ) as spawned:
+                RELEASE.run(["candidate-install"], "candidate", environment=ordinary)
+                self.assertEqual(spawned.call_args.kwargs["pass_fds"], ())
+                RELEASE.run(["sealed-mutation"], "mutation", environment=mutation)
+                self.assertEqual(
+                    spawned.call_args.kwargs["pass_fds"], (descriptor,),
+                )
+        finally:
+            RELEASE.release_cutover_lock(descriptor)
+
+    def test_no_return_cutover_phases_repair_the_floor_before_replay(self) -> None:
+        plan = {
+            "approval_sha256": "9" * 64,
+            "children": {"host_cutover": []},
+        }
+        journal = self.kits / "contract-cutover-journal.json"
+        floor = self.kits / "contract-floor.json"
+
+        def stop_after_floor(_kits: Path, _plan: dict[str, object]) -> None:
+            self.assertTrue(floor.is_file())
+            raise RELEASE.ReleaseError("stop after floor repair")
+
+        for phase in (
+            "active_records_switched", "contract_floor_committed",
+            "launcher_installed", "retired_runtime_removed", "healthy",
+        ):
+            with self.subTest(phase=phase):
+                floor.unlink(missing_ok=True)
+                RELEASE.cutover_update(
+                    journal, plan["approval_sha256"], phase, [], "in-progress",
+                )
+                with (
+                    mock.patch.object(
+                        RELEASE, "require_reservation", side_effect=stop_after_floor,
+                    ),
+                    self.assertRaisesRegex(RELEASE.ReleaseError, "stop after floor"),
+                ):
+                    RELEASE._apply_host_cutover_locked(plan, self.root, self.kits)
+
+    def test_completed_cutover_keeps_the_floor_required_during_later_updates(self) -> None:
+        journal = self.kits / "contract-cutover-journal.json"
+        RELEASE.cutover_update(journal, "8" * 64, "healthy", ["relay"], "pass")
+        RELEASE.cutover_update(journal, "9" * 64, "project:nysa", ["nysa"], "in-progress")
+        value = RELEASE.safe_state(journal, "cutover journal")
+        self.assertTrue(value["floor_required"])
+
+    def test_abort_restores_maintenance_and_clears_only_an_unstarted_reservation(self) -> None:
+        approval = "9" * 64
+        reservation = self.kits / "contract-cutover-reservation.json"
+        RELEASE.atomic_json(reservation, {"placeholder": True})
+        product = self.root / "abort-product"
+        (product / "factory").mkdir(parents=True)
+        marker = product / "factory/MAINTENANCE"
+        reservation_id = "8" * 64
+        RELEASE.atomic_json(marker, {
+            "cutover_owner": reservation_id, "product_path": str(product),
+            "project": "relay", "schema_version": 1,
+        })
+        prior = b'{"incident":"operator"}\n'
+        snapshot = self.root / "abort-prior"
+        RELEASE.atomic_bytes(snapshot, prior)
+        active = self.kits / "projects/relay/active.json"
+        RELEASE.atomic_json(active, {"project": "relay"})
+        receipt_id = "7" * 64
+        item = {
+            "maintenance": {
+                "cutover_sha256": RELEASE.file_digest(marker),
+                "prior": {
+                    "path": str(snapshot),
+                    "sha256": RELEASE.hashlib.sha256(prior).hexdigest(),
+                },
+                "reservation_id": reservation_id,
+            },
+            "product": str(product), "project": "relay",
+            "receipt": {"receipt_id": receipt_id},
+            "source_active_sha256": RELEASE.file_digest(active),
+        }
+        plan = {
+            "approval_sha256": approval,
+            "children": {"host_cutover": [item]},
+            "request": {"operator_id": "tester"}, "stage": "prerequisites",
+        }
+        stored = self.kits / "projects/relay/release-plans" / self.sha / f"{approval}.json"
+        RELEASE.atomic_json(stored, plan)
+        args = argparse.Namespace(
+            approve_hash=approval, approved_by="tester", kits_root=self.kits,
+            project="relay", sha=self.sha,
+        )
+        with (
+            mock.patch.object(RELEASE, "validate_plan"),
+            mock.patch.object(RELEASE, "validate_live_basis"),
+            mock.patch.object(RELEASE, "require_reservation"),
+            mock.patch.object(RELEASE, "read_cutover", return_value={
+                "completed_projects": [], "phase": "approved", "status": "in-progress",
+            }),
+        ):
+            result = RELEASE.abort(args)
+        self.assertEqual(result["status"], "aborted")
+        self.assertEqual(marker.read_bytes(), prior)
+        self.assertFalse(reservation.exists())
+
+    def test_failed_preparation_restores_maintenance_and_releases_reservation(self) -> None:
+        active = self.kits / "projects/relay/active.json"
+        RELEASE.atomic_json(active, {
+            "contract_version": "1.9.0", "kit_sha": "7" * 40,
+            "product_path": str(self.product), "project": "relay",
+        })
+        source = RELEASE.active_inventory(self.kits)[0]
+        retired = self.retired_runtime(self.root / "home")
+        basis = RELEASE.reservation_basis(
+            self.kits,
+            {
+                "action": "reuse", "active_projects": [source],
+                "sha256": "5" * 64,
+            },
+            retired, self.product, "relay", self.sha,
+        )
+        reservation = {**basis, "approval_sha256": None, "status": "preparing"}
+        reservation_path = self.kits / "contract-cutover-reservation.json"
+        RELEASE.atomic_json(
+            reservation_path,
+            {**reservation, "record_sha256": RELEASE.digest(reservation)},
+        )
+        prior = b'{"incident":"operator"}\n'
+        snapshot = (
+            self.kits / "contract-cutover-reservations" / basis["reservation_id"]
+            / "relay.maintenance"
+        )
+        RELEASE.atomic_bytes(snapshot, prior)
+        marker = self.product / "factory/MAINTENANCE"
+        RELEASE.atomic_json(marker, {
+            "cutover_owner": basis["reservation_id"],
+            "product_path": str(self.product), "project": "relay",
+        })
+        args = argparse.Namespace(
+            kits_root=self.kits, product=self.product, project="relay", sha=self.sha,
+        )
+        with (
+            mock.patch.object(
+                RELEASE, "_setup_locked", side_effect=RELEASE.ReleaseError("prepare failed"),
+            ),
+            self.assertRaisesRegex(RELEASE.ReleaseError, "prepare failed"),
+        ):
+            RELEASE.setup(args)
+        self.assertEqual(marker.read_bytes(), prior)
+        self.assertFalse(reservation_path.exists())
 
 
 if __name__ == "__main__":

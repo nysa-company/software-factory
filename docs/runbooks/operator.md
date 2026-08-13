@@ -716,6 +716,9 @@ minutes.
    sandbox smoke, PID, and repeated health probes. Tests alone are not
    production closure evidence; bind these observations and timestamps to the
    exact protected SHA.
+   If the plan is not approved, run the same command with `release abort`, its
+   exact approval hash, and the setup operator ID. Abort restores captured
+   maintenance and is refused after any active record changes.
 15. For an authorized Contract 2.0 in-flight cutover, keep maintenance while
    collecting one `models migrate-batch-plan` preview for one to four exact
    ticket/worktree pairs. Review its protected-main and per-ticket bindings,

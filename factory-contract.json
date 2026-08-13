@@ -241,8 +241,8 @@
           "pin --ticket <T-NNN> --workdir <exact-ticket-worktree> --json",
           "migrate-plan --ticket <T-NNN> --workdir <exact-clean-ticket-worktree> [--include-journal] --json",
           "migrate --ticket <T-NNN> --workdir <exact-clean-ticket-worktree> --approve-hash <lowercase-sha256> --readiness-hash <lowercase-sha256> --approved-by <safe-id> --json",
-          "migrate-batch-plan [--ticket <T-NNN> --workdir <exact-clean-ticket-worktree>]... --json (one to four unique tickets, Contract 1.9)",
-          "migrate-batch --approve-hash <lowercase-sha256> --approved-by <safe-id> [--ticket <T-NNN> --workdir <exact-clean-ticket-worktree>]... --json (one to four unique tickets, Contract 1.9)",
+          "migrate-batch-plan [--ticket <T-NNN> --workdir <exact-clean-ticket-worktree>]... --json (one to four unique tickets, Contract 2.0)",
+          "migrate-batch --approve-hash <lowercase-sha256> --approved-by <safe-id> [--ticket <T-NNN> --workdir <exact-clean-ticket-worktree>]... --json (one to four unique tickets, Contract 2.0)",
           "qualification-readiness --json (qualification launcher, Contract 1.8)",
           "fallback-plan --ticket <T-NNN> --failed-run <safe-run-id> --workdir <exact-ticket-worktree> --reason <credits_exhausted|provider_unavailable> --json",
           "fallback-auto --ticket <T-NNN> --failed-run <safe-run-id> --workdir <exact-ticket-worktree> --reason <credits_exhausted|provider_unavailable> --json",
@@ -807,6 +807,7 @@
   "compatibility_sensitive_surfaces": [
     "factory-contract.json",
     "scripts/factory-launch",
+    "scripts/release-transaction.py",
     "scripts/launchd/com.factory.controller.plist.template",
     "scripts/launchd/com.factory.incident-reporter.plist.template",
     "scripts/factory-doctor.sh",

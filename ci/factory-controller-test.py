@@ -17,6 +17,7 @@ from pathlib import Path
 import plistlib
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -97,6 +98,76 @@ def state_transition(
 
 
 class FactoryControllerTest(unittest.TestCase):
+    def test_native_launch_agent_runs_without_the_retired_runtime(self) -> None:
+        if sys.platform != "darwin":
+            self.skipTest("native LaunchAgent smoke requires macOS")
+        launchctl = Path("/bin/launchctl")
+        uid = os.getuid()
+        prefix = [str(launchctl), "asuser", str(uid), str(launchctl)]
+        domain = f"gui/{uid}"
+        if subprocess.run(
+            prefix + ["print", domain], capture_output=True, check=False,
+        ).returncode:
+            self.skipTest("interactive launchd domain is unavailable")
+        with tempfile.TemporaryDirectory(prefix="factory-native-controller.") as raw:
+            root = Path(raw)
+            home = root / "home"
+            product = root / "product"
+            marker = root / "reconciled"
+            sentinel = root / "retired-runtime-invoked"
+            project = f"smoke-{os.getpid()}"
+            removed = "her" + "mes"
+            binary = home / ".factory/bin"
+            logs = home / ".factory/logs"
+            jobs = home / "Library/LaunchAgents"
+            for directory in (binary, logs, jobs, product / "factory/runs"):
+                directory.mkdir(parents=True, exist_ok=True)
+            retired_command = binary / removed
+            retired_command.write_text(
+                f"#!/bin/sh\n: > {sentinel!s}\nexit 97\n", encoding="utf-8",
+            )
+            retired_command.chmod(0o700)
+            launcher = binary / "factory-launch"
+            launcher.write_text(
+                "#!/bin/sh\nset -eu\n"
+                f"test \"$1\" = {project!s}\n"
+                "test \"$2\" = reconcile\n"
+                "test \"$3\" = --json\n"
+                f"test ! -e {home!s}/.{removed}\n"
+                f": > {marker!s}\n"
+                "printf '%s\\n' '{}'\n",
+                encoding="utf-8",
+            )
+            launcher.chmod(0o700)
+            template = (
+                ROOT / "scripts/launchd/com.factory.controller.plist.template"
+            ).read_text(encoding="utf-8")
+            path = jobs / f"com.factory.controller.{project}.plist"
+            path.write_text(
+                template.replace("__HOME__", str(home))
+                .replace("__PROJECT_SLUG__", project)
+                .replace("__PRODUCT_ROOT__", str(product)),
+                encoding="utf-8",
+            )
+            service = f"{domain}/com.factory.controller.{project}"
+            try:
+                result = subprocess.run(
+                    prefix + ["bootstrap", domain, str(path)],
+                    capture_output=True, check=False, timeout=30,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
+                deadline = time.monotonic() + 15
+                while not marker.exists() and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                self.assertTrue(marker.exists(), "native controller did not reconcile")
+                self.assertFalse(sentinel.exists(), "retired runtime command was invoked")
+                self.assertFalse((home / f".{removed}").exists())
+            finally:
+                subprocess.run(
+                    prefix + ["bootout", service], capture_output=True,
+                    check=False, timeout=30,
+                )
+
     def test_launch_agent_does_not_throttle_bounded_provider_probes(self) -> None:
         template = ROOT / "scripts/launchd/com.factory.controller.plist.template"
         with template.open("rb") as handle:
