@@ -172,20 +172,23 @@ run_launcher() {
 mkdir -p "$TEST_BIN" "$LAUNCH_TMP" "$KITS_ROOT/projects/$PROJECT" \
   "$KITS_ROOT/releases" "$KITS_ROOT/receipts" "$PRODUCT/factory"
 
-# The moved launcher recognizes its exact sealed qualification location.
-QUALIFICATION_ROOT="$(mktemp -d /private/tmp/nysa-sf-qualification.launcher.XXXXXX)"
-QUALIFICATION_SHA=9999999999999999999999999999999999999999
-QUALIFICATION_LAUNCHER="$QUALIFICATION_ROOT/releases/$QUALIFICATION_SHA/scripts/factory-launch"
-mkdir -p "$(dirname "$QUALIFICATION_LAUNCHER")" \
-  "$QUALIFICATION_ROOT/projects/qualification-test"
-cp "$LAUNCHER" "$QUALIFICATION_LAUNCHER"
-chmod 700 "$QUALIFICATION_LAUNCHER"
-if HOME="$TEST_HOME" /bin/bash "$QUALIFICATION_LAUNCHER" \
-  qualification-test contract --json >"$TMP/qualification-launcher.out" 2>&1; then
-  fail "qualification launcher accepted an incomplete active binding"
+# Qualification roots are a macOS-only production boundary fixed under
+# /private/tmp. Linux still exercises the repository launcher below.
+if [[ "$(uname -s)" == Darwin ]]; then
+  QUALIFICATION_ROOT="$(mktemp -d /private/tmp/nysa-sf-qualification.launcher.XXXXXX)"
+  QUALIFICATION_SHA=9999999999999999999999999999999999999999
+  QUALIFICATION_LAUNCHER="$QUALIFICATION_ROOT/releases/$QUALIFICATION_SHA/scripts/factory-launch"
+  mkdir -p "$(dirname "$QUALIFICATION_LAUNCHER")" \
+    "$QUALIFICATION_ROOT/projects/qualification-test"
+  cp "$LAUNCHER" "$QUALIFICATION_LAUNCHER"
+  chmod 700 "$QUALIFICATION_LAUNCHER"
+  if HOME="$TEST_HOME" /bin/bash "$QUALIFICATION_LAUNCHER" \
+    qualification-test contract --json >"$TMP/qualification-launcher.out" 2>&1; then
+    fail "qualification launcher accepted an incomplete active binding"
+  fi
+  grep -q 'project active record is missing' "$TMP/qualification-launcher.out" ||
+    fail "qualification launcher did not recognize its sealed release path"
 fi
-grep -q 'project active record is missing' "$TMP/qualification-launcher.out" ||
-  fail "qualification launcher did not recognize its sealed release path"
 
 for tool in git python3 ps; do
   resolved="$(command -v "$tool")"
