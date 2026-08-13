@@ -19,6 +19,9 @@ import tempfile
 import time
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
+from historical_pr_objects import run_git as hardened_git  # noqa: E402
+
 
 PLAN_SCHEMA = "nysa.software-factory.release-plan/v1"
 JOURNAL_SCHEMA = "nysa.software-factory.release-journal/v1"
@@ -589,15 +592,82 @@ def ticket_inventory(product: Path) -> list[dict[str, str]]:
     return result
 
 
+def validate_product_runtime_contract(
+    product: Path, *, require_idle_dispatch: bool = True,
+) -> None:
+    for relative in (
+        "factory/runs", "factory/.active-runs", "factory/.dispatch-leases",
+        "factory/.dispatch-leases.lock",
+    ):
+        tracked = hardened_git(product, "ls-files", "--", relative)
+        if tracked.returncode != 0 or tracked.stdout:
+            raise ReleaseError(f"release setup requires {relative} to be untracked")
+    lease_dir = product / "factory/.dispatch-leases"
+    if lease_dir.exists() or lease_dir.is_symlink():
+        try:
+            info = lease_dir.lstat()
+        except OSError as error:
+            raise ReleaseError("release setup dispatcher lease state is invalid") from error
+        if (
+            lease_dir.is_symlink() or not stat.S_ISDIR(info.st_mode)
+            or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700
+            or (require_idle_dispatch and any(lease_dir.iterdir()))
+        ):
+            raise ReleaseError("release setup requires factory/.dispatch-leases to be empty or absent")
+    lease_lock = product / "factory/.dispatch-leases.lock"
+    if lease_lock.exists() or lease_lock.is_symlink():
+        raise ReleaseError("release setup requires factory/.dispatch-leases.lock to be absent")
+    for relative in (
+        "factory/runs/.factory-release-probe",
+        "factory/.active-runs/.factory-release-probe",
+        "factory/operator-map.json",
+        "factory/.operator-map.lock",
+        "factory/.dispatch-leases/.factory-release-probe",
+        "factory/.dispatch-leases.lock/.factory-release-probe",
+    ):
+        tracked = hardened_git(
+            product, "ls-files", "--error-unmatch", "--", relative,
+        )
+        if tracked.returncode != 1:
+            raise ReleaseError(f"release setup requires {relative} to be untracked")
+        ignored = hardened_git(
+            product, "check-ignore", "-v", "--no-index", "--stdin", "-z",
+            input_text=relative + "\0",
+        )
+        fields = ignored.stdout.split("\0")
+        if (
+            ignored.returncode != 0 or ignored.stderr or len(fields) != 5
+            or fields[4] or fields[3] != relative or not fields[1].isdigit()
+            or not fields[2] or fields[2].startswith("!")
+        ):
+            raise ReleaseError(f"release setup requires {relative} to be gitignored")
+        source_path = product / fields[0]
+        try:
+            source_info = source_path.lstat()
+            source_relative = str(
+                source_path.resolve(strict=True).relative_to(product)
+            )
+        except (OSError, ValueError) as error:
+            raise ReleaseError("release setup ignore authority is invalid") from error
+        source_tracked = hardened_git(
+            product, "ls-files", "--error-unmatch", "--", source_relative,
+        )
+        head_blob = hardened_git(product, "rev-parse", f"HEAD:{source_relative}")
+        worktree_blob = hardened_git(
+            product, "hash-object", "--no-filters", "--", source_relative,
+        )
+        if (
+            source_path.is_symlink() or not stat.S_ISREG(source_info.st_mode)
+            or source_tracked.returncode != 0
+            or source_tracked.stdout.strip() != source_relative
+            or head_blob.returncode != 0 or worktree_blob.returncode != 0
+            or head_blob.stdout.strip() != worktree_blob.stdout.strip()
+        ):
+            raise ReleaseError("release setup ignore authority is invalid")
+
+
 def prepare_product_runtime(product: Path) -> None:
     for relative in ("factory/runs", "factory/.active-runs"):
-        ignored = subprocess.run(
-            ["git", "-C", str(product), "check-ignore", "-q", "--no-index",
-             f"{relative}/.factory-release-probe"],
-            check=False, timeout=120,
-        )
-        if ignored.returncode:
-            raise ReleaseError(f"release setup requires {relative}/ to be gitignored")
         secure_directory(product / relative, create=True)
 
 
@@ -1671,6 +1741,7 @@ def _setup_locked(args: argparse.Namespace) -> dict[str, Any]:
         raise ReleaseError("Factory candidate does not match release SHA")
     if (product / "factory/KIT_PIN").read_text(encoding="utf-8") != sha + "\n":
         raise ReleaseError("product pin does not match release SHA")
+    validate_product_runtime_contract(product)
     source_kit = repo / "scripts/factory-kit.sh"
     environment = command_environment(kits_root)
     environment.pop("FACTORY_KIT_CERTIFICATION_NETWORK_REVIEWED", None)
@@ -2531,7 +2602,9 @@ def active_exact(kits_root: Path, plan: dict[str, Any]) -> bool:
     }.items())
 
 
-def validate_live_basis(kits_root: Path, plan: dict[str, Any]) -> None:
+def validate_live_basis(
+    kits_root: Path, plan: dict[str, Any], *, require_idle_dispatch: bool = True,
+) -> None:
     identity = plan["identity"]
     product = Path(identity["product_path"])
     product_sha, product_tree, product_origin = clean_identity(product, "product")
@@ -2544,6 +2617,9 @@ def validate_live_basis(kits_root: Path, plan: dict[str, Any]) -> None:
         != identity["factory_sha"] + "\n"
     ):
         raise ReleaseError("product changed after release setup")
+    validate_product_runtime_contract(
+        product, require_idle_dispatch=require_idle_dispatch,
+    )
     release = kits_root / "releases" / identity["factory_sha"]
     if contract(release) != identity["contract_version"]:
         raise ReleaseError("installed release changed after setup")
@@ -2998,7 +3074,18 @@ def _resume_locked(args: argparse.Namespace, kits_root: Path) -> dict[str, Any]:
             value = read_journal(journal, plan)
         else:
             value = journal_update(journal, plan, "approved", "pass")
-        validate_live_basis(kits_root, plan)
+        dispatched = (
+            value.get("phase") in {"dispatch_started", "complete"}
+            or value.get("status") == "pass"
+            or (
+                value.get("phase") == "doctor_pass"
+                and active_exact(kits_root, plan)
+                and not (Path(plan["identity"]["product_path"]) / "factory/KILL").exists()
+            )
+        )
+        validate_live_basis(
+            kits_root, plan, require_idle_dispatch=not dispatched,
+        )
         if plan["stage"] == "prerequisites":
             if value.get("status") == "pass":
                 result_hash = value.get("result_approval_sha256")

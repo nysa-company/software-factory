@@ -5791,3 +5791,13 @@ launches carry a sealed `repository-test` scope, force the mock adapter, refuse
 GitHub-mutating commands, and use mock-only Doctor readiness without provider
 or GitHub credentials. These changes are product-agnostic and do not weaken
 production or qualification evidence.
+
+## 2026-08-13 — Decision 406: Release setup proves operator state is ignored
+
+Category: Reliability
+
+Contract 2 release setup verifies its operator projection, run roots, dispatch
+leases, and their locks are gitignored before it creates product runtime state,
+certifies, or initializes the operator projection. This keeps a successful
+activation or first claim from dirtying its own registered checkout and moving
+the first ticket-readiness failure behind the expensive release boundary.

@@ -10,6 +10,7 @@ import multiprocessing
 import os
 from pathlib import Path
 import plistlib
+import re
 import shutil
 import subprocess
 import tempfile
@@ -334,6 +335,7 @@ class ReleaseTransactionTest(unittest.TestCase):
                 RELEASE, "prepare_runtime",
                 side_effect=lambda *_args: order.append("runtime") or runtime,
             ),
+            mock.patch.object(RELEASE, "validate_product_runtime_contract"),
             mock.patch.object(RELEASE, "prepare_product_runtime"),
             mock.patch.object(RELEASE, "prepare_controller", return_value=self.plan["identity"]["controller"]),
             mock.patch.object(RELEASE, "launcher_plan", return_value=self.plan["children"]["launcher"]),
@@ -520,6 +522,7 @@ class ReleaseTransactionTest(unittest.TestCase):
             mock.patch.object(RELEASE, "run") as run,
             mock.patch.object(RELEASE, "contract", return_value="2.0.0"),
             mock.patch.object(RELEASE, "prepare_runtime", return_value=runtime),
+            mock.patch.object(RELEASE, "validate_product_runtime_contract"),
             mock.patch.object(
                 RELEASE, "release_preflight",
                 side_effect=RELEASE.ReleaseError("activation readiness blocked"),
@@ -571,6 +574,7 @@ class ReleaseTransactionTest(unittest.TestCase):
             mock.patch.object(RELEASE, "release_preflight"),
             mock.patch.object(RELEASE, "contract", return_value="2.0.0"),
             mock.patch.object(RELEASE, "prepare_runtime", return_value=runtime),
+            mock.patch.object(RELEASE, "validate_product_runtime_contract"),
             mock.patch.object(RELEASE, "prepare_product_runtime"),
             mock.patch.object(RELEASE, "prepare_controller", return_value=self.plan["identity"]["controller"]),
             mock.patch.object(RELEASE, "launcher_plan", return_value=self.plan["children"]["launcher"]),
@@ -819,6 +823,7 @@ class ReleaseTransactionTest(unittest.TestCase):
             mock.patch.object(RELEASE.Path, "home", return_value=home),
             mock.patch.object(RELEASE, "clean_identity", return_value=product_identity),
             mock.patch.object(RELEASE, "contract", return_value="2.0.0"),
+            mock.patch.object(RELEASE, "validate_product_runtime_contract"),
             mock.patch.object(RELEASE, "run_json", return_value={"status": "pass"}),
         ):
             RELEASE.validate_live_basis(self.kits, plan)
@@ -838,6 +843,7 @@ class ReleaseTransactionTest(unittest.TestCase):
             mock.patch.object(RELEASE.Path, "home", return_value=home),
             mock.patch.object(RELEASE, "clean_identity", return_value=product_identity),
             mock.patch.object(RELEASE, "contract", return_value="2.0.0"),
+            mock.patch.object(RELEASE, "validate_product_runtime_contract"),
         ):
             with self.assertRaisesRegex(RELEASE.ReleaseError, "runtime changed"):
                 RELEASE.validate_live_basis(self.kits, plan)
@@ -879,12 +885,7 @@ class ReleaseTransactionTest(unittest.TestCase):
             RELEASE.ticket_inventory(self.product)
 
     def test_release_prepares_only_ignored_physical_runtime_directories(self) -> None:
-        with mock.patch.object(
-            RELEASE.subprocess, "run",
-            return_value=subprocess.CompletedProcess([], 0),
-        ) as ignored:
-            RELEASE.prepare_product_runtime(self.product)
-        self.assertEqual(ignored.call_count, 2)
+        RELEASE.prepare_product_runtime(self.product)
         for relative in ("factory/runs", "factory/.active-runs"):
             path = self.product / relative
             self.assertTrue(path.is_dir())
@@ -894,24 +895,169 @@ class ReleaseTransactionTest(unittest.TestCase):
         target.mkdir()
         (self.product / "factory/runs").rmdir()
         (self.product / "factory/runs").symlink_to(target, target_is_directory=True)
-        with (
-            mock.patch.object(
-                RELEASE.subprocess, "run",
-                return_value=subprocess.CompletedProcess([], 0),
-            ),
-            self.assertRaisesRegex(RELEASE.ReleaseError, "unsafe"),
-        ):
+        with self.assertRaisesRegex(RELEASE.ReleaseError, "unsafe"):
             RELEASE.prepare_product_runtime(self.product)
 
-    def test_release_refuses_unignored_runtime_directory(self) -> None:
+    def test_release_refuses_uncommitted_ignore_authority(self) -> None:
+        (self.product / ".gitignore").write_text(
+            "factory/runs/\nfactory/.active-runs/\nfactory/.dispatch-leases/\n"
+            "factory/.dispatch-leases.lock/\n"
+        )
+        subprocess.run(["git", "-C", str(self.product), "init", "-q"], check=True)
+        subprocess.run(["git", "-C", str(self.product), "add", ".gitignore"], check=True)
+        subprocess.run([
+            "git", "-C", str(self.product), "-c", "user.name=test", "-c",
+            "user.email=test@local", "commit", "-qm", "fixture",
+        ], check=True)
+        with (self.product / ".git/info/exclude").open("a") as stream:
+            stream.write("factory/operator-map.json\nfactory/.operator-map.lock\n")
+        with self.assertRaisesRegex(RELEASE.ReleaseError, "ignore authority"):
+            RELEASE.validate_product_runtime_contract(self.product)
+
+    def test_release_refuses_negated_operator_ignore(self) -> None:
+        (self.product / ".gitignore").write_text(
+            "factory/runs/\nfactory/.active-runs/\nfactory/.dispatch-leases/\n"
+            "factory/.dispatch-leases.lock/\nfactory/operator-map.json\n"
+            "!factory/operator-map.json\nfactory/.operator-map.lock\n"
+        )
+        subprocess.run(["git", "-C", str(self.product), "init", "-q"], check=True)
+        subprocess.run(["git", "-C", str(self.product), "add", ".gitignore"], check=True)
+        subprocess.run([
+            "git", "-C", str(self.product), "-c", "user.name=test", "-c",
+            "user.email=test@local", "commit", "-qm", "fixture",
+        ], check=True)
+        with self.assertRaisesRegex(RELEASE.ReleaseError, "gitignored"):
+            RELEASE.validate_product_runtime_contract(self.product)
+
+    def test_setup_refuses_tracked_operator_projection_before_install(self) -> None:
+        (self.product / ".gitignore").write_text(
+            "factory/runs/\nfactory/.active-runs/\nfactory/.dispatch-leases/\n"
+            "factory/.dispatch-leases.lock/\n"
+            "factory/operator-map.json\nfactory/.operator-map.lock\n"
+        )
+        (self.product / "factory/KIT_PIN").write_text(self.sha + "\n")
+        subprocess.run(["git", "-C", str(self.product), "init", "-q"], check=True)
+        subprocess.run([
+            "git", "-C", str(self.product), "add", ".gitignore", "factory/KIT_PIN",
+        ], check=True)
+        subprocess.run([
+            "git", "-C", str(self.product), "add", "-f", "factory/operator-map.json",
+        ], check=True)
+        subprocess.run([
+            "git", "-C", str(self.product), "-c", "user.name=test", "-c",
+            "user.email=test@local", "commit", "-qm", "fixture",
+        ], check=True)
+        repo = self.root / "factory"
+        repo.mkdir()
+        args = argparse.Namespace(
+            project="relay", product=self.product, repo=repo, sha=self.sha,
+            kits_root=self.kits, profile="openai-priority-v1", operator_id="tester",
+            runtime_bin=None, claude_bin=None, codex_bin=None, cursor_bin=None,
+            ticket_workdir=[],
+        )
         with (
-            mock.patch.object(
-                RELEASE.subprocess, "run",
-                return_value=subprocess.CompletedProcess([], 1),
-            ),
-            self.assertRaisesRegex(RELEASE.ReleaseError, "gitignored"),
+            mock.patch.object(RELEASE, "clean_identity", side_effect=[
+                (self.sha, "e" * 40, str(repo)),
+                ("f" * 40, "1" * 40, str(self.product)),
+            ]),
+            mock.patch.object(RELEASE, "run") as install,
+            mock.patch.object(RELEASE, "prepare_runtime") as runtime,
+            self.assertRaisesRegex(RELEASE.ReleaseError, "operator-map.json"),
         ):
-            RELEASE.prepare_product_runtime(self.product)
+            RELEASE.setup(args)
+        install.assert_not_called()
+        runtime.assert_not_called()
+        self.assertFalse((self.product / "factory/runs").exists())
+        self.assertFalse((self.product / "factory/.active-runs").exists())
+
+    def test_release_refuses_missing_or_negated_dispatch_ignores(self) -> None:
+        base = (
+            "factory/runs/\nfactory/.active-runs/\nfactory/operator-map.json\n"
+            "factory/.operator-map.lock\n"
+        )
+        for rule in ("", "factory/.dispatch-leases/\n!factory/.dispatch-leases.lock/\n"):
+            with self.subTest(rule=rule):
+                (self.product / ".gitignore").write_text(base + rule)
+                subprocess.run(["git", "-C", str(self.product), "init", "-q"], check=True)
+                subprocess.run(["git", "-C", str(self.product), "add", ".gitignore"], check=True)
+                subprocess.run([
+                    "git", "-C", str(self.product), "-c", "user.name=test", "-c",
+                    "user.email=test@local", "commit", "-qm", "fixture",
+                ], check=True)
+                with self.assertRaisesRegex(RELEASE.ReleaseError, "dispatch-leases"):
+                    RELEASE.validate_product_runtime_contract(self.product)
+                subprocess.run(["git", "-C", str(self.product), "reset", "--hard", "-q"], check=True)
+
+    def test_release_refuses_tracked_or_unsafe_dispatch_state(self) -> None:
+        ignore = (
+            "factory/runs/\nfactory/.active-runs/\nfactory/operator-map.json\n"
+            "factory/.operator-map.lock\nfactory/.dispatch-leases/\n"
+            "factory/.dispatch-leases.lock/\n"
+        )
+        for index, (relative, expected) in enumerate((
+            ("factory/.dispatch-leases/T-1.json", "factory/.dispatch-leases"),
+            ("factory/.dispatch-leases.lock/owner", "factory/.dispatch-leases.lock"),
+        )):
+            product = self.root / f"tracked-dispatch-{index}"
+            (product / "factory").mkdir(parents=True)
+            with self.subTest(relative=relative):
+                (product / ".gitignore").write_text(ignore)
+                path = product / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("tracked\n")
+                subprocess.run(["git", "-C", str(product), "init", "-q"], check=True)
+                subprocess.run([
+                    "git", "-C", str(product), "add", ".gitignore",
+                ], check=True)
+                subprocess.run([
+                    "git", "-C", str(product), "add", "-f", relative,
+                ], check=True)
+                subprocess.run([
+                    "git", "-C", str(product), "-c", "user.name=test", "-c",
+                    "user.email=test@local", "commit", "-qm", "fixture",
+                ], check=True)
+                with self.assertRaisesRegex(
+                    RELEASE.ReleaseError, re.escape(expected) + ".*untracked",
+                ):
+                    RELEASE.validate_product_runtime_contract(product)
+
+    def test_release_refuses_existing_empty_dispatch_lock(self) -> None:
+        (self.product / ".gitignore").write_text(
+            "factory/runs/\nfactory/.active-runs/\nfactory/operator-map.json\n"
+            "factory/.operator-map.lock\nfactory/.dispatch-leases/\n"
+            "factory/.dispatch-leases.lock/\n"
+        )
+        lock = self.product / "factory/.dispatch-leases.lock"
+        lock.mkdir(mode=0o700)
+        subprocess.run(["git", "-C", str(self.product), "init", "-q"], check=True)
+        subprocess.run(["git", "-C", str(self.product), "add", ".gitignore"], check=True)
+        subprocess.run([
+            "git", "-C", str(self.product), "-c", "user.name=test", "-c",
+            "user.email=test@local", "commit", "-qm", "fixture",
+        ], check=True)
+        with self.assertRaisesRegex(RELEASE.ReleaseError, "lock.*absent"):
+            RELEASE.validate_product_runtime_contract(self.product)
+
+    def test_release_replay_accepts_only_nonempty_lease_runtime_after_dispatch(self) -> None:
+        (self.product / ".gitignore").write_text(
+            "factory/runs/\nfactory/.active-runs/\nfactory/operator-map.json\n"
+            "factory/.operator-map.lock\nfactory/.dispatch-leases/\n"
+            "factory/.dispatch-leases.lock/\n"
+        )
+        subprocess.run(["git", "-C", str(self.product), "init", "-q"], check=True)
+        subprocess.run(["git", "-C", str(self.product), "add", ".gitignore"], check=True)
+        subprocess.run([
+            "git", "-C", str(self.product), "-c", "user.name=test", "-c",
+            "user.email=test@local", "commit", "-qm", "fixture",
+        ], check=True)
+        leases = self.product / "factory/.dispatch-leases"
+        leases.mkdir(mode=0o700)
+        (leases / "T-1.json").write_text("runtime\n")
+        with self.assertRaisesRegex(RELEASE.ReleaseError, "empty or absent"):
+            RELEASE.validate_product_runtime_contract(self.product)
+        RELEASE.validate_product_runtime_contract(
+            self.product, require_idle_dispatch=False,
+        )
 
     def test_release_initializes_every_bound_ticket_without_erasing_overlays(self) -> None:
         tickets = self.product / "factory/tickets"

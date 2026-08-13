@@ -195,7 +195,7 @@ def _git_command(
 
 def run_git(
     product: Path, *arguments: str, environment: dict[str, str] | None = None,
-    timeout: int = 120,
+    timeout: int = 120, input_text: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     value = None
     output = None
@@ -228,13 +228,13 @@ def run_git(
         }
         or object_revision
     )
-    if environment is None and eligible:
+    if environment is None and input_text is None and eligible:
         return subprocess.CompletedProcess(
             arguments, 0 if output is not None else 1, output or "", "",
         )
     return subprocess.run(
         _git_command(product, *arguments), text=True, capture_output=True, check=False,
-        timeout=timeout, env=_git_environment(environment),
+        input=input_text, timeout=timeout, env=_git_environment(environment),
     )
 
 
