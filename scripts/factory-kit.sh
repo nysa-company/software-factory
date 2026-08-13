@@ -4869,7 +4869,7 @@ case "$COMMAND" in
        ${#POSITIONALS[@]} -eq 0 && "$REPO" == "$SCRIPT_ROOT" &&
        -z "$ORIGIN_OVERRIDE$RECEIPT$CAPACITY$APPROVE_HASH$RUNTIME_BIN" ]] ||
       { usage >&2; exit 2; }
-    cmd_preflight_report_json "$PROJECT" "$PRODUCT" "$SHA" "${TICKETS[@]}"
+    cmd_preflight_report_json "$PROJECT" "$PRODUCT" "$SHA" ${TICKETS[@]+"${TICKETS[@]}"}
     ;;
   plan)
     [[ -n "$PROJECT" ]] || PROJECT="${POSITIONALS[0]:-}"
