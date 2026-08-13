@@ -519,6 +519,17 @@ class ReleaseTransactionTest(unittest.TestCase):
         self.assertRegex(model["profile_hash"], r"^[0-9a-f]{64}$")
         self.assertNotIn("QUALIFICATION", json.dumps(model))
 
+    def test_launcher_test_mode_retains_its_explicit_isolated_kits_root(self) -> None:
+        home = self.root / "test-home"
+        kits = home / ".factory/kits"
+        runtime = home / ".factory/project-runtimes/relay/bin"
+        with (
+            mock.patch.object(RELEASE.Path, "home", return_value=home),
+            mock.patch.dict(os.environ, {"FACTORY_LAUNCH_TEST_MODE": "1"}),
+        ):
+            environment = RELEASE.launcher_environment(kits, runtime)
+        self.assertEqual(environment["FACTORY_KITS_ROOT"], str(kits))
+
     def test_profile_registry_and_controller_job_are_exact_and_non_overwriting(self) -> None:
         home = self.root / "home"
         home.mkdir()

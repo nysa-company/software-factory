@@ -478,7 +478,10 @@ def command_environment(kits_root: Path, runtime: Path | None = None) -> dict[st
 
 def launcher_environment(kits_root: Path, runtime: Path) -> dict[str, str]:
     environment = command_environment(kits_root, runtime)
-    if kits_root == Path.home().resolve() / ".factory/kits":
+    if (
+        kits_root == Path.home().resolve() / ".factory/kits"
+        and os.environ.get("FACTORY_LAUNCH_TEST_MODE") != "1"
+    ):
         environment.pop("FACTORY_KITS_ROOT", None)
     return environment
 
