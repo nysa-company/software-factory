@@ -192,7 +192,7 @@ Usage:
   $PROGRAM certify   --project SLUG --product PRODUCT_REPO --sha FULL_SHA
   $PROGRAM bootstrap --project SLUG --product PRODUCT_REPO --sha FULL_SHA [--repo KIT_REPO]
   $PROGRAM bootstrap-status --project SLUG --sha FULL_SHA [--json]
-  $PROGRAM preflight-report --project SLUG --product PRODUCT_REPO --sha FULL_SHA --ticket T-NNN [--ticket T-NNN] --json
+  $PROGRAM preflight-report --project SLUG --product PRODUCT_REPO --sha FULL_SHA [--ticket T-NNN] --json
   $PROGRAM plan      --project SLUG --product PRODUCT_REPO --sha FULL_SHA [--receipt FILE]
   $PROGRAM pause     --project SLUG --product PRODUCT_REPO
   $PROGRAM operator ACTION --project SLUG --product PRODUCT_REPO [--ticket T-NNN]
@@ -415,6 +415,29 @@ validate_test_mode() {
       die "FACTORY_KIT_TEST_MODE requires an explicit local canonical origin"
     [[ "$(canonical_origin_identity "$configured")" != github.com/* ]] ||
       die "FACTORY_KIT_TEST_MODE may not target a GitHub production origin"
+    [[ -n "${FACTORY_RELEASE_TEST_HOME:-}" ]] ||
+      die "FACTORY_KIT_TEST_MODE requires an explicit isolated release test home"
+    python3 -I -S - "$FACTORY_RELEASE_TEST_HOME" "$KITS_ROOT" <<'PY' ||
+import os, pathlib, pwd, stat, sys
+test_home = pathlib.Path(sys.argv[1])
+try:
+    info = test_home.lstat()
+    physical = pathlib.Path(os.path.realpath(test_home))
+except OSError:
+    raise SystemExit(1)
+real_home = pathlib.Path(os.path.realpath(pwd.getpwuid(os.getuid()).pw_dir))
+if (
+    test_home != physical
+    or not stat.S_ISDIR(info.st_mode)
+    or info.st_uid != os.geteuid()
+    or stat.S_IMODE(info.st_mode) != 0o700
+    or physical == real_home
+    or real_home in physical.parents
+    or pathlib.Path(os.path.realpath(sys.argv[2])) != physical / ".factory/kits"
+):
+    raise SystemExit(1)
+PY
+      die "FACTORY_KIT_TEST_MODE requires owner-only state outside the real account home"
   fi
 }
 
@@ -1601,6 +1624,7 @@ cmd_runtime_pin() {
   local product="$1" runtime_bin="$2" product_top
   require_no_host_cutover
   product_top="$(absolute_dir "$product")"
+  require_test_product "$product_top"
   [[ "$runtime_bin" == /* ]] || die "runtime bin path must be absolute"
   [[ -f "$SCRIPT_ROOT/scripts/owner-runtime-pin.py" &&
      ! -L "$SCRIPT_ROOT/scripts/owner-runtime-pin.py" ]] ||
@@ -1938,7 +1962,30 @@ product_origin() {
       ;;
     *) die "product push destination must be absolute, URL, or scp-like" ;;
   esac
+  if [[ "${FACTORY_KIT_TEST_MODE:-0}" == "1" ]]; then
+    python3 -I -S - "$1" "$origin" "$FACTORY_RELEASE_TEST_HOME" <<'PY' ||
+import os, pathlib, sys
+product = pathlib.Path(os.path.realpath(sys.argv[1]))
+origin = sys.argv[2]
+root = pathlib.Path(os.path.realpath(sys.argv[3]))
+if origin.startswith("file://"):
+    origin = origin[7:]
+if not origin.startswith("/"):
+    raise SystemExit(1)
+push = pathlib.Path(os.path.realpath(origin))
+if root not in product.parents or root not in push.parents or not push.is_dir():
+    raise SystemExit(1)
+PY
+      die "Factory test mode requires product and push origin inside the isolated test home"
+  fi
   printf '%s\n' "$origin"
+}
+
+require_test_product() {
+  local product="$1" origin
+  [[ "${FACTORY_KIT_TEST_MODE:-0}" == "1" ]] || return 0
+  origin="$(product_origin "$product")" || return $?
+  [[ -n "$origin" ]] || die "Factory test product origin is unavailable"
 }
 
 require_clean_product() {
@@ -2666,11 +2713,18 @@ validate_receipt_snapshot() {
     die "receipt kit tree does not match trusted install manifest"
   [[ "$(json_get "$receipt" kit_origin)" == "$manifest_origin" ]] ||
     die "receipt kit origin does not match trusted install manifest"
+  if [[ "${FACTORY_KIT_TEST_MODE:-0}" != "1" ]]; then
+    [[ "$(canonical_origin_identity "$manifest_origin")" == "$CANONICAL_GITHUB_ORIGIN" ]] ||
+      die "production receipt does not bind the canonical Factory origin"
+    [[ "$(json_get "$receipt" kit_suite_evidence.verification_source)" == "github-actions-full" ]] ||
+      die "production receipt lacks protected-main CI evidence"
+  fi
 
   verify_installed_launcher_binding "$release"
   product_top="$(absolute_dir "$product")"
   [[ "$product_top" == "$(json_get "$receipt" product_path)" ]] ||
     die "receipt product path does not match"
+  require_test_product "$product_top"
   require_clean_product "$product_top"
   product_git_sha="$(product_sha "$product_top")"
   receipt_product_sha="$(json_get "$receipt" product_sha)"
@@ -2956,351 +3010,10 @@ require_maintenance_after_lock() {
 
 validate_ticket_leases() {
   local product="$1" sha="$2" origin="$3" certified_previous_tree="${4:-}"
-  python3 - "$product/factory" "$sha" "$SCRIPT_ROOT/scripts/lib" \
-    "$RELEASES_DIR/$sha/scripts" "$origin" "$certified_previous_tree" <<'PY'
-import importlib.util, json, pathlib, re, subprocess, sys
-factory, candidate, lib, candidate_scripts, origin, certified_previous_tree = (
-    pathlib.Path(sys.argv[1]), sys.argv[2], pathlib.Path(sys.argv[3]),
-    pathlib.Path(sys.argv[4]), sys.argv[5], sys.argv[6],
-)
-sys.path.insert(0, sys.argv[3])
-from effective_ticket import ticket_branch_prefix
-from inflight_release import (
-    AuthorizationError, authorize_ticket, parse_authorization, unique_object,
-)
-from legacy_closeout import (
-    ValidationError, certified_legacy_terminal, protected_terminal,
-)
-
-authorization = None
-authorized = {}
-used_authorizations = set()
-migration_policy = None
-
-def load_migration_policy():
-    global migration_policy
-    if migration_policy is not None:
-        return migration_policy
-    spec = importlib.util.spec_from_file_location(
-        "factory_inflight_model_manager", candidate_scripts / "model-manager.py",
-    )
-    if spec is None or spec.loader is None:
-        raise SystemExit("candidate model migration validator is unavailable")
-    manager = importlib.util.module_from_spec(spec)
-    try:
-        spec.loader.exec_module(manager)
-        catalog, routes, _, profiles = manager.ROUTER.load_policy(
-            candidate_scripts / "model-routing" / "catalog-v1.json",
-            candidate_scripts / "model-routing" / "profiles-v1.json",
-        )
-    except Exception:
-        raise SystemExit("candidate model migration policy is invalid")
-    migration_policy = manager, catalog, routes, profiles
-    return migration_policy
-
-def load_inflight_authorization():
-    global authorization, authorized
-    if authorization is not None:
-        return
-    relative = "factory/migrations/inflight-release/%s.json" % candidate
-    result = subprocess.run(
-        ["git", "-C", str(repo), "show", "HEAD:" + relative],
-        text=True, capture_output=True,
-    )
-    if result.returncode:
-        raise SystemExit("nonterminal ticket uses another kit without an exact in-flight release authorization")
-    head = subprocess.check_output(
-        ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True,
-    ).strip()
-    remote_main = subprocess.check_output([
-        "git", "-C", str(repo), "ls-remote", "--heads", "--", origin,
-        "refs/heads/main",
-    ], text=True).split()
-    if not remote_main or remote_main[0] != head:
-        raise SystemExit("in-flight release authorization is not on protected main")
-
-    project = factory / "PROJECT.env"
-    if (
-        not project.is_file() or project.is_symlink()
-    ):
-        raise SystemExit("product project descriptor is unsafe")
-    try:
-        authorization, authorized = parse_authorization(
-            result.stdout, project.read_text(), candidate,
-        )
-    except (AuthorizationError, OSError, UnicodeError) as error:
-        raise SystemExit(str(error))
-
-def authorize_inflight(ticket_id, branch, remote_tip, source_ref, state, lease):
-    load_inflight_authorization()
-    try:
-        if not remote_tip or source_ref == "HEAD":
-            raise AuthorizationError("remote ticket ref is unavailable")
-        authorize_ticket(
-            authorization, authorized, ticket=ticket_id, branch=branch,
-            head=remote_tip, state=state, source_kit_sha=lease,
-        )
-    except AuthorizationError:
-        expected = authorized.get(ticket_id) or {
-            "branch": branch, "head": remote_tip, "state": state,
-        }
-        raise SystemExit(
-            "%s does not match its exact in-flight release authorization; "
-            "expected branch=%s head=%s state=%s source_kit_sha=%s"
-            % (
-                ticket_id, expected.get("branch", ""),
-                expected.get("head", ""), expected.get("state", ""),
-                authorization["source_kit_sha"],
-            )
-        )
-    plan_path = "factory/route-plans/%s.json" % ticket_id
-    result = subprocess.run(
-        ["git", "-C", str(repo), "show", remote_tip + ":" + plan_path],
-        text=True, capture_output=True,
-    )
-    if result.returncode or len(result.stdout.encode("utf-8")) > 1024 * 1024:
-        raise SystemExit("authorized in-flight ticket lacks a safe migratable route document")
-    try:
-        plan = json.loads(result.stdout, object_pairs_hook=unique_object)
-        manager, catalog, routes, profiles = load_migration_policy()
-        if plan.get("ticket") != ticket_id or plan.get("kit_sha") != authorization["source_kit_sha"]:
-            raise ValueError("route plan identity mismatch")
-        if plan.get("schema") == "ticket-model-route-plan/v1":
-            if set(plan) != {"schema", "ticket", "kit_sha", "created_at", "resolution"}:
-                raise ValueError("route plan shape mismatch")
-            manager._validate_pin(
-                plan, catalog, routes, profiles, allow_historical_catalog=True,
-            )
-        elif plan.get("schema") == "ticket-model-route-journal/v2":
-            manager.validate_journal(
-                plan, catalog, routes, profiles, allow_historical_active=True,
-            )
-            migrated = manager.migrate_v2_journal(
-                plan, remote_tip, candidate, "1970-01-01T00:00:00Z",
-                catalog, routes, profiles,
-            )
-            if migrated["revisions"][:-1] != plan["revisions"]:
-                raise ValueError("route journal history changed during migration preview")
-        else:
-            raise ValueError("unsupported route document schema")
-    except Exception:
-        raise SystemExit("authorized in-flight ticket route document is not migratable by the candidate")
-    used_authorizations.add(ticket_id)
-
-def protected_legacy_approval(ticket_id, lease, source_ref, text):
-    if source_ref != "HEAD":
-        return False
-    approvals = re.findall(r"(?mi)^Operator-Approval:\s*(.*?)\s*$", text)
-    if approvals != ["Linear"]:
-        return False
-    head = subprocess.check_output(
-        ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True,
-    ).strip()
-    remote_main = subprocess.check_output([
-        "git", "-C", str(repo), "ls-remote", "--heads", "--", origin,
-        "refs/heads/main",
-    ], text=True).split()
-    if not remote_main or remote_main[0] != head:
-        return False
-    root = "factory/attestations/%s" % ticket_id
-    values = []
-    for name in ("bundle.json", "approval.json"):
-        path = root + "/" + name
-        result = subprocess.run(
-            ["git", "-C", str(repo), "show", "HEAD:" + path],
-            text=True, capture_output=True,
-        )
-        if result.returncode:
-            return False
-        try:
-            values.append(json.loads(result.stdout))
-        except json.JSONDecodeError:
-            return False
-    bundle, approval = values
-    branch = prefix + ticket_id
-    bundle_blob = subprocess.check_output([
-        "git", "-C", str(repo), "rev-parse", "HEAD:" + root + "/bundle.json",
-    ], text=True).strip()
-    return (
-        bundle.get("schema") == "nysa.software-factory.ticket-bundle/v1"
-        and approval.get("schema") == "nysa.software-factory.ticket-approval/v1"
-        and bundle.get("ticket") == approval.get("ticket") == ticket_id
-        and bundle.get("branch") == approval.get("branch") == branch
-        and bundle.get("kit_sha") == approval.get("kit_sha") == lease
-        and bundle.get("repository") == approval.get("repository")
-        and bundle.get("pr_number") == approval.get("pr_number")
-        and bundle.get("reviewed_sha") == approval.get("reviewed_sha")
-        and bundle.get("bundle_blob") == approval.get("bundle_blob")
-        and approval.get("bundle_attestation_blob") == bundle_blob
-        and re.fullmatch(r"[0-9a-f]{40}", bundle.get("reviewed_sha", ""))
-        and re.fullmatch(r"[0-9a-f]{40}", bundle.get("bundle_blob", ""))
-    )
-
-tickets = factory / "tickets"
-repo = factory.parent
-prefix = ticket_branch_prefix(factory)
-head = subprocess.check_output(
-    ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True,
-).strip()
-remote_main = subprocess.check_output([
-    "git", "-C", str(repo), "ls-remote", "--heads", "--", origin,
-    "refs/heads/main",
-], text=True).split()
-if not remote_main or remote_main[0] != head:
-    raise SystemExit("activation product HEAD is not current protected main")
-ticket_ids = set()
-if tickets.is_dir():
-    for path in tickets.glob("T-*.md"):
-        if re.fullmatch(r"T-[0-9]+\.md", path.name):
-            if path.is_symlink():
-                raise SystemExit("ticket path is a symlink: %s" % path)
-            ticket_ids.add(path.stem)
-refs = subprocess.check_output([
-    "git", "-C", str(repo), "for-each-ref", "--format=%(refname)",
-    "refs/remotes/origin/" + prefix, "refs/heads/" + prefix,
-], text=True).splitlines()
-remote_tips = {}
-remote_lines = subprocess.check_output([
-    "git", "-C", str(repo), "ls-remote", "--heads", "--", origin,
-    "refs/heads/" + prefix + "T-*",
-], text=True).splitlines()
-for line in remote_lines:
-    tip, ref = line.split()
-    match = re.fullmatch(r"refs/heads/" + re.escape(prefix) + r"(T-[0-9]+)", ref)
-    if not match:
-        continue
-    if not re.fullmatch(r"[0-9a-f]{40}", tip):
-        raise SystemExit("remote ticket ref is malformed")
-    ticket_id = match.group(1)
-    if ticket_id in remote_tips:
-        raise SystemExit("remote ticket ref is duplicated: %s" % ticket_id)
-    remote_tips[ticket_id] = tip
-    ticket_ids.add(ticket_id)
-for ref in refs:
-    branch = re.sub(r"^refs/(?:remotes/origin|heads)/", "", ref)
-    match = re.fullmatch(re.escape(prefix) + r"(T-[0-9]+)", branch)
-    if match:
-        ticket_ids.add(match.group(1))
-for ticket_id in sorted(ticket_ids):
-    branch = prefix + ticket_id
-    remote_ref = "refs/remotes/origin/" + branch
-    local_ref = "refs/heads/" + branch
-    remote_tip = remote_tips.get(ticket_id, "")
-    relative = "factory/tickets/%s.md" % ticket_id
-    protected = subprocess.run(
-        ["git", "-C", str(repo), "show", "HEAD:" + relative],
-        text=True, capture_output=True,
-    )
-    protected_states = (
-        re.findall(r"(?mi)^State:\s*(.*?)\s*$", protected.stdout)
-        if protected.returncode == 0 else []
-    )
-    protected_terminal_state = (
-        protected_states[0].strip().lower()
-        if len(protected_states) == 1
-        and protected_states[0].strip().lower() in ("done", "canceled")
-        else ""
-    )
-    tracking = subprocess.run(
-        ["git", "-C", str(repo), "rev-parse", "--verify", remote_ref],
-        text=True, capture_output=True,
-    )
-    tracking_tip = tracking.stdout.strip() if tracking.returncode == 0 else ""
-    if not protected_terminal_state and tracking_tip and remote_tip != tracking_tip:
-        raise SystemExit("%s remote ticket ref is stale or unverified" % ticket_id)
-    audit_ref = ""
-    if protected_terminal_state:
-        source_ref = "HEAD"
-    elif remote_tip:
-        if tracking_tip:
-            source_ref = remote_ref
-        else:
-            audit_ref = "refs/factory/lease-audit/" + ticket_id
-            fetched = subprocess.run([
-                "git", "-C", str(repo), "fetch", "--quiet", "--no-tags", origin,
-                "refs/heads/" + branch + ":" + audit_ref,
-            ])
-            fetched_tip = subprocess.run(
-                ["git", "-C", str(repo), "rev-parse", "--verify", audit_ref],
-                text=True, capture_output=True,
-            )
-            if fetched.returncode != 0 or fetched_tip.stdout.strip() != remote_tip:
-                subprocess.run(
-                    ["git", "-C", str(repo), "update-ref", "-d", audit_ref],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                )
-                raise SystemExit("%s remote ticket ref could not be verified" % ticket_id)
-            source_ref = audit_ref
-    elif subprocess.run(
-        ["git", "-C", str(repo), "show-ref", "--verify", "--quiet", local_ref]
-    ).returncode == 0:
-        raise SystemExit("%s has an unverified local-only ticket branch" % ticket_id)
-    else:
-        source_ref = "HEAD"
-    content = subprocess.run(
-        ["git", "-C", str(repo), "show", source_ref + ":" + relative],
-        text=True, capture_output=True,
-    )
-    if audit_ref:
-        subprocess.run(
-            ["git", "-C", str(repo), "update-ref", "-d", audit_ref], check=True
-        )
-    if content.returncode != 0:
-        raise SystemExit("%s is missing from its committed ticket source" % ticket_id)
-    text = content.stdout
-    states = re.findall(r"(?mi)^State:\s*(.*?)\s*$", text)
-    leases = re.findall(r"(?mi)^Kit-SHA:\s*(.*?)\s*$", text)
-    if len(states) != 1:
-        raise SystemExit("%s must contain exactly one State field" % ticket_id)
-    if len(leases) > 1:
-        raise SystemExit("%s contains duplicate Kit-SHA fields" % ticket_id)
-    state = states[0].strip()
-    lease = leases[0].strip() if leases else ""
-    if lease and not re.fullmatch(r"[0-9a-f]{40}", lease):
-        raise SystemExit("%s has a noncanonical Kit-SHA" % ticket_id)
-    if state.lower() == "done":
-        try:
-            terminal = protected_terminal(repo, ticket_id)
-        except ValidationError as error:
-            terminal = (
-                certified_legacy_terminal(
-                    repo, ticket_id, "HEAD", certified_previous_tree,
-                )
-                if source_ref == "HEAD"
-                else None
-            )
-            if terminal is None:
-                raise SystemExit(
-                    "%s claims Done without valid protected-main terminal evidence: %s"
-                    % (ticket_id, error)
-                )
-        if terminal.get("basis") not in (
-            "attested-done", "attested-emergency-closeout",
-            "validated-legacy-closeout",
-            "validated-terminal-backfill",
-            "validated-protected-merge-reconciliation",
-            "certified-legacy-done",
-        ):
-            raise SystemExit("%s has an unknown terminal basis" % ticket_id)
-        continue
-    if state.lower() == "canceled":
-        if lease:
-            raise SystemExit("%s is canceled but still carries a Kit-SHA lease" % ticket_id)
-        continue
-    if lease:
-        if lease != candidate:
-            if state.lower() == "approved" and protected_legacy_approval(
-                ticket_id, lease, source_ref, text,
-            ):
-                continue
-            authorize_inflight(
-                ticket_id, branch, remote_tip, source_ref, state, lease,
-            )
-    elif state.lower() not in ("ready", "backlog", "blocked-escalated"):
-        raise SystemExit("%s from %s is in progress without a Kit-SHA lease" % (ticket_id, source_ref))
-if authorization is not None and used_authorizations != set(authorized):
-    raise SystemExit("in-flight release authorization contains an unused ticket")
-PY
+  python3 -B "$SCRIPT_ROOT/scripts/lib/activation_preflight.py" \
+    --product "$product" --candidate "$sha" \
+    --candidate-scripts "$RELEASES_DIR/$sha/scripts" --origin "$origin" \
+    --certified-previous-tree "$certified_previous_tree"
 }
 
 cmd_pause() {
@@ -3309,6 +3022,7 @@ cmd_pause() {
   validate_managed_layout "$slug"
   require_host_cutover_access "$slug"
   product_top="$(absolute_dir "$product")"
+  require_test_product "$product_top"
   [[ -d "$product_top/factory" && ! -L "$product_top/factory" ]] ||
     die "product factory directory is unsafe"
   [[ ! -L "$product_top/factory/.launch.lock" ]] ||
@@ -3332,6 +3046,7 @@ cmd_operator() {
   local action="$1" slug="$2" product="$3" product_top state_dir
   validate_slug "$slug"
   product_top="$(absolute_dir "$product")"
+  require_test_product "$product_top"
   state_dir="$PROJECTS_DIR/$slug/controller"
   mkdir -p "$PROJECTS_DIR/$slug"
   local cli_args=()
@@ -3962,6 +3677,7 @@ cmd_certify() {
   remove_symlinked_suite_evidence "$(suite_evidence_file_for "$sha")"
   validate_project_storage "$slug"
   product_top="$(absolute_dir "$product")"
+  require_test_product "$product_top"
   require_production_product_shape "$product_top"
   release="$RELEASES_DIR/$sha"
   manifest_values="$(verify_release_from_manifest "$sha")"
@@ -4213,6 +3929,7 @@ cmd_bootstrap() {
   ensure_managed_directories "$slug"
   require_host_cutover_access "$slug"
   product_top="$(absolute_dir "$product")"
+  require_test_product "$product_top"
   require_production_product_shape "$product_top"
   require_clean_product "$product_top"
   [[ "$(strict_product_pin "$product_top")" == "$sha" ]] ||
@@ -4384,6 +4101,7 @@ plan_activation() {
   validate_project_storage "$slug"
   validate_sha "$sha"
   product_top="$(absolute_dir "$product")"
+  require_test_product "$product_top"
   require_production_product_shape "$product_top"
   [[ -f "$(maintenance_file_for "$product_top")" &&
      ! -L "$(maintenance_file_for "$product_top")" ]] ||
@@ -4485,6 +4203,7 @@ cmd_activate() {
   validate_slug "$slug"
   validate_sha "$sha"
   product_top="$(absolute_dir "$product")"
+  require_test_product "$product_top"
   require_production_product_shape "$product_top"
   ensure_managed_directories "$slug"
   require_host_cutover_access "$slug"
@@ -4628,6 +4347,7 @@ cmd_reconcile() {
   fi
   [[ -f "$journal" && ! -L "$journal" ]] || die "activation journal is unsafe"
   product_top="$(infer_product_path "$product" "$active" "$journal")"
+  require_test_product "$product_top"
   launch_lock="$product_top/factory/.launch.lock"
   acquire_lock "$launch_lock" "product launch"
   require_maintenance_after_lock "$slug" "$product_top"
@@ -4746,6 +4466,7 @@ cmd_rollback() {
   [[ -n "$(json_get "$journal" previous_record)" ]] ||
     die "active generation has no previous generation"
   product_top="$(infer_product_path "$product" "$active" "$journal")"
+  require_test_product "$product_top"
   previous_sha="$(json_get "$journal" previous_record.kit_sha)"
   previous_tree="$(json_get "$journal" previous_record.kit_tree)"
   previous_product_tree="$(json_get "$journal" previous_record.product_tree)"
@@ -4784,6 +4505,7 @@ cmd_recover_lease() {
   validate_managed_layout "$slug"
   require_host_cutover_access "$slug"
   product_top="$(absolute_dir "$product")"
+  require_test_product "$product_top"
   launch_lock="$product_top/factory/.launch.lock"
   acquire_lock "$launch_lock" "product launch"
   require_maintenance_after_lock "$slug" "$product_top"
@@ -4823,6 +4545,7 @@ cmd_status() {
   elif [[ -f "$active" ]]; then
     product_top="$(json_get "$active" product_path 2>/dev/null || true)"
   fi
+  [[ -z "$product_top" ]] || require_test_product "$(absolute_dir "$product_top")"
   if [[ -f "$active" ]]; then
     verify_release_from_manifest "$(json_get "$active" kit_sha)" >/dev/null
     if [[ -n "$product_top" ]]; then
@@ -4867,7 +4590,7 @@ PY
 }
 
 cmd_preflight_report() {
-  local slug="$1" product="$2" sha="$3" product_top pin manifest_values
+  local slug="$1" product="$2" sha="$3" product_top pin manifest_values active generation previous_tree=""
   local kit_tree release contract network_reviewed origin ticket
   local -a ticket_args=()
   shift 3
@@ -4875,6 +4598,7 @@ cmd_preflight_report() {
   validate_sha "$sha" || return $?
   validate_managed_layout "$slug" || return $?
   product_top="$(absolute_dir "$product")" || return $?
+  require_test_product "$product_top" || return $?
   manifest_values="$(verify_release_from_manifest "$sha")" || return $?
   kit_tree="$(printf '%s' "$manifest_values" | awk -F'\t' '{print $1}')" ||
     return $?
@@ -4883,6 +4607,12 @@ cmd_preflight_report() {
   contract="$(contract_version "$release")" || return $?
   pin="$(strict_product_pin "$product_top")" || return $?
   origin="$(product_origin "$product_top")" || return $?
+  active="$(active_file_for "$slug")"
+  generation="$(certification_active_binding "$slug" "$product_top" "$origin")" || return $?
+  if [[ -n "$generation" ]]; then
+    previous_tree="$(json_get "$active" product_tree)"
+    [[ "$previous_tree" =~ ^[0-9a-f]{40}$ ]] || return 1
+  fi
   certify_script_path "$product_top" >/dev/null || return $?
   network_reviewed="${FACTORY_KIT_CERTIFICATION_NETWORK_REVIEWED:-0}"
   for ticket in "$@"; do
@@ -4895,7 +4625,8 @@ cmd_preflight_report() {
     --factory-sha "$sha" --factory-tree "$kit_tree" \
     --contract-version "$contract" --product-pin "$pin" \
     --product-origin "$origin" \
-    --network-reviewed "$network_reviewed" "${ticket_args[@]}"
+    --network-reviewed "$network_reviewed" \
+    --certified-previous-tree "$previous_tree" "${ticket_args[@]}"
 }
 
 preflight_report_blocked_json() {
@@ -5100,7 +4831,6 @@ if [[ "$COMMAND" != "release" && (
     ) ]]; then
   die "release-only option used with $COMMAND"
 fi
-
 [[ "$COMMAND" == "preflight-report" ]] || validate_managed_roots
 host_cutover_mutation_requested && lock_host_cutover_mutation
 
@@ -5135,7 +4865,7 @@ case "$COMMAND" in
     ;;
   preflight-report)
     [[ -n "$PROJECT" && -n "$PRODUCT" && -n "$SHA" &&
-       ${#TICKETS[@]} -gt 0 && "$JSON" -eq 1 &&
+       "$JSON" -eq 1 &&
        ${#POSITIONALS[@]} -eq 0 && "$REPO" == "$SCRIPT_ROOT" &&
        -z "$ORIGIN_OVERRIDE$RECEIPT$CAPACITY$APPROVE_HASH$RUNTIME_BIN" ]] ||
       { usage >&2; exit 2; }

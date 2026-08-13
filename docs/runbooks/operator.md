@@ -308,21 +308,25 @@ report against the exact intended cohort:
 ```bash
 bash scripts/factory-kit.sh preflight-report \
   --project <project> --product <absolute-product-path> --sha <full-kit-sha> \
-  --ticket <T-NNN> [--ticket <T-NNN>] --json
+  [--ticket <T-NNN>] --json
 ```
 
 The closed JSON report verifies the manifest-backed candidate identity, clean
 product `main` at the exact read-only `ls-remote` result from the validated push
 authority, matching identity snapshots around all evidence reads, candidate
 pin, current Node/npm PATH tuple, certification network declaration, each
-ticket's existing readiness contract, and pairwise Builder ownership. Every
+selected ticket's existing readiness contract, pairwise Builder ownership,
+and every committed terminal ticket needed by activation. It hydrates only
+the immutable `refs/pull/<number>/head` objects named by committed migration
+evidence, without moving local refs or `FETCH_HEAD`, and reports all terminal
+blockers together. Every
 accepted invocation emits exactly one report: `pass` exits 0,
 `authorization-required` exits 3, and `blocked` exits 2. A required network
 phase is not auto-approved: review the named phases, then explicitly rerun the
 same command and later certification with
 `FACTORY_KIT_CERTIFICATION_NETWORK_REVIEWED=1` only when warranted.
 
-The report does not run Doctor or model/provider probes, fetch, write state,
+The report does not run Doctor or model/provider probes, write owner state,
 publish maintenance, certify, activate, or make the operator decision. Use the
 existing `status --json`, Doctor, and provider controls for active runtime and
 transaction diagnosis.
@@ -587,14 +591,25 @@ bash scripts/factory-kit.sh release resume \
 
 `release setup` requires clean exact Factory and product Git trees, an exact
 product `KIT_PIN`, Contract 2.0, and a reviewed certification-plan runtime. It
-installs the sealed candidate, prepares a project-local runtime, the
-ignored physical `factory/runs/` and `.active-runs/` roots, the path-only
+installs the sealed candidate, prepares the project-local Node/npm runtime,
+runs the full activation preflight above through that runtime, then prepares
+the ignored physical `factory/runs/` and `.active-runs/` roots, the path-only
 `active.json.product_path` authority, and the exact macOS controller plist, then binds
 Factory/product SHA and tree, active generation, runtime binaries, provider
 plans, model profile, receipt, and any one-to-four ticket migration previews
 into an owner-only plan. It also binds every committed ticket blob and state,
 then idempotently initializes their local operator-map entries behind the
 dispatch barrier. It never chooses migration tickets or advances ticket state.
+Activation blockers therefore stop before product runtime preparation,
+certification, maintenance, host reservation, or approval generation.
+
+`FACTORY_KIT_TEST_MODE=1` is repository-test evidence only. It requires an
+explicit owner-only `FACTORY_RELEASE_TEST_HOME` outside the real account home
+with its kits root, product checkout, and single local product push destination
+contained beneath that root, plus a local canonical Factory origin. Production
+receipt validation requires the canonical GitHub Factory origin and
+protected-main GitHub Actions evidence; test receipts cannot be promoted into
+an installed production lane.
 
 If the stable launcher or provider settings must change, setup first returns a
 `prerequisites` plan. Review it, ensure every listed active factory is already

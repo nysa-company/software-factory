@@ -31,6 +31,11 @@ from qualification_manifest import (  # noqa: E402
     ManifestError as QualificationManifestError,
     validate as validate_qualification_manifest,
 )
+from historical_pr_objects import (  # noqa: E402
+    HistoricalObjectError,
+    commit_present,
+    hydrate as hydrate_historical_pr_objects,
+)
 
 
 SCHEMA = "nysa.software-factory.qualification-environment/v1"
@@ -1504,140 +1509,11 @@ def product_origin(product: Path) -> str:
     return origins[0]
 
 
-def configured_repository(product: Path) -> str:
-    values = re.findall(
-        r"^(?:export\s+)?GH_REPO\s*=\s*['\"]?([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)['\"]?\s*$",
-        (product / "factory/PROJECT.env").read_text(encoding="utf-8"),
-        re.M,
-    )
-    if len(values) != 1:
-        raise EnvironmentError("qualification product repository is ambiguous")
-    return values[0]
-
-
-def commit_present(product: Path, sha: str) -> bool:
-    return subprocess.run(
-        ["git", "-C", str(product), "cat-file", "-e", f"{sha}^{{commit}}"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        check=False,
-        timeout=120,
-    ).returncode == 0
-
-
 def historical_pr_objects(product: Path) -> int:
-    """Hydrate immutable PR heads needed by committed terminal migrations."""
-    migrations = product / "factory/migrations"
-    if not migrations.is_dir():
-        return 0
-    supported = {
-        "nysa.software-factory.legacy-closeout/v1": ("pr",),
-        "nysa.software-factory.terminal-backfill/v1": (
-            "implementation_pr", "closeout_pr",
-        ),
-        "nysa.software-factory.protected-merge-reconciliation/v1": (
-            "original_pr", "adoption_pr",
-        ),
-    }
-    repository = configured_repository(product)
-    requirements: dict[tuple[int, str], dict[str, Any]] = {}
-    for path in sorted(migrations.glob("**/*.json")):
-        try:
-            value = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as error:
-            raise EnvironmentError(
-                f"historical object record is malformed: {path.relative_to(product)}"
-            ) from error
-        keys = supported.get(value.get("schema")) if isinstance(value, dict) else None
-        if not keys:
-            continue
-        relative = str(path.relative_to(product))
-        if value.get("repository") != repository:
-            raise EnvironmentError(
-                f"historical object repository mismatch: {relative}"
-            )
-        for key in keys:
-            record = value.get(key)
-            if record is None:
-                continue
-            if (
-                not isinstance(record, dict)
-                or isinstance(record.get("number"), bool)
-                or not isinstance(record.get("number"), int)
-                or record["number"] <= 0
-                or not SHA.fullmatch(record.get("head", ""))
-            ):
-                raise EnvironmentError(
-                    f"historical PR record is malformed: {relative} {key}"
-                )
-            identity = (record["number"], record["head"])
-            item = requirements.setdefault(identity, {
-                "commits": set(), "paths": set(),
-            })
-            item["commits"].add(record["head"])
-            item["paths"].add(relative)
-            if (
-                value.get("schema")
-                == "nysa.software-factory.protected-merge-reconciliation/v1"
-                and key == "original_pr"
-            ):
-                evidence = value.get("evidence_head", "")
-                if not SHA.fullmatch(evidence):
-                    raise EnvironmentError(
-                        f"historical evidence head is malformed: {relative}"
-                    )
-                item["commits"].add(evidence)
-
-    for (number, head), item in sorted(requirements.items()):
-        missing = sorted(
-            sha for sha in item["commits"] if not commit_present(product, sha)
-        )
-        if missing:
-            reference = f"refs/pull/{number}/head"
-            observed = subprocess.run(
-                ["git", "-C", str(product), "ls-remote", "--refs", "origin", reference],
-                text=True, capture_output=True, check=False, timeout=120,
-            )
-            fields = observed.stdout.split()
-            relative = sorted(item["paths"])[0]
-            if observed.returncode or fields != [head, reference]:
-                raise EnvironmentError(
-                    f"historical PR head unavailable: {relative} PR #{number} "
-                    f"expected {head}"
-                )
-            fetched = subprocess.run(
-                [
-                    "git", "-C", str(product), "fetch", "--quiet", "--no-tags",
-                    "--no-write-fetch-head", "origin", reference,
-                ],
-                text=True, capture_output=True, check=False, timeout=120,
-            )
-            if fetched.returncode:
-                raise EnvironmentError(
-                    f"historical PR head fetch failed: {relative} PR #{number} "
-                    f"expected {head}"
-                )
-        absent = sorted(
-            sha for sha in item["commits"] if not commit_present(product, sha)
-        )
-        if absent:
-            raise EnvironmentError(
-                f"historical commit object missing: {sorted(item['paths'])[0]} "
-                f"PR #{number} expected {absent[0]}"
-            )
-        for sha in item["commits"]:
-            if sha != head and subprocess.run(
-                ["git", "-C", str(product), "merge-base", "--is-ancestor", sha, head],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False,
-                timeout=120,
-            ).returncode:
-                raise EnvironmentError(
-                    f"historical commit is not in PR: {sorted(item['paths'])[0]} "
-                    f"PR #{number} expected {sha}"
-                )
-    return len(requirements)
+    try:
+        return hydrate_historical_pr_objects(product)
+    except HistoricalObjectError as error:
+        raise EnvironmentError(str(error)) from error
 
 
 def certification_preflight(

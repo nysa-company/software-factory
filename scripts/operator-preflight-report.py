@@ -20,6 +20,7 @@ from certification_plan import (  # noqa: E402
     NODE, NPM, PlanError, TupleError, compare_tuple, expected_tuple,
     observed_tuple, safe_plan, validate_plan,
 )
+from activation_preflight import validate as validate_activation  # noqa: E402
 
 SCHEMA = "nysa.software-factory.operator-preflight-report/v1"
 SHA = re.compile(r"[0-9a-f]{40}\Z")
@@ -116,6 +117,7 @@ def main() -> int:
     parser.add_argument("--product-origin", required=True)
     parser.add_argument("--network-reviewed", required=True)
     parser.add_argument("--ticket", action="append", default=[])
+    parser.add_argument("--certified-previous-tree", default="")
     args = parser.parse_args()
 
     blockers: list[dict[str, str]] = []
@@ -158,6 +160,16 @@ def main() -> int:
     qualification = product / "factory" / "QUALIFICATION.json"
     if qualification.exists() or qualification.is_symlink():
         block("qualification_manifest_present", "product")
+
+    activation_blockers, _, _ = validate_activation(
+        product,
+        args.factory_sha,
+        Path(__file__).resolve().parent,
+        args.product_origin,
+        args.certified_previous_tree,
+    )
+    for item in activation_blockers:
+        block(item["reason_code"], item["scope"])
 
     runtime = {
         "expected": {"node": None, "npm": None},

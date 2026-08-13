@@ -9,7 +9,8 @@ TMP="$(mktemp -d "${TMPDIR:-/tmp}/factory-contract-test.XXXXXX")"
 TMP="$(cd "$TMP" && pwd -P)"
 TEST_HOME="$TMP/home"
 KITS_ROOT="$TEST_HOME/.factory/kits"
-PRODUCT="$TMP/product"
+PRODUCT="$TEST_HOME/product"
+PRODUCT_ORIGIN="$TEST_HOME/product-origin.git"
 TEST_BIN="$TEST_HOME/.factory/bin"
 LAUNCH_TMP="$TMP/launcher-tmp"
 PROJECT=contracttest
@@ -114,7 +115,7 @@ PY
 )"
   python3 - "$active" "$KITS_ROOT/receipts/$RECEIPT_ID.json" \
     "$RECEIPT_ID" "$PROJECT" "$sha" "$tree" "$PRODUCT" "$PRODUCT_TREE" \
-    "$release" "$contract" <<'PY'
+    "$release" "$contract" "$PRODUCT_ORIGIN" <<'PY'
 import json
 import os
 import pathlib
@@ -122,7 +123,7 @@ import sys
 
 (
     active_path, receipt_path, receipt_id, project, kit_sha, kit_tree,
-    product_path, product_tree, release_path, contract,
+    product_path, product_tree, release_path, contract, product_origin,
 ) = sys.argv[1:]
 receipt = {
     "receipt_id": receipt_id,
@@ -132,7 +133,7 @@ receipt = {
     "kit_tree": kit_tree,
     "product_path": os.path.realpath(product_path),
     "product_tree": product_tree,
-    "product_origin": "https://example.invalid/factory-product.git",
+    "product_origin": os.path.realpath(product_origin),
     "contract_version": contract,
 }
 path = pathlib.Path(receipt_path)
@@ -166,11 +167,26 @@ run_launcher() {
     GH_TOKEN=caller-secret-must-not-pass \
     PYTHONPATH="$TMP/python-path-must-not-pass" \
     GIT_CONFIG_GLOBAL="$TMP/git-config-must-not-pass" \
-    /bin/bash "$LAUNCHER" "$PROJECT" "$@"
+    /bin/bash "$TEST_BIN/factory-launch" "$PROJECT" "$@"
 }
 
 mkdir -p "$TEST_BIN" "$LAUNCH_TMP" "$KITS_ROOT/projects/$PROJECT" \
   "$KITS_ROOT/releases" "$KITS_ROOT/receipts" "$PRODUCT/factory"
+chmod 700 "$TEST_HOME"
+cp "$LAUNCHER" "$TEST_BIN/factory-launch"
+chmod 700 "$TEST_BIN/factory-launch"
+git init --bare -q "$PRODUCT_ORIGIN"
+
+ACCOUNT_REAL_HOME="$(python3 - <<'PY'
+import os, pwd
+print(os.path.realpath(pwd.getpwuid(os.getuid()).pw_dir))
+PY
+)"
+expect_refused repository-real-home env \
+  FACTORY_LAUNCH_TEST_MODE=1 \
+  FACTORY_LAUNCH_TEST_HOME="$ACCOUNT_REAL_HOME" \
+  FACTORY_KITS_ROOT="$ACCOUNT_REAL_HOME/.factory/kits" \
+  /bin/bash "$LAUNCHER" "$PROJECT" contract --json
 
 # Qualification roots are a macOS-only production boundary fixed under
 # /private/tmp. Linux still exercises the repository launcher below.
@@ -204,6 +220,7 @@ EOF
 done
 
 git -C "$PRODUCT" init -q -b main
+git -C "$PRODUCT" remote add origin "$PRODUCT_ORIGIN"
 git -C "$PRODUCT" config user.name "Factory contract test"
 git -C "$PRODUCT" config user.email "factory-contract@example.invalid"
 printf 'fixture\n' > "$PRODUCT/README.md"
@@ -435,11 +452,27 @@ assert environment["FACTORY_RELEASE_CONTRACT_VERSION"] == "2.0.0"
 assert environment["FACTORY_KIT_TRUST_SCOPE"] == "production-certified"
 for forbidden in (
     "CALLER_SENTINEL", "GH_TOKEN", "PYTHONPATH", "GIT_CONFIG_GLOBAL",
-    "FACTORY_KITS_ROOT", "FACTORY_LAUNCH_TEST_MODE",
+    "FACTORY_KITS_ROOT", "FACTORY_KIT_TEST_MODE", "FACTORY_RELEASE_TEST_HOME",
+    "FACTORY_LAUNCH_TEST_MODE",
     "FACTORY_LAUNCH_TEST_HOME", "FACTORY_ACTIVE_RECORD",
 ):
     assert forbidden not in environment, forbidden
 assert "caller-secret-must-not-pass" not in "\n".join(environment.values())
+PY
+
+python3 - "$LAUNCHER" <<'PY'
+import pathlib, sys
+source = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+for name in (
+    "FACTORY_KIT_CANONICAL_ORIGIN",
+    "FACTORY_KIT_ORIGIN",
+    "FACTORY_KITS_ROOT",
+    "FACTORY_RELEASE_TEST_HOME",
+):
+    assert f'"{name}"' in source
+assert 'name.startswith("FACTORY_KIT_TEST_")' in source
+assert 'value.get("kit_origin") != "github.com/nysa-company/software-factory"' in source
+assert 'suite.get("verification_source") != "github-actions-full"' in source
 PY
 
 echo "PASS: Contract 2 launcher and Doctor boundary"

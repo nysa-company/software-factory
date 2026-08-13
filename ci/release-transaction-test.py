@@ -16,6 +16,7 @@ import tempfile
 import time
 import unittest
 from unittest import mock
+import sys
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -25,6 +26,8 @@ SPEC = importlib.util.spec_from_file_location(
 assert SPEC and SPEC.loader
 RELEASE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(RELEASE)
+sys.path.insert(0, str(ROOT / "scripts/lib"))
+import activation_preflight as ACTIVATION  # noqa: E402
 
 
 def cutover_lock_worker(
@@ -313,6 +316,7 @@ class ReleaseTransactionTest(unittest.TestCase):
         }
         concurrency = {"action": "apply", "plan": {"approval_sha256": "3" * 64}}
         cli = {"action": "reuse", "evidence": {"status": "pass"}}
+        order = []
         with (
             mock.patch.object(RELEASE, "clean_identity", side_effect=[
                 (self.sha, "e" * 40, str(repo)),
@@ -320,8 +324,14 @@ class ReleaseTransactionTest(unittest.TestCase):
                 ("f" * 40, "1" * 40, str(self.product)),
             ]),
             mock.patch.object(RELEASE, "run"),
+            mock.patch.object(
+                RELEASE, "release_preflight", side_effect=lambda *_args: order.append("preflight"),
+            ),
             mock.patch.object(RELEASE, "contract", return_value="2.0.0"),
-            mock.patch.object(RELEASE, "prepare_runtime", return_value=runtime),
+            mock.patch.object(
+                RELEASE, "prepare_runtime",
+                side_effect=lambda *_args: order.append("runtime") or runtime,
+            ),
             mock.patch.object(RELEASE, "prepare_product_runtime"),
             mock.patch.object(RELEASE, "prepare_controller", return_value=self.plan["identity"]["controller"]),
             mock.patch.object(RELEASE, "launcher_plan", return_value=self.plan["children"]["launcher"]),
@@ -335,7 +345,95 @@ class ReleaseTransactionTest(unittest.TestCase):
             plan = RELEASE.setup(args)
         self.assertEqual(plan["stage"], "prerequisites")
         self.assertEqual(plan["children"]["provider_concurrency"], concurrency)
+        self.assertEqual(order, ["runtime", "preflight"])
         RELEASE.validate_plan(plan)
+
+    def test_release_preflight_uses_the_prepared_runtime(self) -> None:
+        runtime = self.root / "runtime/bin"
+        completed = subprocess.CompletedProcess(
+            [], 0, json.dumps({"status": "pass"}), "",
+        )
+        with mock.patch.object(
+            RELEASE.subprocess, "run", return_value=completed,
+        ) as invoked:
+            report = RELEASE.release_preflight(
+                self.root / "factory-kit.sh", self.kits, runtime,
+                "relay", self.product, self.sha,
+            )
+        self.assertEqual(report["status"], "pass")
+        environment = invoked.call_args.kwargs["env"]
+        self.assertTrue(environment["PATH"].startswith(str(runtime) + ":"))
+
+    def test_activation_validation_hydrates_before_ticket_evidence(self) -> None:
+        order = []
+        validator = ACTIVATION.Validator(
+            self.product, self.sha, ROOT / "scripts", str(self.root / "origin"), "",
+        )
+        with (
+            mock.patch.object(
+                ACTIVATION, "hydrate", side_effect=lambda _product: order.append("hydrate") or 1,
+            ),
+            mock.patch.object(
+                validator, "checked",
+                side_effect=lambda *args: (
+                    self.sha if args == ("rev-parse", "HEAD") else
+                    f"{self.sha}\trefs/heads/main"
+                ),
+            ),
+            mock.patch.object(
+                validator, "ticket_ids",
+                side_effect=lambda: order.append("tickets") or ({"T-1"}, {}),
+            ),
+            mock.patch.object(
+                validator, "validate_ticket",
+                side_effect=lambda *_args: order.append("terminal"),
+            ),
+        ):
+            blockers, _, hydrated = validator.run()
+        self.assertEqual(blockers, [])
+        self.assertEqual(hydrated, 1)
+        self.assertEqual(order, ["hydrate", "tickets", "terminal"])
+
+    def test_blocked_preflight_stops_before_certification_or_pause(self) -> None:
+        repo = self.root / "factory"
+        repo.mkdir()
+        (self.product / "factory/KIT_PIN").write_text(self.sha + "\n")
+        args = argparse.Namespace(
+            project="relay", product=self.product, repo=repo, sha=self.sha,
+            kits_root=self.kits, profile="openai-priority-v1", operator_id="tester",
+            runtime_bin=None, claude_bin=None, codex_bin=None, cursor_bin=None,
+            ticket_workdir=[],
+        )
+        runtime = {
+            "evidence": {"path": str(self.root / "runtime")},
+            "plan_sha256": "2" * 64,
+        }
+        with (
+            mock.patch.object(RELEASE, "clean_identity", side_effect=[
+                (self.sha, "e" * 40, str(repo)),
+                ("f" * 40, "1" * 40, str(self.product)),
+            ]),
+            mock.patch.object(RELEASE, "run") as run,
+            mock.patch.object(RELEASE, "contract", return_value="2.0.0"),
+            mock.patch.object(RELEASE, "prepare_runtime", return_value=runtime),
+            mock.patch.object(
+                RELEASE, "release_preflight",
+                side_effect=RELEASE.ReleaseError("activation readiness blocked"),
+            ),
+            mock.patch.object(RELEASE, "prepare_product_runtime") as product_runtime,
+            mock.patch.object(RELEASE, "prepare_controller") as controller,
+            mock.patch.object(RELEASE, "child_plan") as child_plan,
+            mock.patch.object(RELEASE, "find_receipt") as find_receipt,
+        ):
+            with self.assertRaisesRegex(RELEASE.ReleaseError, "readiness blocked"):
+                RELEASE.setup(args)
+        self.assertEqual(run.call_count, 1)
+        product_runtime.assert_not_called()
+        controller.assert_not_called()
+        child_plan.assert_not_called()
+        find_receipt.assert_not_called()
+        self.assertFalse((self.product / "factory/MAINTENANCE").exists())
+        self.assertFalse((self.kits / "receipts").exists())
 
     def test_setup_emits_receipt_bound_activation_plan(self) -> None:
         repo = self.root / "factory"
@@ -366,6 +464,7 @@ class ReleaseTransactionTest(unittest.TestCase):
                 ("f" * 40, "1" * 40, str(self.product)),
             ]),
             mock.patch.object(RELEASE, "run"),
+            mock.patch.object(RELEASE, "release_preflight"),
             mock.patch.object(RELEASE, "contract", return_value="2.0.0"),
             mock.patch.object(RELEASE, "prepare_runtime", return_value=runtime),
             mock.patch.object(RELEASE, "prepare_product_runtime"),
@@ -386,6 +485,39 @@ class ReleaseTransactionTest(unittest.TestCase):
         self.assertEqual(plan["stage"], "activation")
         self.assertEqual(plan["children"]["receipt"]["sha256"], RELEASE.file_digest(receipt_path))
         RELEASE.validate_plan(plan)
+
+    def test_test_mode_release_requires_an_explicit_isolated_home(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {"FACTORY_KIT_TEST_MODE": "1", "FACTORY_RELEASE_TEST_HOME": ""},
+            clear=False,
+        ):
+            with self.assertRaisesRegex(RELEASE.ReleaseError, "isolated release test home"):
+                RELEASE.account_home()
+        real_home = Path(RELEASE.pwd.getpwuid(os.getuid()).pw_dir).resolve()
+        with mock.patch.dict(
+            os.environ,
+            {
+                "FACTORY_KIT_TEST_MODE": "1",
+                "FACTORY_RELEASE_TEST_HOME": str(real_home),
+            },
+            clear=False,
+        ):
+            with self.assertRaisesRegex(RELEASE.ReleaseError, "real account home"):
+                RELEASE.account_home()
+        isolated = self.root / "isolated-home"
+        isolated.mkdir(mode=0o700)
+        with mock.patch.dict(
+            os.environ,
+            {
+                "FACTORY_KIT_TEST_MODE": "1",
+                "FACTORY_RELEASE_TEST_HOME": str(isolated),
+            },
+            clear=False,
+        ):
+            RELEASE.require_test_layout(isolated / ".factory/kits")
+            with self.assertRaisesRegex(RELEASE.ReleaseError, "isolated test home"):
+                RELEASE.require_test_layout(self.root / "production-kits")
 
     def test_public_setup_command_forwards_every_exact_argument(self) -> None:
         copy = self.root / "wrapper"
@@ -718,14 +850,18 @@ class ReleaseTransactionTest(unittest.TestCase):
 
     def test_launcher_test_mode_retains_its_explicit_isolated_kits_root(self) -> None:
         home = self.root / "test-home"
+        home.mkdir(mode=0o700)
         kits = home / ".factory/kits"
         runtime = home / ".factory/project-runtimes/relay/bin"
-        with (
-            mock.patch.object(RELEASE.Path, "home", return_value=home),
-            mock.patch.dict(os.environ, {"FACTORY_LAUNCH_TEST_MODE": "1"}),
-        ):
+        with mock.patch.dict(os.environ, {
+            "FACTORY_KIT_TEST_MODE": "1",
+            "FACTORY_RELEASE_TEST_HOME": str(home),
+        }):
             environment = RELEASE.launcher_environment(kits, runtime)
         self.assertEqual(environment["FACTORY_KITS_ROOT"], str(kits))
+        self.assertEqual(environment["FACTORY_LAUNCH_TEST_HOME"], str(home))
+        self.assertNotIn("FACTORY_LAUNCH_TEST_ACCOUNT_HOME", environment)
+        self.assertEqual(environment["FACTORY_LAUNCH_TEST_MODE"], "1")
 
     def test_runtime_reentry_reuses_the_completed_exact_approval(self) -> None:
         release = self.root / "release"
@@ -1119,6 +1255,10 @@ class ReleaseTransactionTest(unittest.TestCase):
             mock.patch.object(RELEASE, "apply_launcher_plan") as launcher,
             mock.patch.object(RELEASE, "run_json", side_effect=doctor),
             mock.patch.object(RELEASE, "account_home", return_value=home),
+            mock.patch.object(
+                RELEASE, "launcher_environment",
+                side_effect=lambda kits, runtime: RELEASE.command_environment(kits, runtime),
+            ),
             mock.patch.dict(
                 os.environ,
                 {

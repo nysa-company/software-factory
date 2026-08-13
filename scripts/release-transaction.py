@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import pwd
 import re
 import stat
 import subprocess
@@ -41,14 +42,30 @@ class ReleaseError(ValueError):
 
 def account_home() -> Path:
     override = os.environ.get("FACTORY_RELEASE_TEST_HOME", "")
+    if os.environ.get("FACTORY_KIT_TEST_MODE") == "1" and not override:
+        raise ReleaseError("Factory test mode requires an explicit isolated release test home")
     if override:
         if os.environ.get("FACTORY_KIT_TEST_MODE") != "1":
             raise ReleaseError("release test home is forbidden outside Factory test mode")
         path = Path(override)
         if not path.is_absolute():
             raise ReleaseError("release test home is invalid")
-        return secure_directory(path.resolve(strict=True))
+        path = secure_directory(path.resolve(strict=True))
+        real_home = Path(pwd.getpwuid(os.getuid()).pw_dir).resolve(strict=True)
+        if (
+            path == real_home or real_home in path.parents
+            or stat.S_IMODE(path.stat().st_mode) != 0o700
+        ):
+            raise ReleaseError("release test home must be owner-only and outside the real account home")
+        return path
     return Path.home().resolve(strict=True)
+
+
+def require_test_layout(kits_root: Path) -> None:
+    if os.environ.get("FACTORY_KIT_TEST_MODE") == "1":
+        expected = account_home() / ".factory/kits"
+        if kits_root != expected:
+            raise ReleaseError("Factory test kits root must be inside the isolated test home")
 
 
 def canonical(value: Any) -> bytes:
@@ -478,6 +495,38 @@ def run_json(
     return value
 
 
+def release_preflight(
+    kit: Path, kits_root: Path, runtime_bin: Path, project: str,
+    product: Path, sha: str,
+) -> dict[str, Any]:
+    arguments = [
+        "bash", str(kit), "preflight-report", "--project", project,
+        "--product", str(product), "--sha", sha, "--json",
+    ]
+    result = subprocess.run(
+        arguments, text=True, capture_output=True, check=False,
+        env=command_environment(kits_root, runtime_bin), timeout=1800,
+    )
+    try:
+        report = json.loads(result.stdout)
+    except (json.JSONDecodeError, UnicodeError) as error:
+        raise ReleaseError("activation readiness returned invalid evidence") from error
+    if not isinstance(report, dict) or report.get("status") not in {
+        "pass", "blocked", "authorization-required",
+    }:
+        raise ReleaseError("activation readiness returned invalid evidence")
+    if result.returncode == 0 and report["status"] == "pass":
+        return report
+    if report["status"] == "authorization-required":
+        raise ReleaseError("activation readiness requires certification network review")
+    blockers = report.get("blockers")
+    details = ", ".join(
+        f"{item.get('scope')}:{item.get('reason_code')}"
+        for item in blockers if isinstance(item, dict)
+    ) if isinstance(blockers, list) else ""
+    raise ReleaseError(f"activation readiness blocked{': ' + details if details else ''}")
+
+
 def git(root: Path, *arguments: str) -> str:
     return run(["git", "-C", str(root), *arguments], "Git identity").strip()
 
@@ -582,10 +631,15 @@ def command_environment(
 
 def launcher_environment(kits_root: Path, runtime: Path) -> dict[str, str]:
     environment = command_environment(kits_root, runtime)
-    if (
-        kits_root == Path.home().resolve() / ".factory/kits"
-        and os.environ.get("FACTORY_LAUNCH_TEST_MODE") != "1"
-    ):
+    if os.environ.get("FACTORY_KIT_TEST_MODE") == "1":
+        home = account_home()
+        if kits_root != home / ".factory/kits":
+            raise ReleaseError("Factory test launcher root is outside the isolated home")
+        environment.update({
+            "FACTORY_LAUNCH_TEST_HOME": str(home),
+            "FACTORY_LAUNCH_TEST_MODE": "1",
+        })
+    elif kits_root == account_home() / ".factory/kits":
         environment.pop("FACTORY_KITS_ROOT", None)
     return environment
 
@@ -1600,6 +1654,7 @@ def _setup_locked(args: argparse.Namespace) -> dict[str, Any]:
     repo = args.repo.resolve(strict=True)
     kits_root = args.kits_root.resolve()
     secure_directory(kits_root, create=True)
+    require_test_layout(kits_root)
     pending_reservation = reservation_path(kits_root)
     if pending_reservation.exists() or pending_reservation.is_symlink():
         pending = read_reservation(pending_reservation)
@@ -1612,11 +1667,6 @@ def _setup_locked(args: argparse.Namespace) -> dict[str, Any]:
             raise ReleaseError("another host cutover is already reserved")
     factory_sha, factory_tree, factory_origin = clean_identity(repo, "Factory candidate")
     product_sha, product_tree, product_origin = clean_identity(product, "product")
-    prepare_product_runtime(product)
-    if clean_identity(product, "product") != (
-        product_sha, product_tree, product_origin,
-    ):
-        raise ReleaseError("product changed during runtime preparation")
     if factory_sha != sha:
         raise ReleaseError("Factory candidate does not match release SHA")
     if (product / "factory/KIT_PIN").read_text(encoding="utf-8") != sha + "\n":
@@ -1630,9 +1680,6 @@ def _setup_locked(args: argparse.Namespace) -> dict[str, Any]:
     release = kits_root / "releases" / sha
     sealed_kit = release / "scripts/factory-kit.sh"
     release_contract = contract(release)
-    runtime = prepare_runtime(release, product, kits_root, project, args.runtime_bin)
-    controller = prepare_controller(project, product)
-    runtime_bin = Path(str(runtime["evidence"]["path"]))
     active = kits_root / "projects" / project / "active.json"
     previous = None
     if active.exists() or active.is_symlink():
@@ -1640,6 +1687,15 @@ def _setup_locked(args: argparse.Namespace) -> dict[str, Any]:
         if active_value.get("product_path") != str(product):
             raise ReleaseError("active release belongs to a different product")
         previous = {"record": active_value, "sha256": file_digest(active)}
+    runtime = prepare_runtime(release, product, kits_root, project, args.runtime_bin)
+    runtime_bin = Path(str(runtime["evidence"]["path"]))
+    release_preflight(sealed_kit, kits_root, runtime_bin, project, product, sha)
+    prepare_product_runtime(product)
+    if clean_identity(product, "product") != (
+        product_sha, product_tree, product_origin,
+    ):
+        raise ReleaseError("product changed during runtime preparation")
+    controller = prepare_controller(project, product)
     mode = "upgrade" if previous is not None else "new"
     maintenance_prior = (
         args.maintenance_prior if hasattr(args, "maintenance_prior")
@@ -2972,6 +3028,7 @@ def resume(args: argparse.Namespace) -> dict[str, Any]:
     ):
         raise ReleaseError("release approval boundary is invalid")
     kits_root = args.kits_root.resolve(strict=True)
+    require_test_layout(kits_root)
     descriptor = acquire_cutover_lock(kits_root)
     try:
         return _resume_locked(args, kits_root)
@@ -2987,6 +3044,7 @@ def abort(args: argparse.Namespace) -> dict[str, Any]:
     ):
         raise ReleaseError("release abort boundary is invalid")
     kits_root = args.kits_root.resolve(strict=True)
+    require_test_layout(kits_root)
     descriptor = acquire_cutover_lock(kits_root)
     try:
         latest, _ = plan_paths(kits_root, args.project, args.sha)
