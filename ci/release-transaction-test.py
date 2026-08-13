@@ -318,12 +318,13 @@ class ReleaseTransactionTest(unittest.TestCase):
         cli = {"action": "reuse", "evidence": {"status": "pass"}}
         order = []
         with (
+            mock.patch.dict(os.environ, {"FACTORY_KIT_CERTIFICATION_NETWORK_REVIEWED": "1"}),
             mock.patch.object(RELEASE, "clean_identity", side_effect=[
                 (self.sha, "e" * 40, str(repo)),
                 ("f" * 40, "1" * 40, str(self.product)),
                 ("f" * 40, "1" * 40, str(self.product)),
             ]),
-            mock.patch.object(RELEASE, "run"),
+            mock.patch.object(RELEASE, "run") as run,
             mock.patch.object(
                 RELEASE, "release_preflight", side_effect=lambda *_args: order.append("preflight"),
             ),
@@ -346,6 +347,10 @@ class ReleaseTransactionTest(unittest.TestCase):
         self.assertEqual(plan["stage"], "prerequisites")
         self.assertEqual(plan["children"]["provider_concurrency"], concurrency)
         self.assertEqual(order, ["runtime", "preflight"])
+        self.assertNotIn(
+            "FACTORY_KIT_CERTIFICATION_NETWORK_REVIEWED",
+            run.call_args_list[0].kwargs["environment"],
+        )
         RELEASE.validate_plan(plan)
 
     def test_release_preflight_uses_the_prepared_runtime(self) -> None:

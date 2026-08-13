@@ -1673,6 +1673,7 @@ def _setup_locked(args: argparse.Namespace) -> dict[str, Any]:
         raise ReleaseError("product pin does not match release SHA")
     source_kit = repo / "scripts/factory-kit.sh"
     environment = command_environment(kits_root)
+    environment.pop("FACTORY_KIT_CERTIFICATION_NETWORK_REVIEWED", None)
     run(
         ["bash", str(source_kit), "install", "--sha", sha, "--repo", str(repo)],
         "sealed release installation", environment=environment,
