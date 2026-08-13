@@ -59,7 +59,22 @@ def file_digest(path: Path) -> str:
 
 def secure_directory(path: Path, *, create: bool = False) -> Path:
     if create:
-        path.mkdir(mode=0o700, parents=True, exist_ok=True)
+        missing = []
+        cursor = path
+        while not cursor.exists() and not cursor.is_symlink():
+            missing.append(cursor)
+            cursor = cursor.parent
+        for item in reversed(missing):
+            try:
+                item.mkdir(mode=0o700)
+            except FileExistsError:
+                pass
+            info = item.lstat()
+            if (
+                item.is_symlink() or not stat.S_ISDIR(info.st_mode)
+                or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) & 0o077
+            ):
+                raise ReleaseError("release state parent directory is unsafe")
     try:
         info = path.lstat()
     except OSError as error:
@@ -736,6 +751,7 @@ def validate_plan(value: dict[str, Any]) -> None:
             or not Path(str(receipt.get("path", ""))).is_absolute()
             or not DIGEST.fullmatch(str(receipt.get("receipt_id", "")))
             or not DIGEST.fullmatch(str(receipt.get("sha256", "")))
+            or bool(migrations) != (migration is not None)
             or (migration is not None and (
                 not isinstance(migration, dict)
                 or not DIGEST.fullmatch(str(migration.get("approval_sha256", "")))
@@ -791,6 +807,31 @@ def create_seed(release: Path, product: Path, root: Path) -> Path:
         )
     seed.chmod(0o600)
     return seed
+
+
+def profile_plan(
+    release: Path, state_root: Path, project: str, profile: str,
+) -> dict[str, Any]:
+    preview = secure_directory(state_root / "model-profile-preview", create=True)
+    value = run_json(
+        [sys.executable, "-I", "-S", str(release / "scripts/model-manager.py"),
+         "profiles", "--state-root", str(preview), "--project", project],
+        "candidate model profile preview",
+    )
+    profiles = value.get("profiles")
+    matches = [
+        item for item in profiles if isinstance(item, dict)
+        and item.get("profile_id") == profile
+    ] if isinstance(profiles, list) else []
+    if (
+        value.get("schema") != "model-manager-profiles/v1" or len(matches) != 1
+        or set(matches[0]) != {"profile_hash", "profile_id", "profile_version"}
+        or not DIGEST.fullmatch(str(matches[0].get("profile_hash", "")))
+        or not isinstance(matches[0].get("profile_version"), int)
+        or isinstance(matches[0].get("profile_version"), bool)
+    ):
+        raise ReleaseError("candidate model profile is invalid")
+    return matches[0]
 
 
 def qualification_plans(
@@ -954,9 +995,14 @@ def setup(args: argparse.Namespace) -> dict[str, Any]:
             "activation preview", environment=certification_environment,
         )
         state_root = secure_directory(kits_root / "projects" / project / "release-plans", create=True)
-        qualification, model, migration = qualification_plans(
-            release, repo, product, project, sha, args.profile, migrations, state_root,
-        )
+        if migrations:
+            qualification, model, migration = qualification_plans(
+                release, repo, product, project, sha, args.profile, migrations, state_root,
+            )
+        else:
+            qualification = {"status": "not-required"}
+            model = profile_plan(release, state_root, project, args.profile)
+            migration = None
         plan = seal_plan({
             "children": {
                 "migration": migration, "model": model,

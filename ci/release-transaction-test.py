@@ -276,9 +276,7 @@ class ReleaseTransactionTest(unittest.TestCase):
             mock.patch.object(RELEASE, "find_receipt", return_value=(
                 receipt_path, {"receipt_id": "c" * 64},
             )),
-            mock.patch.object(RELEASE, "qualification_plans", return_value=(
-                {"status": "prepared"}, model, None,
-            )),
+            mock.patch.object(RELEASE, "profile_plan", return_value=model),
         ):
             plan = RELEASE.setup(args)
         self.assertEqual(plan["stage"], "activation")
@@ -506,6 +504,20 @@ class ReleaseTransactionTest(unittest.TestCase):
         runtime = RELEASE.project_runtime_root(self.kits, "relay")
         self.assertEqual(runtime, self.kits.parent / "project-runtimes/relay")
         self.assertNotEqual(runtime.parents[1], self.kits)
+
+    def test_secure_create_keeps_every_new_state_parent_owner_only(self) -> None:
+        nested = self.root / "fresh-home/.factory/kits"
+        RELEASE.secure_directory(nested, create=True)
+        for path in (nested, nested.parent, nested.parent.parent):
+            self.assertEqual(path.stat().st_mode & 0o777, 0o700)
+
+    def test_sealed_profile_preview_needs_no_qualification_manifest(self) -> None:
+        model = RELEASE.profile_plan(
+            ROOT, self.root / "profile-state", "relay", "openai-priority-v1",
+        )
+        self.assertEqual(model["profile_id"], "openai-priority-v1")
+        self.assertRegex(model["profile_hash"], r"^[0-9a-f]{64}$")
+        self.assertNotIn("QUALIFICATION", json.dumps(model))
 
     def test_profile_registry_and_controller_job_are_exact_and_non_overwriting(self) -> None:
         home = self.root / "home"
