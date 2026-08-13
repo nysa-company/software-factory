@@ -4626,7 +4626,8 @@ cmd_preflight_report() {
     --contract-version "$contract" --product-pin "$pin" \
     --product-origin "$origin" \
     --network-reviewed "$network_reviewed" \
-    --certified-previous-tree "$previous_tree" "${ticket_args[@]}"
+    --certified-previous-tree "$previous_tree" \
+    ${ticket_args[@]+"${ticket_args[@]}"}
 }
 
 preflight_report_blocked_json() {
