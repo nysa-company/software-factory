@@ -483,7 +483,6 @@ class Validator:
         blockers: list[dict[str, str]] = []
         historical_objects = 0
         try:
-            historical_objects = hydrate(self.product)
             head = self.checked("rev-parse", "HEAD")
             remote = self.checked(
                 "ls-remote", "--heads", "--", self.origin, "refs/heads/main",
@@ -494,6 +493,7 @@ class Validator:
                     "activation",
                     "activation product HEAD is not current protected main",
                 )
+            historical_objects = hydrate(self.product, self.origin)
             ticket_ids, remote_tips = self.ticket_ids()
         except (HistoricalObjectError, OSError, subprocess.SubprocessError) as error:
             blockers.append({

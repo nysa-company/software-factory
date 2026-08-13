@@ -1509,9 +1509,9 @@ def product_origin(product: Path) -> str:
     return origins[0]
 
 
-def historical_pr_objects(product: Path) -> int:
+def historical_pr_objects(product: Path, origin: str) -> int:
     try:
-        return hydrate_historical_pr_objects(product)
+        return hydrate_historical_pr_objects(product, origin)
     except HistoricalObjectError as error:
         raise EnvironmentError(str(error)) from error
 
@@ -3093,7 +3093,7 @@ def _prepare(args: argparse.Namespace) -> dict[str, Any]:
         factory, product, sha, tree, contract,
     )
     origin = product_origin(product)
-    historical_objects = historical_pr_objects(product)
+    historical_objects = historical_pr_objects(product, origin)
     restoring = bool(getattr(args, "restore", False))
     takeover = takeover_source(
         factory, product, args.project, getattr(args, "takeover_project", None)
@@ -3399,8 +3399,8 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
     runtime_tuple = certification_preflight(
         factory, product, sha, tree, contract,
     )
-    historical_objects = historical_pr_objects(product)
     origin = product_origin(product)
+    historical_objects = historical_pr_objects(product, origin)
     marker = read(root / "marker.json")
     qualification_mode = active.get("qualification_mode")
     active_contract = active.get("contract_version")

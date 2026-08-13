@@ -3,13 +3,25 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import re
+import resource
+import shutil
 import subprocess
+import tempfile
 from typing import Any
+from urllib.parse import urlsplit
 
 
 SHA = re.compile(r"[0-9a-f]{40}\Z")
+MAX_EVIDENCE_FILES = 512
+MAX_EVIDENCE_BYTES = 1024 * 1024
+MAX_TOTAL_EVIDENCE_BYTES = 16 * 1024 * 1024
+MAX_OBJECTS = 512
+MAX_OBJECT_BYTES = 8 * 1024 * 1024
+MAX_FETCH_BYTES = 256 * 1024 * 1024
+FETCH_CHUNK = 64
 
 
 class HistoricalObjectError(ValueError):
@@ -17,9 +29,12 @@ class HistoricalObjectError(ValueError):
 
 
 def _repository(product: Path) -> str:
+    descriptor = product / "factory/PROJECT.env"
+    if descriptor.is_symlink() or descriptor.stat().st_size > MAX_EVIDENCE_BYTES:
+        raise HistoricalObjectError("historical product descriptor is unsafe")
     values = re.findall(
         r"^(?:export\s+)?GH_REPO\s*=\s*['\"]?([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)['\"]?\s*$",
-        (product / "factory/PROJECT.env").read_text(encoding="utf-8"),
+        descriptor.read_text(encoding="utf-8"),
         re.M,
     )
     if len(values) != 1:
@@ -27,31 +42,75 @@ def _repository(product: Path) -> str:
     return values[0]
 
 
-def commit_present(product: Path, sha: str) -> bool:
+def _transport(origin: str) -> str:
+    if not origin or any(character in origin for character in "\x00\r\n\t"):
+        raise HistoricalObjectError("historical product origin is unsafe")
+    if origin.startswith("/"):
+        path = Path(origin).resolve(strict=True)
+        if not path.is_dir():
+            raise HistoricalObjectError("historical local product origin is unavailable")
+        return str(path)
+    if origin.startswith("file://"):
+        parsed = urlsplit(origin)
+        if parsed.netloc or parsed.query or parsed.fragment:
+            raise HistoricalObjectError("historical local product origin is unsafe")
+        path = Path(parsed.path).resolve(strict=True)
+        if not path.is_dir():
+            raise HistoricalObjectError("historical local product origin is unavailable")
+        return "file://" + str(path)
+    if origin.startswith(("https://", "ssh://")):
+        parsed = urlsplit(origin)
+        if not parsed.hostname or parsed.password is not None:
+            raise HistoricalObjectError("historical product origin is unsafe")
+        return origin
+    if re.fullmatch(
+        r"(?:[A-Za-z0-9][A-Za-z0-9._-]*@)?"
+        r"[A-Za-z0-9][A-Za-z0-9._-]*:[A-Za-z0-9._/~+-]+",
+        origin,
+    ):
+        return origin
+    raise HistoricalObjectError("historical product origin uses an unsafe transport")
+
+
+def _git(product: Path, *arguments: str, environment: dict[str, str] | None = None,
+         timeout: int = 120) -> subprocess.CompletedProcess[str]:
+    command = [
+        "git", "-c", "protocol.allow=never", "-c", "protocol.file.allow=always",
+        "-c", "protocol.https.allow=always", "-c", "protocol.ssh.allow=always",
+        "-c", "credential.interactive=never", "-C", str(product), *arguments,
+    ]
+    values = os.environ.copy()
+    values.update({"GIT_PROTOCOL_FROM_USER": "0", "GIT_TERMINAL_PROMPT": "0"})
+    if environment:
+        values.update(environment)
     return subprocess.run(
-        ["git", "-C", str(product), "cat-file", "-e", f"{sha}^{{commit}}"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        check=False,
-        timeout=120,
-    ).returncode == 0
+        command, text=True, capture_output=True, check=False,
+        timeout=timeout, env=values,
+    )
+
+
+def commit_present(product: Path, sha: str) -> bool:
+    return _git(product, "cat-file", "-e", f"{sha}^{{commit}}").returncode == 0
 
 
 def _blob_present(product: Path, sha: str) -> bool:
-    result = subprocess.run(
-        ["git", "-C", str(product), "cat-file", "-t", sha],
-        text=True, capture_output=True, check=False, timeout=120,
-    )
+    result = _git(product, "cat-file", "-t", sha)
     return result.returncode == 0 and result.stdout.strip() == "blob"
 
 
 def _json_at(product: Path, sha: str, path: str) -> dict[str, Any] | None:
-    result = subprocess.run(
-        ["git", "-C", str(product), "show", f"{sha}:{path}"],
-        text=True, capture_output=True, check=False, timeout=120,
-    )
-    if result.returncode:
+    size = _git(product, "cat-file", "-s", f"{sha}:{path}")
+    if size.returncode:
         return None
+    try:
+        length = int(size.stdout.strip())
+    except ValueError as error:
+        raise HistoricalObjectError(f"historical evidence size is invalid: {path}") from error
+    if length > MAX_EVIDENCE_BYTES:
+        raise HistoricalObjectError(f"historical evidence is too large: {path}")
+    result = _git(product, "show", f"{sha}:{path}")
+    if result.returncode or len(result.stdout.encode()) != length:
+        raise HistoricalObjectError(f"historical evidence is unavailable: {path}")
     try:
         value = json.loads(result.stdout)
     except json.JSONDecodeError as error:
@@ -61,10 +120,128 @@ def _json_at(product: Path, sha: str, path: str) -> dict[str, Any] | None:
     return value
 
 
-def hydrate(product: Path) -> int:
+def _object_root(product: Path) -> Path:
+    result = _git(product, "rev-parse", "--git-path", "objects")
+    if result.returncode or not result.stdout.strip():
+        raise HistoricalObjectError("historical Git object root is unavailable")
+    value = Path(result.stdout.strip())
+    if not value.is_absolute():
+        value = product / value
+    root = value.resolve(strict=True)
+    if not root.is_dir() or root.is_symlink():
+        raise HistoricalObjectError("historical Git object root is unsafe")
+    return root
+
+
+def _directory_bytes(root: Path) -> int:
+    total = 0
+    for path in root.rglob("*"):
+        if path.is_symlink():
+            raise HistoricalObjectError("historical fetched object path is unsafe")
+        if path.is_file():
+            total += path.stat().st_size
+    return total
+
+
+def _copy_objects(source: Path, target: Path) -> None:
+    loose = re.compile(r"[0-9a-f]{2}/[0-9a-f]{38}")
+    packed = re.compile(r"pack/pack-[0-9a-f]{40}\.(?:pack|idx|rev)")
+    for path in sorted(source.rglob("*")):
+        if not path.is_file():
+            continue
+        relative = str(path.relative_to(source))
+        if not loose.fullmatch(relative) and not packed.fullmatch(relative):
+            raise HistoricalObjectError("historical fetched object layout is unsafe")
+        destination = target / relative
+        destination.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+        if destination.exists():
+            continue
+        temporary = destination.with_name(destination.name + f".factory-{os.getpid()}")
+        shutil.copyfile(path, temporary)
+        os.chmod(temporary, 0o444)
+        os.replace(temporary, destination)
+
+
+def _fetch_objects(
+    product: Path, origin: str, commits: set[str], blobs: set[str],
+) -> None:
+    expected = {**{value: "commit" for value in commits}, **{value: "blob" for value in blobs}}
+    missing = sorted(
+        value for value, kind in expected.items()
+        if not (commit_present(product, value) if kind == "commit" else _blob_present(product, value))
+    )
+    if not missing:
+        return
+    if len(expected) > MAX_OBJECTS:
+        raise HistoricalObjectError("historical evidence object inventory is too large")
+    target = _object_root(product)
+    imported = 0
+    for offset in range(0, len(missing), FETCH_CHUNK):
+        chunk = missing[offset:offset + FETCH_CHUNK]
+        with tempfile.TemporaryDirectory(prefix="factory-history-", dir=str(target.parent)) as raw:
+            objects = Path(raw) / "objects"
+            (objects / "info").mkdir(parents=True)
+            (objects / "pack").mkdir()
+            remaining = MAX_FETCH_BYTES - imported
+            if remaining <= 0:
+                raise HistoricalObjectError("historical evidence fetch exceeds its quota")
+
+            def limit() -> None:
+                resource.setrlimit(resource.RLIMIT_FSIZE, (remaining, remaining))
+
+            environment = {
+                "GIT_ALTERNATE_OBJECT_DIRECTORIES": str(target),
+                "GIT_OBJECT_DIRECTORY": str(objects),
+            }
+            command = [
+                "git", "-c", "protocol.allow=never", "-c", "protocol.file.allow=always",
+                "-c", "protocol.https.allow=always", "-c", "protocol.ssh.allow=always",
+                "-c", "fetch.fsckObjects=true", "-c", "transfer.fsckObjects=true",
+                "-c", "credential.interactive=never", "-C", str(product),
+                "fetch", "--quiet", "--no-tags", "--no-write-fetch-head",
+                origin, *chunk,
+            ]
+            values = os.environ.copy()
+            values.update(environment)
+            values.update({"GIT_PROTOCOL_FROM_USER": "0", "GIT_TERMINAL_PROMPT": "0"})
+            fetched = subprocess.run(
+                command, text=True, capture_output=True, check=False, timeout=120,
+                env=values, preexec_fn=limit,
+            )
+            if fetched.returncode:
+                raise HistoricalObjectError("historical evidence object fetch failed")
+            size = _directory_bytes(objects)
+            if size > remaining:
+                raise HistoricalObjectError("historical evidence fetch exceeds its quota")
+            for value in chunk:
+                result = _git(product, "cat-file", "-t", value, environment=environment)
+                length = _git(product, "cat-file", "-s", value, environment=environment)
+                if (
+                    result.returncode or result.stdout.strip() != expected[value]
+                    or length.returncode
+                ):
+                    raise HistoricalObjectError("historical evidence object type is invalid")
+                try:
+                    object_size = int(length.stdout.strip())
+                except ValueError as error:
+                    raise HistoricalObjectError(
+                        "historical evidence object size is invalid"
+                    ) from error
+                if object_size > MAX_OBJECT_BYTES:
+                    raise HistoricalObjectError("historical evidence object is too large")
+            _copy_objects(objects, target)
+            imported += size
+    absent = [
+        value for value, kind in expected.items()
+        if not (commit_present(product, value) if kind == "commit" else _blob_present(product, value))
+    ]
+    if absent:
+        raise HistoricalObjectError("historical evidence object import failed")
+
+
+def hydrate(product: Path, origin: str) -> int:
     migrations = product / "factory/migrations"
-    if not migrations.is_dir():
-        return 0
+    origin = _transport(origin)
     supported = {
         "nysa.software-factory.legacy-closeout/v1": ("pr",),
         "nysa.software-factory.terminal-backfill/v1": (
@@ -79,7 +256,21 @@ def hydrate(product: Path) -> int:
     reconciliation: list[tuple[str, str, str, dict[str, Any]]] = []
     direct: set[str] = set()
     blobs: set[str] = set()
-    for path in sorted(migrations.glob("**/*.json")):
+    migration_paths = (
+        sorted(migrations.glob("**/*.json")) if migrations.is_dir() else []
+    )
+    if len(migration_paths) > MAX_EVIDENCE_FILES:
+        raise HistoricalObjectError("historical migration inventory is too large")
+    migration_bytes = 0
+    for path in migration_paths:
+        if path.is_symlink() or not path.is_file():
+            raise HistoricalObjectError(
+                f"historical object record is unsafe: {path.relative_to(product)}"
+            )
+        size = path.stat().st_size
+        migration_bytes += size
+        if size > MAX_EVIDENCE_BYTES or migration_bytes > MAX_TOTAL_EVIDENCE_BYTES:
+            raise HistoricalObjectError("historical migration evidence is too large")
         try:
             value = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as error:
@@ -132,33 +323,20 @@ def hydrate(product: Path) -> int:
                 item["commits"].add(evidence)
                 reconciliation.append((relative, path.stem, evidence, value))
 
+    requirement_commits = set()
     for (number, head), item in sorted(requirements.items()):
-        missing = sorted(
-            sha for sha in item["commits"] if not commit_present(product, sha)
-        )
-        if missing:
+        requirement_commits.update(item["commits"])
+        if any(not commit_present(product, sha) for sha in item["commits"]):
             reference = f"refs/pull/{number}/head"
-            observed = subprocess.run(
-                ["git", "-C", str(product), "ls-remote", "--refs", "origin", reference],
-                text=True, capture_output=True, check=False, timeout=120,
-            )
+            observed = _git(product, "ls-remote", "--refs", "--", origin, reference)
             fields = observed.stdout.split()
             relative = sorted(item["paths"])[0]
             if observed.returncode or fields != [head, reference]:
                 raise HistoricalObjectError(
                     f"historical PR head unavailable: {relative} PR #{number} expected {head}"
                 )
-            fetched = subprocess.run(
-                [
-                    "git", "-C", str(product), "fetch", "--quiet", "--no-tags",
-                    "--no-write-fetch-head", "origin", reference,
-                ],
-                text=True, capture_output=True, check=False, timeout=120,
-            )
-            if fetched.returncode:
-                raise HistoricalObjectError(
-                    f"historical PR head fetch failed: {relative} PR #{number} expected {head}"
-                )
+    _fetch_objects(product, origin, requirement_commits, set())
+    for (number, head), item in sorted(requirements.items()):
         absent = sorted(
             sha for sha in item["commits"] if not commit_present(product, sha)
         )
@@ -168,12 +346,8 @@ def hydrate(product: Path) -> int:
                 f"PR #{number} expected {absent[0]}"
             )
         for sha in item["commits"]:
-            if sha != head and subprocess.run(
-                ["git", "-C", str(product), "merge-base", "--is-ancestor", sha, head],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False,
-                timeout=120,
+            if sha != head and _git(
+                product, "merge-base", "--is-ancestor", sha, head,
             ).returncode:
                 raise HistoricalObjectError(
                     f"historical commit is not in PR: {sorted(item['paths'])[0]} "
@@ -209,16 +383,19 @@ def hydrate(product: Path) -> int:
                         f"historical evidence commit is malformed: {evidence_path} {key}"
                     )
                 direct.add(commit)
-    listing = subprocess.run(
-        [
-            "git", "-C", str(product), "ls-tree", "-r", "--name-only", "HEAD",
-            "--", "factory/attestations",
-        ],
-        text=True, capture_output=True, check=False, timeout=120,
+    listing = _git(
+        product, "ls-tree", "-r", "--name-only", "HEAD",
+        "--", "factory/attestations",
     )
     if listing.returncode:
         raise HistoricalObjectError("historical attestation inventory is unavailable")
-    for path in listing.stdout.splitlines():
+    attestation_paths = listing.stdout.splitlines()
+    if (
+        len(attestation_paths) > MAX_EVIDENCE_FILES * 4
+        or len(listing.stdout.encode()) > MAX_TOTAL_EVIDENCE_BYTES
+    ):
+        raise HistoricalObjectError("historical attestation inventory is too large")
+    for path in attestation_paths:
         if not re.fullmatch(r"factory/attestations/T-[0-9]+/bundle\.json", path):
             continue
         root = str(Path(path).parent)
@@ -252,24 +429,7 @@ def hydrate(product: Path) -> int:
                         f"historical evidence blob is malformed: {evidence_path} {key}"
                     )
                 blobs.add(blob)
-    missing = sorted({
-        *(sha for sha in direct if not commit_present(product, sha)),
-        *(sha for sha in blobs if not _blob_present(product, sha)),
-    })
-    if missing:
-        fetched = subprocess.run(
-            [
-                "git", "-C", str(product), "fetch", "--quiet", "--no-tags",
-                "--no-write-fetch-head", "origin", *missing,
-            ],
-            text=True, capture_output=True, check=False, timeout=120,
-        )
-        if fetched.returncode:
-            raise HistoricalObjectError("historical evidence commit fetch failed")
-    absent = sorted(sha for sha in direct if not commit_present(product, sha))
-    absent += sorted(sha for sha in blobs if not _blob_present(product, sha))
-    if absent:
-        raise HistoricalObjectError(
-            f"historical evidence commit is missing: {absent[0]}"
-        )
+    if len(requirement_commits | direct | blobs) > MAX_OBJECTS:
+        raise HistoricalObjectError("historical evidence object inventory is too large")
+    _fetch_objects(product, origin, direct, blobs)
     return len(requirements)

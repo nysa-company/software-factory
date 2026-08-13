@@ -369,20 +369,23 @@ class ReleaseTransactionTest(unittest.TestCase):
         environment = invoked.call_args.kwargs["env"]
         self.assertTrue(environment["PATH"].startswith(str(runtime) + ":"))
 
-    def test_activation_validation_hydrates_before_ticket_evidence(self) -> None:
+    def test_activation_validation_binds_main_before_hydrating_ticket_evidence(self) -> None:
         order = []
         validator = ACTIVATION.Validator(
             self.product, self.sha, ROOT / "scripts", str(self.root / "origin"), "",
         )
         with (
             mock.patch.object(
-                ACTIVATION, "hydrate", side_effect=lambda _product: order.append("hydrate") or 1,
+                ACTIVATION, "hydrate",
+                side_effect=lambda _product, _origin: order.append("hydrate") or 1,
             ),
             mock.patch.object(
                 validator, "checked",
-                side_effect=lambda *args: (
-                    self.sha if args == ("rev-parse", "HEAD") else
-                    f"{self.sha}\trefs/heads/main"
+                side_effect=lambda *args: order.append(
+                    "head" if args == ("rev-parse", "HEAD") else "remote",
+                ) or (
+                    self.sha if args == ("rev-parse", "HEAD")
+                    else f"{self.sha}\trefs/heads/main"
                 ),
             ),
             mock.patch.object(
@@ -397,7 +400,7 @@ class ReleaseTransactionTest(unittest.TestCase):
             blockers, _, hydrated = validator.run()
         self.assertEqual(blockers, [])
         self.assertEqual(hydrated, 1)
-        self.assertEqual(order, ["hydrate", "tickets", "terminal"])
+        self.assertEqual(order, ["head", "remote", "hydrate", "tickets", "terminal"])
 
     def test_blocked_preflight_stops_before_certification_or_pause(self) -> None:
         repo = self.root / "factory"
