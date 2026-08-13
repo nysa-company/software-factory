@@ -530,6 +530,36 @@ class ReleaseTransactionTest(unittest.TestCase):
             environment = RELEASE.launcher_environment(kits, runtime)
         self.assertEqual(environment["FACTORY_KITS_ROOT"], str(kits))
 
+    def test_runtime_reentry_reuses_the_completed_exact_approval(self) -> None:
+        release = self.root / "release"
+        runtime = self.root / "node/bin"
+        runtime.mkdir(parents=True)
+        root = RELEASE.project_runtime_root(self.kits, "relay")
+        root.mkdir(parents=True)
+        plan_hash = "7" * 64
+        RELEASE.atomic_json(root / "runtime-pin-journal.json", {
+            "plan": {
+                "approval_sha256": plan_hash,
+                "product_path": str(self.product),
+                "runtime_bin": str(runtime),
+                "target_bin": str(root / "bin"),
+            },
+            "status": "completed",
+        })
+        evidence = {
+            "path": str(root / "bin"), "status": "ready",
+        }
+        with (
+            mock.patch.object(RELEASE, "run_json", return_value=evidence) as checked,
+            mock.patch.object(RELEASE.subprocess, "run") as replanned,
+        ):
+            observed = RELEASE.prepare_runtime(
+                release, self.product, self.kits, "relay", runtime,
+            )
+        self.assertEqual(observed["plan_sha256"], plan_hash)
+        checked.assert_called_once()
+        replanned.assert_not_called()
+
     def test_profile_registry_and_controller_job_are_exact_and_non_overwriting(self) -> None:
         home = self.root / "home"
         home.mkdir()

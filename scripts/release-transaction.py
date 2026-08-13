@@ -516,6 +516,27 @@ def prepare_runtime(
     helper = release / "scripts/owner-runtime-pin.py"
     root = secure_directory(project_runtime_root(kits_root, project), create=True)
     target = root / "bin"
+    journal_path = root / "runtime-pin-journal.json"
+    if journal_path.exists() or journal_path.is_symlink():
+        journal = safe_state(journal_path, "runtime pin journal")
+        plan = journal.get("plan")
+        candidates = runtime_candidates(explicit)
+        if (
+            journal.get("status") != "completed" or not isinstance(plan, dict)
+            or not DIGEST.fullmatch(str(plan.get("approval_sha256", "")))
+            or plan.get("product_path") != str(product)
+            or plan.get("target_bin") != str(target)
+            or Path(str(plan.get("runtime_bin", ""))) not in candidates
+        ):
+            raise ReleaseError("existing project runtime does not match release setup")
+        evidence = run_json(
+            [sys.executable, "-I", "-S", str(helper), "check", "--journal",
+             str(journal_path)],
+            "project runtime replay", environment=command_environment(kits_root),
+        )
+        if evidence.get("status") != "ready" or evidence.get("path") != str(target):
+            raise ReleaseError("project runtime replay evidence is invalid")
+        return {"evidence": evidence, "plan_sha256": plan["approval_sha256"]}
     plans: list[dict[str, Any]] = []
     for candidate in runtime_candidates(explicit):
         result = subprocess.run(
