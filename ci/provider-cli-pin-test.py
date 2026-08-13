@@ -79,8 +79,8 @@ class ProviderCliPinTest(unittest.TestCase):
 
     def copy_release_files(self, release: Path) -> None:
         paths = (
-            "integrations/hermes/contract.json",
-            "integrations/hermes/bin/factory-launch",
+            "factory-contract.json",
+            "scripts/factory-launch",
             "scripts/lib/plain-config.sh",
             "scripts/lib/backend-policy.sh",
             "scripts/lib/provider-cli-version.sh",
@@ -305,7 +305,7 @@ exit 2
         self.assertNotEqual(self.command("plan").returncode, 0)
         manifest.write_bytes(original)
         manifest.chmod(0o600)
-        contract = self.release / "integrations/hermes/contract.json"
+        contract = self.release / "factory-contract.json"
         contract.chmod(0o644)
         self.assertNotEqual(self.command("plan").returncode, 0)
         contract.chmod(0o444)
@@ -385,7 +385,7 @@ exit 2
         project = self.kits / "projects/relay"
         project.mkdir()
         (project / "active.json").write_text(json.dumps({
-            "contract_version": "1.9.0", "kit_sha": SHA, "kit_tree": TREE,
+            "contract_version": "2.0.0", "kit_sha": SHA, "kit_tree": TREE,
             "product_path": str(product), "project": "relay", "release_path": str(self.release),
         }))
         (project / "active.json").chmod(0o600)
@@ -579,7 +579,7 @@ exit 2
         project.mkdir()
         active = project / "active.json"
         active.write_text(json.dumps({
-            "contract_version": "1.9.0", "kit_sha": SHA, "kit_tree": TREE,
+            "contract_version": "2.0.0", "kit_sha": SHA, "kit_tree": TREE,
             "product_path": str(product), "project": "authority-a",
             "release_path": str(self.release),
         }))
@@ -605,7 +605,7 @@ exit 2
         legacy = self.kits / "releases" / SHA_LEGACY
         legacy.mkdir(mode=0o700)
         self.copy_release_files(legacy)
-        contract_path = legacy / "integrations/hermes/contract.json"
+        contract_path = legacy / "factory-contract.json"
         contract = json.loads(contract_path.read_text())
         contract["contract_version"] = "1.5.0"
         contract_path.write_text(json.dumps(contract))

@@ -291,7 +291,7 @@ SEQUENCER="$KIT_DIR/scripts/next-stage.sh"
 MONEY="$KIT_DIR/scripts/lib/money.py"
 ENVELOPE_CONTROL="$KIT_DIR/scripts/envelope-control.py"
 SEQUENCER_ERROR=""
-PROVIDER_CONTRACT_VERSION="${FACTORY_RELEASE_CONTRACT_VERSION:-${FACTORY_CONTRACT_VERSION:-${FACTORY_HERMES_CONTRACT_VERSION:-}}}"
+PROVIDER_CONTRACT_VERSION="${FACTORY_RELEASE_CONTRACT_VERSION:-${FACTORY_CONTRACT_VERSION:-${FACTORY_CONTRACT_VERSION:-}}}"
 unset TRANSITION_PROJECT
 readonly TRANSITION_PROJECT="${FACTORY_PROJECT:-}"
 
@@ -315,7 +315,7 @@ load_effective_envelope() {
 sequencer_allows_role() {
   local output rc=0
   SEQUENCER_ERROR=""
-  if [[ "$PROVIDER_CONTRACT_VERSION" == "1.8.0" || "$PROVIDER_CONTRACT_VERSION" == "1.9.0" ]]; then
+  if [[ "$PROVIDER_CONTRACT_VERSION" == "1.8.0" || "$PROVIDER_CONTRACT_VERSION" == "2.0.0" ]]; then
     if [[ ! "${FACTORY_TRANSITION_RECEIPT_SHA256:-}" =~ ^[0-9a-f]{64}$ ||
           -z "${FACTORY_TRANSITION_STATE_DIR:-}" ||
           -z "$TRANSITION_PROJECT" ]]; then
@@ -1846,7 +1846,7 @@ ISOLATED_ACCOUNT_ROUTE=""
 if [[ ( "$PROVIDER_CONTRACT_VERSION" == "1.6.0" ||
         "$PROVIDER_CONTRACT_VERSION" == "1.7.0" ||
         "$PROVIDER_CONTRACT_VERSION" == "1.8.0" ||
-        "$PROVIDER_CONTRACT_VERSION" == "1.9.0" ) &&
+        "$PROVIDER_CONTRACT_VERSION" == "2.0.0" ) &&
       -n "${FACTORY_PROVIDER_ACTIVATION:-}" &&
       -f "${FACTORY_PROVIDER_ACTIVATION:-}" ]]; then
   ACTIVATION_ARGS=(--config "$FACTORY_PROVIDER_ACTIVATION" \
@@ -1896,7 +1896,7 @@ for field in fields:
         elif [[ "$EXECUTION_MODE" == "cli-concurrent-v1" &&
                 ( "$PROVIDER_CONTRACT_VERSION" == "1.7.0" ||
                   "$PROVIDER_CONTRACT_VERSION" == "1.8.0" ||
-                  "$PROVIDER_CONTRACT_VERSION" == "1.9.0" ) &&
+                  "$PROVIDER_CONTRACT_VERSION" == "2.0.0" ) &&
                 "$ACTIVATED_ADAPTER" == "$ADAPTER" &&
                 "$ACTIVATED_POLICY_HASH" =~ ^[0-9a-f]{64}$ ]]; then
           CURRENT_POLICY_HASH="$(python3 - "$FACTORY_PROVIDER_POLICY" <<'PY'
@@ -1927,7 +1927,7 @@ fi
 if [[ "$ISOLATED_RUN" -eq 1 || "$CLI_CONCURRENT_RUN" -eq 1 ]]; then
   PARALLEL_PROVIDER_RUN=1
 fi
-if [[ ( "$PROVIDER_CONTRACT_VERSION" == "1.8.0" || "$PROVIDER_CONTRACT_VERSION" == "1.9.0" ) &&
+if [[ ( "$PROVIDER_CONTRACT_VERSION" == "1.8.0" || "$PROVIDER_CONTRACT_VERSION" == "2.0.0" ) &&
       "$ADAPTER" =~ ^(claude-code|codex|cursor-openai|cursor-anthropic)$ ]]; then
   CONTRACT_CAPACITY="$(factory_dispatch_max_tickets \
     "$REPO_ROOT" "$PROVIDER_CONTRACT_VERSION" 2>/dev/null)" || {
@@ -2333,7 +2333,7 @@ if [[ "$PARALLEL_PROVIDER_RUN" -eq 0 &&
       ( "$PROVIDER_CONTRACT_VERSION" == "1.6.0" ||
         "$PROVIDER_CONTRACT_VERSION" == "1.7.0" ||
         "$PROVIDER_CONTRACT_VERSION" == "1.8.0" ||
-        "$PROVIDER_CONTRACT_VERSION" == "1.9.0" ) &&
+        "$PROVIDER_CONTRACT_VERSION" == "2.0.0" ) &&
       -n "${FACTORY_PROVIDER_DB:-}" && -f "$FACTORY_PROVIDER_DB" ]]; then
   LEGACY_INTERVAL_ID="legacy-$RUN_ID"
   LEGACY_PRODUCT_ID="$(basename "$REPO_ROOT" | tr -c 'A-Za-z0-9._:@-' '_')"
@@ -2983,7 +2983,7 @@ candidates = [
 if not candidates:
     print("none")
 elif (
-    contract in {"1.7.0", "1.8.0", "1.9.0"}
+    contract in {"1.7.0", "1.8.0", "2.0.0"}
     and role in {"planner", "test-author", "builder"}
     and candidates == ["ROLE-ESCALATE: CONTRACT-BLOCKED"]
 ):
@@ -3057,7 +3057,7 @@ elif [[ "$ROLE_EXIT_ENFORCED" -eq 1 ]]; then
       }
       END {
         if (candidates == 0) print "none"
-        else if ((contract == "1.7.0" || contract == "1.8.0" || contract == "1.9.0") &&
+        else if ((contract == "1.7.0" || contract == "1.8.0" || contract == "2.0.0") &&
                  (role == "planner" || role == "test-author" || role == "builder") &&
                  candidates == 1 && exact == 1) print "contract-blocked"
         else print "invalid"

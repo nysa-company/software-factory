@@ -17,7 +17,7 @@ The required `ci` workflow always starts and always reports its aggregate
 status. A fail-closed classifier may skip expensive product tests when the
 complete diff is non-empty and limited to the documented inert-metadata
 allowlist. In this kit that includes the documentation roots plus `AGENTS.md`,
-`CLAUDE.md`, the pull-request template, the Hermes changelog, and the
+`CLAUDE.md`, the pull-request template, the Factory contract changelog, and the
 conformance shakedown report. Repository baseline, secret, artifact, and
 test-immutability checks still run.
 
@@ -86,8 +86,8 @@ For every candidate that may reach production:
 1. wait for its protected `ci` and `test-immutability` checks;
 2. install that exact merged SHA as a sealed release;
 3. certify the exact release/product-tree tuple;
-4. run an isolated real-Hermes canary when a compatibility-sensitive surface
-   changed;
+4. run sealed qualification and the native controller macOS smoke when a
+   compatibility-sensitive surface changed;
 5. open a separate protected product `KIT_PIN` PR; and
 6. activate only at a ticket boundary under maintenance and the shared launch
    barrier.
@@ -120,8 +120,8 @@ deployment. Release and product changes remain separate protected flows:
 3. Open a product PR changing only the product's full `factory/KIT_PIN` and
    any intentional product compatibility changes.
 4. Certify the exact kit SHA/tree plus merged product tree/config tuple.
-5. Run the real-Hermes canary for the first cutover and every
-   compatibility-sensitive release.
+5. Run sealed qualification and the native controller macOS smoke for the
+   first cutover and every compatibility-sensitive release.
 6. Activate only under maintenance, a drained launch barrier, and an
    unexpired matching receipt.
 
@@ -130,11 +130,10 @@ ticket to a new release by editing that line. Finish it on the leased release,
 or use a separately reviewed and tested operator migration.
 
 Changes to the public launcher manifest, command arguments, JSON schemas,
-status/exit semantics, supported Hermes version, canonical profile/skill
-templates, launcher, doctor, dispatcher contract, preflight, sequencer, run
-wrapper, or reorder helper are compatibility-sensitive. Preserve contract
-`1.0.0` behavior or bump the contract and include an explicit bootstrap/profile
-migration plus retained rollback support.
+status/exit semantics, launcher, doctor, controller contract, preflight,
+sequencer, run wrapper, or reorder helper are compatibility-sensitive. Bump
+the contract and include an explicit authenticated migration plus retained
+same-major rollback support.
 
 Contract `1.1.0` preserves 1.0 behavior when `MAX_CONCURRENT_TICKETS` is absent
 or `1`; opt-in values `2` through `4` require the 1.1 launcher, profile skill,

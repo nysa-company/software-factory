@@ -5,8 +5,9 @@ kit SHA and prove it on one product. Fill every `{{...}}` placeholder first.
 
 Before sending, run
 `git diff --name-only {{LAST_ACTIVATED_SHA}}..{{SHA}}` and compare it with
-`compatibility_sensitive_surfaces` in `integrations/hermes/contract.json`.
-Any hit makes the isolated real-Hermes canary mandatory.
+`compatibility_sensitive_surfaces` in `factory-contract.json`.
+Any hit makes sealed qualification and the native controller macOS smoke
+mandatory.
 
 ---
 
@@ -109,23 +110,23 @@ this exact order:
    remain network-denied. Record the host-bound receipt ID and expiry; another
    computer's receipt is invalid. Any later product commit or protected-main
    tree drift requires certification of the new final tree before activation.
-10. {{CANARY_LINE: "Run the isolated real-Hermes canary with a separate sandbox
-   product/profile because this release changes {{SURFACES_TOUCHED}}. Never
-   copy production environment, credentials, board mapping, registry, ledger,
-   or LaunchAgent into it." | "No compatibility-sensitive surface changed;
-   record the exact diff-based skip justification."}}
+10. {{QUALIFICATION_LINE: "Run sealed qualification and the native controller
+   macOS smoke with a separate sandbox product because this release changes
+   {{SURFACES_TOUCHED}}. Never copy production environment, credentials,
+   operator state, registry, ledger, or LaunchAgent into it." | "No
+   compatibility-sensitive surface changed; record the exact diff-based skip
+   justification."}}
 11. On a replacement cutover, re-confirm the old host remains in maintenance
     with its controller and provider work drained. Prove its dispatcher is
     stopped; otherwise revoke its execution access. Only then transfer the
     ignored production `factory/operator-map.json` securely to the same
     canonical path with owner-only permissions. Never print, commit, or copy
-    it into the canary.
+    it into qualification.
 12. Immediately before activation, fetch canonical protected main again and
     require its SHA and tracked tree to match the certification receipt. Drift
     requires a new branch, protected merge, and certification. Run
     `factory-kit.sh plan`; require `No files were changed.` Stop only the
-    product factory profile and reconciler, leaving the dashboard and primary
-    Hermes profile running. Activate while dispatch remains stopped.
+    native product controller. Activate while dispatch remains stopped.
     Collect activation journal, doctor JSON, sandbox smoke, PID, and repeated
     health probes. A failure keeps maintenance published and uses
     `factory-kit.sh reconcile`; never edit `active.json` or the journal.
@@ -163,7 +164,7 @@ secrets; redact values whose key matches
 key|token|secret|password|url|dsn|conn|auth.
 
 Report: protected-main CI run, install proof, receipt ID and expiry, plugin/CLI
-version checks, reconciliation batch result, canary result or skip reason,
+version checks, reconciliation batch result, qualification result or skip reason,
 activation journal, model/envelope activation, doctor summary, T-032 lifecycle
 evidence, and deviations.
 ```

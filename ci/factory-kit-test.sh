@@ -463,8 +463,7 @@ git_identity
 git init --bare -q "$CANONICAL"
 git init -q -b main "$KIT_REPO"
 git -C "$KIT_REPO" remote add origin "$CANONICAL"
-mkdir -p "$KIT_REPO/ci" "$KIT_REPO/scripts/lib" "$KIT_REPO/scripts/launchd" \
-  "$KIT_REPO/integrations/hermes/bin"
+mkdir -p "$KIT_REPO/ci" "$KIT_REPO/scripts/lib" "$KIT_REPO/scripts/launchd"
 mkdir -p "$KIT_REPO/scripts/model-routing"
 cp "$ROOT/scripts/model-manager.py" "$ROOT/scripts/model-router.py" \
   "$ROOT/scripts/certification-runner.py" \
@@ -475,14 +474,14 @@ cp "$ROOT/scripts/model-manager.py" "$ROOT/scripts/model-router.py" \
 cp "$ROOT/scripts/lib/certification_plan.py" \
   "$ROOT/scripts/lib/certification_cache.py" \
   "$KIT_REPO/scripts/lib/"
-cp "$ROOT/integrations/hermes/bin/factory-launch" \
-  "$KIT_REPO/integrations/hermes/bin/factory-launch"
-cp "$ROOT/integrations/hermes/contract.json" "$KIT_REPO/integrations/hermes/contract.json"
+cp "$ROOT/scripts/factory-launch" \
+  "$KIT_REPO/scripts/factory-launch"
+cp "$ROOT/factory-contract.json" "$KIT_REPO/factory-contract.json"
 cp "$ROOT/scripts/factory-incident-reporter.py" \
   "$KIT_REPO/scripts/factory-incident-reporter.py"
 cp "$ROOT/scripts/launchd/com.factory.incident-reporter.plist.template" \
   "$KIT_REPO/scripts/launchd/com.factory.incident-reporter.plist.template"
-chmod +x "$KIT_REPO/integrations/hermes/bin/factory-launch"
+chmod +x "$KIT_REPO/scripts/factory-launch"
 cp "$ROOT/scripts/model-routing/catalog-v1.json" \
   "$ROOT/scripts/model-routing/profiles-v1.json" \
   "$KIT_REPO/scripts/model-routing/"
@@ -1290,8 +1289,7 @@ expect_failure "certification rejects an installed launcher from another release
   certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A"
 unset FACTORY_KIT_TEST_INSTALLED_LAUNCHER
 if [[ "$LAST_OUTPUT" == *"installed factory-launch does not match the sealed candidate"* &&
-      "$LAST_OUTPUT" == *"docs/factory-setup.md"* &&
-      "$LAST_OUTPUT" == *"rollback copy"* ]]; then
+      "$LAST_OUTPUT" == *"signed Contract 2 release transaction"* ]]; then
   pass "launcher drift fails before product certification"
 else
   fail "launcher drift reports its exact activation boundary" "$LAST_OUTPUT"

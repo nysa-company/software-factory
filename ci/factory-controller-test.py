@@ -294,7 +294,7 @@ class FactoryControllerTest(unittest.TestCase):
     ) -> None:
         ticket = "T-110"
         claim = {"branch": f"ticket/{ticket}", "ticket": ticket}
-        for contract in ("1.8.0", "1.9.0"):
+        for contract in ("1.8.0", "2.0.0"):
             with self.subTest(contract=contract):
                 receipt = self.operator_transition(
                     ticket, "RUN planner", role="planner",
@@ -316,7 +316,7 @@ class FactoryControllerTest(unittest.TestCase):
                     contract,
                 )
 
-        for contract in ("1.7.0", "2.0.0"):
+        for contract in ("1.7.0", "1.9.0"):
             with self.subTest(contract=contract):
                 self.operator_transition(
                     ticket, "RUN planner", role="planner",
@@ -7206,9 +7206,8 @@ class FactoryControllerTest(unittest.TestCase):
 
         release = self.root / target
         shutil.copytree(ROOT / "scripts", release / "scripts")
-        contract = release / "integrations/hermes/contract.json"
-        contract.parent.mkdir(parents=True)
-        shutil.copy2(ROOT / "integrations/hermes/contract.json", contract)
+        contract = release / "factory-contract.json"
+        shutil.copy2(ROOT / "factory-contract.json", contract)
         release_tree = subprocess.run(
             [
                 "bash", "-c", 'source "$1"; factory_directory_tree "$2"',
@@ -7237,7 +7236,7 @@ class FactoryControllerTest(unittest.TestCase):
             "FACTORY_GLOBAL_ENV": str(global_env),
             "FACTORY_MODEL_STATE_ROOT": str(model_state),
             "FACTORY_PROJECT": "relay", "FACTORY_ROOT": str(product),
-            "FACTORY_RELEASE_CONTRACT_VERSION": "1.9.0",
+            "FACTORY_RELEASE_CONTRACT_VERSION": "2.0.0",
             "FACTORY_RELEASE_PATH": str(release),
             "FACTORY_RELEASE_SHA": target,
             "FACTORY_RELEASE_TREE": release_tree,
@@ -14756,7 +14755,7 @@ class FactoryControllerTest(unittest.TestCase):
         self,
     ) -> None:
         launcher = (
-            ROOT / "integrations/hermes/bin/factory-launch"
+            ROOT / "scripts/factory-launch"
         ).read_text(encoding="utf-8")
         reconcile = launcher.split("  reconcile)", 1)[1].split("\n    ;;", 1)[0]
         self.assertNotIn("--worktree-root", reconcile)
@@ -15165,7 +15164,7 @@ class FactoryControllerTest(unittest.TestCase):
 
     def test_launcher_authorizes_requested_stage_publication_recovery(self) -> None:
         launcher = (
-            ROOT / "integrations/hermes/bin/factory-launch"
+            ROOT / "scripts/factory-launch"
         ).read_text(encoding="utf-8")
         phase_two = launcher.index(
             'die "transition receipt does not authorize protected auto-merge"'
@@ -15183,10 +15182,10 @@ class FactoryControllerTest(unittest.TestCase):
 
     def test_launcher_ticket_parking_requires_issue_and_named_release(self) -> None:
         launcher = (
-            ROOT / "integrations/hermes/bin/factory-launch"
+            ROOT / "scripts/factory-launch"
         ).read_text(encoding="utf-8")
         contract = json.loads(
-            (ROOT / "integrations/hermes/contract.json").read_text()
+            (ROOT / "factory-contract.json").read_text()
         )["launcher"]["commands"]["ticket-control"]
         self.assertIn('"$4" == "--issue"', launcher)
         self.assertIn('"$4" == "--factory-sha"', launcher)

@@ -4,7 +4,7 @@ set -euo pipefail
 export PYTHONDONTWRITEBYTECODE=1
 
 TICKET="" WORKDIR="" ACTION="" STATE="" ROLE=""
-CONTRACT_VERSION="${FACTORY_RELEASE_CONTRACT_VERSION:-${FACTORY_HERMES_CONTRACT_VERSION:-}}"
+CONTRACT_VERSION="${FACTORY_RELEASE_CONTRACT_VERSION:-${FACTORY_CONTRACT_VERSION:-}}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --ticket) TICKET="$2"; shift 2 ;;
@@ -24,13 +24,13 @@ done
   { echo "--role is valid only for qualification backlog return" >&2; exit 2; }
 [[ "$ACTION" != "reviewer-reconcile" ||
    "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ||
-   "$CONTRACT_VERSION" == "1.9.0" ]] || {
+   "$CONTRACT_VERSION" == "2.0.0" ]] || {
   echo "reviewer reconciliation requires contract 1.7.0" >&2
   exit 1
 }
 [[ "$ACTION" != "qualification-backlog" ||
    "$CONTRACT_VERSION" == "1.7.0" || "$CONTRACT_VERSION" == "1.8.0" ||
-   "$CONTRACT_VERSION" == "1.9.0" ]] || {
+   "$CONTRACT_VERSION" == "2.0.0" ]] || {
   echo "qualification backlog return requires contract 1.7.0" >&2
   exit 1
 }
@@ -311,7 +311,7 @@ with lock.open("a") as handle:
     if current != expected:
         raise SystemExit(0)
     operator = entry.get("operator") or {}
-    if contract == "1.9.0" and action:
+    if contract == "2.0.0" and action:
         current_action, binding = operator_action(operator)
         if current_action != action:
             raise SystemExit("operator action changed during materialization")

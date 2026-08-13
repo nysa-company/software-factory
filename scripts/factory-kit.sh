@@ -13,6 +13,7 @@ PROJECTS_DIR="$KITS_ROOT/projects"
 RECEIPTS_DIR="$KITS_ROOT/receipts"
 CONSUMED_DIR="$RECEIPTS_DIR/consumed"
 CERTIFICATION_ARTIFACTS_DIR="$KITS_ROOT/certification-artifacts"
+CONTRACT_FLOOR_FILE="$KITS_ROOT/contract-floor.json"
 PROVIDER_STATE_ROOT="$(dirname "$KITS_ROOT")"
 CANONICAL_GITHUB_ORIGIN="github.com/nysa-company/software-factory"
 RECEIPT_SCHEMA=2
@@ -338,7 +339,7 @@ file_hash() {
 
 verify_installed_launcher_binding() {
   local release="$1" expected installed
-  expected="$release/integrations/hermes/bin/factory-launch"
+  expected="$release/scripts/factory-launch"
   if [[ "${FACTORY_KIT_TEST_MODE:-0}" == "1" ]]; then
     installed="${FACTORY_KIT_TEST_INSTALLED_LAUNCHER:-$expected}"
   else
@@ -352,8 +353,11 @@ verify_installed_launcher_binding() {
     die "installed factory-launch is missing or unsafe"
   reject_symlink_path_components "$installed" ||
     die "installed factory-launch path contains a symlink"
-  [[ "$(file_hash "$installed")" == "$(file_hash "$expected")" ]] ||
-    die "installed factory-launch does not match the sealed candidate; drain the lane and follow docs/factory-setup.md to atomically install the sealed launcher with a rollback copy"
+  if [[ "$(file_hash "$installed")" != "$(file_hash "$expected")" ]]; then
+    [[ "${FACTORY_CONTRACT_2_CUTOVER:-0}" == "1" &&
+       "$(contract_version "$release")" == "2.0.0" ]] ||
+      die "installed factory-launch does not match the sealed candidate; use the signed Contract 2 release transaction"
+  fi
 }
 
 verify_restrictive_regular_file() {
@@ -615,8 +619,8 @@ for job in jobs:
     if name and (name not in latest or int(job.get("id", 0)) > int(latest[name].get("id", 0))):
         latest[name] = job
 sharded = (
-    "linux-factory", "linux-hermes", "linux-release",
-    "macos-bash-3-factory", "macos-bash-3-hermes", "macos-bash-3-release",
+    "linux-factory", "linux-contract", "linux-release",
+    "macos-bash-3-factory", "macos-bash-3-contract", "macos-bash-3-release",
 )
 legacy = ("linux", "macos-bash-3")
 # A partial shard topology must never fall back to the legacy two-job proof.
@@ -1189,8 +1193,8 @@ verify_release_from_manifest() {
 
 contract_version() {
   local release="$1" value=""
-  if [[ -f "$release/integrations/hermes/contract.json" ]]; then
-    value="$(python3 - "$release/integrations/hermes/contract.json" <<'PY'
+  if [[ -f "$release/factory-contract.json" ]]; then
+    value="$(python3 - "$release/factory-contract.json" <<'PY'
 import json, sys
 try:
     value = json.load(open(sys.argv[1]))
@@ -1201,27 +1205,62 @@ for key in ("contract_version", "version", "schema_version"):
         print(value[key])
         break
 PY
-)" || die "invalid Hermes contract manifest"
-  elif [[ -f "$release/integrations/hermes/CONTRACT_VERSION" ]]; then
-    value="$(awk 'NF {print; exit}' "$release/integrations/hermes/CONTRACT_VERSION")"
-  elif [[ -f "$release/integrations/hermes/contract-version" ]]; then
-    value="$(awk 'NF {print; exit}' "$release/integrations/hermes/contract-version")"
+)" || die "invalid Factory contract manifest"
   else
-    value="1"
+    die "Factory contract manifest is missing"
   fi
   [[ "$value" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] ||
-    die "invalid Hermes contract version"
+    die "invalid Factory contract version"
   printf '%s\n' "$value"
+}
+
+require_contract_floor() {
+  local contract="$1"
+  [[ -e "$CONTRACT_FLOOR_FILE" || -L "$CONTRACT_FLOOR_FILE" ]] || return 0
+  verify_restrictive_regular_file "$CONTRACT_FLOOR_FILE" ||
+    die "contract floor is unsafe"
+  python3 - "$CONTRACT_FLOOR_FILE" "$contract" <<'PY' ||
+import json, os, re, stat, sys
+path, contract = sys.argv[1:]
+def unique(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError
+        value[key] = item
+    return value
+fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+try:
+    before = os.fstat(fd)
+    if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.geteuid()
+            or before.st_nlink != 1 or stat.S_IMODE(before.st_mode) != 0o600
+            or before.st_size > 4096):
+        raise ValueError
+    raw = os.read(fd, before.st_size + 1)
+    after = os.fstat(fd)
+    if len(raw) != before.st_size or (before.st_dev, before.st_ino, before.st_size) != (
+            after.st_dev, after.st_ino, after.st_size):
+        raise ValueError
+finally:
+    os.close(fd)
+value = json.loads(raw.decode("utf-8", "strict"), object_pairs_hook=unique)
+if value != {"minimum_major": 2, "schema": "nysa.software-factory.contract-floor/v1"}:
+    raise SystemExit(1)
+match = re.fullmatch(r"([0-9]+)\.[0-9]+\.[0-9]+", contract)
+if not match or int(match.group(1)) < value["minimum_major"]:
+    raise SystemExit(1)
+PY
+    die "contract $contract is below the active Contract 2 floor"
 }
 
 require_provider_concurrency_ready() {
   local product="$1" release="$2" contract="$3" sha="$4" tree="$5"
   local capacity="" output
-  if [[ "$contract" == "1.8.0" || "$contract" == "1.9.0" ]]; then
+  if [[ "$contract" == "1.8.0" || "$contract" == "2.0.0" ]]; then
     capacity="$(factory_dispatch_max_tickets "$product" "$contract" 2>/dev/null)" ||
       die "product ticket concurrency configuration is invalid"
   fi
-  if [[ ( "$contract" != "1.8.0" && "$contract" != "1.9.0" ) || "$capacity" -le 1 ]]; then
+  if [[ ( "$contract" != "1.8.0" && "$contract" != "2.0.0" ) || "$capacity" -le 1 ]]; then
     PROVIDER_CONCURRENCY_EVIDENCE="$(python3 - "$contract" "$capacity" "$sha" "$tree" <<'PY'
 import json, sys
 contract, capacity, sha, tree = sys.argv[1:]
@@ -2467,7 +2506,8 @@ validate_receipt_snapshot() {
     die "PROJECT.env hash drifted since certification"
   contract="$(contract_version "$release")"
   [[ "$contract" == "$(json_get "$receipt" contract_version)" ]] ||
-    die "Hermes contract version drifted"
+    die "Factory contract version drifted"
+  require_contract_floor "$contract"
   runtime_tuple="$(json_get "$receipt" runtime_tuple 2>/dev/null || true)"
   if [[ -e "$product_top/factory/certification-plan.json" || \
         -L "$product_top/factory/certification-plan.json" || \
@@ -4284,6 +4324,7 @@ cmd_activate() {
   copy_receipt_snapshot "$receipt" "$snapshot"
   remember_temp "$snapshot"
   validate_receipt_snapshot "$snapshot" "$slug" "$product_top" "$sha" "$previous" "$receipt_id"
+  require_contract_floor "$(json_get "$snapshot" contract_version)"
   [[ ! -e "$CONSUMED_DIR/$receipt_id.json" && ! -L "$CONSUMED_DIR/$receipt_id.json" ]] ||
     die "certification receipt has already been consumed"
   launch_lock="$product_top/factory/.launch.lock"
@@ -4445,6 +4486,7 @@ cmd_reconcile() {
       set_journal_phase "$journal" maintenance_published
       set_journal_phase "$journal" launch_drained
       set_journal_phase "$journal" services_stopped
+      require_contract_floor "$(json_get "$journal" candidate_record.contract_version)"
       switch_active_from_journal "$journal" "$active" candidate_record
       set_journal_phase "$journal" activation_record_switched
     fi
@@ -4455,6 +4497,7 @@ cmd_reconcile() {
     say "RECONCILE OK: committed interrupted activation"
   else
     rollback_sha="$(json_get "$journal" previous_record.kit_sha 2>/dev/null || true)"
+    require_contract_floor "$(json_get "$journal" previous_record.contract_version 2>/dev/null || true)"
     [[ -z "$rollback_sha" ]] || require_provider_cli_pin_ready "$rollback_sha"
     rollback_journal "$journal" "$active"
     say "RECONCILE OK: restored previous generation"
@@ -4508,6 +4551,7 @@ cmd_rollback() {
   previous_tree="$(json_get "$journal" previous_record.kit_tree)"
   previous_product_tree="$(json_get "$journal" previous_record.product_tree)"
   validate_sha "$previous_sha"
+  require_contract_floor "$(json_get "$journal" previous_record.contract_version)"
   [[ "$(printf '%s' "$(verify_release_from_manifest "$previous_sha")" | awk -F'\t' '{print $1}')" == "$previous_tree" ]] ||
     die "previous release does not match its trusted install manifest"
 

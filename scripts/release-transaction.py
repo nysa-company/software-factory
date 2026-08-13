@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plan and resume one exact Contract 1.9 production release."""
+"""Plan and resume one exact Contract 2 production release."""
 
 from __future__ import annotations
 
@@ -183,14 +183,6 @@ def exact_local_file(path: Path, expected: bytes, label: str) -> str:
     return hashlib.sha256(expected).hexdigest()
 
 
-def prepare_registry(project: str, product: Path) -> dict[str, Any]:
-    profile = account_home() / ".hermes/profiles/factory"
-    projects = secure_directory(profile / "projects", create=True)
-    path = projects / f"{project}.env"
-    raw = f"PRODUCT_ROOT={product}\n".encode()
-    return {"path": str(path), "sha256": exact_local_file(path, raw, "project registry")}
-
-
 def controller_payload(project: str, product: Path) -> bytes:
     home = account_home()
     label = f"com.factory.controller.{project}"
@@ -237,6 +229,8 @@ def active_inventory(kits_root: Path) -> list[dict[str, Any]]:
         values.append({
             "active_sha256": file_digest(active), "product": str(product),
             "project": root.name,
+            "contract_version": str(record.get("contract_version", "")),
+            "kit_sha": str(record.get("kit_sha", "")),
         })
     return values
 
@@ -267,8 +261,12 @@ def validate_launcher_plan(value: dict[str, Any]) -> None:
     for item in projects:
         if (
             not isinstance(item, dict)
-            or set(item) != {"active_sha256", "product", "project"}
+            or set(item) != {
+                "active_sha256", "contract_version", "kit_sha", "product", "project",
+            }
             or not DIGEST.fullmatch(str(item.get("active_sha256", "")))
+            or not SHA.fullmatch(str(item.get("kit_sha", "")))
+            or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", str(item.get("contract_version", "")))
             or not Path(str(item.get("product", ""))).is_absolute()
             or not PROJECT.fullmatch(str(item.get("project", "")))
         ):
@@ -276,7 +274,7 @@ def validate_launcher_plan(value: dict[str, Any]) -> None:
 
 
 def launcher_plan(release: Path, kits_root: Path) -> dict[str, Any]:
-    candidate = release / "integrations/hermes/bin/factory-launch"
+    candidate = release / "scripts/factory-launch"
     target = account_home() / ".factory/bin/factory-launch"
     secure_directory(target.parent, create=True)
     candidate_sha = hashlib.sha256(
@@ -301,6 +299,7 @@ def launcher_plan(release: Path, kits_root: Path) -> dict[str, Any]:
 
 def _apply_launcher_plan_locked(
     value: dict[str, Any], release: Path, kits_root: Path,
+    cutover_sha: str | None = None,
 ) -> dict[str, Any]:
     validate_launcher_plan(value)
     current_plan = launcher_plan(release, kits_root)
@@ -309,7 +308,20 @@ def _apply_launcher_plan_locked(
         if current_plan["sha256"] != value["candidate"]["sha256"]:
             raise ReleaseError("launcher pin target changed")
     elif current_plan != value:
-        raise ReleaseError("launcher pin basis changed after approval")
+        current = active_inventory(kits_root)
+        expected = {
+            item["project"]: item["product"] for item in value["active_projects"]
+        }
+        if (
+            cutover_sha is None
+            or {item["project"]: item["product"] for item in current} != expected
+            or any(
+                item["kit_sha"] != cutover_sha
+                or int(item["contract_version"].split(".", 1)[0]) < 2
+                for item in current
+            )
+        ):
+            raise ReleaseError("launcher pin basis changed after approval")
     kit = release / "scripts/factory-kit.sh"
     if not replay:
         for item in value["active_projects"]:
@@ -382,6 +394,7 @@ def _apply_launcher_plan_locked(
 
 def apply_launcher_plan(
     value: dict[str, Any], release: Path, kits_root: Path,
+    cutover_sha: str | None = None,
 ) -> dict[str, Any]:
     validate_launcher_plan(value)
     root = secure_directory(Path(value["target"]).parent.parent, create=True)
@@ -397,7 +410,7 @@ def apply_launcher_plan(
         ):
             raise ReleaseError("launcher pin lock is unsafe")
         fcntl.flock(descriptor, fcntl.LOCK_EX)
-        return _apply_launcher_plan_locked(value, release, kits_root)
+        return _apply_launcher_plan_locked(value, release, kits_root, cutover_sha)
     finally:
         os.close(descriptor)
 
@@ -502,12 +515,12 @@ def prepare_product_runtime(product: Path) -> None:
 def contract(release: Path) -> str:
     try:
         value = json.loads(
-            (release / "integrations/hermes/contract.json").read_text(encoding="utf-8")
+            (release / "factory-contract.json").read_text(encoding="utf-8")
         )["contract_version"]
     except (KeyError, OSError, json.JSONDecodeError) as error:
         raise ReleaseError("candidate contract is invalid") from error
-    if value != "1.9.0":
-        raise ReleaseError("release setup requires Contract 1.9.0")
+    if value != "2.0.0":
+        raise ReleaseError("release setup requires Contract 2.0.0")
     return value
 
 
@@ -657,6 +670,63 @@ def seal_plan(body: dict[str, Any]) -> dict[str, Any]:
     return {**body, "approval_sha256": digest(body)}
 
 
+def valid_controller(value: Any, project: str) -> bool:
+    return isinstance(value, dict) and (
+        value.get("status") == "not-applicable"
+        and set(value) == {"platform", "status"}
+        or value.get("status") != "not-applicable"
+        and set(value) == {"label", "path", "platform", "sha256"}
+        and value.get("platform") == "darwin"
+        and value.get("label") == f"com.factory.controller.{project}"
+        and Path(str(value.get("path", ""))).is_absolute()
+        and DIGEST.fullmatch(str(value.get("sha256", ""))) is not None
+    )
+
+
+def valid_host_cutover(value: Any) -> bool:
+    if value is None:
+        return True
+    if not isinstance(value, list) or len(value) != len({
+        item.get("project") for item in value if isinstance(item, dict)
+    }):
+        return False
+    for item in value:
+        if not isinstance(item, dict) or set(item) != {
+            "controller", "incident", "product", "project", "receipt", "runtime",
+            "source_active_sha256",
+        }:
+            return False
+        project = item.get("project")
+        receipt = item.get("receipt")
+        runtime = item.get("runtime")
+        incident = item.get("incident")
+        if (
+            not isinstance(project, str) or not PROJECT.fullmatch(project)
+            or not Path(str(item.get("product", ""))).is_absolute()
+            or not DIGEST.fullmatch(str(item.get("source_active_sha256", "")))
+            or not valid_controller(item.get("controller"), project)
+            or not isinstance(receipt, dict)
+            or set(receipt) != {"path", "receipt_id", "sha256"}
+            or not Path(str(receipt.get("path", ""))).is_absolute()
+            or not DIGEST.fullmatch(str(receipt.get("receipt_id", "")))
+            or not DIGEST.fullmatch(str(receipt.get("sha256", "")))
+            or not isinstance(runtime, dict)
+            or set(runtime) != {"evidence", "plan_sha256"}
+            or not isinstance(runtime.get("evidence"), dict)
+            or not Path(str(runtime["evidence"].get("path", ""))).is_absolute()
+            or not DIGEST.fullmatch(str(runtime.get("plan_sha256", "")))
+            or incident is not None and (
+                not isinstance(incident, dict)
+                or set(incident) != {"label", "path", "sha256"}
+                or incident.get("label") != f"com.factory.incident-reporter.{project}"
+                or not Path(str(incident.get("path", ""))).is_absolute()
+                or not DIGEST.fullmatch(str(incident.get("sha256", "")))
+            )
+        ):
+            return False
+    return True
+
+
 def validate_plan(value: dict[str, Any]) -> None:
     required = {
         "approval_sha256", "children", "created_epoch", "expires_epoch", "identity",
@@ -684,7 +754,7 @@ def validate_plan(value: dict[str, Any]) -> None:
     identity_keys = {
         "capacity", "contract_version", "controller", "factory_origin", "factory_sha",
         "factory_tree", "mode", "previous", "product_origin", "product_path", "product_sha",
-        "product_tree", "registry", "runtime", "tickets",
+        "product_tree", "runtime", "tickets",
     }
     request_keys = {
         "cli_paths", "migrations", "operator_id", "product", "profile", "project",
@@ -692,14 +762,13 @@ def validate_plan(value: dict[str, Any]) -> None:
     }
     runtime = identity.get("runtime")
     evidence = runtime.get("evidence") if isinstance(runtime, dict) else None
-    registry = identity.get("registry")
     controller = identity.get("controller")
     migrations = request.get("migrations")
     cli_paths = request.get("cli_paths")
     inventory = identity.get("tickets")
     if (
         set(identity) != identity_keys or set(request) != request_keys
-        or identity.get("contract_version") != "1.9.0"
+        or identity.get("contract_version") != "2.0.0"
         or identity.get("mode") not in {"new", "upgrade"}
         or not isinstance(identity.get("capacity"), int)
         or isinstance(identity.get("capacity"), bool)
@@ -722,23 +791,7 @@ def validate_plan(value: dict[str, Any]) -> None:
         or not DIGEST.fullmatch(str(runtime.get("plan_sha256", "")))
         or not isinstance(evidence, dict)
         or not Path(str(evidence.get("path", ""))).is_absolute()
-        or not isinstance(registry, dict) or set(registry) != {"path", "sha256"}
-        or not Path(str(registry.get("path", ""))).is_absolute()
-        or not DIGEST.fullmatch(str(registry.get("sha256", "")))
-        or not isinstance(controller, dict)
-        or (
-            controller.get("status") == "not-applicable" and
-            set(controller) != {"platform", "status"}
-        )
-        or (
-            controller.get("status") != "not-applicable" and (
-                set(controller) != {"label", "path", "platform", "sha256"}
-                or controller.get("platform") != "darwin"
-                or controller.get("label") != f"com.factory.controller.{request.get('project')}"
-                or not Path(str(controller.get("path", ""))).is_absolute()
-                or not DIGEST.fullmatch(str(controller.get("sha256", "")))
-            )
-        )
+        or not valid_controller(controller, str(request.get("project", "")))
         or (identity["mode"] == "new" and identity.get("previous") is not None)
         or (identity["mode"] == "upgrade" and not isinstance(identity.get("previous"), dict))
     ):
@@ -801,7 +854,10 @@ def validate_plan(value: dict[str, Any]) -> None:
             raise ReleaseError("release plan is invalid")
     if value["stage"] == "prerequisites":
         if (
-            set(children) != {"launcher", "provider_cli", "provider_concurrency"}
+            set(children) != {
+                "host_cutover", "launcher", "provider_cli", "provider_concurrency",
+            }
+            or not valid_host_cutover(children.get("host_cutover"))
             or "apply" not in {
                 launcher["action"], provider_cli["action"], provider_concurrency["action"],
             }
@@ -969,6 +1025,82 @@ def find_receipt(kits_root: Path, project: str, sha: str) -> tuple[Path, dict[st
     return path, value
 
 
+def incident_identity(project: str) -> dict[str, str] | None:
+    if sys.platform != "darwin" or os.environ.get("FACTORY_KIT_TEST_MODE") == "1":
+        return None
+    path = account_home() / "Library/LaunchAgents" / (
+        f"com.factory.incident-reporter.{project}.plist"
+    )
+    if not path.exists() and not path.is_symlink():
+        return None
+    raw = secure_regular_bytes(path, "incident reporter job")
+    return {
+        "label": f"com.factory.incident-reporter.{project}",
+        "path": str(path),
+        "sha256": hashlib.sha256(raw).hexdigest(),
+    }
+
+
+def prepare_host_cutover(
+    release: Path, kits_root: Path, sha: str, launcher: dict[str, Any],
+    explicit_runtime: Path | None, target_project: str,
+    target_product: Path, target_runtime: dict[str, Any],
+    target_controller: dict[str, Any],
+) -> list[dict[str, Any]]:
+    if launcher.get("action") != "apply":
+        return []
+    kit = release / "scripts/factory-kit.sh"
+    entries: list[dict[str, Any]] = []
+    for source in launcher["active_projects"]:
+        project = source["project"]
+        product = Path(source["product"]).resolve(strict=True)
+        _, _, _ = clean_identity(product, f"active product {project}")
+        if (product / "factory/KIT_PIN").read_text(encoding="utf-8") != sha + "\n":
+            raise ReleaseError(
+                f"active project {project} has not staged the Contract 2 release pin"
+            )
+        runtime = (
+            target_runtime if project == target_project and product == target_product
+            else prepare_runtime(release, product, kits_root, project, explicit_runtime)
+        )
+        controller = (
+            target_controller if project == target_project and product == target_product
+            else prepare_controller(project, product)
+        )
+        environment = command_environment(kits_root, Path(runtime["evidence"]["path"]))
+        environment["FACTORY_CONTRACT_2_CUTOVER"] = "1"
+        run(
+            ["bash", str(kit), "pause", "--project", project,
+             "--product", str(product)], f"host cutover drain for {project}",
+            environment=environment,
+        )
+        run(
+            ["bash", str(kit), "certify", "--project", project,
+             "--product", str(product), "--sha", sha],
+            f"host cutover certification for {project}", environment=environment,
+        )
+        receipt_path, receipt = find_receipt(kits_root, project, sha)
+        run(
+            ["bash", str(kit), "plan", "--project", project,
+             "--product", str(product), "--sha", sha,
+             "--receipt", str(receipt_path)],
+            f"host cutover activation preview for {project}", environment=environment,
+        )
+        entries.append({
+            "controller": controller,
+            "incident": incident_identity(project),
+            "product": str(product),
+            "project": project,
+            "receipt": {
+                "path": str(receipt_path), "receipt_id": receipt["receipt_id"],
+                "sha256": file_digest(receipt_path),
+            },
+            "runtime": runtime,
+            "source_active_sha256": source["active_sha256"],
+        })
+    return entries
+
+
 def setup(args: argparse.Namespace) -> dict[str, Any]:
     project = args.project
     sha = args.sha
@@ -999,7 +1131,6 @@ def setup(args: argparse.Namespace) -> dict[str, Any]:
     sealed_kit = release / "scripts/factory-kit.sh"
     release_contract = contract(release)
     runtime = prepare_runtime(release, product, kits_root, project, args.runtime_bin)
-    registry = prepare_registry(project, product)
     controller = prepare_controller(project, product)
     runtime_bin = Path(str(runtime["evidence"]["path"]))
     active = kits_root / "projects" / project / "active.json"
@@ -1026,6 +1157,15 @@ def setup(args: argparse.Namespace) -> dict[str, Any]:
     concurrency, cli = child_plan(
         sealed_kit, kits_root, sha, capacity(product), cli_paths, args.operator_id,
     )
+    provider_prerequisite = (
+        concurrency["action"] == "apply" or cli["action"] == "apply"
+    )
+    host_cutover = None
+    if launcher["action"] == "apply" and not provider_prerequisite:
+        host_cutover = prepare_host_cutover(
+            release, kits_root, sha, launcher, args.runtime_bin, project, product,
+            runtime, controller,
+        )
     migrations = [
         {"ticket": ticket, "workdir": str(Path(workdir).resolve(strict=True))}
         for ticket, workdir in args.ticket_workdir
@@ -1044,7 +1184,6 @@ def setup(args: argparse.Namespace) -> dict[str, Any]:
         "previous": previous,
         "product_origin": product_origin, "product_path": str(product),
         "product_sha": product_sha, "product_tree": product_tree,
-        "registry": registry,
         "runtime": runtime, "tickets": ticket_inventory(product),
     }
     now = int(time.time())
@@ -1054,6 +1193,7 @@ def setup(args: argparse.Namespace) -> dict[str, Any]:
     ):
         plan = seal_plan({
             "children": {
+                "host_cutover": host_cutover,
                 "launcher": launcher, "provider_cli": cli,
                 "provider_concurrency": concurrency,
             },
@@ -1177,14 +1317,207 @@ def plan_request(plan: dict[str, Any], kits_root: Path) -> argparse.Namespace:
     )
 
 
+def service_prefix() -> tuple[list[str], str]:
+    launchctl = Path("/bin/launchctl")
+    if not launchctl.is_file() or not os.access(launchctl, os.X_OK):
+        raise ReleaseError("native service manager is unavailable")
+    domain = f"gui/{os.getuid()}"
+    return [str(launchctl), "asuser", str(os.getuid()), str(launchctl)], domain
+
+
+def unload_service(value: dict[str, Any] | None) -> None:
+    if (
+        value is None or value.get("status") == "not-applicable"
+        or sys.platform != "darwin" or os.environ.get("FACTORY_KIT_TEST_MODE") == "1"
+    ):
+        return
+    prefix, domain = service_prefix()
+    service = f"{domain}/{value['label']}"
+    current = subprocess.run(
+        prefix + ["print", service], stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL, check=False, timeout=30,
+    )
+    if current.returncode == 0:
+        run(prefix + ["bootout", service], f"service unload for {value['label']}")
+    if subprocess.run(
+        prefix + ["print", service], stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL, check=False, timeout=30,
+    ).returncode == 0:
+        raise ReleaseError(f"service {value['label']} did not unload")
+
+
+def ensure_service(value: dict[str, Any] | None) -> None:
+    if (
+        value is None or value.get("status") == "not-applicable"
+        or sys.platform != "darwin" or os.environ.get("FACTORY_KIT_TEST_MODE") == "1"
+    ):
+        return
+    path = Path(value["path"])
+    if hashlib.sha256(secure_regular_bytes(path, "native service job")).hexdigest() != value["sha256"]:
+        raise ReleaseError("native service job changed after setup")
+    prefix, domain = service_prefix()
+    service = f"{domain}/{value['label']}"
+    run(prefix + ["enable", service], f"service enable for {value['label']}")
+    current = subprocess.run(
+        prefix + ["print", service], stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL, check=False, timeout=30,
+    )
+    if current.returncode:
+        run(prefix + ["bootstrap", domain, str(path)], f"service load for {value['label']}")
+    if subprocess.run(
+        prefix + ["print", service], stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL, check=False, timeout=30,
+    ).returncode:
+        raise ReleaseError(f"service {value['label']} did not load")
+
+
+def cutover_update(
+    path: Path, approval_sha256: str, phase: str, projects: list[str], status: str,
+) -> None:
+    body = {
+        "approval_sha256": approval_sha256,
+        "completed_projects": projects,
+        "phase": phase,
+        "schema": "nysa.software-factory.host-cutover-journal/v1",
+        "status": status,
+    }
+    atomic_json(path, {**body, "record_sha256": digest(body)})
+    if os.environ.get("FACTORY_RELEASE_FAIL_AFTER_CUTOVER_PHASE") == phase:
+        raise ReleaseError(f"injected failure after host cutover phase {phase}")
+
+
+def read_cutover(path: Path, approval_sha256: str) -> dict[str, Any]:
+    if not path.exists() and not path.is_symlink():
+        return {"completed_projects": [], "phase": "approved", "status": "in-progress"}
+    value = safe_state(path, "host cutover journal")
+    body = {key: item for key, item in value.items() if key != "record_sha256"}
+    if value.get("status") == "pass" and value.get("approval_sha256") != approval_sha256:
+        return {"completed_projects": [], "phase": "approved", "status": "in-progress"}
+    if (
+        value.get("schema") != "nysa.software-factory.host-cutover-journal/v1"
+        or value.get("approval_sha256") != approval_sha256
+        or value.get("record_sha256") != digest(body)
+        or value.get("status") not in {"in-progress", "pass"}
+        or not isinstance(value.get("completed_projects"), list)
+    ):
+        raise ReleaseError("host cutover journal is invalid")
+    return value
+
+
+def cutover_active_exact(
+    kits_root: Path, item: dict[str, Any], sha: str,
+) -> bool:
+    path = kits_root / "projects" / item["project"] / "active.json"
+    if not path.exists() or path.is_symlink():
+        return False
+    record = safe_state(path, "active release")
+    return all(record.get(key) == expected for key, expected in {
+        "contract_version": "2.0.0", "kit_sha": sha,
+        "product_path": item["product"], "project": item["project"],
+        "receipt_id": item["receipt"]["receipt_id"],
+    }.items())
+
+
+def apply_host_cutover(
+    plan: dict[str, Any], release: Path, kits_root: Path,
+) -> None:
+    items = plan["children"]["host_cutover"]
+    if not valid_host_cutover(items):
+        raise ReleaseError("host cutover plan is invalid")
+    journal_path = kits_root / "contract-cutover-journal.json"
+    journal = read_cutover(journal_path, plan["approval_sha256"])
+    if journal["status"] == "pass":
+        return
+    completed = list(journal["completed_projects"])
+    kit = release / "scripts/factory-kit.sh"
+    for item in items:
+        project = item["project"]
+        active = kits_root / "projects" / project / "active.json"
+        if project in completed:
+            if not cutover_active_exact(kits_root, item, plan["request"]["sha"]):
+                raise ReleaseError("completed host cutover project changed")
+            continue
+        if file_digest(active) != item["source_active_sha256"]:
+            if cutover_active_exact(kits_root, item, plan["request"]["sha"]):
+                completed.append(project)
+                cutover_update(
+                    journal_path, plan["approval_sha256"], f"project:{project}",
+                    completed, "in-progress",
+                )
+                continue
+            raise ReleaseError("host cutover active basis changed")
+        unload_service(item["controller"])
+        unload_service(item["incident"])
+        environment = command_environment(
+            kits_root, Path(item["runtime"]["evidence"]["path"]),
+        )
+        environment["FACTORY_CONTRACT_2_CUTOVER"] = "1"
+        receipt = Path(item["receipt"]["path"])
+        if (
+            file_digest(receipt) != item["receipt"]["sha256"]
+            or safe_state(receipt, "certification receipt").get("receipt_id")
+            != item["receipt"]["receipt_id"]
+        ):
+            raise ReleaseError("host cutover receipt changed")
+        run(
+            ["bash", str(kit), "activate", "--project", project,
+             "--product", item["product"], "--sha", plan["request"]["sha"],
+             "--receipt", str(receipt)], f"host cutover activation for {project}",
+            environment=environment,
+        )
+        if not cutover_active_exact(kits_root, item, plan["request"]["sha"]):
+            raise ReleaseError("host cutover activation did not commit")
+        completed.append(project)
+        cutover_update(
+            journal_path, plan["approval_sha256"], f"project:{project}",
+            completed, "in-progress",
+        )
+    cutover_update(
+        journal_path, plan["approval_sha256"], "active_records_switched",
+        completed, "in-progress",
+    )
+    apply_launcher_plan(
+        plan["children"]["launcher"], release, kits_root, plan["request"]["sha"],
+    )
+    cutover_update(
+        journal_path, plan["approval_sha256"], "launcher_installed",
+        completed, "in-progress",
+    )
+    floor = kits_root / "contract-floor.json"
+    expected_floor = {
+        "minimum_major": 2,
+        "schema": "nysa.software-factory.contract-floor/v1",
+    }
+    if floor.exists() or floor.is_symlink():
+        if safe_state(floor, "contract floor") != expected_floor:
+            raise ReleaseError("contract floor changed")
+    else:
+        atomic_json(floor, expected_floor)
+    cutover_update(
+        journal_path, plan["approval_sha256"], "contract_floor_committed",
+        completed, "in-progress",
+    )
+    launcher = account_home() / ".factory/bin/factory-launch"
+    for item in items:
+        ensure_service(item["controller"])
+        ensure_service(item["incident"])
+        run_json(
+            [str(launcher), item["project"], "doctor", "--json"],
+            f"host cutover Doctor for {item['project']}",
+            environment=launcher_environment(
+                kits_root, Path(item["runtime"]["evidence"]["path"]),
+            ),
+        )
+    cutover_update(
+        journal_path, plan["approval_sha256"], "healthy", completed, "pass",
+    )
+
+
 def apply_prerequisites(plan: dict[str, Any], kits_root: Path, approved_by: str) -> dict[str, Any]:
     request = plan["request"]
     release = kits_root / "releases" / request["sha"]
     kit = release / "scripts/factory-kit.sh"
     environment = command_environment(kits_root)
-    launcher = plan["children"]["launcher"]
-    if launcher["action"] == "apply":
-        apply_launcher_plan(launcher, release, kits_root)
     concurrency = plan["children"]["provider_concurrency"]
     if concurrency["action"] == "apply":
         child = concurrency["plan"]
@@ -1204,6 +1537,10 @@ def apply_prerequisites(plan: dict[str, Any], kits_root: Path, approved_by: str)
              "--approve-hash", child["approval_sha256"]], "provider CLI apply",
             environment=environment,
         )
+    launcher = plan["children"]["launcher"]
+    host_cutover = plan["children"]["host_cutover"]
+    if launcher["action"] == "apply" and host_cutover is not None:
+        apply_host_cutover(plan, release, kits_root)
     return setup(plan_request(plan, kits_root))
 
 
@@ -1216,7 +1553,7 @@ def active_exact(kits_root: Path, plan: dict[str, Any]) -> bool:
     return all(value.get(key) == expected for key, expected in {
         "kit_sha": identity["factory_sha"], "kit_tree": identity["factory_tree"],
         "product_path": identity["product_path"], "product_sha": identity["product_sha"],
-        "product_tree": identity["product_tree"], "contract_version": "1.9.0",
+        "product_tree": identity["product_tree"], "contract_version": "2.0.0",
     }.items())
 
 
@@ -1254,17 +1591,6 @@ def validate_live_basis(kits_root: Path, plan: dict[str, Any]) -> None:
         allowed_launchers.add(launcher["previous_sha256"])
     if observed_launcher not in allowed_launchers:
         raise ReleaseError("installed launcher changed after setup")
-    registry = identity["registry"]
-    expected_registry = f"PRODUCT_ROOT={product}\n".encode()
-    if (
-        not Path(registry["path"]).exists() or Path(registry["path"]).is_symlink()
-        or
-        hashlib.sha256(expected_registry).hexdigest() != registry["sha256"]
-        or exact_local_file(
-            Path(registry["path"]), expected_registry, "project registry"
-        ) != registry["sha256"]
-    ):
-        raise ReleaseError("project registry changed after setup")
     controller = identity["controller"]
     if controller.get("status") != "not-applicable":
         expected_controller = controller_payload(plan["request"]["project"], product)

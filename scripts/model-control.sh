@@ -2,17 +2,9 @@
 # Task-free model routing control for the sealed launcher.
 set -euo pipefail
 
-CONTROL_GITHUB_TOKEN=""
-CONTROL_GITHUB_TOKEN_ERROR=""
-if [[ -n "${FACTORY_GITHUB_TOKEN_FD:-}" ]]; then
-  if [[ "$FACTORY_GITHUB_TOKEN_FD" != "9" ]]; then
-    CONTROL_GITHUB_TOKEN_ERROR="github credential descriptor is invalid"
-  elif ! IFS= read -r CONTROL_GITHUB_TOKEN <&9; then
-    CONTROL_GITHUB_TOKEN_ERROR="github credential descriptor is unreadable"
-  fi
-  exec 9<&- 2>/dev/null || true
-fi
-unset FACTORY_GITHUB_TOKEN_FD GH_TOKEN
+unset FACTORY_GITHUB_TOKEN_FD GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN
+unset GITHUB_ENTERPRISE_TOKEN GH_HOST GH_CONFIG_DIR
+export GH_PROMPT_DISABLED=1
 
 KIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 # shellcheck disable=SC1091
@@ -40,6 +32,7 @@ TEMPORARY_READINESS_FILE=""
 TEMPORARY_DIR=""
 FALLBACK_LAUNCH_LOCK=""
 CONTROL_GITHUB_HELPER=""
+CONTROL_GITHUB_CONFIG_DIR=""
 
 cleanup() {
   local rc=$?
@@ -161,8 +154,6 @@ PY
   exit 2
 }
 
-[[ -z "$CONTROL_GITHUB_TOKEN_ERROR" ]] || json_error "$CONTROL_GITHUB_TOKEN_ERROR"
-
 [[ "${FACTORY_MODEL_STATE_ROOT:-}" == /* ]] ||
   json_error "FACTORY_MODEL_STATE_ROOT must be an absolute path"
 [[ -d "$FACTORY_MODEL_STATE_ROOT" && ! -L "$FACTORY_MODEL_STATE_ROOT" ]] ||
@@ -257,42 +248,89 @@ EOF
 
 prepare_github_git_auth() {
   [[ "$CONTROL_REMOTE" == https://github.com/* ]] || return 0
-  [[ -n "$CONTROL_GITHUB_TOKEN" ]] || json_error "github_credential_unavailable"
-  local candidate
-  candidate=""
-  for candidate_path in /opt/homebrew/bin/gh /usr/local/bin/gh /usr/bin/gh; do
-    if [[ -x "$candidate_path" ]]; then
-      candidate="$candidate_path"
-      break
-    fi
-  done
+  local auth_capability auth_rc candidate candidate_path
+  candidate="${FACTORY_TEST_GITHUB_HELPER:-}"
+  if [[ -n "$candidate" ]]; then
+    [[ "${FACTORY_TEST_MODE:-}" == "1" &&
+       "${FACTORY_TRUSTED_TEST_HARNESS:-}" == "1" ]] ||
+      json_error "github credential helper test override is forbidden"
+  else
+    for candidate_path in /opt/homebrew/bin/gh /usr/local/bin/gh /usr/bin/gh; do
+      if [[ -x "$candidate_path" ]]; then
+        candidate="$candidate_path"
+        break
+      fi
+    done
+  fi
+  unset FACTORY_TEST_GITHUB_HELPER
   [[ -n "$candidate" ]] || json_error "github credential helper is unavailable"
-  CONTROL_GITHUB_HELPER="$(python3 -I -S - "$candidate" <<'PY'
-import os, re, stat, sys
-path = os.path.realpath(sys.argv[1])
+  if auth_capability="$(python3 -I -S - "$candidate" "${HOME:-}" <<'PY'
+import os, pathlib, re, stat, subprocess, sys
+
+candidate, home_raw = sys.argv[1:]
+path = os.path.realpath(candidate)
 try:
     metadata = os.stat(path)
+    parent = os.stat(os.path.dirname(path))
+    home = pathlib.Path(home_raw)
+    home_metadata = home.lstat()
 except OSError:
-    raise SystemExit(1)
+    raise SystemExit(3)
 if (
     not path.startswith("/")
     or not re.fullmatch(r"/[A-Za-z0-9_./+-]+", path)
     or not stat.S_ISREG(metadata.st_mode)
+    or metadata.st_nlink != 1
     or metadata.st_uid not in {0, os.geteuid()}
     or stat.S_IMODE(metadata.st_mode) & 0o022
     or not os.access(path, os.X_OK)
+    or not stat.S_ISDIR(parent.st_mode)
+    or parent.st_uid not in {0, os.geteuid()}
+    or stat.S_IMODE(parent.st_mode) & 0o022
+    or not home.is_absolute()
+    or home.is_symlink()
+    or home.resolve() != home
+    or not stat.S_ISDIR(home_metadata.st_mode)
+    or home_metadata.st_uid != os.geteuid()
+    or stat.S_IMODE(home_metadata.st_mode) & 0o022
 ):
-    raise SystemExit(1)
+    raise SystemExit(3)
+config_dir = str(home / ".config" / "gh")
+try:
+    result = subprocess.run(
+        [path, "auth", "status", "--active", "--hostname", "github.com"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=15,
+        env={
+            "GH_CONFIG_DIR": config_dir,
+            "GH_PROMPT_DISABLED": "1",
+            "HOME": str(home),
+            "PATH": "/usr/bin:/bin",
+        },
+    )
+except (OSError, subprocess.TimeoutExpired):
+    raise SystemExit(4)
+if result.returncode:
+    raise SystemExit(4)
 print(path)
+print(config_dir)
 PY
-)" || json_error "github credential helper is unsafe"
+  )"; then
+    CONTROL_GITHUB_HELPER="${auth_capability%%$'\n'*}"
+    CONTROL_GITHUB_CONFIG_DIR="${auth_capability#*$'\n'}"
+  else
+    auth_rc=$?
+    [[ "$auth_rc" -ne 3 ]] || json_error "github credential helper is unsafe"
+    json_error "github_credential_unavailable"
+  fi
 }
 
 fallback_python() {
   if [[ -n "$CONTROL_GITHUB_HELPER" ]]; then
-    printf '%s' "$CONTROL_GITHUB_TOKEN" |
-      python3 -B "$KIT_DIR/scripts/model-fallback.py" "$@" \
-        --github-token-stdin --github-helper "$CONTROL_GITHUB_HELPER"
+    python3 -B "$KIT_DIR/scripts/model-fallback.py" "$@" \
+      --github-helper "$CONTROL_GITHUB_HELPER"
   else
     python3 -B "$KIT_DIR/scripts/model-fallback.py" "$@"
   fi
@@ -302,7 +340,8 @@ control_git() {
   local workdir="$1"
   shift
   if [[ -n "$CONTROL_GITHUB_HELPER" ]]; then
-    GH_TOKEN="$CONTROL_GITHUB_TOKEN" git -C "$workdir" \
+    GH_CONFIG_DIR="$CONTROL_GITHUB_CONFIG_DIR" GH_PROMPT_DISABLED=1 \
+      git -C "$workdir" \
       -c credential.helper= \
       -c "credential.https://github.com.helper=!$CONTROL_GITHUB_HELPER auth git-credential" \
       "$@"
@@ -732,8 +771,8 @@ PY
         *) json_error "unknown migration batch argument: $1" ;;
       esac
     done
-    [[ "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.9.0" ]] ||
-      json_error "migration batches require contract 1.9.0"
+    [[ "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "2.0.0" ]] ||
+      json_error "migration batches require contract 2.0.0"
     factory_validate_kit_pin "$KIT_DIR" "$FACTORY_ROOT" ||
       json_error "$FACTORY_KIT_PIN_ERROR"
     [[ "${#batch_tickets[@]}" -ge 1 && "${#batch_tickets[@]}" -le 4 ]] ||
@@ -770,23 +809,12 @@ PY
         "${batch_args[@]}"
       exit $?
     fi
-    if [[ -n "$CONTROL_GITHUB_TOKEN" ]]; then
-      printf '%s\n' "$CONTROL_GITHUB_TOKEN" |
-        FACTORY_CERTIFIED_PRODUCT_ORIGIN="$FACTORY_TRUSTED_PRODUCT_ORIGIN" \
-        python3 -B "$batch_helper" apply \
-        --control "$KIT_DIR/scripts/model-control.sh" \
-        --factory-sha "$FACTORY_KIT_SHA" --capacity "$batch_capacity" \
-        --approve-hash "$batch_approve_hash" --approved-by "$batch_approved_by" \
-        --state-dir "$FACTORY_CONTROLLER_STATE_DIR" --github-token-stdin \
-        "${batch_args[@]}"
-    else
-      FACTORY_CERTIFIED_PRODUCT_ORIGIN="$FACTORY_TRUSTED_PRODUCT_ORIGIN" \
-        python3 -B "$batch_helper" apply \
-        --control "$KIT_DIR/scripts/model-control.sh" \
-        --factory-sha "$FACTORY_KIT_SHA" --capacity "$batch_capacity" \
-        --approve-hash "$batch_approve_hash" --approved-by "$batch_approved_by" \
-        --state-dir "$FACTORY_CONTROLLER_STATE_DIR" "${batch_args[@]}"
-    fi
+    FACTORY_CERTIFIED_PRODUCT_ORIGIN="$FACTORY_TRUSTED_PRODUCT_ORIGIN" \
+      python3 -B "$batch_helper" apply \
+      --control "$KIT_DIR/scripts/model-control.sh" \
+      --factory-sha "$FACTORY_KIT_SHA" --capacity "$batch_capacity" \
+      --approve-hash "$batch_approve_hash" --approved-by "$batch_approved_by" \
+      --state-dir "$FACTORY_CONTROLLER_STATE_DIR" "${batch_args[@]}"
     exit $?
     ;;
   migrate-plan|migrate)
@@ -808,7 +836,7 @@ PY
        "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.6.0" ||
        "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.7.0" ||
        "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.8.0" ||
-       "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.9.0" ]] ||
+       "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "2.0.0" ]] ||
       json_error "route migration requires contract 1.4.0 or newer"
     if [[ "$command_name" == "migrate" ]]; then
       [[ "$approve_hash" =~ ^[0-9a-f]{64}$ ]] ||
@@ -1020,12 +1048,12 @@ PY
        "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.6.0" ||
        "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.7.0" ||
        "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.8.0" ||
-       "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.9.0" ]] ||
+       "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "2.0.0" ]] ||
       json_error "mid-ticket fallback requires contract 1.4.0 or newer"
     if [[ "$command_name" == "fallback-auto" &&
           "${FACTORY_RELEASE_CONTRACT_VERSION:-}" != "1.7.0" &&
           "${FACTORY_RELEASE_CONTRACT_VERSION:-}" != "1.8.0" &&
-          "${FACTORY_RELEASE_CONTRACT_VERSION:-}" != "1.9.0" ]]; then
+          "${FACTORY_RELEASE_CONTRACT_VERSION:-}" != "2.0.0" ]]; then
       json_error "automatic qualification fallback requires contract 1.7.0"
     fi
     [[ "$failed_run" =~ ^[A-Za-z0-9._-]{1,200}$ ]] ||

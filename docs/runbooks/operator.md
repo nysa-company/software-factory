@@ -526,8 +526,9 @@ transaction diagnosis.
   This is normal. A merge is a candidate, not a deployment.
 - Do: upgrade one product at a time. Install the exact merged SHA, update that
   product's full `factory/KIT_PIN` through its protected PR, certify the exact
-  kit/product tuple, run the required canary, enter maintenance, drain, plan,
-  and activate. Follow [../hermes-integration.md](../hermes-integration.md).
+  kit/product tuple, run sealed qualification and the native controller smoke,
+  enter maintenance, drain, plan,
+  and activate. Follow [../factory-runtime.md](../factory-runtime.md).
 - Do: keep every other product on its own active generation. The stable
   launcher resolves releases per project.
 - Don't: run live work from the mutable kit clone, replace `factory-launch` as
@@ -539,7 +540,7 @@ transaction diagnosis.
 - Notice: `~/.factory/bin/factory-launch <project> doctor --json` returns a
   warning/error status, a pin mismatch, maintenance, a
   lock, active/stale run records, a failed installed production controller, or
-  unsupported Hermes/CLI information. On Contract 1.8 macOS production, read
+  unsupported Factory/CLI information. On Contract 2.0 macOS production, read
   `checks.controller.state`: `running` and `idle_clean` are healthy;
   `disabled`, `unavailable`, `route_mismatch`, and `last_exit_nonzero` are
   errors.
@@ -678,9 +679,9 @@ minutes.
    Any later product commit or protected-main tree drift invalidates that
    receipt; land the complete final tree and recertify instead of attempting
    activation with stale evidence.
-8. Complete the real-Hermes canary with a separate sandbox product and
-   profile. Never copy the production `.env`, secrets, board mapping, registry,
-   ledger, or LaunchAgent.
+8. Complete sealed qualification and the native controller macOS smoke with a
+   separate sandbox product. Never copy production credentials, operator state,
+   registry, ledger, or LaunchAgent.
 9. Confirm no active runs and no unauthorized nonterminal ticket with a
    different `Kit-SHA`. Activation scans committed local, tracking, and live
    remote ticket sources; a Done claim also requires a valid normal attestation
@@ -694,39 +695,37 @@ minutes.
     proceeding.
 12. For an active-project upgrade, run `factory-kit.sh plan`. It must report
    `No files were changed.` A new project has no prior generation to plan.
-13. Stop only the product factory profile and reconciler. Leave the dashboard
-   and primary Hermes profile alone. On a new project keep them disabled.
-14. For an active-project upgrade, run `factory-kit.sh activate`. For a new
-   Contract 1.9 project, run the bounded resumable path instead:
+13. Stop only the native product controller. On a new project keep it disabled.
+14. Use the same bounded release transaction for an active-project upgrade or
+   a new Contract 2.0 project:
 
    ```bash
-   bash scripts/factory-kit.sh bootstrap --project <project> \
+   bash scripts/factory-kit.sh release setup --project <project> \
      --product <absolute-product-path> --sha <candidate> \
-     --repo <absolute-clean-kit-checkout>
-   bash scripts/factory-kit.sh bootstrap-status --project <project> \
-     --sha <candidate> --json
+     --repo <absolute-clean-kit-checkout> --profile <model-profile> \
+     --operator-id <operator-id>
+   bash scripts/factory-kit.sh release resume --project <project> \
+     --sha <candidate> --approve-hash <approval-sha256> \
+     --approved-by <operator-id>
    ```
 
-   `bootstrap` reuses the existing install, certify, pause, and activate gates;
-   it does not bypass them. Its owner-only signed trace resumes an interrupted
-   phase and refuses to replace an already-active release. Both activation
-   paths leave maintenance published. There is no scheduled operator-facing
-   sync service: Contract 1.9 accepts `factory/operator-map.json` lifecycle
-   overlays only when they match exact open receipts, while Git retains durable
-   Ready/Canceled state. Restart the other factory services only after the
-   checks below, then collect doctor JSON, sandbox smoke, PID, and repeated
-   health probes. Tests alone are not production closure evidence; bind these
-   observations and timestamps to the exact protected SHA.
-15. For an authorized Contract 1.9 in-flight cutover, keep maintenance while
+   The transaction reuses the existing install, certify, pause, qualification,
+   and activate gates; it does not bypass them. Its owner-only signed plan and
+   journal resume interrupted phases and refuse changed inputs. Restart the
+   native controller only after the checks below, then collect Doctor JSON,
+   sandbox smoke, PID, and repeated health probes. Tests alone are not
+   production closure evidence; bind these observations and timestamps to the
+   exact protected SHA.
+15. For an authorized Contract 2.0 in-flight cutover, keep maintenance while
    collecting one `models migrate-batch-plan` preview for one to four exact
    ticket/worktree pairs. Review its protected-main and per-ticket bindings,
    then remove maintenance and apply only the returned hash with
    `models migrate-batch`. The existing per-ticket migration remains the
    authority for every child; partial results are independently retriable from
-   the signed batch journal. Older contracts or a larger cohort retain the
-   individual `models migrate-plan`/approved `models migrate` procedure. Claim
-   fresh leases afterward. Without in-flight tickets, remove maintenance only
-   after every acceptance check passes.
+   the signed batch journal. A larger cohort retains the individual
+   `models migrate-plan`/approved `models migrate` procedure. Claim fresh leases
+   afterward. Without in-flight tickets, remove maintenance only after every
+   acceptance check passes.
 
 If a named unmerged ticket already has a prior-kit bundle, complete its sealed,
 operator-approved route migration before issuing or consuming a receipt for the

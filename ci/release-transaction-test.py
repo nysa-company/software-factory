@@ -37,9 +37,6 @@ class ReleaseTransactionTest(unittest.TestCase):
         self.kits = self.root / "kits"
         (self.kits / "projects/relay/release-plans/journals").mkdir(parents=True)
         self.sha = "a" * 40
-        self.registry = self.root / "registry.env"
-        self.registry.write_text(f"PRODUCT_ROOT={self.product}\n")
-        self.registry.chmod(0o600)
         self.body = {
             "children": {
                 "launcher": {
@@ -65,7 +62,7 @@ class ReleaseTransactionTest(unittest.TestCase):
             "expires_epoch": 4_000_000_000,
             "identity": {
                 "capacity": 1,
-                "contract_version": "1.9.0",
+                "contract_version": "2.0.0",
                 "controller": {"platform": "test", "status": "not-applicable"},
                 "factory_origin": str(self.root / "factory-origin"),
                 "factory_sha": self.sha,
@@ -76,10 +73,6 @@ class ReleaseTransactionTest(unittest.TestCase):
                 "product_path": str(self.product),
                 "product_sha": "f" * 40,
                 "product_tree": "1" * 40,
-                "registry": {
-                    "path": str(self.registry),
-                    "sha256": RELEASE.file_digest(self.registry),
-                },
                 "runtime": {
                     "evidence": {"path": str(self.root / "runtime")},
                     "plan_sha256": "2" * 64,
@@ -238,10 +231,9 @@ class ReleaseTransactionTest(unittest.TestCase):
                 ("f" * 40, "1" * 40, str(self.product)),
             ]),
             mock.patch.object(RELEASE, "run"),
-            mock.patch.object(RELEASE, "contract", return_value="1.9.0"),
+            mock.patch.object(RELEASE, "contract", return_value="2.0.0"),
             mock.patch.object(RELEASE, "prepare_runtime", return_value=runtime),
             mock.patch.object(RELEASE, "prepare_product_runtime"),
-            mock.patch.object(RELEASE, "prepare_registry", return_value=self.plan["identity"]["registry"]),
             mock.patch.object(RELEASE, "prepare_controller", return_value=self.plan["identity"]["controller"]),
             mock.patch.object(RELEASE, "launcher_plan", return_value=self.plan["children"]["launcher"]),
             mock.patch.object(RELEASE, "capacity", return_value=2),
@@ -281,10 +273,9 @@ class ReleaseTransactionTest(unittest.TestCase):
                 ("f" * 40, "1" * 40, str(self.product)),
             ]),
             mock.patch.object(RELEASE, "run"),
-            mock.patch.object(RELEASE, "contract", return_value="1.9.0"),
+            mock.patch.object(RELEASE, "contract", return_value="2.0.0"),
             mock.patch.object(RELEASE, "prepare_runtime", return_value=runtime),
             mock.patch.object(RELEASE, "prepare_product_runtime"),
-            mock.patch.object(RELEASE, "prepare_registry", return_value=self.plan["identity"]["registry"]),
             mock.patch.object(RELEASE, "prepare_controller", return_value=self.plan["identity"]["controller"]),
             mock.patch.object(RELEASE, "launcher_plan", return_value=self.plan["children"]["launcher"]),
             mock.patch.object(RELEASE, "capacity", return_value=1),
@@ -380,6 +371,7 @@ class ReleaseTransactionTest(unittest.TestCase):
         body = {key: value for key, value in self.plan.items() if key != "approval_sha256"}
         body["stage"] = "prerequisites"
         body["children"] = {
+            "host_cutover": None,
             "launcher": self.plan["children"]["launcher"],
             "provider_cli": {"action": "apply", "plan": {"approval_sha256": "6" * 64}},
             "provider_concurrency": {"action": "reuse"},
@@ -492,7 +484,7 @@ class ReleaseTransactionTest(unittest.TestCase):
         with (
             mock.patch.object(RELEASE.Path, "home", return_value=home),
             mock.patch.object(RELEASE, "clean_identity", return_value=product_identity),
-            mock.patch.object(RELEASE, "contract", return_value="1.9.0"),
+            mock.patch.object(RELEASE, "contract", return_value="2.0.0"),
             mock.patch.object(RELEASE, "run_json", return_value={"status": "pass"}),
         ):
             RELEASE.validate_live_basis(self.kits, plan)
@@ -500,7 +492,7 @@ class ReleaseTransactionTest(unittest.TestCase):
         with (
             mock.patch.object(RELEASE.Path, "home", return_value=home),
             mock.patch.object(RELEASE, "clean_identity", return_value=drifted),
-            mock.patch.object(RELEASE, "contract", return_value="1.9.0"),
+            mock.patch.object(RELEASE, "contract", return_value="2.0.0"),
         ):
             with self.assertRaisesRegex(RELEASE.ReleaseError, "product changed"):
                 RELEASE.validate_live_basis(self.kits, plan)
@@ -511,7 +503,7 @@ class ReleaseTransactionTest(unittest.TestCase):
         with (
             mock.patch.object(RELEASE.Path, "home", return_value=home),
             mock.patch.object(RELEASE, "clean_identity", return_value=product_identity),
-            mock.patch.object(RELEASE, "contract", return_value="1.9.0"),
+            mock.patch.object(RELEASE, "contract", return_value="2.0.0"),
         ):
             with self.assertRaisesRegex(RELEASE.ReleaseError, "runtime changed"):
                 RELEASE.validate_live_basis(self.kits, plan)
@@ -667,13 +659,12 @@ class ReleaseTransactionTest(unittest.TestCase):
         replanned.assert_not_called()
 
     def test_isolated_launcher_forwards_only_explicit_local_origin_evidence(self) -> None:
-        launcher = (ROOT / "integrations/hermes/bin/factory-launch").read_text()
+        launcher = (ROOT / "scripts/factory-launch").read_text()
         controller = launcher[launcher.index("  reconcile)"):launcher.index("  incident-report)")]
         for binding in (
             '"FACTORY_LAUNCH_TEST_MODE=1"',
             '"FACTORY_LAUNCH_TEST_HOME=$HOME"',
             '"FACTORY_KITS_ROOT=$KITS_ROOT"',
-            '"HERMES_FACTORY_PROFILE=$PROFILE_DIR"',
         ):
             self.assertIn(binding, controller)
         self.assertIn('exec "${CONTROLLER_ENV[@]}"', controller)
@@ -684,17 +675,10 @@ class ReleaseTransactionTest(unittest.TestCase):
             launcher,
         )
 
-    def test_profile_registry_and_controller_job_are_exact_and_non_overwriting(self) -> None:
+    def test_controller_job_is_exact_and_non_overwriting(self) -> None:
         home = self.root / "home"
         home.mkdir()
         with mock.patch.object(RELEASE.Path, "home", return_value=home):
-            registry = RELEASE.prepare_registry("relay", self.product)
-            self.assertEqual(RELEASE.prepare_registry("relay", self.product), registry)
-            registry_path = Path(registry["path"])
-            registry_path.write_text("PRODUCT_ROOT=/foreign\n")
-            with self.assertRaisesRegex(RELEASE.ReleaseError, "project registry conflicts"):
-                RELEASE.prepare_registry("relay", self.product)
-
             with mock.patch.object(RELEASE.sys, "platform", "darwin"):
                 controller = RELEASE.prepare_controller("relay", self.product)
                 self.assertEqual(RELEASE.prepare_controller("relay", self.product), controller)
@@ -739,7 +723,7 @@ class ReleaseTransactionTest(unittest.TestCase):
         target.write_text("old launcher\n")
         target.chmod(0o700)
         release = self.root / "release"
-        candidate = release / "integrations/hermes/bin/factory-launch"
+        candidate = release / "scripts/factory-launch"
         candidate.parent.mkdir(parents=True)
         candidate.write_text("new launcher\n")
         candidate.chmod(0o555)
@@ -771,18 +755,112 @@ class ReleaseTransactionTest(unittest.TestCase):
         home = self.root / "home"
         home.mkdir()
         release = self.root / "release"
-        candidate = release / "integrations/hermes/bin/factory-launch"
+        candidate = release / "scripts/factory-launch"
         candidate.parent.mkdir(parents=True)
         candidate.write_text("candidate\n")
         candidate.chmod(0o555)
         active = self.kits / "projects/live/active.json"
         active.parent.mkdir()
-        RELEASE.atomic_json(active, {"product_path": str(self.product)})
+        RELEASE.atomic_json(active, {
+            "contract_version": "1.9.0", "kit_sha": "b" * 40,
+            "product_path": str(self.product),
+        })
         with mock.patch.object(RELEASE.Path, "home", return_value=home):
             plan = RELEASE.launcher_plan(release, self.kits)
             with self.assertRaisesRegex(RELEASE.ReleaseError, "live is not in maintenance"):
                 RELEASE.apply_launcher_plan(plan, release, self.kits)
         self.assertFalse((home / ".factory/bin/factory-launch").exists())
+
+    def test_host_cutover_replays_after_each_active_switch_and_sets_floor(self) -> None:
+        release = self.kits / "releases" / self.sha
+        (release / "scripts").mkdir(parents=True)
+        (release / "scripts/factory-kit.sh").write_text("#!/bin/sh\n")
+        items = []
+        for index, project in enumerate(("relay", "nysa"), start=1):
+            product = self.root / project
+            (product / "factory").mkdir(parents=True)
+            active = self.kits / "projects" / project / "active.json"
+            active.parent.mkdir(parents=True, exist_ok=True)
+            RELEASE.atomic_json(active, {
+                "contract_version": "1.9.0", "kit_sha": str(index) * 40,
+                "product_path": str(product), "project": project,
+            })
+            receipt = self.root / f"{project}-receipt.json"
+            receipt_id = str(index + 2) * 64
+            RELEASE.atomic_json(receipt, {"receipt_id": receipt_id})
+            items.append({
+                "controller": {"platform": "test", "status": "not-applicable"},
+                "incident": None,
+                "product": str(product), "project": project,
+                "receipt": {
+                    "path": str(receipt), "receipt_id": receipt_id,
+                    "sha256": RELEASE.file_digest(receipt),
+                },
+                "runtime": {
+                    "evidence": {"path": str(self.root / f"{project}-runtime")},
+                    "plan_sha256": str(index + 5) * 64,
+                },
+                "source_active_sha256": RELEASE.file_digest(active),
+            })
+        plan = json.loads(json.dumps(self.plan))
+        plan["approval_sha256"] = "9" * 64
+        plan["request"]["sha"] = self.sha
+        plan["children"] = {
+            "host_cutover": items,
+            "launcher": {"action": "apply"},
+        }
+        activated = []
+
+        def activate(arguments: list[str], _label: str, **_kwargs: object) -> str:
+            if "activate" not in arguments:
+                return ""
+            project = arguments[arguments.index("--project") + 1]
+            item = next(value for value in items if value["project"] == project)
+            RELEASE.atomic_json(
+                self.kits / "projects" / project / "active.json",
+                {
+                    "contract_version": "2.0.0", "kit_sha": self.sha,
+                    "product_path": item["product"], "project": project,
+                    "receipt_id": item["receipt"]["receipt_id"],
+                },
+            )
+            activated.append(project)
+            return ""
+
+        with (
+            mock.patch.object(RELEASE, "run", side_effect=activate),
+            mock.patch.object(RELEASE, "unload_service"),
+            mock.patch.object(RELEASE, "ensure_service"),
+            mock.patch.object(RELEASE, "apply_launcher_plan") as launcher,
+            mock.patch.object(RELEASE, "run_json", return_value={"overall_status": "warning"}),
+            mock.patch.object(
+                RELEASE, "account_home", return_value=self.root / "home",
+            ),
+            mock.patch.dict(
+                os.environ,
+                {"FACTORY_RELEASE_FAIL_AFTER_CUTOVER_PHASE": "project:relay"},
+            ),
+        ):
+            with self.assertRaisesRegex(RELEASE.ReleaseError, "project:relay"):
+                RELEASE.apply_host_cutover(plan, release, self.kits)
+            os.environ.pop("FACTORY_RELEASE_FAIL_AFTER_CUTOVER_PHASE", None)
+            RELEASE.apply_host_cutover(plan, release, self.kits)
+            RELEASE.apply_host_cutover(plan, release, self.kits)
+        self.assertEqual(activated, ["relay", "nysa"])
+        launcher.assert_called_once()
+        self.assertEqual(
+            RELEASE.safe_state(self.kits / "contract-floor.json", "contract floor"),
+            {
+                "minimum_major": 2,
+                "schema": "nysa.software-factory.contract-floor/v1",
+            },
+        )
+        self.assertEqual(
+            RELEASE.safe_state(
+                self.kits / "contract-cutover-journal.json", "cutover journal",
+            )["status"],
+            "pass",
+        )
 
 
 if __name__ == "__main__":

@@ -2926,7 +2926,7 @@ def main() -> None:
     try:
         if (
             not TICKET.fullmatch(args.ticket)
-            or args.contract_version not in ("1.8.0", "1.9.0")
+            or args.contract_version not in ("1.8.0", "2.0.0")
             or not SHA.fullmatch(args.factory_sha)
             or (
                 args.expected_head

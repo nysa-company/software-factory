@@ -83,6 +83,5 @@ diff_quiet \
   ':(exclude)AGENTS.md' \
   ':(exclude)CLAUDE.md' \
   ':(exclude).github/pull_request_template.md' \
-  ':(exclude)integrations/hermes/CHANGELOG.md' \
   ':(exclude)conformance/SHAKEDOWN-REPORT.md' \
   ':(exclude)factory/QUALIFICATION.json'

@@ -458,14 +458,14 @@ class CertificationRunnerTest(unittest.TestCase):
                     "factory_tree": "e" * 40,
                     "product_sha": "f" * 40,
                     "product_tree": "d" * 40,
-                    "contract_version": "1.9.0",
+                    "contract_version": "2.0.0",
                 },
                 {
                     "factory_sha": "c" * 40,
                     "factory_tree": "e" * 40,
                     "product_sha": "f" * 40,
                     "product_tree": "d" * 40,
-                    "contract_version": "1.9.0",
+                    "contract_version": "2.0.0",
                     "network_reviewed": True,
                 },
             )
@@ -487,7 +487,7 @@ class CertificationRunnerTest(unittest.TestCase):
             completed, result = self.run_plan(
                 root, [changed_phase], factory_sha="c" * 40,
                 factory_tree="e" * 40, product_sha="f" * 40,
-                product_tree="d" * 40, contract_version="1.9.0",
+                product_tree="d" * 40, contract_version="2.0.0",
                 network_reviewed=True,
             )
             self.assertEqual(completed.returncode, 0, completed.stderr)
@@ -500,7 +500,7 @@ class CertificationRunnerTest(unittest.TestCase):
             completed, result = self.run_plan(
                 root, [changed_phase], factory_sha="c" * 40,
                 factory_tree="e" * 40, product_sha="f" * 40,
-                product_tree="d" * 40, contract_version="1.9.0",
+                product_tree="d" * 40, contract_version="2.0.0",
                 network_reviewed=True,
                 runtime=mismatched,
             )

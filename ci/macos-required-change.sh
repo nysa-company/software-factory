@@ -23,8 +23,7 @@ git diff --quiet --no-renames "$BASE" "$HEAD" -- \
   '.github/workflows/**' \
   'ci/**' \
   'deploy/**' \
-  'scripts/**' \
-  'integrations/hermes/bin/**'
+  'scripts/**'
 case "$?" in
   0) exit 1 ;;
   *) exit 0 ;;

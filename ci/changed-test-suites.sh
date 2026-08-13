@@ -53,7 +53,7 @@ while IFS= read -r -d '' status && IFS= read -r -d '' path; do
   [[ "$status" == "M" ]] || full "added, deleted, renamed, or type-changed path"
   case "$path" in
     docs/*|README.md|TODOS.md|context/memory.md|AGENTS.md|CLAUDE.md|\
-      .github/pull_request_template.md|integrations/hermes/CHANGELOG.md|\
+      .github/pull_request_template.md|\
       conformance/SHAKEDOWN-REPORT.md)
       ;;
     ci/factory-controller-test.py)
@@ -84,7 +84,7 @@ while IFS= read -r -d '' status && IFS= read -r -d '' path; do
       set_group targeted failed-handoff "failed-handoff model-fallback"
       ;;
     scripts/reorder-test-fixes.sh|scripts/lib/reorder_test_fixes.py)
-      set_group targeted reorder-test-fixes "reorder-test-fixes hermes-contract"
+      set_group targeted reorder-test-fixes "reorder-test-fixes factory-contract"
       ;;
     conformance/app/server.js|conformance/app/tests/*)
       set_group targeted conformance "conformance"
@@ -96,4 +96,4 @@ while IFS= read -r -d '' status && IFS= read -r -d '' path; do
 done < <(git -C "$ROOT" diff --name-status -z --no-renames "$MERGE_BASE" "$HEAD")
 
 [[ -n "$GROUP" ]] || full "no recognized component"
-printf '%s|%s|%s ci-scope immutability artifact-policy\n' "$STATE" "$GROUP" "$SUITES"
+printf '%s|%s|%s ci-scope immutability artifact-policy external-runtime-dependency\n' "$STATE" "$GROUP" "$SUITES"

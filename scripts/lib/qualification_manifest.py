@@ -108,7 +108,7 @@ def validate_committed(
         pin = pin_raw.decode("ascii", "strict")
         value = json.loads(raw.decode("utf-8", "strict"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise ManifestError("Contract 1.8 qualification manifest is invalid") from error
+        raise ManifestError("qualification manifest is invalid") from error
     if not re.fullmatch(r"[0-9a-f]{40}\n?", pin):
         raise ManifestError("factory/KIT_PIN must contain one lowercase full SHA")
     validate(value, pin.rstrip("\n"))
@@ -132,7 +132,7 @@ def validate(
     if (
         set(value) != expected_keys
         or value.get("schema") != SCHEMA
-        or value.get("contract_version") not in ("1.8.0", "1.9.0")
+        or value.get("contract_version") not in ("1.8.0", "1.9.0", "2.0.0")
         or not SHA.fullmatch(factory_sha)
         or value.get("factory_sha") != factory_sha
         or capacity not in (3, 4)
@@ -162,7 +162,7 @@ def validate(
             or value.get("per_run_budget_usd") != "2.000000"
         )
     ):
-        raise ManifestError("Contract 1.8 qualification manifest is invalid")
+        raise ManifestError("qualification manifest is invalid")
     return value
 
 

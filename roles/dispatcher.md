@@ -61,13 +61,13 @@ Ticket T-102 sits in Ready. Correct dispatch: resolve the project contract, crea
 
 ## Changelog
 
-- v1: initial — written for the Hermes dispatcher trial on the Relay conformance product.
+- v1: initial — written for the external dispatcher trial on the Relay conformance product.
 - v2: stage selection moved from judgment to mechanism — `scripts/next-stage.sh` is now mandatory before every launch; reviewer verdicts must be recorded on the ticket file (the sequencer blocks until they are).
 - v3: mandatory preflight before first launch; close-out ledger flow (bookkeeping branch + PR); AWAIT-OPERATOR runs `scripts/reorder-test-fixes.sh` before opening the PR.
 - v5: role-level Linear columns, reconciled operator-owned fields, and separate Awaiting Approval / Approved handoff.
 - v4: spec-linter stage between planner and test-author (sequencer-driven); the linter writes its own SPEC-LINT verdict — a missing verdict is an escalation, never a dispatcher write.
 - v6: family-typed pre-execution Cursor fallback, one-agent-per-run rule, and local-only raw run output.
-- v7: Hermes uses the stable, release-validating `factory-launch` contract for preflight, sequencing, runs, and test-fix reordering.
+- v7: routes all dispatch through the stable, release-validating `factory-launch` contract for preflight, sequencing, runs, and test-fix reordering.
 - v8: contract 1.1 may dispatch two leased tickets while contract 1.0 and the default configuration stay serialized.
 - v9: runtime accounting moved to atomic manifests and an ignored effective ledger; only `project-ledger` may update the durable ledger on a close-out branch.
 - v10: automatic pushes bind to the active certification receipt; generic ticket-state transitions refuse evidence-sensitive terminal handoffs.

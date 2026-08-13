@@ -2,7 +2,7 @@
 # Shared validation for bounded dispatcher ticket leases.
 
 factory_dispatch_capacity_limit() {
-  local contract="${1:-${FACTORY_RELEASE_CONTRACT_VERSION:-${FACTORY_HERMES_CONTRACT_VERSION:-}}}"
+  local contract="${1:-${FACTORY_RELEASE_CONTRACT_VERSION:-${FACTORY_CONTRACT_VERSION:-}}}"
   if [[ "$contract" == "1.6.0" ]]; then
     printf '6\n'
   else

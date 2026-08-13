@@ -350,7 +350,7 @@ def preserved_refresh_metadata(
     workdir: Path, ticket: str, reviewed: str, head: str, changed: set[str],
 ) -> set[str]:
     if (
-        os.environ.get("FACTORY_RELEASE_CONTRACT_VERSION") not in ("1.8.0", "1.9.0")
+        os.environ.get("FACTORY_RELEASE_CONTRACT_VERSION") not in ("1.8.0", "2.0.0")
         or not re.fullmatch(
             r"[0-9a-f]{64}",
             os.environ.get("FACTORY_TRANSITION_RECEIPT_SHA256", ""),
@@ -879,7 +879,7 @@ def main() -> None:
         contract = os.environ.get("FACTORY_RELEASE_CONTRACT_VERSION", "")
         if lease_id and not re.fullmatch(r"[0-9a-f]{64}", lease_id):
             raise Refusal("dispatcher lease is invalid")
-        if contract in ("1.8.0", "1.9.0"):
+        if contract in ("1.8.0", "2.0.0"):
             stage = os.environ.get("FACTORY_TRANSITION_STAGE", "")
             if not re.fullmatch(
                 r"(?:RUN (?:reviewer|narrator)|AWAIT-(?:OPERATOR|MERGE) .+)",

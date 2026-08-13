@@ -142,7 +142,7 @@ def authoritative_operator_fields(
     mapping, ticket_id, contract_version=None, state_dir=None,
 ):
     operator = operator_fields(mapping, ticket_id)
-    if not operator or contract_version != "1.9.0":
+    if not operator or contract_version != "2.0.0":
         return operator
     if "observed_at" not in operator or "receipt_sha256" not in operator:
         raise ValueError("Contract 1.9 operator overlay lacks a receipt")
@@ -330,7 +330,7 @@ def main():
         Path(args.operator_action_file).write_text(
             (
                 operator_action(operator)[0]
-                if operator and contract == "1.9.0" else ""
+                if operator and contract == "2.0.0" else ""
             ) + "\n"
         )
     print(apply_operator_fields(text, operator), end="")

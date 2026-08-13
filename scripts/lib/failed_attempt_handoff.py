@@ -20,16 +20,26 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 
+GITHUB_AUTH_ENVIRONMENT = (
+    "FACTORY_GITHUB_TOKEN_FD",
+    "GH_CONFIG_DIR",
+    "GH_ENTERPRISE_TOKEN",
+    "GH_HOST",
+    "GH_TOKEN",
+    "GITHUB_ENTERPRISE_TOKEN",
+    "GITHUB_TOKEN",
+)
+
+
 class HandoffError(ValueError):
     """The attempted handoff is unsafe or no longer matches its preview."""
 
 
 @dataclasses.dataclass(frozen=True)
 class GitHubHTTPSCredential:
-    """Ephemeral GitHub credential helper capability; never serialized."""
+    """Validated GitHub CLI credential-helper capability; never serialized."""
 
     helper: str
-    token: str = dataclasses.field(repr=False)
 
     def __post_init__(self):
         helper = Path(self.helper)
@@ -42,18 +52,23 @@ class GitHubHTTPSCredential:
             or helper.is_symlink()
             or helper.resolve() != helper
             or not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_nlink != 1
             or metadata.st_uid not in {0, os.geteuid()}
             or stat.S_IMODE(metadata.st_mode) & 0o022
             or not os.access(helper, os.X_OK)
             or not re.fullmatch(r"/[A-Za-z0-9_./+-]+", self.helper)
         ):
             raise HandoffError("github credential helper is unsafe")
+        try:
+            parent = helper.parent.stat()
+        except OSError as error:
+            raise HandoffError("github credential helper is unsafe") from error
         if (
-            not self.token
-            or len(self.token.encode("utf-8")) > 65536
-            or any(character.isspace() or ord(character) < 32 for character in self.token)
+            not stat.S_ISDIR(parent.st_mode)
+            or parent.st_uid not in {0, os.geteuid()}
+            or stat.S_IMODE(parent.st_mode) & 0o022
         ):
-            raise HandoffError("github credential is invalid")
+            raise HandoffError("github credential helper is unsafe")
 
 
 def github_https_remote(url):
@@ -319,7 +334,6 @@ class HandoffCommit:
 
 def _git_env(extra=None):
     env = os.environ.copy()
-    env.pop("GH_TOKEN", None)
     env.update(
         {
             "GIT_CONFIG_NOSYSTEM": "1",
@@ -331,20 +345,25 @@ def _git_env(extra=None):
     )
     if extra:
         env.update(extra)
+    for name in GITHUB_AUTH_ENVIRONMENT:
+        env.pop(name, None)
     return env
 
 
 def _git(repo, arguments, *, input_bytes=None, env=None, git_auth=None):
     credential_args = []
-    credential_env = env
+    credential_env = _git_env(env)
     if git_auth is not None:
+        home = Path(credential_env.get("HOME", ""))
+        if not home.is_absolute():
+            raise HandoffError("github credential helper is unavailable")
         credential_args = [
             "-c",
             "credential.https://github.com.helper="
             f"!{git_auth.helper} auth git-credential",
         ]
-        credential_env = dict(env or {})
-        credential_env["GH_TOKEN"] = git_auth.token
+        credential_env["GH_CONFIG_DIR"] = str(home / ".config" / "gh")
+        credential_env["GH_PROMPT_DISABLED"] = "1"
     command = [
         "git",
         "-C",
@@ -367,7 +386,7 @@ def _git(repo, arguments, *, input_bytes=None, env=None, git_auth=None):
         input=input_bytes,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        env=_git_env(credential_env),
+        env=credential_env,
     )
     if result.returncode:
         if git_auth is not None:

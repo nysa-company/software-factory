@@ -11,7 +11,7 @@ FAIL=0
 SEEN=" "
 TOTAL=0
 COUNT_factory_1=0 COUNT_factory_2=0 COUNT_factory_3=0 COUNT_factory_4=0
-COUNT_hermes_1=0 COUNT_hermes_2=0 COUNT_hermes_3=0 COUNT_hermes_4=0
+COUNT_contract_1=0 COUNT_contract_2=0 COUNT_contract_3=0 COUNT_contract_4=0
 COUNT_release_1=0 COUNT_release_2=0 COUNT_release_3=0 COUNT_release_4=0
 
 fail() {
@@ -20,11 +20,11 @@ fail() {
 }
 
 check_suite() {
-  local id="$1" shard group expected_command="" expected_group=""
+  local id="$1" shard group expected_command="" expected_group="" expected_runner="bash"
   shard="$(suite_shard_for "$id")"
   group="$(suite_group_for "$id")"
 
-  case "$shard" in factory|hermes|release) ;; *) fail "$id has invalid shard $shard"; return ;; esac
+  case "$shard" in factory|contract|release) ;; *) fail "$id has invalid shard $shard"; return ;; esac
   case "$group" in 1|2|3|4) ;; *) fail "$id has invalid group $group"; return ;; esac
   if [[ "$SEEN" == *" $id "* ]]; then
     fail "$id is mapped more than once"
@@ -36,7 +36,12 @@ check_suite() {
 
   case "$id" in
     factory-scripts) expected_command="$ROOT/ci/test-factory-scripts.sh"; expected_group=1 ;;
-    hermes-contract) expected_command="$ROOT/ci/hermes-contract-test.sh"; expected_group=2 ;;
+    factory-contract) expected_command="$ROOT/ci/factory-contract-test.sh"; expected_group=2 ;;
+    external-runtime-dependency)
+      expected_command="$ROOT/ci/no-"her"mes-dependency-test.py"
+      expected_group=2
+      expected_runner=python3
+      ;;
     factory-kit) expected_command="$ROOT/ci/factory-kit-test.sh"; expected_group=3 ;;
     factory-controller|ticket-passport) expected_group=1 ;;
     ticket-pr) expected_group=2 ;;
@@ -46,7 +51,7 @@ check_suite() {
   if [[ -n "$expected_group" && "$group" != "$expected_group" ]]; then
     fail "$id no longer has its timing-balanced group $expected_group"
   fi
-  if [[ -n "$expected_command" && ( "$3" != "bash" || "$4" != "$expected_command" ) ]]; then
+  if [[ -n "$expected_command" && ( "$3" != "$expected_runner" || "$4" != "$expected_command" ) ]]; then
     fail "$id no longer preserves its canonical sequential lifecycle command in its pinned group"
   fi
 }
@@ -56,7 +61,7 @@ suite_registry check_suite
 [[ "$SUITE_GROUP_COUNT" -eq 4 ]] || fail "suite orchestration must retain four groups"
 
 for group in 1 2 3 4; do
-  eval "count=\$((COUNT_factory_${group} + COUNT_hermes_${group} + COUNT_release_${group}))"
+  eval "count=\$((COUNT_factory_${group} + COUNT_contract_${group} + COUNT_release_${group}))"
   [[ "$count" -gt 0 ]] || fail "global group $group is empty"
 done
 

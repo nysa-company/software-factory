@@ -130,20 +130,38 @@ class HandoffTest(unittest.TestCase):
         helper = self.base / "gh"
         helper.write_text(
             "#!/bin/sh\n"
-            "test \"$GH_TOKEN\" = ghp_test_secret || exit 3\n"
+            "test -z \"${GH_TOKEN:-}${GITHUB_TOKEN:-}${GH_ENTERPRISE_TOKEN:-}\" || exit 3\n"
+            "test -z \"${GITHUB_ENTERPRISE_TOKEN:-}${GH_HOST:-}\" || exit 4\n"
+            "test \"$GH_CONFIG_DIR\" = \"$HOME/.config/gh\" || exit 5\n"
             "test \"$1 $2 $3\" = 'auth git-credential get' || exit 0\n"
             "printf 'username=test\\npassword=fixture\\n'\n"
         )
         helper.chmod(0o700)
         helper = helper.resolve()
-        credential = GitHubHTTPSCredential(str(helper), "ghp_test_secret")
+        credential = GitHubHTTPSCredential(str(helper))
         completed = subprocess.CompletedProcess([], 0, b"ok", b"")
-        with mock.patch.object(HANDOFF.subprocess, "run", return_value=completed) as run:
-            HANDOFF._git(self.repo, ["ls-remote"], git_auth=credential)
+        ambient = {
+            "GH_CONFIG_DIR": "/tmp/untrusted-config",
+            "GH_ENTERPRISE_TOKEN": "ambient-enterprise",
+            "GH_HOST": "untrusted.example",
+            "GH_TOKEN": "ambient-token",
+            "GITHUB_ENTERPRISE_TOKEN": "ambient-github-enterprise",
+            "GITHUB_TOKEN": "ambient-github-token",
+        }
+        with mock.patch.dict(os.environ, ambient):
+            with mock.patch.object(
+                HANDOFF.subprocess, "run", return_value=completed
+            ) as run:
+                HANDOFF._git(self.repo, ["ls-remote"], git_auth=credential)
         command = run.call_args.args[0]
         environment = run.call_args.kwargs["env"]
-        self.assertEqual(environment["GH_TOKEN"], "ghp_test_secret")
-        self.assertNotIn("ghp_test_secret", repr(command))
+        for name in ambient:
+            if name != "GH_CONFIG_DIR":
+                self.assertNotIn(name, environment)
+        self.assertEqual(
+            environment["GH_CONFIG_DIR"], str(Path(environment["HOME"]) / ".config/gh")
+        )
+        self.assertEqual(environment["GH_PROMPT_DISABLED"], "1")
         self.assertIn("credential.helper=", command)
         self.assertIn(
             f"credential.https://github.com.helper=!{helper} auth git-credential",
@@ -157,12 +175,13 @@ class HandoffTest(unittest.TestCase):
         )
         self.assertIn(b"password=fixture", output)
 
-        with mock.patch.dict(os.environ, {"GH_TOKEN": "ambient-secret"}):
+        with mock.patch.dict(os.environ, ambient):
             with mock.patch.object(
                 HANDOFF.subprocess, "run", return_value=completed
             ) as run:
                 HANDOFF._git(self.repo, ["status"])
-        self.assertNotIn("GH_TOKEN", run.call_args.kwargs["env"])
+        for name in ambient:
+            self.assertNotIn(name, run.call_args.kwargs["env"])
 
     def test_revalidate_detects_worktree_index_head_branch_and_remote_drift(self):
         (self.repo / "src/kept.txt").write_text("changed\n")

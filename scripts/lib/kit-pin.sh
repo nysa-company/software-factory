@@ -104,10 +104,7 @@ factory_product_tree() {
 
 factory_contract_version_from_directory() {
   local kit_dir="$1" file value
-  for file in \
-    "$kit_dir/integrations/hermes/contract.json" \
-    "$kit_dir/integrations/hermes/contract-manifest.json" \
-    "$kit_dir/integrations/hermes/manifest.json"; do
+  for file in "$kit_dir/factory-contract.json"; do
     [[ -f "$file" ]] || continue
     value="$(sed -n \
       -e 's/^[[:space:]]*"contract_version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*$/\1/p' \
@@ -123,7 +120,7 @@ factory_contract_version_from_directory() {
 
 factory_contract_version() {
   local kit_dir="$1"
-  FACTORY_CONTRACT_VERSION="${FACTORY_HERMES_CONTRACT_VERSION:-}"
+  FACTORY_CONTRACT_VERSION="${FACTORY_CONTRACT_VERSION:-}"
   [[ -z "$FACTORY_CONTRACT_VERSION" ]] || return 0
   FACTORY_CONTRACT_VERSION="$(factory_contract_version_from_directory "$kit_dir" 2>/dev/null || true)"
   return 0

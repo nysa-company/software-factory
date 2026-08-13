@@ -53,7 +53,7 @@ REFUSAL_READMISSION_SCHEMA = (
     "nysa.software-factory.refusal-readmission-attempt/v1"
 )
 QUALIFICATION_SCHEMA = "nysa.software-factory.qualification/v2"
-CONTROLLER_CONTRACTS = frozenset({"1.8.0", "1.9.0"})
+CONTROLLER_CONTRACTS = frozenset({"1.8.0", "2.0.0"})
 TICKET = re.compile(r"^T-[0-9]+$")
 SHA = re.compile(r"^[0-9a-f]{40}$")
 DIGEST = re.compile(r"^[0-9a-f]{64}$")

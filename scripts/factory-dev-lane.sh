@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Disposable, branch-local factory lifecycle. This is deliberately not wired
-# into factory-kit, the installed launcher, a registry, or launchd.
+# into factory-kit, the installed launcher, managed production state, or launchd.
 set -euo pipefail
 export LANG=C LC_ALL=C LC_CTYPE=C
 
@@ -125,7 +125,7 @@ subscription_base_env() {
       FACTORY_CLI_LANE_ROOT="$root" FACTORY_CLI_INTERNAL_SANDBOX=1 \
       FACTORY_CLAUDE_SETTINGS="$root/runtime/claude-settings.json" \
       FACTORY_CERTIFIED_PRODUCT_ORIGIN="$root/origin.git" \
-      FACTORY_HERMES_CONTRACT_VERSION=1.7.0 "$@"
+      FACTORY_CONTRACT_VERSION=1.7.0 "$@"
   )
 }
 
@@ -553,7 +553,6 @@ PY
 )"
   for forbidden in \
     "$ACCOUNT_HOME/.factory" \
-    "$ACCOUNT_HOME/.hermes/profiles/factory" \
     "$ACCOUNT_HOME/Library/LaunchAgents" \
     "$ACCOUNT_HOME/Projects/nysa-company/nysa-app"; do
     forbidden="$(python3 - "$forbidden" <<'PY'
@@ -596,7 +595,7 @@ validate_runtime_paths() {
     "$root/runtime/provider-policy.json" "$root/runtime/provider-attempts" \
     "$root/runtime/provider-configuration.lock" \
     "$root/runtime/provider-locks" "$root/runtime/provider-inputs" \
-    "$root/home" "$root/home/.factory" "$root/home/.hermes/profiles/factory-dev-$(basename "$root")" \
+    "$root/home" "$root/home/.factory" \
     "$root/tmp"; do
     require_lane_path "$root" "$path"
   done
@@ -861,7 +860,7 @@ create_lane() {
   fi
   nonce="$(basename "$root" | sed 's/^nysa-sf-dev\.//')"
   project="factory-dev-lane-$(printf '%s' "$nonce" | tr '[:upper:]' '[:lower:]')"
-  mkdir -p "$root/home/.factory" "$root/home/.hermes/profiles/factory-dev-$(basename "$root")" \
+  mkdir -p "$root/home/.factory" \
     "$root/runtime/model-state" "$root/runtime/provider-attempts" \
     "$root/runtime/provider-locks" "$root/runtime/provider-inputs" \
     "$root/tmp" "$root/worktrees"
@@ -1262,7 +1261,7 @@ PY
 import json, os, sys
 path, home=sys.argv[1:]
 denied=[
-    f"Read({home}/.factory/**)", f"Read({home}/.hermes/**)",
+    f"Read({home}/.factory/**)",
     f"Read({home}/Projects/nysa-company/nysa-app/**)",
     "Bash(security *)", "Bash(ssh *)", "Bash(scp *)",
 ]
@@ -2324,7 +2323,7 @@ lane_env() {
     FACTORY_PROVIDER_ACTIVATION="$root/runtime/provider-activation.json" \
     FACTORY_CLI_LANE_ROOT="$root" FACTORY_CLI_INTERNAL_SANDBOX=1 \
     FACTORY_CERTIFIED_PRODUCT_ORIGIN="$root/origin.git" \
-    FACTORY_HERMES_CONTRACT_VERSION=1.7.0 "$@"
+    FACTORY_CONTRACT_VERSION=1.7.0 "$@"
 }
 
 lane_cursor_env() {
@@ -2337,7 +2336,7 @@ lane_cursor_env() {
     FACTORY_CURSOR_SESSION_HOME="${FACTORY_CURSOR_SESSION_HOME:-}" \
     FACTORY_CURSOR_INTERNAL_SANDBOX=1 \
     FACTORY_CERTIFIED_PRODUCT_ORIGIN="$root/origin.git" \
-    FACTORY_HERMES_CONTRACT_VERSION=1.6.0 "$@"
+    FACTORY_CONTRACT_VERSION=1.6.0 "$@"
 }
 
 subscription_env() {

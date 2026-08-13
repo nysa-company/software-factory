@@ -759,7 +759,7 @@ def main() -> None:
             not re.fullmatch(r"T-[0-9]+", args.ticket)
             or not ROLE.fullmatch(args.role)
             or not DIGEST.fullmatch(args.receipt)
-            or args.contract_version not in ("1.8.0", "1.9.0")
+            or args.contract_version not in ("1.8.0", "2.0.0")
             or not SHA.fullmatch(args.factory_sha)
             or (args.lease and not DIGEST.fullmatch(args.lease))
             or (args.action in {"plan", "apply"}) != (args.request is not None)

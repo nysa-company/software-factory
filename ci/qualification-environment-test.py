@@ -60,11 +60,11 @@ class QualificationEnvironmentTest(unittest.TestCase):
         )).resolve()
         os.chmod(self.root, 0o700)
         self.factory = self.workspace / "factory"
-        (self.factory / "integrations/hermes/bin").mkdir(parents=True)
-        (self.factory / "integrations/hermes/contract.json").write_text(
+        (self.factory / "scripts").mkdir(parents=True)
+        (self.factory / "factory-contract.json").write_text(
             '{"contract_version":"1.8.0"}\n', encoding="utf-8",
         )
-        launcher = self.factory / "integrations/hermes/bin/factory-launch"
+        launcher = self.factory / "scripts/factory-launch"
         launcher.write_text("#!/bin/sh\n", encoding="utf-8")
         launcher.chmod(0o755)
         model_control = self.factory / "scripts/model-control.sh"
@@ -344,7 +344,7 @@ class QualificationEnvironmentTest(unittest.TestCase):
             root=self.root,
         )
         value = ENVIRONMENT.prepare(args)
-        release = Path(value["launcher"]).parents[3]
+        release = Path(value["launcher"]).parent.parent
         authority = Path(value["authority_root"])
         self.assertEqual(value["factory_sha"], self.sha)
         lane = ENVIRONMENT.qualification_lane(self.root, "relay")
@@ -379,8 +379,11 @@ class QualificationEnvironmentTest(unittest.TestCase):
         self.assertEqual(ENVIRONMENT.git_tree(release), value["factory_tree"])
         self.assertFalse(release.stat().st_mode & 0o222)
         self.assertEqual(
-            (self.root / "profile/projects/relay.env").read_text(),
-            f"PRODUCT_ROOT={self.product.resolve()}\n",
+            {path.name for path in self.root.iterdir()},
+            {
+                "environment.json", "global.env", "marker.json", "projects",
+                "receipts", "releases",
+            },
         )
         self.assertEqual(
             (self.root / "global.env").read_bytes(),
@@ -410,7 +413,7 @@ class QualificationEnvironmentTest(unittest.TestCase):
         self.assertEqual(policy["coupled_max_concurrent"], 3)
         self.assertEqual(policy["global"]["max_concurrent"], 3)
         launcher_text = (
-            ROOT / "integrations/hermes/bin/factory-launch"
+            ROOT / "scripts/factory-launch"
         ).read_text(encoding="utf-8")
         self.assertIn(
             'PROVIDER_STATE_ROOT="$ACTIVE_PROVIDER_STATE"', launcher_text
@@ -512,7 +515,7 @@ class QualificationEnvironmentTest(unittest.TestCase):
         original_bytes = ENVIRONMENT.write_bytes_exact
         authority = self.home / ".factory/qualification/relay"
         self.assertEqual(
-            ENVIRONMENT.preparation_state(self.root, authority), "fresh",
+            ENVIRONMENT.preparation_state(self.root, authority, "relay"), "fresh",
         )
 
         def crash_global(path, raw):
@@ -548,8 +551,8 @@ class QualificationEnvironmentTest(unittest.TestCase):
             lambda path: path.name == "provider-activation.json",
             lambda path: path.parent.name == "receipts",
             lambda path: path.name == "authority.json",
-            lambda path: path.name == "active.json",
             lambda path: path.name == "environment.json",
+            lambda path: path.name == "active.json",
         )
         for index, predicate in enumerate(predicates):
             with (
@@ -563,33 +566,15 @@ class QualificationEnvironmentTest(unittest.TestCase):
                 ENVIRONMENT.prepare(args)
             if index == 0:
                 self.assertEqual(
-                    ENVIRONMENT.preparation_state(self.root, authority),
+                    ENVIRONMENT.preparation_state(self.root, authority, "relay"),
                     "exact-incomplete",
                 )
 
-        crashed = False
-
-        def crash_registry(path, raw):
-            nonlocal crashed
-            original_bytes(path, raw)
-            if not crashed and path.name == "relay.env":
-                crashed = True
-                raise ENVIRONMENT.EnvironmentError("simulated response loss")
-
-        with (
-            mock.patch.object(
-                ENVIRONMENT, "write_bytes_exact", side_effect=crash_registry,
-            ),
-            self.assertRaisesRegex(
-                ENVIRONMENT.EnvironmentError, "simulated response loss",
-            ),
-        ):
-            ENVIRONMENT.prepare(args)
         value = ENVIRONMENT.prepare(args)
         self.assertEqual(value["status"], "prepared")
         self.assertEqual(
             ENVIRONMENT.preparation_state(
-                self.root, Path(value["authority_root"]),
+                self.root, Path(value["authority_root"]), "relay",
             ),
             "exact-complete",
         )
@@ -695,7 +680,7 @@ class QualificationEnvironmentTest(unittest.TestCase):
         self.assertTrue(active.is_file())
         active.unlink()
 
-        missing = self.root / "profile/projects"
+        missing = self.root / "projects/relay"
         missing.rmdir()
         with (
             mock.patch.object(
@@ -1158,7 +1143,7 @@ class QualificationEnvironmentTest(unittest.TestCase):
                 path.write_text(json.dumps(value) + "\n")
                 with self.assertRaisesRegex(
                     ENVIRONMENT.EnvironmentError,
-                    "Contract 1.8 qualification manifest is invalid",
+                    "qualification manifest is invalid",
                 ):
                     ENVIRONMENT.qualification_manifest(self.product, self.sha)
         path.write_text(json.dumps(original) + "\n")
@@ -1595,13 +1580,49 @@ class QualificationEnvironmentTest(unittest.TestCase):
             project="relay",
             root=self.root,
         )
+        (self.factory / "factory-contract.json").write_text(
+            '{"contract_version":"1.9.0"}\n', encoding="utf-8",
+        )
+        run(self.factory, "git", "add", "factory-contract.json")
+        run(self.factory, "git", "commit", "-qm", "start Contract 1.9 lane")
+        source = run(self.factory, "git", "rev-parse", "HEAD")
+        manifest_path = self.product / "factory/QUALIFICATION.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest.update(contract_version="1.9.0", factory_sha=source)
+        manifest_path.write_text(json.dumps(manifest) + "\n")
+        (self.product / "factory/KIT_PIN").write_text(
+            source + "\n", encoding="utf-8",
+        )
+        run(
+            self.product, "git", "add", "factory/KIT_PIN",
+            "factory/QUALIFICATION.json",
+        )
+        run(self.product, "git", "commit", "-qm", "qualify Contract 1.9")
         first = ENVIRONMENT.prepare(args)
         active_path = self.root / "projects/relay/active.json"
         legacy_active = ENVIRONMENT.read(active_path)
+        legacy_receipt_path = (
+            self.root / "receipts" / f"{legacy_active['receipt_id']}.json"
+        )
+        legacy_receipt = legacy_receipt_path.read_bytes()
+        self.assertEqual(
+            ENVIRONMENT.qualification_lane(self.root, "relay")["active"][
+                "contract_version"
+            ],
+            "1.9.0",
+        )
         legacy_active.pop("product_sha")
         legacy_active.pop("runtime_tuple")
         ENVIRONMENT.replace(active_path, legacy_active)
         controller = Path(first["authority_root"]) / "controller"
+        authority_path = Path(first["authority_root"]) / "authority.json"
+        legacy_authority = ENVIRONMENT.read(authority_path)
+        legacy_authority.pop("authority_sha256")
+        legacy_authority["contract_version"] = "1.8.0"
+        legacy_authority["authority_sha256"] = hashlib.sha256(
+            ENVIRONMENT.canonical(legacy_authority)
+        ).hexdigest()
+        ENVIRONMENT.replace(authority_path, legacy_authority)
         claims = controller / "claims"
         self.assertTrue(controller.is_dir())
         self.assertEqual(controller.stat().st_mode & 0o777, 0o700)
@@ -1611,9 +1632,11 @@ class QualificationEnvironmentTest(unittest.TestCase):
         key.chmod(0o600)
         ENVIRONMENT.write(claims / "T-110.json", {"status": "running"})
 
-        (self.factory / "successor.txt").write_text("successor\n", encoding="utf-8")
-        run(self.factory, "git", "add", "successor.txt")
-        run(self.factory, "git", "commit", "-qm", "successor")
+        (self.factory / "factory-contract.json").write_text(
+            '{"contract_version":"2.0.0"}\n', encoding="utf-8",
+        )
+        run(self.factory, "git", "add", "factory-contract.json")
+        run(self.factory, "git", "commit", "-qm", "successor Contract 2.0")
         successor = run(self.factory, "git", "rev-parse", "HEAD")
         (self.product / "factory/KIT_PIN").write_text(
             successor + "\n", encoding="utf-8",
@@ -1639,11 +1662,11 @@ class QualificationEnvironmentTest(unittest.TestCase):
             "environment": (self.root / "environment.json").read_bytes(),
             "releases": sorted(path.name for path in (self.root / "releases").iterdir()),
             "receipts": sorted(path.name for path in (self.root / "receipts").iterdir()),
-            "authority": (Path(first["authority_root"]) / "authority.json").read_bytes(),
+            "authority": authority_path.read_bytes(),
         }
         with self.assertRaisesRegex(
             ENVIRONMENT.EnvironmentError,
-            "Contract 1.8 qualification manifest is invalid",
+            "qualification manifest is invalid",
         ):
             ENVIRONMENT.upgrade(argparse.Namespace(
                 **vars(args), global_env=replacement,
@@ -1661,17 +1684,43 @@ class QualificationEnvironmentTest(unittest.TestCase):
             before["receipts"],
         )
         self.assertEqual(
-            (Path(first["authority_root"]) / "authority.json").read_bytes(),
+            authority_path.read_bytes(),
             before["authority"],
         )
 
-        manifest_path = self.product / "factory/QUALIFICATION.json"
         manifest = json.loads(manifest_path.read_text())
-        manifest["factory_sha"] = successor
+        manifest.update(contract_version="2.0.0", factory_sha=successor)
         manifest_path.write_text(json.dumps(manifest) + "\n")
         run(self.product, "git", "add", "factory/QUALIFICATION.json")
         run(self.product, "git", "commit", "-qm", "authorize successor")
 
+        original_replace = ENVIRONMENT.replace
+        crashed = False
+
+        def crash_before_active(path, value):
+            nonlocal crashed
+            original_replace(path, value)
+            if not crashed and path.name == "environment.json":
+                crashed = True
+                raise ENVIRONMENT.EnvironmentError("simulated response loss")
+
+        with (
+            mock.patch.object(
+                ENVIRONMENT, "replace", side_effect=crash_before_active,
+            ),
+            self.assertRaisesRegex(
+                ENVIRONMENT.EnvironmentError, "simulated response loss",
+            ),
+        ):
+            ENVIRONMENT.upgrade(argparse.Namespace(
+                **vars(args), global_env=replacement,
+            ))
+        self.assertEqual(
+            ENVIRONMENT.read(active_path)["contract_version"], "1.9.0",
+        )
+        self.assertEqual(
+            ENVIRONMENT.read(self.root / "environment.json")["status"], "upgraded",
+        )
         second = ENVIRONMENT.upgrade(argparse.Namespace(
             **vars(args), global_env=replacement,
         ))
@@ -1679,6 +1728,7 @@ class QualificationEnvironmentTest(unittest.TestCase):
         self.assertEqual(first["status"], "prepared")
         self.assertEqual(second["status"], "upgraded")
         self.assertEqual(active["kit_sha"], successor)
+        self.assertEqual(active["contract_version"], "2.0.0")
         self.assertEqual(active["generation"], 2)
         self.assertEqual(active["product_sha"], second["product_sha"])
         self.assertEqual(active["runtime_tuple"], second["runtime_tuple"])
@@ -1686,7 +1736,21 @@ class QualificationEnvironmentTest(unittest.TestCase):
             (self.root / "global.env").read_bytes(), replacement.read_bytes(),
         )
         self.assertEqual(key.read_bytes(), b"p" * 32)
-        self.assertTrue((self.root / f"releases/{self.sha}").is_dir())
+        self.assertEqual(legacy_receipt_path.read_bytes(), legacy_receipt)
+        self.assertEqual(
+            ENVIRONMENT.read(legacy_receipt_path)["contract_version"], "1.9.0",
+        )
+        self.assertEqual(
+            ENVIRONMENT.read(
+                self.root / "receipts" / f"{active['receipt_id']}.json"
+            )["contract_version"],
+            "2.0.0",
+        )
+        self.assertEqual(
+            ENVIRONMENT.read(authority_path)["contract_version"],
+            "2.0.0",
+        )
+        self.assertTrue((self.root / f"releases/{source}").is_dir())
         self.assertTrue((self.root / f"releases/{successor}").is_dir())
 
     def test_successor_upgrade_requires_exact_source_bound_cohort(self) -> None:
@@ -2547,6 +2611,29 @@ class QualificationEnvironmentTest(unittest.TestCase):
             for name in directories:
                 (Path(base) / name).chmod(0o700)
         shutil.rmtree(self.root)
+        original_write = ENVIRONMENT.write_exact
+        crashed = False
+
+        def crash_before_active(path, value):
+            nonlocal crashed
+            original_write(path, value)
+            if not crashed and path.name == "environment.json":
+                crashed = True
+                raise ENVIRONMENT.EnvironmentError("simulated response loss")
+
+        with (
+            mock.patch.object(
+                ENVIRONMENT, "write_exact", side_effect=crash_before_active,
+            ),
+            self.assertRaisesRegex(
+                ENVIRONMENT.EnvironmentError, "simulated response loss",
+            ),
+        ):
+            ENVIRONMENT.prepare(argparse.Namespace(
+                **vars(args), restore=True,
+            ))
+        self.assertTrue((self.root / "environment.json").is_file())
+        self.assertFalse((self.root / "projects/relay/active.json").exists())
         with mock.patch.object(
             ENVIRONMENT, "initialize_selected_operator",
             wraps=ENVIRONMENT.initialize_selected_operator,

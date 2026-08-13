@@ -49,18 +49,18 @@ fi
 if [[ $# -gt 0 ]]; then
   case "$1" in
     --shard)
-      [[ $# -eq 2 || $# -eq 4 ]] || { echo "usage: ci/test-all.sh [--shard factory|hermes|release [--group 1|2|3|4] | --changed|--shadow-changed|--changed-or-defer BASE [HEAD]]" >&2; exit 2; }
+      [[ $# -eq 2 || $# -eq 4 ]] || { echo "usage: ci/test-all.sh [--shard factory|contract|release [--group 1|2|3|4] | --changed|--shadow-changed|--changed-or-defer BASE [HEAD]]" >&2; exit 2; }
       SHARD="$2"
-      case "$SHARD" in factory|hermes|release) ;; *) echo "unknown suite shard: $SHARD" >&2; exit 2 ;; esac
+      case "$SHARD" in factory|contract|release) ;; *) echo "unknown suite shard: $SHARD" >&2; exit 2 ;; esac
       if [[ $# -eq 4 ]]; then
-        [[ "$3" == "--group" ]] || { echo "usage: ci/test-all.sh [--shard factory|hermes|release [--group 1|2|3|4] | --changed|--shadow-changed|--changed-or-defer BASE [HEAD]]" >&2; exit 2; }
+        [[ "$3" == "--group" ]] || { echo "usage: ci/test-all.sh [--shard factory|contract|release [--group 1|2|3|4] | --changed|--shadow-changed|--changed-or-defer BASE [HEAD]]" >&2; exit 2; }
         GROUP="$4"
         case "$GROUP" in 1|2|3|4) ;; *) echo "unknown suite group: $GROUP" >&2; exit 2 ;; esac
       fi
       REASON="complete GitHub shard: $SHARD"
       ;;
     --group)
-      [[ $# -eq 2 ]] || { echo "usage: ci/test-all.sh [--group 1|2|3|4 | --shard factory|hermes|release [--group 1|2|3|4] | --changed|--shadow-changed|--changed-or-defer BASE [HEAD]]" >&2; exit 2; }
+      [[ $# -eq 2 ]] || { echo "usage: ci/test-all.sh [--group 1|2|3|4 | --shard factory|contract|release [--group 1|2|3|4] | --changed|--shadow-changed|--changed-or-defer BASE [HEAD]]" >&2; exit 2; }
       GROUP="$2"
       case "$GROUP" in 1|2|3|4) ;; *) echo "unknown suite group: $GROUP" >&2; exit 2 ;; esac
       REASON="complete GitHub group: $GROUP"
@@ -68,7 +68,7 @@ if [[ $# -gt 0 ]]; then
     --changed|--shadow-changed|--changed-or-defer)
       [[ "$1" != "--shadow-changed" ]] || SHADOW=1
       [[ "$1" != "--changed-or-defer" ]] || DEFER_FULL=1
-      [[ $# -ge 2 && $# -le 3 ]] || { echo "usage: ci/test-all.sh [--shard factory|hermes|release | --changed|--shadow-changed|--changed-or-defer BASE [HEAD]]" >&2; exit 2; }
+      [[ $# -ge 2 && $# -le 3 ]] || { echo "usage: ci/test-all.sh [--shard factory|contract|release | --changed|--shadow-changed|--changed-or-defer BASE [HEAD]]" >&2; exit 2; }
       CHANGE_BASE="$2"
       CHANGE_HEAD="${3:-HEAD}"
       SELECTION_STATUS=0
@@ -84,7 +84,7 @@ $SELECTION
 EOF
       ;;
     *)
-      echo "usage: ci/test-all.sh [--group 1|2|3|4 | --shard factory|hermes|release [--group 1|2|3|4] | --changed|--shadow-changed|--changed-or-defer BASE [HEAD]]" >&2
+      echo "usage: ci/test-all.sh [--group 1|2|3|4 | --shard factory|contract|release [--group 1|2|3|4] | --changed|--shadow-changed|--changed-or-defer BASE [HEAD]]" >&2
       exit 2
       ;;
   esac
@@ -127,7 +127,7 @@ fi
 
 if [[ "$DEFER_FULL" -eq 1 && "$PLANNED_MODE" == "full" ]]; then
   MODE="targeted"
-  SELECTED="ci-scope immutability artifact-policy"
+  SELECTED="ci-scope immutability artifact-policy external-runtime-dependency"
   DEFER_AFTER=1
   REASON="deferred to required GitHub full CI: $REASON"
 fi

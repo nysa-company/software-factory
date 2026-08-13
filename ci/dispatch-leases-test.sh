@@ -10,7 +10,7 @@ KILL="$ROOT/scripts/kill-switch.sh"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/dispatch-leases-test.XXXXXX")"
 PRODUCT="$TMP/product"
 FAILURES=0
-export FACTORY_HERMES_CONTRACT_VERSION=1.6.0
+export FACTORY_CONTRACT_VERSION=1.6.0
 
 cleanup() { rm -rf "$TMP"; }
 trap cleanup EXIT HUP INT TERM
@@ -254,16 +254,16 @@ fi
 cp "$PRODUCT/factory/PROJECT.env" "$TMP/project-before-expired.env"
 printf '%s\n' 'MAX_CONCURRENT_TICKETS=4' > "$PRODUCT/factory/PROJECT.env"
 LIVE_EXPIRED_RC=0
-FACTORY_RELEASE_CONTRACT_VERSION=1.9.0 FACTORY_ROOT="$PRODUCT" \
+FACTORY_RELEASE_CONTRACT_VERSION=2.0.0 FACTORY_ROOT="$PRODUCT" \
   "$LEASE" release-expired --ticket "$THIRD_TICKET" --lease "$THIRD_ID" \
   > "$TMP/live-expired.out" 2>&1 || LIVE_EXPIRED_RC=$?
 WRONG_EXPIRED_RC=0
-FACTORY_RELEASE_CONTRACT_VERSION=1.9.0 FACTORY_ROOT="$PRODUCT" \
+FACTORY_RELEASE_CONTRACT_VERSION=2.0.0 FACTORY_ROOT="$PRODUCT" \
   "$LEASE" release-expired --ticket "$SECOND_TICKET" \
   --lease 0000000000000000000000000000000000000000000000000000000000000000 \
   > "$TMP/wrong-expired.out" 2>&1 || WRONG_EXPIRED_RC=$?
 EXPIRED_RELEASE="$(
-  FACTORY_RELEASE_CONTRACT_VERSION=1.9.0 FACTORY_ROOT="$PRODUCT" \
+  FACTORY_RELEASE_CONTRACT_VERSION=2.0.0 FACTORY_ROOT="$PRODUCT" \
     "$LEASE" release-expired --ticket "$SECOND_TICKET" --lease "$SECOND_ID"
 )"
 mv "$TMP/project-before-expired.env" "$PRODUCT/factory/PROJECT.env"
@@ -308,16 +308,16 @@ printf '%s\n' 'MAX_CONCURRENT_TICKETS=7' > "$PRODUCT/factory/PROJECT.env"
 INVALID_RC=0
 FACTORY_ROOT="$PRODUCT" "$LEASE" claim --ticket T-903 >/dev/null 2>&1 || INVALID_RC=$?
 [[ "$INVALID_RC" -eq 3 ]] && pass "invalid concurrency configuration fails closed" || fail "invalid concurrency configuration fails closed" "status=$INVALID_RC"
-FACTORY_HERMES_CONTRACT_VERSION=1.5.0
-export FACTORY_HERMES_CONTRACT_VERSION
+FACTORY_CONTRACT_VERSION=1.5.0
+export FACTORY_CONTRACT_VERSION
 printf '%s\n' 'MAX_CONCURRENT_TICKETS=5' > "$PRODUCT/factory/PROJECT.env"
 LEGACY_INVALID_RC=0
 FACTORY_ROOT="$PRODUCT" "$LEASE" claim --ticket T-903 >/dev/null 2>&1 || LEGACY_INVALID_RC=$?
 [[ "$LEGACY_INVALID_RC" -eq 3 ]] &&
   pass "Contract 1.5 retains the 1 through 4 capacity bound" ||
   fail "Contract 1.5 retains the 1 through 4 capacity bound" "status=$LEGACY_INVALID_RC"
-FACTORY_HERMES_CONTRACT_VERSION=1.6.0
-export FACTORY_HERMES_CONTRACT_VERSION
+FACTORY_CONTRACT_VERSION=1.6.0
+export FACTORY_CONTRACT_VERSION
 printf '%s\n' 'MAX_CONCURRENT_TICKETS=6' > "$PRODUCT/factory/PROJECT.env"
 mv "$PRODUCT/factory/PROJECT.env" "$PRODUCT/factory/PROJECT.env.real"
 ln -s PROJECT.env.real "$PRODUCT/factory/PROJECT.env"

@@ -59,7 +59,7 @@ TOOLS = {
 }
 PIN_KEYS = tuple(value["pin"] for value in TOOLS.values())
 REQUIRED_RELEASE_FILES = (
-    "integrations/hermes/bin/factory-launch",
+    "scripts/factory-launch",
     "scripts/lib/plain-config.sh",
     "scripts/lib/backend-policy.sh",
     "scripts/adapters/claude-code.sh",
@@ -400,11 +400,11 @@ def release_identity(
             or stat.S_IMODE(info.st_mode) & 0o222
         ):
             raise PinError("sealed release is not read-only")
-    _, contract = read_json(release / "integrations/hermes/contract.json", "sealed release contract")
+    _, contract = read_json(release / "factory-contract.json", "sealed release contract")
     version = contract.get("contract_version") if isinstance(contract, dict) else None
     if (
         not isinstance(version, str) or not SAFE_VERSION.fullmatch(version)
-        or (candidate and version not in ("1.8.0", "1.9.0"))
+        or (candidate and version not in ("1.8.0", "2.0.0"))
     ):
         raise PinError("sealed release contract is incompatible")
     for relative in REQUIRED_RELEASE_FILES:

@@ -10,7 +10,7 @@ PREFLIGHT="$KIT_DIR/scripts/preflight.sh"
 KIT_HEAD_NOW="$(git -C "$KIT_DIR" rev-parse HEAD)"
 KIT_CONTRACT_VERSION="$(python3 -c \
   'import json,sys; print(json.load(open(sys.argv[1]))["contract_version"])' \
-  "$KIT_DIR/integrations/hermes/contract.json")"
+  "$KIT_DIR/factory-contract.json")"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/preflight-test.XXXXXX")"
 TMP="$(cd "$TMP" && pwd -P)"
 STUB_BIN="$TMP/bin"
@@ -156,10 +156,10 @@ init_git_repo() {
 
 build_sealed_release() {
   local dir="$1"
-  mkdir -p "$dir/integrations/hermes"
+  mkdir -p "$dir"
   cp -R "$KIT_DIR/scripts" "$dir/"
-  cp "$KIT_DIR/integrations/hermes/contract.json" \
-    "$dir/integrations/hermes/contract.json"
+  cp "$KIT_DIR/factory-contract.json" \
+    "$dir/factory-contract.json"
 }
 
 run_preflight() {

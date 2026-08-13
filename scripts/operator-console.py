@@ -3,8 +3,8 @@
 
 Security model: one random bootstrap URL creates one random in-memory session;
 all later API access requires its HttpOnly SameSite cookie.  Mutations also
-require the session CSRF token and an exact same-origin request.  Registry
-files are parsed as data, and browser input can select only a validated slug.
+require the session CSRF token and an exact same-origin request. Browser input
+can select only a slug backed by a validated Factory active record.
 """
 
 from __future__ import annotations
@@ -36,12 +36,8 @@ SNAPSHOT = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
 SPEC.loader.exec_module(SNAPSHOT)
 
-PROJECT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
-ASSIGNMENT_RE = re.compile(
-    r"(?:export[ \t]+)?([A-Z][A-Z0-9_]*)[ \t]*=[ \t]*(.*?)[ \t]*"
-)
-REGISTRY_KEYS = {"KIT_DIR", "PRODUCT_ROOT"}
-MAX_REGISTRY_BYTES = 65_536
+PROJECT_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,62}")
+MAX_ACTIVE_RECORD_BYTES = 131_072
 MAX_BODY_BYTES = 16_384
 SESSION_SECONDS = 8 * 60 * 60
 COOKIE_NAME = "factory_operator_session"
@@ -82,109 +78,109 @@ def loopback_address(value: str) -> str:
     return value
 
 
-def _open_regular(path: Path, maximum: int) -> str:
+def _active_record(path: Path, slug: str) -> None:
     try:
         before = path.lstat()
     except OSError as error:
-        raise RegistryError("registry file is unavailable") from error
+        raise RegistryError("project active record is unavailable") from error
     if (
         not stat.S_ISREG(before.st_mode)
         or before.st_uid != os.geteuid()
         or before.st_nlink != 1
-        or before.st_size > maximum
-        or stat.S_IMODE(before.st_mode) & 0o022
+        or before.st_size > MAX_ACTIVE_RECORD_BYTES
+        or stat.S_IMODE(before.st_mode) != 0o600
     ):
-        raise RegistryError("registry file is not an owner-controlled regular file")
-    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        raise RegistryError("project active record is unsafe")
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except OSError as error:
+        raise RegistryError("project active record cannot be opened safely") from error
     try:
         opened = os.fstat(descriptor)
         if (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
-            raise RegistryError("registry file changed while opening")
+            raise RegistryError("project active record changed while opening")
         with os.fdopen(descriptor, encoding="utf-8", errors="strict") as handle:
             descriptor = -1
-            return handle.read(maximum + 1)
-    except (OSError, UnicodeError) as error:
-        raise RegistryError("registry file cannot be read safely") from error
+            raw = handle.read(MAX_ACTIVE_RECORD_BYTES + 1)
+        if len(raw.encode("utf-8")) > MAX_ACTIVE_RECORD_BYTES:
+            raise RegistryError("project active record is oversized")
+        value = json.loads(raw, object_pairs_hook=_unique_object)
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
+        raise RegistryError("project active record is invalid") from error
     finally:
         if descriptor >= 0:
             os.close(descriptor)
+    if not isinstance(value, dict) or value.get("project") != slug:
+        raise RegistryError("project active record does not match its directory")
 
 
-def _registry_path(value: str, home: Path) -> Path:
-    if value[:1] in {'"', "'"}:
-        if len(value) < 2 or value[-1] != value[0] or value[0] in value[1:-1]:
-            raise RegistryError("registry contains malformed quoting")
-        value = value[1:-1]
-    if any(character.isspace() or ord(character) < 32 for character in value):
-        raise RegistryError("registry path contains unsafe characters")
-    if any(fragment in value for fragment in ("`", "$(", "\\", "\x7f")):
-        raise RegistryError("registry path contains unsafe expansion")
-    for prefix in ("$HOME/", "${HOME}/", "~/"):
-        if value.startswith(prefix):
-            value = str(home / value[len(prefix):])
-            break
-    path = Path(value)
-    if not path.is_absolute() or ".." in path.parts:
-        raise RegistryError("registry paths must be absolute and traversal-free")
-    return path
-
-
-def validate_registry_file(path: Path, home: Path) -> None:
-    content = _open_regular(path, MAX_REGISTRY_BYTES)
-    values: dict[str, Path] = {}
-    for raw in content.splitlines():
-        if not raw.strip() or raw.lstrip().startswith("#"):
-            continue
-        match = ASSIGNMENT_RE.fullmatch(raw)
-        if match is None:
-            raise RegistryError(f"malformed registry: {path.name}")
-        key, encoded = match.groups()
-        if key not in REGISTRY_KEYS or key in values:
-            raise RegistryError(f"unsupported registry key: {path.name}")
-        values[key] = _registry_path(encoded, home)
-    if "PRODUCT_ROOT" not in values:
-        raise RegistryError(f"registry lacks PRODUCT_ROOT: {path.name}")
+def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("duplicate key")
+        value[key] = item
+    return value
 
 
 class ProjectRegistry:
     """Discover project slugs without exposing or accepting product paths."""
 
-    def __init__(self, directory: Path, home: Path | None = None):
+    def __init__(self, directory: Path):
         if not directory.is_absolute():
-            raise RegistryError("registry directory must be absolute")
+            raise RegistryError("projects directory must be absolute")
         try:
             before = directory.lstat()
             resolved = directory.resolve(strict=True)
         except OSError as error:
-            raise RegistryError("registry directory is unavailable") from error
-        if not stat.S_ISDIR(before.st_mode) or directory.is_symlink() or resolved != directory:
-            raise RegistryError("registry directory must be a real absolute directory")
+            raise RegistryError("projects directory is unavailable") from error
+        if (
+            not stat.S_ISDIR(before.st_mode)
+            or before.st_uid != os.geteuid()
+            or stat.S_IMODE(before.st_mode) & 0o022
+            or directory.is_symlink()
+            or resolved != directory
+        ):
+            raise RegistryError("projects directory is unsafe")
         self.directory = directory
-        self.home = (home or Path.home()).resolve()
 
     def projects(self) -> list[str]:
         projects = []
         try:
             entries = list(os.scandir(self.directory))
         except OSError as error:
-            raise RegistryError("registry directory cannot be read") from error
+            raise RegistryError("projects directory cannot be read") from error
         for entry in sorted(entries, key=lambda item: item.name):
-            if not entry.name.endswith(".env"):
+            if not PROJECT_RE.fullmatch(entry.name):
                 continue
-            slug = entry.name[:-4]
-            if not PROJECT_RE.fullmatch(slug):
-                raise RegistryError("registry contains an invalid project filename")
-            validate_registry_file(self.directory / entry.name, self.home)
-            projects.append(slug)
+            directory = self.directory / entry.name
+            try:
+                info = directory.lstat()
+                physical = directory.resolve(strict=True)
+            except OSError as error:
+                raise RegistryError("project directory is unavailable") from error
+            if (
+                not stat.S_ISDIR(info.st_mode)
+                or info.st_uid != os.geteuid()
+                or stat.S_IMODE(info.st_mode) & 0o022
+                or directory.is_symlink()
+                or physical != directory
+            ):
+                raise RegistryError("project directory is unsafe")
+            active = directory / "active.json"
+            if not active.exists() and not active.is_symlink():
+                continue
+            _active_record(active, entry.name)
+            projects.append(entry.name)
         if not projects:
-            raise RegistryError("registry contains no valid projects")
+            raise RegistryError("projects directory contains no active projects")
         return projects
 
     def require(self, project: Any) -> str:
         if not isinstance(project, str) or not PROJECT_RE.fullmatch(project):
             raise RegistryError("invalid project selector")
-        # Revalidate on each request so removed or replaced registry entries
-        # cannot retain authority through a stale in-memory path mapping.
+        # Revalidate on each request so removed or replaced active records
+        # cannot retain authority through a stale in-memory slug list.
         if project not in self.projects():
             raise RegistryError("unknown project selector")
         return project
@@ -524,9 +520,9 @@ def main() -> int:
     parser.add_argument("--bind", type=loopback_address, default="127.0.0.1")
     parser.add_argument("--port", type=int, default=0)
     parser.add_argument(
-        "--registry-dir",
+        "--projects-dir",
         type=Path,
-        default=Path.home() / ".hermes" / "profiles" / "factory" / "projects",
+        default=Path.home() / ".factory" / "kits" / "projects",
     )
     parser.add_argument(
         "--launcher",
@@ -537,7 +533,7 @@ def main() -> int:
     if not 0 <= args.port <= 65535:
         parser.error("port must be from 0 through 65535")
     try:
-        registry = ProjectRegistry(args.registry_dir)
+        registry = ProjectRegistry(args.projects_dir)
         state = ConsoleState(registry, args.launcher)
         server = ConsoleServer((args.bind, args.port), state, args.bind)
     except (RegistryError, SNAPSHOT.SnapshotError, OSError) as error:

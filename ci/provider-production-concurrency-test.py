@@ -457,7 +457,7 @@ done
                 path.chmod(0o755)
 
         task_path = f"{pinned}:{homebrew}:/usr/bin:/bin:/usr/sbin:/sbin"
-        launcher = (ROOT / "integrations/hermes/bin/factory-launch").read_text()
+        launcher = (ROOT / "scripts/factory-launch").read_text()
         self.assertIn(
             '"FACTORY_CERTIFIED_NODE_VERSION=$ACTIVE_RUNTIME_NODE"', launcher
         )
@@ -853,13 +853,13 @@ esac
         (product / "factory/PROJECT.env").write_text("MAX_CONCURRENT_TICKETS=3\n")
         binary_root = self.root / "doctor-bin"
         binary_root.mkdir()
-        for name in ("agent", "claude", "codex", "gh", "hermes"):
+        for name in ("agent", "claude", "codex", "gh", "factory"):
             path = binary_root / name
             path.write_text("#!/bin/sh\nprintf '%s\\n' test\n")
             path.chmod(0o700)
         launcher = self.home / ".factory/bin/factory-launch"
         launcher.parent.mkdir(parents=True)
-        launcher.write_bytes((ROOT / "integrations/hermes/bin/factory-launch").read_bytes())
+        launcher.write_bytes((ROOT / "scripts/factory-launch").read_bytes())
         launcher.chmod(0o700)
         label = "com.factory.legacy-relay.relay"
         launch_agents = self.home / "Library/LaunchAgents"
@@ -897,7 +897,7 @@ esac
             "FACTORY_PROVIDER_DB": str(self.state / "accounting/state-v2.sqlite3"),
             "FACTORY_PROVIDER_POLICY": str(self.state / "provider-policy.json"),
             "FACTORY_CLI_RUNTIME_ROOT": str(self.root),
-            "FACTORY_RELEASE_CONTRACT_VERSION": "1.9.0",
+            "FACTORY_RELEASE_CONTRACT_VERSION": "2.0.0",
             "HOME": str(self.home),
             "PATH": f"{binary_root}:{os.environ['PATH']}",
         }

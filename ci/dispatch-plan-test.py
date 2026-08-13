@@ -297,7 +297,7 @@ class DispatchPlanTest(unittest.TestCase):
         mapping = {"tickets": {"T-300": {"operator": operator}}}
         self.mapping.write_text(json.dumps(mapping) + "\n")
         environment = {
-            "FACTORY_RELEASE_CONTRACT_VERSION": "1.9.0",
+            "FACTORY_RELEASE_CONTRACT_VERSION": "2.0.0",
             "FACTORY_CONTROLLER_STATE_DIR": str(state),
         }
         with mock.patch.dict(os.environ, environment):
@@ -1056,7 +1056,7 @@ class DispatchPlanTest(unittest.TestCase):
         self.assertEqual(value["done"], 0)
 
     def test_current_contract_qualifications_accept_only_supported_versions(self):
-        for contract in ("1.8.0", "1.9.0"):
+        for contract in ("1.8.0", "2.0.0"):
             with self.subTest(contract=contract):
                 self.write_contract_18_qualification(
                     contract_version=contract,

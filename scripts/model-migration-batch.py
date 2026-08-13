@@ -151,12 +151,19 @@ def child(
     *,
     preview: dict[str, Any] | None = None,
     approved_by: str = "",
-    token: str = "",
 ) -> tuple[int, dict[str, Any]]:
     command = [str(control), action, "--ticket", ticket, "--workdir", str(workdir)]
     environment = os.environ.copy()
-    environment.pop("FACTORY_GITHUB_TOKEN_FD", None)
-    input_text = None
+    for name in (
+        "FACTORY_GITHUB_TOKEN_FD",
+        "GH_CONFIG_DIR",
+        "GH_ENTERPRISE_TOKEN",
+        "GH_HOST",
+        "GH_TOKEN",
+        "GITHUB_ENTERPRISE_TOKEN",
+        "GITHUB_TOKEN",
+    ):
+        environment.pop(name, None)
     if action == "migrate":
         assert preview is not None
         command.extend([
@@ -164,14 +171,9 @@ def child(
             "--readiness-hash", preview["readiness_sha256"],
             "--approved-by", approved_by,
         ])
-        if token:
-            command = ["/bin/bash", "-c", 'exec 9<&0; exec "$@"', "_", *command]
-            environment["FACTORY_GITHUB_TOKEN_FD"] = "9"
-            input_text = token + "\n"
     result = subprocess.run(
         command,
         env=environment,
-        input=input_text,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
@@ -383,7 +385,6 @@ def main() -> int:
     parser.add_argument("--approve-hash", default="")
     parser.add_argument("--approved-by", default="")
     parser.add_argument("--state-dir", type=Path)
-    parser.add_argument("--github-token-stdin", action="store_true")
     args = parser.parse_args()
     try:
         if (
@@ -397,7 +398,7 @@ def main() -> int:
         items = validate_items(args.ticket_workdir)
         capacity = min(args.capacity, len(items))
         if args.action == "plan":
-            if args.approve_hash or args.approved_by or args.state_dir or args.github_token_stdin:
+            if args.approve_hash or args.approved_by or args.state_dir:
                 raise Refusal("migration batch plan received apply-only arguments")
             output(build_plan(args.control, args.factory_sha, capacity, items))
             return 0
@@ -413,9 +414,6 @@ def main() -> int:
         journal_dir = args.state_dir / "migration-batches"
         safe_directory(journal_dir, create=True)
         journal_path = journal_dir / f"{args.approve_hash}.json"
-        token = sys.stdin.readline().rstrip("\n") if args.github_token_stdin else ""
-        if args.github_token_stdin and not token:
-            raise Refusal("GitHub credential descriptor is unreadable")
         if journal_path.exists() or journal_path.is_symlink():
             journal = load_journal(journal_path)
             validate_plan(journal["plan"], args.factory_sha, capacity, items)
@@ -454,7 +452,6 @@ def main() -> int:
                     Path(item["workdir"]),
                     preview=item["migration"],
                     approved_by=args.approved_by,
-                    token=token,
                 )
                 for item in plan["items"]
             ]
