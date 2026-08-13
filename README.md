@@ -46,8 +46,8 @@ profile alternatives, family rules, approval flow, and operator commands.
 
 ## Local multi-project console
 
-Contract 1.5 adds a loopback-only control console for every project registered
-in the factory profile:
+The loopback-only control console discovers every project from owner-only
+`~/.factory/kits/projects/<slug>/active.json` records:
 
 ```bash
 python3 scripts/operator-console.py

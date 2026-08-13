@@ -864,10 +864,10 @@ alone was 5m50s and its full maintenance interval was longer.
 
 ## Failed cutover or release rollback
 
-- Notice: doctor returns an error, the factory profile does not stay healthy,
+- Notice: doctor returns an error, the native product controller does not stay healthy,
   or the sandbox smoke does not execute through the expected release.
-- Do: leave `MAINTENANCE` present and stop only the product's factory profile
-  and reconciler. If the activation transaction is interrupted, run
+- Do: leave `MAINTENANCE` present and boot out only the product's
+  `com.factory.controller.<project>` LaunchAgent. If the activation transaction is interrupted, run
   `factory-kit.sh reconcile` first and follow its terminal result.
 - Do: merge the normal protected revert from a `chore/<slug>-revert` branch that restores both the previous full
   `KIT_PIN` and product tree, then update and verify the clean product checkout.

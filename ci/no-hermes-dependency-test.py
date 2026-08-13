@@ -11,7 +11,6 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[1]
 REMOVED = "her" + "mes"
 ALLOW_TEXT = frozenset({
-    "TODOS.md",
     "conformance/factory/runs/1783911942-73937.out",
     "conformance/factory/runs/1783912438-76221.out",
     "conformance/factory/runs/1783912635-77319.out",
@@ -75,7 +74,9 @@ def self_test() -> None:
     assert violations({"scripts/live.py": f"use {REMOVED}\n".encode()}) == [
         ("scripts/live.py", 1)
     ]
-    assert not violations({"TODOS.md": f"retired {REMOVED}\n".encode()})
+    assert violations({"TODOS.md": f"retired {REMOVED}\n".encode()}) == [
+        ("TODOS.md", 1)
+    ]
     memory = f"# Memory\n\n## Current truth\nclean\n\n## Log\nretired {REMOVED}\n"
     assert not violations({MEMORY: memory.encode()})
     bad_memory = memory.replace("clean", REMOVED)
