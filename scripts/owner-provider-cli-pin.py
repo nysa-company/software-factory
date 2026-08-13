@@ -73,6 +73,23 @@ class PinError(ValueError):
     pass
 
 
+def expected_origin() -> str:
+    configured = os.environ.get("FACTORY_KIT_CANONICAL_ORIGIN") or os.environ.get(
+        "FACTORY_KIT_ORIGIN"
+    )
+    if not configured:
+        return CANONICAL_ORIGIN
+    if os.environ.get("FACTORY_KIT_TEST_MODE") != "1":
+        raise PinError("custom canonical origin is allowed only in Factory test mode")
+    value = configured[:-4] if configured.endswith(".git") else configured
+    if value.startswith("file://"):
+        return "file://" + str(Path(value[7:]).resolve(strict=False))
+    path = Path(value)
+    if not path.is_absolute():
+        raise PinError("Factory test origin must be a local absolute path")
+    return str(path.resolve(strict=False))
+
+
 def canonical(value: Any) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
 
@@ -372,7 +389,7 @@ def release_identity(
         not isinstance(manifest, dict) or manifest.get("schema_version") != 1
         or manifest.get("kit_sha") != release_sha
         or manifest.get("git_tree") != tree
-        or manifest.get("canonical_origin") != CANONICAL_ORIGIN
+        or manifest.get("canonical_origin") != expected_origin()
         or manifest.get("sealed_release_path") != str(release)
     ):
         raise PinError("sealed release manifest is invalid")
