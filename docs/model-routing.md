@@ -224,6 +224,15 @@ No-change revisions bind the prior resolution by SHA-256 instead of copying it;
 full refreshed evidence is recorded only when its physical identity changes.
 Legacy revisions containing full prior resolutions remain valid.
 
+Contract 1.9 may preview one to four authorized ticket worktrees together with
+`models migrate-batch-plan`. Its approval hash binds the protected-main
+snapshot and every ticket's branch, head, worktree, migration preview, and
+readiness digest. `models migrate-batch` applies the existing per-ticket
+transaction concurrently only up to `MAX_CONCURRENT_TICKETS`; each push still
+has independent remote authorization and compare-and-swap protection. Results
+are recorded in an owner-only signed journal, so a partial failure or crash is
+retried without discarding successful siblings or repeating completed pushes.
+
 ## Operator commands
 
 ```bash
@@ -234,6 +243,15 @@ Legacy revisions containing full prior resolutions remain valid.
 # Pin the initial six-role plan.
 ~/.factory/bin/factory-launch <project> models pin \
   --ticket T-123 --workdir /absolute/ticket-worktree --json
+
+# Preview and apply a bounded Contract 1.9 release-migration batch.
+~/.factory/bin/factory-launch <project> models migrate-batch-plan \
+  --ticket T-123 --workdir /absolute/ticket-worktree \
+  --ticket T-124 --workdir /absolute/second-worktree --json
+~/.factory/bin/factory-launch <project> models migrate-batch \
+  --approve-hash <batch-approval-hash> --approved-by <operator-id> \
+  --ticket T-123 --workdir /absolute/ticket-worktree \
+  --ticket T-124 --workdir /absolute/second-worktree --json
 
 # Preview an eligible mid-ticket fallback.
 ~/.factory/bin/factory-launch <project> models fallback-plan \

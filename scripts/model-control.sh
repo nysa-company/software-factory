@@ -23,6 +23,8 @@ source "$KIT_DIR/scripts/lib/kit-pin.sh"
 source "$KIT_DIR/scripts/lib/backend-policy.sh"
 # shellcheck disable=SC1091
 source "$KIT_DIR/scripts/lib/product-remote.sh"
+# shellcheck disable=SC1091
+source "$KIT_DIR/scripts/lib/dispatch-leases.sh"
 
 unset FACTORY_TRUSTED_PRODUCT_ORIGIN
 readonly FACTORY_TRUSTED_PRODUCT_ORIGIN="${FACTORY_CERTIFIED_PRODUCT_ORIGIN:-}"
@@ -696,6 +698,96 @@ PY
       json_resolution_error plan "${FACTORY_RESOLVE_ERROR:-unknown}" \
         "$FACTORY_MODEL_PROFILE_ID" "$readiness"
     cat "$resolution"
+    ;;
+  migrate-batch-plan|migrate-batch)
+    batch_approve_hash="" batch_approved_by=""
+    batch_tickets=()
+    batch_workdirs=()
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --ticket)
+          [[ $# -ge 4 && "$3" == "--workdir" ]] ||
+            json_error "migration batch requires ticket/workdir pairs"
+          [[ "$2" =~ ^T-[0-9]+$ ]] || json_error "ticket must match T-NNN"
+          for existing in "${batch_tickets[@]-}"; do
+            [[ "$existing" != "$2" ]] ||
+              json_error "migration batch tickets must be unique"
+          done
+          batch_tickets+=("$2")
+          batch_workdirs+=("$4")
+          shift 4
+          ;;
+        --approve-hash)
+          [[ $# -ge 2 && -z "$batch_approve_hash" ]] ||
+            json_error "migration batch approval hash is duplicated"
+          batch_approve_hash="$2"
+          shift 2
+          ;;
+        --approved-by)
+          [[ $# -ge 2 && -z "$batch_approved_by" ]] ||
+            json_error "migration batch approver is duplicated"
+          batch_approved_by="$2"
+          shift 2
+          ;;
+        *) json_error "unknown migration batch argument: $1" ;;
+      esac
+    done
+    [[ "${FACTORY_RELEASE_CONTRACT_VERSION:-}" == "1.9.0" ]] ||
+      json_error "migration batches require contract 1.9.0"
+    factory_validate_kit_pin "$KIT_DIR" "$FACTORY_ROOT" ||
+      json_error "$FACTORY_KIT_PIN_ERROR"
+    [[ "${#batch_tickets[@]}" -ge 1 && "${#batch_tickets[@]}" -le 4 ]] ||
+      json_error "migration batch requires one to four tickets"
+    if [[ "$command_name" == "migrate-batch-plan" ]]; then
+      [[ -z "$batch_approve_hash$batch_approved_by" ]] ||
+        json_error "migration batch preview does not accept apply arguments"
+    else
+      [[ "$batch_approve_hash" =~ ^[0-9a-f]{64}$ ]] ||
+        json_error "migration batch approval hash is invalid"
+      [[ "$batch_approved_by" =~ ^[a-z0-9][a-z0-9._-]{0,127}$ &&
+         "$batch_approved_by" != "auto" ]] ||
+        json_error "migration batch approver is invalid"
+      [[ "${FACTORY_CONTROLLER_STATE_DIR:-}" == /* ]] ||
+        json_error "FACTORY_CONTROLLER_STATE_DIR is required for migration batch recovery"
+    fi
+    batch_args=()
+    for index in "${!batch_tickets[@]}"; do
+      validate_control_workdir "${batch_tickets[$index]}" "${batch_workdirs[$index]}"
+      batch_args+=(
+        --ticket-workdir "${batch_tickets[$index]}" "${batch_workdirs[$index]}"
+      )
+    done
+    batch_capacity="$(factory_dispatch_max_tickets \
+      "$FACTORY_ROOT" "$FACTORY_RELEASE_CONTRACT_VERSION")" ||
+      json_error "$(factory_dispatch_capacity_error "$FACTORY_RELEASE_CONTRACT_VERSION")"
+    batch_helper="$KIT_DIR/scripts/model-migration-batch.py"
+    [[ -f "$batch_helper" && ! -L "$batch_helper" ]] ||
+      json_error "sealed migration batch helper is missing or unsafe"
+    if [[ "$command_name" == "migrate-batch-plan" ]]; then
+      FACTORY_CERTIFIED_PRODUCT_ORIGIN="$FACTORY_TRUSTED_PRODUCT_ORIGIN" \
+        python3 -B "$batch_helper" plan --control "$KIT_DIR/scripts/model-control.sh" \
+        --factory-sha "$FACTORY_KIT_SHA" --capacity "$batch_capacity" \
+        "${batch_args[@]}"
+      exit $?
+    fi
+    if [[ -n "$CONTROL_GITHUB_TOKEN" ]]; then
+      printf '%s\n' "$CONTROL_GITHUB_TOKEN" |
+        FACTORY_CERTIFIED_PRODUCT_ORIGIN="$FACTORY_TRUSTED_PRODUCT_ORIGIN" \
+        python3 -B "$batch_helper" apply \
+        --control "$KIT_DIR/scripts/model-control.sh" \
+        --factory-sha "$FACTORY_KIT_SHA" --capacity "$batch_capacity" \
+        --approve-hash "$batch_approve_hash" --approved-by "$batch_approved_by" \
+        --state-dir "$FACTORY_CONTROLLER_STATE_DIR" --github-token-stdin \
+        "${batch_args[@]}"
+    else
+      FACTORY_CERTIFIED_PRODUCT_ORIGIN="$FACTORY_TRUSTED_PRODUCT_ORIGIN" \
+        python3 -B "$batch_helper" apply \
+        --control "$KIT_DIR/scripts/model-control.sh" \
+        --factory-sha "$FACTORY_KIT_SHA" --capacity "$batch_capacity" \
+        --approve-hash "$batch_approve_hash" --approved-by "$batch_approved_by" \
+        --state-dir "$FACTORY_CONTROLLER_STATE_DIR" "${batch_args[@]}"
+    fi
+    exit $?
     ;;
   migrate-plan|migrate)
     ticket="" workdir="" approve_hash="" readiness_hash="" approved_by=""

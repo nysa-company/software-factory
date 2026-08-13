@@ -85,9 +85,11 @@ priority, and model-fallback approval) is a one-use receipt issued by
 T-NNN]`. The receipt is anchored in the controller's state directory, is
 projected into the gitignored `factory/operator-map.json` that ticket
 sequencing reads, and gets a zero-authority audit copy under
-`factory/receipts/<T>/` committed in the product checkout. The map is a
-projection with nothing behind it, so there is no sync delay or staleness to
-wait on.
+`factory/receipts/<T>/` committed in the product checkout. Under Contract 1.9,
+a map entry is usable only while its exact receipt remains open; editing the
+map cannot manufacture authority. Ready and Canceled are also pushed to the
+canonical ticket branch, so Git can recover those lifecycle decisions after
+local controller or map loss.
 
 The operator owns the decisions a human should make:
 
@@ -112,6 +114,8 @@ The compact board flow is:
 - Building contains test-author and builder work.
 - Review contains reviewer and Narrator/evidence work.
 - Blocked-Escalated is reachable from any active phase.
+- Canceled is a durable terminal withdrawal reachable only from Backlog and
+  never starts planning or manufactures execution evidence.
 - Approved means the operator authorized the change; Done means merge and
   staging deployment were also confirmed.
 
@@ -170,6 +174,27 @@ running**. Never bypass a preflight failure.
 ## Quick start
 
 Read the [product brief](docs/product-brief.md), [architecture](docs/architecture.md), and [factory setup checklist](docs/factory-setup.md). Copy the required templates into the product repo, fill the blanks, run the validator, then start with the [walking skeleton](docs/operations/walking-skeleton.md). Do not create a ticket backlog before its staging URL works.
+
+For a Contract 1.9 production release, use the two release verbs instead of
+manually sequencing host setup, certification, activation, model selection,
+and migration:
+
+```bash
+bash scripts/factory-kit.sh release setup \
+  --project relay --product /absolute/relay --repo /absolute/software-factory \
+  --sha <factory-sha> --profile openai-priority-v1 --operator-id <operator-id>
+bash scripts/factory-kit.sh release resume \
+  --project relay --sha <factory-sha> \
+  --approve-hash <approval_sha256> --approved-by <operator-id>
+```
+
+`setup` installs and validates immutable inputs, prepares the project-local
+runtime, registry, and controller job, and returns one exact approval plan.
+`resume` applies only that stored hash and resumes crash-lost phases. If a
+machine-wide launcher/provider prerequisite needs changing, the first resume
+returns a second receipt-bound activation plan; review that new hash and run
+the same resume verb again. This keeps certification and activation authority
+separate without adding another command. A completed replay is read-only.
 
 For the complete transition and ownership rules, see
 [`docs/workflows/ticket-flow.md`](docs/workflows/ticket-flow.md) and

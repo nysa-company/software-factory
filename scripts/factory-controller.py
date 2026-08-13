@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Contract 1.8 non-agent ticket reconciliation controller."""
+"""Contract 1.8+ non-agent ticket reconciliation controller."""
 
 from __future__ import annotations
 
@@ -53,6 +53,7 @@ REFUSAL_READMISSION_SCHEMA = (
     "nysa.software-factory.refusal-readmission-attempt/v1"
 )
 QUALIFICATION_SCHEMA = "nysa.software-factory.qualification/v2"
+CONTROLLER_CONTRACTS = frozenset({"1.8.0", "1.9.0"})
 TICKET = re.compile(r"^T-[0-9]+$")
 SHA = re.compile(r"^[0-9a-f]{40}$")
 DIGEST = re.compile(r"^[0-9a-f]{64}$")
@@ -662,7 +663,7 @@ class Controller:
             value.get("schema") != "nysa.software-factory.ticket-passport/v1"
             or value.get("ticket") != ticket
             or value.get("project") != self.project
-            or value.get("contract_version") != "1.8.0"
+            or value.get("contract_version") not in CONTROLLER_CONTRACTS
         ):
             raise ControllerError("operator passport identity is invalid")
         return value
@@ -711,7 +712,7 @@ class Controller:
             value.get("branch") != claim["branch"],
             not isinstance(factory_sha, str) or SHA.fullmatch(factory_sha) is None,
             value.get("project") != self.project,
-            value.get("contract_version") != "1.8.0",
+            value.get("contract_version") not in CONTROLLER_CONTRACTS,
             not isinstance(value.get("consumed"), bool),
         )):
             if record:
@@ -1492,7 +1493,7 @@ class Controller:
                 or receipt_id
                 != hashlib.sha256((canonical(unsigned) + "\n").encode()).hexdigest()
                 or receipt.get("project") != self.project
-                or receipt.get("contract_version") != "1.8.0"
+                or receipt.get("contract_version") not in CONTROLLER_CONTRACTS
                 or receipt.get("qualification_mode") != "isolated"
                 or receipt.get("product_path") != str(self.product)
                 or receipt.get("status") != "pass"
@@ -4476,7 +4477,7 @@ class Controller:
         kit_shas = re.findall(r"^Kit-SHA:\s*(.*?)\s*$", ticket, re.M)
         return not any((
             hashlib.sha256(canonical_document(immutable)).hexdigest() != digest,
-            receipt.get("contract_version") != "1.8.0",
+            receipt.get("contract_version") not in CONTROLLER_CONTRACTS,
             receipt.get("factory_sha") != self.release_path.name,
             receipt.get("head_sha") != head,
             receipt.get("head_tree") != tree,
@@ -5906,7 +5907,7 @@ class Controller:
                 or receipt.get("ticket") != claim["ticket"]
                 or receipt.get("branch") != claim["branch"]
                 or receipt.get("project") != self.project
-                or receipt.get("contract_version") != "1.8.0"
+                or receipt.get("contract_version") not in CONTROLLER_CONTRACTS
                 or receipt.get("receipt_sha256") != hashlib.sha256(
                     canonical_document({
                         key: item for key, item in receipt.items()
@@ -7679,7 +7680,7 @@ class Controller:
         if (
             passport.get("ticket") != claim["ticket"]
             or passport.get("project") != self.project
-            or passport.get("contract_version") != "1.8.0"
+            or passport.get("contract_version") not in CONTROLLER_CONTRACTS
             or passport.get("branch") != claim["branch"]
             or local == passport.get("head_sha")
             or not self.exact_ticket_commit(
@@ -7889,7 +7890,7 @@ class Controller:
             or passport is None
             or passport.get("ticket") != ticket
             or passport.get("project") != self.project
-            or passport.get("contract_version") != "1.8.0"
+            or passport.get("contract_version") not in CONTROLLER_CONTRACTS
             or passport.get("factory_sha") != self.release_path.name
             or passport.get("branch") != claim.get("branch")
             or transition.get("head_sha") != passport.get("head_sha")
@@ -7968,7 +7969,7 @@ class Controller:
             or passport is None
             or passport.get("ticket") != ticket
             or passport.get("project") != self.project
-            or passport.get("contract_version") != "1.8.0"
+            or passport.get("contract_version") not in CONTROLLER_CONTRACTS
             or passport.get("factory_sha") != self.release_path.name
             or passport.get("branch") != claim.get("branch")
             or transition.get("head_sha") != passport.get("head_sha")
@@ -8119,7 +8120,7 @@ class Controller:
             if (
                 not isinstance(item, dict)
                 or set(item) != expected
-                or item.get("contract_version") != "1.8.0"
+                or item.get("contract_version") not in CONTROLLER_CONTRACTS
                 or not SHA.fullmatch(item.get("factory_sha", ""))
                 or not SHA.fullmatch(item.get("head_before", ""))
                 or not DIGEST.fullmatch(item.get("manifest_sha256", ""))
@@ -8223,7 +8224,7 @@ class Controller:
             or passport is None
             or passport.get("ticket") != ticket
             or passport.get("project") != self.project
-            or passport.get("contract_version") != "1.8.0"
+            or passport.get("contract_version") not in CONTROLLER_CONTRACTS
             or passport.get("factory_sha") != self.release_path.name
             or passport.get("current_state") != "Review"
             or passport.get("branch") != claim.get("branch")
@@ -8900,7 +8901,7 @@ class Controller:
                 )
                 or passport is None
                 or passport.get("project") != self.project
-                or passport.get("contract_version") != "1.8.0"
+                or passport.get("contract_version") not in CONTROLLER_CONTRACTS
                 or passport.get("factory_sha") != self.release_path.name
                 or passport.get("current_state") != "Review"
                 or passport.get("branch") != claim.get("branch")

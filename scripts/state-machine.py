@@ -3498,6 +3498,8 @@ def transition(args: argparse.Namespace, state: str) -> None:
         args, "ticket-state.sh", "--ticket", args.ticket,
         "--workdir", str(args.workdir), "--action", "transition", "--state", state,
     )
+    if getattr(args, "expected_head", ""):
+        args.expected_head = git(args.workdir, "rev-parse", "HEAD")
 
 
 def migrate_passport(args: argparse.Namespace) -> None:
@@ -3542,6 +3544,8 @@ def next_transition(args: argparse.Namespace) -> dict[str, Any]:
             args, "ticket-state.sh", "--ticket", args.ticket,
             "--workdir", str(args.workdir), "--action", "materialize",
         )
+        if expected_head:
+            args.expected_head = git(args.workdir, "rev-parse", "HEAD")
     declared = declared_dependencies(args)
     dependencies = unresolved_dependencies(args, declared)
     if not dependencies:

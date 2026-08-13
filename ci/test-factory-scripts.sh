@@ -38,6 +38,12 @@ TMP="$(cd "$TMP" && pwd -P)"
 STUB_BIN="$TMP/bin"
 FAILURES=0
 mkdir -p "$STUB_BIN"
+FACTORY_SCRIPT_HOME="$TMP/home"
+mkdir -m 700 "$FACTORY_SCRIPT_HOME" "$FACTORY_SCRIPT_HOME/.cursor"
+printf '%s\n' '{}' > "$FACTORY_SCRIPT_HOME/.cursor/auth.json"
+printf '%s\n' '{}' > "$FACTORY_SCRIPT_HOME/.cursor/cli-config.json"
+chmod 600 "$FACTORY_SCRIPT_HOME/.cursor/auth.json" "$FACTORY_SCRIPT_HOME/.cursor/cli-config.json"
+export HOME="$FACTORY_SCRIPT_HOME"
 
 cleanup() {
   trap - EXIT HUP INT TERM

@@ -692,6 +692,22 @@ PY
 )" || die "active release contract manifest is invalid"
 [[ "$RELEASE_CONTRACT" == "$ACTIVE_CONTRACT" ]] ||
   die "active record and release contract disagree"
+PROJECT_RUNTIME_ROOT="${KITS_ROOT%/*}/project-runtimes/$PROJECT"
+PROJECT_RUNTIME_BIN="$PROJECT_RUNTIME_ROOT/bin"
+PROJECT_RUNTIME_JOURNAL="$PROJECT_RUNTIME_ROOT/runtime-pin-journal.json"
+if [[ "$QUALIFICATION_LAUNCHER" != "1" &&
+      -n "$ACTIVE_RUNTIME_NODE$ACTIVE_RUNTIME_NPM" &&
+      ( -e "$PROJECT_RUNTIME_JOURNAL" || -L "$PROJECT_RUNTIME_JOURNAL" ) ]]; then
+  require_managed_directory "$PROJECT_RUNTIME_ROOT" "project runtime root"
+  require_managed_directory "$PROJECT_RUNTIME_BIN" "project runtime bin"
+  require_managed_file "$PROJECT_RUNTIME_JOURNAL" "project runtime journal"
+  "$PYTHON_BIN" -I -S "$RELEASE_PATH/scripts/owner-runtime-pin.py" check \
+    --journal "$PROJECT_RUNTIME_JOURNAL" >/dev/null ||
+    die "project runtime pin no longer matches its approved transaction"
+  SAFE_PATH="$PROJECT_RUNTIME_BIN:$HOME/.factory/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+  PATH="$SAFE_PATH"
+  export PATH
+fi
 if [[ "$QUALIFICATION_LAUNCHER" == "1" && "$ACTIVE_RUNTIME_TUPLE" != "{}" ]]; then
   FACTORY_CERTIFICATION_TUPLE="$ACTIVE_RUNTIME_TUPLE" \
     "$PYTHON_BIN" -I "$RELEASE_PATH/scripts/certification-preflight.py" \
@@ -809,6 +825,13 @@ if [[ "$ISOLATED_TEST_LAUNCHER" == "1" ]]; then
     "FACTORY_TRUSTED_TEST_HARNESS=1"
     "FACTORY_ADAPTER_OVERRIDE=mock"
   )
+  if [[ "${FACTORY_KIT_TEST_MODE:-0}" == "1" &&
+        "${FACTORY_KIT_CANONICAL_ORIGIN:-}" == /* ]]; then
+    HELPER_ENV+=(
+      "FACTORY_KIT_TEST_MODE=1"
+      "FACTORY_KIT_CANONICAL_ORIGIN=$FACTORY_KIT_CANONICAL_ORIGIN"
+    )
+  fi
   if [[ -n "${FACTORY_DOCTOR_TEST_LAUNCHCTL:-}" ]]; then
     HELPER_ENV+=("FACTORY_DOCTOR_TEST_LAUNCHCTL=$FACTORY_DOCTOR_TEST_LAUNCHCTL")
   fi
@@ -1264,9 +1287,18 @@ PY
     controller_state_dir
     CONTROLLER="$RELEASE_PATH/scripts/factory-controller.py"
     require_managed_file "$CONTROLLER" "active release controller"
+    CONTROLLER_ENV=("${HELPER_ENV[@]}")
+    if [[ "$ISOLATED_TEST_LAUNCHER" == "1" ]]; then
+      CONTROLLER_ENV+=(
+        "FACTORY_LAUNCH_TEST_MODE=1"
+        "FACTORY_LAUNCH_TEST_HOME=$HOME"
+        "FACTORY_KITS_ROOT=$KITS_ROOT"
+        "HERMES_FACTORY_PROFILE=$PROFILE_DIR"
+      )
+    fi
     cleanup_runtime
     trap - EXIT HUP INT TERM
-    exec "${HELPER_ENV[@]}" "$PYTHON_BIN" -I -S "$CONTROLLER" \
+    exec "${CONTROLLER_ENV[@]}" "$PYTHON_BIN" -I -S "$CONTROLLER" \
       --launcher "$SELF_PATH" \
       --project "$PROJECT" \
       --product-root "$PRODUCT_ROOT" \
@@ -1467,6 +1499,10 @@ PY
         die "cannot secure trusted worktree root"
       require_managed_directory "$WORKTREE_PARENT" "trusted worktree parent"
       require_managed_directory "$WORKTREE_ROOT" "trusted project worktree root"
+    fi
+    if [[ "$ACTIVE_CONTRACT" == "1.8.0" || "$ACTIVE_CONTRACT" == "1.9.0" ]]; then
+      controller_state_dir
+      HELPER_ENV+=("FACTORY_CONTROLLER_STATE_DIR=$CONTROLLER_STATE_DIR")
     fi
     add_certified_origin_env
     cleanup_runtime
@@ -1971,6 +2007,37 @@ PY
         fi
         MODEL_ARGS=("$MODEL_ACTION" --scope-type "$MODEL_SCOPE_TYPE" --scope-id "$MODEL_SCOPE_ID")
         MODEL_MUTATION=1
+        ;;
+      migrate-batch-plan|migrate-batch)
+        [[ "$CONTRACT_VERSION" == "1.9.0" ]] ||
+          die "model route migration batches require contract 1.9.0"
+        [[ "${!#}" == "--json" ]] || usage
+        set -- "${@:1:$(($# - 1))}"
+        shift
+        MODEL_ARGS=("$MODEL_ACTION")
+        MODEL_BATCH_COUNT=0
+        if [[ "$MODEL_ACTION" == "migrate-batch" ]]; then
+          [[ $# -ge 4 && "$1" == "--approve-hash" &&
+             "$3" == "--approved-by" ]] || usage
+          [[ "$2" =~ ^[0-9a-f]{64}$ ]] ||
+            die "invalid migration batch approval hash"
+          [[ "$4" =~ ^[a-z0-9][a-z0-9._-]{0,127}$ && "$4" != "auto" ]] ||
+            die "invalid migration batch approver identifier"
+          MODEL_ARGS+=(--approve-hash "$2" --approved-by "$4")
+          shift 4
+          MODEL_MUTATION=1
+        fi
+        while [[ $# -gt 0 ]]; do
+          [[ $# -ge 4 && "$1" == "--ticket" && "$3" == "--workdir" ]] || usage
+          [[ "$2" =~ ^T-[0-9]+$ ]] || die "invalid ticket identifier"
+          resolve_product_workdir "$4"
+          validate_ticket_worktree "$2"
+          MODEL_ARGS+=(--ticket "$2" --workdir "$RESOLVED_WORKDIR")
+          MODEL_BATCH_COUNT=$((MODEL_BATCH_COUNT + 1))
+          shift 4
+        done
+        [[ "$MODEL_BATCH_COUNT" -ge 1 && "$MODEL_BATCH_COUNT" -le 4 ]] || usage
+        add_certified_origin_env
         ;;
       migrate-plan)
         [[ "$CONTRACT_VERSION" == "1.4.0" || "$CONTRACT_VERSION" == "1.5.0" ||

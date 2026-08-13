@@ -186,6 +186,24 @@ def _latest_open(
     return candidates[-1] if candidates else None
 
 
+def _exact(
+    state_dir: Path, ticket: str, action: str, receipt_sha256: str,
+) -> tuple[Path, dict[str, Any]] | None:
+    if not DIGEST.fullmatch(receipt_sha256):
+        raise OperatorReceiptError("operator receipt digest is invalid")
+    ticket_dir = receipt_root(state_dir) / ticket
+    if not ticket_dir.is_dir():
+        return None
+    matches = []
+    for path in sorted(ticket_dir.glob(f"{action}-*.json")):
+        value = safe_receipt(path)
+        if value["receipt_sha256"] == receipt_sha256:
+            matches.append((path, value))
+    if len(matches) > 1:
+        raise OperatorReceiptError("operator receipt digest is ambiguous")
+    return matches[0] if matches else None
+
+
 def peek(
     state_dir: Path, ticket: str, action: str, binding: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
@@ -199,6 +217,44 @@ def peek(
         for key, expected in (binding or {}).items():
             if value["payload"].get(key) != expected:
                 return None
+        return value
+
+
+def peek_exact(
+    state_dir: Path, ticket: str, action: str, receipt_sha256: str,
+    binding: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Return one exact unconsumed receipt bound to a map projection."""
+    _validate_identity(ticket, action)
+    with _locked(state_dir):
+        found = _exact(state_dir, ticket, action, receipt_sha256)
+        if not found:
+            return None
+        _, value = found
+        if value["consumed"] or any(
+            value["payload"].get(key) != expected
+            for key, expected in (binding or {}).items()
+        ):
+            return None
+        return value
+
+
+def read_exact(
+    state_dir: Path, ticket: str, action: str, receipt_sha256: str,
+    binding: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Return one exact receipt, including a consumed crash-recovery record."""
+    _validate_identity(ticket, action)
+    with _locked(state_dir):
+        found = _exact(state_dir, ticket, action, receipt_sha256)
+        if not found:
+            return None
+        _, value = found
+        if any(
+            value["payload"].get(key) != expected
+            for key, expected in (binding or {}).items()
+        ):
+            return None
         return value
 
 
@@ -218,6 +274,32 @@ def verify_consume(
                 f"no unconsumed operator {action} receipt for {ticket}"
             )
         path, value = found
+        for key, expected in (binding or {}).items():
+            if value["payload"].get(key) != expected:
+                raise OperatorReceiptError(
+                    f"operator {action} receipt binding mismatch: {key}"
+                )
+        value["consumed"] = True
+        value["consumed_at_epoch"] = int(time.time())
+        write_atomic(path, value)
+        return value
+
+
+def verify_consume_exact(
+    state_dir: Path, ticket: str, action: str, receipt_sha256: str,
+    binding: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Consume the exact receipt named by an operator-map projection."""
+    _validate_identity(ticket, action)
+    with _locked(state_dir):
+        found = _exact(state_dir, ticket, action, receipt_sha256)
+        if not found:
+            raise OperatorReceiptError(
+                f"operator {action} receipt is unavailable for {ticket}"
+            )
+        path, value = found
+        if value["consumed"]:
+            raise OperatorReceiptError("operator receipt was already consumed")
         for key, expected in (binding or {}).items():
             if value["payload"].get(key) != expected:
                 raise OperatorReceiptError(

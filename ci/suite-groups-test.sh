@@ -39,6 +39,8 @@ check_suite() {
     hermes-contract) expected_command="$ROOT/ci/hermes-contract-test.sh"; expected_group=2 ;;
     factory-kit) expected_command="$ROOT/ci/factory-kit-test.sh"; expected_group=3 ;;
     factory-controller|ticket-passport) expected_group=1 ;;
+    ticket-pr) expected_group=2 ;;
+    model-fallback) expected_group=3 ;;
     ticket-transition-policy) expected_group=3 ;;
   esac
   if [[ -n "$expected_group" && "$group" != "$expected_group" ]]; then

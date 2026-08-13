@@ -28,8 +28,8 @@ Read [architecture.md](architecture.md) first. It defines the kit/product bounda
   otherwise deployable code.
 - Leave `MAX_CONCURRENT_TICKETS` absent to use the contract default. Contracts
   1.1 through 1.5 default to `1` and accept integers through `4`; Contracts
-  1.6 and 1.7 default to `4` and accept `1` through `6`; Contract 1.8 defaults
-  to `4` and accepts `1` through `4`. Set a value above `1` only after a bounded
+  1.6 and 1.7 default to `4` and accept `1` through `6`; Contracts 1.8 and 1.9
+  default to `4` and accept `1` through `4`. Set a value above `1` only after a bounded
   concurrency pilot is approved. This is the one coupled worktree/provider
   capacity setting. Contract 1.8 at capacity above one requires exact
   owner-approved subscription concurrency for every enabled Cursor, Claude
@@ -90,13 +90,16 @@ anchored in the controller state directory (`$PROJECTS_DIR/<slug>/controller`).
 Each verb issues the receipt, projects the decision into the gitignored
 `factory/operator-map.json` that ticket sequencing reads, and writes a
 zero-authority audit copy under `factory/receipts/<T>/` committed in the
-product checkout. The map is a pure projection with nothing behind it — there
-is no setup step, service, or credential to install for it, and no
-sync/freshness concept to configure. Git owns execution details; the operator
-owns priority, Ready, approval, unblock, and initiative (set directly on the
+product checkout. Contract 1.9 accepts a map overlay only when it matches the
+exact open receipt; a hand edit has no authority. Ready and Canceled also
+materialize and push on the canonical ticket branch, making Git the recoverable
+lifecycle record even when local map/controller state is lost. Canceled is
+terminal, is accepted only from Backlog, and cannot be a factory-owned target.
+There is no sync service or freshness setting. The operator owns priority,
+Ready, approval, unblock, cancellation, and initiative (set directly on the
 ticket via `Initiative:`). There is no push notification by design; run
-`operator pending` to see what needs you, or consume `operator-event-watch --json`
-if you want to build one later.
+`operator pending` to see what needs you, or consume
+`operator-event-watch --json` if you want to build one later.
 
 Fresh qualification preparation for every selected ticket requires
 `--operator-map-seed <absolute-owner-only-operator-map.json>` (or
@@ -158,10 +161,19 @@ product checkout.
   launcher PATH. Run it before readiness or qualification preparation; those
   gates, certification, activation, and launch still independently fail closed
   on tuple drift.
+- The Contract 1.9 `release setup` path does not use the global links above.
+  It reads the same reviewed v2 declaration, accepts exactly one compatible
+  physical runtime (or one explicit `--runtime-bin`), and writes an exact
+  project-local Node/npm/npx transaction under
+  `~/.factory/project-runtimes/<project>/`. The production launcher
+  verifies that signed transaction before prepending only that project's bin
+  directory. Zero or multiple compatible candidates are a refusal; setup does
+  not install Node, source shell profiles, or infer a version from ambient
+  PATH.
 - Create the dedicated factory profile at
   `~/.hermes/profiles/factory`. Install the canonical `SOUL.md` and
   `skills/factory-dispatch/SKILL.md` from `integrations/hermes/templates/`.
-- For Contract 1.8, instantiate
+- For Contracts 1.8 and 1.9, instantiate
   `scripts/launchd/com.factory.controller.plist.template` with the exact
   project, home, and product paths and load it as a separate LaunchAgent.
   Keep its `Interactive` process type: macOS background QoS can exhaust the
@@ -332,6 +344,23 @@ product checkout.
   bash scripts/factory-kit.sh certify \
     --project "<project>" --product "<absolute-product-path>" --sha "<full-sha>"
   ```
+
+  For the first activation of a new Contract 1.9 project, use the resumable
+  orchestration after the exact product pin and runtime/provider prerequisites
+  are ready:
+
+  ```bash
+  bash scripts/factory-kit.sh bootstrap --project "<project>" \
+    --product "<absolute-product-path>" --sha "<full-sha>" --repo "$PWD"
+  bash scripts/factory-kit.sh bootstrap-status --project "<project>" \
+    --sha "<full-sha>" --json
+  ```
+
+  It runs the same install, certify, pause, and activate gates and records each
+  phase in an owner-only signed release journal. Retries resume the exact bound
+  candidate; completed replay is read-only. It refuses an already-active
+  different release and deliberately leaves maintenance in place for health,
+  model activation, and approved ticket migration.
   A fresh install records 24-hour owner-only kit-suite evidence by default.
   Authenticated successful GitHub Actions evidence for the exact protected-main
   SHA and its full Linux, macOS, aggregate, and immutability jobs is mandatory;
@@ -440,7 +469,7 @@ All boxes checked = the factory may start. Any box unchecked = it may not.
 - [ ] Metrics ledger file exists and the run wrapper writes to it
 - [ ] `factory/runs/`, `factory/.active-runs/`, `factory/.provider.lock/`, and `factory/runtime-ledger.csv` are ignored; preflight or the first normal reconciliation creates the durable real runs root; and `project-ledger` can deterministically project it from a clean close-out worktree only after every active or ambiguous claim and `factory/runs/*.pid` record is reconciled
 - [ ] A duplicate ticket-and-role launch refuses an existing claim without creating a manifest, and malformed telemetry retains the full reservation
-- [ ] Contract 1.8 multi-ticket products report provider concurrency ready in
+- [ ] Contract 1.8/1.9 multi-ticket products report provider concurrency ready in
       doctor, cover Cursor, Claude Code, and Codex at ticket capacity, and use
       distinct attempt-local homes; older and single-ticket products retain the
       product-level serialized provider lock

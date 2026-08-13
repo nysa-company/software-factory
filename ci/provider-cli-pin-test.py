@@ -316,6 +316,29 @@ exit 2
         finally:
             alias.unlink()
 
+    def test_explicit_local_origin_is_accepted_only_in_factory_test_mode(self) -> None:
+        manifest = self.kits / "manifests" / f"{SHA}.json"
+        value = json.loads(manifest.read_text())
+        local_origin = self.home / "software-factory-origin"
+        value["canonical_origin"] = str(local_origin)
+        manifest.write_text(json.dumps(value))
+        manifest.chmod(0o600)
+        test_env = {
+            **self.env,
+            "FACTORY_KIT_TEST_MODE": "1",
+            "FACTORY_KIT_CANONICAL_ORIGIN": str(local_origin) + ".git",
+        }
+        accepted = self.command("plan", env=test_env)
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        refused = self.command(
+            "plan",
+            env={
+                **test_env,
+                "FACTORY_KIT_TEST_MODE": "0",
+            },
+        )
+        self.assertNotEqual(refused.returncode, 0)
+
     def test_stale_approval_and_foreign_cursor_path_are_refused(self) -> None:
         approval = self.plan()["approval_sha256"]
         with (self.factory / "global.env").open("a") as stream:

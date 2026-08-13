@@ -126,8 +126,8 @@ def atomic_write(path, value, mode):
 
 def consume(mapping, path, mode, ticket, approval, state_dir):
     try:
-        operator_receipt.verify_consume(
-            state_dir, ticket, "fallback",
+        operator_receipt.verify_consume_exact(
+            state_dir, ticket, "fallback", approval["receipt_sha256"],
             {"preview_sha256": approval["approval_hash"]},
         )
     except operator_receipt.OperatorReceiptError as exc:

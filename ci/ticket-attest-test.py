@@ -738,6 +738,24 @@ else:
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("no unconsumed operator approval", result.stderr)
 
+    def test_approval_consumes_map_bound_receipt_not_newest_open_receipt(self):
+        self.bundle()
+        selected = self.issue_approve_receipt()
+        newest = self.issue_approve_receipt(blob="0" * 40)
+        self.write_operator_overlay(
+            "2099-01-01T00:00:00Z", selected["receipt_sha256"],
+        )
+
+        result = self.attest("approval")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(operator_receipt.read_exact(
+            self.controller, "T-700", "approve", selected["receipt_sha256"],
+        )["consumed"])
+        self.assertFalse(operator_receipt.read_exact(
+            self.controller, "T-700", "approve", newest["receipt_sha256"],
+        )["consumed"])
+
     def test_approval_refuses_already_consumed_receipt(self):
         self.bundle()
         receipt = self.issue_approve_receipt()

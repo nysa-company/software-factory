@@ -113,6 +113,18 @@ print("" if value is None else value)
 PY
 }
 
+project_receipt_count() {
+  python3 - "$STATE/receipts" "$1" "$2" <<'PY'
+import json, pathlib, sys
+root, project, factory_sha = pathlib.Path(sys.argv[1]), *sys.argv[2:]
+print(sum(
+    1 for path in root.glob("*.json")
+    if (value := json.loads(path.read_text())).get("project") == project
+    and value.get("kit_sha") == factory_sha
+))
+PY
+}
+
 failure_receipt_valid() {
   python3 - "$1" <<'PY'
 import hashlib, json, pathlib, sys
@@ -2134,15 +2146,20 @@ ACTIVE_ALPHA="$STATE/projects/alpha/active.json"
   fail "first active generation is release a"
 
 OPERATOR_PRODUCT="$TMP/operator-product"
+OPERATOR_REMOTE="$TMP/operator-product.git"
 mkdir -p "$OPERATOR_PRODUCT/factory/tickets"
-git -C "$OPERATOR_PRODUCT" init -q
+git init --bare -q "$OPERATOR_REMOTE"
+git -C "$OPERATOR_PRODUCT" init -q -b main
 git -C "$OPERATOR_PRODUCT" config user.name "Factory Test"
 git -C "$OPERATOR_PRODUCT" config user.email "test@local"
-printf '%s\n' 'factory/operator-map.json' > "$OPERATOR_PRODUCT/.gitignore"
+git -C "$OPERATOR_PRODUCT" remote add origin "$OPERATOR_REMOTE"
+printf '%s\n' 'factory/operator-map.json' 'factory/.operator-map.lock' \
+  'factory/.operator-clears/' > "$OPERATOR_PRODUCT/.gitignore"
 printf '%s\n' '# T-777' 'State: Backlog' 'Priority: normal' > \
   "$OPERATOR_PRODUCT/factory/tickets/T-777.md"
 git -C "$OPERATOR_PRODUCT" add -A
 git -C "$OPERATOR_PRODUCT" commit -q -m "seed backlog ticket for operator authority"
+git -C "$OPERATOR_PRODUCT" push -qu origin main
 expect_success "operator ready issues a one-use receipt and projects the map" \
   operator ready --project alpha --product "$OPERATOR_PRODUCT" --ticket T-777
 python3 - "$STATE/projects/alpha/controller" "$OPERATOR_PRODUCT" <<'PY'
@@ -2151,21 +2168,29 @@ state, product = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
 receipt_path = state / "operator-receipts/T-777/ready-1.json"
 receipt = json.loads(receipt_path.read_text())
 assert receipt["schema"] == "nysa.software-factory.operator-receipt/v1"
-assert receipt["consumed"] is False
+assert receipt["consumed"] is True
 mapping = json.loads((product / "factory/operator-map.json").read_text())
 assert sorted(mapping) == ["_config", "_sync", "initiatives", "tickets"]
-operator = mapping["tickets"]["T-777"]["operator"]
-assert operator["state"] == "Ready"
-assert operator["state_base"] == "backlog"
-audit = json.loads(
-    (product / "factory/receipts/T-777/ready-1.json").read_text()
-)
+assert "operator" not in mapping["tickets"]["T-777"]
+import subprocess
+audit = json.loads(subprocess.run([
+    "git", "-C", str(product), "show",
+    "refs/remotes/origin/ticket/T-777:factory/receipts/T-777/ready-1.json",
+], check=True, capture_output=True, text=True).stdout)
 assert audit["audit"] == "no-authority"
 assert "nonce" not in audit
 assert audit["receipt_sha256"] == receipt["receipt_sha256"]
+ticket = subprocess.run([
+    "git", "-C", str(product), "show",
+    "refs/remotes/origin/ticket/T-777:factory/tickets/T-777.md",
+], check=True, capture_output=True, text=True).stdout
+assert "State: Ready" in ticket
 PY
+expect_success "operator priority remains a pending one-use receipt" \
+  operator priority --project alpha --product "$OPERATOR_PRODUCT" \
+  --ticket T-777 --priority high
 expect_success "operator pending lists the open receipt" \
-  operator pending --project alpha --product "$PRODUCT_ONE"
+  operator pending --project alpha --product "$OPERATOR_PRODUCT"
 [[ "$LAST_OUTPUT" == *'"ticket": "T-777"'* ]] &&
   pass "pending output names the open receipt" ||
   fail "pending output names the open receipt" "$LAST_OUTPUT"
@@ -2649,6 +2674,194 @@ else
   fail "non-ticket changes retain full product certification"
 fi
 unset FACTORY_KIT_TEST_CERTIFICATION_TRACE
+
+PRODUCT_BOOTSTRAP_UNSAFE="$(make_product product-bootstrap-unsafe)"
+set_pin "$PRODUCT_BOOTSTRAP_UNSAFE" "$SHA_A"
+set_ticket_lease "$PRODUCT_BOOTSTRAP_UNSAFE" "$SHA_A"
+commit_all "$PRODUCT_BOOTSTRAP_UNSAFE" "prepare unsafe bootstrap product"
+push_main "$PRODUCT_BOOTSTRAP_UNSAFE"
+mkdir "$PRODUCT_BOOTSTRAP_UNSAFE/factory/runs"
+chmod 777 "$PRODUCT_BOOTSTRAP_UNSAFE/factory/runs"
+expect_failure "bootstrap rejects a broadly writable empty-run authority" \
+  bootstrap --project bootstrap-unsafe --product "$PRODUCT_BOOTSTRAP_UNSAFE" \
+  --sha "$SHA_A" --repo "$KIT_REPO"
+[[ "$LAST_OUTPUT" == *"product runtime directory is unsafe"* ]] ||
+  fail "bootstrap reports the unsafe empty-run authority" "$LAST_OUTPUT"
+
+PRODUCT_BOOTSTRAP="$(make_product product-bootstrap)"
+set_pin "$PRODUCT_BOOTSTRAP" "$SHA_A"
+set_ticket_lease "$PRODUCT_BOOTSTRAP" "$SHA_A"
+commit_all "$PRODUCT_BOOTSTRAP" "lease bootstrap product to release a"
+push_main "$PRODUCT_BOOTSTRAP"
+export FACTORY_KIT_TEST_FAIL_BOOTSTRAP_AFTER_PHASE=install
+expect_failure "bootstrap interruption preserves installed release progress" \
+  bootstrap --project bootstrap --product "$PRODUCT_BOOTSTRAP" \
+  --sha "$SHA_A" --repo "$KIT_REPO"
+unset FACTORY_KIT_TEST_FAIL_BOOTSTRAP_AFTER_PHASE
+BOOTSTRAP_JOURNAL="$STATE/projects/bootstrap/release-journal/$SHA_A.json"
+if python3 - "$PRODUCT_BOOTSTRAP" <<'PY'
+import os, pathlib, stat, sys
+root = pathlib.Path(sys.argv[1])
+for relative in ("factory/runs", "factory/.active-runs"):
+    path = root / relative
+    info = path.lstat()
+    assert not path.is_symlink() and stat.S_ISDIR(info.st_mode)
+    assert info.st_uid == os.geteuid() and stat.S_IMODE(info.st_mode) == 0o700
+    assert not any(path.iterdir())
+PY
+then
+  pass "bootstrap provisions secure empty-run authority"
+else
+  fail "bootstrap provisions secure empty-run authority"
+fi
+if [[ "$(json_value "$BOOTSTRAP_JOURNAL" phases.install.status)" == "pass" &&
+      "$(project_receipt_count bootstrap "$SHA_A")" == "0" ]]; then
+  pass "install checkpoint resumes before certification"
+else
+  fail "install checkpoint resumes before certification"
+fi
+export FACTORY_KIT_TEST_FAIL_BOOTSTRAP_AFTER_PHASE=certify
+expect_failure "bootstrap interruption preserves certified release progress" \
+  bootstrap --project bootstrap --product "$PRODUCT_BOOTSTRAP" \
+  --sha "$SHA_A" --repo "$KIT_REPO"
+unset FACTORY_KIT_TEST_FAIL_BOOTSTRAP_AFTER_PHASE
+if python3 - "$BOOTSTRAP_JOURNAL" <<'PY'
+import hashlib, json, pathlib, sys
+value = json.loads(pathlib.Path(sys.argv[1]).read_text())
+body = {key: item for key, item in value.items() if key != "record_sha256"}
+canonical = (json.dumps(body, sort_keys=True, separators=(",", ":")) + "\n").encode()
+assert value["record_sha256"] == hashlib.sha256(canonical).hexdigest()
+assert value["phases"]["install"]["status"] == "pass"
+assert value["phases"]["certify"]["status"] == "pass"
+assert "pause" not in value["phases"]
+PY
+then
+  pass "bootstrap journal binds recoverable phase progress"
+else
+  fail "bootstrap journal binds recoverable phase progress"
+fi
+[[ "$(project_receipt_count bootstrap "$SHA_A")" == "1" ]] &&
+  pass "interrupted bootstrap creates one certification receipt" ||
+  fail "interrupted bootstrap creates one certification receipt"
+export FACTORY_KIT_TEST_FAIL_BOOTSTRAP_AFTER_PHASE=pause
+expect_failure "bootstrap interruption preserves drained release progress" \
+  bootstrap --project bootstrap --product "$PRODUCT_BOOTSTRAP" \
+  --sha "$SHA_A" --repo "$KIT_REPO"
+unset FACTORY_KIT_TEST_FAIL_BOOTSTRAP_AFTER_PHASE
+if [[ "$(json_value "$BOOTSTRAP_JOURNAL" phases.pause.status)" == "pass" &&
+      ! -e "$STATE/projects/bootstrap/active.json" ]]; then
+  pass "pause checkpoint resumes before activation"
+else
+  fail "pause checkpoint resumes before activation"
+fi
+expect_success "bootstrap resumes without repeating certification" \
+  bootstrap --project bootstrap --product "$PRODUCT_BOOTSTRAP" \
+  --sha "$SHA_A" --repo "$KIT_REPO"
+BOOTSTRAP_ACTIVE="$STATE/projects/bootstrap/active.json"
+if python3 - "$BOOTSTRAP_JOURNAL" "$BOOTSTRAP_ACTIVE" "$SHA_A" <<'PY'
+import json, pathlib, sys
+journal = json.loads(pathlib.Path(sys.argv[1]).read_text())
+active = json.loads(pathlib.Path(sys.argv[2]).read_text())
+factory_sha = sys.argv[3]
+assert journal["phases"]["bootstrap"]["status"] == "pass"
+assert all(journal["phases"][phase]["status"] == "pass" for phase in (
+    "install", "certify", "pause", "activate",
+))
+epochs = [event["observed_epoch_ms"] for event in journal["events"]]
+assert epochs == sorted(epochs)
+assert active["kit_sha"] == factory_sha and active["generation"] == 1
+activation = next(pathlib.Path(sys.argv[2]).parent.joinpath("activation-journal").glob("*.json"))
+activation_value = json.loads(activation.read_text())
+assert activation_value["phase"] == "committed"
+assert [event["phase"] for event in activation_value["phase_events"]] == [
+    "prepared", "receipt_claimed", "maintenance_published", "launch_drained",
+    "services_stopped", "activation_record_switched", "integration_bundle_switched",
+    "services_started", "healthy", "committed",
+]
+assert [event["observed_epoch_ms"] for event in activation_value["phase_events"]] == sorted(
+    event["observed_epoch_ms"] for event in activation_value["phase_events"]
+)
+PY
+then
+  pass "bootstrap trace and activation trace are complete and ordered"
+else
+  fail "bootstrap trace and activation trace are complete and ordered"
+fi
+BOOTSTRAP_STATE_BEFORE="$(state_snapshot)"
+expect_success "completed bootstrap is idempotent" \
+  bootstrap --project bootstrap --product "$PRODUCT_BOOTSTRAP" \
+  --sha "$SHA_A" --repo "$KIT_REPO"
+BOOTSTRAP_STATE_AFTER="$(state_snapshot)"
+[[ "$(project_receipt_count bootstrap "$SHA_A")" == "1" &&
+   "$(json_value "$BOOTSTRAP_ACTIVE" generation)" == "1" &&
+   "$BOOTSTRAP_STATE_BEFORE" == "$BOOTSTRAP_STATE_AFTER" ]] &&
+  pass "bootstrap replay creates no receipt or activation generation" ||
+  fail "bootstrap replay creates no receipt or activation generation"
+expect_success "bootstrap status returns the signed release trace" \
+  bootstrap-status --project bootstrap --sha "$SHA_A" --json
+if python3 - "$LAST_OUTPUT" "$SHA_A" <<'PY'
+import json, sys
+value = json.loads(sys.argv[1])
+assert value["identity"]["factory_sha"] == sys.argv[2]
+assert value["phases"]["bootstrap"]["status"] == "pass"
+PY
+then
+  pass "bootstrap JSON status identifies the completed candidate"
+else
+  fail "bootstrap JSON status identifies the completed candidate" "$LAST_OUTPUT"
+fi
+PRODUCT_BOOTSTRAP_LEGACY="$(make_product product-bootstrap-legacy)"
+git -C "$PRODUCT_BOOTSTRAP_LEGACY" rm -q factory/certification-plan.json
+cat > "$PRODUCT_BOOTSTRAP_LEGACY/factory/certify.sh" <<'EOF'
+#!/usr/bin/env bash
+set -eu
+[[ "$HOME" == *factory-kit-certification* ]]
+[[ "$FACTORY_KIT_RELEASE" == *factory-kit-certification*/release ]]
+EOF
+set_pin "$PRODUCT_BOOTSTRAP_LEGACY" "$SHA_A"
+set_ticket_lease "$PRODUCT_BOOTSTRAP_LEGACY" "$SHA_A"
+commit_all "$PRODUCT_BOOTSTRAP_LEGACY" "prepare legacy bootstrap product"
+push_main "$PRODUCT_BOOTSTRAP_LEGACY"
+expect_success "bootstrap accepts product without an optional runtime tuple" \
+  bootstrap --project bootstrap-legacy --product "$PRODUCT_BOOTSTRAP_LEGACY" \
+  --sha "$SHA_A" --repo "$KIT_REPO"
+LEGACY_ACTIVE="$STATE/projects/bootstrap-legacy/active.json"
+LEGACY_RECEIPT="$STATE/receipts/consumed/$(json_value "$LEGACY_ACTIVE" receipt_id).json"
+if python3 - "$LEGACY_ACTIVE" "$LEGACY_RECEIPT" <<'PY'
+import json, pathlib, sys
+active = json.loads(pathlib.Path(sys.argv[1]).read_text())
+receipt = json.loads(pathlib.Path(sys.argv[2]).read_text())
+assert "runtime_tuple" not in active
+assert "runtime_tuple" not in receipt
+PY
+then
+  pass "legacy bootstrap preserves absent optional runtime tuple"
+else
+  fail "legacy bootstrap preserves absent optional runtime tuple"
+fi
+cp "$BOOTSTRAP_JOURNAL" "$TMP/bootstrap-journal.saved"
+chmod u+w "$BOOTSTRAP_JOURNAL"
+python3 - "$BOOTSTRAP_JOURNAL" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+value = json.loads(path.read_text())
+value["phases"]["bootstrap"]["status"] = "failed"
+path.write_text(json.dumps(value) + "\n")
+PY
+chmod 600 "$BOOTSTRAP_JOURNAL"
+expect_failure "bootstrap status rejects a tampered release trace" \
+  bootstrap-status --project bootstrap --sha "$SHA_A" --json
+cp "$TMP/bootstrap-journal.saved" "$BOOTSTRAP_JOURNAL"
+chmod 600 "$BOOTSTRAP_JOURNAL"
+printf '%s\n' "$SHA_B" > "$PRODUCT_BOOTSTRAP/factory/KIT_PIN"
+set_ticket_lease "$PRODUCT_BOOTSTRAP" "$SHA_B"
+commit_all "$PRODUCT_BOOTSTRAP" "prepare a different bootstrap candidate"
+push_main "$PRODUCT_BOOTSTRAP"
+expect_failure "bootstrap refuses to replace an active release" \
+  bootstrap --project bootstrap --product "$PRODUCT_BOOTSTRAP" \
+  --sha "$SHA_B" --repo "$KIT_REPO"
+[[ "$LAST_OUTPUT" == *"use the upgrade runbook"* ]] ||
+  fail "bootstrap reports its initial-release boundary" "$LAST_OUTPUT"
 
 expect_failure "invalid slug cannot traverse project state" status --project "../alpha"
 expect_failure "automatic prune remains unavailable" prune

@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Deterministic GitHub policy evidence for FACTORY_KIT_TEST_MODE release proofs.
+set -eu
+
+endpoint=""
+for argument in "$@"; do
+  case "$argument" in repos/*) endpoint="$argument" ;; esac
+done
+
+case "$endpoint" in
+  repos/nysa-company/software-factory/rulesets\?*)
+    printf '%s\n' '[[{"id":101,"enforcement":"active","target":"branch"}]]'
+    ;;
+  repos/nysa-company/software-factory/rulesets/101)
+    printf '%s\n' '{"conditions":{"ref_name":{"include":["refs/heads/main"],"exclude":[]}},"bypass_actors":[],"rules":[{"type":"pull_request"},{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"ci","integration_id":7}]}}]}'
+    ;;
+  repos/nysa-company/software-factory/branches/main/protection/required_status_checks)
+    printf '%s\n' '[{"contexts":[],"checks":[]}]'
+    ;;
+  repos/nysa-company/software-factory/commits/*/check-runs\?*)
+    printf '%s\n' '[{"check_runs":[{"id":1,"name":"ci","status":"completed","conclusion":"success","app":{"id":7}}]}]'
+    ;;
+  repos/nysa-company/software-factory/commits/*/statuses\?*)
+    printf '%s\n' '[[]]'
+    ;;
+  *)
+    printf 'unexpected test GitHub endpoint: %s\n' "$endpoint" >&2
+    exit 2
+    ;;
+esac

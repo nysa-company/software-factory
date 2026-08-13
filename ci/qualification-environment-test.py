@@ -109,6 +109,30 @@ class QualificationEnvironmentTest(unittest.TestCase):
             self.factory / "scripts/lib/operator_receipt.py",
         )
         shutil.copy2(
+            ROOT / "scripts/lib/effective_ticket.py",
+            self.factory / "scripts/lib/effective_ticket.py",
+        )
+        shutil.copy2(
+            ROOT / "scripts/lib/legacy_closeout.py",
+            self.factory / "scripts/lib/legacy_closeout.py",
+        )
+        shutil.copy2(
+            ROOT / "scripts/lib/approval_evidence.py",
+            self.factory / "scripts/lib/approval_evidence.py",
+        )
+        shutil.copy2(
+            ROOT / "scripts/lib/protected_merge_reconciliation.py",
+            self.factory / "scripts/lib/protected_merge_reconciliation.py",
+        )
+        shutil.copy2(
+            ROOT / "scripts/lib/terminal_backfill.py",
+            self.factory / "scripts/lib/terminal_backfill.py",
+        )
+        shutil.copy2(
+            ROOT / "scripts/lib/dependency_fulfillment.py",
+            self.factory / "scripts/lib/dependency_fulfillment.py",
+        )
+        shutil.copy2(
             ROOT / "scripts/certification-preflight.py",
             self.factory / "scripts/certification-preflight.py",
         )

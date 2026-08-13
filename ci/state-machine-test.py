@@ -93,6 +93,44 @@ class StateMachineTest(unittest.TestCase):
         ):
             STATE.next_transition(self.args)
 
+    def test_trusted_state_commit_advances_expected_head_cas(self) -> None:
+        self.args.expected_head = "a" * 40
+        with (
+            mock.patch.object(STATE, "run_helper") as helper,
+            mock.patch.object(STATE, "git", return_value="b" * 40),
+        ):
+            STATE.transition(self.args, "Building")
+        helper.assert_called_once()
+        self.assertEqual(self.args.expected_head, "b" * 40)
+
+    def test_materialization_advances_expected_head_before_receipt(self) -> None:
+        self.args.expected_head = "a" * 40
+        with (
+            mock.patch.object(
+                STATE, "git", side_effect=["a" * 40, "b" * 40],
+            ),
+            mock.patch.object(STATE, "current_state", return_value="Backlog"),
+            mock.patch.object(STATE, "run_helper") as helper,
+            mock.patch.object(STATE, "declared_dependencies", return_value=[]),
+            mock.patch.object(
+                STATE, "contract_repair_stage", return_value=(None, False),
+            ),
+            mock.patch.object(
+                STATE, "resolve", return_value="AWAIT_BUDGET daily cap",
+            ),
+            mock.patch.object(STATE, "migrate_passport"),
+            mock.patch.object(
+                STATE, "issue",
+                side_effect=lambda args, _stage, _loop=None: {
+                    "receipt_sha256": args.expected_head,
+                },
+            ),
+        ):
+            result = STATE.next_transition(self.args)
+        helper.assert_called_once()
+        self.assertEqual(self.args.expected_head, "b" * 40)
+        self.assertEqual(result["receipt"], "b" * 40)
+
     def test_role_prompts_reject_unproducible_generated_values(self) -> None:
         prompts = {
             "planner": "evaluate its first generated value",

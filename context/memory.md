@@ -5692,3 +5692,42 @@ wrapper records exact wrapper/heartbeat identities and applies bounded
 TERM-to-KILL shutdown, which the kill switch can replay after the provider
 group is already absent. This closes issues #551 and #565 without a lifecycle
 bypass or manual ticket-state authority.
+
+## 2026-08-12 — Decision 400: Contract 1.9 release truth is recoverable and batch work is resumable
+
+Category: Reliability
+
+Contract 1.9 operator-map lifecycle overlays are accepted only with the exact
+open one-use receipt. Ready and Backlog-to-Canceled decisions also materialize
+and push on the canonical ticket branch, so map or controller loss cannot erase
+their lifecycle truth; Canceled is terminal and never a factory-owned target.
+Initial product activation may use one signed owner-only bootstrap trace across
+the unchanged install, certify, pause, and activate gates. It resumes exact
+phases, is read-only after completion, leaves maintenance published, and cannot
+replace an active release. Authorized release migrations may bind one to four
+exact worktrees and compact previews to one protected-main approval, then run
+the existing per-ticket CAS transactions at configured capacity. A signed
+batch journal retains independent successes across failure, crash-after-push,
+and replay. The complete CI registry remains four groups: ticket PR moved from
+group 3 to group 2 and model fallback from group 1 to group 3 against the
+protected-main macOS suite baseline of 466/406/377/370 seconds, preserving the
+466-second critical-path target without removing coverage.
+
+## 2026-08-12 — Decision 401: Contract 1.9 release operation has two resumable verbs
+
+Category: Reliability
+
+`factory-kit.sh release setup` and `release resume` replace manual host-release
+orchestration without weakening its approval boundaries. Setup binds exact
+Factory/product trees, active generation, a project-local certification-plan
+runtime, stable launcher and provider prerequisite plans, project registry,
+controller job, model profile, one-use certification receipt, and any approved
+one-to-four-ticket migration cohort. When global prerequisites change, the
+first resume applies only their embedded hashes and emits a separate
+receipt-bound activation hash; the same resume verb consumes that second hash.
+Activation keeps a signed dispatch barrier while maintenance is absent, loads
+the exact controller only after model/migration completion and Doctor success,
+and restores maintenance while retaining the barrier on failure. Completed or
+crash-lost work replays from owner-only signed journals. The operating target
+is setup process start through first controller-observed Planning state in less
+than 15 minutes, excluding human approval-review time.

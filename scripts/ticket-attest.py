@@ -3157,6 +3157,15 @@ def approval(args, product, workdir, repo, prefix, remote, kit_sha, method):
                 raise Refusal(
                     "existing approval attestation does not match the overlay"
                 )
+            attestation_blob = git(
+                workdir, "hash-object", str(attestation_path)
+            ).stdout.strip()
+            if operator_receipt.peek_exact(
+                operator_receipt_state_dir(), args.ticket, "approve",
+                operator.get("receipt_sha256", ""),
+                {"bundle_attestation_blob": attestation_blob},
+            ) is None:
+                raise Refusal("no unconsumed operator approve receipt")
     else:
         bundle_att = validate_bundle_attestation(
             bundle_value, args.ticket, repo, branch, kit_sha, workdir,
@@ -3171,13 +3180,13 @@ def approval(args, product, workdir, repo, prefix, remote, kit_sha, method):
         attestation_blob = git(
             workdir, "hash-object", str(attestation_path)
         ).stdout.strip()
-        receipt = operator_receipt.peek(
+        receipt = operator_receipt.peek_exact(
             operator_receipt_state_dir(), args.ticket, "approve",
+            operator.get("receipt_sha256", ""),
             {"bundle_attestation_blob": attestation_blob},
         )
         if (
             receipt is None
-            or receipt["receipt_sha256"] != operator.get("receipt_sha256")
             or timestamp(receipt["issued_at"], "approval receipt") <= attested
         ):
             raise Refusal(
@@ -3311,14 +3320,20 @@ def approval(args, product, workdir, repo, prefix, remote, kit_sha, method):
     ):
         raise Refusal("GitHub did not confirm auto-merge for the exact approved head")
     if exact_overlay:
-        operator_receipt.verify_consume(
-            operator_receipt_state_dir(), args.ticket, "approve",
-            {
-                "bundle_attestation_blob": git(
-                    workdir, "hash-object", str(attestation_path)
-                ).stdout.strip(),
-            },
-        )
+        try:
+            operator_receipt.verify_consume_exact(
+                operator_receipt_state_dir(), args.ticket, "approve",
+                operator["receipt_sha256"],
+                {
+                    "bundle_attestation_blob": git(
+                        workdir, "hash-object", str(attestation_path)
+                    ).stdout.strip(),
+                },
+            )
+        except operator_receipt.OperatorReceiptError as error:
+            raise Refusal(
+                f"no unconsumed operator approve receipt: {error}"
+            ) from error
         consume_overlay(product, args.ticket, version)
     return {"action": "approval", "head": head, "pr_number": current["number"], "auto_merge": True}
 

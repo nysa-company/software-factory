@@ -174,6 +174,56 @@ class OperatorReceiptTest(unittest.TestCase):
         receipts.verify_consume(self.state, "T-1", "approve")
         self.assertIsNone(receipts.peek(self.state, "T-1", "approve"))
 
+    def test_exact_receipt_selection_never_falls_through_to_newest(self) -> None:
+        first = self.issue_approve("a" * 40)
+        second = receipts.issue(
+            self.state, "T-1", "approve",
+            {"bundle_attestation_blob": "b" * 40},
+        )
+        selected = receipts.peek_exact(
+            self.state, "T-1", "approve", first["receipt_sha256"],
+            {"bundle_attestation_blob": "a" * 40},
+        )
+        self.assertEqual(selected["receipt_sha256"], first["receipt_sha256"])
+        consumed = receipts.verify_consume_exact(
+            self.state, "T-1", "approve", first["receipt_sha256"],
+            {"bundle_attestation_blob": "a" * 40},
+        )
+        self.assertEqual(consumed["receipt_sha256"], first["receipt_sha256"])
+        self.assertEqual(
+            receipts.peek_exact(
+                self.state, "T-1", "approve", second["receipt_sha256"],
+            )["receipt_sha256"],
+            second["receipt_sha256"],
+        )
+
+    def test_exact_receipt_rejects_unknown_mismatch_and_replay(self) -> None:
+        value = self.issue_approve("a" * 40)
+        digest = value["receipt_sha256"]
+        self.assertIsNone(receipts.peek_exact(
+            self.state, "T-1", "approve", "f" * 64,
+        ))
+        self.assertIsNone(receipts.peek_exact(
+            self.state, "T-1", "approve", digest,
+            {"bundle_attestation_blob": "b" * 40},
+        ))
+        receipts.verify_consume_exact(
+            self.state, "T-1", "approve", digest,
+        )
+        self.assertIsNone(receipts.peek_exact(
+            self.state, "T-1", "approve", digest,
+        ))
+        recovered = receipts.read_exact(
+            self.state, "T-1", "approve", digest,
+        )
+        self.assertTrue(recovered["consumed"])
+        with self.assertRaisesRegex(
+            OperatorReceiptError, "already consumed",
+        ):
+            receipts.verify_consume_exact(
+                self.state, "T-1", "approve", digest,
+            )
+
     def test_receipt_files_are_0600(self) -> None:
         self.issue_approve()
         path = self.state / "operator-receipts" / "T-1" / "approve-1.json"

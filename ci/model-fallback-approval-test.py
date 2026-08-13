@@ -116,6 +116,22 @@ class ApprovalTests(unittest.TestCase):
         self.command("consume", *self.consume_args())
         self.assertEqual(receipts.pending(self.state), [])
 
+    def test_consume_uses_map_bound_receipt_not_newest_open_receipt(self):
+        newest = receipts.issue(
+            self.state, "T-1", "fallback",
+            {
+                "preview_sha256": self.approval_hash,
+                "failed_run_id": "different-run",
+            },
+        )
+        self.command("consume", *self.consume_args())
+        self.assertTrue(receipts.read_exact(
+            self.state, "T-1", "fallback", self.receipt_sha256,
+        )["consumed"])
+        self.assertFalse(receipts.read_exact(
+            self.state, "T-1", "fallback", newest["receipt_sha256"],
+        )["consumed"])
+
     def test_wrong_hash_expired_and_symlink_refuse(self):
         result = self.command(
             "consume", "--approval-hash", "c" * 64, "--state-dir", str(self.state),
