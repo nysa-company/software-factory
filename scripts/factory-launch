@@ -481,6 +481,14 @@ if [[ "$HOST_CUTOVER_IN_PROGRESS" == "true" ]]; then
   esac
 fi
 
+if [[ "$ISOLATED_TEST_LAUNCHER" == "1" ]]; then
+  case "$COMMAND" in
+    incident-report|publication-repair|ci-rerun|ticket-pr|ticket-attest)
+      die "repository test mode refuses GitHub-mutating commands"
+      ;;
+  esac
+fi
+
 if [[ "$QUALIFICATION_LAUNCHER" == "1" ]]; then
   [[ "$ACTIVE_FALLBACK_READINESS_SHA256" =~ ^[0-9a-f]{64}$ ]] ||
     die "qualification fallback readiness binding is invalid"
@@ -810,7 +818,9 @@ PROVIDER_ACTIVATION_PATH="$PROVIDER_STATE_ROOT/isolated-v1.enabled"
 CLI_RUNTIME_ROOT="$PROVIDER_STATE_ROOT/cli-runtimes"
 CURSOR_ACCOUNT_DB="$HOME/.factory/accounting/cursor-account-admission-v1.sqlite3"
 KIT_TRUST_SCOPE="production-certified"
-if [[ "$QUALIFICATION_MODE" == "takeover" ]]; then
+if [[ "$ISOLATED_TEST_LAUNCHER" == "1" ]]; then
+  KIT_TRUST_SCOPE="repository-test"
+elif [[ "$QUALIFICATION_MODE" == "takeover" ]]; then
   MODEL_STATE_ROOT="$TAKEOVER_KITS_ROOT/projects"
   ACTIVE_RUNTIME_LEDGER="$PRODUCT_ROOT/factory/runtime-ledger.csv"
 elif [[ "$QUALIFICATION_LAUNCHER" == "1" ]]; then

@@ -32,6 +32,23 @@ def command(*args, cwd=None, env=None, check=True):
 
 
 class LegacyCloseoutTests(unittest.TestCase):
+    def test_batched_object_reader_is_bounded_and_recovers(self):
+        small = subprocess.run(
+            ["git", "-C", str(self.repo), "hash-object", "-w", "--stdin"],
+            input=b"small", capture_output=True, check=True,
+        ).stdout.decode().strip()
+        large = subprocess.run(
+            ["git", "-C", str(self.repo), "hash-object", "-w", "--stdin"],
+            input=b"x" * (legacy_closeout.MAX_GIT_OBJECT_BYTES + 1),
+            capture_output=True, check=True,
+        ).stdout.decode().strip()
+        self.assertIsNone(legacy_closeout._git_object(self.repo, large))
+        self.assertEqual(legacy_closeout._git_object(self.repo, small)[2], b"small")
+        legacy_closeout._close_git_reader()
+        with mock.patch.object(legacy_closeout, "GIT_OBJECT_TIMEOUT_SECONDS", 0):
+            self.assertIsNone(legacy_closeout._git_object(self.repo, small))
+        self.assertEqual(legacy_closeout._git_object(self.repo, small)[2], b"small")
+
     def test_ledger_snapshot_containment_allows_reordering_but_not_tampering(self):
         header = "date,ticket,run_id\n"
         snapshot = header + "2026-08-01,T-100,run-1\n2026-08-02,T-101,run-2\n"

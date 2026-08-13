@@ -1803,8 +1803,12 @@ refreshes evidence only after the isolated suite, tracked-tree check, and sealed
 release verification pass. Install first proves the SHA is on `origin/main`
 and binds exact successful protected main CI. The installed launcher labels
 helper runs `production-certified`; the qualification launcher labels its
-separately SHA/tree-sealed candidate `qualification-candidate`. Mutable local
-kits cannot claim either scope and remain development-only. Product receipts bind the exact evidence ID/digest
+separately SHA/tree-sealed candidate `qualification-candidate`; and the
+contained repository-test launcher labels its forced mock runs
+`repository-test`. Repository-test Doctor readiness proves only that sealed
+mock boundary, never provider or production readiness, and GitHub-mutating
+launcher commands are unavailable. Mutable local kits cannot claim any sealed
+scope and remain development-only. Product receipts bind the exact evidence ID/digest
 and cannot expire after that evidence. Products may opt into the sealed
 `certification-runner.py` with a repository-owned declarative DAG. It records
 wall time, CPU, peak memory, cache status, exact input digests, and artifact

@@ -609,7 +609,10 @@ with its kits root, product checkout, and single local product push destination
 contained beneath that root, plus a local canonical Factory origin. Production
 receipt validation requires the canonical GitHub Factory origin and
 protected-main GitHub Actions evidence; test receipts cannot be promoted into
-an installed production lane.
+an installed production lane. The sealed test launcher forces the mock adapter,
+records `repository-test` in run evidence, refuses GitHub-mutating commands,
+and makes Doctor validate only that local mock boundary. Do not copy provider
+or GitHub credentials into the isolated home.
 
 If the stable launcher or provider settings must change, setup first returns a
 `prerequisites` plan. Review it, ensure every listed active factory is already

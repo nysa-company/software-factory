@@ -1766,8 +1766,12 @@ SELECTED_ROUTE_PLAN_SHA256=""
 SELECTED_ROUTE_REVISION=""
 SELECTED_ROUTE_REVISION_HASH=""
 if [[ -n "${FACTORY_ADAPTER_OVERRIDE:-}" ]]; then
-  if [[ "$FACTORY_ADAPTER_OVERRIDE" != "mock" || "${FACTORY_TEST_MODE:-0}" != "1" ]]; then
-    echo "FACTORY_ADAPTER_OVERRIDE requires FACTORY_TEST_MODE=1 and the mock adapter" >&2
+  if [[ "$FACTORY_ADAPTER_OVERRIDE" != "mock" ||
+        "${FACTORY_TEST_MODE:-0}" != "1" ||
+        "${FACTORY_TRUSTED_TEST_HARNESS:-0}" != "1" ||
+        -n "${FACTORY_KIT_TRUST_SCOPE:-}" &&
+        "${FACTORY_KIT_TRUST_SCOPE:-}" != "repository-test" ]]; then
+    echo "FACTORY_ADAPTER_OVERRIDE requires the trusted repository-test mock harness" >&2
     exit 2
   fi
   SELECTED="$FACTORY_ADAPTER_OVERRIDE"

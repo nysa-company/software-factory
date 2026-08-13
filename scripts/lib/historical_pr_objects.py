@@ -14,6 +14,8 @@ import tempfile
 from typing import Any
 from urllib.parse import urlsplit
 
+from legacy_closeout import _git_object, _git_object_info
+
 
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 MAX_EVIDENCE_FILES = 512
@@ -195,6 +197,41 @@ def run_git(
     product: Path, *arguments: str, environment: dict[str, str] | None = None,
     timeout: int = 120,
 ) -> subprocess.CompletedProcess[str]:
+    value = None
+    output = None
+    object_revision = (
+        len(arguments) == 2 and arguments[0] == "rev-parse"
+        and not arguments[1].startswith("-")
+    ) or (
+        len(arguments) == 3 and arguments[:2] == ("rev-parse", "--verify")
+    )
+    if environment is None:
+        if len(arguments) == 2 and arguments[0] == "show" and ":" in arguments[1]:
+            value = _git_object(product, arguments[1])
+            output = value[2].decode() if value is not None and value[1] == "blob" else None
+        elif len(arguments) == 3 and arguments[:2] in {
+            ("cat-file", "-e"), ("cat-file", "-s"), ("cat-file", "-t"),
+        }:
+            value = _git_object_info(product, arguments[2])
+            if value is not None:
+                output = {
+                    "-e": "", "-s": str(value[2]) + "\n",
+                    "-t": value[1] + "\n",
+                }[arguments[1]]
+        elif object_revision:
+            value = _git_object_info(product, arguments[-1])
+            output = value[0] + "\n" if value is not None else None
+    eligible = (
+        len(arguments) == 2 and arguments[0] == "show" and ":" in arguments[1]
+        or len(arguments) == 3 and arguments[:2] in {
+            ("cat-file", "-e"), ("cat-file", "-s"), ("cat-file", "-t"),
+        }
+        or object_revision
+    )
+    if environment is None and eligible:
+        return subprocess.CompletedProcess(
+            arguments, 0 if output is not None else 1, output or "", "",
+        )
     return subprocess.run(
         _git_command(product, *arguments), text=True, capture_output=True, check=False,
         timeout=timeout, env=_git_environment(environment),

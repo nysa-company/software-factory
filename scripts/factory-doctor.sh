@@ -179,6 +179,50 @@ except OSError as error:
 PY
 }
 
+bounded_command() {
+  local output="$1"
+  shift
+  "$PYTHON_BIN" - "$PROBE_TIMEOUT_SECONDS" "$output" "$@" <<'PY'
+import os
+import resource
+import signal
+import subprocess
+import sys
+
+timeout = int(sys.argv[1])
+path = sys.argv[2]
+command = sys.argv[3:]
+limit_bytes = 1024 * 1024
+
+
+def limit_output():
+    resource.setrlimit(resource.RLIMIT_FSIZE, (limit_bytes, limit_bytes))
+
+
+try:
+    with open(path, "xb") as stream:
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=stream,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            preexec_fn=limit_output,
+        )
+        try:
+            status = process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait()
+            status = 3
+    if os.path.getsize(path) > limit_bytes:
+        status = 3
+except OSError:
+    status = 3
+raise SystemExit(status if status in {0, 2} else 3)
+PY
+}
+
 BINDING_STATUS="ok"
 KIT_DIR=""
 PRODUCT_ROOT=""
@@ -949,13 +993,14 @@ FALLBACK_READINESS_STATUS="not_applicable"
 FALLBACK_READINESS_JSON="null"
 if [[ "${FACTORY_KIT_TRUST_SCOPE:-}" == "qualification-candidate" ]]; then
   FALLBACK_READINESS_STATUS="error"
-  if FALLBACK_READINESS_RAW="$(
-      /bin/bash "$KIT_DIR/scripts/model-control.sh" qualification-readiness 2>/dev/null
-    )"; then
+  FALLBACK_READINESS_FILE="$TMP/fallback-readiness.raw"
+  if bounded_command "$FALLBACK_READINESS_FILE" \
+      /bin/bash "$KIT_DIR/scripts/model-control.sh" qualification-readiness; then
     FALLBACK_READINESS_EXIT=0
   else
     FALLBACK_READINESS_EXIT=$?
   fi
+  FALLBACK_READINESS_RAW="$(cat "$FALLBACK_READINESS_FILE" 2>/dev/null || true)"
   if FALLBACK_READINESS_JSON="$($PYTHON_BIN - "$FALLBACK_READINESS_RAW" <<'PY'
 import json, sys
 value = json.loads(sys.argv[1])
@@ -970,17 +1015,26 @@ fi
 
 MODEL_READINESS_STATUS="not_applicable"
 MODEL_READINESS_JSON="null"
-if [[ "${FACTORY_KIT_TRUST_SCOPE:-}" == "production-certified" &&
+if [[ "${FACTORY_KIT_TRUST_SCOPE:-}" == "repository-test" ]]; then
+  MODEL_READINESS_STATUS="error"
+  if [[ "${FACTORY_TEST_MODE:-0}" == "1" &&
+        "${FACTORY_TRUSTED_TEST_HARNESS:-0}" == "1" &&
+        "${FACTORY_ADAPTER_OVERRIDE:-}" == "mock" ]]; then
+    MODEL_READINESS_STATUS="ok"
+    MODEL_READINESS_JSON='{"adapter":"mock","schema":"nysa.software-factory.doctor-repository-test-readiness/v1","status":"ready","trust_scope":"repository-test"}'
+  fi
+elif [[ "${FACTORY_KIT_TRUST_SCOPE:-}" == "production-certified" &&
       "${FACTORY_MODEL_STATE_ROOT:-}" == /* &&
       -d "${FACTORY_MODEL_STATE_ROOT:-}" ]]; then
   MODEL_READINESS_STATUS="error"
-  if MODEL_READINESS_RAW="$(
-      /bin/bash "$KIT_DIR/scripts/model-control.sh" plan 2>/dev/null
-    )"; then
+  MODEL_READINESS_FILE="$TMP/model-readiness.raw"
+  if bounded_command "$MODEL_READINESS_FILE" \
+      /bin/bash "$KIT_DIR/scripts/model-control.sh" plan; then
     MODEL_READINESS_EXIT=0
   else
     MODEL_READINESS_EXIT=$?
   fi
+  MODEL_READINESS_RAW="$(cat "$MODEL_READINESS_FILE" 2>/dev/null || true)"
   if MODEL_READINESS_PARSED="$($PYTHON_BIN - "$MODEL_READINESS_RAW" \
       "$MODEL_READINESS_EXIT" 2>/dev/null <<'PY'
 import json
@@ -1253,6 +1307,7 @@ PY
   fi
 fi
 if [[ ( "$CONTRACT_VERSION" == "1.8.0" || "$CONTRACT_VERSION" == "2.0.0" ) &&
+      "${FACTORY_KIT_TRUST_SCOPE:-}" != "repository-test" &&
       "$MAX_CONCURRENT_TICKETS" =~ ^[0-9]+$ &&
       "$MAX_CONCURRENT_TICKETS" -gt 1 ]]; then
   PROVIDER_CONCURRENCY_REQUIRED=true

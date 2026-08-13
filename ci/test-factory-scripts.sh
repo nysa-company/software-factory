@@ -994,7 +994,7 @@ env \
   FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
   FACTORY_TEST_MODE=1 \
   FACTORY_ADAPTER_OVERRIDE=mock \
-  FACTORY_KIT_TRUST_SCOPE=qualification-candidate \
+  FACTORY_KIT_TRUST_SCOPE=repository-test \
   FACTORY_RELEASE_SHA="$KIT_SHA" \
   FACTORY_RELEASE_TREE="$SEALED_TREE" \
   FACTORY_RELEASE_PATH="$SEALED_RELEASE" \
@@ -1021,7 +1021,7 @@ if [[ "$SEALED_STAGE" == "RUN planner" &&
    grep -q '^contract_version=2.0.0$' "$SEALED_META" &&
    grep -q "^physical_kit_path=$SEALED_RELEASE$" "$SEALED_META" &&
    grep -q '^kit_provenance_mode=sealed$' "$SEALED_META" &&
-   grep -q '^kit_provenance_scope=qualification-candidate$' "$SEALED_META" &&
+   grep -q '^kit_provenance_scope=repository-test$' "$SEALED_META" &&
    grep -q "^transition_receipt_sha256=$SEALED_RECEIPT$" "$SEALED_META" &&
    grep -q "^Kit-SHA: $KIT_SHA$" "$SEALED_PRODUCT/factory/tickets/T-190.md"; then
   pass "sealed release runs real sequencer and mock agent"

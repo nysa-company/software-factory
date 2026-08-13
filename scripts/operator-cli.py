@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import stat
 import subprocess
@@ -30,6 +31,7 @@ from operator_receipt import OperatorReceiptError  # noqa: E402
 from effective_ticket import (  # noqa: E402
     committed_ticket, operator_action, ticket_branch_prefix, validate_operator,
 )
+from legacy_closeout import _git_object  # noqa: E402
 
 MAP_TOP_LEVEL = ("_config", "_sync", "initiatives", "tickets")
 PRIORITIES = ("none", "urgent", "high", "normal", "low")
@@ -163,6 +165,23 @@ def committed_state(product: Path, ticket: str) -> str:
         if key.strip().lower() == "state":
             return rest.strip().lower()
     raise OperatorCliError(f"ticket has no State field: {ticket}")
+
+
+def committed_main_states(product: Path, tickets: list[str]) -> None:
+    for ticket in tickets:
+        if not re.fullmatch(r"T-[0-9]+", ticket):
+            raise OperatorCliError(f"ticket identifier is invalid: {ticket}")
+        value = _git_object(product, f"HEAD:factory/tickets/{ticket}.md")
+        if value is None or value[1] != "blob":
+            committed_state(product, ticket)
+            continue
+        try:
+            text = value[2].decode("utf-8")
+        except UnicodeError as error:
+            raise OperatorCliError(f"ticket is not UTF-8: {ticket}") from error
+        states = re.findall(r"(?mi)^State:\s*(.*?)\s*$", text)
+        if len(states) != 1:
+            raise OperatorCliError(f"ticket has invalid State fields: {ticket}")
 
 
 def git(product: Path, *arguments: str, check: bool = True) -> str:
@@ -504,8 +523,8 @@ def cmd_initialize(args: argparse.Namespace) -> dict:
         raise OperatorCliError("operator initialization tickets are duplicated")
     with map_lock(map_path):
         mapping = load_map(map_path)
+        committed_main_states(product, args.ticket)
         for ticket in args.ticket:
-            committed_state(product, ticket)
             ticket_entry(mapping, ticket)
         stamp_sync(mapping, None)
         write_map(map_path, mapping)

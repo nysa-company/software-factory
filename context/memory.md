@@ -6,7 +6,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 
 - Product-agnostic factory kit; product repositories carry only their factory state and CI integration.
 - Durable decisions use repository-local numbering beginning at Decision 1.
-- Stable operating truth lives in `docs/`; prompts, templates, and evidence stay colocated with consumers. The operator preflight report hydrates only migration-bound immutable PR objects, aggregates activation blockers, and makes network review explicit before certification.
+- Stable operating truth lives in `docs/`; prompts, templates, and evidence stay colocated with consumers. The operator preflight hydrates only evidence-bound immutable objects, batches read-only object checks, aggregates activation blockers, and makes network review explicit before certification.
 - Nysa Agents baseline v3 as a toolkit; `bash ci/test-all.sh` is the unconditional full command.
 - Contract 2 live products resolve sealed exact-SHA releases from owner-only `active.json` records under `~/.factory/kits` via `~/.factory/bin/factory-launch`; the native controller is the only scheduler.
 - Model routing is portfolio policy; routes pin at the ticket boundary and change only via the Contract 1.4 journal flow. One profile resolution shares model-independent native-adapter readiness across its routes and runs independent probes in bounded parallel; Cursor readiness stays model-specific. Sealed Cursor inventory verifies the exact configured CLI identity in an empty disposable owner-only home before copying credentials, then accepts only its bounded certified structure.
@@ -5779,3 +5779,15 @@ separate account home containing its kits root, product checkout, and local
 product push origin. Production receipts require the canonical GitHub Factory
 origin plus protected-main CI evidence, so local timing evidence cannot be
 promoted into an installed lane.
+
+## 2026-08-13 — Decision 405: Activation validation batches immutable Git reads
+
+Category: Performance
+
+Activation retains its full evidence hydration and ticket validation at every
+trust boundary, but reads immutable Git objects through one bounded `cat-file`
+process and initializes committed operator state in one pass. Repository-test
+launches carry a sealed `repository-test` scope, force the mock adapter, refuse
+GitHub-mutating commands, and use mock-only Doctor readiness without provider
+or GitHub credentials. These changes are product-agnostic and do not weaken
+production or qualification evidence.

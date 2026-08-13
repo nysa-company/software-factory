@@ -2,11 +2,16 @@
 """Strict protected-main validation for normal and one-time legacy closeout."""
 
 import csv
+import atexit
 import hashlib
 import io
 import json
+import os
 import re
+import select
 import subprocess
+import threading
+import time
 from collections import Counter
 from datetime import datetime
 from functools import lru_cache
@@ -21,6 +26,170 @@ from approval_evidence import (
 
 class ValidationError(ValueError):
     pass
+
+
+MAX_GIT_OBJECT_BYTES = 8 * 1024 * 1024
+GIT_OBJECT_TIMEOUT_SECONDS = 5
+
+
+class _GitObjectReader:
+    """Reuse one read-only cat-file process for immutable evidence reads."""
+
+    def __init__(self, repo, content):
+        self.repo = str(Path(repo).resolve(strict=True))
+        self.content = content
+        self.lock = threading.Lock()
+        self.buffer = bytearray()
+        self.process = subprocess.Popen(
+            [
+                "/usr/bin/git", "-C", self.repo,
+                "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
+                "-c", "credential.helper=", "-c", "diff.external=",
+                "cat-file", "--batch" if content else "--batch-check",
+            ],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            env={
+                "GIT_ASKPASS": "/usr/bin/false",
+                "GIT_CONFIG": os.devnull,
+                "GIT_CONFIG_GLOBAL": os.devnull,
+                "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_CONFIG_SYSTEM": os.devnull,
+                "GIT_NO_LAZY_FETCH": "1",
+                "GIT_NO_REPLACE_OBJECTS": "1",
+                "GIT_OPTIONAL_LOCKS": "0",
+                "GIT_PROTOCOL_FROM_USER": "0",
+                "GIT_TERMINAL_PROMPT": "0",
+                "LANG": "C", "LC_ALL": "C", "PATH": "/usr/bin:/bin",
+            },
+            bufsize=0,
+        )
+
+    def take(self, size, deadline):
+        assert self.process.stdout is not None
+        while len(self.buffer) < size:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not select.select(
+                [self.process.stdout.fileno()], [], [], remaining,
+            )[0]:
+                return None
+            chunk = os.read(self.process.stdout.fileno(), 65536)
+            if not chunk:
+                return None
+            self.buffer.extend(chunk)
+        value = bytes(self.buffer[:size])
+        del self.buffer[:size]
+        return value
+
+    def line(self, deadline):
+        assert self.process.stdout is not None
+        while b"\n" not in self.buffer:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not select.select(
+                [self.process.stdout.fileno()], [], [], remaining,
+            )[0]:
+                return None
+            chunk = os.read(self.process.stdout.fileno(), 65536)
+            if not chunk:
+                return None
+            self.buffer.extend(chunk)
+        end = self.buffer.index(b"\n") + 1
+        return self.take(end, deadline)
+
+    def read(self, spec):
+        if not isinstance(spec, str) or "\n" in spec or "\0" in spec:
+            return None
+        with self.lock:
+            if self.process.poll() is not None:
+                return None
+            assert self.process.stdin is not None and self.process.stdout is not None
+            try:
+                self.process.stdin.write(spec.encode() + b"\n")
+                self.process.stdin.flush()
+            except OSError:
+                self.close()
+                return None
+            deadline = time.monotonic() + GIT_OBJECT_TIMEOUT_SECONDS
+            header = self.line(deadline)
+            if not header:
+                self.close()
+                return None
+            if header.rstrip().endswith(b" missing"):
+                return None
+            fields = header.rstrip().split()
+            if len(fields) != 3:
+                self.close()
+                return None
+            try:
+                size = int(fields[2])
+            except ValueError:
+                self.close()
+                return None
+            if size > MAX_GIT_OBJECT_BYTES:
+                self.close()
+                return None
+            if not self.content:
+                return fields[0].decode(), fields[1].decode(), size
+            value = self.take(size + 1, deadline)
+            if value is None or value[-1:] != b"\n":
+                self.close()
+                return None
+            return fields[0].decode(), fields[1].decode(), value[:-1]
+
+    def close(self):
+        if self.process.poll() is None:
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.wait()
+        if self.process.stdin is not None:
+            self.process.stdin.close()
+        if self.process.stdout is not None:
+            self.process.stdout.close()
+
+
+_GIT_READERS = {}
+_GIT_READER_LOCK = threading.Lock()
+
+
+def _git_reader(repo, content):
+    global _GIT_READERS
+    physical = str(Path(repo).resolve(strict=True))
+    with _GIT_READER_LOCK:
+        if _GIT_READERS and any(reader.repo != physical for reader in _GIT_READERS.values()):
+            _close_git_readers_locked()
+        if content in _GIT_READERS and _GIT_READERS[content].process.poll() is not None:
+            _GIT_READERS[content].close()
+            del _GIT_READERS[content]
+        if content not in _GIT_READERS:
+            _GIT_READERS[content] = _GitObjectReader(physical, content)
+        return _GIT_READERS[content]
+
+
+def _git_object(repo, spec):
+    return _git_reader(repo, True).read(spec)
+
+
+def _git_object_info(repo, spec):
+    return _git_reader(repo, False).read(spec)
+
+
+def _close_git_readers_locked():
+    global _GIT_READERS
+    for reader in _GIT_READERS.values():
+        reader.close()
+    _GIT_READERS = {}
+
+
+def _close_git_reader():
+    with _GIT_READER_LOCK:
+        _close_git_readers_locked()
+
+
+atexit.register(_close_git_reader)
 
 
 MIGRATION_DIR = "factory/migrations/contract-1.3"
@@ -120,6 +289,36 @@ EMERGENCY_CLAIM_KEYS = {
 
 
 def run(repo, *args, input_text=None, check=True):
+    value = None
+    output = None
+    if input_text is None:
+        if len(args) == 2 and args[0] == "show" and ":" in args[1]:
+            value = _git_object(repo, args[1])
+            output = value[2].decode() if value is not None and value[1] == "blob" else None
+        elif len(args) == 3 and args[:2] == ("cat-file", "blob"):
+            value = _git_object(repo, args[2])
+            output = value[2].decode() if value is not None and value[1] == "blob" else None
+        elif len(args) == 3 and args[:2] == ("cat-file", "-t"):
+            value = _git_object_info(repo, args[2])
+            output = value[1] + "\n" if value is not None else None
+        elif (
+            len(args) == 2 and args[0] == "rev-parse"
+            or len(args) == 3 and args[:2] == ("rev-parse", "--verify")
+        ):
+            value = _git_object_info(repo, args[-1])
+            output = value[0] + "\n" if value is not None else None
+    if output is not None:
+        return subprocess.CompletedProcess(args, 0, output, "")
+    if value is None and input_text is None and (
+        len(args) == 2 and args[0] == "show" and ":" in args[1]
+        or len(args) == 3 and args[:2] in (("cat-file", "blob"), ("cat-file", "-t"))
+        or len(args) == 2 and args[0] == "rev-parse"
+        or len(args) == 3 and args[:2] == ("rev-parse", "--verify")
+    ):
+        result = subprocess.CompletedProcess(args, 1, "", "Git evidence is unavailable")
+        if check:
+            raise ValidationError(result.stderr)
+        return result
     result = subprocess.run(
         ["git", "-C", str(repo), *args],
         input=input_text,
