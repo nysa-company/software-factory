@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
-import os
 from pathlib import Path
 import re
 import subprocess
@@ -21,6 +20,7 @@ from certification_plan import (  # noqa: E402
     observed_tuple, safe_plan, validate_plan,
 )
 from activation_preflight import validate as validate_activation  # noqa: E402
+from historical_pr_objects import github_auth, run_git, run_git_remote  # noqa: E402
 
 SCHEMA = "nysa.software-factory.operator-preflight-report/v1"
 SHA = re.compile(r"[0-9a-f]{40}\Z")
@@ -37,18 +37,12 @@ def ticket_module() -> Any:
     return module
 
 
-def git(root: Path, *arguments: str) -> subprocess.CompletedProcess[bytes]:
-    environment = os.environ.copy()
-    environment.update({"GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0"})
-    return subprocess.run(
-        ["git", "-c", "credential.interactive=never", "-C", str(root), *arguments],
-        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False,
-        env=environment,
-    )
+def git(root: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
+    return run_git(root, *arguments)
 
 
-def text(result: subprocess.CompletedProcess[bytes]) -> str:
-    return result.stdout.decode("utf-8", errors="strict").strip()
+def text(result: subprocess.CompletedProcess[str]) -> str:
+    return result.stdout.strip()
 
 
 def product_snapshot(product: Path, origin: str) -> dict[str, Any]:
@@ -77,9 +71,9 @@ def product_snapshot(product: Path, origin: str) -> dict[str, Any]:
             and Path(text(top)).resolve(strict=True) == product
         )
         before = identity()
-        remote = git(
-            product, "ls-remote", "--exit-code", "--", origin,
-            "refs/heads/main",
+        remote = run_git_remote(
+            "ls-remote", "--exit-code", "--", origin, "refs/heads/main",
+            auth=github_auth(origin),
         )
         rows = text(remote).splitlines() if remote.returncode == 0 else []
         if len(rows) == 1:

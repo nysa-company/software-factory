@@ -28,6 +28,7 @@ RELEASE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(RELEASE)
 sys.path.insert(0, str(ROOT / "scripts/lib"))
 import activation_preflight as ACTIVATION  # noqa: E402
+import historical_pr_objects as HISTORY  # noqa: E402
 
 
 def cutover_lock_worker(
@@ -376,17 +377,18 @@ class ReleaseTransactionTest(unittest.TestCase):
         )
         with (
             mock.patch.object(
+                ACTIVATION, "run_git_remote",
+                side_effect=lambda *_args, **_kwargs: order.append("remote") or subprocess.CompletedProcess(
+                    [], 0, f"{self.sha}\trefs/heads/main\n", "",
+                ),
+            ),
+            mock.patch.object(
                 ACTIVATION, "hydrate",
                 side_effect=lambda _product, _origin: order.append("hydrate") or 1,
             ),
             mock.patch.object(
                 validator, "checked",
-                side_effect=lambda *args: order.append(
-                    "head" if args == ("rev-parse", "HEAD") else "remote",
-                ) or (
-                    self.sha if args == ("rev-parse", "HEAD")
-                    else f"{self.sha}\trefs/heads/main"
-                ),
+                side_effect=lambda *args: order.append("head") or self.sha,
             ),
             mock.patch.object(
                 validator, "ticket_ids",
@@ -401,6 +403,100 @@ class ReleaseTransactionTest(unittest.TestCase):
         self.assertEqual(blockers, [])
         self.assertEqual(hydrated, 1)
         self.assertEqual(order, ["head", "remote", "hydrate", "tickets", "terminal"])
+
+    def test_activation_main_check_ignores_repository_transport_rewrites(self) -> None:
+        product = self.root / "trust-product"
+        trusted = self.root / "trusted.git"
+        redirected = self.root / "redirected.git"
+
+        def git(root: Path, *arguments: str) -> str:
+            return subprocess.run(
+                ["git", "-C", str(root), *arguments], text=True,
+                capture_output=True, check=True,
+            ).stdout.strip()
+
+        subprocess.run(
+            ["git", "init", "--bare", "-q", str(trusted)], check=True,
+        )
+        subprocess.run(
+            ["git", "init", "--bare", "-q", str(redirected)], check=True,
+        )
+        subprocess.run(
+            ["git", "init", "-q", "-b", "main", str(product)], check=True,
+        )
+        git(product, "config", "user.name", "Test")
+        git(product, "config", "user.email", "test@example.invalid")
+        (product / "factory").mkdir()
+        (product / "factory/PROJECT.env").write_text(
+            "GH_REPO=example/product\n", encoding="utf-8",
+        )
+        git(product, "add", ".")
+        git(product, "commit", "-qm", "protected main")
+        head = git(product, "rev-parse", "HEAD")
+        git(product, "push", "-q", str(trusted), "HEAD:main")
+        git(product, "config", f"url.{redirected}.insteadOf", str(trusted))
+        validator = ACTIVATION.Validator(
+            product, self.sha, ROOT / "scripts", str(trusted), "",
+        )
+        with (
+            mock.patch.object(ACTIVATION, "hydrate", return_value=0),
+            mock.patch.object(validator, "ticket_ids", return_value=(set(), {})),
+        ):
+            blockers, _, _ = validator.run()
+        self.assertEqual(head, git(product, "rev-parse", "HEAD"))
+        self.assertEqual(blockers, [])
+
+    def test_hardened_git_auth_is_github_host_scoped(self) -> None:
+        home = self.root / "auth-home"
+        helper_root = self.root / "Cellar/gh/1.0/bin"
+        helper_root.mkdir(parents=True)
+        helper = helper_root / "gh"
+        helper.write_text("#!/bin/sh\n", encoding="utf-8")
+        helper.chmod(0o700)
+        link_root = self.root / "fixed-bin"
+        link_root.mkdir()
+        (link_root / "gh").symlink_to(helper)
+        config = home / ".config/gh"
+        config.mkdir(parents=True)
+        (config / "hosts.yml").write_text("github.com: {}\n", encoding="utf-8")
+        (config / "hosts.yml").chmod(0o600)
+        with (
+            mock.patch.object(
+                HISTORY, "GITHUB_CLI_CANDIDATES",
+                (link_root / "gh", self.root / "missing-gh"),
+            ),
+            mock.patch.dict(os.environ, {"HOME": str(home)}),
+        ):
+            auth = HISTORY.github_auth("https://github.com/example/private.git")
+        self.assertEqual(auth, (str(helper), str(config)))
+        with mock.patch.object(
+            HISTORY, "GITHUB_CLI_CANDIDATES", (link_root / "gh",),
+        ), mock.patch.dict(os.environ, {"HOME": str(home)}):
+            self.assertIsNone(
+                HISTORY.github_auth("https://github.example/private.git"),
+            )
+            (config / "hosts.yml").chmod(0o644)
+            self.assertIsNone(
+                HISTORY.github_auth("https://github.com/example/private.git"),
+            )
+        assert auth is not None
+        command = HISTORY._git_command(
+            None, "ls-remote", "https://github.com/example/private.git",
+            auth=auth,
+        )
+        self.assertIn("credential.helper=", command)
+        self.assertIn(
+            "credential.https://github.com.helper="
+            f"!{helper} auth git-credential",
+            command,
+        )
+        self.assertFalse(any(
+            value.startswith("credential.https://")
+            and not value.startswith("credential.https://github.com")
+            for value in command
+        ))
+        environment = HISTORY._git_environment(auth=auth)
+        self.assertEqual(environment["GH_CONFIG_DIR"], auth[1])
 
     def test_blocked_preflight_stops_before_certification_or_pause(self) -> None:
         repo = self.root / "factory"

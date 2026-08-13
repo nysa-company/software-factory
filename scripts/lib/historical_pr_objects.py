@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import resource
 import shutil
+import stat
 import subprocess
 import tempfile
 from typing import Any
@@ -22,10 +23,73 @@ MAX_OBJECTS = 512
 MAX_OBJECT_BYTES = 8 * 1024 * 1024
 MAX_FETCH_BYTES = 256 * 1024 * 1024
 FETCH_CHUNK = 64
+GITHUB_CLI_CANDIDATES = tuple(map(Path, (
+    "/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh",
+)))
 
 
 class HistoricalObjectError(ValueError):
     pass
+
+
+def github_auth(origin: str) -> tuple[str, str] | None:
+    try:
+        parsed = urlsplit(origin)
+        port = parsed.port
+    except ValueError:
+        return None
+    if (
+        parsed.scheme != "https" or parsed.hostname != "github.com"
+        or port is not None or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query or parsed.fragment
+    ):
+        return None
+    helper = next((
+        resolved
+        for candidate in GITHUB_CLI_CANDIDATES
+        for resolved in (candidate.resolve(),)
+        if candidate.exists() and resolved.is_file() and os.access(resolved, os.X_OK)
+    ), None)
+    home = Path(os.environ.get("HOME", ""))
+    if helper is None or not home.is_absolute():
+        return None
+    config_parent = home / ".config"
+    config = config_parent / "gh"
+    hosts = config / "hosts.yml"
+    try:
+        helper_metadata = helper.lstat()
+        helper_parent = helper.parent.lstat()
+        if (
+            helper.resolve() != helper or not stat.S_ISREG(helper_metadata.st_mode)
+            or helper_metadata.st_nlink != 1
+            or helper_metadata.st_uid not in {0, os.geteuid()}
+            or stat.S_IMODE(helper_metadata.st_mode) & 0o022
+            or not os.access(helper, os.X_OK)
+            or not re.fullmatch(r"/[A-Za-z0-9_./+-]+", str(helper))
+            or not stat.S_ISDIR(helper_parent.st_mode)
+            or helper_parent.st_uid not in {0, os.geteuid()}
+            or stat.S_IMODE(helper_parent.st_mode) & 0o022
+        ):
+            raise OSError
+        for directory in (home, config_parent, config):
+            metadata = directory.lstat()
+            if (
+                directory.is_symlink() or not stat.S_ISDIR(metadata.st_mode)
+                or metadata.st_uid != os.geteuid()
+                or stat.S_IMODE(metadata.st_mode) & 0o022
+            ):
+                raise OSError
+        metadata = hosts.lstat()
+        if (
+            hosts.is_symlink() or not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.geteuid() or metadata.st_nlink != 1
+            or stat.S_IMODE(metadata.st_mode) & 0o077
+        ):
+            raise OSError
+    except OSError:
+        return None
+    return str(helper), str(config)
 
 
 def _repository(product: Path) -> str:
@@ -72,34 +136,93 @@ def _transport(origin: str) -> str:
     raise HistoricalObjectError("historical product origin uses an unsafe transport")
 
 
-def _git(product: Path, *arguments: str, environment: dict[str, str] | None = None,
-         timeout: int = 120) -> subprocess.CompletedProcess[str]:
+def _git_environment(
+    overrides: dict[str, str] | None = None,
+    auth: tuple[str, str] | None = None,
+) -> dict[str, str]:
+    values = {
+        "GIT_ASKPASS": "/usr/bin/false",
+        "GIT_ATTR_NOSYSTEM": "1",
+        "GIT_CONFIG": os.devnull,
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_SYSTEM": os.devnull,
+        "GIT_NO_REPLACE_OBJECTS": "1",
+        "GIT_OPTIONAL_LOCKS": "0",
+        "GIT_PROTOCOL_FROM_USER": "0",
+        "GIT_SSH_COMMAND": "/usr/bin/ssh -F /dev/null -oBatchMode=yes",
+        "GIT_TERMINAL_PROMPT": "0",
+        "LANG": "C",
+        "LC_ALL": "C",
+        "PATH": "/usr/bin:/bin",
+        "SSH_ASKPASS": "/usr/bin/false",
+    }
+    for name in ("HOME", "SSH_AUTH_SOCK", "TMPDIR"):
+        if os.environ.get(name):
+            values[name] = os.environ[name]
+    if overrides:
+        allowed = {"GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_OBJECT_DIRECTORY"}
+        if set(overrides) - allowed:
+            raise HistoricalObjectError("historical Git environment override is unsafe")
+        values.update(overrides)
+    if auth:
+        values.update({"GH_CONFIG_DIR": auth[1], "GH_PROMPT_DISABLED": "1"})
+    return values
+
+
+def _git_command(
+    product: Path | None, *arguments: str, auth: tuple[str, str] | None = None,
+) -> list[str]:
     command = [
-        "git", "-c", "protocol.allow=never", "-c", "protocol.file.allow=always",
+        "/usr/bin/git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
+        "-c", "credential.helper=", "-c", "credential.interactive=never",
+        "-c", "core.askPass=/usr/bin/false", "-c", "diff.external=",
+        "-c", "interactive.diffFilter=", "-c", "protocol.allow=never",
+        "-c", "protocol.file.allow=always",
         "-c", "protocol.https.allow=always", "-c", "protocol.ssh.allow=always",
-        "-c", "credential.interactive=never", "-C", str(product), *arguments,
+        "-c", "core.sshCommand=/usr/bin/ssh -F /dev/null -oBatchMode=yes",
     ]
-    values = os.environ.copy()
-    values.update({"GIT_PROTOCOL_FROM_USER": "0", "GIT_TERMINAL_PROMPT": "0"})
-    if environment:
-        values.update(environment)
+    if auth:
+        command.extend((
+            "-c",
+            f"credential.https://github.com.helper=!{auth[0]} auth git-credential",
+        ))
+    command.extend(("-C", str(product)) if product is not None else ("-C", "/"))
+    return [*command, *arguments]
+
+
+def run_git(
+    product: Path, *arguments: str, environment: dict[str, str] | None = None,
+    timeout: int = 120,
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        command, text=True, capture_output=True, check=False,
-        timeout=timeout, env=values,
+        _git_command(product, *arguments), text=True, capture_output=True, check=False,
+        timeout=timeout, env=_git_environment(environment),
+    )
+
+
+def run_git_remote(
+    *arguments: str, environment: dict[str, str] | None = None,
+    auth: tuple[str, str] | None = None, timeout: int = 120,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        _git_command(None, *arguments, auth=auth), text=True,
+        capture_output=True, check=False, timeout=timeout,
+        env=_git_environment(environment, auth),
     )
 
 
 def commit_present(product: Path, sha: str) -> bool:
-    return _git(product, "cat-file", "-e", f"{sha}^{{commit}}").returncode == 0
+    return run_git(product, "cat-file", "-e", f"{sha}^{{commit}}").returncode == 0
 
 
 def _blob_present(product: Path, sha: str) -> bool:
-    result = _git(product, "cat-file", "-t", sha)
+    result = run_git(product, "cat-file", "-t", sha)
     return result.returncode == 0 and result.stdout.strip() == "blob"
 
 
 def _json_at(product: Path, sha: str, path: str) -> dict[str, Any] | None:
-    size = _git(product, "cat-file", "-s", f"{sha}:{path}")
+    size = run_git(product, "cat-file", "-s", f"{sha}:{path}")
     if size.returncode:
         return None
     try:
@@ -108,7 +231,7 @@ def _json_at(product: Path, sha: str, path: str) -> dict[str, Any] | None:
         raise HistoricalObjectError(f"historical evidence size is invalid: {path}") from error
     if length > MAX_EVIDENCE_BYTES:
         raise HistoricalObjectError(f"historical evidence is too large: {path}")
-    result = _git(product, "show", f"{sha}:{path}")
+    result = run_git(product, "show", f"{sha}:{path}")
     if result.returncode or len(result.stdout.encode()) != length:
         raise HistoricalObjectError(f"historical evidence is unavailable: {path}")
     try:
@@ -120,8 +243,25 @@ def _json_at(product: Path, sha: str, path: str) -> dict[str, Any] | None:
     return value
 
 
+def _done_at(product: Path, ticket: str) -> bool:
+    path = f"factory/tickets/{ticket}.md"
+    size = run_git(product, "cat-file", "-s", f"HEAD:{path}")
+    try:
+        length = int(size.stdout.strip()) if not size.returncode else 0
+    except ValueError:
+        return False
+    if not 0 < length <= MAX_EVIDENCE_BYTES:
+        return False
+    result = run_git(product, "show", f"HEAD:{path}")
+    states = re.findall(r"(?mi)^State:\s*(.*?)\s*$", result.stdout)
+    return (
+        result.returncode == 0 and len(result.stdout.encode()) == length
+        and len(states) == 1 and states[0].strip().lower() == "done"
+    )
+
+
 def _object_root(product: Path) -> Path:
-    result = _git(product, "rev-parse", "--git-path", "objects")
+    result = run_git(product, "rev-parse", "--git-path", "objects")
     if result.returncode or not result.stdout.strip():
         raise HistoricalObjectError("historical Git object root is unavailable")
     value = Path(result.stdout.strip())
@@ -162,10 +302,14 @@ def _copy_objects(source: Path, target: Path) -> None:
         os.replace(temporary, destination)
 
 
-def _fetch_objects(
+def fetch_objects(
     product: Path, origin: str, commits: set[str], blobs: set[str],
 ) -> None:
+    origin = _transport(origin)
+    auth = github_auth(origin)
     expected = {**{value: "commit" for value in commits}, **{value: "blob" for value in blobs}}
+    if any(not SHA.fullmatch(value) for value in expected):
+        raise HistoricalObjectError("historical evidence object ID is invalid")
     missing = sorted(
         value for value, kind in expected.items()
         if not (commit_present(product, value) if kind == "commit" else _blob_present(product, value))
@@ -179,9 +323,17 @@ def _fetch_objects(
     for offset in range(0, len(missing), FETCH_CHUNK):
         chunk = missing[offset:offset + FETCH_CHUNK]
         with tempfile.TemporaryDirectory(prefix="factory-history-", dir=str(target.parent)) as raw:
-            objects = Path(raw) / "objects"
-            (objects / "info").mkdir(parents=True)
-            (objects / "pack").mkdir()
+            repository = Path(raw) / "fetch.git"
+            initialized = subprocess.run(
+                _git_command(
+                    None, "init", "--bare", "--quiet", str(repository),
+                ),
+                text=True, capture_output=True, check=False, timeout=30,
+                env=_git_environment(),
+            )
+            if initialized.returncode:
+                raise HistoricalObjectError("historical evidence staging failed")
+            objects = repository / "objects"
             remaining = MAX_FETCH_BYTES - imported
             if remaining <= 0:
                 raise HistoricalObjectError("historical evidence fetch exceeds its quota")
@@ -191,22 +343,18 @@ def _fetch_objects(
 
             environment = {
                 "GIT_ALTERNATE_OBJECT_DIRECTORIES": str(target),
-                "GIT_OBJECT_DIRECTORY": str(objects),
             }
-            command = [
-                "git", "-c", "protocol.allow=never", "-c", "protocol.file.allow=always",
-                "-c", "protocol.https.allow=always", "-c", "protocol.ssh.allow=always",
-                "-c", "fetch.fsckObjects=true", "-c", "transfer.fsckObjects=true",
-                "-c", "credential.interactive=never", "-C", str(product),
+            command = _git_command(
+                None, f"--git-dir={repository}", "-c", "fetch.fsckObjects=true",
+                "-c", "transfer.fsckObjects=true",
+                "-c", "gc.auto=0", "-c", "maintenance.auto=false",
                 "fetch", "--quiet", "--no-tags", "--no-write-fetch-head",
                 origin, *chunk,
-            ]
-            values = os.environ.copy()
-            values.update(environment)
-            values.update({"GIT_PROTOCOL_FROM_USER": "0", "GIT_TERMINAL_PROMPT": "0"})
+                auth=auth,
+            )
             fetched = subprocess.run(
                 command, text=True, capture_output=True, check=False, timeout=120,
-                env=values, preexec_fn=limit,
+                env=_git_environment(environment, auth), preexec_fn=limit,
             )
             if fetched.returncode:
                 raise HistoricalObjectError("historical evidence object fetch failed")
@@ -214,8 +362,14 @@ def _fetch_objects(
             if size > remaining:
                 raise HistoricalObjectError("historical evidence fetch exceeds its quota")
             for value in chunk:
-                result = _git(product, "cat-file", "-t", value, environment=environment)
-                length = _git(product, "cat-file", "-s", value, environment=environment)
+                result = run_git_remote(
+                    f"--git-dir={repository}", "cat-file", "-t", value,
+                    environment=environment, auth=auth,
+                )
+                length = run_git_remote(
+                    f"--git-dir={repository}", "cat-file", "-s", value,
+                    environment=environment, auth=auth,
+                )
                 if (
                     result.returncode or result.stdout.strip() != expected[value]
                     or length.returncode
@@ -242,6 +396,7 @@ def _fetch_objects(
 def hydrate(product: Path, origin: str) -> int:
     migrations = product / "factory/migrations"
     origin = _transport(origin)
+    auth = github_auth(origin)
     supported = {
         "nysa.software-factory.legacy-closeout/v1": ("pr",),
         "nysa.software-factory.terminal-backfill/v1": (
@@ -251,7 +406,7 @@ def hydrate(product: Path, origin: str) -> int:
             "original_pr", "adoption_pr",
         ),
     }
-    repository = _repository(product)
+    repository: str | None = None
     requirements: dict[tuple[int, str], dict[str, Any]] = {}
     reconciliation: list[tuple[str, str, str, dict[str, Any]]] = []
     direct: set[str] = set()
@@ -280,6 +435,8 @@ def hydrate(product: Path, origin: str) -> int:
         keys = supported.get(value.get("schema")) if isinstance(value, dict) else None
         if not keys:
             continue
+        if repository is None:
+            repository = _repository(product)
         relative = str(path.relative_to(product))
         if value.get("repository") != repository:
             raise HistoricalObjectError(
@@ -328,14 +485,16 @@ def hydrate(product: Path, origin: str) -> int:
         requirement_commits.update(item["commits"])
         if any(not commit_present(product, sha) for sha in item["commits"]):
             reference = f"refs/pull/{number}/head"
-            observed = _git(product, "ls-remote", "--refs", "--", origin, reference)
+            observed = run_git_remote(
+                "ls-remote", "--refs", "--", origin, reference, auth=auth,
+            )
             fields = observed.stdout.split()
             relative = sorted(item["paths"])[0]
             if observed.returncode or fields != [head, reference]:
                 raise HistoricalObjectError(
                     f"historical PR head unavailable: {relative} PR #{number} expected {head}"
                 )
-    _fetch_objects(product, origin, requirement_commits, set())
+    fetch_objects(product, origin, requirement_commits, set())
     for (number, head), item in sorted(requirements.items()):
         absent = sorted(
             sha for sha in item["commits"] if not commit_present(product, sha)
@@ -346,7 +505,7 @@ def hydrate(product: Path, origin: str) -> int:
                 f"PR #{number} expected {absent[0]}"
             )
         for sha in item["commits"]:
-            if sha != head and _git(
+            if sha != head and run_git(
                 product, "merge-base", "--is-ancestor", sha, head,
             ).returncode:
                 raise HistoricalObjectError(
@@ -383,7 +542,7 @@ def hydrate(product: Path, origin: str) -> int:
                         f"historical evidence commit is malformed: {evidence_path} {key}"
                     )
                 direct.add(commit)
-    listing = _git(
+    listing = run_git(
         product, "ls-tree", "-r", "--name-only", "HEAD",
         "--", "factory/attestations",
     )
@@ -396,7 +555,10 @@ def hydrate(product: Path, origin: str) -> int:
     ):
         raise HistoricalObjectError("historical attestation inventory is too large")
     for path in attestation_paths:
-        if not re.fullmatch(r"factory/attestations/T-[0-9]+/bundle\.json", path):
+        matched = re.fullmatch(
+            r"factory/attestations/(T-[0-9]+)/bundle\.json", path,
+        )
+        if not matched or not _done_at(product, matched.group(1)):
             continue
         root = str(Path(path).parent)
         for name, commit_keys, blob_keys in (
@@ -416,6 +578,8 @@ def hydrate(product: Path, origin: str) -> int:
             if value is None:
                 continue
             for key in commit_keys:
+                if key not in value:
+                    continue
                 commit = value.get(key, "")
                 if not SHA.fullmatch(commit):
                     raise HistoricalObjectError(
@@ -423,6 +587,8 @@ def hydrate(product: Path, origin: str) -> int:
                     )
                 direct.add(commit)
             for key in blob_keys:
+                if key not in value:
+                    continue
                 blob = value.get(key, "")
                 if not SHA.fullmatch(blob):
                     raise HistoricalObjectError(
@@ -431,5 +597,5 @@ def hydrate(product: Path, origin: str) -> int:
                 blobs.add(blob)
     if len(requirement_commits | direct | blobs) > MAX_OBJECTS:
         raise HistoricalObjectError("historical evidence object inventory is too large")
-    _fetch_objects(product, origin, direct, blobs)
+    fetch_objects(product, origin, direct, blobs)
     return len(requirements)

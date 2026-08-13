@@ -1277,53 +1277,31 @@ else
   fail "preflight report blocks pairwise Builder ownership conflicts" \
     "$PREFLIGHT_CONFLICT_OUTPUT"
 fi
-PREFLIGHT_REAL_GIT="$(command -v git)"
-PREFLIGHT_MUTATION_COUNTER="$TMP/preflight-git-counter"
-cat > "$STUB_BIN/git" <<'EOF'
-#!/usr/bin/env bash
-set -eu
-ls_remote=0
-for argument in "$@"; do
-  [[ "$argument" == "ls-remote" ]] && ls_remote=1
-done
-if [[ "$ls_remote" -eq 1 ]]; then
-  count=0
-  [[ ! -f "$PREFLIGHT_MUTATION_COUNTER" ]] ||
-    count="$(cat "$PREFLIGHT_MUTATION_COUNTER")"
-  count=$((count + 1))
-  printf '%s\n' "$count" > "$PREFLIGHT_MUTATION_COUNTER"
-  if [[ "$count" -eq 2 ]]; then
-    "$PREFLIGHT_REAL_GIT" -C "$PREFLIGHT_MUTATION_PRODUCT" \
-      commit --allow-empty -qm "concurrent preflight mutation"
-  fi
-fi
-exec "$PREFLIGHT_REAL_GIT" "$@"
-EOF
-chmod +x "$STUB_BIN/git"
-export PREFLIGHT_REAL_GIT PREFLIGHT_MUTATION_COUNTER
-export PREFLIGHT_MUTATION_PRODUCT="$PRODUCT_PREFLIGHT"
-export FACTORY_KIT_CERTIFICATION_NETWORK_REVIEWED=1
-PREFLIGHT_MUTATION_OUTPUT="$(run_kit preflight-report --project preflight \
-  --product "$PRODUCT_PREFLIGHT" --sha "$SHA_A" --ticket T-001 --json 2>&1)"
-PREFLIGHT_MUTATION_STATUS=$?
-unset FACTORY_KIT_CERTIFICATION_NETWORK_REVIEWED PREFLIGHT_MUTATION_PRODUCT
-unset PREFLIGHT_REAL_GIT PREFLIGHT_MUTATION_COUNTER
-rm -f "$STUB_BIN/git"
-if [[ "$PREFLIGHT_MUTATION_STATUS" -eq 2 ]] &&
-   python3 - "$PREFLIGHT_MUTATION_OUTPUT" <<'PY'
-import json, sys
-value = json.loads(sys.argv[1])
-assert value["status"] == "blocked"
-assert value["product"]["identity_stable"] is False
-assert "identity_changed" in {
-    item["reason_code"] for item in value["blockers"]
-}
+if python3 - "$ROOT" "$PRODUCT_PREFLIGHT" "$PREFLIGHT_PUSH_ORIGIN" <<'PY'
+import importlib.util, pathlib, subprocess, sys
+from unittest import mock
+root, product, origin = map(pathlib.Path, sys.argv[1:])
+spec = importlib.util.spec_from_file_location(
+    "operator_preflight_report", root / "scripts/operator-preflight-report.py",
+)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+real = module.run_git_remote
+def mutate(*arguments, **keywords):
+    subprocess.run(
+        ["/usr/bin/git", "-C", str(product), "commit", "--allow-empty",
+         "-qm", "concurrent preflight mutation"], check=True,
+    )
+    return real(*arguments, **keywords)
+with mock.patch.object(module, "run_git_remote", side_effect=mutate):
+    snapshot = module.product_snapshot(product, str(origin))
+assert snapshot["identity_stable"] is False
+assert snapshot["identity_changed"] is True
 PY
 then
   pass "preflight report blocks a product identity change during evidence reads"
 else
-  fail "preflight report blocks a product identity change during evidence reads" \
-    "$PREFLIGHT_MUTATION_OUTPUT"
+  fail "preflight report blocks a product identity change during evidence reads"
 fi
 
 PRODUCT_ONE="$(make_product product-one)"

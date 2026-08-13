@@ -233,7 +233,10 @@ class QualificationEnvironmentTest(unittest.TestCase):
         run(self.product, "git", "init", "-q", "-b", "main")
         run(self.product, "git", "config", "user.name", "Test")
         run(self.product, "git", "config", "user.email", "test@example.invalid")
-        run(self.product, "git", "remote", "add", "origin", "git@example.invalid")
+        run(
+            self.product, "git", "remote", "add", "origin",
+            "git@example.invalid:example/product.git",
+        )
         run(self.product, "git", "add", ".")
         run(self.product, "git", "commit", "-qm", "product")
         run(
@@ -1257,6 +1260,13 @@ class QualificationEnvironmentTest(unittest.TestCase):
         (publisher / "factory/PROJECT.env").write_text(
             "GH_REPO=example/product\n", encoding="utf-8",
         )
+        (publisher / "factory/tickets/T-030.md").parent.mkdir()
+        (publisher / "factory/tickets/T-030.md").write_text(
+            "# T-030\n\nState: Done\n", encoding="utf-8",
+        )
+        (publisher / "factory/tickets/T-031.md").write_text(
+            "# T-031\n\nState: Approved\n", encoding="utf-8",
+        )
         run(publisher, "git", "add", ".")
         run(publisher, "git", "commit", "-qm", "base")
         base = run(publisher, "git", "rev-parse", "HEAD")
@@ -1302,6 +1312,12 @@ class QualificationEnvironmentTest(unittest.TestCase):
         main_attestation = publisher / "factory/attestations/T-030/bundle.json"
         main_attestation.parent.mkdir(parents=True)
         main_attestation.write_text(attestation_text, encoding="utf-8")
+        skipped_object = "f" * 40
+        skipped = publisher / "factory/attestations/T-031/bundle.json"
+        skipped.parent.mkdir(parents=True)
+        skipped.write_text(json.dumps({
+            "branch_head": skipped_object, "reviewed_sha": skipped_object,
+        }) + "\n", encoding="utf-8")
         migration.write_text(json.dumps({
             "adoption_pr": {"head": head, "number": 30},
             "evidence_head": evidence,
@@ -1325,11 +1341,29 @@ class QualificationEnvironmentTest(unittest.TestCase):
         refs = run(consumer, "git", "show-ref")
         fetch_head = consumer / ".git/FETCH_HEAD"
         fetch_head_before = fetch_head.read_bytes() if fetch_head.exists() else None
-        self.assertEqual(ENVIRONMENT.historical_pr_objects(consumer, str(remote)), 1)
+        redirected = self.workspace / "redirected.git"
+        run(self.workspace, "git", "init", "--bare", "-q", str(redirected))
+        run(
+            consumer, "git", "config",
+            f"url.{redirected}.insteadOf", str(remote),
+        )
+        ambient_objects = self.workspace / "ambient-objects"
+        ambient_objects.mkdir()
+        with mock.patch.dict(os.environ, {
+            "GIT_CONFIG_GLOBAL": str(consumer / ".git/config"),
+            "GIT_OBJECT_DIRECTORY": str(ambient_objects),
+            "GIT_SSH_COMMAND": "false",
+        }):
+            self.assertEqual(
+                ENVIRONMENT.historical_pr_objects(consumer, str(remote)), 1,
+            )
+        self.assertEqual(list(ambient_objects.iterdir()), [])
         self.assertTrue(ENVIRONMENT.commit_present(consumer, head))
         self.assertTrue(ENVIRONMENT.commit_present(consumer, evidence))
         self.assertTrue(ENVIRONMENT.commit_present(consumer, reviewed))
         self.assertEqual(run(consumer, "git", "cat-file", "-t", route_blob), "blob")
+        with self.assertRaises(subprocess.CalledProcessError):
+            run(consumer, "git", "cat-file", "-e", skipped_object)
         self.assertEqual(run(consumer, "git", "show-ref"), refs)
         self.assertEqual(fetch_head.read_bytes() if fetch_head.exists() else None, fetch_head_before)
         run(consumer, "git", "remote", "set-url", "origin", "invalid://offline")

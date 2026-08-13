@@ -17,7 +17,14 @@ LIB = Path(__file__).resolve().parent
 sys.path.insert(0, str(LIB))
 
 from effective_ticket import ticket_branch_prefix  # noqa: E402
-from historical_pr_objects import HistoricalObjectError, hydrate  # noqa: E402
+from historical_pr_objects import (  # noqa: E402
+    HistoricalObjectError,
+    fetch_objects,
+    github_auth,
+    hydrate,
+    run_git,
+    run_git_remote,
+)
 from inflight_release import (  # noqa: E402
     AuthorizationError,
     authorize_ticket,
@@ -57,6 +64,7 @@ class Validator:
         self.candidate = candidate
         self.candidate_scripts = candidate_scripts
         self.origin = origin
+        self.git_auth = github_auth(origin)
         self.certified_previous_tree = certified_previous_tree
         self.prefix = ticket_branch_prefix(self.factory)
         self.authorization: dict[str, Any] | None = None
@@ -71,12 +79,7 @@ class Validator:
         raise ActivationError(reason, scope, detail)
 
     def git(self, *arguments: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            ["git", "-C", str(self.product), *arguments],
-            text=True,
-            capture_output=True,
-            check=False,
-        )
+        return run_git(self.product, *arguments)
 
     def checked(self, *arguments: str) -> str:
         result = self.git(*arguments)
@@ -133,9 +136,11 @@ class Validator:
                     "nonterminal ticket uses another kit without an exact in-flight release authorization",
                 )
             head = self.checked("rev-parse", "HEAD")
-            remote = self.checked(
+            remote_result = run_git_remote(
                 "ls-remote", "--heads", "--", self.origin, "refs/heads/main",
-            ).split()
+                auth=self.git_auth,
+            )
+            remote = remote_result.stdout.split() if not remote_result.returncode else []
             if not remote or remote[0] != head:
                 self.fail(
                     "activation_authorization_invalid",
@@ -258,9 +263,11 @@ class Validator:
         if re.findall(r"(?mi)^Operator-Approval:\s*(.*?)\s*$", text) != ["Linear"]:
             return False
         head = self.checked("rev-parse", "HEAD")
-        remote = self.checked(
+        remote_result = run_git_remote(
             "ls-remote", "--heads", "--", self.origin, "refs/heads/main",
-        ).split()
+            auth=self.git_auth,
+        )
+        remote = remote_result.stdout.split() if not remote_result.returncode else []
         if not remote or remote[0] != head:
             return False
         root = f"factory/attestations/{ticket}"
@@ -311,10 +318,17 @@ class Validator:
             "refs/heads/" + self.prefix,
         ).splitlines()
         remote_tips: dict[str, str] = {}
-        remote_lines = self.checked(
+        remote_result = run_git_remote(
             "ls-remote", "--heads", "--", self.origin,
             "refs/heads/" + self.prefix + "T-*",
-        ).splitlines()
+            auth=self.git_auth,
+        )
+        if remote_result.returncode:
+            self.fail(
+                "activation_inventory_invalid", "activation",
+                "activation remote ticket inventory is unavailable",
+            )
+        remote_lines = remote_result.stdout.strip().splitlines()
         for line in remote_lines:
             fields = line.split()
             if len(fields) != 2:
@@ -379,10 +393,14 @@ class Validator:
                 source_ref = remote_ref
             else:
                 audit_ref = "refs/factory/lease-audit/" + ticket
-                fetched = self.git(
-                    "fetch", "--quiet", "--no-tags", self.origin,
-                    "refs/heads/" + branch + ":" + audit_ref,
-                )
+                try:
+                    fetch_objects(self.product, self.origin, {remote_tip}, set())
+                except HistoricalObjectError:
+                    self.fail(
+                        "activation_remote_ref_unverified", ticket,
+                        f"{ticket} remote ticket ref could not be verified",
+                    )
+                fetched = self.git("update-ref", audit_ref, remote_tip)
                 fetched_tip = self.git("rev-parse", "--verify", audit_ref)
                 if fetched.returncode or fetched_tip.stdout.strip() != remote_tip:
                     self.git("update-ref", "-d", audit_ref)
@@ -484,9 +502,11 @@ class Validator:
         historical_objects = 0
         try:
             head = self.checked("rev-parse", "HEAD")
-            remote = self.checked(
+            remote_result = run_git_remote(
                 "ls-remote", "--heads", "--", self.origin, "refs/heads/main",
-            ).split()
+                auth=self.git_auth,
+            )
+            remote = remote_result.stdout.split() if not remote_result.returncode else []
             if not remote or remote[0] != head:
                 self.fail(
                     "activation_product_not_main",
