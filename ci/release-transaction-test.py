@@ -235,10 +235,12 @@ class ReleaseTransactionTest(unittest.TestCase):
             mock.patch.object(RELEASE, "clean_identity", side_effect=[
                 (self.sha, "e" * 40, str(repo)),
                 ("f" * 40, "1" * 40, str(self.product)),
+                ("f" * 40, "1" * 40, str(self.product)),
             ]),
             mock.patch.object(RELEASE, "run"),
             mock.patch.object(RELEASE, "contract", return_value="1.9.0"),
             mock.patch.object(RELEASE, "prepare_runtime", return_value=runtime),
+            mock.patch.object(RELEASE, "prepare_product_runtime"),
             mock.patch.object(RELEASE, "prepare_registry", return_value=self.plan["identity"]["registry"]),
             mock.patch.object(RELEASE, "prepare_controller", return_value=self.plan["identity"]["controller"]),
             mock.patch.object(RELEASE, "launcher_plan", return_value=self.plan["children"]["launcher"]),
@@ -276,10 +278,12 @@ class ReleaseTransactionTest(unittest.TestCase):
             mock.patch.object(RELEASE, "clean_identity", side_effect=[
                 (self.sha, "e" * 40, str(repo)),
                 ("f" * 40, "1" * 40, str(self.product)),
+                ("f" * 40, "1" * 40, str(self.product)),
             ]),
             mock.patch.object(RELEASE, "run"),
             mock.patch.object(RELEASE, "contract", return_value="1.9.0"),
             mock.patch.object(RELEASE, "prepare_runtime", return_value=runtime),
+            mock.patch.object(RELEASE, "prepare_product_runtime"),
             mock.patch.object(RELEASE, "prepare_registry", return_value=self.plan["identity"]["registry"]),
             mock.patch.object(RELEASE, "prepare_controller", return_value=self.plan["identity"]["controller"]),
             mock.patch.object(RELEASE, "launcher_plan", return_value=self.plan["children"]["launcher"]),
@@ -546,6 +550,41 @@ class ReleaseTransactionTest(unittest.TestCase):
             self.assertRaisesRegex(RELEASE.ReleaseError, "filename"),
         ):
             RELEASE.ticket_inventory(self.product)
+
+    def test_release_prepares_only_ignored_physical_runtime_directories(self) -> None:
+        with mock.patch.object(
+            RELEASE.subprocess, "run",
+            return_value=subprocess.CompletedProcess([], 0),
+        ) as ignored:
+            RELEASE.prepare_product_runtime(self.product)
+        self.assertEqual(ignored.call_count, 2)
+        for relative in ("factory/runs", "factory/.active-runs"):
+            path = self.product / relative
+            self.assertTrue(path.is_dir())
+            self.assertFalse(path.is_symlink())
+            self.assertEqual(path.stat().st_mode & 0o777, 0o700)
+        target = self.root / "foreign-runs"
+        target.mkdir()
+        (self.product / "factory/runs").rmdir()
+        (self.product / "factory/runs").symlink_to(target, target_is_directory=True)
+        with (
+            mock.patch.object(
+                RELEASE.subprocess, "run",
+                return_value=subprocess.CompletedProcess([], 0),
+            ),
+            self.assertRaisesRegex(RELEASE.ReleaseError, "unsafe"),
+        ):
+            RELEASE.prepare_product_runtime(self.product)
+
+    def test_release_refuses_unignored_runtime_directory(self) -> None:
+        with (
+            mock.patch.object(
+                RELEASE.subprocess, "run",
+                return_value=subprocess.CompletedProcess([], 1),
+            ),
+            self.assertRaisesRegex(RELEASE.ReleaseError, "gitignored"),
+        ):
+            RELEASE.prepare_product_runtime(self.product)
 
     def test_release_initializes_every_bound_ticket_without_erasing_overlays(self) -> None:
         tickets = self.product / "factory/tickets"

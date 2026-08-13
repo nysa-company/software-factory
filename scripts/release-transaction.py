@@ -487,6 +487,18 @@ def ticket_inventory(product: Path) -> list[dict[str, str]]:
     return result
 
 
+def prepare_product_runtime(product: Path) -> None:
+    for relative in ("factory/runs", "factory/.active-runs"):
+        ignored = subprocess.run(
+            ["git", "-C", str(product), "check-ignore", "-q", "--no-index",
+             f"{relative}/.factory-release-probe"],
+            check=False, timeout=120,
+        )
+        if ignored.returncode:
+            raise ReleaseError(f"release setup requires {relative}/ to be gitignored")
+        secure_directory(product / relative, create=True)
+
+
 def contract(release: Path) -> str:
     try:
         value = json.loads(
@@ -968,6 +980,11 @@ def setup(args: argparse.Namespace) -> dict[str, Any]:
     secure_directory(kits_root, create=True)
     factory_sha, factory_tree, factory_origin = clean_identity(repo, "Factory candidate")
     product_sha, product_tree, product_origin = clean_identity(product, "product")
+    prepare_product_runtime(product)
+    if clean_identity(product, "product") != (
+        product_sha, product_tree, product_origin,
+    ):
+        raise ReleaseError("product changed during runtime preparation")
     if factory_sha != sha:
         raise ReleaseError("Factory candidate does not match release SHA")
     if (product / "factory/KIT_PIN").read_text(encoding="utf-8") != sha + "\n":

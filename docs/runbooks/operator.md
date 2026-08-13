@@ -586,7 +586,8 @@ bash scripts/factory-kit.sh release resume \
 `release setup` requires clean exact Factory and product Git trees, an exact
 product `KIT_PIN`, Contract 1.9, and a reviewed certification-plan runtime. It
 installs the sealed candidate, prepares a project-local runtime, the
-path-only project registry, and the exact macOS controller plist, then binds
+ignored physical `factory/runs/` and `.active-runs/` roots, the path-only
+project registry, and the exact macOS controller plist, then binds
 Factory/product SHA and tree, active generation, runtime binaries, provider
 plans, model profile, receipt, and any one-to-four ticket migration previews
 into an owner-only plan. It also binds every committed ticket blob and state,
