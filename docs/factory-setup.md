@@ -165,7 +165,7 @@ product checkout.
   It reads the same reviewed v2 declaration, accepts exactly one compatible
   physical runtime (or one explicit `--runtime-bin`), and writes an exact
   project-local Node/npm/npx transaction under
-  `~/.factory/kits/projects/<project>/runtime/`. The production launcher
+  `~/.factory/project-runtimes/<project>/`. The production launcher
   verifies that signed transaction before prepending only that project's bin
   directory. Zero or multiple compatible candidates are a refusal; setup does
   not install Node, source shell profiles, or infer a version from ambient

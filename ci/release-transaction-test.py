@@ -458,7 +458,9 @@ class ReleaseTransactionTest(unittest.TestCase):
 
     def test_resume_live_basis_refuses_product_and_runtime_drift(self) -> None:
         (self.product / "factory/KIT_PIN").write_text(self.sha + "\n")
-        runtime_journal = self.kits / "projects/relay/runtime/runtime-pin-journal.json"
+        runtime_journal = (
+            self.kits.parent / "project-runtimes/relay/runtime-pin-journal.json"
+        )
         RELEASE.atomic_json(runtime_journal, {
             "plan": {"approval_sha256": "2" * 64}, "status": "completed",
         })
@@ -499,6 +501,11 @@ class ReleaseTransactionTest(unittest.TestCase):
         ):
             with self.assertRaisesRegex(RELEASE.ReleaseError, "runtime changed"):
                 RELEASE.validate_live_basis(self.kits, plan)
+
+    def test_project_runtime_is_outside_symlink_free_kit_state(self) -> None:
+        runtime = RELEASE.project_runtime_root(self.kits, "relay")
+        self.assertEqual(runtime, self.kits.parent / "project-runtimes/relay")
+        self.assertNotEqual(runtime.parents[1], self.kits)
 
     def test_profile_registry_and_controller_job_are_exact_and_non_overwriting(self) -> None:
         home = self.root / "home"

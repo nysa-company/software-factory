@@ -92,6 +92,7 @@ class OwnerRuntimePinTest(unittest.TestCase):
             (ROOT / "scripts/owner-runtime-pin.py").read_text(),
         )
         launcher = (ROOT / "integrations/hermes/bin/factory-launch").read_text()
+        self.assertIn('PROJECT_RUNTIME_ROOT="${KITS_ROOT%/*}/project-runtimes/$PROJECT"', launcher)
         self.assertIn('PROJECT_RUNTIME_BIN="$PROJECT_RUNTIME_ROOT/bin"', launcher)
         self.assertIn('owner-runtime-pin.py" check', launcher)
         self.assertIn('SAFE_PATH="$PROJECT_RUNTIME_BIN:', launcher)

@@ -487,12 +487,16 @@ def runtime_candidates(explicit: Path | None) -> list[Path]:
     return result
 
 
+def project_runtime_root(kits_root: Path, project: str) -> Path:
+    return kits_root.parent / "project-runtimes" / project
+
+
 def prepare_runtime(
     release: Path, product: Path, kits_root: Path, project: str,
     explicit: Path | None,
 ) -> dict[str, Any]:
     helper = release / "scripts/owner-runtime-pin.py"
-    root = secure_directory(kits_root / "projects" / project / "runtime", create=True)
+    root = secure_directory(project_runtime_root(kits_root, project), create=True)
     target = root / "bin"
     plans: list[dict[str, Any]] = []
     for candidate in runtime_candidates(explicit):
@@ -1141,10 +1145,9 @@ def validate_live_basis(kits_root: Path, plan: dict[str, Any]) -> None:
             ) != controller["sha256"]
         ):
             raise ReleaseError("controller job changed after setup")
-    runtime_journal = (
-        kits_root / "projects" / plan["request"]["project"] / "runtime"
-        / "runtime-pin-journal.json"
-    )
+    runtime_journal = project_runtime_root(
+        kits_root, plan["request"]["project"]
+    ) / "runtime-pin-journal.json"
     runtime_value = safe_state(runtime_journal, "runtime pin journal")
     runtime_plan = runtime_value.get("plan")
     if (

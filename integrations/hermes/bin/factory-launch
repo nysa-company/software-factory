@@ -692,7 +692,7 @@ PY
 )" || die "active release contract manifest is invalid"
 [[ "$RELEASE_CONTRACT" == "$ACTIVE_CONTRACT" ]] ||
   die "active record and release contract disagree"
-PROJECT_RUNTIME_ROOT="$KITS_ROOT/projects/$PROJECT/runtime"
+PROJECT_RUNTIME_ROOT="${KITS_ROOT%/*}/project-runtimes/$PROJECT"
 PROJECT_RUNTIME_BIN="$PROJECT_RUNTIME_ROOT/bin"
 PROJECT_RUNTIME_JOURNAL="$PROJECT_RUNTIME_ROOT/runtime-pin-journal.json"
 if [[ "$QUALIFICATION_LAUNCHER" != "1" &&
