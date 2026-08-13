@@ -821,10 +821,6 @@ if [[ -n "$PROFILE_GH_TOKEN" ]]; then
 fi
 if [[ "$ISOLATED_TEST_LAUNCHER" == "1" ]]; then
   HELPER_ENV+=(
-    "FACTORY_LAUNCH_TEST_MODE=1"
-    "FACTORY_LAUNCH_TEST_HOME=$HOME"
-    "FACTORY_KITS_ROOT=$KITS_ROOT"
-    "HERMES_FACTORY_PROFILE=$PROFILE_DIR"
     "FACTORY_TEST_MODE=1"
     "FACTORY_TRUSTED_TEST_HARNESS=1"
     "FACTORY_ADAPTER_OVERRIDE=mock"
@@ -1291,9 +1287,18 @@ PY
     controller_state_dir
     CONTROLLER="$RELEASE_PATH/scripts/factory-controller.py"
     require_managed_file "$CONTROLLER" "active release controller"
+    CONTROLLER_ENV=("${HELPER_ENV[@]}")
+    if [[ "$ISOLATED_TEST_LAUNCHER" == "1" ]]; then
+      CONTROLLER_ENV+=(
+        "FACTORY_LAUNCH_TEST_MODE=1"
+        "FACTORY_LAUNCH_TEST_HOME=$HOME"
+        "FACTORY_KITS_ROOT=$KITS_ROOT"
+        "HERMES_FACTORY_PROFILE=$PROFILE_DIR"
+      )
+    fi
     cleanup_runtime
     trap - EXIT HUP INT TERM
-    exec "${HELPER_ENV[@]}" "$PYTHON_BIN" -I -S "$CONTROLLER" \
+    exec "${CONTROLLER_ENV[@]}" "$PYTHON_BIN" -I -S "$CONTROLLER" \
       --launcher "$SELF_PATH" \
       --project "$PROJECT" \
       --product-root "$PRODUCT_ROOT" \

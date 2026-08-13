@@ -668,13 +668,15 @@ class ReleaseTransactionTest(unittest.TestCase):
 
     def test_isolated_launcher_forwards_only_explicit_local_origin_evidence(self) -> None:
         launcher = (ROOT / "integrations/hermes/bin/factory-launch").read_text()
+        controller = launcher[launcher.index("  reconcile)"):launcher.index("  incident-report)")]
         for binding in (
             '"FACTORY_LAUNCH_TEST_MODE=1"',
             '"FACTORY_LAUNCH_TEST_HOME=$HOME"',
             '"FACTORY_KITS_ROOT=$KITS_ROOT"',
             '"HERMES_FACTORY_PROFILE=$PROFILE_DIR"',
         ):
-            self.assertIn(binding, launcher)
+            self.assertIn(binding, controller)
+        self.assertIn('exec "${CONTROLLER_ENV[@]}"', controller)
         self.assertIn('"${FACTORY_KIT_TEST_MODE:-0}" == "1"', launcher)
         self.assertIn('"${FACTORY_KIT_CANONICAL_ORIGIN:-}" == /*', launcher)
         self.assertIn(
