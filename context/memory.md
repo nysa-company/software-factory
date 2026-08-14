@@ -5801,3 +5801,23 @@ leases, and their locks are gitignored before it creates product runtime state,
 certifies, or initializes the operator projection. This keeps a successful
 activation or first claim from dirtying its own registered checkout and moving
 the first ticket-readiness failure behind the expensive release boundary.
+
+## 2026-08-13 — Decision 407: Capacity one is a supported serialized lane
+
+Category: Reliability
+
+Contract 2 autonomous dispatch honors `MAX_CONCURRENT_TICKETS=1` as the
+documented serialized path: one exact ticket can be leased and every later
+claim waits at capacity. Capacity one no longer reaches a post-activation
+dispatcher refusal.
+
+## 2026-08-13 — Decision 408: Release authorization has no human hash handoff
+
+Category: Operations
+
+`release setup` authorizes its exact owner-only sealed transaction. `release
+resume` and pre-mutation `release abort` select the current sealed plan by
+project and candidate SHA, require the same non-auto operator identity, and
+verify that plan against its immutable stored copy. Plan and journal hashes
+remain mandatory internal integrity and replay evidence, but operators no
+longer copy or approve those hashes between certification and activation.

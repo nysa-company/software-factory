@@ -56,7 +56,6 @@ MAXIMUM="$(factory_dispatch_max_tickets "$ROOT" 2>/dev/null)" || {
   factory_dispatch_capacity_error >&2
   exit 3
 }
-[[ "$MAXIMUM" -gt 1 ]] || { echo "bounded dispatcher concurrency is not enabled" >&2; exit 3; }
 [[ -f "$FACTORY_DIR/tickets/$TICKET.md" && ! -L "$FACTORY_DIR/tickets/$TICKET.md" ]] || {
   echo "ticket file is missing or unsafe" >&2
   exit 3
@@ -84,11 +83,12 @@ fi
 case "$OPERATION" in
   claim)
     [[ -z "$LEASE_ID" ]] || { echo "claim does not accept --lease" >&2; exit 2; }
-    python3 - "$LEASE_DIR" "$LEASE_FILE" "$TICKET" "$MAXIMUM" <<'PY'
+    python3 - "$LEASE_DIR" "$LEASE_FILE" "$TICKET" "$MAXIMUM" \
+      "$FACTORY_DIR/.active-runs" <<'PY'
 import json, os, pathlib, re, secrets, stat, sys, tempfile, time
 
 root, destination = map(pathlib.Path, sys.argv[1:3])
-ticket, maximum = sys.argv[3], int(sys.argv[4])
+ticket, maximum, active_root = sys.argv[3], int(sys.argv[4]), pathlib.Path(sys.argv[5])
 entries = sorted(root.iterdir(), key=lambda path: path.name)
 lease_ids = set()
 record_tickets = set()
@@ -118,9 +118,21 @@ for path in entries:
         raise SystemExit("dispatcher lease state is unsafe")
     record_tickets.add(record_ticket)
     lease_ids.add(record_lease)
+active_tickets = set()
+if active_root.exists() or active_root.is_symlink():
+    value = active_root.lstat()
+    if (
+        active_root.is_symlink() or not stat.S_ISDIR(value.st_mode)
+        or value.st_uid != os.geteuid() or stat.S_IMODE(value.st_mode) & 0o022
+    ):
+        raise SystemExit("active-run state is unsafe")
+    for path in active_root.iterdir():
+        match = re.match(r"^(T-[0-9]+)\.", path.name)
+        if match:
+            active_tickets.add(match.group(1))
 if destination.exists():
     raise SystemExit("ticket already has a dispatcher lease")
-if len(entries) >= maximum:
+if ticket in active_tickets or len(record_tickets | active_tickets) >= maximum:
     raise SystemExit("dispatcher capacity is full")
 now = int(time.time())
 lease_id = secrets.token_hex(32)

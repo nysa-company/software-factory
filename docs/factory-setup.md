@@ -313,13 +313,14 @@ product checkout.
     --product "<absolute-product-path>" --sha "<full-sha>" \
     --repo "$PWD" --profile "<model-profile>" --operator-id "<operator-id>"
   bash scripts/factory-kit.sh release resume --project "<project>" \
-    --sha "<full-sha>" --approve-hash "<approval-sha256>" \
-    --approved-by "<operator-id>"
+    --sha "<full-sha>" --approved-by "<operator-id>"
   ```
 
-  Review each returned plan before resuming it. The transaction runs install,
+  `release setup` authorizes the exact sealed transaction. Resume each current
+  plan without copying a hash. The transaction runs install,
   certify, pause, qualification, and activation gates and records each phase in
-  an owner-only signed journal. Retries resume the exact bound candidate.
+  an owner-only signed journal. Internal hashes bind every phase, and retries
+  resume the exact current candidate.
   A fresh install records 24-hour owner-only kit-suite evidence by default.
   Authenticated successful GitHub Actions evidence for the exact protected-main
   SHA and its full Linux, macOS, aggregate, and immutability jobs is mandatory;

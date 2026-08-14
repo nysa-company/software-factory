@@ -209,8 +209,8 @@ Usage:
   $PROGRAM provider-concurrency ACTION --sha FULL_SHA --capacity 2..4 [--approve-hash HASH]
   $PROGRAM provider-cli-pin ACTION --sha FULL_SHA [--claude-bin ABS --codex-bin ABS --cursor-bin ABS --operator-id ID] [--approve-hash HASH]
   $PROGRAM release setup --project SLUG --product PRODUCT_REPO --sha FULL_SHA --profile ID --operator-id ID [--repo KIT_REPO] [--runtime-bin NODE_BIN_DIR] [--claude-bin ABS --codex-bin ABS --cursor-bin ABS] [--ticket-workdir T-NNN ABS]
-  $PROGRAM release resume --project SLUG --sha FULL_SHA --approve-hash HASH --approved-by ID
-  $PROGRAM release abort  --project SLUG --sha FULL_SHA --approve-hash HASH --approved-by ID
+  $PROGRAM release resume --project SLUG --sha FULL_SHA --approved-by ID
+  $PROGRAM release abort  --project SLUG --sha FULL_SHA --approved-by ID
 
 FACTORY_KITS_ROOT overrides the default state root (~/.factory/kits).
 EOF
@@ -4724,27 +4724,25 @@ cmd_release_setup() {
 }
 
 cmd_release_resume() {
-  local project="$1" sha="$2" approval="$3" approver="$4" values release helper
+  local project="$1" sha="$2" approver="$3" values release helper
   validate_sha "$sha"
   values="$(verify_release_from_manifest "$sha")"
   release="$(printf '%s' "$values" | awk -F'\t' '{print $3}')"
   helper="$release/scripts/release-transaction.py"
   [[ -f "$helper" && ! -L "$helper" ]] || die "sealed release transaction helper is missing"
   python3 -I -S "$helper" --kits-root "$KITS_ROOT" resume \
-    --project "$project" --sha "$sha" --approve-hash "$approval" \
-    --approved-by "$approver"
+    --project "$project" --sha "$sha" --approved-by "$approver"
 }
 
 cmd_release_abort() {
-  local project="$1" sha="$2" approval="$3" approver="$4" values release helper
+  local project="$1" sha="$2" approver="$3" values release helper
   validate_sha "$sha"
   values="$(verify_release_from_manifest "$sha")"
   release="$(printf '%s' "$values" | awk -F'\t' '{print $3}')"
   helper="$release/scripts/release-transaction.py"
   [[ -f "$helper" && ! -L "$helper" ]] || die "sealed release transaction helper is missing"
   python3 -I -S "$helper" --kits-root "$KITS_ROOT" abort \
-    --project "$project" --sha "$sha" --approve-hash "$approval" \
-    --approved-by "$approver"
+    --project "$project" --sha "$sha" --approved-by "$approver"
 }
 
 require_command git
@@ -4962,16 +4960,16 @@ case "$COMMAND" in
         ${TICKET_WORKDIRS[@]+"${TICKET_WORKDIRS[@]}"}
     elif [[ "$ACTION" == "resume" || "$ACTION" == "abort" ]]; then
       [[ ${#POSITIONALS[@]} -eq 1 && -n "$PROJECT" && -n "$SHA" &&
-         -n "$APPROVE_HASH" && -n "$APPROVED_BY" && -z "$PRODUCT$PROFILE$OPERATOR_ID" &&
+         -n "$APPROVED_BY" && -z "$APPROVE_HASH$PRODUCT$PROFILE$OPERATOR_ID" &&
          -z "$RUNTIME_BIN$CLAUDE_BIN$CODEX_BIN$CURSOR_BIN$ORIGIN_OVERRIDE$RECEIPT$TICKET$CAPACITY" &&
          -z "$STAGE$PRIORITY_NAME$PREVIEW_HASH$FAILED_RUN$REASON$EXPIRES_MINUTES" &&
          ${#TICKETS[@]} -eq 0 && "$JSON" -eq 0 &&
          ${#TICKET_WORKDIRS[@]} -eq 0 && "$REPO" == "$SCRIPT_ROOT" ]] ||
         { usage >&2; exit 2; }
       if [[ "$ACTION" == "resume" ]]; then
-        cmd_release_resume "$PROJECT" "$SHA" "$APPROVE_HASH" "$APPROVED_BY"
+        cmd_release_resume "$PROJECT" "$SHA" "$APPROVED_BY"
       else
-        cmd_release_abort "$PROJECT" "$SHA" "$APPROVE_HASH" "$APPROVED_BY"
+        cmd_release_abort "$PROJECT" "$SHA" "$APPROVED_BY"
       fi
     else
       { usage >&2; exit 2; }

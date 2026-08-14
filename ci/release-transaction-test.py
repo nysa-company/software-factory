@@ -50,7 +50,7 @@ def cutover_lock_worker(
     elif mode == "resume":
         RELEASE._resume_locked = hold
         RELEASE.resume(argparse.Namespace(
-            approve_hash="8" * 64, approved_by="tester", kits_root=Path(kits),
+            approved_by="tester", kits_root=Path(kits),
             project=plan["request"]["project"], sha="7" * 40,
         ))
     else:
@@ -121,7 +121,7 @@ class ReleaseTransactionTest(unittest.TestCase):
             },
             "schema": RELEASE.PLAN_SCHEMA,
             "stage": "activation",
-            "status": "approval-required",
+            "status": "authorized",
         }
         self.plan = RELEASE.seal_plan(self.body)
 
@@ -257,26 +257,29 @@ class ReleaseTransactionTest(unittest.TestCase):
         request = RELEASE.plan_request(plan, self.kits)
         self.assertEqual(request.maintenance_prior, prior)
 
-    def test_resume_rejects_wrong_hash_approver_and_expiry_before_apply(self) -> None:
+    def test_resume_uses_current_sealed_plan_and_rejects_approver_or_expiry(self) -> None:
         path, _ = RELEASE.plan_paths(self.kits, "relay", self.sha)
         RELEASE.write_plan(path, self.plan)
         base = argparse.Namespace(
-            project="relay", sha=self.sha, approve_hash="9" * 64,
-            approved_by="tester", kits_root=self.kits,
+            project="relay", sha=self.sha, approved_by="someone-else",
+            kits_root=self.kits,
         )
-        with self.assertRaisesRegex(RELEASE.ReleaseError, "approved hash"):
-            RELEASE.resume(base)
-        base.approve_hash = self.plan["approval_sha256"]
-        base.approved_by = "someone-else"
         with self.assertRaisesRegex(RELEASE.ReleaseError, "approver"):
+            RELEASE.resume(base)
+        alternate_body = {
+            key: value for key, value in self.plan.items() if key != "approval_sha256"
+        }
+        alternate_body["created_epoch"] = 2
+        alternate = RELEASE.seal_plan(alternate_body)
+        RELEASE.atomic_json(path, alternate)
+        base.approved_by = "tester"
+        with self.assertRaisesRegex(RELEASE.ReleaseError, "sealed copy"):
             RELEASE.resume(base)
         expired = json.loads(json.dumps(self.plan))
         body = {key: value for key, value in expired.items() if key != "approval_sha256"}
         body["expires_epoch"] = 2
         expired = RELEASE.seal_plan(body)
         RELEASE.write_plan(path, expired)
-        base.approve_hash = expired["approval_sha256"]
-        base.approved_by = "tester"
         with self.assertRaisesRegex(RELEASE.ReleaseError, "stale"):
             RELEASE.resume(base)
 
@@ -291,8 +294,7 @@ class ReleaseTransactionTest(unittest.TestCase):
         with mock.patch.object(RELEASE.time, "time", return_value=1.5):
             RELEASE.journal_update(journal, expired, "approved", "pass")
         args = argparse.Namespace(
-            project="relay", sha=self.sha,
-            approve_hash=expired["approval_sha256"], approved_by="tester",
+            project="relay", sha=self.sha, approved_by="tester",
             kits_root=self.kits,
         )
         with (
@@ -679,6 +681,41 @@ class ReleaseTransactionTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("--ticket-workdir", json.loads(result.stdout))
 
+    def test_public_resume_and_abort_require_no_external_hash(self) -> None:
+        state = self.root / "public-release-state"
+        state.mkdir(mode=0o700)
+        environment = {**os.environ, "FACTORY_KITS_ROOT": str(state)}
+        for action in ("resume", "abort"):
+            with self.subTest(action=action):
+                command = [
+                    "bash", str(ROOT / "scripts/factory-kit.sh"), "release", action,
+                    "--project", "relay", "--sha", self.sha,
+                    "--approved-by", "tester",
+                ]
+                accepted = subprocess.run(
+                    command, text=True, capture_output=True, check=False,
+                    env=environment,
+                )
+                self.assertEqual(accepted.returncode, 1)
+                self.assertIn("trusted install manifest", accepted.stderr)
+                legacy = subprocess.run(
+                    [*command, "--approve-hash", "9" * 64],
+                    text=True, capture_output=True, check=False,
+                    env=environment,
+                )
+                self.assertEqual(legacy.returncode, 2)
+                self.assertIn("Usage:", legacy.stderr)
+                helper = subprocess.run(
+                    [
+                        sys.executable, str(ROOT / "scripts/release-transaction.py"),
+                        "--kits-root", str(state), action, "--project", "relay",
+                        "--sha", self.sha, "--approved-by", "tester",
+                    ],
+                    text=True, capture_output=True, check=False,
+                )
+                self.assertEqual(helper.returncode, 2)
+                self.assertEqual(json.loads(helper.stdout)["status"], "error")
+
     def test_protected_check_fixture_matches_slurped_check_run_shape(self) -> None:
         result = subprocess.run(
             [
@@ -723,8 +760,7 @@ class ReleaseTransactionTest(unittest.TestCase):
             self.plan["approval_sha256"],
         )
         args = argparse.Namespace(
-            project="relay", sha=self.sha,
-            approve_hash=prerequisite["approval_sha256"], approved_by="tester",
+            project="relay", sha=self.sha, approved_by="tester",
             kits_root=self.kits,
         )
         with (
@@ -1782,9 +1818,9 @@ class ReleaseTransactionTest(unittest.TestCase):
         }
         stored = self.kits / "projects/relay/release-plans" / self.sha / f"{approval}.json"
         RELEASE.atomic_json(stored, plan)
+        RELEASE.atomic_json(stored.parent.parent / f"{self.sha}.json", plan)
         args = argparse.Namespace(
-            approve_hash=approval, approved_by="tester", kits_root=self.kits,
-            project="relay", sha=self.sha,
+            approved_by="tester", kits_root=self.kits, project="relay", sha=self.sha,
         )
         with (
             mock.patch.object(RELEASE, "validate_plan"),
@@ -1794,6 +1830,13 @@ class ReleaseTransactionTest(unittest.TestCase):
                 "completed_projects": [], "phase": "approved", "status": "in-progress",
             }),
         ):
+            before = marker.read_bytes()
+            args.approved_by = "someone-else"
+            with self.assertRaisesRegex(RELEASE.ReleaseError, "cannot be aborted"):
+                RELEASE.abort(args)
+            self.assertEqual(marker.read_bytes(), before)
+            self.assertTrue(reservation.exists())
+            args.approved_by = "tester"
             result = RELEASE.abort(args)
         self.assertEqual(result["status"], "aborted")
         self.assertEqual(marker.read_bytes(), prior)

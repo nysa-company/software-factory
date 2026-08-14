@@ -585,8 +585,7 @@ bash scripts/factory-kit.sh release setup \
   [--ticket-workdir T-NNN <absolute-worktree> ...]
 
 bash scripts/factory-kit.sh release resume \
-  --project <project> --sha <candidate> \
-  --approve-hash <approval_sha256> --approved-by <operator-id>
+  --project <project> --sha <candidate> --approved-by <operator-id>
 ```
 
 `release setup` requires clean exact Factory and product Git trees, an exact
@@ -615,9 +614,10 @@ and makes Doctor validate only that local mock boundary. Do not copy provider
 or GitHub credentials into the isolated home.
 
 If the stable launcher or provider settings must change, setup first returns a
-`prerequisites` plan. Review it, ensure every listed active factory is already
-in maintenance and drained, and run resume. That resume applies only the
-embedded child hashes, certifies the product, and returns the second
+`prerequisites` plan. Setup authorizes the exact sealed transaction; ensure
+every listed active factory is already in maintenance and drained, then run
+resume. That resume applies only the embedded child hashes, certifies the
+product, and returns the second
 `activation` plan whose hash binds the fresh one-use certification receipt.
 Review that returned hash and run the same resume verb again. When prerequisites
 already match, setup returns the activation plan directly, so only one resume
@@ -724,8 +724,7 @@ minutes.
      --repo <absolute-clean-kit-checkout> --profile <model-profile> \
      --operator-id <operator-id>
    bash scripts/factory-kit.sh release resume --project <project> \
-     --sha <candidate> --approve-hash <approval-sha256> \
-     --approved-by <operator-id>
+     --sha <candidate> --approved-by <operator-id>
    ```
 
    The transaction reuses the existing install, certify, pause, qualification,
@@ -735,9 +734,9 @@ minutes.
    sandbox smoke, PID, and repeated health probes. Tests alone are not
    production closure evidence; bind these observations and timestamps to the
    exact protected SHA.
-   If the plan is not approved, run the same command with `release abort`, its
-   exact approval hash, and the setup operator ID. Abort restores captured
-   maintenance and is refused after any active record changes.
+   Before the plan mutates a project, `release abort` with the same project,
+   candidate, and setup operator ID restores captured maintenance. Abort is
+   refused after any active record changes.
 15. For an authorized Contract 2.0 in-flight cutover, keep maintenance while
    collecting one `models migrate-batch-plan` preview for one to four exact
    ticket/worktree pairs. Review its protected-main and per-ticket bindings,

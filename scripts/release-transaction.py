@@ -977,7 +977,7 @@ def validate_plan(value: dict[str, Any]) -> None:
     if (
         set(value) != required or value.get("schema") != PLAN_SCHEMA
         or value.get("stage") not in {"prerequisites", "activation"}
-        or value.get("status") != "approval-required"
+        or value.get("status") != "authorized"
         or not DIGEST.fullmatch(str(value.get("approval_sha256", "")))
         or value["approval_sha256"] != digest(body)
         or not isinstance(value.get("created_epoch"), int)
@@ -1150,6 +1150,18 @@ def write_plan(path: Path, plan: dict[str, Any]) -> None:
     else:
         atomic_json(immutable, plan)
     atomic_json(path, plan)
+
+
+def current_plan(path: Path) -> dict[str, Any]:
+    plan = safe_state(path, "current release plan")
+    validate_plan(plan)
+    immutable = path.parent / path.stem / f"{plan['approval_sha256']}.json"
+    if (
+        not immutable.exists() or immutable.is_symlink()
+        or safe_state(immutable, "stored release plan") != plan
+    ):
+        raise ReleaseError("current release plan does not match its sealed copy")
+    return plan
 
 
 def create_seed(release: Path, product: Path, root: Path) -> Path:
@@ -1844,7 +1856,7 @@ def _setup_locked(args: argparse.Namespace) -> dict[str, Any]:
             },
             "created_epoch": now, "expires_epoch": now + 7200,
             "identity": identity, "request": request, "schema": PLAN_SCHEMA,
-            "stage": "prerequisites", "status": "approval-required",
+            "stage": "prerequisites", "status": "authorized",
         })
     else:
         certification_environment = command_environment(
@@ -1889,7 +1901,7 @@ def _setup_locked(args: argparse.Namespace) -> dict[str, Any]:
             },
             "created_epoch": now, "expires_epoch": now + 7200,
             "identity": identity, "request": request, "schema": PLAN_SCHEMA,
-            "stage": "activation", "status": "approval-required",
+            "stage": "activation", "status": "authorized",
         })
     path, _ = plan_paths(kits_root, project, sha)
     write_plan(path, plan)
@@ -3035,17 +3047,12 @@ def apply_activation(
 
 def _resume_locked(args: argparse.Namespace, kits_root: Path) -> dict[str, Any]:
     latest, journals = plan_paths(kits_root, args.project, args.sha)
-    path = latest.parent / latest.stem / f"{args.approve_hash}.json"
-    if not path.exists() or path.is_symlink():
-        raise ReleaseError("approved hash does not match a stored release plan")
-    plan = safe_state(path, "release plan")
-    validate_plan(plan)
-    if plan["approval_sha256"] != args.approve_hash:
-        raise ReleaseError("approved hash does not match exact release plan")
+    plan = current_plan(latest)
+    approval = plan["approval_sha256"]
     if plan["request"]["operator_id"] != args.approved_by:
         raise ReleaseError("release approver does not match setup operator")
     secure_directory(journals, create=True)
-    journal = journals / f"{args.approve_hash}.json"
+    journal = journals / f"{approval}.json"
     if plan["expires_epoch"] <= int(time.time()):
         if not journal.exists():
             raise ReleaseError("release plan is stale")
@@ -3111,7 +3118,6 @@ def _resume_locked(args: argparse.Namespace, kits_root: Path) -> dict[str, Any]:
 def resume(args: argparse.Namespace) -> dict[str, Any]:
     if (
         not PROJECT.fullmatch(args.project) or not SHA.fullmatch(args.sha)
-        or not DIGEST.fullmatch(args.approve_hash)
         or not SAFE_ID.fullmatch(args.approved_by) or args.approved_by == "auto"
     ):
         raise ReleaseError("release approval boundary is invalid")
@@ -3127,7 +3133,6 @@ def resume(args: argparse.Namespace) -> dict[str, Any]:
 def abort(args: argparse.Namespace) -> dict[str, Any]:
     if (
         not PROJECT.fullmatch(args.project) or not SHA.fullmatch(args.sha)
-        or not DIGEST.fullmatch(args.approve_hash)
         or not SAFE_ID.fullmatch(args.approved_by) or args.approved_by == "auto"
     ):
         raise ReleaseError("release abort boundary is invalid")
@@ -3136,13 +3141,10 @@ def abort(args: argparse.Namespace) -> dict[str, Any]:
     descriptor = acquire_cutover_lock(kits_root)
     try:
         latest, _ = plan_paths(kits_root, args.project, args.sha)
-        path = latest.parent / latest.stem / f"{args.approve_hash}.json"
-        plan = safe_state(path, "release plan")
-        validate_plan(plan)
+        plan = current_plan(latest)
         items = plan["children"].get("host_cutover")
         if (
-            plan["approval_sha256"] != args.approve_hash
-            or plan["request"]["operator_id"] != args.approved_by
+            plan["request"]["operator_id"] != args.approved_by
             or plan["stage"] != "prerequisites" or not items
         ):
             raise ReleaseError("release plan cannot be aborted")
@@ -3189,12 +3191,10 @@ def main() -> int:
     resume_parser = commands.add_parser("resume")
     resume_parser.add_argument("--project", required=True)
     resume_parser.add_argument("--sha", required=True)
-    resume_parser.add_argument("--approve-hash", required=True)
     resume_parser.add_argument("--approved-by", required=True)
     abort_parser = commands.add_parser("abort")
     abort_parser.add_argument("--project", required=True)
     abort_parser.add_argument("--sha", required=True)
-    abort_parser.add_argument("--approve-hash", required=True)
     abort_parser.add_argument("--approved-by", required=True)
     args = parser.parse_args()
     try:
