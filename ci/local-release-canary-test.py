@@ -150,7 +150,7 @@ class LocalReleaseCanaryTest(unittest.TestCase):
         self.assertLess(value["elapsed_seconds"], 30)
         self.assertEqual(
             [item["name"] for item in value["commands"]],
-            ["release-setup", "release-resume-1", "operator-ready", "controller-reconcile"],
+            ["release-setup", "release-resume-1", "controller-reconcile"],
         )
         self.assertEqual(set(value["events"]), {"planning", "planner_completed"})
         self.assertTrue(Path(value["root"]).is_relative_to(self.base))
@@ -177,6 +177,17 @@ class LocalReleaseCanaryTest(unittest.TestCase):
         result, value = self.invoke(root)
         self.assertEqual(result.returncode, 2)
         self.assertIn("does not contain the pinned release", value["error"])
+        self.assertFalse(root.exists())
+
+    def test_refuses_ticket_that_is_not_ready(self) -> None:
+        (self.product / "factory/tickets/T-1.md").write_text(
+            "Ticket: T-1\nState: Backlog\n", encoding="utf-8",
+        )
+        commit(self.product, "backlog ticket fixture")
+        root = self.base / "unused-ticket"
+        result, value = self.invoke(root)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("must have exactly one Ready state", value["error"])
         self.assertFalse(root.exists())
 
     def test_refuses_nonempty_evidence_root(self) -> None:

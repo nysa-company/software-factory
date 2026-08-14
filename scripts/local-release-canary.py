@@ -26,6 +26,7 @@ EVENT_SCHEMA = "nysa.software-factory.controller-event/v1"
 PLAN_SCHEMA = "nysa.software-factory.release-plan/v1"
 RESULT_SCHEMA = "nysa.software-factory.release-result/v1"
 GIT = "/usr/bin/git"
+EVIDENCE_ROOT: Path | None = None
 
 
 class CanaryError(RuntimeError):
@@ -261,6 +262,8 @@ def arguments() -> argparse.Namespace:
 
 
 def execute(args: argparse.Namespace) -> dict[str, Any]:
+    global EVIDENCE_ROOT
+    EVIDENCE_ROOT = None
     started = time.monotonic()
     prepare_epoch = time.time_ns()
     if (
@@ -271,6 +274,15 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
         raise CanaryError("canary arguments are invalid")
     factory_source, _ = source_identity(args.factory, "Factory source")
     product_source, product_source_sha = source_identity(args.product, "product source")
+    try:
+        ticket_text = (product_source / f"factory/tickets/{args.ticket}.md").read_text(
+            encoding="utf-8",
+        )
+    except (OSError, UnicodeError) as error:
+        raise CanaryError("canary ticket is missing") from error
+    states = re.findall(r"^State:\s*(.*?)\s*$", ticket_text, re.I | re.M)
+    if states != ["Ready"]:
+        raise CanaryError("canary ticket must have exactly one Ready state")
     try:
         candidate = (product_source / "factory/KIT_PIN").read_text(encoding="utf-8").strip()
     except OSError as error:
@@ -293,6 +305,7 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
         owner_regular(args.cursor_bin, "Cursor CLI", True),
     ]
     root = prepare_root(args.root)
+    EVIDENCE_ROOT = root
     factory_origin, factory = root / "factory-origin.git", root / "factory"
     product_origin, product = root / "product-origin.git", root / "product"
     local_origin(factory_source, factory_origin, factory, candidate)
@@ -363,10 +376,6 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
     ):
         raise CanaryError("release activation did not pass")
     sealed = kits / "releases" / candidate / "scripts/factory-kit.sh"
-    runner.run(
-        "operator-ready", ["bash", str(sealed), "operator", "ready",
-        "--project", args.project, "--product", str(product), "--ticket", args.ticket],
-    )
     launcher = root / ".factory/bin/factory-launch"
     reconcile = runner.run(
         "controller-reconcile", [str(launcher), args.project, "reconcile", "--json"],
@@ -405,6 +414,8 @@ def main() -> int:
     except (CanaryError, OSError, subprocess.SubprocessError) as error:
         value = {"error": str(error), "production_evidence": False,
                  "schema": SCHEMA, "status": "error"}
+        if EVIDENCE_ROOT is not None:
+            value["root"] = str(EVIDENCE_ROOT)
         status = 2
     print(json.dumps(value, sort_keys=True, separators=(",", ":")))
     return status
