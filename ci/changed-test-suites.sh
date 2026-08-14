@@ -73,6 +73,9 @@ while IFS= read -r -d '' status && IFS= read -r -d '' path; do
       set_group targeted state-machine \
         "ticket-state ticket-transition-policy"
       ;;
+    scripts/local-release-canary.py|ci/local-release-canary-test.py)
+      set_group targeted local-release-canary "local-release-canary"
+      ;;
     scripts/operator-console.py|scripts/operator-snapshot.py)
       set_group targeted operator-console "operator-console"
       ;;

@@ -616,6 +616,27 @@ role-exit evidence, and then stops. It does not pin a production model route or
 launch a provider-backed role. Do not copy provider or GitHub credentials into
 the isolated home.
 
+Use the single local canary command instead of assembling that state by hand:
+
+```bash
+python3 scripts/local-release-canary.py \
+  --factory /absolute/clean/software-factory \
+  --product /absolute/clean/product \
+  --project local-canary --ticket T-1 \
+  --profile openai-priority-v1 --operator-id operator \
+  --runtime-bin /absolute/node/bin --gitleaks-bin /absolute/gitleaks \
+  --claude-bin /absolute/claude --codex-bin /absolute/codex \
+  --cursor-bin /absolute/cursor-agent
+```
+
+The command creates fresh local-only origins and clones beneath an owner-only
+short `/private/tmp/r.*` root, runs setup and every required resume, admits the
+named Ready ticket, and stops after one authenticated Planning transition and
+one completed sealed mock planner. Its final JSON includes phase and command
+timings. `production_evidence` is always false; the retained root is diagnostic
+evidence only and cannot be promoted. Certification network remains disabled
+unless `--allow-certification-network` is explicitly supplied.
+
 If the stable launcher or provider settings must change, setup first returns a
 `prerequisites` plan. Setup authorizes the exact sealed transaction; ensure
 every listed active factory is already in maintenance and drained, then run

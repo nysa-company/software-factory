@@ -24,6 +24,7 @@ suite_registry() {
   "$callback" certification-preflight "exact certification runtime tuple suite" python3 "$ROOT/ci/certification-preflight-test.py"
   "$callback" owner-runtime-pin "owner-local certification runtime pin suite" python3 "$ROOT/ci/owner-runtime-pin-test.py"
   "$callback" release-transaction "two-command release transaction suite" python3 "$ROOT/ci/release-transaction-test.py"
+  "$callback" local-release-canary "isolated local release canary suite" python3 "$ROOT/ci/local-release-canary-test.py"
   "$callback" provider-cli-pin "owner-local exact provider CLI pin suite" python3 "$ROOT/ci/provider-cli-pin-test.py"
   "$callback" state-machine "deterministic state-machine suite" python3 "$ROOT/ci/state-machine-test.py"
   "$callback" emergency-admit "one-use emergency role admission suite" python3 "$ROOT/ci/emergency-admit-test.py"
