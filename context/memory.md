@@ -5928,3 +5928,22 @@ explicit `development-local` scope. Production and qualification retain their
 machine-shared database and sealed scopes, and development evidence remains
 nonpromotable. The shared coordinator still enforces the declared account-route
 capacity and start window; only the authority root differs.
+
+## 2026-08-14 — Decision 416: Real local Cursor journey reaches publication boundary
+
+Category: Evidence
+
+Candidate `525cbbada3008336af13f9df1623437908f2b83b` ran one isolated Nysa
+ticket through Planner, Spec-linter, Test-author, Builder, Reviewer, and
+Narrator with real Cursor subscription routes and reached authenticated
+`AWAIT-OPERATOR` in 1,083 seconds. Its reviewed test and implementation strata
+applied cleanly to a second fresh clone; the isolated-database API suite passed
+734 tests, the web suite passed 223 tests, and the production build,
+repository check, and secret scan passed. Provider telemetry was insufficient
+to reduce the six conservative reservations, so this is not measured-spend
+evidence. No GitHub or installed-Factory mutation occurred.
+
+The disposable ticket used T-219 before protected Nysa main independently
+assigned that ID to Builder-ownership enforcement. Production must not reuse
+the local execution cell or its evidence. Its execution, verification, source,
+and provider-session artifacts were cleaned; no replacement ticket is prepared.
