@@ -93,6 +93,10 @@ class OwnerRuntimePinTest(unittest.TestCase):
         )
         launcher = (ROOT / "scripts/factory-launch").read_text()
         self.assertIn('PROJECT_RUNTIME_ROOT="${KITS_ROOT%/*}/project-runtimes/$PROJECT"', launcher)
+        self.assertIn(
+            'PROJECT_RUNTIME_ROOT="$QUALIFICATION_ROOT/project-runtimes/$PROJECT"',
+            launcher,
+        )
         self.assertIn('PROJECT_RUNTIME_BIN="$PROJECT_RUNTIME_ROOT/bin"', launcher)
         self.assertIn('owner-runtime-pin.py" check', launcher)
         self.assertIn('SAFE_PATH="$PROJECT_RUNTIME_BIN:$HOME/.factory/bin:', launcher)

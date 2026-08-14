@@ -49,6 +49,10 @@ class QualificationEnvironmentTest(unittest.TestCase):
         self.home = self.workspace / "home"
         self.home.mkdir(mode=0o700)
         (self.home / ".factory").mkdir(mode=0o700)
+        runtime_bin = self.home / ".local/bin"
+        runtime_bin.mkdir(parents=True, mode=0o700)
+        for tool in ("node", "npm", "npx"):
+            runtime_bin.joinpath(tool).symlink_to(shutil.which(tool))
         self.global_env = self.home / ".factory/global.env"
         self.global_env.write_text(
             "CLAUDE_CODE_PINNED=2.1.223\n", encoding="utf-8",
@@ -135,6 +139,10 @@ class QualificationEnvironmentTest(unittest.TestCase):
         shutil.copy2(
             ROOT / "scripts/certification-preflight.py",
             self.factory / "scripts/certification-preflight.py",
+        )
+        shutil.copy2(
+            ROOT / "scripts/owner-runtime-pin.py",
+            self.factory / "scripts/owner-runtime-pin.py",
         )
         shutil.copy2(
             ROOT / "scripts/lib/certification_plan.py",
@@ -321,12 +329,17 @@ class QualificationEnvironmentTest(unittest.TestCase):
         path.chmod(0o600)
 
     def tearDown(self) -> None:
-        for base, directories, files in os.walk(self.root, topdown=False):
-            for name in files:
-                (Path(base) / name).chmod(0o600)
-            for name in directories:
-                (Path(base) / name).chmod(0o700)
-        shutil.rmtree(self.root)
+        if self.root.exists():
+            for base, directories, files in os.walk(self.root, topdown=False):
+                for name in files:
+                    path = Path(base) / name
+                    if not path.is_symlink():
+                        path.chmod(0o600)
+                for name in directories:
+                    path = Path(base) / name
+                    if not path.is_symlink():
+                        path.chmod(0o700)
+            shutil.rmtree(self.root)
         if self.original_home is None:
             os.environ.pop("HOME", None)
         else:
@@ -385,9 +398,13 @@ class QualificationEnvironmentTest(unittest.TestCase):
             {path.name for path in self.root.iterdir()},
             {
                 "environment.json", "global.env", "marker.json", "projects",
-                "receipts", "releases",
+                "project-runtimes", "receipts", "releases",
             },
         )
+        runtime = self.root / "project-runtimes/relay"
+        self.assertTrue((runtime / "runtime-pin-journal.json").is_file())
+        for tool in ("node", "npm", "npx"):
+            self.assertTrue((runtime / "bin" / tool).is_symlink())
         self.assertEqual(
             (self.root / "global.env").read_bytes(),
             self.global_env.read_bytes(),
@@ -1485,6 +1502,12 @@ class QualificationEnvironmentTest(unittest.TestCase):
         run(self.product, "git", "commit", "-qm", "authorize qualification")
 
         account = (self.workspace / "account").resolve()
+        account_runtime = account / ".local/bin"
+        account_runtime.mkdir(parents=True, mode=0o700)
+        for tool in ("node", "npm", "npx"):
+            account_runtime.joinpath(tool).symlink_to(
+                self.home / ".local/bin" / tool,
+            )
         provider = account / ".factory"
         kits = provider / "kits"
         source = kits / "projects/relay"
@@ -2731,9 +2754,13 @@ class QualificationEnvironmentTest(unittest.TestCase):
 
         for base, directories, files in os.walk(self.root, topdown=False):
             for name in files:
-                (Path(base) / name).chmod(0o600)
+                path = Path(base) / name
+                if not path.is_symlink():
+                    path.chmod(0o600)
             for name in directories:
-                (Path(base) / name).chmod(0o700)
+                path = Path(base) / name
+                if not path.is_symlink():
+                    path.chmod(0o700)
         shutil.rmtree(self.root)
         original_write = ENVIRONMENT.write_exact
         crashed = False

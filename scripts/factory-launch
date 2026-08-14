@@ -762,10 +762,12 @@ PY
 [[ "$RELEASE_CONTRACT" == "$ACTIVE_CONTRACT" ]] ||
   die "active record and release contract disagree"
 PROJECT_RUNTIME_ROOT="${KITS_ROOT%/*}/project-runtimes/$PROJECT"
+if [[ "$QUALIFICATION_LAUNCHER" == "1" ]]; then
+  PROJECT_RUNTIME_ROOT="$QUALIFICATION_ROOT/project-runtimes/$PROJECT"
+fi
 PROJECT_RUNTIME_BIN="$PROJECT_RUNTIME_ROOT/bin"
 PROJECT_RUNTIME_JOURNAL="$PROJECT_RUNTIME_ROOT/runtime-pin-journal.json"
-if [[ "$QUALIFICATION_LAUNCHER" != "1" &&
-      -n "$ACTIVE_RUNTIME_NODE$ACTIVE_RUNTIME_NPM" &&
+if [[ -n "$ACTIVE_RUNTIME_NODE$ACTIVE_RUNTIME_NPM" &&
       ( -e "$PROJECT_RUNTIME_JOURNAL" || -L "$PROJECT_RUNTIME_JOURNAL" ) ]]; then
   require_managed_directory "$PROJECT_RUNTIME_ROOT" "project runtime root"
   require_managed_directory "$PROJECT_RUNTIME_BIN" "project runtime bin"
@@ -778,6 +780,8 @@ if [[ "$QUALIFICATION_LAUNCHER" != "1" &&
   export PATH
 fi
 if [[ "$QUALIFICATION_LAUNCHER" == "1" && "$ACTIVE_RUNTIME_TUPLE" != "{}" ]]; then
+  [[ -e "$PROJECT_RUNTIME_JOURNAL" || -L "$PROJECT_RUNTIME_JOURNAL" ]] ||
+    die "qualification runtime pin is missing"
   FACTORY_CERTIFICATION_TUPLE="$ACTIVE_RUNTIME_TUPLE" \
     "$PYTHON_BIN" -I "$RELEASE_PATH/scripts/certification-preflight.py" \
       --plan "$PRODUCT_ROOT/factory/certification-plan.json" \

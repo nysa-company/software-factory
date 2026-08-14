@@ -5947,3 +5947,14 @@ The disposable ticket used T-219 before protected Nysa main independently
 assigned that ID to Builder-ownership enforcement. Production must not reuse
 the local execution cell or its evidence. Its execution, verification, source,
 and provider-session artifacts were cleaned; no replacement ticket is prepared.
+
+## 2026-08-14 — Decision 417: Qualification uses the production runtime-pin contract
+
+Category: Reliability
+
+Qualification preparation installs the exact product-declared Node/npm/npx
+tuple through the existing owner-runtime transaction under the disposable
+qualification root. The sealed qualification launcher verifies that journal
+before readiness, Doctor, controller, or role work and does not resolve an
+ambient host runtime. This keeps qualification behavior aligned with
+production while preserving its isolated, nonpromotable authority.

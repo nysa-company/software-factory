@@ -170,6 +170,11 @@ product checkout.
   directory. Zero or multiple compatible candidates are a refusal; setup does
   not install Node, source shell profiles, or infer a version from ambient
   PATH.
+- Qualification preparation applies the same owner-runtime transaction under
+  `<qualification-root>/project-runtimes/<project>/` (with the optional exact
+  `--runtime-bin` input). The sealed qualification launcher verifies that
+  journal before using the pinned Node/npm/npx tuple; it never falls back to
+  the host's ambient Node installation.
 - For Contract 2.0, instantiate
   `scripts/launchd/com.factory.controller.plist.template` with the exact
   project, home, and product paths and load it as a separate LaunchAgent.

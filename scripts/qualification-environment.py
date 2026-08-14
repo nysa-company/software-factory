@@ -1554,6 +1554,31 @@ def bind_runtime_tuple(
     return value
 
 
+def prepare_qualification_runtime(
+    release: Path, product: Path, root: Path, project: str,
+    explicit: Path | None,
+) -> Path:
+    spec = importlib.util.spec_from_file_location(
+        "qualification_release_transaction",
+        Path(__file__).resolve().with_name("release-transaction.py"),
+    )
+    if not spec or not spec.loader:
+        raise EnvironmentError("qualification runtime helper is unavailable")
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+    try:
+        result = helper.prepare_runtime(
+            release, product, root / "kits", project, explicit,
+        )
+    except (OSError, RuntimeError, ValueError) as error:
+        raise EnvironmentError("qualification runtime pin failed") from error
+    path = Path(str(result.get("evidence", {}).get("path", "")))
+    expected = root / "project-runtimes" / project / "bin"
+    if path != expected:
+        raise EnvironmentError("qualification runtime pin is invalid")
+    return path
+
+
 def without_dependency_line(value: str) -> str:
     lines = value.splitlines()
     if sum(line.startswith("Depends-On:") for line in lines) != 1:
@@ -2901,7 +2926,7 @@ def ensure_release(factory: Path, sha: str, tree: str, releases: Path) -> Path:
 def validate_prepare_root(root: Path, sha: str, project: str) -> None:
     allowed = {
         "environment.json", "global.env", "marker.json", "projects",
-        "receipts", "releases",
+        "project-runtimes", "receipts", "releases",
     }
     if any(path.name not in allowed for path in root.iterdir()):
         raise EnvironmentError("partial qualification environment is invalid")
@@ -2920,6 +2945,11 @@ def validate_prepare_root(root: Path, sha: str, project: str) -> None:
             safe_directory(project_root)
             if any(path.name != "active.json" for path in project_root.iterdir()):
                 raise EnvironmentError("partial qualification activation is invalid")
+    runtimes = root / "project-runtimes"
+    if runtimes.exists() or runtimes.is_symlink():
+        safe_directory(runtimes)
+        if any(path.name != project for path in runtimes.iterdir()):
+            raise EnvironmentError("partial qualification runtime is invalid")
 def validate_authority_prepare_shape(authority: Path) -> None:
     allowed = {
         "authority.json", "controller", "operator", "operator-bootstrap.json",
@@ -3249,6 +3279,11 @@ def _prepare(args: argparse.Namespace) -> dict[str, Any]:
     else:
         write_exact(root / "marker.json", marker)
         release = ensure_release(factory, sha, tree, releases)
+    if runtime_tuple is not None:
+        prepare_qualification_runtime(
+            release, product, root, args.project,
+            getattr(args, "runtime_bin", None),
+        )
     fallback_readiness, fallback_readiness_sha256 = qualification_fallback_readiness(
         release, root, args.project, product,
     )
@@ -3632,6 +3667,7 @@ def main() -> None:
     parser.add_argument("--root", required=True, type=Path)
     parser.add_argument("--global-env", type=Path)
     parser.add_argument("--operator-map-seed", type=Path)
+    parser.add_argument("--runtime-bin", type=Path)
     parser.add_argument("--takeover-project")
     parser.add_argument("--preprovider-source-root", type=Path)
     parser.add_argument("--preprovider-source-project")
