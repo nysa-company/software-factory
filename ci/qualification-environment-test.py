@@ -599,6 +599,51 @@ class QualificationEnvironmentTest(unittest.TestCase):
             "exact-complete",
         )
 
+    def test_prepare_replays_consumed_ready_receipts_after_later_failure(self) -> None:
+        args = argparse.Namespace(
+            factory_root=self.factory, product_root=self.product,
+            project="relay", root=self.root,
+        )
+        controller = (
+            self.home / ".factory/qualification/relay/controller"
+        ).resolve()
+
+        def fail_after_operator_initialization(*_arguments):
+            lock = os.open(
+                controller / ".operator-apply-lock",
+                os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+            )
+            os.close(lock)
+            for ticket in ("T-101", "T-102", "T-103"):
+                ENVIRONMENT.operator_receipt.issue(
+                    controller, ticket, "ready", {},
+                )
+                ENVIRONMENT.operator_receipt.verify_consume(
+                    controller, ticket, "ready", {},
+                )
+            raise ENVIRONMENT.EnvironmentError("simulated later failure")
+
+        with (
+            mock.patch.object(
+                ENVIRONMENT, "qualification_fallback_readiness",
+                side_effect=fail_after_operator_initialization,
+            ),
+            self.assertRaisesRegex(
+                ENVIRONMENT.EnvironmentError, "simulated later failure",
+            ),
+        ):
+            ENVIRONMENT.prepare(args)
+
+        value = ENVIRONMENT.prepare(args)
+        self.assertEqual(value["status"], "prepared")
+        self.assertEqual(
+            ENVIRONMENT.preparation_state(
+                self.root, Path(value["authority_root"]), "relay",
+            ),
+            "exact-complete",
+        )
+
     def test_prepare_serializes_same_project_and_replays_exact_result(self) -> None:
         args = argparse.Namespace(
             factory_root=self.factory, product_root=self.product,

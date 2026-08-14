@@ -660,6 +660,10 @@ or complete lost-response state resumes. A changed artifact, missing
 predecessor, materialization remnant, active controller/provider, or unexpected
 entry refuses without deletion. This does not widen the signed safe-pause
 `--restore` boundary and adds no cleanup authority.
+The pre-publication controller prefix may retain only the exact owner-only
+locks and consumed Ready receipts created while materializing the selected
+Backlog cohort. Those zero-authority audit records are validated on replay;
+claims, passports, runs, other receipts, or malformed entries still refuse.
 Initial create or adoption
 uses one bounded exact-title query. Before creation it records a ticket-, team-,
 Project-, and title-bound uncertain intent; a returned ID is persisted before

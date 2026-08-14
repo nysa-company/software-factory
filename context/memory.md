@@ -122,7 +122,10 @@ everything the Factory actually enforces lives here.
   create-or-validates every provider and publication artifact, renames a sealed
   release from a same-directory temporary tree, and writes the environment
   before the registry. Torn, mismatched, active, or unexpected state refuses
-  without deletion; the signed safe-pause restore boundary remains unchanged.
+  without deletion. A pre-publication controller may retain only the exact
+  owner-only locks and consumed Ready receipts created for selected Backlog
+  materialization; every other controller artifact still refuses. The signed
+  safe-pause restore boundary remains unchanged.
 - Selected-only Linear initialization uses one bounded exact-title query and a
   ticket-, team-, Project-, and title-bound create intent. It persists a
   returned issue identity before observation and never repeats an uncertain
@@ -5980,3 +5983,14 @@ admission projection accepts a consumed-and-cleared action after successful
 materialization but continues to reject malformed or uninitialized entries.
 After bounded historical-object hydration, every dependency outside the cohort
 must have valid protected terminal evidence before the lane is published.
+
+## 2026-08-14 — Decision 420: Qualification replays consumed Ready receipts
+
+Category: Reliability
+
+If a fallible preparation check stops after selected Backlog tickets were
+materialized, replay accepts only their exact owner-only consumed Ready receipt
+audit records and the two operator lock files. It revalidates those records and
+the durable operator projection before continuing. Claims, passports, runs,
+other receipts, malformed files, or foreign tickets still classify the
+controller as active and refuse without deletion.

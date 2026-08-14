@@ -37,6 +37,7 @@ from historical_pr_objects import (  # noqa: E402
     hydrate as hydrate_historical_pr_objects,
 )
 from effective_ticket import committed_ticket  # noqa: E402
+import operator_receipt  # noqa: E402
 
 
 SCHEMA = "nysa.software-factory.qualification-environment/v1"
@@ -2966,7 +2967,9 @@ def validate_prepare_root(root: Path, sha: str, project: str) -> None:
         safe_directory(runtimes)
         if any(path.name != project for path in runtimes.iterdir()):
             raise EnvironmentError("partial qualification runtime is invalid")
-def validate_authority_prepare_shape(authority: Path) -> None:
+def validate_authority_prepare_shape(
+    authority: Path, selected: list[str],
+) -> None:
     allowed = {
         "authority.json", "controller", "operator", "operator-bootstrap.json",
         "provider",
@@ -2982,8 +2985,47 @@ def validate_authority_prepare_shape(authority: Path) -> None:
         raise EnvironmentError("qualification preparation state is torn")
     if controller.exists() or controller.is_symlink():
         safe_directory(controller)
-        if any(controller.iterdir()):
+        entries = {path.name: path for path in controller.iterdir()}
+        if set(entries) - {
+            ".operator-apply-lock", ".operator-lock", "operator-receipts",
+        }:
             raise EnvironmentError("qualification controller is active")
+        for name in (".operator-apply-lock", ".operator-lock"):
+            path = entries.get(name)
+            if path is None:
+                continue
+            info = path.lstat()
+            if (
+                path.is_symlink() or not stat.S_ISREG(info.st_mode)
+                or info.st_uid != os.geteuid() or info.st_nlink != 1
+                or stat.S_IMODE(info.st_mode) != 0o600 or info.st_size
+            ):
+                raise EnvironmentError("qualification controller is active")
+        receipts = entries.get("operator-receipts")
+        if receipts is not None:
+            safe_directory(receipts)
+            for ticket_dir in receipts.iterdir():
+                if ticket_dir.name not in selected:
+                    raise EnvironmentError("qualification controller is active")
+                safe_directory(ticket_dir)
+                paths = list(ticket_dir.iterdir())
+                if len(paths) != 1 or paths[0].name != "ready-1.json":
+                    raise EnvironmentError("qualification controller is active")
+                try:
+                    receipt = operator_receipt.safe_receipt(paths[0])
+                except (OSError, ValueError) as error:
+                    raise EnvironmentError(
+                        "qualification controller is active"
+                    ) from error
+                if (
+                    receipt.get("ticket") != ticket_dir.name
+                    or receipt.get("action") != "ready"
+                    or receipt.get("sequence") != 1
+                    or receipt.get("payload") != {}
+                    or receipt.get("consumed") is not True
+                    or not isinstance(receipt.get("consumed_at_epoch"), int)
+                ):
+                    raise EnvironmentError("qualification controller is active")
 
 
 def validate_prepare_phase(
@@ -3224,7 +3266,7 @@ def _prepare(args: argparse.Namespace) -> dict[str, Any]:
     if not restoring:
         marker = {"mode": "qualification", "schema": SCHEMA}
         if authority is not None:
-            validate_authority_prepare_shape(authority)
+            validate_authority_prepare_shape(authority, manifest["tickets"])
         validate_prepare_phase(root, authority, sha, args.project)
         global_config = prepare_global_config(args, root)
         if root.exists() or root.is_symlink():
