@@ -985,13 +985,14 @@ env \
     --ticket T-190 --contract-version 2.0.0 --factory-sha "$KIT_SHA" \
     --project sealed --receipt "$SEALED_RECEIPT" --role planner >/dev/null
 SEALED_RUN_STATUS=0
+: > "$TMP/repository-test-global.env"
 env \
   FACTORY_ROOT="$SEALED_PRODUCT" \
   FACTORY_CERTIFIED_PRODUCT_ORIGIN="$SEALED_ORIGIN" \
   FACTORY_PROJECT=sealed \
   FACTORY_TRANSITION_RECEIPT_SHA256="$SEALED_RECEIPT" \
   FACTORY_TRANSITION_STATE_DIR="$SEALED_STATE" \
-  FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
+  FACTORY_GLOBAL_ENV="$TMP/repository-test-global.env" \
   FACTORY_TEST_MODE=1 \
   FACTORY_ADAPTER_OVERRIDE=mock \
   FACTORY_KIT_TRUST_SCOPE=repository-test \

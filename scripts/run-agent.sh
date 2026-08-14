@@ -1642,6 +1642,13 @@ factory_select_role_envelope "$ROLE" || exit 3
 # ~/.factory/global.env defines GLOBAL_DAILY_CAP_USD; every run on the machine
 # then also reserves against ~/.factory/global-ledger.csv, so N projects can't
 # multiply the daily budget silently. Absent file = single-project behavior.
+REPOSITORY_TEST_MOCK=0
+if [[ "${FACTORY_KIT_TRUST_SCOPE:-}" == "repository-test" &&
+      "${FACTORY_TEST_MODE:-0}" == "1" &&
+      "${FACTORY_TRUSTED_TEST_HARNESS:-0}" == "1" &&
+      "${FACTORY_ADAPTER_OVERRIDE:-}" == "mock" ]]; then
+  REPOSITORY_TEST_MOCK=1
+fi
 GLOBAL_ENV="${FACTORY_GLOBAL_ENV:-$HOME/.factory/global.env}"
 if ! factory_validate_runtime_overrides; then
   echo "$FACTORY_RUNTIME_OVERRIDE_ERROR; no task was submitted" >&2
@@ -1649,7 +1656,7 @@ if ! factory_validate_runtime_overrides; then
 fi
 factory_clear_plain_config_keys "$FACTORY_GLOBAL_CONFIG_KEYS"
 GLOBAL_LEDGER="" GLOBAL_LOCK=""
-if [[ -f "$GLOBAL_ENV" ]]; then
+if [[ -f "$GLOBAL_ENV" && "$REPOSITORY_TEST_MOCK" -ne 1 ]]; then
   factory_load_plain_config "$GLOBAL_ENV" global \
     "$FACTORY_GLOBAL_CONFIG_KEYS" "" 1 || exit 3
   GLOBAL_LEDGER="${GLOBAL_LEDGER:-$(dirname "$GLOBAL_ENV")/global-ledger.csv}"
