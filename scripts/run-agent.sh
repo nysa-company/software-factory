@@ -1293,7 +1293,7 @@ validate_cursor_account_admission_authority() {
     development-local)
       [[ -n "$DEVELOPMENT_LANE_ROOT" &&
          "${FACTORY_CURSOR_ACCOUNT_DB:-}" == \
-           "$DEVELOPMENT_LANE_ROOT/runtime/cursor-account-state.sqlite3" ]]
+           "$DEVELOPMENT_LANE_ROOT/runtime/cursor-account/state.sqlite3" ]]
       ;;
     *) return 1 ;;
   esac

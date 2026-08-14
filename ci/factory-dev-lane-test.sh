@@ -540,7 +540,7 @@ eval "$(sed -n '/^subscription_env()/,/^product_approval_hash()/p' \
   fail "subscription environment did not isolate Cursor credentials in the lane"
 [[ "$(subscription_base_env "$READINESS_ROOT" \
   /usr/bin/printenv FACTORY_CURSOR_ACCOUNT_DB)" == \
-  "$READINESS_ROOT/runtime/cursor-account-state.sqlite3" ]] ||
+  "$READINESS_ROOT/runtime/cursor-account/state.sqlite3" ]] ||
   fail "subscription environment omitted its lane-local Cursor account database"
 if (
   die() { exit 1; }
@@ -1559,9 +1559,9 @@ grep -Fq '"CURSOR_CONFIG_DIR=$CLI_CURSOR_CONFIG_DIR"' \
   eval "$(sed -n '/^validate_cursor_account_admission_authority()/,/^}/p' \
     "$ROOT/scripts/run-agent.sh")"
   DEVELOPMENT_LANE_ROOT="$TMP/nysa-sf-dev.account-authority"
-  mkdir -p "$DEVELOPMENT_LANE_ROOT/runtime"
+  mkdir -p "$DEVELOPMENT_LANE_ROOT/runtime/cursor-account"
   FACTORY_KIT_PROVENANCE_SCOPE=development-local
-  FACTORY_CURSOR_ACCOUNT_DB="$DEVELOPMENT_LANE_ROOT/runtime/cursor-account-state.sqlite3"
+  FACTORY_CURSOR_ACCOUNT_DB="$DEVELOPMENT_LANE_ROOT/runtime/cursor-account/state.sqlite3"
   validate_cursor_account_admission_authority ||
     fail "development Cursor account authority rejected its lane-local database"
   [[ "$CURSOR_ACCOUNT_TRUST_SCOPE" == development-local ]] ||
@@ -3549,6 +3549,7 @@ import json, os, stat, sys
 root, tmp_parent = sys.argv[1:]
 r = os.lstat(root)
 m = os.lstat(os.path.join(root, "marker.json"))
+a = os.lstat(os.path.join(root, "runtime", "cursor-account"))
 v = json.load(open(os.path.join(root, "marker.json"), encoding="utf-8"))
 assert set(v) == {"schema", "root", "nonce", "kit_sha", "kit_tree", "mode",
                   "uid", "root_dev", "root_ino", "tmp_parent"}
@@ -3558,6 +3559,8 @@ assert v["tmp_parent"] == tmp_parent == os.path.dirname(root)
 assert stat.S_ISDIR(r.st_mode) and stat.S_IMODE(r.st_mode) == 0o700
 assert stat.S_ISREG(m.st_mode) and stat.S_IMODE(m.st_mode) == 0o600
 assert m.st_uid == r.st_uid == os.getuid() and m.st_dev == r.st_dev and m.st_nlink == 1
+assert stat.S_ISDIR(a.st_mode) and stat.S_IMODE(a.st_mode) == 0o700
+assert a.st_uid == os.getuid()
 assert m.st_ino != r.st_ino
 PY
 [[ -d "$lane_root/kit/.git" || -f "$lane_root/kit/.git" ]] || fail "lane-local kit is missing"
