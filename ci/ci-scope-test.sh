@@ -376,6 +376,46 @@ status=0
 (cd "$RUNNER" && bash ci/test-all.sh --group unknown >/dev/null 2>&1) || status=$?
 [[ "$status" -eq 2 ]] || { echo "FAIL: unknown group must be rejected" >&2; exit 1; }
 
+cat > "$RUNNER/ci/pass.sh" <<'EOF'
+#!/usr/bin/env bash
+set -u
+if [[ -n "${PARALLEL_GATE:-}" && -n "${CI_SUITE_GROUP:-}" &&
+      ! -f "$PARALLEL_GATE/done-$CI_SUITE_GROUP" ]]; then
+  : > "$PARALLEL_GATE/ready-$CI_SUITE_GROUP"
+  deadline=$((SECONDS + 5))
+  while [[ "$SECONDS" -lt "$deadline" ]]; do
+    count=0
+    for marker in "$PARALLEL_GATE"/ready-*; do
+      [[ -f "$marker" ]] && count=$((count + 1))
+    done
+    [[ "$count" -eq 4 ]] && break
+    sleep 0.02
+  done
+  [[ "$count" -eq 4 ]] || exit 9
+  : > "$PARALLEL_GATE/done-$CI_SUITE_GROUP"
+fi
+EOF
+PARALLEL_GATE="$TMP/parallel-gate"
+mkdir -p "$PARALLEL_GATE"
+status=0
+output="$(cd "$RUNNER" && PARALLEL_GATE="$PARALLEL_GATE" bash ci/test-all.sh 2>&1)" || status=$?
+if [[ "$status" -ne 0 || "$output" != *"PASS: complete local suite in four parallel groups"* ]]; then
+  printf 'FAIL: argument-free parallel groups (status %s; output %s)\n' "$status" "$output" >&2
+  exit 1
+fi
+for group in 1 2 3 4; do
+  [[ -f "$PARALLEL_GATE/ready-$group" && -f "$PARALLEL_GATE/done-$group" ]] || {
+    echo "FAIL: parallel group $group did not cross the shared gate" >&2
+    exit 1
+  }
+done
+status=0
+output="$(cd "$RUNNER" && FAIL_SECOND=1 bash ci/test-all.sh 2>&1)" || status=$?
+if [[ "$status" -ne 1 || "$output" != *"FAIL: parallel suite group 4"* ]]; then
+  printf 'FAIL: parallel group failure propagation (status %s; output %s)\n' "$status" "$output" >&2
+  exit 1
+fi
+
 git -C "$RUNNER" init -q -b main
 git -C "$RUNNER" config user.name "Runner test"
 git -C "$RUNNER" config user.email "runner@example.invalid"

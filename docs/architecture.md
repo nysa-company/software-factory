@@ -146,12 +146,14 @@ registry, baseline, and policy changes, runs only CI-scope, immutability, and
 artifact-policy locally and records full behavioral verification as deferred
 to required GitHub CI. The command succeeds when those local policy gates pass.
 An explicit argument-free `bash ci/test-all.sh` remains the complete local
-command; GitHub `main` divides that same registry across eight group jobs and
-retains the six established release-evidence aliases.
+command and runs its four isolated groups concurrently; GitHub `main` divides
+that same registry across eight group jobs and retains the six established
+release-evidence aliases.
 The checked group mapping assigns every registry entry exactly once and new
 unclassified suites fail safely into release group 4. Local argument-free and
-whole-shard commands remain sequential so workstation contention cannot turn
-timing-sensitive tests flaky.
+GitHub runs share the same grouping; an explicit whole-shard command remains
+sequential for diagnosis. Suites within each group keep their existing order,
+and fixtures remain group-isolated.
 
 Installation requires remote full-suite evidence for an exact `origin/main`
 SHA with a successful authenticated GitHub Actions push run whose three Linux,
