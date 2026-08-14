@@ -5968,3 +5968,13 @@ provider readiness, whose exact multi-route checks receive a longer but still
 bounded window. Timeout, empty, or malformed readiness output leaves a typed
 error with a null report; it never replaces that fail-closed value with an
 unparseable string or breaks Doctor's JSON schema.
+
+## 2026-08-14 — Decision 419: Qualification materializes selected Backlog authority
+
+Category: Reliability
+
+Qualification preparation uses the existing one-use operator Ready receipt for
+each selected Backlog ticket, including local ticket-branch materialization.
+Tickets already durably Ready retain the lighter initialization path. The
+admission projection accepts a consumed-and-cleared action after successful
+materialization but continues to reject malformed or uninitialized entries.

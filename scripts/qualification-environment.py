@@ -36,6 +36,7 @@ from historical_pr_objects import (  # noqa: E402
     commit_present,
     hydrate as hydrate_historical_pr_objects,
 )
+from effective_ticket import committed_ticket  # noqa: E402
 
 
 SCHEMA = "nysa.software-factory.qualification-environment/v1"
@@ -1272,11 +1273,18 @@ def initialize_selected_operator(
         mapping = read(map_path)
         if not refresh and selected_operator_ready(mapping, ticket):
             continue
+        text, _source = committed_ticket(product / "factory", ticket)
+        states = re.findall(r"(?mi)^State:\s*(.*?)\s*$", text or "")
+        action = (
+            "ready"
+            if len(states) == 1 and states[0].casefold() == "backlog"
+            else "init"
+        )
         result = subprocess.run(
             [
                 sys.executable, str(factory / "scripts/operator-cli.py"),
                 "--product", str(product), "--state-dir", str(state_dir),
-                "init", "--ticket", ticket,
+                action, "--ticket", ticket,
             ],
             text=True, capture_output=True, check=False, timeout=120,
             env=environment,

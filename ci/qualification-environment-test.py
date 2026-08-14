@@ -1192,9 +1192,15 @@ class QualificationEnvironmentTest(unittest.TestCase):
         ledger = self.workspace / "selected-runtime-ledger.csv"
         state_dir = self.workspace / "selected-controller"
         completed = subprocess.CompletedProcess([], 0, "", "")
-        with mock.patch.object(
-            ENVIRONMENT.subprocess, "run", return_value=completed,
-        ) as invoked:
+        with (
+            mock.patch.object(
+                ENVIRONMENT, "committed_ticket",
+                return_value=("State: Ready\n", "HEAD"),
+            ),
+            mock.patch.object(
+                ENVIRONMENT.subprocess, "run", return_value=completed,
+            ) as invoked,
+        ):
             ENVIRONMENT.initialize_selected_operator(
                 self.factory, self.product, mapping, ledger, state_dir,
                 refresh=True,
@@ -1206,6 +1212,10 @@ class QualificationEnvironmentTest(unittest.TestCase):
              ["--ticket", "T-103"]],
         )
         self.assertEqual(
+            [call.args[0][-3] for call in invoked.call_args_list[:3]],
+            ["init", "init", "init"],
+        )
+        self.assertEqual(
             invoked.call_args_list[3].args[0][-2:],
             ["--runtime-ledger", str(ledger)],
         )
@@ -1214,6 +1224,45 @@ class QualificationEnvironmentTest(unittest.TestCase):
             self.assertEqual(
                 call.kwargs["env"]["FACTORY_CONTROLLER_STATE_DIR"], str(state_dir),
             )
+
+    def test_selected_operator_readies_backlog_cohort(self) -> None:
+        mapping = self.workspace / "backlog-operator-map.json"
+        ENVIRONMENT.write(mapping, {
+            "_config": {}, "_sync": {}, "initiatives": {}, "tickets": {},
+        })
+        ledger = self.workspace / "backlog-runtime-ledger.csv"
+        state_dir = self.workspace / "backlog-controller"
+        commands = []
+
+        def complete(command, **_kwargs):
+            commands.append(command)
+            if "operator-cli.py" in command[1]:
+                ticket = command[-1]
+                value = ENVIRONMENT.read(mapping)
+                value["tickets"][ticket] = {
+                    "operator_fields_initialized": True,
+                }
+                value["_sync"].setdefault(
+                    "selected_ticket_success_at", {}
+                )[ticket] = "2026-08-14T00:00:00Z"
+                ENVIRONMENT.replace(mapping, value)
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        with (
+            mock.patch.object(
+                ENVIRONMENT, "committed_ticket",
+                return_value=("State: Backlog\n", "HEAD"),
+            ),
+            mock.patch.object(ENVIRONMENT.subprocess, "run", side_effect=complete),
+        ):
+            ENVIRONMENT.initialize_selected_operator(
+                self.factory, self.product, mapping, ledger, state_dir,
+            )
+
+        self.assertEqual(
+            [command[-3] for command in commands[:3]],
+            ["ready", "ready", "ready"],
+        )
 
     def test_rejects_ticket_blob_that_dispatch_would_not_use(self) -> None:
         ticket = self.product / "factory/tickets/T-101.md"
