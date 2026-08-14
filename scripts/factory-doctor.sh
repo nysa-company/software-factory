@@ -9,6 +9,7 @@ DOCTOR_SCHEMA="nysa.software-factory.doctor/v2"
 JSON_MODE=0
 PROJECT="${FACTORY_PROJECT:-relay}"
 PROBE_TIMEOUT_SECONDS="${FACTORY_DOCTOR_TIMEOUT_SECONDS:-5}"
+READINESS_TIMEOUT_SECONDS="${FACTORY_DOCTOR_READINESS_TIMEOUT_SECONDS:-30}"
 KIT_DIR_OVERRIDE=""
 PRODUCT_ROOT_OVERRIDE=""
 KIT_SHA_OVERRIDE=""
@@ -60,6 +61,12 @@ if [[ ! "$PROJECT" =~ ^[A-Za-z0-9._-]+$ ]]; then
 fi
 if [[ ! "$PROBE_TIMEOUT_SECONDS" =~ ^[0-9]+$ ]]; then
   echo "timeout value must be a non-negative integer" >&2
+  exit 2
+fi
+if [[ ! "$READINESS_TIMEOUT_SECONDS" =~ ^[0-9]+$ ||
+      "$READINESS_TIMEOUT_SECONDS" -lt 1 ||
+      "$READINESS_TIMEOUT_SECONDS" -gt 120 ]]; then
+  echo "readiness timeout value must be an integer from 1 through 120" >&2
   exit 2
 fi
 PYTHON_BIN="$(command -v python3 2>/dev/null || true)"
@@ -180,9 +187,10 @@ PY
 }
 
 bounded_command() {
-  local output="$1"
-  shift
-  "$PYTHON_BIN" - "$PROBE_TIMEOUT_SECONDS" "$output" "$@" <<'PY'
+  local timeout="$1"
+  local output="$2"
+  shift 2
+  "$PYTHON_BIN" - "$timeout" "$output" "$@" <<'PY'
 import os
 import resource
 import signal
@@ -994,14 +1002,14 @@ FALLBACK_READINESS_JSON="null"
 if [[ "${FACTORY_KIT_TRUST_SCOPE:-}" == "qualification-candidate" ]]; then
   FALLBACK_READINESS_STATUS="error"
   FALLBACK_READINESS_FILE="$TMP/fallback-readiness.raw"
-  if bounded_command "$FALLBACK_READINESS_FILE" \
+  if bounded_command "$READINESS_TIMEOUT_SECONDS" "$FALLBACK_READINESS_FILE" \
       /bin/bash "$KIT_DIR/scripts/model-control.sh" qualification-readiness; then
     FALLBACK_READINESS_EXIT=0
   else
     FALLBACK_READINESS_EXIT=$?
   fi
   FALLBACK_READINESS_RAW="$(cat "$FALLBACK_READINESS_FILE" 2>/dev/null || true)"
-  if FALLBACK_READINESS_JSON="$($PYTHON_BIN - "$FALLBACK_READINESS_RAW" <<'PY'
+  if FALLBACK_READINESS_PARSED="$($PYTHON_BIN - "$FALLBACK_READINESS_RAW" 2>/dev/null <<'PY'
 import json, sys
 value = json.loads(sys.argv[1])
 assert value.get("schema") == "nysa.software-factory.qualification-fallback-readiness/v1"
@@ -1009,6 +1017,7 @@ assert value.get("status") in {"ready", "invalid"}
 print(json.dumps(value, sort_keys=True, separators=(",", ":")))
 PY
 )"; then
+    FALLBACK_READINESS_JSON="$FALLBACK_READINESS_PARSED"
     [[ "$FALLBACK_READINESS_EXIT" -eq 0 ]] && FALLBACK_READINESS_STATUS="ok"
   fi
 fi
@@ -1028,7 +1037,7 @@ elif [[ "${FACTORY_KIT_TRUST_SCOPE:-}" == "production-certified" &&
       -d "${FACTORY_MODEL_STATE_ROOT:-}" ]]; then
   MODEL_READINESS_STATUS="error"
   MODEL_READINESS_FILE="$TMP/model-readiness.raw"
-  if bounded_command "$MODEL_READINESS_FILE" \
+  if bounded_command "$READINESS_TIMEOUT_SECONDS" "$MODEL_READINESS_FILE" \
       /bin/bash "$KIT_DIR/scripts/model-control.sh" plan; then
     MODEL_READINESS_EXIT=0
   else

@@ -5958,3 +5958,13 @@ qualification root. The sealed qualification launcher verifies that journal
 before readiness, Doctor, controller, or role work and does not resolve an
 ambient host runtime. This keeps qualification behavior aligned with
 production while preserving its isolated, nonpromotable authority.
+
+## 2026-08-14 — Decision 418: Doctor separates cheap and readiness probe deadlines
+
+Category: Reliability
+
+Doctor keeps short CLI/version probes bounded independently from model and
+provider readiness, whose exact multi-route checks receive a longer but still
+bounded window. Timeout, empty, or malformed readiness output leaves a typed
+error with a null report; it never replaces that fail-closed value with an
+unparseable string or breaks Doctor's JSON schema.

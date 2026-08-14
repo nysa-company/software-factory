@@ -167,8 +167,12 @@ it. The clean child environment uses the account's fixed `$HOME/.config/gh`
 credential store; it never extracts or forwards a token. Read-only and provider
 execution paths remain credential-free.
 
-Doctor reports only bounded readiness states. It never returns account data,
-credential values, command output, or credential-bearing URLs.
+Doctor reports only bounded readiness states. Cheap CLI probes and model/provider
+readiness have separate bounded windows so a healthy multi-route readiness scan
+is not held to a version probe's deadline. A timeout or malformed readiness
+response remains a typed error report rather than breaking Doctor's JSON
+contract. Doctor never returns account data, credential values, command output,
+or credential-bearing URLs.
 
 ## Qualification
 
