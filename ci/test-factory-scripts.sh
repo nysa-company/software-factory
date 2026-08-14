@@ -942,7 +942,6 @@ if [[ "$SUBSET" == "model-policy" ]]; then
 SEALED_PRODUCT="$TMP/sealed-product"
 write_envelope "$SEALED_PRODUCT"
 write_ticket "$SEALED_PRODUCT" T-190
-printf '\nKit-SHA: %s\n' "$KIT_SHA" >> "$SEALED_PRODUCT/factory/tickets/T-190.md"
 git -C "$SEALED_PRODUCT" add .gitignore factory/tickets/T-190.md
 git -C "$SEALED_PRODUCT" -c user.name=test -c user.email=test@example.com \
   commit -qm "sealed ticket fixture"
@@ -963,7 +962,12 @@ SEALED_STAGE="$(env \
   FACTORY_RELEASE_PATH="$SEALED_RELEASE" \
   FACTORY_RELEASE_CONTRACT_VERSION=2.0.0 \
   "$SEALED_RELEASE/scripts/next-stage.sh" --ticket T-190 2>&1)"
+SEALED_READY_HEAD="$(git -C "$SEALED_PRODUCT" rev-parse HEAD)"
 SEALED_TRANSITION="$(env \
+  FACTORY_KIT_TRUST_SCOPE=repository-test \
+  FACTORY_TEST_MODE=1 \
+  FACTORY_TRUSTED_TEST_HARNESS=1 \
+  FACTORY_ADAPTER_OVERRIDE=mock \
   FACTORY_CERTIFIED_PRODUCT_ORIGIN="$SEALED_ORIGIN" \
   FACTORY_RELEASE_SHA="$KIT_SHA" \
   FACTORY_RELEASE_TREE="$SEALED_TREE" \
@@ -974,6 +978,20 @@ SEALED_TRANSITION="$(env \
     --kit-dir "$SEALED_RELEASE" --state-dir "$SEALED_STATE" \
     --ticket T-190 --contract-version 2.0.0 --factory-sha "$KIT_SHA" \
     --project sealed)"
+SEALED_PLANNING_HEAD="$(git -C "$SEALED_PRODUCT" rev-parse HEAD)"
+SEALED_PLANNING_PARENT="$(git -C "$SEALED_PRODUCT" rev-parse HEAD^)"
+SEALED_PLANNING_TICKET="$(git -C "$SEALED_PRODUCT" show HEAD:factory/tickets/T-190.md)"
+SEALED_PLANNING_REMOTE="$(git -C "$SEALED_PRODUCT" ls-remote --heads -- "$SEALED_ORIGIN" refs/heads/ticket/T-190 | awk 'NR==1 {print $1; exit}')"
+if [[ "$SEALED_PLANNING_HEAD" != "$SEALED_READY_HEAD" &&
+      "$SEALED_PLANNING_PARENT" == "$SEALED_READY_HEAD" &&
+      "$SEALED_PLANNING_REMOTE" == "$SEALED_PLANNING_HEAD" &&
+      -z "$(git -C "$SEALED_PRODUCT" status --porcelain)" ]] &&
+   grep -q '^State: Planning$' <<<"$SEALED_PLANNING_TICKET" &&
+   grep -q "^Kit-SHA: $KIT_SHA$" <<<"$SEALED_PLANNING_TICKET"; then
+  pass "repository-test transition binds kit affinity before receipt"
+else
+  fail "repository-test transition binds kit affinity before receipt"
+fi
 SEALED_RECEIPT="$(python3 -c \
   'import json,sys; print(json.load(sys.stdin)["receipt"])' \
   <<<"$SEALED_TRANSITION")"
@@ -985,16 +1003,19 @@ env \
     --ticket T-190 --contract-version 2.0.0 --factory-sha "$KIT_SHA" \
     --project sealed --receipt "$SEALED_RECEIPT" --role planner >/dev/null
 SEALED_RUN_STATUS=0
+: > "$TMP/repository-test-global.env"
+: > "$TMP/repository-test-provider-activation.json"
 env \
   FACTORY_ROOT="$SEALED_PRODUCT" \
   FACTORY_CERTIFIED_PRODUCT_ORIGIN="$SEALED_ORIGIN" \
   FACTORY_PROJECT=sealed \
   FACTORY_TRANSITION_RECEIPT_SHA256="$SEALED_RECEIPT" \
   FACTORY_TRANSITION_STATE_DIR="$SEALED_STATE" \
-  FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
+  FACTORY_GLOBAL_ENV="$TMP/repository-test-global.env" \
+  FACTORY_PROVIDER_ACTIVATION="$TMP/repository-test-provider-activation.json" \
   FACTORY_TEST_MODE=1 \
   FACTORY_ADAPTER_OVERRIDE=mock \
-  FACTORY_KIT_TRUST_SCOPE=qualification-candidate \
+  FACTORY_KIT_TRUST_SCOPE=repository-test \
   FACTORY_RELEASE_SHA="$KIT_SHA" \
   FACTORY_RELEASE_TREE="$SEALED_TREE" \
   FACTORY_RELEASE_PATH="$SEALED_RELEASE" \
@@ -1021,7 +1042,7 @@ if [[ "$SEALED_STAGE" == "RUN planner" &&
    grep -q '^contract_version=2.0.0$' "$SEALED_META" &&
    grep -q "^physical_kit_path=$SEALED_RELEASE$" "$SEALED_META" &&
    grep -q '^kit_provenance_mode=sealed$' "$SEALED_META" &&
-   grep -q '^kit_provenance_scope=qualification-candidate$' "$SEALED_META" &&
+   grep -q '^kit_provenance_scope=repository-test$' "$SEALED_META" &&
    grep -q "^transition_receipt_sha256=$SEALED_RECEIPT$" "$SEALED_META" &&
    grep -q "^Kit-SHA: $KIT_SHA$" "$SEALED_PRODUCT/factory/tickets/T-190.md"; then
   pass "sealed release runs real sequencer and mock agent"
@@ -4088,6 +4109,13 @@ else
 fi
 
 setup_role_exit_fixture T-600
+ROLE_EMPTY_TARGET="$TMP/role-empty-external.txt"
+printf 'product-owned target\n' > "$ROLE_EMPTY_TARGET"
+ln -s "$ROLE_EMPTY_TARGET" "$ROLE_EXIT_WORKTREE/mock-role-output.txt"
+git -C "$ROLE_EXIT_WORKTREE" add mock-role-output.txt
+git -C "$ROLE_EXIT_WORKTREE" -c user.name=test -c user.email=test@example.com \
+  commit -qm "product-owned mock path"
+git -C "$ROLE_EXIT_WORKTREE" push -q origin ticket/T-600
 ROLE_NO_COMMIT=0
 FACTORY_ROOT="$ROLE_EXIT_ROOT" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
   FACTORY_TEST_MODE=1 FACTORY_TEST_ENFORCE_ROLE_EXIT=1 \
@@ -4096,7 +4124,7 @@ FACTORY_ROOT="$ROLE_EXIT_ROOT" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
   "$RUN_AGENT" --role planner --ticket T-600 --workdir "$ROLE_EXIT_WORKTREE" -- "no commit" \
   > "$TMP/role-no-commit.out" 2>&1 || ROLE_NO_COMMIT=$?
 ROLE_COMMIT=0
-MOCK_COMMIT_WORKDIR=1 FACTORY_ROOT="$ROLE_EXIT_ROOT" \
+MOCK_COMMIT_EMPTY=1 FACTORY_ROOT="$ROLE_EXIT_ROOT" \
   FACTORY_GLOBAL_ENV="$TMP/no-global.env" FACTORY_TEST_MODE=1 \
   FACTORY_CERTIFIED_PRODUCT_ORIGIN="$ROLE_EXIT_REMOTE" \
   FACTORY_TEST_ENFORCE_ROLE_EXIT=1 FACTORY_ADAPTER_OVERRIDE=mock \
@@ -4105,11 +4133,13 @@ MOCK_COMMIT_WORKDIR=1 FACTORY_ROOT="$ROLE_EXIT_ROOT" \
 ROLE_LOCAL_HEAD="$(git -C "$ROLE_EXIT_WORKTREE" rev-parse HEAD)"
 ROLE_REMOTE_HEAD="$(git --git-dir="$ROLE_EXIT_REMOTE" rev-parse refs/heads/ticket/T-600)"
 if [[ "$ROLE_NO_COMMIT" -eq 11 && "$ROLE_COMMIT" -eq 0 &&
-      "$ROLE_LOCAL_HEAD" == "$ROLE_REMOTE_HEAD" ]] &&
+      "$ROLE_LOCAL_HEAD" == "$ROLE_REMOTE_HEAD" &&
+      "$(cat "$ROLE_EMPTY_TARGET")" == "product-owned target" &&
+      -L "$ROLE_EXIT_WORKTREE/mock-role-output.txt" ]] &&
    grep -q 'role_exit_no_commit' "$TMP/role-no-commit.out"; then
-  pass "role exit requires a clean commit and pushes it non-force"
+  pass "role exit accepts an empty mock commit without touching product paths"
 else
-  fail "role exit requires a clean commit and pushes it non-force" \
+  fail "role exit accepts an empty mock commit without touching product paths" \
     "no-commit=$ROLE_NO_COMMIT commit=$ROLE_COMMIT"
 fi
 

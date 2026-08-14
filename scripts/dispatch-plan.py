@@ -1026,6 +1026,14 @@ def main() -> None:
             ticket: head for ticket, head in reset_authorizations.items()
             if readiness_executable(product, ticket)
         }
+        if (
+            args.action == "claim"
+            and reset_authorizations
+            and os.environ.get("FACTORY_KIT_TRUST_SCOPE") == "repository-test"
+        ):
+            raise DispatchError(
+                "repository-test refuses pre-provider branch recovery"
+            )
         if args.action == "claim" and reset_authorizations:
             safe_directory(args.worktree_root, "worktree root", owner_only=True)
             admission_descriptor = admission_lock(
@@ -1055,8 +1063,6 @@ def main() -> None:
                     "status": "WAIT",
                 }))
                 return
-        if maximum == 1:
-            raise DispatchError("autonomous dispatch requires bounded concurrency")
         lease_dir = factory / ".dispatch-leases"
         if args.action == "claim":
             safe_directory(args.worktree_root, "worktree root", owner_only=True)
@@ -1065,7 +1071,8 @@ def main() -> None:
                     args.worktree_root / ".dispatch-admission.lock"
                 )
         leased, lease_ids = lease_records(lease_dir)
-        if len(leased) >= maximum:
+        occupied = leased | active_tickets(factory)
+        if len(occupied) >= maximum:
             print(canonical({
                 "action": "WAIT", "reason_code": "capacity_full",
                 "schema": SCHEMA, "status": "WAIT",
@@ -1073,8 +1080,7 @@ def main() -> None:
             return
         selected, refusals = candidates(
             factory,
-            mapping,
-            leased | active_tickets(factory) | set(args.exclude_ticket),
+            mapping, occupied | set(args.exclude_ticket),
             qualification_state,
         )
         refusal = {"admission_refusal": refusals[0]} if refusals else {}
@@ -1103,10 +1109,11 @@ def main() -> None:
         lease_dir.mkdir(mode=0o700, exist_ok=True)
         safe_directory(lease_dir, "dispatcher lease directory")
         current_leased, current_lease_ids = lease_records(lease_dir)
+        current_occupied = current_leased | active_tickets(factory)
         if (
-            len(current_leased) >= maximum
+            len(current_occupied) >= maximum
             or ticket["ticket"] in current_leased
-            or ticket["ticket"] in active_tickets(factory)
+            or ticket["ticket"] in current_occupied
         ):
             raise DispatchError("dispatcher capacity changed during selection")
         destination, created, branch_created, reset_head = prepare_worktree(

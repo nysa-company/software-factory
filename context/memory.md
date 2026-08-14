@@ -6,7 +6,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 
 - Product-agnostic factory kit; product repositories carry only their factory state and CI integration.
 - Durable decisions use repository-local numbering beginning at Decision 1.
-- Stable operating truth lives in `docs/`; prompts, templates, and evidence stay colocated with consumers. The operator preflight report is read-only and makes network review explicit before certification.
+- Stable operating truth lives in `docs/`; prompts, templates, and evidence stay colocated with consumers. The operator preflight hydrates only evidence-bound immutable objects, batches read-only object checks, aggregates activation blockers, and makes network review explicit before certification.
 - Nysa Agents baseline v3 as a toolkit; `bash ci/test-all.sh` is the unconditional full command.
 - Contract 2 live products resolve sealed exact-SHA releases from owner-only `active.json` records under `~/.factory/kits` via `~/.factory/bin/factory-launch`; the native controller is the only scheduler.
 - Model routing is portfolio policy; routes pin at the ticket boundary and change only via the Contract 1.4 journal flow. One profile resolution shares model-independent native-adapter readiness across its routes and runs independent probes in bounded parallel; Cursor readiness stays model-specific. Sealed Cursor inventory verifies the exact configured CLI identity in an empty disposable owner-only home before copying credentials, then accepts only its bounded certified structure.
@@ -5763,3 +5763,110 @@ every active project, persists a monotonic Contract 2 floor and global dispatch
 barrier, retires the old profile and jobs only after native Doctor success, and
 supports exact pre-mutation abort plus journaled fix-forward replay. Historical
 evidence remains readable; a static registered suite prevents reintroduction.
+
+## 2026-08-13 — Decision 404: Activation readiness precedes expensive release work
+
+Category: System change
+
+The existing operator preflight report hydrates only exact immutable PR heads
+named by committed terminal migrations and aggregates the authoritative
+activation inventory. Contract 2 release setup consumes that report after
+sealing the candidate and preparing its pinned Node/npm runtime, but before
+product runtime preparation, certification, maintenance, host reservation, or
+approval generation; activation rechecks the same validator at mutation time.
+Factory test mode requires a physically
+separate account home containing its kits root, product checkout, and local
+product push origin. Production receipts require the canonical GitHub Factory
+origin plus protected-main CI evidence, so local timing evidence cannot be
+promoted into an installed lane.
+
+## 2026-08-13 — Decision 405: Activation validation batches immutable Git reads
+
+Category: Performance
+
+Activation retains its full evidence hydration and ticket validation at every
+trust boundary, but reads immutable Git objects through one bounded `cat-file`
+process and initializes committed operator state in one pass. Repository-test
+launches carry a sealed `repository-test` scope, force the mock adapter, refuse
+GitHub-mutating commands, and use mock-only Doctor readiness without provider
+or GitHub credentials. These changes are product-agnostic and do not weaken
+production or qualification evidence.
+
+## 2026-08-13 — Decision 406: Release setup proves operator state is ignored
+
+Category: Reliability
+
+Contract 2 release setup verifies its operator projection, run roots, dispatch
+leases, and their locks are gitignored before it creates product runtime state,
+certifies, or initializes the operator projection. This keeps a successful
+activation or first claim from dirtying its own registered checkout and moving
+the first ticket-readiness failure behind the expensive release boundary.
+
+## 2026-08-13 — Decision 407: Capacity one is a supported serialized lane
+
+Category: Reliability
+
+Contract 2 autonomous dispatch honors `MAX_CONCURRENT_TICKETS=1` as the
+documented serialized path: one exact ticket can be leased and every later
+claim waits at capacity. Capacity one no longer reaches a post-activation
+dispatcher refusal.
+
+## 2026-08-13 — Decision 408: Release authorization has no human hash handoff
+
+Category: Operations
+
+`release setup` authorizes its exact owner-only sealed transaction. `release
+resume` and pre-mutation `release abort` select the current sealed plan by
+project and candidate SHA, require the same non-auto operator identity, and
+verify that plan against its immutable stored copy. Plan and journal hashes
+remain mandatory internal integrity and replay evidence, but operators no
+longer copy or approve those hashes between certification and activation.
+
+## 2026-08-13 — Decision 409: Repository-test stops at authenticated Planning
+
+Category: Test strategy
+
+Superseded by Decision 411.
+
+The contained repository-test controller admits exactly one fresh Ready ticket,
+runs the sealed state machine to a committed Planning state, verifies the
+changed head and its unconsumed transition receipt, emits authenticated
+Planning evidence, and stops before model pinning or role execution. Existing
+claims, runs, leases, already-Planning branches, pre-provider recovery, real
+credentials, provider calls, and GitHub mutations are refused. This proves the
+activation-to-Planning timing boundary without creating production-shaped
+provider evidence; production and qualification behavior is unchanged.
+
+## 2026-08-14 — Decision 410: Fresh local Nysa activation reaches Planning in 12m53s
+
+Category: Evidence
+
+Candidate `605ba6fd65e9f9a503899d0180fbd58e272a47e8` reached one authenticated
+`repository_test_planning` event for Nysa ticket T-218 in 773.062 seconds. The
+timer started before fresh local Factory and product clones and ended at the
+event's monotonic wall timestamp; human approval wait was zero. Cold product
+certification passed ten phases in 360.561 seconds. The event digest,
+unconsumed transition-receipt digest, exact lease, changed worktree head,
+literal Planning state, clean registered checkout, and local-only push origins
+were independently revalidated after reconciliation. This is nonproduction
+timing evidence: the disposable product fork quarantined ten legacy Done
+tickets whose protected-main terminal evidence is incomplete, used synthetic
+local Factory CI evidence, and stopped before model pinning or provider/role
+execution. No GitHub write occurred.
+
+## 2026-08-14 — Decision 411: Fresh local activation reaches one sealed planner in 12m38s
+
+Category: Evidence
+
+Candidate `75a4d8bd993184e7b9677ac0db34365f489cd8c0` activated a fresh,
+owner-only local Factory and Nysa product fork, moved only T-218 through an
+authenticated Planning transition in 737.158718 seconds, and completed one
+sealed mock planner run in 758.028586 seconds. The clock started before both
+fresh clones; human and hash-approval wait was zero. Six ticket event digests,
+the consumed transition receipt and lease binding, terminal run/output digest,
+direct-child planner commit, local bare ticket ref, clean registered checkout,
+and local-only origins all revalidated. This evidence is explicitly
+nonproduction and nonpromotable: no credentials or GitHub writes were present,
+and the disposable Nysa fork quarantined legacy terminal-evidence gaps only for
+the timing canary. Repository-test now stops after that one authenticated mock
+planner completion; production and qualification behavior remain unchanged.

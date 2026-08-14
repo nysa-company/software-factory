@@ -99,13 +99,12 @@ bash scripts/factory-kit.sh release setup \
   --operator-id <operator-id>
 ```
 
-Review the returned exact plan and apply only its approval hash:
+`setup` authorizes the returned exact sealed plan. Resume the current plan:
 
 ```bash
 bash scripts/factory-kit.sh release resume \
   --project <project> \
   --sha <full-factory-sha> \
-  --approve-hash <approval-sha256> \
   --approved-by <operator-id>
 ```
 
@@ -115,13 +114,13 @@ qualification result, runtime pins, provider CLI pins, concurrency state, and
 any approved ticket migrations. The signed release journal makes retries
 idempotent and refuses changed inputs.
 
-If a host cutover plan was never approved, abort that exact hash to restore its
-captured maintenance state and release the machine-wide reservation:
+Before a host cutover mutates a project, abort the current sealed plan to
+restore its captured maintenance state and release the machine-wide reservation:
 
 ```bash
 bash scripts/factory-kit.sh release abort \
   --project <project> --sha <full-factory-sha> \
-  --approve-hash <approval-sha256> --approved-by <operator-id>
+  --approved-by <operator-id>
 ```
 
 Abort is refused after the first project mutation; recovery is fix-forward from

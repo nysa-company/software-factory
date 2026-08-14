@@ -308,21 +308,25 @@ report against the exact intended cohort:
 ```bash
 bash scripts/factory-kit.sh preflight-report \
   --project <project> --product <absolute-product-path> --sha <full-kit-sha> \
-  --ticket <T-NNN> [--ticket <T-NNN>] --json
+  [--ticket <T-NNN>] --json
 ```
 
 The closed JSON report verifies the manifest-backed candidate identity, clean
 product `main` at the exact read-only `ls-remote` result from the validated push
 authority, matching identity snapshots around all evidence reads, candidate
 pin, current Node/npm PATH tuple, certification network declaration, each
-ticket's existing readiness contract, and pairwise Builder ownership. Every
+selected ticket's existing readiness contract, pairwise Builder ownership,
+and every committed terminal ticket needed by activation. It hydrates only
+the immutable `refs/pull/<number>/head` objects named by committed migration
+evidence, without moving local refs or `FETCH_HEAD`, and reports all terminal
+blockers together. Every
 accepted invocation emits exactly one report: `pass` exits 0,
 `authorization-required` exits 3, and `blocked` exits 2. A required network
 phase is not auto-approved: review the named phases, then explicitly rerun the
 same command and later certification with
 `FACTORY_KIT_CERTIFICATION_NETWORK_REVIEWED=1` only when warranted.
 
-The report does not run Doctor or model/provider probes, fetch, write state,
+The report does not run Doctor or model/provider probes, write owner state,
 publish maintenance, certify, activate, or make the operator decision. Use the
 existing `status --json`, Doctor, and provider controls for active runtime and
 transaction diagnosis.
@@ -581,27 +585,45 @@ bash scripts/factory-kit.sh release setup \
   [--ticket-workdir T-NNN <absolute-worktree> ...]
 
 bash scripts/factory-kit.sh release resume \
-  --project <project> --sha <candidate> \
-  --approve-hash <approval_sha256> --approved-by <operator-id>
+  --project <project> --sha <candidate> --approved-by <operator-id>
 ```
 
 `release setup` requires clean exact Factory and product Git trees, an exact
 product `KIT_PIN`, Contract 2.0, and a reviewed certification-plan runtime. It
-installs the sealed candidate, prepares a project-local runtime, the
-ignored physical `factory/runs/` and `.active-runs/` roots, the path-only
+installs the sealed candidate, prepares the project-local Node/npm runtime,
+runs the full activation preflight above through that runtime, then prepares
+the ignored physical `factory/runs/` and `.active-runs/` roots, the path-only
 `active.json.product_path` authority, and the exact macOS controller plist, then binds
 Factory/product SHA and tree, active generation, runtime binaries, provider
 plans, model profile, receipt, and any one-to-four ticket migration previews
 into an owner-only plan. It also binds every committed ticket blob and state,
 then idempotently initializes their local operator-map entries behind the
 dispatch barrier. It never chooses migration tickets or advances ticket state.
+Activation blockers therefore stop before product runtime preparation,
+certification, maintenance, host reservation, or approval generation.
+
+`FACTORY_KIT_TEST_MODE=1` is repository-test evidence only. It requires an
+explicit owner-only `FACTORY_RELEASE_TEST_HOME` outside the real account home
+with its kits root, product checkout, and single local product push destination
+contained beneath that root, plus a local canonical Factory origin. Production
+receipt validation requires the canonical GitHub Factory origin and
+protected-main GitHub Actions evidence; test receipts cannot be promoted into
+an installed production lane. The sealed test launcher forces the mock adapter,
+records `repository-test` in run evidence, refuses GitHub-mutating commands,
+and makes Doctor validate only that local mock boundary. Its controller reaches
+one authenticated Planning claim, runs one sealed mock planner with durable
+role-exit evidence, and then stops. It does not pin a production model route or
+launch a provider-backed role. Do not copy provider or GitHub credentials into
+the isolated home.
 
 If the stable launcher or provider settings must change, setup first returns a
-`prerequisites` plan. Review it, ensure every listed active factory is already
-in maintenance and drained, and run resume. That resume applies only the
-embedded child hashes, certifies the product, and returns the second
+`prerequisites` plan. Setup authorizes the exact sealed transaction; ensure
+every listed active factory is already in maintenance and drained, then run
+resume. That resume applies only the embedded child hashes, certifies the
+product, and returns the second
 `activation` plan whose hash binds the fresh one-use certification receipt.
-Review that returned hash and run the same resume verb again. When prerequisites
+Run the same resume verb again; the current owner-only sealed plan remains the
+internal replay and integrity authority. When prerequisites
 already match, setup returns the activation plan directly, so only one resume
 is needed.
 
@@ -706,8 +728,7 @@ minutes.
      --repo <absolute-clean-kit-checkout> --profile <model-profile> \
      --operator-id <operator-id>
    bash scripts/factory-kit.sh release resume --project <project> \
-     --sha <candidate> --approve-hash <approval-sha256> \
-     --approved-by <operator-id>
+     --sha <candidate> --approved-by <operator-id>
    ```
 
    The transaction reuses the existing install, certify, pause, qualification,
@@ -717,9 +738,9 @@ minutes.
    sandbox smoke, PID, and repeated health probes. Tests alone are not
    production closure evidence; bind these observations and timestamps to the
    exact protected SHA.
-   If the plan is not approved, run the same command with `release abort`, its
-   exact approval hash, and the setup operator ID. Abort restores captured
-   maintenance and is refused after any active record changes.
+   Before the plan mutates a project, `release abort` with the same project,
+   candidate, and setup operator ID restores captured maintenance. Abort is
+   refused after any active record changes.
 15. For an authorized Contract 2.0 in-flight cutover, keep maintenance while
    collecting one `models migrate-batch-plan` preview for one to four exact
    ticket/worktree pairs. Review its protected-main and per-ticket bindings,

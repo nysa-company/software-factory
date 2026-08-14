@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import pwd
 import re
 import stat
 import subprocess
@@ -17,6 +18,9 @@ import sys
 import tempfile
 import time
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
+from historical_pr_objects import run_git as hardened_git  # noqa: E402
 
 
 PLAN_SCHEMA = "nysa.software-factory.release-plan/v1"
@@ -41,14 +45,30 @@ class ReleaseError(ValueError):
 
 def account_home() -> Path:
     override = os.environ.get("FACTORY_RELEASE_TEST_HOME", "")
+    if os.environ.get("FACTORY_KIT_TEST_MODE") == "1" and not override:
+        raise ReleaseError("Factory test mode requires an explicit isolated release test home")
     if override:
         if os.environ.get("FACTORY_KIT_TEST_MODE") != "1":
             raise ReleaseError("release test home is forbidden outside Factory test mode")
         path = Path(override)
         if not path.is_absolute():
             raise ReleaseError("release test home is invalid")
-        return secure_directory(path.resolve(strict=True))
+        path = secure_directory(path.resolve(strict=True))
+        real_home = Path(pwd.getpwuid(os.getuid()).pw_dir).resolve(strict=True)
+        if (
+            path == real_home or real_home in path.parents
+            or stat.S_IMODE(path.stat().st_mode) != 0o700
+        ):
+            raise ReleaseError("release test home must be owner-only and outside the real account home")
+        return path
     return Path.home().resolve(strict=True)
+
+
+def require_test_layout(kits_root: Path) -> None:
+    if os.environ.get("FACTORY_KIT_TEST_MODE") == "1":
+        expected = account_home() / ".factory/kits"
+        if kits_root != expected:
+            raise ReleaseError("Factory test kits root must be inside the isolated test home")
 
 
 def canonical(value: Any) -> bytes:
@@ -478,6 +498,38 @@ def run_json(
     return value
 
 
+def release_preflight(
+    kit: Path, kits_root: Path, runtime_bin: Path, project: str,
+    product: Path, sha: str,
+) -> dict[str, Any]:
+    arguments = [
+        "bash", str(kit), "preflight-report", "--project", project,
+        "--product", str(product), "--sha", sha, "--json",
+    ]
+    result = subprocess.run(
+        arguments, text=True, capture_output=True, check=False,
+        env=command_environment(kits_root, runtime_bin), timeout=1800,
+    )
+    try:
+        report = json.loads(result.stdout)
+    except (json.JSONDecodeError, UnicodeError) as error:
+        raise ReleaseError("activation readiness returned invalid evidence") from error
+    if not isinstance(report, dict) or report.get("status") not in {
+        "pass", "blocked", "authorization-required",
+    }:
+        raise ReleaseError("activation readiness returned invalid evidence")
+    if result.returncode == 0 and report["status"] == "pass":
+        return report
+    if report["status"] == "authorization-required":
+        raise ReleaseError("activation readiness requires certification network review")
+    blockers = report.get("blockers")
+    details = ", ".join(
+        f"{item.get('scope')}:{item.get('reason_code')}"
+        for item in blockers if isinstance(item, dict)
+    ) if isinstance(blockers, list) else ""
+    raise ReleaseError(f"activation readiness blocked{': ' + details if details else ''}")
+
+
 def git(root: Path, *arguments: str) -> str:
     return run(["git", "-C", str(root), *arguments], "Git identity").strip()
 
@@ -518,6 +570,8 @@ def ticket_inventory(product: Path) -> list[dict[str, str]]:
     secure_directory(directory)
     result = []
     for path in sorted(directory.glob("T-*.md")):
+        if re.fullmatch(r"T-[0-9]{3}-bundle\.md", path.name):
+            continue
         ticket = path.stem
         if not TICKET.fullmatch(ticket):
             raise ReleaseError("product ticket filename is invalid")
@@ -538,15 +592,86 @@ def ticket_inventory(product: Path) -> list[dict[str, str]]:
     return result
 
 
+def validate_product_runtime_contract(
+    product: Path, *, require_idle_dispatch: bool = True,
+) -> None:
+    for relative in (
+        "factory/runs", "factory/.active-runs", "factory/.dispatch-leases",
+        "factory/.dispatch-leases.lock", "factory/.operator-clears",
+    ):
+        tracked = hardened_git(product, "ls-files", "--", relative)
+        if tracked.returncode != 0 or tracked.stdout:
+            raise ReleaseError(f"release setup requires {relative} to be untracked")
+    lease_dir = product / "factory/.dispatch-leases"
+    if lease_dir.exists() or lease_dir.is_symlink():
+        try:
+            info = lease_dir.lstat()
+        except OSError as error:
+            raise ReleaseError("release setup dispatcher lease state is invalid") from error
+        if (
+            lease_dir.is_symlink() or not stat.S_ISDIR(info.st_mode)
+            or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700
+            or (require_idle_dispatch and any(lease_dir.iterdir()))
+        ):
+            raise ReleaseError("release setup requires factory/.dispatch-leases to be empty or absent")
+    lease_lock = product / "factory/.dispatch-leases.lock"
+    if lease_lock.exists() or lease_lock.is_symlink():
+        raise ReleaseError("release setup requires factory/.dispatch-leases.lock to be absent")
+    operator_clears = product / "factory/.operator-clears"
+    if operator_clears.exists() or operator_clears.is_symlink():
+        secure_directory(operator_clears)
+    for relative in (
+        "factory/runs/.factory-release-probe",
+        "factory/.active-runs/.factory-release-probe",
+        "factory/operator-map.json",
+        "factory/.operator-map.lock",
+        "factory/.operator-clears/.factory-release-probe",
+        "factory/.dispatch-leases/.factory-release-probe",
+        "factory/.dispatch-leases.lock/.factory-release-probe",
+    ):
+        tracked = hardened_git(
+            product, "ls-files", "--error-unmatch", "--", relative,
+        )
+        if tracked.returncode != 1:
+            raise ReleaseError(f"release setup requires {relative} to be untracked")
+        ignored = hardened_git(
+            product, "check-ignore", "-v", "--no-index", "--stdin", "-z",
+            input_text=relative + "\0",
+        )
+        fields = ignored.stdout.split("\0")
+        if (
+            ignored.returncode != 0 or ignored.stderr or len(fields) != 5
+            or fields[4] or fields[3] != relative or not fields[1].isdigit()
+            or not fields[2] or fields[2].startswith("!")
+        ):
+            raise ReleaseError(f"release setup requires {relative} to be gitignored")
+        source_path = product / fields[0]
+        try:
+            source_info = source_path.lstat()
+            source_relative = str(
+                source_path.resolve(strict=True).relative_to(product)
+            )
+        except (OSError, ValueError) as error:
+            raise ReleaseError("release setup ignore authority is invalid") from error
+        source_tracked = hardened_git(
+            product, "ls-files", "--error-unmatch", "--", source_relative,
+        )
+        head_blob = hardened_git(product, "rev-parse", f"HEAD:{source_relative}")
+        worktree_blob = hardened_git(
+            product, "hash-object", "--no-filters", "--", source_relative,
+        )
+        if (
+            source_path.is_symlink() or not stat.S_ISREG(source_info.st_mode)
+            or source_tracked.returncode != 0
+            or source_tracked.stdout.strip() != source_relative
+            or head_blob.returncode != 0 or worktree_blob.returncode != 0
+            or head_blob.stdout.strip() != worktree_blob.stdout.strip()
+        ):
+            raise ReleaseError("release setup ignore authority is invalid")
+
+
 def prepare_product_runtime(product: Path) -> None:
     for relative in ("factory/runs", "factory/.active-runs"):
-        ignored = subprocess.run(
-            ["git", "-C", str(product), "check-ignore", "-q", "--no-index",
-             f"{relative}/.factory-release-probe"],
-            check=False, timeout=120,
-        )
-        if ignored.returncode:
-            raise ReleaseError(f"release setup requires {relative}/ to be gitignored")
         secure_directory(product / relative, create=True)
 
 
@@ -580,10 +705,15 @@ def command_environment(
 
 def launcher_environment(kits_root: Path, runtime: Path) -> dict[str, str]:
     environment = command_environment(kits_root, runtime)
-    if (
-        kits_root == Path.home().resolve() / ".factory/kits"
-        and os.environ.get("FACTORY_LAUNCH_TEST_MODE") != "1"
-    ):
+    if os.environ.get("FACTORY_KIT_TEST_MODE") == "1":
+        home = account_home()
+        if kits_root != home / ".factory/kits":
+            raise ReleaseError("Factory test launcher root is outside the isolated home")
+        environment.update({
+            "FACTORY_LAUNCH_TEST_HOME": str(home),
+            "FACTORY_LAUNCH_TEST_MODE": "1",
+        })
+    elif kits_root == account_home() / ".factory/kits":
         environment.pop("FACTORY_KITS_ROOT", None)
     return environment
 
@@ -851,7 +981,7 @@ def validate_plan(value: dict[str, Any]) -> None:
     if (
         set(value) != required or value.get("schema") != PLAN_SCHEMA
         or value.get("stage") not in {"prerequisites", "activation"}
-        or value.get("status") != "approval-required"
+        or value.get("status") != "authorized"
         or not DIGEST.fullmatch(str(value.get("approval_sha256", "")))
         or value["approval_sha256"] != digest(body)
         or not isinstance(value.get("created_epoch"), int)
@@ -1024,6 +1154,18 @@ def write_plan(path: Path, plan: dict[str, Any]) -> None:
     else:
         atomic_json(immutable, plan)
     atomic_json(path, plan)
+
+
+def current_plan(path: Path) -> dict[str, Any]:
+    plan = safe_state(path, "current release plan")
+    validate_plan(plan)
+    immutable = path.parent / path.stem / f"{plan['approval_sha256']}.json"
+    if (
+        not immutable.exists() or immutable.is_symlink()
+        or safe_state(immutable, "stored release plan") != plan
+    ):
+        raise ReleaseError("current release plan does not match its sealed copy")
+    return plan
 
 
 def create_seed(release: Path, product: Path, root: Path) -> Path:
@@ -1598,6 +1740,7 @@ def _setup_locked(args: argparse.Namespace) -> dict[str, Any]:
     repo = args.repo.resolve(strict=True)
     kits_root = args.kits_root.resolve()
     secure_directory(kits_root, create=True)
+    require_test_layout(kits_root)
     pending_reservation = reservation_path(kits_root)
     if pending_reservation.exists() or pending_reservation.is_symlink():
         pending = read_reservation(pending_reservation)
@@ -1610,17 +1753,14 @@ def _setup_locked(args: argparse.Namespace) -> dict[str, Any]:
             raise ReleaseError("another host cutover is already reserved")
     factory_sha, factory_tree, factory_origin = clean_identity(repo, "Factory candidate")
     product_sha, product_tree, product_origin = clean_identity(product, "product")
-    prepare_product_runtime(product)
-    if clean_identity(product, "product") != (
-        product_sha, product_tree, product_origin,
-    ):
-        raise ReleaseError("product changed during runtime preparation")
     if factory_sha != sha:
         raise ReleaseError("Factory candidate does not match release SHA")
     if (product / "factory/KIT_PIN").read_text(encoding="utf-8") != sha + "\n":
         raise ReleaseError("product pin does not match release SHA")
+    validate_product_runtime_contract(product)
     source_kit = repo / "scripts/factory-kit.sh"
     environment = command_environment(kits_root)
+    environment.pop("FACTORY_KIT_CERTIFICATION_NETWORK_REVIEWED", None)
     run(
         ["bash", str(source_kit), "install", "--sha", sha, "--repo", str(repo)],
         "sealed release installation", environment=environment,
@@ -1628,9 +1768,6 @@ def _setup_locked(args: argparse.Namespace) -> dict[str, Any]:
     release = kits_root / "releases" / sha
     sealed_kit = release / "scripts/factory-kit.sh"
     release_contract = contract(release)
-    runtime = prepare_runtime(release, product, kits_root, project, args.runtime_bin)
-    controller = prepare_controller(project, product)
-    runtime_bin = Path(str(runtime["evidence"]["path"]))
     active = kits_root / "projects" / project / "active.json"
     previous = None
     if active.exists() or active.is_symlink():
@@ -1638,6 +1775,15 @@ def _setup_locked(args: argparse.Namespace) -> dict[str, Any]:
         if active_value.get("product_path") != str(product):
             raise ReleaseError("active release belongs to a different product")
         previous = {"record": active_value, "sha256": file_digest(active)}
+    runtime = prepare_runtime(release, product, kits_root, project, args.runtime_bin)
+    runtime_bin = Path(str(runtime["evidence"]["path"]))
+    release_preflight(sealed_kit, kits_root, runtime_bin, project, product, sha)
+    prepare_product_runtime(product)
+    if clean_identity(product, "product") != (
+        product_sha, product_tree, product_origin,
+    ):
+        raise ReleaseError("product changed during runtime preparation")
+    controller = prepare_controller(project, product)
     mode = "upgrade" if previous is not None else "new"
     maintenance_prior = (
         args.maintenance_prior if hasattr(args, "maintenance_prior")
@@ -1714,7 +1860,7 @@ def _setup_locked(args: argparse.Namespace) -> dict[str, Any]:
             },
             "created_epoch": now, "expires_epoch": now + 7200,
             "identity": identity, "request": request, "schema": PLAN_SCHEMA,
-            "stage": "prerequisites", "status": "approval-required",
+            "stage": "prerequisites", "status": "authorized",
         })
     else:
         certification_environment = command_environment(
@@ -1759,7 +1905,7 @@ def _setup_locked(args: argparse.Namespace) -> dict[str, Any]:
             },
             "created_epoch": now, "expires_epoch": now + 7200,
             "identity": identity, "request": request, "schema": PLAN_SCHEMA,
-            "stage": "activation", "status": "approval-required",
+            "stage": "activation", "status": "authorized",
         })
     path, _ = plan_paths(kits_root, project, sha)
     write_plan(path, plan)
@@ -2472,7 +2618,9 @@ def active_exact(kits_root: Path, plan: dict[str, Any]) -> bool:
     }.items())
 
 
-def validate_live_basis(kits_root: Path, plan: dict[str, Any]) -> None:
+def validate_live_basis(
+    kits_root: Path, plan: dict[str, Any], *, require_idle_dispatch: bool = True,
+) -> None:
     identity = plan["identity"]
     product = Path(identity["product_path"])
     product_sha, product_tree, product_origin = clean_identity(product, "product")
@@ -2485,6 +2633,9 @@ def validate_live_basis(kits_root: Path, plan: dict[str, Any]) -> None:
         != identity["factory_sha"] + "\n"
     ):
         raise ReleaseError("product changed after release setup")
+    validate_product_runtime_contract(
+        product, require_idle_dispatch=require_idle_dispatch,
+    )
     release = kits_root / "releases" / identity["factory_sha"]
     if contract(release) != identity["contract_version"]:
         raise ReleaseError("installed release changed after setup")
@@ -2900,17 +3051,12 @@ def apply_activation(
 
 def _resume_locked(args: argparse.Namespace, kits_root: Path) -> dict[str, Any]:
     latest, journals = plan_paths(kits_root, args.project, args.sha)
-    path = latest.parent / latest.stem / f"{args.approve_hash}.json"
-    if not path.exists() or path.is_symlink():
-        raise ReleaseError("approved hash does not match a stored release plan")
-    plan = safe_state(path, "release plan")
-    validate_plan(plan)
-    if plan["approval_sha256"] != args.approve_hash:
-        raise ReleaseError("approved hash does not match exact release plan")
+    plan = current_plan(latest)
+    approval = plan["approval_sha256"]
     if plan["request"]["operator_id"] != args.approved_by:
         raise ReleaseError("release approver does not match setup operator")
     secure_directory(journals, create=True)
-    journal = journals / f"{args.approve_hash}.json"
+    journal = journals / f"{approval}.json"
     if plan["expires_epoch"] <= int(time.time()):
         if not journal.exists():
             raise ReleaseError("release plan is stale")
@@ -2939,7 +3085,18 @@ def _resume_locked(args: argparse.Namespace, kits_root: Path) -> dict[str, Any]:
             value = read_journal(journal, plan)
         else:
             value = journal_update(journal, plan, "approved", "pass")
-        validate_live_basis(kits_root, plan)
+        dispatched = (
+            value.get("phase") in {"dispatch_started", "complete"}
+            or value.get("status") == "pass"
+            or (
+                value.get("phase") == "doctor_pass"
+                and active_exact(kits_root, plan)
+                and not (Path(plan["identity"]["product_path"]) / "factory/KILL").exists()
+            )
+        )
+        validate_live_basis(
+            kits_root, plan, require_idle_dispatch=not dispatched,
+        )
         if plan["stage"] == "prerequisites":
             if value.get("status") == "pass":
                 result_hash = value.get("result_approval_sha256")
@@ -2965,11 +3122,11 @@ def _resume_locked(args: argparse.Namespace, kits_root: Path) -> dict[str, Any]:
 def resume(args: argparse.Namespace) -> dict[str, Any]:
     if (
         not PROJECT.fullmatch(args.project) or not SHA.fullmatch(args.sha)
-        or not DIGEST.fullmatch(args.approve_hash)
         or not SAFE_ID.fullmatch(args.approved_by) or args.approved_by == "auto"
     ):
         raise ReleaseError("release approval boundary is invalid")
     kits_root = args.kits_root.resolve(strict=True)
+    require_test_layout(kits_root)
     descriptor = acquire_cutover_lock(kits_root)
     try:
         return _resume_locked(args, kits_root)
@@ -2980,21 +3137,18 @@ def resume(args: argparse.Namespace) -> dict[str, Any]:
 def abort(args: argparse.Namespace) -> dict[str, Any]:
     if (
         not PROJECT.fullmatch(args.project) or not SHA.fullmatch(args.sha)
-        or not DIGEST.fullmatch(args.approve_hash)
         or not SAFE_ID.fullmatch(args.approved_by) or args.approved_by == "auto"
     ):
         raise ReleaseError("release abort boundary is invalid")
     kits_root = args.kits_root.resolve(strict=True)
+    require_test_layout(kits_root)
     descriptor = acquire_cutover_lock(kits_root)
     try:
         latest, _ = plan_paths(kits_root, args.project, args.sha)
-        path = latest.parent / latest.stem / f"{args.approve_hash}.json"
-        plan = safe_state(path, "release plan")
-        validate_plan(plan)
+        plan = current_plan(latest)
         items = plan["children"].get("host_cutover")
         if (
-            plan["approval_sha256"] != args.approve_hash
-            or plan["request"]["operator_id"] != args.approved_by
+            plan["request"]["operator_id"] != args.approved_by
             or plan["stage"] != "prerequisites" or not items
         ):
             raise ReleaseError("release plan cannot be aborted")
@@ -3041,12 +3195,10 @@ def main() -> int:
     resume_parser = commands.add_parser("resume")
     resume_parser.add_argument("--project", required=True)
     resume_parser.add_argument("--sha", required=True)
-    resume_parser.add_argument("--approve-hash", required=True)
     resume_parser.add_argument("--approved-by", required=True)
     abort_parser = commands.add_parser("abort")
     abort_parser.add_argument("--project", required=True)
     abort_parser.add_argument("--sha", required=True)
-    abort_parser.add_argument("--approve-hash", required=True)
     abort_parser.add_argument("--approved-by", required=True)
     args = parser.parse_args()
     try:

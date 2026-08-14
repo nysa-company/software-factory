@@ -8,8 +8,8 @@ Read [architecture.md](architecture.md) first. It defines the kit/product bounda
 
 - Create the product repo as a **sibling folder** (never nested inside another repo). Do NOT copy kit scripts into it — the engine model in `docs/architecture.md` is the contract.
 - Create `factory/` with: `ENVELOPE.md` (filled from `envelope/ENVELOPE.template.md`), `ENVELOPE.env`, `PROJECT.env`, `KIT_PIN`, an executable certification script, and empty `initiatives/` and `tickets/` directories.
-- Ignore `factory/operator-map.json`, `factory/.envelope.lock/`, `factory/envelope-overrides/`, and `factory/envelope-override-consumptions/`; they are runtime operator state and must never dirty the registered checkout.
-- Ignore `factory/runs/`, `factory/.active-runs/`, `factory/.provider.lock/`, and `factory/runtime-ledger.csv`; preflight or the first normal reconciliation durably initializes the real, no-follow runs root, manifests are atomic local run truth, claims and the provider lock are runtime exclusion state, and the CSV is their rebuildable view over the tracked durable ledger.
+- Ignore `factory/operator-map.json`, `factory/.operator-map.lock`, `factory/.operator-clears/`, `factory/.envelope.lock/`, `factory/envelope-overrides/`, and `factory/envelope-override-consumptions/`; they are runtime operator state and must never dirty the registered checkout. Release setup verifies the operator projection, lock, and consumed-action audit directory are ignored before it creates any product runtime state.
+- Ignore `factory/runs/`, `factory/.active-runs/`, `factory/.dispatch-leases/`, `factory/.dispatch-leases.lock/`, `factory/.provider.lock/`, and `factory/runtime-ledger.csv`; preflight or the first normal reconciliation durably initializes the real, no-follow runs root, manifests are atomic local run truth, claims and their lock plus the provider lock are runtime exclusion state, and the CSV is their rebuildable view over the tracked durable ledger.
 - Write exactly one lowercase, full 40-character SHA to `factory/KIT_PIN`. External products never use an abbreviated SHA or the in-kit conformance exception.
 - Add one repository-contained executable path to `factory/PROJECT.env`, for example `CERTIFY_SCRIPT=factory/certify.sh`. The script must run the product checks without changing the tracked product tree.
 - Declare exactly one `PREVIEW_PROVIDER=railway` or `PREVIEW_PROVIDER=none`. `none` is allowed only with narrow `NONVISUAL_PATHS`; each ready ticket must also declare exact `Builder ownership: path[, path] only` so qualification can prove the work cannot require a missing preview before any provider call.
@@ -256,9 +256,10 @@ product checkout.
 - Before Contract 2 certification, use the signed `factory-kit release
   setup/resume` transaction. It inventories and drains every active product,
   certifies and switches the full host, installs the exact sealed launcher,
-  and commits the Contract 2 floor before reloading native controllers. The
-  approval hash binds the prior and candidate launcher bytes; never replace
-  the installed launcher independently.
+  and commits the Contract 2 floor before reloading native controllers. Setup
+  authorizes the current owner-only sealed plan; its internal digest binds the
+  prior and candidate launcher bytes. Resume does not require a copied hash.
+  Never replace the installed launcher independently.
 
 - For a release migration, merge the protected product PR containing
   `factory/KIT_PIN` and the complete canonical
@@ -313,13 +314,14 @@ product checkout.
     --product "<absolute-product-path>" --sha "<full-sha>" \
     --repo "$PWD" --profile "<model-profile>" --operator-id "<operator-id>"
   bash scripts/factory-kit.sh release resume --project "<project>" \
-    --sha "<full-sha>" --approve-hash "<approval-sha256>" \
-    --approved-by "<operator-id>"
+    --sha "<full-sha>" --approved-by "<operator-id>"
   ```
 
-  Review each returned plan before resuming it. The transaction runs install,
+  `release setup` authorizes the exact sealed transaction. Resume each current
+  plan without copying a hash. The transaction runs install,
   certify, pause, qualification, and activation gates and records each phase in
-  an owner-only signed journal. Retries resume the exact bound candidate.
+  an owner-only signed journal. Internal hashes bind every phase, and retries
+  resume the exact current candidate.
   A fresh install records 24-hour owner-only kit-suite evidence by default.
   Authenticated successful GitHub Actions evidence for the exact protected-main
   SHA and its full Linux, macOS, aggregate, and immutability jobs is mandatory;

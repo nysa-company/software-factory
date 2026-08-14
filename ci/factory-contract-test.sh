@@ -9,7 +9,8 @@ TMP="$(mktemp -d "${TMPDIR:-/tmp}/factory-contract-test.XXXXXX")"
 TMP="$(cd "$TMP" && pwd -P)"
 TEST_HOME="$TMP/home"
 KITS_ROOT="$TEST_HOME/.factory/kits"
-PRODUCT="$TMP/product"
+PRODUCT="$TEST_HOME/product"
+PRODUCT_ORIGIN="$TEST_HOME/product-origin.git"
 TEST_BIN="$TEST_HOME/.factory/bin"
 LAUNCH_TMP="$TMP/launcher-tmp"
 PROJECT=contracttest
@@ -114,7 +115,7 @@ PY
 )"
   python3 - "$active" "$KITS_ROOT/receipts/$RECEIPT_ID.json" \
     "$RECEIPT_ID" "$PROJECT" "$sha" "$tree" "$PRODUCT" "$PRODUCT_TREE" \
-    "$release" "$contract" <<'PY'
+    "$release" "$contract" "$PRODUCT_ORIGIN" <<'PY'
 import json
 import os
 import pathlib
@@ -122,7 +123,7 @@ import sys
 
 (
     active_path, receipt_path, receipt_id, project, kit_sha, kit_tree,
-    product_path, product_tree, release_path, contract,
+    product_path, product_tree, release_path, contract, product_origin,
 ) = sys.argv[1:]
 receipt = {
     "receipt_id": receipt_id,
@@ -132,7 +133,7 @@ receipt = {
     "kit_tree": kit_tree,
     "product_path": os.path.realpath(product_path),
     "product_tree": product_tree,
-    "product_origin": "https://example.invalid/factory-product.git",
+    "product_origin": os.path.realpath(product_origin),
     "contract_version": contract,
 }
 path = pathlib.Path(receipt_path)
@@ -166,11 +167,26 @@ run_launcher() {
     GH_TOKEN=caller-secret-must-not-pass \
     PYTHONPATH="$TMP/python-path-must-not-pass" \
     GIT_CONFIG_GLOBAL="$TMP/git-config-must-not-pass" \
-    /bin/bash "$LAUNCHER" "$PROJECT" "$@"
+    /bin/bash "$TEST_BIN/factory-launch" "$PROJECT" "$@"
 }
 
 mkdir -p "$TEST_BIN" "$LAUNCH_TMP" "$KITS_ROOT/projects/$PROJECT" \
   "$KITS_ROOT/releases" "$KITS_ROOT/receipts" "$PRODUCT/factory"
+chmod 700 "$TEST_HOME"
+cp "$LAUNCHER" "$TEST_BIN/factory-launch"
+chmod 700 "$TEST_BIN/factory-launch"
+git init --bare -q "$PRODUCT_ORIGIN"
+
+ACCOUNT_REAL_HOME="$(python3 - <<'PY'
+import os, pwd
+print(os.path.realpath(pwd.getpwuid(os.getuid()).pw_dir))
+PY
+)"
+expect_refused repository-real-home env \
+  FACTORY_LAUNCH_TEST_MODE=1 \
+  FACTORY_LAUNCH_TEST_HOME="$ACCOUNT_REAL_HOME" \
+  FACTORY_KITS_ROOT="$ACCOUNT_REAL_HOME/.factory/kits" \
+  /bin/bash "$LAUNCHER" "$PROJECT" contract --json
 
 # Qualification roots are a macOS-only production boundary fixed under
 # /private/tmp. Linux still exercises the repository launcher below.
@@ -204,10 +220,11 @@ EOF
 done
 
 git -C "$PRODUCT" init -q -b main
+git -C "$PRODUCT" remote add origin "$PRODUCT_ORIGIN"
 git -C "$PRODUCT" config user.name "Factory contract test"
 git -C "$PRODUCT" config user.email "factory-contract@example.invalid"
 printf 'fixture\n' > "$PRODUCT/README.md"
-printf 'MAX_CONCURRENT_TICKETS=1\n' > "$PRODUCT/factory/PROJECT.env"
+printf 'MAX_CONCURRENT_TICKETS=3\n' > "$PRODUCT/factory/PROJECT.env"
 printf '%040d\n' 0 > "$PRODUCT/factory/KIT_PIN"
 git -C "$PRODUCT" add -A
 git -C "$PRODUCT" commit -qm "seed product"
@@ -240,6 +257,12 @@ write_binding "$SHA_A" "$TREE_A" "$RELEASE_A"
 RECEIPT_A="$RECEIPT_ID"
 printf '%s\n' "$SHA_A" > "$PRODUCT/factory/KIT_PIN"
 run_launcher contract --json > "$TMP/contract-a.json"
+for command in incident-report publication-repair ci-rerun ticket-pr ticket-attest; do
+  expect_refused "repository-test-$command" run_launcher "$command"
+  grep -Fxq 'factory-launch: repository test mode refuses GitHub-mutating commands' \
+    "$TMP/refused-repository-test-$command.out" ||
+    fail "repository-test-$command did not reach the capability guard"
+done
 python3 - "$TMP/contract-a.json" <<'PY'
 import json
 import sys
@@ -398,6 +421,7 @@ assert value["schema"] == "nysa.software-factory.doctor/v2"
 assert value["schema_version"] == 2
 assert value["contract_version"] == "2.0.0"
 assert value["project"] == "contracttest"
+assert value["overall_status"] == "ok"
 checks = value["checks"]
 assert set(checks) == {
     "active_binding", "kit", "kit_pin", "runtime", "clis",
@@ -413,6 +437,18 @@ assert checks["active_binding"] == {
 assert checks["kit"] == {"status": "ok", "full_sha": sha}
 assert checks["kit_pin"]["status"] == "ok"
 assert checks["kit_pin"]["matches_kit"] is True
+assert checks["model_readiness"] == {
+    "status": "ok",
+    "report": {
+        "adapter": "mock",
+        "schema": "nysa.software-factory.doctor-repository-test-readiness/v1",
+        "status": "ready",
+        "trust_scope": "repository-test",
+    },
+}
+assert checks["credentials"]["status"] == "ok"
+assert checks["isolated_provider"]["concurrency_required"] is False
+assert checks["isolated_provider"]["concurrency_ready"] is False
 assert "registry" not in checks
 PY
 
@@ -432,14 +468,60 @@ assert environment["FACTORY_RELEASE_SHA"] == sha
 assert environment["FACTORY_RELEASE_TREE"] == tree
 assert environment["FACTORY_RELEASE_PATH"] == os.path.realpath(release)
 assert environment["FACTORY_RELEASE_CONTRACT_VERSION"] == "2.0.0"
-assert environment["FACTORY_KIT_TRUST_SCOPE"] == "production-certified"
+assert environment["FACTORY_KIT_TRUST_SCOPE"] == "repository-test"
+assert environment["FACTORY_TEST_ENFORCE_ROLE_EXIT"] == "1"
+assert environment["MOCK_COMMIT_EMPTY"] == "1"
 for forbidden in (
     "CALLER_SENTINEL", "GH_TOKEN", "PYTHONPATH", "GIT_CONFIG_GLOBAL",
-    "FACTORY_KITS_ROOT", "FACTORY_LAUNCH_TEST_MODE",
+    "FACTORY_KITS_ROOT", "FACTORY_KIT_TEST_MODE", "FACTORY_RELEASE_TEST_HOME",
+    "FACTORY_LAUNCH_TEST_MODE",
     "FACTORY_LAUNCH_TEST_HOME", "FACTORY_ACTIVE_RECORD",
 ):
     assert forbidden not in environment, forbidden
 assert "caller-secret-must-not-pass" not in "\n".join(environment.values())
+PY
+
+# Production readiness probes are bounded even when a sealed helper hangs.
+cp "$RELEASE_B/scripts/model-control.sh" "$TMP/model-control.saved"
+cat > "$RELEASE_B/scripts/model-control.sh" <<'EOF'
+#!/usr/bin/env bash
+sleep 30
+EOF
+chmod 700 "$RELEASE_B/scripts/model-control.sh"
+HANG_STARTED="$(python3 -c 'import time; print(time.monotonic())')"
+HANG_RC=0
+HOME="$TEST_HOME" PATH="$TEST_BIN:/usr/bin:/bin" \
+  FACTORY_TEST_MODE=1 FACTORY_TRUSTED_TEST_HARNESS=1 \
+  FACTORY_DOCTOR_TIMEOUT_SECONDS=1 \
+  FACTORY_KIT_TRUST_SCOPE=production-certified \
+  FACTORY_MODEL_STATE_ROOT="$KITS_ROOT/projects" \
+  /bin/bash "$RELEASE_B/scripts/factory-doctor-real.sh" --json \
+    --project "$PROJECT" --kit-dir "$RELEASE_B" \
+    --product-root "$PRODUCT" --kit-sha "$SHA_B" \
+    > "$TMP/hanging-doctor.json" || HANG_RC=$?
+HANG_ENDED="$(python3 -c 'import time; print(time.monotonic())')"
+mv "$TMP/model-control.saved" "$RELEASE_B/scripts/model-control.sh"
+python3 - "$TMP/hanging-doctor.json" "$HANG_RC" "$HANG_STARTED" "$HANG_ENDED" <<'PY'
+import json, sys
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+assert int(sys.argv[2]) == 1
+assert float(sys.argv[4]) - float(sys.argv[3]) < 5
+assert value["checks"]["model_readiness"]["status"] == "error"
+PY
+
+python3 - "$LAUNCHER" <<'PY'
+import pathlib, sys
+source = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+for name in (
+    "FACTORY_KIT_CANONICAL_ORIGIN",
+    "FACTORY_KIT_ORIGIN",
+    "FACTORY_KITS_ROOT",
+    "FACTORY_RELEASE_TEST_HOME",
+):
+    assert f'"{name}"' in source
+assert 'name.startswith("FACTORY_KIT_TEST_")' in source
+assert 'value.get("kit_origin") != "github.com/nysa-company/software-factory"' in source
+assert 'suite.get("verification_source") != "github-actions-full"' in source
 PY
 
 echo "PASS: Contract 2 launcher and Doctor boundary"

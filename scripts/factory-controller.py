@@ -44,6 +44,7 @@ from route_evidence import (  # noqa: E402
     RouteEvidenceError, authenticated_fallback_head, exact_kit_sha_change,
     journal_extends, validate_route,
 )
+from role_output import RoleOutputError, sha256 as role_output_sha256  # noqa: E402
 
 
 SCHEMA = "nysa.software-factory.controller/v1"
@@ -488,6 +489,14 @@ class Controller:
         self.event_lock = Lock()
         self.capacity = self.read_capacity()
         self.qualification = self.read_qualification()
+        repository_test = os.environ.get("FACTORY_KIT_TRUST_SCOPE") == "repository-test"
+        if repository_test and (
+            os.environ.get("FACTORY_TEST_MODE"),
+            os.environ.get("FACTORY_TRUSTED_TEST_HARNESS"),
+            os.environ.get("FACTORY_ADAPTER_OVERRIDE"),
+        ) != ("1", "1", "mock"):
+            raise ControllerError("repository-test controller authority is invalid")
+        self.repository_test = repository_test
         self.qualification_manifest_sha256 = (
             hashlib.sha256(canonical(self.qualification).encode()).hexdigest()
             if self.qualification else ""
@@ -2718,10 +2727,10 @@ class Controller:
                 or not TICKET.fullmatch(shadow.get("ticket", ""))
             ):
                 raise ControllerError("dispatch shadow is malformed")
-            plan = self.json_call(
+            plan = None if self.repository_test else self.json_call(
                 "models", "plan", "--json", allow=(0, 2), timeout=None,
             )
-            if plan.get("status") == "error":
+            if plan is not None and plan.get("status") == "error":
                 failure = self.model_resolution_failure(
                     plan, "model plan failed",
                 )
@@ -2750,7 +2759,7 @@ class Controller:
                 raise ControllerError(canonical({
                     **failure, "ticket": shadow["ticket"],
                 }))
-            if (
+            if plan is not None and (
                 plan.get("schema")
                 not in {"model-resolution-plan/v1", "model-resolution-plan/v2"}
                 or not isinstance(plan.get("profile_id"), str)
@@ -9741,6 +9750,22 @@ class Controller:
             self.save_claim(claim)
             return True
         self.emit_attempt_terminal(claim, terminal)
+        if self.repository_test:
+            if (
+                claim.get("role") == "planner"
+                and terminal.get("phase") == "completed"
+                and terminal.get("accounting_state") == "completed"
+                and terminal.get("exit_status") == "0"
+                and terminal.get("role_exit") == "ok"
+            ):
+                claim.update(receipt="", role="", status="claimed")
+                self.save_claim(claim)
+                return True
+            claim["status"] = "blocked"
+            claim["blocked_reason"] = "role-failure"
+            self.save_claim(claim)
+            self.release_ticket_lease(claim)
+            return False
         if terminal.get("accounting_state") == "launch_void":
             if (
                 self.typed_launch_void(terminal)
@@ -10661,6 +10686,25 @@ class Controller:
                     ),
                     "ticket": claim["ticket"],
                 }
+            repository_test_before_head = ""
+            if self.repository_test:
+                ticket_path = (
+                    Path(claim["worktree"])
+                    / "factory/tickets" / f"{claim['ticket']}.md"
+                )
+                states = re.findall(
+                    r"^State:\s*(.*?)\s*$",
+                    ticket_path.read_text(encoding="utf-8"),
+                    re.I | re.M,
+                )
+                if states != ["Ready"]:
+                    raise ControllerError(
+                        "repository-test requires a fresh Ready ticket"
+                    )
+                repository_test_before_head = subprocess.run(
+                    ["git", "-C", claim["worktree"], "rev-parse", "HEAD"],
+                    text=True, capture_output=True, check=True, timeout=120,
+                ).stdout.strip()
             passport_path = (
                 self.state / "passports" / f"{claim['ticket']}.json"
             )
@@ -10680,7 +10724,7 @@ class Controller:
                     self.release(claim)
                     return {"status": "complete", "ticket": claim["ticket"]}
                 return {"status": "waiting", "ticket": claim["ticket"]}
-            if not self.route_path(claim).exists():
+            if not self.repository_test and not self.route_path(claim).exists():
                 raise ControllerError("ticket route was not batch pinned")
             if not self.refresh_dependency_tracking(claim):
                 claim["status"] = "waiting"
@@ -10709,6 +10753,96 @@ class Controller:
             receipt = transition.get("receipt", "")
             role = transition.get("role")
             loop = transition.get("loop")
+            if self.repository_test:
+                states = re.findall(
+                    r"^State:\s*(.*?)\s*$",
+                    ticket_path.read_text(encoding="utf-8"),
+                    re.I | re.M,
+                )
+                head = subprocess.run(
+                    ["git", "-C", claim["worktree"], "rev-parse", "HEAD"],
+                    text=True, capture_output=True, check=True, timeout=120,
+                ).stdout.strip()
+                persisted = self.transition_receipt(claim, record=False)
+                if (
+                    stage != "RUN planner"
+                    or role != "planner"
+                    or loop is not None
+                    or states != ["Planning"]
+                    or head == repository_test_before_head
+                    or persisted is None
+                    or persisted.get("receipt_sha256") != receipt
+                    or persisted.get("stage") != stage
+                    or persisted.get("role") != role
+                    or persisted.get("head_sha") != head
+                    or persisted.get("consumed") is not False
+                    or persisted.get("lease_sha256")
+                    != hashlib.sha256(claim["lease"].encode()).hexdigest()
+                ):
+                    raise ControllerError(
+                        "repository-test did not reach authenticated Planning"
+                    )
+                self.event(
+                    "repository_test_planning", claim["ticket"],
+                    transition_receipt_sha256=receipt,
+                )
+                self.run_role(claim, "planner", receipt, [])
+                terminal = self.terminal_for_receipt(claim["ticket"], receipt)
+                head_after = self.cell_git(claim, "rev-parse", "HEAD")
+                ancestry = self.cell_git(
+                    claim, "merge-base", "--is-ancestor",
+                    head, head_after.stdout.strip(),
+                )
+                consumed = self.transition_receipt(claim, record=False)
+                output_sha256 = ""
+                if terminal is not None:
+                    try:
+                        output_sha256 = role_output_sha256(
+                            self.product / "factory/runs"
+                            / f"{terminal.get('run_id', '')}.out"
+                        )
+                    except (OSError, RoleOutputError):
+                        pass
+                if (
+                    terminal is None
+                    or terminal.get("phase") != "completed"
+                    or terminal.get("accounting_state") != "completed"
+                    or terminal.get("go_issued") != "1"
+                    or terminal.get("task_submitted") != "1"
+                    or terminal.get("exit_status") != "0"
+                    or terminal.get("role_exit") != "ok"
+                    or terminal.get("role") != "planner"
+                    or terminal.get("adapter") != "mock"
+                    or terminal.get("selection_reason") != "test_override"
+                    or terminal.get("kit_sha") != self.release_path.name
+                    or terminal.get("kit_provenance_scope") != "repository-test"
+                    or terminal.get("transition_receipt_sha256") != receipt
+                    or terminal.get("role_head_before") != head
+                    or output_sha256 != terminal.get("output_sha256")
+                    or head_after.returncode
+                    or not SHA.fullmatch(head_after.stdout.strip())
+                    or head_after.stdout.strip() == head
+                    or ancestry.returncode
+                    or consumed is None
+                    or consumed.get("receipt_sha256") != receipt
+                    or consumed.get("consumed") is not True
+                    or claim.get("receipt")
+                    or claim.get("role")
+                    or claim.get("status") != "claimed"
+                ):
+                    raise ControllerError(
+                        "repository-test planner did not complete with authenticated evidence"
+                    )
+                self.event(
+                    "repository_test_planner_completed", claim["ticket"],
+                    head_sha=head_after.stdout.strip(),
+                    output_sha256=output_sha256,
+                    run_id=terminal["run_id"],
+                    transition_receipt_sha256=receipt,
+                )
+                return {
+                    "status": "planner-complete", "ticket": claim["ticket"]
+                }
             if (
                 not semantic_authorization_wait(stage)
                 and str(claim.get("blocked_reason", "")).startswith(
@@ -11214,6 +11348,14 @@ class Controller:
         self.invalid_transition_tickets.clear()
         self.prior_transition_tickets.clear()
         existing = self.load_claims()
+        if self.repository_test and (
+            existing
+            or self.active_run_tickets()
+            or self.dispatcher_lease_records()
+        ):
+            raise ControllerError(
+                "repository-test Planning canary requires empty execution state"
+            )
         qualification_preflight = self.qualification_admission_preflight(existing)
         if qualification_preflight is not None:
             return {
@@ -11575,6 +11717,8 @@ class Controller:
                 )
                 if self.model_admission_outcome is None:
                     try:
+                        if self.repository_test:
+                            reserved_live = self.capacity - 1
                         claims = (
                             self.claim_new(claims, reserved_live)
                             if reserved_live
@@ -11596,7 +11740,7 @@ class Controller:
                     and not self.role_active(claim)
                     and self.runnable(claim)
                 ]
-                pin_results = self.pin_routes(new_idle)
+                pin_results = [] if self.repository_test else self.pin_routes(new_idle)
                 pin_waiting = {item["ticket"] for item in pin_results}
                 for item in pin_results:
                     results[item["ticket"]] = item
@@ -11655,7 +11799,7 @@ class Controller:
                         )
                     elif item.get("status") in {
                         "active", "blocked", "budget", "error", "maintenance",
-                        "waiting",
+                        "planner-complete", "planning", "waiting",
                     }:
                         settled.add(claim["ticket"])
         finally:

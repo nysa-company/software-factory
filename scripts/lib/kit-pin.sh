@@ -237,6 +237,16 @@ factory_load_kit_provenance() {
       fi
       FACTORY_KIT_PROVENANCE_SCOPE="$requested_scope"
       ;;
+    repository-test)
+      if [[ "$FACTORY_KIT_PROVENANCE_MODE" != "sealed" ||
+            "${FACTORY_TEST_MODE:-0}" != "1" ||
+            "${FACTORY_TRUSTED_TEST_HARNESS:-0}" != "1" ||
+            "${FACTORY_ADAPTER_OVERRIDE:-}" != "mock" ]]; then
+        FACTORY_KIT_PIN_ERROR="repository-test requires the sealed mock harness"
+        return 1
+      fi
+      FACTORY_KIT_PROVENANCE_SCOPE="$requested_scope"
+      ;;
     "")
       if [[ "$FACTORY_KIT_PROVENANCE_MODE" == "git" ]]; then
         FACTORY_KIT_PROVENANCE_SCOPE="development-local"

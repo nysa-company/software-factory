@@ -1642,6 +1642,13 @@ factory_select_role_envelope "$ROLE" || exit 3
 # ~/.factory/global.env defines GLOBAL_DAILY_CAP_USD; every run on the machine
 # then also reserves against ~/.factory/global-ledger.csv, so N projects can't
 # multiply the daily budget silently. Absent file = single-project behavior.
+REPOSITORY_TEST_MOCK=0
+if [[ "${FACTORY_KIT_TRUST_SCOPE:-}" == "repository-test" &&
+      "${FACTORY_TEST_MODE:-0}" == "1" &&
+      "${FACTORY_TRUSTED_TEST_HARNESS:-0}" == "1" &&
+      "${FACTORY_ADAPTER_OVERRIDE:-}" == "mock" ]]; then
+  REPOSITORY_TEST_MOCK=1
+fi
 GLOBAL_ENV="${FACTORY_GLOBAL_ENV:-$HOME/.factory/global.env}"
 if ! factory_validate_runtime_overrides; then
   echo "$FACTORY_RUNTIME_OVERRIDE_ERROR; no task was submitted" >&2
@@ -1649,7 +1656,7 @@ if ! factory_validate_runtime_overrides; then
 fi
 factory_clear_plain_config_keys "$FACTORY_GLOBAL_CONFIG_KEYS"
 GLOBAL_LEDGER="" GLOBAL_LOCK=""
-if [[ -f "$GLOBAL_ENV" ]]; then
+if [[ -f "$GLOBAL_ENV" && "$REPOSITORY_TEST_MOCK" -ne 1 ]]; then
   factory_load_plain_config "$GLOBAL_ENV" global \
     "$FACTORY_GLOBAL_CONFIG_KEYS" "" 1 || exit 3
   GLOBAL_LEDGER="${GLOBAL_LEDGER:-$(dirname "$GLOBAL_ENV")/global-ledger.csv}"
@@ -1766,8 +1773,12 @@ SELECTED_ROUTE_PLAN_SHA256=""
 SELECTED_ROUTE_REVISION=""
 SELECTED_ROUTE_REVISION_HASH=""
 if [[ -n "${FACTORY_ADAPTER_OVERRIDE:-}" ]]; then
-  if [[ "$FACTORY_ADAPTER_OVERRIDE" != "mock" || "${FACTORY_TEST_MODE:-0}" != "1" ]]; then
-    echo "FACTORY_ADAPTER_OVERRIDE requires FACTORY_TEST_MODE=1 and the mock adapter" >&2
+  if [[ "$FACTORY_ADAPTER_OVERRIDE" != "mock" ||
+        "${FACTORY_TEST_MODE:-0}" != "1" ||
+        "${FACTORY_TRUSTED_TEST_HARNESS:-0}" != "1" ||
+        -n "${FACTORY_KIT_TRUST_SCOPE:-}" &&
+        "${FACTORY_KIT_TRUST_SCOPE:-}" != "repository-test" ]]; then
+    echo "FACTORY_ADAPTER_OVERRIDE requires the trusted repository-test mock harness" >&2
     exit 2
   fi
   SELECTED="$FACTORY_ADAPTER_OVERRIDE"
@@ -1847,6 +1858,7 @@ if [[ ( "$PROVIDER_CONTRACT_VERSION" == "1.6.0" ||
         "$PROVIDER_CONTRACT_VERSION" == "1.7.0" ||
         "$PROVIDER_CONTRACT_VERSION" == "1.8.0" ||
         "$PROVIDER_CONTRACT_VERSION" == "2.0.0" ) &&
+      "$REPOSITORY_TEST_MOCK" -ne 1 &&
       -n "${FACTORY_PROVIDER_ACTIVATION:-}" &&
       -f "${FACTORY_PROVIDER_ACTIVATION:-}" ]]; then
   ACTIVATION_ARGS=(--config "$FACTORY_PROVIDER_ACTIVATION" \

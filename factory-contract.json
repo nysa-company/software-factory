@@ -845,6 +845,8 @@
     "scripts/ticket-attest.py",
     "scripts/ticket-attest.sh",
     "scripts/lib/effective_ticket.py",
+    "scripts/lib/activation_preflight.py",
+    "scripts/lib/historical_pr_objects.py",
     "scripts/lib/ticket_state_transition.py",
     "scripts/lib/reviewer-reconcile.py",
     "scripts/lib/reviewer-verdict.py",

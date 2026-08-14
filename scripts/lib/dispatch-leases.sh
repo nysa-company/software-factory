@@ -65,9 +65,15 @@ factory_dispatch_require_lease() {
     FACTORY_DISPATCH_LEASE_ERROR="$(factory_dispatch_capacity_error)"
     return 1
   }
-  [[ "$maximum" -gt 1 ]] || return 0
+  if [[ "$maximum" -eq 1 ]] && ! factory_dispatch_has_leases "$root"; then
+    return 0
+  fi
   [[ "$lease_id" =~ ^[0-9a-f]{64}$ ]] || {
-    FACTORY_DISPATCH_LEASE_ERROR="a canonical dispatcher lease is required while concurrency is enabled"
+    if [[ "$maximum" -eq 1 ]]; then
+      FACTORY_DISPATCH_LEASE_ERROR="a canonical dispatcher lease is required while a dispatcher claim is active"
+    else
+      FACTORY_DISPATCH_LEASE_ERROR="a canonical dispatcher lease is required while concurrency is enabled"
+    fi
     return 1
   }
   file="$(factory_dispatch_lease_file "$root" "$ticket")"

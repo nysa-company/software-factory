@@ -2369,6 +2369,595 @@ class FactoryControllerTest(unittest.TestCase):
             "version_mismatch",
         )
 
+    def test_repository_test_runs_one_mock_planner_without_real_model_access(self) -> None:
+        (self.product / "factory/PROJECT.env").write_text(
+            "MAX_CONCURRENT_TICKETS=3\n", encoding="utf-8",
+        )
+        authority = {
+            "FACTORY_ADAPTER_OVERRIDE": "mock",
+            "FACTORY_KIT_TRUST_SCOPE": "repository-test",
+            "FACTORY_TEST_MODE": "1",
+            "FACTORY_TRUSTED_TEST_HARNESS": "1",
+        }
+        with patch.dict(os.environ, authority, clear=False):
+            controller = CONTROL.Controller(self.args)
+        worktree = self.root / "worktree"
+        ticket_path = worktree / "factory/tickets/T-110.md"
+        ticket_path.parent.mkdir(parents=True)
+        ticket_path.write_text("State: Ready\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "init", "-q", "-b", "ticket/T-110", str(worktree)],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(worktree), "add", "."], check=True,
+        )
+        subprocess.run(
+            [
+                "git", "-C", str(worktree),
+                "-c", "user.name=Software Factory",
+                "-c", "user.email=factory@local",
+                "commit", "-qm", "seed Ready ticket",
+            ],
+            check=True,
+        )
+        ready_head = subprocess.check_output(
+            ["git", "-C", str(worktree), "rev-parse", "HEAD"], text=True,
+        ).strip()
+        wrong_lease = False
+        transition_receipt_overrides: dict[str, object] = {}
+        transition_response_overrides: dict[str, object] = {}
+        transition_state = "Planning"
+        transition_consumed = False
+        commit_transition = True
+        persist_transition = True
+        terminal_overrides: dict[str, str] = {}
+        planner_commits = True
+        planner_non_descendant = False
+        leave_transition_unconsumed = False
+        claim_residue = ""
+        run_ordinal = 0
+        transition_ordinal = 0
+        calls = []
+
+        def admission(*args, **_kwargs):
+            nonlocal transition_ordinal
+            calls.append(args)
+            if args[:2] == ("dispatch-plan", "--shadow"):
+                return {"action": "SHADOW", "ticket": "T-110"}
+            if args[:2] == ("dispatch-plan", "--claim"):
+                return {
+                    "action": "START",
+                    "branch": "ticket/T-110",
+                    "lease_id": "b" * 64,
+                    "ticket": "T-110",
+                    "worktree": str(worktree),
+                }
+            if args[0] == "renew":
+                return {}
+            if args[0] == "release":
+                return {}
+            if args[:2] == ("publication", "withdraw"):
+                return {"status": "absent"}
+            if args[0] == "state-machine":
+                transition_ordinal += 1
+                ticket_path.write_text(
+                    f"State: {transition_state}\n", encoding="utf-8",
+                )
+                if commit_transition:
+                    subprocess.run(
+                        ["git", "-C", str(worktree), "add", str(ticket_path)],
+                        check=True,
+                    )
+                    subprocess.run(
+                        [
+                            "git", "-C", str(worktree),
+                            "-c", "user.name=Software Factory",
+                            "-c", "user.email=factory@local",
+                            "commit", "--allow-empty", "-qm",
+                            "T-110: transition ticket state",
+                        ],
+                        check=True,
+                    )
+                head = subprocess.check_output(
+                    ["git", "-C", str(worktree), "rev-parse", "HEAD"],
+                    text=True,
+                ).strip()
+                receipt = {
+                    "branch": "ticket/T-110",
+                    "contract_version": "2.0.0",
+                    "evidence_sha256": "c" * 64,
+                    "factory_sha": self.release.name,
+                    "head_sha": head,
+                    "head_tree": subprocess.check_output(
+                        ["git", "-C", str(worktree), "rev-parse", "HEAD^{tree}"],
+                        text=True,
+                    ).strip(),
+                    "lease_sha256": (
+                        "0" * 64
+                        if wrong_lease else
+                        hashlib.sha256(("b" * 64).encode()).hexdigest()
+                    ),
+                    "loop": None,
+                    "nonce": f"{transition_ordinal:032x}",
+                    "passport_sha256": None,
+                    "product_origin_sha256": "e" * 64,
+                    "project": "relay",
+                    "role": "planner",
+                    "route_plan_sha256": None,
+                    "schema": "nysa.software-factory.transition-receipt/v1",
+                    "stage": "RUN planner",
+                    "ticket": "T-110",
+                    "ticket_blob": subprocess.check_output(
+                        [
+                            "git", "-C", str(worktree), "rev-parse",
+                            "HEAD:factory/tickets/T-110.md",
+                        ],
+                        text=True,
+                    ).strip(),
+                }
+                receipt.update(transition_receipt_overrides)
+                digest = hashlib.sha256(
+                    CONTROL.canonical_document(receipt)
+                ).hexdigest()
+                receipt.update(
+                    receipt_sha256=digest, consumed=transition_consumed,
+                )
+                if transition_consumed:
+                    receipt["consumed_at_epoch"] = 1
+                if persist_transition:
+                    CONTROL.write(self.state / "T-110.json", receipt)
+                response = state_transition("RUN planner", receipt=digest)
+                response.update(transition_response_overrides)
+                return response
+            raise AssertionError(
+                f"repository-test consulted forbidden command: {args[:2]}"
+            )
+
+        def run_planner(instance, claim, role, receipt, failed_checks):
+            nonlocal run_ordinal
+            self.assertEqual((role, failed_checks), ("planner", []))
+            before = subprocess.check_output(
+                ["git", "-C", str(worktree), "rev-parse", "HEAD"], text=True,
+            ).strip()
+            claim.update(receipt=receipt, role=role, status="running")
+            instance.save_claim(claim)
+            instance.event(
+                "attempt_started", claim["ticket"], role=role,
+                transition_receipt_sha256=receipt,
+            )
+            persisted = CONTROL.read(self.state / "T-110.json")
+            persisted.update(consumed=True, consumed_at_epoch=1)
+            CONTROL.write(self.state / "T-110.json", persisted)
+            if planner_non_descendant:
+                subprocess.run(
+                    ["git", "-C", str(worktree), "reset", "--hard", ready_head],
+                    check=True, stdout=subprocess.DEVNULL,
+                )
+            if planner_commits:
+                subprocess.run(
+                    [
+                        "git", "-C", str(worktree),
+                        "-c", "user.name=Software Factory",
+                        "-c", "user.email=factory@local",
+                        "commit", "--allow-empty", "-qm", "Mock planner output",
+                    ],
+                    check=True,
+                )
+            run_ordinal += 1
+            run_id = f"repository-test-{run_ordinal}"
+            output = self.product / "factory/runs" / f"{run_id}.out"
+            output.parent.mkdir(exist_ok=True)
+            output.write_text("mock adapter ran task\n", encoding="utf-8")
+            output.chmod(0o600)
+            manifest = output.with_suffix(".meta")
+            values = {
+                "run_id": run_id,
+                "phase": "completed",
+                "accounting_state": "completed",
+                "go_issued": "1",
+                "task_submitted": "1",
+                "exit_status": "0",
+                "role_exit": "ok",
+                "ticket": "T-110",
+                "role": "planner",
+                "adapter": "mock",
+                "selection_reason": "test_override",
+                "kit_sha": self.release.name,
+                "kit_provenance_scope": "repository-test",
+                "role_head_before": before,
+                "transition_receipt_sha256": receipt,
+                "output_sha256": hashlib.sha256(output.read_bytes()).hexdigest(),
+            }
+            values.update(terminal_overrides)
+            manifest.write_text(
+                "\n".join(f"{key}={value}" for key, value in values.items())
+                + "\n", encoding="utf-8",
+            )
+            instance.finish_pending_run(claim)
+            if leave_transition_unconsumed:
+                persisted = CONTROL.read(self.state / "T-110.json")
+                persisted.update(consumed=False)
+                persisted.pop("consumed_at_epoch", None)
+                CONTROL.write(self.state / "T-110.json", persisted)
+            if claim_residue:
+                claim[claim_residue] = {
+                    "receipt": receipt,
+                    "role": role,
+                    "status": "running",
+                }[claim_residue]
+                instance.save_claim(claim)
+
+        controller.json_call = admission
+        controller.refresh_dependency_tracking = lambda _claim: True
+        controller.run_role = lambda *args: run_planner(controller, *args)
+        result = controller.reconcile()
+        self.assertEqual([call[:2] for call in calls], [
+            ("dispatch-plan", "--shadow"),
+            ("dispatch-plan", "--claim"),
+            ("renew", "--ticket"),
+            ("state-machine", "--ticket"),
+        ])
+        self.assertEqual(
+            result["results"],
+            [{"status": "planner-complete", "ticket": "T-110"}],
+        )
+        self.assertEqual(ticket_path.read_text(), "State: Planning\n")
+        claims = controller.load_claims()
+        self.assertEqual(len(claims), 1)
+        self.assertEqual(claims[0]["status"], "claimed")
+        self.assertEqual((claims[0]["receipt"], claims[0]["role"]), ("", ""))
+        events = sorted(
+            (CONTROL.read(path) for path in controller.events.glob("*.json")),
+            key=lambda item: item["observed_at_epoch_ns"],
+        )
+        self.assertEqual(
+            [item["event"] for item in events if item["ticket"] == "T-110"],
+            [
+                "ticket_claimed", "repository_test_planning",
+                "attempt_started", "attempt_terminal",
+                "repository_test_planner_completed",
+            ],
+        )
+        for event in events:
+            unsigned = dict(event)
+            digest = unsigned.pop("event_sha256")
+            self.assertEqual(
+                digest,
+                hashlib.sha256(CONTROL.canonical(unsigned).encode()).hexdigest(),
+            )
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError,
+            "repository-test Planning canary requires empty execution state",
+        ):
+            controller.reconcile()
+
+        (controller.claims / "T-110.json").unlink()
+        (self.state / "T-110.json").unlink()
+        subprocess.run(
+            ["git", "-C", str(worktree), "reset", "--hard", ready_head],
+            check=True, stdout=subprocess.DEVNULL,
+        )
+        calls.clear()
+        wrong_lease = True
+        planning_events = len([
+            item for item in events if item["event"] == "repository_test_planning"
+        ])
+        with patch.dict(os.environ, authority, clear=False):
+            tampered = CONTROL.Controller(self.args)
+        tampered.json_call = admission
+        tampered.refresh_dependency_tracking = lambda _claim: True
+        tampered_result = tampered.reconcile()
+        self.assertEqual(tampered_result["status"], "error")
+        self.assertIn(
+            "repository-test did not reach authenticated Planning",
+            tampered_result["results"][0]["error"],
+        )
+        self.assertEqual(
+            len([
+                CONTROL.read(path)
+                for path in tampered.events.glob("*.json")
+                if CONTROL.read(path)["event"] == "repository_test_planning"
+            ]),
+            planning_events,
+        )
+
+        invalid_response = "state-machine returned invalid transition evidence"
+        invalid_planning = "repository-test did not reach authenticated Planning"
+        transition_cases = (
+            (
+                "response-stage", {"stage": "FIX planner"},
+                {"action": "FIX", "stage": "FIX planner"},
+                True, True, invalid_planning,
+            ),
+            ("response-role", {}, {"role": "builder"}, True, True, invalid_response),
+            (
+                "response-loop", {}, {"loop": {"kind": "unexpected"}},
+                True, True, invalid_response,
+            ),
+            (
+                "response-receipt", {}, {"receipt": "0" * 64},
+                True, True, invalid_planning,
+            ),
+            (
+                "persisted-stage", {"stage": "RUN builder"}, {},
+                True, True, invalid_planning,
+            ),
+            (
+                "persisted-role", {"role": "builder"}, {},
+                True, True, invalid_planning,
+            ),
+            (
+                "persisted-head", {"head_sha": "0" * 40}, {},
+                True, True, invalid_planning,
+            ),
+            ("missing-receipt", {}, {}, True, False, invalid_planning),
+            ("unchanged-head", {}, {}, False, True, invalid_planning),
+            ("wrong-state", {}, {}, True, True, invalid_planning),
+            ("consumed-receipt", {}, {}, True, True, invalid_planning),
+        )
+        for (
+            label, receipt_changes, response_changes,
+            should_commit, should_persist, expected_error,
+        ) in transition_cases:
+            (controller.claims / "T-110.json").unlink(missing_ok=True)
+            (self.state / "T-110.json").unlink(missing_ok=True)
+            subprocess.run(
+                ["git", "-C", str(worktree), "reset", "--hard", ready_head],
+                check=True, stdout=subprocess.DEVNULL,
+            )
+            calls.clear()
+            wrong_lease = False
+            transition_receipt_overrides = receipt_changes
+            transition_response_overrides = response_changes
+            transition_state = "Ready" if label == "wrong-state" else "Planning"
+            transition_consumed = label == "consumed-receipt"
+            commit_transition = should_commit
+            persist_transition = should_persist
+            with self.subTest(transition_evidence=label), patch.dict(
+                os.environ, authority, clear=False,
+            ):
+                invalid_transition = CONTROL.Controller(self.args)
+                invalid_transition.json_call = admission
+                invalid_transition.refresh_dependency_tracking = lambda _claim: True
+                invalid_transition.run_role = lambda *_args: self.fail(
+                    "invalid Planning evidence reached planner launch"
+                )
+                invalid_result = invalid_transition.reconcile()
+            self.assertEqual(invalid_result["status"], "error")
+            self.assertIn(
+                expected_error,
+                invalid_result["results"][0]["error"],
+            )
+            self.assertEqual(
+                len([
+                    CONTROL.read(path)
+                    for path in invalid_transition.events.glob("*.json")
+                    if CONTROL.read(path)["event"] == "repository_test_planning"
+                ]),
+                planning_events,
+            )
+
+        (controller.claims / "T-110.json").unlink()
+        (self.state / "T-110.json").unlink()
+        subprocess.run(
+            ["git", "-C", str(worktree), "reset", "--hard", ready_head],
+            check=True, stdout=subprocess.DEVNULL,
+        )
+        calls.clear()
+        wrong_lease = False
+        transition_receipt_overrides = {}
+        transition_response_overrides = {}
+        transition_state = "Planning"
+        transition_consumed = False
+        commit_transition = True
+        persist_transition = True
+        terminal_overrides = {
+            "kit_provenance_scope": "production-certified",
+        }
+        completed_events = len([
+            CONTROL.read(path)
+            for path in controller.events.glob("*.json")
+            if CONTROL.read(path)["event"]
+            == "repository_test_planner_completed"
+        ])
+        with patch.dict(os.environ, authority, clear=False):
+            wrong_scope = CONTROL.Controller(self.args)
+        wrong_scope.json_call = admission
+        wrong_scope.refresh_dependency_tracking = lambda _claim: True
+        wrong_scope.run_role = lambda *args: run_planner(wrong_scope, *args)
+        wrong_scope_result = wrong_scope.reconcile()
+        self.assertEqual(wrong_scope_result["status"], "error")
+        self.assertIn(
+            "repository-test planner did not complete with authenticated evidence",
+            wrong_scope_result["results"][0]["error"],
+        )
+        self.assertEqual(
+            len([
+                CONTROL.read(path)
+                for path in wrong_scope.events.glob("*.json")
+                if CONTROL.read(path)["event"]
+                == "repository_test_planner_completed"
+            ]),
+            completed_events,
+        )
+
+        for field, value in (
+            ("phase", "failed"),
+            ("accounting_state", "launch_void"),
+            ("go_issued", "0"),
+            ("task_submitted", "0"),
+            ("exit_status", "1"),
+            ("role_exit", "role_exit_no_commit"),
+            ("role", "builder"),
+            ("adapter", "codex"),
+            ("selection_reason", "policy"),
+            ("kit_sha", "0" * 40),
+            ("transition_receipt_sha256", "0" * 64),
+            ("role_head_before", "0" * 40),
+            ("output_sha256", "0" * 64),
+        ):
+            (controller.claims / "T-110.json").unlink(missing_ok=True)
+            (self.state / "T-110.json").unlink(missing_ok=True)
+            subprocess.run(
+                ["git", "-C", str(worktree), "reset", "--hard", ready_head],
+                check=True, stdout=subprocess.DEVNULL,
+            )
+            calls.clear()
+            terminal_overrides = {field: value}
+            with self.subTest(terminal_field=field), patch.dict(
+                os.environ, authority, clear=False,
+            ):
+                invalid_terminal = CONTROL.Controller(self.args)
+                invalid_terminal.json_call = admission
+                invalid_terminal.refresh_dependency_tracking = lambda _claim: True
+                invalid_terminal.run_role = (
+                    lambda *args: run_planner(invalid_terminal, *args)
+                )
+                invalid_result = invalid_terminal.reconcile()
+            self.assertEqual(invalid_result["status"], "error")
+            self.assertIn(
+                "repository-test planner did not complete with authenticated evidence",
+                invalid_result["results"][0]["error"],
+            )
+            self.assertEqual(
+                len([
+                    CONTROL.read(path)
+                    for path in invalid_terminal.events.glob("*.json")
+                    if CONTROL.read(path)["event"]
+                    == "repository_test_planner_completed"
+                ]),
+                completed_events,
+            )
+
+        for mode in (
+            "unchanged-head", "non-descendant-head", "unconsumed-receipt",
+            "claim-receipt", "claim-role", "claim-status",
+        ):
+            (controller.claims / "T-110.json").unlink(missing_ok=True)
+            (self.state / "T-110.json").unlink(missing_ok=True)
+            subprocess.run(
+                ["git", "-C", str(worktree), "reset", "--hard", ready_head],
+                check=True, stdout=subprocess.DEVNULL,
+            )
+            calls.clear()
+            terminal_overrides = {}
+            planner_commits = mode != "unchanged-head"
+            planner_non_descendant = mode == "non-descendant-head"
+            leave_transition_unconsumed = mode == "unconsumed-receipt"
+            claim_residue = (
+                mode.removeprefix("claim-")
+                if mode.startswith("claim-") else ""
+            )
+            with self.subTest(planner_lifecycle=mode), patch.dict(
+                os.environ, authority, clear=False,
+            ):
+                invalid_lifecycle = CONTROL.Controller(self.args)
+                invalid_lifecycle.json_call = admission
+                invalid_lifecycle.refresh_dependency_tracking = lambda _claim: True
+                invalid_lifecycle.run_role = (
+                    lambda *args: run_planner(invalid_lifecycle, *args)
+                )
+                invalid_result = invalid_lifecycle.reconcile()
+            self.assertEqual(invalid_result["status"], "error")
+            self.assertIn(
+                "repository-test planner did not complete with authenticated evidence",
+                invalid_result["results"][0]["error"],
+            )
+            self.assertEqual(
+                len([
+                    CONTROL.read(path)
+                    for path in invalid_lifecycle.events.glob("*.json")
+                    if CONTROL.read(path)["event"]
+                    == "repository_test_planner_completed"
+                ]),
+                completed_events,
+            )
+
+        (controller.claims / "T-110.json").unlink(missing_ok=True)
+        calls.clear()
+        terminal_overrides = {}
+        planner_commits = True
+        planner_non_descendant = False
+        leave_transition_unconsumed = False
+        claim_residue = ""
+        with patch.dict(os.environ, authority, clear=False):
+            replay = CONTROL.Controller(self.args)
+        replay.json_call = admission
+        replay.refresh_dependency_tracking = lambda _claim: True
+        replay_result = replay.reconcile()
+        self.assertEqual(replay_result["status"], "error")
+        self.assertNotIn(("state-machine", "--ticket"), [
+            call[:2] for call in calls
+        ])
+        self.assertIn(
+            "repository-test requires a fresh Ready ticket",
+            replay_result["results"][0]["error"],
+        )
+
+        for name in (
+            "FACTORY_ADAPTER_OVERRIDE",
+            "FACTORY_TEST_MODE",
+            "FACTORY_TRUSTED_TEST_HARNESS",
+        ):
+            invalid = dict(authority)
+            invalid[name] = ""
+            with self.subTest(name=name), patch.dict(
+                os.environ, invalid, clear=True,
+            ), self.assertRaisesRegex(
+                CONTROL.ControllerError,
+                "repository-test controller authority is invalid",
+            ):
+                CONTROL.Controller(self.args)
+
+        production = dict(authority)
+        production["FACTORY_KIT_TRUST_SCOPE"] = "production-certified"
+        with patch.dict(os.environ, production, clear=True):
+            controller = CONTROL.Controller(self.args)
+        calls = []
+
+        def production_admission(*args, **_kwargs):
+            calls.append(args[:2])
+            if args[:2] == ("dispatch-plan", "--shadow"):
+                return {"action": "SHADOW", "ticket": "T-110"}
+            if args[:2] == ("models", "plan"):
+                return self.model_resolution_error()
+            raise AssertionError("production admission skipped model readiness")
+
+        controller.json_call = production_admission
+        with self.assertRaises(CONTROL.ControllerError):
+            controller.claim_new([])
+        self.assertEqual(calls, [
+            ("dispatch-plan", "--shadow"),
+            ("models", "plan"),
+        ])
+
+    def test_repository_test_refuses_every_preexisting_execution_source(self) -> None:
+        authority = {
+            "FACTORY_ADAPTER_OVERRIDE": "mock",
+            "FACTORY_KIT_TRUST_SCOPE": "repository-test",
+            "FACTORY_TEST_MODE": "1",
+            "FACTORY_TRUSTED_TEST_HARNESS": "1",
+        }
+        cases = (
+            ("claim", [{"ticket": "T-1"}], set(), {}),
+            ("active-run", [], {"T-1"}, {}),
+            ("lease", [], set(), {"T-1": {"ticket": "T-1"}}),
+        )
+        for label, claims, active, leases in cases:
+            with self.subTest(source=label), patch.dict(
+                os.environ, authority, clear=False,
+            ):
+                controller = CONTROL.Controller(self.args)
+                controller.load_claims = lambda: claims
+                controller.active_run_tickets = lambda: active
+                controller.dispatcher_lease_records = lambda: leases
+                with self.assertRaisesRegex(
+                    CONTROL.ControllerError,
+                    "repository-test Planning canary requires empty execution state",
+                ):
+                    controller.reconcile()
+
     def test_model_resolution_evidence_rejects_secret_key_families(self) -> None:
         controller = CONTROL.Controller(self.args)
         for label, unsafe in (

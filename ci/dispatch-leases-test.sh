@@ -68,6 +68,58 @@ else
   fail "seventh concurrent lease gets deterministic capacity refusal"
 fi
 
+SERIAL="$TMP/serial"
+mkdir -p "$SERIAL/factory/tickets"
+printf '%s\n' 'MAX_CONCURRENT_TICKETS=1' > "$SERIAL/factory/PROJECT.env"
+printf '# T-1\n' > "$SERIAL/factory/tickets/T-1.md"
+printf '# T-2\n' > "$SERIAL/factory/tickets/T-2.md"
+mkdir -p "$SERIAL/factory/.active-runs/T-9.planner.lock"
+chmod 700 "$SERIAL/factory/.active-runs"
+SERIAL_ACTIVE_RC=0
+FACTORY_ROOT="$SERIAL" "$LEASE" claim --ticket T-1 \
+  > "$TMP/serial-active.out" 2>&1 || SERIAL_ACTIVE_RC=$?
+rmdir "$SERIAL/factory/.active-runs/T-9.planner.lock"
+SERIAL_CLAIM="$(FACTORY_ROOT="$SERIAL" "$LEASE" claim --ticket T-1)"
+SERIAL_LEASE="$(printf '%s\n' "$SERIAL_CLAIM" | python3 -c \
+  'import json,sys; print(json.load(sys.stdin)["lease_id"])')"
+FACTORY_ROOT="$SERIAL" "$LEASE" renew --ticket T-1 --lease "$SERIAL_LEASE" >/dev/null
+SERIAL_MISSING_RC=0
+bash -c '. "$1"; factory_dispatch_require_lease "$2" T-2 ""' \
+  _ "$ROOT/scripts/lib/dispatch-leases.sh" "$SERIAL" \
+  >/dev/null 2>&1 || SERIAL_MISSING_RC=$?
+SERIAL_MATCH_RC=0
+bash -c '. "$1"; factory_dispatch_require_lease "$2" T-1 "$3"' \
+  _ "$ROOT/scripts/lib/dispatch-leases.sh" "$SERIAL" "$SERIAL_LEASE" \
+  >/dev/null 2>&1 || SERIAL_MATCH_RC=$?
+FACTORY_ROOT="$SERIAL" "$LEASE" release --ticket T-1 --lease "$SERIAL_LEASE" >/dev/null
+SERIAL_SECOND="$(FACTORY_ROOT="$SERIAL" "$LEASE" claim --ticket T-2)"
+SERIAL_SECOND_LEASE="$(printf '%s\n' "$SERIAL_SECOND" | python3 -c \
+  'import json,sys; print(json.load(sys.stdin)["lease_id"])')"
+python3 - "$SERIAL/factory/.dispatch-leases/T-2.json" <<'PY'
+import json, pathlib, sys, time
+path = pathlib.Path(sys.argv[1])
+value = json.loads(path.read_text())
+value["claimed_epoch"] = int(time.time()) - 901
+value["expires_epoch"] = int(time.time()) - 1
+path.write_text(json.dumps(value) + "\n")
+PY
+FACTORY_RELEASE_CONTRACT_VERSION=2.0.0 FACTORY_ROOT="$SERIAL" \
+  "$LEASE" release-expired --ticket T-2 --lease "$SERIAL_SECOND_LEASE" >/dev/null
+SERIAL_EMPTY_RC=0
+bash -c '. "$1"; factory_dispatch_require_lease "$2" T-2 ""' \
+  _ "$ROOT/scripts/lib/dispatch-leases.sh" "$SERIAL" \
+  >/dev/null 2>&1 || SERIAL_EMPTY_RC=$?
+if [[ "$SERIAL_ACTIVE_RC" -ne 0 &&
+      "$(cat "$TMP/serial-active.out")" == "dispatcher capacity is full" &&
+      "$SERIAL_MISSING_RC" -ne 0 && "$SERIAL_MATCH_RC" -eq 0 &&
+      "$SERIAL_EMPTY_RC" -eq 0 &&
+      -z "$(find "$SERIAL/factory/.dispatch-leases" -type f -print -quit)" ]]; then
+  pass "capacity one serializes entry points and completes the lease lifecycle"
+else
+  fail "capacity one serializes entry points and completes the lease lifecycle" \
+    "missing=$SERIAL_MISSING_RC matching=$SERIAL_MATCH_RC empty=$SERIAL_EMPTY_RC"
+fi
+
 CLAIMED="$(python3 - "$TMP" <<'PY'
 import json, pathlib, sys
 for path in sorted(pathlib.Path(sys.argv[1]).glob("T-*.json")):

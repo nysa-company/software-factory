@@ -626,7 +626,9 @@ tuple, manifest, runtime tuple, passport, branch/head, stage, pause digest, and
 run snapshot still match; it rebuilds no authority from Git history.
 Before provider admission, qualification also hydrates only immutable PR refs
 named by committed terminal migrations, verifies their exact expected heads,
-and leaves every checked-out tree and ref unchanged.
+and leaves every checked-out tree and ref unchanged. Migration and attestation
+inputs, aggregate parsed bytes, object counts and sizes, and staged fetch bytes
+are bounded; protected-main evidence must name exactly `refs/heads/main`.
 Preparation creates an absent ignored `factory/runs/` through the
 owner-controlled physical `factory/` descriptor at mode 0700; a file, symlink,
 foreign owner, or permissive runtime directory refuses. Every selected
@@ -1803,8 +1805,15 @@ refreshes evidence only after the isolated suite, tracked-tree check, and sealed
 release verification pass. Install first proves the SHA is on `origin/main`
 and binds exact successful protected main CI. The installed launcher labels
 helper runs `production-certified`; the qualification launcher labels its
-separately SHA/tree-sealed candidate `qualification-candidate`. Mutable local
-kits cannot claim either scope and remain development-only. Product receipts bind the exact evidence ID/digest
+separately SHA/tree-sealed candidate `qualification-candidate`; and the
+contained repository-test launcher labels its forced mock runs
+`repository-test`. Repository-test Doctor readiness proves only that sealed
+mock boundary, never provider or production readiness, and GitHub-mutating
+launcher commands are unavailable. The repository-test controller stops at its
+first authenticated Planning claim, runs exactly one sealed mock planner with
+durable role-exit enforcement, and then stops without production model
+resolution or later role launch. Mutable local kits cannot claim any sealed
+scope and remain development-only. Product receipts bind the exact evidence ID/digest
 and cannot expire after that evidence. Products may opt into the sealed
 `certification-runner.py` with a repository-owned declarative DAG. It records
 wall time, CPU, peak memory, cache status, exact input digests, and artifact

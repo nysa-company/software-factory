@@ -655,6 +655,30 @@ class DispatchPlanTest(unittest.TestCase):
         self.assertEqual(second["ticket"], "T-100")
         self.assertNotEqual(first["lease_id"], second["lease_id"])
 
+    def test_capacity_one_claims_once_then_waits(self):
+        descriptor = self.product / "factory/PROJECT.env"
+        descriptor.write_text(
+            descriptor.read_text().replace(
+                "MAX_CONCURRENT_TICKETS=2", "MAX_CONCURRENT_TICKETS=1",
+            )
+        )
+        run("git", "add", str(descriptor), cwd=self.product)
+        run("git", "commit", "-qm", "serialize dispatch", cwd=self.product)
+        run("git", "push", "-q", "origin", "main", cwd=self.product)
+        active = self.product / "factory/.active-runs/T-999.planner.lock"
+        active.mkdir(parents=True)
+        busy = self.command("claim")
+        self.assertEqual(busy["status"], "WAIT")
+        self.assertEqual(busy["reason_code"], "capacity_full")
+        active.rmdir()
+        first = self.command("claim")
+        self.assertEqual(first["status"], "CLAIMED")
+        self.assertEqual(first["ticket"], "T-200")
+        second = self.command("claim")
+        self.assertEqual(second["status"], "WAIT")
+        self.assertEqual(second["reason_code"], "capacity_full")
+        self.assertFalse((self.worktrees / "cell-2").exists())
+
     def test_duplicate_wakeups_atomically_claim_distinct_tickets(self):
         with ThreadPoolExecutor(max_workers=2) as executor:
             results = list(executor.map(lambda _: self.command("claim"), range(2)))
@@ -796,6 +820,31 @@ class DispatchPlanTest(unittest.TestCase):
         self.assertIn(
             "supersede pre-provider control state",
             run("git", "log", "-1", "--format=%s", cwd=worktree),
+        )
+
+    def test_repository_test_refuses_preprovider_branch_recovery(self):
+        self.write_contract_18_qualification()
+        run("git", "add", ".", cwd=self.product)
+        run("git", "commit", "-qm", "prepare qualification", cwd=self.product)
+        run("git", "push", "-q", "origin", "main", cwd=self.product)
+        old_head = self.stale_preprovider_branch()
+        self.authorize_preprovider_reset(old_head)
+
+        with mock.patch.dict(
+            os.environ, {"FACTORY_KIT_TRUST_SCOPE": "repository-test"},
+        ):
+            value = self.command("claim", expected=2)
+
+        self.assertEqual(
+            value["error"],
+            "repository-test refuses pre-provider branch recovery",
+        )
+        self.assertEqual(
+            run(
+                "git", "ls-remote", "--heads", str(self.remote),
+                "ticket/T-110",
+            ).split()[0],
+            old_head,
         )
 
     def test_readiness_refusal_precedes_authorized_branch_reset(self):

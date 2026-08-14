@@ -61,10 +61,25 @@ ISOLATED_TEST_LAUNCHER=0
 QUALIFICATION_LAUNCHER=0
 
 if [[ "$SELF_PATH" == "$INSTALLED_LAUNCHER_PATH" ]]; then
-  if [[ ${FACTORY_LAUNCH_TEST_MODE+x} == x ||
-        ${FACTORY_LAUNCH_TEST_HOME+x} == x ||
-        ${FACTORY_LAUNCH_TEST_ACCOUNT_HOME+x} == x ||
-        ${FACTORY_KITS_ROOT+x} == x ]]; then
+  if "$BOOTSTRAP_PYTHON" -I -S - <<'PY'
+import os, sys
+blocked = {
+    "FACTORY_KIT_CANONICAL_ORIGIN",
+    "FACTORY_KIT_FAIL_AFTER_PHASE",
+    "FACTORY_KIT_ORIGIN",
+    "FACTORY_KITS_ROOT",
+    "FACTORY_LAUNCH_TEST_ACCOUNT_HOME",
+    "FACTORY_LAUNCH_TEST_HOME",
+    "FACTORY_LAUNCH_TEST_MODE",
+    "FACTORY_RELEASE_FAIL_AFTER_CUTOVER_PHASE",
+    "FACTORY_RELEASE_TEST_HOME",
+}
+raise SystemExit(0 if any(
+    name in blocked or name.startswith("FACTORY_KIT_TEST_")
+    for name in os.environ
+) else 1)
+PY
+  then
     die "installed launcher refuses test mode and root overrides"
   fi
   HOME="$ACCOUNT_HOME"
@@ -113,6 +128,19 @@ PY
     [[ -d "$FACTORY_LAUNCH_TEST_HOME" ]] || die "test HOME is missing"
     HOME="$(cd "$FACTORY_LAUNCH_TEST_HOME" 2>/dev/null && pwd -P)" ||
       die "test HOME cannot be resolved"
+    "$BOOTSTRAP_PYTHON" -I -S - "$HOME" "$ACCOUNT_HOME" "$FACTORY_KITS_ROOT" <<'PY' ||
+import os, pathlib, stat, sys
+home, account, kits = map(pathlib.Path, map(os.path.realpath, sys.argv[1:]))
+info = home.stat()
+if (
+    info.st_uid != os.geteuid()
+    or stat.S_IMODE(info.st_mode) != 0o700
+    or home == account or account in home.parents
+    or kits != home / ".factory/kits"
+):
+    raise SystemExit(1)
+PY
+      die "repository test mode requires owner-only state outside the real account home"
     RAW_KITS_ROOT="$FACTORY_KITS_ROOT"
   fi
 fi
@@ -425,6 +453,15 @@ RELEASE_PATH="$(cd "$ACTIVE_RELEASE_PATH" 2>/dev/null && pwd -P)" ||
   -c core.fsmonitor=false -c credential.helper= -c diff.external= \
   rev-parse --show-toplevel 2>/dev/null)" == "$PRODUCT_ROOT" ]] ||
   die "active product path is not an exact physical Git root"
+if [[ "$ISOLATED_TEST_LAUNCHER" == "1" ]]; then
+  "$BOOTSTRAP_PYTHON" -I -S - "$PRODUCT_ROOT" "$HOME" <<'PY' ||
+import os, pathlib, sys
+product, home = map(pathlib.Path, map(os.path.realpath, sys.argv[1:]))
+if home not in product.parents:
+    raise SystemExit(1)
+PY
+    die "repository test product escapes its isolated home"
+fi
 EXPECTED_RELEASE="$KITS_ROOT/releases/$KIT_SHA"
 require_managed_directory "$EXPECTED_RELEASE" "expected release path"
 EXPECTED_RELEASE="$(cd "$EXPECTED_RELEASE" 2>/dev/null && pwd -P)" ||
@@ -441,6 +478,14 @@ if [[ "$HOST_CUTOVER_IN_PROGRESS" == "true" ]]; then
   case "$COMMAND" in
     contract|doctor|reconcile|incident-report|watch) ;;
     *) die "host cutover is in progress; command refused" ;;
+  esac
+fi
+
+if [[ "$ISOLATED_TEST_LAUNCHER" == "1" ]]; then
+  case "$COMMAND" in
+    incident-report|publication-repair|ci-rerun|ticket-pr|ticket-attest)
+      die "repository test mode refuses GitHub-mutating commands"
+      ;;
   esac
 fi
 
@@ -510,19 +555,20 @@ if [[ "$CONTRACT_VERSION" == "2.0.0" ]]; then
   require_managed_directory "$KITS_ROOT/receipts" "factory certification receipts directory"
   RECEIPT_FILE="$KITS_ROOT/receipts/$RECEIPT_ID.json"
   require_managed_file "$RECEIPT_FILE" "active certification receipt"
-  CERTIFIED_PRODUCT_ORIGIN="$("$PYTHON_BIN" -I -S - "$RECEIPT_FILE" \
+CERTIFIED_PRODUCT_ORIGIN="$("$PYTHON_BIN" -I -S - "$RECEIPT_FILE" \
     "$RECEIPT_ID" "$PROJECT" "$KIT_SHA" "$KIT_TREE" "$PRODUCT_ROOT" \
     "$ACTIVE_PRODUCT_TREE" "$CONTRACT_VERSION" "$QUALIFICATION_MODE" \
     "$TAKEOVER_KITS_ROOT" "$ACTIVE_OPERATOR_MAP" "$ACTIVE_RUNTIME_LEDGER" \
     "$ACTIVE_PRODUCT_SHA" \
     "$ACTIVE_FALLBACK_READINESS_SHA256" \
-    "$ACTIVE_RUNTIME_TUPLE" <<'PY'
+    "$ACTIVE_RUNTIME_TUPLE" "$ISOLATED_TEST_LAUNCHER" <<'PY'
 import json, os, stat, sys
 
 (
     path, receipt_id, project, kit_sha, kit_tree, product_path, product_tree,
     contract, qualification_mode, takeover_kits_root, operator_map_path,
     runtime_ledger_path, product_sha, fallback_readiness_sha256, runtime_tuple,
+    isolated_test,
 ) = sys.argv[1:]
 flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
 descriptor = os.open(path, flags)
@@ -556,6 +602,31 @@ if runtime_tuple != "{}":
     expected["runtime_tuple"] = json.loads(runtime_tuple)
 if any(value.get(key) != item for key, item in expected.items()):
     raise SystemExit(1)
+if isolated_test == "1":
+    origin = value.get("product_origin")
+    if not isinstance(origin, str):
+        raise SystemExit(1)
+    if origin.startswith("file://"):
+        origin = origin[7:]
+    if not origin.startswith("/"):
+        raise SystemExit(1)
+    physical_origin = os.path.realpath(origin)
+    home = os.path.realpath(os.environ["HOME"])
+    if (
+        not os.path.isdir(physical_origin)
+        or os.path.commonpath([home, physical_origin]) != home
+        or physical_origin == home
+    ):
+        raise SystemExit(1)
+if isolated_test == "0" and not qualification_mode:
+    suite = value.get("kit_suite_evidence")
+    if (
+        value.get("kit_origin") != "github.com/nysa-company/software-factory"
+        or not isinstance(suite, dict)
+        or suite.get("verification_source") != "github-actions-full"
+        or suite.get("canonical_origin") != value.get("kit_origin")
+    ):
+        raise SystemExit(1)
 if qualification_mode:
     if (
         value.get("qualification_mode") != qualification_mode
@@ -580,6 +651,27 @@ if not isinstance(origin, str) or not origin or any(ch in origin for ch in "\r\n
 print(origin)
 PY
 )" || die "active certification receipt does not match the selected product release"
+  if [[ "$ISOLATED_TEST_LAUNCHER" == "1" ]]; then
+    ACTUAL_PRODUCT_ORIGIN="$(git -C "$PRODUCT_ROOT" \
+      -c core.hooksPath=/dev/null -c core.fsmonitor=false \
+      -c credential.helper= -c diff.external= \
+      remote get-url --push --all origin 2>/dev/null)" ||
+      die "repository test product push origin is unavailable"
+    [[ "$ACTUAL_PRODUCT_ORIGIN" != *$'\n'* && "$ACTUAL_PRODUCT_ORIGIN" != *$'\r'* &&
+       "$ACTUAL_PRODUCT_ORIGIN" != *$'\t'* ]] ||
+      die "repository test product push origin is ambiguous"
+    "$BOOTSTRAP_PYTHON" -I -S - "$ACTUAL_PRODUCT_ORIGIN" \
+      "$CERTIFIED_PRODUCT_ORIGIN" <<'PY' ||
+import os, sys
+def physical(value):
+    if value.startswith("file://"):
+        value = value[7:]
+    return os.path.realpath(value) if value.startswith("/") else ""
+if not physical(sys.argv[1]) or physical(sys.argv[1]) != physical(sys.argv[2]):
+    raise SystemExit(1)
+PY
+      die "repository test product push origin differs from its receipt"
+  fi
 fi
 
 if [[ "$QUALIFICATION_LAUNCHER" == "1" && -n "$ACTIVE_PRODUCT_SHA" ]]; then
@@ -726,7 +818,9 @@ PROVIDER_ACTIVATION_PATH="$PROVIDER_STATE_ROOT/isolated-v1.enabled"
 CLI_RUNTIME_ROOT="$PROVIDER_STATE_ROOT/cli-runtimes"
 CURSOR_ACCOUNT_DB="$HOME/.factory/accounting/cursor-account-admission-v1.sqlite3"
 KIT_TRUST_SCOPE="production-certified"
-if [[ "$QUALIFICATION_MODE" == "takeover" ]]; then
+if [[ "$ISOLATED_TEST_LAUNCHER" == "1" ]]; then
+  KIT_TRUST_SCOPE="repository-test"
+elif [[ "$QUALIFICATION_MODE" == "takeover" ]]; then
   MODEL_STATE_ROOT="$TAKEOVER_KITS_ROOT/projects"
   ACTIVE_RUNTIME_LEDGER="$PRODUCT_ROOT/factory/runtime-ledger.csv"
 elif [[ "$QUALIFICATION_LAUNCHER" == "1" ]]; then
@@ -799,6 +893,8 @@ if [[ "$ISOLATED_TEST_LAUNCHER" == "1" ]]; then
     "FACTORY_TEST_MODE=1"
     "FACTORY_TRUSTED_TEST_HARNESS=1"
     "FACTORY_ADAPTER_OVERRIDE=mock"
+    "FACTORY_TEST_ENFORCE_ROLE_EXIT=1"
+    "MOCK_COMMIT_EMPTY=1"
   )
   if [[ "${FACTORY_KIT_TEST_MODE:-0}" == "1" &&
         "${FACTORY_KIT_CANONICAL_ORIGIN:-}" == /* ]]; then

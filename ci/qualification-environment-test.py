@@ -233,7 +233,10 @@ class QualificationEnvironmentTest(unittest.TestCase):
         run(self.product, "git", "init", "-q", "-b", "main")
         run(self.product, "git", "config", "user.name", "Test")
         run(self.product, "git", "config", "user.email", "test@example.invalid")
-        run(self.product, "git", "remote", "add", "origin", "git@example.invalid")
+        run(
+            self.product, "git", "remote", "add", "origin",
+            "git@example.invalid:example/product.git",
+        )
         run(self.product, "git", "add", ".")
         run(self.product, "git", "commit", "-qm", "product")
         run(
@@ -1257,12 +1260,41 @@ class QualificationEnvironmentTest(unittest.TestCase):
         (publisher / "factory/PROJECT.env").write_text(
             "GH_REPO=example/product\n", encoding="utf-8",
         )
+        (publisher / "factory/tickets/T-030.md").parent.mkdir()
+        (publisher / "factory/tickets/T-030.md").write_text(
+            "# T-030\n\nState: Done\n", encoding="utf-8",
+        )
+        (publisher / "factory/tickets/T-031.md").write_text(
+            "# T-031\n\nState: Approved\n", encoding="utf-8",
+        )
         run(publisher, "git", "add", ".")
         run(publisher, "git", "commit", "-qm", "base")
+        base = run(publisher, "git", "rev-parse", "HEAD")
         run(publisher, "git", "remote", "add", "origin", str(remote))
         run(publisher, "git", "push", "-q", "origin", "main")
+        run(publisher, "git", "switch", "-qc", "reviewed")
+        (publisher / "reviewed.txt").write_text("reviewed\n", encoding="utf-8")
+        run(publisher, "git", "add", ".")
+        run(publisher, "git", "commit", "-qm", "reviewed")
+        reviewed = run(publisher, "git", "rev-parse", "HEAD")
+        run(publisher, "git", "push", "-q", "origin", "reviewed")
+        run(publisher, "git", "switch", "-q", "main")
+        run(publisher, "git", "switch", "-qc", "route-blob")
+        (publisher / "route.json").write_text("{}\n", encoding="utf-8")
+        run(publisher, "git", "add", ".")
+        run(publisher, "git", "commit", "-qm", "route blob")
+        route_blob = run(publisher, "git", "rev-parse", "HEAD:route.json")
+        run(publisher, "git", "push", "-q", "origin", "route-blob")
+        run(publisher, "git", "switch", "-q", "main")
         run(publisher, "git", "switch", "-qc", "ticket/T-030")
         (publisher / "evidence.txt").write_text("evidence\n", encoding="utf-8")
+        attestation = publisher / "factory/attestations/T-030/bundle.json"
+        attestation.parent.mkdir(parents=True)
+        attestation_text = json.dumps({
+            "branch_head": base, "reviewed_sha": reviewed,
+            "route_plan_blob": route_blob,
+        }) + "\n"
+        attestation.write_text(attestation_text, encoding="utf-8")
         run(publisher, "git", "add", ".")
         run(publisher, "git", "commit", "-qm", "evidence")
         evidence = run(publisher, "git", "rev-parse", "HEAD")
@@ -1277,6 +1309,15 @@ class QualificationEnvironmentTest(unittest.TestCase):
         run(publisher, "git", "switch", "-q", "main")
         migration = publisher / "factory/migrations/protected-merge-reconciliation/T-030.json"
         migration.parent.mkdir(parents=True)
+        main_attestation = publisher / "factory/attestations/T-030/bundle.json"
+        main_attestation.parent.mkdir(parents=True)
+        main_attestation.write_text(attestation_text, encoding="utf-8")
+        skipped_object = "f" * 40
+        skipped = publisher / "factory/attestations/T-031/bundle.json"
+        skipped.parent.mkdir(parents=True)
+        skipped.write_text(json.dumps({
+            "branch_head": skipped_object, "reviewed_sha": skipped_object,
+        }) + "\n", encoding="utf-8")
         migration.write_text(json.dumps({
             "adoption_pr": {"head": head, "number": 30},
             "evidence_head": evidence,
@@ -1294,15 +1335,69 @@ class QualificationEnvironmentTest(unittest.TestCase):
             "--single-branch", "--branch", "main", str(remote), str(consumer),
         )
         self.assertFalse(ENVIRONMENT.commit_present(consumer, head))
+        self.assertFalse(ENVIRONMENT.commit_present(consumer, reviewed))
+        with self.assertRaises(subprocess.CalledProcessError):
+            run(consumer, "git", "cat-file", "-e", route_blob)
         refs = run(consumer, "git", "show-ref")
-        self.assertEqual(ENVIRONMENT.historical_pr_objects(consumer), 1)
+        fetch_head = consumer / ".git/FETCH_HEAD"
+        fetch_head_before = fetch_head.read_bytes() if fetch_head.exists() else None
+        redirected = self.workspace / "redirected.git"
+        run(self.workspace, "git", "init", "--bare", "-q", str(redirected))
+        run(
+            consumer, "git", "config",
+            f"url.{redirected}.insteadOf", str(remote),
+        )
+        ambient_objects = self.workspace / "ambient-objects"
+        ambient_objects.mkdir()
+        with mock.patch.dict(os.environ, {
+            "GIT_CONFIG_GLOBAL": str(consumer / ".git/config"),
+            "GIT_OBJECT_DIRECTORY": str(ambient_objects),
+            "GIT_SSH_COMMAND": "false",
+        }):
+            self.assertEqual(
+                ENVIRONMENT.historical_pr_objects(consumer, str(remote)), 1,
+            )
+        self.assertEqual(list(ambient_objects.iterdir()), [])
         self.assertTrue(ENVIRONMENT.commit_present(consumer, head))
         self.assertTrue(ENVIRONMENT.commit_present(consumer, evidence))
+        self.assertTrue(ENVIRONMENT.commit_present(consumer, reviewed))
+        self.assertEqual(run(consumer, "git", "cat-file", "-t", route_blob), "blob")
+        with self.assertRaises(subprocess.CalledProcessError):
+            run(consumer, "git", "cat-file", "-e", skipped_object)
         self.assertEqual(run(consumer, "git", "show-ref"), refs)
+        self.assertEqual(fetch_head.read_bytes() if fetch_head.exists() else None, fetch_head_before)
         run(consumer, "git", "remote", "set-url", "origin", "invalid://offline")
-        self.assertEqual(ENVIRONMENT.historical_pr_objects(consumer), 1)
+        self.assertEqual(ENVIRONMENT.historical_pr_objects(consumer, str(remote)), 1)
+
+        attestation_consumer = self.workspace / "attestation-consumer"
+        run(
+            self.workspace, "git", "clone", "-q", "--no-local",
+            "--single-branch", "--branch", "main", str(remote),
+            str(attestation_consumer),
+        )
+        shutil.rmtree(attestation_consumer / "factory/migrations")
+        self.assertFalse(ENVIRONMENT.commit_present(attestation_consumer, reviewed))
+        with self.assertRaises(subprocess.CalledProcessError):
+            run(attestation_consumer, "git", "cat-file", "-e", route_blob)
+        refs = run(attestation_consumer, "git", "show-ref")
+        fetch_head = attestation_consumer / ".git/FETCH_HEAD"
+        fetch_head_before = fetch_head.read_bytes() if fetch_head.exists() else None
+        self.assertEqual(
+            ENVIRONMENT.historical_pr_objects(attestation_consumer, str(remote)), 0,
+        )
+        self.assertTrue(ENVIRONMENT.commit_present(attestation_consumer, reviewed))
+        self.assertEqual(
+            run(attestation_consumer, "git", "cat-file", "-t", route_blob), "blob",
+        )
+        self.assertEqual(run(attestation_consumer, "git", "show-ref"), refs)
+        self.assertEqual(
+            fetch_head.read_bytes() if fetch_head.exists() else None,
+            fetch_head_before,
+        )
 
     def test_historical_pr_ref_mismatch_fails_closed(self) -> None:
+        remote = self.workspace / "mismatch.git"
+        run(self.workspace, "git", "init", "--bare", "-q", str(remote))
         migrations = self.product / "factory/migrations/contract-1.3"
         migrations.mkdir(parents=True)
         (self.product / "factory/PROJECT.env").write_text(
@@ -1317,7 +1412,7 @@ class QualificationEnvironmentTest(unittest.TestCase):
             ENVIRONMENT.EnvironmentError,
             r"historical PR head unavailable: .*T-013.json PR #13",
         ):
-            ENVIRONMENT.historical_pr_objects(self.product)
+            ENVIRONMENT.historical_pr_objects(self.product, str(remote))
         self.assertFalse((self.root / "marker.json").exists())
 
     def test_takeover_reuses_authenticated_live_state_without_copying_it(self) -> None:

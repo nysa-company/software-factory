@@ -184,18 +184,17 @@ bash scripts/factory-kit.sh release setup \
   --project relay --product /absolute/relay --repo /absolute/software-factory \
   --sha <factory-sha> --profile openai-priority-v1 --operator-id <operator-id>
 bash scripts/factory-kit.sh release resume \
-  --project relay --sha <factory-sha> \
-  --approve-hash <approval_sha256> --approved-by <operator-id>
+  --project relay --sha <factory-sha> --approved-by <operator-id>
 ```
 
 `setup` installs and validates immutable inputs, prepares the project-local
 runtime roots and controller job, binds the committed ticket inventory, and
-returns one exact approval plan.
-`resume` applies only that stored hash and resumes crash-lost phases. If a
+returns one exact sealed plan and authorizes that transaction.
+`resume` selects that current sealed plan and resumes crash-lost phases. If a
 machine-wide launcher/provider prerequisite needs changing, the first resume
-returns a second receipt-bound activation plan; review that new hash and run
-the same resume verb again. This keeps certification and activation authority
-separate without adding another command. A completed replay is read-only.
+returns a second receipt-bound activation plan; run the same resume verb again.
+Internal hashes still bind certification and activation without a copy/paste
+authorization step. A completed replay is read-only.
 
 For the complete transition and ownership rules, see
 [`docs/workflows/ticket-flow.md`](docs/workflows/ticket-flow.md) and

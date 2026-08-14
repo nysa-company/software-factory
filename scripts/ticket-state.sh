@@ -38,6 +38,8 @@ done
 KIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 # shellcheck disable=SC1091
 source "$KIT_DIR/scripts/lib/product-remote.sh"
+# shellcheck disable=SC1091
+source "$KIT_DIR/scripts/lib/kit-pin.sh"
 unset FACTORY_TRUSTED_PRODUCT_ORIGIN
 readonly FACTORY_TRUSTED_PRODUCT_ORIGIN="${FACTORY_CERTIFIED_PRODUCT_ORIGIN:-}"
 unset FACTORY_CERTIFIED_PRODUCT_ORIGIN
@@ -116,6 +118,15 @@ try:
 except TransitionError as error:
     raise SystemExit(str(error))
 PY
+  if [[ "${FACTORY_KIT_TRUST_SCOPE:-}" == "repository-test" &&
+        "${FACTORY_TEST_MODE:-0}" == "1" &&
+        "${FACTORY_TRUSTED_TEST_HARNESS:-0}" == "1" &&
+        "${FACTORY_ADAPTER_OVERRIDE:-}" == "mock" ]]; then
+    [[ "${FACTORY_RELEASE_SHA:-}" =~ ^[0-9a-f]{40}$ ]] ||
+      { echo "repository-test Factory SHA is invalid" >&2; exit 1; }
+    factory_record_ticket_kit_sha "$TMP" "$FACTORY_RELEASE_SHA" ||
+      { echo "$FACTORY_TICKET_KIT_ERROR" >&2; exit 1; }
+  fi
 elif [[ "$ACTION" == "reviewer-reconcile" ]]; then
   cmp -s "$TMP" "$TICKET_FILE" || {
     echo "pending operator fields require materialization before reviewer reconciliation" >&2

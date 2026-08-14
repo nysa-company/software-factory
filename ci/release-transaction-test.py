@@ -4,18 +4,21 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import multiprocessing
 import os
 from pathlib import Path
 import plistlib
+import re
 import shutil
 import subprocess
 import tempfile
 import time
 import unittest
 from unittest import mock
+import sys
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -25,6 +28,9 @@ SPEC = importlib.util.spec_from_file_location(
 assert SPEC and SPEC.loader
 RELEASE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(RELEASE)
+sys.path.insert(0, str(ROOT / "scripts/lib"))
+import activation_preflight as ACTIVATION  # noqa: E402
+import historical_pr_objects as HISTORY  # noqa: E402
 
 
 def cutover_lock_worker(
@@ -45,7 +51,7 @@ def cutover_lock_worker(
     elif mode == "resume":
         RELEASE._resume_locked = hold
         RELEASE.resume(argparse.Namespace(
-            approve_hash="8" * 64, approved_by="tester", kits_root=Path(kits),
+            approved_by="tester", kits_root=Path(kits),
             project=plan["request"]["project"], sha="7" * 40,
         ))
     else:
@@ -116,7 +122,7 @@ class ReleaseTransactionTest(unittest.TestCase):
             },
             "schema": RELEASE.PLAN_SCHEMA,
             "stage": "activation",
-            "status": "approval-required",
+            "status": "authorized",
         }
         self.plan = RELEASE.seal_plan(self.body)
 
@@ -252,26 +258,29 @@ class ReleaseTransactionTest(unittest.TestCase):
         request = RELEASE.plan_request(plan, self.kits)
         self.assertEqual(request.maintenance_prior, prior)
 
-    def test_resume_rejects_wrong_hash_approver_and_expiry_before_apply(self) -> None:
+    def test_resume_uses_current_sealed_plan_and_rejects_approver_or_expiry(self) -> None:
         path, _ = RELEASE.plan_paths(self.kits, "relay", self.sha)
         RELEASE.write_plan(path, self.plan)
         base = argparse.Namespace(
-            project="relay", sha=self.sha, approve_hash="9" * 64,
-            approved_by="tester", kits_root=self.kits,
+            project="relay", sha=self.sha, approved_by="someone-else",
+            kits_root=self.kits,
         )
-        with self.assertRaisesRegex(RELEASE.ReleaseError, "approved hash"):
-            RELEASE.resume(base)
-        base.approve_hash = self.plan["approval_sha256"]
-        base.approved_by = "someone-else"
         with self.assertRaisesRegex(RELEASE.ReleaseError, "approver"):
+            RELEASE.resume(base)
+        alternate_body = {
+            key: value for key, value in self.plan.items() if key != "approval_sha256"
+        }
+        alternate_body["created_epoch"] = 2
+        alternate = RELEASE.seal_plan(alternate_body)
+        RELEASE.atomic_json(path, alternate)
+        base.approved_by = "tester"
+        with self.assertRaisesRegex(RELEASE.ReleaseError, "sealed copy"):
             RELEASE.resume(base)
         expired = json.loads(json.dumps(self.plan))
         body = {key: value for key, value in expired.items() if key != "approval_sha256"}
         body["expires_epoch"] = 2
         expired = RELEASE.seal_plan(body)
         RELEASE.write_plan(path, expired)
-        base.approve_hash = expired["approval_sha256"]
-        base.approved_by = "tester"
         with self.assertRaisesRegex(RELEASE.ReleaseError, "stale"):
             RELEASE.resume(base)
 
@@ -286,8 +295,7 @@ class ReleaseTransactionTest(unittest.TestCase):
         with mock.patch.object(RELEASE.time, "time", return_value=1.5):
             RELEASE.journal_update(journal, expired, "approved", "pass")
         args = argparse.Namespace(
-            project="relay", sha=self.sha,
-            approve_hash=expired["approval_sha256"], approved_by="tester",
+            project="relay", sha=self.sha, approved_by="tester",
             kits_root=self.kits,
         )
         with (
@@ -313,15 +321,24 @@ class ReleaseTransactionTest(unittest.TestCase):
         }
         concurrency = {"action": "apply", "plan": {"approval_sha256": "3" * 64}}
         cli = {"action": "reuse", "evidence": {"status": "pass"}}
+        order = []
         with (
+            mock.patch.dict(os.environ, {"FACTORY_KIT_CERTIFICATION_NETWORK_REVIEWED": "1"}),
             mock.patch.object(RELEASE, "clean_identity", side_effect=[
                 (self.sha, "e" * 40, str(repo)),
                 ("f" * 40, "1" * 40, str(self.product)),
                 ("f" * 40, "1" * 40, str(self.product)),
             ]),
-            mock.patch.object(RELEASE, "run"),
+            mock.patch.object(RELEASE, "run") as run,
+            mock.patch.object(
+                RELEASE, "release_preflight", side_effect=lambda *_args: order.append("preflight"),
+            ),
             mock.patch.object(RELEASE, "contract", return_value="2.0.0"),
-            mock.patch.object(RELEASE, "prepare_runtime", return_value=runtime),
+            mock.patch.object(
+                RELEASE, "prepare_runtime",
+                side_effect=lambda *_args: order.append("runtime") or runtime,
+            ),
+            mock.patch.object(RELEASE, "validate_product_runtime_contract"),
             mock.patch.object(RELEASE, "prepare_product_runtime"),
             mock.patch.object(RELEASE, "prepare_controller", return_value=self.plan["identity"]["controller"]),
             mock.patch.object(RELEASE, "launcher_plan", return_value=self.plan["children"]["launcher"]),
@@ -335,7 +352,514 @@ class ReleaseTransactionTest(unittest.TestCase):
             plan = RELEASE.setup(args)
         self.assertEqual(plan["stage"], "prerequisites")
         self.assertEqual(plan["children"]["provider_concurrency"], concurrency)
+        self.assertEqual(order, ["runtime", "preflight"])
+        self.assertNotIn(
+            "FACTORY_KIT_CERTIFICATION_NETWORK_REVIEWED",
+            run.call_args_list[0].kwargs["environment"],
+        )
         RELEASE.validate_plan(plan)
+
+    def test_release_preflight_uses_the_prepared_runtime(self) -> None:
+        runtime = self.root / "runtime/bin"
+        completed = subprocess.CompletedProcess(
+            [], 0, json.dumps({"status": "pass"}), "",
+        )
+        with mock.patch.object(
+            RELEASE.subprocess, "run", return_value=completed,
+        ) as invoked:
+            report = RELEASE.release_preflight(
+                self.root / "factory-kit.sh", self.kits, runtime,
+                "relay", self.product, self.sha,
+            )
+        self.assertEqual(report["status"], "pass")
+        environment = invoked.call_args.kwargs["env"]
+        self.assertTrue(environment["PATH"].startswith(str(runtime) + ":"))
+
+    def test_activation_validation_binds_main_before_hydrating_ticket_evidence(self) -> None:
+        order = []
+        validator = ACTIVATION.Validator(
+            self.product, self.sha, ROOT / "scripts", str(self.root / "origin"), "",
+        )
+        with (
+            mock.patch.object(
+                ACTIVATION, "run_git_remote",
+                side_effect=lambda *_args, **_kwargs: order.append("remote") or subprocess.CompletedProcess(
+                    [], 0, f"{self.sha}\trefs/heads/main\n", "",
+                ),
+            ),
+            mock.patch.object(
+                ACTIVATION, "hydrate",
+                side_effect=lambda _product, _origin: order.append("hydrate") or 1,
+            ),
+            mock.patch.object(
+                validator, "checked",
+                side_effect=lambda *args: order.append("head") or self.sha,
+            ),
+            mock.patch.object(
+                validator, "ticket_ids",
+                side_effect=lambda: order.append("tickets") or ({"T-1"}, {}),
+            ),
+            mock.patch.object(
+                validator, "validate_ticket",
+                side_effect=lambda *_args: order.append("terminal"),
+            ),
+        ):
+            blockers, _, hydrated = validator.run()
+        self.assertEqual(blockers, [])
+        self.assertEqual(hydrated, 1)
+        self.assertEqual(order, ["head", "remote", "hydrate", "tickets", "terminal"])
+
+    def test_activation_main_check_ignores_repository_transport_rewrites(self) -> None:
+        product = self.root / "trust-product"
+        trusted = self.root / "trusted.git"
+        redirected = self.root / "redirected.git"
+
+        def git(root: Path, *arguments: str) -> str:
+            return subprocess.run(
+                ["git", "-C", str(root), *arguments], text=True,
+                capture_output=True, check=True,
+            ).stdout.strip()
+
+        subprocess.run(
+            ["git", "init", "--bare", "-q", str(trusted)], check=True,
+        )
+        subprocess.run(
+            ["git", "init", "--bare", "-q", str(redirected)], check=True,
+        )
+        subprocess.run(
+            ["git", "init", "-q", "-b", "main", str(product)], check=True,
+        )
+        git(product, "config", "user.name", "Test")
+        git(product, "config", "user.email", "test@example.invalid")
+        (product / "factory").mkdir()
+        (product / "factory/PROJECT.env").write_text(
+            "GH_REPO=example/product\n", encoding="utf-8",
+        )
+        git(product, "add", ".")
+        git(product, "commit", "-qm", "protected main")
+        head = git(product, "rev-parse", "HEAD")
+        git(product, "push", "-q", str(trusted), "HEAD:main")
+        git(product, "config", f"url.{redirected}.insteadOf", str(trusted))
+        validator = ACTIVATION.Validator(
+            product, self.sha, ROOT / "scripts", str(trusted), "",
+        )
+        with (
+            mock.patch.object(ACTIVATION, "hydrate", return_value=0),
+            mock.patch.object(validator, "ticket_ids", return_value=(set(), {})),
+        ):
+            blockers, _, _ = validator.run()
+        self.assertEqual(head, git(product, "rev-parse", "HEAD"))
+        self.assertEqual(blockers, [])
+
+    def test_hardened_git_auth_is_github_host_scoped(self) -> None:
+        home = self.root / "auth-home"
+        helper_root = self.root / "Cellar/gh/1.0/bin"
+        helper_root.mkdir(parents=True)
+        helper = helper_root / "gh"
+        helper.write_text("#!/bin/sh\n", encoding="utf-8")
+        helper.chmod(0o700)
+        link_root = self.root / "fixed-bin"
+        link_root.mkdir()
+        (link_root / "gh").symlink_to(helper)
+        config = home / ".config/gh"
+        config.mkdir(parents=True)
+        (config / "hosts.yml").write_text("github.com: {}\n", encoding="utf-8")
+        (config / "hosts.yml").chmod(0o600)
+        with (
+            mock.patch.object(
+                HISTORY, "GITHUB_CLI_CANDIDATES",
+                (link_root / "gh", self.root / "missing-gh"),
+            ),
+            mock.patch.dict(os.environ, {"HOME": str(home)}),
+        ):
+            auth = HISTORY.github_auth("https://github.com/example/private.git")
+        self.assertEqual(auth, (str(helper), str(config)))
+        with mock.patch.object(
+            HISTORY, "GITHUB_CLI_CANDIDATES", (link_root / "gh",),
+        ), mock.patch.dict(os.environ, {"HOME": str(home)}):
+            self.assertIsNone(
+                HISTORY.github_auth("https://github.example/private.git"),
+            )
+            (config / "hosts.yml").chmod(0o644)
+            self.assertIsNone(
+                HISTORY.github_auth("https://github.com/example/private.git"),
+            )
+        assert auth is not None
+        command = HISTORY._git_command(
+            None, "ls-remote", "https://github.com/example/private.git",
+            auth=auth,
+        )
+        self.assertIn("credential.helper=", command)
+        self.assertIn(
+            "credential.https://github.com.helper="
+            f"!{helper} auth git-credential",
+            command,
+        )
+        self.assertFalse(any(
+            value.startswith("credential.https://")
+            and not value.startswith("credential.https://github.com")
+            for value in command
+        ))
+        environment = HISTORY._git_environment(auth=auth)
+        self.assertEqual(environment["GH_CONFIG_DIR"], auth[1])
+
+    def test_historical_transport_environment_and_descriptor_are_strict(self) -> None:
+        local = self.root / "local-origin.git"
+        local.mkdir()
+        for value in (
+            str(local), f"file://{local}",
+            "https://github.com/example/product.git",
+            "ssh://git@github.com/example/product.git",
+            "git@github.com:example/product.git",
+        ):
+            with self.subTest(accepted=value.split(":", 1)[0]):
+                self.assertTrue(HISTORY._transport(value))
+        for value in (
+            "", "relative/origin", "http://example.invalid/product.git",
+            "file://example.invalid/private/tmp/product.git", "ext::helper",
+            "https://example.invalid/product.git\nextra",
+        ):
+            with self.subTest(rejected=value.split(":", 1)[0]), self.assertRaises(
+                HISTORY.HistoricalObjectError,
+            ):
+                HISTORY._transport(value)
+
+        with mock.patch.dict(os.environ, {
+            "GIT_CONFIG_GLOBAL": str(self.root / "poisoned-config"),
+            "GIT_OBJECT_DIRECTORY": str(self.root / "poisoned-objects"),
+            "GIT_SSH_COMMAND": "false",
+        }, clear=False):
+            environment = HISTORY._git_environment()
+        self.assertEqual(environment["GIT_CONFIG_GLOBAL"], os.devnull)
+        self.assertEqual(
+            environment["GIT_SSH_COMMAND"],
+            "/usr/bin/ssh -F /dev/null -oBatchMode=yes",
+        )
+        self.assertNotIn("GIT_OBJECT_DIRECTORY", environment)
+        with self.assertRaisesRegex(
+            HISTORY.HistoricalObjectError,
+            "historical Git environment override is unsafe",
+        ):
+            HISTORY._git_environment({"GIT_CONFIG_GLOBAL": os.devnull})
+
+        descriptor = self.root / "descriptor-product/factory/PROJECT.env"
+        descriptor.parent.mkdir(parents=True)
+        descriptor.write_text(
+            "GH_REPO=example/one\nGH_REPO=example/two\n", encoding="utf-8",
+        )
+        with self.assertRaisesRegex(
+            HISTORY.HistoricalObjectError,
+            "historical product repository is ambiguous",
+        ):
+            HISTORY._repository(descriptor.parents[1])
+        descriptor.unlink()
+        descriptor.symlink_to(self.root / "outside-descriptor")
+        with self.assertRaisesRegex(
+            HISTORY.HistoricalObjectError,
+            "historical product descriptor is unsafe",
+        ):
+            HISTORY._repository(descriptor.parents[1])
+
+    def test_historical_evidence_inventories_and_bytes_are_bounded(self) -> None:
+        product = self.root / "history-limits"
+        migrations = product / "factory/migrations"
+        migrations.mkdir(parents=True)
+        (migrations / "one.json").write_text("{}\n", encoding="utf-8")
+        (migrations / "two.json").write_text("{}\n", encoding="utf-8")
+        with mock.patch.object(HISTORY, "MAX_EVIDENCE_FILES", 1), self.assertRaisesRegex(
+            HISTORY.HistoricalObjectError,
+            "historical migration inventory is too large",
+        ):
+            HISTORY.hydrate(product, str(self.root))
+        (migrations / "two.json").unlink()
+        (migrations / "one.json").unlink()
+        (migrations / "one.json").symlink_to(self.root / "outside-migration")
+        with self.assertRaisesRegex(
+            HISTORY.HistoricalObjectError,
+            "historical object record is unsafe",
+        ):
+            HISTORY.hydrate(product, str(self.root))
+
+        objects = {f"{value:040x}" for value in range(HISTORY.MAX_OBJECTS + 1)}
+        with (
+            mock.patch.object(HISTORY, "commit_present", return_value=False),
+            mock.patch.object(HISTORY, "_blob_present", return_value=False),
+            mock.patch.object(HISTORY, "run_git_remote") as remote,
+            self.assertRaisesRegex(
+                HISTORY.HistoricalObjectError,
+                "historical evidence object inventory is too large",
+            ),
+        ):
+            HISTORY.fetch_objects(product, str(self.root), objects, set())
+        remote.assert_not_called()
+
+        attested = self.root / "attested-product"
+        subprocess.run(
+            ["git", "init", "-q", "-b", "main", str(attested)], check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(attested), "config", "user.name", "Test"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(attested), "config", "user.email", "test@example.invalid"],
+            check=True,
+        )
+        ticket = attested / "factory/tickets/T-1.md"
+        ticket.parent.mkdir(parents=True)
+        ticket.write_text("State: Done\n", encoding="utf-8")
+        (attested / "factory/PROJECT.env").write_text(
+            "GH_REPO=example/product\n", encoding="utf-8",
+        )
+        migration = attested / "factory/migrations/unrelated.json"
+        migration.parent.mkdir()
+        migration.write_text(
+            json.dumps({"padding": "m" * 180}) + "\n", encoding="utf-8",
+        )
+        subprocess.run(["git", "-C", str(attested), "add", "."], check=True)
+        subprocess.run(
+            ["git", "-C", str(attested), "commit", "-qm", "base"], check=True,
+        )
+        base = subprocess.check_output(
+            ["git", "-C", str(attested), "rev-parse", "HEAD"], text=True,
+        ).strip()
+        bundle = attested / "factory/attestations/T-1/bundle.json"
+        bundle.parent.mkdir(parents=True)
+        bundle.write_text(json.dumps({
+            "branch_head": base, "padding": "x" * 512,
+        }) + "\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(attested), "add", "."], check=True)
+        subprocess.run(
+            ["git", "-C", str(attested), "commit", "-qm", "attestation"],
+            check=True,
+        )
+        with mock.patch.object(
+            HISTORY, "MAX_TOTAL_EVIDENCE_BYTES", 700,
+        ), self.assertRaisesRegex(
+            HISTORY.HistoricalObjectError,
+            "historical attestation evidence is too large",
+        ):
+            HISTORY.hydrate(attested, str(attested))
+
+        ticket_budget = self.root / "done-ticket-budget"
+        subprocess.run(
+            ["git", "init", "-q", "-b", "main", str(ticket_budget)], check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(ticket_budget), "config", "user.name", "Test"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(ticket_budget), "config", "user.email", "test@example.invalid"],
+            check=True,
+        )
+        (ticket_budget / "factory/PROJECT.env").parent.mkdir(parents=True)
+        (ticket_budget / "factory/PROJECT.env").write_text(
+            "GH_REPO=example/product\n", encoding="utf-8",
+        )
+        for number in (1, 2):
+            path = ticket_budget / f"factory/tickets/T-{number}.md"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("State: Done\n\n" + "x" * 100 + "\n", encoding="utf-8")
+            evidence = ticket_budget / f"factory/attestations/T-{number}/bundle.json"
+            evidence.parent.mkdir(parents=True)
+            evidence.write_text("{}\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "-C", str(ticket_budget), "add", "."], check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(ticket_budget), "commit", "-qm", "done tickets"],
+            check=True,
+        )
+        with (
+            mock.patch.object(HISTORY, "MAX_TOTAL_EVIDENCE_BYTES", 150),
+            mock.patch.object(HISTORY, "_json_at", return_value={}),
+            self.assertRaisesRegex(
+                HISTORY.HistoricalObjectError,
+                "historical attestation evidence is too large",
+            ),
+        ):
+            HISTORY.hydrate(ticket_budget, str(ticket_budget))
+
+    def test_historical_object_type_and_size_are_verified_before_import(self) -> None:
+        remote = self.root / "objects.git"
+        publisher = self.root / "object-publisher"
+        consumer = self.root / "object-consumer"
+        subprocess.run(["git", "init", "--bare", "-q", str(remote)], check=True)
+        subprocess.run(
+            ["git", "init", "-q", "-b", "main", str(publisher)], check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(publisher), "config", "user.name", "Test"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(publisher), "config", "user.email", "test@example.invalid"],
+            check=True,
+        )
+        (publisher / "object.txt").write_text("object\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(publisher), "add", "."], check=True)
+        subprocess.run(
+            ["git", "-C", str(publisher), "commit", "-qm", "object"], check=True,
+        )
+        commit = subprocess.check_output(
+            ["git", "-C", str(publisher), "rev-parse", "HEAD"], text=True,
+        ).strip()
+        blob = subprocess.check_output(
+            ["git", "-C", str(publisher), "rev-parse", "HEAD:object.txt"],
+            text=True,
+        ).strip()
+        subprocess.run(
+            ["git", "-C", str(publisher), "push", "-q", str(remote), "main"],
+            check=True,
+        )
+        subprocess.run(["git", "init", "-q", str(consumer)], check=True)
+        with self.assertRaisesRegex(
+            HISTORY.HistoricalObjectError,
+            "historical evidence object type is invalid",
+        ):
+            HISTORY.fetch_objects(consumer, str(remote), set(), {commit})
+        self.assertFalse(HISTORY.commit_present(consumer, commit))
+        with mock.patch.object(
+            HISTORY, "MAX_OBJECT_BYTES", 0,
+        ), self.assertRaisesRegex(
+            HISTORY.HistoricalObjectError,
+            "historical evidence object is too large",
+        ):
+            HISTORY.fetch_objects(consumer, str(remote), set(), {blob})
+        self.assertFalse(HISTORY._blob_present(consumer, blob))
+
+    def test_reconciliation_attestations_share_the_migration_byte_budget(self) -> None:
+        product = self.root / "reconciliation-budget"
+        migration = product / "factory/migrations/reconciliation.json"
+        migration.parent.mkdir(parents=True)
+        (product / "factory/PROJECT.env").write_text(
+            "GH_REPO=example/product\n", encoding="utf-8",
+        )
+        migration.write_text(json.dumps({
+            "adoption_pr": {"head": "1" * 40, "number": 1},
+            "evidence_head": "1" * 40,
+            "original_pr": {"head": "1" * 40, "number": 1},
+            "repository": "example/product",
+            "schema": "nysa.software-factory.protected-merge-reconciliation/v1",
+        }) + "\n", encoding="utf-8")
+        limit = migration.stat().st_size + 50
+
+        def charged_json(
+            _product: Path, _sha: str, _path: str, budget: list[int] | None = None,
+        ) -> dict[str, object]:
+            self.assertIsNotNone(budget)
+            assert budget is not None
+            budget[0] += 100
+            if budget[0] > limit:
+                raise HISTORY.HistoricalObjectError(
+                    "historical attestation evidence is too large",
+                )
+            return {}
+
+        with (
+            mock.patch.object(HISTORY, "MAX_TOTAL_EVIDENCE_BYTES", limit),
+            mock.patch.object(HISTORY, "commit_present", return_value=True),
+            mock.patch.object(HISTORY, "fetch_objects"),
+            mock.patch.object(HISTORY, "_json_at", side_effect=charged_json),
+            self.assertRaisesRegex(
+                HISTORY.HistoricalObjectError,
+                "historical attestation evidence is too large",
+            ),
+        ):
+            HISTORY.hydrate(product, str(self.root))
+
+    def test_activation_requires_an_exact_protected_main_record(self) -> None:
+        product = self.root / "main-record-product"
+        (product / "factory").mkdir(parents=True)
+        (product / "factory/PROJECT.env").write_text(
+            "GH_REPO=example/product\n", encoding="utf-8",
+        )
+        subprocess.run(
+            ["git", "init", "-q", "-b", "main", str(product)], check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(product), "config", "user.name", "Test"], check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(product), "config", "user.email", "test@example.invalid"],
+            check=True,
+        )
+        subprocess.run(["git", "-C", str(product), "add", "."], check=True)
+        subprocess.run(
+            ["git", "-C", str(product), "commit", "-qm", "main"], check=True,
+        )
+        head = subprocess.check_output(
+            ["git", "-C", str(product), "rev-parse", "HEAD"], text=True,
+        ).strip()
+        validator = ACTIVATION.Validator(
+            product, self.sha, ROOT / "scripts", str(self.root), "",
+        )
+        valid = subprocess.CompletedProcess(
+            [], 0, f"{head}\trefs/heads/main\n", "",
+        )
+        with mock.patch.object(ACTIVATION, "run_git_remote", return_value=valid):
+            self.assertEqual(validator.remote_main(), head)
+        invalid = (
+            subprocess.CompletedProcess([], 0, f"{head}\trefs/heads/other\n", ""),
+            subprocess.CompletedProcess(
+                [], 0,
+                f"{head}\trefs/heads/main\n{head}\trefs/heads/other\n", "",
+            ),
+            subprocess.CompletedProcess([], 0, f"{head}\n", ""),
+            subprocess.CompletedProcess([], 1, "", "unavailable"),
+        )
+        for response in invalid:
+            with self.subTest(output_fields=len(response.stdout.split())), mock.patch.object(
+                ACTIVATION, "run_git_remote", return_value=response,
+            ):
+                blockers, _, _ = validator.run()
+                self.assertEqual(blockers, [{
+                    "reason_code": "activation_product_not_main",
+                    "scope": "activation",
+                }])
+
+    def test_blocked_preflight_stops_before_certification_or_pause(self) -> None:
+        repo = self.root / "factory"
+        repo.mkdir()
+        (self.product / "factory/KIT_PIN").write_text(self.sha + "\n")
+        args = argparse.Namespace(
+            project="relay", product=self.product, repo=repo, sha=self.sha,
+            kits_root=self.kits, profile="openai-priority-v1", operator_id="tester",
+            runtime_bin=None, claude_bin=None, codex_bin=None, cursor_bin=None,
+            ticket_workdir=[],
+        )
+        runtime = {
+            "evidence": {"path": str(self.root / "runtime")},
+            "plan_sha256": "2" * 64,
+        }
+        with (
+            mock.patch.object(RELEASE, "clean_identity", side_effect=[
+                (self.sha, "e" * 40, str(repo)),
+                ("f" * 40, "1" * 40, str(self.product)),
+            ]),
+            mock.patch.object(RELEASE, "run") as run,
+            mock.patch.object(RELEASE, "contract", return_value="2.0.0"),
+            mock.patch.object(RELEASE, "prepare_runtime", return_value=runtime),
+            mock.patch.object(RELEASE, "validate_product_runtime_contract"),
+            mock.patch.object(
+                RELEASE, "release_preflight",
+                side_effect=RELEASE.ReleaseError("activation readiness blocked"),
+            ),
+            mock.patch.object(RELEASE, "prepare_product_runtime") as product_runtime,
+            mock.patch.object(RELEASE, "prepare_controller") as controller,
+            mock.patch.object(RELEASE, "child_plan") as child_plan,
+            mock.patch.object(RELEASE, "find_receipt") as find_receipt,
+        ):
+            with self.assertRaisesRegex(RELEASE.ReleaseError, "readiness blocked"):
+                RELEASE.setup(args)
+        self.assertEqual(run.call_count, 1)
+        product_runtime.assert_not_called()
+        controller.assert_not_called()
+        child_plan.assert_not_called()
+        find_receipt.assert_not_called()
+        self.assertFalse((self.product / "factory/MAINTENANCE").exists())
+        self.assertFalse((self.kits / "receipts").exists())
 
     def test_setup_emits_receipt_bound_activation_plan(self) -> None:
         repo = self.root / "factory"
@@ -366,8 +890,10 @@ class ReleaseTransactionTest(unittest.TestCase):
                 ("f" * 40, "1" * 40, str(self.product)),
             ]),
             mock.patch.object(RELEASE, "run"),
+            mock.patch.object(RELEASE, "release_preflight"),
             mock.patch.object(RELEASE, "contract", return_value="2.0.0"),
             mock.patch.object(RELEASE, "prepare_runtime", return_value=runtime),
+            mock.patch.object(RELEASE, "validate_product_runtime_contract"),
             mock.patch.object(RELEASE, "prepare_product_runtime"),
             mock.patch.object(RELEASE, "prepare_controller", return_value=self.plan["identity"]["controller"]),
             mock.patch.object(RELEASE, "launcher_plan", return_value=self.plan["children"]["launcher"]),
@@ -386,6 +912,39 @@ class ReleaseTransactionTest(unittest.TestCase):
         self.assertEqual(plan["stage"], "activation")
         self.assertEqual(plan["children"]["receipt"]["sha256"], RELEASE.file_digest(receipt_path))
         RELEASE.validate_plan(plan)
+
+    def test_test_mode_release_requires_an_explicit_isolated_home(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {"FACTORY_KIT_TEST_MODE": "1", "FACTORY_RELEASE_TEST_HOME": ""},
+            clear=False,
+        ):
+            with self.assertRaisesRegex(RELEASE.ReleaseError, "isolated release test home"):
+                RELEASE.account_home()
+        real_home = Path(RELEASE.pwd.getpwuid(os.getuid()).pw_dir).resolve()
+        with mock.patch.dict(
+            os.environ,
+            {
+                "FACTORY_KIT_TEST_MODE": "1",
+                "FACTORY_RELEASE_TEST_HOME": str(real_home),
+            },
+            clear=False,
+        ):
+            with self.assertRaisesRegex(RELEASE.ReleaseError, "real account home"):
+                RELEASE.account_home()
+        isolated = self.root / "isolated-home"
+        isolated.mkdir(mode=0o700)
+        with mock.patch.dict(
+            os.environ,
+            {
+                "FACTORY_KIT_TEST_MODE": "1",
+                "FACTORY_RELEASE_TEST_HOME": str(isolated),
+            },
+            clear=False,
+        ):
+            RELEASE.require_test_layout(isolated / ".factory/kits")
+            with self.assertRaisesRegex(RELEASE.ReleaseError, "isolated test home"):
+                RELEASE.require_test_layout(self.root / "production-kits")
 
     def test_public_setup_command_forwards_every_exact_argument(self) -> None:
         copy = self.root / "wrapper"
@@ -439,6 +998,41 @@ class ReleaseTransactionTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("--ticket-workdir", json.loads(result.stdout))
 
+    def test_public_resume_and_abort_require_no_external_hash(self) -> None:
+        state = self.root / "public-release-state"
+        state.mkdir(mode=0o700)
+        environment = {**os.environ, "FACTORY_KITS_ROOT": str(state)}
+        for action in ("resume", "abort"):
+            with self.subTest(action=action):
+                command = [
+                    "bash", str(ROOT / "scripts/factory-kit.sh"), "release", action,
+                    "--project", "relay", "--sha", self.sha,
+                    "--approved-by", "tester",
+                ]
+                accepted = subprocess.run(
+                    command, text=True, capture_output=True, check=False,
+                    env=environment,
+                )
+                self.assertEqual(accepted.returncode, 1)
+                self.assertIn("trusted install manifest", accepted.stderr)
+                legacy = subprocess.run(
+                    [*command, "--approve-hash", "9" * 64],
+                    text=True, capture_output=True, check=False,
+                    env=environment,
+                )
+                self.assertEqual(legacy.returncode, 2)
+                self.assertIn("Usage:", legacy.stderr)
+                helper = subprocess.run(
+                    [
+                        sys.executable, str(ROOT / "scripts/release-transaction.py"),
+                        "--kits-root", str(state), action, "--project", "relay",
+                        "--sha", self.sha, "--approved-by", "tester",
+                    ],
+                    text=True, capture_output=True, check=False,
+                )
+                self.assertEqual(helper.returncode, 2)
+                self.assertEqual(json.loads(helper.stdout)["status"], "error")
+
     def test_protected_check_fixture_matches_slurped_check_run_shape(self) -> None:
         result = subprocess.run(
             [
@@ -483,8 +1077,7 @@ class ReleaseTransactionTest(unittest.TestCase):
             self.plan["approval_sha256"],
         )
         args = argparse.Namespace(
-            project="relay", sha=self.sha,
-            approve_hash=prerequisite["approval_sha256"], approved_by="tester",
+            project="relay", sha=self.sha, approved_by="tester",
             kits_root=self.kits,
         )
         with (
@@ -583,6 +1176,7 @@ class ReleaseTransactionTest(unittest.TestCase):
             mock.patch.object(RELEASE.Path, "home", return_value=home),
             mock.patch.object(RELEASE, "clean_identity", return_value=product_identity),
             mock.patch.object(RELEASE, "contract", return_value="2.0.0"),
+            mock.patch.object(RELEASE, "validate_product_runtime_contract"),
             mock.patch.object(RELEASE, "run_json", return_value={"status": "pass"}),
         ):
             RELEASE.validate_live_basis(self.kits, plan)
@@ -602,6 +1196,7 @@ class ReleaseTransactionTest(unittest.TestCase):
             mock.patch.object(RELEASE.Path, "home", return_value=home),
             mock.patch.object(RELEASE, "clean_identity", return_value=product_identity),
             mock.patch.object(RELEASE, "contract", return_value="2.0.0"),
+            mock.patch.object(RELEASE, "validate_product_runtime_contract"),
         ):
             with self.assertRaisesRegex(RELEASE.ReleaseError, "runtime changed"):
                 RELEASE.validate_live_basis(self.kits, plan)
@@ -629,6 +1224,7 @@ class ReleaseTransactionTest(unittest.TestCase):
         tickets = self.product / "factory/tickets"
         tickets.mkdir()
         (tickets / "T-126.md").write_text("# T-126\n\nState: Ready\n")
+        (tickets / "T-126-bundle.md").write_text("# T-126 evidence\n")
         with mock.patch.object(RELEASE, "git", return_value="7" * 40):
             inventory = RELEASE.ticket_inventory(self.product)
         self.assertEqual(inventory, [{
@@ -642,12 +1238,7 @@ class ReleaseTransactionTest(unittest.TestCase):
             RELEASE.ticket_inventory(self.product)
 
     def test_release_prepares_only_ignored_physical_runtime_directories(self) -> None:
-        with mock.patch.object(
-            RELEASE.subprocess, "run",
-            return_value=subprocess.CompletedProcess([], 0),
-        ) as ignored:
-            RELEASE.prepare_product_runtime(self.product)
-        self.assertEqual(ignored.call_count, 2)
+        RELEASE.prepare_product_runtime(self.product)
         for relative in ("factory/runs", "factory/.active-runs"):
             path = self.product / relative
             self.assertTrue(path.is_dir())
@@ -657,24 +1248,223 @@ class ReleaseTransactionTest(unittest.TestCase):
         target.mkdir()
         (self.product / "factory/runs").rmdir()
         (self.product / "factory/runs").symlink_to(target, target_is_directory=True)
-        with (
-            mock.patch.object(
-                RELEASE.subprocess, "run",
-                return_value=subprocess.CompletedProcess([], 0),
-            ),
-            self.assertRaisesRegex(RELEASE.ReleaseError, "unsafe"),
-        ):
+        with self.assertRaisesRegex(RELEASE.ReleaseError, "unsafe"):
             RELEASE.prepare_product_runtime(self.product)
 
-    def test_release_refuses_unignored_runtime_directory(self) -> None:
+    def test_release_refuses_uncommitted_ignore_authority(self) -> None:
+        (self.product / ".gitignore").write_text(
+            "factory/runs/\nfactory/.active-runs/\nfactory/.dispatch-leases/\n"
+            "factory/.dispatch-leases.lock/\nfactory/.operator-clears/\n"
+        )
+        subprocess.run(["git", "-C", str(self.product), "init", "-q"], check=True)
+        subprocess.run(["git", "-C", str(self.product), "add", ".gitignore"], check=True)
+        subprocess.run([
+            "git", "-C", str(self.product), "-c", "user.name=test", "-c",
+            "user.email=test@local", "commit", "-qm", "fixture",
+        ], check=True)
+        with (self.product / ".git/info/exclude").open("a") as stream:
+            stream.write("factory/operator-map.json\nfactory/.operator-map.lock\n")
+        with self.assertRaisesRegex(RELEASE.ReleaseError, "ignore authority"):
+            RELEASE.validate_product_runtime_contract(self.product)
+
+    def test_release_refuses_negated_operator_ignore(self) -> None:
+        (self.product / ".gitignore").write_text(
+            "factory/runs/\nfactory/.active-runs/\nfactory/.dispatch-leases/\n"
+            "factory/.dispatch-leases.lock/\nfactory/operator-map.json\n"
+            "!factory/operator-map.json\nfactory/.operator-map.lock\n"
+            "factory/.operator-clears/\n"
+        )
+        subprocess.run(["git", "-C", str(self.product), "init", "-q"], check=True)
+        subprocess.run(["git", "-C", str(self.product), "add", ".gitignore"], check=True)
+        subprocess.run([
+            "git", "-C", str(self.product), "-c", "user.name=test", "-c",
+            "user.email=test@local", "commit", "-qm", "fixture",
+        ], check=True)
+        with self.assertRaisesRegex(RELEASE.ReleaseError, "gitignored"):
+            RELEASE.validate_product_runtime_contract(self.product)
+
+    def test_setup_refuses_tracked_operator_projection_before_install(self) -> None:
+        (self.product / ".gitignore").write_text(
+            "factory/runs/\nfactory/.active-runs/\nfactory/.dispatch-leases/\n"
+            "factory/.dispatch-leases.lock/\n"
+            "factory/operator-map.json\nfactory/.operator-map.lock\n"
+            "factory/.operator-clears/\n"
+        )
+        (self.product / "factory/KIT_PIN").write_text(self.sha + "\n")
+        subprocess.run(["git", "-C", str(self.product), "init", "-q"], check=True)
+        subprocess.run([
+            "git", "-C", str(self.product), "add", ".gitignore", "factory/KIT_PIN",
+        ], check=True)
+        subprocess.run([
+            "git", "-C", str(self.product), "add", "-f", "factory/operator-map.json",
+        ], check=True)
+        subprocess.run([
+            "git", "-C", str(self.product), "-c", "user.name=test", "-c",
+            "user.email=test@local", "commit", "-qm", "fixture",
+        ], check=True)
+        repo = self.root / "factory"
+        repo.mkdir()
+        args = argparse.Namespace(
+            project="relay", product=self.product, repo=repo, sha=self.sha,
+            kits_root=self.kits, profile="openai-priority-v1", operator_id="tester",
+            runtime_bin=None, claude_bin=None, codex_bin=None, cursor_bin=None,
+            ticket_workdir=[],
+        )
         with (
-            mock.patch.object(
-                RELEASE.subprocess, "run",
-                return_value=subprocess.CompletedProcess([], 1),
-            ),
-            self.assertRaisesRegex(RELEASE.ReleaseError, "gitignored"),
+            mock.patch.object(RELEASE, "clean_identity", side_effect=[
+                (self.sha, "e" * 40, str(repo)),
+                ("f" * 40, "1" * 40, str(self.product)),
+            ]),
+            mock.patch.object(RELEASE, "run") as install,
+            mock.patch.object(RELEASE, "prepare_runtime") as runtime,
+            self.assertRaisesRegex(RELEASE.ReleaseError, "operator-map.json"),
         ):
-            RELEASE.prepare_product_runtime(self.product)
+            RELEASE.setup(args)
+        install.assert_not_called()
+        runtime.assert_not_called()
+        self.assertFalse((self.product / "factory/runs").exists())
+        self.assertFalse((self.product / "factory/.active-runs").exists())
+
+    def test_release_refuses_missing_or_negated_dispatch_ignores(self) -> None:
+        base = (
+            "factory/runs/\nfactory/.active-runs/\nfactory/operator-map.json\n"
+            "factory/.operator-map.lock\nfactory/.operator-clears/\n"
+        )
+        for rule in ("", "factory/.dispatch-leases/\n!factory/.dispatch-leases.lock/\n"):
+            with self.subTest(rule=rule):
+                (self.product / ".gitignore").write_text(base + rule)
+                subprocess.run(["git", "-C", str(self.product), "init", "-q"], check=True)
+                subprocess.run(["git", "-C", str(self.product), "add", ".gitignore"], check=True)
+                subprocess.run([
+                    "git", "-C", str(self.product), "-c", "user.name=test", "-c",
+                    "user.email=test@local", "commit", "-qm", "fixture",
+                ], check=True)
+                with self.assertRaisesRegex(RELEASE.ReleaseError, "dispatch-leases"):
+                    RELEASE.validate_product_runtime_contract(self.product)
+                subprocess.run(["git", "-C", str(self.product), "reset", "--hard", "-q"], check=True)
+
+    def test_release_refuses_tracked_or_unsafe_dispatch_state(self) -> None:
+        ignore = (
+            "factory/runs/\nfactory/.active-runs/\nfactory/operator-map.json\n"
+            "factory/.operator-map.lock\nfactory/.operator-clears/\n"
+            "factory/.dispatch-leases/\n"
+            "factory/.dispatch-leases.lock/\n"
+        )
+        for index, (relative, expected) in enumerate((
+            ("factory/.dispatch-leases/T-1.json", "factory/.dispatch-leases"),
+            ("factory/.dispatch-leases.lock/owner", "factory/.dispatch-leases.lock"),
+        )):
+            product = self.root / f"tracked-dispatch-{index}"
+            (product / "factory").mkdir(parents=True)
+            with self.subTest(relative=relative):
+                (product / ".gitignore").write_text(ignore)
+                path = product / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("tracked\n")
+                subprocess.run(["git", "-C", str(product), "init", "-q"], check=True)
+                subprocess.run([
+                    "git", "-C", str(product), "add", ".gitignore",
+                ], check=True)
+                subprocess.run([
+                    "git", "-C", str(product), "add", "-f", relative,
+                ], check=True)
+                subprocess.run([
+                    "git", "-C", str(product), "-c", "user.name=test", "-c",
+                    "user.email=test@local", "commit", "-qm", "fixture",
+                ], check=True)
+                with self.assertRaisesRegex(
+                    RELEASE.ReleaseError, re.escape(expected) + ".*untracked",
+                ):
+                    RELEASE.validate_product_runtime_contract(product)
+
+    def test_release_refuses_existing_empty_dispatch_lock(self) -> None:
+        (self.product / ".gitignore").write_text(
+            "factory/runs/\nfactory/.active-runs/\nfactory/operator-map.json\n"
+            "factory/.operator-map.lock\nfactory/.operator-clears/\n"
+            "factory/.dispatch-leases/\n"
+            "factory/.dispatch-leases.lock/\n"
+        )
+        lock = self.product / "factory/.dispatch-leases.lock"
+        lock.mkdir(mode=0o700)
+        subprocess.run(["git", "-C", str(self.product), "init", "-q"], check=True)
+        subprocess.run(["git", "-C", str(self.product), "add", ".gitignore"], check=True)
+        subprocess.run([
+            "git", "-C", str(self.product), "-c", "user.name=test", "-c",
+            "user.email=test@local", "commit", "-qm", "fixture",
+        ], check=True)
+        with self.assertRaisesRegex(RELEASE.ReleaseError, "lock.*absent"):
+            RELEASE.validate_product_runtime_contract(self.product)
+
+    def test_release_replay_accepts_only_nonempty_lease_runtime_after_dispatch(self) -> None:
+        (self.product / ".gitignore").write_text(
+            "factory/runs/\nfactory/.active-runs/\nfactory/operator-map.json\n"
+            "factory/.operator-map.lock\nfactory/.operator-clears/\n"
+            "factory/.dispatch-leases/\n"
+            "factory/.dispatch-leases.lock/\n"
+        )
+        subprocess.run(["git", "-C", str(self.product), "init", "-q"], check=True)
+        subprocess.run(["git", "-C", str(self.product), "add", ".gitignore"], check=True)
+        subprocess.run([
+            "git", "-C", str(self.product), "-c", "user.name=test", "-c",
+            "user.email=test@local", "commit", "-qm", "fixture",
+        ], check=True)
+        leases = self.product / "factory/.dispatch-leases"
+        leases.mkdir(mode=0o700)
+        (leases / "T-1.json").write_text("runtime\n")
+        with self.assertRaisesRegex(RELEASE.ReleaseError, "empty or absent"):
+            RELEASE.validate_product_runtime_contract(self.product)
+        RELEASE.validate_product_runtime_contract(
+            self.product, require_idle_dispatch=False,
+        )
+
+    def test_release_refuses_missing_operator_clear_ignore(self) -> None:
+        (self.product / ".gitignore").write_text(
+            "factory/runs/\nfactory/.active-runs/\nfactory/operator-map.json\n"
+            "factory/.operator-map.lock\nfactory/.dispatch-leases/\n"
+            "factory/.dispatch-leases.lock/\n"
+        )
+        subprocess.run(["git", "-C", str(self.product), "init", "-q"], check=True)
+        subprocess.run(["git", "-C", str(self.product), "add", ".gitignore"], check=True)
+        subprocess.run([
+            "git", "-C", str(self.product), "-c", "user.name=test", "-c",
+            "user.email=test@local", "commit", "-qm", "fixture",
+        ], check=True)
+        with self.assertRaisesRegex(RELEASE.ReleaseError, "operator-clears"):
+            RELEASE.validate_product_runtime_contract(self.product)
+
+    def test_release_refuses_tracked_or_unsafe_operator_clears(self) -> None:
+        ignore = (
+            "factory/runs/\nfactory/.active-runs/\nfactory/operator-map.json\n"
+            "factory/.operator-map.lock\nfactory/.operator-clears/\n"
+            "factory/.dispatch-leases/\nfactory/.dispatch-leases.lock/\n"
+        )
+        for index, unsafe in enumerate((False, True)):
+            product = self.root / f"operator-clears-{index}"
+            (product / "factory").mkdir(parents=True)
+            (product / ".gitignore").write_text(ignore)
+            subprocess.run(["git", "-C", str(product), "init", "-q"], check=True)
+            subprocess.run(["git", "-C", str(product), "add", ".gitignore"], check=True)
+            if unsafe:
+                target = self.root / "foreign-operator-clears"
+                target.mkdir()
+                (product / "factory/.operator-clears").symlink_to(
+                    target, target_is_directory=True,
+                )
+            else:
+                intent = product / "factory/.operator-clears/T-218.json"
+                intent.parent.mkdir()
+                intent.write_text("tracked\n")
+                subprocess.run([
+                    "git", "-C", str(product), "add", "-f",
+                    "factory/.operator-clears/T-218.json",
+                ], check=True)
+            subprocess.run([
+                "git", "-C", str(product), "-c", "user.name=test", "-c",
+                "user.email=test@local", "commit", "-qm", "fixture",
+            ], check=True)
+            expected = "state directory is unsafe" if unsafe else "operator-clears.*untracked"
+            with self.assertRaisesRegex(RELEASE.ReleaseError, expected):
+                RELEASE.validate_product_runtime_contract(product)
 
     def test_release_initializes_every_bound_ticket_without_erasing_overlays(self) -> None:
         tickets = self.product / "factory/tickets"
@@ -717,14 +1507,18 @@ class ReleaseTransactionTest(unittest.TestCase):
 
     def test_launcher_test_mode_retains_its_explicit_isolated_kits_root(self) -> None:
         home = self.root / "test-home"
+        home.mkdir(mode=0o700)
         kits = home / ".factory/kits"
         runtime = home / ".factory/project-runtimes/relay/bin"
-        with (
-            mock.patch.object(RELEASE.Path, "home", return_value=home),
-            mock.patch.dict(os.environ, {"FACTORY_LAUNCH_TEST_MODE": "1"}),
-        ):
+        with mock.patch.dict(os.environ, {
+            "FACTORY_KIT_TEST_MODE": "1",
+            "FACTORY_RELEASE_TEST_HOME": str(home),
+        }):
             environment = RELEASE.launcher_environment(kits, runtime)
         self.assertEqual(environment["FACTORY_KITS_ROOT"], str(kits))
+        self.assertEqual(environment["FACTORY_LAUNCH_TEST_HOME"], str(home))
+        self.assertNotIn("FACTORY_LAUNCH_TEST_ACCOUNT_HOME", environment)
+        self.assertEqual(environment["FACTORY_LAUNCH_TEST_MODE"], "1")
 
     def test_runtime_reentry_reuses_the_completed_exact_approval(self) -> None:
         release = self.root / "release"
@@ -1118,6 +1912,10 @@ class ReleaseTransactionTest(unittest.TestCase):
             mock.patch.object(RELEASE, "apply_launcher_plan") as launcher,
             mock.patch.object(RELEASE, "run_json", side_effect=doctor),
             mock.patch.object(RELEASE, "account_home", return_value=home),
+            mock.patch.object(
+                RELEASE, "launcher_environment",
+                side_effect=lambda kits, runtime: RELEASE.command_environment(kits, runtime),
+            ),
             mock.patch.dict(
                 os.environ,
                 {
@@ -1391,9 +2189,9 @@ class ReleaseTransactionTest(unittest.TestCase):
         }
         stored = self.kits / "projects/relay/release-plans" / self.sha / f"{approval}.json"
         RELEASE.atomic_json(stored, plan)
+        RELEASE.atomic_json(stored.parent.parent / f"{self.sha}.json", plan)
         args = argparse.Namespace(
-            approve_hash=approval, approved_by="tester", kits_root=self.kits,
-            project="relay", sha=self.sha,
+            approved_by="tester", kits_root=self.kits, project="relay", sha=self.sha,
         )
         with (
             mock.patch.object(RELEASE, "validate_plan"),
@@ -1403,6 +2201,13 @@ class ReleaseTransactionTest(unittest.TestCase):
                 "completed_projects": [], "phase": "approved", "status": "in-progress",
             }),
         ):
+            before = marker.read_bytes()
+            args.approved_by = "someone-else"
+            with self.assertRaisesRegex(RELEASE.ReleaseError, "cannot be aborted"):
+                RELEASE.abort(args)
+            self.assertEqual(marker.read_bytes(), before)
+            self.assertTrue(reservation.exists())
+            args.approved_by = "tester"
             result = RELEASE.abort(args)
         self.assertEqual(result["status"], "aborted")
         self.assertEqual(marker.read_bytes(), prior)

@@ -7,10 +7,11 @@ KIT="$ROOT/scripts/factory-kit.sh"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/factory-kit-test.XXXXXX")"
 TMP="$(cd "$TMP" && pwd -P)"
 TEST_TMP="$TMP/tmp"
-STATE="$TMP/kits"
 CANONICAL="$TMP/canonical.git"
 KIT_REPO="$TMP/kit-source"
 STUB_BIN="$TMP/bin"
+RELEASE_TEST_HOME="$TMP"
+STATE="$RELEASE_TEST_HOME/.factory/kits"
 PINNED_SCANNER_STUB="$STUB_BIN/gitleaks"
 GH_TRACE="$TMP/gh.trace"
 FAILURES=0
@@ -19,6 +20,7 @@ FIRST_PID=""
 REAL_HOME_SANDBOX_SECRET=""
 
 mkdir -p "$TEST_TMP" "$STUB_BIN"
+chmod 700 "$RELEASE_TEST_HOME"
 cat > "$PINNED_SCANNER_STUB" <<'EOF'
 #!/usr/bin/env bash
 exit 0
@@ -56,6 +58,7 @@ run_kit() {
   TMPDIR="$TEST_TMP" \
   FACTORY_KITS_ROOT="$STATE" \
   FACTORY_KIT_TEST_MODE=1 \
+  FACTORY_RELEASE_TEST_HOME="$RELEASE_TEST_HOME" \
   FACTORY_KIT_TEST_SKIP_PROVIDER_CLI_PIN=1 \
   FACTORY_KIT_TEST_REMOTE_FULL_CI="${FACTORY_KIT_TEST_REMOTE_FULL_CI:-1}" \
   FACTORY_KIT_TEST_PINNED_SCANNER="$PINNED_SCANNER_STUB" \
@@ -66,12 +69,14 @@ run_kit() {
 }
 
 run_kit_with_state() {
-  local state="$1"
+  local state="$1" test_home
   shift
+  test_home="$(dirname "$(dirname "$state")")"
   PATH="$STUB_BIN:$PATH" \
   TMPDIR="$TEST_TMP" \
   FACTORY_KITS_ROOT="$state" \
   FACTORY_KIT_TEST_MODE=1 \
+  FACTORY_RELEASE_TEST_HOME="$test_home" \
   FACTORY_KIT_TEST_SKIP_PROVIDER_CLI_PIN=1 \
   FACTORY_KIT_TEST_REMOTE_FULL_CI="${FACTORY_KIT_TEST_REMOTE_FULL_CI:-1}" \
   FACTORY_KIT_TEST_PINNED_SCANNER="$PINNED_SCANNER_STUB" \
@@ -463,6 +468,19 @@ git_identity
 git init --bare -q "$CANONICAL"
 git init -q -b main "$KIT_REPO"
 git -C "$KIT_REPO" remote add origin "$CANONICAL"
+if FACTORY_KIT_TEST_MODE=1 FACTORY_KIT_CANONICAL_ORIGIN="$CANONICAL" \
+   FACTORY_KITS_ROOT="$STATE" bash "$KIT" --help >/dev/null 2>&1; then
+  fail "Factory test mode requires an explicit test home"
+else
+  pass "Factory test mode requires an explicit test home"
+fi
+if FACTORY_KIT_TEST_MODE=1 FACTORY_KIT_CANONICAL_ORIGIN="$CANONICAL" \
+   FACTORY_RELEASE_TEST_HOME="$RELEASE_TEST_HOME" \
+   FACTORY_KITS_ROOT="$HOME/.factory/kits" bash "$KIT" --help >/dev/null 2>&1; then
+  fail "Factory test mode refuses the real kits root"
+else
+  pass "Factory test mode refuses the real kits root"
+fi
 mkdir -p "$KIT_REPO/ci" "$KIT_REPO/scripts/lib" "$KIT_REPO/scripts/launchd"
 mkdir -p "$KIT_REPO/scripts/model-routing"
 cp "$ROOT/scripts/model-manager.py" "$ROOT/scripts/model-router.py" \
@@ -472,7 +490,16 @@ cp "$ROOT/scripts/model-manager.py" "$ROOT/scripts/model-router.py" \
   "$ROOT/scripts/ticket-readiness.py" \
   "$KIT_REPO/scripts/"
 cp "$ROOT/scripts/lib/certification_plan.py" \
+  "$ROOT/scripts/lib/activation_preflight.py" \
   "$ROOT/scripts/lib/certification_cache.py" \
+  "$ROOT/scripts/lib/effective_ticket.py" \
+  "$ROOT/scripts/lib/historical_pr_objects.py" \
+  "$ROOT/scripts/lib/inflight_release.py" \
+  "$ROOT/scripts/lib/legacy_closeout.py" \
+  "$ROOT/scripts/lib/operator_receipt.py" \
+  "$ROOT/scripts/lib/protected_merge_reconciliation.py" \
+  "$ROOT/scripts/lib/terminal_backfill.py" \
+  "$ROOT/scripts/lib/approval_evidence.py" \
   "$KIT_REPO/scripts/lib/"
 cp "$ROOT/scripts/factory-launch" \
   "$KIT_REPO/scripts/factory-launch"
@@ -566,13 +593,20 @@ SYMLINK_TARGET="$TMP/symlink-target"
 mkdir "$SYMLINK_TARGET"
 RAW_LINK="$TMP/raw-kits-link"
 ln -s "$SYMLINK_TARGET" "$RAW_LINK"
-if run_kit_with_state "$RAW_LINK" status --project alpha >/dev/null 2>&1; then
+RAW_HOME="$TMP/raw-home"
+mkdir -m 700 "$RAW_HOME" "$RAW_HOME/.factory"
+RAW_STATE="$RAW_HOME/.factory/kits"
+ln -s "$SYMLINK_TARGET" "$RAW_STATE"
+if run_kit_with_state "$RAW_STATE" status --project alpha >/dev/null 2>&1; then
   fail "raw state root symlink is rejected"
 else
   pass "raw state root symlink is rejected"
 fi
 for component in releases manifests receipts projects; do
-  SYM_STATE="$TMP/sym-$component"
+  SYM_HOME="$TMP/sym-$component-home"
+  mkdir -m 700 "$SYM_HOME"
+  mkdir "$SYM_HOME/.factory"
+  SYM_STATE="$SYM_HOME/.factory/kits"
   mkdir -p "$SYM_STATE"
   ln -s "$SYMLINK_TARGET" "$SYM_STATE/$component"
   if run_kit_with_state "$SYM_STATE" status --project alpha >/dev/null 2>&1; then
@@ -581,7 +615,10 @@ for component in releases manifests receipts projects; do
     pass "$component managed symlink is rejected"
   fi
 done
-SYM_PROJECT_STATE="$TMP/sym-project-dir"
+SYM_PROJECT_HOME="$TMP/sym-project-home"
+mkdir -m 700 "$SYM_PROJECT_HOME"
+mkdir "$SYM_PROJECT_HOME/.factory"
+SYM_PROJECT_STATE="$SYM_PROJECT_HOME/.factory/kits"
 mkdir -p "$SYM_PROJECT_STATE/projects"
 ln -s "$SYMLINK_TARGET" "$SYM_PROJECT_STATE/projects/alpha"
 if run_kit_with_state "$SYM_PROJECT_STATE" status --project alpha >/dev/null 2>&1; then
@@ -955,6 +992,7 @@ PY
 
 PRODUCT_PREFLIGHT="$(make_product product-preflight)"
 set_pin "$PRODUCT_PREFLIGHT" "$SHA_A"
+printf 'State: Backlog\n' > "$PRODUCT_PREFLIGHT/factory/tickets/T-004.md"
 cat > "$PRODUCT_PREFLIGHT/factory/tickets/T-001.md" <<'EOF'
 State: Ready
 Product-Decisions: frozen
@@ -1138,6 +1176,21 @@ else
   fail "preflight report binds remote-main evidence to validated push authority" \
     "$PREFLIGHT_AUTHORITY_OUTPUT"
 fi
+git -C "$PRODUCT_PREFLIGHT" remote set-url --push origin \
+  https://example.invalid/product.git
+export FACTORY_KIT_CERTIFICATION_NETWORK_REVIEWED=1
+PREFLIGHT_GITHUB_PUSH_OUTPUT="$(run_kit preflight-report --project preflight \
+  --product "$PRODUCT_PREFLIGHT" --sha "$SHA_A" --ticket T-001 --json 2>&1)"
+PREFLIGHT_GITHUB_PUSH_STATUS=$?
+unset FACTORY_KIT_CERTIFICATION_NETWORK_REVIEWED
+git -C "$PRODUCT_PREFLIGHT" remote set-url --push origin "$PREFLIGHT_PUSH_ORIGIN"
+if [[ "$PREFLIGHT_GITHUB_PUSH_STATUS" -eq 2 ]] &&
+   preflight_setup_blocked_json "$PREFLIGHT_GITHUB_PUSH_OUTPUT"; then
+  pass "Factory test mode refuses a GitHub product push origin"
+else
+  fail "Factory test mode refuses a GitHub product push origin" \
+    "$PREFLIGHT_GITHUB_PUSH_OUTPUT"
+fi
 export FACTORY_KIT_CERTIFICATION_NETWORK_REVIEWED=1
 PREFLIGHT_BACKLOG_OUTPUT="$(run_kit preflight-report --project preflight \
   --product "$PRODUCT_PREFLIGHT" --sha "$SHA_A" --ticket T-003 --json 2>&1)"
@@ -1162,6 +1215,39 @@ else
   fail "preflight report requires selected tickets to be Ready" \
     "$PREFLIGHT_BACKLOG_OUTPUT"
 fi
+for ticket in T-004 T-005; do
+  printf 'State: Done\n' > "$PRODUCT_PREFLIGHT/factory/tickets/$ticket.md"
+done
+printf 'State: Planning\n' > "$PRODUCT_PREFLIGHT/factory/tickets/T-006.md"
+commit_all "$PRODUCT_PREFLIGHT" "add invalid terminal preflight fixtures"
+push_main "$PRODUCT_PREFLIGHT"
+PREFLIGHT_TERMINAL_STATE_BEFORE="$(state_snapshot)"
+export FACTORY_KIT_CERTIFICATION_NETWORK_REVIEWED=1
+PREFLIGHT_TERMINAL_OUTPUT="$(run_kit preflight-report --project preflight \
+  --product "$PRODUCT_PREFLIGHT" --sha "$SHA_A" --json 2>&1)"
+PREFLIGHT_TERMINAL_STATUS=$?
+unset FACTORY_KIT_CERTIFICATION_NETWORK_REVIEWED
+if [[ "$PREFLIGHT_TERMINAL_STATUS" -eq 2 ]] &&
+   python3 - "$PREFLIGHT_TERMINAL_OUTPUT" <<'PY'
+import json, sys
+value = json.loads(sys.argv[1])
+assert value["blockers"] == [
+    {"reason_code": "activation_terminal_invalid", "scope": "T-004"},
+    {"reason_code": "activation_terminal_invalid", "scope": "T-005"},
+    {"reason_code": "activation_ticket_lease_missing", "scope": "T-006"},
+]
+PY
+   [[ "$PREFLIGHT_TERMINAL_STATE_BEFORE" == "$(state_snapshot)" ]] &&
+   [[ -z "$(git -C "$PRODUCT_PREFLIGHT" status --porcelain --untracked-files=all)" ]]; then
+  pass "preflight report aggregates authoritative activation blockers without owner-state mutation"
+else
+  fail "preflight report aggregates authoritative activation blockers without owner-state mutation" \
+    "$PREFLIGHT_TERMINAL_OUTPUT"
+fi
+git -C "$PRODUCT_PREFLIGHT" rm -q \
+  factory/tickets/T-004.md factory/tickets/T-005.md factory/tickets/T-006.md
+commit_all "$PRODUCT_PREFLIGHT" "remove invalid terminal preflight fixtures"
+push_main "$PRODUCT_PREFLIGHT"
 sed 's|Builder ownership: app/two.js only|Builder ownership: app/one.js only|' \
   "$PRODUCT_PREFLIGHT/factory/tickets/T-002.md" > "$TMP/preflight-conflict-ticket"
 mv "$TMP/preflight-conflict-ticket" "$PRODUCT_PREFLIGHT/factory/tickets/T-002.md"
@@ -1191,53 +1277,31 @@ else
   fail "preflight report blocks pairwise Builder ownership conflicts" \
     "$PREFLIGHT_CONFLICT_OUTPUT"
 fi
-PREFLIGHT_REAL_GIT="$(command -v git)"
-PREFLIGHT_MUTATION_COUNTER="$TMP/preflight-git-counter"
-cat > "$STUB_BIN/git" <<'EOF'
-#!/usr/bin/env bash
-set -eu
-ls_remote=0
-for argument in "$@"; do
-  [[ "$argument" == "ls-remote" ]] && ls_remote=1
-done
-if [[ "$ls_remote" -eq 1 ]]; then
-  count=0
-  [[ ! -f "$PREFLIGHT_MUTATION_COUNTER" ]] ||
-    count="$(cat "$PREFLIGHT_MUTATION_COUNTER")"
-  count=$((count + 1))
-  printf '%s\n' "$count" > "$PREFLIGHT_MUTATION_COUNTER"
-  if [[ "$count" -eq 2 ]]; then
-    "$PREFLIGHT_REAL_GIT" -C "$PREFLIGHT_MUTATION_PRODUCT" \
-      commit --allow-empty -qm "concurrent preflight mutation"
-  fi
-fi
-exec "$PREFLIGHT_REAL_GIT" "$@"
-EOF
-chmod +x "$STUB_BIN/git"
-export PREFLIGHT_REAL_GIT PREFLIGHT_MUTATION_COUNTER
-export PREFLIGHT_MUTATION_PRODUCT="$PRODUCT_PREFLIGHT"
-export FACTORY_KIT_CERTIFICATION_NETWORK_REVIEWED=1
-PREFLIGHT_MUTATION_OUTPUT="$(run_kit preflight-report --project preflight \
-  --product "$PRODUCT_PREFLIGHT" --sha "$SHA_A" --ticket T-001 --json 2>&1)"
-PREFLIGHT_MUTATION_STATUS=$?
-unset FACTORY_KIT_CERTIFICATION_NETWORK_REVIEWED PREFLIGHT_MUTATION_PRODUCT
-unset PREFLIGHT_REAL_GIT PREFLIGHT_MUTATION_COUNTER
-rm -f "$STUB_BIN/git"
-if [[ "$PREFLIGHT_MUTATION_STATUS" -eq 2 ]] &&
-   python3 - "$PREFLIGHT_MUTATION_OUTPUT" <<'PY'
-import json, sys
-value = json.loads(sys.argv[1])
-assert value["status"] == "blocked"
-assert value["product"]["identity_stable"] is False
-assert "identity_changed" in {
-    item["reason_code"] for item in value["blockers"]
-}
+if python3 - "$ROOT" "$PRODUCT_PREFLIGHT" "$PREFLIGHT_PUSH_ORIGIN" <<'PY'
+import importlib.util, pathlib, subprocess, sys
+from unittest import mock
+root, product, origin = map(pathlib.Path, sys.argv[1:])
+spec = importlib.util.spec_from_file_location(
+    "operator_preflight_report", root / "scripts/operator-preflight-report.py",
+)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+real = module.run_git_remote
+def mutate(*arguments, **keywords):
+    subprocess.run(
+        ["/usr/bin/git", "-C", str(product), "commit", "--allow-empty",
+         "-qm", "concurrent preflight mutation"], check=True,
+    )
+    return real(*arguments, **keywords)
+with mock.patch.object(module, "run_git_remote", side_effect=mutate):
+    snapshot = module.product_snapshot(product, str(origin))
+assert snapshot["identity_stable"] is False
+assert snapshot["identity_changed"] is True
 PY
 then
   pass "preflight report blocks a product identity change during evidence reads"
 else
-  fail "preflight report blocks a product identity change during evidence reads" \
-    "$PREFLIGHT_MUTATION_OUTPUT"
+  fail "preflight report blocks a product identity change during evidence reads"
 fi
 
 PRODUCT_ONE="$(make_product product-one)"
