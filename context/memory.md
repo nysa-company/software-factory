@@ -9,6 +9,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Stable operating truth lives in `docs/`; prompts, templates, and evidence stay colocated with consumers. The operator preflight hydrates only evidence-bound immutable objects, batches read-only object checks, aggregates activation blockers, and makes network review explicit before certification.
 - Nysa Agents baseline v3 as a toolkit; `bash ci/test-all.sh` is the unconditional full command.
 - Contract 2 live products resolve sealed exact-SHA releases from owner-only `active.json` records under `~/.factory/kits` via `~/.factory/bin/factory-launch`; the native controller is the only scheduler.
+- The local release canary is one code-driven, product-agnostic command that creates contained local origins, runs setup/resume, and times one authenticated Planning transition plus sealed mock planner; its repository-test evidence is never promotable.
 - Model routing is portfolio policy; routes pin at the ticket boundary and change only via the Contract 1.4 journal flow. One profile resolution shares model-independent native-adapter readiness across its routes and runs independent probes in bounded parallel; Cursor readiness stays model-specific. Sealed Cursor inventory verifies the exact configured CLI identity in an empty disposable owner-only home before copying credentials, then accepts only its bounded certified structure.
 - Linear is removed (Decision 398); the six operator authorities are one-use receipts via `factory-kit.sh operator ACTION`. The only emergency recovery is the receipt-bound `OPERATOR RESUME` ticket commit. No generic lifecycle bypass is approved.
 - **Contract rules below in Operating contract are authoritative**; this summary is only what the session hook can inject.
@@ -759,6 +760,17 @@ everything the Factory actually enforces lives here.
   un-restored occurrence also requires protected in-flight rewrite authority.
 
 ## Log
+
+## 2026-08-14 — Local release canary became one command
+
+Category: System change
+
+`scripts/local-release-canary.py` now creates a short owner-only isolated home,
+fresh local Factory and product origins, drives the existing composite release
+transaction to activation, and verifies one digest-bound Planning event and
+one completed sealed mock planner within a bounded total deadline. It accepts
+any clean Contract 2 product pinned to the supplied clean Factory checkout and
+records command/phase timing without adding a product-specific shortcut.
 
 ## 2026-08-07 — Current truth split into an injected summary and Operating contract
 

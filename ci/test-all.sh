@@ -3,6 +3,33 @@
 set -u
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+parallel_full_suite() {
+  local group child_pid group_index=0 failed=0 pids=""
+  for group in 1 2 3 4; do
+    (
+      set -o pipefail
+      CI_SUITE_GROUP="$group" bash "$0" --group "$group" 2>&1 |
+        awk -v group="$group" '{ print "[group " group "] " $0; fflush() }'
+    ) &
+    pids="$pids $!"
+  done
+  for child_pid in $pids; do
+    group_index=$((group_index + 1))
+    if ! wait "$child_pid"; then
+      printf 'FAIL: parallel suite group %s\n' "$group_index" >&2
+      failed=1
+    fi
+  done
+  [[ "$failed" -eq 0 ]] || return 1
+  printf 'PASS: complete local suite in four parallel groups\n'
+}
+
+if [[ $# -eq 0 ]]; then
+  parallel_full_suite
+  exit $?
+fi
+
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/software-factory-tests.XXXXXX")"
 FAIL=0
 SHADOW_MISS=0
