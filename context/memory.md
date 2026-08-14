@@ -5897,3 +5897,13 @@ only when the operator passes `--skip-optional-tests`. Required phases may not
 depend on optional tests, non-test phases cannot opt in, and the sealed release
 plan, measured result, and receipt record the exact omission. A missing test run
 is therefore visible and is never reported as a passing test.
+
+## 2026-08-14 — Decision 413: Development products bind their declared runtime
+
+Category: Reliability
+
+An isolated product lane resolves Node, npm, and npx through the existing
+owner-runtime transaction instead of a machine-specific Homebrew path. The
+exact candidate must match the product's committed certification plan, is
+bound into planning and resume evidence, and receives only read-only sandbox
+access to its resolved runtime roots.

@@ -255,9 +255,12 @@ grep -Fq 'FACTORY_CLI_LANE_ROOT="$root"' <<<"$lane_env_source" ||
   fail "trusted product helpers lost the checkpoint lane-root binding"
 grep -Fq 'FACTORY_CLI_INTERNAL_SANDBOX=1' <<<"$lane_env_source" ||
   fail "trusted product helpers lost the development sandbox marker"
-seatbelt_source="$(sed -n '/^write_seatbelt_profiles()/,/^}/p' "$LANE")"
-grep -Fq 'for item in ("/opt/homebrew", "/usr/local"):' <<<"$seatbelt_source" ||
-  fail "development sandbox dropped the trusted Node toolchain roots"
+seatbelt_source="$(sed -n '/^write_seatbelt_profiles()/,/^prepare_product_dependencies()/p' \
+  "$LANE" | sed '$d')"
+eval "$seatbelt_source"
+grep -Fq 'runtime_tools={' <<<"$seatbelt_source" &&
+  grep -Fq 'runtime_roots={' <<<"$seatbelt_source" ||
+  fail "development sandbox dropped the exact Node toolchain roots"
 grep -Fq '(allow file-read-data (literal "/dev/dtracehelper"))' \
   <<<"$seatbelt_source" ||
   fail "native Claude startup lost its read-only dtracehelper allowance"
@@ -272,11 +275,30 @@ grep -Fq 'exec "$(sandbox_exec)" -f "$root/runtime/native.sb"' \
 grep -Fq 'CLAUDE_PERMISSION_ARGS=(--dangerously-skip-permissions' \
   "$ROOT/scripts/adapters/claude-code.sh" ||
   fail "Claude cannot run role-owned git inside the outer Seatbelt"
-if grep -Eq 'file-write.*(/opt/homebrew|/usr/local)' <<<"$seatbelt_source"; then
+SEATBELT_RUNTIME_ROOT="$TMP/nysa-sf-dev.seatbelt-runtime"
+mkdir -p "$SEATBELT_RUNTIME_ROOT"/{home,runtime} \
+  "$SEATBELT_RUNTIME_ROOT/node-dist/bin" "$SEATBELT_RUNTIME_ROOT/npm-dist/bin"
+for runtime_tool in node npm npx; do
+  case "$runtime_tool" in
+    node) runtime_target="$SEATBELT_RUNTIME_ROOT/node-dist/bin/node" ;;
+    npm) runtime_target="$SEATBELT_RUNTIME_ROOT/npm-dist/bin/npm-cli.js" ;;
+    npx) runtime_target="$SEATBELT_RUNTIME_ROOT/npm-dist/bin/npx-cli.js" ;;
+  esac
+  printf '#!/bin/sh\nexit 0\n' >"$runtime_target"
+  chmod +x "$runtime_target"
+  ln -s "$runtime_target" "$SEATBELT_RUNTIME_ROOT/home/$runtime_tool"
+done
+write_seatbelt_profiles "$SEATBELT_RUNTIME_ROOT" /usr/bin/true "" "" ""
+for runtime_root in "$SEATBELT_RUNTIME_ROOT/node-dist" \
+  "$SEATBELT_RUNTIME_ROOT/npm-dist"; do
+  grep -Fq "(allow file-read* (subpath \"$runtime_root\"))" \
+    "$SEATBELT_RUNTIME_ROOT/runtime/native.sb" ||
+    fail "development sandbox omitted an exact product runtime root"
+done
+grep -Eq 'file-write.*(node-dist|npm-dist)' \
+  "$SEATBELT_RUNTIME_ROOT/runtime/native.sb" &&
   fail "development sandbox made the host toolchain writable"
-fi
 if [[ "$(uname -s)" == Darwin && -x /usr/bin/sandbox-exec ]]; then
-  eval "$seatbelt_source"
   OUTER_PROBE_ROOT="$(mktemp -d /private/tmp/nysa-sb.XXXXXX)"
   REAL_GIT="$(/usr/bin/xcrun -f git)"
   mkdir -p "$OUTER_PROBE_ROOT"/{home,runtime,tmp,work}
@@ -315,6 +337,49 @@ if [[ "$(uname -s)" == Darwin && -x /usr/bin/sandbox-exec ]]; then
   fi
   rm -rf -- "$OUTER_PROBE_ROOT"
 fi
+eval "$(sed -n '/^prepare_product_runtime()/,/^validate_lane()/p' "$LANE" | sed '$d')"
+RUNTIME_ROOT="$TMP/nysa-sf-dev.runtime"
+mkdir -p "$RUNTIME_ROOT"/{home,product/factory,runtime,runtime-bin,kit/scripts/lib}
+cp "$ROOT/scripts/owner-runtime-pin.py" "$RUNTIME_ROOT/kit/scripts/owner-runtime-pin.py"
+cp "$ROOT/scripts/lib/certification_plan.py" \
+  "$RUNTIME_ROOT/kit/scripts/lib/certification_plan.py"
+cat >"$RUNTIME_ROOT/product/factory/certification-plan.json" <<'EOF'
+{"phases":[{"artifacts":[],"command":["true"],"depends_on":[],"name":"fixture","network":"denied"}],"runtime":{"node":"v22.22.0","npm":"10.9.2"},"schema":"nysa.software-factory.certification-plan/v2"}
+EOF
+for runtime_tool in node npm npx; do
+  runtime_version=10.9.2
+  [[ "$runtime_tool" != node ]] || runtime_version=v22.22.0
+  printf '#!/bin/sh\nprintf "%%s\\n" "%s"\n' "$runtime_version" \
+    >"$RUNTIME_ROOT/runtime-bin/$runtime_tool"
+  chmod +x "$RUNTIME_ROOT/runtime-bin/$runtime_tool"
+done
+PRODUCT_RUNTIME_BIN="$RUNTIME_ROOT/runtime-bin"
+refuse_production_path() { :; }
+die() { printf '%s\n' "$*" >&2; return 1; }
+prepare_product_runtime "$RUNTIME_ROOT" ||
+  fail "exact product runtime preparation failed"
+python3 - "$RUNTIME_ROOT/runtime/product-source.json" \
+  "$(shasum -a 256 "$RUNTIME_ROOT/runtime/product-runtime-plan.json" | awk '{print $1}')" <<'PY'
+import json, sys
+open(sys.argv[1],"w",encoding="utf-8").write(json.dumps({
+    "runtime_plan_sha256":sys.argv[2],
+    "schema":"factory-dev-product-source/v1",
+},sort_keys=True,separators=(",",":"))+"\n")
+PY
+validate_product_runtime "$RUNTIME_ROOT" ||
+  fail "exact product runtime validation failed"
+[[ "$(path_metadata "$RUNTIME_ROOT/runtime/product-runtime-plan.json")" == \
+   "$(id -u):600:1" ]] ||
+  fail "product runtime plan is not owner-only"
+for runtime_tool in node npm npx; do
+  [[ -L "$RUNTIME_ROOT/home/$runtime_tool" &&
+     "$(readlink "$RUNTIME_ROOT/home/$runtime_tool")" == \
+       "$RUNTIME_ROOT/runtime/runtime-target/$runtime_tool" ]] ||
+    fail "product runtime link is not bound to the lane transaction: $runtime_tool"
+done
+printf '# changed after approval\n' >>"$RUNTIME_ROOT/runtime-bin/npm"
+expect_failure "product runtime candidate drift" \
+  validate_product_runtime "$RUNTIME_ROOT"
 eval "$(sed -n '/^prepare_product_dependencies()/,/^}/p' "$LANE")"
 sandbox_exec() { printf '%s\n' "$FAKE_SANDBOX"; }
 DEPENDENCY_ROOT="$TMP/nysa-sf-dev.dependencies"

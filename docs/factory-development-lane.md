@@ -207,6 +207,22 @@ ticket to a successor sandbox. The source must be a clean isolated worktree;
 the canonical Nysa checkout is refused. The lane clones it into a private
 product, replaces its remote with a local bare origin, and has no GitHub
 route.
+
+```bash
+bash scripts/factory-dev-lane.sh product-plan \
+  --source <isolated-product> --base-sha <full-sha> --tickets T-NNN \
+  --runtime-bin <absolute-node-bin>
+
+bash scripts/factory-dev-lane.sh product-ticket-run \
+  --root <root-from-plan> --ticket T-NNN \
+  --approve-hash <ticket-hash-from-plan>
+```
+
+`--runtime-bin` defaults to the directory containing `node` on the caller's
+`PATH`. The lane accepts it only when Node, npm, and npx exactly match the
+product's committed certification plan. It applies the existing owner-runtime
+transaction inside the lane, binds that plan into approval and resume evidence,
+and gives providers read-only access only to the resolved runtime roots.
 Fresh planning resets each selected ticket to `Ready` and removes prior
 canonical Spec-lint verdict, Reviewer verdict, and repair-owner control lines
 before the new role sequence begins. Historical prose and quoted signed-review
