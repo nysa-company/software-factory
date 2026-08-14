@@ -5826,6 +5826,8 @@ longer copy or approve those hashes between certification and activation.
 
 Category: Test strategy
 
+Superseded by Decision 411.
+
 The contained repository-test controller admits exactly one fresh Ready ticket,
 runs the sealed state machine to a committed Planning state, verifies the
 changed head and its unconsumed transition receipt, emits authenticated
@@ -5851,3 +5853,20 @@ timing evidence: the disposable product fork quarantined ten legacy Done
 tickets whose protected-main terminal evidence is incomplete, used synthetic
 local Factory CI evidence, and stopped before model pinning or provider/role
 execution. No GitHub write occurred.
+
+## 2026-08-14 — Decision 411: Fresh local activation reaches one sealed planner in 12m38s
+
+Category: Evidence
+
+Candidate `75a4d8bd993184e7b9677ac0db34365f489cd8c0` activated a fresh,
+owner-only local Factory and Nysa product fork, moved only T-218 through an
+authenticated Planning transition in 737.158718 seconds, and completed one
+sealed mock planner run in 758.028586 seconds. The clock started before both
+fresh clones; human and hash-approval wait was zero. Six ticket event digests,
+the consumed transition receipt and lease binding, terminal run/output digest,
+direct-child planner commit, local bare ticket ref, clean registered checkout,
+and local-only origins all revalidated. This evidence is explicitly
+nonproduction and nonpromotable: no credentials or GitHub writes were present,
+and the disposable Nysa fork quarantined legacy terminal-evidence gaps only for
+the timing canary. Repository-test now stops after that one authenticated mock
+planner completion; production and qualification behavior remain unchanged.
