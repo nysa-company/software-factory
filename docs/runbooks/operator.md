@@ -615,7 +615,6 @@ one authenticated Planning claim, runs one sealed mock planner with durable
 role-exit evidence, and then stops. It does not pin a production model route or
 launch a provider-backed role. Do not copy provider or GitHub credentials into
 the isolated home.
-
 Use the single local canary command instead of assembling that state by hand:
 
 ```bash
