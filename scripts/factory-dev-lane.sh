@@ -406,6 +406,12 @@ PY
     printf '%s\n' "$real" "$(sha256_file "$real")" \
       "$(subscription_base_env "$root" "$root/home/$tool" --version 2>/dev/null | head -n1)"
     if [[ "$adapter" == codex ]]; then
+      real="$(python3 - "$root/home/codex-code-mode-host" <<'PY'
+import os, sys
+print(os.path.realpath(sys.argv[1]))
+PY
+)"
+      printf '%s\n' "$real" "$(sha256_file "$real")"
       subscription_base_env "$root" "$root/home/codex" login status 2>/dev/null |
         sha256_text
     else
@@ -933,7 +939,7 @@ prepare_product_dependencies() {
 }
 
 create_lane() {
-  local mode="$1" root sha tree nonce project cursor developer tool timeout_bin tmp_parent bridge session_home ticket port_a port_b resolved seed_hash="" accounting_hash="" lineage_hash="" checkpoint_hash="" cleanup_trap subscription_adapter cursor_enabled=0 claude_token_source=""
+  local mode="$1" root sha tree nonce project cursor developer tool timeout_bin tmp_parent bridge session_home ticket port_a port_b resolved companion seed_hash="" accounting_hash="" lineage_hash="" checkpoint_hash="" cleanup_trap subscription_adapter cursor_enabled=0 claude_token_source=""
   local -a subscription_tools
   subscription_adapter="${FACTORY_SUBSCRIPTION_ADAPTER:-codex}"
   [[ "$mode" != subscription || "$subscription_adapter" == codex ||
@@ -1295,6 +1301,21 @@ PY
 )"
       refuse_production_path "$resolved"
       ln -s "$resolved" "$root/home/$tool-real"
+      if [[ "$tool" == codex ]]; then
+        companion="$(command -v codex-code-mode-host 2>/dev/null || true)"
+        [[ "$companion" == /* && -x "$companion" ]] ||
+          die "Codex code-mode host is unavailable"
+        refuse_production_path "$companion"
+        companion="$(python3 - "$companion" <<'PY'
+import os, sys
+print(os.path.realpath(sys.argv[1]))
+PY
+)"
+        [[ -f "$companion" && -x "$companion" ]] ||
+          die "Codex code-mode host is unavailable"
+        refuse_production_path "$companion"
+        ln -s "$companion" "$root/home/codex-code-mode-host"
+      fi
     done
   fi
   if [[ "$mode" == product ]]; then
@@ -2520,6 +2541,14 @@ PY
 )"
       printf '%s\n' "$real" "$(sha256_file "$real")" \
         "$(subscription_base_env "$root" "$root/home/$tool" --version 2>/dev/null | head -n1)"
+      if [[ "$tool" == codex ]]; then
+        real="$(python3 - "$root/home/codex-code-mode-host" <<'PY'
+import os, sys
+print(os.path.realpath(sys.argv[1]))
+PY
+)"
+        printf '%s\n' "$real" "$(sha256_file "$real")"
+      fi
     done
     if [[ "$cursor_enabled" == 1 ]]; then
       real="$(python3 - "$root/home/agent" <<'PY'

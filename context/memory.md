@@ -5907,3 +5907,13 @@ owner-runtime transaction instead of a machine-specific Homebrew path. The
 exact candidate must match the product's committed certification plan, is
 bound into planning and resume evidence, and receives only read-only sandbox
 access to its resolved runtime roots.
+
+## 2026-08-14 — Decision 414: Codex lanes bind the complete executable runtime
+
+Category: Reliability
+
+An isolated Codex lane requires the installed `codex-code-mode-host` companion
+alongside the CLI. Its resolved physical path and bytes are approval-bound, and
+the lane sandbox exposes it only inside the disposable runtime. This prevents a
+provider run from passing login/version readiness and then failing before its
+first repository command.

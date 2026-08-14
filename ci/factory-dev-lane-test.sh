@@ -1404,6 +1404,16 @@ printf '%s\n' "$subscription_cases" |
 printf '%s\n' "$subscription_cases" |
   grep -Fq 'run_in_sandbox "$root" subscription __subscription-run' ||
   fail "Codex subscription execution still depends on the Cursor scratch bridge"
+create_lane_source="$(sed -n '/^create_lane()/,/^validate_product_checkpoint()/p' "$LANE")"
+grep -Fq 'ln -s "$companion" "$root/home/codex-code-mode-host"' \
+  <<<"$create_lane_source" ||
+  fail "Codex lane omitted its code-mode host companion"
+for approval_function in subscription_approval_hash product_approval_hash; do
+  approval_source="$(sed -n "/^${approval_function}()/,/^}/p" "$LANE")"
+  grep -Fq '"$root/home/codex-code-mode-host"' <<<"$approval_source" &&
+    grep -Fq '"$(sha256_file "$real")"' <<<"$approval_source" ||
+    fail "$approval_function omitted the Codex companion binding"
+done
 eval "$(sed -n '/^cleanup_empty_cursor_bridge()/,/^}/p' "$LANE")"
 REPLACED_BRIDGE="$TMP/replaced-cursor-bridge"
 mkdir -p "$REPLACED_BRIDGE/empty-session"

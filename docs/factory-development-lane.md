@@ -147,6 +147,10 @@ the new digests are therefore approval-bound. A blocking transition also records
 its actual current phase as `Resume-State`, and resolution materializes that
 phase rather than assuming Planner.
 
+Codex lanes also require the installed `codex-code-mode-host` companion. The
+lane resolves it once, exposes it only inside the isolated runtime, and binds
+its physical path and bytes into every affected approval.
+
 Each completed ticket publishes an owner-only readiness record after its lease
 and role process drain. A selected-ticket `product-export` checks only that
 ticket's provider attempts, lease, claim, head, evidence, and worktree, so an
