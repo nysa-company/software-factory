@@ -256,9 +256,10 @@ product checkout.
 - Before Contract 2 certification, use the signed `factory-kit release
   setup/resume` transaction. It inventories and drains every active product,
   certifies and switches the full host, installs the exact sealed launcher,
-  and commits the Contract 2 floor before reloading native controllers. The
-  approval hash binds the prior and candidate launcher bytes; never replace
-  the installed launcher independently.
+  and commits the Contract 2 floor before reloading native controllers. Setup
+  authorizes the current owner-only sealed plan; its internal digest binds the
+  prior and candidate launcher bytes. Resume does not require a copied hash.
+  Never replace the installed launcher independently.
 
 - For a release migration, merge the protected product PR containing
   `factory/KIT_PIN` and the complete canonical

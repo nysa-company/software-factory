@@ -129,6 +129,8 @@ def _transport(origin: str) -> str:
         if not parsed.hostname or parsed.password is not None:
             raise HistoricalObjectError("historical product origin is unsafe")
         return origin
+    if "://" in origin:
+        raise HistoricalObjectError("historical product origin uses an unsafe transport")
     if re.fullmatch(
         r"(?:[A-Za-z0-9][A-Za-z0-9._-]*@)?"
         r"[A-Za-z0-9][A-Za-z0-9._-]*:[A-Za-z0-9._/~+-]+",
@@ -258,7 +260,9 @@ def _blob_present(product: Path, sha: str) -> bool:
     return result.returncode == 0 and result.stdout.strip() == "blob"
 
 
-def _json_at(product: Path, sha: str, path: str) -> dict[str, Any] | None:
+def _json_at(
+    product: Path, sha: str, path: str, budget: list[int] | None = None,
+) -> dict[str, Any] | None:
     size = run_git(product, "cat-file", "-s", f"{sha}:{path}")
     if size.returncode:
         return None
@@ -268,6 +272,10 @@ def _json_at(product: Path, sha: str, path: str) -> dict[str, Any] | None:
         raise HistoricalObjectError(f"historical evidence size is invalid: {path}") from error
     if length > MAX_EVIDENCE_BYTES:
         raise HistoricalObjectError(f"historical evidence is too large: {path}")
+    if budget is not None:
+        budget[0] += length
+        if budget[0] > MAX_TOTAL_EVIDENCE_BYTES:
+            raise HistoricalObjectError("historical attestation evidence is too large")
     result = run_git(product, "show", f"{sha}:{path}")
     if result.returncode or len(result.stdout.encode()) != length:
         raise HistoricalObjectError(f"historical evidence is unavailable: {path}")
@@ -280,7 +288,7 @@ def _json_at(product: Path, sha: str, path: str) -> dict[str, Any] | None:
     return value
 
 
-def _done_at(product: Path, ticket: str) -> bool:
+def _done_at(product: Path, ticket: str, budget: list[int]) -> bool:
     path = f"factory/tickets/{ticket}.md"
     size = run_git(product, "cat-file", "-s", f"HEAD:{path}")
     try:
@@ -289,6 +297,9 @@ def _done_at(product: Path, ticket: str) -> bool:
         return False
     if not 0 < length <= MAX_EVIDENCE_BYTES:
         return False
+    budget[0] += length
+    if budget[0] > MAX_TOTAL_EVIDENCE_BYTES:
+        raise HistoricalObjectError("historical attestation evidence is too large")
     result = run_git(product, "show", f"HEAD:{path}")
     states = re.findall(r"(?mi)^State:\s*(.*?)\s*$", result.stdout)
     return (
@@ -517,6 +528,8 @@ def hydrate(product: Path, origin: str) -> int:
                 item["commits"].add(evidence)
                 reconciliation.append((relative, path.stem, evidence, value))
 
+    evidence_bytes = [migration_bytes]
+
     requirement_commits = set()
     for (number, head), item in sorted(requirements.items()):
         requirement_commits.update(item["commits"])
@@ -569,7 +582,7 @@ def hydrate(product: Path, origin: str) -> int:
             ("approval.json", ("parent_head", "reviewed_sha")),
         ):
             evidence_path = f"factory/attestations/{ticket}/{name}"
-            value = _json_at(product, evidence, evidence_path)
+            value = _json_at(product, evidence, evidence_path, evidence_bytes)
             if value is None:
                 continue
             for key in keys:
@@ -595,7 +608,7 @@ def hydrate(product: Path, origin: str) -> int:
         matched = re.fullmatch(
             r"factory/attestations/(T-[0-9]+)/bundle\.json", path,
         )
-        if not matched or not _done_at(product, matched.group(1)):
+        if not matched or not _done_at(product, matched.group(1), evidence_bytes):
             continue
         root = str(Path(path).parent)
         for name, commit_keys, blob_keys in (
@@ -611,7 +624,7 @@ def hydrate(product: Path, origin: str) -> int:
             ),
         ):
             evidence_path = f"{root}/{name}"
-            value = _json_at(product, "HEAD", evidence_path)
+            value = _json_at(product, "HEAD", evidence_path, evidence_bytes)
             if value is None:
                 continue
             for key in commit_keys:

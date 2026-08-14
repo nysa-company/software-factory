@@ -626,7 +626,9 @@ tuple, manifest, runtime tuple, passport, branch/head, stage, pause digest, and
 run snapshot still match; it rebuilds no authority from Git history.
 Before provider admission, qualification also hydrates only immutable PR refs
 named by committed terminal migrations, verifies their exact expected heads,
-and leaves every checked-out tree and ref unchanged.
+and leaves every checked-out tree and ref unchanged. Migration and attestation
+inputs, aggregate parsed bytes, object counts and sizes, and staged fetch bytes
+are bounded; protected-main evidence must name exactly `refs/heads/main`.
 Preparation creates an absent ignored `factory/runs/` through the
 owner-controlled physical `factory/` descriptor at mode 0700; a file, symlink,
 foreign owner, or permissive runtime directory refuses. Every selected

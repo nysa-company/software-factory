@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import multiprocessing
@@ -501,6 +502,322 @@ class ReleaseTransactionTest(unittest.TestCase):
         ))
         environment = HISTORY._git_environment(auth=auth)
         self.assertEqual(environment["GH_CONFIG_DIR"], auth[1])
+
+    def test_historical_transport_environment_and_descriptor_are_strict(self) -> None:
+        local = self.root / "local-origin.git"
+        local.mkdir()
+        for value in (
+            str(local), f"file://{local}",
+            "https://github.com/example/product.git",
+            "ssh://git@github.com/example/product.git",
+            "git@github.com:example/product.git",
+        ):
+            with self.subTest(accepted=value.split(":", 1)[0]):
+                self.assertTrue(HISTORY._transport(value))
+        for value in (
+            "", "relative/origin", "http://example.invalid/product.git",
+            "file://example.invalid/private/tmp/product.git", "ext::helper",
+            "https://example.invalid/product.git\nextra",
+        ):
+            with self.subTest(rejected=value.split(":", 1)[0]), self.assertRaises(
+                HISTORY.HistoricalObjectError,
+            ):
+                HISTORY._transport(value)
+
+        with mock.patch.dict(os.environ, {
+            "GIT_CONFIG_GLOBAL": str(self.root / "poisoned-config"),
+            "GIT_OBJECT_DIRECTORY": str(self.root / "poisoned-objects"),
+            "GIT_SSH_COMMAND": "false",
+        }, clear=False):
+            environment = HISTORY._git_environment()
+        self.assertEqual(environment["GIT_CONFIG_GLOBAL"], os.devnull)
+        self.assertEqual(
+            environment["GIT_SSH_COMMAND"],
+            "/usr/bin/ssh -F /dev/null -oBatchMode=yes",
+        )
+        self.assertNotIn("GIT_OBJECT_DIRECTORY", environment)
+        with self.assertRaisesRegex(
+            HISTORY.HistoricalObjectError,
+            "historical Git environment override is unsafe",
+        ):
+            HISTORY._git_environment({"GIT_CONFIG_GLOBAL": os.devnull})
+
+        descriptor = self.root / "descriptor-product/factory/PROJECT.env"
+        descriptor.parent.mkdir(parents=True)
+        descriptor.write_text(
+            "GH_REPO=example/one\nGH_REPO=example/two\n", encoding="utf-8",
+        )
+        with self.assertRaisesRegex(
+            HISTORY.HistoricalObjectError,
+            "historical product repository is ambiguous",
+        ):
+            HISTORY._repository(descriptor.parents[1])
+        descriptor.unlink()
+        descriptor.symlink_to(self.root / "outside-descriptor")
+        with self.assertRaisesRegex(
+            HISTORY.HistoricalObjectError,
+            "historical product descriptor is unsafe",
+        ):
+            HISTORY._repository(descriptor.parents[1])
+
+    def test_historical_evidence_inventories_and_bytes_are_bounded(self) -> None:
+        product = self.root / "history-limits"
+        migrations = product / "factory/migrations"
+        migrations.mkdir(parents=True)
+        (migrations / "one.json").write_text("{}\n", encoding="utf-8")
+        (migrations / "two.json").write_text("{}\n", encoding="utf-8")
+        with mock.patch.object(HISTORY, "MAX_EVIDENCE_FILES", 1), self.assertRaisesRegex(
+            HISTORY.HistoricalObjectError,
+            "historical migration inventory is too large",
+        ):
+            HISTORY.hydrate(product, str(self.root))
+        (migrations / "two.json").unlink()
+        (migrations / "one.json").unlink()
+        (migrations / "one.json").symlink_to(self.root / "outside-migration")
+        with self.assertRaisesRegex(
+            HISTORY.HistoricalObjectError,
+            "historical object record is unsafe",
+        ):
+            HISTORY.hydrate(product, str(self.root))
+
+        objects = {f"{value:040x}" for value in range(HISTORY.MAX_OBJECTS + 1)}
+        with (
+            mock.patch.object(HISTORY, "commit_present", return_value=False),
+            mock.patch.object(HISTORY, "_blob_present", return_value=False),
+            mock.patch.object(HISTORY, "run_git_remote") as remote,
+            self.assertRaisesRegex(
+                HISTORY.HistoricalObjectError,
+                "historical evidence object inventory is too large",
+            ),
+        ):
+            HISTORY.fetch_objects(product, str(self.root), objects, set())
+        remote.assert_not_called()
+
+        attested = self.root / "attested-product"
+        subprocess.run(
+            ["git", "init", "-q", "-b", "main", str(attested)], check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(attested), "config", "user.name", "Test"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(attested), "config", "user.email", "test@example.invalid"],
+            check=True,
+        )
+        ticket = attested / "factory/tickets/T-1.md"
+        ticket.parent.mkdir(parents=True)
+        ticket.write_text("State: Done\n", encoding="utf-8")
+        (attested / "factory/PROJECT.env").write_text(
+            "GH_REPO=example/product\n", encoding="utf-8",
+        )
+        migration = attested / "factory/migrations/unrelated.json"
+        migration.parent.mkdir()
+        migration.write_text(
+            json.dumps({"padding": "m" * 180}) + "\n", encoding="utf-8",
+        )
+        subprocess.run(["git", "-C", str(attested), "add", "."], check=True)
+        subprocess.run(
+            ["git", "-C", str(attested), "commit", "-qm", "base"], check=True,
+        )
+        base = subprocess.check_output(
+            ["git", "-C", str(attested), "rev-parse", "HEAD"], text=True,
+        ).strip()
+        bundle = attested / "factory/attestations/T-1/bundle.json"
+        bundle.parent.mkdir(parents=True)
+        bundle.write_text(json.dumps({
+            "branch_head": base, "padding": "x" * 512,
+        }) + "\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(attested), "add", "."], check=True)
+        subprocess.run(
+            ["git", "-C", str(attested), "commit", "-qm", "attestation"],
+            check=True,
+        )
+        with mock.patch.object(
+            HISTORY, "MAX_TOTAL_EVIDENCE_BYTES", 700,
+        ), self.assertRaisesRegex(
+            HISTORY.HistoricalObjectError,
+            "historical attestation evidence is too large",
+        ):
+            HISTORY.hydrate(attested, str(attested))
+
+        ticket_budget = self.root / "done-ticket-budget"
+        subprocess.run(
+            ["git", "init", "-q", "-b", "main", str(ticket_budget)], check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(ticket_budget), "config", "user.name", "Test"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(ticket_budget), "config", "user.email", "test@example.invalid"],
+            check=True,
+        )
+        (ticket_budget / "factory/PROJECT.env").parent.mkdir(parents=True)
+        (ticket_budget / "factory/PROJECT.env").write_text(
+            "GH_REPO=example/product\n", encoding="utf-8",
+        )
+        for number in (1, 2):
+            path = ticket_budget / f"factory/tickets/T-{number}.md"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("State: Done\n\n" + "x" * 100 + "\n", encoding="utf-8")
+            evidence = ticket_budget / f"factory/attestations/T-{number}/bundle.json"
+            evidence.parent.mkdir(parents=True)
+            evidence.write_text("{}\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "-C", str(ticket_budget), "add", "."], check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(ticket_budget), "commit", "-qm", "done tickets"],
+            check=True,
+        )
+        with (
+            mock.patch.object(HISTORY, "MAX_TOTAL_EVIDENCE_BYTES", 150),
+            mock.patch.object(HISTORY, "_json_at", return_value={}),
+            self.assertRaisesRegex(
+                HISTORY.HistoricalObjectError,
+                "historical attestation evidence is too large",
+            ),
+        ):
+            HISTORY.hydrate(ticket_budget, str(ticket_budget))
+
+    def test_historical_object_type_and_size_are_verified_before_import(self) -> None:
+        remote = self.root / "objects.git"
+        publisher = self.root / "object-publisher"
+        consumer = self.root / "object-consumer"
+        subprocess.run(["git", "init", "--bare", "-q", str(remote)], check=True)
+        subprocess.run(
+            ["git", "init", "-q", "-b", "main", str(publisher)], check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(publisher), "config", "user.name", "Test"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(publisher), "config", "user.email", "test@example.invalid"],
+            check=True,
+        )
+        (publisher / "object.txt").write_text("object\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(publisher), "add", "."], check=True)
+        subprocess.run(
+            ["git", "-C", str(publisher), "commit", "-qm", "object"], check=True,
+        )
+        commit = subprocess.check_output(
+            ["git", "-C", str(publisher), "rev-parse", "HEAD"], text=True,
+        ).strip()
+        blob = subprocess.check_output(
+            ["git", "-C", str(publisher), "rev-parse", "HEAD:object.txt"],
+            text=True,
+        ).strip()
+        subprocess.run(
+            ["git", "-C", str(publisher), "push", "-q", str(remote), "main"],
+            check=True,
+        )
+        subprocess.run(["git", "init", "-q", str(consumer)], check=True)
+        with self.assertRaisesRegex(
+            HISTORY.HistoricalObjectError,
+            "historical evidence object type is invalid",
+        ):
+            HISTORY.fetch_objects(consumer, str(remote), set(), {commit})
+        self.assertFalse(HISTORY.commit_present(consumer, commit))
+        with mock.patch.object(
+            HISTORY, "MAX_OBJECT_BYTES", 0,
+        ), self.assertRaisesRegex(
+            HISTORY.HistoricalObjectError,
+            "historical evidence object is too large",
+        ):
+            HISTORY.fetch_objects(consumer, str(remote), set(), {blob})
+        self.assertFalse(HISTORY._blob_present(consumer, blob))
+
+    def test_reconciliation_attestations_share_the_migration_byte_budget(self) -> None:
+        product = self.root / "reconciliation-budget"
+        migration = product / "factory/migrations/reconciliation.json"
+        migration.parent.mkdir(parents=True)
+        (product / "factory/PROJECT.env").write_text(
+            "GH_REPO=example/product\n", encoding="utf-8",
+        )
+        migration.write_text(json.dumps({
+            "adoption_pr": {"head": "1" * 40, "number": 1},
+            "evidence_head": "1" * 40,
+            "original_pr": {"head": "1" * 40, "number": 1},
+            "repository": "example/product",
+            "schema": "nysa.software-factory.protected-merge-reconciliation/v1",
+        }) + "\n", encoding="utf-8")
+        limit = migration.stat().st_size + 50
+
+        def charged_json(
+            _product: Path, _sha: str, _path: str, budget: list[int] | None = None,
+        ) -> dict[str, object]:
+            self.assertIsNotNone(budget)
+            assert budget is not None
+            budget[0] += 100
+            if budget[0] > limit:
+                raise HISTORY.HistoricalObjectError(
+                    "historical attestation evidence is too large",
+                )
+            return {}
+
+        with (
+            mock.patch.object(HISTORY, "MAX_TOTAL_EVIDENCE_BYTES", limit),
+            mock.patch.object(HISTORY, "commit_present", return_value=True),
+            mock.patch.object(HISTORY, "fetch_objects"),
+            mock.patch.object(HISTORY, "_json_at", side_effect=charged_json),
+            self.assertRaisesRegex(
+                HISTORY.HistoricalObjectError,
+                "historical attestation evidence is too large",
+            ),
+        ):
+            HISTORY.hydrate(product, str(self.root))
+
+    def test_activation_requires_an_exact_protected_main_record(self) -> None:
+        product = self.root / "main-record-product"
+        (product / "factory").mkdir(parents=True)
+        (product / "factory/PROJECT.env").write_text(
+            "GH_REPO=example/product\n", encoding="utf-8",
+        )
+        subprocess.run(
+            ["git", "init", "-q", "-b", "main", str(product)], check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(product), "config", "user.name", "Test"], check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(product), "config", "user.email", "test@example.invalid"],
+            check=True,
+        )
+        subprocess.run(["git", "-C", str(product), "add", "."], check=True)
+        subprocess.run(
+            ["git", "-C", str(product), "commit", "-qm", "main"], check=True,
+        )
+        head = subprocess.check_output(
+            ["git", "-C", str(product), "rev-parse", "HEAD"], text=True,
+        ).strip()
+        validator = ACTIVATION.Validator(
+            product, self.sha, ROOT / "scripts", str(self.root), "",
+        )
+        valid = subprocess.CompletedProcess(
+            [], 0, f"{head}\trefs/heads/main\n", "",
+        )
+        with mock.patch.object(ACTIVATION, "run_git_remote", return_value=valid):
+            self.assertEqual(validator.remote_main(), head)
+        invalid = (
+            subprocess.CompletedProcess([], 0, f"{head}\trefs/heads/other\n", ""),
+            subprocess.CompletedProcess(
+                [], 0,
+                f"{head}\trefs/heads/main\n{head}\trefs/heads/other\n", "",
+            ),
+            subprocess.CompletedProcess([], 0, f"{head}\n", ""),
+            subprocess.CompletedProcess([], 1, "", "unavailable"),
+        )
+        for response in invalid:
+            with self.subTest(output_fields=len(response.stdout.split())), mock.patch.object(
+                ACTIVATION, "run_git_remote", return_value=response,
+            ):
+                blockers, _, _ = validator.run()
+                self.assertEqual(blockers, [{
+                    "reason_code": "activation_product_not_main",
+                    "scope": "activation",
+                }])
 
     def test_blocked_preflight_stops_before_certification_or_pause(self) -> None:
         repo = self.root / "factory"

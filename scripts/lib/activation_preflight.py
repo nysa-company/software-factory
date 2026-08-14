@@ -91,6 +91,20 @@ class Validator:
             )
         return result.stdout.strip()
 
+    def remote_main(self) -> str:
+        result = run_git_remote(
+            "ls-remote", "--heads", "--", self.origin, "refs/heads/main",
+            auth=self.git_auth,
+        )
+        fields = result.stdout.split() if not result.returncode else []
+        return (
+            fields[0]
+            if len(fields) == 2
+            and SHA.fullmatch(fields[0])
+            and fields[1] == "refs/heads/main"
+            else ""
+        )
+
     def load_migration_policy(self) -> tuple[Any, Any, Any, Any]:
         if self.migration_policy is not None:
             return self.migration_policy
@@ -136,12 +150,7 @@ class Validator:
                     "nonterminal ticket uses another kit without an exact in-flight release authorization",
                 )
             head = self.checked("rev-parse", "HEAD")
-            remote_result = run_git_remote(
-                "ls-remote", "--heads", "--", self.origin, "refs/heads/main",
-                auth=self.git_auth,
-            )
-            remote = remote_result.stdout.split() if not remote_result.returncode else []
-            if not remote or remote[0] != head:
+            if self.remote_main() != head:
                 self.fail(
                     "activation_authorization_invalid",
                     "activation",
@@ -263,12 +272,7 @@ class Validator:
         if re.findall(r"(?mi)^Operator-Approval:\s*(.*?)\s*$", text) != ["Linear"]:
             return False
         head = self.checked("rev-parse", "HEAD")
-        remote_result = run_git_remote(
-            "ls-remote", "--heads", "--", self.origin, "refs/heads/main",
-            auth=self.git_auth,
-        )
-        remote = remote_result.stdout.split() if not remote_result.returncode else []
-        if not remote or remote[0] != head:
+        if self.remote_main() != head:
             return False
         root = f"factory/attestations/{ticket}"
         values = []
@@ -502,12 +506,7 @@ class Validator:
         historical_objects = 0
         try:
             head = self.checked("rev-parse", "HEAD")
-            remote_result = run_git_remote(
-                "ls-remote", "--heads", "--", self.origin, "refs/heads/main",
-                auth=self.git_auth,
-            )
-            remote = remote_result.stdout.split() if not remote_result.returncode else []
-            if not remote or remote[0] != head:
+            if self.remote_main() != head:
                 self.fail(
                     "activation_product_not_main",
                     "activation",
