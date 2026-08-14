@@ -5978,3 +5978,5 @@ each selected Backlog ticket, including local ticket-branch materialization.
 Tickets already durably Ready retain the lighter initialization path. The
 admission projection accepts a consumed-and-cleared action after successful
 materialization but continues to reject malformed or uninitialized entries.
+After bounded historical-object hydration, every dependency outside the cohort
+must have valid protected terminal evidence before the lane is published.

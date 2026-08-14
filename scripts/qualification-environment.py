@@ -1092,6 +1092,14 @@ def validate_selected_contracts(
                 f"qualification cohort dependency {ticket} -> {internal[0]}; "
                 "use independent tickets or sequential generations"
             )
+        for dependency in sorted(dependencies - cohort):
+            try:
+                protected_terminal(product, dependency)
+            except TerminalError as error:
+                raise EnvironmentError(
+                    f"{ticket}: qualification dependency lacks protected "
+                    f"terminal evidence: {dependency}"
+                ) from error
     for ticket in selected:
         path = f"factory/tickets/{ticket}.md"
         try:
@@ -3121,6 +3129,8 @@ def _prepare(args: argparse.Namespace) -> dict[str, Any]:
         raise EnvironmentError("qualification requires a supported Factory Contract")
     manifest = qualification_manifest(product, sha)
     capacity = manifest["capacity"]
+    origin = product_origin(product)
+    historical_objects = historical_pr_objects(product, origin)
     validate_selected_contracts(product, manifest)
     prepare_product_runtime(product)
     if command("git", "-C", str(product), "status", "--porcelain", "--untracked-files=all"):
@@ -3130,8 +3140,6 @@ def _prepare(args: argparse.Namespace) -> dict[str, Any]:
     runtime_tuple = certification_preflight(
         factory, product, sha, tree, contract,
     )
-    origin = product_origin(product)
-    historical_objects = historical_pr_objects(product, origin)
     restoring = bool(getattr(args, "restore", False))
     takeover = takeover_source(
         factory, product, args.project, getattr(args, "takeover_project", None)

@@ -1107,6 +1107,39 @@ class QualificationEnvironmentTest(unittest.TestCase):
                 project="relay", root=self.root,
             ))
 
+    def test_rejects_external_dependency_without_terminal_evidence(self) -> None:
+        dependency = self.product / "factory/tickets/T-099.md"
+        dependency.write_text(
+            "# T-099\n\nState: Done\nDepends-On: none\n",
+            encoding="utf-8",
+        )
+        ticket = self.product / "factory/tickets/T-103.md"
+        ticket.write_text(ticket.read_text().replace(
+            "Depends-On: none", "Depends-On: T-099",
+        ))
+        run(self.product, "git", "add", "factory/tickets")
+        run(self.product, "git", "commit", "-qm", "unattested dependency")
+        run(
+            self.product, "git", "update-ref", "refs/remotes/origin/main",
+            run(self.product, "git", "rev-parse", "HEAD"),
+        )
+        with (
+            mock.patch.object(
+                ENVIRONMENT, "initialize_selected_operator",
+                side_effect=AssertionError("operator initialization must not run"),
+            ),
+            self.assertRaisesRegex(
+                ENVIRONMENT.EnvironmentError,
+                "T-103: qualification dependency lacks protected terminal "
+                "evidence: T-099",
+            ),
+        ):
+            ENVIRONMENT.prepare(argparse.Namespace(
+                factory_root=self.factory, product_root=self.product,
+                project="relay", root=self.root,
+            ))
+        self.assertFalse((self.root / "marker.json").exists())
+
     def test_selected_ticket_authoring_fields_fail_before_lane_creation(self) -> None:
         ticket = self.product / "factory/tickets/T-101.md"
         original = ticket.read_text()
