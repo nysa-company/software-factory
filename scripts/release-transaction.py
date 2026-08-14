@@ -597,7 +597,7 @@ def validate_product_runtime_contract(
 ) -> None:
     for relative in (
         "factory/runs", "factory/.active-runs", "factory/.dispatch-leases",
-        "factory/.dispatch-leases.lock",
+        "factory/.dispatch-leases.lock", "factory/.operator-clears",
     ):
         tracked = hardened_git(product, "ls-files", "--", relative)
         if tracked.returncode != 0 or tracked.stdout:
@@ -617,11 +617,15 @@ def validate_product_runtime_contract(
     lease_lock = product / "factory/.dispatch-leases.lock"
     if lease_lock.exists() or lease_lock.is_symlink():
         raise ReleaseError("release setup requires factory/.dispatch-leases.lock to be absent")
+    operator_clears = product / "factory/.operator-clears"
+    if operator_clears.exists() or operator_clears.is_symlink():
+        secure_directory(operator_clears)
     for relative in (
         "factory/runs/.factory-release-probe",
         "factory/.active-runs/.factory-release-probe",
         "factory/operator-map.json",
         "factory/.operator-map.lock",
+        "factory/.operator-clears/.factory-release-probe",
         "factory/.dispatch-leases/.factory-release-probe",
         "factory/.dispatch-leases.lock/.factory-release-probe",
     ):

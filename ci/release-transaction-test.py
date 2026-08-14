@@ -937,7 +937,7 @@ class ReleaseTransactionTest(unittest.TestCase):
     def test_release_refuses_uncommitted_ignore_authority(self) -> None:
         (self.product / ".gitignore").write_text(
             "factory/runs/\nfactory/.active-runs/\nfactory/.dispatch-leases/\n"
-            "factory/.dispatch-leases.lock/\n"
+            "factory/.dispatch-leases.lock/\nfactory/.operator-clears/\n"
         )
         subprocess.run(["git", "-C", str(self.product), "init", "-q"], check=True)
         subprocess.run(["git", "-C", str(self.product), "add", ".gitignore"], check=True)
@@ -955,6 +955,7 @@ class ReleaseTransactionTest(unittest.TestCase):
             "factory/runs/\nfactory/.active-runs/\nfactory/.dispatch-leases/\n"
             "factory/.dispatch-leases.lock/\nfactory/operator-map.json\n"
             "!factory/operator-map.json\nfactory/.operator-map.lock\n"
+            "factory/.operator-clears/\n"
         )
         subprocess.run(["git", "-C", str(self.product), "init", "-q"], check=True)
         subprocess.run(["git", "-C", str(self.product), "add", ".gitignore"], check=True)
@@ -970,6 +971,7 @@ class ReleaseTransactionTest(unittest.TestCase):
             "factory/runs/\nfactory/.active-runs/\nfactory/.dispatch-leases/\n"
             "factory/.dispatch-leases.lock/\n"
             "factory/operator-map.json\nfactory/.operator-map.lock\n"
+            "factory/.operator-clears/\n"
         )
         (self.product / "factory/KIT_PIN").write_text(self.sha + "\n")
         subprocess.run(["git", "-C", str(self.product), "init", "-q"], check=True)
@@ -1009,7 +1011,7 @@ class ReleaseTransactionTest(unittest.TestCase):
     def test_release_refuses_missing_or_negated_dispatch_ignores(self) -> None:
         base = (
             "factory/runs/\nfactory/.active-runs/\nfactory/operator-map.json\n"
-            "factory/.operator-map.lock\n"
+            "factory/.operator-map.lock\nfactory/.operator-clears/\n"
         )
         for rule in ("", "factory/.dispatch-leases/\n!factory/.dispatch-leases.lock/\n"):
             with self.subTest(rule=rule):
@@ -1027,7 +1029,8 @@ class ReleaseTransactionTest(unittest.TestCase):
     def test_release_refuses_tracked_or_unsafe_dispatch_state(self) -> None:
         ignore = (
             "factory/runs/\nfactory/.active-runs/\nfactory/operator-map.json\n"
-            "factory/.operator-map.lock\nfactory/.dispatch-leases/\n"
+            "factory/.operator-map.lock\nfactory/.operator-clears/\n"
+            "factory/.dispatch-leases/\n"
             "factory/.dispatch-leases.lock/\n"
         )
         for index, (relative, expected) in enumerate((
@@ -1060,7 +1063,8 @@ class ReleaseTransactionTest(unittest.TestCase):
     def test_release_refuses_existing_empty_dispatch_lock(self) -> None:
         (self.product / ".gitignore").write_text(
             "factory/runs/\nfactory/.active-runs/\nfactory/operator-map.json\n"
-            "factory/.operator-map.lock\nfactory/.dispatch-leases/\n"
+            "factory/.operator-map.lock\nfactory/.operator-clears/\n"
+            "factory/.dispatch-leases/\n"
             "factory/.dispatch-leases.lock/\n"
         )
         lock = self.product / "factory/.dispatch-leases.lock"
@@ -1077,7 +1081,8 @@ class ReleaseTransactionTest(unittest.TestCase):
     def test_release_replay_accepts_only_nonempty_lease_runtime_after_dispatch(self) -> None:
         (self.product / ".gitignore").write_text(
             "factory/runs/\nfactory/.active-runs/\nfactory/operator-map.json\n"
-            "factory/.operator-map.lock\nfactory/.dispatch-leases/\n"
+            "factory/.operator-map.lock\nfactory/.operator-clears/\n"
+            "factory/.dispatch-leases/\n"
             "factory/.dispatch-leases.lock/\n"
         )
         subprocess.run(["git", "-C", str(self.product), "init", "-q"], check=True)
@@ -1094,6 +1099,55 @@ class ReleaseTransactionTest(unittest.TestCase):
         RELEASE.validate_product_runtime_contract(
             self.product, require_idle_dispatch=False,
         )
+
+    def test_release_refuses_missing_operator_clear_ignore(self) -> None:
+        (self.product / ".gitignore").write_text(
+            "factory/runs/\nfactory/.active-runs/\nfactory/operator-map.json\n"
+            "factory/.operator-map.lock\nfactory/.dispatch-leases/\n"
+            "factory/.dispatch-leases.lock/\n"
+        )
+        subprocess.run(["git", "-C", str(self.product), "init", "-q"], check=True)
+        subprocess.run(["git", "-C", str(self.product), "add", ".gitignore"], check=True)
+        subprocess.run([
+            "git", "-C", str(self.product), "-c", "user.name=test", "-c",
+            "user.email=test@local", "commit", "-qm", "fixture",
+        ], check=True)
+        with self.assertRaisesRegex(RELEASE.ReleaseError, "operator-clears"):
+            RELEASE.validate_product_runtime_contract(self.product)
+
+    def test_release_refuses_tracked_or_unsafe_operator_clears(self) -> None:
+        ignore = (
+            "factory/runs/\nfactory/.active-runs/\nfactory/operator-map.json\n"
+            "factory/.operator-map.lock\nfactory/.operator-clears/\n"
+            "factory/.dispatch-leases/\nfactory/.dispatch-leases.lock/\n"
+        )
+        for index, unsafe in enumerate((False, True)):
+            product = self.root / f"operator-clears-{index}"
+            (product / "factory").mkdir(parents=True)
+            (product / ".gitignore").write_text(ignore)
+            subprocess.run(["git", "-C", str(product), "init", "-q"], check=True)
+            subprocess.run(["git", "-C", str(product), "add", ".gitignore"], check=True)
+            if unsafe:
+                target = self.root / "foreign-operator-clears"
+                target.mkdir()
+                (product / "factory/.operator-clears").symlink_to(
+                    target, target_is_directory=True,
+                )
+            else:
+                intent = product / "factory/.operator-clears/T-218.json"
+                intent.parent.mkdir()
+                intent.write_text("tracked\n")
+                subprocess.run([
+                    "git", "-C", str(product), "add", "-f",
+                    "factory/.operator-clears/T-218.json",
+                ], check=True)
+            subprocess.run([
+                "git", "-C", str(product), "-c", "user.name=test", "-c",
+                "user.email=test@local", "commit", "-qm", "fixture",
+            ], check=True)
+            expected = "state directory is unsafe" if unsafe else "operator-clears.*untracked"
+            with self.assertRaisesRegex(RELEASE.ReleaseError, expected):
+                RELEASE.validate_product_runtime_contract(product)
 
     def test_release_initializes_every_bound_ticket_without_erasing_overlays(self) -> None:
         tickets = self.product / "factory/tickets"
