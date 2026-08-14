@@ -302,7 +302,9 @@ def run(repo, *args, input_text=None, check=True):
             value = _git_object_info(repo, args[2])
             output = value[1] + "\n" if value is not None else None
         elif (
-            len(args) == 2 and args[0] == "rev-parse"
+            len(args) == 2
+            and args[0] == "rev-parse"
+            and not args[1].startswith("-")
             or len(args) == 3 and args[:2] == ("rev-parse", "--verify")
         ):
             value = _git_object_info(repo, args[-1])
@@ -312,7 +314,11 @@ def run(repo, *args, input_text=None, check=True):
     if value is None and input_text is None and (
         len(args) == 2 and args[0] == "show" and ":" in args[1]
         or len(args) == 3 and args[:2] in (("cat-file", "blob"), ("cat-file", "-t"))
-        or len(args) == 2 and args[0] == "rev-parse"
+        or (
+            len(args) == 2
+            and args[0] == "rev-parse"
+            and not args[1].startswith("-")
+        )
         or len(args) == 3 and args[:2] == ("rev-parse", "--verify")
     ):
         result = subprocess.CompletedProcess(args, 1, "", "Git evidence is unavailable")
