@@ -582,7 +582,8 @@ bash scripts/factory-kit.sh release setup \
   [--runtime-bin <absolute-node-bin>] \
   [--claude-bin <absolute-claude> --codex-bin <absolute-codex> \
    --cursor-bin <absolute-agent>] \
-  [--ticket-workdir T-NNN <absolute-worktree> ...]
+  [--ticket-workdir T-NNN <absolute-worktree> ...] \
+  [--skip-optional-tests]
 
 bash scripts/factory-kit.sh release resume \
   --project <project> --sha <candidate> --approved-by <operator-id>
@@ -601,6 +602,11 @@ then idempotently initializes their local operator-map entries behind the
 dispatch barrier. It never chooses migration tickets or advances ticket state.
 Activation blockers therefore stop before product runtime preparation,
 certification, maintenance, host reservation, or approval generation.
+
+Tests run by default. Use `--skip-optional-tests` only when the product's
+committed plan marks exact phases with `kind: "test", "optional": true`. The
+release plan and receipt bind the omission; required and non-test phases always
+run.
 
 `FACTORY_KIT_TEST_MODE=1` is repository-test evidence only. It requires an
 explicit owner-only `FACTORY_RELEASE_TEST_HOME` outside the real account home

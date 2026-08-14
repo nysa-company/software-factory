@@ -312,7 +312,8 @@ product checkout.
   ```bash
   bash scripts/factory-kit.sh release setup --project "<project>" \
     --product "<absolute-product-path>" --sha "<full-sha>" \
-    --repo "$PWD" --profile "<model-profile>" --operator-id "<operator-id>"
+    --repo "$PWD" --profile "<model-profile>" --operator-id "<operator-id>" \
+    [--skip-optional-tests]
   bash scripts/factory-kit.sh release resume --project "<project>" \
     --sha "<full-sha>" --approved-by "<operator-id>"
   ```
@@ -322,6 +323,10 @@ product checkout.
   certify, pause, qualification, and activation gates and records each phase in
   an owner-only signed journal. Internal hashes bind every phase, and retries
   resume the exact current candidate.
+  Tests run by default. `--skip-optional-tests` works only for exact phases the
+  committed product plan marks with `kind: "test"` and `optional: true`; the
+  release plan and certification receipt record the omission. Required and
+  non-test phases always run.
   A fresh install records 24-hour owner-only kit-suite evidence by default.
   Authenticated successful GitHub Actions evidence for the exact protected-main
   SHA and its full Linux, macOS, aggregate, and immutability jobs is mandatory;

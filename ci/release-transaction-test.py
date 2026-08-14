@@ -119,6 +119,7 @@ class ReleaseTransactionTest(unittest.TestCase):
                 "product": str(self.product), "profile": "openai-priority-v1",
                 "project": "relay", "repo": str(self.root / "factory"),
                 "runtime_bin": None, "sha": self.sha,
+                "skip_optional_tests": False,
             },
             "schema": RELEASE.PLAN_SCHEMA,
             "stage": "activation",
@@ -172,6 +173,10 @@ class ReleaseTransactionTest(unittest.TestCase):
         body["identity"]["tickets"] = [{
             "blob": "3" * 40, "state": "Invented", "ticket": "T-1",
         }]
+        with self.assertRaisesRegex(RELEASE.ReleaseError, "release plan is invalid"):
+            RELEASE.validate_plan(RELEASE.seal_plan(body))
+        body = json.loads(json.dumps(self.body))
+        body["request"]["skip_optional_tests"] = "yes"
         with self.assertRaisesRegex(RELEASE.ReleaseError, "release plan is invalid"):
             RELEASE.validate_plan(RELEASE.seal_plan(body))
 
@@ -313,7 +318,7 @@ class ReleaseTransactionTest(unittest.TestCase):
             project="relay", product=self.product, repo=repo, sha=self.sha,
             kits_root=self.kits, profile="openai-priority-v1", operator_id="tester",
             runtime_bin=None, claude_bin=None, codex_bin=None, cursor_bin=None,
-            ticket_workdir=[],
+            ticket_workdir=[], skip_optional_tests=True,
         )
         runtime = {
             "evidence": {"path": str(self.root / "runtime")},
@@ -339,6 +344,7 @@ class ReleaseTransactionTest(unittest.TestCase):
                 side_effect=lambda *_args: order.append("runtime") or runtime,
             ),
             mock.patch.object(RELEASE, "validate_product_runtime_contract"),
+            mock.patch.object(RELEASE, "validate_optional_test_request"),
             mock.patch.object(RELEASE, "prepare_product_runtime"),
             mock.patch.object(RELEASE, "prepare_controller", return_value=self.plan["identity"]["controller"]),
             mock.patch.object(RELEASE, "launcher_plan", return_value=self.plan["children"]["launcher"]),
@@ -352,6 +358,8 @@ class ReleaseTransactionTest(unittest.TestCase):
             plan = RELEASE.setup(args)
         self.assertEqual(plan["stage"], "prerequisites")
         self.assertEqual(plan["children"]["provider_concurrency"], concurrency)
+        self.assertTrue(plan["request"]["skip_optional_tests"])
+        self.assertTrue(RELEASE.plan_request(plan, self.kits).skip_optional_tests)
         self.assertEqual(order, ["runtime", "preflight"])
         self.assertNotIn(
             "FACTORY_KIT_CERTIFICATION_NETWORK_REVIEWED",
@@ -374,6 +382,30 @@ class ReleaseTransactionTest(unittest.TestCase):
         self.assertEqual(report["status"], "pass")
         environment = invoked.call_args.kwargs["env"]
         self.assertTrue(environment["PATH"].startswith(str(runtime) + ":"))
+
+    def test_undeclared_optional_skip_refuses_before_install(self) -> None:
+        repo = self.root / "factory"
+        repo.mkdir()
+        (self.product / "factory/KIT_PIN").write_text(self.sha + "\n")
+        args = argparse.Namespace(
+            project="relay", product=self.product, repo=repo, sha=self.sha,
+            kits_root=self.kits, profile="openai-priority-v1", operator_id="tester",
+            runtime_bin=None, claude_bin=None, codex_bin=None, cursor_bin=None,
+            ticket_workdir=[], skip_optional_tests=True,
+        )
+        with (
+            mock.patch.object(RELEASE, "clean_identity", side_effect=[
+                (self.sha, "e" * 40, str(repo)),
+                ("f" * 40, "1" * 40, str(self.product)),
+            ]),
+            mock.patch.object(RELEASE, "validate_product_runtime_contract"),
+            mock.patch.object(RELEASE, "run") as install,
+            mock.patch.object(RELEASE, "prepare_runtime") as runtime,
+            self.assertRaisesRegex(RELEASE.ReleaseError, "optional-test"),
+        ):
+            RELEASE.setup(args)
+        install.assert_not_called()
+        runtime.assert_not_called()
 
     def test_activation_validation_binds_main_before_hydrating_ticket_evidence(self) -> None:
         order = []
@@ -827,7 +859,7 @@ class ReleaseTransactionTest(unittest.TestCase):
             project="relay", product=self.product, repo=repo, sha=self.sha,
             kits_root=self.kits, profile="openai-priority-v1", operator_id="tester",
             runtime_bin=None, claude_bin=None, codex_bin=None, cursor_bin=None,
-            ticket_workdir=[],
+            ticket_workdir=[], skip_optional_tests=False,
         )
         runtime = {
             "evidence": {"path": str(self.root / "runtime")},
@@ -872,7 +904,7 @@ class ReleaseTransactionTest(unittest.TestCase):
             project="relay", product=self.product, repo=repo, sha=self.sha,
             kits_root=self.kits, profile="openai-priority-v1", operator_id="tester",
             runtime_bin=None, claude_bin=None, codex_bin=None, cursor_bin=None,
-            ticket_workdir=[],
+            ticket_workdir=[], skip_optional_tests=True,
         )
         runtime = {
             "evidence": {"path": str(self.root / "runtime")},
@@ -889,11 +921,12 @@ class ReleaseTransactionTest(unittest.TestCase):
                 ("f" * 40, "1" * 40, str(self.product)),
                 ("f" * 40, "1" * 40, str(self.product)),
             ]),
-            mock.patch.object(RELEASE, "run"),
+            mock.patch.object(RELEASE, "run") as run,
             mock.patch.object(RELEASE, "release_preflight"),
             mock.patch.object(RELEASE, "contract", return_value="2.0.0"),
             mock.patch.object(RELEASE, "prepare_runtime", return_value=runtime),
             mock.patch.object(RELEASE, "validate_product_runtime_contract"),
+            mock.patch.object(RELEASE, "validate_optional_test_request"),
             mock.patch.object(RELEASE, "prepare_product_runtime"),
             mock.patch.object(RELEASE, "prepare_controller", return_value=self.plan["identity"]["controller"]),
             mock.patch.object(RELEASE, "launcher_plan", return_value=self.plan["children"]["launcher"]),
@@ -911,6 +944,10 @@ class ReleaseTransactionTest(unittest.TestCase):
             plan = RELEASE.setup(args)
         self.assertEqual(plan["stage"], "activation")
         self.assertEqual(plan["children"]["receipt"]["sha256"], RELEASE.file_digest(receipt_path))
+        certify = next(
+            call.args[0] for call in run.call_args_list if "certify" in call.args[0]
+        )
+        self.assertEqual(certify[-1], "--skip-optional-tests")
         RELEASE.validate_plan(plan)
 
     def test_test_mode_release_requires_an_explicit_isolated_home(self) -> None:
@@ -963,6 +1000,7 @@ class ReleaseTransactionTest(unittest.TestCase):
             "--repo", str(self.root / "repo"), "--profile", "openai-priority-v1",
             "--operator-id", "tester", "--runtime-bin", str(self.root / "runtime"),
             "--claude-bin", "/a", "--codex-bin", "/b", "--cursor-bin", "/c",
+            "--skip-optional-tests",
             "--ticket-workdir", "T-1", str(self.root / "worktree"),
         ]
         result = subprocess.run(
@@ -972,6 +1010,7 @@ class ReleaseTransactionTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         forwarded = json.loads(result.stdout)
         self.assertEqual(forwarded[2:4], ["setup", "--project"])
+        self.assertIn("--skip-optional-tests", forwarded)
         self.assertEqual(forwarded[-3:], ["--ticket-workdir", "T-1", str(self.root / "worktree")])
 
     def test_public_setup_command_accepts_no_migration_tickets(self) -> None:
@@ -1022,6 +1061,13 @@ class ReleaseTransactionTest(unittest.TestCase):
                 )
                 self.assertEqual(legacy.returncode, 2)
                 self.assertIn("Usage:", legacy.stderr)
+                skipped = subprocess.run(
+                    [*command, "--skip-optional-tests"],
+                    text=True, capture_output=True, check=False,
+                    env=environment,
+                )
+                self.assertEqual(skipped.returncode, 2)
+                self.assertIn("Usage:", skipped.stderr)
                 helper = subprocess.run(
                     [
                         sys.executable, str(ROOT / "scripts/release-transaction.py"),
@@ -1308,7 +1354,7 @@ class ReleaseTransactionTest(unittest.TestCase):
             project="relay", product=self.product, repo=repo, sha=self.sha,
             kits_root=self.kits, profile="openai-priority-v1", operator_id="tester",
             runtime_bin=None, claude_bin=None, codex_bin=None, cursor_bin=None,
-            ticket_workdir=[],
+            ticket_workdir=[], skip_optional_tests=False,
         )
         with (
             mock.patch.object(RELEASE, "clean_identity", side_effect=[

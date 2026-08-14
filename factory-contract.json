@@ -807,6 +807,8 @@
   "compatibility_sensitive_surfaces": [
     "factory-contract.json",
     "scripts/factory-launch",
+    "scripts/certification-preflight.py",
+    "scripts/certification-runner.py",
     "scripts/release-transaction.py",
     "scripts/launchd/com.factory.controller.plist.template",
     "scripts/launchd/com.factory.incident-reporter.plist.template",
@@ -846,6 +848,7 @@
     "scripts/ticket-attest.sh",
     "scripts/lib/effective_ticket.py",
     "scripts/lib/activation_preflight.py",
+    "scripts/lib/certification_plan.py",
     "scripts/lib/historical_pr_objects.py",
     "scripts/lib/ticket_state_transition.py",
     "scripts/lib/reviewer-reconcile.py",

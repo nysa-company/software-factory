@@ -64,6 +64,11 @@ class CertificationPreflightTest(unittest.TestCase):
                     "depends_on": [],
                     "name": "control-only",
                     "network": "denied",
+                }, {
+                    "artifacts": [], "command": ["false"],
+                    "depends_on": ["control-only"], "kind": "test",
+                    "name": "optional-tests", "network": "denied",
+                    "optional": True,
                 }],
                 "runtime": runtime,
                 "schema": "nysa.software-factory.certification-plan/v2",
@@ -97,6 +102,8 @@ class CertificationPreflightTest(unittest.TestCase):
                 self.assertEqual(completed.returncode, 0, completed.stderr)
                 value = json.loads(completed.stdout)
                 self.assertEqual(value["runtime_tuple"], self.expected)
+                self.assertEqual(value["phases"], ["control-only", "optional-tests"])
+                self.assertEqual(value["optional_tests"], ["optional-tests"])
                 self.assertFalse(self.marker.exists())
 
     def test_each_tuple_mismatch_is_typed_and_never_spawns_phase(self) -> None:

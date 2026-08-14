@@ -1840,7 +1840,12 @@ independent strict tuple check. Cache hits are recorded, but the
 runner reuses a phase only when its protected plan explicitly opts into
 `artifacts` and declares a nonempty, complete output set. Phases with undeclared
 side effects cannot opt in; application tests, policy, security, and
-configuration checks must retain the default `never` policy. Same-workspace
+configuration checks must retain the default `never` policy. Products may mark
+exact phases with `kind: "test"` and `optional: true` only when every dependent
+phase is also optional. Those tests still run by default. An explicit
+`--skip-optional-tests` certification or release request omits only those
+phases, and the result and receipt record their names. Build, dependency,
+policy, security, and configuration phases cannot use this path. Same-workspace
 restart reuse retains its self-hashed evidence. Across Factory certification
 commands, the Factory imports only HMAC-authenticated, unexpired entries into a
 read-only disposable cache input; the product sandbox never sees the persistent

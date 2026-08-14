@@ -22,7 +22,7 @@ CANONICAL_GITHUB_ORIGIN="github.com/nysa-company/software-factory"
 RECEIPT_SCHEMA=2
 INSTALL_MANIFEST_SCHEMA=1
 SUITE_EVIDENCE_SCHEMA=2
-CERTIFICATION_TOOL_VERSION=6
+CERTIFICATION_TOOL_VERSION=7
 # Bump whenever run_kit_checks_isolated command composition or semantics change.
 KIT_SUITE_DEFINITION="factory-kit-suite-v2"
 DEFAULT_RECEIPT_TTL="${FACTORY_KIT_RECEIPT_TTL_SECONDS:-86400}"
@@ -189,7 +189,7 @@ usage() {
   cat <<EOF
 Usage:
   $PROGRAM install   --sha FULL_SHA [--repo KIT_REPO] [--origin ORIGIN]
-  $PROGRAM certify   --project SLUG --product PRODUCT_REPO --sha FULL_SHA
+  $PROGRAM certify   --project SLUG --product PRODUCT_REPO --sha FULL_SHA [--skip-optional-tests]
   $PROGRAM bootstrap --project SLUG --product PRODUCT_REPO --sha FULL_SHA [--repo KIT_REPO]
   $PROGRAM bootstrap-status --project SLUG --sha FULL_SHA [--json]
   $PROGRAM preflight-report --project SLUG --product PRODUCT_REPO --sha FULL_SHA [--ticket T-NNN] --json
@@ -208,7 +208,7 @@ Usage:
   $PROGRAM runtime-pin --product PRODUCT_REPO --runtime-bin NODE_BIN_DIR
   $PROGRAM provider-concurrency ACTION --sha FULL_SHA --capacity 2..4 [--approve-hash HASH]
   $PROGRAM provider-cli-pin ACTION --sha FULL_SHA [--claude-bin ABS --codex-bin ABS --cursor-bin ABS --operator-id ID] [--approve-hash HASH]
-  $PROGRAM release setup --project SLUG --product PRODUCT_REPO --sha FULL_SHA --profile ID --operator-id ID [--repo KIT_REPO] [--runtime-bin NODE_BIN_DIR] [--claude-bin ABS --codex-bin ABS --cursor-bin ABS] [--ticket-workdir T-NNN ABS]
+  $PROGRAM release setup --project SLUG --product PRODUCT_REPO --sha FULL_SHA --profile ID --operator-id ID [--repo KIT_REPO] [--runtime-bin NODE_BIN_DIR] [--claude-bin ABS --codex-bin ABS --cursor-bin ABS] [--ticket-workdir T-NNN ABS] [--skip-optional-tests]
   $PROGRAM release resume --project SLUG --sha FULL_SHA --approved-by ID
   $PROGRAM release abort  --project SLUG --sha FULL_SHA --approved-by ID
 
@@ -2337,6 +2337,8 @@ run_product_certification() {
   local product_git_tree="$8"
   local product_git_sha="$9" kit_tree="${10}" contract="${11}"
   local runtime_tuple="${12}"
+  local skip_optional_tests="${13}" certification_phases="${14}"
+  local optional_tests="${15}"
   local raw="$workspace/certification.raw" redacted="$workspace/certification.redacted"
   local driver_raw="$workspace/certification-driver.raw"
   local driver_redacted="$workspace/certification-driver.redacted"
@@ -2368,6 +2370,7 @@ run_product_certification() {
     "$product_git_tree" "$evidence" "$network_opt_in" "$deny_profile" \
     "$product_git_sha" "$kit_tree" "$contract" "$runtime_tuple" \
     "$CERTIFICATION_CACHE_INPUT" "$CERTIFICATION_CACHE_OUTPUT" "$driver_stage" \
+    "$skip_optional_tests" \
     <<'PY' >"$driver_raw" 2>&1 || driver_status=$?
 import json, os, pathlib, subprocess, sys
 product, script, sha, release, home, scratch, timeout, output = sys.argv[1:9]
@@ -2388,6 +2391,7 @@ runtime_tuple = sys.argv[22]
 cache_input = sys.argv[23]
 cache_output = sys.argv[24]
 driver_stage = pathlib.Path(sys.argv[25])
+skip_optional_tests = sys.argv[26]
 path_value = os.environ.get("PATH", "/usr/bin:/bin")
 tool_environment = {}
 if os.path.isfile("/usr/bin/xcode-select"):
@@ -2442,6 +2446,7 @@ environment = {
     "FACTORY_CERTIFICATION_EVIDENCE": certification_evidence,
     "FACTORY_CERTIFICATION_PHASE_SANDBOX_REQUIRED": "1" if sandbox_exec else "0",
     "FACTORY_CERTIFICATION_NETWORK_REVIEWED": network_reviewed,
+    "FACTORY_CERTIFICATION_SKIP_OPTIONAL_TESTS": skip_optional_tests,
 }
 if cache_input:
     environment["FACTORY_CERTIFICATION_CACHE_INPUT"] = cache_input
@@ -2530,11 +2535,13 @@ PY
   if [[ -e "$evidence" || -L "$evidence" ]]; then
     PRODUCT_CERTIFICATION_EVIDENCE_DIGEST="$(python3 - \
       "$evidence" "$sha" "$product_git_tree" "$product_git_sha" \
-      "$kit_tree" "$contract" "$runtime_tuple" <<'PY'
+      "$kit_tree" "$contract" "$runtime_tuple" "$skip_optional_tests" \
+      "$certification_phases" "$optional_tests" <<'PY'
 import hashlib, json, os, re, stat, sys
 (
     path, factory_sha, product_tree, product_sha, factory_tree,
-    contract_version, runtime_tuple_raw,
+    contract_version, runtime_tuple_raw, skip_optional_tests,
+    certification_phases_raw, optional_tests_raw,
 ) = sys.argv[1:]
 descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
 try:
@@ -2554,6 +2561,11 @@ finally:
 value = json.loads(raw)
 runtime_tuple = json.loads(runtime_tuple_raw)
 phases = value.get("phases")
+phase_names = [phase.get("name") for phase in phases] if isinstance(phases, list) else []
+optional_policy = value.get("optional_tests")
+declared_phases = json.loads(certification_phases_raw)
+declared_optional = json.loads(optional_tests_raw)
+expected_skipped = declared_optional if skip_optional_tests == "1" else []
 digest = re.compile(r"^[0-9a-f]{64}$")
 if (
     value.get("schema") != "nysa.software-factory.certification-result/v1"
@@ -2568,7 +2580,13 @@ if (
     or not isinstance(value.get("network_reviewed"), bool)
     or not isinstance(value.get("runtime"), dict)
     or set(value["runtime"]) != {"node", "npm"}
-    or not isinstance(phases, list) or not phases
+    or not isinstance(phases, list)
+    or not isinstance(optional_policy, dict)
+    or set(optional_policy) != {"requested", "skipped"}
+    or optional_policy.get("requested") is not (skip_optional_tests == "1")
+    or optional_policy.get("skipped") != expected_skipped
+    or len(phase_names) != len(set(phase_names))
+    or sorted(phase_names + expected_skipped) != declared_phases
     or any(
         not isinstance(phase, dict)
         or phase.get("exit_status") != 0
@@ -2675,7 +2693,7 @@ validate_receipt_snapshot() {
   local expected_id="${6:-}" release="$RELEASES_DIR/$sha"
   local expected_tree manifest_values manifest_origin pin contract receipt_id
   local product_top product_git_sha receipt_product_sha product_git_tree kit_pin_hash project_env_hash
-  local runtime_tuple
+  local runtime_tuple preflight certification_phases="[]" optional_tests="[]"
   local evidence_created evidence_expires
   [[ -f "$receipt" ]] || die "certification receipt not found: $receipt"
   [[ ! -L "$receipt" ]] || die "certification receipt may not be a symlink"
@@ -2755,12 +2773,18 @@ validate_receipt_snapshot() {
         -n "$runtime_tuple" ]]; then
     [[ -n "$runtime_tuple" ]] ||
       die "certification receipt lacks its runtime tuple"
-    FACTORY_CERTIFICATION_TUPLE="$runtime_tuple" \
+    preflight="$(FACTORY_CERTIFICATION_TUPLE="$runtime_tuple" \
       python3 "$release/scripts/certification-preflight.py" \
         --plan "$product_top/factory/certification-plan.json" \
         --factory-sha "$sha" --factory-tree "$expected_tree" \
-        --product-root "$product_top" --contract-version "$contract" \
-        >/dev/null || die "certification runtime tuple drifted"
+        --product-root "$product_top" --contract-version "$contract")" ||
+      die "certification runtime tuple drifted"
+    certification_phases="$(printf '%s' "$preflight" | python3 -c \
+      'import json,sys; print(json.dumps(json.load(sys.stdin)["phases"],sort_keys=True,separators=(",",":")))')" ||
+      die "certification phase inventory drifted"
+    optional_tests="$(printf '%s' "$preflight" | python3 -c \
+      'import json,sys; print(json.dumps(json.load(sys.stdin)["optional_tests"],sort_keys=True,separators=(",",":")))')" ||
+      die "optional certification test inventory drifted"
   fi
   require_provider_concurrency_ready \
     "$product_top" "$release" "$contract" "$sha" "$expected_tree"
@@ -2814,11 +2838,13 @@ validate_receipt_snapshot() {
       ;;
     measured)
       python3 - "$receipt" "$sha" "$expected_tree" "$product_git_sha" \
-        "$product_git_tree" "$contract" "$runtime_tuple" <<'PY' || die "measured product certification evidence is invalid"
+        "$product_git_tree" "$contract" "$runtime_tuple" \
+        "$certification_phases" "$optional_tests" <<'PY' || die "measured product certification evidence is invalid"
 import hashlib, json, re, sys
 (
     receipt, factory_sha, factory_tree, product_sha, product_tree,
-    contract_version, runtime_tuple_raw,
+    contract_version, runtime_tuple_raw, certification_phases_raw,
+    optional_tests_raw,
 ) = sys.argv[1:]
 container = json.load(open(receipt, encoding="utf-8"))[
     "product_certification_evidence"
@@ -2830,6 +2856,19 @@ raw = (
 ).encode()
 digest = re.compile(r"^[0-9a-f]{64}$")
 phases = result.get("phases") if isinstance(result, dict) else None
+phase_names = [phase.get("name") for phase in phases] if isinstance(phases, list) else []
+optional_policy = result.get("optional_tests") if isinstance(result, dict) else None
+declared_phases = json.loads(certification_phases_raw)
+declared_optional = json.loads(optional_tests_raw)
+optional_policy_valid = optional_policy is None or (
+    isinstance(optional_policy, dict)
+    and set(optional_policy) == {"requested", "skipped"}
+    and isinstance(optional_policy.get("requested"), bool)
+    and isinstance(optional_policy.get("skipped"), list)
+    and optional_policy["skipped"] == sorted(set(optional_policy["skipped"]))
+    and all(isinstance(name, str) and name for name in optional_policy["skipped"])
+    and bool(optional_policy["skipped"]) is optional_policy["requested"]
+)
 tuple_identity_invalid = bool(runtime_tuple_raw) and (
     result.get("factory_tree") != factory_tree
     or result.get("product_sha") != product_sha
@@ -2846,7 +2885,19 @@ if (
     or tuple_identity_invalid
     or result.get("max_workers") not in {1, 2, 3}
     or not isinstance(phases, list)
-    or not phases
+    or not optional_policy_valid
+    or not phases and optional_policy is None
+    or not phases and not optional_policy.get("skipped")
+    or any(not isinstance(name, str) or not name for name in phase_names)
+    or len(phase_names) != len(set(phase_names))
+    or declared_phases
+    and sorted(phase_names + (
+        optional_policy["skipped"] if optional_policy is not None else []
+    )) != declared_phases
+    or optional_policy is not None
+    and optional_policy["skipped"] not in ([], declared_optional)
+    or optional_policy is not None
+    and set(phase_names) & set(optional_policy["skipped"])
     or any(
         not isinstance(phase, dict)
         or phase.get("exit_status") != 0
@@ -3312,6 +3363,10 @@ try:
     source_tree = source.get("product_tree")
     source_evidence = source.get("product_certification_evidence")
     result = source_evidence.get("result") if isinstance(source_evidence, dict) else None
+    optional_policy = result.get("optional_tests") if isinstance(result, dict) else None
+    full_product_tests = optional_policy is None or optional_policy == {
+        "requested": False, "skipped": [],
+    }
     source_runtime = dict(runtime) if isinstance(runtime, dict) else None
     if source_runtime is not None:
         source_runtime["product_sha"] = source_sha
@@ -3349,6 +3404,7 @@ try:
         or not hex64.fullmatch(source_evidence.get("digest", ""))
         or source_evidence["digest"] != hashlib.sha256(result_raw).hexdigest()
         or not isinstance(result, dict)
+        or not full_product_tests
         or result.get("schema") != "nysa.software-factory.certification-result/v1"
         or result.get("status") != "pass"
         or result.get("factory_sha") != factory_sha
@@ -3658,13 +3714,13 @@ cmd_install() {
 }
 
 cmd_certify() {
-  local slug="$1" product="$2" sha="$3"
+  local slug="$1" product="$2" sha="$3" skip_optional_tests="${4:-0}"
   local product_top release kit_tree pin product_git_sha product_git_tree product_repo contract manifest_values
   local writable writable_head script created expires receipt_id receipt previous_generation workspace
   local kit_pin_hash project_env_hash kit_origin lock evidence_values evidence_id
   local evidence_digest evidence_created evidence_expires evidence_source suite_reused
   local refresh_source refresh_mode refresh_remote_id active_binding_hash
-  local preflight runtime_tuple replay_evidence
+  local preflight runtime_tuple replay_evidence certification_phases optional_tests
   validate_slug "$slug"
   validate_sha "$sha"
   require_host_cutover_access "$slug"
@@ -3698,6 +3754,8 @@ cmd_certify() {
   active_binding_hash="$(file_hash "$(active_file_for "$slug")")"
   contract="$(contract_version "$release")"
   runtime_tuple=""
+  certification_phases="[]"
+  optional_tests="[]"
   if [[ -e "$product_top/factory/certification-plan.json" || \
         -L "$product_top/factory/certification-plan.json" ]]; then
     preflight="$(python3 "$release/scripts/certification-preflight.py" \
@@ -3708,7 +3766,17 @@ cmd_certify() {
     runtime_tuple="$(printf '%s' "$preflight" | python3 -c \
       'import json,sys; print(json.dumps(json.load(sys.stdin)["runtime_tuple"],sort_keys=True,separators=(",",":")))')" ||
       die "certification runtime tuple preflight is malformed"
+    certification_phases="$(printf '%s' "$preflight" | python3 -c \
+      'import json,sys; print(json.dumps(json.load(sys.stdin)["phases"],sort_keys=True,separators=(",",":")))')" ||
+      die "certification phase inventory is malformed"
+    optional_tests="$(printf '%s' "$preflight" | python3 -c \
+      'import json,sys; print(json.dumps(json.load(sys.stdin)["optional_tests"],sort_keys=True,separators=(",",":")))')" ||
+      die "optional certification test inventory is malformed"
   fi
+  [[ "$skip_optional_tests" == "0" || "$skip_optional_tests" == "1" ]] ||
+    die "optional test request is invalid"
+  [[ "$skip_optional_tests" == "0" || "$optional_tests" != "[]" ]] ||
+    die "product certification plan has no optional tests"
   require_provider_concurrency_ready \
     "$product_top" "$release" "$contract" "$sha" "$kit_tree"
   workspace="$(mktemp -d "${TMPDIR:-/tmp}/factory-kit-certification.XXXXXX")"
@@ -3786,7 +3854,8 @@ cmd_certify() {
   else
     run_product_certification "$PREPARED_PRODUCT" "$script" "$sha" "$writable" \
       "$workspace" "$product_top" "$release" "$product_git_tree" \
-      "$product_git_sha" "$kit_tree" "$contract" "$runtime_tuple" ||
+      "$product_git_sha" "$kit_tree" "$contract" "$runtime_tuple" \
+      "$skip_optional_tests" "$certification_phases" "$optional_tests" ||
       die "product certification failed"
     record_certification_trace "product-certification"
   fi
@@ -4706,8 +4775,8 @@ cmd_preflight_report_json() {
 
 cmd_release_setup() {
   local project="$1" product="$2" sha="$3" repo="$4" profile="$5" operator="$6"
-  local runtime="$7" claude="$8" codex="$9" cursor="${10}"
-  shift 10
+  local runtime="$7" claude="$8" codex="$9" cursor="${10}" skip_optional="${11}"
+  shift 11
   local -a arguments=(
     --kits-root "$KITS_ROOT" setup --project "$project" --product "$product"
     --sha "$sha" --repo "$repo" --profile "$profile" --operator-id "$operator"
@@ -4716,6 +4785,7 @@ cmd_release_setup() {
   [[ -z "$claude" ]] || arguments+=(--claude-bin "$claude")
   [[ -z "$codex" ]] || arguments+=(--codex-bin "$codex")
   [[ -z "$cursor" ]] || arguments+=(--cursor-bin "$cursor")
+  [[ "$skip_optional" == "0" ]] || arguments+=(--skip-optional-tests)
   while [[ $# -gt 0 ]]; do
     arguments+=(--ticket-workdir "$1" "$2")
     shift 2
@@ -4779,6 +4849,7 @@ PREVIEW_HASH=""
 FAILED_RUN=""
 REASON=""
 EXPIRES_MINUTES=""
+SKIP_OPTIONAL_TESTS=0
 JSON=0
 POSITIONALS=()
 TICKET_WORKDIRS=()
@@ -4818,6 +4889,7 @@ while [[ $# -gt 0 ]]; do
     --failed-run) [[ $# -ge 2 ]] || die "$1 requires a value"; FAILED_RUN="$2"; shift 2 ;;
     --reason) [[ $# -ge 2 ]] || die "$1 requires a value"; REASON="$2"; shift 2 ;;
     --expires-minutes) [[ $# -ge 2 ]] || die "$1 requires a value"; EXPIRES_MINUTES="$2"; shift 2 ;;
+    --skip-optional-tests) SKIP_OPTIONAL_TESTS=1; shift ;;
     --json) JSON=1; shift ;;
     --help|-h) usage; exit 0 ;;
     --*) die "unknown option: $1" ;;
@@ -4829,6 +4901,9 @@ if [[ "$COMMAND" != "release" && (
       -n "$PROFILE$APPROVED_BY" || ${#TICKET_WORKDIRS[@]} -ne 0
     ) ]]; then
   die "release-only option used with $COMMAND"
+fi
+if [[ "$SKIP_OPTIONAL_TESTS" -eq 1 && "$COMMAND" != "certify" && "$COMMAND" != "release" ]]; then
+  die "--skip-optional-tests is only valid for certify or release setup"
 fi
 [[ "$COMMAND" == "preflight-report" ]] || validate_managed_roots
 host_cutover_mutation_requested && lock_host_cutover_mutation
@@ -4845,7 +4920,7 @@ case "$COMMAND" in
     [[ -n "$PRODUCT" ]] || PRODUCT="${POSITIONALS[1]:-}"
     [[ -n "$SHA" ]] || SHA="${POSITIONALS[2]:-}"
     [[ -n "$PROJECT" && -n "$PRODUCT" && -n "$SHA" ]] || { usage >&2; exit 2; }
-    cmd_certify "$PROJECT" "$PRODUCT" "$SHA"
+    cmd_certify "$PROJECT" "$PRODUCT" "$SHA" "$SKIP_OPTIONAL_TESTS"
     ;;
   bootstrap)
     [[ -n "$PROJECT" ]] || PROJECT="${POSITIONALS[0]:-}"
@@ -4957,6 +5032,7 @@ case "$COMMAND" in
         { usage >&2; exit 2; }
       cmd_release_setup "$PROJECT" "$PRODUCT" "$SHA" "$REPO" "$PROFILE" \
         "$OPERATOR_ID" "$RUNTIME_BIN" "$CLAUDE_BIN" "$CODEX_BIN" "$CURSOR_BIN" \
+        "$SKIP_OPTIONAL_TESTS" \
         ${TICKET_WORKDIRS[@]+"${TICKET_WORKDIRS[@]}"}
     elif [[ "$ACTION" == "resume" || "$ACTION" == "abort" ]]; then
       [[ ${#POSITIONALS[@]} -eq 1 && -n "$PROJECT" && -n "$SHA" &&
@@ -4964,7 +5040,8 @@ case "$COMMAND" in
          -z "$RUNTIME_BIN$CLAUDE_BIN$CODEX_BIN$CURSOR_BIN$ORIGIN_OVERRIDE$RECEIPT$TICKET$CAPACITY" &&
          -z "$STAGE$PRIORITY_NAME$PREVIEW_HASH$FAILED_RUN$REASON$EXPIRES_MINUTES" &&
          ${#TICKETS[@]} -eq 0 && "$JSON" -eq 0 &&
-         ${#TICKET_WORKDIRS[@]} -eq 0 && "$REPO" == "$SCRIPT_ROOT" ]] ||
+         ${#TICKET_WORKDIRS[@]} -eq 0 && "$SKIP_OPTIONAL_TESTS" -eq 0 &&
+         "$REPO" == "$SCRIPT_ROOT" ]] ||
         { usage >&2; exit 2; }
       if [[ "$ACTION" == "resume" ]]; then
         cmd_release_resume "$PROJECT" "$SHA" "$APPROVED_BY"

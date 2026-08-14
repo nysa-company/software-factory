@@ -264,6 +264,9 @@ def main() -> int:
     )
     cache_input_raw = os.environ.get("FACTORY_CERTIFICATION_CACHE_INPUT", "")
     cache_output_raw = os.environ.get("FACTORY_CERTIFICATION_CACHE_OUTPUT", "")
+    skip_optional_tests = os.environ.get(
+        "FACTORY_CERTIFICATION_SKIP_OPTIONAL_TESTS", "0"
+    )
     if (
         not 1 <= args.workers <= 3
         or not SHA.fullmatch(factory_sha)
@@ -273,6 +276,7 @@ def main() -> int:
         or not args.result.is_absolute()
         or network_reviewed not in {"0", "1"}
         or sandbox_required not in {"0", "1"}
+        or skip_optional_tests not in {"0", "1"}
     ):
         print("invalid certification runner boundary", file=sys.stderr)
         return 2
@@ -297,6 +301,13 @@ def main() -> int:
         args.result.unlink(missing_ok=True)
         plan, plan_digest = safe_plan(args.plan)
         phases = validate_plan(plan, root)
+        optional_test_names = sorted(
+            name for name, phase in phases.items()
+            if phase.get("optional") is True
+        )
+        if skip_optional_tests == "1" and not optional_test_names:
+            raise PlanError("certification plan has no optional tests")
+        skipped = set(optional_test_names if skip_optional_tests == "1" else [])
         identity = {
             "contract_version": contract_version,
             "factory_sha": factory_sha,
@@ -328,7 +339,8 @@ def main() -> int:
     runtime = {field: runtime_tuple[field] for field in ("node", "npm")}
     missing_network = sorted(
         name for name, phase in phases.items()
-        if phase["network"] == "required" and network_reviewed != "1"
+        if name not in skipped
+        and phase["network"] == "required" and network_reviewed != "1"
     )
     reason = (
         "reviewed_network_required" if missing_network else ""
@@ -343,6 +355,10 @@ def main() -> int:
             "failure": {"phases": missing_network, "reason_code": reason},
             "max_workers": args.workers,
             "network_reviewed": network_reviewed == "1",
+            "optional_tests": {
+                "requested": skip_optional_tests == "1",
+                "skipped": sorted(skipped),
+            },
             "phases": [],
             "plan_sha256": plan_digest,
             "product_sha": product_sha,
@@ -361,7 +377,7 @@ def main() -> int:
     try:
         safe_directory(run_root)
         cache_records: dict[str, dict[str, Any] | None] = {}
-        for name in phases:
+        for name in phases.keys() - skipped:
             phase_root = run_root / name
             if phase_root.exists() or phase_root.is_symlink():
                 safe_directory(phase_root)
@@ -370,7 +386,7 @@ def main() -> int:
         print(str(error), file=sys.stderr)
         return 2
     started = time.time()
-    pending = set(phases)
+    pending = set(phases) - skipped
     running: dict[int, dict[str, Any]] = {}
     completed: dict[str, dict[str, Any]] = {}
     failed = False
@@ -690,6 +706,10 @@ def main() -> int:
         "factory_tree": factory_tree,
         "max_workers": args.workers,
         "network_reviewed": network_reviewed == "1",
+        "optional_tests": {
+            "requested": skip_optional_tests == "1",
+            "skipped": sorted(skipped),
+        },
         "phases": [completed[name] for name in sorted(completed)],
         "plan_sha256": plan_digest,
         "product_sha": product_sha,

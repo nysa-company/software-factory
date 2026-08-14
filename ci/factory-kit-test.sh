@@ -1304,8 +1304,57 @@ else
   fail "preflight report blocks a product identity change during evidence reads"
 fi
 
+PRODUCT_OPTIONAL="$(make_product product-optional)"
+set_pin "$PRODUCT_OPTIONAL" "$SHA_A"
+node_version="$(node --version)"
+npm_version="$(npm --version)"
+cat > "$PRODUCT_OPTIONAL/factory/certification-plan.json" <<EOF
+{"phases":[{"artifacts":[],"command":["true"],"depends_on":[],"name":"required-check","network":"denied"},{"artifacts":[],"command":["false"],"depends_on":["required-check"],"kind":"test","name":"application-tests","network":"denied","optional":true}],"runtime":{"node":"$node_version","npm":"$npm_version"},"schema":"nysa.software-factory.certification-plan/v2"}
+EOF
+commit_all "$PRODUCT_OPTIONAL" "declare optional application tests"
+push_main "$PRODUCT_OPTIONAL"
+expect_success "certification skips only app-declared optional tests" \
+  certify --project optional --product "$PRODUCT_OPTIONAL" --sha "$SHA_A" \
+  --skip-optional-tests
+OPTIONAL_RECEIPT="$(printf '%s\n' "$LAST_OUTPUT" | awk '/^\// {value=$0} END {print value}')"
+if python3 - "$OPTIONAL_RECEIPT" <<'PY'
+import json, sys
+result = json.load(open(sys.argv[1]))["product_certification_evidence"]["result"]
+assert result["optional_tests"] == {
+    "requested": True, "skipped": ["application-tests"],
+}
+assert [phase["name"] for phase in result["phases"]] == ["required-check"]
+PY
+then
+  pass "certification receipt records the exact optional test omission"
+else
+  fail "certification receipt records the exact optional test omission"
+fi
+OPTIONAL_TAMPER="$TMP/optional-receipt-tamper.json"
+python3 - "$OPTIONAL_RECEIPT" "$OPTIONAL_TAMPER" <<'PY'
+import hashlib, json, pathlib, sys
+source, target = map(pathlib.Path, sys.argv[1:])
+value = json.loads(source.read_text())
+evidence = value["product_certification_evidence"]
+evidence["result"]["optional_tests"]["skipped"] = ["invented-tests"]
+raw = (json.dumps(
+    evidence["result"], ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+) + "\n").encode()
+evidence["digest"] = hashlib.sha256(raw).hexdigest()
+target.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n")
+target.chmod(0o600)
+PY
+expect_failure "activation rejects a receipt with a resealed skipped-test inventory" \
+  plan --project optional --product "$PRODUCT_OPTIONAL" --sha "$SHA_A" \
+  --receipt "$OPTIONAL_TAMPER"
+expect_failure "certification runs optional tests by default" \
+  certify --project optional --product "$PRODUCT_OPTIONAL" --sha "$SHA_A"
+
 PRODUCT_ONE="$(make_product product-one)"
 set_pin "$PRODUCT_ONE" "$SHA_A"
+expect_failure "certification refuses an undeclared optional-test skip" \
+  certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A" \
+  --skip-optional-tests
 printf '%s\n' 'PREVIEW_PROVIDER=none' >> "$PRODUCT_ONE/factory/PROJECT.env"
 commit_all "$PRODUCT_ONE" "add duplicate preview provider"
 push_main "$PRODUCT_ONE"
@@ -1822,7 +1871,7 @@ fi
 RECEIPT_STALE="$(printf '%s\n' "$LAST_OUTPUT" | awk '/^\// {value=$0} END {print value}')"
 RECEIPT_STALE_ID="$(json_value "$RECEIPT_STALE" receipt_id)"
 if [[ "$(basename "$RECEIPT_STALE")" == "$RECEIPT_STALE_ID.json" &&
-      "$(json_value "$RECEIPT_STALE" certification_tool_version)" == "6" &&
+      "$(json_value "$RECEIPT_STALE" certification_tool_version)" == "7" &&
       "$(json_value "$RECEIPT_STALE" provider_concurrency_evidence.status)" == "not-required" &&
       "$(json_value "$RECEIPT_STALE" provider_concurrency_evidence.factory_sha)" == "$SHA_A" &&
       "$(json_value "$RECEIPT_STALE" provider_concurrency_evidence.factory_tree)" == "$(git -C "$KIT_REPO" rev-parse "$SHA_A^{tree}")" &&

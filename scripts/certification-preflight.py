@@ -29,7 +29,7 @@ def main() -> int:
     try:
         product = args.product_root.resolve(strict=True)
         plan, plan_digest = safe_plan(args.plan)
-        validate_plan(plan, product)
+        phases = validate_plan(plan, product)
         product_sha, product_tree = git_identity(product)
         identity = {
             "contract_version": args.contract_version,
@@ -44,6 +44,11 @@ def main() -> int:
         compare_tuple(expected, planned)
         compare_tuple(expected, observed_tuple(identity))
         print(json.dumps({
+            "optional_tests": sorted(
+                name for name, phase in phases.items()
+                if phase.get("optional") is True
+            ),
+            "phases": sorted(phases),
             "plan_sha256": plan_digest,
             "runtime_tuple": expected,
             "schema": PREFLIGHT_SCHEMA,

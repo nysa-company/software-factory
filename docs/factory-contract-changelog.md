@@ -22,6 +22,9 @@ are not compatibility promises.
   preserves the existing inherited-descriptor boundary.
 - Replaces the legacy contract suite and shard names with Factory-owned names
   and adds a static gate against reintroducing the removed runtime.
+- Lets products mark exact certification test phases as optional while keeping
+  them enabled by default; explicit omission is bound to the result, receipt,
+  and release plan.
 
 ## 1.9.0 — 2026-08-11
 

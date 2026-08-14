@@ -622,6 +622,10 @@ everything the Factory actually enforces lives here.
   and provider work are drained, with the prior executable retained for
   rollback.
 - Install records owner-only, expiring kit-suite evidence for the exact sealed release. Exact protected-main GitHub Actions full-suite evidence is mandatory and is followed by a sandboxed platform smoke; missing evidence fails closed without a local full fallback. Certification reuses evidence only when every release, physical-tree, host, platform, suite-definition, tool-version, source, and configured-lifetime binding matches; product certification and binding checks always rerun.
+- Product certification tests run by default. A committed plan may mark only
+  exact `kind: test` phases as optional, and only an explicit release or
+  certification request omits them; the plan, result, and receipt bind the
+  skipped names while every required and non-test phase still runs.
 - Product certification stages a checksum-verified pinned scanner into the disposable product copy before entering its network-denied sandbox, so managed secret scanning never depends on a prewarmed product cache or certification-time network access.
 - Certification phase reuse is explicit and artifact-only. Same-root restarts
   retain self-hashed local evidence. Across commands, the Factory verifies an
@@ -5882,3 +5886,14 @@ nonproduction and nonpromotable: no credentials or GitHub writes were present,
 and the disposable Nysa fork quarantined legacy terminal-evidence gaps only for
 the timing canary. Repository-test now stops after that one authenticated mock
 planner completion; production and qualification behavior remain unchanged.
+
+## 2026-08-14 — Decision 412: Product tests require two explicit choices to skip
+
+Category: Test strategy
+
+A product may mark exact certification phases with `kind: "test"` and
+`optional: true`; those phases still run by default. Certification omits them
+only when the operator passes `--skip-optional-tests`. Required phases may not
+depend on optional tests, non-test phases cannot opt in, and the sealed release
+plan, measured result, and receipt record the exact omission. A missing test run
+is therefore visible and is never reported as a passing test.

@@ -40,6 +40,7 @@ class CertificationRunnerTest(unittest.TestCase):
         runtime: dict | None = None,
         cache_input: Path | None = None,
         cache_output: Path | None = None,
+        skip_optional_tests: bool = False,
         extra_environment: dict[str, str] | None = None,
     ):
         phases = [{**phase, "network": phase.get("network", "denied")} for phase in phases]
@@ -71,6 +72,9 @@ class CertificationRunnerTest(unittest.TestCase):
             }),
             FACTORY_CERTIFICATION_NETWORK_REVIEWED=(
                 "1" if network_reviewed else "0"
+            ),
+            FACTORY_CERTIFICATION_SKIP_OPTIONAL_TESTS=(
+                "1" if skip_optional_tests else "0"
             ),
         )
         if cache_input is not None:
@@ -154,6 +158,129 @@ class CertificationRunnerTest(unittest.TestCase):
             self.assertTrue(
                 all(item["network_granted"] is False for item in result["phases"])
             )
+
+    def test_optional_test_runs_by_default_and_skips_only_on_explicit_request(self) -> None:
+        phases = [
+            {
+                "artifacts": [], "command": ["touch", "required-ran"],
+                "depends_on": [], "name": "required-check",
+            },
+            {
+                "artifacts": [], "command": ["touch", "optional-ran"],
+                "depends_on": ["required-check"], "kind": "test",
+                "name": "application-tests", "optional": True,
+            },
+        ]
+        with tempfile.TemporaryDirectory() as raw:
+            default_root = Path(raw) / "default"
+            default_root.mkdir()
+            completed, result = self.run_plan(default_root, phases)
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertTrue((default_root / "optional-ran").exists())
+            self.assertEqual(result["optional_tests"], {
+                "requested": False, "skipped": [],
+            })
+
+            skipped_root = Path(raw) / "skipped"
+            skipped_root.mkdir()
+            completed, result = self.run_plan(
+                skipped_root, phases, skip_optional_tests=True,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertTrue((skipped_root / "required-ran").exists())
+            self.assertFalse((skipped_root / "optional-ran").exists())
+            self.assertEqual(
+                [phase["name"] for phase in result["phases"]],
+                ["required-check"],
+            )
+            self.assertEqual(result["optional_tests"], {
+                "requested": True, "skipped": ["application-tests"],
+            })
+
+    def test_all_tests_may_be_optional_but_required_dependents_are_rejected(self) -> None:
+        optional = {
+            "artifacts": [], "command": ["touch", "must-not-run"],
+            "depends_on": [], "kind": "test", "name": "application-tests",
+            "optional": True,
+        }
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            completed, result = self.run_plan(
+                root, [optional], skip_optional_tests=True,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertEqual(result["phases"], [])
+            self.assertEqual(result["optional_tests"]["skipped"], ["application-tests"])
+            self.assertFalse((root / "must-not-run").exists())
+
+            required_dependent = {
+                "artifacts": [], "command": ["touch", "dependent-ran"],
+                "depends_on": ["application-tests"], "name": "package",
+            }
+            completed, result = self.run_plan(
+                root, [optional, required_dependent], skip_optional_tests=True,
+            )
+            self.assertEqual(completed.returncode, 2)
+            self.assertIsNone(result)
+            self.assertFalse((root / "dependent-ran").exists())
+
+    def test_skip_requires_declared_tests_and_does_not_require_their_network(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            required = {
+                "artifacts": [], "command": ["touch", "required-ran"],
+                "depends_on": [], "name": "required-check",
+            }
+            completed, result = self.run_plan(
+                root, [required], skip_optional_tests=True,
+            )
+            self.assertEqual(completed.returncode, 2)
+            self.assertIsNone(result)
+            self.assertFalse((root / "required-ran").exists())
+
+            optional_network = {
+                "artifacts": [], "command": ["touch", "network-test-ran"],
+                "depends_on": ["required-check"], "kind": "test",
+                "name": "network-tests", "network": "required",
+                "optional": True,
+            }
+            completed, result = self.run_plan(
+                root, [required, optional_network], skip_optional_tests=True,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertTrue((root / "required-ran").exists())
+            self.assertFalse((root / "network-test-ran").exists())
+            self.assertFalse(result["network_reviewed"])
+
+    def test_optional_marker_is_exact_and_test_only(self) -> None:
+        base = {
+            "artifacts": [], "command": ["touch", "must-not-run"],
+            "depends_on": [], "name": "candidate",
+        }
+        invalid = (
+            {**base, "optional": True},
+            {**base, "kind": "test", "optional": False},
+            {**base, "kind": "build", "optional": True},
+        )
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            for phase in invalid:
+                with self.subTest(phase=phase):
+                    completed, result = self.run_plan(root, [phase])
+                    self.assertEqual(completed.returncode, 2)
+                    self.assertIsNone(result)
+                    self.assertFalse((root / "must-not-run").exists())
+            valid = {
+                **base, "kind": "test", "optional": True,
+            }
+            completed, result = self.run_plan(
+                root, [valid], extra_environment={
+                    "FACTORY_CERTIFICATION_SKIP_OPTIONAL_TESTS": "yes",
+                },
+            )
+            self.assertEqual(completed.returncode, 2)
+            self.assertIsNone(result)
+            self.assertFalse((root / "must-not-run").exists())
 
     def test_failed_phase_cancels_sibling_and_never_passes(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

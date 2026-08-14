@@ -187,6 +187,10 @@ bash scripts/factory-kit.sh release resume \
   --project relay --sha <factory-sha> --approved-by <operator-id>
 ```
 
+Products may explicitly mark certification test phases as optional. Add
+`--skip-optional-tests` to `release setup` only when that committed product
+policy intentionally applies; otherwise all product tests run.
+
 `setup` installs and validates immutable inputs, prepares the project-local
 runtime roots and controller job, binds the committed ticket inventory, and
 returns one exact sealed plan and authorizes that transaction.
