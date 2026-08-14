@@ -329,6 +329,7 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
     environment = {
         "FACTORY_KIT_CANONICAL_ORIGIN": str(factory_origin),
         "FACTORY_KIT_TEST_MODE": "1", "FACTORY_KIT_TEST_REMOTE_FULL_CI": "1",
+        "FACTORY_LAUNCH_TEST_HOME": str(root), "FACTORY_LAUNCH_TEST_MODE": "1",
         "FACTORY_KITS_ROOT": str(kits), "FACTORY_RELEASE_TEST_HOME": str(root),
         "GITLEAKS_BIN": str(tools / "gitleaks"), "HOME": str(root),
         "LANG": "C.UTF-8", "LC_ALL": "C", "TMPDIR": str(tmp),

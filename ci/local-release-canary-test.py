@@ -39,6 +39,8 @@ if [[ "$1" == "release" && "$2" == "setup" ]]; then
 #!/usr/bin/env python3
 import hashlib, json, os, pathlib, sys, time
 kits = pathlib.Path(os.environ["FACTORY_KITS_ROOT"])
+if os.environ.get("FACTORY_LAUNCH_TEST_MODE") != "1" or os.environ.get("FACTORY_LAUNCH_TEST_HOME") != os.environ.get("HOME"):
+    raise SystemExit("missing repository-test launcher authority")
 project = sys.argv[1]
 ticket = "T-1"
 sha = next((kits / "releases").iterdir()).name
