@@ -942,7 +942,6 @@ if [[ "$SUBSET" == "model-policy" ]]; then
 SEALED_PRODUCT="$TMP/sealed-product"
 write_envelope "$SEALED_PRODUCT"
 write_ticket "$SEALED_PRODUCT" T-190
-printf '\nKit-SHA: %s\n' "$KIT_SHA" >> "$SEALED_PRODUCT/factory/tickets/T-190.md"
 git -C "$SEALED_PRODUCT" add .gitignore factory/tickets/T-190.md
 git -C "$SEALED_PRODUCT" -c user.name=test -c user.email=test@example.com \
   commit -qm "sealed ticket fixture"
@@ -963,7 +962,12 @@ SEALED_STAGE="$(env \
   FACTORY_RELEASE_PATH="$SEALED_RELEASE" \
   FACTORY_RELEASE_CONTRACT_VERSION=2.0.0 \
   "$SEALED_RELEASE/scripts/next-stage.sh" --ticket T-190 2>&1)"
+SEALED_READY_HEAD="$(git -C "$SEALED_PRODUCT" rev-parse HEAD)"
 SEALED_TRANSITION="$(env \
+  FACTORY_KIT_TRUST_SCOPE=repository-test \
+  FACTORY_TEST_MODE=1 \
+  FACTORY_TRUSTED_TEST_HARNESS=1 \
+  FACTORY_ADAPTER_OVERRIDE=mock \
   FACTORY_CERTIFIED_PRODUCT_ORIGIN="$SEALED_ORIGIN" \
   FACTORY_RELEASE_SHA="$KIT_SHA" \
   FACTORY_RELEASE_TREE="$SEALED_TREE" \
@@ -974,6 +978,20 @@ SEALED_TRANSITION="$(env \
     --kit-dir "$SEALED_RELEASE" --state-dir "$SEALED_STATE" \
     --ticket T-190 --contract-version 2.0.0 --factory-sha "$KIT_SHA" \
     --project sealed)"
+SEALED_PLANNING_HEAD="$(git -C "$SEALED_PRODUCT" rev-parse HEAD)"
+SEALED_PLANNING_PARENT="$(git -C "$SEALED_PRODUCT" rev-parse HEAD^)"
+SEALED_PLANNING_TICKET="$(git -C "$SEALED_PRODUCT" show HEAD:factory/tickets/T-190.md)"
+SEALED_PLANNING_REMOTE="$(git -C "$SEALED_PRODUCT" ls-remote --heads -- "$SEALED_ORIGIN" refs/heads/ticket/T-190 | awk 'NR==1 {print $1; exit}')"
+if [[ "$SEALED_PLANNING_HEAD" != "$SEALED_READY_HEAD" &&
+      "$SEALED_PLANNING_PARENT" == "$SEALED_READY_HEAD" &&
+      "$SEALED_PLANNING_REMOTE" == "$SEALED_PLANNING_HEAD" &&
+      -z "$(git -C "$SEALED_PRODUCT" status --porcelain)" ]] &&
+   grep -q '^State: Planning$' <<<"$SEALED_PLANNING_TICKET" &&
+   grep -q "^Kit-SHA: $KIT_SHA$" <<<"$SEALED_PLANNING_TICKET"; then
+  pass "repository-test transition binds kit affinity before receipt"
+else
+  fail "repository-test transition binds kit affinity before receipt"
+fi
 SEALED_RECEIPT="$(python3 -c \
   'import json,sys; print(json.load(sys.stdin)["receipt"])' \
   <<<"$SEALED_TRANSITION")"
