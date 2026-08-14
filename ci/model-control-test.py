@@ -644,6 +644,9 @@ class ModelControlTest(unittest.TestCase):
         plan = json.loads(self.command("plan").stdout)
         self.assertEqual(plan["schema"], "model-resolution-plan/v2")
         self.assertEqual(plan["profile_id"], "project-policy")
+        readiness = json.loads(self.command("qualification-readiness").stdout)
+        self.assertEqual(readiness["status"], "ready")
+        self.assertEqual(readiness["profile_id"], "project-policy")
 
         status = json.loads(
             self.command("ticket-status", "--ticket", "T-901").stdout
