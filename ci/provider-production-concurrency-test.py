@@ -142,7 +142,9 @@ class ProductionConcurrencyTest(unittest.TestCase):
             "0",
         )
 
-    def cursor_account(self, action: str, lease: str) -> dict:
+    def cursor_account(
+        self, action: str, lease: str, scope: str = "production-certified"
+    ) -> dict:
         arguments = [
             "--account-db", str(self.state / "accounting/cursor-account.sqlite3"),
             f"account-{action}", "--lease-id", lease,
@@ -156,7 +158,7 @@ class ProductionConcurrencyTest(unittest.TestCase):
             )
             arguments.extend([
                 "--account-route", "cursor",
-                "--trust-scope", "production-certified",
+                "--trust-scope", scope,
                 "--policy", str(self.state / "provider-policy.json"),
                 "--configuration-lock",
                 str(self.state / "provider-configuration.lock"),
@@ -173,6 +175,16 @@ class ProductionConcurrencyTest(unittest.TestCase):
                 "--runtime-start", runtime_start,
             ])
         return self.coordinator(*arguments)
+
+    def test_development_cursor_account_scope_is_explicit(self) -> None:
+        self.apply()
+        lease = "development-local"
+        admitted = self.cursor_account(
+            "acquire", lease, scope="development-local"
+        )
+        self.assertTrue(admitted["admitted"])
+        self.assertEqual(admitted["lease"]["trust_scope"], "development-local")
+        self.assertTrue(self.cursor_account("release", lease)["released"])
 
     def prepare_runtime(self, adapter: str, attempt: str) -> Path:
         script = f"""

@@ -121,6 +121,7 @@ subscription_base_env() {
       FACTORY_PROVIDER_POLICY="$root/runtime/provider-policy.json" \
       FACTORY_PROVIDER_CONFIGURATION_LOCK="$root/runtime/provider-configuration.lock" \
       FACTORY_PROVIDER_ACTIVATION="$root/runtime/provider-activation.json" \
+      FACTORY_CURSOR_ACCOUNT_DB="$root/runtime/cursor-account-state.sqlite3" \
       FACTORY_CURSOR_SESSION_HOME="$root/session-home" FACTORY_CURSOR_INTERNAL_SANDBOX=1 \
       FACTORY_CURSOR_REPEATED_TOOL_ERROR_LIMIT=2 \
       FACTORY_CLI_LANE_ROOT="$root" FACTORY_CLI_INTERNAL_SANDBOX=1 \

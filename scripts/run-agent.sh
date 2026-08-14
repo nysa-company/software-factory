@@ -1284,6 +1284,21 @@ raise SystemExit(0 if json.load(sys.stdin).get("bound") is True else 1)
 '
 }
 
+validate_cursor_account_admission_authority() {
+  CURSOR_ACCOUNT_TRUST_SCOPE="${FACTORY_KIT_PROVENANCE_SCOPE:-}"
+  case "$CURSOR_ACCOUNT_TRUST_SCOPE" in
+    production-certified|qualification-candidate)
+      [[ "${FACTORY_CURSOR_ACCOUNT_DB:-}" == /* ]]
+      ;;
+    development-local)
+      [[ -n "$DEVELOPMENT_LANE_ROOT" &&
+         "${FACTORY_CURSOR_ACCOUNT_DB:-}" == \
+           "$DEVELOPMENT_LANE_ROOT/runtime/cursor-account-state.sqlite3" ]]
+      ;;
+    *) return 1 ;;
+  esac
+}
+
 copy_cli_credential() {
   python3 - "$1" "$2" <<'PY'
 import os
@@ -1970,8 +1985,7 @@ elif [[ "$CLI_CONCURRENT_RUN" -eq 1 ]]; then
   PROVIDER_EXECUTION_MODE="cli-concurrent-v1"
 fi
 if [[ "$CLI_CONCURRENT_RUN" -eq 1 && "$ADAPTER" == cursor-* ]]; then
-  [[ "${FACTORY_CURSOR_ACCOUNT_DB:-}" == /* &&
-     "${FACTORY_KIT_TRUST_SCOPE:-}" =~ ^(production-certified|qualification-candidate)$ ]] || {
+  validate_cursor_account_admission_authority || {
     echo "Cursor account admission authority is unavailable; no task was submitted" >&2
     exit 3
   }
@@ -2248,7 +2262,7 @@ if [[ "$CLI_CONCURRENT_RUN" -eq 1 && "$ADAPTER" == cursor-* ]]; then
       --account-db "$FACTORY_CURSOR_ACCOUNT_DB" account-acquire \
       --lease-id "$CURSOR_ACCOUNT_LEASE_ID" \
       --account-route "$SELECTED_ACCOUNT_ROUTE_ID" \
-      --trust-scope "$FACTORY_KIT_TRUST_SCOPE" \
+      --trust-scope "$CURSOR_ACCOUNT_TRUST_SCOPE" \
       --owner-pid "$CURSOR_ACCOUNT_OWNER_PID" \
       --owner-pgid "$CURSOR_ACCOUNT_OWNER_PGID" \
       --owner-start "$CURSOR_ACCOUNT_OWNER_START" \
@@ -2689,7 +2703,7 @@ elif [[ "$CLI_CONCURRENT_RUN" -eq 1 ]]; then
       --account-owner-pid "$CURSOR_ACCOUNT_OWNER_PID"
       --account-owner-pgid "$CURSOR_ACCOUNT_OWNER_PGID"
       --account-owner-start "$CURSOR_ACCOUNT_OWNER_START"
-      --trust-scope "$FACTORY_KIT_TRUST_SCOPE"
+      --trust-scope "$CURSOR_ACCOUNT_TRUST_SCOPE"
       --account-policy-sha256 "$ACTIVATED_POLICY_HASH"
     )
   fi

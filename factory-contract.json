@@ -598,7 +598,7 @@
       "FACTORY_PROVIDER_CONFIGURATION_LOCK": "fixed Contract 1.8 owner-local provider-configuration lock",
       "FACTORY_PROVIDER_ACTIVATION": "fixed owner-local activation gate: Contract 1.6 API-only v1; Contract 1.7/1.8 API v1 or subscription-CLI v2",
       "FACTORY_CLI_RUNTIME_ROOT": "fixed Contract 1.7+ owner-local per-attempt subscription CLI runtime directory",
-      "FACTORY_CURSOR_ACCOUNT_DB": "fixed machine-local owner-only Cursor account-route admission database shared by production and qualification",
+      "FACTORY_CURSOR_ACCOUNT_DB": "fixed owner-only Cursor account-route admission database: machine-shared for production and qualification, lane-local for isolated development",
       "FACTORY_PROVIDER_BROKER_URL": "fixed Contract 1.6 loopback TLS broker endpoint",
       "FACTORY_PROVIDER_BROKER_CA": "fixed Contract 1.6 broker trust anchor"
     },

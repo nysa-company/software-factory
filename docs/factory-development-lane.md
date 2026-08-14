@@ -103,6 +103,10 @@ immediately. This five-minute rule applies equally to Codex, Claude, and
 Cursor, and one ticket waiting for authorization never blocks its siblings.
 Family separation and adapter concurrency ceilings still apply;
 the Factory never waits on a login prompt or starts an unauthenticated task.
+Cursor roles use a lane-local owner-only account-admission database with the
+explicit `development-local` scope. Production and qualification retain their
+machine-shared database and sealed scopes; development evidence cannot be
+promoted into either.
 Retained-product resumes run that probe before hashing the plan and again
 before validating it for execution; the internal run reuses the second result
 instead of immediately probing the same session a third time.

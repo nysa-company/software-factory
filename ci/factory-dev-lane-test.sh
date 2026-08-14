@@ -538,6 +538,10 @@ eval "$(sed -n '/^subscription_env()/,/^product_approval_hash()/p' \
 [[ "$(subscription_base_env "$READINESS_ROOT" \
   /usr/bin/printenv AGENT_CLI_CREDENTIAL_STORE)" == file ]] ||
   fail "subscription environment did not isolate Cursor credentials in the lane"
+[[ "$(subscription_base_env "$READINESS_ROOT" \
+  /usr/bin/printenv FACTORY_CURSOR_ACCOUNT_DB)" == \
+  "$READINESS_ROOT/runtime/cursor-account-state.sqlite3" ]] ||
+  fail "subscription environment omitted its lane-local Cursor account database"
 if (
   die() { exit 1; }
   AMBIENT_AUTH_READY=1 \
@@ -1551,6 +1555,21 @@ grep -Fq '"CURSOR_CONFIG_DIR=$CLI_CURSOR_CONFIG_DIR"' \
   grep -Fq 'mkdir -m 700 "$CLI_PROVIDER_HOME/.cursor" "$CLI_RUNTIME_ROOT/data"' \
     "$ROOT/scripts/run-agent.sh" ||
   fail "concurrent Cursor does not use attempt-local config and data roots"
+(
+  eval "$(sed -n '/^validate_cursor_account_admission_authority()/,/^}/p' \
+    "$ROOT/scripts/run-agent.sh")"
+  DEVELOPMENT_LANE_ROOT="$TMP/nysa-sf-dev.account-authority"
+  mkdir -p "$DEVELOPMENT_LANE_ROOT/runtime"
+  FACTORY_KIT_PROVENANCE_SCOPE=development-local
+  FACTORY_CURSOR_ACCOUNT_DB="$DEVELOPMENT_LANE_ROOT/runtime/cursor-account-state.sqlite3"
+  validate_cursor_account_admission_authority ||
+    fail "development Cursor account authority rejected its lane-local database"
+  [[ "$CURSOR_ACCOUNT_TRUST_SCOPE" == development-local ]] ||
+    fail "development Cursor account authority changed its trust scope"
+  FACTORY_CURSOR_ACCOUNT_DB="$TMP/foreign-cursor-account.sqlite3"
+  expect_failure "development Cursor account database escape" \
+    validate_cursor_account_admission_authority
+)
 for invalid in 'APPROVE|REQUEST CHANGES' '**APPROVE**|**REQUEST CHANGES**' 'no verdict'; do
   printf '%s\n' "$invalid" | tr '|' '\n' >"$VERDICT"
   expect_failure "ambiguous reviewer verdict" python3 "$ROOT/scripts/lib/reviewer-verdict.py" \
