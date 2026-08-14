@@ -5834,3 +5834,20 @@ claims, runs, leases, already-Planning branches, pre-provider recovery, real
 credentials, provider calls, and GitHub mutations are refused. This proves the
 activation-to-Planning timing boundary without creating production-shaped
 provider evidence; production and qualification behavior is unchanged.
+
+## 2026-08-14 — Decision 410: Fresh local Nysa activation reaches Planning in 12m53s
+
+Category: Evidence
+
+Candidate `605ba6fd65e9f9a503899d0180fbd58e272a47e8` reached one authenticated
+`repository_test_planning` event for Nysa ticket T-218 in 773.062 seconds. The
+timer started before fresh local Factory and product clones and ended at the
+event's monotonic wall timestamp; human approval wait was zero. Cold product
+certification passed ten phases in 360.561 seconds. The event digest,
+unconsumed transition-receipt digest, exact lease, changed worktree head,
+literal Planning state, clean registered checkout, and local-only push origins
+were independently revalidated after reconciliation. This is nonproduction
+timing evidence: the disposable product fork quarantined ten legacy Done
+tickets whose protected-main terminal evidence is incomplete, used synthetic
+local Factory CI evidence, and stopped before model pinning or provider/role
+execution. No GitHub write occurred.
