@@ -4088,6 +4088,13 @@ else
 fi
 
 setup_role_exit_fixture T-600
+ROLE_EMPTY_TARGET="$TMP/role-empty-external.txt"
+printf 'product-owned target\n' > "$ROLE_EMPTY_TARGET"
+ln -s "$ROLE_EMPTY_TARGET" "$ROLE_EXIT_WORKTREE/mock-role-output.txt"
+git -C "$ROLE_EXIT_WORKTREE" add mock-role-output.txt
+git -C "$ROLE_EXIT_WORKTREE" -c user.name=test -c user.email=test@example.com \
+  commit -qm "product-owned mock path"
+git -C "$ROLE_EXIT_WORKTREE" push -q origin ticket/T-600
 ROLE_NO_COMMIT=0
 FACTORY_ROOT="$ROLE_EXIT_ROOT" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
   FACTORY_TEST_MODE=1 FACTORY_TEST_ENFORCE_ROLE_EXIT=1 \
@@ -4096,7 +4103,7 @@ FACTORY_ROOT="$ROLE_EXIT_ROOT" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
   "$RUN_AGENT" --role planner --ticket T-600 --workdir "$ROLE_EXIT_WORKTREE" -- "no commit" \
   > "$TMP/role-no-commit.out" 2>&1 || ROLE_NO_COMMIT=$?
 ROLE_COMMIT=0
-MOCK_COMMIT_WORKDIR=1 FACTORY_ROOT="$ROLE_EXIT_ROOT" \
+MOCK_COMMIT_EMPTY=1 FACTORY_ROOT="$ROLE_EXIT_ROOT" \
   FACTORY_GLOBAL_ENV="$TMP/no-global.env" FACTORY_TEST_MODE=1 \
   FACTORY_CERTIFIED_PRODUCT_ORIGIN="$ROLE_EXIT_REMOTE" \
   FACTORY_TEST_ENFORCE_ROLE_EXIT=1 FACTORY_ADAPTER_OVERRIDE=mock \
@@ -4105,11 +4112,13 @@ MOCK_COMMIT_WORKDIR=1 FACTORY_ROOT="$ROLE_EXIT_ROOT" \
 ROLE_LOCAL_HEAD="$(git -C "$ROLE_EXIT_WORKTREE" rev-parse HEAD)"
 ROLE_REMOTE_HEAD="$(git --git-dir="$ROLE_EXIT_REMOTE" rev-parse refs/heads/ticket/T-600)"
 if [[ "$ROLE_NO_COMMIT" -eq 11 && "$ROLE_COMMIT" -eq 0 &&
-      "$ROLE_LOCAL_HEAD" == "$ROLE_REMOTE_HEAD" ]] &&
+      "$ROLE_LOCAL_HEAD" == "$ROLE_REMOTE_HEAD" &&
+      "$(cat "$ROLE_EMPTY_TARGET")" == "product-owned target" &&
+      -L "$ROLE_EXIT_WORKTREE/mock-role-output.txt" ]] &&
    grep -q 'role_exit_no_commit' "$TMP/role-no-commit.out"; then
-  pass "role exit requires a clean commit and pushes it non-force"
+  pass "role exit accepts an empty mock commit without touching product paths"
 else
-  fail "role exit requires a clean commit and pushes it non-force" \
+  fail "role exit accepts an empty mock commit without touching product paths" \
     "no-commit=$ROLE_NO_COMMIT commit=$ROLE_COMMIT"
 fi
 

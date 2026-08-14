@@ -469,6 +469,8 @@ assert environment["FACTORY_RELEASE_TREE"] == tree
 assert environment["FACTORY_RELEASE_PATH"] == os.path.realpath(release)
 assert environment["FACTORY_RELEASE_CONTRACT_VERSION"] == "2.0.0"
 assert environment["FACTORY_KIT_TRUST_SCOPE"] == "repository-test"
+assert environment["FACTORY_TEST_ENFORCE_ROLE_EXIT"] == "1"
+assert environment["MOCK_COMMIT_EMPTY"] == "1"
 for forbidden in (
     "CALLER_SENTINEL", "GH_TOKEN", "PYTHONPATH", "GIT_CONFIG_GLOBAL",
     "FACTORY_KITS_ROOT", "FACTORY_KIT_TEST_MODE", "FACTORY_RELEASE_TEST_HOME",

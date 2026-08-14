@@ -610,9 +610,10 @@ receipt validation requires the canonical GitHub Factory origin and
 protected-main GitHub Actions evidence; test receipts cannot be promoted into
 an installed production lane. The sealed test launcher forces the mock adapter,
 records `repository-test` in run evidence, refuses GitHub-mutating commands,
-and makes Doctor validate only that local mock boundary. Its controller stops
-after the first authenticated Planning claim; it does not pin a production
-model route or launch a role. Do not copy provider or GitHub credentials into
+and makes Doctor validate only that local mock boundary. Its controller reaches
+one authenticated Planning claim, runs one sealed mock planner with durable
+role-exit evidence, and then stops. It does not pin a production model route or
+launch a provider-backed role. Do not copy provider or GitHub credentials into
 the isolated home.
 
 If the stable launcher or provider settings must change, setup first returns a

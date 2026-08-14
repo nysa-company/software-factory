@@ -44,6 +44,7 @@ from route_evidence import (  # noqa: E402
     RouteEvidenceError, authenticated_fallback_head, exact_kit_sha_change,
     journal_extends, validate_route,
 )
+from role_output import RoleOutputError, sha256 as role_output_sha256  # noqa: E402
 
 
 SCHEMA = "nysa.software-factory.controller/v1"
@@ -9749,6 +9750,22 @@ class Controller:
             self.save_claim(claim)
             return True
         self.emit_attempt_terminal(claim, terminal)
+        if self.repository_test:
+            if (
+                claim.get("role") == "planner"
+                and terminal.get("phase") == "completed"
+                and terminal.get("accounting_state") == "completed"
+                and terminal.get("exit_status") == "0"
+                and terminal.get("role_exit") == "ok"
+            ):
+                claim.update(receipt="", role="", status="claimed")
+                self.save_claim(claim)
+                return True
+            claim["status"] = "blocked"
+            claim["blocked_reason"] = "role-failure"
+            self.save_claim(claim)
+            self.release_ticket_lease(claim)
+            return False
         if terminal.get("accounting_state") == "launch_void":
             if (
                 self.typed_launch_void(terminal)
@@ -10769,7 +10786,63 @@ class Controller:
                     "repository_test_planning", claim["ticket"],
                     transition_receipt_sha256=receipt,
                 )
-                return {"status": "planning", "ticket": claim["ticket"]}
+                self.run_role(claim, "planner", receipt, [])
+                terminal = self.terminal_for_receipt(claim["ticket"], receipt)
+                head_after = self.cell_git(claim, "rev-parse", "HEAD")
+                ancestry = self.cell_git(
+                    claim, "merge-base", "--is-ancestor",
+                    head, head_after.stdout.strip(),
+                )
+                consumed = self.transition_receipt(claim, record=False)
+                output_sha256 = ""
+                if terminal is not None:
+                    try:
+                        output_sha256 = role_output_sha256(
+                            self.product / "factory/runs"
+                            / f"{terminal.get('run_id', '')}.out"
+                        )
+                    except (OSError, RoleOutputError):
+                        pass
+                if (
+                    terminal is None
+                    or terminal.get("phase") != "completed"
+                    or terminal.get("accounting_state") != "completed"
+                    or terminal.get("go_issued") != "1"
+                    or terminal.get("task_submitted") != "1"
+                    or terminal.get("exit_status") != "0"
+                    or terminal.get("role_exit") != "ok"
+                    or terminal.get("role") != "planner"
+                    or terminal.get("adapter") != "mock"
+                    or terminal.get("selection_reason") != "test_override"
+                    or terminal.get("kit_sha") != self.release_path.name
+                    or terminal.get("kit_provenance_scope") != "repository-test"
+                    or terminal.get("transition_receipt_sha256") != receipt
+                    or terminal.get("role_head_before") != head
+                    or output_sha256 != terminal.get("output_sha256")
+                    or head_after.returncode
+                    or not SHA.fullmatch(head_after.stdout.strip())
+                    or head_after.stdout.strip() == head
+                    or ancestry.returncode
+                    or consumed is None
+                    or consumed.get("receipt_sha256") != receipt
+                    or consumed.get("consumed") is not True
+                    or claim.get("receipt")
+                    or claim.get("role")
+                    or claim.get("status") != "claimed"
+                ):
+                    raise ControllerError(
+                        "repository-test planner did not complete with authenticated evidence"
+                    )
+                self.event(
+                    "repository_test_planner_completed", claim["ticket"],
+                    head_sha=head_after.stdout.strip(),
+                    output_sha256=output_sha256,
+                    run_id=terminal["run_id"],
+                    transition_receipt_sha256=receipt,
+                )
+                return {
+                    "status": "planner-complete", "ticket": claim["ticket"]
+                }
             if (
                 not semantic_authorization_wait(stage)
                 and str(claim.get("blocked_reason", "")).startswith(
@@ -11726,7 +11799,7 @@ class Controller:
                         )
                     elif item.get("status") in {
                         "active", "blocked", "budget", "error", "maintenance",
-                        "planning", "waiting",
+                        "planner-complete", "planning", "waiting",
                     }:
                         settled.add(claim["ticket"])
         finally:

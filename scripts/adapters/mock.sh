@@ -64,7 +64,10 @@ if [[ -n "${MOCK_SPEC_LINT_VERDICT:-}" ]]; then
     break
   done
 fi
-if [[ "${MOCK_COMMIT_WORKDIR:-0}" == "1" ||
+if [[ "${MOCK_COMMIT_EMPTY:-0}" == "1" ]]; then
+  git -C "$WORKDIR" -c user.name=mock -c user.email=mock@example.com \
+    commit --allow-empty -m "Mock role output" >/dev/null
+elif [[ "${MOCK_COMMIT_WORKDIR:-0}" == "1" ||
       "${MOCK_PROTECTED_TICKET_MUTATION:-0}" == "1" ||
       -n "${MOCK_SPEC_LINT_VERDICT:-}" ]]; then
   git -C "$WORKDIR" -c user.name=mock -c user.email=mock@example.com \

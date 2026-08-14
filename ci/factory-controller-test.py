@@ -2369,7 +2369,7 @@ class FactoryControllerTest(unittest.TestCase):
             "version_mismatch",
         )
 
-    def test_repository_test_stops_at_planning_without_real_model_access(self) -> None:
+    def test_repository_test_runs_one_mock_planner_without_real_model_access(self) -> None:
         (self.product / "factory/PROJECT.env").write_text(
             "MAX_CONCURRENT_TICKETS=3\n", encoding="utf-8",
         )
@@ -2405,9 +2405,13 @@ class FactoryControllerTest(unittest.TestCase):
             ["git", "-C", str(worktree), "rev-parse", "HEAD"], text=True,
         ).strip()
         wrong_lease = False
+        wrong_terminal_scope = False
+        run_ordinal = 0
+        transition_ordinal = 0
         calls = []
 
         def admission(*args, **_kwargs):
+            nonlocal transition_ordinal
             calls.append(args)
             if args[:2] == ("dispatch-plan", "--shadow"):
                 return {"action": "SHADOW", "ticket": "T-110"}
@@ -2426,6 +2430,7 @@ class FactoryControllerTest(unittest.TestCase):
             if args[:2] == ("publication", "withdraw"):
                 return {"status": "absent"}
             if args[0] == "state-machine":
+                transition_ordinal += 1
                 ticket_path.write_text("State: Planning\n", encoding="utf-8")
                 subprocess.run(
                     ["git", "-C", str(worktree), "add", str(ticket_path)],
@@ -2460,7 +2465,7 @@ class FactoryControllerTest(unittest.TestCase):
                         hashlib.sha256(("b" * 64).encode()).hexdigest()
                     ),
                     "loop": None,
-                    "nonce": "d" * 32,
+                    "nonce": f"{transition_ordinal:032x}",
                     "passport_sha256": None,
                     "product_origin_sha256": "e" * 64,
                     "project": "relay",
@@ -2487,8 +2492,68 @@ class FactoryControllerTest(unittest.TestCase):
                 f"repository-test consulted forbidden command: {args[:2]}"
             )
 
+        def run_planner(instance, claim, role, receipt, failed_checks):
+            nonlocal run_ordinal
+            self.assertEqual((role, failed_checks), ("planner", []))
+            before = subprocess.check_output(
+                ["git", "-C", str(worktree), "rev-parse", "HEAD"], text=True,
+            ).strip()
+            claim.update(receipt=receipt, role=role, status="running")
+            instance.save_claim(claim)
+            instance.event(
+                "attempt_started", claim["ticket"], role=role,
+                transition_receipt_sha256=receipt,
+            )
+            persisted = CONTROL.read(self.state / "T-110.json")
+            persisted.update(consumed=True, consumed_at_epoch=1)
+            CONTROL.write(self.state / "T-110.json", persisted)
+            subprocess.run(
+                [
+                    "git", "-C", str(worktree),
+                    "-c", "user.name=Software Factory",
+                    "-c", "user.email=factory@local",
+                    "commit", "--allow-empty", "-qm", "Mock planner output",
+                ],
+                check=True,
+            )
+            run_ordinal += 1
+            run_id = f"repository-test-{run_ordinal}"
+            output = self.product / "factory/runs" / f"{run_id}.out"
+            output.parent.mkdir(exist_ok=True)
+            output.write_text("mock adapter ran task\n", encoding="utf-8")
+            output.chmod(0o600)
+            manifest = output.with_suffix(".meta")
+            manifest.write_text(
+                "\n".join((
+                    f"run_id={run_id}",
+                    "phase=completed",
+                    "accounting_state=completed",
+                    "go_issued=1",
+                    "task_submitted=1",
+                    "exit_status=0",
+                    "role_exit=ok",
+                    "ticket=T-110",
+                    "role=planner",
+                    "adapter=mock",
+                    "selection_reason=test_override",
+                    f"kit_sha={self.release.name}",
+                    "kit_provenance_scope=" + (
+                        "production-certified"
+                        if wrong_terminal_scope else "repository-test"
+                    ),
+                    f"role_head_before={before}",
+                    f"transition_receipt_sha256={receipt}",
+                    "output_sha256=" + hashlib.sha256(
+                        output.read_bytes()
+                    ).hexdigest(),
+                )) + "\n",
+                encoding="utf-8",
+            )
+            self.assertTrue(instance.finish_pending_run(claim))
+
         controller.json_call = admission
         controller.refresh_dependency_tracking = lambda _claim: True
+        controller.run_role = lambda *args: run_planner(controller, *args)
         result = controller.reconcile()
         self.assertEqual([call[:2] for call in calls], [
             ("dispatch-plan", "--shadow"),
@@ -2498,19 +2563,24 @@ class FactoryControllerTest(unittest.TestCase):
         ])
         self.assertEqual(
             result["results"],
-            [{"status": "planning", "ticket": "T-110"}],
+            [{"status": "planner-complete", "ticket": "T-110"}],
         )
         self.assertEqual(ticket_path.read_text(), "State: Planning\n")
         claims = controller.load_claims()
         self.assertEqual(len(claims), 1)
         self.assertEqual(claims[0]["status"], "claimed")
+        self.assertEqual((claims[0]["receipt"], claims[0]["role"]), ("", ""))
         events = sorted(
             (CONTROL.read(path) for path in controller.events.glob("*.json")),
             key=lambda item: item["observed_at_epoch_ns"],
         )
         self.assertEqual(
             [item["event"] for item in events if item["ticket"] == "T-110"],
-            ["ticket_claimed", "repository_test_planning"],
+            [
+                "ticket_claimed", "repository_test_planning",
+                "attempt_started", "attempt_terminal",
+                "repository_test_planner_completed",
+            ],
         )
         for event in events:
             unsigned = dict(event)
@@ -2556,8 +2626,44 @@ class FactoryControllerTest(unittest.TestCase):
         )
 
         (controller.claims / "T-110.json").unlink()
+        (self.state / "T-110.json").unlink()
+        subprocess.run(
+            ["git", "-C", str(worktree), "reset", "--hard", ready_head],
+            check=True, stdout=subprocess.DEVNULL,
+        )
         calls.clear()
         wrong_lease = False
+        wrong_terminal_scope = True
+        completed_events = len([
+            CONTROL.read(path)
+            for path in controller.events.glob("*.json")
+            if CONTROL.read(path)["event"]
+            == "repository_test_planner_completed"
+        ])
+        with patch.dict(os.environ, authority, clear=False):
+            wrong_scope = CONTROL.Controller(self.args)
+        wrong_scope.json_call = admission
+        wrong_scope.refresh_dependency_tracking = lambda _claim: True
+        wrong_scope.run_role = lambda *args: run_planner(wrong_scope, *args)
+        wrong_scope_result = wrong_scope.reconcile()
+        self.assertEqual(wrong_scope_result["status"], "error")
+        self.assertIn(
+            "repository-test planner did not complete with authenticated evidence",
+            wrong_scope_result["results"][0]["error"],
+        )
+        self.assertEqual(
+            len([
+                CONTROL.read(path)
+                for path in wrong_scope.events.glob("*.json")
+                if CONTROL.read(path)["event"]
+                == "repository_test_planner_completed"
+            ]),
+            completed_events,
+        )
+
+        (controller.claims / "T-110.json").unlink()
+        calls.clear()
+        wrong_terminal_scope = False
         with patch.dict(os.environ, authority, clear=False):
             replay = CONTROL.Controller(self.args)
         replay.json_call = admission
