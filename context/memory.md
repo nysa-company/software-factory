@@ -5821,3 +5821,16 @@ project and candidate SHA, require the same non-auto operator identity, and
 verify that plan against its immutable stored copy. Plan and journal hashes
 remain mandatory internal integrity and replay evidence, but operators no
 longer copy or approve those hashes between certification and activation.
+
+## 2026-08-13 — Decision 409: Repository-test stops at authenticated Planning
+
+Category: Test strategy
+
+The contained repository-test controller admits exactly one fresh Ready ticket,
+runs the sealed state machine to a committed Planning state, verifies the
+changed head and its unconsumed transition receipt, emits authenticated
+Planning evidence, and stops before model pinning or role execution. Existing
+claims, runs, leases, already-Planning branches, pre-provider recovery, real
+credentials, provider calls, and GitHub mutations are refused. This proves the
+activation-to-Planning timing boundary without creating production-shaped
+provider evidence; production and qualification behavior is unchanged.

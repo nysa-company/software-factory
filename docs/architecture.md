@@ -1807,7 +1807,9 @@ separately SHA/tree-sealed candidate `qualification-candidate`; and the
 contained repository-test launcher labels its forced mock runs
 `repository-test`. Repository-test Doctor readiness proves only that sealed
 mock boundary, never provider or production readiness, and GitHub-mutating
-launcher commands are unavailable. Mutable local kits cannot claim any sealed
+launcher commands are unavailable. The repository-test controller stops at its
+first authenticated Planning claim without production model resolution or role
+launch. Mutable local kits cannot claim any sealed
 scope and remain development-only. Product receipts bind the exact evidence ID/digest
 and cannot expire after that evidence. Products may opt into the sealed
 `certification-runner.py` with a repository-owned declarative DAG. It records

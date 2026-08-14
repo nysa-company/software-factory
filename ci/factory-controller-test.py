@@ -2369,6 +2369,246 @@ class FactoryControllerTest(unittest.TestCase):
             "version_mismatch",
         )
 
+    def test_repository_test_stops_at_planning_without_real_model_access(self) -> None:
+        (self.product / "factory/PROJECT.env").write_text(
+            "MAX_CONCURRENT_TICKETS=3\n", encoding="utf-8",
+        )
+        authority = {
+            "FACTORY_ADAPTER_OVERRIDE": "mock",
+            "FACTORY_KIT_TRUST_SCOPE": "repository-test",
+            "FACTORY_TEST_MODE": "1",
+            "FACTORY_TRUSTED_TEST_HARNESS": "1",
+        }
+        with patch.dict(os.environ, authority, clear=False):
+            controller = CONTROL.Controller(self.args)
+        worktree = self.root / "worktree"
+        ticket_path = worktree / "factory/tickets/T-110.md"
+        ticket_path.parent.mkdir(parents=True)
+        ticket_path.write_text("State: Ready\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "init", "-q", "-b", "ticket/T-110", str(worktree)],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(worktree), "add", "."], check=True,
+        )
+        subprocess.run(
+            [
+                "git", "-C", str(worktree),
+                "-c", "user.name=Software Factory",
+                "-c", "user.email=factory@local",
+                "commit", "-qm", "seed Ready ticket",
+            ],
+            check=True,
+        )
+        ready_head = subprocess.check_output(
+            ["git", "-C", str(worktree), "rev-parse", "HEAD"], text=True,
+        ).strip()
+        wrong_lease = False
+        calls = []
+
+        def admission(*args, **_kwargs):
+            calls.append(args)
+            if args[:2] == ("dispatch-plan", "--shadow"):
+                return {"action": "SHADOW", "ticket": "T-110"}
+            if args[:2] == ("dispatch-plan", "--claim"):
+                return {
+                    "action": "START",
+                    "branch": "ticket/T-110",
+                    "lease_id": "b" * 64,
+                    "ticket": "T-110",
+                    "worktree": str(worktree),
+                }
+            if args[0] == "renew":
+                return {}
+            if args[0] == "release":
+                return {}
+            if args[:2] == ("publication", "withdraw"):
+                return {"status": "absent"}
+            if args[0] == "state-machine":
+                ticket_path.write_text("State: Planning\n", encoding="utf-8")
+                subprocess.run(
+                    ["git", "-C", str(worktree), "add", str(ticket_path)],
+                    check=True,
+                )
+                subprocess.run(
+                    [
+                        "git", "-C", str(worktree),
+                        "-c", "user.name=Software Factory",
+                        "-c", "user.email=factory@local",
+                        "commit", "-qm", "T-110: transition ticket state",
+                    ],
+                    check=True,
+                )
+                head = subprocess.check_output(
+                    ["git", "-C", str(worktree), "rev-parse", "HEAD"],
+                    text=True,
+                ).strip()
+                receipt = {
+                    "branch": "ticket/T-110",
+                    "contract_version": "2.0.0",
+                    "evidence_sha256": "c" * 64,
+                    "factory_sha": self.release.name,
+                    "head_sha": head,
+                    "head_tree": subprocess.check_output(
+                        ["git", "-C", str(worktree), "rev-parse", "HEAD^{tree}"],
+                        text=True,
+                    ).strip(),
+                    "lease_sha256": (
+                        "0" * 64
+                        if wrong_lease else
+                        hashlib.sha256(("b" * 64).encode()).hexdigest()
+                    ),
+                    "loop": None,
+                    "nonce": "d" * 32,
+                    "passport_sha256": None,
+                    "product_origin_sha256": "e" * 64,
+                    "project": "relay",
+                    "role": "planner",
+                    "route_plan_sha256": None,
+                    "schema": "nysa.software-factory.transition-receipt/v1",
+                    "stage": "RUN planner",
+                    "ticket": "T-110",
+                    "ticket_blob": subprocess.check_output(
+                        [
+                            "git", "-C", str(worktree), "rev-parse",
+                            "HEAD:factory/tickets/T-110.md",
+                        ],
+                        text=True,
+                    ).strip(),
+                }
+                digest = hashlib.sha256(
+                    CONTROL.canonical_document(receipt)
+                ).hexdigest()
+                receipt.update(receipt_sha256=digest, consumed=False)
+                CONTROL.write(self.state / "T-110.json", receipt)
+                return state_transition("RUN planner", receipt=digest)
+            raise AssertionError(
+                f"repository-test consulted forbidden command: {args[:2]}"
+            )
+
+        controller.json_call = admission
+        controller.refresh_dependency_tracking = lambda _claim: True
+        result = controller.reconcile()
+        self.assertEqual([call[:2] for call in calls], [
+            ("dispatch-plan", "--shadow"),
+            ("dispatch-plan", "--claim"),
+            ("renew", "--ticket"),
+            ("state-machine", "--ticket"),
+        ])
+        self.assertEqual(
+            result["results"],
+            [{"status": "planning", "ticket": "T-110"}],
+        )
+        self.assertEqual(ticket_path.read_text(), "State: Planning\n")
+        claims = controller.load_claims()
+        self.assertEqual(len(claims), 1)
+        self.assertEqual(claims[0]["status"], "claimed")
+        events = sorted(
+            (CONTROL.read(path) for path in controller.events.glob("*.json")),
+            key=lambda item: item["observed_at_epoch_ns"],
+        )
+        self.assertEqual(
+            [item["event"] for item in events if item["ticket"] == "T-110"],
+            ["ticket_claimed", "repository_test_planning"],
+        )
+        for event in events:
+            unsigned = dict(event)
+            digest = unsigned.pop("event_sha256")
+            self.assertEqual(
+                digest,
+                hashlib.sha256(CONTROL.canonical(unsigned).encode()).hexdigest(),
+            )
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError,
+            "repository-test Planning canary requires empty execution state",
+        ):
+            controller.reconcile()
+
+        (controller.claims / "T-110.json").unlink()
+        (self.state / "T-110.json").unlink()
+        subprocess.run(
+            ["git", "-C", str(worktree), "reset", "--hard", ready_head],
+            check=True, stdout=subprocess.DEVNULL,
+        )
+        calls.clear()
+        wrong_lease = True
+        planning_events = len([
+            item for item in events if item["event"] == "repository_test_planning"
+        ])
+        with patch.dict(os.environ, authority, clear=False):
+            tampered = CONTROL.Controller(self.args)
+        tampered.json_call = admission
+        tampered.refresh_dependency_tracking = lambda _claim: True
+        tampered_result = tampered.reconcile()
+        self.assertEqual(tampered_result["status"], "error")
+        self.assertIn(
+            "repository-test did not reach authenticated Planning",
+            tampered_result["results"][0]["error"],
+        )
+        self.assertEqual(
+            len([
+                CONTROL.read(path)
+                for path in tampered.events.glob("*.json")
+                if CONTROL.read(path)["event"] == "repository_test_planning"
+            ]),
+            planning_events,
+        )
+
+        (controller.claims / "T-110.json").unlink()
+        calls.clear()
+        wrong_lease = False
+        with patch.dict(os.environ, authority, clear=False):
+            replay = CONTROL.Controller(self.args)
+        replay.json_call = admission
+        replay.refresh_dependency_tracking = lambda _claim: True
+        replay_result = replay.reconcile()
+        self.assertEqual(replay_result["status"], "error")
+        self.assertNotIn(("state-machine", "--ticket"), [
+            call[:2] for call in calls
+        ])
+        self.assertIn(
+            "repository-test requires a fresh Ready ticket",
+            replay_result["results"][0]["error"],
+        )
+
+        for name in (
+            "FACTORY_ADAPTER_OVERRIDE",
+            "FACTORY_TEST_MODE",
+            "FACTORY_TRUSTED_TEST_HARNESS",
+        ):
+            invalid = dict(authority)
+            invalid[name] = ""
+            with self.subTest(name=name), patch.dict(
+                os.environ, invalid, clear=True,
+            ), self.assertRaisesRegex(
+                CONTROL.ControllerError,
+                "repository-test controller authority is invalid",
+            ):
+                CONTROL.Controller(self.args)
+
+        production = dict(authority)
+        production["FACTORY_KIT_TRUST_SCOPE"] = "production-certified"
+        with patch.dict(os.environ, production, clear=True):
+            controller = CONTROL.Controller(self.args)
+        calls = []
+
+        def production_admission(*args, **_kwargs):
+            calls.append(args[:2])
+            if args[:2] == ("dispatch-plan", "--shadow"):
+                return {"action": "SHADOW", "ticket": "T-110"}
+            if args[:2] == ("models", "plan"):
+                return self.model_resolution_error()
+            raise AssertionError("production admission skipped model readiness")
+
+        controller.json_call = production_admission
+        with self.assertRaises(CONTROL.ControllerError):
+            controller.claim_new([])
+        self.assertEqual(calls, [
+            ("dispatch-plan", "--shadow"),
+            ("models", "plan"),
+        ])
+
     def test_model_resolution_evidence_rejects_secret_key_families(self) -> None:
         controller = CONTROL.Controller(self.args)
         for label, unsafe in (

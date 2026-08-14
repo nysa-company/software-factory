@@ -1026,6 +1026,14 @@ def main() -> None:
             ticket: head for ticket, head in reset_authorizations.items()
             if readiness_executable(product, ticket)
         }
+        if (
+            args.action == "claim"
+            and reset_authorizations
+            and os.environ.get("FACTORY_KIT_TRUST_SCOPE") == "repository-test"
+        ):
+            raise DispatchError(
+                "repository-test refuses pre-provider branch recovery"
+            )
         if args.action == "claim" and reset_authorizations:
             safe_directory(args.worktree_root, "worktree root", owner_only=True)
             admission_descriptor = admission_lock(

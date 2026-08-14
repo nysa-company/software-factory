@@ -610,8 +610,10 @@ receipt validation requires the canonical GitHub Factory origin and
 protected-main GitHub Actions evidence; test receipts cannot be promoted into
 an installed production lane. The sealed test launcher forces the mock adapter,
 records `repository-test` in run evidence, refuses GitHub-mutating commands,
-and makes Doctor validate only that local mock boundary. Do not copy provider
-or GitHub credentials into the isolated home.
+and makes Doctor validate only that local mock boundary. Its controller stops
+after the first authenticated Planning claim; it does not pin a production
+model route or launch a role. Do not copy provider or GitHub credentials into
+the isolated home.
 
 If the stable launcher or provider settings must change, setup first returns a
 `prerequisites` plan. Setup authorizes the exact sealed transaction; ensure
@@ -619,7 +621,8 @@ every listed active factory is already in maintenance and drained, then run
 resume. That resume applies only the embedded child hashes, certifies the
 product, and returns the second
 `activation` plan whose hash binds the fresh one-use certification receipt.
-Review that returned hash and run the same resume verb again. When prerequisites
+Run the same resume verb again; the current owner-only sealed plan remains the
+internal replay and integrity authority. When prerequisites
 already match, setup returns the activation plan directly, so only one resume
 is needed.
 

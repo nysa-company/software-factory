@@ -822,6 +822,31 @@ class DispatchPlanTest(unittest.TestCase):
             run("git", "log", "-1", "--format=%s", cwd=worktree),
         )
 
+    def test_repository_test_refuses_preprovider_branch_recovery(self):
+        self.write_contract_18_qualification()
+        run("git", "add", ".", cwd=self.product)
+        run("git", "commit", "-qm", "prepare qualification", cwd=self.product)
+        run("git", "push", "-q", "origin", "main", cwd=self.product)
+        old_head = self.stale_preprovider_branch()
+        self.authorize_preprovider_reset(old_head)
+
+        with mock.patch.dict(
+            os.environ, {"FACTORY_KIT_TRUST_SCOPE": "repository-test"},
+        ):
+            value = self.command("claim", expected=2)
+
+        self.assertEqual(
+            value["error"],
+            "repository-test refuses pre-provider branch recovery",
+        )
+        self.assertEqual(
+            run(
+                "git", "ls-remote", "--heads", str(self.remote),
+                "ticket/T-110",
+            ).split()[0],
+            old_head,
+        )
+
     def test_readiness_refusal_precedes_authorized_branch_reset(self):
         self.write_contract_18_qualification()
         ticket = self.product / "factory/tickets/T-110.md"
