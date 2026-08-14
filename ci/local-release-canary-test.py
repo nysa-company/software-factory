@@ -57,7 +57,9 @@ for index, name in enumerate(("repository_test_planning", "repository_test_plann
     path = events / f"{index}.json"
     path.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n")
     path.chmod(0o600)
-print(json.dumps({"status": "planner-complete", "ticket": ticket}, separators=(",", ":")))
+print(json.dumps({"active": 1, "results": [{"status": "planner-complete", "ticket": ticket}],
+                  "schema": "nysa.software-factory.controller/v1", "status": "ok"},
+                 separators=(",", ":")))
 PY
   chmod 700 "$HOME/.factory/bin/factory-launch"
   printf '{"schema":"nysa.software-factory.release-plan/v1","stage":"activation","status":"authorized"}\n'

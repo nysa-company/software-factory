@@ -382,7 +382,12 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
         "controller-reconcile", [str(launcher), args.project, "reconcile", "--json"],
         json_result=True,
     )
-    if reconcile != {"status": "planner-complete", "ticket": args.ticket}:
+    if (
+        reconcile.get("schema") != "nysa.software-factory.controller/v1"
+        or reconcile.get("status") != "ok"
+        or reconcile.get("results")
+        != [{"status": "planner-complete", "ticket": args.ticket}]
+    ):
         raise CanaryError("controller did not complete the requested mock planner")
     events = kits / "projects" / args.project / "controller/events"
     planning_path, planning = event_for(
