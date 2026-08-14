@@ -72,7 +72,9 @@ class ProviderCliRuntimeTest(unittest.TestCase):
         )
         return json.loads(result.stdout)
 
-    def account(self, action: str, lease: str) -> dict:
+    def account(
+        self, action: str, lease: str, scope: str = "production-certified"
+    ) -> dict:
         arguments = [
             sys.executable, str(COORDINATOR), "--db", str(self.db),
             "--account-db", str(self.account_db), f"account-{action}",
@@ -83,7 +85,7 @@ class ProviderCliRuntimeTest(unittest.TestCase):
         if action == "acquire":
             arguments.extend([
                 "--account-route", "codex", "--trust-scope",
-                "production-certified", "--policy", str(self.policy),
+                scope, "--policy", str(self.policy),
                 "--wait-seconds", "2",
             ])
         elif action == "bind-runtime":
@@ -216,6 +218,32 @@ class ProviderCliRuntimeTest(unittest.TestCase):
             "--", sys.executable, "-c", f"open({str(marker)!r}, 'w').close()",
         ], text=True, capture_output=True, check=False, timeout=10)
         self.assertEqual(valid.returncode, 0, valid.stderr)
+        self.assertTrue(marker.exists())
+
+    def test_cursor_command_accepts_development_account_scope(self) -> None:
+        marker = self.root / "development-cursor-command"
+        lease = "cursor-development-account"
+        admission = self.account("acquire", lease, scope="development-local")
+        self.assertTrue(admission["admitted"])
+        self.assertTrue(self.account("bind-runtime", lease)["bound"])
+        result = subprocess.run([
+            sys.executable, str(RUNTIME), "--coordinator", str(COORDINATOR),
+            "--db", str(self.db), "--policy", str(self.policy),
+            "--adapter", "cursor-openai", "--account-db", str(self.account_db),
+            "--account-lease-id", lease,
+            "--account-owner-pid", str(os.getpid()),
+            "--account-owner-pgid", str(os.getpgrp()),
+            "--account-owner-start", self.owner_start,
+            "--account-policy-sha256", admission["lease"]["policy_sha256"],
+            "--trust-scope", "development-local",
+            "--attempt-id", "cursor-development", "--provider-family", "openai",
+            "--account-route", "codex", "--reserve-micro-usd", "1",
+            "--product-id", "product", "--ticket-id", "T-cursor-development",
+            "--budget-day", "2026-07-23", "--product-cap-micro-usd", "100",
+            "--ticket-cap-micro-usd", "100", "--machine-cap-micro-usd", "100",
+            "--", sys.executable, "-c", f"open({str(marker)!r}, 'w').close()",
+        ], text=True, capture_output=True, check=False, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(marker.exists())
 
     def test_authorized_sibling_manifests_are_preserved(self) -> None:
