@@ -686,7 +686,7 @@ everything the Factory actually enforces lives here.
 - The isolated process-group wrapper may wait up to two minutes for the trusted controller's final pre-submission acknowledgement. No adapter starts before that gate, so expensive protected-history validation can finish without weakening kill-switch or orphan prevention.
 - Factory development may use the macOS-only disposable lane against an exact clean commit, a synthetic product, and a local Git remote. Mock mode is network-denied under outer Seatbelt and must finish below 15 minutes; real Cursor uses the authenticated CLI session, Cursor's explicit internal sandbox, and a one-use executable/session-bound approval because the current CLI cannot authenticate inside nested Seatbelt. Only Cursor subprocesses receive the session home, and Cursor's hardcoded temporary root is redirected into the lane for each invocation. Lane artifacts have no release receipts or activation records, and its local product scheduler is not production-orchestration evidence. The sealed Contract 1.8 qualification environment is the pre-promotion proof for the exact production launcher, controller, passport, recovery, and release-upgrade paths.
 - A legacy serialized development Cursor lane may reclaim its hardcoded temporary bridge only when it is an empty owner-owned directory tree with no group/other write permission and all subscription providers are idle. Files, symlinks, content, unsafe ownership or modes, and active providers refuse; the replacement remains an atomic lane-target symlink with exact-owner cleanup. Contract 1.7 product Cursor attempts use isolated owner-only home, configuration, data, temporary, and credential roots, so unrelated legacy bridge state does not affect their admission.
-- Subscription and product development lanes copy CLI session files once, then bind readiness, version evidence, approval hashes, and role execution to the same sanitized lane-local session environment and working directory. Ambient authentication variables, caller working directories, and external Cursor session state cannot satisfy readiness; unavailable copied authentication stops before approval consumption, lease claim, reservation, or task submission.
+- Subscription and product development lanes copy CLI session files once, then bind readiness, version evidence, approval hashes, and role execution to the same sanitized lane-local session environment and working directory. Cursor task admission uses an owner-only lane-local database and the explicit nonpromotable `development-local` scope; production and qualification keep their machine-shared sealed authority. Ambient authentication variables, caller working directories, and external Cursor session state cannot satisfy readiness; unavailable copied authentication stops before approval consumption, lease claim, reservation, or task submission.
 - Development-lane subscription readiness retries three times with a one-second delay between misses. This absorbs short lane-local CLI session transitions while preserving the same fail-closed pre-approval boundary.
 - Development interactive subscription authorization is bounded to five minutes. A native Claude access token with less than five minutes remaining is unavailable before task submission, so the existing profile resolver may select the authenticated Anthropic-family Cursor route under its cap.
 - A fresh development product lane derives its lane-local machine-day cap from
@@ -5917,3 +5917,14 @@ alongside the CLI. Its resolved physical path and bytes are approval-bound, and
 the lane sandbox exposes it only inside the disposable runtime. This prevents a
 provider run from passing login/version readiness and then failing before its
 first repository command.
+
+## 2026-08-14 — Decision 415: Development Cursor admission stays lane-local
+
+Category: Reliability
+
+An isolated development lane gives task-bearing Cursor roles an owner-only
+account-admission database inside that lane and identifies its leases with the
+explicit `development-local` scope. Production and qualification retain their
+machine-shared database and sealed scopes, and development evidence remains
+nonpromotable. The shared coordinator still enforces the declared account-route
+capacity and start window; only the authority root differs.
