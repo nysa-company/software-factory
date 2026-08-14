@@ -91,7 +91,8 @@ def commit(repo: Path, message: str) -> str:
 
 class LocalReleaseCanaryTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.temporary = tempfile.TemporaryDirectory(prefix="local-canary-test.", dir="/private/tmp")
+        parent = "/private/tmp" if Path("/private/tmp").is_dir() else "/tmp"
+        self.temporary = tempfile.TemporaryDirectory(prefix="local-canary-test.", dir=parent)
         self.addCleanup(self.temporary.cleanup)
         self.base = Path(self.temporary.name)
         self.factory = self.base / "factory-source"
@@ -207,7 +208,7 @@ class LocalReleaseCanaryTest(unittest.TestCase):
         (self.product / "factory/SLOW").write_text("1\n", encoding="utf-8")
         commit(self.product, "slow fixture")
         root = self.base / "timeout"
-        result, value = self.invoke(root, maximum=1)
+        result, value = self.invoke(root, maximum=10)
         self.assertEqual(result.returncode, 2)
         self.assertIn("exceeded the canary time limit", value["error"])
         pid = int((root / "sleeper.pid").read_text())
