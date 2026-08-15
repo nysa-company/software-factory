@@ -238,7 +238,9 @@ grep -Fq 'PROVIDER_SPLIT=$selected:4' <<<"$subscription_run_source" ||
 grep -Fq 'codex_subscription_ready "$root"' <<<"$subscription_run_source" ||
   fail "subscription canary lost Codex readiness"
 create_lane_source="$(sed -n '/^create_lane()/,/^validate_lane()/p' "$LANE")"
-grep -Fq 'physical "$(dirname "$claude_token_source")"' <<<"$create_lane_source" ||
+claude_stage_source="$(sed -n \
+  '/^stage_claude_subscription_credential()/,/^}/p' "$LANE")"
+grep -Fq 'physical "$(dirname "$token_source")"' <<<"$claude_stage_source" ||
   fail "Claude token source was resolved as a directory instead of a file"
 grep -Fq 'claude_subscription_ready "$root"' <<<"$subscription_run_source" ||
   fail "subscription canary lacks Claude readiness"
@@ -1412,12 +1414,71 @@ create_lane_source="$(sed -n '/^create_lane()/,/^validate_product_checkpoint()/p
 grep -Fq 'ln -s "$companion" "$root/home/codex-code-mode-host"' \
   <<<"$create_lane_source" ||
   fail "Codex lane omitted its code-mode host companion"
+grep -Fq 'stage_claude_subscription_credential' <<<"$create_lane_source" ||
+  fail "product lane bypassed the shared optional Claude-session boundary"
+(
+  eval "$(sed -n '/^stage_claude_subscription_credential()/,/^}/p' "$LANE")"
+  root="$TMP/optional-claude-create"
+  source_home="$TMP/optional-claude-source"
+  mkdir -p "$root/runtime" "$root/session-home/.claude" "$source_home/.claude"
+  physical() { (cd "$1" && pwd -P); }
+  refuse_production_path() { :; }
+  materialize_claude_subscription_token() { return 91; }
+  die() { printf '%s\n' "$*" >&2; return 1; }
+  stage_claude_subscription_credential "$root" product 1 "$source_home" ||
+    fail "Cursor product lane required an absent native Claude session"
+  [[ ! -e "$root/session-home/.claude/.credentials.json" ]] ||
+    fail "Cursor product lane fabricated a native Claude credential"
+  expect_failure "native-only product without Claude session" \
+    stage_claude_subscription_credential "$root" product 0 "$source_home"
+  printf '%s\n' credential >"$source_home/.claude/source"
+  ln -s "$source_home/.claude/source" \
+    "$source_home/.claude/.credentials.json"
+  expect_failure "symlinked optional Claude session" \
+    stage_claude_subscription_credential "$root" product 1 "$source_home"
+  rm "$source_home/.claude/.credentials.json"
+  printf '%s\n' credential >"$source_home/.claude/.credentials.json"
+  chmod 600 "$source_home/.claude/.credentials.json"
+  stage_claude_subscription_credential "$root" product 1 "$source_home" ||
+    fail "Cursor product lane rejected an available native Claude fallback"
+  cmp "$source_home/.claude/.credentials.json" \
+    "$root/session-home/.claude/.credentials.json" >/dev/null ||
+    fail "Cursor product lane copied the wrong native Claude credential"
+)
+(
+  eval "$(sed -n '/^product_cursor_enabled()/,/^}/p' "$LANE")"
+  eval "$(sed -n '/^refresh_product_subscription_credentials()/,/^}/p' "$LANE")"
+  root="$TMP/optional-claude-refresh"
+  REFRESH_SOURCE_HOME="$TMP/optional-claude-refresh-source"
+  mkdir -m 700 -p "$root/runtime" "$root/session-home/.codex" \
+    "$root/session-home/.claude" "$REFRESH_SOURCE_HOME/.codex" \
+    "$REFRESH_SOURCE_HOME/.claude"
+  printf '%s\n' enabled >"$root/runtime/product-cursor-fallback"
+  printf '%s\n' old >"$root/session-home/.codex/auth.json"
+  printf '%s\n' refreshed >"$REFRESH_SOURCE_HOME/.codex/auth.json"
+  chmod 600 "$root/runtime/product-cursor-fallback" \
+    "$root/session-home/.codex/auth.json" \
+    "$REFRESH_SOURCE_HOME/.codex/auth.json"
+  cursor_session_home() { printf '%s\n' "$REFRESH_SOURCE_HOME"; }
+  refuse_production_path() { :; }
+  materialize_claude_subscription_token() { return 91; }
+  die() { printf '%s\n' "$*" >&2; return 1; }
+  refresh_product_subscription_credentials "$root" ||
+    fail "Cursor product resume required an absent native Claude session"
+  [[ "$(cat "$root/session-home/.codex/auth.json")" == refreshed &&
+     ! -e "$root/session-home/.claude/.credentials.json" ]] ||
+    fail "Cursor product resume refreshed the wrong session set"
+)
 for approval_function in subscription_approval_hash product_approval_hash; do
   approval_source="$(sed -n "/^${approval_function}()/,/^}/p" "$LANE")"
   grep -Fq '"$root/home/codex-code-mode-host"' <<<"$approval_source" &&
     grep -Fq '"$(sha256_file "$real")"' <<<"$approval_source" ||
     fail "$approval_function omitted the Codex companion binding"
 done
+product_approval_source="$(sed -n '/^product_approval_hash()/,/^}/p' "$LANE")"
+grep -Fq 'product_cursor_enabled "$root" || return 1' \
+  <<<"$product_approval_source" ||
+  fail "product approval does not bind an intentionally absent Claude session"
 eval "$(sed -n '/^cleanup_empty_cursor_bridge()/,/^}/p' "$LANE")"
 REPLACED_BRIDGE="$TMP/replaced-cursor-bridge"
 mkdir -p "$REPLACED_BRIDGE/empty-session"

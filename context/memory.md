@@ -6016,3 +6016,13 @@ exact GitHub repository declared by `factory/PROJECT.env` before it snapshots
 global config or publishes lane authority. A local-only origin cannot prove the
 required PR, CI, merge, and protected-terminal chain and now fails before any
 ticket branch or paid provider role instead of surfacing after Builder work.
+
+## 2026-08-14 — Decision 423: Cursor development lanes tolerate an absent native Claude session
+
+Category: Reliability
+
+When an isolated product lane has authenticated Cursor enabled, an absent
+native Claude credential is recorded as an unavailable fallback rather than a
+lane-construction failure. Cursor still supplies the required Anthropic-family
+roles, the absent session is approval-bound, and Cursor-disabled lanes continue
+to require native Claude authentication.

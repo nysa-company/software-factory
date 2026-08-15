@@ -313,6 +313,31 @@ PY
     die "Claude subscription token boundary is unsafe"
 }
 
+stage_claude_subscription_credential() {
+  local root="$1" mode="$2" cursor_enabled="$3" session_home="$4"
+  local source="$session_home/.claude/.credentials.json"
+  local target="$root/session-home/.claude/.credentials.json"
+  local token_source="${FACTORY_DEV_LANE_CLAUDE_OAUTH_TOKEN_FILE:-}"
+  if [[ -n "$token_source" ]]; then
+    [[ "$token_source" == /* && -f "$token_source" &&
+       ! -L "$token_source" && "$token_source" != *$'\n'* ]] ||
+      die "Claude subscription token source is unavailable"
+    token_source="$(physical "$(dirname "$token_source")")/$(basename "$token_source")"
+    refuse_production_path "$token_source"
+    printf '%s\n' "$token_source" >"$root/runtime/claude-token-source"
+    chmod 600 "$root/runtime/claude-token-source"
+    materialize_claude_subscription_token "$token_source" "$target"
+  elif [[ -f "$source" && ! -L "$source" ]]; then
+    cp "$source" "$target"
+    chmod 600 "$target"
+  elif [[ "$mode" == product && "$cursor_enabled" == 1 &&
+          ! -e "$source" && ! -L "$source" ]]; then
+    return
+  else
+    die "Claude subscription session file is unavailable"
+  fi
+}
+
 refresh_product_subscription_credentials() {
   local root="$1" source_home token_source="" include_claude=1
   source_home="$(cursor_session_home)" ||
@@ -324,6 +349,12 @@ refresh_product_subscription_credentials() {
     token_source="$(cat "$root/runtime/claude-token-source")"
     [[ "$token_source" == /* && "$token_source" != *$'\n'* ]] ||
       die "Claude subscription token source is invalid"
+    include_claude=0
+  elif product_cursor_enabled "$root" &&
+       [[ ! -e "$source_home/.claude/.credentials.json" &&
+          ! -L "$source_home/.claude/.credentials.json" &&
+          ! -e "$root/session-home/.claude/.credentials.json" &&
+          ! -L "$root/session-home/.claude/.credentials.json" ]]; then
     include_claude=0
   fi
   python3 - "$source_home" "$root/session-home" "$include_claude" <<'PY' ||
@@ -941,7 +972,7 @@ prepare_product_dependencies() {
 }
 
 create_lane() {
-  local mode="$1" root sha tree nonce project cursor developer tool timeout_bin tmp_parent bridge session_home ticket port_a port_b resolved companion seed_hash="" accounting_hash="" lineage_hash="" checkpoint_hash="" cleanup_trap subscription_adapter cursor_enabled=0 claude_token_source=""
+  local mode="$1" root sha tree nonce project cursor developer tool timeout_bin tmp_parent bridge session_home ticket port_a port_b resolved companion seed_hash="" accounting_hash="" lineage_hash="" checkpoint_hash="" cleanup_trap subscription_adapter cursor_enabled=0
   local -a subscription_tools
   subscription_adapter="${FACTORY_SUBSCRIPTION_ADAPTER:-codex}"
   [[ "$mode" != subscription || "$subscription_adapter" == codex ||
@@ -1262,27 +1293,8 @@ PY
     fi
     if [[ "$mode" == product || "$subscription_adapter" == claude ]]; then
       mkdir -m 700 "$root/session-home/.claude"
-      claude_token_source="${FACTORY_DEV_LANE_CLAUDE_OAUTH_TOKEN_FILE:-}"
-      if [[ -n "$claude_token_source" ]]; then
-        [[ "$claude_token_source" == /* && -f "$claude_token_source" &&
-           ! -L "$claude_token_source" &&
-           "$claude_token_source" != *$'\n'* ]] ||
-          die "Claude subscription token source is unavailable"
-        claude_token_source="$(physical "$(dirname "$claude_token_source")")/$(basename "$claude_token_source")"
-        refuse_production_path "$claude_token_source"
-        printf '%s\n' "$claude_token_source" \
-          >"$root/runtime/claude-token-source"
-        chmod 600 "$root/runtime/claude-token-source"
-        materialize_claude_subscription_token "$claude_token_source" \
-          "$root/session-home/.claude/.credentials.json"
-      else
-        [[ -f "$session_home/.claude/.credentials.json" &&
-           ! -L "$session_home/.claude/.credentials.json" ]] ||
-          die "Claude subscription session file is unavailable"
-        cp "$session_home/.claude/.credentials.json" \
-          "$root/session-home/.claude/.credentials.json"
-        chmod 600 "$root/session-home/.claude/.credentials.json"
-      fi
+      stage_claude_subscription_credential \
+        "$root" "$mode" "$cursor_enabled" "$session_home"
       subscription_tools+=(claude)
     fi
     if [[ "$mode" == product && "$cursor_enabled" == 1 ]]; then
@@ -1291,7 +1303,8 @@ PY
       cp "$session_home/.cursor/cli-config.json" "$root/session-home/.cursor/cli-config.json"
       chmod 600 "$root/session-home/.cursor/"*.json
     fi
-    [[ "$mode" != product ]] ||
+    [[ "$mode" != product ||
+       ! -f "$root/session-home/.claude/.credentials.json" ]] ||
       chmod 600 "$root/session-home/.claude/.credentials.json"
     for tool in "${subscription_tools[@]}"; do
       resolved="$(command -v "$tool" 2>/dev/null || true)"
@@ -2565,7 +2578,14 @@ PY
       sha256_file "$cursor_home/.cursor/cli-config.json"
     fi
     sha256_file "$session_home/.codex/auth.json"
-    sha256_file "$session_home/.claude/.credentials.json"
+    if [[ -e "$session_home/.claude/.credentials.json" ||
+          -L "$session_home/.claude/.credentials.json" ]]; then
+      [[ -f "$session_home/.claude/.credentials.json" &&
+         ! -L "$session_home/.claude/.credentials.json" ]] || return 1
+      sha256_file "$session_home/.claude/.credentials.json"
+    else
+      product_cursor_enabled "$root" || return 1
+    fi
     [[ ! -f "$root/runtime/claude-token-source" ]] ||
       sha256_file "$root/runtime/claude-token-source"
     for ticket in "${approval_tickets[@]}"; do

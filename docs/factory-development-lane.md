@@ -70,8 +70,11 @@ mutation. Native Claude additionally receives a separate owner-only home,
 configuration directory, temporary directory, and credential copy per attempt;
 those roots are removed only after their process groups drain.
 
-The subscription canary copies only its selected CLI session; product lanes
-copy their three configured CLI sessions into the owner-only lane root once.
+The subscription canary copies only its selected CLI session. Product lanes
+copy each available configured CLI session into the owner-only lane root once.
+When Cursor is enabled, a missing native Claude session is recorded as an
+unavailable fallback and the required Anthropic-family roles stay on Cursor;
+disabling Cursor still requires an authenticated native Claude session.
 When current Claude stores subscription state only in the macOS Keychain,
 `FACTORY_DEV_LANE_CLAUDE_OAUTH_TOKEN_FILE` may name an owner-only `0600`
 token created by `claude setup-token`. The controller validates it without
