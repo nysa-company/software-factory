@@ -563,6 +563,45 @@ assert value["checks"]["runtime"]["dispatch_leases"] == [
 ]
 PY
 
+mkdir -p "$TMP/qualification-controller/events"
+chmod 700 "$TMP/qualification-controller" "$TMP/qualification-controller/events"
+python3 - "$TMP/qualification-controller/events/recovered.json" "$SHA_B" <<'PY'
+import hashlib, json, os, pathlib, sys
+path, factory = pathlib.Path(sys.argv[1]), sys.argv[2]
+value = {
+    "event": "upgraded_claim_recovered",
+    "factory_sha": factory,
+    "from_factory_sha": factory,
+    "observed_at_epoch_ns": 1,
+    "qualification_generation": 1,
+    "qualification_manifest_sha256": "a" * 64,
+    "schema": "nysa.software-factory.controller-event/v1",
+    "ticket": "T-1",
+}
+value["event_sha256"] = hashlib.sha256(json.dumps(
+    value, ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+).encode()).hexdigest()
+path.write_text(json.dumps(value, sort_keys=True) + "\n", encoding="utf-8")
+os.chmod(path, 0o600)
+PY
+HOME="$TEST_HOME" PATH="$TEST_BIN:/usr/bin:/bin" \
+  FACTORY_TEST_MODE=1 FACTORY_TRUSTED_TEST_HARNESS=1 \
+  FACTORY_DOCTOR_TIMEOUT_SECONDS=1 \
+  FACTORY_DOCTOR_READINESS_TIMEOUT_SECONDS=5 \
+  FACTORY_KIT_TRUST_SCOPE=qualification-candidate \
+  FACTORY_CONTROLLER_STATE_DIR="$TMP/qualification-controller" \
+  FACTORY_PROVIDER_POLICY="$TMP/provider/provider-policy.json" \
+  /bin/bash "$RELEASE_B/scripts/factory-doctor-real.sh" --json \
+    --project "$PROJECT" --kit-dir "$RELEASE_B" \
+    --product-root "$PRODUCT" --kit-sha "$SHA_B" \
+    > "$TMP/qualification-recovered-doctor.json"
+python3 - "$TMP/qualification-recovered-doctor.json" <<'PY'
+import json, sys
+checks = json.load(open(sys.argv[1], encoding="utf-8"))["checks"]
+assert checks["contract_resume"] == {"incidents": [], "status": "ok"}
+assert checks["transition_receipts"] == {"incidents": [], "status": "ok"}
+PY
+
 # The deterministic qualification driver accepts that real, cohort-bound
 # runtime-only warning and reaches reconciliation.
 python3 - "$TMP/qualification-manifest.json" "$SHA_B" <<'PY'

@@ -567,6 +567,10 @@ try:
         base_fields = {
             "event", "factory_sha", "observed_at_epoch_ns", "schema", "ticket",
         }
+        upgrade_fields = base_fields | {"from_factory_sha"}
+        qualification_fields = {
+            "qualification_generation", "qualification_manifest_sha256",
+        }
         if (
             factory_sha is None
             and event == "contract_blocker_recovered"
@@ -583,9 +587,21 @@ try:
             continue
         if (
             event == "upgraded_claim_recovered"
-            and set(value) == base_fields | {"from_factory_sha"}
+            and set(value) in (
+                upgrade_fields, upgrade_fields | qualification_fields,
+            )
             and isinstance(value.get("from_factory_sha"), str)
             and re.fullmatch(r"[0-9a-f]{40}", value.get("from_factory_sha", ""))
+            and (
+                set(value) == upgrade_fields
+                or isinstance(value.get("qualification_generation"), int)
+                and not isinstance(value["qualification_generation"], bool)
+                and value["qualification_generation"] > 0
+                and re.fullmatch(
+                    r"[0-9a-f]{64}",
+                    value.get("qualification_manifest_sha256", ""),
+                )
+            )
             and (
                 factory_sha is None
                 or (
