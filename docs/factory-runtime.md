@@ -221,8 +221,9 @@ active qualification leases, or—only for a successor—the exact selected-tick
 itself must recover. During a long successor role, the controller renews every
 idle cohort lease and releases a parked lease instead of allowing either to
 expire. A warning
-from one prior candidate is accepted only when it covers the full selected
-cohort; the controller still authenticates and migrates every receipt. It
+from the manifest's exact source release may cover any selected subset; a
+warning from an older prior candidate is accepted only when it covers the full
+selected cohort. The controller still authenticates and migrates every receipt. It
 clears the invocation-local prior-receipt exclusion only after that exact
 migration, allowing the ordinary state machine to issue the current chained
 receipt without deleting its predecessor. It

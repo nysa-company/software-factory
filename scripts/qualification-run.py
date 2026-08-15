@@ -116,7 +116,7 @@ def report_result(value: dict[str, Any]) -> None:
         raise QualificationRunError("qualification reducer returned invalid evidence")
 
 
-def qualification_basis() -> tuple[set[str], int, bool, str]:
+def qualification_basis() -> tuple[set[str], int, bool, str, str]:
     raw_path = os.environ.get("FACTORY_QUALIFICATION_MANIFEST", "")
     factory_sha = os.environ.get("FACTORY_RELEASE_SHA", "")
     path = Path(raw_path)
@@ -142,6 +142,7 @@ def qualification_basis() -> tuple[set[str], int, bool, str]:
         return (
             set(manifest["tickets"]), manifest["capacity"],
             manifest.get("mode") == "successor", factory_sha,
+            manifest.get("source_factory_sha", ""),
         )
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, ManifestError) as error:
         raise QualificationRunError("qualification manifest is invalid") from error
@@ -295,7 +296,7 @@ def migration_apply_result(
 
 def doctor_allows_reconcile(
     value: dict[str, Any], project: str, selected: set[str], capacity: int,
-    successor: bool, factory_sha: str,
+    successor: bool, factory_sha: str, source_factory_sha: str,
 ) -> bool:
     checks = value.get("checks")
     if (
@@ -364,6 +365,7 @@ def doctor_allows_reconcile(
         )
         and (
             incident_factories == {factory_sha}
+            or incident_factories == {source_factory_sha}
             or (
                 incident_tickets == selected
                 and len(incident_factories) == 1
@@ -461,12 +463,13 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
     if not PROJECT.fullmatch(args.project):
         raise QualificationRunError("invalid qualification project")
     launcher = launcher_path(args.launcher)
-    selected, capacity, successor, factory_sha = qualification_basis()
+    selected, capacity, successor, factory_sha, source_factory_sha = qualification_basis()
     phases: list[dict[str, Any]] = []
     started = time.monotonic()
     code, doctor = invoke(launcher, args.project, "doctor", phases)
     if code != 0 or not doctor_allows_reconcile(
         doctor, args.project, selected, capacity, successor, factory_sha,
+        source_factory_sha,
     ):
         return {
             "doctor_status": doctor.get("overall_status"),

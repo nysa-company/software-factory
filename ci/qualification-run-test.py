@@ -412,6 +412,21 @@ raise SystemExit(code)
         self.assertEqual(self.called(), ["doctor", "reconcile"])
 
         self.calls.unlink()
+        source = copy.deepcopy(doctor)
+        source["checks"]["transition_receipts"]["incidents"][0].update({
+            "active_factory_sha": "b" * 40,
+            "receipt_factory_sha": "c" * 40,
+        })
+        code, value = self.run_scenario({
+            "doctor": source,
+            "reconcile": [self.controller("waiting_for_target")],
+            "qualification": self.report(),
+        })
+        self.assertEqual(code, 3)
+        self.assertEqual(value["reason"], "cohort_not_accounted")
+        self.assertEqual(self.called(), ["doctor", "reconcile"])
+
+        self.calls.unlink()
         stale = copy.deepcopy(doctor)
         stale["checks"]["transition_receipts"]["incidents"] = [
             {
