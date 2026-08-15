@@ -8033,7 +8033,10 @@ class Controller:
         ):
             raise ControllerError("semantic authorization request is invalid")
         claim = self.operator_control_claim(ticket, "semantic authorization")
-        if not DIGEST.fullmatch(claim.get("lease", "")):
+        if not (
+            DIGEST.fullmatch(claim.get("lease", ""))
+            or self.parked(claim) and claim.get("lease") == ""
+        ):
             raise ControllerError("semantic authorization authority is unavailable")
         transition = self.transition_receipt(claim, record=False)
         passport = self.authenticated_operator_passport(ticket)
@@ -8142,6 +8145,8 @@ class Controller:
             or approve_hash != plan["approval_hash"]
         ):
             raise ControllerError("semantic authorization approval hash does not match")
+        if not DIGEST.fullmatch(claim.get("lease", "")):
+            self.ensure_lease(claim, "semantic-round-authorization")
         head = self.apply_operator_ticket_change(
             claim, plan, after, observed_status, operator_id,
             f"Authorize {role} round {semantic_round} for {ticket}",

@@ -17303,6 +17303,24 @@ class FactoryControllerTest(unittest.TestCase):
         controller, claim, cell, passport, _transition = (
             self.semantic_wait_fixture("semantic-control", "T-213")
         )
+        parked = self.root / "parked/T-213"
+        parked.parent.mkdir(exist_ok=True)
+        cell.rename(parked)
+        cell = parked
+        claim["worktree"] = str(cell)
+        claim.update(lease="", parked=True)
+        controller.worktrees_by_branch = lambda: {
+            "refs/heads/ticket/T-213": [str(cell)],
+        }
+        controller.save_claim(claim)
+        leases = []
+
+        def ensure_lease(current, reason):
+            leases.append(reason)
+            current.update(lease="2" * 64)
+            controller.save_claim(current)
+
+        controller.ensure_lease = ensure_lease
         parent = passport["head_sha"]
         remote = self.root / "semantic-control.git"
         sibling = self.root / "parked/T-999"
@@ -17317,6 +17335,7 @@ class FactoryControllerTest(unittest.TestCase):
         plan = controller.plan_semantic_authorization(
             "T-213", "spec-linter", 3, "operator",
         )
+        self.assertEqual(leases, [])
         self.assertEqual(state_bytes(), before_plan)
         self.assertEqual(plan["status"], "planned")
         self.assertEqual(
@@ -17354,9 +17373,15 @@ class FactoryControllerTest(unittest.TestCase):
         committed = cell_git(claim, "rev-parse", "HEAD").stdout.strip()
         self.assertNotEqual(committed, parent)
         controller.cell_git = cell_git
+        retry_plan = controller.plan_semantic_authorization(
+            "T-213", "spec-linter", 3, "operator",
+        )
+        self.assertNotEqual(retry_plan["approval_hash"], plan["approval_hash"])
+        plan = retry_plan
         result = controller.apply_semantic_authorization(
             "T-213", "spec-linter", 3, "operator", plan["approval_hash"],
         )
+        self.assertEqual(leases, ["semantic-round-authorization"])
         head = result["authorization_head"]
         self.assertEqual(result["status"], "applied")
         self.assertNotEqual(head, parent)
