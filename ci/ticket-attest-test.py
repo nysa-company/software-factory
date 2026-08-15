@@ -697,6 +697,19 @@ else:
         self.prepare_post_review_evidence()
         self.bundle()
 
+    def test_bundle_counts_only_current_qualification_review_evidence(self):
+        baseline = self.head()
+        ticket = self.product / "factory/tickets/T-700.md"
+        ticket.write_text(ticket.read_text() + "reviewer round 2: APPROVE\n")
+        self.commit("record current qualification review")
+        command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
+        self.env.update({
+            "FACTORY_KIT_TRUST_SCOPE": "qualification-candidate",
+            "FACTORY_QUALIFICATION_PRODUCT_SHA": baseline,
+        })
+
+        self.bundle()
+
     def test_bundle_refuses_unreferenced_narrator_evidence(self):
         self.prepare_post_review_evidence(unreferenced=True)
         result = self.attest("bundle")

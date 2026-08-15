@@ -166,18 +166,24 @@ elif [[ "$ACTION" == "qualification-backlog" ]]; then
     { echo "protected qualification manifest is unavailable" >&2; exit 1; }
   python3 - "$TMP" "$OPERATOR_VERSION_FILE" "$TICKET" \
     "$PRODUCT_ROOT/factory/runs" "$ROLE" "$PINNED_KIT_SHA" \
-    "$CONTRACT_VERSION" <<'PY'
+    "$CONTRACT_VERSION" "$KIT_DIR/scripts/lib" "$WORKDIR" <<'PY'
 import json
 import re
 import stat
 import sys
 from pathlib import Path
 
-ticket_path, qualification_path, ticket, runs_path, role, pinned_kit_sha, contract_version = (
+ticket_path, qualification_path, ticket, runs_path, role, pinned_kit_sha, contract_version, lib, workdir = (
     Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3], Path(sys.argv[4]),
-    sys.argv[5], sys.argv[6], sys.argv[7]
+    sys.argv[5], sys.argv[6], sys.argv[7], sys.argv[8], Path(sys.argv[9])
 )
 text = ticket_path.read_text()
+sys.path.insert(0, lib)
+from ticket_state_transition import TransitionError, qualification_epoch_text
+try:
+    epoch_text = qualification_epoch_text(workdir, ticket, text)
+except TransitionError as error:
+    raise SystemExit(str(error)) from error
 qualification = json.loads(qualification_path.read_text())
 if (
     qualification.get("schema") != "nysa.software-factory.qualification/v1"
@@ -188,7 +194,7 @@ states = re.findall(r"^State:\s*(.*?)\s*$", text, re.I | re.M)
 spec_failed = (
     states == ["Planning"]
     and re.search(
-        r"^\s*SPEC-LINT:\s*FAIL(?:\s+—\s+.*)?\s*$", text, re.I | re.M
+        r"^\s*SPEC-LINT:\s*FAIL(?:\s+—\s+.*)?\s*$", epoch_text, re.I | re.M
     )
 )
 contract_blocked = False

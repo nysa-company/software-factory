@@ -1600,6 +1600,7 @@ class FactoryControllerTest(unittest.TestCase):
         self, name: str, ticket: str = "T-110", *, duplicates: bool = False,
         role: str = "spec-linter", semantic_round: int = 3,
         semantic_kind: str = "planner-spec-linter",
+        historical_controls: str = "",
     ) -> tuple[CONTROL.Controller, dict, Path, dict, dict]:
         cell = self.root / name
         remote = self.root / f"{name}.git"
@@ -1624,6 +1625,7 @@ class FactoryControllerTest(unittest.TestCase):
         )
         ticket_path.write_text(
             f"# {ticket}\n\nState: Planning\nKit-SHA: {self.release.name}\n"
+            + historical_controls
             + spec_failures
             + (authorization + authorization.rstrip("\n") if duplicates else ""),
             encoding="utf-8",
@@ -17259,6 +17261,54 @@ class FactoryControllerTest(unittest.TestCase):
             ).stdout.strip(),
             unsafe_head,
         )
+
+    def test_qualification_authorization_is_new_even_when_the_line_is_historical(
+        self,
+    ) -> None:
+        historical = (
+            "SPEC-LINT: FAIL — historical one\n"
+            "SPEC-LINT: FAIL — historical two\n"
+            "OPERATOR AUTHORIZATION: spec-linter round 3\n"
+        )
+        ticket = self.product / "factory/tickets/T-221.md"
+        ticket.parent.mkdir(parents=True)
+        ticket.write_text(historical, encoding="utf-8")
+        subprocess.run(
+            ["git", "init", "-q", "-b", "main", str(self.product)], check=True,
+        )
+        subprocess.run(["git", "-C", str(self.product), "add", "."], check=True)
+        subprocess.run([
+            "git", "-C", str(self.product), "-c", "user.name=Test",
+            "-c", "user.email=test@nysa.dev", "commit", "-qm", "baseline",
+        ], check=True)
+        baseline = subprocess.run(
+            ["git", "-C", str(self.product), "rev-parse", "HEAD"],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+        with patch.dict(os.environ, {
+            "FACTORY_KIT_TRUST_SCOPE": "qualification-candidate",
+            "FACTORY_QUALIFICATION_PRODUCT_SHA": baseline,
+        }):
+            controller, _claim, cell, _passport, _transition = (
+                self.semantic_wait_fixture(
+                    "qualification-semantic-control", "T-221",
+                    historical_controls=historical,
+                )
+            )
+            plan = controller.plan_semantic_authorization(
+                "T-221", "spec-linter", 3, "operator",
+            )
+            result = controller.apply_semantic_authorization(
+                "T-221", "spec-linter", 3, "operator", plan["approval_hash"],
+            )
+            self.assertEqual(result["status"], "applied")
+            text = (cell / "factory/tickets/T-221.md").read_text(encoding="utf-8")
+            self.assertEqual(
+                text.splitlines().count(
+                    "OPERATOR AUTHORIZATION: spec-linter round 3"
+                ),
+                2,
+            )
 
     def test_semantic_authorization_continues_later_and_contract_rounds(
         self,

@@ -579,7 +579,7 @@
       "FACTORY_PROJECT": "validated launcher project slug",
       "FACTORY_OPERATOR_MAP": "sealed qualification operator overlay path: owner-local lane state for isolated qualification or the canonical live map for takeover",
       "FACTORY_QUALIFICATION_MANIFEST": "sealed qualification manifest path supplied only by a qualification launcher",
-      "FACTORY_QUALIFICATION_PRODUCT_SHA": "qualification receipt-bound protected product commit",
+      "FACTORY_QUALIFICATION_PRODUCT_SHA": "qualification receipt-bound protected product commit and immutable role-control epoch baseline",
       "FACTORY_QUALIFICATION_PRODUCT_TREE": "qualification receipt-bound protected product tree",
       "FACTORY_QUALIFICATION_FALLBACK_READINESS_SHA256": "qualification receipt-bound native fallback readiness digest",
       "FACTORY_CERTIFIED_PRODUCT_ORIGIN": "contract 1.2+ certification receipt product_origin; consumed by trusted write helpers and never exposed to adapters",

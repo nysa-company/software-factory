@@ -10,6 +10,8 @@ import re
 import stat
 import subprocess
 
+from ticket_state_transition import TransitionError, qualification_epoch_text
+
 
 def regular(path: Path) -> bool:
     try:
@@ -135,18 +137,27 @@ def main() -> None:
         raise SystemExit("reviewer reconciliation paths are unsafe")
 
     text = args.ticket_file.read_text(encoding="utf-8")
+    try:
+        epoch_text = qualification_epoch_text(
+            args.ticket_file.parents[2], args.ticket, text,
+        )
+    except TransitionError as error:
+        raise SystemExit(str(error)) from error
     state = re.findall(r"^State:\s*(.*?)\s*$", text, re.I | re.M)
     if len(state) != 1 or state[0].lower() not in {"review", "building"}:
         raise SystemExit("reviewer reconciliation requires Review or its idempotent Building result")
 
     verdict_pattern = re.compile(
-        r"^\s*reviewer round\s+(\d+):\s*(APPROVE|REQUEST CHANGES)\s*$", re.I | re.M
+        r"^\s*reviewer round\s+(\d+):\s*(APPROVE|REQUEST CHANGES)"
+        r"(?:\s+—\s+.*)?\s*$", re.I | re.M
     )
     owner_pattern = re.compile(
         r"^\s*reviewer round\s+(\d+)\s+FIX-OWNER:\s*(builder|test-author|both)\s*$",
         re.I | re.M,
     )
     verdicts = [(int(number), verdict.upper()) for number, verdict in verdict_pattern.findall(text)]
+    fresh_verdicts = verdict_pattern.findall(epoch_text)
+    historical_verdicts = len(verdicts) - len(fresh_verdicts)
     owners = {int(number): owner.lower() for number, owner in owner_pattern.findall(text)}
     if [number for number, _ in verdicts] != list(range(1, len(verdicts) + 1)):
         raise SystemExit("reviewer verdict rounds are not canonical")
@@ -174,7 +185,7 @@ def main() -> None:
         ):
             raise SystemExit("reviewer checkpoint is malformed")
         imported = records[0]["roles"].count("reviewer")
-        if imported > len(verdicts):
+        if imported > len(fresh_verdicts):
             raise SystemExit("reviewer checkpoint exceeds canonical verdict history")
 
     successful = []
@@ -204,12 +215,12 @@ def main() -> None:
         successful.append((value.get("started_at", ""), manifest.name, value, output))
     successful.sort(key=lambda item: (item[0], item[1]))
 
-    matched = len(verdicts) - imported
-    if imported + len(successful) == len(verdicts):
+    matched = len(fresh_verdicts) - imported
+    if imported + len(successful) == len(fresh_verdicts):
         text = canonicalize_reviews(
             text,
             successful,
-            imported,
+            historical_verdicts + imported,
             verdicts,
             owners,
             Path(__file__).with_name("reviewer-verdict.py"),
@@ -217,7 +228,7 @@ def main() -> None:
         )
         args.output.write_text(text, encoding="utf-8")
         return
-    if imported + len(successful) != len(verdicts) + 1:
+    if imported + len(successful) != len(fresh_verdicts) + 1:
         raise SystemExit("reviewer runs and canonical verdicts are ambiguous")
     if state[0].lower() != "review":
         raise SystemExit("unmatched reviewer evidence requires Review state")
@@ -225,7 +236,7 @@ def main() -> None:
     text = canonicalize_reviews(
         text,
         successful[:matched],
-        imported,
+        historical_verdicts + imported,
         verdicts,
         owners,
         Path(__file__).with_name("reviewer-verdict.py"),

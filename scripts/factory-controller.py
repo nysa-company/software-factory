@@ -45,6 +45,10 @@ from route_evidence import (  # noqa: E402
     journal_extends, validate_route,
 )
 from role_output import RoleOutputError, sha256 as role_output_sha256  # noqa: E402
+from ticket_state_transition import (  # noqa: E402
+    TransitionError as TicketTransitionError,
+    qualification_epoch_text,
+)
 
 
 SCHEMA = "nysa.software-factory.controller/v1"
@@ -514,6 +518,12 @@ class Controller:
         # ponytail: closeouts are rare; serialize them until throughput requires a queue.
         self.closeout_lock = Lock()
         self.recovery_context = local()
+
+    def epoch_ticket(self, ticket: str, text: str) -> str:
+        try:
+            return qualification_epoch_text(self.product, ticket, text)
+        except TicketTransitionError as error:
+            raise ControllerError(str(error)) from error
 
     def read_qualification(self) -> dict[str, Any] | None:
         path = self.product / "factory/QUALIFICATION.json"
@@ -7640,8 +7650,13 @@ class Controller:
             line[:-1] if line.endswith("\n") else line
             for line in text.splitlines(keepends=True)
         ]
-        old_count = exact_lines(old.stdout).count(authorization_line)
-        new_count = exact_lines(new.stdout).count(authorization_line)
+        try:
+            old_epoch = self.epoch_ticket(claim["ticket"], old.stdout)
+            new_epoch = self.epoch_ticket(claim["ticket"], new.stdout)
+        except ControllerError:
+            return False
+        old_count = exact_lines(old_epoch).count(authorization_line)
+        new_count = exact_lines(new_epoch).count(authorization_line)
         without_grants = lambda text: "".join(
             line for line in text.splitlines(keepends=True)
             if (line[:-1] if line.endswith("\n") else line)
@@ -7659,16 +7674,20 @@ class Controller:
                 semantic_kind != "planner-spec-linter"
                 or len(re.findall(
                     r"^\s*SPEC-LINT:\s*FAIL(?:\s+—\s+.*)?\s*$",
-                    old.stdout, re.I | re.M,
+                    old_epoch, re.I | re.M,
                 )) == semantic_round - 1
             )
             and new_count == 1
             and (
                 old_count == 0
                 and new.stdout in appended(old.stdout)
-                or old_count > 1
-                and new_count == 1
-                and new.stdout in appended(without_grants(old.stdout))
+                or (
+                    os.environ.get("FACTORY_KIT_TRUST_SCOPE")
+                    != "qualification-candidate"
+                    and old_count > 1
+                    and new_count == 1
+                    and new.stdout in appended(without_grants(old.stdout))
+                )
             )
         )
 
@@ -7994,13 +8013,14 @@ class Controller:
         )
         if before.returncode:
             raise ControllerError("semantic authorization ticket is unavailable")
-        old_lines = before.stdout.splitlines()
+        epoch_before = self.epoch_ticket(ticket, before.stdout)
+        old_lines = epoch_before.splitlines()
         if (
             old_lines.count(line) != 0
             or context[3] == "planner-spec-linter"
             and len(re.findall(
                 r"^\s*SPEC-LINT:\s*FAIL(?:\s+—\s+.*)?\s*$",
-                before.stdout, re.I | re.M,
+                epoch_before, re.I | re.M,
             )) != semantic_round - 1
         ):
             raise ControllerError("semantic authorization ticket is invalid")
@@ -8103,14 +8123,23 @@ class Controller:
             r"duplicate'",
             transition.get("stage", ""),
         )
-        verdicts = [
+        all_verdicts = [
             int(number) for number, _verdict in re.findall(
                 r"^\s*reviewer round\s+([1-9][0-9]*):\s*"
                 r"(APPROVE|REQUEST CHANGES(?:\s+—\s+.*)?)\s*$",
                 before, re.I | re.M,
             )
         ]
-        voids = self.reviewer_void_records(before)
+        epoch = self.epoch_ticket(transition["ticket"], before)
+        verdicts = [
+            int(number) for number, _verdict in re.findall(
+                r"^\s*reviewer round\s+([1-9][0-9]*):\s*"
+                r"(APPROVE|REQUEST CHANGES(?:\s+—\s+.*)?)\s*$",
+                epoch, re.I | re.M,
+            )
+        ]
+        baseline = len(all_verdicts) - len(verdicts)
+        voids = self.reviewer_void_records(epoch)
         completed = passport.get("completed_role_evidence")
         expected = {
             "contract_version", "factory_sha", "head_before",
@@ -8150,7 +8179,8 @@ class Controller:
         reviewers = [item for item in completed if item["role"] == "reviewer"]
         if (
             stage is None
-            or verdicts != list(range(1, len(verdicts) + 1))
+            or all_verdicts != list(range(1, len(all_verdicts) + 1))
+            or verdicts != list(range(baseline + 1, len(all_verdicts) + 1))
             or any(item < 1 or item > len(reviewers) for item in voids)
             or len(reviewers) - len(voids) != int(stage[1])
             or int(stage[1]) != int(stage[2]) + 1
@@ -8179,8 +8209,12 @@ class Controller:
             old.stdout + "\n" + line + "\n",
         }
         try:
-            old_voids = self.reviewer_void_records(old.stdout)
-            new_voids = self.reviewer_void_records(new.stdout)
+            old_voids = self.reviewer_void_records(
+                self.epoch_ticket(claim["ticket"], old.stdout)
+            )
+            new_voids = self.reviewer_void_records(
+                self.epoch_ticket(claim["ticket"], new.stdout)
+            )
         except ControllerError:
             return False
         return (
