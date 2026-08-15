@@ -6211,7 +6211,8 @@ Category: Reliability
 
 The deterministic qualification driver admits a Doctor warning only when every
 transition incident is a unique selected-ticket `prior_kit_receipt` bound to
-the active successor Factory; the ordinary controller must then migrate it.
+the active successor Factory, or when one prior candidate covers the exact full
+selected cohort; the ordinary controller must then authenticate and migrate it.
 Runtime warnings retain their separate bounded shape, all other warnings stay
 blocked, and an empty controller result is a wait rather than terminal evidence.
 

@@ -217,8 +217,10 @@ authenticated boundary:
 
 It requires Doctor `ok`, the exact bounded runtime-only warning produced by
 active qualification leases, or—only for a successor—the exact selected-ticket
-`prior_kit_receipt` warning that the controller itself must migrate. It performs
-the one mandatory controller restart in a new process, runs the ordinary
+`prior_kit_receipt` warning that the controller itself must migrate. A warning
+from one prior candidate is accepted only when it covers the full selected
+cohort; the controller still authenticates and migrates every receipt. It
+performs the one mandatory controller restart in a new process, runs the ordinary
 controller/state machine, applies the existing sealed batch route migration
 when every selected successor claim is at that exact boundary, and invokes the
 existing reducer only after a nonempty set of terminal completion results. The

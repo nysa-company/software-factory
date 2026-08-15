@@ -411,6 +411,31 @@ raise SystemExit(code)
         self.assertEqual(value["reason"], "cohort_not_accounted")
         self.assertEqual(self.called(), ["doctor", "reconcile"])
 
+        self.calls.unlink()
+        stale = copy.deepcopy(doctor)
+        stale["checks"]["transition_receipts"]["incidents"] = [
+            {
+                "active_factory_sha": "d" * 40,
+                "observed_at_epoch_ns": index,
+                "reason_code": "prior_kit_receipt",
+                "receipt_factory_sha": "b" * 40,
+                "ticket": ticket,
+                "transition_receipt_sha256": f"{index}" * 64,
+            }
+            for index, ticket in enumerate(("T-1", "T-2", "T-3"), 1)
+        ]
+        code, value = self.run_scenario({
+            "doctor": stale,
+            "reconcile": [
+                self.controller("restart_required", active=3),
+                self.controller("waiting_for_target", active=3),
+            ],
+            "qualification": self.report(),
+        })
+        self.assertEqual(code, 3)
+        self.assertEqual(value["reason"], "cohort_not_accounted")
+        self.assertEqual(self.called(), ["doctor", "reconcile", "reconcile"])
+
         for label, change in {
             "foreign-ticket": ("ticket", "T-9"),
             "wrong-active-factory": ("active_factory_sha", "d" * 40),

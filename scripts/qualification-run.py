@@ -320,6 +320,13 @@ def doctor_allows_reconcile(
         return False
     transition = checks["transition_receipts"]
     incidents = transition.get("incidents")
+    incident_tickets = {
+        item.get("ticket") for item in incidents if isinstance(item, dict)
+    } if isinstance(incidents, list) else set()
+    incident_factories = {
+        item.get("active_factory_sha")
+        for item in incidents if isinstance(item, dict)
+    } if isinstance(incidents, list) else set()
     transition_ok = (
         transition.get("status") == "ok"
         and (incidents is None or incidents == [])
@@ -339,10 +346,11 @@ def doctor_allows_reconcile(
         )
         and len({item["ticket"] for item in incidents}) == len(incidents)
         and all(
-            item.get("active_factory_sha") == factory_sha
-            and item.get("receipt_factory_sha") != factory_sha
+            isinstance(item.get("active_factory_sha"), str)
+            and SHA.fullmatch(item["active_factory_sha"])
             and isinstance(item.get("receipt_factory_sha"), str)
-            and re.fullmatch(r"[0-9a-f]{40}", item["receipt_factory_sha"])
+            and SHA.fullmatch(item["receipt_factory_sha"])
+            and item["receipt_factory_sha"] != item["active_factory_sha"]
             and item.get("reason_code") == "prior_kit_receipt"
             and item.get("ticket") in selected
             and isinstance(item.get("observed_at_epoch_ns"), int)
@@ -353,6 +361,14 @@ def doctor_allows_reconcile(
                 r"[0-9a-f]{64}", item["transition_receipt_sha256"],
             )
             for item in incidents
+        )
+        and (
+            incident_factories == {factory_sha}
+            or (
+                incident_tickets == selected
+                and len(incident_factories) == 1
+                and factory_sha not in incident_factories
+            )
         )
     )
     if not transition_ok and not transition_recovery:
