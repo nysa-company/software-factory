@@ -78,8 +78,15 @@ class TicketTransitionPolicyTest(unittest.TestCase):
             "SPEC-LINT: FAIL — old reason\n"
             "reviewer round 1: REQUEST CHANGES — old review\n"
             "reviewer round 1 FIX-OWNER: builder\n"
+            "reviewer round 2 FIX-OWNER: test-author\n"
+            "reviewer round 3 FIX-OWNER: both\n"
             "OPERATOR NOTE: reviewer run 1 void — duplicate\n"
+            "OPERATOR AUTHORIZATION: planner round 2\n"
             "OPERATOR AUTHORIZATION: spec-linter round 3\n"
+            "OPERATOR AUTHORIZATION: test-author round 2\n"
+            "OPERATOR AUTHORIZATION: builder round 2\n"
+            "OPERATOR AUTHORIZATION: reviewer round 2\n"
+            "OPERATOR AUTHORIZATION: narrator round 2\n"
             "Audit: SPEC-LINT: PASS is prose\n"
         )
         current = baseline + (
@@ -118,6 +125,24 @@ class TicketTransitionPolicyTest(unittest.TestCase):
                 ),
                 current,
             )
+
+        with mock.patch.dict(os.environ, {
+            "FACTORY_KIT_TRUST_SCOPE": "qualification-candidate",
+            "FACTORY_QUALIFICATION_PRODUCT_SHA": "invalid",
+        }), self.assertRaisesRegex(
+            TransitionError, "qualification role-control baseline is invalid",
+        ):
+            qualification_epoch_text(Path("/unavailable"), "T-1", current)
+
+        with mock.patch.dict(os.environ, {
+            "FACTORY_KIT_TRUST_SCOPE": "qualification-candidate",
+            "FACTORY_QUALIFICATION_PRODUCT_SHA": "a" * 40,
+        }), mock.patch(
+            "legacy_closeout._git_object", return_value=None,
+        ), self.assertRaisesRegex(
+            TransitionError, "qualification role-control baseline is unavailable",
+        ):
+            qualification_epoch_text(Path("/unavailable"), "T-1", current)
 
     def test_allowed_edges_are_the_complete_declared_policy(self) -> None:
         self.assertEqual(ALLOWED_TRANSITIONS, EXPECTED)

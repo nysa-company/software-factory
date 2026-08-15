@@ -221,7 +221,7 @@ selection_case scripts/ticket-state.sh \
   "targeted|state-machine|ticket-state ticket-transition-policy $POLICY" \
   "ticket-state implementation selection"
 selection_case scripts/lib/ticket_state_transition.py \
-  "targeted|state-machine|ticket-transition-policy $POLICY" \
+  "full|shared role-control projection|" \
   "ticket transition policy selection"
 selection_case scripts/operator-console.py "targeted|operator-console|operator-console $POLICY" "operator console selection"
 selection_case scripts/operator-snapshot.py "targeted|operator-console|operator-console $POLICY" "operator snapshot selection"

@@ -1161,6 +1161,42 @@ class StateMachineTest(unittest.TestCase):
                         "RUN planner",
                     )
 
+    def test_qualification_reviewer_catchup_requires_a_current_verdict(self) -> None:
+        ticket = self.product / "factory/tickets/T-110.md"
+        historical = (
+            "# T-110\n\nState: Building\n"
+            "reviewer round 1: REQUEST CHANGES\n"
+            "SPEC-LINT: FAIL — historical\n"
+        )
+        ticket.write_text(historical, encoding="utf-8")
+        run("git", "add", str(ticket), cwd=self.product)
+        run("git", "commit", "-qm", "protected review baseline", cwd=self.product)
+        baseline = run("git", "rev-parse", "HEAD", cwd=self.product)
+        completed = [
+            {"role": role} for role in (
+                "planner", "spec-linter", "test-author", "builder", "reviewer",
+                "planner", "spec-linter",
+            )
+        ]
+        with mock.patch.dict(os.environ, {
+            "FACTORY_KIT_TRUST_SCOPE": "qualification-candidate",
+            "FACTORY_QUALIFICATION_PRODUCT_SHA": baseline,
+        }), mock.patch.object(
+            STATE, "authenticated_role_evidence", return_value=({}, completed),
+        ):
+            self.assertFalse(
+                STATE.reviewer_repair_catchup(self.args, "RUN planner")
+            )
+            ticket.write_text(
+                historical
+                + "reviewer round 2: REQUEST CHANGES\n"
+                + "SPEC-LINT: FAIL — current\n",
+                encoding="utf-8",
+            )
+            self.assertTrue(
+                STATE.reviewer_repair_catchup(self.args, "RUN planner")
+            )
+
     def test_replay_after_committed_role_transition_preserves_narrator_evidence(
         self,
     ) -> None:

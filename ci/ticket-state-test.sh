@@ -303,6 +303,8 @@ FACTORY_QUALIFICATION_PRODUCT_SHA="$QUALIFICATION_REVIEW_BASE" \
   TEST_CONTRACT=2.0.0 ticket_state --ticket T-700 --workdir "$PRODUCT" \
   --action reviewer-reconcile >/dev/null
 grep -q '^State: Building$' "$PRODUCT/factory/tickets/T-700.md"
+grep -qx 'reviewer round 1: APPROVE' \
+  "$PRODUCT/factory/tickets/T-700.md"
 grep -qx 'reviewer round 2: REQUEST CHANGES' \
   "$PRODUCT/factory/tickets/T-700.md"
 

@@ -65,9 +65,11 @@ while IFS= read -r -d '' status && IFS= read -r -d '' path; do
     ci/ticket-state-test.sh)
       set_group targeted state-machine "ticket-state"
       ;;
-    ci/ticket-transition-policy-test.py|\
-      scripts/lib/ticket_state_transition.py)
+    ci/ticket-transition-policy-test.py)
       set_group targeted state-machine "ticket-transition-policy"
+      ;;
+    scripts/lib/ticket_state_transition.py)
+      full "shared role-control projection"
       ;;
     scripts/ticket-state.sh)
       set_group targeted state-machine \

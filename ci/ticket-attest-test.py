@@ -1186,6 +1186,17 @@ else:
         self.assertIn("did not confirm", self.attest("approval").stderr)
 
     def test_refresh_retires_stale_approval_and_binds_exact_main_merge(self):
+        baseline = self.head()
+        ticket_path = self.product / "factory/tickets/T-700.md"
+        ticket_path.write_text(
+            ticket_path.read_text() + "reviewer round 2: APPROVE\n"
+        )
+        self.commit("record current qualification review")
+        command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
+        self.env.update({
+            "FACTORY_KIT_TRUST_SCOPE": "qualification-candidate",
+            "FACTORY_QUALIFICATION_PRODUCT_SHA": baseline,
+        })
         self.bundle()
         self.approval_overlay()
         self.assertEqual(self.attest("approval").returncode, 0)
@@ -1245,7 +1256,6 @@ else:
         self.assertEqual(operator, {"priority": "urgent"})
         self.assertIn("post-refresh Reviewer", self.attest("bundle").stderr)
         refreshed = self.head()
-        ticket_path = self.product / "factory/tickets/T-700.md"
         ticket_path.write_text(
             ticket_path.read_text() + "\nOPERATOR NOTE: reviewer run 1 void — duplicate\n"
         )
@@ -1284,7 +1294,7 @@ else:
         ticket_path.write_text(
             ticket_path.read_text().replace(
                 "\nOPERATOR NOTE: reviewer run 1 void — duplicate\n", "",
-            ) + "\nreviewer round 2: APPROVE\n"
+            ) + "\nreviewer round 3: APPROVE\n"
         )
         self.commit("fresh reviewer verdict")
         command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)

@@ -8965,8 +8965,12 @@ class Controller:
             old = self.cell_git(claim, "show", f"{parent}:{ticket_path}")
             new = self.cell_git(claim, "show", f"{local}:{ticket_path}")
             try:
-                old_voids = self.reviewer_void_records(old.stdout)
-                new_voids = self.reviewer_void_records(new.stdout)
+                old_voids = self.reviewer_void_records(
+                    self.epoch_ticket(claim["ticket"], old.stdout)
+                )
+                new_voids = self.reviewer_void_records(
+                    self.epoch_ticket(claim["ticket"], new.stdout)
+                )
             except ControllerError:
                 continue
             added = (

@@ -104,7 +104,12 @@ def qualification_epoch_text(product: Path, ticket: str, current: str) -> str:
         raise TransitionError("qualification role-control baseline is invalid")
     from legacy_closeout import _git_object
 
-    value = _git_object(product, f"{sha}:factory/tickets/{ticket}.md")
+    try:
+        value = _git_object(product, f"{sha}:factory/tickets/{ticket}.md")
+    except OSError as error:
+        raise TransitionError(
+            "qualification role-control baseline is unavailable"
+        ) from error
     if value is None or value[1] != "blob":
         raise TransitionError("qualification role-control baseline is unavailable")
     try:
