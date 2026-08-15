@@ -38,19 +38,23 @@ def main() -> int:
     catalog = json.loads(args.catalog.read_text(encoding="utf-8"))
     profiles = json.loads(args.profiles.read_text(encoding="utf-8"))
     routes = {item["route_id"]: item for item in catalog["routes"]}
-    profile = next(
-        item for item in profiles["profiles"] if item["profile_id"] == plan["profile_id"]
-    )
-    portfolio = next(
-        item for item in profile["portfolios"]
-        if item["portfolio_id"] == plan["portfolio_id"]
-    )
     policy_roles = plan.get("model_policy", {}).get("roles")
+    portfolio = None
+    if policy_roles is None:
+        profile = next(
+            item for item in profiles["profiles"]
+            if item["profile_id"] == plan["profile_id"]
+        )
+        portfolio = next(
+            item for item in profile["portfolios"]
+            if item["portfolio_id"] == plan["portfolio_id"]
+        )
     checks = []
     for role, selected in sorted(plan["selections"].items()):
         if not selected["adapter"].startswith("cursor-"):
             continue
         if policy_roles is None:
+            assert portfolio is not None
             candidates = portfolio["roles"][role]["candidates"]
         else:
             policy = policy_roles[role]

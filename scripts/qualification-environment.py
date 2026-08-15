@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from decimal import Decimal, InvalidOperation
 import fcntl
 import hashlib
 import importlib.util
@@ -22,7 +23,11 @@ from typing import Any
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
 from release_lineage import successor_release_lineage  # noqa: E402
-from legacy_closeout import ValidationError as TerminalError, protected_terminal  # noqa: E402
+from legacy_closeout import (  # noqa: E402
+    ValidationError as TerminalError,
+    protected_dependency,
+    protected_terminal,
+)
 from qualification_artifacts import (  # noqa: E402
     ArtifactError as QualificationArtifactError,
     ensure_ticket as ensure_qualification_artifacts,
@@ -33,9 +38,12 @@ from qualification_manifest import (  # noqa: E402
 )
 from historical_pr_objects import (  # noqa: E402
     HistoricalObjectError,
+    _repository as historical_product_repository,
     commit_present,
     hydrate as hydrate_historical_pr_objects,
 )
+from effective_ticket import committed_ticket  # noqa: E402
+import operator_receipt  # noqa: E402
 
 
 SCHEMA = "nysa.software-factory.qualification-environment/v1"
@@ -244,6 +252,77 @@ def prepare_global_config(args: argparse.Namespace, root: Path) -> bytes:
         if config_bytes(target) != raw:
             raise EnvironmentError("qualification preparation artifact changed")
     return raw
+
+
+def qualification_global_cap(raw: bytes) -> Decimal:
+    values: list[str] = []
+    try:
+        lines = raw.decode("utf-8").splitlines()
+    except UnicodeDecodeError as error:
+        raise EnvironmentError("qualification global config is invalid") from error
+    for raw_line in lines:
+        if not raw_line or raw_line.startswith("#"):
+            continue
+        line = raw_line.removeprefix("export ")
+        match = re.fullmatch(r"([A-Z][A-Z0-9_]*)=(.*)", line)
+        if not match:
+            raise EnvironmentError("qualification global config is invalid")
+        key, value = match.groups()
+        if value[:1] in {"\"", "'"}:
+            if len(value) < 2 or value[-1] != value[0]:
+                raise EnvironmentError("qualification global config is invalid")
+            value = value[1:-1]
+        if not re.fullmatch(r"[A-Za-z0-9._:/+@%~-]*", value):
+            raise EnvironmentError("qualification global config is invalid")
+        if key == "GLOBAL_DAILY_CAP_USD":
+            values.append(value)
+    if len(values) != 1:
+        raise EnvironmentError("qualification global daily cap is missing or repeated")
+    if not re.fullmatch(r"[0-9]{1,7}(?:[.][0-9]{1,6})?", values[0]):
+        raise EnvironmentError("qualification global daily cap is invalid")
+    try:
+        cap = Decimal(values[0])
+    except InvalidOperation as error:
+        raise EnvironmentError("qualification global daily cap is invalid") from error
+    if not cap.is_finite() or cap <= 0 or cap > 1_000_000:
+        raise EnvironmentError("qualification global daily cap is invalid")
+    return cap
+
+
+def validate_qualification_budget(
+    factory: Path, product: Path, manifest: dict[str, Any], global_config: bytes,
+) -> None:
+    spec = importlib.util.spec_from_file_location(
+        "qualification_envelope", factory / "scripts/envelope-control.py"
+    )
+    if not spec or not spec.loader:
+        raise EnvironmentError("qualification envelope verifier is unavailable")
+    envelope = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(envelope)
+    try:
+        values = envelope.read_runtime_state(product)[-1]
+        run_cap = Decimal(manifest["per_run_budget_usd"])
+        ticket_cap = Decimal(manifest["per_ticket_budget_usd"])
+        total_cap = Decimal(manifest["budget_usd"])
+        role_budgets = {
+            role: Decimal(envelope.effective_role(values, role)["PER_RUN_BUDGET_USD"])
+            for role in envelope.ROLES
+        }
+        product_ticket = Decimal(values["PER_TICKET_BUDGET_USD"])
+        product_daily = Decimal(values["DAILY_CAP_USD"])
+    except (
+        AttributeError, InvalidOperation, KeyError, OSError, TypeError,
+        ValueError, envelope.ControlError,
+    ) as error:
+        raise EnvironmentError("qualification budget inputs are invalid") from error
+    if any(value > run_cap for value in role_budgets.values()):
+        raise EnvironmentError("qualification product per-run budget exceeds the manifest")
+    if product_ticket != ticket_cap:
+        raise EnvironmentError("qualification product ticket budget does not match the manifest")
+    if product_daily < total_cap:
+        raise EnvironmentError("qualification product daily cap is below the manifest budget")
+    if qualification_global_cap(global_config) < total_cap:
+        raise EnvironmentError("qualification machine daily cap is below the manifest budget")
 
 
 def qualification_fallback_readiness(
@@ -1091,6 +1170,14 @@ def validate_selected_contracts(
                 f"qualification cohort dependency {ticket} -> {internal[0]}; "
                 "use independent tickets or sequential generations"
             )
+        for dependency in sorted(dependencies - cohort):
+            try:
+                protected_dependency(product, dependency)
+            except TerminalError as error:
+                raise EnvironmentError(
+                    f"{ticket}: qualification dependency lacks protected "
+                    f"evidence: {dependency}"
+                ) from error
     for ticket in selected:
         path = f"factory/tickets/{ticket}.md"
         try:
@@ -1272,11 +1359,18 @@ def initialize_selected_operator(
         mapping = read(map_path)
         if not refresh and selected_operator_ready(mapping, ticket):
             continue
+        text, _source = committed_ticket(product / "factory", ticket)
+        states = re.findall(r"(?mi)^State:\s*(.*?)\s*$", text or "")
+        action = (
+            "ready"
+            if len(states) == 1 and states[0].casefold() == "backlog"
+            else "init"
+        )
         result = subprocess.run(
             [
                 sys.executable, str(factory / "scripts/operator-cli.py"),
                 "--product", str(product), "--state-dir", str(state_dir),
-                "init", "--ticket", ticket,
+                action, "--ticket", ticket,
             ],
             text=True, capture_output=True, check=False, timeout=120,
             env=environment,
@@ -1509,6 +1603,22 @@ def product_origin(product: Path) -> str:
     return origins[0]
 
 
+def qualification_publication_origin(product: Path, origin: str) -> None:
+    try:
+        repository = historical_product_repository(product)
+    except HistoricalObjectError as error:
+        raise EnvironmentError(str(error)) from error
+    value = origin[:-4] if origin.endswith(".git") else origin
+    if value not in {
+        f"https://github.com/{repository}",
+        f"git@github.com:{repository}",
+        f"ssh://git@github.com/{repository}",
+    }:
+        raise EnvironmentError(
+            "qualification requires the protected GitHub product origin"
+        )
+
+
 def historical_pr_objects(product: Path, origin: str) -> int:
     try:
         return hydrate_historical_pr_objects(product, origin)
@@ -1552,6 +1662,31 @@ def bind_runtime_tuple(
     if runtime_tuple is not None:
         value["runtime_tuple"] = runtime_tuple
     return value
+
+
+def prepare_qualification_runtime(
+    release: Path, product: Path, root: Path, project: str,
+    explicit: Path | None,
+) -> Path:
+    spec = importlib.util.spec_from_file_location(
+        "qualification_release_transaction",
+        Path(__file__).resolve().with_name("release-transaction.py"),
+    )
+    if not spec or not spec.loader:
+        raise EnvironmentError("qualification runtime helper is unavailable")
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+    try:
+        result = helper.prepare_runtime(
+            release, product, root / "kits", project, explicit,
+        )
+    except (OSError, RuntimeError, ValueError) as error:
+        raise EnvironmentError("qualification runtime pin failed") from error
+    path = Path(str(result.get("evidence", {}).get("path", "")))
+    expected = root / "project-runtimes" / project / "bin"
+    if path != expected:
+        raise EnvironmentError("qualification runtime pin is invalid")
+    return path
 
 
 def without_dependency_line(value: str) -> str:
@@ -2901,7 +3036,7 @@ def ensure_release(factory: Path, sha: str, tree: str, releases: Path) -> Path:
 def validate_prepare_root(root: Path, sha: str, project: str) -> None:
     allowed = {
         "environment.json", "global.env", "marker.json", "projects",
-        "receipts", "releases",
+        "project-runtimes", "receipts", "releases",
     }
     if any(path.name not in allowed for path in root.iterdir()):
         raise EnvironmentError("partial qualification environment is invalid")
@@ -2920,7 +3055,14 @@ def validate_prepare_root(root: Path, sha: str, project: str) -> None:
             safe_directory(project_root)
             if any(path.name != "active.json" for path in project_root.iterdir()):
                 raise EnvironmentError("partial qualification activation is invalid")
-def validate_authority_prepare_shape(authority: Path) -> None:
+    runtimes = root / "project-runtimes"
+    if runtimes.exists() or runtimes.is_symlink():
+        safe_directory(runtimes)
+        if any(path.name != project for path in runtimes.iterdir()):
+            raise EnvironmentError("partial qualification runtime is invalid")
+def validate_authority_prepare_shape(
+    authority: Path, selected: list[str],
+) -> None:
     allowed = {
         "authority.json", "controller", "operator", "operator-bootstrap.json",
         "provider",
@@ -2936,8 +3078,47 @@ def validate_authority_prepare_shape(authority: Path) -> None:
         raise EnvironmentError("qualification preparation state is torn")
     if controller.exists() or controller.is_symlink():
         safe_directory(controller)
-        if any(controller.iterdir()):
+        entries = {path.name: path for path in controller.iterdir()}
+        if set(entries) - {
+            ".operator-apply-lock", ".operator-lock", "operator-receipts",
+        }:
             raise EnvironmentError("qualification controller is active")
+        for name in (".operator-apply-lock", ".operator-lock"):
+            path = entries.get(name)
+            if path is None:
+                continue
+            info = path.lstat()
+            if (
+                path.is_symlink() or not stat.S_ISREG(info.st_mode)
+                or info.st_uid != os.geteuid() or info.st_nlink != 1
+                or stat.S_IMODE(info.st_mode) != 0o600 or info.st_size
+            ):
+                raise EnvironmentError("qualification controller is active")
+        receipts = entries.get("operator-receipts")
+        if receipts is not None:
+            safe_directory(receipts)
+            for ticket_dir in receipts.iterdir():
+                if ticket_dir.name not in selected:
+                    raise EnvironmentError("qualification controller is active")
+                safe_directory(ticket_dir)
+                paths = list(ticket_dir.iterdir())
+                if len(paths) != 1 or paths[0].name != "ready-1.json":
+                    raise EnvironmentError("qualification controller is active")
+                try:
+                    receipt = operator_receipt.safe_receipt(paths[0])
+                except (OSError, ValueError) as error:
+                    raise EnvironmentError(
+                        "qualification controller is active"
+                    ) from error
+                if (
+                    receipt.get("ticket") != ticket_dir.name
+                    or receipt.get("action") != "ready"
+                    or receipt.get("sequence") != 1
+                    or receipt.get("payload") != {}
+                    or receipt.get("consumed") is not True
+                    or not isinstance(receipt.get("consumed_at_epoch"), int)
+                ):
+                    raise EnvironmentError("qualification controller is active")
 
 
 def validate_prepare_phase(
@@ -3083,6 +3264,16 @@ def _prepare(args: argparse.Namespace) -> dict[str, Any]:
         raise EnvironmentError("qualification requires a supported Factory Contract")
     manifest = qualification_manifest(product, sha)
     capacity = manifest["capacity"]
+    origin = product_origin(product)
+    qualification_publication_origin(product, origin)
+    restoring = bool(getattr(args, "restore", False))
+    takeover_requested = getattr(args, "takeover_project", None) is not None
+    global_config = b""
+    if not restoring:
+        global_config = prepare_global_config(args, root)
+        if not takeover_requested:
+            validate_qualification_budget(factory, product, manifest, global_config)
+    historical_objects = historical_pr_objects(product, origin)
     validate_selected_contracts(product, manifest)
     prepare_product_runtime(product)
     if command("git", "-C", str(product), "status", "--porcelain", "--untracked-files=all"):
@@ -3092,9 +3283,6 @@ def _prepare(args: argparse.Namespace) -> dict[str, Any]:
     runtime_tuple = certification_preflight(
         factory, product, sha, tree, contract,
     )
-    origin = product_origin(product)
-    historical_objects = historical_pr_objects(product, origin)
-    restoring = bool(getattr(args, "restore", False))
     takeover = takeover_source(
         factory, product, args.project, getattr(args, "takeover_project", None)
     )
@@ -3178,9 +3366,8 @@ def _prepare(args: argparse.Namespace) -> dict[str, Any]:
     if not restoring:
         marker = {"mode": "qualification", "schema": SCHEMA}
         if authority is not None:
-            validate_authority_prepare_shape(authority)
+            validate_authority_prepare_shape(authority, manifest["tickets"])
         validate_prepare_phase(root, authority, sha, args.project)
-        global_config = prepare_global_config(args, root)
         if root.exists() or root.is_symlink():
             validate_prepare_root(root, sha, args.project)
             marker_path = root / "marker.json"
@@ -3249,6 +3436,11 @@ def _prepare(args: argparse.Namespace) -> dict[str, Any]:
     else:
         write_exact(root / "marker.json", marker)
         release = ensure_release(factory, sha, tree, releases)
+    if runtime_tuple is not None:
+        prepare_qualification_runtime(
+            release, product, root, args.project,
+            getattr(args, "runtime_bin", None),
+        )
     fallback_readiness, fallback_readiness_sha256 = qualification_fallback_readiness(
         release, root, args.project, product,
     )
@@ -3632,6 +3824,7 @@ def main() -> None:
     parser.add_argument("--root", required=True, type=Path)
     parser.add_argument("--global-env", type=Path)
     parser.add_argument("--operator-map-seed", type=Path)
+    parser.add_argument("--runtime-bin", type=Path)
     parser.add_argument("--takeover-project")
     parser.add_argument("--preprovider-source-root", type=Path)
     parser.add_argument("--preprovider-source-project")

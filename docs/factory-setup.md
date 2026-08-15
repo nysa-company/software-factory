@@ -108,6 +108,10 @@ absent, ambiguous, unsafe, malformed, or contains secret-bearing fields. It
 copies the validated seed into owner-only qualification authority, where the
 mutable map, locks, clear intents, and runtime ledger remain outside the sealed
 product checkout.
+Because qualification proves the production publication chain, the certified
+product push origin must be the exact GitHub repository declared by
+`factory/PROJECT.env`; a local-only origin is refused before global config,
+provider state, ticket branches, or paid roles are created.
 
 ## Step 5 — Factory release boundary
 
@@ -170,6 +174,11 @@ product checkout.
   directory. Zero or multiple compatible candidates are a refusal; setup does
   not install Node, source shell profiles, or infer a version from ambient
   PATH.
+- Qualification preparation applies the same owner-runtime transaction under
+  `<qualification-root>/project-runtimes/<project>/` (with the optional exact
+  `--runtime-bin` input). The sealed qualification launcher verifies that
+  journal before using the pinned Node/npm/npx tuple; it never falls back to
+  the host's ambient Node installation.
 - For Contract 2.0, instantiate
   `scripts/launchd/com.factory.controller.plist.template` with the exact
   project, home, and product paths and load it as a separate LaunchAgent.
@@ -209,6 +218,17 @@ product checkout.
   environment record is durable before the final `active.json` authority. Continue
   to use `--restore` only for its existing signed safe-pause boundary; there is
   no partial-lane cleanup command.
+  After preparation, use the sealed candidate's single deterministic driver:
+
+  ```bash
+  /private/tmp/nysa-sf-qualification.<lane>/releases/<factory-sha>/scripts/factory-launch \
+    <project> qualification-run --json
+  ```
+
+  It composes Doctor, the required process-level controller restart, ordinary
+  reconciliation, and final reduction. A typed wait is not retried until its
+  authenticated input changes; no manual state edit or agent-authored evidence
+  is part of the workflow.
   It also provisions the exact historical run artifacts named by those
   passports from its owner-only retained closure; any absent or altered
   manifest, output, or progress journal stops preparation before a paid role.
@@ -312,7 +332,8 @@ product checkout.
   ```bash
   bash scripts/factory-kit.sh release setup --project "<project>" \
     --product "<absolute-product-path>" --sha "<full-sha>" \
-    --repo "$PWD" --profile "<model-profile>" --operator-id "<operator-id>"
+    --repo "$PWD" --profile "<model-profile>" --operator-id "<operator-id>" \
+    [--skip-optional-tests]
   bash scripts/factory-kit.sh release resume --project "<project>" \
     --sha "<full-sha>" --approved-by "<operator-id>"
   ```
@@ -322,6 +343,10 @@ product checkout.
   certify, pause, qualification, and activation gates and records each phase in
   an owner-only signed journal. Internal hashes bind every phase, and retries
   resume the exact current candidate.
+  Tests run by default. `--skip-optional-tests` works only for exact phases the
+  committed product plan marks with `kind: "test"` and `optional: true`; the
+  release plan and certification receipt record the omission. Required and
+  non-test phases always run.
   A fresh install records 24-hour owner-only kit-suite evidence by default.
   Authenticated successful GitHub Actions evidence for the exact protected-main
   SHA and its full Linux, macOS, aggregate, and immutability jobs is mandatory;

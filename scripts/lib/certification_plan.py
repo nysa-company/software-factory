@@ -91,6 +91,9 @@ def validate_plan(plan: dict[str, Any], root: Path) -> dict[str, dict[str, Any]]
         }, {
             "artifacts", "command", "depends_on", "kind", "name", "network",
             "reuse"
+        }, {
+            "artifacts", "command", "depends_on", "kind", "name", "network",
+            "optional"
         }):
             raise PlanError("certification phase is malformed")
         name = phase["name"]
@@ -100,6 +103,7 @@ def validate_plan(plan: dict[str, Any], root: Path) -> dict[str, dict[str, Any]]
         network = phase["network"]
         reuse = phase.get("reuse", "never")
         kind = phase.get("kind")
+        optional = phase.get("optional", False)
         if (
             not isinstance(name, str)
             or not NAME.fullmatch(name)
@@ -119,7 +123,12 @@ def validate_plan(plan: dict[str, Any], root: Path) -> dict[str, dict[str, Any]]
             or reuse not in {"never", "artifacts"}
             or (reuse == "artifacts" and not artifacts)
             or (reuse == "artifacts" and kind not in {"build", "dependencies"})
-            or (reuse != "artifacts" and kind is not None)
+            or (
+                reuse != "artifacts"
+                and kind is not None
+                and not (kind == "test" and optional is True)
+            )
+            or (optional is not False and not (kind == "test" and optional is True))
         ):
             raise PlanError("certification phase values are invalid")
         for artifact in artifacts:
@@ -147,6 +156,15 @@ def validate_plan(plan: dict[str, Any], root: Path) -> dict[str, dict[str, Any]]
     for phase in phases.values():
         if any(dependency not in phases for dependency in phase["depends_on"]):
             raise PlanError("certification dependency is unknown")
+    optional_tests = {
+        name for name, phase in phases.items() if phase.get("optional") is True
+    }
+    if any(
+        dependency in optional_tests and name not in optional_tests
+        for name, phase in phases.items()
+        for dependency in phase["depends_on"]
+    ):
+        raise PlanError("required certification phase depends on an optional test")
     remaining = set(phases)
     resolved: set[str] = set()
     while remaining:

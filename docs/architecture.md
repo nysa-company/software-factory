@@ -532,6 +532,7 @@ state-machine envelope: schema, status, ticket, action, detail, receipt digest,
 typed stage, and exact stage-to-role mapping. Any mutation blocks and releases
 the lease before provider or publication work.
 Operator authority is expressed entirely through one-use receipts (`scripts/lib/operator_receipt.py`, issued by `scripts/operator-cli.py`), anchored in the controller's state directory. There is no external system to reconcile, poll, or retry against, so there is no scheduled cycle, quota cooldown, or comment/description sync to describe: `factory/operator-map.json` is computed on demand from committed ticket state and consumed receipts, each map mutation owns only a short map lock, and staleness has no meaning for a pure projection. During ordinary admission, malformed dependency syntax is isolated to that exact ticket and reported in controller results, events, and incident evidence while eligible siblings continue. The same defect in a selected qualification ticket remains globally fail-closed for the sealed cohort. A missing operator initiative remains authoritative, but if it removes a Ready ticket's effective initiative, admission emits a named `initiative_missing` refusal while eligible siblings continue. Initiative assignment is a direct ticket-only Git commit setting `Initiative:` — there is no external Project object to mark, adopt, or reconcile.
+Qualification preparation applies the same operator lifecycle to its fixed cohort: a selected Backlog ticket receives a one-use Ready receipt and local ticket-branch materialization, while an already-durable Ready ticket needs only projection initialization. Admission accepts the normal consumed-and-cleared projection after materialization but still rejects malformed or uninitialized entries. Because the reducer proves protected GitHub publication truth, preparation binds the certified push origin to the exact repository declared by `factory/PROJECT.env` and refuses a local-only origin before it publishes lane state. After bounded historical-object hydration, preparation also requires every dependency outside the cohort to satisfy the shared protected dependency predicate: normal terminal evidence or one exact protected dependency-fulfillment receipt. Later independently authorized batches live under an immutable directory named by their target Factory SHA; the original flat batch remains valid and unchanged. An isolated lane is never published with a dependency that dispatch cannot honor.
 Automatic GitHub defect reporting is an optional production sidecar, never a
 controller dependency. The controller marks only explicit internal invariant
 failures with a stable reason code; the reporter accepts a fixed allowlist of
@@ -620,6 +621,13 @@ that same candidate share the scope, while predecessor-candidate charges stay
 outside its allowance. Provider lifecycle and financial accounting stay
 lane-local; task-bearing Cursor runs alone also obey the machine-local
 account-route concurrency and start-window admission described above.
+Before hydration or runtime publication, fresh isolated preparation validates
+the product's existing envelope against the sealed qualification manifest:
+every effective role reservation fits the per-run cap, the ticket cap is exact,
+and both the product and supplied machine daily caps cover the manifest budget.
+A mismatch refuses before any claim or provider work instead of producing a
+qualification that can only fail later at admission or reduction. Takeover
+continues to use its separately authenticated live-state budget contract.
 Its release and CLI scratch remain disposable under `/private/tmp`, but signed
 passports, controller events, provider accounting, paused worktrees, and HMAC
 authority live under the owner-only `~/.factory/qualification/<project>` root.
@@ -659,6 +667,10 @@ or complete lost-response state resumes. A changed artifact, missing
 predecessor, materialization remnant, active controller/provider, or unexpected
 entry refuses without deletion. This does not widen the signed safe-pause
 `--restore` boundary and adds no cleanup authority.
+The pre-publication controller prefix may retain only the exact owner-only
+locks and consumed Ready receipts created while materializing the selected
+Backlog cohort. Those zero-authority audit records are validated on replay;
+claims, passports, runs, other receipts, or malformed entries still refuse.
 Initial create or adoption
 uses one bounded exact-title query. Before creation it records a ticket-, team-,
 Project-, and title-bound uncertain intent; a returned ID is persisted before
@@ -1840,7 +1852,12 @@ independent strict tuple check. Cache hits are recorded, but the
 runner reuses a phase only when its protected plan explicitly opts into
 `artifacts` and declares a nonempty, complete output set. Phases with undeclared
 side effects cannot opt in; application tests, policy, security, and
-configuration checks must retain the default `never` policy. Same-workspace
+configuration checks must retain the default `never` policy. Products may mark
+exact phases with `kind: "test"` and `optional: true` only when every dependent
+phase is also optional. Those tests still run by default. An explicit
+`--skip-optional-tests` certification or release request omits only those
+phases, and the result and receipt record their names. Build, dependency,
+policy, security, and configuration phases cannot use this path. Same-workspace
 restart reuse retains its self-hashed evidence. Across Factory certification
 commands, the Factory imports only HMAC-authenticated, unexpired entries into a
 read-only disposable cache input; the product sandbox never sees the persistent

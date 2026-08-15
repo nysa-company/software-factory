@@ -21,6 +21,9 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
 from historical_pr_objects import run_git as hardened_git  # noqa: E402
+from certification_plan import (  # noqa: E402
+    PlanError, safe_plan, validate_plan as validate_certification_plan,
+)
 
 
 PLAN_SCHEMA = "nysa.software-factory.release-plan/v1"
@@ -41,6 +44,18 @@ _CUTOVER_LOCK_FD: int | None = None
 
 class ReleaseError(ValueError):
     pass
+
+
+def validate_optional_test_request(product: Path, requested: bool) -> None:
+    if not requested:
+        return
+    try:
+        plan, _ = safe_plan(product / "factory/certification-plan.json")
+        phases = validate_certification_plan(plan, product)
+    except (FileNotFoundError, OSError, PlanError, json.JSONDecodeError) as error:
+        raise ReleaseError("optional-test certification request is invalid") from error
+    if not any(phase.get("optional") is True for phase in phases.values()):
+        raise ReleaseError("product certification plan has no optional tests")
 
 
 def account_home() -> Path:
@@ -1000,7 +1015,7 @@ def validate_plan(value: dict[str, Any]) -> None:
     }
     request_keys = {
         "cli_paths", "migrations", "operator_id", "product", "profile", "project",
-        "repo", "runtime_bin", "sha",
+        "repo", "runtime_bin", "sha", "skip_optional_tests",
     }
     runtime = identity.get("runtime")
     evidence = runtime.get("evidence") if isinstance(runtime, dict) else None
@@ -1025,6 +1040,7 @@ def validate_plan(value: dict[str, Any]) -> None:
         or not Path(str(request.get("repo", ""))).is_absolute()
         or not SAFE_ID.fullmatch(str(request.get("operator_id", "")))
         or request.get("operator_id") == "auto"
+        or not isinstance(request.get("skip_optional_tests"), bool)
         or not SAFE_ID.fullmatch(str(request.get("profile", "")))
         or not isinstance(cli_paths, dict) or set(cli_paths) - {"claude", "codex", "cursor"}
         or not isinstance(migrations, list) or not 0 <= len(migrations) <= 4
@@ -1639,6 +1655,7 @@ def prepare_host_cutover(
     explicit_runtime: Path | None, target_project: str,
     target_product: Path, target_runtime: dict[str, Any],
     target_controller: dict[str, Any], reservation_id: str,
+    skip_optional_tests: bool,
 ) -> list[dict[str, Any]]:
     kit = release / "scripts/factory-kit.sh"
     entries: list[dict[str, Any]] = []
@@ -1684,9 +1701,17 @@ def prepare_host_cutover(
             secure_regular_bytes(maintenance, "host cutover maintenance marker")
         ).hexdigest()
         if launcher["action"] == "apply":
+            certify = [
+                "bash", str(kit), "certify", "--project", project,
+                "--product", str(product), "--sha", sha,
+            ]
+            if (
+                skip_optional_tests
+                and project == target_project and product == target_product
+            ):
+                certify.append("--skip-optional-tests")
             run(
-                ["bash", str(kit), "certify", "--project", project,
-                 "--product", str(product), "--sha", sha],
+                certify,
                 f"host cutover certification for {project}", environment=environment,
             )
             receipt_path, receipt = find_receipt(kits_root, project, sha)
@@ -1758,6 +1783,7 @@ def _setup_locked(args: argparse.Namespace) -> dict[str, Any]:
     if (product / "factory/KIT_PIN").read_text(encoding="utf-8") != sha + "\n":
         raise ReleaseError("product pin does not match release SHA")
     validate_product_runtime_contract(product)
+    validate_optional_test_request(product, args.skip_optional_tests)
     source_kit = repo / "scripts/factory-kit.sh"
     environment = command_environment(kits_root)
     environment.pop("FACTORY_KIT_CERTIFICATION_NETWORK_REVIEWED", None)
@@ -1816,6 +1842,7 @@ def _setup_locked(args: argparse.Namespace) -> dict[str, Any]:
         host_cutover = prepare_host_cutover(
             release, kits_root, sha, launcher, args.runtime_bin, project, product,
             runtime, controller, basis["reservation_id"],
+            args.skip_optional_tests,
         )
     elif not provider_prerequisite and mode == "upgrade":
         run(
@@ -1834,6 +1861,7 @@ def _setup_locked(args: argparse.Namespace) -> dict[str, Any]:
         "product": str(product), "profile": args.profile, "project": project,
         "repo": str(repo), "runtime_bin": str(args.runtime_bin.resolve(strict=True))
         if args.runtime_bin is not None else None, "sha": sha,
+        "skip_optional_tests": args.skip_optional_tests,
     }
     identity = {
         "capacity": capacity(product), "contract_version": release_contract,
@@ -1866,9 +1894,14 @@ def _setup_locked(args: argparse.Namespace) -> dict[str, Any]:
         certification_environment = command_environment(
             kits_root, runtime_bin, cutover_lock=True,
         )
+        certify = [
+            "bash", str(sealed_kit), "certify", "--project", project,
+            "--product", str(product), "--sha", sha,
+        ]
+        if args.skip_optional_tests:
+            certify.append("--skip-optional-tests")
         run(
-            ["bash", str(sealed_kit), "certify", "--project", project,
-             "--product", str(product), "--sha", sha], "product certification",
+            certify, "product certification",
             environment=certification_environment,
         )
         run(
@@ -2078,6 +2111,7 @@ def plan_request(plan: dict[str, Any], kits_root: Path) -> argparse.Namespace:
             if item["project"] == request["project"]
         ), plan["identity"]["maintenance_prior"]),
         ticket_workdir=migrations,
+        skip_optional_tests=request["skip_optional_tests"],
     )
 
 
@@ -3192,6 +3226,7 @@ def main() -> int:
     setup_parser.add_argument("--codex-bin", type=Path)
     setup_parser.add_argument("--cursor-bin", type=Path)
     setup_parser.add_argument("--ticket-workdir", action="append", nargs=2, default=[])
+    setup_parser.add_argument("--skip-optional-tests", action="store_true")
     resume_parser = commands.add_parser("resume")
     resume_parser.add_argument("--project", required=True)
     resume_parser.add_argument("--sha", required=True)

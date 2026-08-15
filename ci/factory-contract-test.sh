@@ -257,6 +257,10 @@ write_binding "$SHA_A" "$TREE_A" "$RELEASE_A"
 RECEIPT_A="$RECEIPT_ID"
 printf '%s\n' "$SHA_A" > "$PRODUCT/factory/KIT_PIN"
 run_launcher contract --json > "$TMP/contract-a.json"
+expect_refused repository-test-qualification-run run_launcher qualification-run --json
+grep -Fxq 'factory-launch: qualification run requires a sealed qualification launcher' \
+  "$TMP/refused-repository-test-qualification-run.out" ||
+  fail "repository-test qualification-run did not reach the sealed-lane guard"
 for command in incident-report publication-repair ci-rerun ticket-pr ticket-attest; do
   expect_refused "repository-test-$command" run_launcher "$command"
   grep -Fxq 'factory-launch: repository test mode refuses GitHub-mutating commands' \
@@ -493,6 +497,7 @@ HANG_RC=0
 HOME="$TEST_HOME" PATH="$TEST_BIN:/usr/bin:/bin" \
   FACTORY_TEST_MODE=1 FACTORY_TRUSTED_TEST_HARNESS=1 \
   FACTORY_DOCTOR_TIMEOUT_SECONDS=1 \
+  FACTORY_DOCTOR_READINESS_TIMEOUT_SECONDS=1 \
   FACTORY_KIT_TRUST_SCOPE=production-certified \
   FACTORY_MODEL_STATE_ROOT="$KITS_ROOT/projects" \
   /bin/bash "$RELEASE_B/scripts/factory-doctor-real.sh" --json \
@@ -507,6 +512,70 @@ value = json.load(open(sys.argv[1], encoding="utf-8"))
 assert int(sys.argv[2]) == 1
 assert float(sys.argv[4]) - float(sys.argv[3]) < 5
 assert value["checks"]["model_readiness"]["status"] == "error"
+PY
+
+# Qualification readiness gets a longer bounded window than cheap CLI probes,
+# and a timeout still produces typed Doctor JSON instead of a traceback.
+cp "$RELEASE_B/scripts/model-control.sh" "$TMP/model-control.saved"
+cat > "$RELEASE_B/scripts/model-control.sh" <<'EOF'
+#!/usr/bin/env bash
+sleep 2
+printf '%s\n' '{"checks":[],"readiness_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","schema":"nysa.software-factory.qualification-fallback-readiness/v1","status":"ready"}'
+EOF
+chmod 700 "$RELEASE_B/scripts/model-control.sh"
+QUALIFICATION_READY_RC=0
+HOME="$TEST_HOME" PATH="$TEST_BIN:/usr/bin:/bin" \
+  FACTORY_TEST_MODE=1 FACTORY_TRUSTED_TEST_HARNESS=1 \
+  FACTORY_DOCTOR_TIMEOUT_SECONDS=1 \
+  FACTORY_DOCTOR_READINESS_TIMEOUT_SECONDS=5 \
+  FACTORY_KIT_TRUST_SCOPE=qualification-candidate \
+  /bin/bash "$RELEASE_B/scripts/factory-doctor-real.sh" --json \
+    --project "$PROJECT" --kit-dir "$RELEASE_B" \
+    --product-root "$PRODUCT" --kit-sha "$SHA_B" \
+    > "$TMP/qualification-ready-doctor.json" \
+    2> "$TMP/qualification-ready-doctor.err" || QUALIFICATION_READY_RC=$?
+python3 - "$TMP/qualification-ready-doctor.json" \
+  "$TMP/qualification-ready-doctor.err" "$QUALIFICATION_READY_RC" <<'PY'
+import json, pathlib, sys
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+assert pathlib.Path(sys.argv[2]).read_bytes() == b""
+assert int(sys.argv[3]) in {0, 1}, sys.argv[3]
+assert value["checks"]["fallback_readiness"]["status"] == "ok"
+assert value["checks"]["fallback_readiness"]["report"]["status"] == "ready"
+PY
+
+cat > "$RELEASE_B/scripts/model-control.sh" <<'EOF'
+#!/usr/bin/env bash
+sleep 30
+EOF
+chmod 700 "$RELEASE_B/scripts/model-control.sh"
+QUALIFICATION_HANG_STARTED="$(python3 -c 'import time; print(time.monotonic())')"
+QUALIFICATION_HANG_RC=0
+HOME="$TEST_HOME" PATH="$TEST_BIN:/usr/bin:/bin" \
+  FACTORY_TEST_MODE=1 FACTORY_TRUSTED_TEST_HARNESS=1 \
+  FACTORY_DOCTOR_TIMEOUT_SECONDS=1 \
+  FACTORY_DOCTOR_READINESS_TIMEOUT_SECONDS=1 \
+  FACTORY_KIT_TRUST_SCOPE=qualification-candidate \
+  /bin/bash "$RELEASE_B/scripts/factory-doctor-real.sh" --json \
+    --project "$PROJECT" --kit-dir "$RELEASE_B" \
+    --product-root "$PRODUCT" --kit-sha "$SHA_B" \
+    > "$TMP/qualification-hanging-doctor.json" \
+    2> "$TMP/qualification-hanging-doctor.err" || QUALIFICATION_HANG_RC=$?
+QUALIFICATION_HANG_ENDED="$(python3 -c 'import time; print(time.monotonic())')"
+mv "$TMP/model-control.saved" "$RELEASE_B/scripts/model-control.sh"
+python3 - "$TMP/qualification-hanging-doctor.json" \
+  "$TMP/qualification-hanging-doctor.err" "$QUALIFICATION_HANG_RC" \
+  "$QUALIFICATION_HANG_STARTED" "$QUALIFICATION_HANG_ENDED" <<'PY'
+import json, pathlib, sys
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+assert pathlib.Path(sys.argv[2]).read_bytes() == b""
+assert int(sys.argv[3]) == 1, sys.argv[3]
+assert float(sys.argv[5]) - float(sys.argv[4]) < 5, (
+    float(sys.argv[5]) - float(sys.argv[4])
+)
+assert value["checks"]["fallback_readiness"] == {
+    "status": "error", "report": None,
+}
 PY
 
 python3 - "$LAUNCHER" <<'PY'

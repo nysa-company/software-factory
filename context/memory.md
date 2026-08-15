@@ -122,7 +122,10 @@ everything the Factory actually enforces lives here.
   create-or-validates every provider and publication artifact, renames a sealed
   release from a same-directory temporary tree, and writes the environment
   before the registry. Torn, mismatched, active, or unexpected state refuses
-  without deletion; the signed safe-pause restore boundary remains unchanged.
+  without deletion. A pre-publication controller may retain only the exact
+  owner-only locks and consumed Ready receipts created for selected Backlog
+  materialization; every other controller artifact still refuses. The signed
+  safe-pause restore boundary remains unchanged.
 - Selected-only Linear initialization uses one bounded exact-title query and a
   ticket-, team-, Project-, and title-bound create intent. It persists a
   returned issue identity before observation and never repeats an uncertain
@@ -622,6 +625,10 @@ everything the Factory actually enforces lives here.
   and provider work are drained, with the prior executable retained for
   rollback.
 - Install records owner-only, expiring kit-suite evidence for the exact sealed release. Exact protected-main GitHub Actions full-suite evidence is mandatory and is followed by a sandboxed platform smoke; missing evidence fails closed without a local full fallback. Certification reuses evidence only when every release, physical-tree, host, platform, suite-definition, tool-version, source, and configured-lifetime binding matches; product certification and binding checks always rerun.
+- Product certification tests run by default. A committed plan may mark only
+  exact `kind: test` phases as optional, and only an explicit release or
+  certification request omits them; the plan, result, and receipt bind the
+  skipped names while every required and non-test phase still runs.
 - Product certification stages a checksum-verified pinned scanner into the disposable product copy before entering its network-denied sandbox, so managed secret scanning never depends on a prewarmed product cache or certification-time network access.
 - Certification phase reuse is explicit and artifact-only. Same-root restarts
   retain self-hashed local evidence. Across commands, the Factory verifies an
@@ -682,7 +689,7 @@ everything the Factory actually enforces lives here.
 - The isolated process-group wrapper may wait up to two minutes for the trusted controller's final pre-submission acknowledgement. No adapter starts before that gate, so expensive protected-history validation can finish without weakening kill-switch or orphan prevention.
 - Factory development may use the macOS-only disposable lane against an exact clean commit, a synthetic product, and a local Git remote. Mock mode is network-denied under outer Seatbelt and must finish below 15 minutes; real Cursor uses the authenticated CLI session, Cursor's explicit internal sandbox, and a one-use executable/session-bound approval because the current CLI cannot authenticate inside nested Seatbelt. Only Cursor subprocesses receive the session home, and Cursor's hardcoded temporary root is redirected into the lane for each invocation. Lane artifacts have no release receipts or activation records, and its local product scheduler is not production-orchestration evidence. The sealed Contract 1.8 qualification environment is the pre-promotion proof for the exact production launcher, controller, passport, recovery, and release-upgrade paths.
 - A legacy serialized development Cursor lane may reclaim its hardcoded temporary bridge only when it is an empty owner-owned directory tree with no group/other write permission and all subscription providers are idle. Files, symlinks, content, unsafe ownership or modes, and active providers refuse; the replacement remains an atomic lane-target symlink with exact-owner cleanup. Contract 1.7 product Cursor attempts use isolated owner-only home, configuration, data, temporary, and credential roots, so unrelated legacy bridge state does not affect their admission.
-- Subscription and product development lanes copy CLI session files once, then bind readiness, version evidence, approval hashes, and role execution to the same sanitized lane-local session environment and working directory. Ambient authentication variables, caller working directories, and external Cursor session state cannot satisfy readiness; unavailable copied authentication stops before approval consumption, lease claim, reservation, or task submission.
+- Subscription and product development lanes copy CLI session files once, then bind readiness, version evidence, approval hashes, and role execution to the same sanitized lane-local session environment and working directory. Cursor task admission uses an owner-only lane-local database and the explicit nonpromotable `development-local` scope; production and qualification keep their machine-shared sealed authority. Ambient authentication variables, caller working directories, and external Cursor session state cannot satisfy readiness; unavailable copied authentication stops before approval consumption, lease claim, reservation, or task submission.
 - Development-lane subscription readiness retries three times with a one-second delay between misses. This absorbs short lane-local CLI session transitions while preserving the same fail-closed pre-approval boundary.
 - Development interactive subscription authorization is bounded to five minutes. A native Claude access token with less than five minutes remaining is unavailable before task submission, so the existing profile resolver may select the authenticated Anthropic-family Cursor route under its cap.
 - A fresh development product lane derives its lane-local machine-day cap from
@@ -5882,3 +5889,185 @@ nonproduction and nonpromotable: no credentials or GitHub writes were present,
 and the disposable Nysa fork quarantined legacy terminal-evidence gaps only for
 the timing canary. Repository-test now stops after that one authenticated mock
 planner completion; production and qualification behavior remain unchanged.
+
+## 2026-08-14 — Decision 412: Product tests require two explicit choices to skip
+
+Category: Test strategy
+
+A product may mark exact certification phases with `kind: "test"` and
+`optional: true`; those phases still run by default. Certification omits them
+only when the operator passes `--skip-optional-tests`. Required phases may not
+depend on optional tests, non-test phases cannot opt in, and the sealed release
+plan, measured result, and receipt record the exact omission. A missing test run
+is therefore visible and is never reported as a passing test.
+
+## 2026-08-14 — Decision 413: Development products bind their declared runtime
+
+Category: Reliability
+
+An isolated product lane resolves Node, npm, and npx through the existing
+owner-runtime transaction instead of a machine-specific Homebrew path. The
+exact candidate must match the product's committed certification plan, is
+bound into planning and resume evidence, and receives only read-only sandbox
+access to its resolved runtime roots.
+
+## 2026-08-14 — Decision 414: Codex lanes bind the complete executable runtime
+
+Category: Reliability
+
+An isolated Codex lane requires the installed `codex-code-mode-host` companion
+alongside the CLI. Its resolved physical path and bytes are approval-bound, and
+the lane sandbox exposes it only inside the disposable runtime. This prevents a
+provider run from passing login/version readiness and then failing before its
+first repository command.
+
+## 2026-08-14 — Decision 415: Development Cursor admission stays lane-local
+
+Category: Reliability
+
+An isolated development lane gives task-bearing Cursor roles an owner-only
+account-admission database inside that lane and identifies its leases with the
+explicit `development-local` scope. Production and qualification retain their
+machine-shared database and sealed scopes, and development evidence remains
+nonpromotable. The shared coordinator still enforces the declared account-route
+capacity and start window; only the authority root differs.
+
+## 2026-08-14 — Decision 416: Real local Cursor journey reaches publication boundary
+
+Category: Evidence
+
+Candidate `525cbbada3008336af13f9df1623437908f2b83b` ran one isolated Nysa
+ticket through Planner, Spec-linter, Test-author, Builder, Reviewer, and
+Narrator with real Cursor subscription routes and reached authenticated
+`AWAIT-OPERATOR` in 1,083 seconds. Its reviewed test and implementation strata
+applied cleanly to a second fresh clone; the isolated-database API suite passed
+734 tests, the web suite passed 223 tests, and the production build,
+repository check, and secret scan passed. Provider telemetry was insufficient
+to reduce the six conservative reservations, so this is not measured-spend
+evidence. No GitHub or installed-Factory mutation occurred.
+
+The disposable ticket used T-219 before protected Nysa main independently
+assigned that ID to Builder-ownership enforcement. Production must not reuse
+the local execution cell or its evidence. Its execution, verification, source,
+and provider-session artifacts were cleaned; no replacement ticket is prepared.
+
+## 2026-08-14 — Decision 417: Qualification uses the production runtime-pin contract
+
+Category: Reliability
+
+Qualification preparation installs the exact product-declared Node/npm/npx
+tuple through the existing owner-runtime transaction under the disposable
+qualification root. The sealed qualification launcher verifies that journal
+before readiness, Doctor, controller, or role work and does not resolve an
+ambient host runtime. This keeps qualification behavior aligned with
+production while preserving its isolated, nonpromotable authority.
+
+## 2026-08-14 — Decision 418: Doctor separates cheap and readiness probe deadlines
+
+Category: Reliability
+
+Doctor keeps short CLI/version probes bounded independently from model and
+provider readiness, whose exact multi-route checks receive a longer but still
+bounded window. Timeout, empty, or malformed readiness output leaves a typed
+error with a null report; it never replaces that fail-closed value with an
+unparseable string or breaks Doctor's JSON schema.
+
+## 2026-08-14 — Decision 419: Qualification materializes selected Backlog authority
+
+Category: Reliability
+
+Qualification preparation uses the existing one-use operator Ready receipt for
+each selected Backlog ticket, including local ticket-branch materialization.
+Tickets already durably Ready retain the lighter initialization path. The
+admission projection accepts a consumed-and-cleared action after successful
+materialization but continues to reject malformed or uninitialized entries.
+After bounded historical-object hydration, every dependency outside the cohort
+must satisfy the shared protected dependency predicate—normal terminal evidence
+or one exact dependency-fulfillment receipt—before the lane is published.
+
+## 2026-08-14 — Decision 420: Qualification replays consumed Ready receipts
+
+Category: Reliability
+
+If a fallible preparation check stops after selected Backlog tickets were
+materialized, replay accepts only their exact owner-only consumed Ready receipt
+audit records and the two operator lock files. It revalidates those records and
+the durable operator projection before continuing. Claims, passports, runs,
+other receipts, malformed files, or foreign tickets still classify the
+controller as active and refuse without deletion.
+
+## 2026-08-14 — Decision 421: Qualification proves budget fit before publication
+
+Category: Reliability
+
+Fresh isolated qualification preparation reuses the product envelope authority
+and refuses before hydration or runtime state when any effective role reserve
+exceeds the manifest per-run cap, the product ticket cap differs from the
+manifest, or the product or supplied machine daily cap cannot cover the
+manifest budget. This prevents a sealed lane from admitting only part of its
+cohort and discovering an unavoidable budget failure after paid provider work;
+takeover retains its separate authenticated live-state budget contract.
+
+## 2026-08-14 — Decision 422: Qualification requires its protected publication origin
+
+Category: Reliability
+
+Fresh qualification binds the product's certified push destination to the
+exact GitHub repository declared by `factory/PROJECT.env` before it snapshots
+global config or publishes lane authority. A local-only origin cannot prove the
+required PR, CI, merge, and protected-terminal chain and now fails before any
+ticket branch or paid provider role instead of surfacing after Builder work.
+
+## 2026-08-14 — Decision 423: Cursor development lanes tolerate an absent native Claude session
+
+Category: Reliability
+
+When an isolated product lane has authenticated Cursor enabled, an absent
+native Claude credential is recorded as an unavailable fallback rather than a
+lane-construction failure. Cursor still supplies the required Anthropic-family
+roles, the absent session is approval-bound, and Cursor-disabled lanes continue
+to require native Claude authentication.
+
+## 2026-08-14 — Decision 424: Development Node readiness tolerates one fresh-sandbox abort
+
+Category: Reliability
+
+The product development lane retries only its no-side-effect exact Node 22
+readiness probe up to three times because a freshly created macOS sandbox can
+abort the first process while the unchanged second invocation succeeds.
+`npm ci` and every later mutating phase remain single-attempt and fail closed.
+
+## 2026-08-14 — Decision 425: Qualification has one deterministic run command
+
+Category: Reliability
+
+After the existing qualification preparer seals a lane, the sealed
+`qualification-run` launcher command composes Doctor, the mandatory
+process-level controller restart, ordinary controller/state-machine
+reconciliation, and final evidence reduction. It stops on typed waits or
+blocks and never writes Factory authority itself. Operators and agents rerun
+the same command only after authenticated input changes; hand-edited tickets,
+claims, leases, receipts, passports, journals, or fabricated evidence are not
+part of qualification.
+
+## 2026-08-14 — Decision 426: Readiness rejects duplicate ticket state authority
+
+Category: Reliability
+
+The shared provider-free ticket readiness validator requires exactly one
+nonempty `State:` field before expensive qualification preparation. Historical
+prose that accidentally starts with `State:` now fails at the same early
+boundary instead of passing readiness and failing later in qualification.
+
+## 2026-08-14 — Decision 427: Qualification reuses protected dependency truth
+
+Category: Reliability
+
+Qualification preparation uses the same protected dependency predicate as
+dispatch and the state machine. The dependency-only fulfillment migration may
+bind an already-merged ticket whose exact protected source state is Backlog or
+Done; it never promotes that ticket to terminal truth, and still requires its
+exact merged PR, successful protected checks, immutable ticket blob, target kit,
+and fresh manual protected-main authorization. The original flat migration
+batch stays immutable; any later batch uses one append-only directory named by
+its exact target Factory SHA, and duplicate tickets across batches fail closed.

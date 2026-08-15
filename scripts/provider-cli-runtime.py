@@ -147,7 +147,9 @@ def main() -> int:
     parser.add_argument("--account-policy-sha256")
     parser.add_argument(
         "--trust-scope",
-        choices=("production-certified", "qualification-candidate"),
+        choices=(
+            "production-certified", "qualification-candidate", "development-local"
+        ),
     )
     parser.add_argument("--attempt-id", required=True)
     parser.add_argument("--provider-family", required=True)

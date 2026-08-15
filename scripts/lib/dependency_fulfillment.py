@@ -3,7 +3,7 @@
 
 from functools import lru_cache
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from legacy_closeout import (
     ValidationError,
@@ -49,10 +49,12 @@ PR_KEYS = {
 TICKET_ID = re.compile(r"T-[0-9]+")
 
 
-def _migration_commit(repo, ref, basis, expected_paths, optional_paths):
+def _migration_commit(
+    repo, ref, basis, expected_paths, optional_paths, migration_dir,
+):
     additions = run(
         repo, "log", "--format=%H", "--diff-filter=A", ref, "--",
-        f"{MIGRATION_DIR}/authorization.json",
+        f"{migration_dir}/authorization.json",
     ).stdout.splitlines()
     if len(additions) != 1:
         raise ValidationError(
@@ -75,7 +77,9 @@ def _migration_commit(repo, ref, basis, expected_paths, optional_paths):
     return migration
 
 
-def _validate_documents(repo, ref, authorization, receipts):
+def _validate_documents(
+    repo, ref, authorization, receipts, migration_dir=MIGRATION_DIR,
+):
     exact(authorization, AUTH_KEYS, "dependency fulfillment authorization")
     if (
         authorization["schema"] != AUTH_SCHEMA
@@ -83,7 +87,15 @@ def _validate_documents(repo, ref, authorization, receipts):
         or repository_from_project(repo, ref) != authorization["repository"]
     ):
         raise ValidationError("dependency fulfillment authorization identity is invalid")
-    oid(authorization["target_kit_sha"], "dependency fulfillment target kit")
+    target_kit = oid(
+        authorization["target_kit_sha"], "dependency fulfillment target kit"
+    )
+    if migration_dir not in {
+        MIGRATION_DIR, f"{MIGRATION_DIR}/{target_kit}",
+    }:
+        raise ValidationError(
+            "dependency fulfillment generation does not match its target kit"
+        )
     cutoff = timestamp(authorization["cutoff"], "dependency fulfillment cutoff")
     if cutoff.microsecond:
         raise ValidationError(
@@ -148,7 +160,7 @@ def _validate_documents(repo, ref, authorization, receipts):
             or ticket in expected
             or not isinstance(entry["pr_number"], int)
             or entry["pr_number"] <= 0
-            or entry["receipt"] != f"{MIGRATION_DIR}/{ticket}.json"
+            or entry["receipt"] != f"{migration_dir}/{ticket}.json"
         ):
             raise ValidationError(
                 "dependency fulfillment ticket authorization is invalid"
@@ -159,20 +171,24 @@ def _validate_documents(repo, ref, authorization, receipts):
             "dependency fulfillment receipts are unsorted, partial, or extra"
         )
     expected_files = {
-        f"{MIGRATION_DIR}/authorization.json",
+        f"{migration_dir}/authorization.json",
         *(entry["receipt"] for entry in expected.values()),
     }
     actual_files = set(
         run(
-            repo, "ls-tree", "-r", "--name-only", ref, "--", MIGRATION_DIR
+            repo, "ls-tree", "-r", "--name-only", ref, "--", migration_dir
         ).stdout.splitlines()
     )
+    actual_files = {
+        path for path in actual_files
+        if str(PurePosixPath(path).parent) == migration_dir
+    }
     if actual_files != expected_files:
         raise ValidationError(
             "dependency fulfillment migration contains partial or extra files"
         )
     authorization_blob = blob_at(
-        repo, ref, f"{MIGRATION_DIR}/authorization.json"
+        repo, ref, f"{migration_dir}/authorization.json"
     )
     migration = _migration_commit(
         repo,
@@ -183,6 +199,7 @@ def _validate_documents(repo, ref, authorization, receipts):
             "factory/migrations/inflight-release/"
             f"{authorization['target_kit_sha']}.json"
         },
+        migration_dir,
     )
     if (
         text_at(repo, migration, "factory/KIT_PIN")
@@ -220,12 +237,12 @@ def _validate_documents(repo, ref, authorization, receipts):
             or receipt["repository"] != authorization["repository"]
             or receipt["target_kit_sha"] != authorization["target_kit_sha"]
             or receipt["candidate_contract"] not in ("1.8.0", "2.0.0")
-            or receipt["source_state"] != "Backlog"
+            or receipt["source_state"] not in {"Backlog", "Done"}
             or receipt["authorization_blob"] != authorization_blob
             or receipt["cutoff"] != authorization["cutoff"]
             or receipt_basis != basis
             or source_ticket is None
-            or one_field(source_ticket, "State") != "Backlog"
+            or one_field(source_ticket, "State") != receipt["source_state"]
             or blob_at(
                 repo, basis["commit"], f"factory/tickets/{ticket}.md"
             )
@@ -300,46 +317,79 @@ def _validate_documents(repo, ref, authorization, receipts):
     return result
 
 
-def validate_generated_dependency_batch(repo, authorization, receipts, ref):
-    return _validate_documents(Path(repo), ref, authorization, receipts)
+def validate_generated_dependency_batch(
+    repo, authorization, receipts, ref, migration_dir=MIGRATION_DIR,
+):
+    repo = Path(repo)
+    _validate_documents(
+        repo, ref, authorization, receipts, migration_dir,
+    )
+    return _dependency_batch_at(str(repo), ref)
 
 
 @lru_cache(maxsize=64)
 def _dependency_batch_at(repo, commit):
     repo = Path(repo)
-    authorization = json_at(
-        repo,
-        commit,
-        f"{MIGRATION_DIR}/authorization.json",
-        "dependency fulfillment authorization",
-    )
     files = run(
         repo, "ls-tree", "-r", "--name-only", commit, "--", MIGRATION_DIR
     ).stdout.splitlines()
-    if authorization is None:
+    authorization_paths = [
+        path for path in files
+        if path == f"{MIGRATION_DIR}/authorization.json"
+        or re.fullmatch(
+            rf"{re.escape(MIGRATION_DIR)}/[0-9a-f]{{40}}/authorization[.]json",
+            path,
+        )
+    ]
+    if not authorization_paths:
         if files:
             raise ValidationError("dependency fulfillment batch is partial")
         return {}
-    entries = authorization.get("tickets") if isinstance(authorization, dict) else None
-    receipts = {}
-    if isinstance(entries, list):
-        for entry in entries:
-            if not isinstance(entry, dict) or not isinstance(
-                entry.get("ticket"), str
-            ):
-                raise ValidationError(
-                    "dependency fulfillment ticket authorization is invalid"
+    expected_files = set()
+    result = {}
+    for authorization_path in authorization_paths:
+        migration_dir = str(PurePosixPath(authorization_path).parent)
+        authorization = json_at(
+            repo, commit, authorization_path,
+            "dependency fulfillment authorization",
+        )
+        entries = (
+            authorization.get("tickets")
+            if isinstance(authorization, dict) else None
+        )
+        receipts = {}
+        if isinstance(entries, list):
+            for entry in entries:
+                if not isinstance(entry, dict) or not isinstance(
+                    entry.get("ticket"), str
+                ):
+                    raise ValidationError(
+                        "dependency fulfillment ticket authorization is invalid"
+                    )
+                ticket = entry["ticket"]
+                value = json_at(
+                    repo, commit, f"{migration_dir}/{ticket}.json",
+                    f"{ticket} dependency fulfillment receipt",
                 )
-            ticket = entry["ticket"]
-            value = json_at(
-                repo,
-                commit,
-                f"{MIGRATION_DIR}/{ticket}.json",
-                f"{ticket} dependency fulfillment receipt",
+                if value is not None:
+                    receipts[ticket] = value
+        batch = _validate_documents(
+            repo, commit, authorization, receipts, migration_dir,
+        )
+        if set(result) & set(batch):
+            raise ValidationError(
+                "dependency fulfillment ticket appears in multiple batches"
             )
-            if value is not None:
-                receipts[ticket] = value
-    return _validate_documents(repo, commit, authorization, receipts)
+        result.update(batch)
+        expected_files.add(authorization_path)
+        expected_files.update(
+            f"{migration_dir}/{ticket}.json" for ticket in receipts
+        )
+    if set(files) != expected_files:
+        raise ValidationError(
+            "dependency fulfillment migration contains partial or extra files"
+        )
+    return result
 
 
 def dependency_fulfillment(repo, ticket, ref="refs/remotes/origin/main"):

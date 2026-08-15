@@ -21,6 +21,7 @@ PRODUCT_SEED_LINEAGE=""
 PRODUCT_SEED_CHECKPOINT=""
 PRODUCT_SEED_BASE=""
 PRODUCT_PUBLICATION_CONFLICT_JSON=""
+PRODUCT_RUNTIME_BIN=""
 PRODUCT_TICKETS=()
 ROLES=planner,spec-linter,test-author,builder,reviewer,narrator
 TEST_MODE=0
@@ -42,7 +43,7 @@ usage: factory-dev-lane.sh mock [--keep]
        factory-dev-lane.sh subscription-plan [--adapter codex|claude]
        factory-dev-lane.sh subscription-run --root <absolute-lane-root> --approve-hash <sha256>
        factory-dev-lane.sh product-seed-lineage --accounting <absolute-json> --output <absolute-json> [--parent-accounting <absolute-json>]
-       factory-dev-lane.sh product-plan --source <absolute-repo> --base-sha <full-sha> --tickets <one-to-ten-T-NNN,...> [--seed-bundle <absolute-bundle> --seed-accounting <absolute-json> --seed-lineage <absolute-json> --seed-checkpoint <absolute-json>]
+       factory-dev-lane.sh product-plan --source <absolute-repo> --base-sha <full-sha> --tickets <one-to-ten-T-NNN,...> [--runtime-bin <absolute-node-bin>] [--seed-bundle <absolute-bundle> --seed-accounting <absolute-json> --seed-lineage <absolute-json> --seed-checkpoint <absolute-json>]
        factory-dev-lane.sh product-resume-plan --root <absolute-lane-root> --tickets <T-NNN,...>
        factory-dev-lane.sh product-run --root <absolute-lane-root> --approve-hash <sha256>
        factory-dev-lane.sh product-ticket-resume-plan --root <absolute-lane-root> --ticket <T-NNN>
@@ -120,6 +121,7 @@ subscription_base_env() {
       FACTORY_PROVIDER_POLICY="$root/runtime/provider-policy.json" \
       FACTORY_PROVIDER_CONFIGURATION_LOCK="$root/runtime/provider-configuration.lock" \
       FACTORY_PROVIDER_ACTIVATION="$root/runtime/provider-activation.json" \
+      FACTORY_CURSOR_ACCOUNT_DB="$root/runtime/cursor-account/state.sqlite3" \
       FACTORY_CURSOR_SESSION_HOME="$root/session-home" FACTORY_CURSOR_INTERNAL_SANDBOX=1 \
       FACTORY_CURSOR_REPEATED_TOOL_ERROR_LIMIT=2 \
       FACTORY_CLI_LANE_ROOT="$root" FACTORY_CLI_INTERNAL_SANDBOX=1 \
@@ -311,6 +313,31 @@ PY
     die "Claude subscription token boundary is unsafe"
 }
 
+stage_claude_subscription_credential() {
+  local root="$1" mode="$2" cursor_enabled="$3" session_home="$4"
+  local source="$session_home/.claude/.credentials.json"
+  local target="$root/session-home/.claude/.credentials.json"
+  local token_source="${FACTORY_DEV_LANE_CLAUDE_OAUTH_TOKEN_FILE:-}"
+  if [[ -n "$token_source" ]]; then
+    [[ "$token_source" == /* && -f "$token_source" &&
+       ! -L "$token_source" && "$token_source" != *$'\n'* ]] ||
+      die "Claude subscription token source is unavailable"
+    token_source="$(physical "$(dirname "$token_source")")/$(basename "$token_source")"
+    refuse_production_path "$token_source"
+    printf '%s\n' "$token_source" >"$root/runtime/claude-token-source"
+    chmod 600 "$root/runtime/claude-token-source"
+    materialize_claude_subscription_token "$token_source" "$target"
+  elif [[ -f "$source" && ! -L "$source" ]]; then
+    cp "$source" "$target"
+    chmod 600 "$target"
+  elif [[ "$mode" == product && "$cursor_enabled" == 1 &&
+          ! -e "$source" && ! -L "$source" ]]; then
+    return
+  else
+    die "Claude subscription session file is unavailable"
+  fi
+}
+
 refresh_product_subscription_credentials() {
   local root="$1" source_home token_source="" include_claude=1
   source_home="$(cursor_session_home)" ||
@@ -322,6 +349,12 @@ refresh_product_subscription_credentials() {
     token_source="$(cat "$root/runtime/claude-token-source")"
     [[ "$token_source" == /* && "$token_source" != *$'\n'* ]] ||
       die "Claude subscription token source is invalid"
+    include_claude=0
+  elif product_cursor_enabled "$root" &&
+       [[ ! -e "$source_home/.claude/.credentials.json" &&
+          ! -L "$source_home/.claude/.credentials.json" &&
+          ! -e "$root/session-home/.claude/.credentials.json" &&
+          ! -L "$root/session-home/.claude/.credentials.json" ]]; then
     include_claude=0
   fi
   python3 - "$source_home" "$root/session-home" "$include_claude" <<'PY' ||
@@ -405,6 +438,12 @@ PY
     printf '%s\n' "$real" "$(sha256_file "$real")" \
       "$(subscription_base_env "$root" "$root/home/$tool" --version 2>/dev/null | head -n1)"
     if [[ "$adapter" == codex ]]; then
+      real="$(python3 - "$root/home/codex-code-mode-host" <<'PY'
+import os, sys
+print(os.path.realpath(sys.argv[1]))
+PY
+)"
+      printf '%s\n' "$real" "$(sha256_file "$real")"
       subscription_base_env "$root" "$root/home/codex" login status 2>/dev/null |
         sha256_text
     else
@@ -593,12 +632,96 @@ validate_runtime_paths() {
     "$root/kit" "$root/product" "$root/origin.git" "$root/worktrees" \
     "$root/runtime" "$root/runtime/provider-state.sqlite3" \
     "$root/runtime/provider-policy.json" "$root/runtime/provider-attempts" \
+    "$root/runtime/cursor-account" "$root/runtime/cursor-account/state.sqlite3" \
     "$root/runtime/provider-configuration.lock" \
     "$root/runtime/provider-locks" "$root/runtime/provider-inputs" \
+    "$root/runtime/product-runtime-plan.json" \
     "$root/home" "$root/home/.factory" \
     "$root/tmp"; do
     require_lane_path "$root" "$path"
   done
+}
+
+prepare_product_runtime() {
+  local root="$1" plan approval path tool
+  [[ "$PRODUCT_RUNTIME_BIN" == /* && -d "$PRODUCT_RUNTIME_BIN" &&
+     ! -L "$PRODUCT_RUNTIME_BIN" ]] ||
+    die "product runtime bin must be an existing absolute, non-symlink directory"
+  refuse_production_path "$PRODUCT_RUNTIME_BIN"
+  plan="$(HOME="$root/home" python3 "$root/kit/scripts/owner-runtime-pin.py" plan \
+    --product "$root/product" --runtime-bin "$PRODUCT_RUNTIME_BIN" \
+    --target-bin "$root/runtime/runtime-target")" ||
+    die "product runtime does not match the committed certification plan"
+  python3 - "$root/runtime/product-runtime-plan.json" "$plan" <<'PY' ||
+import json, os, pathlib, sys
+path=pathlib.Path(sys.argv[1]); value=json.loads(sys.argv[2])
+raw=json.dumps(value,sort_keys=True,separators=(",",":"))+"\n"
+fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+with os.fdopen(fd,"w",encoding="utf-8") as stream:
+    stream.write(raw); stream.flush(); os.fsync(stream.fileno())
+PY
+    die "product runtime evidence could not be sealed"
+  for tool in node npm npx; do
+    path="$(python3 - "$root/runtime/product-runtime-plan.json" "$tool" <<'PY'
+import json, sys
+print(json.load(open(sys.argv[1],encoding="utf-8"))["candidate"][sys.argv[2]]["path"])
+PY
+)" || die "product runtime evidence is malformed"
+    refuse_production_path "$path"
+  done
+  approval="$(python3 - "$root/runtime/product-runtime-plan.json" <<'PY'
+import json, sys
+print(json.load(open(sys.argv[1],encoding="utf-8"))["approval_sha256"])
+PY
+)" || die "product runtime evidence is malformed"
+  HOME="$root/home" python3 "$root/kit/scripts/owner-runtime-pin.py" apply \
+    --plan "$root/runtime/product-runtime-plan.json" \
+    --approve-hash "$approval" >/dev/null ||
+    die "product runtime could not be installed"
+  for tool in node npm npx; do
+    path="$root/runtime/runtime-target/$tool"
+    ln -s "$path" "$root/home/$tool" ||
+      die "product runtime link could not be created: $tool"
+  done
+}
+
+validate_product_runtime() {
+  local root="$1" binding
+  binding="$(python3 - "$root/runtime/product-source.json" <<'PY'
+import json, re, sys
+value=json.load(open(sys.argv[1],encoding="utf-8"))
+digest=value.get("runtime_plan_sha256")
+if digest is None: print("legacy")
+elif isinstance(digest,str) and re.fullmatch(r"[0-9a-f]{64}",digest): print(digest)
+else: raise SystemExit(1)
+PY
+)" || return 1
+  [[ "$binding" != legacy ]] || return 0
+  HOME="$root/home" python3 "$root/kit/scripts/owner-runtime-pin.py" check \
+    --journal "$root/runtime/runtime-pin-journal.json" >/dev/null || return 1
+  python3 - "$root/runtime/product-runtime-plan.json" \
+    "$root/runtime/runtime-pin-journal.json" "$root/home" \
+    "$root/runtime/runtime-target" "$binding" <<'PY'
+import hashlib, json, os, pathlib, stat, sys
+plan_path,journal_path,home_raw,target_raw=map(pathlib.Path,sys.argv[1:5])
+info=plan_path.lstat()
+if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or
+    info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o600):
+    raise SystemExit(1)
+if hashlib.sha256(plan_path.read_bytes()).hexdigest() != sys.argv[5]:
+    raise SystemExit(1)
+stored=json.load(open(plan_path,encoding="utf-8"))
+journal=json.load(open(journal_path,encoding="utf-8"))
+if journal.get("plan") != stored or journal.get("status") != "completed":
+    raise SystemExit(1)
+home=home_raw
+for tool in ("node","npm","npx"):
+    link=home/tool
+    target=target_raw/tool
+    if (not link.is_symlink() or os.readlink(link) != str(target) or
+        link.resolve(strict=True) != pathlib.Path(stored["candidate"][tool]["path"])):
+        raise SystemExit(1)
+PY
 }
 
 validate_lane() {
@@ -740,9 +863,19 @@ for entry in pathlib.Path(root, "home").iterdir():
         for relative in ("usr/libexec/git-core", "usr/share/git-core"):
             item=developer / relative
             if item.is_dir() and str(item) not in tools: tools.append(str(item))
-if pathlib.Path(root, "home/node").is_symlink():
-    for item in ("/opt/homebrew", "/usr/local"):
-        if os.path.isdir(item) and item not in tools: tools.append(item)
+runtime_tools={
+    name: pathlib.Path(root, "home", name).resolve()
+    for name in ("node", "npm", "npx")
+    if pathlib.Path(root, "home", name).is_symlink()
+}
+if set(runtime_tools) == {"node", "npm", "npx"}:
+    runtime_roots={
+        runtime_tools["node"].parent.parent,
+        runtime_tools["npm"].parent.parent,
+        runtime_tools["npx"].parent.parent,
+    }
+    for item in sorted(map(str, runtime_roots)):
+        if item not in {"/", "/usr"} and item not in tools: tools.append(item)
 reads=[]
 session=[] if not session_home else [
     str(pathlib.Path(session_home, ".cursor", name).resolve())
@@ -807,18 +940,24 @@ PY
 }
 
 prepare_product_dependencies() {
-  local root="$1" ticket work
+  local root="$1" attempt ticket work
   shift
   [[ -f "$root/product/package-lock.json" &&
      ! -L "$root/product/package-lock.json" ]] || return 0
-  ( cd "$root"
-    HOME="$root/home" TMPDIR="$root/tmp" \
-      "$(sandbox_exec)" -f "$root/runtime/native.sb" \
-        env -i HOME="$root/home" TMPDIR="$root/tmp" LANG=C LC_ALL=C \
-          PATH="$root/home:/usr/bin:/bin:/usr/sbin:/sbin" \
-          "$root/home/node" -e \
-            'if (process.versions.node.split(".")[0] !== "22") process.exit(1)' ) ||
-    die "product dependency installation requires the pinned Node 22 runtime"
+  for attempt in 1 2 3; do
+    if ( cd "$root"
+      HOME="$root/home" TMPDIR="$root/tmp" \
+        "$(sandbox_exec)" -f "$root/runtime/native.sb" \
+          env -i HOME="$root/home" TMPDIR="$root/tmp" LANG=C LC_ALL=C \
+            PATH="$root/home:/usr/bin:/bin:/usr/sbin:/sbin" \
+            "$root/home/node" -e \
+              'if (process.versions.node.split(".")[0] !== "22") process.exit(1)' ); then
+      break
+    fi
+    [[ "$attempt" -lt 3 ]] ||
+      die "product dependency installation requires the pinned Node 22 runtime"
+    sleep 1
+  done
   for ticket in "$@"; do
     work="$root/worktrees/$ticket"
     [[ -f "$work/package.json" && ! -L "$work/package.json" &&
@@ -839,7 +978,7 @@ prepare_product_dependencies() {
 }
 
 create_lane() {
-  local mode="$1" root sha tree nonce project cursor developer tool timeout_bin tmp_parent bridge session_home ticket port_a port_b resolved seed_hash="" accounting_hash="" lineage_hash="" checkpoint_hash="" cleanup_trap subscription_adapter cursor_enabled=0 claude_token_source=""
+  local mode="$1" root sha tree nonce project cursor developer tool timeout_bin tmp_parent bridge session_home ticket port_a port_b resolved companion seed_hash="" accounting_hash="" lineage_hash="" checkpoint_hash="" cleanup_trap subscription_adapter cursor_enabled=0
   local -a subscription_tools
   subscription_adapter="${FACTORY_SUBSCRIPTION_ADAPTER:-codex}"
   [[ "$mode" != subscription || "$subscription_adapter" == codex ||
@@ -864,6 +1003,7 @@ create_lane() {
     "$root/runtime/model-state" "$root/runtime/provider-attempts" \
     "$root/runtime/provider-locks" "$root/runtime/provider-inputs" \
     "$root/tmp" "$root/worktrees"
+  mkdir -m 700 "$root/runtime/cursor-account"
   python3 - "$root/runtime/provider-configuration.lock" <<'PY'
 import os, sys
 descriptor=os.open(
@@ -997,12 +1137,14 @@ PY
         write_product_checkpoint_import "$root" "$PRODUCT_SEED_CHECKPOINT"
       fi
     fi
+    prepare_product_runtime "$root"
     python3 - "$root/runtime/product-source.json" "$PRODUCT_BASE" \
       "$(git -C "$PRODUCT_SOURCE" rev-parse "$PRODUCT_BASE^{tree}")" "$lane_control_sha" \
-      "$seed_hash" "$accounting_hash" "$lineage_hash" "$checkpoint_hash" -- \
+      "$seed_hash" "$accounting_hash" "$lineage_hash" "$checkpoint_hash" \
+      "$(sha256_file "$root/runtime/product-runtime-plan.json")" -- \
       "${lane_tickets[@]}" <<'PY'
 import json, os, sys
-path, base, tree, control, seed, accounting, lineage, checkpoint, separator, *tickets=sys.argv[1:]
+path, base, tree, control, seed, accounting, lineage, checkpoint, runtime, separator, *tickets=sys.argv[1:]
 if separator != "--": raise SystemExit(1)
 with open(path, "w", encoding="utf-8") as stream:
     json.dump({"schema":"factory-dev-product-source/v1","base_sha":base,
@@ -1010,7 +1152,8 @@ with open(path, "w", encoding="utf-8") as stream:
                "seed_bundle_sha256":seed or None,
                "seed_accounting_sha256":accounting or None,
                "seed_lineage_sha256":lineage or None,
-               "seed_checkpoint_sha256":checkpoint or None,"tickets":tickets},
+               "seed_checkpoint_sha256":checkpoint or None,
+               "runtime_plan_sha256":runtime,"tickets":tickets},
               stream, sort_keys=True, separators=(",",":")); stream.write("\n")
 os.chmod(path, 0o600)
 PY
@@ -1156,27 +1299,8 @@ PY
     fi
     if [[ "$mode" == product || "$subscription_adapter" == claude ]]; then
       mkdir -m 700 "$root/session-home/.claude"
-      claude_token_source="${FACTORY_DEV_LANE_CLAUDE_OAUTH_TOKEN_FILE:-}"
-      if [[ -n "$claude_token_source" ]]; then
-        [[ "$claude_token_source" == /* && -f "$claude_token_source" &&
-           ! -L "$claude_token_source" &&
-           "$claude_token_source" != *$'\n'* ]] ||
-          die "Claude subscription token source is unavailable"
-        claude_token_source="$(physical "$(dirname "$claude_token_source")")/$(basename "$claude_token_source")"
-        refuse_production_path "$claude_token_source"
-        printf '%s\n' "$claude_token_source" \
-          >"$root/runtime/claude-token-source"
-        chmod 600 "$root/runtime/claude-token-source"
-        materialize_claude_subscription_token "$claude_token_source" \
-          "$root/session-home/.claude/.credentials.json"
-      else
-        [[ -f "$session_home/.claude/.credentials.json" &&
-           ! -L "$session_home/.claude/.credentials.json" ]] ||
-          die "Claude subscription session file is unavailable"
-        cp "$session_home/.claude/.credentials.json" \
-          "$root/session-home/.claude/.credentials.json"
-        chmod 600 "$root/session-home/.claude/.credentials.json"
-      fi
+      stage_claude_subscription_credential \
+        "$root" "$mode" "$cursor_enabled" "$session_home"
       subscription_tools+=(claude)
     fi
     if [[ "$mode" == product && "$cursor_enabled" == 1 ]]; then
@@ -1185,7 +1309,8 @@ PY
       cp "$session_home/.cursor/cli-config.json" "$root/session-home/.cursor/cli-config.json"
       chmod 600 "$root/session-home/.cursor/"*.json
     fi
-    [[ "$mode" != product ]] ||
+    [[ "$mode" != product ||
+       ! -f "$root/session-home/.claude/.credentials.json" ]] ||
       chmod 600 "$root/session-home/.claude/.credentials.json"
     for tool in "${subscription_tools[@]}"; do
       resolved="$(command -v "$tool" 2>/dev/null || true)"
@@ -1198,14 +1323,24 @@ PY
 )"
       refuse_production_path "$resolved"
       ln -s "$resolved" "$root/home/$tool-real"
+      if [[ "$tool" == codex ]]; then
+        companion="$(command -v codex-code-mode-host 2>/dev/null || true)"
+        [[ "$companion" == /* && -x "$companion" ]] ||
+          die "Codex code-mode host is unavailable"
+        refuse_production_path "$companion"
+        companion="$(python3 - "$companion" <<'PY'
+import os, sys
+print(os.path.realpath(sys.argv[1]))
+PY
+)"
+        [[ -f "$companion" && -x "$companion" ]] ||
+          die "Codex code-mode host is unavailable"
+        refuse_production_path "$companion"
+        ln -s "$companion" "$root/home/codex-code-mode-host"
+      fi
     done
   fi
   if [[ "$mode" == product ]]; then
-    for tool in node npm npx; do
-      resolved="/opt/homebrew/opt/node@22/bin/$tool"
-      [[ -x "$resolved" || -f "$resolved" ]] || die "Node 22 $tool is unavailable"
-      ln -s "$resolved" "$root/home/$tool"
-    done
     resolved="$(command -v docker 2>/dev/null || true)"
     [[ "$resolved" == /* && -x "$resolved" ]] || die "Docker is unavailable"
     resolved="$(python3 - "$resolved" <<'PY'
@@ -2388,9 +2523,11 @@ product_approval_hash() {
   fi
   cursor_home="$session_home"
   product_cursor_enabled "$root" && cursor_enabled=1
+  validate_product_runtime "$root" || die "product runtime drifted"
   {
     sha256_file "$root/marker.json"
     sha256_file "$root/runtime/product-source.json"
+    sha256_file "$root/runtime/product-runtime-plan.json"
     git -C "$root/kit" rev-parse HEAD 'HEAD^{tree}'
     sha256_file "$root/home/.factory/global.env"
     sha256_file "$root/runtime/provider-policy.json"
@@ -2426,6 +2563,14 @@ PY
 )"
       printf '%s\n' "$real" "$(sha256_file "$real")" \
         "$(subscription_base_env "$root" "$root/home/$tool" --version 2>/dev/null | head -n1)"
+      if [[ "$tool" == codex ]]; then
+        real="$(python3 - "$root/home/codex-code-mode-host" <<'PY'
+import os, sys
+print(os.path.realpath(sys.argv[1]))
+PY
+)"
+        printf '%s\n' "$real" "$(sha256_file "$real")"
+      fi
     done
     if [[ "$cursor_enabled" == 1 ]]; then
       real="$(python3 - "$root/home/agent" <<'PY'
@@ -2439,7 +2584,14 @@ PY
       sha256_file "$cursor_home/.cursor/cli-config.json"
     fi
     sha256_file "$session_home/.codex/auth.json"
-    sha256_file "$session_home/.claude/.credentials.json"
+    if [[ -e "$session_home/.claude/.credentials.json" ||
+          -L "$session_home/.claude/.credentials.json" ]]; then
+      [[ -f "$session_home/.claude/.credentials.json" &&
+         ! -L "$session_home/.claude/.credentials.json" ]] || return 1
+      sha256_file "$session_home/.claude/.credentials.json"
+    else
+      product_cursor_enabled "$root" || return 1
+    fi
     [[ ! -f "$root/runtime/claude-token-source" ]] ||
       sha256_file "$root/runtime/claude-token-source"
     for ticket in "${approval_tickets[@]}"; do
@@ -3044,6 +3196,7 @@ product_resume_basis_hash() {
   local -a selected=("$@")
   [[ -z "$(git -C "$SOURCE_ROOT" status --porcelain --untracked-files=all)" ]] ||
     return 1
+  validate_product_runtime "$root" || return 1
   if [[ "${#selected[@]}" -eq 0 ]]; then
     load_product_tickets "$root"
     selected=("${PRODUCT_TICKETS[@]}")
@@ -3066,7 +3219,7 @@ import json, sys
 v=json.load(open(sys.argv[1], encoding="utf-8"))
 for key in ("schema","base_sha","base_tree","lane_control_sha",
             "seed_bundle_sha256","seed_accounting_sha256","seed_lineage_sha256",
-            "seed_checkpoint_sha256"):
+            "seed_checkpoint_sha256","runtime_plan_sha256"):
     print(f"{key}={json.dumps(v.get(key),sort_keys=True,separators=(',',':'))}")
 PY
     printf 'provider_status=%s\nevidence_sha256=%s\n' "$status" "$evidence"
@@ -3082,7 +3235,8 @@ PY
       "$root/runtime/product-checkpoint-source.json" \
       "$root/runtime/product-seed-accounting-source.json" \
       "$root/runtime/product-publication-conflict.json" \
-      "$root/runtime/product-publication-replay.json"; do
+      "$root/runtime/product-publication-replay.json" \
+      "$root/runtime/product-runtime-plan.json"; do
       [[ -f "$path" ]] || continue
       printf '%s=%s\n' "${path#$root/}" "$(sha256_file "$path")"
     done
@@ -5556,12 +5710,13 @@ case "$command" in
   product-plan)
     assert_macos
     source_repo=""; base_sha=""; ticket_csv=""; seed_bundle=""; seed_accounting=""
-    seed_lineage=""; seed_checkpoint=""
+    seed_lineage=""; seed_checkpoint=""; runtime_bin=""
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --source) source_repo="${2:-}"; shift 2 ;;
         --base-sha) base_sha="${2:-}"; shift 2 ;;
         --tickets) ticket_csv="${2:-}"; shift 2 ;;
+        --runtime-bin) runtime_bin="${2:-}"; shift 2 ;;
         --seed-bundle) seed_bundle="${2:-}"; shift 2 ;;
         --seed-accounting) seed_accounting="${2:-}"; shift 2 ;;
         --seed-lineage) seed_lineage="${2:-}"; shift 2 ;;
@@ -5571,6 +5726,15 @@ case "$command" in
     done
     [[ "$source_repo" == /* && "$base_sha" =~ ^[0-9a-f]{40}$ && -n "$ticket_csv" ]] || usage
     refuse_production_path "$source_repo"
+    if [[ -z "$runtime_bin" ]]; then
+      runtime_bin="$(command -v node 2>/dev/null || true)"
+      [[ "$runtime_bin" == /* ]] || die "product runtime bin is unavailable"
+      runtime_bin="$(dirname "$runtime_bin")"
+    fi
+    [[ "$runtime_bin" == /* && -d "$runtime_bin" && ! -L "$runtime_bin" ]] ||
+      die "product runtime bin must be an existing absolute, non-symlink directory"
+    PRODUCT_RUNTIME_BIN="$(physical "$runtime_bin")"
+    refuse_production_path "$PRODUCT_RUNTIME_BIN"
     PRODUCT_SOURCE="$source_repo"; PRODUCT_BASE="$base_sha"; PRODUCT_SEED_BUNDLE="$seed_bundle"
     IFS=, read -r -a PRODUCT_TICKETS <<<"$ticket_csv"
     [[ "${#PRODUCT_TICKETS[@]}" -ge 1 && "${#PRODUCT_TICKETS[@]}" -le 10 ]] || usage

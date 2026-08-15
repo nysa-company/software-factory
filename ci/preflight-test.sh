@@ -836,6 +836,21 @@ else
   echo "FAIL: contract 1.8 provider-free readiness rejected executable seams"
   FAILURES=$((FAILURES + 1))
 fi
+printf '\nState: historical prose must not become authority\n' \
+  >> "$READINESS/factory/tickets/T-110.md"
+if python3 "$KIT_DIR/scripts/ticket-readiness.py" \
+     --ticket T-110 --workdir "$READINESS" > "$TMP/readiness-state-duplicate.out"; then
+  echo "FAIL: contract 1.8 readiness accepted duplicate State authority"
+  FAILURES=$((FAILURES + 1))
+elif grep -qF 'ticket requires exactly one State field' \
+     "$TMP/readiness-state-duplicate.out"; then
+  echo "PASS: contract 1.8 readiness rejects duplicate State authority"
+else
+  echo "FAIL: duplicate State authority returned the wrong readiness refusal"
+  FAILURES=$((FAILURES + 1))
+fi
+sed '$d' "$READINESS/factory/tickets/T-110.md" > "$TMP/readiness-state.md"
+sed '$d' "$TMP/readiness-state.md" > "$READINESS/factory/tickets/T-110.md"
 cp "$READINESS/factory/tickets/T-110.md" "$TMP/readiness-ticket.md"
 for builder_case in missing malformed broad; do
   cp "$TMP/readiness-ticket.md" "$READINESS/factory/tickets/T-110.md"

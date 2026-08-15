@@ -158,6 +158,7 @@ def validate(ticket: str, workdir: Path) -> None:
     ):
         raise ReadinessError("ticket contract is unsafe")
     text = ticket_path.read_text(encoding="utf-8")
+    field(text, "State")
     if field(text, "Product-Decisions").casefold() != "frozen":
         raise ReadinessError("product decisions are not frozen")
     builder_paths(text)

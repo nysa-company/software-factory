@@ -980,9 +980,6 @@ class DispatchPlanTest(unittest.TestCase):
             "uninitialized": lambda item: item["tickets"][tickets[0]].update(
                 operator_fields_initialized=False
             ),
-            "operator-missing": lambda item: item["tickets"][tickets[0]].pop(
-                "operator"
-            ),
             "entry-not-object": lambda item: item["tickets"].update(
                 {tickets[0]: "not-an-object"}
             ),
@@ -997,6 +994,10 @@ class DispatchPlanTest(unittest.TestCase):
                     "selected-ticket operator projection is invalid",
                     refused["error"],
                 )
+        consumed = json.loads(json.dumps(mapping))
+        consumed["tickets"][tickets[0]].pop("operator")
+        self.mapping.write_text(json.dumps(consumed) + "\n")
+        self.assertEqual(self.command("shadow")["status"], "SHADOW")
 
     def test_authorized_reset_rejects_non_control_ticket_drift(self):
         self.write_contract_18_qualification()

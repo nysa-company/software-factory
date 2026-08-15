@@ -238,7 +238,9 @@ grep -Fq 'PROVIDER_SPLIT=$selected:4' <<<"$subscription_run_source" ||
 grep -Fq 'codex_subscription_ready "$root"' <<<"$subscription_run_source" ||
   fail "subscription canary lost Codex readiness"
 create_lane_source="$(sed -n '/^create_lane()/,/^validate_lane()/p' "$LANE")"
-grep -Fq 'physical "$(dirname "$claude_token_source")"' <<<"$create_lane_source" ||
+claude_stage_source="$(sed -n \
+  '/^stage_claude_subscription_credential()/,/^}/p' "$LANE")"
+grep -Fq 'physical "$(dirname "$token_source")"' <<<"$claude_stage_source" ||
   fail "Claude token source was resolved as a directory instead of a file"
 grep -Fq 'claude_subscription_ready "$root"' <<<"$subscription_run_source" ||
   fail "subscription canary lacks Claude readiness"
@@ -255,9 +257,12 @@ grep -Fq 'FACTORY_CLI_LANE_ROOT="$root"' <<<"$lane_env_source" ||
   fail "trusted product helpers lost the checkpoint lane-root binding"
 grep -Fq 'FACTORY_CLI_INTERNAL_SANDBOX=1' <<<"$lane_env_source" ||
   fail "trusted product helpers lost the development sandbox marker"
-seatbelt_source="$(sed -n '/^write_seatbelt_profiles()/,/^}/p' "$LANE")"
-grep -Fq 'for item in ("/opt/homebrew", "/usr/local"):' <<<"$seatbelt_source" ||
-  fail "development sandbox dropped the trusted Node toolchain roots"
+seatbelt_source="$(sed -n '/^write_seatbelt_profiles()/,/^prepare_product_dependencies()/p' \
+  "$LANE" | sed '$d')"
+eval "$seatbelt_source"
+grep -Fq 'runtime_tools={' <<<"$seatbelt_source" &&
+  grep -Fq 'runtime_roots={' <<<"$seatbelt_source" ||
+  fail "development sandbox dropped the exact Node toolchain roots"
 grep -Fq '(allow file-read-data (literal "/dev/dtracehelper"))' \
   <<<"$seatbelt_source" ||
   fail "native Claude startup lost its read-only dtracehelper allowance"
@@ -272,11 +277,30 @@ grep -Fq 'exec "$(sandbox_exec)" -f "$root/runtime/native.sb"' \
 grep -Fq 'CLAUDE_PERMISSION_ARGS=(--dangerously-skip-permissions' \
   "$ROOT/scripts/adapters/claude-code.sh" ||
   fail "Claude cannot run role-owned git inside the outer Seatbelt"
-if grep -Eq 'file-write.*(/opt/homebrew|/usr/local)' <<<"$seatbelt_source"; then
+SEATBELT_RUNTIME_ROOT="$TMP/nysa-sf-dev.seatbelt-runtime"
+mkdir -p "$SEATBELT_RUNTIME_ROOT"/{home,runtime} \
+  "$SEATBELT_RUNTIME_ROOT/node-dist/bin" "$SEATBELT_RUNTIME_ROOT/npm-dist/bin"
+for runtime_tool in node npm npx; do
+  case "$runtime_tool" in
+    node) runtime_target="$SEATBELT_RUNTIME_ROOT/node-dist/bin/node" ;;
+    npm) runtime_target="$SEATBELT_RUNTIME_ROOT/npm-dist/bin/npm-cli.js" ;;
+    npx) runtime_target="$SEATBELT_RUNTIME_ROOT/npm-dist/bin/npx-cli.js" ;;
+  esac
+  printf '#!/bin/sh\nexit 0\n' >"$runtime_target"
+  chmod +x "$runtime_target"
+  ln -s "$runtime_target" "$SEATBELT_RUNTIME_ROOT/home/$runtime_tool"
+done
+write_seatbelt_profiles "$SEATBELT_RUNTIME_ROOT" /usr/bin/true "" "" ""
+for runtime_root in "$SEATBELT_RUNTIME_ROOT/node-dist" \
+  "$SEATBELT_RUNTIME_ROOT/npm-dist"; do
+  grep -Fq "(allow file-read* (subpath \"$runtime_root\"))" \
+    "$SEATBELT_RUNTIME_ROOT/runtime/native.sb" ||
+    fail "development sandbox omitted an exact product runtime root"
+done
+grep -Eq 'file-write.*(node-dist|npm-dist)' \
+  "$SEATBELT_RUNTIME_ROOT/runtime/native.sb" &&
   fail "development sandbox made the host toolchain writable"
-fi
 if [[ "$(uname -s)" == Darwin && -x /usr/bin/sandbox-exec ]]; then
-  eval "$seatbelt_source"
   OUTER_PROBE_ROOT="$(mktemp -d /private/tmp/nysa-sb.XXXXXX)"
   REAL_GIT="$(/usr/bin/xcrun -f git)"
   mkdir -p "$OUTER_PROBE_ROOT"/{home,runtime,tmp,work}
@@ -315,6 +339,49 @@ if [[ "$(uname -s)" == Darwin && -x /usr/bin/sandbox-exec ]]; then
   fi
   rm -rf -- "$OUTER_PROBE_ROOT"
 fi
+eval "$(sed -n '/^prepare_product_runtime()/,/^validate_lane()/p' "$LANE" | sed '$d')"
+RUNTIME_ROOT="$TMP/nysa-sf-dev.runtime"
+mkdir -p "$RUNTIME_ROOT"/{home,product/factory,runtime,runtime-bin,kit/scripts/lib}
+cp "$ROOT/scripts/owner-runtime-pin.py" "$RUNTIME_ROOT/kit/scripts/owner-runtime-pin.py"
+cp "$ROOT/scripts/lib/certification_plan.py" \
+  "$RUNTIME_ROOT/kit/scripts/lib/certification_plan.py"
+cat >"$RUNTIME_ROOT/product/factory/certification-plan.json" <<'EOF'
+{"phases":[{"artifacts":[],"command":["true"],"depends_on":[],"name":"fixture","network":"denied"}],"runtime":{"node":"v22.22.0","npm":"10.9.2"},"schema":"nysa.software-factory.certification-plan/v2"}
+EOF
+for runtime_tool in node npm npx; do
+  runtime_version=10.9.2
+  [[ "$runtime_tool" != node ]] || runtime_version=v22.22.0
+  printf '#!/bin/sh\nprintf "%%s\\n" "%s"\n' "$runtime_version" \
+    >"$RUNTIME_ROOT/runtime-bin/$runtime_tool"
+  chmod +x "$RUNTIME_ROOT/runtime-bin/$runtime_tool"
+done
+PRODUCT_RUNTIME_BIN="$RUNTIME_ROOT/runtime-bin"
+refuse_production_path() { :; }
+die() { printf '%s\n' "$*" >&2; return 1; }
+prepare_product_runtime "$RUNTIME_ROOT" ||
+  fail "exact product runtime preparation failed"
+python3 - "$RUNTIME_ROOT/runtime/product-source.json" \
+  "$(shasum -a 256 "$RUNTIME_ROOT/runtime/product-runtime-plan.json" | awk '{print $1}')" <<'PY'
+import json, sys
+open(sys.argv[1],"w",encoding="utf-8").write(json.dumps({
+    "runtime_plan_sha256":sys.argv[2],
+    "schema":"factory-dev-product-source/v1",
+},sort_keys=True,separators=(",",":"))+"\n")
+PY
+validate_product_runtime "$RUNTIME_ROOT" ||
+  fail "exact product runtime validation failed"
+[[ "$(path_metadata "$RUNTIME_ROOT/runtime/product-runtime-plan.json")" == \
+   "$(id -u):600:1" ]] ||
+  fail "product runtime plan is not owner-only"
+for runtime_tool in node npm npx; do
+  [[ -L "$RUNTIME_ROOT/home/$runtime_tool" &&
+     "$(readlink "$RUNTIME_ROOT/home/$runtime_tool")" == \
+       "$RUNTIME_ROOT/runtime/runtime-target/$runtime_tool" ]] ||
+    fail "product runtime link is not bound to the lane transaction: $runtime_tool"
+done
+printf '# changed after approval\n' >>"$RUNTIME_ROOT/runtime-bin/npm"
+expect_failure "product runtime candidate drift" \
+  validate_product_runtime "$RUNTIME_ROOT"
 eval "$(sed -n '/^prepare_product_dependencies()/,/^}/p' "$LANE")"
 sandbox_exec() { printf '%s\n' "$FAKE_SANDBOX"; }
 DEPENDENCY_ROOT="$TMP/nysa-sf-dev.dependencies"
@@ -323,7 +390,12 @@ mkdir -p "$DEPENDENCY_ROOT"/{home,product,runtime,tmp,worktrees/T-1,worktrees/T-
 printf '{}\n' >"$DEPENDENCY_ROOT/product/package-lock.json"
 cat >"$DEPENDENCY_ROOT/home/node" <<'EOF'
 #!/usr/bin/env bash
-exit 0
+root="$(cd "$(dirname "$0")/.." && pwd -P)"
+count=0
+[[ ! -f "$root/runtime/node-probe-count" ]] ||
+  count="$(cat "$root/runtime/node-probe-count")"
+printf '%s\n' "$((count + 1))" >"$root/runtime/node-probe-count"
+[[ "$count" -gt 0 ]]
 EOF
 cat >"$DEPENDENCY_ROOT/home/npm" <<'EOF'
 #!/usr/bin/env bash
@@ -355,6 +427,8 @@ done
 ( die() { printf '%s\n' "$*" >&2; exit 1; }
   prepare_product_dependencies "$DEPENDENCY_ROOT" T-1 T-2 ) ||
   fail "pinned dependency bootstrap rejected clean ticket worktrees"
+[[ "$(cat "$DEPENDENCY_ROOT/runtime/node-probe-count")" == 2 ]] ||
+  fail "pinned dependency bootstrap did not retry one transient Node startup"
 [[ "$(cat "$DEPENDENCY_ROOT/runtime/npm-calls")" == $'T-1\nT-2' ]] ||
   fail "pinned dependency bootstrap did not run exactly once per ticket"
 for dependency_ticket in T-1 T-2; do
@@ -473,6 +547,10 @@ eval "$(sed -n '/^subscription_env()/,/^product_approval_hash()/p' \
 [[ "$(subscription_base_env "$READINESS_ROOT" \
   /usr/bin/printenv AGENT_CLI_CREDENTIAL_STORE)" == file ]] ||
   fail "subscription environment did not isolate Cursor credentials in the lane"
+[[ "$(subscription_base_env "$READINESS_ROOT" \
+  /usr/bin/printenv FACTORY_CURSOR_ACCOUNT_DB)" == \
+  "$READINESS_ROOT/runtime/cursor-account/state.sqlite3" ]] ||
+  fail "subscription environment omitted its lane-local Cursor account database"
 if (
   die() { exit 1; }
   AMBIENT_AUTH_READY=1 \
@@ -1339,6 +1417,75 @@ printf '%s\n' "$subscription_cases" |
 printf '%s\n' "$subscription_cases" |
   grep -Fq 'run_in_sandbox "$root" subscription __subscription-run' ||
   fail "Codex subscription execution still depends on the Cursor scratch bridge"
+create_lane_source="$(sed -n '/^create_lane()/,/^validate_product_checkpoint()/p' "$LANE")"
+grep -Fq 'ln -s "$companion" "$root/home/codex-code-mode-host"' \
+  <<<"$create_lane_source" ||
+  fail "Codex lane omitted its code-mode host companion"
+grep -Fq 'stage_claude_subscription_credential' <<<"$create_lane_source" ||
+  fail "product lane bypassed the shared optional Claude-session boundary"
+(
+  eval "$(sed -n '/^stage_claude_subscription_credential()/,/^}/p' "$LANE")"
+  root="$TMP/optional-claude-create"
+  source_home="$TMP/optional-claude-source"
+  mkdir -p "$root/runtime" "$root/session-home/.claude" "$source_home/.claude"
+  physical() { (cd "$1" && pwd -P); }
+  refuse_production_path() { :; }
+  materialize_claude_subscription_token() { return 91; }
+  die() { printf '%s\n' "$*" >&2; return 1; }
+  stage_claude_subscription_credential "$root" product 1 "$source_home" ||
+    fail "Cursor product lane required an absent native Claude session"
+  [[ ! -e "$root/session-home/.claude/.credentials.json" ]] ||
+    fail "Cursor product lane fabricated a native Claude credential"
+  expect_failure "native-only product without Claude session" \
+    stage_claude_subscription_credential "$root" product 0 "$source_home"
+  printf '%s\n' credential >"$source_home/.claude/source"
+  ln -s "$source_home/.claude/source" \
+    "$source_home/.claude/.credentials.json"
+  expect_failure "symlinked optional Claude session" \
+    stage_claude_subscription_credential "$root" product 1 "$source_home"
+  rm "$source_home/.claude/.credentials.json"
+  printf '%s\n' credential >"$source_home/.claude/.credentials.json"
+  chmod 600 "$source_home/.claude/.credentials.json"
+  stage_claude_subscription_credential "$root" product 1 "$source_home" ||
+    fail "Cursor product lane rejected an available native Claude fallback"
+  cmp "$source_home/.claude/.credentials.json" \
+    "$root/session-home/.claude/.credentials.json" >/dev/null ||
+    fail "Cursor product lane copied the wrong native Claude credential"
+)
+(
+  eval "$(sed -n '/^product_cursor_enabled()/,/^}/p' "$LANE")"
+  eval "$(sed -n '/^refresh_product_subscription_credentials()/,/^}/p' "$LANE")"
+  root="$TMP/optional-claude-refresh"
+  REFRESH_SOURCE_HOME="$TMP/optional-claude-refresh-source"
+  mkdir -m 700 -p "$root/runtime" "$root/session-home/.codex" \
+    "$root/session-home/.claude" "$REFRESH_SOURCE_HOME/.codex" \
+    "$REFRESH_SOURCE_HOME/.claude"
+  printf '%s\n' enabled >"$root/runtime/product-cursor-fallback"
+  printf '%s\n' old >"$root/session-home/.codex/auth.json"
+  printf '%s\n' refreshed >"$REFRESH_SOURCE_HOME/.codex/auth.json"
+  chmod 600 "$root/runtime/product-cursor-fallback" \
+    "$root/session-home/.codex/auth.json" \
+    "$REFRESH_SOURCE_HOME/.codex/auth.json"
+  cursor_session_home() { printf '%s\n' "$REFRESH_SOURCE_HOME"; }
+  refuse_production_path() { :; }
+  materialize_claude_subscription_token() { return 91; }
+  die() { printf '%s\n' "$*" >&2; return 1; }
+  refresh_product_subscription_credentials "$root" ||
+    fail "Cursor product resume required an absent native Claude session"
+  [[ "$(cat "$root/session-home/.codex/auth.json")" == refreshed &&
+     ! -e "$root/session-home/.claude/.credentials.json" ]] ||
+    fail "Cursor product resume refreshed the wrong session set"
+)
+for approval_function in subscription_approval_hash product_approval_hash; do
+  approval_source="$(sed -n "/^${approval_function}()/,/^}/p" "$LANE")"
+  grep -Fq '"$root/home/codex-code-mode-host"' <<<"$approval_source" &&
+    grep -Fq '"$(sha256_file "$real")"' <<<"$approval_source" ||
+    fail "$approval_function omitted the Codex companion binding"
+done
+product_approval_source="$(sed -n '/^product_approval_hash()/,/^}/p' "$LANE")"
+grep -Fq 'product_cursor_enabled "$root" || return 1' \
+  <<<"$product_approval_source" ||
+  fail "product approval does not bind an intentionally absent Claude session"
 eval "$(sed -n '/^cleanup_empty_cursor_bridge()/,/^}/p' "$LANE")"
 REPLACED_BRIDGE="$TMP/replaced-cursor-bridge"
 mkdir -p "$REPLACED_BRIDGE/empty-session"
@@ -1476,6 +1623,21 @@ grep -Fq '"CURSOR_CONFIG_DIR=$CLI_CURSOR_CONFIG_DIR"' \
   grep -Fq 'mkdir -m 700 "$CLI_PROVIDER_HOME/.cursor" "$CLI_RUNTIME_ROOT/data"' \
     "$ROOT/scripts/run-agent.sh" ||
   fail "concurrent Cursor does not use attempt-local config and data roots"
+(
+  eval "$(sed -n '/^validate_cursor_account_admission_authority()/,/^}/p' \
+    "$ROOT/scripts/run-agent.sh")"
+  DEVELOPMENT_LANE_ROOT="$TMP/nysa-sf-dev.account-authority"
+  mkdir -p "$DEVELOPMENT_LANE_ROOT/runtime/cursor-account"
+  FACTORY_KIT_PROVENANCE_SCOPE=development-local
+  FACTORY_CURSOR_ACCOUNT_DB="$DEVELOPMENT_LANE_ROOT/runtime/cursor-account/state.sqlite3"
+  validate_cursor_account_admission_authority ||
+    fail "development Cursor account authority rejected its lane-local database"
+  [[ "$CURSOR_ACCOUNT_TRUST_SCOPE" == development-local ]] ||
+    fail "development Cursor account authority changed its trust scope"
+  FACTORY_CURSOR_ACCOUNT_DB="$TMP/foreign-cursor-account.sqlite3"
+  expect_failure "development Cursor account database escape" \
+    validate_cursor_account_admission_authority
+)
 for invalid in 'APPROVE|REQUEST CHANGES' '**APPROVE**|**REQUEST CHANGES**' 'no verdict'; do
   printf '%s\n' "$invalid" | tr '|' '\n' >"$VERDICT"
   expect_failure "ambiguous reviewer verdict" python3 "$ROOT/scripts/lib/reviewer-verdict.py" \
@@ -3455,6 +3617,7 @@ import json, os, stat, sys
 root, tmp_parent = sys.argv[1:]
 r = os.lstat(root)
 m = os.lstat(os.path.join(root, "marker.json"))
+a = os.lstat(os.path.join(root, "runtime", "cursor-account"))
 v = json.load(open(os.path.join(root, "marker.json"), encoding="utf-8"))
 assert set(v) == {"schema", "root", "nonce", "kit_sha", "kit_tree", "mode",
                   "uid", "root_dev", "root_ino", "tmp_parent"}
@@ -3464,6 +3627,8 @@ assert v["tmp_parent"] == tmp_parent == os.path.dirname(root)
 assert stat.S_ISDIR(r.st_mode) and stat.S_IMODE(r.st_mode) == 0o700
 assert stat.S_ISREG(m.st_mode) and stat.S_IMODE(m.st_mode) == 0o600
 assert m.st_uid == r.st_uid == os.getuid() and m.st_dev == r.st_dev and m.st_nlink == 1
+assert stat.S_ISDIR(a.st_mode) and stat.S_IMODE(a.st_mode) == 0o700
+assert a.st_uid == os.getuid()
 assert m.st_ino != r.st_ino
 PY
 [[ -d "$lane_root/kit/.git" || -f "$lane_root/kit/.git" ]] || fail "lane-local kit is missing"

@@ -256,8 +256,15 @@ def prepare(product, request_path):
         == request["target_kit_sha"] + "\n"
     ):
         raise ValidationError(
-            "dependency fulfillment must install a different Contract 1.8 kit"
+            "dependency fulfillment must install a different supported kit"
         )
+    existing = run(
+        repo, "ls-tree", "-r", "--name-only", basis_commit, "--", MIGRATION_DIR
+    ).stdout.splitlines()
+    migration_dir = (
+        MIGRATION_DIR if not existing
+        else f"{MIGRATION_DIR}/{request['target_kit_sha']}"
+    )
     cutoff = timestamp(request["cutoff"], "dependency fulfillment request cutoff")
     if cutoff.microsecond or cutoff > datetime.now(timezone.utc):
         raise ValidationError(
@@ -323,9 +330,12 @@ def prepare(product, request_path):
         ticket_text = text_at(
             repo, basis_commit, f"factory/tickets/{ticket}.md"
         )
-        if ticket_text is None or one_field(ticket_text, "State") != "Backlog":
+        source_state = (
+            None if ticket_text is None else one_field(ticket_text, "State")
+        )
+        if source_state not in {"Backlog", "Done"}:
             raise ValidationError(
-                f"{ticket} dependency-only fulfillment requires Backlog state"
+                f"{ticket} dependency-only fulfillment requires Backlog or Done state"
             )
         pr = pr_evidence(
             repo,
@@ -340,6 +350,7 @@ def prepare(product, request_path):
             "checks": check_evidence(
                 request["repository"], pr["merge_commit"], expected_checks
             ),
+            "source_state": source_state,
             "source_ticket_blob": blob_at(
                 repo, basis_commit, f"factory/tickets/{ticket}.md"
             ),
@@ -348,7 +359,7 @@ def prepare(product, request_path):
             {
                 "ticket": ticket,
                 "pr_number": item["pr_number"],
-                "receipt": f"{MIGRATION_DIR}/{ticket}.json",
+                "receipt": f"{migration_dir}/{ticket}.json",
             }
         )
     authorization_text = pretty(authorization)
@@ -358,7 +369,7 @@ def prepare(product, request_path):
     receipts = {}
     files = {
         "factory/KIT_PIN": request["target_kit_sha"] + "\n",
-        f"{MIGRATION_DIR}/authorization.json": authorization_text,
+        f"{migration_dir}/authorization.json": authorization_text,
     }
     for ticket in sorted(evidence):
         receipts[ticket] = {
@@ -367,7 +378,7 @@ def prepare(product, request_path):
             "repository": request["repository"],
             "target_kit_sha": request["target_kit_sha"],
             "candidate_contract": request["candidate_contract"],
-            "source_state": "Backlog",
+            "source_state": evidence[ticket]["source_state"],
             "source_ticket_blob": evidence[ticket]["source_ticket_blob"],
             "pr": evidence[ticket]["pr"],
             "checks": evidence[ticket]["checks"],
@@ -375,9 +386,11 @@ def prepare(product, request_path):
             "cutoff": request["cutoff"],
             "protected_main_basis": basis,
         }
-        files[f"{MIGRATION_DIR}/{ticket}.json"] = pretty(receipts[ticket])
+        files[f"{migration_dir}/{ticket}.json"] = pretty(receipts[ticket])
     candidate = temporary_candidate(repo, basis_commit, files, request["cutoff"])
-    validate_generated_dependency_batch(repo, authorization, receipts, candidate)
+    validate_generated_dependency_batch(
+        repo, authorization, receipts, candidate, migration_dir,
+    )
     payload = {
         "authorization": authorization,
         "files": files,

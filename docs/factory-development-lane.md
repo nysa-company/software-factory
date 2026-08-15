@@ -70,8 +70,11 @@ mutation. Native Claude additionally receives a separate owner-only home,
 configuration directory, temporary directory, and credential copy per attempt;
 those roots are removed only after their process groups drain.
 
-The subscription canary copies only its selected CLI session; product lanes
-copy their three configured CLI sessions into the owner-only lane root once.
+The subscription canary copies only its selected CLI session. Product lanes
+copy each available configured CLI session into the owner-only lane root once.
+When Cursor is enabled, a missing native Claude session is recorded as an
+unavailable fallback and the required Anthropic-family roles stay on Cursor;
+disabling Cursor still requires an authenticated native Claude session.
 When current Claude stores subscription state only in the macOS Keychain,
 `FACTORY_DEV_LANE_CLAUDE_OAUTH_TOKEN_FILE` may name an owner-only `0600`
 token created by `claude setup-token`. The controller validates it without
@@ -103,6 +106,10 @@ immediately. This five-minute rule applies equally to Codex, Claude, and
 Cursor, and one ticket waiting for authorization never blocks its siblings.
 Family separation and adapter concurrency ceilings still apply;
 the Factory never waits on a login prompt or starts an unauthenticated task.
+Cursor roles use a lane-local owner-only account-admission database with the
+explicit `development-local` scope. Production and qualification retain their
+machine-shared database and sealed scopes; development evidence cannot be
+promoted into either.
 Retained-product resumes run that probe before hashing the plan and again
 before validating it for execution; the internal run reuses the second result
 instead of immediately probing the same session a third time.
@@ -146,6 +153,10 @@ Codex and Claude credential copies from their owner-controlled source files;
 the new digests are therefore approval-bound. A blocking transition also records
 its actual current phase as `Resume-State`, and resolution materializes that
 phase rather than assuming Planner.
+
+Codex lanes also require the installed `codex-code-mode-host` companion. The
+lane resolves it once, exposes it only inside the isolated runtime, and binds
+its physical path and bytes into every affected approval.
 
 Each completed ticket publishes an owner-only readiness record after its lease
 and role process drain. A selected-ticket `product-export` checks only that
@@ -207,6 +218,22 @@ ticket to a successor sandbox. The source must be a clean isolated worktree;
 the canonical Nysa checkout is refused. The lane clones it into a private
 product, replaces its remote with a local bare origin, and has no GitHub
 route.
+
+```bash
+bash scripts/factory-dev-lane.sh product-plan \
+  --source <isolated-product> --base-sha <full-sha> --tickets T-NNN \
+  --runtime-bin <absolute-node-bin>
+
+bash scripts/factory-dev-lane.sh product-ticket-run \
+  --root <root-from-plan> --ticket T-NNN \
+  --approve-hash <ticket-hash-from-plan>
+```
+
+`--runtime-bin` defaults to the directory containing `node` on the caller's
+`PATH`. The lane accepts it only when Node, npm, and npx exactly match the
+product's committed certification plan. It applies the existing owner-runtime
+transaction inside the lane, binds that plan into approval and resume evidence,
+and gives providers read-only access only to the resolved runtime roots.
 Fresh planning resets each selected ticket to `Ready` and removes prior
 canonical Spec-lint verdict, Reviewer verdict, and repair-owner control lines
 before the new role sequence begins. Historical prose and quoted signed-review
@@ -217,6 +244,9 @@ runs pinned `npm ci` separately in every ticket worktree inside the lane
 sandbox before any provider role. The provider receives the host's Node 22
 toolchain read-only and ticket-local writable dependencies; installation
 failure or tracked-tree drift fails planning closed.
+The no-side-effect Node readiness probe gets three bounded attempts so one
+fresh macOS sandbox startup abort cannot discard an otherwise exact runtime;
+dependency installation itself still runs once and never retries.
 Before each product role, the development scheduler uses the shared trusted
 ticket-state helper to enforce the Factory phase sequence: Planner and
 Spec-linter see Planning, Test-author and Builder see Building, and Reviewer

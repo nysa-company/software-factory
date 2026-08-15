@@ -28,7 +28,7 @@ die() {
 }
 
 usage() {
-  echo "usage: factory-launch <project> <contract|doctor|reconcile|incident-report|watch|ticket-control|qualification|dispatch-plan|state-machine|emergency-admit|passport|publication|publication-repair|ci-rerun|ticket-pr|models|envelope|operator-snapshot|attempt|claim|renew|release|release-expired|preflight|next-stage|ticket-state|ticket-attest|project-ledger|reorder-test-fixes|run> [arguments]" >&2
+  echo "usage: factory-launch <project> <contract|doctor|reconcile|incident-report|watch|ticket-control|qualification-run|qualification|dispatch-plan|state-machine|emergency-admit|passport|publication|publication-repair|ci-rerun|ticket-pr|models|envelope|operator-snapshot|attempt|claim|renew|release|release-expired|preflight|next-stage|ticket-state|ticket-attest|project-ledger|reorder-test-fixes|run> [arguments]" >&2
   exit 2
 }
 
@@ -762,10 +762,12 @@ PY
 [[ "$RELEASE_CONTRACT" == "$ACTIVE_CONTRACT" ]] ||
   die "active record and release contract disagree"
 PROJECT_RUNTIME_ROOT="${KITS_ROOT%/*}/project-runtimes/$PROJECT"
+if [[ "$QUALIFICATION_LAUNCHER" == "1" ]]; then
+  PROJECT_RUNTIME_ROOT="$QUALIFICATION_ROOT/project-runtimes/$PROJECT"
+fi
 PROJECT_RUNTIME_BIN="$PROJECT_RUNTIME_ROOT/bin"
 PROJECT_RUNTIME_JOURNAL="$PROJECT_RUNTIME_ROOT/runtime-pin-journal.json"
-if [[ "$QUALIFICATION_LAUNCHER" != "1" &&
-      -n "$ACTIVE_RUNTIME_NODE$ACTIVE_RUNTIME_NPM" &&
+if [[ -n "$ACTIVE_RUNTIME_NODE$ACTIVE_RUNTIME_NPM" &&
       ( -e "$PROJECT_RUNTIME_JOURNAL" || -L "$PROJECT_RUNTIME_JOURNAL" ) ]]; then
   require_managed_directory "$PROJECT_RUNTIME_ROOT" "project runtime root"
   require_managed_directory "$PROJECT_RUNTIME_BIN" "project runtime bin"
@@ -778,6 +780,8 @@ if [[ "$QUALIFICATION_LAUNCHER" != "1" &&
   export PATH
 fi
 if [[ "$QUALIFICATION_LAUNCHER" == "1" && "$ACTIVE_RUNTIME_TUPLE" != "{}" ]]; then
+  [[ -e "$PROJECT_RUNTIME_JOURNAL" || -L "$PROJECT_RUNTIME_JOURNAL" ]] ||
+    die "qualification runtime pin is missing"
   FACTORY_CERTIFICATION_TUPLE="$ACTIVE_RUNTIME_TUPLE" \
     "$PYTHON_BIN" -I "$RELEASE_PATH/scripts/certification-preflight.py" \
       --plan "$PRODUCT_ROOT/factory/certification-plan.json" \
@@ -1519,6 +1523,17 @@ PY
       --release-path "$RELEASE_PATH" \
       --state-dir "$CONTROLLER_STATE_DIR" \
       "${CONTROL_ARGS[@]}"
+    ;;
+  qualification-run)
+    [[ "$QUALIFICATION_LAUNCHER" == "1" ]] ||
+      die "qualification run requires a sealed qualification launcher"
+    require_exact "--json" "$@"
+    QUALIFICATION_RUNNER="$RELEASE_PATH/scripts/qualification-run.py"
+    require_managed_file "$QUALIFICATION_RUNNER" "active release qualification runner"
+    cleanup_runtime
+    trap - EXIT HUP INT TERM
+    exec "${HELPER_ENV[@]}" "$PYTHON_BIN" -I -S "$QUALIFICATION_RUNNER" \
+      --launcher "$SELF_PATH" --project "$PROJECT" --json
     ;;
   qualification)
     [[ "$ACTIVE_CONTRACT" == "1.8.0" || "$ACTIVE_CONTRACT" == "2.0.0" ]] ||

@@ -386,7 +386,10 @@ def operator_mapping(
             if (
                 not isinstance(entry, dict)
                 or entry.get("operator_fields_initialized") is not True
-                or not isinstance(entry.get("operator"), dict)
+                or (
+                    "operator" in entry
+                    and not isinstance(entry.get("operator"), dict)
+                )
             ):
                 raise DispatchError(
                     f"selected-ticket operator projection is invalid: {ticket}"

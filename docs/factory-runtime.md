@@ -167,8 +167,12 @@ it. The clean child environment uses the account's fixed `$HOME/.config/gh`
 credential store; it never extracts or forwards a token. Read-only and provider
 execution paths remain credential-free.
 
-Doctor reports only bounded readiness states. It never returns account data,
-credential values, command output, or credential-bearing URLs.
+Doctor reports only bounded readiness states. Cheap CLI probes and model/provider
+readiness have separate bounded windows so a healthy multi-route readiness scan
+is not held to a version probe's deadline. A timeout or malformed readiness
+response remains a typed error report rather than breaking Doctor's JSON
+contract. Doctor never returns account data, credential values, command output,
+or credential-bearing URLs.
 
 ## Qualification
 
@@ -177,6 +181,21 @@ non-production environment for the exact candidate release. It uses its own
 active record, controller state, provider state, operator map, runtime ledger,
 ports, temporary home, and product checkout. It does not modify the installed
 launcher or production active record.
+
+After preparation, one sealed command owns deterministic progress to the next
+authenticated boundary:
+
+```bash
+/private/tmp/nysa-sf-qualification.<lane>/releases/<factory-sha>/scripts/factory-launch \
+  <project> qualification-run --json
+```
+
+It requires Doctor `ok`, performs the one mandatory controller restart in a
+new process, runs the ordinary controller/state machine, and invokes the
+existing reducer only after terminal completion. `waiting` and `blocked` are
+typed stops: rerun the same command only after the named external or operator
+evidence changes. The driver never edits tickets, claims, leases, receipts,
+passports, journals, or provider state.
 
 Qualification must prove:
 

@@ -49,9 +49,15 @@ class QualificationEnvironmentTest(unittest.TestCase):
         self.home = self.workspace / "home"
         self.home.mkdir(mode=0o700)
         (self.home / ".factory").mkdir(mode=0o700)
+        runtime_bin = self.home / ".local/bin"
+        runtime_bin.mkdir(parents=True, mode=0o700)
+        for tool in ("node", "npm", "npx"):
+            runtime_bin.joinpath(tool).symlink_to(shutil.which(tool))
         self.global_env = self.home / ".factory/global.env"
         self.global_env.write_text(
-            "CLAUDE_CODE_PINNED=2.1.223\n", encoding="utf-8",
+            "CLAUDE_CODE_PINNED=2.1.223\n"
+            "GLOBAL_DAILY_CAP_USD=100.000000\n",
+            encoding="utf-8",
         )
         self.global_env.chmod(0o600)
         os.environ["HOME"] = str(self.home)
@@ -137,6 +143,14 @@ class QualificationEnvironmentTest(unittest.TestCase):
             self.factory / "scripts/certification-preflight.py",
         )
         shutil.copy2(
+            ROOT / "scripts/envelope-control.py",
+            self.factory / "scripts/envelope-control.py",
+        )
+        shutil.copy2(
+            ROOT / "scripts/owner-runtime-pin.py",
+            self.factory / "scripts/owner-runtime-pin.py",
+        )
+        shutil.copy2(
             ROOT / "scripts/lib/certification_plan.py",
             self.factory / "scripts/lib/certification_plan.py",
         )
@@ -193,7 +207,15 @@ class QualificationEnvironmentTest(unittest.TestCase):
             encoding="utf-8",
         )
         (self.product / "factory/PROJECT.env").write_text(
-            "PREVIEW_PROVIDER=railway\n", encoding="utf-8",
+            "GH_REPO=example/product\nPREVIEW_PROVIDER=railway\n", encoding="utf-8",
+        )
+        (self.product / "factory/ENVELOPE.env").write_text(
+            "PER_RUN_BUDGET_USD=2.000000\n"
+            "PER_TICKET_BUDGET_USD=25.000000\n"
+            "PER_RUN_MAX_TURNS=60\n"
+            "PER_RUN_TIMEOUT_MIN=45\n"
+            "DAILY_CAP_USD=100.000000\n",
+            encoding="utf-8",
         )
         (self.product / "factory/ledger.csv").write_text(
             "date,time,ticket,role,adapter,prompt_version,turns,cost_usd,"
@@ -235,7 +257,7 @@ class QualificationEnvironmentTest(unittest.TestCase):
         run(self.product, "git", "config", "user.email", "test@example.invalid")
         run(
             self.product, "git", "remote", "add", "origin",
-            "git@example.invalid:example/product.git",
+            "git@github.com:example/product.git",
         )
         run(self.product, "git", "add", ".")
         run(self.product, "git", "commit", "-qm", "product")
@@ -321,12 +343,17 @@ class QualificationEnvironmentTest(unittest.TestCase):
         path.chmod(0o600)
 
     def tearDown(self) -> None:
-        for base, directories, files in os.walk(self.root, topdown=False):
-            for name in files:
-                (Path(base) / name).chmod(0o600)
-            for name in directories:
-                (Path(base) / name).chmod(0o700)
-        shutil.rmtree(self.root)
+        if self.root.exists():
+            for base, directories, files in os.walk(self.root, topdown=False):
+                for name in files:
+                    path = Path(base) / name
+                    if not path.is_symlink():
+                        path.chmod(0o600)
+                for name in directories:
+                    path = Path(base) / name
+                    if not path.is_symlink():
+                        path.chmod(0o700)
+            shutil.rmtree(self.root)
         if self.original_home is None:
             os.environ.pop("HOME", None)
         else:
@@ -385,9 +412,13 @@ class QualificationEnvironmentTest(unittest.TestCase):
             {path.name for path in self.root.iterdir()},
             {
                 "environment.json", "global.env", "marker.json", "projects",
-                "receipts", "releases",
+                "project-runtimes", "receipts", "releases",
             },
         )
+        runtime = self.root / "project-runtimes/relay"
+        self.assertTrue((runtime / "runtime-pin-journal.json").is_file())
+        for tool in ("node", "npm", "npx"):
+            self.assertTrue((runtime / "bin" / tool).is_symlink())
         self.assertEqual(
             (self.root / "global.env").read_bytes(),
             self.global_env.read_bytes(),
@@ -509,6 +540,71 @@ class QualificationEnvironmentTest(unittest.TestCase):
         self.assertEqual(replay, value)
         readiness.assert_called_once()
 
+    def test_prepare_rejects_unfit_run_budget_before_state(self) -> None:
+        envelope = self.product / "factory/ENVELOPE.env"
+        envelope.write_text(
+            envelope.read_text(encoding="utf-8").replace(
+                "PER_RUN_BUDGET_USD=2.000000",
+                "PER_RUN_BUDGET_USD=10.000000",
+            ),
+            encoding="utf-8",
+        )
+        run(self.product, "git", "add", "factory/ENVELOPE.env")
+        run(self.product, "git", "commit", "-qm", "oversized qualification run")
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError,
+            "qualification product per-run budget exceeds the manifest",
+        ):
+            ENVIRONMENT.prepare(argparse.Namespace(
+                factory_root=self.factory, product_root=self.product,
+                project="relay", root=self.root,
+            ))
+        self.assertEqual(list(self.root.iterdir()), [])
+        self.assertFalse((self.product / "factory/runs").exists())
+        self.assertFalse(self.home.joinpath(".factory/qualification/relay").exists())
+
+    def test_qualification_budget_contract_covers_every_cap(self) -> None:
+        manifest = json.loads(
+            (self.product / "factory/QUALIFICATION.json").read_text(encoding="utf-8")
+        )
+        envelope = self.product / "factory/ENVELOPE.env"
+        original = envelope.read_text(encoding="utf-8")
+        cases = (
+            (
+                original + "PLANNER_PER_RUN_BUDGET_USD=2.000001\n",
+                self.global_env.read_bytes(),
+                "qualification product per-run budget exceeds the manifest",
+            ),
+            (
+                original.replace(
+                    "PER_TICKET_BUDGET_USD=25.000000",
+                    "PER_TICKET_BUDGET_USD=26.000000",
+                ),
+                self.global_env.read_bytes(),
+                "qualification product ticket budget does not match the manifest",
+            ),
+            (
+                original.replace(
+                    "DAILY_CAP_USD=100.000000", "DAILY_CAP_USD=99.999999",
+                ),
+                self.global_env.read_bytes(),
+                "qualification product daily cap is below the manifest budget",
+            ),
+            (
+                original,
+                b"GLOBAL_DAILY_CAP_USD=99.999999\n",
+                "qualification machine daily cap is below the manifest budget",
+            ),
+        )
+        for env_text, global_config, message in cases:
+            with self.subTest(message=message):
+                envelope.write_text(env_text, encoding="utf-8")
+                with self.assertRaisesRegex(ENVIRONMENT.EnvironmentError, message):
+                    ENVIRONMENT.validate_qualification_budget(
+                        self.factory, self.product, manifest, global_config,
+                    )
+        envelope.write_text(original, encoding="utf-8")
+
     def test_prepare_recovers_each_exact_crash_prefix_and_response_loss(self) -> None:
         args = argparse.Namespace(
             factory_root=self.factory, product_root=self.product,
@@ -572,6 +668,51 @@ class QualificationEnvironmentTest(unittest.TestCase):
                     ENVIRONMENT.preparation_state(self.root, authority, "relay"),
                     "exact-incomplete",
                 )
+
+        value = ENVIRONMENT.prepare(args)
+        self.assertEqual(value["status"], "prepared")
+        self.assertEqual(
+            ENVIRONMENT.preparation_state(
+                self.root, Path(value["authority_root"]), "relay",
+            ),
+            "exact-complete",
+        )
+
+    def test_prepare_replays_consumed_ready_receipts_after_later_failure(self) -> None:
+        args = argparse.Namespace(
+            factory_root=self.factory, product_root=self.product,
+            project="relay", root=self.root,
+        )
+        controller = (
+            self.home / ".factory/qualification/relay/controller"
+        ).resolve()
+
+        def fail_after_operator_initialization(*_arguments):
+            lock = os.open(
+                controller / ".operator-apply-lock",
+                os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+            )
+            os.close(lock)
+            for ticket in ("T-101", "T-102", "T-103"):
+                ENVIRONMENT.operator_receipt.issue(
+                    controller, ticket, "ready", {},
+                )
+                ENVIRONMENT.operator_receipt.verify_consume(
+                    controller, ticket, "ready", {},
+                )
+            raise ENVIRONMENT.EnvironmentError("simulated later failure")
+
+        with (
+            mock.patch.object(
+                ENVIRONMENT, "qualification_fallback_readiness",
+                side_effect=fail_after_operator_initialization,
+            ),
+            self.assertRaisesRegex(
+                ENVIRONMENT.EnvironmentError, "simulated later failure",
+            ),
+        ):
+            ENVIRONMENT.prepare(args)
 
         value = ENVIRONMENT.prepare(args)
         self.assertEqual(value["status"], "prepared")
@@ -937,6 +1078,31 @@ class QualificationEnvironmentTest(unittest.TestCase):
             ))
         self.assertFalse((self.root / "marker.json").exists())
 
+    def test_local_publication_origin_fails_before_materialization(self) -> None:
+        remote = self.workspace / "local-only.git"
+        run(self.workspace, "git", "init", "--bare", "-q", str(remote))
+        run(self.product, "git", "remote", "set-url", "origin", str(remote))
+        args = argparse.Namespace(
+            factory_root=self.factory, product_root=self.product,
+            project="relay", root=self.root,
+        )
+        with (
+            mock.patch.object(
+                ENVIRONMENT, "prepare_global_config",
+                side_effect=AssertionError("origin refusal must be read-only"),
+            ),
+            self.assertRaisesRegex(
+                ENVIRONMENT.EnvironmentError,
+                "qualification requires the protected GitHub product origin",
+            ),
+        ):
+            ENVIRONMENT.prepare(args)
+        self.assertFalse((self.root / "marker.json").exists())
+        self.assertFalse((self.root / "global.env").exists())
+        self.assertFalse(
+            self.home.joinpath(".factory/qualification/relay").exists()
+        )
+
     def test_partial_selected_initialization_restarts_without_duplication(self) -> None:
         args = argparse.Namespace(
             factory_root=self.factory, product_root=self.product,
@@ -1090,6 +1256,64 @@ class QualificationEnvironmentTest(unittest.TestCase):
                 project="relay", root=self.root,
             ))
 
+    def test_rejects_external_dependency_without_terminal_evidence(self) -> None:
+        dependency = self.product / "factory/tickets/T-099.md"
+        dependency.write_text(
+            "# T-099\n\nState: Done\nDepends-On: none\n",
+            encoding="utf-8",
+        )
+        ticket = self.product / "factory/tickets/T-103.md"
+        ticket.write_text(ticket.read_text().replace(
+            "Depends-On: none", "Depends-On: T-099",
+        ))
+        run(self.product, "git", "add", "factory/tickets")
+        run(self.product, "git", "commit", "-qm", "unattested dependency")
+        run(
+            self.product, "git", "update-ref", "refs/remotes/origin/main",
+            run(self.product, "git", "rev-parse", "HEAD"),
+        )
+        with (
+            mock.patch.object(
+                ENVIRONMENT, "initialize_selected_operator",
+                side_effect=AssertionError("operator initialization must not run"),
+            ),
+            self.assertRaisesRegex(
+                ENVIRONMENT.EnvironmentError,
+                "T-103: qualification dependency lacks protected evidence: T-099",
+            ),
+            mock.patch.object(
+                ENVIRONMENT, "protected_dependency",
+                side_effect=ENVIRONMENT.TerminalError(
+                    "protected main lacks dependency fulfillment evidence"
+                ),
+            ),
+        ):
+            ENVIRONMENT.prepare(argparse.Namespace(
+                factory_root=self.factory, product_root=self.product,
+                project="relay", root=self.root,
+            ))
+        self.assertFalse((self.root / "marker.json").exists())
+
+    def test_accepts_external_dependency_fulfillment(self) -> None:
+        ticket = self.product / "factory/tickets/T-103.md"
+        ticket.write_text(ticket.read_text().replace(
+            "Depends-On: none", "Depends-On: T-099",
+        ))
+        run(self.product, "git", "add", "factory/tickets/T-103.md")
+        run(self.product, "git", "commit", "-qm", "fulfilled dependency")
+        run(
+            self.product, "git", "update-ref", "refs/remotes/origin/main",
+            run(self.product, "git", "rev-parse", "HEAD"),
+        )
+        with mock.patch.object(
+            ENVIRONMENT, "protected_dependency", return_value={
+                "basis": "validated-protected-dependency-fulfillment",
+                "ticket": "T-099",
+            },
+        ) as dependency:
+            ENVIRONMENT.validate_selected_contracts(self.product)
+        dependency.assert_called_once_with(self.product, "T-099")
+
     def test_selected_ticket_authoring_fields_fail_before_lane_creation(self) -> None:
         ticket = self.product / "factory/tickets/T-101.md"
         original = ticket.read_text()
@@ -1175,9 +1399,15 @@ class QualificationEnvironmentTest(unittest.TestCase):
         ledger = self.workspace / "selected-runtime-ledger.csv"
         state_dir = self.workspace / "selected-controller"
         completed = subprocess.CompletedProcess([], 0, "", "")
-        with mock.patch.object(
-            ENVIRONMENT.subprocess, "run", return_value=completed,
-        ) as invoked:
+        with (
+            mock.patch.object(
+                ENVIRONMENT, "committed_ticket",
+                return_value=("State: Ready\n", "HEAD"),
+            ),
+            mock.patch.object(
+                ENVIRONMENT.subprocess, "run", return_value=completed,
+            ) as invoked,
+        ):
             ENVIRONMENT.initialize_selected_operator(
                 self.factory, self.product, mapping, ledger, state_dir,
                 refresh=True,
@@ -1189,6 +1419,10 @@ class QualificationEnvironmentTest(unittest.TestCase):
              ["--ticket", "T-103"]],
         )
         self.assertEqual(
+            [call.args[0][-3] for call in invoked.call_args_list[:3]],
+            ["init", "init", "init"],
+        )
+        self.assertEqual(
             invoked.call_args_list[3].args[0][-2:],
             ["--runtime-ledger", str(ledger)],
         )
@@ -1197,6 +1431,45 @@ class QualificationEnvironmentTest(unittest.TestCase):
             self.assertEqual(
                 call.kwargs["env"]["FACTORY_CONTROLLER_STATE_DIR"], str(state_dir),
             )
+
+    def test_selected_operator_readies_backlog_cohort(self) -> None:
+        mapping = self.workspace / "backlog-operator-map.json"
+        ENVIRONMENT.write(mapping, {
+            "_config": {}, "_sync": {}, "initiatives": {}, "tickets": {},
+        })
+        ledger = self.workspace / "backlog-runtime-ledger.csv"
+        state_dir = self.workspace / "backlog-controller"
+        commands = []
+
+        def complete(command, **_kwargs):
+            commands.append(command)
+            if "operator-cli.py" in command[1]:
+                ticket = command[-1]
+                value = ENVIRONMENT.read(mapping)
+                value["tickets"][ticket] = {
+                    "operator_fields_initialized": True,
+                }
+                value["_sync"].setdefault(
+                    "selected_ticket_success_at", {}
+                )[ticket] = "2026-08-14T00:00:00Z"
+                ENVIRONMENT.replace(mapping, value)
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        with (
+            mock.patch.object(
+                ENVIRONMENT, "committed_ticket",
+                return_value=("State: Backlog\n", "HEAD"),
+            ),
+            mock.patch.object(ENVIRONMENT.subprocess, "run", side_effect=complete),
+        ):
+            ENVIRONMENT.initialize_selected_operator(
+                self.factory, self.product, mapping, ledger, state_dir,
+            )
+
+        self.assertEqual(
+            [command[-3] for command in commands[:3]],
+            ["ready", "ready", "ready"],
+        )
 
     def test_rejects_ticket_blob_that_dispatch_would_not_use(self) -> None:
         ticket = self.product / "factory/tickets/T-101.md"
@@ -1485,6 +1758,12 @@ class QualificationEnvironmentTest(unittest.TestCase):
         run(self.product, "git", "commit", "-qm", "authorize qualification")
 
         account = (self.workspace / "account").resolve()
+        account_runtime = account / ".local/bin"
+        account_runtime.mkdir(parents=True, mode=0o700)
+        for tool in ("node", "npm", "npx"):
+            account_runtime.joinpath(tool).symlink_to(
+                self.home / ".local/bin" / tool,
+            )
         provider = account / ".factory"
         kits = provider / "kits"
         source = kits / "projects/relay"
@@ -2731,9 +3010,13 @@ class QualificationEnvironmentTest(unittest.TestCase):
 
         for base, directories, files in os.walk(self.root, topdown=False):
             for name in files:
-                (Path(base) / name).chmod(0o600)
+                path = Path(base) / name
+                if not path.is_symlink():
+                    path.chmod(0o600)
             for name in directories:
-                (Path(base) / name).chmod(0o700)
+                path = Path(base) / name
+                if not path.is_symlink():
+                    path.chmod(0o700)
         shutil.rmtree(self.root)
         original_write = ENVIRONMENT.write_exact
         crashed = False

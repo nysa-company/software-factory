@@ -379,7 +379,9 @@ CREATE TABLE IF NOT EXISTS account_leases (
   lease_id TEXT NOT NULL UNIQUE,
   account_route TEXT NOT NULL,
   trust_scope TEXT NOT NULL
-    CHECK(trust_scope IN ('production-certified','qualification-candidate')),
+    CHECK(trust_scope IN (
+      'production-certified','qualification-candidate','development-local'
+    )),
   owner_pid INTEGER NOT NULL CHECK(owner_pid > 0),
   owner_pgid INTEGER NOT NULL CHECK(owner_pgid > 0),
   owner_start TEXT NOT NULL,
@@ -1519,7 +1521,9 @@ def account_acquire_command(connection, args):
                     """SELECT lease_id FROM account_leases
                        WHERE account_route=? AND state='waiting'
                        ORDER BY CASE trust_scope
-                                  WHEN 'production-certified' THEN 0 ELSE 1 END,
+                                  WHEN 'production-certified' THEN 0
+                                  WHEN 'qualification-candidate' THEN 1
+                                  ELSE 2 END,
                                 sequence LIMIT 1""",
                     (account_route,),
                 ).fetchone()
@@ -1951,7 +1955,9 @@ def parser():
     account_acquire.add_argument(
         "--trust-scope",
         required=True,
-        choices=("production-certified", "qualification-candidate"),
+        choices=(
+            "production-certified", "qualification-candidate", "development-local"
+        ),
     )
     account_acquire.add_argument("--policy", required=True)
     account_acquire.add_argument("--configuration-lock")
@@ -1975,7 +1981,9 @@ def parser():
     account_validate.add_argument(
         "--trust-scope",
         required=True,
-        choices=("production-certified", "qualification-candidate"),
+        choices=(
+            "production-certified", "qualification-candidate", "development-local"
+        ),
     )
     account_validate.set_defaults(handler=account_validate_command)
 
