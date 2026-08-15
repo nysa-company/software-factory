@@ -1871,12 +1871,13 @@ class TicketPassportTest(unittest.TestCase):
         authorization.write_text(
             json.dumps({
                 "repository": "nysa-company/relay-factory",
-                "schema": PASSPORT.INFLIGHT_SCHEMA,
-                "source_kit_sha": "a" * 40,
+                "schema": PASSPORT.INFLIGHT_SCHEMA_V2,
+                "source_kit_sha": "f" * 40,
                 "target_kit_sha": "b" * 40,
                 "tickets": [{
                     "branch": "ticket/T-110",
                     "head": rewritten,
+                    "source_kit_sha": "a" * 40,
                     "state": "Blocked-Escalated",
                     "ticket": "T-110",
                 }],
@@ -1937,6 +1938,21 @@ class TicketPassportTest(unittest.TestCase):
         )
         self.assertEqual(authorization, value)
         self.assertEqual(entries["T-110"], value["tickets"][0])
+        mixed = json.loads(json.dumps(value))
+        mixed["schema"] = PASSPORT.INFLIGHT_SCHEMA_V2
+        mixed["tickets"][0]["source_kit_sha"] = "c" * 40
+        authorization, entries = PASSPORT.parse_inflight_authorization(
+            json.dumps(mixed), project, target,
+        )
+        self.assertEqual(entries["T-110"]["source_kit_sha"], "c" * 40)
+        for invalid in (None, 1, target):
+            malformed = json.loads(json.dumps(mixed))
+            malformed["tickets"][0]["source_kit_sha"] = invalid
+            with self.subTest(ticket_source=invalid):
+                with self.assertRaises(PASSPORT.InflightAuthorizationError):
+                    PASSPORT.parse_inflight_authorization(
+                        json.dumps(malformed), project, target,
+                    )
         with self.assertRaises(PASSPORT.InflightAuthorizationError):
             PASSPORT.parse_inflight_authorization(
                 "{" + " " * (limit + 1 - len(raw)) + raw[1:], project, target,

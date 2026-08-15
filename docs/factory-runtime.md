@@ -235,6 +235,10 @@ existing reducer only after a nonempty set of terminal completion results. The
 batch reads its in-flight authorization from the sealed qualification product
 SHA; production continues to require protected-main authority. The preview
 digest stays inside the command; no human hash handoff is needed.
+Authorization v2 may bind a different exact source Factory per selected ticket
+while retaining the manifest source as the cohort root. This is the supported
+recovery after an interrupted batch leaves an authenticated mixed-source
+cohort; the next sealed batch still migrates every selected ticket to one target.
 Contract-blocked roles use the same sealed boundary: `ticket-control
 contract-repair plan/apply` verifies the exact claim, passport, transition,
 terminal evidence, and ticket head before appending one receipt-bound resume

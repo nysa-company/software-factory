@@ -771,6 +771,7 @@ class ModelControlTest(unittest.TestCase):
     def test_migration_preview_binds_one_current_readiness_probe_per_command(self):
         self.command("pin", "--ticket", "T-901", "--workdir", str(self.workdir))
         source_kit_sha = "a" * 40
+        sibling_source_kit_sha = "d" * 40
         ticket_path = self.workdir / "factory" / "tickets" / "T-901.md"
         route_plan = self.workdir / "factory" / "route-plans" / "T-901.json"
         ticket_path.write_text(
@@ -826,10 +827,11 @@ class ModelControlTest(unittest.TestCase):
         )
         sibling_ticket = sibling_workdir / "factory" / "tickets" / "T-902.md"
         sibling_ticket.write_text(
-            sibling_ticket.read_text() + f"Kit-SHA: {source_kit_sha}\n"
+            sibling_ticket.read_text() + f"Kit-SHA: {sibling_source_kit_sha}\n"
         )
         sibling_plan = dict(source_plan)
         sibling_plan["ticket"] = "T-902"
+        sibling_plan["kit_sha"] = sibling_source_kit_sha
         sibling_route = sibling_workdir / "factory" / "route-plans" / "T-902.json"
         sibling_route.parent.mkdir(parents=True)
         sibling_route.write_text(
@@ -865,16 +867,18 @@ class ModelControlTest(unittest.TestCase):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(json.dumps({
                 "repository": "nysa-company/model-control-test",
-                "schema": "nysa.software-factory.inflight-release-authorization/v1",
+                "schema": "nysa.software-factory.inflight-release-authorization/v2",
                 "source_kit_sha": source_kit_sha,
                 "target_kit_sha": self.kit_sha,
                 "tickets": [
                     {
-                        "branch": "ticket/T-901", "head": head, "state": state,
+                        "branch": "ticket/T-901", "head": head,
+                        "source_kit_sha": source_kit_sha, "state": state,
                         "ticket": "T-901",
                     },
                     {
                         "branch": "ticket/T-902", "head": sibling_head,
+                        "source_kit_sha": sibling_source_kit_sha,
                         "state": "Ready", "ticket": "T-902",
                     },
                 ],

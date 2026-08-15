@@ -251,6 +251,11 @@ provider state, ticket branches, or paid roles are created.
   descendant work incomplete and source evidence historical, then model
   migration may fast-forward an ancestor remote to that checkpoint and the
   candidate Kit-SHA in one CAS-protected push; it never resets ticket work.
+  If an interrupted sealed batch leaves selected tickets on different
+  authenticated releases, authorization v2 keeps `source_kit_sha` at the
+  manifest's source root and adds each ticket's exact current
+  `source_kit_sha`. The next candidate migrates the complete cohort to one
+  target; do not rewrite ticket history to manufacture a uniform source.
   If a failed isolated predecessor stopped after issuing Planner receipts but
   before preflight, commit and protect the successor manifest, candidate pin,
   and exact `preprovider-branch-resets.json`; prepare that unchanged successor

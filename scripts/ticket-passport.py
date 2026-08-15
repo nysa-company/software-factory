@@ -35,6 +35,7 @@ from failed_attempt_handoff import (  # noqa: E402
 from inflight_release import (  # noqa: E402
     AuthorizationError as InflightAuthorizationError,
     SCHEMA as INFLIGHT_SCHEMA,
+    SCHEMA_V2 as INFLIGHT_SCHEMA_V2,
     authorize_ticket as authorize_inflight_ticket,
     parse_authorization as parse_inflight_authorization,
 )
@@ -407,8 +408,7 @@ def authorized_inflight_rewrite(
     except InflightAuthorizationError:
         return False
     if (
-        authorization.get("source_kit_sha") != source
-        or not DIGEST.fullmatch(previous.get("route_plan_sha256", ""))
+        not DIGEST.fullmatch(previous.get("route_plan_sha256", ""))
         or previous["route_plan_sha256"] != route_digest(args.workdir, args.ticket)
     ):
         return False
