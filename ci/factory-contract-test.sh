@@ -99,9 +99,14 @@ EOF
 #!/usr/bin/env bash
 printf '%s\n' '{"portfolio_id":"fixture","profile_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","profile_id":"fixture","schema":"model-resolution-plan/v1","selections":{"builder":{},"narrator":{},"planner":{},"reviewer":{},"spec-linter":{},"test-author":{}}}'
 EOF
+  cat > "$release/scripts/provider-concurrency-config.py" <<'EOF'
+#!/usr/bin/env python3
+raise SystemExit(0)
+EOF
   chmod 700 "$release/scripts/factory-doctor.sh" \
     "$release/scripts/factory-doctor-real.sh" \
-    "$release/scripts/model-control.sh"
+    "$release/scripts/model-control.sh" \
+    "$release/scripts/provider-concurrency-config.py"
 }
 
 write_binding() {
@@ -226,6 +231,8 @@ git -C "$PRODUCT" config user.email "factory-contract@example.invalid"
 printf 'fixture\n' > "$PRODUCT/README.md"
 printf 'MAX_CONCURRENT_TICKETS=3\n' > "$PRODUCT/factory/PROJECT.env"
 printf '%040d\n' 0 > "$PRODUCT/factory/KIT_PIN"
+mkdir -p "$PRODUCT/factory/tickets"
+printf '%s\n' '# T-1' '' 'State: Ready' > "$PRODUCT/factory/tickets/T-1.md"
 git -C "$PRODUCT" add -A
 git -C "$PRODUCT" commit -qm "seed product"
 PRODUCT_TREE="$(git -C "$PRODUCT" rev-parse 'HEAD^{tree}')"
@@ -516,6 +523,11 @@ PY
 
 # Qualification readiness gets a longer bounded window than cheap CLI probes,
 # and a timeout still produces typed Doctor JSON instead of a traceback.
+FACTORY_ROOT="$PRODUCT" FACTORY_RELEASE_CONTRACT_VERSION=2.0.0 \
+  "$ROOT/scripts/dispatch-lease.sh" claim --ticket T-1 \
+  > "$TMP/qualification-lease.json"
+mkdir -p "$TMP/provider"
+printf '%s\n' '{}' > "$TMP/provider/provider-policy.json"
 cp "$RELEASE_B/scripts/model-control.sh" "$TMP/model-control.saved"
 cat > "$RELEASE_B/scripts/model-control.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -529,6 +541,7 @@ HOME="$TEST_HOME" PATH="$TEST_BIN:/usr/bin:/bin" \
   FACTORY_DOCTOR_TIMEOUT_SECONDS=1 \
   FACTORY_DOCTOR_READINESS_TIMEOUT_SECONDS=5 \
   FACTORY_KIT_TRUST_SCOPE=qualification-candidate \
+  FACTORY_PROVIDER_POLICY="$TMP/provider/provider-policy.json" \
   /bin/bash "$RELEASE_B/scripts/factory-doctor-real.sh" --json \
     --project "$PROJECT" --kit-dir "$RELEASE_B" \
     --product-root "$PRODUCT" --kit-sha "$SHA_B" \
@@ -542,7 +555,147 @@ assert pathlib.Path(sys.argv[2]).read_bytes() == b""
 assert int(sys.argv[3]) in {0, 1}, sys.argv[3]
 assert value["checks"]["fallback_readiness"]["status"] == "ok"
 assert value["checks"]["fallback_readiness"]["report"]["status"] == "ready"
+assert value["overall_status"] == "warning", {
+    name: check["status"] for name, check in value["checks"].items()
+}
+assert value["checks"]["runtime"]["dispatch_leases"] == [
+    {"state": "active", "ticket": "T-1"},
+]
 PY
+
+# The deterministic qualification driver accepts that real, cohort-bound
+# runtime-only warning and reaches reconciliation.
+python3 - "$TMP/qualification-manifest.json" "$SHA_B" <<'PY'
+import json, os, pathlib, sys
+path, sha = pathlib.Path(sys.argv[1]), sys.argv[2]
+path.write_text(json.dumps({
+    "budget_usd": "100.000000",
+    "capacity": 3,
+    "contract_version": "2.0.0",
+    "factory_sha": sha,
+    "generation": 1,
+    "per_run_budget_usd": "2.000000",
+    "per_ticket_budget_usd": "25.000000",
+    "schema": "nysa.software-factory.qualification/v2",
+    "target_done": 3,
+    "tickets": ["T-1", "T-2", "T-3"],
+}, sort_keys=True) + "\n", encoding="utf-8")
+os.chmod(path, 0o600)
+PY
+cat > "$TMP/qualification-driver-launcher" <<'EOF'
+#!/usr/bin/env bash
+case "$2" in
+  doctor) cat "$QUALIFICATION_DOCTOR_JSON" ;;
+  reconcile)
+    : > "$QUALIFICATION_RECONCILE_MARKER"
+    printf '%s\n' '{"active":1,"results":[],"schema":"nysa.software-factory.controller/v1","status":"waiting_for_target"}'
+    ;;
+  *) exit 2 ;;
+esac
+EOF
+chmod 700 "$TMP/qualification-driver-launcher"
+QUALIFICATION_DRIVER_RC=0
+FACTORY_QUALIFICATION_MANIFEST="$TMP/qualification-manifest.json" \
+  FACTORY_RELEASE_SHA="$SHA_B" \
+  QUALIFICATION_DOCTOR_JSON="$TMP/qualification-ready-doctor.json" \
+  QUALIFICATION_RECONCILE_MARKER="$TMP/qualification-reconcile-called" \
+  python3 "$ROOT/scripts/qualification-run.py" \
+    --launcher "$TMP/qualification-driver-launcher" \
+    --project "$PROJECT" --json > "$TMP/qualification-driver.json" \
+    || QUALIFICATION_DRIVER_RC=$?
+python3 - "$TMP/qualification-driver.json" "$QUALIFICATION_DRIVER_RC" \
+  "$TMP/qualification-reconcile-called" <<'PY'
+import json, pathlib, sys
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+assert int(sys.argv[2]) == 3
+assert pathlib.Path(sys.argv[3]).is_file()
+assert value["doctor_status"] == "warning"
+assert value["reason"] == "cohort_not_accounted"
+assert value["status"] == "waiting"
+PY
+
+mkdir -p "$PRODUCT/factory/.active-runs/T-1.planner.lock"
+chmod 700 "$PRODUCT/factory/.active-runs" \
+  "$PRODUCT/factory/.active-runs/T-1.planner.lock"
+printf '%s\n' "pid=$$" 'process_start=fixture' \
+  'token=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
+  > "$PRODUCT/factory/.active-runs/T-1.planner.lock/owner"
+chmod 600 "$PRODUCT/factory/.active-runs/T-1.planner.lock/owner"
+HOME="$TEST_HOME" PATH="$TEST_BIN:/usr/bin:/bin" \
+  FACTORY_TEST_MODE=1 FACTORY_TRUSTED_TEST_HARNESS=1 \
+  FACTORY_DOCTOR_TIMEOUT_SECONDS=1 \
+  FACTORY_DOCTOR_READINESS_TIMEOUT_SECONDS=5 \
+  FACTORY_KIT_TRUST_SCOPE=qualification-candidate \
+  FACTORY_PROVIDER_POLICY="$TMP/provider/provider-policy.json" \
+  /bin/bash "$RELEASE_B/scripts/factory-doctor-real.sh" --json \
+    --project "$PROJECT" --kit-dir "$RELEASE_B" \
+    --product-root "$PRODUCT" --kit-sha "$SHA_B" \
+    > "$TMP/qualification-active-claim-doctor.json"
+rm -f "$TMP/qualification-reconcile-called"
+QUALIFICATION_DRIVER_RC=0
+FACTORY_QUALIFICATION_MANIFEST="$TMP/qualification-manifest.json" \
+  FACTORY_RELEASE_SHA="$SHA_B" \
+  QUALIFICATION_DOCTOR_JSON="$TMP/qualification-active-claim-doctor.json" \
+  QUALIFICATION_RECONCILE_MARKER="$TMP/qualification-reconcile-called" \
+  python3 "$ROOT/scripts/qualification-run.py" \
+    --launcher "$TMP/qualification-driver-launcher" \
+    --project "$PROJECT" --json > "$TMP/qualification-active-claim-driver.json" \
+    || QUALIFICATION_DRIVER_RC=$?
+python3 - "$TMP/qualification-active-claim-doctor.json" \
+  "$TMP/qualification-active-claim-driver.json" "$QUALIFICATION_DRIVER_RC" \
+  "$TMP/qualification-reconcile-called" <<'PY'
+import json, pathlib, sys
+doctor = json.load(open(sys.argv[1], encoding="utf-8"))
+driver = json.load(open(sys.argv[2], encoding="utf-8"))
+assert doctor["checks"]["runtime"]["active_run_claims"] == 1
+assert doctor["checks"]["runtime"]["active_run_tickets"] == ["T-1"]
+assert doctor["checks"]["runtime"]["run_records"] == 0
+assert int(sys.argv[3]) == 3
+assert not pathlib.Path(sys.argv[4]).exists()
+assert driver["reason"] == "doctor_not_ready"
+assert driver["status"] == "blocked"
+PY
+rm -rf "$PRODUCT/factory/.active-runs"
+
+mkdir "$TMP/foreign-active-runs"
+ln -s "$TMP/foreign-active-runs" "$PRODUCT/factory/.active-runs"
+HOME="$TEST_HOME" PATH="$TEST_BIN:/usr/bin:/bin" \
+  FACTORY_TEST_MODE=1 FACTORY_TRUSTED_TEST_HARNESS=1 \
+  FACTORY_DOCTOR_TIMEOUT_SECONDS=1 \
+  FACTORY_DOCTOR_READINESS_TIMEOUT_SECONDS=5 \
+  FACTORY_KIT_TRUST_SCOPE=qualification-candidate \
+  FACTORY_PROVIDER_POLICY="$TMP/provider/provider-policy.json" \
+  /bin/bash "$RELEASE_B/scripts/factory-doctor-real.sh" --json \
+    --project "$PROJECT" --kit-dir "$RELEASE_B" \
+    --product-root "$PRODUCT" --kit-sha "$SHA_B" \
+    > "$TMP/qualification-malformed-claim-doctor.json" || true
+rm -f "$TMP/qualification-reconcile-called"
+QUALIFICATION_DRIVER_RC=0
+FACTORY_QUALIFICATION_MANIFEST="$TMP/qualification-manifest.json" \
+  FACTORY_RELEASE_SHA="$SHA_B" \
+  QUALIFICATION_DOCTOR_JSON="$TMP/qualification-malformed-claim-doctor.json" \
+  QUALIFICATION_RECONCILE_MARKER="$TMP/qualification-reconcile-called" \
+  python3 "$ROOT/scripts/qualification-run.py" \
+    --launcher "$TMP/qualification-driver-launcher" \
+    --project "$PROJECT" --json > "$TMP/qualification-malformed-claim-driver.json" \
+    || QUALIFICATION_DRIVER_RC=$?
+python3 - "$TMP/qualification-malformed-claim-doctor.json" \
+  "$TMP/qualification-malformed-claim-driver.json" "$QUALIFICATION_DRIVER_RC" \
+  "$TMP/qualification-reconcile-called" <<'PY'
+import json, pathlib, sys
+doctor = json.load(open(sys.argv[1], encoding="utf-8"))
+driver = json.load(open(sys.argv[2], encoding="utf-8"))
+runtime = doctor["checks"]["runtime"]
+assert doctor["overall_status"] == "error"
+assert runtime["active_run_claims"] == 0
+assert runtime["active_run_tickets"] == []
+assert runtime["malformed_active_run_claims"] == 1
+assert int(sys.argv[3]) == 3
+assert not pathlib.Path(sys.argv[4]).exists()
+assert driver["reason"] == "doctor_not_ready"
+assert driver["status"] == "blocked"
+PY
+rm "$PRODUCT/factory/.active-runs"
 
 cat > "$RELEASE_B/scripts/model-control.sh" <<'EOF'
 #!/usr/bin/env bash

@@ -1923,13 +1923,15 @@ class ReleaseTransactionTest(unittest.TestCase):
                 checks = {
                     "active_binding": {"status": "ok"},
                     "runtime": {
+                        "active_run_claims": 0, "active_run_tickets": [],
                         "active_runs": 0, "dispatch_lease_records": 0,
                         "locks": {
                             "global_ledger": False, "launch": False,
                             "ledger": False, "provider": False,
                         },
                         "maintenance": True, "malformed_dispatch_leases": 0,
-                        "malformed_runs": 0, "provider_lock_state": "absent",
+                        "malformed_active_run_claims": 0, "malformed_runs": 0,
+                        "provider_lock_state": "absent",
                         "run_records": 0, "stale_dispatch_leases": 0,
                         "stale_runs": 0, "status": "warning",
                     },

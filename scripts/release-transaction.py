@@ -2445,9 +2445,11 @@ def validate_host_runtime(
             and not any(runtime["locks"].values())
             and all(runtime.get(key) == 0 for key in (
                 "run_records", "active_runs", "stale_runs", "malformed_runs",
+                "active_run_claims", "malformed_active_run_claims",
                 "dispatch_lease_records", "stale_dispatch_leases",
                 "malformed_dispatch_leases",
             ))
+            and runtime.get("active_run_tickets") == []
             and all(
                 name == "runtime" or isinstance(check, dict)
                 and check.get("status") == "ok"
