@@ -1230,6 +1230,101 @@ class DispatchPlanTest(unittest.TestCase):
         self.assertEqual(subjects.count("T-110: operator ready receipt 1"), 1)
         self.assertIn("T-110: materialize ticket state", subjects)
 
+    def test_repeated_operator_ready_recovery_preserves_lineage(self):
+        _authorized, controller, _main, _resets = self.reconciled_operator_reset()
+        first = self.command("claim", controller_state=controller)
+
+        for generation in (2, 3):
+            previous = run(
+                "git", "ls-remote", "--heads", str(self.remote), "ticket/T-110",
+                cwd=self.product,
+            ).split()[0]
+            (self.product / "factory/.dispatch-leases/T-110.json").unlink()
+            worktree = Path(first["worktree"])
+            run("git", "worktree", "remove", str(worktree), cwd=self.product)
+            run("git", "branch", "-D", "ticket/T-110", cwd=self.product)
+            self.authorize_preprovider_reset(previous)
+            controller = self.root / f"controller-{generation}"
+            controller.mkdir(mode=0o700)
+
+            first = self.command("claim", controller_state=controller)
+
+            self.assertEqual(first["ticket"], "T-110")
+            self.assertEqual(first["preprovider_reset_head"], previous)
+            current = run(
+                "git", "ls-remote", "--heads", str(self.remote), "ticket/T-110",
+                cwd=self.product,
+            ).split()[0]
+            self.assertNotEqual(current, previous)
+            self.assertIn(
+                "State: Ready",
+                (Path(first["worktree"]) / "factory/tickets/T-110.md").read_text(),
+            )
+
+    def test_repeated_operator_ready_recovery_rejects_arbitrary_suffix(self):
+        _authorized, controller, _main, _resets = self.reconciled_operator_reset()
+        first = self.command("claim", controller_state=controller)
+        (self.product / "factory/.dispatch-leases/T-110.json").unlink()
+        worktree = Path(first["worktree"])
+        run("git", "worktree", "remove", str(worktree), cwd=self.product)
+        run("git", "branch", "-D", "ticket/T-110", cwd=self.product)
+        run("git", "switch", "-qc", "ticket/T-110", "origin/ticket/T-110", cwd=self.product)
+        receipt = self.product / "factory/receipts/T-110/ready-1.json"
+        value = json.loads(receipt.read_text())
+        value["issued_at"] = "2026-01-02T00:00:00Z"
+        receipt.write_text(json.dumps(value, sort_keys=True) + "\n")
+        run("git", "add", str(receipt), cwd=self.product)
+        run("git", "commit", "-qm", "unrelated control rewrite", cwd=self.product)
+        bad_head = run("git", "rev-parse", "HEAD", cwd=self.product).strip()
+        run("git", "push", "-q", "origin", "ticket/T-110", cwd=self.product)
+        run("git", "switch", "-q", "main", cwd=self.product)
+        self.authorize_preprovider_reset(bad_head)
+
+        refused = self.command("claim", expected=2)
+
+        self.assertIn("commits are not canonical", refused["error"])
+        self.assertEqual(
+            run(
+                "git", "ls-remote", "--heads", str(self.remote), "ticket/T-110",
+                cwd=self.product,
+            ).split()[0],
+            bad_head,
+        )
+
+    def test_repeated_operator_ready_reset_response_loss_replays_to_claim(self):
+        _authorized, controller, _main, _resets = self.reconciled_operator_reset()
+        first = self.command("claim", controller_state=controller)
+        previous = run(
+            "git", "ls-remote", "--heads", str(self.remote), "ticket/T-110",
+            cwd=self.product,
+        ).split()[0]
+        (self.product / "factory/.dispatch-leases/T-110.json").unlink()
+        run(
+            "git", "worktree", "remove", first["worktree"], cwd=self.product,
+        )
+        run("git", "branch", "-D", "ticket/T-110", cwd=self.product)
+        self.authorize_preprovider_reset(previous)
+        state = self.qualification_state()
+        resets = DISPATCH.inspect_selected_preprovider_branches(
+            self.product, self.product / "factory", state, str(self.remote),
+        )
+        main = run("git", "rev-parse", "origin/main", cwd=self.product).strip()
+        DISPATCH.reconcile_authorized_preprovider_branches(
+            self.product, self.worktrees, "ticket/", str(self.remote),
+            resets, main,
+        )
+        next_controller = self.root / "controller-replay"
+        next_controller.mkdir(mode=0o700)
+
+        replay = self.command("claim", controller_state=next_controller)
+
+        self.assertEqual(replay["ticket"], "T-110")
+        self.assertEqual(replay["preprovider_reset_head"], previous)
+        self.assertIn(
+            "State: Ready",
+            (Path(replay["worktree"]) / "factory/tickets/T-110.md").read_text(),
+        )
+
     def test_ready_materialization_refuses_remote_race_before_child_fetch(self):
         _authorized, controller, main, resets = self.reconciled_operator_reset()
         original_run = subprocess.run

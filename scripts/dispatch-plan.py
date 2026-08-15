@@ -684,6 +684,158 @@ def ticket_without_control(text: str) -> str:
     ).strip()
 
 
+def validate_operator_ready_lineage(
+    product: Path,
+    ticket: str,
+    branch: str,
+    main: str,
+    remote_head: str,
+    ticket_path: str,
+    plan_path: str,
+) -> None:
+    base = git(product, "merge-base", main, remote_head).strip()
+    changed = set(git(
+        product, "diff", "--name-only", f"{base}..{remote_head}",
+    ).splitlines())
+    receipt_paths = [
+        path for path in changed
+        if re.fullmatch(
+            rf"factory/receipts/{re.escape(ticket)}/ready-([1-9][0-9]*)[.]json",
+            path,
+        )
+    ]
+    if len(receipt_paths) != 1 or changed != {ticket_path, receipt_paths[0]}:
+        raise DispatchError("pre-provider branch is not control-only")
+    receipt_path = receipt_paths[0]
+    sequence = int(re.search(r"ready-([0-9]+)[.]json$", receipt_path).group(1))
+    commits = [
+        tuple(line.split("\0"))
+        for line in git(
+            product, "log", "--first-parent", "--reverse",
+            "--format=%H%x00%P%x00%an%x00%ae%x00%s",
+            f"{base}..{remote_head}",
+        ).splitlines()
+    ]
+    resets = [
+        index for index, item in enumerate(commits)
+        if len(item) == 5
+        and len(item[1].split()) == 2
+        and item[1].split()[1] == base
+    ]
+    previous = base
+    if resets:
+        if len(resets) != 1:
+            raise DispatchError("pre-provider branch commits are not canonical")
+        index = resets[0]
+        if index == 0 or index + 1 >= len(commits):
+            raise DispatchError("pre-provider branch commits are not canonical")
+        merge, reset = commits[index:index + 2]
+        parents = merge[1].split()
+        if (
+            commits[index - 1][0] != parents[0]
+            or merge[2:5] != (
+                "Software Factory", "factory@local",
+                f"Merge commit '{base}' into {branch}",
+            )
+            or reset[1] != merge[0]
+            or reset[2:5] != (
+                "Software Factory", "factory@local",
+                f"{ticket}: supersede pre-provider control state",
+            )
+            or git(product, "rev-parse", f"{reset[0]}^{{tree}}").strip()
+            != git(product, "rev-parse", f"{base}^{{tree}}").strip()
+        ):
+            raise DispatchError("pre-provider branch commits are not canonical")
+        validate_operator_ready_lineage(
+            product, ticket, branch, base, parents[0], ticket_path,
+            plan_path,
+        )
+        previous = reset[0]
+        commits = commits[index + 2:]
+
+    materialized = 0
+    operator_seen = False
+    for commit in commits:
+        if len(commit) != 5 or commit[1] != previous:
+            raise DispatchError("pre-provider branch commits are not canonical")
+        paths = git(
+            product, "diff-tree", "--no-commit-id", "--name-only",
+            "-r", commit[0],
+        ).splitlines()
+        if (
+            commit[2:5]
+            == (
+                "Factory Operator", "operator@local",
+                f"{ticket}: operator ready receipt {sequence}",
+            )
+            and paths == [receipt_path]
+        ):
+            operator_seen = True
+        elif (
+            operator_seen
+            and materialized == 0
+            and commit[2:5]
+            == (
+                "Software Factory", "factory@local",
+                f"{ticket}: materialize ticket state",
+            )
+            and paths == [ticket_path]
+        ):
+            before = git(product, "show", f"{previous}:{ticket_path}")
+            after = git(product, "show", f"{commit[0]}:{ticket_path}")
+            expected = re.sub(
+                r"^State:\s*Backlog\s*$", "State: Ready", before,
+                count=1, flags=re.I | re.M,
+            )
+            if after != expected:
+                raise DispatchError(
+                    "pre-provider materialize commit is not canonical"
+                )
+            materialized = 1
+        else:
+            raise DispatchError("pre-provider branch commits are not canonical")
+        previous = commit[0]
+
+    base_ticket = git(product, "show", f"{base}:{ticket_path}")
+    main_ticket = git(product, "show", f"{main}:{ticket_path}")
+    remote_ticket = git(product, "show", f"{remote_head}:{ticket_path}")
+    try:
+        receipt = json.loads(git(product, "show", f"{remote_head}:{receipt_path}"))
+    except json.JSONDecodeError as error:
+        raise DispatchError("pre-provider operator receipt is invalid") from error
+    if (
+        not commits
+        or materialized != 1
+        or ticket_without_control(base_ticket)
+        != ticket_without_control(main_ticket)
+        or ticket_without_control(base_ticket)
+        != ticket_without_control(remote_ticket)
+        or field(base_ticket, "State").lower() != "backlog"
+        or field(main_ticket, "State").lower() != "backlog"
+        or field(remote_ticket, "State").lower() != "ready"
+        or field(main_ticket, "Kit-SHA")
+        or field(remote_ticket, "Kit-SHA")
+        or git_succeeds(product, "cat-file", "-e", f"{main}:{plan_path}")
+        or git_succeeds(product, "cat-file", "-e", f"{main}:{receipt_path}")
+        or not isinstance(receipt, dict)
+        or set(receipt) != {
+            "action", "audit", "consumed", "issued_at", "payload",
+            "receipt_sha256", "schema", "sequence", "ticket",
+        }
+        or receipt.get("schema")
+        != "nysa.software-factory.operator-receipt/v1"
+        or receipt.get("action") != "ready"
+        or receipt.get("audit") != "no-authority"
+        or receipt.get("consumed") is not False
+        or receipt.get("payload") != {}
+        or receipt.get("sequence") != sequence
+        or receipt.get("ticket") != ticket
+        or not isinstance(receipt.get("issued_at"), str)
+        or not re.fullmatch(r"[0-9a-f]{64}", receipt.get("receipt_sha256", ""))
+    ):
+        raise DispatchError("pre-provider operator-ready state is invalid")
+
+
 def validate_preprovider_branch(
     product: Path,
     ticket: str,
@@ -712,93 +864,10 @@ def validate_preprovider_branch(
         )
     ]
     if len(receipt_paths) == 1 and changed == {ticket_path, receipt_paths[0]}:
-        receipt_path = receipt_paths[0]
-        sequence = int(re.search(r"ready-([0-9]+)[.]json$", receipt_path).group(1))
-        commits = [
-            tuple(line.split("\0"))
-            for line in git(
-                product, "log", "--first-parent", "--reverse",
-                "--format=%H%x00%P%x00%an%x00%ae%x00%s",
-                f"{base}..{remote_head}",
-            ).splitlines()
-        ]
-        previous = base
-        materialized = 0
-        operator_seen = False
-        for commit in commits:
-            if len(commit) != 5 or commit[1] != previous:
-                raise DispatchError("pre-provider branch commits are not canonical")
-            paths = git(
-                product, "diff-tree", "--no-commit-id", "--name-only",
-                "-r", commit[0],
-            ).splitlines()
-            if (
-                commit[2:5]
-                == ("Factory Operator", "operator@local",
-                    f"{ticket}: operator ready receipt {sequence}")
-                and paths == [receipt_path]
-            ):
-                operator_seen = True
-            elif (
-                operator_seen
-                and materialized == 0
-                and commit[2:5]
-                == ("Software Factory", "factory@local",
-                    f"{ticket}: materialize ticket state")
-                and paths == [ticket_path]
-            ):
-                before = git(product, "show", f"{previous}:{ticket_path}")
-                after = git(product, "show", f"{commit[0]}:{ticket_path}")
-                expected = re.sub(
-                    r"^State:\s*Backlog\s*$", "State: Ready", before,
-                    count=1, flags=re.I | re.M,
-                )
-                if after != expected:
-                    raise DispatchError(
-                        "pre-provider materialize commit is not canonical"
-                    )
-                materialized = 1
-            else:
-                raise DispatchError("pre-provider branch commits are not canonical")
-            previous = commit[0]
-        base_ticket = git(product, "show", f"{base}:{ticket_path}")
-        main_ticket = git(product, "show", f"{main}:{ticket_path}")
-        remote_ticket = git(product, "show", f"{remote_head}:{ticket_path}")
-        try:
-            receipt = json.loads(git(product, "show", f"{remote_head}:{receipt_path}"))
-        except json.JSONDecodeError as error:
-            raise DispatchError("pre-provider operator receipt is invalid") from error
-        if (
-            not commits
-            or materialized != 1
-            or ticket_without_control(base_ticket)
-            != ticket_without_control(main_ticket)
-            or ticket_without_control(base_ticket)
-            != ticket_without_control(remote_ticket)
-            or field(base_ticket, "State").lower() != "backlog"
-            or field(main_ticket, "State").lower() != "backlog"
-            or field(remote_ticket, "State").lower() != "ready"
-            or field(main_ticket, "Kit-SHA")
-            or field(remote_ticket, "Kit-SHA")
-            or git_succeeds(product, "cat-file", "-e", f"{main}:{plan_path}")
-            or git_succeeds(product, "cat-file", "-e", f"{main}:{receipt_path}")
-            or not isinstance(receipt, dict)
-            or set(receipt) != {
-                "action", "audit", "consumed", "issued_at", "payload",
-                "receipt_sha256", "schema", "sequence", "ticket",
-            }
-            or receipt.get("schema")
-            != "nysa.software-factory.operator-receipt/v1"
-            or receipt.get("action") != "ready"
-            or receipt.get("audit") != "no-authority"
-            or receipt.get("consumed") is not False
-            or receipt.get("payload") != {}
-            or receipt.get("sequence") != sequence
-            or receipt.get("ticket") != ticket
-            or not isinstance(receipt.get("issued_at"), str)
-            or not re.fullmatch(r"[0-9a-f]{64}", receipt.get("receipt_sha256", ""))
-        ):
-            raise DispatchError("pre-provider operator-ready state is invalid")
+        validate_operator_ready_lineage(
+            product, ticket, branch, main, remote_head, ticket_path,
+            plan_path,
+        )
         return remote_head
     if changed != {ticket_path, plan_path}:
         raise DispatchError("pre-provider branch is not control-only")

@@ -192,6 +192,9 @@ If dispatch loses the response around that reset, replay recognizes only the
 canonical reset commits and exact in-progress cleanup. A Backlog reset is made
 Ready again through the normal operator receipt, starting from the exact reset
 SHA; unrelated local commits, dirty paths, or a changed remote remain blocked.
+When a later generation reauthorizes that Ready head, preparation and dispatch
+recursively validate every prior Ready epoch and canonical reset pair before
+repeating the same exact-head recovery.
 
 After preparation, one sealed command owns deterministic progress to the next
 authenticated boundary:

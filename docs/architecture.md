@@ -543,6 +543,11 @@ cleanup, or the resulting main-tree supersede commit. After a pushed
 operator-ready reset, dispatch reissues Ready through the normal one-use
 operator receipt and binds materialization to that exact reset SHA; an advanced
 remote is refused rather than adopted.
+A later qualification generation may reauthorize that exact rematerialized
+Ready head. Its validator recursively proves each earlier operator-ready epoch,
+canonical reset merge, main-tree supersede, and later Ready suffix before the
+new reset; no earlier control history is skipped or trusted from authorization
+alone.
 Automatic GitHub defect reporting is an optional production sidecar, never a
 controller dependency. The controller marks only explicit internal invariant
 failures with a stable reason code; the reporter accepts a fixed allowlist of
