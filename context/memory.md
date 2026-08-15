@@ -6006,3 +6006,13 @@ manifest, or the product or supplied machine daily cap cannot cover the
 manifest budget. This prevents a sealed lane from admitting only part of its
 cohort and discovering an unavoidable budget failure after paid provider work;
 takeover retains its separate authenticated live-state budget contract.
+
+## 2026-08-14 — Decision 422: Qualification requires its protected publication origin
+
+Category: Reliability
+
+Fresh qualification binds the product's certified push destination to the
+exact GitHub repository declared by `factory/PROJECT.env` before it snapshots
+global config or publishes lane authority. A local-only origin cannot prove the
+required PR, CI, merge, and protected-terminal chain and now fails before any
+ticket branch or paid provider role instead of surfacing after Builder work.

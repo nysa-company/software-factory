@@ -108,6 +108,10 @@ absent, ambiguous, unsafe, malformed, or contains secret-bearing fields. It
 copies the validated seed into owner-only qualification authority, where the
 mutable map, locks, clear intents, and runtime ledger remain outside the sealed
 product checkout.
+Because qualification proves the production publication chain, the certified
+product push origin must be the exact GitHub repository declared by
+`factory/PROJECT.env`; a local-only origin is refused before global config,
+provider state, ticket branches, or paid roles are created.
 
 ## Step 5 — Factory release boundary
 

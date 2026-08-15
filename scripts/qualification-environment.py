@@ -34,6 +34,7 @@ from qualification_manifest import (  # noqa: E402
 )
 from historical_pr_objects import (  # noqa: E402
     HistoricalObjectError,
+    _repository as historical_product_repository,
     commit_present,
     hydrate as hydrate_historical_pr_objects,
 )
@@ -1596,6 +1597,22 @@ def product_origin(product: Path) -> str:
     if len(origins) != 1 or not origins[0]:
         raise EnvironmentError("qualification product origin is ambiguous")
     return origins[0]
+
+
+def qualification_publication_origin(product: Path, origin: str) -> None:
+    try:
+        repository = historical_product_repository(product)
+    except HistoricalObjectError as error:
+        raise EnvironmentError(str(error)) from error
+    value = origin[:-4] if origin.endswith(".git") else origin
+    if value not in {
+        f"https://github.com/{repository}",
+        f"git@github.com:{repository}",
+        f"ssh://git@github.com/{repository}",
+    }:
+        raise EnvironmentError(
+            "qualification requires the protected GitHub product origin"
+        )
 
 
 def historical_pr_objects(product: Path, origin: str) -> int:
@@ -3243,6 +3260,8 @@ def _prepare(args: argparse.Namespace) -> dict[str, Any]:
         raise EnvironmentError("qualification requires a supported Factory Contract")
     manifest = qualification_manifest(product, sha)
     capacity = manifest["capacity"]
+    origin = product_origin(product)
+    qualification_publication_origin(product, origin)
     restoring = bool(getattr(args, "restore", False))
     takeover_requested = getattr(args, "takeover_project", None) is not None
     global_config = b""
@@ -3250,7 +3269,6 @@ def _prepare(args: argparse.Namespace) -> dict[str, Any]:
         global_config = prepare_global_config(args, root)
         if not takeover_requested:
             validate_qualification_budget(factory, product, manifest, global_config)
-    origin = product_origin(product)
     historical_objects = historical_pr_objects(product, origin)
     validate_selected_contracts(product, manifest)
     prepare_product_runtime(product)

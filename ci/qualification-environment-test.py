@@ -207,7 +207,7 @@ class QualificationEnvironmentTest(unittest.TestCase):
             encoding="utf-8",
         )
         (self.product / "factory/PROJECT.env").write_text(
-            "PREVIEW_PROVIDER=railway\n", encoding="utf-8",
+            "GH_REPO=example/product\nPREVIEW_PROVIDER=railway\n", encoding="utf-8",
         )
         (self.product / "factory/ENVELOPE.env").write_text(
             "PER_RUN_BUDGET_USD=2.000000\n"
@@ -257,7 +257,7 @@ class QualificationEnvironmentTest(unittest.TestCase):
         run(self.product, "git", "config", "user.email", "test@example.invalid")
         run(
             self.product, "git", "remote", "add", "origin",
-            "git@example.invalid:example/product.git",
+            "git@github.com:example/product.git",
         )
         run(self.product, "git", "add", ".")
         run(self.product, "git", "commit", "-qm", "product")
@@ -1077,6 +1077,31 @@ class QualificationEnvironmentTest(unittest.TestCase):
                 **vars(args), operator_map_seed=alternate,
             ))
         self.assertFalse((self.root / "marker.json").exists())
+
+    def test_local_publication_origin_fails_before_materialization(self) -> None:
+        remote = self.workspace / "local-only.git"
+        run(self.workspace, "git", "init", "--bare", "-q", str(remote))
+        run(self.product, "git", "remote", "set-url", "origin", str(remote))
+        args = argparse.Namespace(
+            factory_root=self.factory, product_root=self.product,
+            project="relay", root=self.root,
+        )
+        with (
+            mock.patch.object(
+                ENVIRONMENT, "prepare_global_config",
+                side_effect=AssertionError("origin refusal must be read-only"),
+            ),
+            self.assertRaisesRegex(
+                ENVIRONMENT.EnvironmentError,
+                "qualification requires the protected GitHub product origin",
+            ),
+        ):
+            ENVIRONMENT.prepare(args)
+        self.assertFalse((self.root / "marker.json").exists())
+        self.assertFalse((self.root / "global.env").exists())
+        self.assertFalse(
+            self.home.joinpath(".factory/qualification/relay").exists()
+        )
 
     def test_partial_selected_initialization_restarts_without_duplication(self) -> None:
         args = argparse.Namespace(
