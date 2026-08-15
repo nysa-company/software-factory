@@ -5751,6 +5751,22 @@ Validation: same-head cutover, exact route child, wrong shape, remote drift,
 migration refusal, legacy refusal, post-migration capacity failure, retry
 idempotence, and neighboring route-recovery paths are covered.
 
+## FI-20260815-221 — Test-author could rewrite its authenticated role input
+
+Status: Focused regression implemented; protected CI and successor qualification pending
+Priority: P1
+Area: role-exit history integrity
+Owner: Factory
+Impact: a qualification Test-author repair replaced its authenticated input
+ancestry. The required non-force push refused the output and passport export
+could not bind the unrelated local head, parking the ticket before Builder.
+Smallest repair: apply the existing role-exit ancestry quarantine to
+Test-author too. Preserve the rejected output under the bounded diagnostic ref,
+restore the clean authenticated input, and leave authorized tests-first history
+repair exclusively to the separate trusted operator reorder command.
+Validation: the shared role-exit fixture now proves both Builder and Test-author
+rewrites are quarantined, restored, conservatively charged, and never pushed.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

@@ -4322,46 +4322,53 @@ else
   fail "role exit retains foreign-owner ticket refusal"
 fi
 
-setup_role_exit_fixture T-654 builder
-ROLE_REWRITE_INPUT="$(git -C "$ROLE_EXIT_WORKTREE" rev-parse HEAD)"
-ROLE_REWRITE_STATUS=0
-MOCK_COMMIT_WORKDIR=1 MOCK_REWRITE_WORKDIR=1 \
-  FACTORY_ROOT="$ROLE_EXIT_ROOT" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
-  FACTORY_TEST_MODE=1 FACTORY_TEST_ENFORCE_ROLE_EXIT=1 \
-  FACTORY_CERTIFIED_PRODUCT_ORIGIN="$ROLE_EXIT_REMOTE" \
-  FACTORY_ADAPTER_OVERRIDE=mock \
-  "$RUN_AGENT" --role builder --ticket T-654 --workdir "$ROLE_EXIT_WORKTREE" -- \
-    "rewrite history" >"$TMP/role-history-rewrite.out" 2>&1 ||
-  ROLE_REWRITE_STATUS=$?
-ROLE_REWRITE_META="$(ls "$ROLE_EXIT_ROOT"/factory/runs/*.meta)"
-ROLE_REWRITE_RUN_ID="$(sed -n 's/^run_id=//p' "$ROLE_REWRITE_META")"
-ROLE_REWRITE_REF="refs/factory/failed-role/T-654/$ROLE_REWRITE_RUN_ID"
-ROLE_REWRITE_OUTPUT="$(git -C "$ROLE_EXIT_WORKTREE" rev-parse \
-  "$ROLE_REWRITE_REF" 2>/dev/null || true)"
-if [[ "$ROLE_REWRITE_STATUS" -eq 11 &&
-      "$(git -C "$ROLE_EXIT_WORKTREE" rev-parse HEAD)" == \
-        "$ROLE_REWRITE_INPUT" &&
-      "$(git --git-dir="$ROLE_EXIT_REMOTE" rev-parse \
-        refs/heads/ticket/T-654)" == "$ROLE_REWRITE_INPUT" &&
-      -z "$(git -C "$ROLE_EXIT_WORKTREE" status --porcelain=v1)" &&
-      -n "$ROLE_REWRITE_OUTPUT" &&
-      "$ROLE_REWRITE_OUTPUT" != "$ROLE_REWRITE_INPUT" ]] &&
-   ! git -C "$ROLE_EXIT_WORKTREE" merge-base --is-ancestor \
-      "$ROLE_REWRITE_INPUT" "$ROLE_REWRITE_OUTPUT" &&
-   grep -q 'role_exit_history_rewritten' "$TMP/role-history-rewrite.out" &&
-   grep -q '^phase=completed$' "$ROLE_REWRITE_META" &&
-   grep -q '^accounting_state=abandoned_conservative$' "$ROLE_REWRITE_META" &&
-   grep -q '^go_issued=1$' "$ROLE_REWRITE_META" &&
-   grep -q '^task_submitted=1$' "$ROLE_REWRITE_META" &&
-   grep -q '^effective_cost=1.00$' "$ROLE_REWRITE_META" &&
-   grep -q '^exit_status=11$' "$ROLE_REWRITE_META" &&
-   grep -q '^role_exit=role_exit_history_rewritten$' "$ROLE_REWRITE_META" &&
-   grep -q "^role_head_before=$ROLE_REWRITE_INPUT$" "$ROLE_REWRITE_META"; then
-  pass "non-Test-author history rewrite is quarantined and restored before push"
-else
-  fail "history rewrite did not preserve output and restore authenticated input" \
-    "status=$ROLE_REWRITE_STATUS run=$ROLE_REWRITE_RUN_ID"
-fi
+for ROLE_REWRITE_ROLE in builder test-author; do
+  [[ "$ROLE_REWRITE_ROLE" == "builder" ]] && ROLE_REWRITE_TICKET=T-654 ||
+    ROLE_REWRITE_TICKET=T-661
+  setup_role_exit_fixture "$ROLE_REWRITE_TICKET" "$ROLE_REWRITE_ROLE"
+  ROLE_REWRITE_INPUT="$(git -C "$ROLE_EXIT_WORKTREE" rev-parse HEAD)"
+  ROLE_REWRITE_STATUS=0
+  MOCK_COMMIT_WORKDIR=1 MOCK_REWRITE_WORKDIR=1 \
+    FACTORY_ROOT="$ROLE_EXIT_ROOT" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
+    FACTORY_TEST_MODE=1 FACTORY_TEST_ENFORCE_ROLE_EXIT=1 \
+    FACTORY_CERTIFIED_PRODUCT_ORIGIN="$ROLE_EXIT_REMOTE" \
+    FACTORY_ADAPTER_OVERRIDE=mock \
+    "$RUN_AGENT" --role "$ROLE_REWRITE_ROLE" --ticket "$ROLE_REWRITE_TICKET" \
+      --workdir "$ROLE_EXIT_WORKTREE" -- "rewrite history" \
+      >"$TMP/role-history-rewrite-$ROLE_REWRITE_ROLE.out" 2>&1 ||
+    ROLE_REWRITE_STATUS=$?
+  ROLE_REWRITE_META="$(ls "$ROLE_EXIT_ROOT"/factory/runs/*.meta)"
+  ROLE_REWRITE_RUN_ID="$(sed -n 's/^run_id=//p' "$ROLE_REWRITE_META")"
+  ROLE_REWRITE_REF="refs/factory/failed-role/$ROLE_REWRITE_TICKET/$ROLE_REWRITE_RUN_ID"
+  ROLE_REWRITE_OUTPUT="$(git -C "$ROLE_EXIT_WORKTREE" rev-parse \
+    "$ROLE_REWRITE_REF" 2>/dev/null || true)"
+  if [[ "$ROLE_REWRITE_STATUS" -eq 11 &&
+        "$(git -C "$ROLE_EXIT_WORKTREE" rev-parse HEAD)" == \
+          "$ROLE_REWRITE_INPUT" &&
+        "$(git --git-dir="$ROLE_EXIT_REMOTE" rev-parse \
+          "refs/heads/ticket/$ROLE_REWRITE_TICKET")" == \
+          "$ROLE_REWRITE_INPUT" &&
+        -z "$(git -C "$ROLE_EXIT_WORKTREE" status --porcelain=v1)" &&
+        -n "$ROLE_REWRITE_OUTPUT" &&
+        "$ROLE_REWRITE_OUTPUT" != "$ROLE_REWRITE_INPUT" ]] &&
+     ! git -C "$ROLE_EXIT_WORKTREE" merge-base --is-ancestor \
+        "$ROLE_REWRITE_INPUT" "$ROLE_REWRITE_OUTPUT" &&
+     grep -q 'role_exit_history_rewritten' \
+       "$TMP/role-history-rewrite-$ROLE_REWRITE_ROLE.out" &&
+     grep -q '^phase=completed$' "$ROLE_REWRITE_META" &&
+     grep -q '^accounting_state=abandoned_conservative$' "$ROLE_REWRITE_META" &&
+     grep -q '^go_issued=1$' "$ROLE_REWRITE_META" &&
+     grep -q '^task_submitted=1$' "$ROLE_REWRITE_META" &&
+     grep -q '^effective_cost=1.00$' "$ROLE_REWRITE_META" &&
+     grep -q '^exit_status=11$' "$ROLE_REWRITE_META" &&
+     grep -q '^role_exit=role_exit_history_rewritten$' "$ROLE_REWRITE_META" &&
+     grep -q "^role_head_before=$ROLE_REWRITE_INPUT$" "$ROLE_REWRITE_META"; then
+    pass "$ROLE_REWRITE_ROLE history rewrite is quarantined and restored before push"
+  else
+    fail "$ROLE_REWRITE_ROLE rewrite did not preserve output and restore input" \
+      "status=$ROLE_REWRITE_STATUS run=$ROLE_REWRITE_RUN_ID"
+  fi
+done
 
 setup_role_exit_fixture T-650
 ROLE_REAL_GIT="$(type -P git)"

@@ -657,7 +657,7 @@ everything the Factory actually enforces lives here.
   approved; envelope and semantic-round overrides grant no state authority.
   Any future exception requires exact owner authorization and a dedicated
   GitHub issue before implementation or use.
-- Ticket execution reads Git-authored state from the exact ticket worktree/committed branch and overlays Linear-owned fields from ignored `factory/linear-map.json`. Mutating roles must commit cleanly and retain the role-input commit as an ancestor; the trusted wrapper quarantines a non-Test-author rewrite, restores the authenticated input without touching the remote, and otherwise non-force pushes and verifies output. Reviewer must leave Git unchanged, and Test-author ancestry repair remains separately operator-authorized.
+- Ticket execution reads Git-authored state from the exact ticket worktree/committed branch and overlays Linear-owned fields from ignored `factory/linear-map.json`. Mutating roles must commit cleanly and retain the role-input commit as an ancestor; the trusted wrapper quarantines any role-executed rewrite, restores the authenticated input without touching the remote, and otherwise non-force pushes and verifies output. Reviewer must leave Git unchanged, and Test-author ancestry repair remains available only through the separate trusted operator reorder command.
 - Trusted ticket and role pushes use only the exact product origin bound by the active certification receipt. Contract 1.2 still stops in Review. Contracts 1.3 and 1.4 provide trusted bundle, exact newer Linear approval/protected auto-merge, and merge/deployment/Done closeout attestations while generic ticket-state keeps refusing evidence-sensitive transitions.
 - Runtime costs are authoritative in atomic run manifests and materialized into ignored `factory/runtime-ledger.csv`; tracked `factory/ledger.csv` changes only through deterministic close-out projection, which refuses every active or ambiguous claim and `factory/runs/*.pid` record.
 - Backward-compatible ledger reduction collapses a legacy durable reservation followed by its identity-matching terminal row; every other conflicting duplicate run ID fails closed.
@@ -6142,3 +6142,12 @@ source or the canonical Ready receipt, followed by one exact route pin and
 ticket-only qualification work; any application path, source mismatch, or head
 race remains closed.
 The existing v1 pre-provider reset grammar is unchanged.
+
+## 2026-08-15 — Decision 434: Test-author role execution is append-only
+
+Category: Reliability
+
+Test-author role execution retains its authenticated input commit exactly like
+every other mutating role. A direct rebase, reset, amend, or other ancestry
+rewrite is quarantined and restored before any remote push; only the separate
+trusted operator reorder command may perform an authorized tests-first rewrite.
