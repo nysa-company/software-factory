@@ -7543,6 +7543,7 @@ class Controller:
             else:
                 claim.update(receipt="", role="", status="claimed")
                 claim.pop("budget_sha256", None)
+                self.prior_transition_tickets.discard(claim["ticket"])
             if claim.get("blocked_reason") == "route-migration-required":
                 claim.pop("blocked_reason")
             self.save_claim(claim)

@@ -223,6 +223,9 @@ idle cohort lease and releases a parked lease instead of allowing either to
 expire. A warning
 from one prior candidate is accepted only when it covers the full selected
 cohort; the controller still authenticates and migrates every receipt. It
+clears the invocation-local prior-receipt exclusion only after that exact
+migration, allowing the ordinary state machine to issue the current chained
+receipt without deleting its predecessor. It
 performs the one mandatory controller restart in a new process, runs the ordinary
 controller/state machine, applies the existing sealed batch route migration
 when every selected successor claim is at that exact boundary, and invokes the

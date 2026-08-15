@@ -9,6 +9,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Stable operating truth lives in `docs/`; prompts, templates, and evidence stay colocated with consumers. The operator preflight hydrates only evidence-bound immutable objects, batches read-only object checks, aggregates activation blockers, and makes network review explicit before certification. Qualification validates selected remote branches and exact prior-cohort control retries before publication, shares protected dependency truth, counts only role-control evidence appended after its sealed product SHA, preserves one exact-head retry for a parked preview timeout, maintains idle successor leases during long roles, and does not rerun new-admission checks once its exact cohort is fully accounted for.
 - Historical committed-role checks carry unchanged baseline symlinks; changed symlinks and every handoff snapshot symlink remain fail-closed.
 - Successor qualification can preserve an exact source-passport checkpoint or descendant only through the existing protected in-flight release authorization; migration fast-forwards it without deleting or rewriting ticket work.
+- An exactly migrated successor claim may chain a current transition receipt after its authenticated predecessor; predecessor evidence remains durable and unedited.
 - Nysa Agents baseline v3 as a toolkit; `bash ci/test-all.sh` is the unconditional full command.
 - Contract 2 live products resolve sealed exact-SHA releases from owner-only `active.json` records under `~/.factory/kits` via `~/.factory/bin/factory-launch`; the native controller is the only scheduler.
 - The local release canary is one code-driven, product-agnostic command that creates contained local origins, runs setup/resume, and times one authenticated Planning transition plus sealed mock planner; its repository-test evidence is never promotable.
@@ -6241,3 +6242,13 @@ has already expired with no active run, provider activity, or runtime lock, the
 Doctor warning may enter the same controller, which verifies the current
 passport and ticket before replacing that lease. Non-successor, foreign,
 malformed, active-run, or provider-active stale state remains blocked.
+
+## 2026-08-15 — Decision 443: Migrated successor receipts reenter scheduling
+
+Category: Reliability
+
+After exact passport and route migration, a receipt-free successor claim is no
+longer excluded merely because its durable transition receipt belongs to the
+source kit. The ordinary state machine issues a current receipt chained to that
+authenticated predecessor; invalid, unmigrated, or terminal-bearing claims
+remain on their existing recovery paths.

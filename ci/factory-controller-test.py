@@ -10074,6 +10074,22 @@ class FactoryControllerTest(unittest.TestCase):
                 f"transition_receipt_sha256={receipt}\n",
                 encoding="utf-8",
             )
+        resumable = {
+            "branch": "ticket/T-118",
+            "lease": "d" * 64,
+            "priority": "normal",
+            "publication_lease": "",
+            "receipt": "",
+            "role": "",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "blocked",
+            "ticket": "T-118",
+            "worktree": str(self.root / "cell-T-118"),
+        }
+        claims.append(resumable)
+        CONTROL.write(
+            passports / "T-118.json", {"factory_sha": old_factory},
+        )
 
         def migrate(claim, _publication):
             CONTROL.write(
@@ -10094,11 +10110,14 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(claims[0]["status"], "running")
         self.assertEqual(claims[0]["receipt"], f"{1:064x}")
         self.assertNotIn("T-110", controller.prior_transition_tickets)
-        for claim in claims[1:]:
+        for claim in claims[1:-1]:
             with self.subTest(ticket=claim["ticket"]):
                 self.assertEqual(claim["status"], "blocked")
                 self.assertTrue(claim["receipt"])
                 self.assertIn(claim["ticket"], controller.prior_transition_tickets)
+        self.assertEqual(resumable["status"], "claimed")
+        self.assertEqual(resumable["receipt"], "")
+        self.assertNotIn("T-118", controller.prior_transition_tickets)
         self.assertTrue(controller.finish_pending_run(claims[0]))
         self.assertTrue(controller.finish_pending_run(claims[0]))
         self.assertEqual(claims[0]["status"], "claimed")
