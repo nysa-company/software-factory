@@ -6048,3 +6048,12 @@ blocks and never writes Factory authority itself. Operators and agents rerun
 the same command only after authenticated input changes; hand-edited tickets,
 claims, leases, receipts, passports, journals, or fabricated evidence are not
 part of qualification.
+
+## 2026-08-14 — Decision 426: Readiness rejects duplicate ticket state authority
+
+Category: Reliability
+
+The shared provider-free ticket readiness validator requires exactly one
+nonempty `State:` field before expensive qualification preparation. Historical
+prose that accidentally starts with `State:` now fails at the same early
+boundary instead of passing readiness and failing later in qualification.
