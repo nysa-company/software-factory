@@ -323,9 +323,12 @@ def prepare(product, request_path):
         ticket_text = text_at(
             repo, basis_commit, f"factory/tickets/{ticket}.md"
         )
-        if ticket_text is None or one_field(ticket_text, "State") != "Backlog":
+        source_state = (
+            None if ticket_text is None else one_field(ticket_text, "State")
+        )
+        if source_state not in {"Backlog", "Done"}:
             raise ValidationError(
-                f"{ticket} dependency-only fulfillment requires Backlog state"
+                f"{ticket} dependency-only fulfillment requires Backlog or Done state"
             )
         pr = pr_evidence(
             repo,
@@ -340,6 +343,7 @@ def prepare(product, request_path):
             "checks": check_evidence(
                 request["repository"], pr["merge_commit"], expected_checks
             ),
+            "source_state": source_state,
             "source_ticket_blob": blob_at(
                 repo, basis_commit, f"factory/tickets/{ticket}.md"
             ),
@@ -367,7 +371,7 @@ def prepare(product, request_path):
             "repository": request["repository"],
             "target_kit_sha": request["target_kit_sha"],
             "candidate_contract": request["candidate_contract"],
-            "source_state": "Backlog",
+            "source_state": evidence[ticket]["source_state"],
             "source_ticket_blob": evidence[ticket]["source_ticket_blob"],
             "pr": evidence[ticket]["pr"],
             "checks": evidence[ticket]["checks"],

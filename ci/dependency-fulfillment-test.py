@@ -65,7 +65,8 @@ class DependencyFulfillmentTest(unittest.TestCase):
         self.pr_head = run("git", "rev-parse", "HEAD", cwd=self.repo)
         run("git", "checkout", "-q", "main", cwd=self.repo)
         run("git", "merge", "-q", "--no-ff", "feature/t300", "-m", "merge T-300", cwd=self.repo)
-        self.basis = run("git", "rev-parse", "HEAD", cwd=self.repo)
+        self.merge_commit = run("git", "rev-parse", "HEAD", cwd=self.repo)
+        self.basis = self.merge_commit
         self.tree = run("git", "rev-parse", "HEAD^{tree}", cwd=self.repo)
         run("git", "update-ref", "refs/remotes/origin/main", self.basis, cwd=self.repo)
         self.cutoff = (
@@ -114,6 +115,28 @@ class DependencyFulfillmentTest(unittest.TestCase):
     def tearDown(self):
         self.temporary.cleanup()
 
+    def refresh_basis(self):
+        self.basis = run("git", "rev-parse", "HEAD", cwd=self.repo)
+        self.tree = run("git", "rev-parse", "HEAD^{tree}", cwd=self.repo)
+        run("git", "update-ref", "refs/remotes/origin/main", self.basis, cwd=self.repo)
+        self.cutoff = (
+            datetime.now(timezone.utc)
+            .replace(microsecond=0)
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
+        request = json.loads(self.request.read_text(encoding="utf-8"))
+        request["cutoff"] = self.cutoff
+        request["protected_main_basis"] = {
+            "commit": self.basis,
+            "tree": self.tree,
+        }
+        request["authorization"]["authorized_at"] = self.cutoff
+        self.request.write_text(
+            json.dumps(request, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
     def gh(self, endpoint):
         if endpoint == "repos/acme/widget/pulls/7":
             return {
@@ -122,7 +145,7 @@ class DependencyFulfillmentTest(unittest.TestCase):
                 "merged": True,
                 "base": {"ref": "main"},
                 "head": {"ref": "feature/t300", "sha": self.pr_head},
-                "merge_commit_sha": self.basis,
+                "merge_commit_sha": self.merge_commit,
                 "merged_at": self.cutoff,
                 "merged_by": {"login": "operator"},
             }
@@ -188,6 +211,31 @@ class DependencyFulfillmentTest(unittest.TestCase):
             ValidationError, "lacks dependency fulfillment evidence"
         ):
             protected_dependency(self.repo, "T-301")
+
+    def test_already_done_ticket_may_supply_dependency_only_evidence(self):
+        path = self.repo / "factory/tickets/T-300.md"
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                "State: Backlog", "State: Done",
+            ),
+            encoding="utf-8",
+        )
+        run("git", "add", str(path), cwd=self.repo)
+        run("git", "commit", "-qm", "record external closeout", cwd=self.repo)
+        self.refresh_basis()
+
+        self.apply_and_commit()
+
+        result = protected_dependency(self.repo, "T-300")
+        self.assertEqual(
+            result["basis"], "validated-protected-dependency-fulfillment"
+        )
+        receipt = json.loads((
+            self.repo
+            / "factory/migrations/dependency-fulfillment/T-300.json"
+        ).read_text(encoding="utf-8"))
+        self.assertEqual(receipt["source_state"], "Done")
+        self.assertIn("State: Done", path.read_text(encoding="utf-8"))
 
     def test_partial_terminal_evidence_cannot_bypass_through_fulfillment(self):
         self.apply_and_commit()

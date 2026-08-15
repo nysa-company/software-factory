@@ -220,12 +220,12 @@ def _validate_documents(repo, ref, authorization, receipts):
             or receipt["repository"] != authorization["repository"]
             or receipt["target_kit_sha"] != authorization["target_kit_sha"]
             or receipt["candidate_contract"] not in ("1.8.0", "2.0.0")
-            or receipt["source_state"] != "Backlog"
+            or receipt["source_state"] not in {"Backlog", "Done"}
             or receipt["authorization_blob"] != authorization_blob
             or receipt["cutoff"] != authorization["cutoff"]
             or receipt_basis != basis
             or source_ticket is None
-            or one_field(source_ticket, "State") != "Backlog"
+            or one_field(source_ticket, "State") != receipt["source_state"]
             or blob_at(
                 repo, basis["commit"], f"factory/tickets/{ticket}.md"
             )

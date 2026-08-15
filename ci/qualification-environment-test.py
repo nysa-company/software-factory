@@ -1279,8 +1279,13 @@ class QualificationEnvironmentTest(unittest.TestCase):
             ),
             self.assertRaisesRegex(
                 ENVIRONMENT.EnvironmentError,
-                "T-103: qualification dependency lacks protected terminal "
-                "evidence: T-099",
+                "T-103: qualification dependency lacks protected evidence: T-099",
+            ),
+            mock.patch.object(
+                ENVIRONMENT, "protected_dependency",
+                side_effect=ENVIRONMENT.TerminalError(
+                    "protected main lacks dependency fulfillment evidence"
+                ),
             ),
         ):
             ENVIRONMENT.prepare(argparse.Namespace(
@@ -1288,6 +1293,26 @@ class QualificationEnvironmentTest(unittest.TestCase):
                 project="relay", root=self.root,
             ))
         self.assertFalse((self.root / "marker.json").exists())
+
+    def test_accepts_external_dependency_fulfillment(self) -> None:
+        ticket = self.product / "factory/tickets/T-103.md"
+        ticket.write_text(ticket.read_text().replace(
+            "Depends-On: none", "Depends-On: T-099",
+        ))
+        run(self.product, "git", "add", "factory/tickets/T-103.md")
+        run(self.product, "git", "commit", "-qm", "fulfilled dependency")
+        run(
+            self.product, "git", "update-ref", "refs/remotes/origin/main",
+            run(self.product, "git", "rev-parse", "HEAD"),
+        )
+        with mock.patch.object(
+            ENVIRONMENT, "protected_dependency", return_value={
+                "basis": "validated-protected-dependency-fulfillment",
+                "ticket": "T-099",
+            },
+        ) as dependency:
+            ENVIRONMENT.validate_selected_contracts(self.product)
+        dependency.assert_called_once_with(self.product, "T-099")
 
     def test_selected_ticket_authoring_fields_fail_before_lane_creation(self) -> None:
         ticket = self.product / "factory/tickets/T-101.md"

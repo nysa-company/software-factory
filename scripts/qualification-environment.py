@@ -23,7 +23,11 @@ from typing import Any
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
 from release_lineage import successor_release_lineage  # noqa: E402
-from legacy_closeout import ValidationError as TerminalError, protected_terminal  # noqa: E402
+from legacy_closeout import (  # noqa: E402
+    ValidationError as TerminalError,
+    protected_dependency,
+    protected_terminal,
+)
 from qualification_artifacts import (  # noqa: E402
     ArtifactError as QualificationArtifactError,
     ensure_ticket as ensure_qualification_artifacts,
@@ -1168,11 +1172,11 @@ def validate_selected_contracts(
             )
         for dependency in sorted(dependencies - cohort):
             try:
-                protected_terminal(product, dependency)
+                protected_dependency(product, dependency)
             except TerminalError as error:
                 raise EnvironmentError(
                     f"{ticket}: qualification dependency lacks protected "
-                    f"terminal evidence: {dependency}"
+                    f"evidence: {dependency}"
                 ) from error
     for ticket in selected:
         path = f"factory/tickets/{ticket}.md"

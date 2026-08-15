@@ -5982,7 +5982,8 @@ Tickets already durably Ready retain the lighter initialization path. The
 admission projection accepts a consumed-and-cleared action after successful
 materialization but continues to reject malformed or uninitialized entries.
 After bounded historical-object hydration, every dependency outside the cohort
-must have valid protected terminal evidence before the lane is published.
+must satisfy the shared protected dependency predicate—normal terminal evidence
+or one exact dependency-fulfillment receipt—before the lane is published.
 
 ## 2026-08-14 — Decision 420: Qualification replays consumed Ready receipts
 
@@ -6057,3 +6058,14 @@ The shared provider-free ticket readiness validator requires exactly one
 nonempty `State:` field before expensive qualification preparation. Historical
 prose that accidentally starts with `State:` now fails at the same early
 boundary instead of passing readiness and failing later in qualification.
+
+## 2026-08-14 — Decision 427: Qualification reuses protected dependency truth
+
+Category: Reliability
+
+Qualification preparation uses the same protected dependency predicate as
+dispatch and the state machine. The dependency-only fulfillment migration may
+bind an already-merged ticket whose exact protected source state is Backlog or
+Done; it never promotes that ticket to terminal truth, and still requires its
+exact merged PR, successful protected checks, immutable ticket blob, target kit,
+and fresh manual protected-main authorization.
