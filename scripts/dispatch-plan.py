@@ -153,6 +153,26 @@ def dependencies(text: str) -> tuple[str, ...]:
     return values
 
 
+def qualification_terminal(
+    product: Path, tickets: list[str], graph: dict[str, tuple[str, ...]],
+) -> set[str]:
+    selected = set(tickets)
+    terminal = set()
+    for ticket in selected:
+        try:
+            protected_terminal(product, ticket)
+        except ValidationError:
+            continue
+        terminal.add(ticket)
+    for ticket in set().union(*(set(items) for items in graph.values())) - selected:
+        try:
+            protected_dependency(product, ticket)
+        except ValidationError:
+            continue
+        terminal.add(ticket)
+    return terminal
+
+
 def qualification(
     product: Path, factory: Path, configured_capacity: int
 ) -> dict[str, Any] | None:
@@ -231,13 +251,7 @@ def qualification(
                 for ticket, items in pending.items()
                 if ticket not in ready
             }
-        terminal = set()
-        for ticket in set(tickets).union(*(set(items) for items in graph.values())):
-            try:
-                protected_terminal(product, ticket)
-            except ValidationError:
-                continue
-            terminal.add(ticket)
+        terminal = qualification_terminal(product, tickets, graph)
         return {
             **value,
             "capacity": selected_capacity,
@@ -290,13 +304,7 @@ def qualification(
             if ticket not in ready
         }
 
-    terminal = set()
-    for ticket in set(tickets).union(*(set(items) for items in graph.values())):
-        try:
-            protected_terminal(product, ticket)
-        except ValidationError:
-            continue
-        terminal.add(ticket)
+    terminal = qualification_terminal(product, tickets, graph)
     done = len(set(tickets) & terminal)
     return {
         **value,

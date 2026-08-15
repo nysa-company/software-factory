@@ -6,7 +6,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 
 - Product-agnostic factory kit; product repositories carry only their factory state and CI integration.
 - Durable decisions use repository-local numbering beginning at Decision 1.
-- Stable operating truth lives in `docs/`; prompts, templates, and evidence stay colocated with consumers. The operator preflight hydrates only evidence-bound immutable objects, batches read-only object checks, aggregates activation blockers, and makes network review explicit before certification. Qualification validates selected remote branch eligibility before publication, and its single driver accepts only Doctor `ok` or a manifest-bound runtime-only active-lease warning.
+- Stable operating truth lives in `docs/`; prompts, templates, and evidence stay colocated with consumers. The operator preflight hydrates only evidence-bound immutable objects, batches read-only object checks, aggregates activation blockers, and makes network review explicit before certification. Qualification validates selected remote branches before publication, shares protected dependency truth with dispatch, and its single driver accepts only Doctor `ok` or a manifest-bound runtime-only active-lease warning.
 - Nysa Agents baseline v3 as a toolkit; `bash ci/test-all.sh` is the unconditional full command.
 - Contract 2 live products resolve sealed exact-SHA releases from owner-only `active.json` records under `~/.factory/kits` via `~/.factory/bin/factory-launch`; the native controller is the only scheduler.
 - The local release canary is one code-driven, product-agnostic command that creates contained local origins, runs setup/resume, and times one authenticated Planning transition plus sealed mock planner; its repository-test evidence is never promotable.
@@ -6099,3 +6099,12 @@ ticket/control cleanup, or the resulting main-tree supersede commit. A pushed
 operator-ready reset is replayed by issuing a normal one-use Ready receipt from
 the exact reset SHA; unrelated local work and any remote-head race remain
 fail-closed.
+
+## 2026-08-15 — Decision 430: Qualification shares dependency truth
+
+Category: Reliability
+
+Qualification preparation and dispatch use the same protected dependency
+predicate for dependencies outside the selected cohort. Dependency-only
+fulfillment makes the dependent ticket runnable but never counts a selected
+qualification target as terminal.

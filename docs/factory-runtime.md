@@ -185,6 +185,9 @@ Before publishing that state, it proves every selected remote ticket branch is
 absent, descends from protected main, or has an exact protected authorization
 for canonical pre-provider recovery. Dispatch repeats the observation before
 performing the only allowed non-force reset.
+Preparation and dispatch both accept an external dependency only through the
+shared protected dependency predicate; dependency-only fulfillment never
+counts a selected qualification target as Done.
 If dispatch loses the response around that reset, replay recognizes only the
 canonical reset commits and exact in-progress cleanup. A Backlog reset is made
 Ready again through the normal operator receipt, starting from the exact reset
