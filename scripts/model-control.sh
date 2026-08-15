@@ -417,6 +417,7 @@ PY
 
 validate_inflight_migration_authority() {
   local current_head tracking_ticket tracking_main actual_ticket expected_parent
+  local qualification_head
   current_head="$(git -C "$CONTROL_WORKDIR" rev-parse HEAD)" ||
     json_error "cannot resolve ticket head"
   tracking_ticket="$(factory_remote_tracking_tip \
@@ -428,9 +429,19 @@ validate_inflight_migration_authority() {
   tracking_main="$(factory_remote_tracking_tip "$CONTROL_WORKDIR" main)"
   [[ "$tracking_main" == "$CONTROL_PROTECTED_MAIN" ]] ||
     json_error "protected main tracking state is stale"
+  CONTROL_AUTHORIZATION_REF="$CONTROL_PROTECTED_MAIN"
+  if [[ "${FACTORY_KIT_TRUST_SCOPE:-}" == "qualification-candidate" ]]; then
+    [[ "${FACTORY_QUALIFICATION_PRODUCT_SHA:-}" =~ ^[0-9a-f]{40}$ ]] ||
+      json_error "qualification product authorization is invalid"
+    qualification_head="$(git -C "$FACTORY_ROOT" rev-parse HEAD)" ||
+      json_error "qualification product authorization is unavailable"
+    [[ "$qualification_head" == "$FACTORY_QUALIFICATION_PRODUCT_SHA" ]] ||
+      json_error "qualification product authorization changed"
+    CONTROL_AUTHORIZATION_REF="$FACTORY_QUALIFICATION_PRODUCT_SHA"
+  fi
   CONTROL_AUTHORIZATION_MODE="$(python3 -B \
     "$KIT_DIR/scripts/lib/inflight_release.py" \
-    --repo "$CONTROL_WORKDIR" --protected "$CONTROL_PROTECTED_MAIN" \
+    --repo "$CONTROL_WORKDIR" --protected "$CONTROL_AUTHORIZATION_REF" \
     --target "$FACTORY_KIT_SHA" --ticket "$ticket" \
     --branch "$CONTROL_BRANCH" --head "$current_head")" ||
     json_error "ticket does not match its exact protected in-flight release authorization"
@@ -466,7 +477,7 @@ validate_inflight_migration_authority() {
 
 recheck_inflight_migration_authority() {
   local current_head tracking_ticket tracking_main actual_ticket protected authority
-  local worktree_status
+  local qualification_head worktree_status
   current_head="$(git -C "$CONTROL_WORKDIR" rev-parse HEAD)" ||
     json_error "cannot resolve ticket head"
   tracking_ticket="$(factory_remote_tracking_tip \
@@ -484,8 +495,14 @@ recheck_inflight_migration_authority() {
     json_error "protected in-flight release authorization changed before migration"
   [[ "$tracking_main" == "$CONTROL_PROTECTED_MAIN" ]] ||
     json_error "protected main tracking state changed before migration"
+  if [[ "${FACTORY_KIT_TRUST_SCOPE:-}" == "qualification-candidate" ]]; then
+    qualification_head="$(git -C "$FACTORY_ROOT" rev-parse HEAD)" ||
+      json_error "qualification product authorization is unavailable"
+    [[ "$qualification_head" == "$CONTROL_AUTHORIZATION_REF" ]] ||
+      json_error "qualification product authorization changed before migration"
+  fi
   authority="$(python3 -B "$KIT_DIR/scripts/lib/inflight_release.py" \
-    --repo "$CONTROL_WORKDIR" --protected "$CONTROL_PROTECTED_MAIN" \
+    --repo "$CONTROL_WORKDIR" --protected "$CONTROL_AUTHORIZATION_REF" \
     --target "$FACTORY_KIT_SHA" --ticket "$ticket" \
     --branch "$CONTROL_BRANCH" --head "$current_head")" ||
     json_error "ticket authorization evidence changed before migration"

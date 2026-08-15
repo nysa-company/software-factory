@@ -6223,5 +6223,7 @@ When every selected successor claim is idle and blocked only on route migration,
 the deterministic qualification driver reads the owner-only claim/worktree
 bindings, runs the existing sealed batch preview, applies that exact digest as
 `qualification-run`, and reconciles again. Partial cohorts and unsafe state do
-not migrate. The approval digest stays internal; ticket, route, journal, and
-remote mutations remain owned by the existing sealed migration command.
+not migrate. Qualification reads the authorization from its immutable sealed
+product SHA; production remains protected-main-only. The approval digest stays
+internal; ticket, route, journal, and remote mutations remain owned by the
+existing sealed migration command.

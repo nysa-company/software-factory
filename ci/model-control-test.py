@@ -1179,6 +1179,88 @@ PY
             source_head,
         )
         authorize(source_head, "Ready")
+        qualification_authorization = subprocess.check_output(
+            ["git", "-C", str(self.product), "rev-parse", "HEAD"], text=True,
+        ).strip()
+        protected_without_authorization = subprocess.check_output(
+            ["git", "-C", str(self.product), "rev-parse", "HEAD^"], text=True,
+        ).strip()
+        subprocess.run(
+            [
+                "git", "--git-dir", str(self.remote), "update-ref",
+                "refs/heads/main", protected_without_authorization,
+                qualification_authorization,
+            ],
+            check=True,
+        )
+        subprocess.run(
+            [
+                "git", "-C", str(self.product), "update-ref",
+                "refs/remotes/origin/main", protected_without_authorization,
+            ],
+            check=True,
+        )
+        qualification_environment = {
+            **environment,
+            "FACTORY_KIT_TRUST_SCOPE": "qualification-candidate",
+            "FACTORY_QUALIFICATION_PRODUCT_SHA": qualification_authorization,
+        }
+        qualification_preview = migrate(
+            "migrate-plan", "--ticket", "T-901", "--workdir", str(self.workdir),
+            run_environment=qualification_environment,
+        )
+        qualification_applied = migrate(
+            "migrate", "--ticket", "T-901", "--workdir", str(self.workdir),
+            "--approve-hash", qualification_preview["preview_hash"],
+            "--readiness-hash", qualification_preview["readiness_sha256"],
+            "--approved-by", "tester",
+            run_environment=qualification_environment,
+        )
+        self.assertEqual(qualification_applied["ticket"], "T-901")
+        subprocess.run(
+            ["git", "-C", str(self.workdir), "reset", "--hard", "-q", source_head],
+            check=True,
+        )
+        subprocess.run(
+            [
+                "git", "--git-dir", str(self.remote), "update-ref",
+                "refs/heads/ticket/T-901", source_head,
+                qualification_applied["commit_sha"],
+            ],
+            check=True,
+        )
+        subprocess.run(
+            [
+                "git", "-C", str(self.workdir), "update-ref",
+                "refs/remotes/origin/ticket/T-901", source_head,
+            ],
+            check=True,
+        )
+        production_refusal = migrate(
+            "migrate", "--ticket", "T-901", "--workdir", str(self.workdir),
+            "--approve-hash", qualification_preview["preview_hash"],
+            "--readiness-hash", qualification_preview["readiness_sha256"],
+            "--approved-by", "tester",
+            check=False,
+        )
+        self.assertEqual(production_refusal.returncode, 2)
+        self.assertIn("exact protected in-flight", production_refusal.stdout)
+        subprocess.run(
+            [
+                "git", "--git-dir", str(self.remote), "update-ref",
+                "refs/heads/main", qualification_authorization,
+                protected_without_authorization,
+            ],
+            check=True,
+        )
+        subprocess.run(
+            [
+                "git", "-C", str(self.product), "update-ref",
+                "refs/remotes/origin/main", qualification_authorization,
+            ],
+            check=True,
+        )
+        network_trace.write_text("")
         (self.workdir / "fixture-note.txt").write_text("authorization head drift\n")
         subprocess.run(
             ["git", "-C", str(self.workdir), "add", "fixture-note.txt"], check=True,
