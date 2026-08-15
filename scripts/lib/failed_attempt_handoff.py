@@ -420,7 +420,7 @@ def _decode_path(raw):
     return _validate_path_text(path)
 
 
-def _parse_tree(raw):
+def _parse_tree(raw, *, allow_symlinks=False):
     entries = {}
     for record in raw.split(b"\0"):
         if not record:
@@ -433,9 +433,13 @@ def _parse_tree(raw):
         path = _decode_path(path_raw)
         if kind == "commit" or mode == "160000":
             raise HandoffError(f"submodules are forbidden: {path}")
-        if mode == "120000":
+        if mode == "120000" and not allow_symlinks:
             raise HandoffError(f"symlinks are forbidden: {path}")
-        if kind != "blob" or mode not in ("100644", "100755"):
+        allowed_modes = (
+            ("100644", "100755", "120000")
+            if allow_symlinks else ("100644", "100755")
+        )
+        if kind != "blob" or mode not in allowed_modes:
             raise HandoffError(f"unsupported tracked entry: {path}")
         entries[path] = (mode, oid)
     return entries
@@ -776,10 +780,12 @@ def _validate_committed_changes(
         return
     _git(repo, ["merge-base", "--is-ancestor", baseline, head])
     baseline_tree = _parse_tree(
-        _git(repo, ["ls-tree", "-rz", "--full-tree", baseline])
+        _git(repo, ["ls-tree", "-rz", "--full-tree", baseline]),
+        allow_symlinks=True,
     )
     head_tree = _parse_tree(
-        _git(repo, ["ls-tree", "-rz", "--full-tree", head])
+        _git(repo, ["ls-tree", "-rz", "--full-tree", head]),
+        allow_symlinks=True,
     )
     changed = _git(
         repo,
@@ -813,6 +819,8 @@ def _validate_committed_changes(
             raise HandoffError(f"committed path is forbidden for {role}: {path}")
         previous = baseline_tree.get(path)
         current = head_tree.get(path)
+        if any(item is not None and item[0] == "120000" for item in (previous, current)):
+            raise HandoffError(f"committed path has an unsafe mode: {path}")
         if current is not None:
             mode, oid = current
             if mode not in ("100644", "100755"):

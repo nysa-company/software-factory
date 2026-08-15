@@ -7,6 +7,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Product-agnostic factory kit; product repositories carry only their factory state and CI integration.
 - Durable decisions use repository-local numbering beginning at Decision 1.
 - Stable operating truth lives in `docs/`; prompts, templates, and evidence stay colocated with consumers. The operator preflight hydrates only evidence-bound immutable objects, batches read-only object checks, aggregates activation blockers, and makes network review explicit before certification. Qualification validates selected remote branches and exact prior-cohort control retries before publication, shares protected dependency truth, counts only role-control evidence appended after its sealed product SHA, and preserves one exact-head retry for a parked preview timeout.
+- Historical committed-role checks carry unchanged baseline symlinks; changed symlinks and every handoff snapshot symlink remain fail-closed.
 - Nysa Agents baseline v3 as a toolkit; `bash ci/test-all.sh` is the unconditional full command.
 - Contract 2 live products resolve sealed exact-SHA releases from owner-only `active.json` records under `~/.factory/kits` via `~/.factory/bin/factory-launch`; the native controller is the only scheduler.
 - The local release canary is one code-driven, product-agnostic command that creates contained local origins, runs setup/resume, and times one authenticated Planning transition plus sealed mock planner; its repository-test evidence is never promotable.
@@ -6170,3 +6171,12 @@ role wrapper preserves that rejected head under the existing failed-role ref
 and restores the authenticated input before publishing the typed failure. A
 retry therefore starts from the same clean local and remote head; any branch,
 dirty-worktree, or remote mismatch remains a control-plane mutation.
+
+## 2026-08-15 — Decision 437: Historical role validation preserves baseline symlinks
+
+Category: Reliability
+
+Committed-role validation may carry a symlink only when its mode and blob are
+unchanged from the authenticated baseline. Added, removed, or modified
+symlinks remain invalid, and failed-attempt snapshots retain their stricter
+no-symlink boundary.
