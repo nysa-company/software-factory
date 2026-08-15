@@ -111,7 +111,7 @@ def report_result(value: dict[str, Any]) -> None:
         raise QualificationRunError("qualification reducer returned invalid evidence")
 
 
-def qualification_basis() -> tuple[set[str], int]:
+def qualification_basis() -> tuple[set[str], int, bool, str]:
     raw_path = os.environ.get("FACTORY_QUALIFICATION_MANIFEST", "")
     factory_sha = os.environ.get("FACTORY_RELEASE_SHA", "")
     path = Path(raw_path)
@@ -134,7 +134,10 @@ def qualification_basis() -> tuple[set[str], int]:
             raise QualificationRunError("qualification manifest changed while reading")
         value = json.loads(raw.decode("utf-8", "strict"))
         manifest = validate_manifest(value, factory_sha)
-        return set(manifest["tickets"]), manifest["capacity"]
+        return (
+            set(manifest["tickets"]), manifest["capacity"],
+            manifest.get("mode") == "successor", factory_sha,
+        )
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, ManifestError) as error:
         raise QualificationRunError("qualification manifest is invalid") from error
     finally:
@@ -144,6 +147,7 @@ def qualification_basis() -> tuple[set[str], int]:
 
 def doctor_allows_reconcile(
     value: dict[str, Any], project: str, selected: set[str], capacity: int,
+    successor: bool, factory_sha: str,
 ) -> bool:
     checks = value.get("checks")
     if (
@@ -156,7 +160,7 @@ def doctor_allows_reconcile(
         or any(
             not isinstance(checks[name], dict)
             or checks[name].get("status") != "ok"
-            for name in REQUIRED_CHECKS
+            for name in REQUIRED_CHECKS - {"transition_receipts"}
         )
         or any(
             not isinstance(checks[name], dict)
@@ -166,10 +170,53 @@ def doctor_allows_reconcile(
         or not isinstance(checks["runtime"], dict)
     ):
         return False
+    transition = checks["transition_receipts"]
+    incidents = transition.get("incidents")
+    transition_ok = (
+        transition.get("status") == "ok"
+        and (incidents is None or incidents == [])
+    )
+    transition_recovery = (
+        successor
+        and transition.get("status") == "warning"
+        and isinstance(incidents, list)
+        and bool(incidents)
+        and all(isinstance(item, dict) for item in incidents)
+        and all(
+            set(item) == {
+                "active_factory_sha", "observed_at_epoch_ns", "reason_code",
+                "receipt_factory_sha", "ticket", "transition_receipt_sha256",
+            }
+            for item in incidents
+        )
+        and len({item["ticket"] for item in incidents}) == len(incidents)
+        and all(
+            item.get("active_factory_sha") == factory_sha
+            and item.get("receipt_factory_sha") != factory_sha
+            and isinstance(item.get("receipt_factory_sha"), str)
+            and re.fullmatch(r"[0-9a-f]{40}", item["receipt_factory_sha"])
+            and item.get("reason_code") == "prior_kit_receipt"
+            and item.get("ticket") in selected
+            and isinstance(item.get("observed_at_epoch_ns"), int)
+            and not isinstance(item["observed_at_epoch_ns"], bool)
+            and item["observed_at_epoch_ns"] >= 0
+            and isinstance(item.get("transition_receipt_sha256"), str)
+            and re.fullmatch(
+                r"[0-9a-f]{64}", item["transition_receipt_sha256"],
+            )
+            for item in incidents
+        )
+    )
+    if not transition_ok and not transition_recovery:
+        return False
     runtime = checks["runtime"]
     if value.get("overall_status") == "ok":
-        return runtime.get("status") == "ok"
-    if value.get("overall_status") != "warning" or runtime.get("status") != "warning":
+        return runtime.get("status") == "ok" and transition_ok
+    if value.get("overall_status") != "warning":
+        return False
+    if runtime.get("status") == "ok":
+        return transition_recovery
+    if runtime.get("status") != "warning":
         return False
 
     counters = (
@@ -239,12 +286,12 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
     if not PROJECT.fullmatch(args.project):
         raise QualificationRunError("invalid qualification project")
     launcher = launcher_path(args.launcher)
-    selected, capacity = qualification_basis()
+    selected, capacity, successor, factory_sha = qualification_basis()
     phases: list[dict[str, Any]] = []
     started = time.monotonic()
     code, doctor = invoke(launcher, args.project, "doctor", phases)
     if code != 0 or not doctor_allows_reconcile(
-        doctor, args.project, selected, capacity,
+        doctor, args.project, selected, capacity, successor, factory_sha,
     ):
         return {
             "doctor_status": doctor.get("overall_status"),
@@ -308,7 +355,11 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
         raise QualificationRunError("controller reported a ticket error")
     if result_statuses & {"blocked", "budget", "cancelled", "maintenance"}:
         return {**base, "reason": "ticket_blocked", "status": "blocked"}
-    if result_statuses - {"complete"} or controller["active"]:
+    if (
+        not result_statuses
+        or result_statuses - {"complete"}
+        or controller["active"]
+    ):
         return {**base, "reason": "authenticated_wait", "status": "waiting"}
 
     code, report = invoke(launcher, args.project, "qualification", phases)

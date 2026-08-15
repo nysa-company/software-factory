@@ -6204,3 +6204,13 @@ claim or protected Done evidence and no foreign claim exists, the controller
 skips both admission shadow and real claim. Existing claims still cross every
 ordinary passport, lease, route, recovery, provider, and lifecycle check; a
 partial or foreign cohort retains the fail-closed admission boundary.
+
+## 2026-08-15 — Decision 440: Successor receipt warnings enter exact recovery
+
+Category: Reliability
+
+The deterministic qualification driver admits a Doctor warning only when every
+transition incident is a unique selected-ticket `prior_kit_receipt` bound to
+the active successor Factory; the ordinary controller must then migrate it.
+Runtime warnings retain their separate bounded shape, all other warnings stay
+blocked, and an empty controller result is a wait rather than terminal evidence.

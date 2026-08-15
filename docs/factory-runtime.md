@@ -215,10 +215,12 @@ authenticated boundary:
   <project> qualification-run --json
 ```
 
-It requires Doctor `ok` or the exact bounded runtime-only warning produced by
-active qualification leases, performs the one mandatory controller restart in
-a new process, runs the ordinary controller/state machine, and invokes the
-existing reducer only after terminal completion. Every other warning remains a
+It requires Doctor `ok`, the exact bounded runtime-only warning produced by
+active qualification leases, or—only for a successor—the exact selected-ticket
+`prior_kit_receipt` warning that the controller itself must migrate. It performs
+the one mandatory controller restart in a new process, runs the ordinary
+controller/state machine, and invokes the existing reducer only after a
+nonempty set of terminal completion results. Every other warning remains a
 typed block. Rerun after a named external or operator input changes; the driver
 never edits tickets, claims, leases, receipts, passports, journals, or provider
 state itself.

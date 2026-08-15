@@ -213,6 +213,16 @@ raise SystemExit(code)
         self.assertEqual(value["reason"], "authenticated_wait")
         self.assertEqual(self.called(), ["doctor", "reconcile"])
 
+    def test_empty_controller_result_is_not_reduced(self) -> None:
+        code, value = self.run_scenario({
+            "doctor": self.doctor(),
+            "reconcile": [self.controller("ok")],
+            "qualification": self.report(),
+        })
+        self.assertEqual(code, 3)
+        self.assertEqual(value["reason"], "authenticated_wait")
+        self.assertEqual(self.called(), ["doctor", "reconcile"])
+
     def test_cohort_and_busy_waits_are_typed_and_single_attempt(self) -> None:
         for controller, reason in (
             (self.controller("waiting_for_target"), "cohort_not_accounted"),
@@ -239,6 +249,61 @@ raise SystemExit(code)
         self.assertEqual(value["status"], "blocked")
         self.assertEqual(value["reason"], "doctor_not_ready")
         self.assertEqual(self.called(), ["doctor"])
+
+    def test_successor_prior_receipts_reach_only_controller_recovery(self) -> None:
+        manifest = json.loads(self.manifest.read_text(encoding="utf-8"))
+        manifest.update({
+            "budget_usd": "300.000000",
+            "mode": "successor",
+            "per_run_budget_usd": "10.000000",
+            "per_ticket_budget_usd": "100.000000",
+            "source_factory_sha": "b" * 40,
+        })
+        self.manifest.write_text(json.dumps(manifest), encoding="utf-8")
+        doctor = self.doctor("warning")
+        doctor["checks"]["runtime"]["status"] = "ok"
+        doctor["checks"]["transition_receipts"] = {
+            "incidents": [{
+                "active_factory_sha": "a" * 40,
+                "observed_at_epoch_ns": 1,
+                "reason_code": "prior_kit_receipt",
+                "receipt_factory_sha": "b" * 40,
+                "ticket": "T-1",
+                "transition_receipt_sha256": "c" * 64,
+            }],
+            "status": "warning",
+        }
+
+        code, value = self.run_scenario({
+            "doctor": doctor,
+            "reconcile": [self.controller("waiting_for_target")],
+            "qualification": self.report(),
+        })
+
+        self.assertEqual(code, 3)
+        self.assertEqual(value["reason"], "cohort_not_accounted")
+        self.assertEqual(self.called(), ["doctor", "reconcile"])
+
+        for label, change in {
+            "foreign-ticket": ("ticket", "T-9"),
+            "wrong-active-factory": ("active_factory_sha", "d" * 40),
+            "wrong-reason": ("reason_code", "receipt_identity_invalid"),
+            "wrong-receipt": ("transition_receipt_sha256", "bad"),
+        }.items():
+            with self.subTest(label=label):
+                self.calls.unlink(missing_ok=True)
+                changed = copy.deepcopy(doctor)
+                changed["checks"]["transition_receipts"]["incidents"][0][
+                    change[0]
+                ] = change[1]
+                code, value = self.run_scenario({
+                    "doctor": changed,
+                    "reconcile": [self.controller("ok")],
+                    "qualification": self.report(),
+                })
+                self.assertEqual(code, 3)
+                self.assertEqual(value["reason"], "doctor_not_ready")
+                self.assertEqual(self.called(), ["doctor"])
 
     def test_bounded_inflight_doctor_warning_reaches_controller(self) -> None:
         code, value = self.run_scenario({
@@ -419,7 +484,10 @@ raise SystemExit(code)
         report["report_sha256"] = "0" * 64
         code, value = self.run_scenario({
             "doctor": self.doctor(),
-            "reconcile": [self.controller("ok")],
+            "reconcile": [self.controller("ok", results=[
+                {"status": "complete", "ticket": ticket}
+                for ticket in ("T-1", "T-2", "T-3")
+            ])],
             "qualification": report,
         })
         self.assertEqual(code, 2)
