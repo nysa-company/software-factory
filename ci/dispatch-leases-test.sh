@@ -288,6 +288,45 @@ else
     "status=$HEARTBEAT_FAILURE_RC"
 fi
 
+HEARTBEAT_IGNORE_READY="$TMP/heartbeat-ignore-started"
+HEARTBEAT_IGNORE_LOCK="$TMP/heartbeat-ignore.lock"
+HEARTBEAT_IGNORE_RENEW="$TMP/heartbeat-ignore.sh"
+printf '%s\n' '#!/usr/bin/env bash' \
+  'trap '\''rmdir "$HEARTBEAT_IGNORE_LOCK"; exit 143'\'' TERM' \
+  'mkdir "$HEARTBEAT_IGNORE_LOCK"' \
+  'touch "$HEARTBEAT_IGNORE_READY"' \
+  'while :; do sleep 1; done' > "$HEARTBEAT_IGNORE_RENEW"
+chmod 700 "$HEARTBEAT_IGNORE_RENEW"
+HEARTBEAT_IGNORE_READY="$HEARTBEAT_IGNORE_READY" \
+  HEARTBEAT_IGNORE_LOCK="$HEARTBEAT_IGNORE_LOCK" \
+  FACTORY_TEST_MODE=1 FACTORY_TRUSTED_TEST_HARNESS=1 \
+  FACTORY_TEST_LEASE_HEARTBEAT_IGNORE_TERM=1 \
+  python3 "$ROOT/scripts/dispatch-lease-heartbeat.py" \
+    --renew-script "$HEARTBEAT_IGNORE_RENEW" --factory-root "$PRODUCT" \
+    --ticket "$FIRST_TICKET" --lease "$FIRST_ID" --interval 1 &
+HEARTBEAT_IGNORE_PID=$!
+for _try in $(seq 1 500); do
+  [[ -f "$HEARTBEAT_IGNORE_READY" ]] && break
+  sleep 0.02
+done
+kill -TERM -- "-$HEARTBEAT_IGNORE_PID" 2>/dev/null || true
+for _try in $(seq 1 100); do
+  kill -0 "$HEARTBEAT_IGNORE_PID" 2>/dev/null || break
+  sleep 0.02
+done
+if kill -0 "$HEARTBEAT_IGNORE_PID" 2>/dev/null; then
+  kill -KILL -- "-$HEARTBEAT_IGNORE_PID" 2>/dev/null || true
+fi
+HEARTBEAT_IGNORE_RC=0
+wait "$HEARTBEAT_IGNORE_PID" || HEARTBEAT_IGNORE_RC=$?
+if [[ -f "$HEARTBEAT_IGNORE_READY" && "$HEARTBEAT_IGNORE_RC" -eq 143 &&
+      ! -e "$HEARTBEAT_IGNORE_LOCK" ]]; then
+  pass "ignored heartbeat stop still lets an in-flight renewal clean up"
+else
+  fail "ignored heartbeat stop still lets an in-flight renewal clean up" \
+    "status=$HEARTBEAT_IGNORE_RC"
+fi
+
 mkdir "$PRODUCT/factory/.launch.lock"
 BUSY_RENEW_RC=0
 FACTORY_ROOT="$PRODUCT" "$LEASE" renew --ticket "$FIRST_TICKET" --lease "$FIRST_ID" \
