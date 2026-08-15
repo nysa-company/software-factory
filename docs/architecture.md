@@ -1264,6 +1264,11 @@ every terminal field matches the typed post-GO failure. Test-author's separate
 trusted operator reorder command remains the sole ancestry-rewrite exception;
 role execution never performs that rewrite and the controller never
 force-pushes either path.
+The same restoration happens when bounded role-output validation rejects a
+clean descendant commit before role exit. The rejected commit remains under
+the failed-role diagnostic ref, while the ticket branch, index, worktree, and
+remote return to the authenticated input so the typed invalid-output retry
+cannot inherit unreviewed local history.
 Before those publication checks, the wrapper reconciles the selected ticket's
 physical mode with its committed `100644` mode. It changes only an owner-owned,
 single-link regular file from `0600` to `0644`; symlinks, hardlinks,

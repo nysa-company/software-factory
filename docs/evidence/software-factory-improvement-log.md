@@ -5783,6 +5783,24 @@ ticket, transition, passport, head, timeout, cleanliness, or remote check.
 Validation: the focused controller regression exercises both forms and proves
 the parked retry preserves its empty lease for ordinary controller recovery.
 
+## FI-20260815-223 — Invalid role output poisoned the automatic retry
+
+Status: Focused regression implemented; protected CI and successor qualification pending
+Priority: P1
+Area: role-output recovery
+Owner: Factory
+Impact: T-226 Test-author produced more than the bounded 8 MiB output after
+creating a clean descendant commit. The wrapper correctly rejected the output,
+but left that commit checked out; the automatic retry then failed before GO
+because the local ticket head no longer matched the authenticated remote.
+Smallest repair: reuse the existing failed-role quarantine for a rejected clean
+descendant, then restore and revalidate the authenticated local and remote
+input before publishing `role_exit_invalid_output`. Treat every other local or
+remote mutation as a control-plane failure.
+Validation: the role-exit integration fixture produces an oversized output and
+proves status 11, exact invalid-output evidence, preserved diagnostic head,
+clean restored worktree, and unchanged bare remote.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

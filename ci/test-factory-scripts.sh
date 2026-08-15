@@ -4370,6 +4370,41 @@ for ROLE_REWRITE_ROLE in builder test-author; do
   fi
 done
 
+setup_role_exit_fixture T-662 test-author
+ROLE_OVERSIZED_INPUT="$(git -C "$ROLE_EXIT_WORKTREE" rev-parse HEAD)"
+ROLE_OVERSIZED_STATUS=0
+MOCK_COMMIT_EMPTY=1 MOCK_OVERSIZED_OUTPUT=1 \
+  FACTORY_ROOT="$ROLE_EXIT_ROOT" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
+  FACTORY_TEST_MODE=1 FACTORY_TEST_ENFORCE_ROLE_EXIT=1 \
+  FACTORY_CERTIFIED_PRODUCT_ORIGIN="$ROLE_EXIT_REMOTE" \
+  FACTORY_ADAPTER_OVERRIDE=mock \
+  "$RUN_AGENT" --role test-author --ticket T-662 \
+    --workdir "$ROLE_EXIT_WORKTREE" -- "oversized output" \
+    >"$TMP/role-oversized-output.out" 2>&1 || ROLE_OVERSIZED_STATUS=$?
+ROLE_OVERSIZED_META="$(ls "$ROLE_EXIT_ROOT"/factory/runs/*.meta)"
+ROLE_OVERSIZED_RUN_ID="$(sed -n 's/^run_id=//p' "$ROLE_OVERSIZED_META")"
+ROLE_OVERSIZED_REF="refs/factory/failed-role/T-662/$ROLE_OVERSIZED_RUN_ID"
+ROLE_OVERSIZED_HEAD="$(git -C "$ROLE_EXIT_WORKTREE" rev-parse \
+  "$ROLE_OVERSIZED_REF" 2>/dev/null || true)"
+if [[ "$ROLE_OVERSIZED_STATUS" -eq 11 &&
+      "$(git -C "$ROLE_EXIT_WORKTREE" rev-parse HEAD)" == \
+        "$ROLE_OVERSIZED_INPUT" &&
+      "$(git --git-dir="$ROLE_EXIT_REMOTE" rev-parse \
+        refs/heads/ticket/T-662)" == "$ROLE_OVERSIZED_INPUT" &&
+      -z "$(git -C "$ROLE_EXIT_WORKTREE" status --porcelain=v1)" &&
+      -n "$ROLE_OVERSIZED_HEAD" &&
+      "$ROLE_OVERSIZED_HEAD" != "$ROLE_OVERSIZED_INPUT" ]] &&
+   git -C "$ROLE_EXIT_WORKTREE" merge-base --is-ancestor \
+     "$ROLE_OVERSIZED_INPUT" "$ROLE_OVERSIZED_HEAD" &&
+   grep -q '^ROLE_OUTPUT_INVALID: role output exceeds 8388608-byte limit$' \
+     "$ROLE_EXIT_ROOT/factory/runs/$ROLE_OVERSIZED_RUN_ID.out" &&
+   grep -q '^role_exit=role_exit_invalid_output$' "$ROLE_OVERSIZED_META"; then
+  pass "invalid role output restores its authenticated input before retry"
+else
+  fail "invalid role output did not restore its authenticated input" \
+    "status=$ROLE_OVERSIZED_STATUS run=$ROLE_OVERSIZED_RUN_ID"
+fi
+
 setup_role_exit_fixture T-650
 ROLE_REAL_GIT="$(type -P git)"
 ROLE_GIT_COUNT="$TMP/role-git-count"

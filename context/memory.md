@@ -6160,3 +6160,13 @@ The exact-head preview retry accepts both the immediate released-lease form and
 the normal parked checkpoint form, where parking has cleared the released
 lease marker and lease ID. Every existing head, passport, transition, timeout,
 cleanliness, and remote validation remains required before the wait is reset.
+
+## 2026-08-15 — Decision 436: Invalid role output restores its input before retry
+
+Category: Reliability
+
+When bounded role-output validation rejects a clean descendant commit, the
+role wrapper preserves that rejected head under the existing failed-role ref
+and restores the authenticated input before publishing the typed failure. A
+retry therefore starts from the same clean local and remote head; any branch,
+dirty-worktree, or remote mismatch remains a control-plane mutation.

@@ -161,6 +161,12 @@ if [[ "${MOCK_SLEEP:-0}" != "0" ]]; then
   fi
 fi
 echo "mock adapter ran task: ${*:-<none>}"
+if [[ "${MOCK_OVERSIZED_OUTPUT:-0}" == "1" ]]; then
+  python3 - <<'PY'
+import sys
+sys.stdout.write("x" * (8 * 1024 * 1024 + 1))
+PY
+fi
 if [[ -n "${MOCK_RAW_METRICS:-}" ]]; then
   printf '%s\n' "$MOCK_RAW_METRICS"
 elif [[ "${MOCK_NO_COST:-0}" == "1" ]]; then
