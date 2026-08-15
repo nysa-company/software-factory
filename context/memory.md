@@ -6068,4 +6068,6 @@ dispatch and the state machine. The dependency-only fulfillment migration may
 bind an already-merged ticket whose exact protected source state is Backlog or
 Done; it never promotes that ticket to terminal truth, and still requires its
 exact merged PR, successful protected checks, immutable ticket blob, target kit,
-and fresh manual protected-main authorization.
+and fresh manual protected-main authorization. The original flat migration
+batch stays immutable; any later batch uses one append-only directory named by
+its exact target Factory SHA, and duplicate tickets across batches fail closed.

@@ -23,6 +23,8 @@ from legacy_closeout import ValidationError, protected_dependency  # noqa: E402
 
 OLD_KIT = "a" * 40
 NEW_KIT = "b" * 40
+THIRD_KIT = "c" * 40
+FOURTH_KIT = "d" * 40
 CHECKS = (
     {"name": "ci", "app_id": 7, "app_slug": "github-actions"},
     {"name": "policy", "app_id": 7, "app_slug": "github-actions"},
@@ -54,6 +56,9 @@ class DependencyFulfillmentTest(unittest.TestCase):
         (self.repo / "factory/KIT_PIN").write_text(OLD_KIT + "\n")
         (self.repo / "factory/tickets/T-300.md").write_text(
             "# T-300\n\nState: Backlog\n", encoding="utf-8"
+        )
+        (self.repo / "factory/tickets/T-301.md").write_text(
+            "# T-301\n\nState: Done\n", encoding="utf-8"
         )
         (self.repo / "app.txt").write_text("before\n", encoding="utf-8")
         run("git", "add", ".", cwd=self.repo)
@@ -236,6 +241,63 @@ class DependencyFulfillmentTest(unittest.TestCase):
         ).read_text(encoding="utf-8"))
         self.assertEqual(receipt["source_state"], "Done")
         self.assertIn("State: Done", path.read_text(encoding="utf-8"))
+
+    def test_later_target_uses_an_immutable_generation(self):
+        self.apply_and_commit()
+        self.refresh_basis()
+        request = json.loads(self.request.read_text(encoding="utf-8"))
+        request["target_kit_sha"] = THIRD_KIT
+        request["tickets"] = [{"ticket": "T-301", "pr_number": 7}]
+        self.request.write_text(
+            json.dumps(request, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+        self.apply_and_commit()
+
+        self.assertEqual(
+            protected_dependency(self.repo, "T-300")["target_kit_sha"],
+            NEW_KIT,
+        )
+        self.assertEqual(
+            protected_dependency(self.repo, "T-301")["target_kit_sha"],
+            THIRD_KIT,
+        )
+        generation = (
+            self.repo / "factory/migrations/dependency-fulfillment" / THIRD_KIT
+        )
+        self.assertEqual(
+            sorted(path.name for path in generation.iterdir()),
+            ["T-301.json", "authorization.json"],
+        )
+        wrong = generation.with_name(FOURTH_KIT)
+        run("git", "mv", str(generation), str(wrong), cwd=self.repo)
+        run("git", "commit", "-qm", "mislabel dependency generation", cwd=self.repo)
+        run(
+            "git", "update-ref", "refs/remotes/origin/main",
+            run("git", "rev-parse", "HEAD", cwd=self.repo), cwd=self.repo,
+        )
+        with self.assertRaisesRegex(
+            ValidationError, "generation does not match its target kit",
+        ):
+            protected_dependency(self.repo, "T-301")
+
+    def test_later_generation_cannot_repeat_a_ticket(self):
+        self.apply_and_commit()
+        self.refresh_basis()
+        request = json.loads(self.request.read_text(encoding="utf-8"))
+        request["target_kit_sha"] = THIRD_KIT
+        self.request.write_text(
+            json.dumps(request, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        with (
+            mock.patch.object(CLI, "gh_json", side_effect=self.gh),
+            self.assertRaisesRegex(
+                ValidationError, "ticket appears in multiple batches",
+            ),
+        ):
+            CLI.prepare(self.repo, self.request)
 
     def test_partial_terminal_evidence_cannot_bypass_through_fulfillment(self):
         self.apply_and_commit()

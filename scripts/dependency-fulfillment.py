@@ -256,8 +256,15 @@ def prepare(product, request_path):
         == request["target_kit_sha"] + "\n"
     ):
         raise ValidationError(
-            "dependency fulfillment must install a different Contract 1.8 kit"
+            "dependency fulfillment must install a different supported kit"
         )
+    existing = run(
+        repo, "ls-tree", "-r", "--name-only", basis_commit, "--", MIGRATION_DIR
+    ).stdout.splitlines()
+    migration_dir = (
+        MIGRATION_DIR if not existing
+        else f"{MIGRATION_DIR}/{request['target_kit_sha']}"
+    )
     cutoff = timestamp(request["cutoff"], "dependency fulfillment request cutoff")
     if cutoff.microsecond or cutoff > datetime.now(timezone.utc):
         raise ValidationError(
@@ -352,7 +359,7 @@ def prepare(product, request_path):
             {
                 "ticket": ticket,
                 "pr_number": item["pr_number"],
-                "receipt": f"{MIGRATION_DIR}/{ticket}.json",
+                "receipt": f"{migration_dir}/{ticket}.json",
             }
         )
     authorization_text = pretty(authorization)
@@ -362,7 +369,7 @@ def prepare(product, request_path):
     receipts = {}
     files = {
         "factory/KIT_PIN": request["target_kit_sha"] + "\n",
-        f"{MIGRATION_DIR}/authorization.json": authorization_text,
+        f"{migration_dir}/authorization.json": authorization_text,
     }
     for ticket in sorted(evidence):
         receipts[ticket] = {
@@ -379,9 +386,11 @@ def prepare(product, request_path):
             "cutoff": request["cutoff"],
             "protected_main_basis": basis,
         }
-        files[f"{MIGRATION_DIR}/{ticket}.json"] = pretty(receipts[ticket])
+        files[f"{migration_dir}/{ticket}.json"] = pretty(receipts[ticket])
     candidate = temporary_candidate(repo, basis_commit, files, request["cutoff"])
-    validate_generated_dependency_batch(repo, authorization, receipts, candidate)
+    validate_generated_dependency_batch(
+        repo, authorization, receipts, candidate, migration_dir,
+    )
     payload = {
         "authorization": authorization,
         "files": files,
