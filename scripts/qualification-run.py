@@ -409,8 +409,8 @@ def doctor_allows_reconcile(
         }
         or runtime.get("provider_lock_state") != "absent"
         or any(runtime[name] for name in (
-            "stale_runs", "malformed_runs", "stale_dispatch_leases",
-            "malformed_dispatch_leases", "malformed_active_run_claims",
+            "stale_runs", "malformed_runs", "malformed_dispatch_leases",
+            "malformed_active_run_claims",
         ))
         or not isinstance(runs, list)
         or not runtime["run_records"] == runtime["active_runs"] == len(runs)
@@ -435,14 +435,25 @@ def doctor_allows_reconcile(
     ):
         return False
     tickets = [item.get("ticket") for item in leases if isinstance(item, dict)]
+    states = [item.get("state") for item in leases if isinstance(item, dict)]
+    stale_recovery = (
+        successor
+        and runtime["stale_dispatch_leases"] > 0
+        and runtime["stale_dispatch_leases"] == states.count("stale")
+        and all(state in {"active", "stale"} for state in states)
+    )
     return (
         len(tickets) == len(leases)
         and all(
             isinstance(ticket, str) and TICKET.fullmatch(ticket) and ticket in selected
-            and item.get("state") == "active"
             for ticket, item in zip(tickets, leases)
         )
         and len(set(tickets)) == len(tickets)
+        and (
+            runtime["stale_dispatch_leases"] == 0
+            and states == ["active"] * len(states)
+            or stale_recovery
+        )
     )
 
 

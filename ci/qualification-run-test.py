@@ -468,6 +468,31 @@ raise SystemExit(code)
         self.assertEqual(value["doctor_status"], "warning")
         self.assertEqual(self.called(), ["doctor", "reconcile"])
 
+    def test_successor_stale_selected_lease_reaches_controller_recovery(self) -> None:
+        manifest = json.loads(self.manifest.read_text(encoding="utf-8"))
+        manifest.update({
+            "budget_usd": "300.000000",
+            "mode": "successor",
+            "per_run_budget_usd": "10.000000",
+            "per_ticket_budget_usd": "100.000000",
+            "source_factory_sha": "b" * 40,
+        })
+        self.manifest.write_text(json.dumps(manifest), encoding="utf-8")
+        doctor = self.inflight_doctor()
+        doctor["checks"]["runtime"]["stale_dispatch_leases"] = 1
+        doctor["checks"]["runtime"]["dispatch_leases"][0]["state"] = "stale"
+
+        code, value = self.run_scenario({
+            "doctor": doctor,
+            "reconcile": [self.controller("waiting_for_target", active=1)],
+            "qualification": self.report(),
+        })
+
+        self.assertEqual(code, 3)
+        self.assertEqual(value["reason"], "cohort_not_accounted")
+        self.assertEqual(value["doctor_status"], "warning")
+        self.assertEqual(self.called(), ["doctor", "reconcile"])
+
     def test_unsafe_doctor_warnings_remain_blocked(self) -> None:
         cases = {
             "wrong-project": [("project", "other")],

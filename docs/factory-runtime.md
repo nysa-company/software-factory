@@ -217,7 +217,10 @@ authenticated boundary:
 
 It requires Doctor `ok`, the exact bounded runtime-only warning produced by
 active qualification leases, or—only for a successor—the exact selected-ticket
-`prior_kit_receipt` warning that the controller itself must migrate. A warning
+`prior_kit_receipt` warning or idle selected-lease expiry that the controller
+itself must recover. During a long successor role, the controller renews every
+idle cohort lease and releases a parked lease instead of allowing either to
+expire. A warning
 from one prior candidate is accepted only when it covers the full selected
 cohort; the controller still authenticates and migrates every receipt. It
 performs the one mandatory controller restart in a new process, runs the ordinary

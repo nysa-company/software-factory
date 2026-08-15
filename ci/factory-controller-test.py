@@ -3929,12 +3929,17 @@ class FactoryControllerTest(unittest.TestCase):
         second.recover_terminal_exports = lambda _claims: None
         second.recover_repaired_failures = lambda _claims: None
         second.claim_new = lambda claims, *_args: claims
+        maintained = []
+        second.maintain_successor_leases = lambda claims: maintained.append(
+            sorted(claim["ticket"] for claim in claims)
+        )
         second.pin_routes = lambda claims: [
             {"status": "waiting", "ticket": claim["ticket"]}
             for claim in claims
         ]
         second.reconcile()
 
+        self.assertIn(tickets, maintained)
         self.assertTrue(
             (self.state / f"qualification-recovered-{'a' * 40}.json").is_file()
         )
@@ -9815,6 +9820,51 @@ class FactoryControllerTest(unittest.TestCase):
         calls_before_restart = list(calls)
         controller.recover_upgraded_claims([claim])
         self.assertEqual(calls, calls_before_restart)
+
+        calls.clear()
+        claim.pop("parked")
+        claim["lease"] = stale["lease_id"]
+        CONTROL.write(leases / "T-110.json", stale)
+        controller.ensure_lease(claim, "successor-cohort")
+        self.assertEqual(claim["lease"], "d" * 64)
+        self.assertEqual(calls, [
+            ("renew", "--ticket", "T-110", "--lease", stale["lease_id"]),
+            (
+                "release-expired", "--ticket", "T-110",
+                "--lease", stale["lease_id"],
+            ),
+            ("claim", "--ticket", "T-110"),
+        ])
+
+    def test_successor_maintains_only_idle_cohort_leases(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        controller.qualification = {"mode": "successor"}
+        parked = {
+            "lease": "a" * 64, "parked": True, "status": "claimed",
+            "ticket": "T-110",
+        }
+        idle = {
+            "lease": "b" * 64, "status": "claimed", "ticket": "T-111",
+        }
+        active = {
+            "lease": "c" * 64, "status": "running", "ticket": "T-112",
+        }
+        blocked = {
+            "lease": "d" * 64, "parked": True, "status": "blocked",
+            "ticket": "T-113",
+        }
+        calls = []
+        controller.role_active = lambda claim: claim is active
+        controller.park_claim = lambda claim: calls.append(("park", claim["ticket"]))
+        controller.ensure_lease = lambda claim, label: calls.append(
+            (label, claim["ticket"])
+        )
+
+        controller.maintain_successor_leases([parked, idle, active, blocked])
+
+        self.assertEqual(calls, [
+            ("park", "T-110"), ("successor-cohort", "T-111"),
+        ])
 
     def test_successor_expired_lease_recovery_refuses_live_or_malformed(self) -> None:
         controller = CONTROL.Controller(self.args)

@@ -3563,6 +3563,7 @@ class Controller:
             except ControllerError:
                 if self.role_active(claim):
                     raise
+                self.release_expired_successor_lease(claim)
         lease = self.json_call("claim", "--ticket", claim["ticket"])
         if (
             lease.get("schema_version") != 1
@@ -3605,6 +3606,21 @@ class Controller:
                         "inactive_ticket_lease_released", claim["ticket"],
                         status=status,
                     )
+
+    def maintain_successor_leases(self, claims: list[dict[str, Any]]) -> None:
+        if not self.qualification or self.qualification.get("mode") != "successor":
+            return
+        for claim in claims:
+            if self.role_active(claim):
+                continue
+            if (
+                self.parked(claim)
+                and claim.get("status") in {"claimed", "running", "waiting"}
+                and DIGEST.fullmatch(claim.get("lease", ""))
+            ):
+                self.park_claim(claim)
+            elif self.consumes_capacity(claim):
+                self.ensure_lease(claim, "successor-cohort")
 
     def semantic_handoff_state(self, claim: dict[str, Any]) -> str:
         if (
@@ -3677,11 +3693,14 @@ class Controller:
         return self.semantic_handoff_state(claim) != "invalid"
 
     def release_expired_successor_lease(self, claim: dict[str, Any]) -> bool:
+        lease_id = claim.get("lease", "")
         if (
             self.qualification is None
             or self.qualification.get("mode") != "successor"
-            or not self.parked(claim)
-            or claim.get("lease") != ""
+            or not (
+                self.parked(claim) and lease_id == ""
+                or DIGEST.fullmatch(lease_id)
+            )
             or claim.get("publication_lease")
             or self.role_active(claim)
             or not self.ticket_release_current(claim)
@@ -3705,6 +3724,8 @@ class Controller:
         record = records.get(claim["ticket"])
         if record is None or record["expires_epoch"] > int(time.time()):
             return False
+        if lease_id and record["lease_id"] != lease_id:
+            raise ControllerError("expired dispatcher lease identity changed")
         result = self.json_call(
             "release-expired", "--ticket", claim["ticket"],
             "--lease", record["lease_id"],
@@ -3719,6 +3740,10 @@ class Controller:
                 record["lease_id"].encode()
             ).hexdigest(),
         )
+        if lease_id:
+            claim["lease"] = ""
+            claim.pop("lease_released", None)
+            self.save_claim(claim)
         return True
 
     def park_claim(self, claim: dict[str, Any]) -> bool:
@@ -3729,7 +3754,11 @@ class Controller:
             if claim["status"] in {"claimed", "running"}:
                 claim["status"] = "waiting"
             if DIGEST.fullmatch(claim.get("lease", "")):
-                self.release_ticket_lease(claim)
+                try:
+                    self.release_ticket_lease(claim)
+                except ControllerError:
+                    if not self.release_expired_successor_lease(claim):
+                        raise
                 claim["lease"] = ""
                 claim.pop("lease_released", None)
                 self.save_claim(claim)
@@ -11714,6 +11743,7 @@ class Controller:
                     and not self.role_active(claim)
                 ]
                 self.release_inactive_ticket_leases(idle)
+                self.maintain_successor_leases(idle)
                 if protected_main is None:
                     protected_main = self.cancellation_authority(idle)
                 before_retirement = {claim["ticket"] for claim in idle}
