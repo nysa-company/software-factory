@@ -439,10 +439,16 @@ validate_inflight_migration_authority() {
     json_error "in-flight release authorization result is invalid"
   CONTROL_AUTHORIZED_LOCAL_HEAD="$current_head"
   if [[ "$CONTROL_AUTHORIZATION_MODE" == "exact" ]]; then
-    [[ "$tracking_ticket" == "$current_head" &&
-       "$actual_ticket" == "$current_head" ]] ||
-      json_error "ticket head is not current on its certified remote"
-    CONTROL_EXPECTED_REMOTE_HEAD="$current_head"
+    if [[ "$tracking_ticket" == "$current_head" &&
+          "$actual_ticket" == "$current_head" ]]; then
+      CONTROL_EXPECTED_REMOTE_HEAD="$current_head"
+    elif [[ "$tracking_ticket" == "$actual_ticket" ]] &&
+         git -C "$CONTROL_WORKDIR" merge-base --is-ancestor \
+           "$actual_ticket" "$current_head"; then
+      CONTROL_EXPECTED_REMOTE_HEAD="$actual_ticket"
+    else
+      json_error "ticket head is not a fast-forward of its certified remote"
+    fi
   else
     expected_parent="$(git -C "$CONTROL_WORKDIR" rev-parse "$current_head^")" ||
       json_error "authorized migration parent is unavailable"

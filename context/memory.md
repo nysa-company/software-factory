@@ -8,6 +8,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Durable decisions use repository-local numbering beginning at Decision 1.
 - Stable operating truth lives in `docs/`; prompts, templates, and evidence stay colocated with consumers. The operator preflight hydrates only evidence-bound immutable objects, batches read-only object checks, aggregates activation blockers, and makes network review explicit before certification. Qualification validates selected remote branches and exact prior-cohort control retries before publication, shares protected dependency truth, counts only role-control evidence appended after its sealed product SHA, and preserves one exact-head retry for a parked preview timeout.
 - Historical committed-role checks carry unchanged baseline symlinks; changed symlinks and every handoff snapshot symlink remain fail-closed.
+- Successor qualification can preserve an exact source-passport checkpoint or descendant only through the existing protected in-flight release authorization; migration fast-forwards it without deleting or rewriting ticket work.
 - Nysa Agents baseline v3 as a toolkit; `bash ci/test-all.sh` is the unconditional full command.
 - Contract 2 live products resolve sealed exact-SHA releases from owner-only `active.json` records under `~/.factory/kits` via `~/.factory/bin/factory-launch`; the native controller is the only scheduler.
 - The local release canary is one code-driven, product-agnostic command that creates contained local origins, runs setup/resume, and times one authenticated Planning transition plus sealed mock planner; its repository-test evidence is never promotable.
@@ -6180,3 +6181,16 @@ Committed-role validation may carry a symlink only when its mode and blob are
 unchanged from the authenticated baseline. Added, removed, or modified
 symlinks remain invalid, and failed-attempt snapshots retain their stricter
 no-symlink boundary.
+
+## 2026-08-15 — Decision 438: Successor checkpoints preserve ticket work
+
+Category: Reliability
+
+An exact protected in-flight release authorization may bind the selected
+source-passport heads or exact descendants when a newer successor cannot replay
+their historical role validation. Preparation still proves source HMAC,
+lineage, accounting, passport commit/tree/ticket/route identity, an unchanged
+route at the descendant, and exact cohort membership. Descendant work remains
+incomplete source work. Route migration may CAS-fast-forward an ancestor remote
+through that checkpoint, but never deletes, rewinds, or rewrites its ticket
+history.
