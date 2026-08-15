@@ -1026,7 +1026,7 @@ role_remote_head() {
 quarantine_rewritten_role_history() {
   local diagnostic_ref="refs/factory/failed-role/$TICKET/$RUN_ID"
   local existing="" current_branch current_head remote_head
-  [[ "$ROLE" != "test-author" && "$ROLE" != "reviewer" ]] || return 1
+  [[ "$ROLE" != "reviewer" ]] || return 1
   [[ "$RUN_ID" =~ ^[A-Za-z0-9._-]+$ ]] || return 1
   current_branch="$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" \
     symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
@@ -3040,6 +3040,24 @@ if ! stop_lease_heartbeat; then
 fi
 
 PROVIDER_STATUS="$STATUS"
+if [[ "$ROLE_OUTPUT_VALID" -eq 0 && "$ROLE_EXIT_ENFORCED" -eq 1 ]]; then
+  ROLE_BRANCH_AFTER="$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" \
+    symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+  ROLE_HEAD_AFTER="$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" \
+    rev-parse HEAD 2>/dev/null || true)"
+  ROLE_DIRTY="$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" \
+    status --porcelain --untracked-files=all 2>/dev/null || true)"
+  if [[ "$ROLE_BRANCH_AFTER" == "$ROLE_BRANCH_BEFORE" &&
+        "$ROLE_HEAD_AFTER" != "$ROLE_HEAD_BEFORE" &&
+        -z "$ROLE_DIRTY" ]]; then
+    quarantine_rewritten_role_history || CONTROL_PLANE_MUTATION=1
+  elif [[ "$ROLE_BRANCH_AFTER" != "$ROLE_BRANCH_BEFORE" ||
+          "$ROLE_HEAD_AFTER" != "$ROLE_HEAD_BEFORE" ||
+          -n "$ROLE_DIRTY" ||
+          "$(role_remote_head || true)" != "$ROLE_REMOTE_BEFORE" ]]; then
+    CONTROL_PLANE_MUTATION=1
+  fi
+fi
 if [[ "$CONTROL_PLANE_MUTATION" -eq 0 &&
       -n "$CANCELLATION_REASON" ]]; then
   CANCELLATION_ACCEPTED=1
@@ -3134,7 +3152,7 @@ elif [[ "$ROLE_EXIT_ENFORCED" -eq 1 ]]; then
          ! python3 "$KIT_DIR/scripts/lib/lane-path-sentinel.py" \
            "$WORKDIR" "$ROLE_HEAD_BEFORE" "$ROLE_HEAD_AFTER"; then
       ROLE_EXIT_STATUS="role_exit_lane_path_leak"
-    elif [[ "$ROLE" != "test-author" && "$ROLE" != "reviewer" ]] &&
+    elif [[ "$ROLE" != "reviewer" ]] &&
          ! "$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" merge-base --is-ancestor \
            "$ROLE_HEAD_BEFORE" "$ROLE_HEAD_AFTER"; then
       if quarantine_rewritten_role_history; then

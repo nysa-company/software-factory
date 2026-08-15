@@ -25,6 +25,7 @@ The reconciled Markdown ticket in Building with its acceptance criteria and froz
 - For each declared `Protected-Test-Conflicts: <test path> => <literal>` entry, change only that exact protected test inside `Fixture-Seams` and keep its allowlist fail-closed. A missing, malformed, or differently owned source-boundary conflict blocks the contract; never broaden the allowlist or ownership.
 - For that contract blocker, stop immediately. Commit the exact ambiguity to the ticket log with one standalone `ROLE-ESCALATE: CONTRACT-BLOCKED` line, then end your response with that same standalone line. A blocker discovered at any point supersedes normal completion; do not complete the tests after it.
 - Do not edit State, Initiative, Priority, or operator-owned fields. The dispatcher records stage movement and the projected result lands in `factory/operator-map.json`.
+- Append commits only. Never rebase, reset, amend, or otherwise rewrite the authenticated role-input history; the separate trusted operator reorder command owns any authorized tests-first history repair.
 - Commit all test and ticket-log changes on the current ticket branch before exiting. A successful run with no new commit or a dirty worktree is rejected by the wrapper.
 - When the current branch contains an authenticated
   `dependency-refresh/v2` receipt and the state machine assigns

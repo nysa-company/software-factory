@@ -7901,13 +7901,18 @@ class Controller:
         ).stdout
         started = claim.get("preview_wait_started_epoch")
         now = int(time.time())
+        lease_released = claim.get("lease_released") is True or (
+            self.parked(claim)
+            and claim.get("lease") == ""
+            and "lease_released" not in claim
+        )
         if (
             claim.get("status") != "blocked"
             or claim.get("blocked_reason") != "preview-identity-timeout"
             or claim.get("receipt")
             or claim.get("role")
             or claim.get("publication_lease")
-            or claim.get("lease_released") is not True
+            or not lease_released
             or self.role_active(claim)
             or transition is None
             or transition.get("factory_sha") != self.release_path.name

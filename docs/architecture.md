@@ -1250,8 +1250,8 @@ A role subprocess that exits without any receipt-bound terminal manifest is an
 invalid launcher boundary, regardless of exit code. The controller preserves
 the receipt, blocks the claim, releases its lease, and emits one content-free
 diagnostic instead of clearing the receipt and resolving the same stage again.
-Every successful mutating role except Test-author must retain its authenticated
-role-input commit as an ancestor. The trusted wrapper checks that invariant
+Every successful mutating role must retain its authenticated role-input commit
+as an ancestor. The trusted wrapper checks that invariant
 before reading the remote for publication or attempting a push. If a clean
 provider output rewrites that history, the wrapper preserves the exact output
 under `refs/factory/failed-role/<ticket>/<run-id>`, restores the local ticket
@@ -1261,8 +1261,14 @@ conservative charge. The same Factory keeps that receipt blocked. A successor
 may retry only when the remote passport still binds the role-input head, the
 failed charge was exported exactly once with no completed-role evidence, and
 every terminal field matches the typed post-GO failure. Test-author's separate
-operator-authorized protected rewrite flow remains the sole ancestry-rewrite
-exception; the controller never force-pushes either path.
+trusted operator reorder command remains the sole ancestry-rewrite exception;
+role execution never performs that rewrite and the controller never
+force-pushes either path.
+The same restoration happens when bounded role-output validation rejects a
+clean descendant commit before role exit. The rejected commit remains under
+the failed-role diagnostic ref, while the ticket branch, index, worktree, and
+remote return to the authenticated input so the typed invalid-output retry
+cannot inherit unreviewed local history.
 Before those publication checks, the wrapper reconciles the selected ticket's
 physical mode with its committed `100644` mode. It changes only an owner-owned,
 single-link regular file from `0600` to `0644`; symlinks, hardlinks,

@@ -5751,6 +5751,56 @@ Validation: same-head cutover, exact route child, wrong shape, remote drift,
 migration refusal, legacy refusal, post-migration capacity failure, retry
 idempotence, and neighboring route-recovery paths are covered.
 
+## FI-20260815-221 — Test-author could rewrite its authenticated role input
+
+Status: Focused regression implemented; protected CI and successor qualification pending
+Priority: P1
+Area: role-exit history integrity
+Owner: Factory
+Impact: a qualification Test-author repair replaced its authenticated input
+ancestry. The required non-force push refused the output and passport export
+could not bind the unrelated local head, parking the ticket before Builder.
+Smallest repair: apply the existing role-exit ancestry quarantine to
+Test-author too. Preserve the rejected output under the bounded diagnostic ref,
+restore the clean authenticated input, and leave authorized tests-first history
+repair exclusively to the separate trusted operator reorder command.
+Validation: the shared role-exit fixture now proves both Builder and Test-author
+rewrites are quarantined, restored, conservatively charged, and never pushed.
+
+## FI-20260815-222 — Parking made exact preview retries unreachable
+
+Status: Focused regression implemented; protected CI and successor qualification pending
+Priority: P1
+Area: preview identity recovery
+Owner: Factory
+Impact: preview timeout correctly parked and released T-219, but parking then
+normalized the lease to an empty ID with no released marker. The supported
+exact-head retry required the pre-parking marker and could never resume that
+valid checkpoint.
+Smallest repair: accept the existing authenticated parked lease-normalization
+shape in addition to the immediate released-lease shape. Do not weaken any
+ticket, transition, passport, head, timeout, cleanliness, or remote check.
+Validation: the focused controller regression exercises both forms and proves
+the parked retry preserves its empty lease for ordinary controller recovery.
+
+## FI-20260815-223 — Invalid role output poisoned the automatic retry
+
+Status: Focused regression implemented; protected CI and successor qualification pending
+Priority: P1
+Area: role-output recovery
+Owner: Factory
+Impact: T-226 Test-author produced more than the bounded 8 MiB output after
+creating a clean descendant commit. The wrapper correctly rejected the output,
+but left that commit checked out; the automatic retry then failed before GO
+because the local ticket head no longer matched the authenticated remote.
+Smallest repair: reuse the existing failed-role quarantine for a rejected clean
+descendant, then restore and revalidate the authenticated local and remote
+input before publishing `role_exit_invalid_output`. Treat every other local or
+remote mutation as a control-plane failure.
+Validation: the role-exit integration fixture produces an oversized output and
+proves status 11, exact invalid-output evidence, preserved diagnostic head,
+clean restored worktree, and unchanged bare remote.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling
