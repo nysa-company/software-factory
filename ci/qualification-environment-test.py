@@ -3139,6 +3139,30 @@ class QualificationEnvironmentTest(unittest.TestCase):
             (base, source), (partial_protected, candidate),
         ])
 
+        value = json.loads(authorization.read_text(encoding="utf-8"))
+        value["schema"] = (
+            "nysa.software-factory.inflight-release-authorization/v2"
+        )
+        value["tickets"][0]["source_kit_sha"] = "0" * 40
+        authorization.write_text(
+            json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+        run(self.product, "git", "add", str(authorization))
+        run(self.product, "git", "commit", "-qm", "foreign checkpoint source")
+        foreign_protected = run(self.product, "git", "rev-parse", "HEAD")
+        write_source_passport(foreign_protected)
+        with mock.patch.object(
+            ENVIRONMENT, "verify_inflight_migration", side_effect=verify_partial,
+        ), self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError,
+            "successor qualification requires every selected ticket",
+        ):
+            ENVIRONMENT.validate_successor_upgrade_cohort(
+                self.factory, self.product, controller, "relay", source,
+                base, manifest,
+            )
+
     def test_successor_accepts_only_exact_source_terminal_reconciliations(self) -> None:
         controller = (self.workspace / "terminal-controller").resolve()
         passports = controller / "passports"

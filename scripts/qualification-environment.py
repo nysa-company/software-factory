@@ -46,6 +46,7 @@ from effective_ticket import committed_ticket  # noqa: E402
 from inflight_release import (  # noqa: E402
     AuthorizationError as InflightAuthorizationError,
     parse_authorization as parse_inflight_authorization,
+    ticket_source_kit,
     verify_migration as verify_inflight_migration,
 )
 import operator_receipt  # noqa: E402
@@ -2477,6 +2478,9 @@ def validate_successor_upgrade_cohort(
                     )
                     checkpoint_valid = (
                         release_lineage_valid
+                        and ticket_source_kit(
+                            checkpoint_authorization, checkpoint,
+                        ) in releases
                         and verify_inflight_migration(
                             product,
                             command(
