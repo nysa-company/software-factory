@@ -9294,7 +9294,7 @@ class FactoryControllerTest(unittest.TestCase):
     def test_completed_route_migration_readmits_abandoned_upgrade(self) -> None:
         controller = CONTROL.Controller(self.args)
         claim = self.recovery_claim()
-        source = "a" * 40
+        source = "9" * 40
         target = "b" * 40
         claim.update({
             "blocked_reason": "recovery-abandoned:release-upgrade",

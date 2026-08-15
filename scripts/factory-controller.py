@@ -8181,7 +8181,9 @@ class Controller:
             and attempt.get("recovery") == "targeted-repair"
         )
         receipt = claim.get("receipt", "")
-        transition = self.transition_receipt(claim, record=False)
+        transition = self.transition_receipt(
+            claim, allow_prior=True, record=False,
+        )
         passport = self.authenticated_operator_passport(ticket)
         terminal = self.terminal_for_receipt(ticket, receipt)
         evidence_factory = transition.get("factory_sha", "") if transition else ""
