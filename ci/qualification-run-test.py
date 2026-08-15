@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 from pathlib import Path
@@ -30,7 +31,20 @@ class QualificationRunTest(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.scenario = self.root / "scenario.json"
         self.calls = self.root / "calls.json"
+        self.manifest = self.root / "QUALIFICATION.json"
         self.launcher = self.root / "factory-launch"
+        self.manifest.write_text(json.dumps({
+            "budget_usd": "100.000000",
+            "capacity": 3,
+            "contract_version": "2.0.0",
+            "factory_sha": "a" * 40,
+            "generation": 1,
+            "per_run_budget_usd": "2.000000",
+            "per_ticket_budget_usd": "25.000000",
+            "schema": "nysa.software-factory.qualification/v2",
+            "target_done": 3,
+            "tickets": ["T-1", "T-2", "T-3"],
+        }), encoding="utf-8")
         self.launcher.write_text(
             """#!/usr/bin/env python3
 import json, os, pathlib, sys
@@ -57,10 +71,62 @@ raise SystemExit(code)
 
     @staticmethod
     def doctor(status: str = "ok") -> dict[str, object]:
+        required = {
+            "active_binding", "clis", "contract_resume", "credentials",
+            "fallback_readiness", "isolated_provider", "kit", "kit_pin",
+            "transition_receipts",
+        }
         return {
+            "checks": {
+                **{name: {"status": "ok"} for name in required},
+                **{
+                    name: {"status": "not_applicable"}
+                    for name in ("controller", "model_readiness", "provider_cli_pins")
+                },
+                "runtime": {"status": status},
+            },
+            "contract_version": "2.0.0",
             "schema": "nysa.software-factory.doctor/v2",
+            "schema_version": 2,
+            "project": "relay",
             "overall_status": status,
         }
+
+    @classmethod
+    def inflight_doctor(cls, *, active_runs: int = 0) -> dict[str, object]:
+        value = cls.doctor("warning")
+        runtime = value["checks"]["runtime"]
+        runtime.update({
+            "active_runs": active_runs,
+            "active_run_claims": 0,
+            "active_run_tickets": [],
+            "dispatch_lease_records": 1,
+            "dispatch_leases": [{"state": "active", "ticket": "T-1"}],
+            "locks": {
+                "global_ledger": False, "launch": False,
+                "ledger": False, "provider": False,
+            },
+            "maintenance": False,
+            "malformed_dispatch_leases": 0,
+            "malformed_active_run_claims": 0,
+            "malformed_runs": 0,
+            "max_concurrent_tickets": 3,
+            "provider_lock_state": "absent",
+            "run_records": active_runs,
+            "runs": (
+                [{"run_id": "T-1-planner-1", "state": "active"}]
+                if active_runs else []
+            ),
+            "stale_dispatch_leases": 0,
+            "stale_runs": 0,
+        })
+        value["checks"]["isolated_provider"].update({
+            "active_attempts": 0,
+            "active_tokens": 0,
+            "legacy_intervals": 0,
+            "unknown_workers": 0,
+        })
+        return value
 
     @staticmethod
     def controller(
@@ -97,6 +163,8 @@ raise SystemExit(code)
             capture_output=True, check=False, text=True,
             env={
                 "PATH": "/usr/bin:/bin",
+                "FACTORY_QUALIFICATION_MANIFEST": str(self.manifest),
+                "FACTORY_RELEASE_SHA": "a" * 40,
                 "QUALIFICATION_RUN_CALLS": str(self.calls),
                 "QUALIFICATION_RUN_SCENARIO": str(self.scenario),
             },
@@ -169,6 +237,121 @@ raise SystemExit(code)
         })
         self.assertEqual(code, 3)
         self.assertEqual(value["status"], "blocked")
+        self.assertEqual(value["reason"], "doctor_not_ready")
+        self.assertEqual(self.called(), ["doctor"])
+
+    def test_bounded_inflight_doctor_warning_reaches_controller(self) -> None:
+        code, value = self.run_scenario({
+            "doctor": self.inflight_doctor(),
+            "reconcile": [self.controller("waiting_for_target", active=1)],
+            "qualification": self.report(),
+        })
+        self.assertEqual(code, 3)
+        self.assertEqual(value["reason"], "cohort_not_accounted")
+        self.assertEqual(value["doctor_status"], "warning")
+        self.assertEqual(self.called(), ["doctor", "reconcile"])
+
+    def test_unsafe_doctor_warnings_remain_blocked(self) -> None:
+        cases = {
+            "wrong-project": [("project", "other")],
+            "wrong-schema": [("schema", "other")],
+            "wrong-schema-version": [("schema_version", 1)],
+            "wrong-contract": [("contract_version", "1.8.0")],
+            "missing-check": [("checks.controller", None)],
+            "unrelated-warning": [("checks.credentials.status", "warning")],
+            "neutral-check-active": [("checks.controller.status", "ok")],
+            "runtime-status": [("checks.runtime.status", "ok")],
+            "overall-status": [("overall_status", "ok")],
+            "maintenance": [("checks.runtime.maintenance", True)],
+            "lock": [("checks.runtime.locks.launch", True)],
+            "lock-shape": [("checks.runtime.locks.provider", None)],
+            "provider-active": [("checks.runtime.provider_lock_state", "active")],
+            "stale-run": [("checks.runtime.stale_runs", 1)],
+            "malformed-run": [("checks.runtime.malformed_runs", 1)],
+            "active-run-claim-count": [("checks.runtime.active_run_claims", 1)],
+            "active-run-ticket-projection": [
+                ("checks.runtime.active_run_tickets", ["T-1"]),
+            ],
+            "malformed-run-claim": [
+                ("checks.runtime.malformed_active_run_claims", 1),
+            ],
+            "stale-lease": [("checks.runtime.stale_dispatch_leases", 1)],
+            "malformed-lease": [("checks.runtime.malformed_dispatch_leases", 1)],
+            "malformed-lease-item": [("checks.runtime.dispatch_leases", ["bad"])],
+            "boolean-counter": [("checks.runtime.run_records", True)],
+            "zero-leases": [
+                ("checks.runtime.dispatch_lease_records", 0),
+                ("checks.runtime.dispatch_leases", []),
+            ],
+            "over-capacity": [("checks.runtime.max_concurrent_tickets", 0)],
+            "capacity-drift": [("checks.runtime.max_concurrent_tickets", 4)],
+            "orphan-run": [
+                ("checks.runtime.active_runs", 1),
+                ("checks.runtime.run_records", 1),
+                ("checks.runtime.runs", [
+                    {"run_id": "one", "state": "active"},
+                ]),
+            ],
+            "foreign-lease": [("checks.runtime.dispatch_leases.0.ticket", "T-9")],
+            "inactive-lease": [("checks.runtime.dispatch_leases.0.state", "stale")],
+            "invalid-ticket": [("checks.runtime.dispatch_leases.0.ticket", "bad")],
+            "duplicate-lease": [
+                ("checks.runtime.dispatch_lease_records", 2),
+                ("checks.runtime.dispatch_leases", [
+                    {"state": "active", "ticket": "T-1"},
+                    {"state": "active", "ticket": "T-1"},
+                ]),
+            ],
+            "provider-attempt": [("checks.isolated_provider.active_attempts", 1)],
+            "provider-token": [("checks.isolated_provider.active_tokens", 1)],
+            "provider-worker": [("checks.isolated_provider.unknown_workers", 1)],
+            "provider-legacy": [("checks.isolated_provider.legacy_intervals", 1)],
+        }
+        for name, changes in cases.items():
+            with self.subTest(name=name):
+                self.calls.unlink(missing_ok=True)
+                doctor = copy.deepcopy(self.inflight_doctor())
+                for dotted, replacement in changes:
+                    parent = doctor
+                    parts = dotted.split(".")
+                    for part in parts[:-1]:
+                        parent = parent[int(part)] if isinstance(parent, list) else parent[part]
+                    if replacement is None:
+                        parent.pop(parts[-1])
+                    elif isinstance(parent, list):
+                        parent[int(parts[-1])] = replacement
+                    else:
+                        parent[parts[-1]] = replacement
+                code, value = self.run_scenario({
+                    "doctor": doctor,
+                    "reconcile": [self.controller("ok")],
+                    "qualification": self.report(),
+                })
+                self.assertEqual(code, 3)
+                self.assertEqual(value["reason"], "doctor_not_ready")
+                self.assertEqual(self.called(), ["doctor"])
+
+    def test_manifest_and_doctor_process_fail_closed(self) -> None:
+        valid_manifest = self.manifest.read_bytes()
+        self.manifest.write_text("{}\n", encoding="utf-8")
+        code, value = self.run_scenario({
+            "doctor": self.doctor(),
+            "reconcile": [self.controller("ok")],
+            "qualification": self.report(),
+        })
+        self.assertEqual(code, 2)
+        self.assertEqual(value["status"], "error")
+        self.assertFalse(self.calls.exists())
+
+        self.manifest.write_bytes(valid_manifest)
+        doctor = self.inflight_doctor()
+        doctor["_returncode"] = 1
+        code, value = self.run_scenario({
+            "doctor": doctor,
+            "reconcile": [self.controller("ok")],
+            "qualification": self.report(),
+        })
+        self.assertEqual(code, 3)
         self.assertEqual(value["reason"], "doctor_not_ready")
         self.assertEqual(self.called(), ["doctor"])
 

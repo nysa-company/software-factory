@@ -6,7 +6,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 
 - Product-agnostic factory kit; product repositories carry only their factory state and CI integration.
 - Durable decisions use repository-local numbering beginning at Decision 1.
-- Stable operating truth lives in `docs/`; prompts, templates, and evidence stay colocated with consumers. The operator preflight hydrates only evidence-bound immutable objects, batches read-only object checks, aggregates activation blockers, and makes network review explicit before certification.
+- Stable operating truth lives in `docs/`; prompts, templates, and evidence stay colocated with consumers. The operator preflight hydrates only evidence-bound immutable objects, batches read-only object checks, aggregates activation blockers, and makes network review explicit before certification. Qualification's single driver accepts only Doctor `ok` or a manifest-bound runtime-only active-lease warning.
 - Nysa Agents baseline v3 as a toolkit; `bash ci/test-all.sh` is the unconditional full command.
 - Contract 2 live products resolve sealed exact-SHA releases from owner-only `active.json` records under `~/.factory/kits` via `~/.factory/bin/factory-launch`; the native controller is the only scheduler.
 - The local release canary is one code-driven, product-agnostic command that creates contained local origins, runs setup/resume, and times one authenticated Planning transition plus sealed mock planner; its repository-test evidence is never promotable.
@@ -6071,3 +6071,14 @@ exact merged PR, successful protected checks, immutable ticket blob, target kit,
 and fresh manual protected-main authorization. The original flat migration
 batch stays immutable; any later batch uses one append-only directory named by
 its exact target Factory SHA, and duplicate tickets across batches fail closed.
+
+## 2026-08-15 — Decision 428: Qualification resumes through bounded active leases
+
+Category: Reliability
+
+The deterministic qualification driver accepts a Doctor warning only when the
+runtime is idle except for active leases belonging to the exact authenticated
+qualification cohort, within its declared capacity. Maintenance, locks, active
+runs, foreign tickets, stale or malformed state, provider activity, and every
+non-runtime warning remain closed; the observed warning status stays in the
+driver result.

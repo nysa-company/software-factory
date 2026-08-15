@@ -87,11 +87,13 @@ cleanup() {
 trap cleanup EXIT HUP INT TERM
 CLI_FILE="$TMP/clis.tsv"
 RUN_FILE="$TMP/runs.tsv"
+ACTIVE_CLAIM_FILE="$TMP/active-run-claims.tsv"
 LEASE_FILE="$TMP/leases.tsv"
 CONTRACT_RESUME_FILE="$TMP/contract-resume.json"
 TRANSITION_RECEIPT_FILE="$TMP/transition-receipts.json"
 : > "$CLI_FILE"
 : > "$RUN_FILE"
+: > "$ACTIVE_CLAIM_FILE"
 : > "$LEASE_FILE"
 printf '[]\n' > "$CONTRACT_RESUME_FILE"
 printf '[]\n' > "$TRANSITION_RECEIPT_FILE"
@@ -292,6 +294,8 @@ ACTIVE_RECORDS=0
 ACTIVE_RUNS=0
 STALE_RUNS=0
 MALFORMED_RUNS=0
+ACTIVE_RUN_CLAIMS=0
+MALFORMED_ACTIVE_RUN_CLAIMS=0
 MAX_CONCURRENT_TICKETS=1
 DISPATCH_LEASES=0
 STALE_DISPATCH_LEASES=0
@@ -366,6 +370,57 @@ PY
       printf '%s\t%s\n' "$run_id" "$state" >> "$RUN_FILE"
     done
   fi
+  if ! ACTIVE_CLAIM_DATA="$("$PYTHON_BIN" -I -S - "$FACTORY_DIR/.active-runs" <<'PY'
+import os, pathlib, re, stat, sys
+
+root = pathlib.Path(sys.argv[1])
+try:
+    info = root.lstat()
+except FileNotFoundError:
+    raise SystemExit(0)
+try:
+    if (
+        root.is_symlink() or not stat.S_ISDIR(info.st_mode)
+        or info.st_uid != os.geteuid() or info.st_mode & 0o022
+    ):
+        raise ValueError
+    tickets = set()
+    for path in sorted(root.iterdir()):
+        match = re.fullmatch(
+            r"(T-[0-9]+)[.][A-Za-z0-9_-]+[.](lock|pid)", path.name,
+        )
+        if match is None:
+            raise ValueError
+        item = path.lstat()
+        if (
+            path.is_symlink() or item.st_uid != os.geteuid()
+            or item.st_mode & 0o022
+            or match.group(2) == "lock" and not stat.S_ISDIR(item.st_mode)
+            or match.group(2) == "pid" and (
+                not stat.S_ISREG(item.st_mode)
+                or item.st_nlink != 1 or item.st_size > 10_000
+            )
+        ):
+            raise ValueError
+        tickets.add(match.group(1))
+except (OSError, ValueError):
+    print("state\tmalformed")
+    raise SystemExit(0)
+for ticket in sorted(tickets):
+    print(ticket + "\tactive")
+PY
+)"; then
+    ACTIVE_CLAIM_DATA="$(printf 'state\tmalformed')"
+  fi
+  if [[ -n "$ACTIVE_CLAIM_DATA" ]]; then
+    printf '%s\n' "$ACTIVE_CLAIM_DATA" > "$ACTIVE_CLAIM_FILE"
+    while IFS="$(printf '\t')" read -r _ticket state; do
+      case "$state" in
+        active) ACTIVE_RUN_CLAIMS=$((ACTIVE_RUN_CLAIMS + 1)) ;;
+        *) MALFORMED_ACTIVE_RUN_CLAIMS=$((MALFORMED_ACTIVE_RUN_CLAIMS + 1)) ;;
+      esac
+    done < "$ACTIVE_CLAIM_FILE"
+  fi
   # shellcheck disable=SC1091
   if source "$KIT_DIR/scripts/lib/dispatch-leases.sh" 2>/dev/null &&
      MAX_CONCURRENT_TICKETS="$(factory_dispatch_max_tickets "$PRODUCT_ROOT" "$CONTRACT_VERSION" 2>/dev/null)"; then
@@ -418,10 +473,12 @@ if [[ "$RUNTIME_STATUS" != "error" ]] &&
       "$LEDGER_LOCK" == "true" ||
       "$GLOBAL_LEDGER_LOCK" == "true" || "$PROVIDER_LOCK" == "true" ||
       "$ACTIVE_RECORDS" -gt 0 ||
+      "$ACTIVE_RUN_CLAIMS" -gt 0 ||
       "$DISPATCH_LEASES" -gt 0 ]]; then
   RUNTIME_STATUS="warning"
 fi
 [[ "$MALFORMED_DISPATCH_LEASES" -eq 0 ]] || RUNTIME_STATUS="error"
+[[ "$MALFORMED_ACTIVE_RUN_CLAIMS" -eq 0 ]] || RUNTIME_STATUS="error"
 [[ "$PROVIDER_LOCK_STATE" != "malformed" ]] || RUNTIME_STATUS="error"
 
 CONTRACT_RESUME_STATUS="ok"
@@ -1366,6 +1423,7 @@ export KIT_STATUS KIT_SHA PIN_STATUS OUTPUT_PIN_FILE PIN_SHA PIN_VALID PIN_MATCH
 export RUNTIME_STATUS OUTPUT_FACTORY_DIR MAINTENANCE LAUNCH_LOCK LEDGER_LOCK GLOBAL_LEDGER_LOCK
 export PROVIDER_LOCK PROVIDER_LOCK_STATE
 export ACTIVE_RECORDS ACTIVE_RUNS STALE_RUNS MALFORMED_RUNS
+export ACTIVE_RUN_CLAIMS MALFORMED_ACTIVE_RUN_CLAIMS ACTIVE_CLAIM_FILE
 export MAX_CONCURRENT_TICKETS DISPATCH_LEASES STALE_DISPATCH_LEASES MALFORMED_DISPATCH_LEASES LEASE_FILE
 export CLI_STATUS CLI_FILE
 export CREDENTIAL_STATUS GH_AUTH_READY
@@ -1412,6 +1470,13 @@ with open(os.environ["RUN_FILE"], encoding="utf-8") as handle:
     for line in handle:
         run_id, state = line.rstrip("\n").split("\t", 1)
         runs.append({"run_id": run_id, "state": state})
+
+active_run_tickets = []
+with open(os.environ["ACTIVE_CLAIM_FILE"], encoding="utf-8") as handle:
+    for line in handle:
+        ticket, state = line.rstrip("\n").split("\t", 1)
+        if state == "active":
+            active_run_tickets.append(ticket)
 
 leases = []
 with open(os.environ["LEASE_FILE"], encoding="utf-8") as handle:
@@ -1463,6 +1528,9 @@ document = {
             "stale_runs": number("STALE_RUNS"),
             "malformed_runs": number("MALFORMED_RUNS"),
             "runs": runs,
+            "active_run_claims": number("ACTIVE_RUN_CLAIMS"),
+            "malformed_active_run_claims": number("MALFORMED_ACTIVE_RUN_CLAIMS"),
+            "active_run_tickets": active_run_tickets,
             "max_concurrent_tickets": number("MAX_CONCURRENT_TICKETS"),
             "dispatch_lease_records": number("DISPATCH_LEASES"),
             "stale_dispatch_leases": number("STALE_DISPATCH_LEASES"),
@@ -1524,7 +1592,7 @@ else
   echo "Active binding [$BINDING_STATUS]: kit=$OUTPUT_KIT_DIR product=$OUTPUT_PRODUCT_ROOT"
   echo "Kit [$KIT_STATUS]: ${KIT_SHA:-unavailable}"
   echo "KIT_PIN [$PIN_STATUS]: ${PIN_SHA:-missing or invalid}"
-  echo "Runtime [$RUNTIME_STATUS]: maintenance=$MAINTENANCE active=$ACTIVE_RUNS stale=$STALE_RUNS malformed=$MALFORMED_RUNS concurrency=$MAX_CONCURRENT_TICKETS leases=$DISPATCH_LEASES"
+  echo "Runtime [$RUNTIME_STATUS]: maintenance=$MAINTENANCE active=$ACTIVE_RUNS claims=$ACTIVE_RUN_CLAIMS stale=$STALE_RUNS malformed=$MALFORMED_RUNS concurrency=$MAX_CONCURRENT_TICKETS leases=$DISPATCH_LEASES"
   echo "Locks: launch=$LAUNCH_LOCK ledger=$LEDGER_LOCK global_ledger=$GLOBAL_LEDGER_LOCK provider=$PROVIDER_LOCK provider_state=$PROVIDER_LOCK_STATE"
   while IFS="$(printf '\t')" read -r cli_name cli_item_status cli_path cli_version; do
     echo "CLI $cli_name [$cli_item_status]: ${cli_version:-unavailable} (${cli_path:-not found})"
