@@ -1513,14 +1513,16 @@ match the authorization and whose complete history passes the candidate's
 migration validator. The normal maintenance, zero-active-run, and
 zero-dispatcher-lease barriers still apply.
 Successor qualification may use that same exact protected entry to preserve a
-source-authenticated checkpoint when its historical passport cannot satisfy a
-newer role-history validator. The preparer still requires the source HMAC,
-release lineage, run accounting, exact commit/tree/ticket/route identity, and
-an authorization set equal to the selected cohort; it does not relabel source
-work as candidate evidence. If the certified ticket ref is a strict ancestor
-of the authorized checkpoint, route migration publishes the checkpoint and
-its Kit-SHA migration child in one exact-head CAS fast-forward. It never
-deletes, rewinds, force-resets, or rewrites the preserved ticket history.
+checkpoint at or after the source-authenticated passport head when its
+historical passport cannot satisfy a newer role-history validator. The
+preparer still requires the source HMAC, release lineage, run accounting,
+passport commit/tree/ticket/route identity, an unchanged route through the
+authorized descendant, and an authorization set equal to the selected cohort;
+it does not relabel descendant source work as completed candidate evidence. If
+the certified ticket ref is an ancestor of the authorized checkpoint, route
+migration publishes the checkpoint and its Kit-SHA migration child in one
+exact-head CAS fast-forward. It never deletes, rewinds, force-resets, or
+rewrites the preserved ticket history.
 Activation and mutating model-route migration use the same strict authorization
 parser. Migration revalidates current protected main, the selected remote ticket
 head, repository, source and target kit, branch, and state before changing Git.

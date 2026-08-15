@@ -2958,6 +2958,13 @@ class QualificationEnvironmentTest(unittest.TestCase):
         run(self.product, "git", "add", "factory")
         run(self.product, "git", "commit", "-qm", "source checkpoint")
         checkpoint_parent = run(self.product, "git", "rev-parse", "HEAD")
+        checkpoint_parent_tree = run(
+            self.product, "git", "rev-parse", f"{checkpoint_parent}^{{tree}}",
+        )
+        checkpoint_parent_ticket_blob = run(
+            self.product, "git", "rev-parse",
+            f"{checkpoint_parent}:factory/tickets/{ticket}.md",
+        )
         ticket_path.write_text(
             ticket_path.read_text() + "\npreserved source work\n",
             encoding="utf-8",
@@ -2965,13 +2972,6 @@ class QualificationEnvironmentTest(unittest.TestCase):
         run(self.product, "git", "add", str(ticket_path))
         run(self.product, "git", "commit", "-qm", "preserve source work")
         checkpoint = run(self.product, "git", "rev-parse", "HEAD")
-        checkpoint_tree = run(
-            self.product, "git", "rev-parse", f"{checkpoint}^{{tree}}",
-        )
-        ticket_blob = run(
-            self.product, "git", "rev-parse",
-            f"{checkpoint}:factory/tickets/{ticket}.md",
-        )
         route_sha256 = hashlib.sha256(route.read_bytes()).hexdigest()
         run(self.product, "git", "switch", "-q", "main")
 
@@ -2986,8 +2986,8 @@ class QualificationEnvironmentTest(unittest.TestCase):
                 "base_history": [protected],
                 "current_stage": "RUN planner",
                 "current_state": "Ready",
-                "head_sha": checkpoint,
-                "head_tree": checkpoint_tree,
+                "head_sha": checkpoint_parent,
+                "head_tree": checkpoint_parent_tree,
                 "migration_history": [{
                     "from_factory_sha": source,
                     "from_head_sha": base,
@@ -3007,7 +3007,7 @@ class QualificationEnvironmentTest(unittest.TestCase):
                 "parent_file_sha256": "5" * 64,
                 "protected_base_sha": protected,
                 "route_plan_sha256": route_sha256,
-                "ticket_blob": ticket_blob,
+                "ticket_blob": checkpoint_parent_ticket_blob,
             })
             self.sign_passport(passport_path, secret, value)
 
@@ -3057,7 +3057,7 @@ class QualificationEnvironmentTest(unittest.TestCase):
             base, manifest,
         )
         authorization.write_text(
-            authorization.read_text().replace(checkpoint, checkpoint_parent),
+            authorization.read_text().replace(checkpoint, base),
             encoding="utf-8",
         )
         run(self.product, "git", "add", str(authorization))

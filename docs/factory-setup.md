@@ -246,10 +246,11 @@ provider state, ticket branches, or paid roles are created.
   lineage evidence on an idempotent restart.
   A protected in-flight release authorization for the exact selected cohort is
   the narrow exception for preserving source-authenticated ticket work that a
-  newer historical validator cannot replay. It must bind each current passport
-  head and state exactly. Upgrade keeps the source evidence historical, then
-  model migration may fast-forward an ancestor remote to that checkpoint and
-  the candidate Kit-SHA in one CAS-protected push; it never resets ticket work.
+  newer historical validator cannot replay. It must bind each passport head or
+  an exact descendant with the same route and current state. Upgrade keeps
+  descendant work incomplete and source evidence historical, then model
+  migration may fast-forward an ancestor remote to that checkpoint and the
+  candidate Kit-SHA in one CAS-protected push; it never resets ticket work.
   If a failed isolated predecessor stopped after issuing Planner receipts but
   before preflight, commit and protect the successor manifest, candidate pin,
   and exact `preprovider-branch-resets.json`; prepare that unchanged successor

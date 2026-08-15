@@ -2420,10 +2420,18 @@ def validate_successor_upgrade_cohort(
             checkpoint = checkpoint_entries.get(ticket)
             if checkpoint_authorization is not None and checkpoint is not None:
                 try:
-                    route = subprocess.run(
+                    passport_route = subprocess.run(
                         [
                             "git", "-C", str(product), "show",
                             f"{value.get('head_sha', '')}:factory/route-plans/"
+                            f"{ticket}.json",
+                        ],
+                        capture_output=True, check=False, timeout=120,
+                    )
+                    checkpoint_route = subprocess.run(
+                        [
+                            "git", "-C", str(product), "show",
+                            f"{checkpoint['head']}:factory/route-plans/"
                             f"{ticket}.json",
                         ],
                         capture_output=True, check=False, timeout=120,
@@ -2436,8 +2444,16 @@ def validate_successor_upgrade_cohort(
                                 "git", "-C", str(product), "rev-parse", "HEAD",
                             ),
                             candidate, ticket, value.get("branch", ""),
-                            value.get("head_sha", ""),
+                            checkpoint["head"],
                         ) == "exact"
+                        and subprocess.run(
+                            [
+                                "git", "-C", str(product), "merge-base",
+                                "--is-ancestor", value.get("head_sha", ""),
+                                checkpoint["head"],
+                            ],
+                            capture_output=True, check=False, timeout=120,
+                        ).returncode == 0
                         and command(
                             "git", "-C", str(product), "rev-parse",
                             f"{value.get('head_sha', '')}^{{tree}}",
@@ -2447,8 +2463,11 @@ def validate_successor_upgrade_cohort(
                             f"{value.get('head_sha', '')}:factory/tickets/"
                             f"{ticket}.md",
                         ) == value.get("ticket_blob")
-                        and route.returncode == 0
-                        and hashlib.sha256(route.stdout).hexdigest()
+                        and passport_route.returncode == 0
+                        and checkpoint_route.returncode == 0
+                        and hashlib.sha256(passport_route.stdout).hexdigest()
+                        == value.get("route_plan_sha256")
+                        and hashlib.sha256(checkpoint_route.stdout).hexdigest()
                         == value.get("route_plan_sha256")
                     )
                 except InflightAuthorizationError:
