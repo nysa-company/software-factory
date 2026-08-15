@@ -6,7 +6,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 
 - Product-agnostic factory kit; product repositories carry only their factory state and CI integration.
 - Durable decisions use repository-local numbering beginning at Decision 1.
-- Stable operating truth lives in `docs/`; prompts, templates, and evidence stay colocated with consumers. The operator preflight hydrates only evidence-bound immutable objects, batches read-only object checks, aggregates activation blockers, and makes network review explicit before certification. Qualification validates selected remote branches and repeated reset lineage before publication, shares protected dependency truth, and counts only role-control evidence appended after its sealed product SHA.
+- Stable operating truth lives in `docs/`; prompts, templates, and evidence stay colocated with consumers. The operator preflight hydrates only evidence-bound immutable objects, batches read-only object checks, aggregates activation blockers, and makes network review explicit before certification. Qualification validates selected remote branches and exact prior-cohort control retries before publication, shares protected dependency truth, and counts only role-control evidence appended after its sealed product SHA.
 - Nysa Agents baseline v3 as a toolkit; `bash ci/test-all.sh` is the unconditional full command.
 - Contract 2 live products resolve sealed exact-SHA releases from owner-only `active.json` records under `~/.factory/kits` via `~/.factory/bin/factory-launch`; the native controller is the only scheduler.
 - The local release canary is one code-driven, product-agnostic command that creates contained local origins, runs setup/resume, and times one authenticated Planning transition plus sealed mock planner; its repository-test evidence is never promotable.
@@ -6130,3 +6130,15 @@ candidate evidence. One shared read-only projection binds the baseline to the
 sealed qualification product SHA, requires the historical control sequence to
 remain an exact ordered prefix, and exposes only newly appended controls to all
 role/state/publication consumers. Production behavior is unchanged.
+
+## 2026-08-15 — Decision 433: Qualification retries authenticate prior control work
+
+Category: Reliability
+
+A protected v2 reset authorization may bind one earlier qualification
+generation, its exact Factory and product SHA, and the exact selected branch
+head. Preparation and dispatch accept it only from either a durable Ready
+source or the canonical Ready receipt, followed by one exact route pin and
+ticket-only qualification work; any application path, source mismatch, or head
+race remains closed.
+The existing v1 pre-provider reset grammar is unchanged.

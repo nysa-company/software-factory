@@ -183,8 +183,13 @@ ports, temporary home, and product checkout. It does not modify the installed
 launcher or production active record.
 Before publishing that state, it proves every selected remote ticket branch is
 absent, descends from protected main, or has an exact protected authorization
-for canonical pre-provider recovery. Dispatch repeats the observation before
-performing the only allowed non-force reset.
+for canonical recovery. The v1 authorization remains limited to pre-provider
+Ready/pin history. A v2 authorization additionally binds the exact earlier
+qualification generation, Factory SHA, product SHA, and branch head, and admits
+only a durable Ready base or its Ready receipt, one route pin, and ticket-only
+qualification work.
+Dispatch repeats the observation before the exact-head CAS reset; application
+changes are never reset through this path.
 Preparation and dispatch both accept an external dependency only through the
 shared protected dependency predicate; dependency-only fulfillment never
 counts a selected qualification target as Done.

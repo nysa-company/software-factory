@@ -15,7 +15,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from typing import Any
+from typing import Any, NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
 from effective_ticket import (  # noqa: E402
@@ -36,6 +36,7 @@ QUALIFICATION_SCHEMA = "nysa.software-factory.qualification/v1"
 QUALIFICATION_SCHEMA_V2 = "nysa.software-factory.qualification/v2"
 QUALIFICATION_CONTRACTS = frozenset({"1.8.0", "2.0.0"})
 PREPROVIDER_RESET_SCHEMA = "nysa.software-factory.preprovider-branch-resets/v1"
+QUALIFICATION_RESET_SCHEMA = "nysa.software-factory.preprovider-branch-resets/v2"
 TICKET = re.compile(r"^T-([0-9]+)$")
 SHA = re.compile(r"^[0-9a-f]{40}$")
 PRIORITY = {"urgent": 0, "high": 1, "normal": 2, "low": 3, "none": 4}
@@ -43,6 +44,13 @@ PRIORITY = {"urgent": 0, "high": 1, "normal": 2, "low": 3, "none": 4}
 
 class DispatchError(ValueError):
     pass
+
+
+class ResetAuthorization(NamedTuple):
+    head: str
+    source_factory_sha: str = ""
+    source_generation: int = 0
+    source_product_sha: str = ""
 
 
 def canonical(value: Any) -> str:
@@ -338,7 +346,7 @@ def validate_qualification_ticket_sources(
 
 def preprovider_reset_authorizations(
     factory: Path, qualification_state: dict[str, Any] | None, prefix: str
-) -> dict[str, str]:
+) -> dict[str, ResetAuthorization]:
     path = factory / "qualification/preprovider-branch-resets.json"
     if (
         qualification_state is None
@@ -383,14 +391,31 @@ def preprovider_reset_authorizations(
         )
     value = json.loads(raw)
     resets = value.get("resets")
+    schema = value.get("schema")
+    source = value.get("source_qualification")
     if (
-        set(value) != {"factory_sha", "resets", "schema"}
-        or value.get("schema") != PREPROVIDER_RESET_SCHEMA
+        schema not in {PREPROVIDER_RESET_SCHEMA, QUALIFICATION_RESET_SCHEMA}
+        or set(value) != (
+            {"factory_sha", "resets", "schema"}
+            if schema == PREPROVIDER_RESET_SCHEMA
+            else {"factory_sha", "resets", "schema", "source_qualification"}
+        )
         or value.get("factory_sha") != qualification_state["factory_sha"]
         or not isinstance(resets, list)
         or not resets
     ):
         raise DispatchError("pre-provider branch reset authorization is invalid")
+    if schema == QUALIFICATION_RESET_SCHEMA and (
+        not isinstance(source, dict)
+        or set(source) != {"factory_sha", "generation", "product_sha"}
+        or not SHA.fullmatch(source.get("factory_sha", ""))
+        or not SHA.fullmatch(source.get("product_sha", ""))
+        or not isinstance(source.get("generation"), int)
+        or isinstance(source.get("generation"), bool)
+        or source["generation"] < 1
+        or source["generation"] >= qualification_state["generation"]
+    ):
+        raise DispatchError("qualification control reset source is invalid")
     result = {}
     for item in resets:
         ticket = item.get("ticket") if isinstance(item, dict) else None
@@ -406,7 +431,12 @@ def preprovider_reset_authorizations(
             or ticket in result
         ):
             raise DispatchError("pre-provider branch reset entry is invalid")
-        result[ticket] = head
+        result[ticket] = ResetAuthorization(
+            head=head,
+            source_factory_sha=(source or {}).get("factory_sha", ""),
+            source_generation=(source or {}).get("generation", 0),
+            source_product_sha=(source or {}).get("product_sha", ""),
+        )
     return result
 
 
@@ -836,16 +866,174 @@ def validate_operator_ready_lineage(
         raise DispatchError("pre-provider operator-ready state is invalid")
 
 
+def reset_authorization(value: ResetAuthorization | str) -> ResetAuthorization:
+    return value if isinstance(value, ResetAuthorization) else ResetAuthorization(value)
+
+
+def validate_qualification_control_branch(
+    product: Path,
+    ticket: str,
+    branch: str,
+    main: str,
+    remote_head: str,
+    authorization: ResetAuthorization,
+) -> None:
+    ticket_path = f"factory/tickets/{ticket}.md"
+    plan_path = f"factory/route-plans/{ticket}.json"
+    base = git(product, "merge-base", main, remote_head).strip()
+    if (
+        base != authorization.source_product_sha
+        or not git_succeeds(
+            product, "merge-base", "--is-ancestor",
+            authorization.source_product_sha, main,
+        )
+    ):
+        raise DispatchError("qualification control reset source changed")
+    try:
+        source = json.loads(git(
+            product, "show",
+            f"{authorization.source_product_sha}:factory/QUALIFICATION.json",
+        ))
+    except json.JSONDecodeError as error:
+        raise DispatchError("qualification control reset source is invalid") from error
+    if (
+        not isinstance(source, dict)
+        or source.get("schema") != QUALIFICATION_SCHEMA_V2
+        or source.get("factory_sha") != authorization.source_factory_sha
+        or source.get("generation") != authorization.source_generation
+        or not isinstance(source.get("tickets"), list)
+        or ticket not in source["tickets"]
+    ):
+        raise DispatchError("qualification control reset source is invalid")
+    changed = set(git(
+        product, "diff", "--name-only", f"{base}..{remote_head}",
+    ).splitlines())
+    receipt_paths = [
+        path for path in changed
+        if re.fullmatch(
+            rf"factory/receipts/{re.escape(ticket)}/ready-([1-9][0-9]*)[.]json",
+            path,
+        )
+    ]
+    expected_paths = {ticket_path, plan_path, *receipt_paths}
+    if len(receipt_paths) > 1 or changed != expected_paths:
+        raise DispatchError("qualification control reset contains product changes")
+    commits = [
+        tuple(line.split("\0"))
+        for line in git(
+            product, "log", "--first-parent", "--reverse",
+            "--format=%H%x00%P%x00%an%x00%ae%x00%s",
+            f"{base}..{remote_head}",
+        ).splitlines()
+    ]
+    pins = [
+        index for index, commit in enumerate(commits)
+        if len(commit) == 5
+        and commit[2:5] == (
+            "Software Factory", "factory@local",
+            f"{ticket}: pin kit and model route plan",
+        )
+    ]
+    if len(pins) != 1:
+        raise DispatchError("qualification control reset pin is invalid")
+    pin_index = pins[0]
+    pin = commits[pin_index]
+    parents = pin[1].split()
+    if (
+        len(parents) != 1
+        or set(git(
+            product, "diff-tree", "--no-commit-id", "--name-only", "-r", pin[0],
+        ).splitlines()) != {ticket_path, plan_path}
+    ):
+        raise DispatchError("qualification control reset pin is invalid")
+    if receipt_paths:
+        validate_operator_ready_lineage(
+            product, ticket, branch, main, parents[0], ticket_path, plan_path,
+        )
+    elif parents[0] != authorization.source_product_sha:
+        raise DispatchError("qualification control reset Ready source is invalid")
+    before = git(product, "show", f"{parents[0]}:{ticket_path}")
+    pinned = git(product, "show", f"{pin[0]}:{ticket_path}")
+    try:
+        route = json.loads(git(product, "show", f"{pin[0]}:{plan_path}"))
+        receipt = (
+            json.loads(git(product, "show", f"{pin[0]}:{receipt_paths[0]}"))
+            if receipt_paths else None
+        )
+    except json.JSONDecodeError as error:
+        raise DispatchError("qualification control reset evidence is invalid") from error
+    previous = pin[0]
+    for commit in commits[pin_index + 1:]:
+        if (
+            len(commit) != 5
+            or commit[1].split() != [previous]
+            or git(
+                product, "diff-tree", "--no-commit-id", "--name-only",
+                "-r", commit[0],
+            ).splitlines() != [ticket_path]
+        ):
+            raise DispatchError("qualification control reset suffix is invalid")
+        previous = commit[0]
+    main_ticket = git(product, "show", f"{main}:{ticket_path}")
+    remote_ticket = git(product, "show", f"{remote_head}:{ticket_path}")
+    if (
+        field(before, "State").casefold() != "ready"
+        or field(before, "Kit-SHA")
+        or field(pinned, "State").casefold() != "ready"
+        or field(pinned, "Kit-SHA") != authorization.source_factory_sha
+        or ticket_without_control(before) != ticket_without_control(pinned)
+        or field(main_ticket, "State").casefold()
+        != ("backlog" if receipt_paths else "ready")
+        or field(main_ticket, "Kit-SHA")
+        or (
+            not receipt_paths
+            and ticket_without_control(before) != ticket_without_control(main_ticket)
+        )
+        or field(remote_ticket, "State").casefold()
+        not in {"ready", "planning", "building", "review", "blocked-escalated"}
+        or field(remote_ticket, "Kit-SHA") != authorization.source_factory_sha
+        or not isinstance(route, dict)
+        or route.get("schema") != "ticket-model-route-plan/v1"
+        or route.get("ticket") != ticket
+        or route.get("kit_sha") != authorization.source_factory_sha
+        or (
+            receipt is not None
+            and (
+                not isinstance(receipt, dict)
+                or receipt.get("schema")
+                != "nysa.software-factory.operator-receipt/v1"
+                or receipt.get("action") != "ready"
+                or receipt.get("audit") != "no-authority"
+                or receipt.get("ticket") != ticket
+            )
+        )
+        or git_succeeds(product, "cat-file", "-e", f"{main}:{plan_path}")
+        or (
+            bool(receipt_paths)
+            and git_succeeds(
+                product, "cat-file", "-e", f"{main}:{receipt_paths[0]}"
+            )
+        )
+    ):
+        raise DispatchError("qualification control reset evidence is invalid")
+
+
 def validate_preprovider_branch(
     product: Path,
     ticket: str,
     branch: str,
     main: str,
-    authorized_head: str,
+    reset: ResetAuthorization | str,
     remote_head: str,
 ) -> str:
-    if remote_head != authorized_head:
+    authorization = reset_authorization(reset)
+    if remote_head != authorization.head:
         raise DispatchError("ticket remote branch does not match reset authorization")
+    if authorization.source_factory_sha:
+        validate_qualification_control_branch(
+            product, ticket, branch, main, remote_head, authorization,
+        )
+        return remote_head
     base = git(product, "merge-base", main, remote_head).strip()
     if not SHA.fullmatch(base) or not git_succeeds(
         product, "merge-base", "--is-ancestor", base, main
@@ -1027,11 +1215,13 @@ def reconcile_preprovider_branch(
     branch: str,
     remote: str,
     main: str,
-    authorized_head: str,
+    reset: ResetAuthorization | str,
 ) -> str:
+    authorization = reset_authorization(reset)
+    authorized_head = authorization.head
     remote_head = git(worktree, "rev-parse", "HEAD").strip()
     remote_head = validate_preprovider_branch(
-        product, ticket, branch, main, authorized_head, remote_head,
+        product, ticket, branch, main, authorization, remote_head,
     )
     ticket_path = f"factory/tickets/{ticket}.md"
     plan_path = f"factory/route-plans/{ticket}.json"
@@ -1167,9 +1357,13 @@ def interrupted_reset_dirty(
 
 def prepare_worktree(
     product: Path, worktree_root: Path, ticket: str, prefix: str, remote: str,
-    authorized_reset_head: str = "",
+    authorized_reset: ResetAuthorization | str | None = None,
     protected_main: str = "",
 ) -> tuple[Path, bool, bool, str]:
+    authorization = (
+        reset_authorization(authorized_reset) if authorized_reset else None
+    )
+    authorized_reset_head = authorization.head if authorization else ""
     branch = prefix + ticket
     safe_directory(worktree_root, "worktree root", owner_only=True)
     records = worktree_records(product)
@@ -1226,7 +1420,7 @@ def prepare_worktree(
         ):
             reset_head = reconcile_preprovider_branch(
                 product, destination, ticket, branch, remote, main,
-                authorized_reset_head,
+                authorization or "",
             )
         return destination, False, False, reset_head
     occupied = {
@@ -1281,7 +1475,7 @@ def prepare_worktree(
         try:
             reset_head = reconcile_preprovider_branch(
                 product, destination, ticket, branch, remote, main,
-                authorized_reset_head,
+                authorization or "",
             )
         except (
             DispatchError, OSError, UnicodeError, json.JSONDecodeError,
@@ -1305,10 +1499,12 @@ def prepare_worktree(
 
 def reconcile_authorized_preprovider_branches(
     product: Path, worktree_root: Path, prefix: str, remote: str,
-    authorizations: dict[str, str], main: str,
+    authorizations: dict[str, ResetAuthorization | str], main: str,
 ) -> dict[str, tuple[str, str]]:
     reset = {}
-    for ticket, authorized_head in sorted(authorizations.items()):
+    for ticket, raw_authorization in sorted(authorizations.items()):
+        authorization = reset_authorization(raw_authorization)
+        authorized_head = authorization.head
         branch = prefix + ticket
         observed = git(
             product, "ls-remote", "--heads", remote, f"refs/heads/{branch}"
@@ -1341,7 +1537,7 @@ def reconcile_authorized_preprovider_branches(
         if remote_head != authorized_head:
             raise DispatchError("ticket remote branch does not match reset authorization")
         destination, created, branch_created, reset_head = prepare_worktree(
-            product, worktree_root, ticket, prefix, remote, authorized_head,
+            product, worktree_root, ticket, prefix, remote, authorization,
             main,
         )
         if reset_head != authorized_head:

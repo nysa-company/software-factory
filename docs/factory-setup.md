@@ -253,6 +253,11 @@ provider state, ticket branches, or paid roles are created.
   refuses before runtime or authority publication when a divergent branch is
   missing its exact protected reset entry. Never generate, delete, or rewrite
   that authority inside the qualification lane.
+  When retrying a prior qualification cohort, use the v2 reset schema to bind
+  the protected source generation, source Factory SHA, source product SHA, and
+  each exact selected branch head. It permits only the prior canonical Ready
+  base/receipt, route pin, and ticket-only qualification work; any application
+  change requires an ordinary product review instead of automatic recovery.
   A later generation may authorize the exact Ready head produced by an earlier
   canonical reset. The shared validator proves the complete prior Ready/reset
   lineage; do not flatten, rewrite, or manually clean that branch history.

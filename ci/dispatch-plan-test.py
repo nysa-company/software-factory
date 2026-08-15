@@ -295,6 +295,98 @@ class DispatchPlanTest(unittest.TestCase):
         run("git", "commit", "-qm", "authorize pre-provider reset", cwd=self.product)
         run("git", "push", "-q", "origin", "main", cwd=self.product)
 
+    def authorize_qualification_control_reset(
+        self, head, source_product_sha, *, ticket="T-110",
+    ):
+        path = self.product / "factory/qualification/preprovider-branch-resets.json"
+        path.parent.mkdir(exist_ok=True)
+        path.write_text(json.dumps({
+            "factory_sha": "a" * 40,
+            "resets": [{
+                "branch": f"ticket/{ticket}",
+                "head": head,
+                "ticket": ticket,
+            }],
+            "schema": "nysa.software-factory.preprovider-branch-resets/v2",
+            "source_qualification": {
+                "factory_sha": "b" * 40,
+                "generation": 1,
+                "product_sha": source_product_sha,
+            },
+        }, sort_keys=True, separators=(",", ":")) + "\n")
+        run("git", "add", ".", cwd=self.product)
+        run("git", "commit", "-qm", "authorize qualification control reset", cwd=self.product)
+        run("git", "push", "-q", "origin", "main", cwd=self.product)
+
+    def qualification_control_branch(
+        self, *, product_change=False, source_ready=False,
+        source_includes_ticket=True, extra_pre_pin=False,
+    ):
+        self.write_contract_18_qualification()
+        manifest = self.product / "factory/QUALIFICATION.json"
+        value = json.loads(manifest.read_text())
+        current_tickets = value["tickets"]
+        if not source_includes_ticket:
+            value["tickets"] = [item for item in current_tickets if item != "T-110"]
+        value.update({"factory_sha": "b" * 40, "generation": 1})
+        manifest.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n")
+        (self.product / "factory/KIT_PIN").write_text("b" * 40 + "\n")
+        ticket = self.product / "factory/tickets/T-110.md"
+        if not source_ready:
+            ticket.write_text(ticket.read_text().replace("State: Ready", "State: Backlog"))
+        run("git", "add", ".", cwd=self.product)
+        run("git", "commit", "-qm", "prepare source qualification", cwd=self.product)
+        run("git", "push", "-q", "origin", "main", cwd=self.product)
+        source_product_sha = run("git", "rev-parse", "HEAD", cwd=self.product).strip()
+
+        if source_ready:
+            run("git", "switch", "-qc", "ticket/T-110", cwd=self.product)
+        else:
+            self.stale_operator_ready_branch()
+            run("git", "switch", "-q", "ticket/T-110", cwd=self.product)
+        if extra_pre_pin:
+            run(
+                "git", "commit", "--allow-empty", "-qm",
+                "uncanonical pre-pin work", cwd=self.product,
+            )
+        ticket.write_text(ticket.read_text() + f"\nKit-SHA: {'b' * 40}\n")
+        plan = self.product / "factory/route-plans/T-110.json"
+        plan.parent.mkdir(exist_ok=True)
+        plan.write_text(json.dumps({
+            "kit_sha": "b" * 40,
+            "schema": "ticket-model-route-plan/v1",
+            "ticket": "T-110",
+        }) + "\n")
+        run("git", "add", str(ticket), str(plan), cwd=self.product)
+        run(
+            "git", "-c", "user.name=Software Factory",
+            "-c", "user.email=factory@local", "commit", "-qm",
+            "T-110: pin kit and model route plan", cwd=self.product,
+        )
+        ticket.write_text(
+            ticket.read_text().replace("State: Ready", "State: Planning")
+            + "\nSPEC-LINT: PASS\n"
+        )
+        run("git", "add", str(ticket), cwd=self.product)
+        run("git", "commit", "-qm", "T-110: freeze qualification spec", cwd=self.product)
+        if product_change:
+            (self.product / "README.md").write_text("qualification product change\n")
+            run("git", "add", "README.md", cwd=self.product)
+            run("git", "commit", "-qm", "qualification product work", cwd=self.product)
+        head = run("git", "rev-parse", "HEAD", cwd=self.product).strip()
+        run("git", "push", "-q", "origin", "ticket/T-110", cwd=self.product)
+        run("git", "switch", "-q", "main", cwd=self.product)
+
+        value.update({
+            "factory_sha": "a" * 40,
+            "generation": 2,
+            "tickets": current_tickets,
+        })
+        manifest.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n")
+        (self.product / "factory/KIT_PIN").write_text("a" * 40 + "\n")
+        self.authorize_qualification_control_reset(head, source_product_sha)
+        return head, source_product_sha
+
     def interrupt_authorized_reset(self, stage):
         self.write_contract_18_qualification()
         run("git", "add", ".", cwd=self.product)
@@ -1476,6 +1568,223 @@ class DispatchPlanTest(unittest.TestCase):
                 str(self.remote), exact_authorizations=True,
             )
         self.assertNotEqual(advanced, old_head)
+
+    def test_qualification_control_retry_resets_only_authenticated_control_state(self):
+        old_head, source_product_sha = self.qualification_control_branch()
+        state = self.qualification_state()
+        authorizations = DISPATCH.preprovider_reset_authorizations(
+            self.product / "factory", state, "ticket/",
+        )
+        self.assertEqual(
+            authorizations["T-110"],
+            DISPATCH.ResetAuthorization(
+                old_head, "b" * 40, 1, source_product_sha,
+            ),
+        )
+        self.assertEqual(
+            DISPATCH.inspect_selected_preprovider_branches(
+                self.product, self.product / "factory", state,
+                str(self.remote), exact_authorizations=True,
+            ),
+            {"T-110": old_head},
+        )
+        main = run("git", "rev-parse", "origin/main", cwd=self.product).strip()
+        reset = DISPATCH.reconcile_authorized_preprovider_branches(
+            self.product, self.worktrees, "ticket/", str(self.remote),
+            authorizations, main,
+        )
+        self.assertEqual(reset["T-110"][0], old_head)
+        reset_head = reset["T-110"][1]
+        self.assertNotEqual(reset_head, old_head)
+        self.assertEqual(
+            run("git", "rev-parse", f"{reset_head}^{{tree}}", cwd=self.product),
+            run("git", "rev-parse", f"{main}^{{tree}}", cwd=self.product),
+        )
+        self.assertEqual(
+            run(
+                "git", "ls-remote", "--heads", str(self.remote),
+                "ticket/T-110", cwd=self.product,
+            ).split()[0],
+            reset_head,
+        )
+
+    def test_qualification_control_retry_accepts_durable_ready_source(self):
+        old_head, _ = self.qualification_control_branch(source_ready=True)
+        state = self.qualification_state()
+        authorizations = DISPATCH.preprovider_reset_authorizations(
+            self.product / "factory", state, "ticket/",
+        )
+        self.assertEqual(
+            DISPATCH.inspect_selected_preprovider_branches(
+                self.product, self.product / "factory", state,
+                str(self.remote), exact_authorizations=True,
+            ),
+            {"T-110": old_head},
+        )
+        main = run("git", "rev-parse", "origin/main", cwd=self.product).strip()
+        reset = DISPATCH.reconcile_authorized_preprovider_branches(
+            self.product, self.worktrees, "ticket/", str(self.remote),
+            authorizations, main,
+        )
+        self.assertEqual(reset["T-110"][0], old_head)
+        self.assertEqual(
+            run(
+                "git", "show",
+                f"{reset['T-110'][1]}:factory/tickets/T-110.md",
+                cwd=self.product,
+            ),
+            run("git", "show", f"{main}:factory/tickets/T-110.md", cwd=self.product),
+        )
+
+    def test_qualification_control_retry_refuses_noncanonical_ready_prefix(self):
+        old_head, _ = self.qualification_control_branch(
+            source_ready=True, extra_pre_pin=True,
+        )
+        with self.assertRaisesRegex(
+            DISPATCH.DispatchError,
+            "qualification control reset Ready source is invalid",
+        ):
+            DISPATCH.inspect_selected_preprovider_branches(
+                self.product, self.product / "factory", self.qualification_state(),
+                str(self.remote), exact_authorizations=True,
+            )
+        self.assertEqual(
+            run(
+                "git", "ls-remote", "--heads", str(self.remote),
+                "ticket/T-110", cwd=self.product,
+            ).split()[0],
+            old_head,
+        )
+
+    def test_qualification_control_retry_requires_v2_source_binding(self):
+        old_head, _ = self.qualification_control_branch()
+        authorization = self.product / (
+            "factory/qualification/preprovider-branch-resets.json"
+        )
+        value = json.loads(authorization.read_text())
+        value.pop("source_qualification")
+        value["schema"] = "nysa.software-factory.preprovider-branch-resets/v1"
+        authorization.write_text(json.dumps(value) + "\n")
+        run("git", "add", str(authorization), cwd=self.product)
+        run("git", "commit", "-qm", "downgrade retry authorization", cwd=self.product)
+        run("git", "push", "-q", "origin", "main", cwd=self.product)
+
+        with self.assertRaisesRegex(
+            DISPATCH.DispatchError, "pre-provider branch is not control-only",
+        ):
+            DISPATCH.inspect_selected_preprovider_branches(
+                self.product, self.product / "factory", self.qualification_state(),
+                str(self.remote), exact_authorizations=True,
+            )
+        self.assertEqual(
+            run(
+                "git", "ls-remote", "--heads", str(self.remote),
+                "ticket/T-110", cwd=self.product,
+            ).split()[0],
+            old_head,
+        )
+
+    def test_qualification_control_retry_refuses_product_changes(self):
+        old_head, _ = self.qualification_control_branch(product_change=True)
+        with self.assertRaisesRegex(
+            DISPATCH.DispatchError,
+            "qualification control reset contains product changes",
+        ):
+            DISPATCH.inspect_selected_preprovider_branches(
+                self.product, self.product / "factory", self.qualification_state(),
+                str(self.remote), exact_authorizations=True,
+            )
+        self.assertEqual(
+            run(
+                "git", "ls-remote", "--heads", str(self.remote),
+                "ticket/T-110", cwd=self.product,
+            ).split()[0],
+            old_head,
+        )
+
+    def test_qualification_control_retry_refuses_source_binding_changes(self):
+        old_head, _ = self.qualification_control_branch()
+        authorization = self.product / (
+            "factory/qualification/preprovider-branch-resets.json"
+        )
+        original = json.loads(authorization.read_text())
+        for field, replacement, error in (
+            ("product_sha", "c" * 40, "source changed"),
+            ("factory_sha", "c" * 40, "source is invalid"),
+            ("generation", 2, "source is invalid"),
+        ):
+            with self.subTest(field=field):
+                value = json.loads(json.dumps(original))
+                value["source_qualification"][field] = replacement
+                authorization.write_text(json.dumps(value) + "\n")
+                run("git", "add", str(authorization), cwd=self.product)
+                run(
+                    "git", "commit", "-qm",
+                    f"change qualification source {field}", cwd=self.product,
+                )
+                run("git", "push", "-q", "origin", "main", cwd=self.product)
+                with self.assertRaisesRegex(DISPATCH.DispatchError, error):
+                    DISPATCH.inspect_selected_preprovider_branches(
+                        self.product, self.product / "factory",
+                        self.qualification_state(), str(self.remote),
+                        exact_authorizations=True,
+                    )
+                self.assertEqual(
+                    run(
+                        "git", "ls-remote", "--heads", str(self.remote),
+                        "ticket/T-110", cwd=self.product,
+                    ).split()[0],
+                    old_head,
+                )
+
+    def test_qualification_control_retry_checks_historical_manifest_semantics(self):
+        old_head, _ = self.qualification_control_branch()
+        manifest = self.product / "factory/QUALIFICATION.json"
+        authorization = self.product / (
+            "factory/qualification/preprovider-branch-resets.json"
+        )
+        current = json.loads(manifest.read_text())
+        current["generation"] = 3
+        manifest.write_text(json.dumps(current) + "\n")
+        value = json.loads(authorization.read_text())
+        value["source_qualification"]["generation"] = 2
+        authorization.write_text(json.dumps(value) + "\n")
+        run("git", "add", str(manifest), str(authorization), cwd=self.product)
+        run("git", "commit", "-qm", "misbind source generation", cwd=self.product)
+        run("git", "push", "-q", "origin", "main", cwd=self.product)
+        with self.assertRaisesRegex(
+            DISPATCH.DispatchError, "qualification control reset source is invalid",
+        ):
+            DISPATCH.inspect_selected_preprovider_branches(
+                self.product, self.product / "factory", self.qualification_state(),
+                str(self.remote), exact_authorizations=True,
+            )
+        self.assertEqual(
+            run(
+                "git", "ls-remote", "--heads", str(self.remote),
+                "ticket/T-110", cwd=self.product,
+            ).split()[0],
+            old_head,
+        )
+
+    def test_qualification_control_retry_requires_source_ticket_membership(self):
+        old_head, _ = self.qualification_control_branch(
+            source_includes_ticket=False,
+        )
+        with self.assertRaisesRegex(
+            DISPATCH.DispatchError, "qualification control reset source is invalid",
+        ):
+            DISPATCH.inspect_selected_preprovider_branches(
+                self.product, self.product / "factory", self.qualification_state(),
+                str(self.remote), exact_authorizations=True,
+            )
+        self.assertEqual(
+            run(
+                "git", "ls-remote", "--heads", str(self.remote),
+                "ticket/T-110", cwd=self.product,
+            ).split()[0],
+            old_head,
+        )
 
     def test_selected_branch_inspection_refuses_missing_or_extra_authorization(self):
         self.write_contract_18_qualification()
