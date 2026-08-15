@@ -43,6 +43,11 @@ from historical_pr_objects import (  # noqa: E402
     hydrate as hydrate_historical_pr_objects,
 )
 from effective_ticket import committed_ticket  # noqa: E402
+from inflight_release import (  # noqa: E402
+    AuthorizationError as InflightAuthorizationError,
+    parse_authorization as parse_inflight_authorization,
+    verify_migration as verify_inflight_migration,
+)
 import operator_receipt  # noqa: E402
 
 
@@ -2185,6 +2190,43 @@ def completed_role_gap(
     return True
 
 
+def successor_checkpoint_authorizations(
+    product: Path, manifest: dict[str, Any],
+) -> tuple[dict[str, Any] | None, dict[str, dict[str, Any]]]:
+    """Load one exact protected checkpoint set for a successor cohort."""
+    target = manifest["factory_sha"]
+    protected = command("git", "-C", str(product), "rev-parse", "HEAD")
+    relative = f"factory/migrations/inflight-release/{target}.json"
+    entry = command(
+        "git", "-C", str(product), "ls-tree", protected, "--", relative,
+    )
+    if not entry:
+        return None, {}
+    if not re.fullmatch(
+        rf"100644 blob [0-9a-f]{{40}}\t{re.escape(relative)}", entry,
+    ):
+        raise EnvironmentError("successor checkpoint authorization is unsafe")
+    try:
+        authorization, entries = parse_inflight_authorization(
+            command("git", "-C", str(product), "show", f"{protected}:{relative}"),
+            command(
+                "git", "-C", str(product), "show",
+                f"{protected}:factory/PROJECT.env",
+            ),
+            target,
+        )
+    except (InflightAuthorizationError, OSError, ValueError) as error:
+        raise EnvironmentError(
+            "successor checkpoint authorization is invalid"
+        ) from error
+    if (
+        authorization.get("source_kit_sha") != manifest["source_factory_sha"]
+        or set(entries) != set(manifest["tickets"])
+    ):
+        raise EnvironmentError("successor checkpoint authorization is not exact")
+    return authorization, entries
+
+
 def validate_successor_upgrade_cohort(
     factory: Path, product: Path, controller: Path, project: str,
     active_factory_sha: str, active_product_sha: str,
@@ -2207,6 +2249,9 @@ def validate_successor_upgrade_cohort(
         if len(secret) != 32:
             raise EnvironmentError("successor passport key is invalid")
         source = manifest["source_factory_sha"]
+        checkpoint_authorization, checkpoint_entries = (
+            successor_checkpoint_authorizations(product, manifest)
+        )
         absent = {
             ticket for ticket in manifest["tickets"]
             if not (passports / f"{ticket}.json").exists()
@@ -2303,7 +2348,7 @@ def validate_successor_upgrade_cohort(
                     )
                 )
             )
-            lineage_valid = (
+            release_lineage_valid = (
                 isinstance(history, list)
                 and releases
                 and len(releases) == len(history) == len(set(releases))
@@ -2317,45 +2362,98 @@ def validate_successor_upgrade_cohort(
                     or bool(migrations)
                     and migrations[0]["from_factory_sha"] == releases[0]
                     and migrations[-1]["to_factory_sha"] == releases[-1]
-                    and all(
-                        prior["to_factory_sha"] == following["from_factory_sha"]
-                        and prior["to_protected_base_sha"]
-                        == following["from_protected_base_sha"]
-                        and prior["to_route_plan_sha256"]
-                        == following["from_route_plan_sha256"]
-                        and (
-                            prior["to_head_sha"] == following["from_head_sha"]
-                            or isinstance(charges, list)
-                            and isinstance(completed, list)
-                            and completed_role_gap(
-                                factory, product, passport, ticket,
-                                charges, completed, prior["to_head_sha"],
-                                following["from_head_sha"],
-                                prior["to_factory_sha"],
-                            )
-                        )
-                        for prior, following in zip(migrations, migrations[1:])
-                    )
                     and [
                         (item["from_factory_sha"], item["to_factory_sha"])
                         for item in migrations
                         if item["from_factory_sha"] != item["to_factory_sha"]
                     ] == list(zip(releases, releases[1:]))
-                    and migrations[-1]["to_head_sha"] == value.get("head_sha")
                     and migrations[-1]["to_protected_base_sha"]
                     == value.get("protected_base_sha")
                     and migrations[-1]["to_route_plan_sha256"]
                     == value.get("route_plan_sha256")
-                    and migrations[-1]["from_passport_sha256"]
-                    == value.get("parent_digest")
-                    and migrations[-1]["from_passport_file_sha256"]
-                    == value.get("parent_file_sha256")
                 )
                 and successor_release_lineage(
                     history, migrations, source,
                     value.get("factory_sha", ""), passport.valid_v2_migration,
                 )
             )
+            try:
+                strict_lineage_valid = (
+                    release_lineage_valid
+                    and (
+                        not migrations and len(releases) == 1
+                        or bool(migrations)
+                        and all(
+                            prior["to_factory_sha"]
+                            == following["from_factory_sha"]
+                            and prior["to_protected_base_sha"]
+                            == following["from_protected_base_sha"]
+                            and prior["to_route_plan_sha256"]
+                            == following["from_route_plan_sha256"]
+                            and (
+                                prior["to_head_sha"]
+                                == following["from_head_sha"]
+                                or isinstance(charges, list)
+                                and isinstance(completed, list)
+                                and completed_role_gap(
+                                    factory, product, passport, ticket,
+                                    charges, completed, prior["to_head_sha"],
+                                    following["from_head_sha"],
+                                    prior["to_factory_sha"],
+                                )
+                            )
+                            for prior, following in zip(
+                                migrations, migrations[1:]
+                            )
+                        )
+                        and migrations[-1]["to_head_sha"]
+                        == value.get("head_sha")
+                        and migrations[-1]["from_passport_sha256"]
+                        == value.get("parent_digest")
+                        and migrations[-1]["from_passport_file_sha256"]
+                        == value.get("parent_file_sha256")
+                    )
+                )
+            except (OSError, TypeError, ValueError, passport.PassportError):
+                strict_lineage_valid = False
+            checkpoint_valid = False
+            checkpoint = checkpoint_entries.get(ticket)
+            if checkpoint_authorization is not None and checkpoint is not None:
+                try:
+                    route = subprocess.run(
+                        [
+                            "git", "-C", str(product), "show",
+                            f"{value.get('head_sha', '')}:factory/route-plans/"
+                            f"{ticket}.json",
+                        ],
+                        capture_output=True, check=False, timeout=120,
+                    )
+                    checkpoint_valid = (
+                        release_lineage_valid
+                        and verify_inflight_migration(
+                            product,
+                            command(
+                                "git", "-C", str(product), "rev-parse", "HEAD",
+                            ),
+                            candidate, ticket, value.get("branch", ""),
+                            value.get("head_sha", ""),
+                        ) == "exact"
+                        and command(
+                            "git", "-C", str(product), "rev-parse",
+                            f"{value.get('head_sha', '')}^{{tree}}",
+                        ) == value.get("head_tree")
+                        and command(
+                            "git", "-C", str(product), "rev-parse",
+                            f"{value.get('head_sha', '')}:factory/tickets/"
+                            f"{ticket}.md",
+                        ) == value.get("ticket_blob")
+                        and route.returncode == 0
+                        and hashlib.sha256(route.stdout).hexdigest()
+                        == value.get("route_plan_sha256")
+                    )
+                except InflightAuthorizationError:
+                    checkpoint_valid = False
+            lineage_valid = strict_lineage_valid or checkpoint_valid
             evidence_valid = (
                 isinstance(charges, list)
                 and isinstance(completed, list)

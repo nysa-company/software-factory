@@ -1068,6 +1068,82 @@ PY
                 ))
             return json.loads(result.stdout) if not result.returncode else result
 
+        checkpoint_note = self.workdir / "checkpoint-note.txt"
+        checkpoint_note.write_text("preserved source checkpoint\n")
+        subprocess.run(
+            ["git", "-C", str(self.workdir), "add", str(checkpoint_note)],
+            check=True,
+        )
+        subprocess.run(
+            [
+                "git", "-C", str(self.workdir), "-c", "user.name=test",
+                "-c", "user.email=test@example.com", "commit", "-qm",
+                "preserve source checkpoint",
+            ],
+            check=True,
+        )
+        checkpoint_head = subprocess.check_output(
+            ["git", "-C", str(self.workdir), "rev-parse", "HEAD"], text=True,
+        ).strip()
+        authorize(checkpoint_head, "Ready")
+        checkpoint_preview = migrate(
+            "migrate-plan", "--ticket", "T-901", "--workdir", str(self.workdir)
+        )
+        checkpoint_applied = migrate(
+            "migrate", "--ticket", "T-901", "--workdir", str(self.workdir),
+            "--approve-hash", checkpoint_preview["preview_hash"],
+            "--readiness-hash", checkpoint_preview["readiness_sha256"],
+            "--approved-by", "tester",
+        )
+        self.assertEqual(
+            subprocess.check_output(
+                [
+                    "git", "-C", str(self.workdir), "show",
+                    f"{checkpoint_applied['commit_sha']}:checkpoint-note.txt",
+                ],
+                text=True,
+            ),
+            "preserved source checkpoint\n",
+        )
+        self.assertEqual(
+            subprocess.check_output(
+                ["git", "-C", str(self.workdir), "rev-parse", "HEAD^"],
+                text=True,
+            ).strip(),
+            checkpoint_head,
+        )
+        self.assertEqual(
+            subprocess.check_output(
+                [
+                    "git", "--git-dir", str(self.remote), "rev-parse",
+                    "refs/heads/ticket/T-901",
+                ],
+                text=True,
+            ).strip(),
+            checkpoint_applied["commit_sha"],
+        )
+        subprocess.run(
+            ["git", "-C", str(self.workdir), "reset", "--hard", "-q", source_head],
+            check=True,
+        )
+        subprocess.run(
+            [
+                "git", "-C", str(self.workdir), "push", "-q", "--force",
+                str(self.remote), "HEAD:refs/heads/ticket/T-901",
+            ],
+            check=True,
+        )
+        subprocess.run(
+            [
+                "git", "-C", str(self.workdir), "update-ref",
+                "refs/remotes/origin/ticket/T-901", source_head,
+            ],
+            check=True,
+        )
+        authorize(source_head, "Building")
+        trace.write_text("")
+        network_trace.write_text("")
+
         github_config.chmod(0o777)
         unsafe_store = migrate(
             "migrate", "--ticket", "T-901", "--workdir", str(self.workdir),

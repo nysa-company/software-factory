@@ -2933,6 +2933,144 @@ class QualificationEnvironmentTest(unittest.TestCase):
                 product_sha, drifted,
             )
 
+    def test_successor_upgrade_accepts_only_exact_preserved_checkpoint(self) -> None:
+        controller = (self.workspace / "checkpoint-controller").resolve()
+        passports = controller / "passports"
+        passports.mkdir(mode=0o700, parents=True)
+        controller.chmod(0o700)
+        secret = b"p" * 32
+        key = controller / "passport.key"
+        key.write_bytes(secret)
+        key.chmod(0o600)
+        source = "b" * 40
+        candidate = "c" * 40
+        ticket = "T-101"
+        base = run(self.product, "git", "rev-parse", "HEAD")
+        run(self.product, "git", "switch", "-qc", f"ticket/{ticket}")
+        ticket_path = self.product / f"factory/tickets/{ticket}.md"
+        ticket_path.write_text(
+            ticket_path.read_text() + f"Kit-SHA: {source}\n",
+            encoding="utf-8",
+        )
+        route = self.product / f"factory/route-plans/{ticket}.json"
+        route.parent.mkdir(parents=True)
+        route.write_text("{}\n", encoding="utf-8")
+        run(self.product, "git", "add", "factory")
+        run(self.product, "git", "commit", "-qm", "source checkpoint")
+        checkpoint_parent = run(self.product, "git", "rev-parse", "HEAD")
+        ticket_path.write_text(
+            ticket_path.read_text() + "\npreserved source work\n",
+            encoding="utf-8",
+        )
+        run(self.product, "git", "add", str(ticket_path))
+        run(self.product, "git", "commit", "-qm", "preserve source work")
+        checkpoint = run(self.product, "git", "rev-parse", "HEAD")
+        checkpoint_tree = run(
+            self.product, "git", "rev-parse", f"{checkpoint}^{{tree}}",
+        )
+        ticket_blob = run(
+            self.product, "git", "rev-parse",
+            f"{checkpoint}:factory/tickets/{ticket}.md",
+        )
+        route_sha256 = hashlib.sha256(route.read_bytes()).hexdigest()
+        run(self.product, "git", "switch", "-q", "main")
+
+        passport_path = passports / f"{ticket}.json"
+
+        def write_source_passport(protected: str) -> None:
+            self.write_passport(passport_path, secret, ticket, source)
+            value = json.loads(passport_path.read_text(encoding="utf-8"))
+            value.pop("authentication_sha256")
+            value.pop("passport_sha256")
+            value.update({
+                "base_history": [protected],
+                "current_stage": "RUN planner",
+                "current_state": "Ready",
+                "head_sha": checkpoint,
+                "head_tree": checkpoint_tree,
+                "migration_history": [{
+                    "from_factory_sha": source,
+                    "from_head_sha": base,
+                    "from_passport_file_sha256": "2" * 64,
+                    "from_passport_sha256": "3" * 64,
+                    "from_protected_base_sha": protected,
+                    "from_route_plan_sha256": route_sha256,
+                    "schema": (
+                        "nysa.software-factory.ticket-passport-migration/v2"
+                    ),
+                    "to_factory_sha": source,
+                    "to_head_sha": checkpoint_parent,
+                    "to_protected_base_sha": protected,
+                    "to_route_plan_sha256": route_sha256,
+                }],
+                "parent_digest": "4" * 64,
+                "parent_file_sha256": "5" * 64,
+                "protected_base_sha": protected,
+                "route_plan_sha256": route_sha256,
+                "ticket_blob": ticket_blob,
+            })
+            self.sign_passport(passport_path, secret, value)
+
+        manifest = {
+            "factory_sha": candidate,
+            "mode": "successor",
+            "source_factory_sha": source,
+            "tickets": [ticket],
+        }
+        write_source_passport(base)
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError,
+            "successor qualification requires every selected ticket",
+        ):
+            ENVIRONMENT.validate_successor_upgrade_cohort(
+                self.factory, self.product, controller, "relay", source,
+                base, manifest,
+            )
+
+        authorization = (
+            self.product / "factory/migrations/inflight-release"
+            / f"{candidate}.json"
+        )
+        authorization.parent.mkdir(parents=True)
+
+        def authorize(head: str) -> str:
+            authorization.write_text(json.dumps({
+                "repository": "example/product",
+                "schema": (
+                    "nysa.software-factory.inflight-release-authorization/v1"
+                ),
+                "source_kit_sha": source,
+                "target_kit_sha": candidate,
+                "tickets": [{
+                    "branch": f"ticket/{ticket}", "head": head,
+                    "state": "Ready", "ticket": ticket,
+                }],
+            }, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+            run(self.product, "git", "add", str(authorization))
+            run(self.product, "git", "commit", "-qm", "authorize checkpoint")
+            return run(self.product, "git", "rev-parse", "HEAD")
+
+        protected = authorize(checkpoint)
+        write_source_passport(protected)
+        ENVIRONMENT.validate_successor_upgrade_cohort(
+            self.factory, self.product, controller, "relay", source,
+            base, manifest,
+        )
+        authorization.write_text(
+            authorization.read_text().replace(checkpoint, checkpoint_parent),
+            encoding="utf-8",
+        )
+        run(self.product, "git", "add", str(authorization))
+        run(self.product, "git", "commit", "-qm", "change checkpoint")
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError,
+            "successor qualification requires every selected ticket",
+        ):
+            ENVIRONMENT.validate_successor_upgrade_cohort(
+                self.factory, self.product, controller, "relay", source,
+                base, manifest,
+            )
+
     def test_successor_accepts_only_exact_source_terminal_reconciliations(self) -> None:
         controller = (self.workspace / "terminal-controller").resolve()
         passports = controller / "passports"
