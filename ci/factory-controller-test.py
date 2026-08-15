@@ -17540,8 +17540,10 @@ class FactoryControllerTest(unittest.TestCase):
         ], check=True)
         subprocess.run(["git", "-C", str(cell), "push", "-q"], check=True)
         head = controller.cell_git(claim, "rev-parse", "HEAD").stdout.strip()
+        source = "a" * 40
+        transition_head = transition["head_sha"]
         transition.update(
-            consumed=True, head_sha=head, role="test-author",
+            consumed=True, factory_sha=source, role="test-author",
             stage="RUN test-author",
         )
         transition["receipt_sha256"] = hashlib.sha256(
@@ -17553,11 +17555,49 @@ class FactoryControllerTest(unittest.TestCase):
         CONTROL.write(self.state / "T-216.json", transition)
         passport.pop("passport_sha256")
         passport.pop("authentication_sha256")
+        route = passport["route_plan_sha256"]
+        protected = passport["protected_base_sha"]
+        parent_file = "b" * 64
+        parent_digest = "c" * 64
         passport.update(
             current_stage="RUN test-author",
             current_state="Blocked-Escalated",
+            factory_release_history=[
+                {"contract_version": "2.0.0", "factory_sha": source},
+                {"contract_version": "2.0.0", "factory_sha": self.release.name},
+            ],
             head_sha=head,
             head_tree=controller.cell_git(claim, "rev-parse", "HEAD^{tree}").stdout.strip(),
+            migration_history=[
+                {
+                    "from_factory_sha": source,
+                    "from_head_sha": transition_head,
+                    "from_passport_file_sha256": "d" * 64,
+                    "from_passport_sha256": "e" * 64,
+                    "from_protected_base_sha": protected,
+                    "from_route_plan_sha256": route,
+                    "schema": "nysa.software-factory.ticket-passport-migration/v2",
+                    "to_factory_sha": source,
+                    "to_head_sha": head,
+                    "to_protected_base_sha": protected,
+                    "to_route_plan_sha256": route,
+                },
+                {
+                    "from_factory_sha": source,
+                    "from_head_sha": head,
+                    "from_passport_file_sha256": parent_file,
+                    "from_passport_sha256": parent_digest,
+                    "from_protected_base_sha": protected,
+                    "from_route_plan_sha256": route,
+                    "schema": "nysa.software-factory.ticket-passport-migration/v2",
+                    "to_factory_sha": self.release.name,
+                    "to_head_sha": head,
+                    "to_protected_base_sha": protected,
+                    "to_route_plan_sha256": route,
+                },
+            ],
+            parent_digest=parent_digest,
+            parent_file_sha256=parent_file,
             ticket_blob=controller.cell_git(
                 claim, "rev-parse", "HEAD:factory/tickets/T-216.md",
             ).stdout.strip(),
@@ -17572,10 +17612,13 @@ class FactoryControllerTest(unittest.TestCase):
             role="test-author", status="blocked",
         )
         controller.save_claim(claim)
+        controller.qualification = {
+            "mode": "successor", "source_factory_sha": source,
+        }
         controller.role_active = lambda _claim: False
         controller.remote_passport_valid = lambda _claim: True
         controller.terminal_for_receipt = lambda *_args: {
-            "exit_status": "12", "kit_sha": self.release.name,
+            "exit_status": "12", "kit_sha": source,
             "role": "test-author", "role_exit": "role_exit_contract_blocked",
             "ticket": "T-216",
             "transition_receipt_sha256": transition["receipt_sha256"],
@@ -17610,7 +17653,7 @@ class FactoryControllerTest(unittest.TestCase):
             plan["approval_hash"],
         )
         controller.terminal_for_receipt = lambda *_args: {
-            "exit_status": "1", "kit_sha": self.release.name,
+            "exit_status": "1", "kit_sha": source,
             "role": "test-author", "role_exit": "role_exit_contract_blocked",
             "ticket": "T-216",
             "transition_receipt_sha256": transition["receipt_sha256"],

@@ -6278,3 +6278,5 @@ A contract-blocked role resumes only through `ticket-control contract-repair
 plan/apply`. The controller binds the plan to the exact claim, passport,
 transition, terminal evidence, and ticket head; apply reacquires a parked lease
 and appends one receipt-bound repair directive without rewriting ticket history.
+A successor may use the exact source-release transition and terminal only when
+the current passport authenticates their complete migration lineage.

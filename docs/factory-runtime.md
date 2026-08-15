@@ -238,7 +238,9 @@ digest stays inside the command; no human hash handoff is needed.
 Contract-blocked roles use the same sealed boundary: `ticket-control
 contract-repair plan/apply` verifies the exact claim, passport, transition,
 terminal evidence, and ticket head before appending one receipt-bound resume
-directive. Apply reacquires a parked lease and commits only that ticket.
+directive. A successor accepts the exact source-release transition and terminal
+only through the passport's authenticated migration lineage. Apply reacquires a
+parked lease and commits only that ticket.
 Every other warning remains a typed block. Rerun after a named external or
 operator input changes; the driver never hand-edits tickets, claims, leases,
 receipts, passports, journals, or provider state.

@@ -8186,6 +8186,24 @@ class Controller:
         transition = self.transition_receipt(claim, record=False)
         passport = self.authenticated_operator_passport(ticket)
         terminal = self.terminal_for_receipt(ticket, receipt)
+        evidence_factory = transition.get("factory_sha", "") if transition else ""
+        source_evidence = (
+            self.qualification
+            and self.qualification.get("mode") == "successor"
+            and evidence_factory == self.qualification.get("source_factory_sha")
+            and terminal is not None
+            and terminal.get("kit_sha") == evidence_factory
+            and passport is not None
+            and passport.get("factory_sha") == self.release_path.name
+            and transition.get("route_plan_sha256")
+            == passport.get("route_plan_sha256")
+            and passport_head_lineage(passport, transition.get("head_sha", ""))
+            and successor_release_lineage(
+                passport.get("factory_release_history"),
+                passport.get("migration_history"), evidence_factory,
+                self.release_path.name, valid_v2_migration,
+            )
+        )
         if (
             claim.get("status") != "blocked"
             or not (claim.get("blocked_reason") == "role-failure" or abandoned)
@@ -8198,7 +8216,12 @@ class Controller:
                 or self.parked(claim) and claim.get("lease") == ""
             )
             or transition is None
-            or transition.get("factory_sha") != self.release_path.name
+            or not (
+                evidence_factory == self.release_path.name
+                and terminal is not None
+                and terminal.get("kit_sha") == self.release_path.name
+                or source_evidence
+            )
             or transition.get("receipt_sha256") != receipt
             or transition.get("role") != claim["role"]
             or transition.get("stage") not in {
@@ -8215,7 +8238,6 @@ class Controller:
             or terminal is None
             or terminal.get("ticket") != ticket
             or terminal.get("role") != claim["role"]
-            or terminal.get("kit_sha") != self.release_path.name
             or terminal.get("transition_receipt_sha256") != receipt
             or terminal.get("exit_status") != "12"
             or terminal.get("role_exit") != "role_exit_contract_blocked"
