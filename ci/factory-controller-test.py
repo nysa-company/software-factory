@@ -10035,15 +10035,20 @@ class FactoryControllerTest(unittest.TestCase):
         controller.renew = lambda _claim: None
         controller.migrate_passport = migrate
         controller.restore_contract_blocker = lambda _claim: False
+        controller.prior_transition_tickets.update(
+            claim["ticket"] for claim in claims
+        )
 
         controller.recover_upgraded_claims(claims)
 
         self.assertEqual(claims[0]["status"], "running")
         self.assertEqual(claims[0]["receipt"], f"{1:064x}")
+        self.assertNotIn("T-110", controller.prior_transition_tickets)
         for claim in claims[1:]:
             with self.subTest(ticket=claim["ticket"]):
                 self.assertEqual(claim["status"], "blocked")
                 self.assertTrue(claim["receipt"])
+                self.assertIn(claim["ticket"], controller.prior_transition_tickets)
         self.assertTrue(controller.finish_pending_run(claims[0]))
         self.assertTrue(controller.finish_pending_run(claims[0]))
         self.assertEqual(claims[0]["status"], "claimed")

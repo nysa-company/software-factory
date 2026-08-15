@@ -7497,6 +7497,8 @@ class Controller:
                     and SHA.fullmatch(terminal.get("kit_sha", ""))
                     and terminal["kit_sha"] != self.release_path.name
                 )
+                if prior_release_launch_void:
+                    self.prior_transition_tickets.discard(claim["ticket"])
                 claim["status"] = (
                     "running"
                     if (
