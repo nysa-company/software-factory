@@ -6,7 +6,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 
 - Product-agnostic factory kit; product repositories carry only their factory state and CI integration.
 - Durable decisions use repository-local numbering beginning at Decision 1.
-- Stable operating truth lives in `docs/`; prompts, templates, and evidence stay colocated with consumers. The operator preflight hydrates only evidence-bound immutable objects, batches read-only object checks, aggregates activation blockers, and makes network review explicit before certification. Qualification validates selected remote branches and exact prior-cohort control retries before publication, shares protected dependency truth, and counts only role-control evidence appended after its sealed product SHA.
+- Stable operating truth lives in `docs/`; prompts, templates, and evidence stay colocated with consumers. The operator preflight hydrates only evidence-bound immutable objects, batches read-only object checks, aggregates activation blockers, and makes network review explicit before certification. Qualification validates selected remote branches and exact prior-cohort control retries before publication, shares protected dependency truth, counts only role-control evidence appended after its sealed product SHA, and preserves one exact-head retry for a parked preview timeout.
 - Nysa Agents baseline v3 as a toolkit; `bash ci/test-all.sh` is the unconditional full command.
 - Contract 2 live products resolve sealed exact-SHA releases from owner-only `active.json` records under `~/.factory/kits` via `~/.factory/bin/factory-launch`; the native controller is the only scheduler.
 - The local release canary is one code-driven, product-agnostic command that creates contained local origins, runs setup/resume, and times one authenticated Planning transition plus sealed mock planner; its repository-test evidence is never promotable.
@@ -6151,3 +6151,12 @@ Test-author role execution retains its authenticated input commit exactly like
 every other mutating role. A direct rebase, reset, amend, or other ancestry
 rewrite is quarantined and restored before any remote push; only the separate
 trusted operator reorder command may perform an authorized tests-first rewrite.
+
+## 2026-08-15 — Decision 435: Parked preview timeouts remain retryable
+
+Category: Reliability
+
+The exact-head preview retry accepts both the immediate released-lease form and
+the normal parked checkpoint form, where parking has cleared the released
+lease marker and lease ID. Every existing head, passport, transition, timeout,
+cleanliness, and remote validation remains required before the wait is reset.

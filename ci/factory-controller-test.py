@@ -3357,6 +3357,27 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(retried["preview_wait_started_epoch"], 1000)
         self.assertTrue(retried["lease_released"])
 
+        parked_cell = self.root / "parked" / "T-221"
+        parked_cell.parent.mkdir()
+        cell.rename(parked_cell)
+        claim.update(
+            blocked_reason="preview-identity-timeout", lease="", parked=True,
+            preview_wait_started_epoch=0, status="blocked",
+            worktree=str(parked_cell),
+        )
+        claim.pop("lease_released", None)
+        controller.worktrees_by_branch = lambda: {
+            "refs/heads/ticket/T-221": [str(parked_cell)],
+        }
+        controller.save_claim(claim)
+        with patch.object(CONTROL.time, "time", return_value=1000):
+            result = controller.retry_preview_timeout("T-221", "operator")
+        self.assertEqual(result["status"], "retry-authorized")
+        parked = CONTROL.read(controller.claim_path("T-221"))
+        self.assertEqual(parked["lease"], "")
+        self.assertTrue(parked["parked"])
+        self.assertNotIn("lease_released", parked)
+
     def test_exact_terminal_request_recovers_only_terminal_controller_error(self) -> None:
         controller = CONTROL.Controller(self.args)
         worktree = self.root / "parked/T-110"

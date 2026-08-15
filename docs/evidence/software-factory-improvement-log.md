@@ -5767,6 +5767,22 @@ repair exclusively to the separate trusted operator reorder command.
 Validation: the shared role-exit fixture now proves both Builder and Test-author
 rewrites are quarantined, restored, conservatively charged, and never pushed.
 
+## FI-20260815-222 — Parking made exact preview retries unreachable
+
+Status: Focused regression implemented; protected CI and successor qualification pending
+Priority: P1
+Area: preview identity recovery
+Owner: Factory
+Impact: preview timeout correctly parked and released T-219, but parking then
+normalized the lease to an empty ID with no released marker. The supported
+exact-head retry required the pre-parking marker and could never resume that
+valid checkpoint.
+Smallest repair: accept the existing authenticated parked lease-normalization
+shape in addition to the immediate released-lease shape. Do not weaken any
+ticket, transition, passport, head, timeout, cleanliness, or remote check.
+Validation: the focused controller regression exercises both forms and proves
+the parked retry preserves its empty lease for ordinary controller recovery.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling
