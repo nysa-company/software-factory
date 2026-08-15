@@ -2278,6 +2278,46 @@ class FactoryControllerTest(unittest.TestCase):
         ]
         self.assertEqual(len(events), 1)
 
+    def test_accounted_qualification_cohort_skips_only_new_admission(self) -> None:
+        controller = self.qualification_controller()
+        tickets = controller.qualification["tickets"]
+        claims = [{"ticket": ticket} for ticket in tickets]
+        controller.json_call = lambda *_args, **_kwargs: (
+            (_ for _ in ()).throw(AssertionError("new admission ran"))
+        )
+
+        self.assertIsNone(controller.qualification_admission_preflight(claims))
+        self.assertEqual(controller.claim_new(claims), claims)
+
+        controller.product_ticket_done = lambda ticket: ticket == tickets[-1]
+        self.assertIsNone(
+            controller.qualification_admission_preflight(claims[:-1])
+        )
+        self.assertEqual(controller.claim_new(claims[:-1]), claims[:-1])
+        controller.product_ticket_done = lambda _ticket: False
+
+        calls = []
+        controller.json_call = lambda *args, **_kwargs: (
+            calls.append(args) or {
+                "action": "WAIT",
+                "schema": "nysa.software-factory.dispatch-plan/v1",
+                "status": "WAIT",
+            }
+        )
+        self.assertIsNone(
+            controller.qualification_admission_preflight(claims[:-1])
+        )
+        self.assertIsNone(controller.qualification_admission_preflight(
+            [*claims, {"ticket": "T-999"}],
+        ))
+        self.assertEqual(
+            calls,
+            [
+                ("dispatch-plan", "--shadow", "--json"),
+                ("dispatch-plan", "--shadow", "--json"),
+            ],
+        )
+
     def test_qualification_preflight_accepts_shadow_and_wait(self) -> None:
         class ExistingFlowReached(Exception):
             pass

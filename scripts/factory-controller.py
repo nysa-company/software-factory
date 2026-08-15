@@ -2179,6 +2179,18 @@ class Controller:
             and bool(DIGEST.fullmatch(claim.get("lease", "")))
         )
 
+    def qualification_cohort_accounted(
+        self, claims: list[dict[str, Any]],
+    ) -> bool:
+        if not self.qualification:
+            return False
+        selected = set(self.qualification["tickets"])
+        claimed = {claim["ticket"] for claim in claims}
+        return claimed <= selected and all(
+            ticket in claimed or self.product_ticket_done(ticket)
+            for ticket in selected
+        )
+
     @staticmethod
     def parked(claim: dict[str, Any]) -> bool:
         return claim.get("parked") is True
@@ -2647,7 +2659,10 @@ class Controller:
     def qualification_admission_preflight(
         self, existing: list[dict[str, Any]],
     ) -> dict[str, str] | None:
-        if not self.qualification:
+        if (
+            not self.qualification
+            or self.qualification_cohort_accounted(existing)
+        ):
             return None
         try:
             value = self.json_call(
@@ -2696,6 +2711,8 @@ class Controller:
         claims = list(existing)
         if not 0 <= reserved_capacity <= self.capacity:
             raise ControllerError("reserved controller capacity is invalid")
+        if self.qualification_cohort_accounted(claims):
+            return claims
         if not self.qualification:
             self.model_admission_outcome = None
         if self.qualification:

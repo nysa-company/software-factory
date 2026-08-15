@@ -1992,8 +1992,12 @@ result records one bounded admission incident and stops the sweep with no
 recovery, claim, model, or provider mutation. The operator uses the existing
 sealed qualification `--restore` to reinitialize every selected ticket. A
 fresh `SHADOW` or `WAIT` enters the unchanged flow, and the later real claim
-still re-reads the map under its normal 600-second contract. Production does
-not run this qualification headroom check.
+still re-reads the map under its normal 600-second contract. When the exact
+selected cohort is already accounted for by its own durable claims or
+protected Done targets, no admission is possible: reconciliation skips both
+shadow and real claim while retaining every ordinary claim, passport, lease,
+route, and recovery validation. A foreign or partial claim set still runs the
+admission check. Production does not run this qualification headroom check.
 Production candidate selection runs the existing provider-free ticket
 readiness contract for every otherwise eligible ticket before either shadow or
 claim may succeed. A refusal, malformed success, helper error, or timeout is a

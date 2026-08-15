@@ -6,7 +6,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 
 - Product-agnostic factory kit; product repositories carry only their factory state and CI integration.
 - Durable decisions use repository-local numbering beginning at Decision 1.
-- Stable operating truth lives in `docs/`; prompts, templates, and evidence stay colocated with consumers. The operator preflight hydrates only evidence-bound immutable objects, batches read-only object checks, aggregates activation blockers, and makes network review explicit before certification. Qualification validates selected remote branches and exact prior-cohort control retries before publication, shares protected dependency truth, counts only role-control evidence appended after its sealed product SHA, and preserves one exact-head retry for a parked preview timeout.
+- Stable operating truth lives in `docs/`; prompts, templates, and evidence stay colocated with consumers. The operator preflight hydrates only evidence-bound immutable objects, batches read-only object checks, aggregates activation blockers, and makes network review explicit before certification. Qualification validates selected remote branches and exact prior-cohort control retries before publication, shares protected dependency truth, counts only role-control evidence appended after its sealed product SHA, preserves one exact-head retry for a parked preview timeout, and does not rerun new-admission checks once its exact cohort is fully accounted for.
 - Historical committed-role checks carry unchanged baseline symlinks; changed symlinks and every handoff snapshot symlink remain fail-closed.
 - Successor qualification can preserve an exact source-passport checkpoint or descendant only through the existing protected in-flight release authorization; migration fast-forwards it without deleting or rewriting ticket work.
 - Nysa Agents baseline v3 as a toolkit; `bash ci/test-all.sh` is the unconditional full command.
@@ -6194,3 +6194,13 @@ route at the descendant, and exact cohort membership. Descendant work remains
 incomplete source work. Route migration may CAS-fast-forward an ancestor remote
 through that checkpoint, but never deletes, rewinds, or rewrites its ticket
 history.
+
+## 2026-08-15 — Decision 439: Accounted qualification cohorts reconcile before admission
+
+Category: Reliability
+
+When every selected qualification target is represented by its own durable
+claim or protected Done evidence and no foreign claim exists, the controller
+skips both admission shadow and real claim. Existing claims still cross every
+ordinary passport, lease, route, recovery, provider, and lifecycle check; a
+partial or foreign cohort retains the fail-closed admission boundary.
