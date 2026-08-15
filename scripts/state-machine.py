@@ -24,6 +24,10 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
 from legacy_closeout import ValidationError, protected_dependency  # noqa: E402
 from role_output import RoleOutputError, sha256 as role_output_sha256  # noqa: E402
+from ticket_state_transition import (  # noqa: E402
+    TransitionError as TicketTransitionError,
+    qualification_epoch_text,
+)
 
 
 SCHEMA = "nysa.software-factory.state-machine/v1"
@@ -3079,9 +3083,16 @@ def contract_repair_attempt(args: argparse.Namespace) -> int:
 def govern_loop(
     args: argparse.Namespace, stage: str, repair_override: bool
 ) -> tuple[str, dict[str, Any] | None]:
-    text = (
-        args.workdir / "factory" / "tickets" / f"{args.ticket}.md"
-    ).read_text(encoding="utf-8")
+    try:
+        text = qualification_epoch_text(
+            args.workdir,
+            args.ticket,
+            (args.workdir / "factory" / "tickets" / f"{args.ticket}.md").read_text(
+                encoding="utf-8"
+            ),
+        )
+    except TicketTransitionError as error:
+        raise StateError(str(error)) from error
     spec = re.findall(
         r"^\s*SPEC-LINT:\s*(PASS|FAIL)(?:\s+—\s+.*)?\s*$",
         text, re.I | re.M,
@@ -3440,9 +3451,16 @@ def reviewer_repair_catchup(args: argparse.Namespace, stage: str) -> bool:
         return False
     reviewer = reviewers[-1]
     after = roles[reviewer + 1:]
-    ticket_text = (
-        args.workdir / "factory" / "tickets" / f"{args.ticket}.md"
-    ).read_text(encoding="utf-8")
+    try:
+        ticket_text = qualification_epoch_text(
+            args.workdir,
+            args.ticket,
+            (args.workdir / "factory" / "tickets" / f"{args.ticket}.md").read_text(
+                encoding="utf-8"
+            ),
+        )
+    except TicketTransitionError as error:
+        raise StateError(str(error)) from error
     verdicts = re.findall(
         r"^\s*reviewer round\s+\d+:\s*(APPROVE|REQUEST CHANGES)\s*$",
         ticket_text, re.I | re.M,

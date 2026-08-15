@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
 import re
 
 
@@ -45,6 +47,78 @@ ALLOWED_TRANSITIONS = {
 
 class TransitionError(ValueError):
     """A ticket transition violates the trusted state policy."""
+
+
+CONTROL_LINE = re.compile(
+    r"(?:"
+    r"\s*SPEC-LINT:\s*(?:PASS|FAIL)(?:\s+—\s+.*)?\s*"
+    r"|\s*reviewer round\s+[1-9][0-9]*:\s*"
+    r"(?:APPROVE|REQUEST CHANGES(?:\s+—\s+.*)?)\s*"
+    r"|\s*reviewer round\s+[1-9][0-9]*\s+FIX-OWNER:\s*"
+    r"(?:builder|test-author|both)\s*"
+    r"|\s*OPERATOR NOTE:\s*reviewer run\s*[1-9][0-9]*\s+"
+    r"void[^A-Za-z0-9]*duplicate\s*"
+    r"|\s*OPERATOR AUTHORIZATION:\s*"
+    r"(?:planner|spec-linter|test-author|builder|reviewer|narrator)\s+"
+    r"round\s+[1-9][0-9]*\s*"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def protocol_controls(text: str) -> list[str]:
+    return [
+        line for line in text.splitlines(keepends=True)
+        if CONTROL_LINE.fullmatch(line.rstrip("\r\n"))
+    ]
+
+
+def fresh_protocol_text(current: str, baseline: str) -> str:
+    protected = protocol_controls(baseline)
+    remaining = iter(protected)
+    expected = next(remaining, None)
+    fresh: list[str] = []
+    for line in current.splitlines(keepends=True):
+        if expected is not None and CONTROL_LINE.fullmatch(line.rstrip("\r\n")):
+            if line != expected:
+                raise TransitionError(
+                    "protected qualification role-control history changed"
+                )
+            expected = next(remaining, None)
+        else:
+            fresh.append(line)
+    if expected is not None:
+        raise TransitionError(
+            "protected qualification role-control history changed"
+        )
+    return "".join(fresh)
+
+
+def qualification_epoch_text(product: Path, ticket: str, current: str) -> str:
+    if os.environ.get("FACTORY_KIT_TRUST_SCOPE") != "qualification-candidate":
+        return current
+    sha = os.environ.get("FACTORY_QUALIFICATION_PRODUCT_SHA", "")
+    if not re.fullmatch(r"[0-9a-f]{40}", sha) or not re.fullmatch(
+        r"T-[0-9]+", ticket
+    ):
+        raise TransitionError("qualification role-control baseline is invalid")
+    from legacy_closeout import _git_object
+
+    try:
+        value = _git_object(product, f"{sha}:factory/tickets/{ticket}.md")
+    except OSError as error:
+        raise TransitionError(
+            "qualification role-control baseline is unavailable"
+        ) from error
+    if value is None or value[1] != "blob":
+        raise TransitionError("qualification role-control baseline is unavailable")
+    try:
+        baseline = value[2].decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise TransitionError(
+            "qualification role-control baseline is not UTF-8"
+        ) from error
+    return fresh_protocol_text(current, baseline)
 
 
 def field(text: str, name: str) -> str:

@@ -52,10 +52,21 @@ from release_lineage import (  # noqa: E402
     valid_v2_migration,
 )
 from runtime_paths import canonical_factory_file  # noqa: E402
+from ticket_state_transition import (  # noqa: E402
+    TransitionError as TicketTransitionError,
+    qualification_epoch_text,
+)
 
 
 class Refusal(ValueError):
     pass
+
+
+def epoch_ticket_text(workdir, ticket, text):
+    try:
+        return qualification_epoch_text(workdir, ticket, text)
+    except TicketTransitionError as error:
+        raise Refusal(str(error)) from error
 
 
 ROLES = ("planner", "spec-linter", "test-author", "builder", "reviewer", "narrator")
@@ -840,8 +851,12 @@ def validate_refresh_review_evidence(workdir, ticket, text, manifests, reviewer,
     old_ticket = git(
         workdir, "show", f"{receipt['old_head']}:factory/tickets/{ticket}.md",
     ).stdout
-    old_verdicts, old_voids = reviewer_sequences(old_ticket)
-    current_verdicts, current_voids = reviewer_sequences(text)
+    old_verdicts, old_voids = reviewer_sequences(
+        epoch_ticket_text(workdir, ticket, old_ticket)
+    )
+    current_verdicts, current_voids = reviewer_sequences(
+        epoch_ticket_text(workdir, ticket, text)
+    )
     old_approvals = sum(value.endswith(":APPROVE") for value in old_verdicts)
     if (
         receipt["prior_reviewer_runs"] != len(old_verdicts)
@@ -2329,7 +2344,9 @@ def refresh(
             raise Refusal("GitHub did not make the exact stale PR head a draft")
 
     manifests = successful_runs(product, workdir, args.ticket)
-    reviewers, approvals, requests, narrators = refresh_baselines(text, manifests)
+    reviewers, approvals, requests, narrators = refresh_baselines(
+        epoch_ticket_text(workdir, args.ticket, text), manifests,
+    )
     bundle_path = workdir / "factory" / "attestations" / args.ticket / "bundle.json"
     approval_path = bundle_path.with_name("approval.json")
     attestation_dir = bundle_path.parent
@@ -3050,7 +3067,9 @@ def bundle(args, product, workdir, repo, prefix, remote, kit_sha):
         raise Refusal("evidence bundle lacks the operator approval question")
     manifests = successful_runs(product, workdir, args.ticket)
     route_plan = route_plan_evidence(workdir, product, args.ticket, kit_sha, manifests)
-    reviewer, narrator, reviewed = review_evidence(text, manifests, workdir)
+    reviewer, narrator, reviewed = review_evidence(
+        epoch_ticket_text(workdir, args.ticket, text), manifests, workdir,
+    )
     preserved_base = validate_refresh_review_evidence(
         workdir, args.ticket, text, manifests, reviewer, narrator,
     )

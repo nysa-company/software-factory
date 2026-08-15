@@ -98,8 +98,11 @@ TICKET_FILE="$TICKETS_DIR/$TICKET.md"
 [[ -f "$TICKET_FILE" ]] || { echo "REFUSE no ticket file at $TICKET_FILE"; exit 1; }
 SOURCE_TICKET_FILE="$(cd "$(dirname "$TICKET_FILE")" && pwd -P)/$(basename "$TICKET_FILE")"
 COMMITTED_TICKET_FILE="$(mktemp "${TMPDIR:-/tmp}/committed-ticket.XXXXXX")"
+RAW_COMMITTED_TICKET_FILE="$COMMITTED_TICKET_FILE"
 EFFECTIVE_TICKET="$(mktemp "${TMPDIR:-/tmp}/effective-ticket.XXXXXX")"
-trap 'rm -f "$COMMITTED_TICKET_FILE" "$EFFECTIVE_TICKET"' EXIT
+EPOCH_COMMITTED_TICKET="$(mktemp "${TMPDIR:-/tmp}/epoch-committed-ticket.XXXXXX")"
+EPOCH_EFFECTIVE_TICKET="$(mktemp "${TMPDIR:-/tmp}/epoch-effective-ticket.XXXXXX")"
+trap 'rm -f "$RAW_COMMITTED_TICKET_FILE" "$COMMITTED_TICKET_FILE" "$EFFECTIVE_TICKET" "$EPOCH_COMMITTED_TICKET" "$EPOCH_EFFECTIVE_TICKET"' EXIT
 TICKET_WORKTREE_ROOT="" TICKET_RELATIVE="" COMMITTED_HEAD=""
 if WORKTREE_ROOT="$(git -C "$CONTENT_ROOT" rev-parse --show-toplevel 2>/dev/null)"; then
   WORKTREE_ROOT="$(cd "$WORKTREE_ROOT" && pwd -P)"
@@ -125,7 +128,35 @@ python3 "$KIT_DIR/scripts/lib/effective_ticket.py" \
     echo "REFUSE effective ticket state could not be resolved"
     exit 1
   }
-TICKET_FILE="$EFFECTIVE_TICKET"
+project_qualification_epoch() { # input output
+  python3 - "$KIT_DIR/scripts/lib" "${TICKET_WORKTREE_ROOT:-$CONTENT_ROOT}" \
+    "$TICKET" "$1" "$2" <<'PY'
+import sys
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[1])
+from ticket_state_transition import TransitionError, qualification_epoch_text
+
+root, ticket, source, output = Path(sys.argv[2]), sys.argv[3], Path(sys.argv[4]), Path(sys.argv[5])
+try:
+    output.write_text(
+        qualification_epoch_text(root, ticket, source.read_text(encoding="utf-8")),
+        encoding="utf-8",
+    )
+except (OSError, TransitionError) as error:
+    raise SystemExit(str(error))
+PY
+}
+project_qualification_epoch "$EFFECTIVE_TICKET" "$EPOCH_EFFECTIVE_TICKET" || {
+  echo "REFUSE qualification role-control epoch is invalid"
+  exit 1
+}
+project_qualification_epoch "$COMMITTED_TICKET_FILE" "$EPOCH_COMMITTED_TICKET" || {
+  echo "REFUSE qualification committed role-control epoch is invalid"
+  exit 1
+}
+TICKET_FILE="$EPOCH_EFFECTIVE_TICKET"
+COMMITTED_TICKET_FILE="$EPOCH_COMMITTED_TICKET"
 CONTRACT_VERSION="${FACTORY_RELEASE_CONTRACT_VERSION:-${FACTORY_CONTRACT_VERSION:-1.2.0}}"
 if [[ -n "$ROLE_EVIDENCE" ]]; then
   [[ "$CONTRACT_VERSION" == "1.8.0" || "$CONTRACT_VERSION" == "2.0.0" ]] || {
@@ -258,7 +289,7 @@ if [[ -e "$REFRESH_RECEIPT" ]]; then
   }
   REFRESH_RELATIVE="factory/attestations/$TICKET/refresh.json"
   COMMITTED_REFRESH="$(mktemp "${TMPDIR:-/tmp}/committed-refresh.XXXXXX")"
-  trap 'rm -f "$COMMITTED_TICKET_FILE" "$EFFECTIVE_TICKET" "$COMMITTED_REFRESH"' EXIT
+  trap 'rm -f "$RAW_COMMITTED_TICKET_FILE" "$COMMITTED_TICKET_FILE" "$EFFECTIVE_TICKET" "$EPOCH_COMMITTED_TICKET" "$EPOCH_EFFECTIVE_TICKET" "$COMMITTED_REFRESH"' EXIT
   if [[ -z "$TICKET_WORKTREE_ROOT" ]] ||
      ! git -C "$TICKET_WORKTREE_ROOT" show "$COMMITTED_HEAD:$REFRESH_RELATIVE" \
        > "$COMMITTED_REFRESH" 2>/dev/null ||
@@ -395,13 +426,19 @@ PY
     exit 1
   }
   OLD_TICKET="$(mktemp "${TMPDIR:-/tmp}/old-ticket.XXXXXX")"
+  EPOCH_OLD_TICKET="$(mktemp "${TMPDIR:-/tmp}/epoch-old-ticket.XXXXXX")"
   REFRESH_COMMIT_TICKET="$(mktemp "${TMPDIR:-/tmp}/refresh-ticket.XXXXXX")"
-  trap 'rm -f "$COMMITTED_TICKET_FILE" "$EFFECTIVE_TICKET" "$COMMITTED_REFRESH" "$OLD_TICKET" "$REFRESH_COMMIT_TICKET"' EXIT
+  trap 'rm -f "$RAW_COMMITTED_TICKET_FILE" "$COMMITTED_TICKET_FILE" "$EFFECTIVE_TICKET" "$EPOCH_COMMITTED_TICKET" "$EPOCH_EFFECTIVE_TICKET" "$COMMITTED_REFRESH" "$OLD_TICKET" "$EPOCH_OLD_TICKET" "$REFRESH_COMMIT_TICKET"' EXIT
   if ! git -C "$TICKET_WORKTREE_ROOT" show \
     "$REFRESH_OLD_HEAD:factory/tickets/$TICKET.md" > "$OLD_TICKET" 2>/dev/null; then
     echo "REFUSE refresh old head lacks the ticket baseline"
     exit 1
   fi
+  project_qualification_epoch "$OLD_TICKET" "$EPOCH_OLD_TICKET" || {
+    echo "REFUSE refresh old ticket role-control epoch is invalid"
+    exit 1
+  }
+  OLD_TICKET="$EPOCH_OLD_TICKET"
   if [[ "$REFRESH_TICKET_CHANGED" -eq 0 ]]; then
     if ! git -C "$TICKET_WORKTREE_ROOT" show \
          "$REFRESH_COMMIT:factory/tickets/$TICKET.md" > "$REFRESH_COMMIT_TICKET" 2>/dev/null ||

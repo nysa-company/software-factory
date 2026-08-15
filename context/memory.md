@@ -6,7 +6,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 
 - Product-agnostic factory kit; product repositories carry only their factory state and CI integration.
 - Durable decisions use repository-local numbering beginning at Decision 1.
-- Stable operating truth lives in `docs/`; prompts, templates, and evidence stay colocated with consumers. The operator preflight hydrates only evidence-bound immutable objects, batches read-only object checks, aggregates activation blockers, and makes network review explicit before certification. Qualification validates selected remote branches, including repeated canonical reset lineage, before publication; it shares protected dependency truth with dispatch, and its single driver accepts only Doctor `ok` or a manifest-bound runtime-only active-lease warning.
+- Stable operating truth lives in `docs/`; prompts, templates, and evidence stay colocated with consumers. The operator preflight hydrates only evidence-bound immutable objects, batches read-only object checks, aggregates activation blockers, and makes network review explicit before certification. Qualification validates selected remote branches and repeated reset lineage before publication, shares protected dependency truth, and counts only role-control evidence appended after its sealed product SHA.
 - Nysa Agents baseline v3 as a toolkit; `bash ci/test-all.sh` is the unconditional full command.
 - Contract 2 live products resolve sealed exact-SHA releases from owner-only `active.json` records under `~/.factory/kits` via `~/.factory/bin/factory-launch`; the native controller is the only scheduler.
 - The local release canary is one code-driven, product-agnostic command that creates contained local origins, runs setup/resume, and times one authenticated Planning transition plus sealed mock planner; its repository-test evidence is never promotable.
@@ -6119,3 +6119,14 @@ dispatch validator recursively proves every prior operator-ready epoch, exact
 Factory merge, main-tree supersede, and Ready rematerialization before it permits
 another exact-head CAS reset. Authorization alone never blesses skipped or
 arbitrary branch history.
+
+## 2026-08-15 — Decision 432: Qualification role evidence has a sealed epoch
+
+Category: Reliability
+
+Qualification preserves the protected ticket byte-for-byte but does not count
+its historical spec, review, void, or semantic-authorization controls as
+candidate evidence. One shared read-only projection binds the baseline to the
+sealed qualification product SHA, requires the historical control sequence to
+remain an exact ordered prefix, and exposes only newly appended controls to all
+role/state/publication consumers. Production behavior is unchanged.

@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import itertools
+import os
 from pathlib import Path
 import sys
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -18,6 +20,8 @@ from ticket_state_transition import (  # noqa: E402
     apply_factory_transition,
     exact_state,
     field,
+    fresh_protocol_text,
+    qualification_epoch_text,
     validate_action_transition,
     validate_materialization,
 )
@@ -68,6 +72,78 @@ RESUME_STATE_CONTRACTS = ("1.7.0", "1.8.0", "2.0.0")
 
 
 class TicketTransitionPolicyTest(unittest.TestCase):
+    def test_qualification_epoch_projects_only_fresh_protocol_controls(self) -> None:
+        baseline = (
+            "State: Backlog\n"
+            "SPEC-LINT: FAIL — old reason\n"
+            "reviewer round 1: REQUEST CHANGES — old review\n"
+            "reviewer round 1 FIX-OWNER: builder\n"
+            "reviewer round 2 FIX-OWNER: test-author\n"
+            "reviewer round 3 FIX-OWNER: both\n"
+            "OPERATOR NOTE: reviewer run 1 void — duplicate\n"
+            "OPERATOR AUTHORIZATION: planner round 2\n"
+            "OPERATOR AUTHORIZATION: spec-linter round 3\n"
+            "OPERATOR AUTHORIZATION: test-author round 2\n"
+            "OPERATOR AUTHORIZATION: builder round 2\n"
+            "OPERATOR AUTHORIZATION: reviewer round 2\n"
+            "OPERATOR AUTHORIZATION: narrator round 2\n"
+            "Audit: SPEC-LINT: PASS is prose\n"
+        )
+        current = baseline + (
+            "SPEC-LINT: PASS — current scope is coherent\n"
+            "reviewer round 2: APPROVE\n"
+            "OPERATOR AUTHORIZATION: spec-linter round 3\n"
+        )
+        self.assertEqual(
+            fresh_protocol_text(current, baseline),
+            "State: Backlog\nAudit: SPEC-LINT: PASS is prose\n"
+            "SPEC-LINT: PASS — current scope is coherent\n"
+            "reviewer round 2: APPROVE\n"
+            "OPERATOR AUTHORIZATION: spec-linter round 3\n",
+        )
+        self.assertEqual(baseline.splitlines()[0], "State: Backlog")
+
+        protected = baseline.splitlines(keepends=True)
+        for name, changed in {
+            "deleted": "".join(protected[:1] + protected[2:]),
+            "rewritten": baseline.replace("old reason", "new reason"),
+            "reordered": "".join([protected[0], protected[2], protected[1], *protected[3:]]),
+            "interposed": baseline.replace(
+                "reviewer round 1: REQUEST CHANGES — old review\n",
+                "SPEC-LINT: PASS\nreviewer round 1: REQUEST CHANGES — old review\n",
+            ),
+        }.items():
+            with self.subTest(name=name), self.assertRaisesRegex(
+                TransitionError, "protected qualification role-control history changed",
+            ):
+                fresh_protocol_text(changed, baseline)
+
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(
+                qualification_epoch_text(
+                    Path("/path-that-does-not-exist"), "T-1", current,
+                ),
+                current,
+            )
+
+        with mock.patch.dict(os.environ, {
+            "FACTORY_KIT_TRUST_SCOPE": "qualification-candidate",
+            "FACTORY_QUALIFICATION_PRODUCT_SHA": "invalid",
+        }), self.assertRaisesRegex(
+            TransitionError, "qualification role-control baseline is invalid",
+        ):
+            qualification_epoch_text(Path("/unavailable"), "T-1", current)
+
+        with mock.patch.dict(os.environ, {
+            "FACTORY_KIT_TRUST_SCOPE": "qualification-candidate",
+            "FACTORY_QUALIFICATION_PRODUCT_SHA": "a" * 40,
+        }), mock.patch(
+            "legacy_closeout._git_object", return_value=None,
+        ), self.assertRaisesRegex(
+            TransitionError, "qualification role-control baseline is unavailable",
+        ):
+            qualification_epoch_text(Path("/unavailable"), "T-1", current)
+
     def test_allowed_edges_are_the_complete_declared_policy(self) -> None:
         self.assertEqual(ALLOWED_TRANSITIONS, EXPECTED)
 

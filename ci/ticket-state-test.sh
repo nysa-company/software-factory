@@ -283,6 +283,8 @@ printf '%s\n' \
 TEST_CONTRACT=2.0.0 ticket_state --ticket T-700 --workdir "$PRODUCT" \
   --action reviewer-reconcile >/dev/null
 grep -qx 'reviewer round 1: APPROVE' "$PRODUCT/factory/tickets/T-700.md"
+QUALIFICATION_REVIEW_BASE="$(git -C "$PRODUCT" rev-parse HEAD)"
+rm "$PRODUCT/factory/runs/reviewer.meta" "$PRODUCT/factory/runs/reviewer.out"
 
 # The Reviewer back-edge is legal only through the shared action whitelist.
 REVIEW_HEAD="$(git -C "$PRODUCT" rev-parse HEAD)"
@@ -296,9 +298,13 @@ printf '%s\n' \
   "role_remote_before=$REVIEW_HEAD" "output_sha256=$REVIEW_DIGEST" \
   'started_at=2026-07-27T00:01:00Z' \
   > "$PRODUCT/factory/runs/reviewer-2.meta"
-TEST_CONTRACT=2.0.0 ticket_state --ticket T-700 --workdir "$PRODUCT" \
+FACTORY_KIT_TRUST_SCOPE=qualification-candidate \
+FACTORY_QUALIFICATION_PRODUCT_SHA="$QUALIFICATION_REVIEW_BASE" \
+  TEST_CONTRACT=2.0.0 ticket_state --ticket T-700 --workdir "$PRODUCT" \
   --action reviewer-reconcile >/dev/null
 grep -q '^State: Building$' "$PRODUCT/factory/tickets/T-700.md"
+grep -qx 'reviewer round 1: APPROVE' \
+  "$PRODUCT/factory/tickets/T-700.md"
 grep -qx 'reviewer round 2: REQUEST CHANGES' \
   "$PRODUCT/factory/tickets/T-700.md"
 
@@ -432,6 +438,35 @@ git -C "$PRODUCT" -c user.name=test -c user.email=test@example.com \
   commit -qm "indented spec failure fixture"
 TEST_CONTRACT=2.0.0 ticket_state --ticket T-700 --workdir "$PRODUCT" \
   --action qualification-backlog >/dev/null
+grep -q '^State: Backlog$' "$PRODUCT/factory/tickets/T-700.md"
+
+# A protected historical spec failure is not a failure in this qualification
+# epoch. The action requires a newly appended failure after the sealed base.
+QUALIFICATION_FAILURE_BASE="$(git -C "$PRODUCT" rev-parse HEAD)"
+sed -E 's/^State: .*/State: Planning/' \
+  "$PRODUCT/factory/tickets/T-700.md" > "$TMP/ticket"
+mv "$TMP/ticket" "$PRODUCT/factory/tickets/T-700.md"
+git -C "$PRODUCT" add factory/tickets/T-700.md
+git -C "$PRODUCT" -c user.name=test -c user.email=test@example.com \
+  commit -qm "qualification historical failure fixture"
+git -C "$PRODUCT" push -q "$REMOTE" HEAD:refs/heads/ticket/T-700
+if FACTORY_KIT_TRUST_SCOPE=qualification-candidate \
+    FACTORY_QUALIFICATION_PRODUCT_SHA="$QUALIFICATION_FAILURE_BASE" \
+    TEST_CONTRACT=2.0.0 ticket_state --ticket T-700 --workdir "$PRODUCT" \
+      --action qualification-backlog >/dev/null 2>&1; then
+  echo "FAIL: qualification reused a protected historical spec failure" >&2
+  exit 1
+fi
+printf '\nSPEC-LINT: FAIL — current qualification failure\n' \
+  >> "$PRODUCT/factory/tickets/T-700.md"
+git -C "$PRODUCT" add factory/tickets/T-700.md
+git -C "$PRODUCT" -c user.name=test -c user.email=test@example.com \
+  commit -qm "qualification current failure fixture"
+git -C "$PRODUCT" push -q "$REMOTE" HEAD:refs/heads/ticket/T-700
+FACTORY_KIT_TRUST_SCOPE=qualification-candidate \
+FACTORY_QUALIFICATION_PRODUCT_SHA="$QUALIFICATION_FAILURE_BASE" \
+  TEST_CONTRACT=2.0.0 ticket_state --ticket T-700 --workdir "$PRODUCT" \
+    --action qualification-backlog >/dev/null
 grep -q '^State: Backlog$' "$PRODUCT/factory/tickets/T-700.md"
 
 echo "PASS: ticket-state binds pushes, qualification returns, CAS tracking, and evidence-sensitive transitions"

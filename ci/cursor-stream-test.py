@@ -7,6 +7,7 @@ import json
 import importlib.util
 import os
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -14,6 +15,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts/lib"))
 STREAM = ROOT / "scripts/lib/cursor-stream.py"
 ADAPTER = ROOT / "scripts/adapters/cursor-anthropic.sh"
 VERDICT = ROOT / "scripts/lib/reviewer-verdict.py"

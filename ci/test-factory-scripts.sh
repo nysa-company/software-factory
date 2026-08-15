@@ -2855,6 +2855,107 @@ if expect_stage "RUN test-author" "$SPEC_ROUNDS" T-301; then
   pass "authorized spec-linter pass advances to tests"
 fi
 
+# Qualification starts one sealed role-control epoch without rewriting the
+# protected ticket's historical audit log.
+QUALIFICATION_EPOCH="$TMP/qualification-role-epoch"
+write_envelope "$QUALIFICATION_EPOCH" no-git
+cat > "$QUALIFICATION_EPOCH/factory/tickets/T-305.md" <<EOF
+# T-305
+State: Ready
+Kit-SHA: $KIT_SHA
+SPEC-LINT: FAIL — historical one
+SPEC-LINT: FAIL — historical two
+SPEC-LINT: FAIL — historical three
+reviewer round 1: APPROVE
+OPERATOR AUTHORIZATION: spec-linter round 3
+EOF
+cat > "$QUALIFICATION_EPOCH/factory/tickets/T-306.md" <<EOF
+# T-306
+State: Planning
+Kit-SHA: $KIT_SHA
+SPEC-LINT: PASS
+EOF
+cat > "$QUALIFICATION_EPOCH/factory/tickets/T-307.md" <<EOF
+# T-307
+State: Planning
+Kit-SHA: $KIT_SHA
+SPEC-LINT: FAIL — historical one
+SPEC-LINT: FAIL — historical two
+SPEC-LINT: FAIL — historical three
+OPERATOR AUTHORIZATION: spec-linter round 3
+EOF
+ledger_header > "$QUALIFICATION_EPOCH/factory/ledger.csv"
+init_product_git "$QUALIFICATION_EPOCH"
+QUALIFICATION_EPOCH_SHA="$(git -C "$QUALIFICATION_EPOCH" rev-parse HEAD)"
+export FACTORY_KIT_TRUST_SCOPE=qualification-candidate
+export FACTORY_QUALIFICATION_PRODUCT_SHA="$QUALIFICATION_EPOCH_SHA"
+ledger_row T-306 planner >> "$QUALIFICATION_EPOCH/factory/ledger.csv"
+TEST_CONTRACT_VERSION=2.0.0 expect_stage "RUN spec-linter" \
+  "$QUALIFICATION_EPOCH" T-306 || true
+{
+  ledger_row T-307 planner
+  ledger_row T-307 spec-linter
+  ledger_row T-307 planner
+  ledger_row T-307 spec-linter
+} >> "$QUALIFICATION_EPOCH/factory/ledger.csv"
+printf '%s\n' 'SPEC-LINT: FAIL — current one' \
+  'SPEC-LINT: FAIL — current two' >> \
+  "$QUALIFICATION_EPOCH/factory/tickets/T-307.md"
+git -C "$QUALIFICATION_EPOCH" add factory/tickets/T-307.md
+git -C "$QUALIFICATION_EPOCH" -c user.name=test -c user.email=test@example.com \
+  commit -qm "record current qualification failures"
+TEST_CONTRACT_VERSION=2.0.0 expect_stage \
+  "AWAIT-OPERATOR semantic-round authorization required" \
+  "$QUALIFICATION_EPOCH" T-307 || true
+printf '%s\n' 'OPERATOR AUTHORIZATION: spec-linter round 3' >> \
+  "$QUALIFICATION_EPOCH/factory/tickets/T-307.md"
+git -C "$QUALIFICATION_EPOCH" add factory/tickets/T-307.md
+git -C "$QUALIFICATION_EPOCH" -c user.name=test -c user.email=test@example.com \
+  commit -qm "authorize current qualification round"
+TEST_CONTRACT_VERSION=2.0.0 expect_stage "RUN planner" \
+  "$QUALIFICATION_EPOCH" T-307 || true
+printf '%s\n' 'OPERATOR AUTHORIZATION: spec-linter round 3' >> \
+  "$QUALIFICATION_EPOCH/factory/tickets/T-307.md"
+git -C "$QUALIFICATION_EPOCH" add factory/tickets/T-307.md
+git -C "$QUALIFICATION_EPOCH" -c user.name=test -c user.email=test@example.com \
+  commit -qm "duplicate current qualification authorization"
+TEST_CONTRACT_VERSION=2.0.0 expect_stage \
+  "AWAIT-OPERATOR semantic-round authorization invalid" \
+  "$QUALIFICATION_EPOCH" T-307 || true
+if TEST_CONTRACT_VERSION=2.0.0 expect_stage "RUN planner" \
+  "$QUALIFICATION_EPOCH" T-305; then
+  ledger_row T-305 planner >> "$QUALIFICATION_EPOCH/factory/ledger.csv"
+  TEST_CONTRACT_VERSION=2.0.0 expect_stage "RUN spec-linter" \
+    "$QUALIFICATION_EPOCH" T-305 || true
+fi
+ledger_row T-305 spec-linter >> "$QUALIFICATION_EPOCH/factory/ledger.csv"
+TEST_CONTRACT_VERSION=2.0.0 expect_stage "REFUSE spec-linter has 1 successful run" \
+  "$QUALIFICATION_EPOCH" T-305 || true
+printf '%s\n' 'SPEC-LINT: PASS' >> \
+  "$QUALIFICATION_EPOCH/factory/tickets/T-305.md"
+git -C "$QUALIFICATION_EPOCH" add factory/tickets/T-305.md
+git -C "$QUALIFICATION_EPOCH" -c user.name=test -c user.email=test@example.com \
+  commit -qm "record current spec verdict"
+TEST_CONTRACT_VERSION=2.0.0 expect_stage "RUN test-author" \
+  "$QUALIFICATION_EPOCH" T-305 || true
+{
+  ledger_row T-305 test-author
+  ledger_row T-305 builder
+  ledger_row T-305 reviewer
+} >> "$QUALIFICATION_EPOCH/factory/ledger.csv"
+TEST_CONTRACT_VERSION=2.0.0 expect_stage "REFUSE reviewer has 1 non-void successful run" \
+  "$QUALIFICATION_EPOCH" T-305 || true
+printf '%s\n' 'reviewer round 2: APPROVE' >> \
+  "$QUALIFICATION_EPOCH/factory/tickets/T-305.md"
+git -C "$QUALIFICATION_EPOCH" add factory/tickets/T-305.md
+git -C "$QUALIFICATION_EPOCH" -c user.name=test -c user.email=test@example.com \
+  commit -qm "record current reviewer verdict"
+if TEST_CONTRACT_VERSION=2.0.0 expect_stage "RUN narrator" \
+  "$QUALIFICATION_EPOCH" T-305; then
+  pass "qualification role-control epoch ignores protected history"
+fi
+unset FACTORY_KIT_TRUST_SCOPE FACTORY_QUALIFICATION_PRODUCT_SHA
+
 # Missing verdict still refuses unless the extra row has a void note.
 grep -v 'OPERATOR NOTE' "$ROUNDS/factory/tickets/T-300.md" > "$ROUNDS/factory/tickets/T-300.tmp"
 mv "$ROUNDS/factory/tickets/T-300.tmp" "$ROUNDS/factory/tickets/T-300.md"

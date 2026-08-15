@@ -1600,6 +1600,7 @@ class FactoryControllerTest(unittest.TestCase):
         self, name: str, ticket: str = "T-110", *, duplicates: bool = False,
         role: str = "spec-linter", semantic_round: int = 3,
         semantic_kind: str = "planner-spec-linter",
+        historical_controls: str = "",
     ) -> tuple[CONTROL.Controller, dict, Path, dict, dict]:
         cell = self.root / name
         remote = self.root / f"{name}.git"
@@ -1624,6 +1625,7 @@ class FactoryControllerTest(unittest.TestCase):
         )
         ticket_path.write_text(
             f"# {ticket}\n\nState: Planning\nKit-SHA: {self.release.name}\n"
+            + historical_controls
             + spec_failures
             + (authorization + authorization.rstrip("\n") if duplicates else ""),
             encoding="utf-8",
@@ -1738,7 +1740,7 @@ class FactoryControllerTest(unittest.TestCase):
         return controller, claim, cell, passport, transition
 
     def reviewer_void_fixture(
-        self, name: str, ticket: str,
+        self, name: str, ticket: str, *, controls: str = "reviewer round 1: APPROVE\n",
     ) -> tuple[CONTROL.Controller, dict, Path, dict, dict]:
         cell = self.root / "parked" / ticket
         remote = self.root / f"{name}.git"
@@ -1753,7 +1755,7 @@ class FactoryControllerTest(unittest.TestCase):
         route_path.parent.mkdir(parents=True)
         ticket_path.write_text(
             f"# {ticket}\n\nState: Review\nKit-SHA: {self.release.name}\n"
-            "reviewer round 1: APPROVE\n",
+            + controls,
             encoding="utf-8",
         )
         route_path.write_text(
@@ -17260,6 +17262,54 @@ class FactoryControllerTest(unittest.TestCase):
             unsafe_head,
         )
 
+    def test_qualification_authorization_is_new_even_when_the_line_is_historical(
+        self,
+    ) -> None:
+        historical = (
+            "SPEC-LINT: FAIL — historical one\n"
+            "SPEC-LINT: FAIL — historical two\n"
+            "OPERATOR AUTHORIZATION: spec-linter round 3\n"
+        )
+        ticket = self.product / "factory/tickets/T-221.md"
+        ticket.parent.mkdir(parents=True)
+        ticket.write_text(historical, encoding="utf-8")
+        subprocess.run(
+            ["git", "init", "-q", "-b", "main", str(self.product)], check=True,
+        )
+        subprocess.run(["git", "-C", str(self.product), "add", "."], check=True)
+        subprocess.run([
+            "git", "-C", str(self.product), "-c", "user.name=Test",
+            "-c", "user.email=test@nysa.dev", "commit", "-qm", "baseline",
+        ], check=True)
+        baseline = subprocess.run(
+            ["git", "-C", str(self.product), "rev-parse", "HEAD"],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+        with patch.dict(os.environ, {
+            "FACTORY_KIT_TRUST_SCOPE": "qualification-candidate",
+            "FACTORY_QUALIFICATION_PRODUCT_SHA": baseline,
+        }):
+            controller, _claim, cell, _passport, _transition = (
+                self.semantic_wait_fixture(
+                    "qualification-semantic-control", "T-221",
+                    historical_controls=historical,
+                )
+            )
+            plan = controller.plan_semantic_authorization(
+                "T-221", "spec-linter", 3, "operator",
+            )
+            result = controller.apply_semantic_authorization(
+                "T-221", "spec-linter", 3, "operator", plan["approval_hash"],
+            )
+            self.assertEqual(result["status"], "applied")
+            text = (cell / "factory/tickets/T-221.md").read_text(encoding="utf-8")
+            self.assertEqual(
+                text.splitlines().count(
+                    "OPERATOR AUTHORIZATION: spec-linter round 3"
+                ),
+                2,
+            )
+
     def test_semantic_authorization_continues_later_and_contract_rounds(
         self,
     ) -> None:
@@ -17451,6 +17501,82 @@ class FactoryControllerTest(unittest.TestCase):
         ):
             confined.plan_reviewer_void("T-218", 1, "operator")
         self.assertEqual(state_bytes(), confined_state)
+
+    def test_qualification_reviewer_void_recovery_uses_current_epoch(self) -> None:
+        historical = (
+            "reviewer round 1: APPROVE\n"
+            "OPERATOR NOTE: reviewer run 1 void — duplicate\n"
+        )
+        tickets = self.product / "factory/tickets"
+        tickets.mkdir()
+        for ticket in ("T-219", "T-220"):
+            (tickets / f"{ticket}.md").write_text(
+                f"# {ticket}\n\nState: Review\n" + historical,
+                encoding="utf-8",
+            )
+        subprocess.run(
+            ["git", "init", "-q", "-b", "main", str(self.product)], check=True,
+        )
+        subprocess.run(["git", "-C", str(self.product), "add", "."], check=True)
+        subprocess.run([
+            "git", "-C", str(self.product), "-c", "user.name=Test",
+            "-c", "user.email=test@nysa.dev", "commit", "-qm", "baseline",
+        ], check=True)
+        baseline = subprocess.run(
+            ["git", "-C", str(self.product), "rev-parse", "HEAD"],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+
+        with patch.dict(os.environ, {
+            "FACTORY_KIT_TRUST_SCOPE": "qualification-candidate",
+            "FACTORY_QUALIFICATION_PRODUCT_SHA": baseline,
+        }):
+            for ticket, migrated in (("T-219", False), ("T-220", True)):
+                with self.subTest(ticket=ticket, migrated=migrated):
+                    controller, claim, cell, _passport, _transition = (
+                        self.reviewer_void_fixture(
+                            f"qualification-reviewer-{ticket}", ticket,
+                            controls=historical + "reviewer round 2: APPROVE\n",
+                        )
+                    )
+                    plan = controller.plan_reviewer_void(ticket, 1, "operator")
+                    controller.apply_reviewer_void(
+                        ticket, 1, "operator", plan["approval_hash"],
+                    )
+                    self.assertEqual(
+                        (cell / f"factory/tickets/{ticket}.md").read_text(
+                            encoding="utf-8"
+                        ).splitlines().count(
+                            "OPERATOR NOTE: reviewer run 1 void — duplicate"
+                        ),
+                        2,
+                    )
+                    if migrated:
+                        self.migrate_semantic_wait_passport(controller, claim)
+                        runner = CONTROL.Controller(self.args)
+                        runner.worktrees_by_branch = controller.worktrees_by_branch
+                        runner.migrate_passport = lambda *_args: self.fail(
+                            "passport remigrated"
+                        )
+                    else:
+                        runner = controller
+
+                        def migrate(_claim: dict, _mode: str) -> dict:
+                            value = self.migrate_semantic_wait_passport(
+                                controller, claim,
+                            )
+                            return {
+                                "passport": value["passport_sha256"],
+                                "status": "ok",
+                            }
+
+                        runner.migrate_passport = migrate
+                    runner.remote_passport_valid = lambda _claim: True
+                    runner.ensure_lease = lambda *_args: self.fail("lease reacquired")
+                    runner.run_role = lambda *_args: self.fail("provider role launched")
+                    runner.recover_reviewer_voids([claim])
+                    self.assertEqual(claim["status"], "claimed")
+                    self.assertNotIn("blocked_reason", claim)
 
     def test_semantic_authorization_invalid_heads_are_recoverable(self) -> None:
         canonical = "OPERATOR AUTHORIZATION: spec-linter round 3"
