@@ -2629,6 +2629,29 @@ class StateMachineTest(unittest.TestCase):
         self.assertGreater(error.evidence["actual_bytes"], error.evidence["expected_bytes"])
         self.assertIsInstance(error.evidence["first_differing_line"], int)
 
+    def test_operator_resume_accepts_exact_compact_directive_pair(self) -> None:
+        self.args.receipt = "b" * 64
+        path = self.product / "factory/tickets/T-110.md"
+        passport = {
+            "branch": "ticket/T-110",
+            "factory_sha": self.args.factory_sha,
+            "head_sha": run("git", "rev-parse", "HEAD", cwd=self.product),
+            "ticket": "T-110",
+        }
+        path.write_text(
+            path.read_text(encoding="utf-8").rstrip("\n")
+            + "\nOPERATOR RESUME: planner\n"
+            + f"OPERATOR RESUME RECEIPT: {self.args.receipt}\n",
+            encoding="utf-8",
+        )
+        run("git", "add", str(path), cwd=self.product)
+        run("git", "commit", "-qm", "compact contract repair", cwd=self.product)
+
+        self.assertEqual(
+            STATE.operator_resume_role(self.args, passport, "planner"),
+            "planner",
+        )
+
     def test_operator_resume_names_ambiguous_directive_pairs(self) -> None:
         self.args.receipt = "b" * 64
         path = self.product / "factory/tickets/T-110.md"

@@ -17632,7 +17632,7 @@ class FactoryControllerTest(unittest.TestCase):
         after = ticket.read_text(encoding="utf-8")
         self.assertEqual(
             after,
-            before + "OPERATOR RESUME: planner\n"
+            before.rstrip("\n") + "\n\nOPERATOR RESUME: planner\n"
             + f"OPERATOR RESUME RECEIPT: {transition['receipt_sha256']}\n",
         )
         self.assertEqual(

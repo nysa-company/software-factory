@@ -1199,6 +1199,10 @@ def operator_resume_role(
             before.rstrip("\n")
             + f"\n\n{directive}\n{receipt_directive}\n"
         )
+        accepted = {
+            expected,
+            before.rstrip("\n") + f"\n{directive}\n{receipt_directive}\n",
+        }
     elif len(prior_directives) == 1 and not prior_receipts:
         expected = re.sub(
             r"^OPERATOR RESUME: (planner|spec-linter|test-author|builder)$",
@@ -1227,9 +1231,11 @@ def operator_resume_role(
             "resume_directives_ambiguous",
             "contract repair operator directive is invalid: prior directives are ambiguous",
         )
+    if prior_directives or prior_receipts:
+        accepted = {expected}
     changed = git(args.workdir, "diff", "--name-only", f"{parent}..{commit}").splitlines()
     current_head = git(args.workdir, "rev-parse", "HEAD")
-    if after != expected or changed != [relative]:
+    if after not in accepted or changed != [relative]:
         raise ContractResumeError(
             "resume_commit_content_mismatch",
             "contract repair operator directive is invalid: commit must contain only the exact directives",

@@ -8278,8 +8278,8 @@ class Controller:
         ):
             raise ControllerError("contract repair ticket is invalid")
         after = (
-            before.stdout + ("" if before.stdout.endswith("\n") else "\n")
-            + f"OPERATOR RESUME: {role}\n"
+            before.stdout.rstrip("\n")
+            + f"\n\nOPERATOR RESUME: {role}\n"
             + f"OPERATOR RESUME RECEIPT: {receipt}\n"
         )
         observed_status = self.operator_ticket_change_status(

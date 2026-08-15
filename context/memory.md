@@ -6280,3 +6280,5 @@ transition, terminal evidence, and ticket head; apply reacquires a parked lease
 and appends one receipt-bound repair directive without rewriting ticket history.
 A successor may use the exact source-release transition and terminal only when
 the current passport authenticates their complete migration lineage.
+The writer uses a blank-line-separated pair; replay also accepts the earlier
+exact compact pair so an already-pushed repair is never rewritten.
