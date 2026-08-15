@@ -17541,7 +17541,6 @@ class FactoryControllerTest(unittest.TestCase):
         subprocess.run(["git", "-C", str(cell), "push", "-q"], check=True)
         head = controller.cell_git(claim, "rev-parse", "HEAD").stdout.strip()
         source = "a" * 40
-        transition_head = transition["head_sha"]
         transition.update(
             consumed=True, factory_sha=source, role="test-author",
             stage="RUN test-author",
@@ -17571,19 +17570,6 @@ class FactoryControllerTest(unittest.TestCase):
             migration_history=[
                 {
                     "from_factory_sha": source,
-                    "from_head_sha": transition_head,
-                    "from_passport_file_sha256": "d" * 64,
-                    "from_passport_sha256": "e" * 64,
-                    "from_protected_base_sha": protected,
-                    "from_route_plan_sha256": route,
-                    "schema": "nysa.software-factory.ticket-passport-migration/v2",
-                    "to_factory_sha": source,
-                    "to_head_sha": head,
-                    "to_protected_base_sha": protected,
-                    "to_route_plan_sha256": route,
-                },
-                {
-                    "from_factory_sha": source,
                     "from_head_sha": head,
                     "from_passport_file_sha256": parent_file,
                     "from_passport_sha256": parent_digest,
@@ -17608,8 +17594,17 @@ class FactoryControllerTest(unittest.TestCase):
         )
         PASSPORT.write_atomic(self.state / "passports/T-216.json", passport)
         claim.update(
-            blocked_reason="role-failure", receipt=transition["receipt_sha256"],
-            role="test-author", status="blocked",
+            blocked_reason="recovery-abandoned:targeted-repair",
+            receipt=transition["receipt_sha256"], role="test-author",
+            status="blocked", recovery_attempt={
+                "count": CONTROL.RECOVERY_ATTEMPT_LIMIT,
+                "factory_sha": self.release.name,
+                "input_sha256": "f" * 64,
+                "outcome_sha256": "1" * 64,
+                "phase": "abandoned", "recovery": "targeted-repair",
+                "retry_reason": "route-migration-required",
+                "retry_status": "blocked",
+            },
         )
         controller.save_claim(claim)
         controller.qualification = {

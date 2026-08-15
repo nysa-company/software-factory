@@ -8179,14 +8179,24 @@ class Controller:
             and self.valid_recovery_attempt(attempt)
             and attempt.get("phase") == "abandoned"
             and attempt.get("recovery") == "targeted-repair"
-            and attempt.get("retry_reason") == "role-failure"
-            and attempt.get("retry_status") == "blocked"
         )
         receipt = claim.get("receipt", "")
         transition = self.transition_receipt(claim, record=False)
         passport = self.authenticated_operator_passport(ticket)
         terminal = self.terminal_for_receipt(ticket, receipt)
         evidence_factory = transition.get("factory_sha", "") if transition else ""
+        migrations = passport.get("migration_history") if passport else None
+        source_starts = [
+            index for index, edge in enumerate(migrations or [])
+            if valid_v2_migration(edge)
+            and edge["from_factory_sha"] == evidence_factory
+            and edge["to_factory_sha"] != evidence_factory
+        ]
+        source_suffix = (
+            migrations[source_starts[0]:]
+            if isinstance(migrations, list) and len(source_starts) == 1 else []
+        )
+        final_source_edge = source_suffix[-1] if source_suffix else {}
         source_evidence = (
             self.qualification
             and self.qualification.get("mode") == "successor"
@@ -8197,12 +8207,25 @@ class Controller:
             and passport.get("factory_sha") == self.release_path.name
             and transition.get("route_plan_sha256")
             == passport.get("route_plan_sha256")
-            and passport_head_lineage(passport, transition.get("head_sha", ""))
+            and source_suffix
+            and all(valid_v2_migration(edge) for edge in source_suffix)
+            and all(
+                edge["from_head_sha"] == edge["to_head_sha"]
+                == passport.get("head_sha")
+                and edge["from_route_plan_sha256"]
+                == edge["to_route_plan_sha256"]
+                == passport.get("route_plan_sha256")
+                for edge in source_suffix
+            )
             and successor_release_lineage(
                 passport.get("factory_release_history"),
                 passport.get("migration_history"), evidence_factory,
                 self.release_path.name, valid_v2_migration,
             )
+            and final_source_edge.get("from_passport_file_sha256")
+            == passport.get("parent_file_sha256")
+            and final_source_edge.get("from_passport_sha256")
+            == passport.get("parent_digest")
         )
         if (
             claim.get("status") != "blocked"
