@@ -6215,6 +6215,8 @@ the active successor Factory, or when one prior candidate covers the exact full
 selected cohort; the ordinary controller must then authenticate and migrate it.
 Runtime warnings retain their separate bounded shape, all other warnings stay
 blocked, and an empty controller result is a wait rather than terminal evidence.
+An unconsumed intermediate candidate may be skipped only when the lagging
+passport release has exact cohort authority in the previous sealed product.
 
 ## 2026-08-15 — Decision 441: Qualification owns sealed route migration
 

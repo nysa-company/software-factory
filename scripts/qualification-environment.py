@@ -2191,11 +2191,13 @@ def completed_role_gap(
 
 
 def successor_checkpoint_authorizations(
-    product: Path, manifest: dict[str, Any],
+    product: Path, manifest: dict[str, Any], protected: str | None = None,
 ) -> tuple[dict[str, Any] | None, dict[str, dict[str, Any]]]:
     """Load one exact protected checkpoint set for a successor cohort."""
     target = manifest["factory_sha"]
-    protected = command("git", "-C", str(product), "rev-parse", "HEAD")
+    protected = protected or command("git", "-C", str(product), "rev-parse", "HEAD")
+    if not SHA.fullmatch(protected):
+        raise EnvironmentError("successor checkpoint authorization is invalid")
     relative = f"factory/migrations/inflight-release/{target}.json"
     entry = command(
         "git", "-C", str(product), "ls-tree", protected, "--", relative,
@@ -2266,6 +2268,24 @@ def validate_successor_upgrade_cohort(
             if ticket in absent:
                 continue
             value, _ = passport.load_passport(passports / f"{ticket}.json", secret)
+            passport_factory = value.get("factory_sha", "")
+            if not isinstance(passport_factory, str) or not SHA.fullmatch(
+                passport_factory
+            ):
+                raise EnvironmentError("successor passport release is invalid")
+            passport_release_authorized = passport_factory in {
+                source, active_factory_sha,
+            }
+            if not passport_release_authorized:
+                prior_manifest = dict(manifest, factory_sha=passport_factory)
+                prior, _ = successor_checkpoint_authorizations(
+                    product, prior_manifest, active_product_sha,
+                )
+                if prior is None:
+                    raise EnvironmentError(
+                        "successor passport release is not authorized"
+                    )
+                passport_release_authorized = True
             valid_sha = lambda item: (  # noqa: E731
                 isinstance(item, str) and SHA.fullmatch(item) is not None
             )
@@ -2354,7 +2374,7 @@ def validate_successor_upgrade_cohort(
                 and len(releases) == len(history) == len(set(releases))
                 and releases[-1] == value.get("factory_sha")
                 and source in releases
-                and value.get("factory_sha") in {source, active_factory_sha}
+                and passport_release_authorized
                 and isinstance(migrations, list)
                 and all(passport.valid_v2_migration(item) for item in migrations)
                 and (

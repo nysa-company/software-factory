@@ -231,6 +231,11 @@ Every other warning remains a typed block. Rerun after a named external or
 operator input changes; the driver never hand-edits tickets, claims, leases,
 receipts, passports, journals, or provider state.
 
+A successor upgrade may pass over an unconsumed intermediate candidate only
+when each lagging passport Factory has an exact selected-cohort authorization
+in the previous sealed product commit. Missing or changed authority blocks the
+upgrade; the controller remains responsible for the actual passport migration.
+
 Qualification must prove:
 
 1. the release installs and certifies in an isolated home;

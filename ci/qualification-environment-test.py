@@ -2933,6 +2933,45 @@ class QualificationEnvironmentTest(unittest.TestCase):
                 product_sha, drifted,
             )
 
+        intermediate = "d" * 40
+        unconsumed = "e" * 40
+        for ticket in tickets:
+            self.write_passport(
+                passports / f"{ticket}.json", secret, ticket, intermediate, source,
+            )
+        authorization = (
+            self.product / "factory/migrations/inflight-release"
+            / f"{intermediate}.json"
+        )
+        authorization.parent.mkdir(parents=True, exist_ok=True)
+        authorization.write_text(json.dumps({
+            "repository": "example/product",
+            "schema": "nysa.software-factory.inflight-release-authorization/v1",
+            "source_kit_sha": source,
+            "target_kit_sha": intermediate,
+            "tickets": [{
+                "branch": f"ticket/{ticket}",
+                "head": f"{index}" * 40,
+                "state": "Building",
+                "ticket": ticket,
+            } for index, ticket in enumerate(tickets, 1)],
+        }, sort_keys=True, separators=(",", ":")) + "\n")
+        run(self.product, "git", "add", str(authorization))
+        run(self.product, "git", "commit", "-qm", "authorize prior candidate")
+        authorized_product = run(self.product, "git", "rev-parse", "HEAD")
+        ENVIRONMENT.validate_successor_upgrade_cohort(
+            self.factory, self.product, controller, "relay", unconsumed,
+            authorized_product, manifest,
+        )
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError,
+            "T-101: successor qualification requires every selected ticket",
+        ):
+            ENVIRONMENT.validate_successor_upgrade_cohort(
+                self.factory, self.product, controller, "relay", unconsumed,
+                product_sha, manifest,
+            )
+
     def test_successor_upgrade_accepts_only_exact_preserved_checkpoint(self) -> None:
         controller = (self.workspace / "checkpoint-controller").resolve()
         passports = controller / "passports"
