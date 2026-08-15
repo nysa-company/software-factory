@@ -5994,3 +5994,15 @@ audit records and the two operator lock files. It revalidates those records and
 the durable operator projection before continuing. Claims, passports, runs,
 other receipts, malformed files, or foreign tickets still classify the
 controller as active and refuse without deletion.
+
+## 2026-08-14 — Decision 421: Qualification proves budget fit before publication
+
+Category: Reliability
+
+Fresh isolated qualification preparation reuses the product envelope authority
+and refuses before hydration or runtime state when any effective role reserve
+exceeds the manifest per-run cap, the product ticket cap differs from the
+manifest, or the product or supplied machine daily cap cannot cover the
+manifest budget. This prevents a sealed lane from admitting only part of its
+cohort and discovering an unavoidable budget failure after paid provider work;
+takeover retains its separate authenticated live-state budget contract.

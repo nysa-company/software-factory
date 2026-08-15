@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from decimal import Decimal, InvalidOperation
 import fcntl
 import hashlib
 import importlib.util
@@ -246,6 +247,77 @@ def prepare_global_config(args: argparse.Namespace, root: Path) -> bytes:
         if config_bytes(target) != raw:
             raise EnvironmentError("qualification preparation artifact changed")
     return raw
+
+
+def qualification_global_cap(raw: bytes) -> Decimal:
+    values: list[str] = []
+    try:
+        lines = raw.decode("utf-8").splitlines()
+    except UnicodeDecodeError as error:
+        raise EnvironmentError("qualification global config is invalid") from error
+    for raw_line in lines:
+        if not raw_line or raw_line.startswith("#"):
+            continue
+        line = raw_line.removeprefix("export ")
+        match = re.fullmatch(r"([A-Z][A-Z0-9_]*)=(.*)", line)
+        if not match:
+            raise EnvironmentError("qualification global config is invalid")
+        key, value = match.groups()
+        if value[:1] in {"\"", "'"}:
+            if len(value) < 2 or value[-1] != value[0]:
+                raise EnvironmentError("qualification global config is invalid")
+            value = value[1:-1]
+        if not re.fullmatch(r"[A-Za-z0-9._:/+@%~-]*", value):
+            raise EnvironmentError("qualification global config is invalid")
+        if key == "GLOBAL_DAILY_CAP_USD":
+            values.append(value)
+    if len(values) != 1:
+        raise EnvironmentError("qualification global daily cap is missing or repeated")
+    if not re.fullmatch(r"[0-9]{1,7}(?:[.][0-9]{1,6})?", values[0]):
+        raise EnvironmentError("qualification global daily cap is invalid")
+    try:
+        cap = Decimal(values[0])
+    except InvalidOperation as error:
+        raise EnvironmentError("qualification global daily cap is invalid") from error
+    if not cap.is_finite() or cap <= 0 or cap > 1_000_000:
+        raise EnvironmentError("qualification global daily cap is invalid")
+    return cap
+
+
+def validate_qualification_budget(
+    factory: Path, product: Path, manifest: dict[str, Any], global_config: bytes,
+) -> None:
+    spec = importlib.util.spec_from_file_location(
+        "qualification_envelope", factory / "scripts/envelope-control.py"
+    )
+    if not spec or not spec.loader:
+        raise EnvironmentError("qualification envelope verifier is unavailable")
+    envelope = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(envelope)
+    try:
+        values = envelope.read_runtime_state(product)[-1]
+        run_cap = Decimal(manifest["per_run_budget_usd"])
+        ticket_cap = Decimal(manifest["per_ticket_budget_usd"])
+        total_cap = Decimal(manifest["budget_usd"])
+        role_budgets = {
+            role: Decimal(envelope.effective_role(values, role)["PER_RUN_BUDGET_USD"])
+            for role in envelope.ROLES
+        }
+        product_ticket = Decimal(values["PER_TICKET_BUDGET_USD"])
+        product_daily = Decimal(values["DAILY_CAP_USD"])
+    except (
+        AttributeError, InvalidOperation, KeyError, OSError, TypeError,
+        ValueError, envelope.ControlError,
+    ) as error:
+        raise EnvironmentError("qualification budget inputs are invalid") from error
+    if any(value > run_cap for value in role_budgets.values()):
+        raise EnvironmentError("qualification product per-run budget exceeds the manifest")
+    if product_ticket != ticket_cap:
+        raise EnvironmentError("qualification product ticket budget does not match the manifest")
+    if product_daily < total_cap:
+        raise EnvironmentError("qualification product daily cap is below the manifest budget")
+    if qualification_global_cap(global_config) < total_cap:
+        raise EnvironmentError("qualification machine daily cap is below the manifest budget")
 
 
 def qualification_fallback_readiness(
@@ -3171,6 +3243,13 @@ def _prepare(args: argparse.Namespace) -> dict[str, Any]:
         raise EnvironmentError("qualification requires a supported Factory Contract")
     manifest = qualification_manifest(product, sha)
     capacity = manifest["capacity"]
+    restoring = bool(getattr(args, "restore", False))
+    takeover_requested = getattr(args, "takeover_project", None) is not None
+    global_config = b""
+    if not restoring:
+        global_config = prepare_global_config(args, root)
+        if not takeover_requested:
+            validate_qualification_budget(factory, product, manifest, global_config)
     origin = product_origin(product)
     historical_objects = historical_pr_objects(product, origin)
     validate_selected_contracts(product, manifest)
@@ -3182,7 +3261,6 @@ def _prepare(args: argparse.Namespace) -> dict[str, Any]:
     runtime_tuple = certification_preflight(
         factory, product, sha, tree, contract,
     )
-    restoring = bool(getattr(args, "restore", False))
     takeover = takeover_source(
         factory, product, args.project, getattr(args, "takeover_project", None)
     )
@@ -3268,7 +3346,6 @@ def _prepare(args: argparse.Namespace) -> dict[str, Any]:
         if authority is not None:
             validate_authority_prepare_shape(authority, manifest["tickets"])
         validate_prepare_phase(root, authority, sha, args.project)
-        global_config = prepare_global_config(args, root)
         if root.exists() or root.is_symlink():
             validate_prepare_root(root, sha, args.project)
             marker_path = root / "marker.json"

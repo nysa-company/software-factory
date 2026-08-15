@@ -55,7 +55,9 @@ class QualificationEnvironmentTest(unittest.TestCase):
             runtime_bin.joinpath(tool).symlink_to(shutil.which(tool))
         self.global_env = self.home / ".factory/global.env"
         self.global_env.write_text(
-            "CLAUDE_CODE_PINNED=2.1.223\n", encoding="utf-8",
+            "CLAUDE_CODE_PINNED=2.1.223\n"
+            "GLOBAL_DAILY_CAP_USD=100.000000\n",
+            encoding="utf-8",
         )
         self.global_env.chmod(0o600)
         os.environ["HOME"] = str(self.home)
@@ -141,6 +143,10 @@ class QualificationEnvironmentTest(unittest.TestCase):
             self.factory / "scripts/certification-preflight.py",
         )
         shutil.copy2(
+            ROOT / "scripts/envelope-control.py",
+            self.factory / "scripts/envelope-control.py",
+        )
+        shutil.copy2(
             ROOT / "scripts/owner-runtime-pin.py",
             self.factory / "scripts/owner-runtime-pin.py",
         )
@@ -202,6 +208,14 @@ class QualificationEnvironmentTest(unittest.TestCase):
         )
         (self.product / "factory/PROJECT.env").write_text(
             "PREVIEW_PROVIDER=railway\n", encoding="utf-8",
+        )
+        (self.product / "factory/ENVELOPE.env").write_text(
+            "PER_RUN_BUDGET_USD=2.000000\n"
+            "PER_TICKET_BUDGET_USD=25.000000\n"
+            "PER_RUN_MAX_TURNS=60\n"
+            "PER_RUN_TIMEOUT_MIN=45\n"
+            "DAILY_CAP_USD=100.000000\n",
+            encoding="utf-8",
         )
         (self.product / "factory/ledger.csv").write_text(
             "date,time,ticket,role,adapter,prompt_version,turns,cost_usd,"
@@ -525,6 +539,71 @@ class QualificationEnvironmentTest(unittest.TestCase):
             replay = ENVIRONMENT.prepare(args)
         self.assertEqual(replay, value)
         readiness.assert_called_once()
+
+    def test_prepare_rejects_unfit_run_budget_before_state(self) -> None:
+        envelope = self.product / "factory/ENVELOPE.env"
+        envelope.write_text(
+            envelope.read_text(encoding="utf-8").replace(
+                "PER_RUN_BUDGET_USD=2.000000",
+                "PER_RUN_BUDGET_USD=10.000000",
+            ),
+            encoding="utf-8",
+        )
+        run(self.product, "git", "add", "factory/ENVELOPE.env")
+        run(self.product, "git", "commit", "-qm", "oversized qualification run")
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError,
+            "qualification product per-run budget exceeds the manifest",
+        ):
+            ENVIRONMENT.prepare(argparse.Namespace(
+                factory_root=self.factory, product_root=self.product,
+                project="relay", root=self.root,
+            ))
+        self.assertEqual(list(self.root.iterdir()), [])
+        self.assertFalse((self.product / "factory/runs").exists())
+        self.assertFalse(self.home.joinpath(".factory/qualification/relay").exists())
+
+    def test_qualification_budget_contract_covers_every_cap(self) -> None:
+        manifest = json.loads(
+            (self.product / "factory/QUALIFICATION.json").read_text(encoding="utf-8")
+        )
+        envelope = self.product / "factory/ENVELOPE.env"
+        original = envelope.read_text(encoding="utf-8")
+        cases = (
+            (
+                original + "PLANNER_PER_RUN_BUDGET_USD=2.000001\n",
+                self.global_env.read_bytes(),
+                "qualification product per-run budget exceeds the manifest",
+            ),
+            (
+                original.replace(
+                    "PER_TICKET_BUDGET_USD=25.000000",
+                    "PER_TICKET_BUDGET_USD=26.000000",
+                ),
+                self.global_env.read_bytes(),
+                "qualification product ticket budget does not match the manifest",
+            ),
+            (
+                original.replace(
+                    "DAILY_CAP_USD=100.000000", "DAILY_CAP_USD=99.999999",
+                ),
+                self.global_env.read_bytes(),
+                "qualification product daily cap is below the manifest budget",
+            ),
+            (
+                original,
+                b"GLOBAL_DAILY_CAP_USD=99.999999\n",
+                "qualification machine daily cap is below the manifest budget",
+            ),
+        )
+        for env_text, global_config, message in cases:
+            with self.subTest(message=message):
+                envelope.write_text(env_text, encoding="utf-8")
+                with self.assertRaisesRegex(ENVIRONMENT.EnvironmentError, message):
+                    ENVIRONMENT.validate_qualification_budget(
+                        self.factory, self.product, manifest, global_config,
+                    )
+        envelope.write_text(original, encoding="utf-8")
 
     def test_prepare_recovers_each_exact_crash_prefix_and_response_loss(self) -> None:
         args = argparse.Namespace(

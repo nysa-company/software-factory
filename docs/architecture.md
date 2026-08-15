@@ -621,6 +621,13 @@ that same candidate share the scope, while predecessor-candidate charges stay
 outside its allowance. Provider lifecycle and financial accounting stay
 lane-local; task-bearing Cursor runs alone also obey the machine-local
 account-route concurrency and start-window admission described above.
+Before hydration or runtime publication, fresh isolated preparation validates
+the product's existing envelope against the sealed qualification manifest:
+every effective role reservation fits the per-run cap, the ticket cap is exact,
+and both the product and supplied machine daily caps cover the manifest budget.
+A mismatch refuses before any claim or provider work instead of producing a
+qualification that can only fail later at admission or reduction. Takeover
+continues to use its separately authenticated live-state budget contract.
 Its release and CLI scratch remain disposable under `/private/tmp`, but signed
 passports, controller events, provider accounting, paused worktrees, and HMAC
 authority live under the owner-only `~/.factory/qualification/<project>` root.
