@@ -9286,6 +9286,52 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertNotIn("blocked_reason", claim)
         self.assertEqual(claim["recovery_attempt"]["phase"], "pending")
 
+    def test_completed_route_migration_readmits_abandoned_upgrade(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        claim = self.recovery_claim()
+        source = "a" * 40
+        target = "b" * 40
+        claim.update({
+            "blocked_reason": "recovery-abandoned:release-upgrade",
+            "lease_released": True,
+            "recovery_attempt": {
+                "count": CONTROL.RECOVERY_ATTEMPT_LIMIT,
+                "factory_sha": self.release.name,
+                "input_sha256": "c" * 64,
+                "outcome_sha256": "d" * 64,
+                "phase": "abandoned",
+                "recovery": "release-upgrade",
+                "retry_reason": "route-migration-required",
+                "retry_status": "blocked",
+            },
+        })
+        controller.marker(
+            f"passport-route-migration-pending-T-110-{self.release.name}",
+            {
+                "factory_sha": self.release.name,
+                "schema": CONTROL.EVENT_SCHEMA,
+                "ticket": "T-110",
+            },
+        )
+        controller.terminal_for_receipt = lambda *_args: None
+        controller.authenticated_operator_passport = lambda _ticket: {
+            "factory_sha": self.release.name,
+            "head_sha": source,
+        }
+        controller.remote_cell_head_status = lambda _claim: (
+            "pushed", target, target,
+        )
+        controller.ticket_release_current = lambda _claim: True
+        controller.exact_route_migration_commit = lambda _claim, old, new: (
+            old == source and new == target
+        )
+
+        self.assertTrue(
+            controller.readmit_stranded_route_upgrade(claim, "release-upgrade")
+        )
+        self.assertEqual(claim["blocked_reason"], "route-migration-required")
+        self.assertNotIn("recovery_attempt", claim)
+
     def test_successor_release_resets_before_reading_old_malformed_evidence(self) -> None:
         controller = CONTROL.Controller(self.args)
         claim = self.recovery_claim()

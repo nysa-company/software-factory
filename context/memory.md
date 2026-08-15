@@ -6214,3 +6214,14 @@ transition incident is a unique selected-ticket `prior_kit_receipt` bound to
 the active successor Factory; the ordinary controller must then migrate it.
 Runtime warnings retain their separate bounded shape, all other warnings stay
 blocked, and an empty controller result is a wait rather than terminal evidence.
+
+## 2026-08-15 — Decision 441: Qualification owns sealed route migration
+
+Category: Reliability
+
+When every selected successor claim is idle and blocked only on route migration,
+the deterministic qualification driver reads the owner-only claim/worktree
+bindings, runs the existing sealed batch preview, applies that exact digest as
+`qualification-run`, and reconciles again. Partial cohorts and unsafe state do
+not migrate. The approval digest stays internal; ticket, route, journal, and
+remote mutations remain owned by the existing sealed migration command.

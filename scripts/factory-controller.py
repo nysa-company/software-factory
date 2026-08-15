@@ -6336,7 +6336,11 @@ class Controller:
             or claim.get("status") != "blocked"
             or claim.get("blocked_reason")
             != "recovery-abandoned:release-upgrade"
-            or claim.get("lease_released") is not True
+            or not (
+                claim.get("lease_released") is True
+                or claim.get("parked") is True
+                and claim.get("lease", "") == ""
+            )
             or claim.get("publication_lease")
         ):
             return False
@@ -6360,6 +6364,13 @@ class Controller:
                 )
                 if terminal is not None and passport is not None else None
             )
+            ordinary_route = authorization is None and passport is not None
+            if (
+                ordinary_route
+                and passport.get("factory_sha") == self.release_path.name
+                and SHA.fullmatch(passport.get("head_sha", ""))
+            ):
+                authorization = passport["head_sha"]
             remote_status, local_head, remote_head = (
                 self.remote_cell_head_status(claim)
             )
@@ -6387,6 +6398,7 @@ class Controller:
             or remote_status != "pushed"
             or remote_head != local_head
             or authorization is None
+            or ordinary_route and not route_ready
             or local_head != authorization and not route_ready
         ):
             return False

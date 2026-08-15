@@ -28,10 +28,11 @@ def canonical(value: object) -> bytes:
 class QualificationRunTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
-        self.root = Path(self.temporary.name)
+        self.root = Path(self.temporary.name).resolve()
         self.scenario = self.root / "scenario.json"
         self.calls = self.root / "calls.json"
         self.manifest = self.root / "QUALIFICATION.json"
+        self.controller_state = self.root / "controller"
         self.launcher = self.root / "factory-launch"
         self.manifest.write_text(json.dumps({
             "budget_usd": "100.000000",
@@ -52,11 +53,12 @@ scenario = json.loads(pathlib.Path(os.environ["QUALIFICATION_RUN_SCENARIO"]).rea
 calls_path = pathlib.Path(os.environ["QUALIFICATION_RUN_CALLS"])
 calls = json.loads(calls_path.read_text()) if calls_path.exists() else []
 action = sys.argv[2]
-index = sum(item == action for item in calls)
-calls.append(action)
+key = f"models:{sys.argv[3]}" if action == "models" else action
+index = sum(item == key for item in calls)
+calls.append(key)
 calls_path.write_text(json.dumps(calls))
-value = scenario[action]
-if action == "reconcile":
+value = scenario[key]
+if isinstance(value, list):
     value = value[index]
 code = value.pop("_returncode", 0) if isinstance(value, dict) else 0
 print(json.dumps(value, sort_keys=True, separators=(",", ":")))
@@ -65,6 +67,7 @@ raise SystemExit(code)
             encoding="utf-8",
         )
         self.launcher.chmod(stat.S_IRWXU)
+        (self.controller_state / "claims").mkdir(parents=True, mode=0o700)
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -163,6 +166,7 @@ raise SystemExit(code)
             capture_output=True, check=False, text=True,
             env={
                 "PATH": "/usr/bin:/bin",
+                "FACTORY_CONTROLLER_STATE_DIR": str(self.controller_state),
                 "FACTORY_QUALIFICATION_MANIFEST": str(self.manifest),
                 "FACTORY_RELEASE_SHA": "a" * 40,
                 "QUALIFICATION_RUN_CALLS": str(self.calls),
@@ -214,6 +218,129 @@ raise SystemExit(code)
         self.assertEqual(self.called(), ["doctor", "reconcile"])
 
     def test_empty_controller_result_is_not_reduced(self) -> None:
+        code, value = self.run_scenario({
+            "doctor": self.doctor(),
+            "reconcile": [self.controller("ok")],
+            "qualification": self.report(),
+        })
+        self.assertEqual(code, 3)
+        self.assertEqual(value["reason"], "authenticated_wait")
+        self.assertEqual(self.called(), ["doctor", "reconcile"])
+
+    def test_successor_route_migration_is_planned_applied_and_reconciled(self) -> None:
+        manifest = json.loads(self.manifest.read_text(encoding="utf-8"))
+        manifest.update({
+            "budget_usd": "300.000000",
+            "mode": "successor",
+            "per_run_budget_usd": "10.000000",
+            "per_ticket_budget_usd": "100.000000",
+            "source_factory_sha": "b" * 40,
+        })
+        self.manifest.write_text(json.dumps(manifest), encoding="utf-8")
+        workdirs = {}
+        for ticket in ("T-1", "T-2", "T-3"):
+            workdir = self.root / f"worktree-{ticket}"
+            workdir.mkdir(mode=0o700)
+            workdirs[ticket] = workdir
+            claim = self.controller_state / "claims" / f"{ticket}.json"
+            claim.write_text(json.dumps({
+                "blocked_reason": "route-migration-required",
+                "status": "blocked",
+                "ticket": ticket,
+                "worktree": str(workdir),
+            }), encoding="utf-8")
+            claim.chmod(0o600)
+        plan = {
+            "factory_sha": "a" * 40,
+            "items": [{
+                "branch": f"ticket/{ticket}",
+                "head": "d" * 40,
+                "migration": {},
+                "ticket": ticket,
+                "workdir": str(workdirs[ticket]),
+            } for ticket in ("T-1", "T-2", "T-3")],
+            "max_workers": 3,
+            "protected_main": "e" * 40,
+            "schema": "nysa.software-factory.model-migration-batch-preview/v1",
+        }
+        plan["approval_sha256"] = hashlib.sha256(
+            canonical(plan) + b"\n",
+        ).hexdigest()
+        journal = {
+            "approved_by": "qualification-run",
+            "created_at": "2026-08-15T00:00:00Z",
+            "plan": plan,
+            "results": {ticket: {} for ticket in ("T-1", "T-2", "T-3")},
+            "schema": "nysa.software-factory.model-migration-batch-journal/v1",
+            "status": "pass",
+            "updated_at": "2026-08-15T00:00:01Z",
+        }
+        journal["record_sha256"] = hashlib.sha256(
+            canonical(journal) + b"\n",
+        ).hexdigest()
+        code, value = self.run_scenario({
+            "doctor": self.doctor(),
+            "models:migrate-batch-plan": plan,
+            "models:migrate-batch": journal,
+            "reconcile": [
+                self.controller("ok"),
+                self.controller("ok", results=[
+                    {"status": "complete", "ticket": ticket}
+                    for ticket in ("T-1", "T-2", "T-3")
+                ]),
+            ],
+            "qualification": self.report(),
+        })
+        self.assertEqual(code, 0)
+        self.assertEqual(value["status"], "green")
+        self.assertEqual(self.called(), [
+            "doctor", "reconcile", "models:migrate-batch-plan",
+            "models:migrate-batch", "reconcile", "qualification",
+        ])
+
+        self.calls.unlink()
+        for ticket in ("T-1", "T-2", "T-3"):
+            path = self.controller_state / "claims" / f"{ticket}.json"
+            claim = json.loads(path.read_text(encoding="utf-8"))
+            claim.update({
+                "blocked_reason": "recovery-abandoned:release-upgrade",
+                "lease_released": True,
+                "recovery_attempt": {
+                    "count": 3,
+                    "factory_sha": "a" * 40,
+                    "input_sha256": "f" * 64,
+                    "outcome_sha256": "9" * 64,
+                    "phase": "abandoned",
+                    "recovery": "release-upgrade",
+                    "retry_reason": "route-migration-required",
+                    "retry_status": "blocked",
+                },
+            })
+            path.write_text(json.dumps(claim), encoding="utf-8")
+            path.chmod(0o600)
+        code, value = self.run_scenario({
+            "doctor": self.doctor(),
+            "models:migrate-batch-plan": plan,
+            "models:migrate-batch": journal,
+            "reconcile": [
+                self.controller("ok"),
+                self.controller("ok", results=[
+                    {"status": "complete", "ticket": ticket}
+                    for ticket in ("T-1", "T-2", "T-3")
+                ]),
+            ],
+            "qualification": self.report(),
+        })
+        self.assertEqual(code, 0)
+        self.assertEqual(value["status"], "green")
+        self.assertIn("models:migrate-batch", self.called())
+
+        self.calls.unlink()
+        partial = self.controller_state / "claims/T-3.json"
+        claim = json.loads(partial.read_text(encoding="utf-8"))
+        claim["status"] = "waiting"
+        partial.write_text(json.dumps(claim), encoding="utf-8")
+        partial.chmod(0o600)
         code, value = self.run_scenario({
             "doctor": self.doctor(),
             "reconcile": [self.controller("ok")],

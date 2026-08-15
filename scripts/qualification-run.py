@@ -23,8 +23,12 @@ SCHEMA = "nysa.software-factory.qualification-run/v1"
 CONTROLLER_SCHEMA = "nysa.software-factory.controller/v1"
 DOCTOR_SCHEMA = "nysa.software-factory.doctor/v2"
 REPORT_SCHEMA = "nysa.software-factory.qualification-report/v1"
+MIGRATION_PLAN_SCHEMA = "nysa.software-factory.model-migration-batch-preview/v1"
+MIGRATION_JOURNAL_SCHEMA = "nysa.software-factory.model-migration-batch-journal/v1"
 PROJECT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 TICKET = re.compile(r"T-[0-9]+")
+SHA = re.compile(r"[0-9a-f]{40}")
+DIGEST = re.compile(r"[0-9a-f]{64}")
 REQUIRED_CHECKS = {
     "active_binding", "clis", "contract_resume", "credentials",
     "fallback_readiness", "isolated_provider", "kit", "kit_pin",
@@ -64,16 +68,17 @@ def launcher_path(path: Path) -> Path:
 
 def invoke(
     launcher: Path, project: str, action: str, phases: list[dict[str, Any]],
+    *arguments: str,
 ) -> tuple[int, dict[str, Any]]:
     started_epoch_ms = time.time_ns() // 1_000_000
     started = time.monotonic()
     result = subprocess.run(
-        [str(launcher), project, action, "--json"],
+        [str(launcher), project, action, *arguments, "--json"],
         capture_output=True, check=False, text=True,
     )
     phases.append({
         "elapsed_seconds": round(time.monotonic() - started, 3),
-        "name": action,
+        "name": " ".join((action, *arguments[:1])),
         "started_epoch_ms": started_epoch_ms,
     })
     try:
@@ -143,6 +148,149 @@ def qualification_basis() -> tuple[set[str], int, bool, str]:
     finally:
         if descriptor >= 0:
             os.close(descriptor)
+
+
+def route_migration_arguments(
+    selected: set[str], factory_sha: str,
+) -> tuple[str, ...]:
+    state = Path(os.environ.get("FACTORY_CONTROLLER_STATE_DIR", ""))
+    try:
+        if not state.is_absolute() or state.resolve(strict=True) != state:
+            return ()
+        for directory in (state, state / "claims"):
+            info = directory.lstat()
+            if (
+                directory.is_symlink()
+                or not stat.S_ISDIR(info.st_mode)
+                or info.st_uid != os.geteuid()
+                or info.st_mode & 0o022
+            ):
+                raise QualificationRunError("qualification claim state is unsafe")
+        pairs: list[str] = []
+        migration_tickets: set[str] = set()
+        for ticket in sorted(selected):
+            path = state / f"claims/{ticket}.json"
+            descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            try:
+                info = os.fstat(descriptor)
+                if (
+                    not stat.S_ISREG(info.st_mode)
+                    or info.st_uid != os.geteuid()
+                    or info.st_nlink != 1
+                    or stat.S_IMODE(info.st_mode) != 0o600
+                    or info.st_size > 1_048_576
+                ):
+                    raise QualificationRunError("qualification claim is unsafe")
+                raw = os.read(descriptor, 1_048_577)
+            finally:
+                os.close(descriptor)
+            if len(raw) != info.st_size:
+                raise QualificationRunError("qualification claim changed while reading")
+            claim = json.loads(raw.decode("utf-8", "strict"))
+            if not isinstance(claim, dict) or claim.get("ticket") != ticket:
+                raise QualificationRunError("qualification claim is invalid")
+            route_wait = (
+                claim.get("status") == "blocked"
+                and claim.get("blocked_reason") == "route-migration-required"
+            )
+            attempt = claim.get("recovery_attempt")
+            abandoned_route_wait = (
+                claim.get("status") == "blocked"
+                and claim.get("blocked_reason")
+                == "recovery-abandoned:release-upgrade"
+                and isinstance(attempt, dict)
+                and set(attempt) == {
+                    "count", "factory_sha", "input_sha256", "outcome_sha256",
+                    "phase", "recovery", "retry_reason", "retry_status",
+                }
+                and isinstance(attempt.get("count"), int)
+                and not isinstance(attempt["count"], bool)
+                and attempt["count"] > 0
+                and attempt.get("factory_sha") == factory_sha
+                and isinstance(attempt.get("input_sha256"), str)
+                and DIGEST.fullmatch(attempt["input_sha256"])
+                and isinstance(attempt.get("outcome_sha256"), str)
+                and DIGEST.fullmatch(attempt["outcome_sha256"])
+                and attempt.get("phase") == "abandoned"
+                and attempt.get("recovery") == "release-upgrade"
+                and attempt.get("retry_reason") == "route-migration-required"
+                and attempt.get("retry_status") == "blocked"
+                and (
+                    claim.get("lease_released") is True
+                    or claim.get("parked") is True
+                    and claim.get("lease", "") == ""
+                )
+            )
+            if not route_wait and not abandoned_route_wait:
+                continue
+            worktree = Path(claim.get("worktree", ""))
+            worktree_info = worktree.lstat()
+            if (
+                not worktree.is_absolute()
+                or worktree.is_symlink()
+                or worktree.resolve(strict=True) != worktree
+                or not stat.S_ISDIR(worktree_info.st_mode)
+                or worktree_info.st_uid != os.geteuid()
+                or worktree_info.st_mode & 0o022
+            ):
+                raise QualificationRunError("qualification worktree is unsafe")
+            migration_tickets.add(ticket)
+            pairs.extend(("--ticket", ticket, "--workdir", str(worktree)))
+        return tuple(pairs) if migration_tickets == selected else ()
+    except (
+        FileNotFoundError, json.JSONDecodeError, OSError, TypeError, UnicodeError,
+    ) as error:
+        raise QualificationRunError("qualification claim state is invalid") from error
+
+
+def migration_plan_result(
+    value: dict[str, Any], selected: set[str], capacity: int, factory_sha: str,
+) -> str:
+    items = value.get("items")
+    unsigned = {key: item for key, item in value.items() if key != "approval_sha256"}
+    digest = value.get("approval_sha256", "")
+    if (
+        set(value) != {
+            "approval_sha256", "factory_sha", "items", "max_workers",
+            "protected_main", "schema",
+        }
+        or value.get("schema") != MIGRATION_PLAN_SCHEMA
+        or value.get("factory_sha") != factory_sha
+        or value.get("max_workers") != min(capacity, len(selected))
+        or not isinstance(value.get("protected_main"), str)
+        or not SHA.fullmatch(value["protected_main"])
+        or not isinstance(items, list)
+        or {item.get("ticket") for item in items if isinstance(item, dict)} != selected
+        or len(items) != len(selected)
+        or not isinstance(digest, str)
+        or not DIGEST.fullmatch(digest)
+        or digest != hashlib.sha256(canonical(unsigned) + b"\n").hexdigest()
+    ):
+        raise QualificationRunError("route migration preview is invalid")
+    return digest
+
+
+def migration_apply_result(
+    value: dict[str, Any], plan: dict[str, Any], selected: set[str],
+) -> None:
+    unsigned = {key: item for key, item in value.items() if key != "record_sha256"}
+    results = value.get("results")
+    if (
+        set(value) != {
+            "approved_by", "created_at", "plan", "record_sha256", "results",
+            "schema", "status", "updated_at",
+        }
+        or value.get("schema") != MIGRATION_JOURNAL_SCHEMA
+        or value.get("status") != "pass"
+        or value.get("approved_by") != "qualification-run"
+        or value.get("plan") != plan
+        or not isinstance(results, dict)
+        or set(results) != selected
+        or not isinstance(value.get("record_sha256"), str)
+        or value["record_sha256"]
+        != hashlib.sha256(canonical(unsigned) + b"\n").hexdigest()
+    ):
+        raise QualificationRunError("route migration result is invalid")
 
 
 def doctor_allows_reconcile(
@@ -305,6 +453,7 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
         }
 
     restarts = 0
+    migration_applied = False
     while True:
         code, controller = invoke(launcher, args.project, "reconcile", phases)
         controller_result(controller)
@@ -321,6 +470,36 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
                 "status": "error",
             }
         if controller["status"] != "restart_required":
+            if (
+                not migration_applied
+                and successor
+                and controller["status"] == "ok"
+                and controller["active"] == 0
+                and controller["results"] == []
+            ):
+                migration_arguments = route_migration_arguments(
+                    selected, factory_sha,
+                )
+                if migration_arguments:
+                    code, plan = invoke(
+                        launcher, args.project, "models", phases,
+                        "migrate-batch-plan", *migration_arguments,
+                    )
+                    if code != 0:
+                        raise QualificationRunError("route migration preview failed")
+                    approval = migration_plan_result(
+                        plan, selected, capacity, factory_sha,
+                    )
+                    code, migration = invoke(
+                        launcher, args.project, "models", phases,
+                        "migrate-batch", "--approve-hash", approval,
+                        "--approved-by", "qualification-run", *migration_arguments,
+                    )
+                    if code != 0:
+                        raise QualificationRunError("route migration failed")
+                    migration_apply_result(migration, plan, selected)
+                    migration_applied = True
+                    continue
             break
         restarts += 1
         if restarts > 1:

@@ -219,11 +219,13 @@ It requires Doctor `ok`, the exact bounded runtime-only warning produced by
 active qualification leases, or—only for a successor—the exact selected-ticket
 `prior_kit_receipt` warning that the controller itself must migrate. It performs
 the one mandatory controller restart in a new process, runs the ordinary
-controller/state machine, and invokes the existing reducer only after a
-nonempty set of terminal completion results. Every other warning remains a
-typed block. Rerun after a named external or operator input changes; the driver
-never edits tickets, claims, leases, receipts, passports, journals, or provider
-state itself.
+controller/state machine, applies the existing sealed batch route migration
+when every selected successor claim is at that exact boundary, and invokes the
+existing reducer only after a nonempty set of terminal completion results. The
+batch preview digest stays inside the command; no human hash handoff is needed.
+Every other warning remains a typed block. Rerun after a named external or
+operator input changes; the driver never hand-edits tickets, claims, leases,
+receipts, passports, journals, or provider state.
 
 Qualification must prove:
 
