@@ -266,8 +266,25 @@ factory_product_remote_matches "$PRODUCT_ROOT" "$PRODUCT_REMOTE" || {
 }
 LOCAL_HEAD="$(git -C "$WORKDIR" rev-parse HEAD)"
 TRACKING_HEAD="$(factory_remote_tracking_tip "$WORKDIR" "$BRANCH")"
-git -C "$WORKDIR" push --no-force -- "$PRODUCT_REMOTE" \
-  "$LOCAL_HEAD:refs/heads/$BRANCH" >/dev/null 2>&1
+PUSH_MODE=(--no-force)
+EXPECTED_REMOTE_HEAD="${FACTORY_EXPECTED_TICKET_REMOTE_HEAD:-}"
+if [[ -n "$EXPECTED_REMOTE_HEAD" ]]; then
+  [[ "$EXPECTED_REMOTE_HEAD" =~ ^[0-9a-f]{40}$ ]] || {
+    echo "expected ticket remote head is invalid" >&2
+    exit 1
+  }
+  git -C "$WORKDIR" merge-base --is-ancestor \
+    "$EXPECTED_REMOTE_HEAD" "$LOCAL_HEAD" >/dev/null 2>&1 || {
+    echo "ticket state is not a fast-forward of the expected remote head" >&2
+    exit 1
+  }
+  PUSH_MODE=("--force-with-lease=refs/heads/$BRANCH:$EXPECTED_REMOTE_HEAD")
+fi
+git -C "$WORKDIR" push "${PUSH_MODE[@]}" -- "$PRODUCT_REMOTE" \
+  "$LOCAL_HEAD:refs/heads/$BRANCH" >/dev/null 2>&1 || {
+  echo "ticket-state remote compare-and-swap failed" >&2
+  exit 1
+}
 REMOTE_HEAD="$(git -C "$WORKDIR" ls-remote --heads -- "$PRODUCT_REMOTE" \
   "refs/heads/$BRANCH" 2>/dev/null | awk 'NR==1 {print $1; exit}')"
 [[ "$REMOTE_HEAD" == "$LOCAL_HEAD" ]] || { echo "ticket-state remote verification failed" >&2; exit 1; }

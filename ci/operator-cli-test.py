@@ -4,18 +4,26 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parent.parent
 CLI = ROOT / "scripts" / "operator-cli.py"
 sys.path.insert(0, str(ROOT / "scripts" / "lib"))
 import operator_receipt as receipts  # noqa: E402
+
+SPEC = importlib.util.spec_from_file_location("operator_cli", CLI)
+assert SPEC and SPEC.loader
+OPERATOR = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(OPERATOR)
 
 
 def run_git(product: Path, *arguments: str) -> str:
@@ -129,6 +137,169 @@ class OperatorCliTest(unittest.TestCase):
         self.assertIn("State: Ready", durable)
         with self.assertRaises(receipts.OperatorReceiptError):
             receipts.verify_consume(self.state, "T-1", "ready")
+
+    def test_ready_binds_the_expected_remote_base(self) -> None:
+        run_git(self.product, "switch", "--quiet", "-c", "ticket/T-1")
+        run_git(self.product, "commit", "--allow-empty", "--quiet", "-m", "Backlog")
+        run_git(self.product, "push", "--quiet", "-u", "origin", "ticket/T-1")
+        run_git(self.product, "switch", "--quiet", "main")
+        head = run_git(
+            self.product, "rev-parse", "refs/remotes/origin/ticket/T-1",
+        )
+
+        with mock.patch.dict(os.environ, {
+            "FACTORY_CERTIFIED_PRODUCT_ORIGIN": str(self.remote),
+        }):
+            self.cli(
+                "--expected-base-sha", run_git(self.product, "rev-parse", "main"),
+                "ready", "--ticket", "T-1", expect=1,
+            )
+        self.assertEqual(
+            run_git(
+                self.product, "ls-remote", "--heads", str(self.remote),
+                "ticket/T-1",
+            ).split()[0],
+            head,
+        )
+        with mock.patch.dict(os.environ, {
+            "FACTORY_CERTIFIED_PRODUCT_ORIGIN": str(self.remote),
+        }):
+            receipt = self.cli(
+                "--expected-base-sha", head, "ready", "--ticket", "T-1",
+            )
+        self.assertTrue(receipt["consumed"])
+
+    def test_expected_base_is_used_as_the_immutable_worktree_start(self) -> None:
+        expected = "a" * 40
+        starts = []
+
+        def fake_git(_product, *arguments, check=True):
+            if arguments[:3] == ("symbolic-ref", "--quiet", "--short"):
+                return "main"
+            if arguments[:2] == ("status", "--porcelain=v1"):
+                return ""
+            if arguments[:4] == ("remote", "get-url", "--push", "--all"):
+                return str(self.remote)
+            if arguments[0] == "fetch":
+                return ""
+            if arguments[0] == "rev-parse":
+                return expected
+            if arguments[0] == "ls-remote":
+                return f"{expected}\trefs/heads/ticket/T-1"
+            if arguments[:2] == ("worktree", "add"):
+                starts.append(arguments[-1])
+                raise OPERATOR.OperatorCliError("stop after immutable base")
+            return ""
+
+        with (
+            mock.patch.object(OPERATOR, "git", side_effect=fake_git),
+            mock.patch.object(OPERATOR, "git_succeeds", return_value=True),
+            mock.patch.dict(os.environ, {
+                "FACTORY_CERTIFIED_PRODUCT_ORIGIN": str(self.remote),
+            }),
+            self.assertRaisesRegex(OPERATOR.OperatorCliError, "immutable base"),
+        ):
+            OPERATOR.materialize_pre_dispatch(
+                self.product, self.state,
+                self.product / "factory/operator-map.json",
+                {"ticket": "T-1"}, expected,
+            )
+        self.assertEqual(starts, [expected])
+
+    def assert_expected_base_push_cas_refuses(self, race: str) -> None:
+        run_git(self.product, "switch", "--quiet", "-c", "ticket/T-1")
+        run_git(self.product, "commit", "--allow-empty", "--quiet", "-m", "Backlog")
+        run_git(self.product, "push", "--quiet", "-u", "origin", "ticket/T-1")
+        expected = run_git(self.product, "rev-parse", "HEAD")
+        run_git(self.product, "switch", "--quiet", "main")
+        receipt = receipts.issue(self.state, "T-1", "ready", {})
+        self.write_pending(
+            "ready", receipt, state="Ready", state_base="backlog",
+        )
+        original_run = subprocess.run
+        raced = False
+
+        def race_then_run(command, *args, **kwargs):
+            nonlocal raced
+            if (
+                not raced
+                and any(str(item).endswith("/ticket-state.sh") for item in command)
+            ):
+                raced = True
+                destination = ":refs/heads/ticket/T-1"
+                if race == "rewind":
+                    destination = "main:refs/heads/ticket/T-1"
+                original_run(
+                    [
+                        "git", "-C", str(self.product), "push", "--quiet",
+                        *(["--force"] if race == "rewind" else []),
+                        "origin", destination,
+                    ],
+                    text=True, capture_output=True, check=True,
+                )
+            return original_run(command, *args, **kwargs)
+
+        with (
+            mock.patch.object(OPERATOR.subprocess, "run", side_effect=race_then_run),
+            mock.patch.dict(os.environ, {
+                "FACTORY_CERTIFIED_PRODUCT_ORIGIN": str(self.remote),
+            }),
+            self.assertRaisesRegex(OPERATOR.OperatorCliError, "compare-and-swap"),
+        ):
+            OPERATOR.materialize_pre_dispatch(
+                self.product, self.state,
+                self.product / "factory/operator-map.json", receipt, expected,
+            )
+        observed = run_git(
+            self.product, "ls-remote", "--heads", str(self.remote), "ticket/T-1",
+        ).split()
+        if race == "delete":
+            self.assertEqual(observed, [])
+        else:
+            self.assertEqual(observed[0], run_git(self.product, "rev-parse", "main"))
+
+    def test_expected_base_push_refuses_remote_deletion_race(self) -> None:
+        self.assert_expected_base_push_cas_refuses("delete")
+
+    def test_expected_base_push_refuses_remote_rewind_race(self) -> None:
+        self.assert_expected_base_push_cas_refuses("rewind")
+
+    def test_expected_base_refuses_a_swapped_push_origin(self) -> None:
+        run_git(self.product, "switch", "--quiet", "-c", "ticket/T-1")
+        run_git(self.product, "commit", "--allow-empty", "--quiet", "-m", "Backlog")
+        run_git(self.product, "push", "--quiet", "-u", "origin", "ticket/T-1")
+        expected = run_git(self.product, "rev-parse", "HEAD")
+        run_git(self.product, "switch", "--quiet", "main")
+        other = self.remote.parent / "other.git"
+        run_git(self.remote.parent, "init", "--bare", "--quiet", str(other))
+        run_git(self.product, "push", "--quiet", str(other), "main", "ticket/T-1")
+        run_git(self.product, "remote", "set-url", "--push", "origin", str(other))
+        receipt = receipts.issue(self.state, "T-1", "ready", {})
+        self.write_pending(
+            "ready", receipt, state="Ready", state_base="backlog",
+        )
+
+        with (
+            mock.patch.dict(os.environ, {
+                "FACTORY_CERTIFIED_PRODUCT_ORIGIN": str(self.remote),
+            }),
+            self.assertRaisesRegex(
+                OPERATOR.OperatorCliError, "materialization origin changed",
+            ),
+        ):
+            OPERATOR.materialize_pre_dispatch(
+                self.product, self.state,
+                self.product / "factory/operator-map.json", receipt, expected,
+            )
+        self.assertEqual(
+            run_git(
+                self.product, "ls-remote", "--heads", str(other), "ticket/T-1",
+            ).split()[0],
+            expected,
+        )
+        self.assertFalse(receipts.safe_receipt(
+            self.state / "operator-receipts/T-1/ready-1.json",
+        )["consumed"])
 
     def test_ready_refused_outside_backlog(self) -> None:
         self.write_ticket("T-1", "Building")

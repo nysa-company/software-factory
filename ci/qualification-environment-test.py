@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -108,6 +109,10 @@ class QualificationEnvironmentTest(unittest.TestCase):
         shutil.copy2(
             ROOT / "scripts/ledger-view.py",
             self.factory / "scripts/ledger-view.py",
+        )
+        shutil.copy2(
+            ROOT / "scripts/dispatch-plan.py",
+            self.factory / "scripts/dispatch-plan.py",
         )
         (self.factory / "scripts/lib").mkdir()
         shutil.copy2(
@@ -223,7 +228,11 @@ class QualificationEnvironmentTest(unittest.TestCase):
             encoding="utf-8",
         )
         (self.product / ".gitignore").write_text(
-            "factory/runs/\n", encoding="utf-8",
+            "factory/runs/\n"
+            "factory/.dispatch-leases/\n"
+            "factory/.dispatch-leases.lock/\n"
+            "factory/.launch.lock/\n",
+            encoding="utf-8",
         )
         (self.product / "factory/tickets").mkdir()
         for ticket in ("T-101", "T-102", "T-103"):
@@ -278,6 +287,10 @@ class QualificationEnvironmentTest(unittest.TestCase):
         os.environ["FACTORY_QUALIFICATION_OPERATOR_MAP_SEED"] = str(
             self.operator_seed
         )
+        self.branch_preflight = mock.patch.object(
+            ENVIRONMENT, "validate_selected_remote_branches",
+        )
+        self.branch_preflight.start()
 
     def write_passport(
         self, path: Path, secret: bytes, ticket: str, factory_sha: str,
@@ -343,6 +356,8 @@ class QualificationEnvironmentTest(unittest.TestCase):
         path.chmod(0o600)
 
     def tearDown(self) -> None:
+        if self.branch_preflight is not None:
+            self.branch_preflight.stop()
         if self.root.exists():
             for base, directories, files in os.walk(self.root, topdown=False):
                 for name in files:
@@ -365,6 +380,145 @@ class QualificationEnvironmentTest(unittest.TestCase):
                 self.original_operator_seed
             )
         shutil.rmtree(self.workspace)
+
+    def use_real_branch_preflight(self) -> Path:
+        self.branch_preflight.stop()
+        self.branch_preflight = None
+        remote = self.workspace / "product.git"
+        run(self.workspace, "git", "init", "--bare", "-q", str(remote))
+        run(self.product, "git", "remote", "set-url", "origin", str(remote))
+        run(self.product, "git", "push", "-qu", "origin", "main")
+        return remote
+
+    def use_contract_2(self) -> None:
+        (self.factory / "factory-contract.json").write_text(
+            '{"contract_version":"2.0.0"}\n', encoding="utf-8",
+        )
+        run(self.factory, "git", "add", "factory-contract.json")
+        run(self.factory, "git", "commit", "-qm", "use Contract 2")
+        self.sha = run(self.factory, "git", "rev-parse", "HEAD")
+        (self.product / "factory/KIT_PIN").write_text(self.sha + "\n")
+        manifest = json.loads(
+            (self.product / "factory/QUALIFICATION.json").read_text()
+        )
+        manifest["contract_version"] = "2.0.0"
+        manifest["factory_sha"] = self.sha
+        (self.product / "factory/QUALIFICATION.json").write_text(
+            json.dumps(manifest) + "\n"
+        )
+        descriptor = self.product / "factory/PROJECT.env"
+        descriptor.write_text(
+            descriptor.read_text() + "MAX_CONCURRENT_TICKETS=3\n"
+        )
+        run(
+            self.product, "git", "add", "factory/KIT_PIN",
+            "factory/QUALIFICATION.json", "factory/PROJECT.env",
+        )
+        run(self.product, "git", "commit", "-qm", "pin Contract 2 candidate")
+
+    def stale_selected_branch(
+        self, remote: Path, *, publish_authorization: bool = True,
+    ) -> str:
+        ticket = "T-101"
+        branch = f"ticket/{ticket}"
+        run(self.product, "git", "switch", "-qc", branch)
+        ticket_path = self.product / f"factory/tickets/{ticket}.md"
+        ticket_path.write_text(ticket_path.read_text() + f"Kit-SHA: {self.sha}\n")
+        plan = self.product / f"factory/route-plans/{ticket}.json"
+        plan.parent.mkdir()
+        plan.write_text(json.dumps({
+            "kit_sha": self.sha,
+            "schema": "ticket-model-route-plan/v1",
+            "ticket": ticket,
+        }) + "\n")
+        run(self.product, "git", "add", str(ticket_path), str(plan))
+        run(
+            self.product, "git", "-c", "user.name=Software Factory",
+            "-c", "user.email=factory@local", "commit", "-qm",
+            f"{ticket}: pin kit and model route plan",
+        )
+        ticket_path.write_text(
+            ticket_path.read_text().replace("State: Ready", "State: Planning")
+        )
+        run(self.product, "git", "add", str(ticket_path))
+        run(
+            self.product, "git", "-c", "user.name=Software Factory",
+            "-c", "user.email=factory@local", "commit", "-qm",
+            f"{ticket}: transition ticket state",
+        )
+        head = run(self.product, "git", "rev-parse", "HEAD")
+        run(self.product, "git", "push", "-q", str(remote), branch)
+        run(self.product, "git", "switch", "-q", "main")
+        authorization = self.product / (
+            "factory/qualification/preprovider-branch-resets.json"
+        )
+        authorization.parent.mkdir(exist_ok=True)
+        authorization.write_text(json.dumps({
+            "factory_sha": self.sha,
+            "resets": [{
+                "branch": branch, "head": head, "ticket": ticket,
+            }],
+            "schema": "nysa.software-factory.preprovider-branch-resets/v1",
+        }, sort_keys=True, separators=(",", ":")) + "\n")
+        run(self.product, "git", "add", str(authorization))
+        run(self.product, "git", "commit", "-qm", "authorize selected branch reset")
+        if publish_authorization:
+            run(self.product, "git", "push", "-q", str(remote), "main")
+        return head
+
+    def stale_operator_ready_selected_branch(self, remote: Path) -> str:
+        ticket = "T-101"
+        ticket_path = self.product / f"factory/tickets/{ticket}.md"
+        ticket_path.write_text(
+            ticket_path.read_text().replace("State: Ready", "State: Backlog")
+        )
+        run(self.product, "git", "add", str(ticket_path))
+        run(self.product, "git", "commit", "-qm", "protect backlog ticket")
+        run(self.product, "git", "push", "-q", str(remote), "main")
+        branch = f"ticket/{ticket}"
+        run(self.product, "git", "switch", "-qc", branch)
+        receipt = self.product / f"factory/receipts/{ticket}/ready-1.json"
+        receipt.parent.mkdir(parents=True)
+        receipt.write_text(json.dumps({
+            "action": "ready", "audit": "no-authority", "consumed": False,
+            "issued_at": "2026-01-01T00:00:00Z", "payload": {},
+            "receipt_sha256": "c" * 64,
+            "schema": "nysa.software-factory.operator-receipt/v1",
+            "sequence": 1, "ticket": ticket,
+        }) + "\n")
+        run(self.product, "git", "add", str(receipt))
+        run(
+            self.product, "git", "-c", "user.name=Factory Operator",
+            "-c", "user.email=operator@local", "commit", "-qm",
+            f"{ticket}: operator ready receipt 1",
+        )
+        ticket_path.write_text(
+            ticket_path.read_text().replace("State: Backlog", "State: Ready")
+        )
+        run(self.product, "git", "add", str(ticket_path))
+        run(
+            self.product, "git", "-c", "user.name=Software Factory",
+            "-c", "user.email=factory@local", "commit", "-qm",
+            f"{ticket}: materialize ticket state",
+        )
+        head = run(self.product, "git", "rev-parse", "HEAD")
+        run(self.product, "git", "push", "-q", str(remote), branch)
+        run(self.product, "git", "switch", "-q", "main")
+        authorization = self.product / (
+            "factory/qualification/preprovider-branch-resets.json"
+        )
+        authorization.parent.mkdir(exist_ok=True)
+        authorization.write_text(json.dumps({
+            "factory_sha": self.sha,
+            "resets": [{
+                "branch": branch, "head": head, "ticket": ticket,
+            }],
+            "schema": "nysa.software-factory.preprovider-branch-resets/v1",
+        }, sort_keys=True, separators=(",", ":")) + "\n")
+        run(self.product, "git", "add", str(authorization))
+        run(self.product, "git", "commit", "-qm", "authorize operator branch reset")
+        run(self.product, "git", "push", "-q", str(remote), "main")
+        return head
 
     def test_prepares_exact_read_only_candidate_once(self) -> None:
         args = argparse.Namespace(
@@ -562,6 +716,144 @@ class QualificationEnvironmentTest(unittest.TestCase):
         self.assertEqual(list(self.root.iterdir()), [])
         self.assertFalse((self.product / "factory/runs").exists())
         self.assertFalse(self.home.joinpath(".factory/qualification/relay").exists())
+
+    def test_prepare_validates_exact_selected_branch_before_publication(self) -> None:
+        remote = self.use_real_branch_preflight()
+        expected = self.stale_selected_branch(remote)
+        args = argparse.Namespace(
+            factory_root=self.factory, product_root=self.product,
+            project="relay", root=self.root,
+        )
+        with mock.patch.object(
+            ENVIRONMENT, "qualification_publication_origin",
+        ):
+            value = ENVIRONMENT.prepare(args)
+        self.assertEqual(value["status"], "prepared")
+        self.assertEqual(
+            run(
+                self.product, "git", "ls-remote", "--heads", str(remote),
+                "refs/heads/ticket/T-101",
+            ).split()[0],
+            expected,
+        )
+        run(
+            self.product, "git", "push", "-q", str(remote),
+            "+main:refs/heads/ticket/T-101",
+        )
+        with mock.patch.object(
+            ENVIRONMENT, "qualification_publication_origin",
+        ):
+            self.assertEqual(ENVIRONMENT.prepare(args), value)
+
+    def test_prepare_does_not_advance_authorized_operator_ready_branch(self) -> None:
+        self.use_contract_2()
+        remote = self.use_real_branch_preflight()
+        expected = self.stale_operator_ready_selected_branch(remote)
+        args = argparse.Namespace(
+            factory_root=self.factory, product_root=self.product,
+            project="relay", root=self.root,
+        )
+        with mock.patch.object(
+            ENVIRONMENT, "qualification_publication_origin",
+        ):
+            value = ENVIRONMENT.prepare(args)
+        self.assertEqual(value["status"], "prepared")
+        self.assertEqual(
+            run(
+                self.product, "git", "ls-remote", "--heads", str(remote),
+                "refs/heads/ticket/T-101",
+            ).split()[0],
+            expected,
+        )
+        active = ENVIRONMENT.read(self.root / "projects/relay/active.json")
+        worktrees = self.root / "worktrees"
+        worktrees.mkdir(mode=0o700)
+        result = subprocess.run(
+            [
+                sys.executable, str(ROOT / "scripts/dispatch-plan.py"),
+                "--factory-root", str(self.product.resolve()),
+                "--worktree-root", str(worktrees.resolve()), "claim",
+            ],
+            text=True, capture_output=True, check=False, timeout=60,
+            env={
+                **os.environ,
+                "FACTORY_CERTIFIED_PRODUCT_ORIGIN": str(remote),
+                "FACTORY_CONTROLLER_STATE_DIR": active["controller_state_path"],
+                "FACTORY_OPERATOR_MAP": active["operator_map_path"],
+                "FACTORY_RELEASE_CONTRACT_VERSION": "2.0.0",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        claim = json.loads(result.stdout)
+        self.assertIn("ticket", claim, claim)
+        self.assertEqual(claim["ticket"], "T-101")
+        self.assertEqual(claim["preprovider_reset_head"], expected)
+        self.assertIn(
+            "State: Ready",
+            Path(claim["worktree"])
+            .joinpath("factory/tickets/T-101.md").read_text(),
+        )
+
+    def test_prepare_refuses_selected_branch_head_drift_before_state(self) -> None:
+        remote = self.use_real_branch_preflight()
+        authorized = self.stale_selected_branch(remote)
+        run(self.product, "git", "switch", "-q", "ticket/T-101")
+        run(
+            self.product, "git", "commit", "--allow-empty", "-qm",
+            "advance selected branch",
+        )
+        advanced = run(self.product, "git", "rev-parse", "HEAD")
+        run(self.product, "git", "push", "-q", str(remote), "ticket/T-101")
+        run(self.product, "git", "switch", "-q", "main")
+        args = argparse.Namespace(
+            factory_root=self.factory, product_root=self.product,
+            project="relay", root=self.root,
+        )
+        with (
+            mock.patch.object(ENVIRONMENT, "qualification_publication_origin"),
+            mock.patch.object(
+                ENVIRONMENT, "initialize_selected_operator",
+                side_effect=AssertionError("operator state must not be initialized"),
+            ),
+            self.assertRaisesRegex(
+                ENVIRONMENT.EnvironmentError,
+                "ticket remote branch does not match reset authorization",
+            ),
+        ):
+            ENVIRONMENT.prepare(args)
+        self.assertNotEqual(advanced, authorized)
+        self.assertEqual(list(self.root.iterdir()), [])
+        self.assertFalse((self.product / "factory/runs").exists())
+        self.assertFalse(
+            self.home.joinpath(".factory/qualification/relay").exists()
+        )
+
+    def test_prepare_refuses_local_only_reset_authorization_before_state(self) -> None:
+        remote = self.use_real_branch_preflight()
+        selected_head = self.stale_selected_branch(
+            remote, publish_authorization=False,
+        )
+        args = argparse.Namespace(
+            factory_root=self.factory, product_root=self.product,
+            project="relay", root=self.root,
+        )
+        with (
+            mock.patch.object(ENVIRONMENT, "qualification_publication_origin"),
+            self.assertRaisesRegex(
+                ENVIRONMENT.EnvironmentError,
+                "reset authorization is not protected",
+            ),
+        ):
+            ENVIRONMENT.prepare(args)
+        self.assertEqual(list(self.root.iterdir()), [])
+        self.assertFalse((self.product / "factory/runs").exists())
+        self.assertEqual(
+            run(
+                self.product, "git", "ls-remote", "--heads", str(remote),
+                "refs/heads/ticket/T-101",
+            ).split()[0],
+            selected_head,
+        )
 
     def test_qualification_budget_contract_covers_every_cap(self) -> None:
         manifest = json.loads(

@@ -32,7 +32,10 @@ def main() -> int:
     if (os.environ.get("FACTORY_TEST_MODE") == "1" and
             os.environ.get("FACTORY_TRUSTED_TEST_HARNESS") == "1" and
             os.environ.get("FACTORY_TEST_LEASE_HEARTBEAT_IGNORE_TERM") == "1"):
-        handler = signal.SIG_IGN
+        def ignore(_signum, _frame):
+            return None
+
+        handler = ignore
     for selected in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         signal.signal(selected, handler)
     environment = os.environ.copy()

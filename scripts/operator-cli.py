@@ -204,6 +204,7 @@ def git_succeeds(product: Path, *arguments: str) -> bool:
 
 def materialize_pre_dispatch(
     product: Path, state_dir: Path, map_path: Path, receipt: dict,
+    expected_base_sha: str = "",
 ) -> None:
     ticket = receipt["ticket"]
     if git(product, "symbolic-ref", "--quiet", "--short", "HEAD") != "main":
@@ -213,12 +214,16 @@ def materialize_pre_dispatch(
     origins = git(product, "remote", "get-url", "--push", "--all", "origin").splitlines()
     if len(origins) != 1 or not origins[0]:
         raise OperatorCliError("operator lifecycle write requires one push destination")
+    certified_origin = os.environ.get("FACTORY_CERTIFIED_PRODUCT_ORIGIN", "")
+    if expected_base_sha and origins != [certified_origin]:
+        raise OperatorCliError("operator materialization origin changed")
     prefix = ticket_branch_prefix(product / "factory")
     branch = f"{prefix}{ticket}"
     git(product, "fetch", "--quiet", "origin", "+main:refs/remotes/origin/main")
     git(
         product, "fetch", "--quiet", "origin",
-        f"+refs/heads/{branch}:refs/remotes/origin/{branch}", check=False,
+        f"+refs/heads/{branch}:refs/remotes/origin/{branch}",
+        check=bool(expected_base_sha),
     )
     remote_branch = f"refs/remotes/origin/{branch}"
     local_branch = f"refs/heads/{branch}"
@@ -228,6 +233,20 @@ def materialize_pre_dispatch(
         base = local_branch
     else:
         base = "refs/remotes/origin/main"
+    if expected_base_sha:
+        observed = git(
+            product, "ls-remote", "--heads", "--", origins[0],
+            f"refs/heads/{branch}",
+        ).split()
+        if observed != [expected_base_sha, f"refs/heads/{branch}"]:
+            raise OperatorCliError("operator materialization base changed")
+    if expected_base_sha and (
+        not re.fullmatch(r"[0-9a-f]{40}", expected_base_sha)
+        or git(product, "rev-parse", base) != expected_base_sha
+    ):
+        raise OperatorCliError("operator materialization base changed")
+    if expected_base_sha:
+        base = expected_base_sha
     worktree = Path(tempfile.mkdtemp(prefix=f"operator-{ticket}-", dir=state_dir))
     added = False
     try:
@@ -254,7 +273,8 @@ def materialize_pre_dispatch(
             "FACTORY_OPERATOR_MAP": str(map_path),
             "FACTORY_RELEASE_CONTRACT_VERSION": CONTRACT_VERSION,
             "FACTORY_TRANSITION_STATE_DIR": str(state_dir),
-            "FACTORY_CERTIFIED_PRODUCT_ORIGIN": origins[0],
+            "FACTORY_CERTIFIED_PRODUCT_ORIGIN": certified_origin or origins[0],
+            "FACTORY_EXPECTED_TICKET_REMOTE_HEAD": expected_base_sha,
         }
         result = subprocess.run(
             [
@@ -442,7 +462,9 @@ def _cmd_ticket_action(args: argparse.Namespace) -> dict:
         stamp_sync(mapping, args.ticket)
         write_map(map_path, mapping)
     if action in {"ready", "cancel"} and CONTRACT_VERSION == "2.0.0":
-        materialize_pre_dispatch(product, state_dir, map_path, receipt)
+        materialize_pre_dispatch(
+            product, state_dir, map_path, receipt, args.expected_base_sha,
+        )
         path = (
             state_dir / "operator-receipts" / args.ticket
             / f"{action}-{receipt['sequence']}.json"
@@ -560,6 +582,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--product", required=True)
     parser.add_argument("--state-dir", required=True)
+    parser.add_argument("--expected-base-sha", default="")
     commands = parser.add_subparsers(dest="command", required=True)
     for name in ("ready", "approve", "cancel", "init"):
         sub = commands.add_parser(name)

@@ -181,6 +181,14 @@ non-production environment for the exact candidate release. It uses its own
 active record, controller state, provider state, operator map, runtime ledger,
 ports, temporary home, and product checkout. It does not modify the installed
 launcher or production active record.
+Before publishing that state, it proves every selected remote ticket branch is
+absent, descends from protected main, or has an exact protected authorization
+for canonical pre-provider recovery. Dispatch repeats the observation before
+performing the only allowed non-force reset.
+If dispatch loses the response around that reset, replay recognizes only the
+canonical reset commits and exact in-progress cleanup. A Backlog reset is made
+Ready again through the normal operator receipt, starting from the exact reset
+SHA; unrelated local commits, dirty paths, or a changed remote remain blocked.
 
 After preparation, one sealed command owns deterministic progress to the next
 authenticated boundary:

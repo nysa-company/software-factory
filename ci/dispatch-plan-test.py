@@ -52,7 +52,9 @@ class DispatchPlanTest(unittest.TestCase):
         )
         (factory / "KIT_PIN").write_text("a" * 40 + "\n")
         (self.product / ".gitignore").write_text(
-            "factory/operator-map.json\nfactory/.dispatch-leases/\n"
+            "factory/operator-map.json\nfactory/.operator-map.lock\n"
+            "factory/.operator-clears/\n"
+            "factory/.dispatch-leases/\n"
             "factory/.dispatch-leases.lock/\nfactory/.launch.lock/\n"
         )
         self.ticket("T-100", "normal", "Ready")
@@ -180,9 +182,11 @@ class DispatchPlanTest(unittest.TestCase):
         self.write_qualification_mapping(tickets)
         return tickets
 
-    def stale_preprovider_branch(self, change_spec=False, materialize=False):
+    def stale_preprovider_branch(
+        self, change_spec=False, materialize=False, prefix="ticket/",
+    ):
         ticket = "T-110"
-        branch = f"ticket/{ticket}"
+        branch = f"{prefix}{ticket}"
         run("git", "switch", "-qc", branch, cwd=self.product)
         ticket_path = self.product / f"factory/tickets/{ticket}.md"
         ticket_path.write_text(ticket_path.read_text() + f"\nKit-SHA: {'b' * 40}\n")
@@ -224,21 +228,160 @@ class DispatchPlanTest(unittest.TestCase):
         run("git", "switch", "-q", "main", cwd=self.product)
         return head
 
-    def authorize_preprovider_reset(self, head):
+    def stale_operator_ready_branch(self, prefix="ticket/"):
+        ticket = "T-110"
+        branch = f"{prefix}{ticket}"
+        run("git", "switch", "-qc", branch, cwd=self.product)
+        receipt = self.product / f"factory/receipts/{ticket}/ready-1.json"
+        receipt.parent.mkdir(parents=True)
+        receipt.write_text(json.dumps({
+            "action": "ready",
+            "audit": "no-authority",
+            "consumed": False,
+            "issued_at": "2026-01-01T00:00:00Z",
+            "payload": {},
+            "receipt_sha256": "c" * 64,
+            "schema": "nysa.software-factory.operator-receipt/v1",
+            "sequence": 1,
+            "ticket": ticket,
+        }, sort_keys=True) + "\n")
+        run("git", "add", str(receipt), cwd=self.product)
+        run(
+            "git", "-c", "user.name=Factory Operator",
+            "-c", "user.email=operator@local", "commit", "-qm",
+            f"{ticket}: operator ready receipt 1", cwd=self.product,
+        )
+        ticket_path = self.product / f"factory/tickets/{ticket}.md"
+        ticket_path.write_text(
+            ticket_path.read_text().replace("State: Backlog", "State: Ready")
+        )
+        run("git", "add", str(ticket_path), cwd=self.product)
+        run(
+            "git", "-c", "user.name=Software Factory",
+            "-c", "user.email=factory@local", "commit", "-qm",
+            f"{ticket}: materialize ticket state", cwd=self.product,
+        )
+        head = run("git", "rev-parse", "HEAD", cwd=self.product).strip()
+        run("git", "push", "-qu", "origin", branch, cwd=self.product)
+        run("git", "switch", "-q", "main", cwd=self.product)
+        return head
+
+    def authorize_preprovider_reset(
+        self, head, prefix="ticket/", ticket="T-110",
+    ):
         path = self.product / "factory/qualification/preprovider-branch-resets.json"
         path.parent.mkdir(exist_ok=True)
         path.write_text(json.dumps({
             "factory_sha": "a" * 40,
             "resets": [{
-                "branch": "ticket/T-110",
+                "branch": prefix + ticket,
                 "head": head,
-                "ticket": "T-110",
+                "ticket": ticket,
             }],
             "schema": "nysa.software-factory.preprovider-branch-resets/v1",
         }, sort_keys=True, separators=(",", ":")) + "\n")
         run("git", "add", ".", cwd=self.product)
         run("git", "commit", "-qm", "authorize pre-provider reset", cwd=self.product)
         run("git", "push", "-q", "origin", "main", cwd=self.product)
+
+    def interrupt_authorized_reset(self, stage):
+        self.write_contract_18_qualification()
+        run("git", "add", ".", cwd=self.product)
+        run("git", "commit", "-qm", "prepare qualification", cwd=self.product)
+        run("git", "push", "-q", "origin", "main", cwd=self.product)
+        authorized = self.stale_preprovider_branch()
+        self.authorize_preprovider_reset(authorized)
+        worktree = self.worktrees / "cell-1"
+        run("git", "worktree", "add", "-q", str(worktree), "ticket/T-110", cwd=self.product)
+        main = run("git", "rev-parse", "origin/main", cwd=self.product).strip()
+        if stage == "arbitrary":
+            (worktree / "arbitrary.txt").write_text("preserve me\n")
+            run("git", "add", "arbitrary.txt", cwd=worktree)
+            run("git", "commit", "-qm", "unrelated local work", cwd=worktree)
+            return authorized, worktree
+        run(
+            "git", "-c", "user.name=Software Factory",
+            "-c", "user.email=factory@local", "merge", "--no-ff", "--no-edit",
+            "-X", "theirs", main, cwd=worktree,
+        )
+        if stage == "merge":
+            return authorized, worktree
+        ticket = "factory/tickets/T-110.md"
+        run("git", "checkout", main, "--", ticket, cwd=worktree)
+        if stage == "checkout":
+            return authorized, worktree
+        run("git", "rm", "-q", "factory/route-plans/T-110.json", cwd=worktree)
+        if stage == "remove":
+            return authorized, worktree
+        run(
+            "git", "-c", "user.name=Software Factory",
+            "-c", "user.email=factory@local", "commit", "-qm",
+            "T-110: supersede pre-provider control state", "--", ticket,
+            "factory/route-plans/T-110.json", cwd=worktree,
+        )
+        return authorized, worktree
+
+    def reconciled_operator_reset(self):
+        self.write_contract_18_qualification()
+        ticket = self.product / "factory/tickets/T-110.md"
+        ticket.write_text(ticket.read_text().replace("State: Ready", "State: Backlog"))
+        run("git", "add", ".", cwd=self.product)
+        run("git", "commit", "-qm", "prepare backlog qualification", cwd=self.product)
+        run("git", "push", "-q", "origin", "main", cwd=self.product)
+        authorized = self.stale_operator_ready_branch()
+        self.authorize_preprovider_reset(authorized)
+        mapping = json.loads(self.mapping.read_text())
+        mapping.setdefault("_config", None)
+        mapping.setdefault("initiatives", {})
+        for entry in mapping["tickets"].values():
+            entry.pop("operator", None)
+        self.mapping.write_text(json.dumps(mapping) + "\n")
+        controller = self.root / "controller"
+        controller.mkdir(mode=0o700)
+        state = self.qualification_state()
+        DISPATCH.inspect_selected_preprovider_branches(
+            self.product, self.product / "factory", state, str(self.remote),
+        )
+        main = run("git", "rev-parse", "origin/main", cwd=self.product).strip()
+        resets = DISPATCH.reconcile_authorized_preprovider_branches(
+            self.product, self.worktrees, "ticket/", str(self.remote),
+            {"T-110": authorized}, main,
+        )
+        return authorized, controller, main, resets
+
+    def interrupted_operator_reset_after_receipt_removal(self):
+        self.write_contract_18_qualification()
+        ticket = self.product / "factory/tickets/T-110.md"
+        ticket.write_text(ticket.read_text().replace("State: Ready", "State: Backlog"))
+        run("git", "add", ".", cwd=self.product)
+        run("git", "commit", "-qm", "prepare backlog qualification", cwd=self.product)
+        run("git", "push", "-q", "origin", "main", cwd=self.product)
+        authorized = self.stale_operator_ready_branch()
+        self.authorize_preprovider_reset(authorized)
+        mapping = json.loads(self.mapping.read_text())
+        mapping.setdefault("_config", None)
+        mapping.setdefault("initiatives", {})
+        for entry in mapping["tickets"].values():
+            entry.pop("operator", None)
+        self.mapping.write_text(json.dumps(mapping) + "\n")
+        controller = self.root / "controller"
+        controller.mkdir(mode=0o700)
+        worktree = self.worktrees / "cell-1"
+        run("git", "worktree", "add", "-q", str(worktree), "ticket/T-110", cwd=self.product)
+        main = run("git", "rev-parse", "origin/main", cwd=self.product).strip()
+        run(
+            "git", "-c", "user.name=Software Factory",
+            "-c", "user.email=factory@local", "merge", "--no-ff", "--no-edit",
+            "-X", "theirs", main, cwd=worktree,
+        )
+        run("git", "checkout", main, "--", "factory/tickets/T-110.md", cwd=worktree)
+        run("git", "rm", "-q", "factory/receipts/T-110/ready-1.json", cwd=worktree)
+        return authorized, controller
+
+    def qualification_state(self):
+        return json.loads(
+            (self.product / "factory/QUALIFICATION.json").read_text()
+        )
 
     def command(
         self, action, expected=0, operator_map=None,
@@ -285,7 +428,7 @@ class DispatchPlanTest(unittest.TestCase):
         self.assertEqual(value["ticket"], "T-200")
         self.assertEqual(value["status"], "SHADOW")
 
-    def test_contract_19_dispatch_requires_exact_open_operator_receipt(self):
+    def test_contract_2_pending_ready_requires_durable_materialization(self):
         state = self.root / "controller"
         state.mkdir(mode=0o700)
         receipt = operator_receipt.issue(state, "T-300", "ready", {})
@@ -301,10 +444,15 @@ class DispatchPlanTest(unittest.TestCase):
             "FACTORY_CONTROLLER_STATE_DIR": str(state),
         }
         with mock.patch.dict(os.environ, environment):
-            selected, _ = DISPATCH.candidates(
+            selected, refusals = DISPATCH.candidates(
                 self.product / "factory", DISPATCH.load_mapping(self.mapping), set(),
             )
-        self.assertIn("T-300", {item["ticket"] for item in selected})
+        self.assertNotIn("T-300", {item["ticket"] for item in selected})
+        self.assertIn({
+            "error": "operator Ready materialization is pending",
+            "reason_code": "operator_materialization_pending",
+            "ticket": "T-300",
+        }, refusals)
 
         for mutation in ("forged", "consumed", "missing-state"):
             with self.subTest(mutation=mutation):
@@ -821,6 +969,491 @@ class DispatchPlanTest(unittest.TestCase):
             "supersede pre-provider control state",
             run("git", "log", "-1", "--format=%s", cwd=worktree),
         )
+
+    def test_authorized_operator_ready_branch_rejoins_current_main(self):
+        self.write_contract_18_qualification()
+        ticket = self.product / "factory/tickets/T-110.md"
+        ticket.write_text(ticket.read_text().replace("State: Ready", "State: Backlog"))
+        run("git", "add", ".", cwd=self.product)
+        run("git", "commit", "-qm", "prepare backlog qualification", cwd=self.product)
+        run("git", "push", "-q", "origin", "main", cwd=self.product)
+        old_head = self.stale_operator_ready_branch()
+        self.authorize_preprovider_reset(old_head)
+        mapping = json.loads(self.mapping.read_text())
+        mapping.setdefault("_config", None)
+        mapping.setdefault("initiatives", {})
+        mapping["tickets"]["T-110"].pop("operator")
+        self.mapping.write_text(json.dumps(mapping) + "\n")
+        controller = self.root / "controller"
+        controller.mkdir(mode=0o700)
+
+        value = self.command("claim", controller_state=controller)
+
+        worktree = Path(value["worktree"])
+        self.assertEqual(value["preprovider_reset_head"], old_head)
+        self.assertIn(
+            "State: Ready",
+            (worktree / "factory/tickets/T-110.md").read_text(),
+        )
+        self.assertTrue((worktree / "factory/receipts/T-110/ready-1.json").exists())
+        remote_head = run(
+            "git", "ls-remote", "--heads", str(self.remote), "ticket/T-110",
+        ).split()[0]
+        self.assertEqual(remote_head, run("git", "rev-parse", "HEAD", cwd=worktree).strip())
+        self.assertNotEqual(remote_head, old_head)
+
+    def assert_interrupted_reset_recovers(self, stage):
+        authorized, worktree = self.interrupt_authorized_reset(stage)
+        value = self.command("claim")
+        self.assertEqual(value["preprovider_reset_head"], authorized)
+        self.assertEqual(Path(value["worktree"]), worktree)
+
+    def test_authorized_reset_recovers_after_merge(self):
+        self.assert_interrupted_reset_recovers("merge")
+
+    def test_authorized_reset_recovers_after_checkout(self):
+        self.assert_interrupted_reset_recovers("checkout")
+
+    def test_authorized_reset_recovers_after_control_removal(self):
+        self.assert_interrupted_reset_recovers("remove")
+
+    def test_authorized_reset_recovers_after_supersede(self):
+        self.assert_interrupted_reset_recovers("supersede")
+
+    def test_operator_reset_recovers_after_receipt_removal(self):
+        authorized, controller = self.interrupted_operator_reset_after_receipt_removal()
+
+        value = self.command("claim", controller_state=controller)
+
+        self.assertEqual(value["ticket"], "T-110")
+        self.assertEqual(value["preprovider_reset_head"], authorized)
+        worktree = Path(value["worktree"])
+        self.assertIn(
+            "State: Ready", (worktree / "factory/tickets/T-110.md").read_text(),
+        )
+        reset = run(
+            "git", "log", "-1", "--format=%H",
+            "--grep=^T-110: supersede pre-provider control state$", cwd=worktree,
+        ).strip()
+        subjects = run(
+            "git", "log", "--format=%s", f"{reset}..HEAD", cwd=worktree,
+        ).splitlines()
+        self.assertEqual(subjects.count("T-110: operator ready receipt 1"), 1)
+
+    def test_operator_reset_preserves_ignored_cell_data(self):
+        _authorized, controller = self.interrupted_operator_reset_after_receipt_removal()
+        ignored = self.worktrees / "cell-1/factory/.dispatch-leases/scratch"
+        ignored.parent.mkdir()
+        ignored.write_text("preserve me\n")
+
+        value = self.command(
+            "claim", expected=2, controller_state=controller,
+        )
+
+        self.assertIn("reset worktree changed before materialization", value["error"])
+        self.assertEqual(ignored.read_text(), "preserve me\n")
+
+    def test_authorized_reset_preserves_unrelated_local_commit(self):
+        authorized, worktree = self.interrupt_authorized_reset("arbitrary")
+        local = run("git", "rev-parse", "HEAD", cwd=worktree).strip()
+
+        value = self.command("claim", expected=2)
+
+        self.assertIn("divergent or unpushed", value["error"])
+        self.assertEqual(run("git", "rev-parse", "HEAD", cwd=worktree).strip(), local)
+        self.assertEqual((worktree / "arbitrary.txt").read_text(), "preserve me\n")
+        self.assertEqual(
+            run(
+                "git", "ls-remote", "--heads", str(self.remote),
+                "ticket/T-110", cwd=self.product,
+            ).split()[0],
+            authorized,
+        )
+
+    def test_authorized_reset_preserves_arbitrary_staged_ticket(self):
+        authorized, worktree = self.interrupt_authorized_reset("checkout")
+        alternate = self.root / "alternate-ticket.md"
+        alternate.write_text("arbitrary staged ticket\n")
+        blob = run("git", "hash-object", "-w", str(alternate), cwd=worktree).strip()
+        run(
+            "git", "update-index", "--cacheinfo", "100644", blob,
+            "factory/tickets/T-110.md", cwd=worktree,
+        )
+
+        value = self.command("claim", expected=2)
+
+        self.assertIn("ticket worktree is dirty", value["error"])
+        self.assertEqual(
+            run(
+                "git", "rev-parse", ":factory/tickets/T-110.md", cwd=worktree,
+            ).strip(),
+            blob,
+        )
+        self.assertEqual(
+            run(
+                "git", "ls-remote", "--heads", str(self.remote),
+                "ticket/T-110", cwd=self.product,
+            ).split()[0],
+            authorized,
+        )
+
+    def assert_reset_push_cas_refuses(self, race):
+        self.write_contract_18_qualification()
+        run("git", "add", ".", cwd=self.product)
+        run("git", "commit", "-qm", "prepare qualification", cwd=self.product)
+        run("git", "push", "-q", "origin", "main", cwd=self.product)
+        authorized = self.stale_preprovider_branch()
+        self.authorize_preprovider_reset(authorized)
+        worktree = self.worktrees / "cell-1"
+        run("git", "worktree", "add", "-q", str(worktree), "ticket/T-110", cwd=self.product)
+        main = run("git", "rev-parse", "origin/main", cwd=self.product).strip()
+        original_git = DISPATCH.git
+        raced = False
+
+        def race_then_git(root, *arguments, **kwargs):
+            nonlocal raced
+            if arguments[0] == "push" and not raced:
+                raced = True
+                destination = ":refs/heads/ticket/T-110"
+                if race == "rewind":
+                    destination = "main:refs/heads/ticket/T-110"
+                subprocess.run(
+                    [
+                        "git", "-C", str(self.product), "push", "-q",
+                        *(["--force"] if race == "rewind" else []),
+                        "origin", destination,
+                    ],
+                    text=True, capture_output=True, check=True,
+                )
+            return original_git(root, *arguments, **kwargs)
+
+        with (
+            mock.patch.object(DISPATCH, "git", side_effect=race_then_git),
+            self.assertRaisesRegex(DISPATCH.DispatchError, "stale info|rejected"),
+        ):
+            DISPATCH.reconcile_preprovider_branch(
+                self.product, worktree, "T-110", "ticket/T-110",
+                str(self.remote), main, authorized,
+            )
+        observed = run(
+            "git", "ls-remote", "--heads", str(self.remote), "ticket/T-110",
+            cwd=self.product,
+        ).split()
+        if race == "delete":
+            self.assertEqual(observed, [])
+        else:
+            self.assertEqual(observed[0], main)
+
+    def test_authorized_reset_push_refuses_remote_deletion_race(self):
+        self.assert_reset_push_cas_refuses("delete")
+
+    def test_authorized_reset_push_refuses_remote_rewind_race(self):
+        self.assert_reset_push_cas_refuses("rewind")
+
+    def test_authorized_reset_does_not_adopt_arbitrary_descendant(self):
+        self.write_contract_18_qualification()
+        ticket = self.product / "factory/tickets/T-110.md"
+        ticket.write_text(ticket.read_text().replace("State: Ready", "State: Backlog"))
+        run("git", "add", ".", cwd=self.product)
+        run("git", "commit", "-qm", "prepare backlog qualification", cwd=self.product)
+        run("git", "push", "-q", "origin", "main", cwd=self.product)
+        authorized = self.stale_operator_ready_branch()
+        self.authorize_preprovider_reset(authorized)
+        run("git", "branch", "-D", "ticket/T-110", cwd=self.product)
+        run("git", "switch", "-qc", "arbitrary-descendant", cwd=self.product)
+        (self.product / "application.txt").write_text("unrelated product work\n")
+        run("git", "add", "application.txt", cwd=self.product)
+        run("git", "commit", "-qm", "unrelated product work", cwd=self.product)
+        descendant = run("git", "rev-parse", "HEAD", cwd=self.product).strip()
+        run(
+            "git", "push", "-q", "--force", "origin",
+            "HEAD:refs/heads/ticket/T-110", cwd=self.product,
+        )
+        run("git", "switch", "-q", "main", cwd=self.product)
+        mapping = json.loads(self.mapping.read_text())
+        mapping["tickets"]["T-110"].pop("operator")
+        self.mapping.write_text(json.dumps(mapping) + "\n")
+
+        value = self.command("claim")
+
+        self.assertNotEqual(value.get("ticket"), "T-110")
+        self.assertEqual(
+            run(
+                "git", "ls-remote", "--heads", str(self.remote),
+                "ticket/T-110", cwd=self.product,
+            ).split()[0],
+            descendant,
+        )
+        self.assertFalse(DISPATCH.git_succeeds(
+            self.product, "cat-file", "-e",
+            "refs/remotes/origin/ticket/T-110:factory/receipts/T-110/ready-2.json",
+        ))
+
+    def test_reset_ready_materialization_binds_the_reconciled_head(self):
+        _authorized, _controller, main, resets = self.reconciled_operator_reset()
+        self.assertNotEqual(resets["T-110"][1], main)
+        run(
+            "git", "push", "-q", "--force", "origin",
+            "main:refs/heads/ticket/T-110", cwd=self.product,
+        )
+
+        with self.assertRaisesRegex(
+            DISPATCH.DispatchError, "reset ticket branch is unavailable",
+        ):
+            DISPATCH.materialize_reset_backlog(
+                self.product, self.product / "factory", self.mapping,
+                str(self.remote), resets, main,
+            )
+        self.assertEqual(
+            run(
+                "git", "ls-remote", "--heads", str(self.remote),
+                "ticket/T-110", cwd=self.product,
+            ).split()[0],
+            main,
+        )
+
+    def test_pushed_operator_reset_response_loss_replays_to_claim(self):
+        authorized, controller, _main, resets = self.reconciled_operator_reset()
+        reset_head = resets["T-110"][1]
+
+        value = self.command("claim", controller_state=controller)
+
+        self.assertEqual(value["ticket"], "T-110")
+        self.assertEqual(value["preprovider_reset_head"], authorized)
+        remote = run(
+            "git", "ls-remote", "--heads", str(self.remote), "ticket/T-110",
+            cwd=self.product,
+        ).split()[0]
+        subjects = run(
+            "git", "log", "--format=%s", f"{reset_head}..{remote}", cwd=self.product,
+        ).splitlines()
+        self.assertEqual(subjects.count("T-110: operator ready receipt 1"), 1)
+        self.assertIn("T-110: materialize ticket state", subjects)
+
+    def test_ready_materialization_refuses_remote_race_before_child_fetch(self):
+        _authorized, controller, main, resets = self.reconciled_operator_reset()
+        original_run = subprocess.run
+
+        def advance_then_run(command, *args, **kwargs):
+            if any(str(item).endswith("/operator-cli.py") for item in command):
+                original_run(
+                    [
+                        "git", "-C", str(self.product), "push", "-q", "--force",
+                        "origin", "main:refs/heads/ticket/T-110",
+                    ],
+                    text=True, capture_output=True, check=True,
+                )
+            return original_run(command, *args, **kwargs)
+
+        with (
+            mock.patch.object(DISPATCH.subprocess, "run", side_effect=advance_then_run),
+            mock.patch.dict(os.environ, {
+                "FACTORY_CONTROLLER_STATE_DIR": str(self.root / "controller"),
+                "FACTORY_CERTIFIED_PRODUCT_ORIGIN": str(self.remote),
+                "FACTORY_RELEASE_CONTRACT_VERSION": "2.0.0",
+            }),
+            self.assertRaisesRegex(
+                DISPATCH.DispatchError, "operator materialization base changed",
+            ),
+        ):
+            DISPATCH.materialize_reset_backlog(
+                self.product, self.product / "factory", self.mapping,
+                str(self.remote), resets, main,
+            )
+        self.assertEqual(
+            run(
+                "git", "ls-remote", "--heads", str(self.remote),
+                "ticket/T-110", cwd=self.product,
+            ).split()[0],
+            main,
+        )
+        retry = self.command(
+            "claim", controller_state=controller, contract="2.0.0",
+        )
+        self.assertNotEqual(retry.get("ticket"), "T-110")
+        self.assertFalse(DISPATCH.git_succeeds(
+            self.product, "cat-file", "-e",
+            "refs/remotes/origin/ticket/T-110:factory/receipts/T-110/ready-1.json",
+        ))
+
+    def test_operator_ready_reset_refuses_protected_route_plan(self):
+        self.write_contract_18_qualification()
+        ticket = self.product / "factory/tickets/T-110.md"
+        ticket.write_text(ticket.read_text().replace("State: Ready", "State: Backlog"))
+        plan = self.product / "factory/route-plans/T-110.json"
+        plan.parent.mkdir()
+        plan.write_text(json.dumps({
+            "kit_sha": "a" * 40,
+            "schema": "ticket-model-route-plan/v1",
+            "ticket": "T-110",
+        }) + "\n")
+        run("git", "add", ".", cwd=self.product)
+        run("git", "commit", "-qm", "protect route plan", cwd=self.product)
+        run("git", "push", "-q", "origin", "main", cwd=self.product)
+        old_head = self.stale_operator_ready_branch()
+        self.authorize_preprovider_reset(old_head)
+
+        value = self.command("claim", expected=2)
+
+        self.assertIn("operator-ready state is invalid", value["error"])
+        self.assertEqual(
+            run(
+                "git", "ls-remote", "--heads", str(self.remote),
+                "ticket/T-110", cwd=self.product,
+            ).split()[0],
+            old_head,
+        )
+
+    def test_selected_branch_inspection_uses_configured_prefix_and_exact_head(self):
+        self.write_contract_18_qualification()
+        descriptor = self.product / "factory/PROJECT.env"
+        descriptor.write_text(descriptor.read_text().replace("ticket/", "canary/"))
+        run("git", "add", ".", cwd=self.product)
+        run("git", "commit", "-qm", "configure canary branch prefix", cwd=self.product)
+        run("git", "push", "-q", "origin", "main", cwd=self.product)
+        old_head = self.stale_preprovider_branch(prefix="canary/")
+        self.authorize_preprovider_reset(old_head, prefix="canary/")
+
+        inspected = DISPATCH.inspect_selected_preprovider_branches(
+            self.product, self.product / "factory", self.qualification_state(),
+            str(self.remote), exact_authorizations=True,
+        )
+        self.assertEqual(inspected, {"T-110": old_head})
+
+        run("git", "switch", "-q", "canary/T-110", cwd=self.product)
+        run("git", "commit", "--allow-empty", "-qm", "advance stale branch", cwd=self.product)
+        advanced = run("git", "rev-parse", "HEAD", cwd=self.product).strip()
+        run("git", "push", "-q", "origin", "canary/T-110", cwd=self.product)
+        run("git", "switch", "-q", "main", cwd=self.product)
+        with self.assertRaisesRegex(
+            DISPATCH.DispatchError,
+            "ticket remote branch does not match reset authorization",
+        ):
+            DISPATCH.inspect_selected_preprovider_branches(
+                self.product, self.product / "factory", self.qualification_state(),
+                str(self.remote), exact_authorizations=True,
+            )
+        self.assertNotEqual(advanced, old_head)
+
+    def test_selected_branch_inspection_refuses_missing_or_extra_authorization(self):
+        self.write_contract_18_qualification()
+        run("git", "add", ".", cwd=self.product)
+        run("git", "commit", "-qm", "prepare qualification", cwd=self.product)
+        run("git", "push", "-q", "origin", "main", cwd=self.product)
+        old_head = self.stale_preprovider_branch()
+        (self.product / "README.md").write_text("advance protected main\n")
+        run("git", "add", "README.md", cwd=self.product)
+        run("git", "commit", "-qm", "advance protected main", cwd=self.product)
+        run("git", "push", "-q", "origin", "main", cwd=self.product)
+        with self.assertRaisesRegex(
+            DISPATCH.DispatchError,
+            "T-110: divergent remote branch lacks reset authorization",
+        ):
+            DISPATCH.inspect_selected_preprovider_branches(
+                self.product, self.product / "factory", self.qualification_state(),
+                str(self.remote), exact_authorizations=True,
+            )
+        self.authorize_preprovider_reset(old_head)
+        authorization = self.product / (
+            "factory/qualification/preprovider-branch-resets.json"
+        )
+        value = json.loads(authorization.read_text())
+        value["resets"].append({
+            "branch": "ticket/T-111", "head": "d" * 40, "ticket": "T-111",
+        })
+        authorization.write_text(json.dumps(value) + "\n")
+        run("git", "add", str(authorization), cwd=self.product)
+        run("git", "commit", "-qm", "add unavailable reset", cwd=self.product)
+        run("git", "push", "-q", "origin", "main", cwd=self.product)
+        with self.assertRaisesRegex(
+            DISPATCH.DispatchError, "authorized pre-provider branch is unavailable",
+        ):
+            DISPATCH.inspect_selected_preprovider_branches(
+                self.product, self.product / "factory", self.qualification_state(),
+                str(self.remote), exact_authorizations=True,
+            )
+
+    def test_selected_branch_inspection_ignores_unselected_stale_branch(self):
+        self.write_contract_18_qualification()
+        run("git", "add", ".", cwd=self.product)
+        run("git", "commit", "-qm", "prepare qualification", cwd=self.product)
+        run("git", "push", "-q", "origin", "main", cwd=self.product)
+        run("git", "switch", "-qc", "ticket/T-999", cwd=self.product)
+        run("git", "commit", "--allow-empty", "-qm", "unrelated stale branch", cwd=self.product)
+        run("git", "push", "-q", "origin", "ticket/T-999", cwd=self.product)
+        run("git", "switch", "-q", "main", cwd=self.product)
+        (self.product / "README.md").write_text("advance selected base\n")
+        run("git", "add", "README.md", cwd=self.product)
+        run("git", "commit", "-qm", "advance selected base", cwd=self.product)
+        run("git", "push", "-q", "origin", "main", cwd=self.product)
+
+        self.assertEqual(
+            DISPATCH.inspect_selected_preprovider_branches(
+                self.product, self.product / "factory", self.qualification_state(),
+                str(self.remote), exact_authorizations=True,
+            ),
+            {},
+        )
+
+    def test_selected_descendant_accepts_no_auth_and_rejects_extra_auth(self):
+        self.write_contract_18_qualification()
+        run("git", "add", ".", cwd=self.product)
+        run("git", "commit", "-qm", "prepare qualification", cwd=self.product)
+        run("git", "push", "-q", "origin", "main", cwd=self.product)
+        run("git", "switch", "-qc", "ticket/T-111", cwd=self.product)
+        run("git", "commit", "--allow-empty", "-qm", "selected descendant", cwd=self.product)
+        descendant = run("git", "rev-parse", "HEAD", cwd=self.product).strip()
+        run("git", "push", "-q", "origin", "ticket/T-111", cwd=self.product)
+        run("git", "switch", "-q", "main", cwd=self.product)
+        self.assertEqual(
+            DISPATCH.inspect_selected_preprovider_branches(
+                self.product, self.product / "factory", self.qualification_state(),
+                str(self.remote), exact_authorizations=True,
+            ),
+            {},
+        )
+        self.authorize_preprovider_reset(descendant, ticket="T-111")
+        run(
+            "git", "push", "-q", str(self.remote),
+            "+main:refs/heads/ticket/T-111", cwd=self.product,
+        )
+        with self.assertRaisesRegex(
+            DISPATCH.DispatchError, "pre-provider reset authorization is not exact",
+        ):
+            DISPATCH.inspect_selected_preprovider_branches(
+                self.product, self.product / "factory", self.qualification_state(),
+                str(self.remote), exact_authorizations=True,
+            )
+
+    def test_dispatch_refuses_local_only_reset_authorization_without_mutation(self):
+        self.write_contract_18_qualification()
+        run("git", "add", ".", cwd=self.product)
+        run("git", "commit", "-qm", "prepare qualification", cwd=self.product)
+        run("git", "push", "-q", "origin", "main", cwd=self.product)
+        old_head = self.stale_preprovider_branch()
+        path = self.product / "factory/qualification/preprovider-branch-resets.json"
+        path.parent.mkdir(exist_ok=True)
+        path.write_text(json.dumps({
+            "factory_sha": "a" * 40,
+            "resets": [{
+                "branch": "ticket/T-110", "head": old_head, "ticket": "T-110",
+            }],
+            "schema": "nysa.software-factory.preprovider-branch-resets/v1",
+        }) + "\n")
+        run("git", "add", str(path), cwd=self.product)
+        run("git", "commit", "-qm", "local-only reset authorization", cwd=self.product)
+
+        value = self.command("claim", expected=2)
+
+        self.assertIn("reset authorization is not protected", value["error"])
+        self.assertEqual(
+            run(
+                "git", "ls-remote", "--heads", str(self.remote),
+                "ticket/T-110", cwd=self.product,
+            ).split()[0],
+            old_head,
+        )
+        self.assertFalse((self.product / "factory/.dispatch-leases/T-110.json").exists())
 
     def test_repository_test_refuses_preprovider_branch_recovery(self):
         self.write_contract_18_qualification()

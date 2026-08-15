@@ -332,14 +332,48 @@ def preprovider_reset_authorizations(
     factory: Path, qualification_state: dict[str, Any] | None, prefix: str
 ) -> dict[str, str]:
     path = factory / "qualification/preprovider-branch-resets.json"
-    if not path.exists():
-        return {}
     if (
         qualification_state is None
         or qualification_state.get("schema") != QUALIFICATION_SCHEMA_V2
     ):
+        if not path.exists():
+            return {}
         raise DispatchError("pre-provider branch resets require Contract 1.8 qualification")
-    value = json.loads(safe_file(path, "pre-provider branch reset authorization"))
+    product = factory.parent
+    relative = "factory/qualification/preprovider-branch-resets.json"
+    protected = git(product, "rev-parse", "refs/remotes/origin/main").strip()
+    entries = git(product, "ls-tree", protected, "--", relative).strip().split(None, 3)
+    local = path.exists() or path.is_symlink()
+    if not entries and not local:
+        return {}
+    if (
+        len(entries) != 4
+        or entries[:2] != ["100644", "blob"]
+        or entries[3] != relative
+        or not local
+        or git(product, "ls-tree", "HEAD", "--", relative).strip().split(None, 3)
+        != entries
+    ):
+        raise DispatchError(
+            "pre-provider branch reset authorization is not protected"
+        )
+    try:
+        size = int(git(product, "cat-file", "-s", entries[2]))
+    except ValueError as error:
+        raise DispatchError(
+            "pre-provider branch reset authorization is invalid"
+        ) from error
+    if size < 0 or size > 100_000:
+        raise DispatchError(
+            "pre-provider branch reset authorization is oversized"
+        )
+    blob = git(product, "cat-file", "blob", entries[2])
+    raw = safe_file(path, "pre-provider branch reset authorization", 100_000)
+    if raw != blob:
+        raise DispatchError(
+            "pre-provider branch reset authorization differs from protected main"
+        )
+    value = json.loads(raw)
     resets = value.get("resets")
     if (
         set(value) != {"factory_sha", "resets", "schema"}
@@ -499,6 +533,8 @@ def candidates(
                 if field(durable, "State").casefold() in {"ready", "canceled"}:
                     text = durable
                     break
+                if source.startswith("refs/remotes/"):
+                    break
         if field(text, "State").casefold() in {"canceled", "done"}:
             continue
         try:
@@ -519,6 +555,17 @@ def candidates(
             os.environ.get("FACTORY_CONTROLLER_STATE_DIR"),
         )
         effective = apply_operator_fields(text, operator)
+        if (
+            os.environ.get("FACTORY_RELEASE_CONTRACT_VERSION") == "2.0.0"
+            and field(text, "State").casefold() == "backlog"
+            and field(effective, "State").casefold() == "ready"
+        ):
+            refusals.append({
+                "error": "operator Ready materialization is pending",
+                "reason_code": "operator_materialization_pending",
+                "ticket": path.stem,
+            })
+            continue
         ticket_pin = field(effective, "Kit-SHA")
         if ticket_pin and ticket_pin != pin:
             continue
@@ -593,6 +640,34 @@ def worktree_records(product: Path) -> list[dict[str, str]]:
     return records
 
 
+def release_reset_cell(
+    product: Path, worktree_root: Path, branch: str, expected_head: str,
+) -> None:
+    matches = [
+        item for item in worktree_records(product)
+        if item.get("branch") == f"refs/heads/{branch}"
+    ]
+    if not matches:
+        return
+    if len(matches) != 1:
+        raise DispatchError("reset branch is checked out more than once")
+    destination = Path(matches[0].get("worktree", "")).resolve(strict=True)
+    if destination.parent != worktree_root or not re.fullmatch(
+        r"cell-[1-6]", destination.name,
+    ):
+        raise DispatchError("reset branch is checked out outside a trusted cell")
+    safe_directory(destination, "reset worktree")
+    if (
+        git(
+            destination, "status", "--porcelain=v1", "-z",
+            "--untracked-files=all", "--ignored", "--ignore-submodules=none",
+        )
+        or git(destination, "rev-parse", "HEAD").strip() != expected_head
+    ):
+        raise DispatchError("reset worktree changed before materialization")
+    git(product, "worktree", "remove", "--force", str(destination))
+
+
 def ticket_without_control(text: str) -> str:
     return "\n".join(
         line
@@ -603,14 +678,12 @@ def ticket_without_control(text: str) -> str:
 
 def validate_preprovider_branch(
     product: Path,
-    worktree: Path,
     ticket: str,
     branch: str,
-    remote: str,
     main: str,
     authorized_head: str,
+    remote_head: str,
 ) -> str:
-    remote_head = git(worktree, "rev-parse", "HEAD").strip()
     if remote_head != authorized_head:
         raise DispatchError("ticket remote branch does not match reset authorization")
     base = git(product, "merge-base", main, remote_head).strip()
@@ -623,6 +696,102 @@ def validate_preprovider_branch(
     changed = set(
         git(product, "diff", "--name-only", f"{base}..{remote_head}").splitlines()
     )
+    receipt_paths = [
+        path for path in changed
+        if re.fullmatch(
+            rf"factory/receipts/{re.escape(ticket)}/ready-([1-9][0-9]*)[.]json",
+            path,
+        )
+    ]
+    if len(receipt_paths) == 1 and changed == {ticket_path, receipt_paths[0]}:
+        receipt_path = receipt_paths[0]
+        sequence = int(re.search(r"ready-([0-9]+)[.]json$", receipt_path).group(1))
+        commits = [
+            tuple(line.split("\0"))
+            for line in git(
+                product, "log", "--first-parent", "--reverse",
+                "--format=%H%x00%P%x00%an%x00%ae%x00%s",
+                f"{base}..{remote_head}",
+            ).splitlines()
+        ]
+        previous = base
+        materialized = 0
+        operator_seen = False
+        for commit in commits:
+            if len(commit) != 5 or commit[1] != previous:
+                raise DispatchError("pre-provider branch commits are not canonical")
+            paths = git(
+                product, "diff-tree", "--no-commit-id", "--name-only",
+                "-r", commit[0],
+            ).splitlines()
+            if (
+                commit[2:5]
+                == ("Factory Operator", "operator@local",
+                    f"{ticket}: operator ready receipt {sequence}")
+                and paths == [receipt_path]
+            ):
+                operator_seen = True
+            elif (
+                operator_seen
+                and materialized == 0
+                and commit[2:5]
+                == ("Software Factory", "factory@local",
+                    f"{ticket}: materialize ticket state")
+                and paths == [ticket_path]
+            ):
+                before = git(product, "show", f"{previous}:{ticket_path}")
+                after = git(product, "show", f"{commit[0]}:{ticket_path}")
+                expected = re.sub(
+                    r"^State:\s*Backlog\s*$", "State: Ready", before,
+                    count=1, flags=re.I | re.M,
+                )
+                if after != expected:
+                    raise DispatchError(
+                        "pre-provider materialize commit is not canonical"
+                    )
+                materialized = 1
+            else:
+                raise DispatchError("pre-provider branch commits are not canonical")
+            previous = commit[0]
+        base_ticket = git(product, "show", f"{base}:{ticket_path}")
+        main_ticket = git(product, "show", f"{main}:{ticket_path}")
+        remote_ticket = git(product, "show", f"{remote_head}:{ticket_path}")
+        try:
+            receipt = json.loads(git(product, "show", f"{remote_head}:{receipt_path}"))
+        except json.JSONDecodeError as error:
+            raise DispatchError("pre-provider operator receipt is invalid") from error
+        if (
+            not commits
+            or materialized != 1
+            or ticket_without_control(base_ticket)
+            != ticket_without_control(main_ticket)
+            or ticket_without_control(base_ticket)
+            != ticket_without_control(remote_ticket)
+            or field(base_ticket, "State").lower() != "backlog"
+            or field(main_ticket, "State").lower() != "backlog"
+            or field(remote_ticket, "State").lower() != "ready"
+            or field(main_ticket, "Kit-SHA")
+            or field(remote_ticket, "Kit-SHA")
+            or git_succeeds(product, "cat-file", "-e", f"{main}:{plan_path}")
+            or git_succeeds(product, "cat-file", "-e", f"{main}:{receipt_path}")
+            or not isinstance(receipt, dict)
+            or set(receipt) != {
+                "action", "audit", "consumed", "issued_at", "payload",
+                "receipt_sha256", "schema", "sequence", "ticket",
+            }
+            or receipt.get("schema")
+            != "nysa.software-factory.operator-receipt/v1"
+            or receipt.get("action") != "ready"
+            or receipt.get("audit") != "no-authority"
+            or receipt.get("consumed") is not False
+            or receipt.get("payload") != {}
+            or receipt.get("sequence") != sequence
+            or receipt.get("ticket") != ticket
+            or not isinstance(receipt.get("issued_at"), str)
+            or not re.fullmatch(r"[0-9a-f]{64}", receipt.get("receipt_sha256", ""))
+        ):
+            raise DispatchError("pre-provider operator-ready state is invalid")
+        return remote_head
     if changed != {ticket_path, plan_path}:
         raise DispatchError("pre-provider branch is not control-only")
     commits = [
@@ -717,6 +886,63 @@ def validate_preprovider_branch(
     return remote_head
 
 
+def inspect_selected_preprovider_branches(
+    product: Path,
+    factory: Path,
+    qualification_state: dict[str, Any],
+    remote: str,
+    *,
+    exact_authorizations: bool = False,
+) -> dict[str, str]:
+    """Validate selected remote branches without changing them."""
+    if qualification_state.get("schema") != QUALIFICATION_SCHEMA_V2:
+        return {}
+    prefix = ticket_branch_prefix(factory)
+    git(product, "fetch", "--quiet", remote, "+main:refs/remotes/origin/main")
+    main = git(product, "rev-parse", "refs/remotes/origin/main").strip()
+    if not SHA.fullmatch(main):
+        raise DispatchError("protected main is unavailable")
+    authorizations = preprovider_reset_authorizations(
+        factory, qualification_state, prefix,
+    )
+    divergent = {}
+    for ticket in sorted(qualification_state["tickets"]):
+        branch = prefix + ticket
+        reference = f"refs/heads/{branch}"
+        observed = git(
+            product, "ls-remote", "--heads", "--", remote, reference,
+        ).split()
+        if not observed:
+            if ticket in authorizations:
+                raise DispatchError("authorized pre-provider branch is unavailable")
+            continue
+        if (
+            len(observed) != 2
+            or not SHA.fullmatch(observed[0])
+            or observed[1] != reference
+        ):
+            raise DispatchError("ticket remote branch result is ambiguous")
+        remote_head = observed[0]
+        git(
+            product, "fetch", "--quiet", remote,
+            f"+{reference}:refs/remotes/origin/{branch}",
+        )
+        if git_succeeds(product, "merge-base", "--is-ancestor", main, remote_head):
+            continue
+        authorized_head = authorizations.get(ticket, "")
+        if not authorized_head:
+            raise DispatchError(
+                f"{ticket}: divergent remote branch lacks reset authorization"
+            )
+        validate_preprovider_branch(
+            product, ticket, branch, main, authorized_head, remote_head,
+        )
+        divergent[ticket] = remote_head
+    if exact_authorizations and set(authorizations) != set(divergent):
+        raise DispatchError("pre-provider reset authorization is not exact")
+    return divergent
+
+
 def reconcile_preprovider_branch(
     product: Path,
     worktree: Path,
@@ -726,11 +952,22 @@ def reconcile_preprovider_branch(
     main: str,
     authorized_head: str,
 ) -> str:
+    remote_head = git(worktree, "rev-parse", "HEAD").strip()
     remote_head = validate_preprovider_branch(
-        product, worktree, ticket, branch, remote, main, authorized_head,
+        product, ticket, branch, main, authorized_head, remote_head,
     )
     ticket_path = f"factory/tickets/{ticket}.md"
     plan_path = f"factory/route-plans/{ticket}.json"
+    base = git(product, "merge-base", main, remote_head).strip()
+    receipt_paths = [
+        path for path in git(
+            product, "diff", "--name-only", f"{base}..{remote_head}",
+        ).splitlines()
+        if re.fullmatch(
+            rf"factory/receipts/{re.escape(ticket)}/ready-[1-9][0-9]*[.]json",
+            path,
+        )
+    ]
     git(
         worktree,
         "-c", "user.name=Software Factory",
@@ -738,17 +975,24 @@ def reconcile_preprovider_branch(
         "merge", "--no-ff", "--no-edit", "-X", "theirs", main,
     )
     git(worktree, "checkout", main, "--", ticket_path)
-    git(worktree, "rm", "-f", "--", plan_path)
+    removed = [
+        path for path in (plan_path, *receipt_paths)
+        if git_succeeds(worktree, "cat-file", "-e", f"HEAD:{path}")
+    ]
+    if removed:
+        git(worktree, "rm", "-f", "--", *removed)
     git(
         worktree,
         "-c", "user.name=Software Factory",
         "-c", "user.email=factory@local",
         "commit", "-m", f"{ticket}: supersede pre-provider control state",
-        "--", ticket_path, plan_path,
+        "--", ticket_path, *removed,
     )
     reset_head = git(worktree, "rev-parse", "HEAD").strip()
     git(
-        worktree, "push", "--no-force", "--", remote,
+        worktree, "push",
+        f"--force-with-lease=refs/heads/{branch}:{authorized_head}",
+        "--", remote,
         f"{reset_head}:refs/heads/{branch}",
     )
     observed = git(
@@ -765,15 +1009,98 @@ def reconcile_preprovider_branch(
     return remote_head
 
 
+def interrupted_reset_head(
+    product: Path, ticket: str, branch: str, authorized_head: str,
+    main: str, local: str, *, completed: bool = False,
+) -> bool:
+    def commit(value: str) -> tuple[str, ...]:
+        return tuple(git(
+            product, "show", "-s", "--format=%H%x00%P%x00%an%x00%ae%x00%s",
+            value,
+        ).strip().split("\0"))
+
+    def merge(value: str) -> bool:
+        item = commit(value)
+        return (
+            len(item) == 5
+            and item[1].split() == [authorized_head, main]
+            and item[2:4] == ("Software Factory", "factory@local")
+            and item[4] == f"Merge commit '{main}' into {branch}"
+        )
+
+    item = commit(local)
+    if merge(local):
+        return not completed
+    return (
+        len(item) == 5
+        and len(item[1].split()) == 1
+        and merge(item[1])
+        and item[2:5] == (
+            "Software Factory", "factory@local",
+            f"{ticket}: supersede pre-provider control state",
+        )
+        and git(product, "rev-parse", f"{local}^{{tree}}").strip()
+        == git(product, "rev-parse", f"{main}^{{tree}}").strip()
+    )
+
+
+def interrupted_reset_dirty(
+    product: Path, worktree: Path, ticket: str, authorized_head: str,
+    main: str, local: str,
+) -> bool:
+    branch = ticket_branch_prefix(product / "factory") + ticket
+    if not interrupted_reset_head(
+        product, ticket, branch, authorized_head, main, local,
+    ):
+        return False
+    base = git(product, "merge-base", main, authorized_head).strip()
+    ticket_path = f"factory/tickets/{ticket}.md"
+    allowed = {ticket_path, f"factory/route-plans/{ticket}.json"}
+    allowed.update(
+        path for path in git(
+            product, "diff", "--name-only", f"{base}..{authorized_head}",
+        ).splitlines()
+        if re.fullmatch(
+            rf"factory/receipts/{re.escape(ticket)}/ready-[1-9][0-9]*[.]json",
+            path,
+        )
+    )
+    changed = set(git(worktree, "diff", "HEAD", "--name-only").splitlines())
+    changed.update(
+        git(worktree, "diff", "--cached", "--name-only").splitlines()
+    )
+    main_blob = git(product, "rev-parse", f"{main}:{ticket_path}").strip()
+    if (
+        not changed
+        or not changed <= allowed
+        or git(worktree, "ls-files", "--others", "--exclude-standard")
+        or ticket_path not in changed
+        or git(worktree, "hash-object", ticket_path).strip() != main_blob
+        or git(worktree, "rev-parse", f":{ticket_path}", check=False).strip()
+        != main_blob
+    ):
+        return False
+    for path in changed - {ticket_path}:
+        if (worktree / path).exists() or git_succeeds(
+            worktree, "cat-file", "-e", f":{path}",
+        ):
+            return False
+    return True
+
+
 def prepare_worktree(
     product: Path, worktree_root: Path, ticket: str, prefix: str, remote: str,
     authorized_reset_head: str = "",
+    protected_main: str = "",
 ) -> tuple[Path, bool, bool, str]:
     branch = prefix + ticket
     safe_directory(worktree_root, "worktree root", owner_only=True)
     records = worktree_records(product)
-    git(product, "fetch", "--quiet", remote, "+main:refs/remotes/origin/main")
-    main = git(product, "rev-parse", "origin/main").strip()
+    if protected_main:
+        main = protected_main
+    else:
+        git(product, "fetch", "--quiet", remote, "+main:refs/remotes/origin/main")
+        main = git(product, "rev-parse", "origin/main").strip()
     remote_branch = git(
         product, "ls-remote", "--heads", remote, f"refs/heads/{branch}"
     ).split()
@@ -789,12 +1116,33 @@ def prepare_worktree(
         ):
             raise DispatchError("ticket branch is checked out outside a trusted cell")
         safe_directory(destination, "ticket worktree")
-        if git(destination, "status", "--porcelain=v1", "-z"):
-            raise DispatchError("ticket worktree is dirty")
         local = git(destination, "rev-parse", "HEAD").strip()
         expected = remote_branch[0] if remote_branch else main
+        dirty = bool(git(destination, "status", "--porcelain=v1", "-z"))
+        if dirty:
+            if (
+                authorized_reset_head
+                and expected == authorized_reset_head
+                and interrupted_reset_dirty(
+                    product, destination, ticket, expected, main, local,
+                )
+            ):
+                git(destination, "reset", "--hard", expected)
+                local = expected
+            else:
+                raise DispatchError("ticket worktree is dirty")
         if local != expected:
-            raise DispatchError("ticket worktree branch is divergent or unpushed")
+            if (
+                authorized_reset_head
+                and expected == authorized_reset_head
+                and interrupted_reset_head(
+                    product, ticket, branch, expected, main, local,
+                )
+            ):
+                git(destination, "reset", "--hard", expected)
+                local = expected
+            else:
+                raise DispatchError("ticket worktree branch is divergent or unpushed")
         reset_head = ""
         if remote_branch and not git_succeeds(
             product, "merge-base", "--is-ancestor", main, remote_branch[0]
@@ -880,9 +1228,8 @@ def prepare_worktree(
 
 def reconcile_authorized_preprovider_branches(
     product: Path, worktree_root: Path, prefix: str, remote: str,
-    authorizations: dict[str, str],
-) -> dict[str, str]:
-    main = git(product, "rev-parse", "origin/main").strip()
+    authorizations: dict[str, str], main: str,
+) -> dict[str, tuple[str, str]]:
     reset = {}
     for ticket, authorized_head in sorted(authorizations.items()):
         branch = prefix + ticket
@@ -897,20 +1244,95 @@ def reconcile_authorized_preprovider_branches(
             f"+refs/heads/{branch}:refs/remotes/origin/{branch}",
         )
         if git_succeeds(product, "merge-base", "--is-ancestor", main, remote_head):
+            ticket_path = f"factory/tickets/{ticket}.md"
+            if (
+                field(git(product, "show", f"{main}:{ticket_path}"), "State").lower()
+                == "backlog"
+                and field(
+                    git(product, "show", f"{remote_head}:{ticket_path}"), "State"
+                ).lower() == "backlog"
+                and interrupted_reset_head(
+                    product, ticket, branch, authorized_head, main,
+                    remote_head, completed=True,
+                )
+            ):
+                reset[ticket] = (authorized_head, remote_head)
+                release_reset_cell(
+                    product, worktree_root, branch, remote_head,
+                )
             continue
         if remote_head != authorized_head:
             raise DispatchError("ticket remote branch does not match reset authorization")
         destination, created, branch_created, reset_head = prepare_worktree(
-            product, worktree_root, ticket, prefix, remote, authorized_head
+            product, worktree_root, ticket, prefix, remote, authorized_head,
+            main,
         )
         if reset_head != authorized_head:
             raise DispatchError("authorized pre-provider branch was not reset")
-        reset[ticket] = reset_head
-        if created:
-            git(product, "worktree", "remove", "--force", str(destination))
+        reset[ticket] = (
+            reset_head, git(destination, "rev-parse", "HEAD").strip(),
+        )
+        needs_materialization = field(
+            git(product, "show", f"{main}:factory/tickets/{ticket}.md"), "State",
+        ).casefold() == "backlog"
+        if created or needs_materialization:
+            if created:
+                git(product, "worktree", "remove", "--force", str(destination))
+            else:
+                release_reset_cell(
+                    product, worktree_root, branch, reset[ticket][1],
+                )
             if branch_created:
                 git(product, "branch", "-D", branch)
     return reset
+
+
+def materialize_reset_backlog(
+    product: Path,
+    factory: Path,
+    mapping_path: Path,
+    remote: str,
+    resets: dict[str, tuple[str, str]],
+    main: str,
+) -> None:
+    state_dir = os.environ.get("FACTORY_CONTROLLER_STATE_DIR", "")
+    for ticket, (_, expected_head) in sorted(resets.items()):
+        ticket_path = f"factory/tickets/{ticket}.md"
+        if field(git(product, "show", f"{main}:{ticket_path}"), "State").lower() != "backlog":
+            continue
+        branch = ticket_branch_prefix(factory) + ticket
+        observed = git(
+            product, "ls-remote", "--heads", "--", remote,
+            f"refs/heads/{branch}",
+        ).split()
+        if len(observed) != 2 or observed[0] != expected_head:
+            raise DispatchError("reset ticket branch is unavailable")
+        git(
+            product, "fetch", "--quiet", remote,
+            f"+refs/heads/{branch}:refs/remotes/origin/{branch}",
+        )
+        current = field(
+            git(product, "show", f"{observed[0]}:{ticket_path}"), "State"
+        ).lower()
+        if current == "ready":
+            continue
+        if current != "backlog" or not state_dir:
+            raise DispatchError("reset ticket is not ready for materialization")
+        result = subprocess.run(
+            [
+                sys.executable, str(Path(__file__).with_name("operator-cli.py")),
+                "--product", str(product), "--state-dir", state_dir,
+                "--expected-base-sha", expected_head,
+                "ready", "--ticket", ticket,
+            ],
+            text=True, capture_output=True, check=False, timeout=300,
+            env={**os.environ, "FACTORY_OPERATOR_MAP": str(mapping_path)},
+        )
+        if result.returncode:
+            raise DispatchError(
+                result.stderr.strip() or result.stdout.strip()
+                or "reset ticket materialization failed"
+            )
 
 
 def create_lease(
@@ -997,7 +1419,7 @@ def main() -> None:
     created_branch = ""
     lease_created = False
     selected_ticket = ""
-    preprovider_resets: dict[str, str] = {}
+    preprovider_resets: dict[str, tuple[str, str]] = {}
     try:
         product = args.factory_root.resolve(strict=True)
         if any(not TICKET.fullmatch(item) for item in args.exclude_ticket):
@@ -1022,6 +1444,10 @@ def main() -> None:
         qualification_state = qualification(product, factory, maximum)
         validate_qualification_ticket_sources(product, qualification_state)
         prefix = ticket_branch_prefix(factory)
+        if qualification_state is not None:
+            inspect_selected_preprovider_branches(
+                product, factory, qualification_state, remote,
+            )
         reset_authorizations = preprovider_reset_authorizations(
             factory, qualification_state, prefix
         )
@@ -1044,8 +1470,26 @@ def main() -> None:
             )
             lock(launch_lock)
             held_launch = True
+            inspect_selected_preprovider_branches(
+                product, factory, qualification_state, remote,
+            )
+            protected_main = git(
+                product, "rev-parse", "refs/remotes/origin/main",
+            ).strip()
+            reset_authorizations = preprovider_reset_authorizations(
+                factory, qualification_state, prefix,
+            )
+            reset_authorizations = {
+                ticket: head for ticket, head in reset_authorizations.items()
+                if readiness_executable(product, ticket)
+            }
             preprovider_resets = reconcile_authorized_preprovider_branches(
-                product, args.worktree_root, prefix, remote, reset_authorizations
+                product, args.worktree_root, prefix, remote,
+                reset_authorizations, protected_main,
+            )
+            materialize_reset_backlog(
+                product, factory, mapping_path, remote, preprovider_resets,
+                protected_main,
             )
             launch_lock.rmdir()
             held_launch = False
@@ -1123,7 +1567,9 @@ def main() -> None:
             product, args.worktree_root, ticket["ticket"],
             prefix, remote, reset_authorizations.get(ticket["ticket"], ""),
         )
-        reset_head = reset_head or preprovider_resets.get(ticket["ticket"], "")
+        reset_head = reset_head or preprovider_resets.get(
+            ticket["ticket"], ("", ""),
+        )[0]
         if created:
             created_worktree = destination
         if branch_created:
