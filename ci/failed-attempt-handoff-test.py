@@ -249,6 +249,31 @@ class HandoffTest(unittest.TestCase):
         with self.assertRaisesRegex(HandoffError, "outside"):
             self.preview(expected_head=forbidden_head)
 
+    def test_committed_role_validation_allows_only_unchanged_symlinks(self):
+        link = self.repo / "src/baseline-link"
+        link.symlink_to("kept.txt")
+        git(self.repo, "add", "src/baseline-link")
+        git(self.repo, "commit", "-qm", "add protected baseline symlink")
+        baseline = git(self.repo, "rev-parse", "HEAD")
+
+        (self.repo / "src/kept.txt").write_text("allowed commit\n")
+        git(self.repo, "add", "src/kept.txt")
+        git(self.repo, "commit", "-qm", "allowed role progress")
+        head = git(self.repo, "rev-parse", "HEAD")
+        HANDOFF._validate_committed_changes(
+            self.repo, baseline, head, "builder", self.policy,
+        )
+
+        link.unlink()
+        link.symlink_to("deleted.txt")
+        git(self.repo, "add", "src/baseline-link")
+        git(self.repo, "commit", "-qm", "change protected baseline symlink")
+        with self.assertRaisesRegex(HandoffError, "unsafe mode"):
+            HANDOFF._validate_committed_changes(
+                self.repo, baseline, git(self.repo, "rev-parse", "HEAD"),
+                "builder", self.policy,
+            )
+
     def test_rejects_path_boundary_protected_binary_large_and_secret_content(self):
         cases = (
             ("outside.txt", b"text\n", self.policy, "outside"),

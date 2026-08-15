@@ -202,6 +202,8 @@ Failed-attempt handoff snapshots cover the Git tree, index, and non-ignored
 untracked files. Git-ignored dependency/build trees are outside that snapshot;
 every tracked or non-ignored symlink, hardlink, special file, nested repository,
 unsafe mode, or unsafe parent path remains forbidden.
+Historical committed-role validation may carry an unchanged symlink from its
+authenticated baseline, but any added, removed, or changed symlink still fails.
 
 ```bash
 # ~/.factory/global.env — no credentials in this file
