@@ -32,10 +32,11 @@ def main() -> int:
     if (os.environ.get("FACTORY_TEST_MODE") == "1" and
             os.environ.get("FACTORY_TRUSTED_TEST_HARNESS") == "1" and
             os.environ.get("FACTORY_TEST_LEASE_HEARTBEAT_IGNORE_TERM") == "1"):
-        def ignore(_signum, _frame):
-            return None
+        def wait_for_kill(_signum, _frame):
+            while True:
+                time.sleep(1)
 
-        handler = ignore
+        handler = wait_for_kill
     for selected in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         signal.signal(selected, handler)
     environment = os.environ.copy()
