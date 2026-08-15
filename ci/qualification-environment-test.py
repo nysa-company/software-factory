@@ -520,6 +520,62 @@ class QualificationEnvironmentTest(unittest.TestCase):
         run(self.product, "git", "push", "-q", str(remote), "main")
         return head
 
+    def qualification_control_selected_branch(self, remote: Path) -> str:
+        self.use_contract_2()
+        ready = self.stale_operator_ready_selected_branch(remote)
+        source_product_sha = run(
+            self.product, "git", "merge-base", "HEAD", ready,
+        )
+        ticket = "T-101"
+        ticket_path = self.product / f"factory/tickets/{ticket}.md"
+        run(self.product, "git", "switch", "-q", f"ticket/{ticket}")
+        ticket_path.write_text(ticket_path.read_text() + f"Kit-SHA: {self.sha}\n")
+        plan = self.product / f"factory/route-plans/{ticket}.json"
+        plan.parent.mkdir(exist_ok=True)
+        plan.write_text(json.dumps({
+            "kit_sha": self.sha,
+            "schema": "ticket-model-route-plan/v1",
+            "ticket": ticket,
+        }) + "\n")
+        run(self.product, "git", "add", str(ticket_path), str(plan))
+        run(
+            self.product, "git", "-c", "user.name=Software Factory",
+            "-c", "user.email=factory@local", "commit", "-qm",
+            f"{ticket}: pin kit and model route plan",
+        )
+        ticket_path.write_text(
+            ticket_path.read_text().replace("State: Ready", "State: Planning")
+        )
+        run(self.product, "git", "add", str(ticket_path))
+        run(self.product, "git", "commit", "-qm", f"{ticket}: plan qualification")
+        head = run(self.product, "git", "rev-parse", "HEAD")
+        run(self.product, "git", "push", "-q", str(remote), f"ticket/{ticket}")
+        run(self.product, "git", "switch", "-q", "main")
+
+        manifest_path = self.product / "factory/QUALIFICATION.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["generation"] = 2
+        manifest_path.write_text(json.dumps(manifest) + "\n")
+        authorization = self.product / (
+            "factory/qualification/preprovider-branch-resets.json"
+        )
+        authorization.write_text(json.dumps({
+            "factory_sha": self.sha,
+            "resets": [{
+                "branch": f"ticket/{ticket}", "head": head, "ticket": ticket,
+            }],
+            "schema": "nysa.software-factory.preprovider-branch-resets/v2",
+            "source_qualification": {
+                "factory_sha": self.sha,
+                "generation": 1,
+                "product_sha": source_product_sha,
+            },
+        }, sort_keys=True, separators=(",", ":")) + "\n")
+        run(self.product, "git", "add", str(manifest_path), str(authorization))
+        run(self.product, "git", "commit", "-qm", "authorize qualification retry")
+        run(self.product, "git", "push", "-q", str(remote), "main")
+        return head
+
     def test_prepares_exact_read_only_candidate_once(self) -> None:
         args = argparse.Namespace(
             factory_root=self.factory,
@@ -786,6 +842,51 @@ class QualificationEnvironmentTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         claim = json.loads(result.stdout)
         self.assertIn("ticket", claim, claim)
+        self.assertEqual(claim["ticket"], "T-101")
+        self.assertEqual(claim["preprovider_reset_head"], expected)
+        self.assertIn(
+            "State: Ready",
+            Path(claim["worktree"])
+            .joinpath("factory/tickets/T-101.md").read_text(),
+        )
+
+    def test_prepare_accepts_authenticated_qualification_control_retry(self) -> None:
+        remote = self.use_real_branch_preflight()
+        expected = self.qualification_control_selected_branch(remote)
+        args = argparse.Namespace(
+            factory_root=self.factory, product_root=self.product,
+            project="relay", root=self.root,
+        )
+        with mock.patch.object(ENVIRONMENT, "qualification_publication_origin"):
+            value = ENVIRONMENT.prepare(args)
+        self.assertEqual(value["status"], "prepared")
+        self.assertEqual(
+            run(
+                self.product, "git", "ls-remote", "--heads", str(remote),
+                "refs/heads/ticket/T-101",
+            ).split()[0],
+            expected,
+        )
+        active = ENVIRONMENT.read(self.root / "projects/relay/active.json")
+        worktrees = self.root / "worktrees"
+        worktrees.mkdir(mode=0o700)
+        result = subprocess.run(
+            [
+                sys.executable, str(ROOT / "scripts/dispatch-plan.py"),
+                "--factory-root", str(self.product.resolve()),
+                "--worktree-root", str(worktrees.resolve()), "claim",
+            ],
+            text=True, capture_output=True, check=False, timeout=60,
+            env={
+                **os.environ,
+                "FACTORY_CERTIFIED_PRODUCT_ORIGIN": str(remote),
+                "FACTORY_CONTROLLER_STATE_DIR": active["controller_state_path"],
+                "FACTORY_OPERATOR_MAP": active["operator_map_path"],
+                "FACTORY_RELEASE_CONTRACT_VERSION": "2.0.0",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        claim = json.loads(result.stdout)
         self.assertEqual(claim["ticket"], "T-101")
         self.assertEqual(claim["preprovider_reset_head"], expected)
         self.assertIn(

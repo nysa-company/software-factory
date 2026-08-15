@@ -544,7 +544,13 @@ Preparation also inspects only the selected remote ticket branches before it
 creates runtime or authority state. An absent branch or one descending from
 protected main is ready; a divergent branch requires its exact protected reset
 authorization and must pass the same canonical control-history validator that
-dispatch rechecks immediately before its non-force reset.
+dispatch rechecks immediately before its exact-head CAS reset. A v2 reset may
+name an earlier qualification generation only when it binds that generation's
+Factory and product SHA and the exact branch head; the accepted delta is the
+durable Ready base or canonical Ready receipt, one route pin, and ticket-only
+qualification work.
+Any application path or source mismatch remains fail-closed. The narrower v1
+pre-provider grammar is unchanged.
 Reset replay accepts only the exact canonical merge, its exact ticket/control
 cleanup, or the resulting main-tree supersede commit. After a pushed
 operator-ready reset, dispatch reissues Ready through the normal one-use
