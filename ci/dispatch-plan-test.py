@@ -1720,6 +1720,39 @@ class DispatchPlanTest(unittest.TestCase):
         complete = state(set(tickets))
         self.assertEqual(complete["done"], complete["target_done"])
 
+    def test_qualification_v1_accepts_external_dependency_fulfillment(self):
+        tickets = self.write_qualification({"T-109": ["T-999"]})
+        selected_done = set()
+
+        def terminal(_product, ticket):
+            if ticket not in selected_done:
+                raise DISPATCH.ValidationError("not done")
+            return {"ticket": ticket}
+
+        with (
+            mock.patch.object(DISPATCH, "protected_terminal", side_effect=terminal),
+            mock.patch.object(
+                DISPATCH, "protected_dependency",
+                return_value={"ticket": "T-999"},
+            ) as dependency,
+        ):
+            initial = DISPATCH.qualification(
+                self.product, self.product / "factory", 4
+            )
+            selected_done.update(tickets[:3])
+            ramped = DISPATCH.qualification(
+                self.product, self.product / "factory", 4
+            )
+
+        self.assertEqual(initial["terminal"], {"T-999"})
+        self.assertEqual(initial["done"], 0)
+        self.assertEqual(ramped["terminal"], {"T-999", *tickets[:3]})
+        self.assertEqual(ramped["done"], 3)
+        self.assertEqual(dependency.call_args_list, [
+            mock.call(self.product, "T-999"),
+            mock.call(self.product, "T-999"),
+        ])
+
     def test_qualification_rejects_dependency_cycle(self):
         self.write_qualification({"T-100": ["T-101"], "T-101": ["T-100"]})
         with self.assertRaisesRegex(DISPATCH.DispatchError, "cycle"):
@@ -1737,6 +1770,30 @@ class DispatchPlanTest(unittest.TestCase):
         self.assertEqual(value["capacity"], 4)
         self.assertEqual(value["dependencies"], {ticket: () for ticket in tickets})
         self.assertEqual(value["done"], 0)
+
+    def test_contract_2_qualification_accepts_dependency_fulfillment(self):
+        tickets = self.write_contract_18_qualification(
+            target=3, dependencies={"T-110": ["T-999"]},
+            contract_version="2.0.0",
+        )
+        with (
+            mock.patch.object(
+                DISPATCH, "protected_terminal",
+                side_effect=DISPATCH.ValidationError("not done"),
+            ),
+            mock.patch.object(
+                DISPATCH, "protected_dependency",
+                return_value={"ticket": "T-999"},
+            ) as dependency,
+        ):
+            value = DISPATCH.qualification(
+                self.product, self.product / "factory", 3
+            )
+
+        self.assertEqual(value["tickets"], tickets)
+        self.assertEqual(value["done"], 0)
+        self.assertEqual(value["terminal"], {"T-999"})
+        dependency.assert_called_once_with(self.product, "T-999")
 
     def test_current_contract_qualifications_accept_only_supported_versions(self):
         for contract in ("1.8.0", "2.0.0"):
@@ -1785,12 +1842,16 @@ class DispatchPlanTest(unittest.TestCase):
             "T-112": ["T-111", "T-099"],
         })
 
-        def terminal(_product, ticket):
-            if ticket != "T-099":
-                raise DISPATCH.ValidationError("not done")
-            return {"ticket": ticket}
-
-        with mock.patch.object(DISPATCH, "protected_terminal", side_effect=terminal):
+        with (
+            mock.patch.object(
+                DISPATCH, "protected_terminal",
+                side_effect=DISPATCH.ValidationError("not done"),
+            ),
+            mock.patch.object(
+                DISPATCH, "protected_dependency",
+                return_value={"ticket": "T-099"},
+            ) as dependency,
+        ):
             value = DISPATCH.qualification(
                 self.product, self.product / "factory", 3
             )
@@ -1798,6 +1859,7 @@ class DispatchPlanTest(unittest.TestCase):
         self.assertEqual(value["capacity"], 3)
         self.assertEqual(value["dependencies"]["T-112"], ("T-111", "T-099"))
         self.assertEqual(value["terminal"], {"T-099"})
+        dependency.assert_called_once_with(self.product, "T-099")
 
         path = self.product / "factory/tickets/T-110.md"
         path.write_text(path.read_text() + "Depends-On: T-112\n")
