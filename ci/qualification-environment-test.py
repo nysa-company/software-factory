@@ -794,6 +794,107 @@ class QualificationEnvironmentTest(unittest.TestCase):
             .joinpath("factory/tickets/T-101.md").read_text(),
         )
 
+    def test_fresh_prepare_and_claim_accept_prior_canonical_ready_reset(self) -> None:
+        self.use_contract_2()
+        remote = self.use_real_branch_preflight()
+        self.stale_operator_ready_selected_branch(remote)
+        args = argparse.Namespace(
+            factory_root=self.factory, product_root=self.product,
+            project="relay", root=self.root,
+        )
+        with mock.patch.object(ENVIRONMENT, "qualification_publication_origin"):
+            ENVIRONMENT.prepare(args)
+        active = ENVIRONMENT.read(self.root / "projects/relay/active.json")
+        worktrees = self.root / "worktrees"
+        worktrees.mkdir(mode=0o700)
+        environment = {
+            **os.environ,
+            "FACTORY_CERTIFIED_PRODUCT_ORIGIN": str(remote),
+            "FACTORY_CONTROLLER_STATE_DIR": active["controller_state_path"],
+            "FACTORY_OPERATOR_MAP": active["operator_map_path"],
+            "FACTORY_RELEASE_CONTRACT_VERSION": "2.0.0",
+        }
+        first = subprocess.run(
+            [
+                sys.executable, str(ROOT / "scripts/dispatch-plan.py"),
+                "--factory-root", str(self.product.resolve()),
+                "--worktree-root", str(worktrees.resolve()), "claim",
+            ],
+            text=True, capture_output=True, check=True, timeout=60,
+            env=environment,
+        )
+        first_claim = json.loads(first.stdout)
+        first_ready = run(
+            self.product, "git", "ls-remote", "--heads", str(remote),
+            "refs/heads/ticket/T-101",
+        ).split()[0]
+        self.product.joinpath(
+            "factory/.dispatch-leases/T-101.json"
+        ).unlink()
+        run(
+            self.product, "git", "worktree", "remove", first_claim["worktree"],
+        )
+        run(self.product, "git", "branch", "-D", "ticket/T-101")
+
+        manifest_path = self.product / "factory/QUALIFICATION.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["generation"] = 2
+        manifest_path.write_text(json.dumps(manifest) + "\n")
+        authorization = self.product / (
+            "factory/qualification/preprovider-branch-resets.json"
+        )
+        value = json.loads(authorization.read_text())
+        value["resets"][0]["head"] = first_ready
+        authorization.write_text(
+            json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n"
+        )
+        run(self.product, "git", "add", str(manifest_path), str(authorization))
+        run(self.product, "git", "commit", "-qm", "prepare qualification generation 2")
+        run(self.product, "git", "push", "-q", str(remote), "main")
+
+        second_root = Path(tempfile.mkdtemp(
+            prefix="nysa-sf-qualification.x-", dir="/private/tmp",
+        )).resolve()
+        os.chmod(second_root, 0o700)
+        self.addCleanup(shutil.rmtree, second_root, ignore_errors=True)
+        second_args = argparse.Namespace(
+            factory_root=self.factory, product_root=self.product,
+            project="r", root=second_root,
+        )
+        with mock.patch.object(ENVIRONMENT, "qualification_publication_origin"):
+            prepared = ENVIRONMENT.prepare(second_args)
+        self.assertEqual(prepared["status"], "prepared")
+        second_active = ENVIRONMENT.read(
+            second_root / "projects/r/active.json"
+        )
+        second_worktrees = second_root / "worktrees"
+        second_worktrees.mkdir(mode=0o700)
+        second = subprocess.run(
+            [
+                sys.executable, str(ROOT / "scripts/dispatch-plan.py"),
+                "--factory-root", str(self.product.resolve()),
+                "--worktree-root", str(second_worktrees.resolve()), "claim",
+            ],
+            text=True, capture_output=True, check=True, timeout=60,
+            env={
+                **os.environ,
+                "FACTORY_CERTIFIED_PRODUCT_ORIGIN": str(remote),
+                "FACTORY_CONTROLLER_STATE_DIR": second_active[
+                    "controller_state_path"
+                ],
+                "FACTORY_OPERATOR_MAP": second_active["operator_map_path"],
+                "FACTORY_RELEASE_CONTRACT_VERSION": "2.0.0",
+            },
+        )
+        second_claim = json.loads(second.stdout)
+        self.assertEqual(second_claim["ticket"], "T-101")
+        self.assertEqual(second_claim["preprovider_reset_head"], first_ready)
+        self.assertIn(
+            "State: Ready",
+            Path(second_claim["worktree"])
+            .joinpath("factory/tickets/T-101.md").read_text(),
+        )
+
     def test_prepare_refuses_selected_branch_head_drift_before_state(self) -> None:
         remote = self.use_real_branch_preflight()
         authorized = self.stale_selected_branch(remote)

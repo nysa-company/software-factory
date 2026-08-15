@@ -253,6 +253,9 @@ provider state, ticket branches, or paid roles are created.
   refuses before runtime or authority publication when a divergent branch is
   missing its exact protected reset entry. Never generate, delete, or rewrite
   that authority inside the qualification lane.
+  A later generation may authorize the exact Ready head produced by an earlier
+  canonical reset. The shared validator proves the complete prior Ready/reset
+  lineage; do not flatten, rewrite, or manually clean that branch history.
   Retry the normal qualification driver after a reset interruption. It replays
   only canonical reset prefixes and exact pushed resets; do not edit the cell,
   receipt, operator map, or remote branch by hand.
