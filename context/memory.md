@@ -6035,3 +6035,16 @@ The product development lane retries only its no-side-effect exact Node 22
 readiness probe up to three times because a freshly created macOS sandbox can
 abort the first process while the unchanged second invocation succeeds.
 `npm ci` and every later mutating phase remain single-attempt and fail closed.
+
+## 2026-08-14 — Decision 425: Qualification has one deterministic run command
+
+Category: Reliability
+
+After the existing qualification preparer seals a lane, the sealed
+`qualification-run` launcher command composes Doctor, the mandatory
+process-level controller restart, ordinary controller/state-machine
+reconciliation, and final evidence reduction. It stops on typed waits or
+blocks and never writes Factory authority itself. Operators and agents rerun
+the same command only after authenticated input changes; hand-edited tickets,
+claims, leases, receipts, passports, journals, or fabricated evidence are not
+part of qualification.

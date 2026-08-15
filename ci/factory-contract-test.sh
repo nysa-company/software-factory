@@ -257,6 +257,10 @@ write_binding "$SHA_A" "$TREE_A" "$RELEASE_A"
 RECEIPT_A="$RECEIPT_ID"
 printf '%s\n' "$SHA_A" > "$PRODUCT/factory/KIT_PIN"
 run_launcher contract --json > "$TMP/contract-a.json"
+expect_refused repository-test-qualification-run run_launcher qualification-run --json
+grep -Fxq 'factory-launch: qualification run requires a sealed qualification launcher' \
+  "$TMP/refused-repository-test-qualification-run.out" ||
+  fail "repository-test qualification-run did not reach the sealed-lane guard"
 for command in incident-report publication-repair ci-rerun ticket-pr ticket-attest; do
   expect_refused "repository-test-$command" run_launcher "$command"
   grep -Fxq 'factory-launch: repository test mode refuses GitHub-mutating commands' \

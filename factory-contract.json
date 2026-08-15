@@ -835,6 +835,7 @@
     "scripts/budget-stage.py",
     "scripts/qualification-reducer.py",
     "scripts/qualification-environment.py",
+    "scripts/qualification-run.py",
     "scripts/provider-executor.py",
     "scripts/provider-isolated-run.py",
     "scripts/provider-recovery.py",

@@ -182,6 +182,21 @@ active record, controller state, provider state, operator map, runtime ledger,
 ports, temporary home, and product checkout. It does not modify the installed
 launcher or production active record.
 
+After preparation, one sealed command owns deterministic progress to the next
+authenticated boundary:
+
+```bash
+/private/tmp/nysa-sf-qualification.<lane>/releases/<factory-sha>/scripts/factory-launch \
+  <project> qualification-run --json
+```
+
+It requires Doctor `ok`, performs the one mandatory controller restart in a
+new process, runs the ordinary controller/state machine, and invokes the
+existing reducer only after terminal completion. `waiting` and `blocked` are
+typed stops: rerun the same command only after the named external or operator
+evidence changes. The driver never edits tickets, claims, leases, receipts,
+passports, journals, or provider state.
+
 Qualification must prove:
 
 1. the release installs and certifies in an isolated home;

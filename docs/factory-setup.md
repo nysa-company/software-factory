@@ -218,6 +218,17 @@ provider state, ticket branches, or paid roles are created.
   environment record is durable before the final `active.json` authority. Continue
   to use `--restore` only for its existing signed safe-pause boundary; there is
   no partial-lane cleanup command.
+  After preparation, use the sealed candidate's single deterministic driver:
+
+  ```bash
+  /private/tmp/nysa-sf-qualification.<lane>/releases/<factory-sha>/scripts/factory-launch \
+    <project> qualification-run --json
+  ```
+
+  It composes Doctor, the required process-level controller restart, ordinary
+  reconciliation, and final reduction. A typed wait is not retried until its
+  authenticated input changes; no manual state edit or agent-authored evidence
+  is part of the workflow.
   It also provisions the exact historical run artifacts named by those
   passports from its owner-only retained closure; any absent or altered
   manifest, output, or progress journal stops preparation before a paid role.

@@ -296,6 +296,12 @@ Cursor role or edit its claim/passport: exact identity-only success is recovered
 without another provider call, while a typed `qualification-fallback-refused`
 claim remains parked until a successor release contains the repair.
 
+The normal operator entrypoint is the sealed candidate's
+`factory-launch <project> qualification-run --json`. It performs that Doctor
+gate, the mandatory restart, reconciliation, and terminal reduction in code.
+On `waiting` or `blocked`, change only the named external/operator evidence and
+run the same command again; never hand-edit authority state.
+
 Kimi K2.6 remains disabled experimental through Claude CLI/OpenRouter/Moonshot.
 No live or billed pilot has run. Rotate the credential before a pilot; direct
 same-UID token exposure remains until a broker or OS isolation is used.
