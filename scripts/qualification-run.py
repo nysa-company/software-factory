@@ -309,7 +309,9 @@ def doctor_allows_reconcile(
         or any(
             not isinstance(checks[name], dict)
             or checks[name].get("status") != "ok"
-            for name in REQUIRED_CHECKS - {"transition_receipts"}
+            for name in REQUIRED_CHECKS - {
+                "contract_resume", "transition_receipts",
+            }
         )
         or any(
             not isinstance(checks[name], dict)
@@ -375,13 +377,61 @@ def doctor_allows_reconcile(
     )
     if not transition_ok and not transition_recovery:
         return False
+    contract = checks["contract_resume"]
+    contract_incidents = contract.get("incidents")
+    transition_by_ticket = {
+        item["ticket"]: item for item in incidents
+    } if transition_recovery else {}
+    contract_ok = (
+        contract.get("status") == "ok"
+        and (contract_incidents is None or contract_incidents == [])
+    )
+    contract_recovery = (
+        successor
+        and transition_recovery
+        and contract.get("status") == "warning"
+        and isinstance(contract_incidents, list)
+        and len(contract_incidents) == 1
+        and all(
+            isinstance(item, dict)
+            and set(item) == {
+                "actual_bytes", "blocked_receipt_sha256",
+                "changed_path_count", "expected_bytes",
+                "first_differing_line", "observed_at_epoch_ns",
+                "reason_code", "ticket",
+            }
+            and item.get("ticket") in selected
+            and item.get("reason_code") == "resume_commit_content_mismatch"
+            and isinstance(item.get("blocked_receipt_sha256"), str)
+            and DIGEST.fullmatch(item["blocked_receipt_sha256"])
+            and transition_by_ticket.get(item["ticket"], {}).get(
+                "transition_receipt_sha256"
+            ) == item["blocked_receipt_sha256"]
+            and transition_by_ticket[item["ticket"]]["observed_at_epoch_ns"]
+            <= item.get("observed_at_epoch_ns", -1)
+            and isinstance(item.get("observed_at_epoch_ns"), int)
+            and not isinstance(item["observed_at_epoch_ns"], bool)
+            and item["observed_at_epoch_ns"] >= 0
+            and isinstance(item.get("actual_bytes"), int)
+            and not isinstance(item["actual_bytes"], bool)
+            and item["actual_bytes"] >= 0
+            and item.get("expected_bytes") == item["actual_bytes"] + 1
+            and item.get("changed_path_count") == 1
+            and isinstance(item.get("first_differing_line"), int)
+            and not isinstance(item["first_differing_line"], bool)
+            and item["first_differing_line"] > 0
+            for item in contract_incidents
+        )
+    )
+    if not contract_ok and not contract_recovery:
+        return False
     runtime = checks["runtime"]
     if value.get("overall_status") == "ok":
-        return runtime.get("status") == "ok" and transition_ok
+        return runtime.get("status") == "ok" and transition_ok and contract_ok
     if value.get("overall_status") != "warning":
         return False
     if runtime.get("status") == "ok":
-        return transition_recovery
+        return transition_recovery and (contract_ok or contract_recovery)
     if runtime.get("status") != "warning":
         return False
 

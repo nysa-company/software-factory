@@ -218,7 +218,10 @@ authenticated boundary:
 It requires Doctor `ok`, the exact bounded runtime-only warning produced by
 active qualification leases, or—only for a successor—the exact selected-ticket
 `prior_kit_receipt` warning or idle selected-lease expiry that the controller
-itself must recover. During a long successor role, the controller renews every
+itself must recover. One compact-pair `resume_commit_content_mismatch` may
+accompany that prior receipt only when its ticket, receipt, one-path shape, and
+one-byte delta match exactly; the controller still revalidates the Git repair.
+During a long successor role, the controller renews every
 idle cohort lease and releases a parked lease instead of allowing either to
 expire. A parked semantic-round wait remains plannable without a lease; exact
 apply reacquires that lease before its ticket-only authorization commit. A warning

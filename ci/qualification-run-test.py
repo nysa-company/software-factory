@@ -472,6 +472,76 @@ raise SystemExit(code)
                 self.assertEqual(value["reason"], "doctor_not_ready")
                 self.assertEqual(self.called(), ["doctor"])
 
+    def test_successor_prior_receipt_allows_its_exact_contract_recovery(self) -> None:
+        manifest = json.loads(self.manifest.read_text(encoding="utf-8"))
+        manifest.update({
+            "budget_usd": "300.000000",
+            "mode": "successor",
+            "per_run_budget_usd": "10.000000",
+            "per_ticket_budget_usd": "100.000000",
+            "source_factory_sha": "b" * 40,
+        })
+        self.manifest.write_text(json.dumps(manifest), encoding="utf-8")
+        doctor = self.doctor("warning")
+        doctor["checks"]["runtime"]["status"] = "ok"
+        receipt = "c" * 64
+        doctor["checks"]["transition_receipts"] = {
+            "incidents": [{
+                "active_factory_sha": "a" * 40,
+                "observed_at_epoch_ns": 1,
+                "reason_code": "prior_kit_receipt",
+                "receipt_factory_sha": "b" * 40,
+                "ticket": "T-1",
+                "transition_receipt_sha256": receipt,
+            }],
+            "status": "warning",
+        }
+        doctor["checks"]["contract_resume"] = {
+            "incidents": [{
+                "actual_bytes": 10,
+                "blocked_receipt_sha256": receipt,
+                "changed_path_count": 1,
+                "expected_bytes": 11,
+                "first_differing_line": 2,
+                "observed_at_epoch_ns": 2,
+                "reason_code": "resume_commit_content_mismatch",
+                "ticket": "T-1",
+            }],
+            "status": "warning",
+        }
+
+        code, value = self.run_scenario({
+            "doctor": doctor,
+            "reconcile": [self.controller("waiting_for_target")],
+            "qualification": self.report(),
+        })
+        self.assertEqual((code, value["reason"]), (3, "cohort_not_accounted"))
+        self.assertEqual(self.called(), ["doctor", "reconcile"])
+
+        for label, key, changed in (
+            ("wrong-receipt", "blocked_receipt_sha256", "d" * 64),
+            ("wrong-reason", "reason_code", "resume_receipt_mismatch"),
+            ("multiple-paths", "changed_path_count", 2),
+            ("wide-byte-delta", "expected_bytes", 12),
+            ("early-refusal", "observed_at_epoch_ns", 0),
+            ("extra-field", "local_head", "e" * 40),
+        ):
+            with self.subTest(label=label):
+                self.calls.unlink(missing_ok=True)
+                changed_doctor = copy.deepcopy(doctor)
+                changed_doctor["checks"]["contract_resume"]["incidents"][0][
+                    key
+                ] = changed
+                code, value = self.run_scenario({
+                    "doctor": changed_doctor,
+                    "reconcile": [self.controller("waiting_for_target")],
+                    "qualification": self.report(),
+                })
+                self.assertEqual(
+                    (code, value["reason"]), (3, "doctor_not_ready")
+                )
+                self.assertEqual(self.called(), ["doctor"])
+
     def test_bounded_inflight_doctor_warning_reaches_controller(self) -> None:
         code, value = self.run_scenario({
             "doctor": self.inflight_doctor(),

@@ -6293,3 +6293,15 @@ After a partial batch, the next sealed candidate can migrate the authenticated
 mixed-source cohort without rewriting ticket history; v1 remains unchanged. A
 route-changed checkpoint is accepted only when the previous sealed product
 authorization verifies it as that active release's exact migration replay.
+
+## 2026-08-15 — Decision 448: Compact contract repairs enter successor recovery
+
+Category: Reliability
+
+The deterministic qualification driver may pass one historical
+`resume_commit_content_mismatch` to successor reconciliation only when it is
+the exact one-path, one-byte compact-pair shape and its selected ticket and
+blocked receipt match an already-authenticated prior-kit transition warning.
+The driver does not clear the warning; the controller revalidates the current
+Git repair and emits the durable recovery event. Every other contract-resume
+warning remains blocked.
