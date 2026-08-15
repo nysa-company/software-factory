@@ -319,7 +319,7 @@ if kill -0 "$HEARTBEAT_IGNORE_PID" 2>/dev/null; then
 fi
 HEARTBEAT_IGNORE_RC=0
 wait "$HEARTBEAT_IGNORE_PID" || HEARTBEAT_IGNORE_RC=$?
-if [[ -f "$HEARTBEAT_IGNORE_READY" && "$HEARTBEAT_IGNORE_RC" -eq 143 &&
+if [[ -f "$HEARTBEAT_IGNORE_READY" && "$HEARTBEAT_IGNORE_RC" -eq 137 &&
       ! -e "$HEARTBEAT_IGNORE_LOCK" ]]; then
   pass "ignored heartbeat stop still lets an in-flight renewal clean up"
 else
