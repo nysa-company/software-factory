@@ -390,7 +390,12 @@ mkdir -p "$DEPENDENCY_ROOT"/{home,product,runtime,tmp,worktrees/T-1,worktrees/T-
 printf '{}\n' >"$DEPENDENCY_ROOT/product/package-lock.json"
 cat >"$DEPENDENCY_ROOT/home/node" <<'EOF'
 #!/usr/bin/env bash
-exit 0
+root="$(cd "$(dirname "$0")/.." && pwd -P)"
+count=0
+[[ ! -f "$root/runtime/node-probe-count" ]] ||
+  count="$(cat "$root/runtime/node-probe-count")"
+printf '%s\n' "$((count + 1))" >"$root/runtime/node-probe-count"
+[[ "$count" -gt 0 ]]
 EOF
 cat >"$DEPENDENCY_ROOT/home/npm" <<'EOF'
 #!/usr/bin/env bash
@@ -422,6 +427,8 @@ done
 ( die() { printf '%s\n' "$*" >&2; exit 1; }
   prepare_product_dependencies "$DEPENDENCY_ROOT" T-1 T-2 ) ||
   fail "pinned dependency bootstrap rejected clean ticket worktrees"
+[[ "$(cat "$DEPENDENCY_ROOT/runtime/node-probe-count")" == 2 ]] ||
+  fail "pinned dependency bootstrap did not retry one transient Node startup"
 [[ "$(cat "$DEPENDENCY_ROOT/runtime/npm-calls")" == $'T-1\nT-2' ]] ||
   fail "pinned dependency bootstrap did not run exactly once per ticket"
 for dependency_ticket in T-1 T-2; do

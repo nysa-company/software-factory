@@ -6026,3 +6026,12 @@ native Claude credential is recorded as an unavailable fallback rather than a
 lane-construction failure. Cursor still supplies the required Anthropic-family
 roles, the absent session is approval-bound, and Cursor-disabled lanes continue
 to require native Claude authentication.
+
+## 2026-08-14 — Decision 424: Development Node readiness tolerates one fresh-sandbox abort
+
+Category: Reliability
+
+The product development lane retries only its no-side-effect exact Node 22
+readiness probe up to three times because a freshly created macOS sandbox can
+abort the first process while the unchanged second invocation succeeds.
+`npm ci` and every later mutating phase remain single-attempt and fail closed.

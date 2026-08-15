@@ -940,18 +940,24 @@ PY
 }
 
 prepare_product_dependencies() {
-  local root="$1" ticket work
+  local root="$1" attempt ticket work
   shift
   [[ -f "$root/product/package-lock.json" &&
      ! -L "$root/product/package-lock.json" ]] || return 0
-  ( cd "$root"
-    HOME="$root/home" TMPDIR="$root/tmp" \
-      "$(sandbox_exec)" -f "$root/runtime/native.sb" \
-        env -i HOME="$root/home" TMPDIR="$root/tmp" LANG=C LC_ALL=C \
-          PATH="$root/home:/usr/bin:/bin:/usr/sbin:/sbin" \
-          "$root/home/node" -e \
-            'if (process.versions.node.split(".")[0] !== "22") process.exit(1)' ) ||
-    die "product dependency installation requires the pinned Node 22 runtime"
+  for attempt in 1 2 3; do
+    if ( cd "$root"
+      HOME="$root/home" TMPDIR="$root/tmp" \
+        "$(sandbox_exec)" -f "$root/runtime/native.sb" \
+          env -i HOME="$root/home" TMPDIR="$root/tmp" LANG=C LC_ALL=C \
+            PATH="$root/home:/usr/bin:/bin:/usr/sbin:/sbin" \
+            "$root/home/node" -e \
+              'if (process.versions.node.split(".")[0] !== "22") process.exit(1)' ); then
+      break
+    fi
+    [[ "$attempt" -lt 3 ]] ||
+      die "product dependency installation requires the pinned Node 22 runtime"
+    sleep 1
+  done
   for ticket in "$@"; do
     work="$root/worktrees/$ticket"
     [[ -f "$work/package.json" && ! -L "$work/package.json" &&

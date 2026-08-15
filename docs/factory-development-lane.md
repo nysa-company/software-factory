@@ -244,6 +244,9 @@ runs pinned `npm ci` separately in every ticket worktree inside the lane
 sandbox before any provider role. The provider receives the host's Node 22
 toolchain read-only and ticket-local writable dependencies; installation
 failure or tracked-tree drift fails planning closed.
+The no-side-effect Node readiness probe gets three bounded attempts so one
+fresh macOS sandbox startup abort cannot discard an otherwise exact runtime;
+dependency installation itself still runs once and never retries.
 Before each product role, the development scheduler uses the shared trusted
 ticket-state helper to enforce the Factory phase sequence: Planner and
 Spec-linter see Planning, Test-author and Builder see Building, and Reviewer
