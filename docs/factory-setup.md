@@ -249,6 +249,14 @@ provider state, ticket branches, or paid roles are created.
   and exact `preprovider-branch-resets.json`; prepare that unchanged successor
   product; then run the candidate helper once:
 
+  Fresh preparation applies the same rule to every selected remote branch and
+  refuses before runtime or authority publication when a divergent branch is
+  missing its exact protected reset entry. Never generate, delete, or rewrite
+  that authority inside the qualification lane.
+  Retry the normal qualification driver after a reset interruption. It replays
+  only canonical reset prefixes and exact pushed resets; do not edit the cell,
+  receipt, operator map, or remote branch by hand.
+
   ```bash
   python3 scripts/qualification-environment.py \
     --factory-root "<clean-successor-factory-checkout>" \

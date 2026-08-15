@@ -1626,6 +1626,28 @@ def historical_pr_objects(product: Path, origin: str) -> int:
         raise EnvironmentError(str(error)) from error
 
 
+def validate_selected_remote_branches(
+    factory: Path, product: Path, manifest: dict[str, Any], origin: str,
+    *, exact_authorizations: bool,
+) -> None:
+    spec = importlib.util.spec_from_file_location(
+        "qualification_prepare_dispatch", factory / "scripts/dispatch-plan.py",
+    )
+    if not spec or not spec.loader:
+        raise EnvironmentError("qualification dispatch validator is unavailable")
+    dispatch = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(dispatch)
+    try:
+        dispatch.inspect_selected_preprovider_branches(
+            product, product / "factory", manifest, origin,
+            exact_authorizations=exact_authorizations,
+        )
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        raise EnvironmentError(
+            f"qualification selected branch is not dispatchable: {error}"
+        ) from error
+
+
 def certification_preflight(
     factory: Path, product: Path, sha: str, tree: str, contract: str,
 ) -> dict[str, str] | None:
@@ -2672,9 +2694,8 @@ def validate_handoff_entry(
         raise EnvironmentError("pre-provider branch does not require successor reset")
     try:
         dispatch.validate_preprovider_branch(
-            target["product"], registered, ticket, entry["branch"], "origin",
-            protected,
-            entry["head_sha"],
+            target["product"], ticket, entry["branch"], protected,
+            entry["head_sha"], entry["head_sha"],
         )
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         raise EnvironmentError(f"pre-provider reset is unusable: {error}") from error
@@ -3274,6 +3295,12 @@ def _prepare(args: argparse.Namespace) -> dict[str, Any]:
         if not takeover_requested:
             validate_qualification_budget(factory, product, manifest, global_config)
     historical_objects = historical_pr_objects(product, origin)
+    validate_selected_remote_branches(
+        factory, product, manifest, origin,
+        exact_authorizations=not (
+            root / f"projects/{args.project}/active.json"
+        ).exists(),
+    )
     validate_selected_contracts(product, manifest)
     prepare_product_runtime(product)
     if command("git", "-C", str(product), "status", "--porcelain", "--untracked-files=all"):

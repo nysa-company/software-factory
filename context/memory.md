@@ -6,7 +6,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 
 - Product-agnostic factory kit; product repositories carry only their factory state and CI integration.
 - Durable decisions use repository-local numbering beginning at Decision 1.
-- Stable operating truth lives in `docs/`; prompts, templates, and evidence stay colocated with consumers. The operator preflight hydrates only evidence-bound immutable objects, batches read-only object checks, aggregates activation blockers, and makes network review explicit before certification. Qualification's single driver accepts only Doctor `ok` or a manifest-bound runtime-only active-lease warning.
+- Stable operating truth lives in `docs/`; prompts, templates, and evidence stay colocated with consumers. The operator preflight hydrates only evidence-bound immutable objects, batches read-only object checks, aggregates activation blockers, and makes network review explicit before certification. Qualification validates selected remote branch eligibility before publication, and its single driver accepts only Doctor `ok` or a manifest-bound runtime-only active-lease warning.
 - Nysa Agents baseline v3 as a toolkit; `bash ci/test-all.sh` is the unconditional full command.
 - Contract 2 live products resolve sealed exact-SHA releases from owner-only `active.json` records under `~/.factory/kits` via `~/.factory/bin/factory-launch`; the native controller is the only scheduler.
 - The local release canary is one code-driven, product-agnostic command that creates contained local origins, runs setup/resume, and times one authenticated Planning transition plus sealed mock planner; its repository-test evidence is never promotable.
@@ -6082,3 +6082,20 @@ qualification cohort, within its declared capacity. Maintenance, locks, active
 runs, foreign tickets, stale or malformed state, provider activity, and every
 non-runtime warning remain closed; the observed warning status stays in the
 driver result.
+
+## 2026-08-15 — Decision 429: Qualification proves selected branches before publication
+
+Category: Reliability
+
+Fresh qualification preparation inspects only the manifest-selected remote
+ticket branches before product runtime or lane authority is created. Missing
+branches and branches descending from protected main are usable; a divergent
+branch requires its exact protected-main reset authorization and must pass the
+same canonical control-history validator that dispatch rechecks before its
+non-force reset. Preparation never creates that authorization or mutates the
+remote branch.
+Dispatch recovery recognizes only the exact canonical reset merge, its bounded
+ticket/control cleanup, or the resulting main-tree supersede commit. A pushed
+operator-ready reset is replayed by issuing a normal one-use Ready receipt from
+the exact reset SHA; unrelated local work and any remote-head race remain
+fail-closed.

@@ -533,6 +533,16 @@ typed stage, and exact stage-to-role mapping. Any mutation blocks and releases
 the lease before provider or publication work.
 Operator authority is expressed entirely through one-use receipts (`scripts/lib/operator_receipt.py`, issued by `scripts/operator-cli.py`), anchored in the controller's state directory. There is no external system to reconcile, poll, or retry against, so there is no scheduled cycle, quota cooldown, or comment/description sync to describe: `factory/operator-map.json` is computed on demand from committed ticket state and consumed receipts, each map mutation owns only a short map lock, and staleness has no meaning for a pure projection. During ordinary admission, malformed dependency syntax is isolated to that exact ticket and reported in controller results, events, and incident evidence while eligible siblings continue. The same defect in a selected qualification ticket remains globally fail-closed for the sealed cohort. A missing operator initiative remains authoritative, but if it removes a Ready ticket's effective initiative, admission emits a named `initiative_missing` refusal while eligible siblings continue. Initiative assignment is a direct ticket-only Git commit setting `Initiative:` — there is no external Project object to mark, adopt, or reconcile.
 Qualification preparation applies the same operator lifecycle to its fixed cohort: a selected Backlog ticket receives a one-use Ready receipt and local ticket-branch materialization, while an already-durable Ready ticket needs only projection initialization. Admission accepts the normal consumed-and-cleared projection after materialization but still rejects malformed or uninitialized entries. Because the reducer proves protected GitHub publication truth, preparation binds the certified push origin to the exact repository declared by `factory/PROJECT.env` and refuses a local-only origin before it publishes lane state. After bounded historical-object hydration, preparation also requires every dependency outside the cohort to satisfy the shared protected dependency predicate: normal terminal evidence or one exact protected dependency-fulfillment receipt. Later independently authorized batches live under an immutable directory named by their target Factory SHA; the original flat batch remains valid and unchanged. An isolated lane is never published with a dependency that dispatch cannot honor.
+Preparation also inspects only the selected remote ticket branches before it
+creates runtime or authority state. An absent branch or one descending from
+protected main is ready; a divergent branch requires its exact protected reset
+authorization and must pass the same canonical control-history validator that
+dispatch rechecks immediately before its non-force reset.
+Reset replay accepts only the exact canonical merge, its exact ticket/control
+cleanup, or the resulting main-tree supersede commit. After a pushed
+operator-ready reset, dispatch reissues Ready through the normal one-use
+operator receipt and binds materialization to that exact reset SHA; an advanced
+remote is refused rather than adopted.
 Automatic GitHub defect reporting is an optional production sidecar, never a
 controller dependency. The controller marks only explicit internal invariant
 failures with a stable reason code; the reporter accepts a fixed allowlist of
