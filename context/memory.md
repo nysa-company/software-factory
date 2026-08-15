@@ -6290,4 +6290,6 @@ Category: Reliability
 In-flight release authorization v2 retains the manifest's source Factory as
 the cohort root and binds each selected ticket's exact current source Factory.
 After a partial batch, the next sealed candidate can migrate the authenticated
-mixed-source cohort without rewriting ticket history; v1 remains unchanged.
+mixed-source cohort without rewriting ticket history; v1 remains unchanged. A
+route-changed checkpoint is accepted only when the previous sealed product
+authorization verifies it as that active release's exact migration replay.

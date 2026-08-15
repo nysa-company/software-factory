@@ -1529,7 +1529,9 @@ head, repository, source and target kit, branch, and state before changing Git.
 Authorization v1 retains one source kit for the whole cohort. V2 retains that
 source as the successor root and binds each ticket's exact current source kit,
 so a replayed partial batch can advance a mixed-source cohort without relabeling
-or rewriting already-migrated work.
+or rewriting already-migrated work. Preparation accepts a route-changed
+checkpoint only when the previous sealed product authorization proves it is
+the exact one-child replay of that active release's migration.
 The first application starts at the exact authorized head. An interrupted
 idempotent retry may start only at its one direct child when that commit changes
 only the selected ticket's Kit-SHA and its exact append-only release-migration

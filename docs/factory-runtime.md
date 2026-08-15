@@ -239,6 +239,8 @@ Authorization v2 may bind a different exact source Factory per selected ticket
 while retaining the manifest source as the cohort root. This is the supported
 recovery after an interrupted batch leaves an authenticated mixed-source
 cohort; the next sealed batch still migrates every selected ticket to one target.
+If the prior batch moved a branch but not its passport, upgrade accepts that
+checkpoint only through the previous sealed authorization's exact replay proof.
 Contract-blocked roles use the same sealed boundary: `ticket-control
 contract-repair plan/apply` verifies the exact claim, passport, transition,
 terminal evidence, and ticket head before appending one receipt-bound resume

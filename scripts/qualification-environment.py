@@ -2456,6 +2456,25 @@ def validate_successor_upgrade_cohort(
                         ],
                         capture_output=True, check=False, timeout=120,
                     )
+                    passport_route_sha256 = hashlib.sha256(
+                        passport_route.stdout
+                    ).hexdigest()
+                    checkpoint_route_sha256 = hashlib.sha256(
+                        checkpoint_route.stdout
+                    ).hexdigest()
+                    route_checkpoint_valid = (
+                        passport_route_sha256 == value.get("route_plan_sha256")
+                        and (
+                            checkpoint_route_sha256
+                            == value.get("route_plan_sha256")
+                            or value.get("factory_sha") == active_factory_sha
+                            and verify_inflight_migration(
+                                product, active_product_sha,
+                                active_factory_sha, ticket,
+                                value.get("branch", ""), checkpoint["head"],
+                            ) == "replay"
+                        )
+                    )
                     checkpoint_valid = (
                         release_lineage_valid
                         and verify_inflight_migration(
@@ -2485,10 +2504,7 @@ def validate_successor_upgrade_cohort(
                         ) == value.get("ticket_blob")
                         and passport_route.returncode == 0
                         and checkpoint_route.returncode == 0
-                        and hashlib.sha256(passport_route.stdout).hexdigest()
-                        == value.get("route_plan_sha256")
-                        and hashlib.sha256(checkpoint_route.stdout).hexdigest()
-                        == value.get("route_plan_sha256")
+                        and route_checkpoint_valid
                     )
                 except InflightAuthorizationError:
                     checkpoint_valid = False

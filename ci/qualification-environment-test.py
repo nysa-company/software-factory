@@ -3110,6 +3110,35 @@ class QualificationEnvironmentTest(unittest.TestCase):
                 base, manifest,
             )
 
+        run(self.product, "git", "switch", "-q", f"ticket/{ticket}")
+        route.write_text('{"partial":"migration"}\n', encoding="utf-8")
+        run(self.product, "git", "add", str(route))
+        run(self.product, "git", "commit", "-qm", "partial route migration")
+        partial_checkpoint = run(self.product, "git", "rev-parse", "HEAD")
+        run(self.product, "git", "switch", "-q", "main")
+        partial_protected = authorize(partial_checkpoint)
+        write_source_passport(partial_protected)
+
+        calls: list[tuple[str, str]] = []
+
+        def verify_partial(
+            _product: Path, protected_sha: str, target_sha: str,
+            _ticket: str, _branch: str, _head: str,
+        ) -> str:
+            calls.append((protected_sha, target_sha))
+            return "exact" if target_sha == candidate else "replay"
+
+        with mock.patch.object(
+            ENVIRONMENT, "verify_inflight_migration", side_effect=verify_partial,
+        ):
+            ENVIRONMENT.validate_successor_upgrade_cohort(
+                self.factory, self.product, controller, "relay", source,
+                base, manifest,
+            )
+        self.assertEqual(calls, [
+            (base, source), (partial_protected, candidate),
+        ])
+
     def test_successor_accepts_only_exact_source_terminal_reconciliations(self) -> None:
         controller = (self.workspace / "terminal-controller").resolve()
         passports = controller / "passports"
