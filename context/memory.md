@@ -6,7 +6,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 
 - Product-agnostic factory kit; product repositories carry only their factory state and CI integration.
 - Durable decisions use repository-local numbering beginning at Decision 1.
-- Stable operating truth lives in `docs/`; prompts, templates, and evidence stay colocated with consumers. The operator preflight hydrates only evidence-bound immutable objects, batches read-only object checks, aggregates activation blockers, and makes network review explicit before certification. Qualification validates selected remote branches and exact prior-cohort control retries before publication, shares protected dependency truth, counts only role-control evidence appended after its sealed product SHA, preserves one exact-head retry for a parked preview timeout, reacquires parked semantic authority only at apply, admits exact source-release receipt warnings to controller-owned migration, maintains idle successor leases during long roles, and does not rerun new-admission checks once its exact cohort is fully accounted for.
+- Stable operating truth lives in `docs/`; prompts, templates, and evidence stay colocated with consumers. The operator preflight hydrates only evidence-bound immutable objects, batches read-only object checks, aggregates activation blockers, and makes network review explicit before certification. Qualification validates selected remote branches and exact prior-cohort control retries before publication, shares protected dependency truth, counts only role-control evidence appended after its sealed product SHA, preserves one exact-head retry for a parked preview timeout, reacquires parked semantic or contract-repair authority only at apply, admits exact source-release receipt warnings to controller-owned migration, maintains idle successor leases during long roles, and does not rerun new-admission checks once its exact cohort is fully accounted for.
 - Historical committed-role checks carry unchanged baseline symlinks; changed symlinks and every handoff snapshot symlink remain fail-closed.
 - Successor qualification can preserve an exact source-passport checkpoint or descendant only through the existing protected in-flight release authorization; migration fast-forwards it without deleting or rewriting ticket work.
 - An exactly migrated successor claim may chain a current transition receipt after its authenticated predecessor; predecessor evidence remains durable and unedited.
@@ -6269,3 +6269,12 @@ Category: Reliability
 A parked semantic-round wait may produce its read-only plan without retaining a
 dispatcher lease. Exact apply reacquires the lease before its ticket-only
 authorization commit; malformed, active, or non-semantic claims remain refused.
+
+## 2026-08-15 — Decision 446: Contract repair is a sealed ticket-only action
+
+Category: Reliability
+
+A contract-blocked role resumes only through `ticket-control contract-repair
+plan/apply`. The controller binds the plan to the exact claim, passport,
+transition, terminal evidence, and ticket head; apply reacquires a parked lease
+and appends one receipt-bound repair directive without rewriting ticket history.

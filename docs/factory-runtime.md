@@ -235,6 +235,10 @@ existing reducer only after a nonempty set of terminal completion results. The
 batch reads its in-flight authorization from the sealed qualification product
 SHA; production continues to require protected-main authority. The preview
 digest stays inside the command; no human hash handoff is needed.
+Contract-blocked roles use the same sealed boundary: `ticket-control
+contract-repair plan/apply` verifies the exact claim, passport, transition,
+terminal evidence, and ticket head before appending one receipt-bound resume
+directive. Apply reacquires a parked lease and commits only that ticket.
 Every other warning remains a typed block. Rerun after a named external or
 operator input changes; the driver never hand-edits tickets, claims, leases,
 receipts, passports, journals, or provider state.

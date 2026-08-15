@@ -8162,6 +8162,132 @@ class Controller:
             "schema": SCHEMA, "status": "applied", "ticket": ticket,
         }
 
+    def contract_repair_plan(
+        self, ticket: str, role: str, operator_id: str,
+    ) -> tuple[dict[str, Any], dict[str, Any], str, str]:
+        if (
+            not TICKET.fullmatch(ticket)
+            or role not in {"planner", "spec-linter", "test-author", "builder"}
+            or not OPERATOR_ID.fullmatch(operator_id)
+            or operator_id == "auto"
+        ):
+            raise ControllerError("contract repair request is invalid")
+        claim = self.operator_control_claim(ticket, "contract repair")
+        attempt = claim.get("recovery_attempt")
+        abandoned = (
+            claim.get("blocked_reason") == "recovery-abandoned:targeted-repair"
+            and self.valid_recovery_attempt(attempt)
+            and attempt.get("phase") == "abandoned"
+            and attempt.get("recovery") == "targeted-repair"
+            and attempt.get("retry_reason") == "role-failure"
+            and attempt.get("retry_status") == "blocked"
+        )
+        receipt = claim.get("receipt", "")
+        transition = self.transition_receipt(claim, record=False)
+        passport = self.authenticated_operator_passport(ticket)
+        terminal = self.terminal_for_receipt(ticket, receipt)
+        if (
+            claim.get("status") != "blocked"
+            or not (claim.get("blocked_reason") == "role-failure" or abandoned)
+            or not DIGEST.fullmatch(receipt)
+            or not claim.get("role")
+            or claim.get("publication_lease")
+            or self.role_active(claim)
+            or not (
+                DIGEST.fullmatch(claim.get("lease", ""))
+                or self.parked(claim) and claim.get("lease") == ""
+            )
+            or transition is None
+            or transition.get("factory_sha") != self.release_path.name
+            or transition.get("receipt_sha256") != receipt
+            or transition.get("role") != claim["role"]
+            or transition.get("stage") not in {
+                f"RUN {claim['role']}", f"FIX {claim['role']}",
+            }
+            or passport is None
+            or passport.get("ticket") != ticket
+            or passport.get("project") != self.project
+            or passport.get("factory_sha") != self.release_path.name
+            or passport.get("branch") != claim.get("branch")
+            or passport.get("current_state") != "Blocked-Escalated"
+            or passport.get("current_stage") != transition.get("stage")
+            or passport.get("transition_receipt_sha256") != receipt
+            or terminal is None
+            or terminal.get("ticket") != ticket
+            or terminal.get("role") != claim["role"]
+            or terminal.get("kit_sha") != self.release_path.name
+            or terminal.get("transition_receipt_sha256") != receipt
+            or terminal.get("exit_status") != "12"
+            or terminal.get("role_exit") != "role_exit_contract_blocked"
+            or not self.remote_passport_valid(claim)
+        ):
+            raise ControllerError("contract repair authority is unavailable")
+        ticket_path = f"factory/tickets/{ticket}.md"
+        before = self.cell_git(claim, "show", f"{passport['head_sha']}:{ticket_path}")
+        if (
+            before.returncode
+            or self.contract_resume_directive_status(before.stdout, receipt)
+            != "waiting"
+        ):
+            raise ControllerError("contract repair ticket is invalid")
+        after = (
+            before.stdout + ("" if before.stdout.endswith("\n") else "\n")
+            + f"OPERATOR RESUME: {role}\n"
+            + f"OPERATOR RESUME RECEIPT: {receipt}\n"
+        )
+        observed_status = self.operator_ticket_change_status(
+            claim, passport, after,
+            lambda parent, child: self.exact_ticket_commit(claim, parent, child),
+            "contract repair",
+        )
+        plan = {
+            "blocked_receipt": receipt,
+            "blocked_role": claim["role"],
+            "branch": claim["branch"],
+            "claim_sha256": hashlib.sha256(canonical_document(claim)).hexdigest(),
+            "factory_sha": self.release_path.name,
+            "operator_id": operator_id,
+            "parent_sha": passport["head_sha"],
+            "passport_sha256": passport["passport_sha256"],
+            "project": self.project,
+            "repair_role": role,
+            "schema": SCHEMA,
+            "ticket": ticket,
+            "ticket_after_sha256": hashlib.sha256(after.encode()).hexdigest(),
+            "ticket_before_sha256": hashlib.sha256(before.stdout.encode()).hexdigest(),
+        }
+        plan["approval_hash"] = hashlib.sha256(canonical_document(plan)).hexdigest()
+        return plan, claim, after, observed_status
+
+    def plan_contract_repair(
+        self, ticket: str, role: str, operator_id: str,
+    ) -> dict[str, Any]:
+        plan, _claim, _after, observed = self.contract_repair_plan(
+            ticket, role, operator_id,
+        )
+        return {**plan, "status": observed}
+
+    def apply_contract_repair(
+        self, ticket: str, role: str, operator_id: str, approve_hash: str,
+    ) -> dict[str, Any]:
+        plan, claim, after, observed = self.contract_repair_plan(
+            ticket, role, operator_id,
+        )
+        if not DIGEST.fullmatch(approve_hash) or approve_hash != plan["approval_hash"]:
+            raise ControllerError("contract repair approval hash does not match")
+        if not DIGEST.fullmatch(claim.get("lease", "")):
+            self.ensure_lease(claim, "contract-repair")
+        head = self.apply_operator_ticket_change(
+            claim, plan, after, observed, operator_id,
+            f"Route {ticket} contract repair to {role}",
+            lambda parent, child: self.exact_ticket_commit(claim, parent, child),
+            "contract repair",
+        )
+        return {
+            "approval_hash": approve_hash, "repair_head": head,
+            "schema": SCHEMA, "status": "applied", "ticket": ticket,
+        }
+
     @staticmethod
     def reviewer_void_records(text: str) -> list[int]:
         broad = [
@@ -11945,6 +12071,7 @@ def main() -> None:
             "reconcile", "pause", "resume",
             "preview-timeout-retry",
             "authorize-round-plan", "authorize-round-apply",
+            "contract-repair-plan", "contract-repair-apply",
             "reviewer-void-plan", "reviewer-void-apply",
         ),
         default="reconcile",
@@ -11997,6 +12124,16 @@ def main() -> None:
                 ))
             )
             or (
+                args.action in {"contract-repair-plan", "contract-repair-apply"}
+                and any((
+                    args.issue, args.factory_sha, not args.ticket,
+                    not args.role, args.semantic_round, args.run_ordinal,
+                    not args.operator_id,
+                    args.action == "contract-repair-plan" and args.approve_hash,
+                    args.action == "contract-repair-apply" and not args.approve_hash,
+                ))
+            )
+            or (
                 args.action in {"reviewer-void-plan", "reviewer-void-apply"}
                 and any((
                     args.issue, args.factory_sha, args.role,
@@ -12036,6 +12173,14 @@ def main() -> None:
             result = controller.apply_semantic_authorization(
                 args.ticket, args.role, args.semantic_round, args.operator_id,
                 args.approve_hash,
+            )
+        elif args.action == "contract-repair-plan":
+            result = controller.plan_contract_repair(
+                args.ticket, args.role, args.operator_id,
+            )
+        elif args.action == "contract-repair-apply":
+            result = controller.apply_contract_repair(
+                args.ticket, args.role, args.operator_id, args.approve_hash,
             )
         elif args.action == "reviewer-void-plan":
             result = controller.plan_reviewer_void(

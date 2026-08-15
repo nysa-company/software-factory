@@ -16034,6 +16034,7 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertIn('"$4" == "--factory-sha"', launcher)
         self.assertIn('"$1" == "retry-preview"', launcher)
         self.assertIn('"$1" == "authorize-round"', launcher)
+        self.assertIn('"$1" == "contract-repair"', launcher)
         self.assertIn('"$1" == "reviewer-void"', launcher)
         self.assertIn('"${11}" == "--approve-hash"', launcher)
         self.assertEqual(contract["grammars"], [
@@ -16047,6 +16048,12 @@ class FactoryControllerTest(unittest.TestCase):
             "authorize-round apply --ticket <T-NNN> --role "
             "<planner|spec-linter|test-author|builder|narrator> "
             "--round <N> --operator-id <ID> --approve-hash <HASH> --json",
+            "contract-repair plan --ticket <T-NNN> --role "
+            "<planner|spec-linter|test-author|builder> "
+            "--operator-id <ID> --json",
+            "contract-repair apply --ticket <T-NNN> --role "
+            "<planner|spec-linter|test-author|builder> "
+            "--operator-id <ID> --approve-hash <HASH> --json",
             "reviewer-void plan --ticket <T-NNN> --run <N> "
             "--operator-id <ID> --json",
             "reviewer-void apply --ticket <T-NNN> --run <N> "
@@ -17515,6 +17522,101 @@ class FactoryControllerTest(unittest.TestCase):
                 ),
                 2,
             )
+
+    def test_contract_repair_plan_apply_pushes_exact_directive_child(self) -> None:
+        controller, claim, cell, passport, transition = (
+            self.semantic_wait_fixture("contract-repair-control", "T-216")
+        )
+        ticket = cell / "factory/tickets/T-216.md"
+        before = ticket.read_text(encoding="utf-8").replace(
+            "State: Planning", "State: Blocked-Escalated",
+        ) + "ROLE-ESCALATE: CONTRACT-BLOCKED\n"
+        ticket.write_text(before, encoding="utf-8")
+        subprocess.run(["git", "-C", str(cell), "add", str(ticket)], check=True)
+        subprocess.run([
+            "git", "-C", str(cell), "-c", "user.name=State Machine",
+            "-c", "user.email=state-machine@local", "commit", "-qm",
+            "block contract",
+        ], check=True)
+        subprocess.run(["git", "-C", str(cell), "push", "-q"], check=True)
+        head = controller.cell_git(claim, "rev-parse", "HEAD").stdout.strip()
+        transition.update(
+            consumed=True, head_sha=head, role="test-author",
+            stage="RUN test-author",
+        )
+        transition["receipt_sha256"] = hashlib.sha256(
+            CONTROL.canonical_document({
+                key: value for key, value in transition.items()
+                if key not in {"consumed", "receipt_sha256"}
+            })
+        ).hexdigest()
+        CONTROL.write(self.state / "T-216.json", transition)
+        passport.pop("passport_sha256")
+        passport.pop("authentication_sha256")
+        passport.update(
+            current_stage="RUN test-author",
+            current_state="Blocked-Escalated",
+            head_sha=head,
+            head_tree=controller.cell_git(claim, "rev-parse", "HEAD^{tree}").stdout.strip(),
+            ticket_blob=controller.cell_git(
+                claim, "rev-parse", "HEAD:factory/tickets/T-216.md",
+            ).stdout.strip(),
+            transition_receipt_sha256=transition["receipt_sha256"],
+        )
+        passport = PASSPORT.authenticate(
+            passport, (self.state / "passport.key").read_bytes(),
+        )
+        PASSPORT.write_atomic(self.state / "passports/T-216.json", passport)
+        claim.update(
+            blocked_reason="role-failure", receipt=transition["receipt_sha256"],
+            role="test-author", status="blocked",
+        )
+        controller.save_claim(claim)
+        controller.role_active = lambda _claim: False
+        controller.remote_passport_valid = lambda _claim: True
+        controller.terminal_for_receipt = lambda *_args: {
+            "exit_status": "12", "kit_sha": self.release.name,
+            "role": "test-author", "role_exit": "role_exit_contract_blocked",
+            "ticket": "T-216",
+            "transition_receipt_sha256": transition["receipt_sha256"],
+        }
+        plan = controller.plan_contract_repair("T-216", "planner", "operator")
+        self.assertEqual(plan["status"], "planned")
+        self.assertEqual(controller.cell_git(claim, "rev-parse", "HEAD").stdout.strip(), head)
+        with self.assertRaisesRegex(CONTROL.ControllerError, "approval hash"):
+            controller.apply_contract_repair(
+                "T-216", "planner", "operator", "0" * 64,
+            )
+        result = controller.apply_contract_repair(
+            "T-216", "planner", "operator", plan["approval_hash"],
+        )
+        self.assertEqual(result["status"], "applied")
+        after = ticket.read_text(encoding="utf-8")
+        self.assertEqual(
+            after,
+            before + "OPERATOR RESUME: planner\n"
+            + f"OPERATOR RESUME RECEIPT: {transition['receipt_sha256']}\n",
+        )
+        self.assertEqual(
+            controller.cell_git(
+                claim, "diff-tree", "--no-commit-id", "--name-only", "-r",
+                result["repair_head"],
+            ).stdout.splitlines(),
+            ["factory/tickets/T-216.md"],
+        )
+        self.assertEqual(
+            controller.plan_contract_repair("T-216", "planner", "operator")
+            ["approval_hash"],
+            plan["approval_hash"],
+        )
+        controller.terminal_for_receipt = lambda *_args: {
+            "exit_status": "1", "kit_sha": self.release.name,
+            "role": "test-author", "role_exit": "role_exit_contract_blocked",
+            "ticket": "T-216",
+            "transition_receipt_sha256": transition["receipt_sha256"],
+        }
+        with self.assertRaisesRegex(CONTROL.ControllerError, "authority is unavailable"):
+            controller.plan_contract_repair("T-216", "planner", "operator")
 
     def test_semantic_authorization_continues_later_and_contract_rounds(
         self,
