@@ -255,7 +255,9 @@ It reconstructs exactly one protected-test snapshot followed by one
 same-ticket Factory-evidence snapshot, requires an unchanged final tree and
 both history gates, publishes with an exact force-with-lease, and migrates the
 passport through a durable replay record. Product paths, foreign-ticket state,
-production, and takeover remain closed. The protected snapshot uses every
+production, and takeover remain closed. For a historical blocker, the snapshot
+uses its authenticated release-source base while independently requiring the
+current protected main bound by the passport. The protected snapshot uses every
 whitespace-separated `TEST_PATHS` root, including the ordinary quoted
 multi-root `PROJECT.env` form.
 If successor route migration ran first, the command accepts only the continuous
