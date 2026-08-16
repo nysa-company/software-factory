@@ -6487,3 +6487,12 @@ observed after the durable historical resume mismatch. The isolated driver
 therefore binds recovery to the exact selected blocked claim and matching
 transition receipt digest instead of comparing those observation timestamps;
 invalid timestamps, stale claims, production, and takeover remain closed.
+
+## 2026-08-16 — Decision 466: History repair uses the complete protected test set
+
+Category: Reliability
+
+Qualification history reconstruction parses `TEST_PATHS` with the same
+quoted, whitespace-separated semantics as the state machine. Every configured
+root participates in the protected-test snapshot; unsafe, duplicate,
+overlapping, Factory, or empty paths remain refused.
