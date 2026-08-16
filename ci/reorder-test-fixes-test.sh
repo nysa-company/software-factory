@@ -712,6 +712,80 @@ scenario_cross_merge_refused() {
   fi
 }
 
+# ---------- scenario 12: qualification snapshot reconstruction ----------
+scenario_snapshot_reconstruction() {
+  local repo base old_head old_tree branch result new_head test_commit extra
+  repo="$(new_repo)"
+  write_file "$repo" conformance/app/server.js "base"
+  write_file "$repo" factory/tickets/T-42.md "State: Building"
+  commit_all "$repo" "protected base"
+  base="$(head_sha "$repo")"
+  write_file "$repo" conformance/app/tests/t42.test.js "test"
+  write_file "$repo" factory/tickets/T-42.md "State: Blocked-Escalated"
+  write_file "$repo" factory/route-plans/T-42.json '{}'
+  write_file "$repo" factory/receipts/T-42/ready-1.json '{}'
+  commit_all "$repo" "mixed protected evidence"
+  old_head="$(head_sha "$repo")"
+  old_tree="$(head_tree "$repo")"
+  branch="$(git -C "$repo" symbolic-ref --short HEAD)"
+  result="$(PYTHONPATH="$REPO_ROOT/scripts/lib" python3 - "$repo" "$base" "$old_head" <<'PY'
+import json
+import sys
+from reorder_test_fixes import create_test_snapshot_reconstruction
+
+print(json.dumps(create_test_snapshot_reconstruction(
+    sys.argv[1], sys.argv[2], sys.argv[3], ["conformance/app/tests/"], "T-42",
+), sort_keys=True))
+PY
+)" || return 1
+  new_head="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["new_head"])' <<<"$result")"
+  test_commit="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["test_commit"])' <<<"$result")"
+  if [ "$(head_sha "$repo")" != "$old_head" ] \
+    || [ "$(git -C "$repo" symbolic-ref --short HEAD)" != "$branch" ] \
+    || [ "$(git -C "$repo" rev-parse "$new_head^{tree}")" != "$old_tree" ] \
+    || [ "$(git -C "$repo" rev-list --count "$base..$new_head")" -ne 2 ] \
+    || [ "$(git -C "$repo" diff-tree --no-commit-id --name-only -r "$test_commit")" \
+         != "conformance/app/tests/t42.test.js" ] \
+    || [ "$(git -C "$repo" diff-tree --no-commit-id --name-only -r "$new_head" | sort)" \
+         != $'factory/receipts/T-42/ready-1.json\nfactory/route-plans/T-42.json\nfactory/tickets/T-42.md' ]; then
+    echo "  [snapshot] reconstruction changed content, refs, or path partitions"
+    return 1
+  fi
+  extra="$(printf 'extra\n' | git -C "$repo" commit-tree "$old_tree" -p "$new_head")"
+  if PYTHONPATH="$REPO_ROOT/scripts/lib" python3 - "$repo" "$base" "$old_head" "$extra" <<'PY'
+import sys
+from reorder_test_fixes import verified_test_snapshot_reconstruction
+
+raise SystemExit(0 if verified_test_snapshot_reconstruction(
+    sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4],
+    ["conformance/app/tests/"], "T-42",
+) else 1)
+PY
+  then
+    echo "  [snapshot] verifier accepted an extra commit"
+    return 1
+  fi
+  append_file "$repo" conformance/app/server.js "foreign product change"
+  commit_all "$repo" "foreign product change"
+  if PYTHONPATH="$REPO_ROOT/scripts/lib" python3 - "$repo" "$base" HEAD <<'PY'
+import sys
+from reorder_test_fixes import Fail, create_test_snapshot_reconstruction
+
+try:
+    create_test_snapshot_reconstruction(
+        sys.argv[1], sys.argv[2], sys.argv[3],
+        ["conformance/app/tests/"], "T-42",
+    )
+except Fail:
+    raise SystemExit(1)
+raise SystemExit(0)
+PY
+  then
+    echo "  [snapshot] reconstruction accepted a foreign product path"
+    return 1
+  fi
+}
+
 # ---------- runner ----------
 
 run_scenario() { # run_scenario <name> <function>
@@ -744,6 +818,7 @@ run_scenario "scenario-8-frozen-contract-epoch"        scenario_contract_epoch
 run_scenario "scenario-9-invalid-contract-epoch"       scenario_invalid_contract_epoch
 run_scenario "scenario-10-t100-accepted-push-merge-rich" scenario_t100_merge_rich
 run_scenario "scenario-11-cross-merge-refused"          scenario_cross_merge_refused
+run_scenario "scenario-12-snapshot-reconstruction"      scenario_snapshot_reconstruction
 
 echo
 echo "== summary: $PASS_TOTAL passed, $FAIL_TOTAL failed =="

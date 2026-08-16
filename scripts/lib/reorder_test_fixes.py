@@ -54,6 +54,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass, field
 
 
@@ -61,7 +62,7 @@ class Fail(Exception):
     """Raised for any condition that should abort with a clear message."""
 
 
-def run(args, cwd=None, check=True, input_text=None):
+def run(args, cwd=None, check=True, input_text=None, env=None):
     result = subprocess.run(
         args,
         cwd=cwd,
@@ -69,6 +70,7 @@ def run(args, cwd=None, check=True, input_text=None):
         stderr=subprocess.PIPE,
         text=True,
         input=input_text,
+        env=env,
     )
     if check and result.returncode != 0:
         raise Fail(
@@ -79,8 +81,11 @@ def run(args, cwd=None, check=True, input_text=None):
     return result
 
 
-def git(repo, *args, check=True, input_text=None):
-    return run(["git", "-C", repo] + list(args), check=check, input_text=input_text)
+def git(repo, *args, check=True, input_text=None, env=None):
+    return run(
+        ["git", "-C", repo] + list(args), check=check,
+        input_text=input_text, env=env,
+    )
 
 
 @dataclass
@@ -97,6 +102,168 @@ class Commit:
 
 def is_exempt(path, exempt_paths):
     return any(path.startswith(p) if p.endswith("/") else path == p for p in exempt_paths)
+
+
+def _matches_path(path, configured):
+    return any(
+        path.startswith(item) if item.endswith("/") else path == item
+        for item in configured
+    )
+
+
+def _snapshot_paths(repo, base, old_head, test_paths, ticket):
+    raw = git(
+        repo, "diff", "--name-status", "-z", "--no-renames", base, old_head,
+    ).stdout.split("\0")
+    if raw and raw[-1] == "":
+        raw.pop()
+    if len(raw) % 2:
+        raise Fail("history reconstruction diff is malformed")
+    tests, factory = [], []
+    ticket_factory = re.compile(
+        rf"^factory/(?:tickets/{re.escape(ticket)}[.]md|"
+        rf"route-plans/{re.escape(ticket)}[.]json|"
+        rf"(?:receipts|attestations)/{re.escape(ticket)}/"
+        r"[A-Za-z0-9._+@-]+)$"
+    )
+    safe = re.compile(r"^[A-Za-z0-9._+@/-]+$")
+    for status, path in zip(raw[::2], raw[1::2]):
+        if (
+            status not in {"A", "M"}
+            or not safe.fullmatch(path)
+            or any(part in {"", ".", ".."} for part in path.split("/"))
+        ):
+            raise Fail("history reconstruction contains an unsafe path change")
+        if _matches_path(path, test_paths):
+            tests.append(path)
+        elif ticket_factory.fullmatch(path):
+            factory.append(path)
+        else:
+            raise Fail("history reconstruction contains a product or foreign path")
+    ticket_path = f"factory/tickets/{ticket}.md"
+    if not tests or ticket_path not in factory:
+        raise Fail("history reconstruction requires protected tests and ticket evidence")
+    for path in (*tests, *factory):
+        _regular_blob(repo, old_head, path)
+    return tuple(sorted(tests)), tuple(sorted(factory))
+
+
+def _regular_blob(repo, head, path):
+    fields = git(repo, "ls-tree", head, "--", path).stdout.split()
+    if len(fields) < 4 or fields[:2] != ["100644", "blob"]:
+        raise Fail(f"history reconstruction path is not a regular blob: {path}")
+    return fields[0], fields[2]
+
+
+def create_test_snapshot_reconstruction(repo, base, old_head, test_paths, ticket):
+    """Create the canonical two-commit, tree-identical reconstruction."""
+    tests, factory = _snapshot_paths(repo, base, old_head, test_paths, ticket)
+    old_tree = git(repo, "rev-parse", f"{old_head}^{{tree}}").stdout.strip()
+    old_epoch = git(repo, "show", "-s", "--format=%ct", old_head).stdout.strip()
+    if not old_epoch.isdigit():
+        raise Fail("history reconstruction timestamp is invalid")
+    descriptor, index = tempfile.mkstemp(prefix="factory-history-index.")
+    os.close(descriptor)
+    os.unlink(index)
+    environment = dict(os.environ)
+    environment["GIT_INDEX_FILE"] = index
+    environment.update({
+        "GIT_AUTHOR_NAME": "Software Factory",
+        "GIT_AUTHOR_EMAIL": "factory@local",
+        "GIT_COMMITTER_NAME": "Software Factory",
+        "GIT_COMMITTER_EMAIL": "factory@local",
+    })
+    try:
+        git(repo, "read-tree", base, env=environment)
+        for path in tests:
+            mode, blob = _regular_blob(repo, old_head, path)
+            git(
+                repo, "update-index", "--add", "--cacheinfo",
+                f"{mode},{blob},{path}", env=environment,
+            )
+        test_tree = git(repo, "write-tree", env=environment).stdout.strip()
+        environment["GIT_AUTHOR_DATE"] = f"{int(old_epoch) + 1} +0000"
+        environment["GIT_COMMITTER_DATE"] = environment["GIT_AUTHOR_DATE"]
+        test_commit = git(
+            repo, "commit-tree", test_tree, "-p", base,
+            input_text=f"{ticket}: reconstruct protected tests\n",
+            env=environment,
+        ).stdout.strip()
+        environment["GIT_AUTHOR_DATE"] = f"{int(old_epoch) + 2} +0000"
+        environment["GIT_COMMITTER_DATE"] = environment["GIT_AUTHOR_DATE"]
+        new_head = git(
+            repo, "commit-tree", old_tree, "-p", test_commit,
+            input_text=f"{ticket}: snapshot preserved factory evidence\n",
+            env=environment,
+        ).stdout.strip()
+    finally:
+        try:
+            os.unlink(index)
+        except FileNotFoundError:
+            pass
+    if not verified_test_snapshot_reconstruction(
+        repo, base, old_head, new_head, test_paths, ticket,
+    ):
+        raise Fail("history reconstruction verification failed")
+    return {
+        "factory_paths": list(factory),
+        "new_head": new_head,
+        "old_tree": old_tree,
+        "test_commit": test_commit,
+        "test_paths": list(tests),
+    }
+
+
+def verified_test_snapshot_reconstruction(
+    repo, base, old_head, new_head, test_paths, ticket,
+):
+    """Verify a two-commit test/factory snapshot with an unchanged final tree."""
+    try:
+        tests, factory = _snapshot_paths(
+            repo, base, old_head, test_paths, ticket,
+        )
+        if git(repo, "rev-parse", f"{old_head}^{{tree}}").stdout.strip() != git(
+            repo, "rev-parse", f"{new_head}^{{tree}}",
+        ).stdout.strip():
+            return False
+        rows = [
+            line.split()
+            for line in git(
+                repo, "rev-list", "--reverse", "--parents", f"{base}..{new_head}",
+            ).stdout.splitlines()
+        ]
+        if (
+            len(rows) != 2
+            or len(rows[0]) != 2
+            or rows[0][1] != base
+            or rows[1] != [new_head, rows[0][0]]
+        ):
+            return False
+        test_commit = rows[0][0]
+        observed_test = tuple(sorted(diff_tree_files(repo, test_commit)))
+        observed_factory = tuple(sorted(diff_tree_files(repo, new_head)))
+        identity = git(
+            repo, "show", "-s", "--format=%an%x00%ae%x00%cn%x00%ce%x00%s",
+            new_head,
+        ).stdout.rstrip("\n").split("\0")
+        test_identity = git(
+            repo, "show", "-s", "--format=%an%x00%ae%x00%cn%x00%ce%x00%s",
+            test_commit,
+        ).stdout.rstrip("\n").split("\0")
+        return (
+            observed_test == tests
+            and observed_factory == factory
+            and test_identity == [
+                "Software Factory", "factory@local", "Software Factory",
+                "factory@local", f"{ticket}: reconstruct protected tests",
+            ]
+            and identity == [
+                "Software Factory", "factory@local", "Software Factory",
+                "factory@local", f"{ticket}: snapshot preserved factory evidence",
+            ]
+        )
+    except (Fail, OSError):
+        return False
 
 
 def diff_tree_files(repo, sha, pathspecs=None):

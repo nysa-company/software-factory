@@ -316,6 +316,19 @@ The driver derives the stage from the exact repair check. Its exact new receipt
 rearms one abandoned targeted recovery attempt; replaying the unchanged receipt
 does not reopen the attempt. Production and qualification takeover refuse this
 command.
+For an explicit `role_exit_contract_blocked` Test-author history-shape failure,
+preserve the ticket and every final blob. In the sealed isolated successor,
+run:
+
+```bash
+factory-launch <project> qualification-history-repair \
+  --ticket <T-NNN> --blocked-receipt <SHA256> --json
+```
+
+Require `status=repaired` before `contract-repair plan/apply`,
+`qualification-resume`, and `qualification-run` continue. The command changes
+ancestry only; gate failure, remote movement, a wrong receipt, production, or
+takeover refuses without moving the authenticated branch or passport.
 Successful resume and durable repair replay both reenter ordinary scheduling;
 an exact crash replay repeats that preparation automatically. Do not clear the
 prior transition receipt by hand.

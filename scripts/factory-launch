@@ -28,7 +28,7 @@ die() {
 }
 
 usage() {
-  echo "usage: factory-launch <project> <contract|doctor|reconcile|incident-report|watch|ticket-control|qualification-run|qualification-resume|qualification|dispatch-plan|state-machine|emergency-admit|passport|publication|publication-repair|ci-rerun|ticket-pr|models|envelope|operator-snapshot|attempt|claim|renew|release|release-expired|preflight|next-stage|ticket-state|ticket-attest|project-ledger|reorder-test-fixes|run> [arguments]" >&2
+  echo "usage: factory-launch <project> <contract|doctor|reconcile|incident-report|watch|ticket-control|qualification-run|qualification-resume|qualification-history-repair|qualification|dispatch-plan|state-machine|emergency-admit|passport|publication|publication-repair|ci-rerun|ticket-pr|models|envelope|operator-snapshot|attempt|claim|renew|release|release-expired|preflight|next-stage|ticket-state|ticket-attest|project-ledger|reorder-test-fixes|run> [arguments]" >&2
   exit 2
 }
 
@@ -1575,6 +1575,26 @@ PY
     exec "${HELPER_ENV[@]}" "$PYTHON_BIN" -I -S "$QUALIFICATION_RUNNER" \
       --launcher "$SELF_PATH" --project "$PROJECT" \
       --resume-ticket "$2" --resume-receipt "$4" --json
+    ;;
+  qualification-history-repair)
+    [[ "$ACTIVE_CONTRACT" == "2.0.0" ]] ||
+      die "qualification history repair requires contract 2.0.0"
+    [[ "$QUALIFICATION_LAUNCHER" == "1" && "$QUALIFICATION_MODE" == "isolated" ]] ||
+      die "qualification history repair requires a sealed isolated qualification launcher"
+    [[ $# -eq 5 && "$1" == "--ticket" && "$2" =~ ^T-[0-9]+$ &&
+       "$3" == "--blocked-receipt" && "$4" =~ ^[0-9a-f]{64}$ &&
+       "$5" == "--json" ]] || usage
+    controller_state_dir
+    add_certified_origin_env
+    CONTROLLER="$RELEASE_PATH/scripts/factory-controller.py"
+    require_managed_file "$CONTROLLER" "active release controller"
+    cleanup_runtime
+    trap - EXIT HUP INT TERM
+    exec "${HELPER_ENV[@]}" "$PYTHON_BIN" -I -S "$CONTROLLER" \
+      --launcher "$SELF_PATH" --project "$PROJECT" \
+      --product-root "$PRODUCT_ROOT" --release-path "$RELEASE_PATH" \
+      --state-dir "$CONTROLLER_STATE_DIR" \
+      --action qualification-history-repair --ticket "$2" --receipt "$4"
     ;;
   qualification)
     [[ "$ACTIVE_CONTRACT" == "1.8.0" || "$ACTIVE_CONTRACT" == "2.0.0" ]] ||

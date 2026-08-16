@@ -754,6 +754,7 @@ class QualificationEnvironmentTest(unittest.TestCase):
     def test_sealed_qualification_resume_is_isolated_and_exact(self) -> None:
         self.use_contract_2()
         marker = self.workspace / "qualification-resume-args.json"
+        history_marker = self.workspace / "qualification-history-args.json"
         shutil.copy2(
             ROOT / "scripts/factory-launch",
             self.factory / "scripts/factory-launch",
@@ -771,6 +772,16 @@ class QualificationEnvironmentTest(unittest.TestCase):
             encoding="utf-8",
         )
         runner.chmod(0o755)
+        controller = self.factory / "scripts/factory-controller.py"
+        controller.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json, pathlib, sys\n"
+            f"pathlib.Path({str(history_marker)!r}).write_text(json.dumps(sys.argv[1:]))\n"
+            "print('{\"schema\":\"nysa.software-factory.controller/v1\",'"
+            "'\"status\":\"repaired\"}')\n",
+            encoding="utf-8",
+        )
+        controller.chmod(0o755)
         run(self.factory, "git", "add", ".")
         run(self.factory, "git", "commit", "-qm", "seal launcher fixture")
         self.sha = run(self.factory, "git", "rev-parse", "HEAD")
@@ -868,6 +879,23 @@ class QualificationEnvironmentTest(unittest.TestCase):
             ])
             self.assertEqual(snapshot(), before)
 
+            result = subprocess.run([
+                str(launcher), project, "qualification-history-repair",
+                "--ticket", "T-101", "--blocked-receipt", receipt_digest,
+                "--json",
+            ], capture_output=True, check=False, text=True, timeout=120)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            history_args = json.loads(history_marker.read_text())
+            self.assertEqual(history_args, [
+                "--launcher", str(launcher), "--project", project,
+                "--product-root", str(self.product.resolve()),
+                "--release-path", str(launcher.parent.parent),
+                "--state-dir", str(authority / "controller"),
+                "--action", "qualification-history-repair",
+                "--ticket", "T-101", "--receipt", receipt_digest,
+            ])
+            self.assertEqual(snapshot(), before)
+
             for arguments in (
                 ("--ticket", "bad", "--blocked-receipt", receipt_digest, "--json"),
                 ("--blocked-receipt", receipt_digest, "--ticket", "T-101", "--json"),
@@ -881,6 +909,21 @@ class QualificationEnvironmentTest(unittest.TestCase):
                 )
                 self.assertEqual(result.returncode, 2)
                 self.assertFalse(marker.exists())
+                self.assertEqual(snapshot(), before)
+
+            for arguments in (
+                ("--ticket", "bad", "--blocked-receipt", receipt_digest, "--json"),
+                ("--blocked-receipt", receipt_digest, "--ticket", "T-101", "--json"),
+                ("--ticket", "T-101", "--blocked-receipt", "bad", "--json"),
+                ("--ticket", "T-101", "--blocked-receipt", receipt_digest),
+            ):
+                history_marker.unlink(missing_ok=True)
+                result = subprocess.run([
+                    str(launcher), project, "qualification-history-repair",
+                    *arguments,
+                ], capture_output=True, check=False, text=True, timeout=120)
+                self.assertEqual(result.returncode, 2)
+                self.assertFalse(history_marker.exists())
                 self.assertEqual(snapshot(), before)
 
             write_mode("takeover")
@@ -897,6 +940,19 @@ class QualificationEnvironmentTest(unittest.TestCase):
                 result.stderr,
             )
             self.assertFalse(marker.exists())
+            self.assertEqual(snapshot(), before)
+            history_marker.unlink(missing_ok=True)
+            result = subprocess.run([
+                str(launcher), project, "qualification-history-repair",
+                "--ticket", "T-101", "--blocked-receipt", receipt_digest,
+                "--json",
+            ], capture_output=True, check=False, text=True, timeout=120)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(
+                "qualification history repair requires a sealed isolated qualification launcher",
+                result.stderr,
+            )
+            self.assertFalse(history_marker.exists())
             self.assertEqual(snapshot(), before)
         finally:
             shutil.rmtree(authority, ignore_errors=True)

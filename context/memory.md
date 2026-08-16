@@ -6431,3 +6431,15 @@ the ordinary state machine must issue the current chained transition before a
 role can run. A restart may retire the reconstructed exclusion only for an
 exact claimed, pending targeted repair with empty role/receipt and a current
 remote-valid passport; other pending claims remain quarantined.
+
+## 2026-08-15 — Decision 461: Qualification history repair preserves every final byte
+
+Category: Reliability
+
+Only a sealed isolated successor may reconstruct an exact selected
+contract-blocked Test-author branch. It replaces ancestry with one
+protected-test snapshot and one same-ticket Factory-evidence snapshot while
+requiring the final tree and ticket bytes to remain identical, both history
+gates to pass, an exact remote lease, and a passport rewrite bound to the
+durable replay record; production, takeover, product paths, and foreign-ticket
+state remain closed.

@@ -239,6 +239,19 @@ that selected ticket's blocked-receipt-bound one-use authority, and writes no
 product audit commit. That exact new authority rearms one abandoned targeted
 recovery attempt; an unchanged receipt cannot reopen recovery repeatedly.
 Takeover and production launchers refuse it.
+If a contract-blocked Test-author cannot satisfy the frozen tests-first history
+shape without deleting evidence, an isolated successor may run:
+
+```bash
+factory-launch <project> qualification-history-repair \
+  --ticket <T-NNN> --blocked-receipt <SHA256> --json
+```
+
+It reconstructs exactly one protected-test snapshot followed by one
+same-ticket Factory-evidence snapshot, requires an unchanged final tree and
+both history gates, publishes with an exact force-with-lease, and migrates the
+passport through a durable replay record. Product paths, foreign-ticket state,
+production, and takeover remain closed.
 Once either the exact resume or its durable repair replay succeeds, the
 controller removes the prior transition from its invocation-local exclusion
 set so the ordinary state machine can issue the current chained transition.

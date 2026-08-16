@@ -1012,6 +1012,15 @@ historical blocker charge, ordered release history, exact current passport
 digest, and receipt-to-current-head lineage before accepting that later coarse
 state. Once a signed repair exists, its narrower contract-repair migration
 proof remains authoritative.
+An isolated successor has one ancestry-only recovery for an exact
+contract-blocked Test-author ticket. `qualification-history-repair` binds the
+selected claim, consumed receipt, passport, protected base, configured test
+roots, certified branch head, and unchanged final tree. The only accepted new
+line is `protected base -> protected-test snapshot -> same-ticket Factory
+snapshot`; both history gates and an exact remote lease precede mutation. Its
+durable record authorizes only the matching passport rewrite edge and crash
+replay. Production, takeover, product paths, and foreign-ticket state remain
+closed.
 An operator appends the first
 exact repair-owner and blocked-receipt directive pair, or replaces the one
 visible pair for a later blocker, without changing any other path:
