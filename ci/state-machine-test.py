@@ -508,6 +508,22 @@ class StateMachineTest(unittest.TestCase):
                     "attempt": 4, "capped": True,
                     "kind": "planner-spec-linter", "limit": 3,
                 })
+        stage, loop = STATE.govern_loop(self.args, expected, False)
+        self.assertEqual(stage, expected)
+        self.assertEqual(loop, {
+            "attempt": 4, "capped": True,
+            "kind": "planner-spec-linter", "limit": 3,
+        })
+        narrator_wait = (
+            "AWAIT-OPERATOR semantic-round authorization required; add exact "
+            "line: OPERATOR AUTHORIZATION: narrator round 3"
+        )
+        stage, loop = STATE.govern_loop(self.args, narrator_wait, False)
+        self.assertEqual(stage, narrator_wait)
+        self.assertEqual(loop, {
+            "attempt": 2, "capped": True,
+            "kind": "narrator-bundle", "limit": 2,
+        })
         grant = "OPERATOR AUTHORIZATION: spec-linter round 5\n"
         ticket.write_text(history + grant, encoding="utf-8")
         stage, loop = STATE.govern_loop(self.args, "RUN spec-linter", False)

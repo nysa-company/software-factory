@@ -3309,6 +3309,12 @@ def govern_loop(
     attempt = 0
     cap_stage = False
     planner_authorization = planner_spec_linter_authorization(text)
+    planner_wait_stages = () if planner_authorization is None else (
+        "AWAIT-OPERATOR semantic-round authorization required; add exact line: "
+        f"OPERATOR AUTHORIZATION: spec-linter round {planner_authorization[0]}",
+        "AWAIT-OPERATOR semantic-round authorization invalid; keep exactly one line: "
+        f"OPERATOR AUTHORIZATION: spec-linter round {planner_authorization[0]}",
+    )
     if planner_authorization is not None and planner_authorization[1] == "invalid":
         attempt = planner_authorization[0] - 1
         return (
@@ -3325,12 +3331,7 @@ def govern_loop(
         planner_authorization is not None
         and (
             stage in {"RUN planner", "RUN spec-linter"}
-            or stage.startswith(
-                "AWAIT-OPERATOR semantic-round authorization required;"
-            )
-            or stage.startswith(
-                "AWAIT-OPERATOR semantic-round authorization invalid;"
-            )
+            or stage in planner_wait_stages
             or stage.startswith(
                 "REFUSE semantic-round authorization is ambiguous;"
             )
@@ -3383,6 +3384,7 @@ def govern_loop(
         and (
             stage in {"RUN planner", "RUN spec-linter"}
             or stage == planner_cap_stage
+            or stage in planner_wait_stages
         )
         or kind == "contract-repair"
         and cap_stage
