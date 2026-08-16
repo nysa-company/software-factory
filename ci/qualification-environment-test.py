@@ -3154,6 +3154,74 @@ class QualificationEnvironmentTest(unittest.TestCase):
         value["schema"] = (
             "nysa.software-factory.inflight-release-authorization/v2"
         )
+        value["tickets"][0]["source_kit_sha"] = source
+        authorization.write_text(
+            json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+        run(self.product, "git", "add", str(authorization))
+        run(self.product, "git", "commit", "-qm", "authorize active checkpoint")
+        active_good = run(self.product, "git", "rev-parse", "HEAD")
+        value["tickets"][0]["state"] = "Building"
+        authorization.write_text(
+            json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+        run(self.product, "git", "add", str(authorization))
+        run(self.product, "git", "commit", "-qm", "drift active checkpoint")
+        active_bad = run(self.product, "git", "rev-parse", "HEAD")
+        value["tickets"][0]["state"] = "Ready"
+        authorization.write_text(
+            json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+        run(self.product, "git", "add", str(authorization))
+        run(self.product, "git", "commit", "-qm", "restore active checkpoint")
+
+        next_candidate = "d" * 40
+        next_authorization = authorization.with_name(f"{next_candidate}.json")
+        next_value = dict(value, source_kit_sha=candidate,
+                          target_kit_sha=next_candidate)
+        next_authorization.write_text(
+            json.dumps(next_value, sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+        run(self.product, "git", "add", str(next_authorization))
+        run(self.product, "git", "commit", "-qm", "carry checkpoint forward")
+        next_manifest = dict(
+            manifest, factory_sha=next_candidate,
+            source_factory_sha=candidate,
+        )
+        source_manifest = dict(
+            manifest, factory_sha=candidate, source_factory_sha=source,
+        )
+        write_source_passport(active_good)
+        with mock.patch.object(
+            ENVIRONMENT, "validate_qualification_manifest",
+            return_value=source_manifest,
+        ), mock.patch.object(
+            ENVIRONMENT, "verify_inflight_migration",
+            side_effect=lambda _product, _protected, target, *_args: (
+                "exact" if target == next_candidate else "replay"
+            ),
+        ):
+            ENVIRONMENT.validate_successor_upgrade_cohort(
+                self.factory, self.product, controller, "relay", candidate,
+                active_good, next_manifest,
+            )
+            with self.assertRaisesRegex(
+                ENVIRONMENT.EnvironmentError,
+                "successor qualification requires every selected ticket",
+            ):
+                ENVIRONMENT.validate_successor_upgrade_cohort(
+                    self.factory, self.product, controller, "relay", candidate,
+                    active_bad, next_manifest,
+                )
+
+        value = json.loads(authorization.read_text(encoding="utf-8"))
+        value["schema"] = (
+            "nysa.software-factory.inflight-release-authorization/v2"
+        )
         value["tickets"][0]["source_kit_sha"] = "0" * 40
         authorization.write_text(
             json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n",
