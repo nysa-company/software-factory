@@ -9,7 +9,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Stable operating truth lives in `docs/`; prompts, templates, and evidence stay colocated with consumers. The operator preflight hydrates only evidence-bound immutable objects, batches read-only object checks, aggregates activation blockers, and makes network review explicit before certification. Qualification validates selected remote branches and exact prior-cohort control retries before publication, shares protected dependency truth, counts only role-control evidence appended after its sealed product SHA, preserves one exact-head retry for a parked preview timeout, reacquires parked semantic or contract-repair authority only at apply, admits exact source-release receipt warnings to controller-owned migration, maintains idle successor leases during long roles, and does not rerun new-admission checks once its exact cohort is fully accounted for.
 - Historical committed-role checks carry unchanged baseline symlinks; changed symlinks and every handoff snapshot symlink remain fail-closed.
 - Successor qualification can preserve an exact source-passport checkpoint or descendant only through the protected in-flight release authorization; v2 binds each ticket's authenticated current source after a partial batch, migration never deletes or rewrites ticket work, and prior failed roles reopen only across an exact signed route-only migration suffix.
-- Isolated successor contract repair may use an older authenticated blocker only through its complete signed release suffix ending at the exact protected per-ticket source, while prior resume pairs remain immutable transition history.
+- Isolated successor contract repair may use an older authenticated blocker only through its complete signed release suffix ending at the exact protected per-ticket source, while prior resume pairs remain immutable transition history. After prior-kit receipt migration, the driver admits its historical resume mismatch only while the exact blocked claim still binds that selected ticket and receipt.
 - An exactly migrated successor claim may chain a current transition receipt after its authenticated predecessor; predecessor evidence remains durable and unedited.
 - Nysa Agents baseline v3 as a toolkit; `bash ci/test-all.sh` is the unconditional full command.
 - Contract 2 live products resolve sealed exact-SHA releases from owner-only `active.json` records under `~/.factory/kits` via `~/.factory/bin/factory-launch`; the native controller is the only scheduler.
@@ -6467,3 +6467,13 @@ current repair appends one fresh pair, while production and takeover retain the
 ordinary single-visible-pair rule. A successor-settled targeted-repair claim
 with no remaining reason is eligible only under the same exact consumed
 transition, terminal, passport, and lineage proof.
+
+## 2026-08-16 — Decision 464: Historical resume survives receipt migration
+
+Category: Reliability
+
+After exact successor migration resolves the prior-kit transition warning, the
+sealed isolated driver may still enter reconciliation for one historical
+`resume_receipt_mismatch` only when the current blocked claim binds the same
+selected ticket and receipt. The controller remains the repair authority;
+production, takeover, stale claims, and every other Doctor warning stay closed.

@@ -218,7 +218,10 @@ authenticated boundary:
 It requires Doctor `ok`, the exact bounded runtime-only warning produced by
 active qualification leases, or—only for a successor—the exact selected-ticket
 `prior_kit_receipt` warning or idle selected-lease expiry that the controller
-itself must recover. One compact-pair `resume_commit_content_mismatch` may
+itself must recover. After that receipt warning is resolved, one exact
+`resume_receipt_mismatch` may still enter reconciliation only while the current
+blocked claim retains that selected ticket and receipt. One compact-pair
+`resume_commit_content_mismatch` may
 accompany that prior receipt only when its ticket, receipt, one-path shape, and
 one-byte delta match exactly. At that one successor boundary, the sealed driver
 runs the ordinary repair check and issues the existing one-use resume receipt

@@ -353,6 +353,13 @@ def contract_recovery_claim(ticket: str) -> dict[str, Any]:
             os.close(descriptor)
 
 
+def contract_recovery_claim_matches(ticket: str, receipt: str) -> bool:
+    try:
+        return contract_recovery_claim(ticket)["receipt"] == receipt
+    except QualificationRunError:
+        return False
+
+
 def worktree_head(worktree: Path) -> str:
     result = subprocess.run(
         ["git", "-C", str(worktree), "rev-parse", "HEAD"],
@@ -687,7 +694,7 @@ def doctor_allows_reconcile(
     historical_resume = (
         successor
         and os.environ.get("FACTORY_QUALIFICATION_MODE") == "isolated"
-        and transition_recovery
+        and (transition_recovery or transition_ok)
         and contract.get("status") == "warning"
         and isinstance(contract_incidents, list)
         and len(contract_incidents) == 1
@@ -701,13 +708,20 @@ def doctor_allows_reconcile(
             and item.get("reason_code") == "resume_receipt_mismatch"
             and isinstance(item.get("blocked_receipt_sha256"), str)
             and DIGEST.fullmatch(item["blocked_receipt_sha256"])
-            and transition_by_ticket.get(item["ticket"], {}).get(
-                "transition_receipt_sha256"
-            ) == item["blocked_receipt_sha256"]
             and isinstance(item.get("observed_at_epoch_ns"), int)
             and not isinstance(item["observed_at_epoch_ns"], bool)
-            and item["observed_at_epoch_ns"]
-            >= transition_by_ticket[item["ticket"]]["observed_at_epoch_ns"]
+            and (
+                transition_recovery
+                and transition_by_ticket.get(item["ticket"], {}).get(
+                    "transition_receipt_sha256"
+                ) == item["blocked_receipt_sha256"]
+                and item["observed_at_epoch_ns"]
+                >= transition_by_ticket[item["ticket"]]["observed_at_epoch_ns"]
+                or transition_ok
+                and contract_recovery_claim_matches(
+                    item["ticket"], item["blocked_receipt_sha256"],
+                )
+            )
             for item in contract_incidents
         )
     )
@@ -719,7 +733,7 @@ def doctor_allows_reconcile(
     if value.get("overall_status") != "warning":
         return False
     if runtime.get("status") == "ok":
-        return transition_recovery and (
+        return (transition_recovery or historical_resume) and (
             contract_ok or contract_recovery or historical_resume
         )
     if runtime.get("status") != "warning":
