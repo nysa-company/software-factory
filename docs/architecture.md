@@ -1050,6 +1050,9 @@ wait; it runs Planner again only after that one exact grant. Its authenticated
 receipt maps to the existing Planner catch-up preflight when the coarse ticket
 state is still Building or Review. No ticket state is rewound and the receipt
 schema is unchanged.
+Before a protected in-flight route migration, an exact certified remote ticket
+head may refresh only its stale local remote-tracking cache; authorization,
+TOCTOU rechecks, and the exact remote push lease remain unchanged.
 If that exact backward repair blocks again, the active signed repair also
 authorizes the block at the unchanged coarse state. The block records that
 coarse state as its resume target, and the same signed repair must authenticate

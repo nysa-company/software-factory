@@ -6344,3 +6344,12 @@ successor reuses ordinary claim migration/readmission; only one exact next-round
 line permits Planner through the existing authenticated catch-up preflight,
 while malformed cap text and missing, duplicate, or wrong-round authority
 remain closed without rewriting prior ticket evidence.
+
+## 2026-08-15 — Decision 452: Certified ticket heads refresh migration tracking
+
+Category: Reliability
+
+After protected in-flight authorization and an exact certified remote lookup,
+model migration may CAS-refresh only the stale local remote-tracking ref to that
+observed head. Existing authorization, worktree, TOCTOU, and exact push-lease
+checks still gate every product or remote mutation.

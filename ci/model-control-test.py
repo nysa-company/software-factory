@@ -1790,6 +1790,13 @@ PY
         )
         self.assertEqual(network_trace.read_text().splitlines().count("push"), 4)
 
+        stale_tracking = subprocess.check_output(
+            ["git", "-C", str(self.workdir), "rev-parse", "HEAD^"], text=True,
+        ).strip()
+        subprocess.run([
+            "git", "-C", str(self.workdir), "update-ref",
+            "refs/remotes/origin/ticket/T-901", stale_tracking, replay_head,
+        ], check=True)
         batch_arguments = (
             "--ticket", "T-901", "--workdir", str(self.workdir),
             "--ticket", "T-902", "--workdir", str(sibling_workdir),
@@ -1816,6 +1823,13 @@ PY
         self.assertIn("one to four tickets", oversized_batch.stdout)
         batch_preview = migrate("migrate-batch-plan", *batch_arguments)
         self.assertEqual(
+            subprocess.check_output([
+                "git", "-C", str(self.workdir), "rev-parse",
+                "refs/remotes/origin/ticket/T-901",
+            ], text=True).strip(),
+            stale_tracking,
+        )
+        self.assertEqual(
             batch_preview["schema"],
             "nysa.software-factory.model-migration-batch-preview/v1",
         )
@@ -1838,6 +1852,13 @@ PY
         )
         self.assertEqual(refused_batch.returncode, 2)
         self.assertIn("does not match preview", refused_batch.stdout)
+        self.assertEqual(
+            subprocess.check_output([
+                "git", "-C", str(self.workdir), "rev-parse",
+                "refs/remotes/origin/ticket/T-901",
+            ], text=True).strip(),
+            stale_tracking,
+        )
         self.assertEqual(
             subprocess.check_output(
                 ["git", "-C", str(sibling_workdir), "rev-parse", "HEAD"],
@@ -1877,6 +1898,13 @@ PY
         partial = json.loads(batch_journal.read_text())
         self.assertEqual(partial["status"], "in_progress")
         self.assertEqual(set(partial["results"]), {"T-901"})
+        self.assertEqual(
+            subprocess.check_output([
+                "git", "-C", str(self.workdir), "rev-parse",
+                "refs/remotes/origin/ticket/T-901",
+            ], text=True).strip(),
+            partial["results"]["T-901"]["commit_sha"],
+        )
         subprocess.run(
             [
                 "git", "--git-dir", str(self.remote), "update-ref",
