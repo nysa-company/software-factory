@@ -684,9 +684,38 @@ raise SystemExit(code)
         self.assertEqual(self.called(), ["doctor", "reconcile"])
         self.assertFalse(self.operator_map.exists())
 
+        resolved = copy.deepcopy(doctor)
+        resolved["checks"]["transition_receipts"] = {
+            "incidents": [], "status": "ok",
+        }
         self.calls.unlink()
         code, value = self.run_scenario({
-            "doctor": doctor,
+            "doctor": resolved,
+            "reconcile": [self.controller("waiting_for_target")],
+            "qualification": self.report(),
+        })
+        self.assertEqual((code, value["reason"]), (3, "cohort_not_accounted"))
+        self.assertEqual(self.called(), ["doctor", "reconcile"])
+        self.assertFalse(self.operator_map.exists())
+
+        claim_path = self.controller_state / "claims/T-1.json"
+        claim = json.loads(claim_path.read_text(encoding="utf-8"))
+        claim["receipt"] = "d" * 64
+        claim_path.write_text(json.dumps(claim), encoding="utf-8")
+        self.calls.unlink()
+        code, value = self.run_scenario({
+            "doctor": resolved,
+            "reconcile": [self.controller("waiting_for_target")],
+            "qualification": self.report(),
+        })
+        self.assertEqual((code, value["reason"]), (3, "doctor_not_ready"))
+        self.assertEqual(self.called(), ["doctor"])
+        claim["receipt"] = receipt
+        claim_path.write_text(json.dumps(claim), encoding="utf-8")
+
+        self.calls.unlink()
+        code, value = self.run_scenario({
+            "doctor": resolved,
             "reconcile": [self.controller("waiting_for_target")],
             "qualification": self.report(),
         }, qualification_mode="takeover")
