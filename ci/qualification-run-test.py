@@ -523,7 +523,6 @@ raise SystemExit(code)
             ("wrong-reason", "reason_code", "resume_receipt_mismatch"),
             ("multiple-paths", "changed_path_count", 2),
             ("wide-byte-delta", "expected_bytes", 12),
-            ("early-refusal", "observed_at_epoch_ns", 0),
             ("extra-field", "local_head", "e" * 40),
         ):
             with self.subTest(label=label):

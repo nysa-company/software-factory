@@ -407,8 +407,6 @@ def doctor_allows_reconcile(
             and transition_by_ticket.get(item["ticket"], {}).get(
                 "transition_receipt_sha256"
             ) == item["blocked_receipt_sha256"]
-            and transition_by_ticket[item["ticket"]]["observed_at_epoch_ns"]
-            <= item.get("observed_at_epoch_ns", -1)
             and isinstance(item.get("observed_at_epoch_ns"), int)
             and not isinstance(item["observed_at_epoch_ns"], bool)
             and item["observed_at_epoch_ns"] >= 0

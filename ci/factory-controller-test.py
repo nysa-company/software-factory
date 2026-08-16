@@ -10741,8 +10741,16 @@ class FactoryControllerTest(unittest.TestCase):
         controller.recover_repaired_failures([claim])
         claim["blocked_reason"] = "route-migration-required"
         controller.ticket_release_current = lambda _claim: False
+        restores = []
+        controller.restore_recorded_contract_repair = (
+            lambda _claim: restores.append("recorded") or False
+        )
+        controller.restore_contract_blocker = (
+            lambda _claim: restores.append("blocker") or False
+        )
         controller.recover_repaired_failures([claim])
         self.assertEqual(calls, [])
+        self.assertEqual(restores, [])
         self.assertEqual(claim["status"], "blocked")
         self.assertEqual(claim["receipt"], receipt)
         claim.pop("blocked_reason")

@@ -9351,14 +9351,14 @@ class Controller:
 
     def recover_repaired_failures(self, claims: list[dict[str, Any]]) -> None:
         for claim in claims:
-            if self.restore_recorded_contract_repair(claim):
-                continue
-            self.restore_contract_blocker(claim)
             if (
                 claim.get("blocked_reason") == "route-migration-required"
                 and not self.ticket_release_current(claim)
             ):
                 continue
+            if self.restore_recorded_contract_repair(claim):
+                continue
+            self.restore_contract_blocker(claim)
             if (
                 claim["status"] not in {"blocked", "claimed", "running"}
                 or not claim.get("receipt")
