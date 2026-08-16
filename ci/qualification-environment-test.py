@@ -812,6 +812,10 @@ class QualificationEnvironmentTest(unittest.TestCase):
         authority = account_home / f".factory/qualification/{project}"
         self.assertFalse(authority.exists())
         authority.parent.mkdir(parents=True, exist_ok=True)
+        takeover_kits_root = account_home / ".factory/kits"
+        created_takeover_kits_root = not takeover_kits_root.exists()
+        if created_takeover_kits_root:
+            takeover_kits_root.mkdir(mode=0o700)
         shutil.copytree(Path(value["authority_root"]), authority)
         isolated_paths = {
             "controller_state_path": str(authority / "controller"),
@@ -839,7 +843,7 @@ class QualificationEnvironmentTest(unittest.TestCase):
                     "runtime_ledger_path"
                 ]
             else:
-                takeover = str(account_home / ".factory/kits")
+                takeover = str(takeover_kits_root)
                 selected_active["takeover_kits_root"] = takeover
                 selected_active.pop("runtime_ledger_path", None)
                 selected_receipt["takeover_kits_root"] = takeover
@@ -956,6 +960,8 @@ class QualificationEnvironmentTest(unittest.TestCase):
             self.assertEqual(snapshot(), before)
         finally:
             shutil.rmtree(authority, ignore_errors=True)
+            if created_takeover_kits_root:
+                takeover_kits_root.rmdir()
 
     def test_prepare_rejects_unfit_run_budget_before_state(self) -> None:
         envelope = self.product / "factory/ENVELOPE.env"
