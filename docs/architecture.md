@@ -1201,6 +1201,9 @@ passport migration boundary. Missing, duplicate, stale-round, wrong-role, or
 unrelated changes remain provider-free waits or typed refusals. Builder/Reviewer
 remains budget-only. Repair replays keep the coarse business state for
 operator legibility but are no longer invisible.
+Each exact grant is armed in ticket order and consumed by the next Spec-linter
+verdict, whether PASS or FAIL; any later Planner–Spec-linter cycle therefore
+waits for the next numbered grant instead of reusing a prior successful round.
 The first task-submitted terminal failed Cursor attempt for a protected
 qualification keeps its claim and authenticated evidence while the controller
 appends the existing same-family direct-CLI fallback and resumes the same

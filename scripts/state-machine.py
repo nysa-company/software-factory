@@ -30,6 +30,7 @@ from ticket_state_transition import (  # noqa: E402
     TransitionError as TicketTransitionError,
     field as ticket_text_field,
     fresh_resume_text,
+    planner_spec_linter_authorization,
     qualification_epoch_text,
 )
 
@@ -3304,16 +3305,24 @@ def govern_loop(
         )
     except TicketTransitionError as error:
         raise StateError(str(error)) from error
-    spec = re.findall(
-        r"^\s*SPEC-LINT:\s*(PASS|FAIL)(?:\s+—\s+.*)?\s*$",
-        text, re.I | re.M,
-    )
     kind = ""
     attempt = 0
     cap_stage = False
+    planner_authorization = planner_spec_linter_authorization(text)
+    if planner_authorization is not None and planner_authorization[1] == "invalid":
+        attempt = planner_authorization[0] - 1
+        return (
+            "REFUSE semantic-round authorization is ambiguous; "
+            "spec-linter grants are not ordered one-use controls",
+            {
+                "attempt": attempt,
+                "capped": attempt >= LOOP_LIMIT,
+                "kind": "planner-spec-linter",
+                "limit": LOOP_LIMIT,
+            },
+        )
     if (
-        spec
-        and spec[-1].upper() == "FAIL"
+        planner_authorization is not None
         and (
             stage in {"RUN planner", "RUN spec-linter"}
             or stage.startswith(
@@ -3331,7 +3340,7 @@ def govern_loop(
         )
     ):
         kind = "planner-spec-linter"
-        attempt = sum(item.upper() == "FAIL" for item in spec)
+        attempt = planner_authorization[0] - 1
         cap_stage = (
             stage == "RUN planner"
             or stage.startswith(
@@ -3381,7 +3390,14 @@ def govern_loop(
         or kind == "narrator-bundle" and cap_stage and attempt >= 2
     )
     matches = text.splitlines().count(authorization_line)
-    authorized = authorization_required and matches == 1
+    authorized = (
+        authorization_required
+        and (
+            kind != "planner-spec-linter" and matches == 1
+            or kind == "planner-spec-linter"
+            and planner_authorization == (authorization_round, "authorized")
+        )
+    )
     limit = 2 if kind == "narrator-bundle" else LOOP_LIMIT
     capped = authorization_required and attempt >= limit and not authorized
     loop = {
@@ -3391,7 +3407,11 @@ def govern_loop(
         "limit": limit,
     }
     if authorization_required and not authorized:
-        if matches == 0:
+        if (
+            kind == "planner-spec-linter"
+            and planner_authorization == (authorization_round, "required")
+            or kind != "planner-spec-linter" and matches == 0
+        ):
             stage = (
                 "AWAIT-OPERATOR semantic-round authorization required; "
                 f"add exact line: {authorization_line}"

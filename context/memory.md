@@ -6521,3 +6521,14 @@ through the current passport's signed migration lineage. Adjacent passport
 snapshots may have ordinary descendant commit gaps, but Factory, protected-base,
 and route junctions remain exact; malformed, reordered, duplicated, ambiguous,
 or unrelated evidence fails closed.
+
+## 2026-08-16 — Decision 469: Spec-linter grants are ordered and one-use
+
+Category: Reliability
+
+After two Spec-linter FAIL verdicts, each exact round grant arms only the next
+Spec-linter verdict and that verdict consumes it whether PASS or FAIL. Any
+later Planner–Spec-linter cycle waits provider-free for the next numbered
+grant. The state machine, direct stage reducer, and operator plan/apply path
+share this ordered ticket-control projection; wrong, skipped, stale, or
+duplicate grants remain non-runnable.

@@ -178,6 +178,7 @@ an in-flight manifest or backdate an override.
 ## A semantic loop reached its next-round authorization boundary
 
 - Notice: after two Spec-linter FAIL verdicts, and before every later Planner–Spec-linter round, `next-stage` returns provider-free `AWAIT-OPERATOR` with the exact next `OPERATOR AUTHORIZATION: spec-linter round <N>` line. Contract repair does the same before its fourth and every later `FIX <role>` attempt. After the one automatic Narrator bundle correction, every later invalid bundle waits for the exact next Narrator round. A duplicate or malformed attempt produces a typed correction action without launching a provider.
+- Notice: a Spec-linter PASS consumes its round grant too; a later repair cycle cannot reuse that grant.
 - Do: if one more cycle is warranted, use the exact role and round from the watcher: `factory-launch <project> ticket-control authorize-round plan --ticket <T-NNN> --role <role> --round <N> --operator-id <ID> --json`, review its identities, then run the matching `authorize-round apply` with `--approve-hash <HASH>`. The controller writes and pushes one ticket-only child; ordinary reconciliation imports it. Each line grants only that next round.
 - Don't: add commentary to the authorization line, authorize a different role or round, change another path, or infer authorization. Reviewer remains governed by its budget-only review loop and has no semantic-round authorization gate.
 

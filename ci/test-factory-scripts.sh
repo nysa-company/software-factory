@@ -2845,14 +2845,32 @@ fi
 
 ledger_row T-301 spec-linter >> "$SPEC_ROUNDS/factory/ledger.csv"
 printf '%s\n' 'SPEC-LINT: FAIL — third' >> "$SPEC_ROUNDS/factory/tickets/T-301.md"
-if expect_stage "ESCALATE planner-spec-linter loop cap reached" "$SPEC_ROUNDS" T-301; then
-  pass "third failed spec round reaches the hard cap"
+if expect_stage "AWAIT-OPERATOR semantic-round authorization required; add exact line: OPERATOR AUTHORIZATION: spec-linter round 4" "$SPEC_ROUNDS" T-301; then
+  pass "third failed spec round waits for its next exact grant"
 fi
 
 sed -i.bak 's/SPEC-LINT: FAIL — third/SPEC-LINT: PASS/' "$SPEC_ROUNDS/factory/tickets/T-301.md"
 rm -f "$SPEC_ROUNDS/factory/tickets/T-301.md.bak"
+cp "$SPEC_ROUNDS/factory/tickets/T-301.md" "$SPEC_ROUNDS/factory/tickets/T-301.saved"
+sed -i.bak '/^OPERATOR AUTHORIZATION: spec-linter round 3$/d' \
+  "$SPEC_ROUNDS/factory/tickets/T-301.md"
+rm -f "$SPEC_ROUNDS/factory/tickets/T-301.md.bak"
+if expect_stage "REFUSE semantic-round authorization is ambiguous" "$SPEC_ROUNDS" T-301; then
+  pass "an unauthorized passing spec round cannot advance to tests"
+fi
+mv "$SPEC_ROUNDS/factory/tickets/T-301.saved" "$SPEC_ROUNDS/factory/tickets/T-301.md"
 if expect_stage "RUN test-author" "$SPEC_ROUNDS" T-301; then
   pass "authorized spec-linter pass advances to tests"
+fi
+
+ledger_row T-301 planner >> "$SPEC_ROUNDS/factory/ledger.csv"
+if expect_stage "AWAIT-OPERATOR semantic-round authorization required; add exact line: OPERATOR AUTHORIZATION: spec-linter round 4" "$SPEC_ROUNDS" T-301; then
+  pass "a passing verdict consumes its one-use spec-linter grant"
+fi
+printf '%s\n' 'OPERATOR AUTHORIZATION: spec-linter round 4' >> \
+  "$SPEC_ROUNDS/factory/tickets/T-301.md"
+if expect_stage "RUN spec-linter" "$SPEC_ROUNDS" T-301; then
+  pass "the next exact grant opens only its named lint round"
 fi
 
 # Qualification starts one sealed role-control epoch without rewriting the
@@ -2920,7 +2938,7 @@ git -C "$QUALIFICATION_EPOCH" add factory/tickets/T-307.md
 git -C "$QUALIFICATION_EPOCH" -c user.name=test -c user.email=test@example.com \
   commit -qm "duplicate current qualification authorization"
 TEST_CONTRACT_VERSION=2.0.0 expect_stage \
-  "AWAIT-OPERATOR semantic-round authorization invalid" \
+  "REFUSE semantic-round authorization is ambiguous" \
   "$QUALIFICATION_EPOCH" T-307 || true
 if TEST_CONTRACT_VERSION=2.0.0 expect_stage "RUN planner" \
   "$QUALIFICATION_EPOCH" T-305; then
@@ -4069,7 +4087,7 @@ if expect_stage "AWAIT-OPERATOR semantic-round authorization required" "$WALK" T
   if expect_stage "RUN planner" "$WALK" T-503; then
     printf 'OPERATOR AUTHORIZATION: spec-linter round 3\n' >> \
       "$WALK/factory/tickets/T-503.md"
-    if expect_stage "AWAIT-OPERATOR semantic-round authorization invalid" "$WALK" T-503; then
+    if expect_stage "REFUSE semantic-round authorization is ambiguous" "$WALK" T-503; then
       pass "spec-lint round-three authorization is exact and unambiguous"
     fi
   fi
