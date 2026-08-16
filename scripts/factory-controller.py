@@ -7272,7 +7272,10 @@ class Controller:
                     )
                 except (ControllerError, OSError, subprocess.SubprocessError):
                     pass
-                if not migrated_authorization:
+                if (
+                    not migrated_authorization
+                    and passport.get("factory_sha") == terminal.get("kit_sha")
+                ):
                     self.quarantine_legacy_protected_mutation(claim, terminal)
             if (
                 migrated_authorization

@@ -8802,13 +8802,25 @@ class FactoryControllerTest(unittest.TestCase):
         source = "b" * 40
         passport_path = self.state / "passports/T-110.json"
         passport_path.parent.mkdir(mode=0o700)
-        CONTROL.write(passport_path, {"factory_sha": source})
+        CONTROL.write(passport_path, {"factory_sha": source, "head_sha": ""})
         claim = {
             "branch": "ticket/T-110",
+            "receipt": "c" * 64,
+            "role": "spec-linter",
             "status": "blocked",
             "ticket": "T-110",
             "worktree": str(self.product),
         }
+        terminal = {
+            "kit_sha": "d" * 40,
+            "role_exit": "role_exit_protected_ticket_mutation",
+        }
+        controller.terminal_for_receipt = lambda _ticket, _receipt: terminal
+        controller.authenticated_operator_passport = lambda _ticket: None
+        quarantined = []
+        controller.quarantine_legacy_protected_mutation = (
+            lambda _claim, _terminal: quarantined.append(True)
+        )
         controller.ticket_release_current = lambda _claim: False
         controller.migrate_passport = lambda _claim, _mode: None
         controller.recovery_input_sha256 = lambda _claim, _name: "e" * 64
@@ -8821,6 +8833,7 @@ class FactoryControllerTest(unittest.TestCase):
             claim["recovery_attempt"]["retry_reason"],
             "route-migration-required",
         )
+        self.assertEqual(quarantined, [])
 
 
     def test_recovery_failures_dedupe_and_release_new_nonlive_lease(self) -> None:

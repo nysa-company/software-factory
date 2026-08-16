@@ -6380,3 +6380,13 @@ When successor recovery discovers `route-migration-required`, its persisted
 attempt retains that exact retry reason. The sealed qualification driver can
 therefore prove the whole selected cohort and run one deterministic migration
 batch even if controller recovery reaches its bounded attempt limit first.
+
+## 2026-08-15 — Decision 456: Quarantine stays within the failed release
+
+Category: Reliability
+
+Protected-ticket failed-output quarantine runs only while the signed passport
+still belongs to the role's failed Factory. Once exact successor migrations
+have moved that passport, the controller preserves the migrated head and uses
+ordinary authenticated successor recovery instead of treating route commits as
+failed role output.
