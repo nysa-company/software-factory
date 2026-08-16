@@ -180,6 +180,9 @@ raise SystemExit(code)
                 "FACTORY_KIT_TRUST_SCOPE": "qualification-candidate",
                 "FACTORY_QUALIFICATION_MODE": "isolated",
                 "FACTORY_QUALIFICATION_MANIFEST": str(self.manifest),
+                "FACTORY_QUALIFICATION_PRODUCT_SHA": getattr(
+                    self, "product_sha", "",
+                ),
                 "FACTORY_RELEASE_SHA": "a" * 40,
                 "QUALIFICATION_RUN_CALLS": str(self.calls),
                 "QUALIFICATION_RUN_SCENARIO": str(self.scenario),
@@ -646,6 +649,113 @@ raise SystemExit(code)
                     (code, value["reason"]), (3, "doctor_not_ready")
                 )
                 self.assertEqual(self.called(), ["doctor"])
+
+    def test_mixed_source_incident_uses_exact_ticket_authorization(self) -> None:
+        doctor, _worktree, head, _receipt = self.contract_recovery_fixture()
+        doctor["checks"]["transition_receipts"]["incidents"][0].update({
+            "active_factory_sha": "c" * 40,
+            "receipt_factory_sha": "d" * 40,
+        })
+        checked = {
+            "action": "repair-check", "current_state": "Blocked-Escalated",
+            "head": head, "repair_role": "planner", "resume_state": "Building",
+            "role": "test-author",
+            "schema": "nysa.software-factory.state-machine/v1",
+            "status": "ready", "ticket": "T-1",
+        }
+        product = self.root / "product"
+        factory = product / "factory"
+        authorization_path = (
+            factory / "migrations/inflight-release" / f'{"a" * 40}.json'
+        )
+        authorization_path.parent.mkdir(parents=True)
+        self.manifest = factory / "QUALIFICATION.json"
+        self.manifest.write_text(json.dumps({
+            "budget_usd": "300.000000", "capacity": 3,
+            "contract_version": "2.0.0", "factory_sha": "a" * 40,
+            "generation": 1, "mode": "successor",
+            "per_run_budget_usd": "10.000000",
+            "per_ticket_budget_usd": "100.000000",
+            "schema": "nysa.software-factory.qualification/v2",
+            "source_factory_sha": "b" * 40, "target_done": 3,
+            "tickets": ["T-1", "T-2", "T-3"],
+        }), encoding="utf-8")
+        (factory / "PROJECT.env").write_text(
+            "GH_REPO=example/product\n", encoding="utf-8",
+        )
+        authorization = {
+            "repository": "example/product",
+            "schema": (
+                "nysa.software-factory.inflight-release-authorization/v2"
+            ),
+            "source_kit_sha": "b" * 40,
+            "target_kit_sha": "a" * 40,
+            "tickets": [{
+                "branch": f"ticket/T-{index}", "head": f"{index}" * 40,
+                "source_kit_sha": "c" * 40 if index == 1 else "b" * 40,
+                "state": "Blocked-Escalated" if index == 1 else "Building",
+                "ticket": f"T-{index}",
+            } for index in range(1, 4)],
+        }
+        authorization_path.write_text(
+            json.dumps(authorization, sort_keys=True, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        for command in (
+            ("init", "-q"),
+            ("config", "user.name", "Qualification Test"),
+            ("config", "user.email", "qualification@test.invalid"),
+            ("add", "."),
+            ("commit", "-qm", "qualification source authorization"),
+        ):
+            subprocess.run(
+                ["git", "-C", str(product), *command], check=True,
+                capture_output=True, text=True,
+            )
+        self.product_sha = subprocess.run(
+            ["git", "-C", str(product), "rev-parse", "HEAD"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+
+        code, value = self.run_scenario({
+            "doctor": doctor, "state-machine:repair-check": checked,
+            "reconcile": [
+                self.controller("waiting_for_target"),
+                self.controller("waiting_for_target"),
+            ],
+            "qualification": self.report(),
+        })
+        self.assertEqual((code, value["reason"]), (3, "cohort_not_accounted"))
+        self.assertEqual(self.called(), [
+            "doctor", "reconcile", "doctor", "state-machine:repair-check",
+            "reconcile",
+        ])
+
+        authorization["tickets"][0]["source_kit_sha"] = "e" * 40
+        authorization_path.write_text(
+            json.dumps(authorization, sort_keys=True, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        subprocess.run(
+            ["git", "-C", str(product), "add", str(authorization_path)],
+            check=True, capture_output=True, text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(product), "commit", "-qm", "drift source"],
+            check=True, capture_output=True, text=True,
+        )
+        self.product_sha = subprocess.run(
+            ["git", "-C", str(product), "rev-parse", "HEAD"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        self.calls.unlink()
+        code, value = self.run_scenario({
+            "doctor": doctor,
+            "reconcile": [self.controller("waiting_for_target")],
+            "qualification": self.report(),
+        })
+        self.assertEqual((code, value["reason"]), (3, "doctor_not_ready"))
+        self.assertEqual(self.called(), ["doctor"])
 
     def test_contract_resume_projection_replays_after_receipt_consumption(self) -> None:
         doctor, worktree, _head, _receipt = self.contract_recovery_fixture(

@@ -17,6 +17,10 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
 from qualification_manifest import ManifestError, validate as validate_manifest  # noqa: E402
+from inflight_release import (  # noqa: E402
+    AuthorizationError, parse_authorization, ticket_source_kit,
+)
+from legacy_closeout import ValidationError, run as run_git  # noqa: E402
 import operator_receipt  # noqa: E402
 
 
@@ -117,7 +121,9 @@ def report_result(value: dict[str, Any]) -> None:
         raise QualificationRunError("qualification reducer returned invalid evidence")
 
 
-def qualification_basis() -> tuple[set[str], int, bool, str, str]:
+def qualification_basis() -> tuple[
+    set[str], int, bool, str, str, dict[str, str],
+]:
     raw_path = os.environ.get("FACTORY_QUALIFICATION_MANIFEST", "")
     factory_sha = os.environ.get("FACTORY_RELEASE_SHA", "")
     path = Path(raw_path)
@@ -140,12 +146,51 @@ def qualification_basis() -> tuple[set[str], int, bool, str, str]:
             raise QualificationRunError("qualification manifest changed while reading")
         value = json.loads(raw.decode("utf-8", "strict"))
         manifest = validate_manifest(value, factory_sha)
+        ticket_sources: dict[str, str] = {}
+        product_sha = os.environ.get("FACTORY_QUALIFICATION_PRODUCT_SHA", "")
+        if manifest.get("mode") == "successor" and product_sha:
+            if not SHA.fullmatch(product_sha) or path.parent.name != "factory":
+                raise QualificationRunError("qualification product identity is invalid")
+            product = path.parent.parent.resolve(strict=True)
+            if path.resolve(strict=True) != product / "factory/QUALIFICATION.json":
+                raise QualificationRunError("qualification manifest is unavailable")
+            committed = run_git(
+                product, "show",
+                f"{product_sha}:factory/QUALIFICATION.json",
+            ).stdout.encode()
+            if committed != raw:
+                raise QualificationRunError("qualification manifest is not committed")
+            authorization, entries = parse_authorization(
+                run_git(
+                    product, "show", f"{product_sha}:factory/migrations/"
+                    f"inflight-release/{factory_sha}.json",
+                ).stdout,
+                run_git(
+                    product, "show", f"{product_sha}:factory/PROJECT.env",
+                ).stdout,
+                factory_sha,
+            )
+            if (
+                authorization["source_kit_sha"]
+                != manifest["source_factory_sha"]
+                or set(entries) != set(manifest["tickets"])
+            ):
+                raise QualificationRunError(
+                    "qualification source authorization is not exact"
+                )
+            ticket_sources = {
+                ticket: ticket_source_kit(authorization, entries[ticket])
+                for ticket in manifest["tickets"]
+            }
         return (
             set(manifest["tickets"]), manifest["capacity"],
             manifest.get("mode") == "successor", factory_sha,
-            manifest.get("source_factory_sha", ""),
+            manifest.get("source_factory_sha", ""), ticket_sources,
         )
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ManifestError) as error:
+    except (
+        AuthorizationError, OSError, UnicodeDecodeError, json.JSONDecodeError,
+        ManifestError, ValidationError,
+    ) as error:
         raise QualificationRunError("qualification manifest is invalid") from error
     finally:
         if descriptor >= 0:
@@ -501,6 +546,7 @@ def migration_apply_result(
 def doctor_allows_reconcile(
     value: dict[str, Any], project: str, selected: set[str], capacity: int,
     successor: bool, factory_sha: str, source_factory_sha: str,
+    ticket_sources: dict[str, str],
 ) -> bool:
     checks = value.get("checks")
     if (
@@ -572,6 +618,11 @@ def doctor_allows_reconcile(
         and (
             incident_factories == {factory_sha}
             or incident_factories == {source_factory_sha}
+            or all(
+                item["active_factory_sha"]
+                == ticket_sources.get(item["ticket"])
+                for item in incidents
+            )
             or (
                 incident_tickets == selected
                 and len(incident_factories) == 1
@@ -715,13 +766,16 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
     if not PROJECT.fullmatch(args.project):
         raise QualificationRunError("invalid qualification project")
     launcher = launcher_path(args.launcher)
-    selected, capacity, successor, factory_sha, source_factory_sha = qualification_basis()
+    (
+        selected, capacity, successor, factory_sha, source_factory_sha,
+        ticket_sources,
+    ) = qualification_basis()
     phases: list[dict[str, Any]] = []
     started = time.monotonic()
     code, doctor = invoke(launcher, args.project, "doctor", phases)
     if code != 0 or not doctor_allows_reconcile(
         doctor, args.project, selected, capacity, successor, factory_sha,
-        source_factory_sha,
+        source_factory_sha, ticket_sources,
     ):
         return {
             "doctor_status": doctor.get("overall_status"),
@@ -761,7 +815,7 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
                 )
                 if code != 0 or not doctor_allows_reconcile(
                     refreshed, args.project, selected, capacity, successor,
-                    factory_sha, source_factory_sha,
+                    factory_sha, source_factory_sha, ticket_sources,
                 ):
                     raise QualificationRunError(
                         "qualification Doctor changed during contract recovery"
