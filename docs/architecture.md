@@ -467,6 +467,9 @@ stale-bundle recovery may ask the
 state machine for a current receipt only after one unique contiguous suffix of
 authenticated release-changing migration edges binds the old receipt and
 passport-file digest to the current passport without changing head or route.
+When the approved route commit is already pushed, recovery migrates the
+passport to that clean commit before testing whether the retained bundle is
+refreshable; restart may replay the idempotent passport migration.
 The old receipt retains its historical lease while the successor receipt binds
 the controller's current active lease. A release-scoped marker is durable
 before issuance, so restart
@@ -787,7 +790,10 @@ starts before route resolution and provider admission queues. The controller
 serializes only protected-base Git mutations because disposable
 cells share one Git common directory. Refresh proves staleness from the exact
 certified remote tip, ancestry, and exact open PR identity; GitHub's lagging
-`mergeStateStatus` is not evidence. The two exact receipt-topology
+`mergeStateStatus` is not evidence. Before Reviewer or Narrator evidence, the
+launcher may consume that exact role receipt for one provider-free
+protected-base refresh; the next reconciliation reissues role authority at
+the refreshed head. The two exact receipt-topology
 refusals—an old merge no longer in branch history, or a receipt commit no
 longer directly after its merge—route through the same receipt-bound
 protected-base refresh. `Building` is admitted only when the trusted launcher

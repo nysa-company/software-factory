@@ -2757,7 +2757,9 @@ PY
           ;;
         refresh)
           [[ "$TRANSITION_STAGE" != REFUSE\ dependency\ refresh\ required* &&
-             ( "$TRANSITION_STAGE" == REFUSE* || "$TRANSITION_STAGE" == AWAIT-* ) ]] ||
+             ( "$TRANSITION_STAGE" == REFUSE* || "$TRANSITION_STAGE" == AWAIT-* ||
+               "$TRANSITION_STAGE" == "RUN reviewer" ||
+               "$TRANSITION_STAGE" == "RUN narrator" ) ]] ||
             die "transition receipt does not authorize refresh"
           ;;
         dependency-refresh)

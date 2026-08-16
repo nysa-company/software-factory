@@ -8263,8 +8263,21 @@ class FactoryControllerTest(unittest.TestCase):
 
         controller.json_call = state_machine
         controller.migrate_passport = migrate_passport
-        controller.locally_valid_operator_passport = lambda _claim: (
-            controller.authenticated_operator_passport(ticket_id)
+
+        def locally_valid_operator_passport(_claim):
+            current = controller.authenticated_operator_passport(ticket_id)
+            head = subprocess.run(
+                ["git", "-C", str(cell), "rev-parse", "HEAD"],
+                text=True, capture_output=True, check=True,
+            ).stdout.strip()
+            if current["head_sha"] != head:
+                raise CONTROL.ControllerError(
+                    "passport does not match this clean execution cell"
+                )
+            return current
+
+        controller.locally_valid_operator_passport = (
+            locally_valid_operator_passport
         )
         controller.renew = lambda _claim: None
         original_event_once = controller.event_once
@@ -8280,20 +8293,20 @@ class FactoryControllerTest(unittest.TestCase):
 
         receipt_bytes = (self.state / "T-110.json").read_bytes()
         restarted = CONTROL.Controller(args)
-        restarted.locally_valid_operator_passport = lambda _claim: (
-            restarted.authenticated_operator_passport(ticket_id)
+        restarted.locally_valid_operator_passport = (
+            locally_valid_operator_passport
         )
         restarted.renew = lambda _claim: None
         restarted.json_call = lambda *_args, **_kwargs: self.fail(
             "restart must reuse the current durable receipt"
         )
-        restarted.migrate_passport = lambda *_args: self.fail(
-            "restart must retain the final passport edge"
+        restarted.migrate_passport = lambda *_args: passport_calls.append(
+            "passport-replay"
         )
         claim = restarted.load_claims()[0]
         restarted.recover_upgraded_claims([claim])
 
-        self.assertEqual(passport_calls, ["passport"])
+        self.assertEqual(passport_calls, ["passport", "passport-replay"])
         self.assertEqual((self.state / "T-110.json").read_bytes(), receipt_bytes)
         self.assertEqual(claim["status"], "claimed")
         self.assertTrue(claim["release_refresh_required"])
@@ -16470,6 +16483,13 @@ class FactoryControllerTest(unittest.TestCase):
             'await merge and closeout"',
             guard,
         )
+        refresh = launcher.index(
+            'die "transition receipt does not authorize refresh"'
+        )
+        refresh_guard = launcher[refresh - 500:refresh]
+        self.assertIn('"$TRANSITION_STAGE" == "RUN reviewer"', refresh_guard)
+        self.assertIn('"$TRANSITION_STAGE" == "RUN narrator"', refresh_guard)
+        self.assertNotIn('"$TRANSITION_STAGE" == RUN*', refresh_guard)
 
     def test_launcher_ticket_parking_requires_issue_and_named_release(self) -> None:
         launcher = (

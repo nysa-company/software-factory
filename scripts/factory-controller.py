@@ -7438,7 +7438,12 @@ class Controller:
                 continue
             merged_closeout = False
             bundle_refresh = False
-            if prior == self.release_path.name:
+            route_passport_pending = (
+                prior == self.release_path.name
+                and not migration_complete
+                and self.ticket_release_current(claim)
+            )
+            if prior == self.release_path.name and not route_passport_pending:
                 if (
                     passport.get("current_state") == "Approved"
                     and passport.get("publication_state") == "merged"
