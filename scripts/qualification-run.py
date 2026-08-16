@@ -290,9 +290,8 @@ def route_migration_arguments(
         raise QualificationRunError("qualification claim state is invalid") from error
 
 
-def contract_recovery_claim(ticket: str) -> dict[str, Any]:
+def controller_state_json(path: Path) -> dict[str, Any]:
     state = Path(os.environ.get("FACTORY_CONTROLLER_STATE_DIR", ""))
-    path = state / "claims" / f"{ticket}.json"
     descriptor = -1
     try:
         if (
@@ -308,6 +307,7 @@ def contract_recovery_claim(ticket: str) -> dict[str, Any]:
             or state_info.st_mode & 0o022
         ):
             raise QualificationRunError("qualification claim state is unsafe")
+        path = state / path
         descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
         info = os.fstat(descriptor)
         if (
@@ -321,9 +321,22 @@ def contract_recovery_claim(ticket: str) -> dict[str, Any]:
         raw = os.read(descriptor, 1_048_577)
         if len(raw) != info.st_size:
             raise QualificationRunError("qualification claim changed while reading")
-        claim = json.loads(raw.decode("utf-8", "strict"))
-        if not isinstance(claim, dict):
+        value = json.loads(raw.decode("utf-8", "strict"))
+        if not isinstance(value, dict):
             raise QualificationRunError("qualification recovery claim is invalid")
+        return value
+    except (
+        FileNotFoundError, json.JSONDecodeError, OSError, TypeError, UnicodeError,
+    ) as error:
+        raise QualificationRunError("qualification claim state is invalid") from error
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def contract_recovery_claim(ticket: str) -> dict[str, Any]:
+    claim = controller_state_json(Path("claims") / f"{ticket}.json")
+    try:
         worktree = Path(claim.get("worktree", ""))
         worktree_info = worktree.lstat()
         if (
@@ -344,18 +357,27 @@ def contract_recovery_claim(ticket: str) -> dict[str, Any]:
         ):
             raise QualificationRunError("qualification recovery claim is invalid")
         return claim
-    except (
-        FileNotFoundError, json.JSONDecodeError, OSError, TypeError, UnicodeError,
-    ) as error:
+    except (FileNotFoundError, OSError, TypeError) as error:
         raise QualificationRunError("qualification claim state is invalid") from error
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
 
 
-def contract_recovery_claim_matches(ticket: str, receipt: str) -> bool:
+def contract_recovery_claim_matches(
+    project: str, ticket: str, receipt: str,
+) -> bool:
     try:
-        return contract_recovery_claim(ticket)["receipt"] == receipt
+        claim = contract_recovery_claim(ticket)
+        transition = controller_state_json(Path(f"{ticket}.json"))
+        return (
+            claim["receipt"] == receipt
+            and transition.get("schema")
+            == "nysa.software-factory.transition-receipt/v1"
+            and transition.get("project") == project
+            and transition.get("ticket") == ticket
+            and transition.get("branch") == claim.get("branch")
+            and transition.get("role") == claim["role"]
+            and transition.get("receipt_sha256") == receipt
+            and transition.get("consumed") is True
+        )
     except QualificationRunError:
         return False
 
@@ -710,17 +732,16 @@ def doctor_allows_reconcile(
             and DIGEST.fullmatch(item["blocked_receipt_sha256"])
             and isinstance(item.get("observed_at_epoch_ns"), int)
             and not isinstance(item["observed_at_epoch_ns"], bool)
+            and item["observed_at_epoch_ns"] >= 0
+            and contract_recovery_claim_matches(
+                project, item["ticket"], item["blocked_receipt_sha256"],
+            )
             and (
                 transition_recovery
                 and transition_by_ticket.get(item["ticket"], {}).get(
                     "transition_receipt_sha256"
                 ) == item["blocked_receipt_sha256"]
-                and item["observed_at_epoch_ns"]
-                >= transition_by_ticket[item["ticket"]]["observed_at_epoch_ns"]
                 or transition_ok
-                and contract_recovery_claim_matches(
-                    item["ticket"], item["blocked_receipt_sha256"],
-                )
             )
             for item in contract_incidents
         )
