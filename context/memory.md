@@ -6496,3 +6496,15 @@ Qualification history reconstruction parses `TEST_PATHS` with the same
 quoted, whitespace-separated semantics as the state machine. Every configured
 root participates in the protected-test snapshot; unsafe, duplicate,
 overlapping, Factory, or empty paths remain refused.
+
+## 2026-08-16 — Decision 467: Historical reconstruction keeps its source base
+
+Category: Reliability
+
+Qualification successor migrations may advance the signed current protected
+main without rebasing an already-authorized ticket branch. History
+reconstruction therefore builds its exact two-commit line from the unique
+authenticated protected base carried out of the blocker's release, while
+separately requiring the passport's current protected main at the certified
+origin. The durable record and passport rewrite validate both bindings; product
+paths and foreign-ticket state remain closed.

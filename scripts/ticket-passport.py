@@ -22,7 +22,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
 from release_lineage import (  # noqa: E402
-    successor_release_lineage, valid_v2_migration,
+    release_source_base, successor_release_lineage, valid_v2_migration,
 )
 from reorder_test_fixes import (  # noqa: E402
     verified_history_repair, verified_normalization_plan,
@@ -675,6 +675,21 @@ def authorized_qualification_history_reconstruction(
         "transition_receipt_sha256",
     }
     configured = test_paths.split()
+    reconstruction_base = (
+        protected
+        if consumed.get("factory_sha") == args.factory_sha
+        else release_source_base(
+            previous.get("migration_history"),
+            consumed.get("factory_sha", ""),
+        )
+    )
+    base_continuous = subprocess.run(
+        [
+            "git", "-C", str(args.workdir), "merge-base", "--is-ancestor",
+            reconstruction_base, protected,
+        ],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+    )
     if (
         set(value) != expected_keys
         or not DIGEST.fullmatch(digest)
@@ -693,9 +708,9 @@ def authorized_qualification_history_reconstruction(
         != previous.get("product_origin_sha256")
         or value.get("product_origin_sha256")
         != current.get("product_origin_sha256")
-        or value.get("protected_base_sha") != protected
-        or value.get("protected_base_sha")
-        != previous.get("protected_base_sha")
+        or value.get("protected_base_sha") != reconstruction_base
+        or previous.get("protected_base_sha") != protected
+        or base_continuous.returncode
         or value.get("new_head") != current.get("head_sha")
         or value.get("new_tree") != current.get("head_tree")
         or value.get("old_tree") != value.get("new_tree")
@@ -712,7 +727,7 @@ def authorized_qualification_history_reconstruction(
         or consumed.get("stage") not in {"RUN test-author", "FIX test-author"}
         or consumed.get("consumed") is not True
         or not verified_test_snapshot_reconstruction(
-            str(args.workdir), protected, previous["head_sha"],
+            str(args.workdir), reconstruction_base, previous["head_sha"],
             current["head_sha"], configured, args.ticket,
         )
     ):

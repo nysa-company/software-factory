@@ -82,6 +82,19 @@ def valid_v2_migration(item: Any) -> bool:
     )
 
 
+def release_source_base(migrations: Any, source: str) -> str:
+    """Return the unique protected base carried out of one release."""
+    if not isinstance(migrations, list) or not SHA.fullmatch(source):
+        return ""
+    bases = [
+        edge["from_protected_base_sha"] for edge in migrations
+        if valid_v2_migration(edge)
+        and edge["from_factory_sha"] == source
+        and edge["to_factory_sha"] != source
+    ]
+    return bases[0] if len(bases) == 1 else ""
+
+
 def passport_head_lineage(passport: Any, source_head: str) -> bool:
     """Match one authenticated v2 suffix from source to the current passport."""
     if (

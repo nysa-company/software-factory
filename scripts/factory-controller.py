@@ -27,7 +27,8 @@ from urllib.parse import urlsplit
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
 from release_lineage import (  # noqa: E402
     MIGRATION_SCHEMA as PASSPORT_MIGRATION_SCHEMA,
-    passport_head_lineage, successor_release_lineage, valid_v2_migration,
+    passport_head_lineage, release_source_base, successor_release_lineage,
+    valid_v2_migration,
 )
 from qualification_artifacts import (  # noqa: E402
     ArtifactError as QualificationArtifactError,
@@ -8603,6 +8604,13 @@ class Controller:
         except (ControllerError, FileNotFoundError, OSError, ValueError):
             return False
         digest = record.get("record_sha256", "")
+        transition = self.transition_receipt(
+            claim, allow_prior=True, record=False,
+        )
+        reconstruction_base = release_source_base(
+            passport.get("migration_history"),
+            transition.get("factory_sha", "") if transition else "",
+        )
         unsigned = {
             key: value for key, value in record.items()
             if key != "record_sha256"
@@ -8633,7 +8641,7 @@ class Controller:
             and record.get("product_origin_sha256")
             == passport.get("product_origin_sha256")
             and record.get("protected_base_sha")
-            == passport.get("protected_base_sha")
+            == reconstruction_base
             and record.get("state") == "Blocked-Escalated"
             and record.get("transition_receipt_sha256") == claim.get("receipt")
             and isinstance(configured, list) and configured
@@ -8718,6 +8726,9 @@ class Controller:
                 raise ControllerError(
                     "qualification history reconstruction passport is unavailable"
                 )
+            transition = self.transition_receipt(
+                claim, allow_prior=True, record=False,
+            )
         else:
             claim = self.operator_control_claim(
                 ticket, "qualification history reconstruction",
@@ -8771,11 +8782,17 @@ class Controller:
                 )
 
         worktree = Path(claim["worktree"])
+        reconstruction_base = (
+            passport["protected_base_sha"]
+            if transition.get("factory_sha") == self.release_path.name
+            else release_source_base(
+                passport.get("migration_history"),
+                transition.get("factory_sha", ""),
+            )
+        )
         old_head = record.get("old_head", "") if record else passport["head_sha"]
         new_head = record.get("new_head", "") if record else ""
-        base = record.get("protected_base_sha", "") if record else passport[
-            "protected_base_sha"
-        ]
+        base = record.get("protected_base_sha", "") if record else reconstruction_base
         project = self.cell_git(
             claim, "show", f"{base}:factory/PROJECT.env",
         )
@@ -8854,6 +8871,10 @@ class Controller:
             claim, "status", "--porcelain=v1", "-z", "--untracked-files=all",
             "--ignore-submodules=none",
         )
+        base_continuous = self.cell_git(
+            claim, "merge-base", "--is-ancestor", base,
+            passport.get("protected_base_sha", ""),
+        )
         if (
             not certified
             or any(character in certified for character in "\n\r\t")
@@ -8864,7 +8885,8 @@ class Controller:
             or dirty.returncode
             or dirty.stdout
             or not SHA.fullmatch(base)
-            or remote_head("main") != base
+            or base_continuous.returncode
+            or remote_head("main") != passport.get("protected_base_sha")
             or tracking_result.returncode
             or tracking not in {old_head, new_head}
             or local not in {old_head, new_head}
@@ -8991,6 +9013,7 @@ class Controller:
             or record.get("factory_sha") != self.release_path.name
             or record.get("configured_test_paths") != configured
             or record.get("protected_base_sha") != base
+            or record.get("protected_base_sha") != reconstruction_base
             or record.get("transition_receipt_sha256") != blocked_receipt
             or record.get("state") != "Blocked-Escalated"
             or record.get("old_tree") != record.get("new_tree")

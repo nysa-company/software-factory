@@ -18205,6 +18205,10 @@ class FactoryControllerTest(unittest.TestCase):
             ["git", "-C", str(self.product), "rev-parse", "HEAD"],
             text=True, capture_output=True, check=True,
         ).stdout.strip()
+        subprocess.run(
+            ["git", "-C", str(self.product), "push", "-q", "origin", "main"],
+            check=True,
+        )
 
         key = self.state / "passport.key"
         key.write_bytes(b"k" * 32)
@@ -18258,7 +18262,8 @@ class FactoryControllerTest(unittest.TestCase):
                     ).hexdigest(),
                     "schema": "nysa.software-factory.ticket-passport-migration/v2",
                     "to_factory_sha": self.release.name,
-                    "to_head_sha": old_head, "to_protected_base_sha": base,
+                    "to_head_sha": old_head,
+                    "to_protected_base_sha": qualification_product_sha,
                     "to_route_plan_sha256": hashlib.sha256(
                         route.read_bytes()
                     ).hexdigest(),
@@ -18267,7 +18272,8 @@ class FactoryControllerTest(unittest.TestCase):
             "parent_digest": parent_digest,
             "parent_file_sha256": parent_file,
             "product_origin_sha256": origin_digest, "project": "relay",
-            "protected_base_sha": base, "publication_state": "none",
+            "protected_base_sha": qualification_product_sha,
+            "publication_state": "none",
             "route_plan_sha256": hashlib.sha256(route.read_bytes()).hexdigest(),
             "schema": "nysa.software-factory.ticket-passport/v1",
             "ticket": ticket,
@@ -18588,6 +18594,7 @@ class FactoryControllerTest(unittest.TestCase):
             record = CONTROL.read(
                 self.state / f"history-reconstructions/{ticket}.json"
             )
+            self.assertEqual(record["protected_base_sha"], base)
             self.assertEqual(
                 subprocess.run(
                     ["git", "--git-dir", str(remote), "rev-parse", f"ticket/{ticket}"],
