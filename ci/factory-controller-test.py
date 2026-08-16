@@ -16470,6 +16470,13 @@ class FactoryControllerTest(unittest.TestCase):
             'await merge and closeout"',
             guard,
         )
+        refresh = launcher.index(
+            'die "transition receipt does not authorize refresh"'
+        )
+        refresh_guard = launcher[refresh - 500:refresh]
+        self.assertIn('"$TRANSITION_STAGE" == "RUN reviewer"', refresh_guard)
+        self.assertIn('"$TRANSITION_STAGE" == "RUN narrator"', refresh_guard)
+        self.assertNotIn('"$TRANSITION_STAGE" == RUN*', refresh_guard)
 
     def test_launcher_ticket_parking_requires_issue_and_named_release(self) -> None:
         launcher = (

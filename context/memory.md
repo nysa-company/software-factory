@@ -6566,3 +6566,13 @@ record and consumes the exact receipt through the ordinary closeout flow. An
 exact completed attestation may replay receipt consumption to clear an
 unchanged overlay after a crash; unmatched or unattested consumed receipts
 remain refused.
+
+## 2026-08-16 — Decision 473: Evidence roles may refresh stale protected main
+
+Category: Reliability
+
+Before running Reviewer or Narrator, the controller may consume that exact
+authenticated role receipt for one provider-free protected-base refresh. The
+refresh remains bound to the certified remote, open PR, ticket lease, and
+current head; the next reconciliation issues fresh role authority at the new
+head. Other runnable role receipts do not authorize refresh.
