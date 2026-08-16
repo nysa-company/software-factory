@@ -9568,6 +9568,36 @@ class Controller:
             == before.get("completed_role_evidence")
         )
 
+    @staticmethod
+    def operator_import_migration(
+        passport: dict[str, Any], source: str, target: str, factory_sha: str,
+        source_file_sha256: str, route_plan_sha256: str,
+    ) -> bool:
+        history = passport.get("migration_history")
+        edge = history[-1] if isinstance(history, list) and history else {}
+        return (
+            isinstance(edge, dict)
+            and edge.get("schema") == PASSPORT_MIGRATION_SCHEMA
+            and edge.get("from_factory_sha")
+            == edge.get("to_factory_sha")
+            == passport.get("factory_sha")
+            == factory_sha
+            and edge.get("from_head_sha") == source
+            and edge.get("to_head_sha") == passport.get("head_sha") == target
+            and edge.get("from_protected_base_sha")
+            == edge.get("to_protected_base_sha")
+            == passport.get("protected_base_sha")
+            and edge.get("from_route_plan_sha256")
+            == edge.get("to_route_plan_sha256")
+            == passport.get("route_plan_sha256")
+            == route_plan_sha256
+            and edge.get("from_passport_file_sha256")
+            == passport.get("parent_file_sha256")
+            == source_file_sha256
+            and edge.get("from_passport_sha256")
+            == passport.get("parent_digest")
+        )
+
     def exact_route_migration_commit(
         self, claim: dict[str, Any], before: str, after: str,
     ) -> bool:
@@ -9874,8 +9904,11 @@ class Controller:
                         semantic_round=semantic_round,
                         semantic_kind=semantic_kind,
                     )
-                    or not passport_head_lineage(
-                        passport, transition.get("head_sha", ""),
+                    or not self.operator_import_migration(
+                        passport, transition.get("head_sha", ""), target,
+                        self.release_path.name,
+                        transition.get("passport_sha256", ""),
+                        transition.get("route_plan_sha256", ""),
                     )
                     or not self.remote_passport_valid(claim)
                 ):
@@ -9920,8 +9953,11 @@ class Controller:
                 or not self.semantic_import_migration(
                     passport, migrated, target, self.release_path.name,
                 )
-                or not passport_head_lineage(
-                    migrated, passport.get("head_sha", ""),
+                or not self.operator_import_migration(
+                    migrated, transition.get("head_sha", ""), target,
+                    self.release_path.name,
+                    transition.get("passport_sha256", ""),
+                    transition.get("route_plan_sha256", ""),
                 )
                 or not self.remote_passport_valid(claim)
             ):
@@ -10082,7 +10118,11 @@ class Controller:
             else:
                 continue
             if (
-                not passport_head_lineage(passport, parent)
+                not self.operator_import_migration(
+                    passport, parent, local, self.release_path.name,
+                    transition.get("passport_sha256", ""),
+                    transition.get("route_plan_sha256", ""),
+                )
                 or not self.remote_passport_valid(claim)
             ):
                 raise ControllerError("reviewer void passport migration is invalid")

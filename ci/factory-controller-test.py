@@ -17655,6 +17655,63 @@ class FactoryControllerTest(unittest.TestCase):
 
             controller.json_call = json_call
 
+        def add_passport_gap(
+            controller: CONTROL.Controller, claim: dict, cell: Path,
+            transition: dict,
+        ) -> None:
+            ticket = claim["ticket"]
+            ticket_path = cell / f"factory/tickets/{ticket}.md"
+            commit(
+                cell, ticket,
+                ticket_path.read_text(encoding="utf-8") + "checkpoint\n",
+            )
+            self.migrate_semantic_wait_passport(controller, claim)
+            role_head = commit(
+                cell, ticket,
+                ticket_path.read_text(encoding="utf-8") + "role output\n",
+            )
+            passport_path = self.state / f"passports/{ticket}.json"
+            before = controller.authenticated_operator_passport(ticket)
+            assert before is not None
+            parent_file = hashlib.sha256(passport_path.read_bytes()).hexdigest()
+            advanced = PASSPORT.authenticate({
+                **{
+                    key: value for key, value in before.items()
+                    if key not in {
+                        "authentication_sha256", "passport_sha256",
+                        "parent_digest", "parent_file_sha256",
+                    }
+                },
+                "head_sha": role_head,
+                "head_tree": subprocess.run(
+                    ["git", "-C", str(cell), "rev-parse", "HEAD^{tree}"],
+                    text=True, capture_output=True, check=True,
+                ).stdout.strip(),
+                "parent_digest": before["passport_sha256"],
+                "parent_file_sha256": parent_file,
+                "ticket_blob": subprocess.run(
+                    [
+                        "git", "-C", str(cell), "rev-parse",
+                        f"HEAD:factory/tickets/{ticket}.md",
+                    ],
+                    text=True, capture_output=True, check=True,
+                ).stdout.strip(),
+            }, (self.state / "passport.key").read_bytes())
+            PASSPORT.write_atomic(passport_path, advanced)
+            transition.update(
+                head_sha=role_head,
+                passport_sha256=hashlib.sha256(
+                    passport_path.read_bytes()
+                ).hexdigest(),
+            )
+            transition["receipt_sha256"] = hashlib.sha256(
+                CONTROL.canonical_document({
+                    key: value for key, value in transition.items()
+                    if key not in {"consumed", "receipt_sha256"}
+                })
+            ).hexdigest()
+            CONTROL.write(self.state / f"{ticket}.json", transition)
+
         controller, claim, cell, passport, transition = self.semantic_wait_fixture(
             "same-release", "T-210",
         )
@@ -17704,9 +17761,10 @@ class FactoryControllerTest(unittest.TestCase):
             {path: path.read_bytes() for path in sibling_bytes}, sibling_bytes,
         )
 
-        crash, crash_claim, crash_cell, _old, _wait = self.semantic_wait_fixture(
+        crash, crash_claim, crash_cell, _old, crash_wait = self.semantic_wait_fixture(
             "same-release-crash", "T-211",
         )
+        add_passport_gap(crash, crash_claim, crash_cell, crash_wait)
         crash_ticket = crash_cell / "factory/tickets/T-211.md"
         commit(
             crash_cell, "T-211",
