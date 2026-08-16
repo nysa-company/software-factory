@@ -36,6 +36,7 @@ from qualification_manifest import (  # noqa: E402
     ManifestError as QualificationManifestError,
     validate as validate_qualification_manifest,
 )
+from effective_ticket import operator_action, operator_fields  # noqa: E402
 from legacy_closeout import (  # noqa: E402
     ValidationError as ProtectedTerminalError,
     protected_terminal,
@@ -44,6 +45,7 @@ from route_evidence import (  # noqa: E402
     RouteEvidenceError, authenticated_fallback_head, exact_kit_sha_change,
     journal_extends, validate_route,
 )
+import operator_receipt  # noqa: E402
 from role_output import RoleOutputError, sha256 as role_output_sha256  # noqa: E402
 from ticket_state_transition import (  # noqa: E402
     TransitionError as TicketTransitionError,
@@ -2274,6 +2276,57 @@ class Controller:
             "status": claim.get("status", ""),
         }).encode()).hexdigest()
 
+    def targeted_recovery_evidence_sha256(
+        self, claim: dict[str, Any],
+    ) -> str:
+        evidence: dict[str, str] = {}
+        mapping_path = Path(os.environ.get("FACTORY_OPERATOR_MAP", ""))
+        ticket_receipts = (
+            self.state / "operator-receipts" / claim["ticket"]
+        )
+        expected_map = self.state.parent / "operator/operator-map.json"
+        if (
+            (self.qualification or {}).get("mode") == "successor"
+            and os.environ.get("FACTORY_QUALIFICATION_MODE") == "isolated"
+            and mapping_path.is_absolute()
+            and mapping_path == expected_map
+            and ticket_receipts.is_dir()
+        ):
+            try:
+                info = ticket_receipts.lstat()
+                if (
+                    ticket_receipts.is_symlink()
+                    or ticket_receipts.resolve(strict=True) != ticket_receipts
+                    or not stat.S_ISDIR(info.st_mode)
+                    or info.st_uid != os.geteuid()
+                    or stat.S_IMODE(info.st_mode) != 0o700
+                ):
+                    raise ControllerError(
+                        "qualification resume receipt state is unsafe"
+                    )
+                operator = operator_fields(
+                    read(mapping_path), claim["ticket"],
+                )
+                if operator:
+                    action, binding = operator_action(operator)
+                    receipt = operator_receipt.peek_exact(
+                        self.state, claim["ticket"], action,
+                        operator["receipt_sha256"], {
+                            **binding,
+                            "blocked_receipt_sha256": claim.get("receipt", ""),
+                        },
+                    )
+                    if action == "resume" and receipt is not None:
+                        evidence["operator_resume"] = receipt["receipt_sha256"]
+            except (OSError, TypeError, ValueError) as error:
+                raise ControllerError(
+                    "qualification resume recovery evidence is invalid"
+                ) from error
+        return (
+            hashlib.sha256(canonical(evidence).encode()).hexdigest()
+            if evidence else ""
+        )
+
     def recovery_input_sha256(
         self, claim: dict[str, Any], recovery: str,
     ) -> str:
@@ -2357,6 +2410,10 @@ class Controller:
             "ticket": ticket,
             "worktree": str(worktree),
         }
+        if recovery == "targeted-repair":
+            external = self.targeted_recovery_evidence_sha256(claim)
+            if external:
+                value["external_evidence_sha256"] = external
         return hashlib.sha256(canonical(value).encode()).hexdigest()
 
     def worktree_records(self) -> list[dict[str, str]]:

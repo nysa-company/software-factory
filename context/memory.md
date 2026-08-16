@@ -14,7 +14,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Contract 2 live products resolve sealed exact-SHA releases from owner-only `active.json` records under `~/.factory/kits` via `~/.factory/bin/factory-launch`; the native controller is the only scheduler.
 - The local release canary is one code-driven, product-agnostic command that creates contained local origins, runs setup/resume, and times one authenticated Planning transition plus sealed mock planner; its repository-test evidence is never promotable.
 - Model routing is portfolio policy; routes pin at the ticket boundary and change only via the Contract 1.4 journal flow. One profile resolution shares model-independent native-adapter readiness across its routes and runs independent probes in bounded parallel; Cursor readiness stays model-specific. Sealed Cursor inventory verifies the exact configured CLI identity in an empty disposable owner-only home before copying credentials, then accepts only its bounded certified structure.
-- Linear is removed (Decision 398); the six operator authorities are one-use receipts via `factory-kit.sh operator ACTION`. Qualification may issue one manifest-selected successor resume only after the exact sealed compact-repair check, including the explicit isolated close after an authenticated contract-repair directive; production has no lifecycle bypass.
+- Linear is removed (Decision 398); the six operator authorities are one-use receipts via `factory-kit.sh operator ACTION`. Qualification may issue one manifest-selected successor resume only after the exact sealed compact-repair check, including the explicit isolated close after an authenticated contract-repair directive; that exact new authority rearms one abandoned targeted recovery attempt, while unchanged evidence cannot loop. Production has no lifecycle bypass.
 - **Contract rules below in Operating contract are authoritative**; this summary is only what the session hook can inject.
 
 ## Operating contract
@@ -6409,3 +6409,13 @@ lifecycle transition. The sealed isolated `qualification-resume` command closes
 that second boundary only for the selected ticket and exact blocked receipt,
 derives its stage through the ordinary repair check, and writes no product audit
 commit. Production and qualification takeover refuse the command.
+
+## 2026-08-15 — Decision 459: New repair evidence rearms recovery once
+
+Category: Reliability
+
+An abandoned targeted repair may reenter recovery only when its authenticated
+input gains the exact selected-ticket isolated-qualification resume receipt.
+The evidence digest becomes part of the bounded attempt fingerprint, so
+retrying unchanged evidence cannot create a loop; production and takeover do
+not admit this signal.

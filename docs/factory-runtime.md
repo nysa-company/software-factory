@@ -236,7 +236,9 @@ factory-launch <project> qualification-resume \
 
 It derives the resume stage from the authenticated repair check, projects only
 that selected ticket's blocked-receipt-bound one-use authority, and writes no
-product audit commit. Takeover and production launchers refuse it.
+product audit commit. That exact new authority rearms one abandoned targeted
+recovery attempt; an unchanged receipt cannot reopen recovery repeatedly.
+Takeover and production launchers refuse it.
 During a long successor role, the controller renews every
 idle cohort lease and releases a parked lease instead of allowing either to
 expire. A parked semantic-round wait remains plannable without a lease; exact

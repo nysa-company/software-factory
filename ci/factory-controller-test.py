@@ -9470,6 +9470,96 @@ class FactoryControllerTest(unittest.TestCase):
         fail()
         self.assertEqual(claim["recovery_attempt"]["count"], 1)
 
+    def test_exact_qualification_resume_readmits_abandoned_repair(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        controller.qualification = {"mode": "successor"}
+        claim = self.recovery_claim()
+        claim.update(
+            blocked_reason="recovery-abandoned:targeted-repair",
+            lease_released=True, receipt="c" * 64, role="test-author",
+            status="blocked",
+        )
+        operator_map = self.state.parent / "operator/operator-map.json"
+        operator_map.parent.mkdir(mode=0o700)
+
+        def abandon() -> None:
+            claim["recovery_attempt"] = {
+                "count": CONTROL.RECOVERY_ATTEMPT_LIMIT,
+                "factory_sha": self.release.name,
+                "input_sha256": controller.recovery_input_sha256(
+                    claim, "targeted-repair",
+                ),
+                "outcome_sha256": "e" * 64,
+                "phase": "abandoned", "recovery": "targeted-repair",
+                "retry_reason": "role-failure", "retry_status": "blocked",
+            }
+
+        def project(blocked_receipt: str) -> None:
+            receipt = STATE.operator_receipt.issue(
+                self.state, "T-110", "resume", {
+                    "blocked_receipt_sha256": blocked_receipt,
+                    "resume_stage": "Building",
+                },
+            )
+            CONTROL.write(operator_map, {"tickets": {"T-110": {"operator": {
+                "observed_at": "2026-08-15T00:00:00Z",
+                "receipt_sha256": receipt["receipt_sha256"],
+                "state": "Building", "state_base": "blocked-escalated",
+            }}}})
+
+        with patch.dict(os.environ, {
+            "FACTORY_OPERATOR_MAP": str(operator_map),
+            "FACTORY_QUALIFICATION_MODE": "isolated",
+        }):
+            CONTROL.write(operator_map, {"tickets": {}})
+            controller.qualification = None
+            abandon()
+            project(claim["receipt"])
+            self.assertTrue(controller.recovery_blocked(
+                claim, "targeted-repair",
+            ))
+
+            CONTROL.write(operator_map, {"tickets": {}})
+            controller.qualification = {"mode": "initial"}
+            abandon()
+            project(claim["receipt"])
+            self.assertTrue(controller.recovery_blocked(
+                claim, "targeted-repair",
+            ))
+
+            CONTROL.write(operator_map, {"tickets": {}})
+            controller.qualification = {"mode": "successor"}
+            with patch.dict(os.environ, {
+                "FACTORY_QUALIFICATION_MODE": "takeover",
+            }):
+                abandon()
+                project(claim["receipt"])
+                self.assertTrue(controller.recovery_blocked(
+                    claim, "targeted-repair",
+                ))
+
+            CONTROL.write(operator_map, {"tickets": {}})
+            abandon()
+            self.assertTrue(controller.recovery_blocked(
+                claim, "targeted-repair",
+            ))
+            project("d" * 64)
+            self.assertTrue(controller.recovery_blocked(
+                claim, "targeted-repair",
+            ))
+            project(claim["receipt"])
+            self.assertFalse(controller.recovery_blocked(
+                claim, "targeted-repair",
+            ))
+            self.assertNotIn("recovery_attempt", claim)
+            self.assertEqual(claim["blocked_reason"], "role-failure")
+
+            claim["blocked_reason"] = "recovery-abandoned:targeted-repair"
+            abandon()
+            self.assertTrue(controller.recovery_blocked(
+                claim, "targeted-repair",
+            ))
+
     def test_changed_receipt_readmits_real_release_upgrade_selector(self) -> None:
         controller = CONTROL.Controller(self.args)
         claim = self.recovery_claim()
