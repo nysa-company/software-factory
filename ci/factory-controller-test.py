@@ -18059,7 +18059,8 @@ class FactoryControllerTest(unittest.TestCase):
         )
         (self.product / ".gitignore").write_text("factory/runs/\n", encoding="utf-8")
         (self.product / "factory/PROJECT.env").write_text(
-            'GH_REPO=nysa-company/product\nTEST_PATHS="app/tests/"\n',
+            'GH_REPO=nysa-company/product\n'
+            'TEST_PATHS="app/tests/ packages/shared/tests/"\n',
             encoding="utf-8",
         )
         ticket_path = self.product / f"factory/tickets/{ticket}.md"

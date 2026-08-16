@@ -8781,7 +8781,9 @@ class Controller:
         )
         values = re.findall(r"(?m)^TEST_PATHS=(.*)$", project.stdout)
         try:
-            configured = shlex.split(values[0], comments=False, posix=True)
+            configured = " ".join(
+                shlex.split(values[0], comments=False, posix=True)
+            ).split()
         except (IndexError, ValueError) as error:
             raise ControllerError(
                 "qualification history reconstruction test paths are invalid"
