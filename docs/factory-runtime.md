@@ -252,6 +252,9 @@ same-ticket Factory-evidence snapshot, requires an unchanged final tree and
 both history gates, publishes with an exact force-with-lease, and migrates the
 passport through a durable replay record. Product paths, foreign-ticket state,
 production, and takeover remain closed.
+If successor route migration ran first, the command accepts only the continuous
+authenticated migration suffix from the blocker route through the current
+passport head and route.
 Once either the exact resume or its durable repair replay succeeds, the
 controller removes the prior transition from its invocation-local exclusion
 set so the ordinary state machine can issue the current chained transition.

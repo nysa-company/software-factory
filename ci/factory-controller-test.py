@@ -617,7 +617,6 @@ class FactoryControllerTest(unittest.TestCase):
             migrated = True
 
         controller.migrate_passport = migrate
-
         class InjectedCrash(BaseException):
             pass
 
@@ -18047,6 +18046,7 @@ class FactoryControllerTest(unittest.TestCase):
         self,
     ) -> None:
         ticket = "T-217"
+        source = "b" * 40
         remote = self.root / "qualification-history.git"
         cell = self.root / "qualification-history-cell"
         gate_allow = self.root / "allow-history-gates"
@@ -18101,14 +18101,14 @@ class FactoryControllerTest(unittest.TestCase):
         test_path.write_text("test\n", encoding="utf-8")
         cell_ticket = cell / f"factory/tickets/{ticket}.md"
         cell_ticket.write_text(
-            f"# {ticket}\n\nState: Blocked-Escalated\nResume-State: Building\n",
+            f"# {ticket}\n\nState: Building\nKit-SHA: {source}\n",
             encoding="utf-8",
         )
         route = cell / f"factory/route-plans/{ticket}.json"
         route.parent.mkdir(parents=True)
         route.write_text(
             CONTROL.canonical({
-                "kit_sha": self.release.name,
+                "kit_sha": source,
                 "schema": "ticket-model-route-plan/v1", "ticket": ticket,
             }) + "\n",
             encoding="utf-8",
@@ -18120,6 +18120,37 @@ class FactoryControllerTest(unittest.TestCase):
         subprocess.run([
             "git", "-C", str(cell), "-c", "user.name=Test Author",
             "-c", "user.email=test@nysa.dev", "commit", "-qm", "mixed history",
+        ], check=True)
+        transition_head = subprocess.run(
+            ["git", "-C", str(cell), "rev-parse", "HEAD"], text=True,
+            capture_output=True, check=True,
+        ).stdout.strip()
+        cell_ticket.write_text(
+            cell_ticket.read_text(encoding="utf-8")
+            + "Contract-Blocker: exact fixture\n",
+            encoding="utf-8",
+        )
+        subprocess.run(
+            ["git", "-C", str(cell), "add", str(cell_ticket.relative_to(cell))],
+            check=True,
+        )
+        subprocess.run([
+            "git", "-C", str(cell), "-c", "user.name=Operator",
+            "-c", "user.email=operator@nysa.dev", "commit", "-qm", "record blocker",
+        ], check=True)
+        cell_ticket.write_text(
+            cell_ticket.read_text(encoding="utf-8").replace(
+                "State: Building", "State: Blocked-Escalated\nResume-State: Building",
+            ),
+            encoding="utf-8",
+        )
+        subprocess.run(
+            ["git", "-C", str(cell), "add", str(cell_ticket.relative_to(cell))],
+            check=True,
+        )
+        subprocess.run([
+            "git", "-C", str(cell), "-c", "user.name=Software Factory",
+            "-c", "user.email=factory@local", "commit", "-qm", "transition state",
         ], check=True)
         old_head = subprocess.run(
             ["git", "-C", str(cell), "rev-parse", "HEAD"], text=True,
@@ -18140,7 +18171,6 @@ class FactoryControllerTest(unittest.TestCase):
         passport_path = self.state / f"passports/{ticket}.json"
         passport_path.parent.mkdir(mode=0o700)
         origin_digest = hashlib.sha256(str(remote).encode()).hexdigest()
-        source = "b" * 40
         parent_file = "c" * 64
         parent_digest = "d" * 64
         passport = PASSPORT.authenticate({
@@ -18188,7 +18218,7 @@ class FactoryControllerTest(unittest.TestCase):
         transition = {
             "branch": f"ticket/{ticket}", "consumed": True,
             "contract_version": "2.0.0", "factory_sha": source,
-            "head_sha": old_head, "loop": None,
+            "head_sha": transition_head, "loop": None,
             "passport_sha256": hashlib.sha256(passport_path.read_bytes()).hexdigest(),
             "project": "relay", "role": "test-author",
             "route_plan_sha256": passport["route_plan_sha256"],
@@ -18215,7 +18245,7 @@ class FactoryControllerTest(unittest.TestCase):
             "effective_cost=1.000000\nexit_status=12\n"
             f"ticket={ticket}\nrole=test-author\n"
             "role_exit=role_exit_contract_blocked\n"
-            f"role_head_before={old_head}\nkit_sha={source}\n"
+            f"role_head_before={transition_head}\nkit_sha={source}\n"
             "contract_version=2.0.0\n"
             f"transition_receipt_sha256={transition['receipt_sha256']}\n",
             encoding="utf-8",
@@ -18264,7 +18294,169 @@ class FactoryControllerTest(unittest.TestCase):
             "FACTORY_KIT_TRUST_SCOPE": "qualification-candidate",
             "FACTORY_QUALIFICATION_MODE": "isolated",
         }
+        same_head_passport = controller.authenticated_operator_passport(ticket)
+        broken_same_head = copy.deepcopy(same_head_passport)
+        broken_same_head.pop("authentication_sha256")
+        broken_same_head.pop("passport_sha256")
+        broken_same_head["migration_history"][-1][
+            "to_protected_base_sha"
+        ] = "1" * 40
+        PASSPORT.write_atomic(
+            passport_path,
+            PASSPORT.authenticate(broken_same_head, key.read_bytes()),
+        )
+        with patch.dict(os.environ, environment), self.assertRaisesRegex(
+            CONTROL.ControllerError, "authority is unavailable",
+        ):
+            controller.plan_contract_repair(ticket, "test-author", "operator")
+        PASSPORT.write_atomic(passport_path, same_head_passport)
+
+        route_parent = old_head
+        old_route_raw = route.read_bytes()
+        old_route_sha = hashlib.sha256(old_route_raw).hexdigest()
+        cell_ticket.write_text(
+            cell_ticket.read_text(encoding="utf-8").replace(
+                f"Kit-SHA: {source}", f"Kit-SHA: {self.release.name}",
+            ),
+            encoding="utf-8",
+        )
+        route.write_text(CONTROL.canonical({
+            "kit_sha": self.release.name,
+            "revisions": [{"body": {
+                "kind": "migration",
+                "legacy_plan_b64": base64.b64encode(old_route_raw).decode(),
+                "legacy_plan_sha256": old_route_sha,
+                "new_kit_sha": source, "old_kit_sha": source,
+            }}, {"body": {
+                "kind": "release-migration",
+                "new_kit_sha": self.release.name, "old_kit_sha": source,
+            }}],
+            "schema": "ticket-model-route-journal/v2", "ticket": ticket,
+        }) + "\n", encoding="utf-8")
+        subprocess.run(
+            [
+                "git", "-C", str(cell), "add",
+                str(route.relative_to(cell)), str(cell_ticket.relative_to(cell)),
+            ],
+            check=True,
+        )
+        subprocess.run([
+            "git", "-C", str(cell), "-c", "user.name=Factory",
+            "-c", "user.email=factory@nysa.dev", "commit", "-qm", "migrate route",
+        ], check=True)
+        old_head = subprocess.run(
+            ["git", "-C", str(cell), "rev-parse", "HEAD"], text=True,
+            capture_output=True, check=True,
+        ).stdout.strip()
+        old_tree = subprocess.run(
+            ["git", "-C", str(cell), "rev-parse", "HEAD^{tree}"], text=True,
+            capture_output=True, check=True,
+        ).stdout.strip()
+        subprocess.run(
+            ["git", "-C", str(cell), "push", "-q", "origin", "HEAD"],
+            check=True,
+        )
         with patch.dict(os.environ, environment):
+            migrate(claim, "none", expected_head=old_head)
+        migrated_before_repair = controller.authenticated_operator_passport(ticket)
+        self.assertTrue(CONTROL.passport_head_lineage(
+            migrated_before_repair, route_parent,
+        ))
+        controller.exact_route_migration_commit = (
+            lambda _claim, before, after:
+            (before, after) == (route_parent, old_head)
+        )
+        self.assertTrue(controller.exact_route_migration_commit(
+            claim, route_parent, old_head,
+        ))
+        self.assertNotEqual(
+            transition["route_plan_sha256"],
+            migrated_before_repair["route_plan_sha256"],
+        )
+        with patch.dict(os.environ, environment):
+            broken_base = copy.deepcopy(migrated_before_repair)
+            broken_base.pop("authentication_sha256")
+            broken_base.pop("passport_sha256")
+            broken_base["migration_history"][-1][
+                "from_protected_base_sha"
+            ] = "1" * 40
+            PASSPORT.write_atomic(
+                passport_path,
+                PASSPORT.authenticate(broken_base, key.read_bytes()),
+            )
+            with self.assertRaisesRegex(
+                CONTROL.ControllerError, "authority is unavailable",
+            ):
+                controller.plan_contract_repair(
+                    ticket, "test-author", "operator",
+                )
+            PASSPORT.write_atomic(passport_path, migrated_before_repair)
+
+            route_parent_tree = subprocess.run(
+                ["git", "-C", str(cell), "rev-parse", f"{route_parent}^{{tree}}"],
+                text=True, capture_output=True, check=True,
+            ).stdout.strip()
+            arbitrary_predecessor = subprocess.run([
+                "git", "-C", str(cell), "-c", "user.name=Other",
+                "-c", "user.email=other@example.invalid", "commit-tree",
+                route_parent_tree, "-p", route_parent,
+            ], input="arbitrary predecessor\n", text=True, capture_output=True,
+                check=True).stdout.strip()
+            predecessor = copy.deepcopy(migrated_before_repair)
+            predecessor.pop("authentication_sha256")
+            predecessor.pop("passport_sha256")
+            predecessor["migration_history"][-2]["from_head_sha"] = (
+                arbitrary_predecessor
+            )
+            predecessor["migration_history"][-2]["to_head_sha"] = (
+                arbitrary_predecessor
+            )
+            predecessor["migration_history"][-1]["from_head_sha"] = (
+                arbitrary_predecessor
+            )
+            PASSPORT.write_atomic(
+                passport_path,
+                PASSPORT.authenticate(predecessor, key.read_bytes()),
+            )
+            controller.exact_route_migration_commit = (
+                lambda _claim, before, after:
+                (before, after) == (arbitrary_predecessor, old_head)
+            )
+            with self.assertRaisesRegex(
+                CONTROL.ControllerError, "authority is unavailable",
+            ):
+                controller.plan_contract_repair(
+                    ticket, "test-author", "operator",
+                )
+            PASSPORT.write_atomic(passport_path, migrated_before_repair)
+            controller.exact_route_migration_commit = (
+                lambda _claim, before, after:
+                (before, after) == (route_parent, old_head)
+            )
+
+            arbitrary_head = subprocess.run([
+                "git", "-C", str(cell), "-c", "user.name=Other",
+                "-c", "user.email=other@example.invalid", "commit-tree",
+                old_tree, "-p", route_parent,
+            ], input="arbitrary descendant\n", text=True, capture_output=True,
+                check=True).stdout.strip()
+            arbitrary = copy.deepcopy(migrated_before_repair)
+            arbitrary.pop("authentication_sha256")
+            arbitrary.pop("passport_sha256")
+            arbitrary["head_sha"] = arbitrary_head
+            arbitrary["migration_history"][-1]["to_head_sha"] = arbitrary_head
+            PASSPORT.write_atomic(
+                passport_path,
+                PASSPORT.authenticate(arbitrary, key.read_bytes()),
+            )
+            with self.assertRaisesRegex(
+                CONTROL.ControllerError, "authority is unavailable",
+            ):
+                controller.plan_contract_repair(
+                    ticket, "test-author", "operator",
+                )
+            PASSPORT.write_atomic(passport_path, migrated_before_repair)
+
             with self.assertRaisesRegex(CONTROL.ControllerError, "gate failed"):
                 controller.qualification_history_repair(
                     ticket, transition["receipt_sha256"],
