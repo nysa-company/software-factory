@@ -18047,6 +18047,9 @@ class FactoryControllerTest(unittest.TestCase):
     ) -> None:
         ticket = "T-217"
         source = "b" * 40
+        cohort_source = "6" * 40
+        activation_source = "e" * 40
+        prior_resume_receipt = "9" * 64
         remote = self.root / "qualification-history.git"
         cell = self.root / "qualification-history-cell"
         gate_allow = self.root / "allow-history-gates"
@@ -18101,7 +18104,9 @@ class FactoryControllerTest(unittest.TestCase):
         test_path.write_text("test\n", encoding="utf-8")
         cell_ticket = cell / f"factory/tickets/{ticket}.md"
         cell_ticket.write_text(
-            f"# {ticket}\n\nState: Building\nKit-SHA: {source}\n",
+            f"# {ticket}\n\nState: Building\nKit-SHA: {source}\n"
+            "OPERATOR RESUME: planner\n"
+            f"OPERATOR RESUME RECEIPT: {prior_resume_receipt}\n",
             encoding="utf-8",
         )
         route = cell / f"factory/route-plans/{ticket}.json"
@@ -18164,6 +18169,41 @@ class FactoryControllerTest(unittest.TestCase):
             ["git", "-C", str(cell), "push", "-qu", "origin", "HEAD"],
             check=True,
         )
+        authorization_path = (
+            self.product / "factory/migrations/inflight-release"
+            / f"{self.release.name}.json"
+        )
+        authorization_path.parent.mkdir(parents=True)
+        authorization = {
+            "repository": "nysa-company/product",
+            "schema": (
+                "nysa.software-factory.inflight-release-authorization/v2"
+            ),
+            "source_kit_sha": cohort_source,
+            "target_kit_sha": self.release.name,
+            "tickets": [{
+                "branch": f"ticket/{ticket}", "head": old_head,
+                "source_kit_sha": activation_source,
+                "state": "Blocked-Escalated", "ticket": ticket,
+            }],
+        }
+        authorization_path.write_text(
+            CONTROL.canonical(authorization) + "\n", encoding="utf-8",
+        )
+        subprocess.run(
+            ["git", "-C", str(self.product), "add", str(
+                authorization_path.relative_to(self.product)
+            )], check=True,
+        )
+        subprocess.run([
+            "git", "-C", str(self.product), "-c", "user.name=Operator",
+            "-c", "user.email=operator@nysa.dev", "commit", "-qm",
+            "authorize mixed source",
+        ], check=True)
+        qualification_product_sha = subprocess.run(
+            ["git", "-C", str(self.product), "rev-parse", "HEAD"],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
 
         key = self.state / "passport.key"
         key.write_bytes(b"k" * 32)
@@ -18182,25 +18222,47 @@ class FactoryControllerTest(unittest.TestCase):
                 {"contract_version": "2.0.0", "factory_sha": source},
                 {
                     "contract_version": "2.0.0",
+                    "factory_sha": activation_source,
+                },
+                {
+                    "contract_version": "2.0.0",
                     "factory_sha": self.release.name,
                 },
             ],
             "factory_sha": self.release.name, "head_sha": old_head,
-            "head_tree": old_tree, "migration_history": [{
-                "from_factory_sha": source, "from_head_sha": old_head,
-                "from_passport_file_sha256": parent_file,
-                "from_passport_sha256": parent_digest,
-                "from_protected_base_sha": base,
-                "from_route_plan_sha256": hashlib.sha256(
-                    route.read_bytes()
-                ).hexdigest(),
-                "schema": "nysa.software-factory.ticket-passport-migration/v2",
-                "to_factory_sha": self.release.name,
-                "to_head_sha": old_head, "to_protected_base_sha": base,
-                "to_route_plan_sha256": hashlib.sha256(
-                    route.read_bytes()
-                ).hexdigest(),
-            }],
+            "head_tree": old_tree, "migration_history": [
+                {
+                    "from_factory_sha": source, "from_head_sha": old_head,
+                    "from_passport_file_sha256": "1" * 64,
+                    "from_passport_sha256": "2" * 64,
+                    "from_protected_base_sha": base,
+                    "from_route_plan_sha256": hashlib.sha256(
+                        route.read_bytes()
+                    ).hexdigest(),
+                    "schema": "nysa.software-factory.ticket-passport-migration/v2",
+                    "to_factory_sha": activation_source,
+                    "to_head_sha": old_head, "to_protected_base_sha": base,
+                    "to_route_plan_sha256": hashlib.sha256(
+                        route.read_bytes()
+                    ).hexdigest(),
+                },
+                {
+                    "from_factory_sha": activation_source,
+                    "from_head_sha": old_head,
+                    "from_passport_file_sha256": parent_file,
+                    "from_passport_sha256": parent_digest,
+                    "from_protected_base_sha": base,
+                    "from_route_plan_sha256": hashlib.sha256(
+                        route.read_bytes()
+                    ).hexdigest(),
+                    "schema": "nysa.software-factory.ticket-passport-migration/v2",
+                    "to_factory_sha": self.release.name,
+                    "to_head_sha": old_head, "to_protected_base_sha": base,
+                    "to_route_plan_sha256": hashlib.sha256(
+                        route.read_bytes()
+                    ).hexdigest(),
+                },
+            ],
             "parent_digest": parent_digest,
             "parent_file_sha256": parent_file,
             "product_origin_sha256": origin_digest, "project": "relay",
@@ -18252,9 +18314,14 @@ class FactoryControllerTest(unittest.TestCase):
         )
         terminal.chmod(0o600)
         claim = {
-            "blocked_reason": "role-failure", "branch": f"ticket/{ticket}",
-            "lease": "a" * 64,
+            "branch": f"ticket/{ticket}", "lease": "a" * 64,
             "priority": "normal", "publication_lease": "",
+            "recovery_attempt": {
+                "count": 1, "factory_sha": self.release.name,
+                "input_sha256": "3" * 64, "outcome_sha256": "4" * 64,
+                "phase": "settled", "recovery": "targeted-repair",
+                "retry_reason": "", "retry_status": "blocked",
+            },
             "receipt": transition["receipt_sha256"], "role": "test-author",
             "schema": CONTROL.CLAIM_SCHEMA, "status": "blocked",
             "ticket": ticket, "worktree": str(cell),
@@ -18262,7 +18329,7 @@ class FactoryControllerTest(unittest.TestCase):
         controller = CONTROL.Controller(self.args)
         controller.qualification = {
             "generation": 1, "mode": "successor",
-            "source_factory_sha": source, "tickets": [ticket],
+            "source_factory_sha": cohort_source, "tickets": [ticket],
         }
         controller.qualification_manifest_sha256 = "f" * 64
         controller.save_claim(claim)
@@ -18293,6 +18360,7 @@ class FactoryControllerTest(unittest.TestCase):
             "FACTORY_CERTIFIED_PRODUCT_ORIGIN": str(remote),
             "FACTORY_KIT_TRUST_SCOPE": "qualification-candidate",
             "FACTORY_QUALIFICATION_MODE": "isolated",
+            "FACTORY_QUALIFICATION_PRODUCT_SHA": qualification_product_sha,
         }
         same_head_passport = controller.authenticated_operator_passport(ticket)
         broken_same_head = copy.deepcopy(same_head_passport)
@@ -18373,6 +18441,42 @@ class FactoryControllerTest(unittest.TestCase):
             transition["route_plan_sha256"],
             migrated_before_repair["route_plan_sha256"],
         )
+        bad_authorization = copy.deepcopy(authorization)
+        bad_authorization["tickets"][0]["source_kit_sha"] = source
+        authorization_path.write_text(
+            CONTROL.canonical(bad_authorization) + "\n", encoding="utf-8",
+        )
+        subprocess.run(
+            ["git", "-C", str(self.product), "add", str(
+                authorization_path.relative_to(self.product)
+            )], check=True,
+        )
+        subprocess.run([
+            "git", "-C", str(self.product), "-c", "user.name=Operator",
+            "-c", "user.email=operator@nysa.dev", "commit", "-qm",
+            "authorize wrong ticket source",
+        ], check=True)
+        bad_product_sha = subprocess.run(
+            ["git", "-C", str(self.product), "rev-parse", "HEAD"],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+        with patch.dict(os.environ, {
+            **environment, "FACTORY_QUALIFICATION_PRODUCT_SHA": bad_product_sha,
+        }):
+            with self.assertRaisesRegex(
+                CONTROL.ControllerError, "authority is unavailable",
+            ):
+                controller.plan_contract_repair(
+                    ticket, "test-author", "operator",
+                )
+        with patch.dict(os.environ, {
+            **environment, "FACTORY_QUALIFICATION_MODE": "takeover",
+        }), self.assertRaisesRegex(
+            CONTROL.ControllerError, "authority is unavailable",
+        ):
+            controller.plan_contract_repair(
+                ticket, "test-author", "operator",
+            )
         with patch.dict(os.environ, environment):
             broken_base = copy.deepcopy(migrated_before_repair)
             broken_base.pop("authentication_sha256")
@@ -18504,8 +18608,21 @@ class FactoryControllerTest(unittest.TestCase):
             continuation = controller.plan_contract_repair(
                 ticket, "test-author", "operator",
             )
+            _plan, _claim, continuation_after, _observed = (
+                controller.contract_repair_plan(
+                    ticket, "test-author", "operator",
+                )
+            )
         self.assertEqual(replay, repaired)
         self.assertEqual(continuation["status"], "planned")
+        self.assertIn(
+            f"OPERATOR RESUME RECEIPT: {prior_resume_receipt}\n",
+            continuation_after,
+        )
+        self.assertIn(
+            f"OPERATOR RESUME RECEIPT: {transition['receipt_sha256']}\n",
+            continuation_after,
+        )
         new_head = repaired["new_head"]
         self.assertNotEqual(new_head, old_head)
         self.assertEqual(

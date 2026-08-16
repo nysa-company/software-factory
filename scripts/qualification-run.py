@@ -684,7 +684,34 @@ def doctor_allows_reconcile(
             for item in contract_incidents
         )
     )
-    if not contract_ok and not contract_recovery:
+    historical_resume = (
+        successor
+        and os.environ.get("FACTORY_QUALIFICATION_MODE") == "isolated"
+        and transition_recovery
+        and contract.get("status") == "warning"
+        and isinstance(contract_incidents, list)
+        and len(contract_incidents) == 1
+        and all(
+            isinstance(item, dict)
+            and set(item) == {
+                "blocked_receipt_sha256", "observed_at_epoch_ns",
+                "reason_code", "ticket",
+            }
+            and item.get("ticket") in selected
+            and item.get("reason_code") == "resume_receipt_mismatch"
+            and isinstance(item.get("blocked_receipt_sha256"), str)
+            and DIGEST.fullmatch(item["blocked_receipt_sha256"])
+            and transition_by_ticket.get(item["ticket"], {}).get(
+                "transition_receipt_sha256"
+            ) == item["blocked_receipt_sha256"]
+            and isinstance(item.get("observed_at_epoch_ns"), int)
+            and not isinstance(item["observed_at_epoch_ns"], bool)
+            and item["observed_at_epoch_ns"]
+            >= transition_by_ticket[item["ticket"]]["observed_at_epoch_ns"]
+            for item in contract_incidents
+        )
+    )
+    if not contract_ok and not contract_recovery and not historical_resume:
         return False
     runtime = checks["runtime"]
     if value.get("overall_status") == "ok":
@@ -692,7 +719,9 @@ def doctor_allows_reconcile(
     if value.get("overall_status") != "warning":
         return False
     if runtime.get("status") == "ok":
-        return transition_recovery and (contract_ok or contract_recovery)
+        return transition_recovery and (
+            contract_ok or contract_recovery or historical_resume
+        )
     if runtime.get("status") != "warning":
         return False
 
@@ -817,8 +846,10 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
 
     restarts = 0
     migration_applied = False
-    contract_recovery_pending = (
-        doctor["checks"]["contract_resume"]["status"] == "warning"
+    contract_recovery_pending = any(
+        isinstance(item, dict)
+        and item.get("reason_code") == "resume_commit_content_mismatch"
+        for item in doctor["checks"]["contract_resume"].get("incidents", [])
     )
     while True:
         code, controller = invoke(launcher, args.project, "reconcile", phases)

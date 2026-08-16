@@ -1020,10 +1020,14 @@ line is `protected base -> protected-test snapshot -> same-ticket Factory
 snapshot`; both history gates and an exact remote lease precede mutation. Its
 durable record authorizes only the matching passport rewrite edge and crash
 replay. Production, takeover, product paths, and foreign-ticket state remain
-closed.
+closed. When the blocker predates the ticket's protected activation source, its
+complete v2 suffix must end in the exact ticket-source to active-release edge.
 An operator appends the first
 exact repair-owner and blocked-receipt directive pair, or replaces the one
-visible pair for a later blocker, without changing any other path:
+visible pair for a later blocker, without changing any other path. In an
+isolated successor, exact pairs already present at the authenticated blocked
+transition are immutable history; the current repair appends one fresh pair
+and the state machine validates only that fresh suffix:
 `OPERATOR RESUME: <role>` and
 `OPERATOR RESUME RECEIPT: <transition-receipt-sha256>`.
 The ticket records the blocked-state timestamp once per substantive blocker. Exact

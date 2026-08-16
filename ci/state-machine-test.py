@@ -3511,6 +3511,70 @@ class StateMachineTest(unittest.TestCase):
                 ("RUN spec-linter", True),
             )
 
+    def test_qualification_resume_preserves_prior_transition_directive(self) -> None:
+        prior_receipt = "a" * 64
+        ticket = self.product / "factory/tickets/T-110.md"
+        ticket.write_text(
+            "# T-110\n\nState: Blocked-Escalated\nResume-State: Building\n"
+            "OPERATOR RESUME: test-author\n"
+            f"OPERATOR RESUME RECEIPT: {prior_receipt}\n",
+            encoding="utf-8",
+        )
+        run("git", "add", str(ticket), cwd=self.product)
+        run("git", "commit", "-qm", "historical resume", cwd=self.product)
+        baseline = run("git", "rev-parse", "HEAD", cwd=self.product)
+        transition = {
+            "consumed": True,
+            "head_sha": baseline,
+            "schema": STATE.RECEIPT_SCHEMA,
+            "ticket": "T-110",
+        }
+        transition["receipt_sha256"] = hashlib.sha256(
+            STATE.canonical({
+                key: value for key, value in transition.items()
+                if key != "consumed"
+            })
+        ).hexdigest()
+        self.args.receipt = transition["receipt_sha256"]
+        STATE.write_atomic(self.state_dir / "T-110.json", transition)
+        ticket.write_text(
+            ticket.read_text(encoding="utf-8")
+            + "OPERATOR RESUME: planner\n"
+            + f"OPERATOR RESUME RECEIPT: {self.args.receipt}\n",
+            encoding="utf-8",
+        )
+        run("git", "add", str(ticket), cwd=self.product)
+        run("git", "commit", "-qm", "current resume", cwd=self.product)
+        passport = {
+            "branch": "ticket/T-110",
+            "factory_sha": self.args.factory_sha,
+            "head_sha": baseline,
+            "schema": STATE.PASSPORT_SCHEMA,
+            "ticket": "T-110",
+        }
+        with mock.patch.dict(os.environ, {
+            "FACTORY_KIT_TRUST_SCOPE": "qualification-candidate",
+            "FACTORY_QUALIFICATION_MODE": "isolated",
+        }):
+            self.assertEqual(
+                STATE.operator_resume_role(self.args, passport, "test-author"),
+                "planner",
+            )
+
+            ticket.write_text(
+                ticket.read_text(encoding="utf-8").replace(
+                    prior_receipt, "c" * 64, 1,
+                ),
+                encoding="utf-8",
+            )
+            run("git", "add", str(ticket), cwd=self.product)
+            run("git", "commit", "-qm", "rewrite historical resume", cwd=self.product)
+            with self.assertRaises(STATE.ContractResumeError) as raised:
+                STATE.operator_resume_role(self.args, passport, "test-author")
+            self.assertEqual(
+                raised.exception.reason_code, "resume_directives_ambiguous",
+            )
+
     def test_authenticated_contract_repair_is_one_success_boundary(self) -> None:
         secret = b"k" * 32
         (self.state_dir / "passport.key").write_bytes(secret)

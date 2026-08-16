@@ -254,7 +254,11 @@ passport through a durable replay record. Product paths, foreign-ticket state,
 production, and takeover remain closed.
 If successor route migration ran first, the command accepts only the continuous
 authenticated migration suffix from the blocker route through the current
-passport head and route.
+passport head and route. A blocker older than the ticket's protected source is
+accepted only when that complete suffix ends with the exact ticket-source to
+active-release edge. Resume pairs already present at the authenticated
+blocked transition remain immutable history; the current repair appends one
+fresh pair and evaluates only that suffix.
 Once either the exact resume or its durable repair replay succeeds, the
 controller removes the prior transition from its invocation-local exclusion
 set so the ordinary state machine can issue the current chained transition.

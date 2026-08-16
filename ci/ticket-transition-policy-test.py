@@ -21,6 +21,7 @@ from ticket_state_transition import (  # noqa: E402
     exact_state,
     field,
     fresh_protocol_text,
+    fresh_resume_text,
     qualification_epoch_text,
     validate_action_transition,
     validate_materialization,
@@ -72,6 +73,34 @@ RESUME_STATE_CONTRACTS = ("1.7.0", "1.8.0", "2.0.0")
 
 
 class TicketTransitionPolicyTest(unittest.TestCase):
+    def test_blocked_transition_projects_only_fresh_resume_controls(self) -> None:
+        prior = "a" * 64
+        current = "b" * 64
+        baseline = (
+            "State: Building\n"
+            "OPERATOR RESUME: planner\n"
+            f"OPERATOR RESUME RECEIPT: {prior}\n"
+            "Audit: OPERATOR RESUME: builder is prose\n"
+        )
+        after = baseline + (
+            "OPERATOR RESUME: test-author\n"
+            f"OPERATOR RESUME RECEIPT: {current}\n"
+        )
+        self.assertEqual(
+            fresh_resume_text(after, baseline),
+            "State: Building\nAudit: OPERATOR RESUME: builder is prose\n"
+            "OPERATOR RESUME: test-author\n"
+            f"OPERATOR RESUME RECEIPT: {current}\n",
+        )
+        for changed in (
+            after.replace("OPERATOR RESUME: planner\n", "", 1),
+            after.replace(prior, "c" * 64, 1),
+        ):
+            with self.assertRaisesRegex(
+                TransitionError, "blocked transition resume history changed",
+            ):
+                fresh_resume_text(changed, baseline)
+
     def test_qualification_epoch_projects_only_fresh_protocol_controls(self) -> None:
         baseline = (
             "State: Backlog\n"
