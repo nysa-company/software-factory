@@ -242,6 +242,7 @@ raise SystemExit(code)
         receipt = "c" * 64
         claim = self.controller_state / "claims/T-1.json"
         claim.write_text(json.dumps({
+            "branch": "ticket/T-1",
             "lease_released": True,
             "parked": True,
             "receipt": receipt,
@@ -251,6 +252,17 @@ raise SystemExit(code)
             "worktree": str(worktree),
         }), encoding="utf-8")
         claim.chmod(0o600)
+        transition = self.controller_state / "T-1.json"
+        transition.write_text(json.dumps({
+            "branch": "ticket/T-1",
+            "consumed": True,
+            "project": "relay",
+            "receipt_sha256": receipt,
+            "role": "test-author",
+            "schema": "nysa.software-factory.transition-receipt/v1",
+            "ticket": "T-1",
+        }), encoding="utf-8")
+        transition.chmod(0o600)
         doctor = self.doctor("warning")
         doctor["checks"]["runtime"]["status"] = "ok"
         doctor["checks"]["transition_receipts"] = {
@@ -668,7 +680,7 @@ raise SystemExit(code)
         doctor, _worktree, _head, receipt = self.contract_recovery_fixture()
         incident = {
             "blocked_receipt_sha256": receipt,
-            "observed_at_epoch_ns": 2,
+            "observed_at_epoch_ns": 0,
             "reason_code": "resume_receipt_mismatch",
             "ticket": "T-1",
         }
@@ -684,6 +696,34 @@ raise SystemExit(code)
         self.assertEqual(self.called(), ["doctor", "reconcile"])
         self.assertFalse(self.operator_map.exists())
 
+        claim_path = self.controller_state / "claims/T-1.json"
+        claim = json.loads(claim_path.read_text(encoding="utf-8"))
+        claim["receipt"] = "d" * 64
+        claim_path.write_text(json.dumps(claim), encoding="utf-8")
+        self.calls.unlink()
+        code, value = self.run_scenario({
+            "doctor": doctor,
+            "reconcile": [self.controller("waiting_for_target")],
+            "qualification": self.report(),
+        })
+        self.assertEqual((code, value["reason"]), (3, "doctor_not_ready"))
+        self.assertEqual(self.called(), ["doctor"])
+        claim["receipt"] = receipt
+        claim_path.write_text(json.dumps(claim), encoding="utf-8")
+
+        mismatched_transition = copy.deepcopy(doctor)
+        mismatched_transition["checks"]["transition_receipts"]["incidents"][0][
+            "transition_receipt_sha256"
+        ] = "d" * 64
+        self.calls.unlink()
+        code, value = self.run_scenario({
+            "doctor": mismatched_transition,
+            "reconcile": [self.controller("waiting_for_target")],
+            "qualification": self.report(),
+        })
+        self.assertEqual((code, value["reason"]), (3, "doctor_not_ready"))
+        self.assertEqual(self.called(), ["doctor"])
+
         resolved = copy.deepcopy(doctor)
         resolved["checks"]["transition_receipts"] = {
             "incidents": [], "status": "ok",
@@ -698,8 +738,6 @@ raise SystemExit(code)
         self.assertEqual(self.called(), ["doctor", "reconcile"])
         self.assertFalse(self.operator_map.exists())
 
-        claim_path = self.controller_state / "claims/T-1.json"
-        claim = json.loads(claim_path.read_text(encoding="utf-8"))
         claim["receipt"] = "d" * 64
         claim_path.write_text(json.dumps(claim), encoding="utf-8")
         self.calls.unlink()
@@ -712,6 +750,21 @@ raise SystemExit(code)
         self.assertEqual(self.called(), ["doctor"])
         claim["receipt"] = receipt
         claim_path.write_text(json.dumps(claim), encoding="utf-8")
+
+        transition_path = self.controller_state / "T-1.json"
+        transition = json.loads(transition_path.read_text(encoding="utf-8"))
+        transition["receipt_sha256"] = "d" * 64
+        transition_path.write_text(json.dumps(transition), encoding="utf-8")
+        self.calls.unlink()
+        code, value = self.run_scenario({
+            "doctor": resolved,
+            "reconcile": [self.controller("waiting_for_target")],
+            "qualification": self.report(),
+        })
+        self.assertEqual((code, value["reason"]), (3, "doctor_not_ready"))
+        self.assertEqual(self.called(), ["doctor"])
+        transition["receipt_sha256"] = receipt
+        transition_path.write_text(json.dumps(transition), encoding="utf-8")
 
         self.calls.unlink()
         code, value = self.run_scenario({
@@ -726,7 +779,7 @@ raise SystemExit(code)
         for label, key, changed in (
             ("wrong-receipt", "blocked_receipt_sha256", "d" * 64),
             ("wrong-reason", "reason_code", "resume_commit_not_pushed"),
-            ("early-incident", "observed_at_epoch_ns", 0),
+            ("invalid-time", "observed_at_epoch_ns", -1),
             ("foreign-ticket", "ticket", "T-9"),
             ("extra-field", "local_head", "e" * 40),
         ):
