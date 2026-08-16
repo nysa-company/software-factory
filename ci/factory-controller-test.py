@@ -10739,9 +10739,14 @@ class FactoryControllerTest(unittest.TestCase):
 
         controller.json_call = json_call
         controller.recover_repaired_failures([claim])
+        claim["blocked_reason"] = "route-migration-required"
+        controller.ticket_release_current = lambda _claim: False
+        controller.recover_repaired_failures([claim])
         self.assertEqual(calls, [])
         self.assertEqual(claim["status"], "blocked")
         self.assertEqual(claim["receipt"], receipt)
+        claim.pop("blocked_reason")
+        controller.ticket_release_current = lambda _claim: True
         controller.recover_repaired_failures([claim])
         controller.recover_repaired_failures([claim])
         self.assertEqual(claim["status"], "claimed")

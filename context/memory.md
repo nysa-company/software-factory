@@ -6306,3 +6306,12 @@ blocked receipt match an already-authenticated prior-kit transition warning.
 The driver does not clear the warning; the controller revalidates the current
 Git repair and emits the durable recovery event. Every other contract-resume
 warning remains blocked.
+
+## 2026-08-15 — Decision 449: Route migration precedes targeted recovery
+
+Category: Reliability
+
+An upgraded claim blocked on `route-migration-required` does not enter
+targeted role recovery until its ticket and route are bound to the active
+Factory. The sealed qualification driver can therefore migrate the whole idle
+cohort first, then let the controller revalidate contract or role evidence.

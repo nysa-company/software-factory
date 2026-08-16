@@ -9355,6 +9355,11 @@ class Controller:
                 continue
             self.restore_contract_blocker(claim)
             if (
+                claim.get("blocked_reason") == "route-migration-required"
+                and not self.ticket_release_current(claim)
+            ):
+                continue
+            if (
                 claim["status"] not in {"blocked", "claimed", "running"}
                 or not claim.get("receipt")
                 or self.role_active(claim)
