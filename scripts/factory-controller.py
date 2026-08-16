@@ -9366,6 +9366,65 @@ class Controller:
             )
         )
 
+    def route_migrated_failed_role(
+        self, claim: dict[str, Any], terminal: dict[str, str],
+        passport: dict[str, Any],
+    ) -> bool:
+        source = terminal.get("role_head_before", "")
+        source_factory = terminal.get("kit_sha", "")
+        migrations = passport.get("migration_history")
+        starts = [
+            index for index, edge in enumerate(migrations or [])
+            if valid_v2_migration(edge)
+            and edge["from_factory_sha"] == source_factory
+            and edge["to_factory_sha"] != source_factory
+            and edge["from_head_sha"] == source
+        ]
+        suffix = (
+            migrations[starts[0]:]
+            if isinstance(migrations, list) and len(starts) == 1 else []
+        )
+        final = suffix[-1] if suffix else {}
+        return (
+            bool(suffix)
+            and all(valid_v2_migration(edge) for edge in suffix)
+            and all(
+                prior["to_factory_sha"] == following["from_factory_sha"]
+                and prior["to_head_sha"] == following["from_head_sha"]
+                and prior["to_protected_base_sha"]
+                == following["from_protected_base_sha"]
+                and prior["to_route_plan_sha256"]
+                == following["from_route_plan_sha256"]
+                for prior, following in zip(suffix, suffix[1:])
+            )
+            and all(
+                edge["from_head_sha"] == edge["to_head_sha"]
+                and edge["from_route_plan_sha256"]
+                == edge["to_route_plan_sha256"]
+                or edge["from_head_sha"] != edge["to_head_sha"]
+                and self.exact_route_migration_commit(
+                    claim, edge["from_head_sha"], edge["to_head_sha"],
+                )
+                for edge in suffix
+            )
+            and successor_release_lineage(
+                passport.get("factory_release_history"), migrations,
+                source_factory, self.release_path.name, valid_v2_migration,
+            )
+            and final.get("to_factory_sha") == passport.get("factory_sha")
+            == self.release_path.name
+            and final.get("to_head_sha") == passport.get("head_sha")
+            and final.get("to_protected_base_sha")
+            == passport.get("protected_base_sha")
+            and final.get("to_route_plan_sha256")
+            == passport.get("route_plan_sha256")
+            and final.get("from_passport_file_sha256")
+            == passport.get("parent_file_sha256")
+            and final.get("from_passport_sha256")
+            == passport.get("parent_digest")
+            and self.remote_passport_valid(claim)
+        )
+
     def recover_repaired_failures(self, claims: list[dict[str, Any]]) -> None:
         for claim in claims:
             if (
@@ -9748,9 +9807,18 @@ class Controller:
                         claim, terminal,
                     )
                 )
+                route_migrated_failure = (
+                    not semantic_authorization
+                    and passport.get("head_sha")
+                    != terminal.get("role_head_before")
+                    and self.route_migrated_failed_role(
+                        claim, terminal, passport,
+                    )
+                )
                 if (
                     passport.get("head_sha") != terminal.get("role_head_before")
                     and not semantic_authorization
+                    and not route_migrated_failure
                     or completed.count(expected) != 0
                 ):
                     continue

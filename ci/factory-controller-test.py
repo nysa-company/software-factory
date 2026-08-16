@@ -8797,6 +8797,133 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(recovered, [])
         self.assertEqual((claim["status"], claim["receipt"]), ("blocked", receipt))
 
+    def test_prior_role_failure_accepts_only_exact_route_migration_suffix(
+        self,
+    ) -> None:
+        controller = CONTROL.Controller(self.args)
+        source = "b" * 40
+        intermediate = "c" * 40
+        input_head, route_head, current_head = (value * 40 for value in "def")
+        protected = "1" * 40
+        old_route, middle_route, current_route = (value * 64 for value in "234")
+        receipt = "5" * 64
+
+        def edge(
+            before_factory, after_factory, before_head, after_head,
+            before_route, after_route, parent_file, parent_digest,
+        ):
+            return {
+                "from_factory_sha": before_factory,
+                "from_head_sha": before_head,
+                "from_passport_file_sha256": parent_file,
+                "from_passport_sha256": parent_digest,
+                "from_protected_base_sha": protected,
+                "from_route_plan_sha256": before_route,
+                "schema": CONTROL.PASSPORT_MIGRATION_SCHEMA,
+                "to_factory_sha": after_factory,
+                "to_head_sha": after_head,
+                "to_protected_base_sha": protected,
+                "to_route_plan_sha256": after_route,
+            }
+
+        migrations = [
+            edge(
+                source, intermediate, input_head, input_head,
+                old_route, old_route, "6" * 64, "7" * 64,
+            ),
+            edge(
+                intermediate, self.release.name, input_head, route_head,
+                old_route, middle_route, "8" * 64, "9" * 64,
+            ),
+            edge(
+                self.release.name, self.release.name, route_head, current_head,
+                middle_route, current_route, "a" * 64, "b" * 64,
+            ),
+        ]
+        passport = {
+            "branch": "ticket/T-110",
+            "charge_records": [],
+            "completed_role_evidence": [],
+            "factory_release_history": [
+                {"contract_version": "2.0.0", "factory_sha": source},
+                {"contract_version": "2.0.0", "factory_sha": intermediate},
+                {"contract_version": "2.0.0", "factory_sha": self.release.name},
+            ],
+            "factory_sha": self.release.name,
+            "head_sha": current_head,
+            "migration_history": migrations,
+            "parent_digest": "b" * 64,
+            "parent_file_sha256": "a" * 64,
+            "protected_base_sha": protected,
+            "route_plan_sha256": current_route,
+            "ticket": "T-110",
+            "transition_receipt_sha256": receipt,
+        }
+        claim = {
+            "branch": "ticket/T-110", "lease": "c" * 64,
+            "lease_released": True, "parked": True, "priority": "normal",
+            "publication_lease": "", "receipt": receipt,
+            "role": "spec-linter", "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "blocked", "ticket": "T-110",
+            "worktree": str(self.product),
+        }
+        terminal = {
+            "accounting_state": "abandoned_conservative",
+            "cost_basis": "conservative_reservation",
+            "effective_cost": "2.000000", "exit_status": "11",
+            "go_issued": "1", "kit_sha": source, "phase": "completed",
+            "reserved_usd": "2.000000", "role": "spec-linter",
+            "role_exit": "role_exit_protected_ticket_mutation",
+            "role_head_before": input_head, "run_id": "failed-lint",
+            "task_submitted": "1",
+        }
+        pairs = []
+        controller.exact_route_migration_commit = (
+            lambda _claim, before, after: pairs.append((before, after))
+            or (before, after) in {
+                (input_head, route_head), (route_head, current_head),
+            }
+        )
+        controller.remote_passport_valid = lambda _claim: True
+        self.assertTrue(
+            controller.route_migrated_failed_role(claim, terminal, passport)
+        )
+        self.assertEqual(
+            pairs,
+            [(input_head, route_head), (route_head, current_head)],
+        )
+
+        drifted = copy.deepcopy(passport)
+        drifted["migration_history"][1]["to_head_sha"] = "0" * 40
+        self.assertFalse(
+            controller.route_migrated_failed_role(claim, terminal, drifted)
+        )
+
+        passport["charge_records"] = [{
+            "role": "spec-linter", "run_id": "failed-lint",
+            "transition_receipt_sha256": receipt,
+        }]
+        passport_path = self.state / "passports/T-110.json"
+        passport_path.parent.mkdir(mode=0o700)
+        CONTROL.write(passport_path, passport)
+        controller.restore_recorded_contract_repair = lambda _claim: False
+        controller.restore_contract_blocker = lambda _claim: False
+        controller.role_active = lambda _claim: False
+        controller.direct_model_identity_candidate = lambda *_args: False
+        controller.terminal_for_receipt = lambda *_args: terminal
+        controller.terminal_already_exported = lambda *_args: True
+        controller.exact_semantic_authorization_recovery = lambda *_args: False
+        controller.ensure_lease = lambda *_args: None
+        events = []
+        controller.event = lambda name, *_args, **_kwargs: events.append(name)
+        controller.recover_repaired_failures([claim])
+        self.assertEqual((claim["status"], claim["role"], claim["receipt"]), (
+            "claimed", "", "",
+        ))
+        self.assertEqual(events, [
+            "protected_ticket_mutation_recovered_by_release_upgrade",
+        ])
+
     def test_release_upgrade_attempt_retains_discovered_route_wait(self) -> None:
         controller = CONTROL.Controller(self.args)
         source = "b" * 40

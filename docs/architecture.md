@@ -1299,7 +1299,10 @@ passport contains the failed charge once and no completion. Legacy releases
 that left the rejected head checked out additionally require the existing
 protected in-flight rewrite authorization before passport migration can move
 back to the unchanged remote input. Same-release retry and acceptance of the
-protected mutation remain forbidden.
+protected mutation remain forbidden. If later successors have already migrated
+that passport, recovery additionally requires one continuous authenticated v2
+suffix from the failed role input to the current passport, with every
+head-changing edge revalidated as an exact Factory route-migration commit.
 See [factory-runtime.md](factory-runtime.md) for the schemas and commands.
 
 Ticket content is read from the launcher's validated ticket worktree, while
