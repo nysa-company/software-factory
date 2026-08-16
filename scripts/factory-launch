@@ -28,7 +28,7 @@ die() {
 }
 
 usage() {
-  echo "usage: factory-launch <project> <contract|doctor|reconcile|incident-report|watch|ticket-control|qualification-run|qualification|dispatch-plan|state-machine|emergency-admit|passport|publication|publication-repair|ci-rerun|ticket-pr|models|envelope|operator-snapshot|attempt|claim|renew|release|release-expired|preflight|next-stage|ticket-state|ticket-attest|project-ledger|reorder-test-fixes|run> [arguments]" >&2
+  echo "usage: factory-launch <project> <contract|doctor|reconcile|incident-report|watch|ticket-control|qualification-run|qualification-resume|qualification|dispatch-plan|state-machine|emergency-admit|passport|publication|publication-repair|ci-rerun|ticket-pr|models|envelope|operator-snapshot|attempt|claim|renew|release|release-expired|preflight|next-stage|ticket-state|ticket-attest|project-ledger|reorder-test-fixes|run> [arguments]" >&2
   exit 2
 }
 
@@ -1561,6 +1561,20 @@ PY
     trap - EXIT HUP INT TERM
     exec "${HELPER_ENV[@]}" "$PYTHON_BIN" -I -S "$QUALIFICATION_RUNNER" \
       --launcher "$SELF_PATH" --project "$PROJECT" --json
+    ;;
+  qualification-resume)
+    [[ "$QUALIFICATION_LAUNCHER" == "1" && "$QUALIFICATION_MODE" == "isolated" ]] ||
+      die "qualification resume requires a sealed isolated qualification launcher"
+    [[ $# -eq 5 && "$1" == "--ticket" && "$2" =~ ^T-[0-9]+$ &&
+       "$3" == "--blocked-receipt" && "$4" =~ ^[0-9a-f]{64}$ &&
+       "$5" == "--json" ]] || usage
+    QUALIFICATION_RUNNER="$RELEASE_PATH/scripts/qualification-run.py"
+    require_managed_file "$QUALIFICATION_RUNNER" "active release qualification runner"
+    cleanup_runtime
+    trap - EXIT HUP INT TERM
+    exec "${HELPER_ENV[@]}" "$PYTHON_BIN" -I -S "$QUALIFICATION_RUNNER" \
+      --launcher "$SELF_PATH" --project "$PROJECT" \
+      --resume-ticket "$2" --resume-receipt "$4" --json
     ;;
   qualification)
     [[ "$ACTIVE_CONTRACT" == "1.8.0" || "$ACTIVE_CONTRACT" == "2.0.0" ]] ||

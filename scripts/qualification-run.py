@@ -376,19 +376,27 @@ def worktree_clean(worktree: Path) -> bool:
 def project_contract_recovery(
     launcher: Path, project: str, doctor: dict[str, Any],
     selected: set[str], phases: list[dict[str, Any]],
+    authority: tuple[str, str] | None = None,
 ) -> None:
     contract = doctor["checks"]["contract_resume"]
     incidents = contract.get("incidents")
-    if contract.get("status") != "warning" or not isinstance(incidents, list):
-        return
-    if len(incidents) != 1:
-        raise QualificationRunError("qualification contract recovery is ambiguous")
-    incident = incidents[0]
-    ticket = incident["ticket"]
+    if authority is None:
+        if contract.get("status") != "warning" or not isinstance(incidents, list):
+            return
+        if len(incidents) != 1:
+            raise QualificationRunError("qualification contract recovery is ambiguous")
+        incident = incidents[0]
+        ticket, expected_receipt = (
+            incident["ticket"], incident["blocked_receipt_sha256"],
+        )
+    else:
+        if contract.get("status") != "ok" or incidents not in (None, []):
+            raise QualificationRunError("qualification contract recovery is ambiguous")
+        ticket, expected_receipt = authority
     if ticket not in selected:
         raise QualificationRunError("qualification contract recovery is foreign")
     claim = contract_recovery_claim(ticket)
-    if claim["receipt"] != incident["blocked_receipt_sha256"]:
+    if claim["receipt"] != expected_receipt:
         raise QualificationRunError("qualification contract recovery receipt changed")
     worktree = Path(claim["worktree"])
     code, checked = invoke(
@@ -787,6 +795,25 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
             "schema": SCHEMA,
             "status": "blocked",
         }
+    if args.resume_ticket:
+        if not TICKET.fullmatch(args.resume_ticket) or not DIGEST.fullmatch(
+            args.resume_receipt
+        ):
+            raise QualificationRunError("qualification resume authority is invalid")
+        project_contract_recovery(
+            launcher, args.project, doctor, selected, phases,
+            (args.resume_ticket, args.resume_receipt),
+        )
+        return {
+            "doctor_status": doctor["overall_status"],
+            "elapsed_seconds": round(time.monotonic() - started, 3),
+            "phases": phases,
+            "project": args.project,
+            "reason": "operator_resume_projected",
+            "schema": SCHEMA,
+            "status": "projected",
+            "ticket": args.resume_ticket,
+        }
 
     restarts = 0
     migration_applied = False
@@ -914,14 +941,19 @@ def arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--launcher", required=True, type=Path)
     parser.add_argument("--project", required=True)
+    parser.add_argument("--resume-ticket", default="")
+    parser.add_argument("--resume-receipt", default="")
     parser.add_argument("--json", action="store_true", required=True)
-    return parser.parse_args()
+    args = parser.parse_args()
+    if bool(args.resume_ticket) != bool(args.resume_receipt):
+        parser.error("qualification resume requires ticket and receipt")
+    return args
 
 
 def main() -> int:
     try:
         result = execute(arguments())
-        code = 0 if result["status"] == "green" else (
+        code = 0 if result["status"] in {"green", "projected"} else (
             2 if result["status"] == "error" else 3
         )
     except (OSError, QualificationRunError, subprocess.SubprocessError) as error:

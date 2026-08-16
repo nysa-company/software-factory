@@ -167,11 +167,22 @@ raise SystemExit(code)
         value["report_sha256"] = hashlib.sha256(canonical(value)).hexdigest()
         return value
 
-    def run_scenario(self, scenario: dict[str, object]) -> tuple[int, dict[str, object]]:
+    def run_scenario(
+        self, scenario: dict[str, object],
+        resume: tuple[str, str] | None = None,
+    ) -> tuple[int, dict[str, object]]:
         self.scenario.write_text(json.dumps(scenario), encoding="utf-8")
+        command = [
+            sys.executable, str(RUNNER), "--launcher", str(self.launcher),
+            "--project", "relay",
+        ]
+        if resume:
+            command.extend((
+                "--resume-ticket", resume[0], "--resume-receipt", resume[1],
+            ))
+        command.append("--json")
         result = subprocess.run(
-            [sys.executable, str(RUNNER), "--launcher", str(self.launcher),
-             "--project", "relay", "--json"],
+            command,
             capture_output=True, check=False, text=True,
             env={
                 "PATH": "/usr/bin:/bin",
@@ -649,6 +660,45 @@ raise SystemExit(code)
                     (code, value["reason"]), (3, "doctor_not_ready")
                 )
                 self.assertEqual(self.called(), ["doctor"])
+
+    def test_explicit_qualification_resume_projects_exact_repair(self) -> None:
+        doctor, worktree, head, receipt = self.contract_recovery_fixture()
+        doctor["checks"]["contract_resume"] = {"incidents": [], "status": "ok"}
+        checked = {
+            "action": "repair-check", "current_state": "Blocked-Escalated",
+            "head": head, "repair_role": "planner", "resume_state": "Building",
+            "role": "test-author",
+            "schema": "nysa.software-factory.state-machine/v1",
+            "status": "ready", "ticket": "T-1",
+        }
+
+        code, value = self.run_scenario({
+            "doctor": doctor, "state-machine:repair-check": checked,
+        }, resume=("T-1", receipt))
+        self.assertEqual((code, value["status"], value["reason"]), (
+            0, "projected", "operator_resume_projected",
+        ))
+        self.assertEqual(self.called(), ["doctor", "state-machine:repair-check"])
+        mapping = json.loads(self.operator_map.read_text(encoding="utf-8"))
+        projected = operator_receipt.read_exact(
+            self.controller_state, "T-1", "resume",
+            mapping["tickets"]["T-1"]["operator"]["receipt_sha256"],
+            {"blocked_receipt_sha256": receipt, "resume_stage": "Building"},
+        )
+        self.assertIsNotNone(projected)
+        self.assertFalse(projected["consumed"])
+        self.assertFalse((worktree / "factory/receipts").exists())
+        self.assertEqual(subprocess.run(
+            ["git", "-C", str(worktree), "status", "--porcelain=v1"],
+            check=True, capture_output=True, text=True,
+        ).stdout, "")
+
+        self.calls.unlink()
+        code, value = self.run_scenario(
+            {"doctor": doctor}, resume=("T-1", "d" * 64),
+        )
+        self.assertEqual((code, value["status"]), (2, "error"))
+        self.assertEqual(self.called(), ["doctor"])
 
     def test_mixed_source_incident_uses_exact_ticket_authorization(self) -> None:
         doctor, _worktree, head, _receipt = self.contract_recovery_fixture()

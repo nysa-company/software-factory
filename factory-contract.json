@@ -118,6 +118,13 @@
         "output_schema": "nysa.software-factory.qualification-report/v1",
         "authority": "immutable exact reduction of an acyclic three-ticket ordered cohort or four-ticket concurrent cohort across authenticated passports, source-to-candidate migration, cumulative and candidate-only charges, controller history, protected checks, and GitHub merge truth"
       },
+      "qualification-resume": {
+        "contract_version": "2.0.0",
+        "helper": "scripts/qualification-run.py",
+        "grammar": "--ticket <T-NNN> --blocked-receipt <SHA256> --json",
+        "output_schema": "nysa.software-factory.qualification-run/v1",
+        "authority": "isolated qualification only: after the ordinary contract-repair directive is exact, projects one selected ticket's blocked-receipt-bound one-use resume authority without changing product Git history"
+      },
       "dispatch-plan": {
         "minimum_contract_version": "1.6.0",
         "helper": "scripts/dispatch-plan.py",

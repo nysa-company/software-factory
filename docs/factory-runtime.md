@@ -226,6 +226,17 @@ without writing an audit commit into the ticket branch; the controller still
 owns the resume. A consumed receipt plus the exact resumed state closes the
 push-before-recovery-record crash window. Production operator authority is
 unchanged.
+After an explicit contract-repair apply, the separate lifecycle boundary is
+closed with the same sealed isolated release:
+
+```bash
+factory-launch <project> qualification-resume \
+  --ticket <T-NNN> --blocked-receipt <SHA256> --json
+```
+
+It derives the resume stage from the authenticated repair check, projects only
+that selected ticket's blocked-receipt-bound one-use authority, and writes no
+product audit commit. Takeover and production launchers refuse it.
 During a long successor role, the controller renews every
 idle cohort lease and releases a parked lease instead of allowing either to
 expire. A parked semantic-round wait remains plannable without a lease; exact

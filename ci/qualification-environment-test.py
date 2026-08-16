@@ -12,6 +12,7 @@ import hmac
 import importlib.util
 import os
 from pathlib import Path
+import pwd
 import shutil
 import subprocess
 import sys
@@ -749,6 +750,156 @@ class QualificationEnvironmentTest(unittest.TestCase):
             replay = ENVIRONMENT.prepare(args)
         self.assertEqual(replay, value)
         readiness.assert_called_once()
+
+    def test_sealed_qualification_resume_is_isolated_and_exact(self) -> None:
+        self.use_contract_2()
+        marker = self.workspace / "qualification-resume-args.json"
+        shutil.copy2(
+            ROOT / "scripts/factory-launch",
+            self.factory / "scripts/factory-launch",
+        )
+        shutil.copy2(
+            ROOT / "factory-contract.json", self.factory / "factory-contract.json",
+        )
+        runner = self.factory / "scripts/qualification-run.py"
+        runner.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json, pathlib, sys\n"
+            f"pathlib.Path({str(marker)!r}).write_text(json.dumps(sys.argv[1:]))\n"
+            "print('{\"schema\":\"nysa.software-factory.qualification-run/v1\",'"
+            "'\"status\":\"projected\"}')\n",
+            encoding="utf-8",
+        )
+        runner.chmod(0o755)
+        run(self.factory, "git", "add", ".")
+        run(self.factory, "git", "commit", "-qm", "seal launcher fixture")
+        self.sha = run(self.factory, "git", "rev-parse", "HEAD")
+        (self.product / "factory/KIT_PIN").write_text(self.sha + "\n")
+        manifest = json.loads(
+            (self.product / "factory/QUALIFICATION.json").read_text()
+        )
+        manifest["factory_sha"] = self.sha
+        (self.product / "factory/QUALIFICATION.json").write_text(
+            json.dumps(manifest) + "\n"
+        )
+        run(
+            self.product, "git", "add", "factory/KIT_PIN",
+            "factory/QUALIFICATION.json",
+        )
+        run(self.product, "git", "commit", "-qm", "pin launcher fixture")
+
+        project = f"qualification-launcher-{os.getpid()}-{self.root.name[-6:]}"
+        value = ENVIRONMENT.prepare(argparse.Namespace(
+            factory_root=self.factory, product_root=self.product,
+            project=project, root=self.root,
+        ))
+        active_path = self.root / f"projects/{project}/active.json"
+        active = ENVIRONMENT.read(active_path)
+        receipt_path = self.root / f"receipts/{active['receipt_id']}.json"
+        receipt = ENVIRONMENT.read(receipt_path)
+        account_home = Path(pwd.getpwuid(os.getuid()).pw_dir).resolve()
+        authority = account_home / f".factory/qualification/{project}"
+        self.assertFalse(authority.exists())
+        authority.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(Path(value["authority_root"]), authority)
+        isolated_paths = {
+            "controller_state_path": str(authority / "controller"),
+            "operator_map_path": str(authority / "operator/operator-map.json"),
+            "provider_state_path": str(authority / "provider"),
+            "runtime_ledger_path": str(authority / "operator/runtime-ledger.csv"),
+        }
+
+        def replace_json(path: Path, value: dict[str, object]) -> None:
+            temporary = path.with_name(path.name + ".test-tmp")
+            ENVIRONMENT.write(temporary, value)
+            os.replace(temporary, path)
+
+        def write_mode(mode: str) -> None:
+            selected_active = {**active, **isolated_paths, "qualification_mode": mode}
+            selected_receipt = {
+                **receipt,
+                "operator_map_path": isolated_paths["operator_map_path"],
+                "qualification_mode": mode,
+            }
+            if mode == "isolated":
+                selected_active.pop("takeover_kits_root", None)
+                selected_receipt.pop("takeover_kits_root", None)
+                selected_receipt["runtime_ledger_path"] = isolated_paths[
+                    "runtime_ledger_path"
+                ]
+            else:
+                takeover = str(account_home / ".factory/kits")
+                selected_active["takeover_kits_root"] = takeover
+                selected_active.pop("runtime_ledger_path", None)
+                selected_receipt["takeover_kits_root"] = takeover
+                selected_receipt.pop("runtime_ledger_path", None)
+            replace_json(active_path, selected_active)
+            replace_json(receipt_path, selected_receipt)
+
+        def snapshot() -> tuple[
+            str, str, bytes, bytes, list[tuple[str, bytes]],
+        ]:
+            return (
+                run(self.product, "git", "rev-parse", "HEAD"),
+                run(self.product, "git", "status", "--porcelain"),
+                active_path.read_bytes(),
+                receipt_path.read_bytes(),
+                [
+                    (str(path.relative_to(authority)), path.read_bytes())
+                    for path in sorted(authority.rglob("*")) if path.is_file()
+                ],
+            )
+
+        launcher = Path(value["launcher"])
+        receipt_digest = "a" * 64
+        try:
+            write_mode("isolated")
+            before = snapshot()
+            result = subprocess.run([
+                str(launcher), project, "qualification-resume",
+                "--ticket", "T-101", "--blocked-receipt", receipt_digest,
+                "--json",
+            ], capture_output=True, check=False, text=True, timeout=120)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(marker.read_text()), [
+                "--launcher", str(launcher), "--project", project,
+                "--resume-ticket", "T-101", "--resume-receipt",
+                receipt_digest, "--json",
+            ])
+            self.assertEqual(snapshot(), before)
+
+            for arguments in (
+                ("--ticket", "bad", "--blocked-receipt", receipt_digest, "--json"),
+                ("--blocked-receipt", receipt_digest, "--ticket", "T-101", "--json"),
+                ("--ticket", "T-101", "--blocked-receipt", "bad", "--json"),
+                ("--ticket", "T-101", "--blocked-receipt", receipt_digest),
+            ):
+                marker.unlink(missing_ok=True)
+                result = subprocess.run(
+                    [str(launcher), project, "qualification-resume", *arguments],
+                    capture_output=True, check=False, text=True, timeout=120,
+                )
+                self.assertEqual(result.returncode, 2)
+                self.assertFalse(marker.exists())
+                self.assertEqual(snapshot(), before)
+
+            write_mode("takeover")
+            marker.unlink(missing_ok=True)
+            before = snapshot()
+            result = subprocess.run([
+                str(launcher), project, "qualification-resume",
+                "--ticket", "T-101", "--blocked-receipt", receipt_digest,
+                "--json",
+            ], capture_output=True, check=False, text=True, timeout=120)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(
+                "qualification resume requires a sealed isolated qualification launcher",
+                result.stderr,
+            )
+            self.assertFalse(marker.exists())
+            self.assertEqual(snapshot(), before)
+        finally:
+            shutil.rmtree(authority, ignore_errors=True)
 
     def test_prepare_rejects_unfit_run_budget_before_state(self) -> None:
         envelope = self.product / "factory/ENVELOPE.env"

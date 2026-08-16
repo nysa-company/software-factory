@@ -268,6 +268,11 @@ expect_refused repository-test-qualification-run run_launcher qualification-run 
 grep -Fxq 'factory-launch: qualification run requires a sealed qualification launcher' \
   "$TMP/refused-repository-test-qualification-run.out" ||
   fail "repository-test qualification-run did not reach the sealed-lane guard"
+expect_refused repository-test-qualification-resume run_launcher qualification-resume \
+  --ticket T-1 --blocked-receipt "$(printf 'a%.0s' {1..64})" --json
+grep -Fxq 'factory-launch: qualification resume requires a sealed isolated qualification launcher' \
+  "$TMP/refused-repository-test-qualification-resume.out" ||
+  fail "repository-test qualification-resume did not reach the sealed-lane guard"
 for command in incident-report publication-repair ci-rerun ticket-pr ticket-attest; do
   expect_refused "repository-test-$command" run_launcher "$command"
   grep -Fxq 'factory-launch: repository test mode refuses GitHub-mutating commands' \

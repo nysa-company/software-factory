@@ -303,6 +303,17 @@ For the exact authenticated successor compact-repair warning, it also projects
 the one-use qualification resume receipt after the sealed repair check. It does
 not create a product audit commit or grant the production controller authority
 to issue operator decisions.
+After an explicit `ticket-control contract-repair apply`, close the separate
+lifecycle boundary with the sealed isolated command below, then return to
+`qualification-run`:
+
+```bash
+factory-launch <project> qualification-resume \
+  --ticket <T-NNN> --blocked-receipt <SHA256> --json
+```
+
+The driver derives the stage from the exact repair check; production and
+qualification takeover refuse this command.
 On `waiting` or `blocked`, change only the named external/operator evidence and
 run the same command again; never hand-edit authority state.
 
