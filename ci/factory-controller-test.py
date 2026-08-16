@@ -8797,6 +8797,31 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(recovered, [])
         self.assertEqual((claim["status"], claim["receipt"]), ("blocked", receipt))
 
+    def test_release_upgrade_attempt_retains_discovered_route_wait(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        source = "b" * 40
+        passport_path = self.state / "passports/T-110.json"
+        passport_path.parent.mkdir(mode=0o700)
+        CONTROL.write(passport_path, {"factory_sha": source})
+        claim = {
+            "branch": "ticket/T-110",
+            "status": "blocked",
+            "ticket": "T-110",
+            "worktree": str(self.product),
+        }
+        controller.ticket_release_current = lambda _claim: False
+        controller.migrate_passport = lambda _claim, _mode: None
+        controller.recovery_input_sha256 = lambda _claim, _name: "e" * 64
+        controller.recover_each(
+            [claim], controller.recover_upgraded_claims, "release-upgrade",
+        )
+
+        self.assertEqual(claim["blocked_reason"], "route-migration-required")
+        self.assertEqual(
+            claim["recovery_attempt"]["retry_reason"],
+            "route-migration-required",
+        )
+
 
     def test_recovery_failures_dedupe_and_release_new_nonlive_lease(self) -> None:
         controller = CONTROL.Controller(self.args)

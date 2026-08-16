@@ -7418,6 +7418,12 @@ class Controller:
                         )
                 claim["status"] = "blocked"
                 claim["blocked_reason"] = "route-migration-required"
+                context = getattr(self.recovery_context, "value", None)
+                if context and context.get("ticket") == claim["ticket"]:
+                    context["attempt"].update(
+                        retry_reason="route-migration-required",
+                        retry_status="blocked",
+                    )
                 self.save_claim(claim)
                 marker = (
                     f"route-migration-required-{claim['ticket']}-"

@@ -6371,3 +6371,12 @@ After an exact successor passport migration, a prior-release protected-ticket
 failure without migrated semantic authority enters the existing targeted
 recovery before release-upgrade attempt settlement. This preserves its
 authenticated evidence while allowing the corrected successor role to retry.
+
+## 2026-08-15 — Decision 455: Route waits survive recovery settlement
+
+Category: Reliability
+
+When successor recovery discovers `route-migration-required`, its persisted
+attempt retains that exact retry reason. The sealed qualification driver can
+therefore prove the whole selected cohort and run one deterministic migration
+batch even if controller recovery reaches its bounded attempt limit first.

@@ -449,7 +449,9 @@ and contract-blocker recovery may still use a digest-valid prior receipt under
 their stricter bindings. After passport migration, an exact prior-release
 protected-ticket failure with no migrated semantic authority enters that
 existing targeted recovery before the release-upgrade attempt can be
-abandoned. One roleless prior-release maintenance refusal may
+abandoned. A release-upgrade attempt that discovers the route-migration
+boundary retains that exact retry reason so the sealed qualification driver
+can prove and migrate the complete cohort. One roleless prior-release maintenance refusal may
 also re-enter ordinary scheduling after its exact protected in-flight release
 and route migration is complete. Admission requires the authenticated current
 Review passport, one contiguous release/head/base/route suffix from the
