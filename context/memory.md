@@ -6576,3 +6576,13 @@ authenticated role receipt for one provider-free protected-base refresh. The
 refresh remains bound to the certified remote, open PR, ticket lease, and
 current head; the next reconciliation issues fresh role authority at the new
 head. Other runnable role receipts do not authorize refresh.
+
+## 2026-08-16 — Decision 474: Route passports migrate before bundle recovery
+
+Category: Reliability
+
+Successor recovery does not validate a retained bundle against a passport that
+still precedes the already-pushed authorized route commit. It first migrates
+the passport to that exact clean commit, then evaluates the existing sealed
+bundle-refresh predicates. Restart may replay the idempotent passport migration
+without adding another edge or weakening bundle authority.

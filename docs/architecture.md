@@ -467,6 +467,9 @@ stale-bundle recovery may ask the
 state machine for a current receipt only after one unique contiguous suffix of
 authenticated release-changing migration edges binds the old receipt and
 passport-file digest to the current passport without changing head or route.
+When the approved route commit is already pushed, recovery migrates the
+passport to that clean commit before testing whether the retained bundle is
+refreshable; restart may replay the idempotent passport migration.
 The old receipt retains its historical lease while the successor receipt binds
 the controller's current active lease. A release-scoped marker is durable
 before issuance, so restart
