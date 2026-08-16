@@ -446,7 +446,14 @@ and is excluded from ordinary recovery, admission, and scheduling for that
 sweep. An inactive invalid claim releases its lease without rewriting the
 receipt; a live role is untouched. Existing typed release-upgrade, terminal,
 and contract-blocker recovery may still use a digest-valid prior receipt under
-their stricter bindings. One roleless prior-release maintenance refusal may
+their stricter bindings. After passport migration, an exact prior-release
+protected-ticket failure with no migrated semantic authority enters that
+existing targeted recovery before the release-upgrade attempt can be
+abandoned. Legacy failed-output quarantine runs only while the signed passport
+still belongs to that failed role's Factory; an already-migrated passport
+continues through ordinary successor recovery. A release-upgrade attempt that discovers the route-migration
+boundary retains that exact retry reason so the sealed qualification driver
+can prove and migrate the complete cohort. One roleless prior-release maintenance refusal may
 also re-enter ordinary scheduling after its exact protected in-flight release
 and route migration is complete. Admission requires the authenticated current
 Review passport, one contiguous release/head/base/route suffix from the
@@ -1005,6 +1012,15 @@ historical blocker charge, ordered release history, exact current passport
 digest, and receipt-to-current-head lineage before accepting that later coarse
 state. Once a signed repair exists, its narrower contract-repair migration
 proof remains authoritative.
+An isolated successor has one ancestry-only recovery for an exact
+contract-blocked Test-author ticket. `qualification-history-repair` binds the
+selected claim, consumed receipt, passport, protected base, configured test
+roots, certified branch head, and unchanged final tree. The only accepted new
+line is `protected base -> protected-test snapshot -> same-ticket Factory
+snapshot`; both history gates and an exact remote lease precede mutation. Its
+durable record authorizes only the matching passport rewrite edge and crash
+replay. Production, takeover, product paths, and foreign-ticket state remain
+closed.
 An operator appends the first
 exact repair-owner and blocked-receipt directive pair, or replaces the one
 visible pair for a later blocker, without changing any other path:
@@ -1044,8 +1060,15 @@ Review. Receipt verification rechecks the current rejection, authenticated
 role prefix, exact branch/head/passport identity, and uncapped
 `planner-spec-linter` loop before deriving the launcher-only `CATCHUP planner`
 preflight admission. Ordinary `RUN planner`, missing or malformed loop data,
-an impossible role order, a stale receipt, and the capped third failure remain
-closed. No ticket state is rewound and the receipt schema is unchanged.
+an impossible role order, a stale receipt, and a malformed cap remain closed.
+The exact sealed cap enters the existing provider-free next-round authorization
+wait; it runs Planner again only after that one exact grant. Its authenticated
+receipt maps to the existing Planner catch-up preflight when the coarse ticket
+state is still Building or Review. No ticket state is rewound and the receipt
+schema is unchanged.
+Before a protected in-flight route migration, an exact certified remote ticket
+head may refresh only its stale local remote-tracking cache; authorization,
+TOCTOU rechecks, and the exact remote push lease remain unchanged.
 If that exact backward repair blocks again, the active signed repair also
 authorizes the block at the unchanged coarse state. The block records that
 coarse state as its resume target, and the same signed repair must authenticate
@@ -1285,7 +1308,10 @@ passport contains the failed charge once and no completion. Legacy releases
 that left the rejected head checked out additionally require the existing
 protected in-flight rewrite authorization before passport migration can move
 back to the unchanged remote input. Same-release retry and acceptance of the
-protected mutation remain forbidden.
+protected mutation remain forbidden. If later successors have already migrated
+that passport, recovery additionally requires one continuous authenticated v2
+suffix from the failed role input to the current passport, with every
+head-changing edge revalidated as an exact Factory route-migration commit.
 See [factory-runtime.md](factory-runtime.md) for the schemas and commands.
 
 Ticket content is read from the launcher's validated ticket worktree, while
@@ -1526,6 +1552,12 @@ rewrites the preserved ticket history.
 Activation and mutating model-route migration use the same strict authorization
 parser. Migration revalidates current protected main, the selected remote ticket
 head, repository, source and target kit, branch, and state before changing Git.
+Authorization v1 retains one source kit for the whole cohort. V2 retains that
+source as the successor root and binds each ticket's exact current source kit,
+so a replayed partial batch can advance a mixed-source cohort without relabeling
+or rewriting already-migrated work. Preparation accepts a route-changed
+checkpoint only when the previous sealed product authorization proves it is
+the exact one-child replay of that active release's migration.
 The first application starts at the exact authorized head. An interrupted
 idempotent retry may start only at its one direct child when that commit changes
 only the selected ticket's Kit-SHA and its exact append-only release-migration
@@ -1992,8 +2024,12 @@ result records one bounded admission incident and stops the sweep with no
 recovery, claim, model, or provider mutation. The operator uses the existing
 sealed qualification `--restore` to reinitialize every selected ticket. A
 fresh `SHADOW` or `WAIT` enters the unchanged flow, and the later real claim
-still re-reads the map under its normal 600-second contract. Production does
-not run this qualification headroom check.
+still re-reads the map under its normal 600-second contract. When the exact
+selected cohort is already accounted for by its own durable claims or
+protected Done targets, no admission is possible: reconciliation skips both
+shadow and real claim while retaining every ordinary claim, passport, lease,
+route, and recovery validation. A foreign or partial claim set still runs the
+admission check. Production does not run this qualification headroom check.
 Production candidate selection runs the existing provider-free ticket
 readiness contract for every otherwise eligible ticket before either shadow or
 claim may succeed. A refusal, malformed success, helper error, or timeout is a

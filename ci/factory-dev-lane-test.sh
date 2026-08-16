@@ -47,6 +47,12 @@ grep -Fq 'SPEC-WARN: <one-line recommendation>' "$ROOT/roles/spec-linter.md" &&
   grep -Fq 'PASS may include `SPEC-WARN` recommendations' \
     "$ROOT/roles/spec-linter.md" ||
   fail "Spec-linter contract does not distinguish warnings from blockers"
+grep -Fq 'before every later round' "$ROOT/roles/spec-linter.md" &&
+  grep -Fq 'OPERATOR AUTHORIZATION: spec-linter round N' \
+    "$ROOT/roles/spec-linter.md" &&
+  ! grep -Fq 'absolute cap with no round four' \
+    "$ROOT/roles/spec-linter.md" ||
+  fail "Spec-linter contract does not honor sequencer-authorized later rounds"
 
 expect_failure() {
   local label="$1"

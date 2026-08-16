@@ -12,6 +12,7 @@ import hmac
 import importlib.util
 import os
 from pathlib import Path
+import pwd
 import shutil
 import subprocess
 import sys
@@ -749,6 +750,218 @@ class QualificationEnvironmentTest(unittest.TestCase):
             replay = ENVIRONMENT.prepare(args)
         self.assertEqual(replay, value)
         readiness.assert_called_once()
+
+    def test_sealed_qualification_resume_is_isolated_and_exact(self) -> None:
+        self.use_contract_2()
+        marker = self.workspace / "qualification-resume-args.json"
+        history_marker = self.workspace / "qualification-history-args.json"
+        shutil.copy2(
+            ROOT / "scripts/factory-launch",
+            self.factory / "scripts/factory-launch",
+        )
+        shutil.copy2(
+            ROOT / "factory-contract.json", self.factory / "factory-contract.json",
+        )
+        runner = self.factory / "scripts/qualification-run.py"
+        runner.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json, pathlib, sys\n"
+            f"pathlib.Path({str(marker)!r}).write_text(json.dumps(sys.argv[1:]))\n"
+            "print('{\"schema\":\"nysa.software-factory.qualification-run/v1\",'"
+            "'\"status\":\"projected\"}')\n",
+            encoding="utf-8",
+        )
+        runner.chmod(0o755)
+        controller = self.factory / "scripts/factory-controller.py"
+        controller.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json, pathlib, sys\n"
+            f"pathlib.Path({str(history_marker)!r}).write_text(json.dumps(sys.argv[1:]))\n"
+            "print('{\"schema\":\"nysa.software-factory.controller/v1\",'"
+            "'\"status\":\"repaired\"}')\n",
+            encoding="utf-8",
+        )
+        controller.chmod(0o755)
+        run(self.factory, "git", "add", ".")
+        run(self.factory, "git", "commit", "-qm", "seal launcher fixture")
+        self.sha = run(self.factory, "git", "rev-parse", "HEAD")
+        (self.product / "factory/KIT_PIN").write_text(self.sha + "\n")
+        manifest = json.loads(
+            (self.product / "factory/QUALIFICATION.json").read_text()
+        )
+        manifest["factory_sha"] = self.sha
+        (self.product / "factory/QUALIFICATION.json").write_text(
+            json.dumps(manifest) + "\n"
+        )
+        run(
+            self.product, "git", "add", "factory/KIT_PIN",
+            "factory/QUALIFICATION.json",
+        )
+        run(self.product, "git", "commit", "-qm", "pin launcher fixture")
+
+        project = f"qualification-launcher-{os.getpid()}-{self.root.name[-6:]}"
+        value = ENVIRONMENT.prepare(argparse.Namespace(
+            factory_root=self.factory, product_root=self.product,
+            project=project, root=self.root,
+        ))
+        active_path = self.root / f"projects/{project}/active.json"
+        active = ENVIRONMENT.read(active_path)
+        receipt_path = self.root / f"receipts/{active['receipt_id']}.json"
+        receipt = ENVIRONMENT.read(receipt_path)
+        account_home = Path(pwd.getpwuid(os.getuid()).pw_dir).resolve()
+        authority = account_home / f".factory/qualification/{project}"
+        self.assertFalse(authority.exists())
+        authority.parent.mkdir(parents=True, exist_ok=True)
+        takeover_kits_root = account_home / ".factory/kits"
+        created_takeover_kits_root = not takeover_kits_root.exists()
+        if created_takeover_kits_root:
+            takeover_kits_root.mkdir(mode=0o700)
+        shutil.copytree(Path(value["authority_root"]), authority)
+        isolated_paths = {
+            "controller_state_path": str(authority / "controller"),
+            "operator_map_path": str(authority / "operator/operator-map.json"),
+            "provider_state_path": str(authority / "provider"),
+            "runtime_ledger_path": str(authority / "operator/runtime-ledger.csv"),
+        }
+
+        def replace_json(path: Path, value: dict[str, object]) -> None:
+            temporary = path.with_name(path.name + ".test-tmp")
+            ENVIRONMENT.write(temporary, value)
+            os.replace(temporary, path)
+
+        def write_mode(mode: str) -> None:
+            selected_active = {**active, **isolated_paths, "qualification_mode": mode}
+            selected_receipt = {
+                **receipt,
+                "operator_map_path": isolated_paths["operator_map_path"],
+                "qualification_mode": mode,
+            }
+            if mode == "isolated":
+                selected_active.pop("takeover_kits_root", None)
+                selected_receipt.pop("takeover_kits_root", None)
+                selected_receipt["runtime_ledger_path"] = isolated_paths[
+                    "runtime_ledger_path"
+                ]
+            else:
+                takeover = str(takeover_kits_root)
+                selected_active["takeover_kits_root"] = takeover
+                selected_active.pop("runtime_ledger_path", None)
+                selected_receipt["takeover_kits_root"] = takeover
+                selected_receipt.pop("runtime_ledger_path", None)
+            replace_json(active_path, selected_active)
+            replace_json(receipt_path, selected_receipt)
+
+        def snapshot() -> tuple[
+            str, str, bytes, bytes, list[tuple[str, bytes]],
+        ]:
+            return (
+                run(self.product, "git", "rev-parse", "HEAD"),
+                run(self.product, "git", "status", "--porcelain"),
+                active_path.read_bytes(),
+                receipt_path.read_bytes(),
+                [
+                    (str(path.relative_to(authority)), path.read_bytes())
+                    for path in sorted(authority.rglob("*")) if path.is_file()
+                ],
+            )
+
+        launcher = Path(value["launcher"])
+        receipt_digest = "a" * 64
+        try:
+            write_mode("isolated")
+            before = snapshot()
+            result = subprocess.run([
+                str(launcher), project, "qualification-resume",
+                "--ticket", "T-101", "--blocked-receipt", receipt_digest,
+                "--json",
+            ], capture_output=True, check=False, text=True, timeout=120)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(marker.read_text()), [
+                "--launcher", str(launcher), "--project", project,
+                "--resume-ticket", "T-101", "--resume-receipt",
+                receipt_digest, "--json",
+            ])
+            self.assertEqual(snapshot(), before)
+
+            result = subprocess.run([
+                str(launcher), project, "qualification-history-repair",
+                "--ticket", "T-101", "--blocked-receipt", receipt_digest,
+                "--json",
+            ], capture_output=True, check=False, text=True, timeout=120)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            history_args = json.loads(history_marker.read_text())
+            self.assertEqual(history_args, [
+                "--launcher", str(launcher), "--project", project,
+                "--product-root", str(self.product.resolve()),
+                "--release-path", str(launcher.parent.parent),
+                "--state-dir", str(authority / "controller"),
+                "--action", "qualification-history-repair",
+                "--ticket", "T-101", "--receipt", receipt_digest,
+            ])
+            self.assertEqual(snapshot(), before)
+
+            for arguments in (
+                ("--ticket", "bad", "--blocked-receipt", receipt_digest, "--json"),
+                ("--blocked-receipt", receipt_digest, "--ticket", "T-101", "--json"),
+                ("--ticket", "T-101", "--blocked-receipt", "bad", "--json"),
+                ("--ticket", "T-101", "--blocked-receipt", receipt_digest),
+            ):
+                marker.unlink(missing_ok=True)
+                result = subprocess.run(
+                    [str(launcher), project, "qualification-resume", *arguments],
+                    capture_output=True, check=False, text=True, timeout=120,
+                )
+                self.assertEqual(result.returncode, 2)
+                self.assertFalse(marker.exists())
+                self.assertEqual(snapshot(), before)
+
+            for arguments in (
+                ("--ticket", "bad", "--blocked-receipt", receipt_digest, "--json"),
+                ("--blocked-receipt", receipt_digest, "--ticket", "T-101", "--json"),
+                ("--ticket", "T-101", "--blocked-receipt", "bad", "--json"),
+                ("--ticket", "T-101", "--blocked-receipt", receipt_digest),
+            ):
+                history_marker.unlink(missing_ok=True)
+                result = subprocess.run([
+                    str(launcher), project, "qualification-history-repair",
+                    *arguments,
+                ], capture_output=True, check=False, text=True, timeout=120)
+                self.assertEqual(result.returncode, 2)
+                self.assertFalse(history_marker.exists())
+                self.assertEqual(snapshot(), before)
+
+            write_mode("takeover")
+            marker.unlink(missing_ok=True)
+            before = snapshot()
+            result = subprocess.run([
+                str(launcher), project, "qualification-resume",
+                "--ticket", "T-101", "--blocked-receipt", receipt_digest,
+                "--json",
+            ], capture_output=True, check=False, text=True, timeout=120)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(
+                "qualification resume requires a sealed isolated qualification launcher",
+                result.stderr,
+            )
+            self.assertFalse(marker.exists())
+            self.assertEqual(snapshot(), before)
+            history_marker.unlink(missing_ok=True)
+            result = subprocess.run([
+                str(launcher), project, "qualification-history-repair",
+                "--ticket", "T-101", "--blocked-receipt", receipt_digest,
+                "--json",
+            ], capture_output=True, check=False, text=True, timeout=120)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(
+                "qualification history repair requires a sealed isolated qualification launcher",
+                result.stderr,
+            )
+            self.assertFalse(history_marker.exists())
+            self.assertEqual(snapshot(), before)
+        finally:
+            shutil.rmtree(authority, ignore_errors=True)
+            if created_takeover_kits_root:
+                takeover_kits_root.rmdir()
 
     def test_prepare_rejects_unfit_run_budget_before_state(self) -> None:
         envelope = self.product / "factory/ENVELOPE.env"
@@ -2933,6 +3146,45 @@ class QualificationEnvironmentTest(unittest.TestCase):
                 product_sha, drifted,
             )
 
+        intermediate = "d" * 40
+        unconsumed = "e" * 40
+        for ticket in tickets:
+            self.write_passport(
+                passports / f"{ticket}.json", secret, ticket, intermediate, source,
+            )
+        authorization = (
+            self.product / "factory/migrations/inflight-release"
+            / f"{intermediate}.json"
+        )
+        authorization.parent.mkdir(parents=True, exist_ok=True)
+        authorization.write_text(json.dumps({
+            "repository": "example/product",
+            "schema": "nysa.software-factory.inflight-release-authorization/v1",
+            "source_kit_sha": source,
+            "target_kit_sha": intermediate,
+            "tickets": [{
+                "branch": f"ticket/{ticket}",
+                "head": f"{index}" * 40,
+                "state": "Building",
+                "ticket": ticket,
+            } for index, ticket in enumerate(tickets, 1)],
+        }, sort_keys=True, separators=(",", ":")) + "\n")
+        run(self.product, "git", "add", str(authorization))
+        run(self.product, "git", "commit", "-qm", "authorize prior candidate")
+        authorized_product = run(self.product, "git", "rev-parse", "HEAD")
+        ENVIRONMENT.validate_successor_upgrade_cohort(
+            self.factory, self.product, controller, "relay", unconsumed,
+            authorized_product, manifest,
+        )
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError,
+            "T-101: successor qualification requires every selected ticket",
+        ):
+            ENVIRONMENT.validate_successor_upgrade_cohort(
+                self.factory, self.product, controller, "relay", unconsumed,
+                product_sha, manifest,
+            )
+
     def test_successor_upgrade_accepts_only_exact_preserved_checkpoint(self) -> None:
         controller = (self.workspace / "checkpoint-controller").resolve()
         passports = controller / "passports"
@@ -3063,6 +3315,138 @@ class QualificationEnvironmentTest(unittest.TestCase):
         run(self.product, "git", "add", str(authorization))
         run(self.product, "git", "commit", "-qm", "change checkpoint")
         with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError,
+            "successor qualification requires every selected ticket",
+        ):
+            ENVIRONMENT.validate_successor_upgrade_cohort(
+                self.factory, self.product, controller, "relay", source,
+                base, manifest,
+            )
+
+        run(self.product, "git", "switch", "-q", f"ticket/{ticket}")
+        route.write_text('{"partial":"migration"}\n', encoding="utf-8")
+        run(self.product, "git", "add", str(route))
+        run(self.product, "git", "commit", "-qm", "partial route migration")
+        partial_checkpoint = run(self.product, "git", "rev-parse", "HEAD")
+        run(self.product, "git", "switch", "-q", "main")
+        partial_protected = authorize(partial_checkpoint)
+        write_source_passport(partial_protected)
+
+        calls: list[tuple[str, str]] = []
+
+        def verify_partial(
+            _product: Path, protected_sha: str, target_sha: str,
+            _ticket: str, _branch: str, _head: str,
+        ) -> str:
+            calls.append((protected_sha, target_sha))
+            return "exact" if target_sha == candidate else "replay"
+
+        with mock.patch.object(
+            ENVIRONMENT, "verify_inflight_migration", side_effect=verify_partial,
+        ):
+            ENVIRONMENT.validate_successor_upgrade_cohort(
+                self.factory, self.product, controller, "relay", source,
+                base, manifest,
+            )
+        self.assertEqual(calls, [
+            (base, source), (partial_protected, candidate),
+        ])
+        calls.clear()
+        with mock.patch.object(
+            ENVIRONMENT, "verify_inflight_migration", side_effect=verify_partial,
+        ):
+            ENVIRONMENT.validate_successor_upgrade_cohort(
+                self.factory, self.product, controller, "relay", "6" * 40,
+                partial_protected, manifest,
+            )
+        self.assertEqual(calls, [
+            (partial_protected, source), (partial_protected, candidate),
+        ])
+
+        value = json.loads(authorization.read_text(encoding="utf-8"))
+        value["schema"] = (
+            "nysa.software-factory.inflight-release-authorization/v2"
+        )
+        value["tickets"][0]["source_kit_sha"] = source
+        authorization.write_text(
+            json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+        run(self.product, "git", "add", str(authorization))
+        run(self.product, "git", "commit", "-qm", "authorize active checkpoint")
+        active_good = run(self.product, "git", "rev-parse", "HEAD")
+        value["tickets"][0]["state"] = "Building"
+        authorization.write_text(
+            json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+        run(self.product, "git", "add", str(authorization))
+        run(self.product, "git", "commit", "-qm", "drift active checkpoint")
+        active_bad = run(self.product, "git", "rev-parse", "HEAD")
+        value["tickets"][0]["state"] = "Ready"
+        authorization.write_text(
+            json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+        run(self.product, "git", "add", str(authorization))
+        run(self.product, "git", "commit", "-qm", "restore active checkpoint")
+
+        next_candidate = "d" * 40
+        next_authorization = authorization.with_name(f"{next_candidate}.json")
+        next_value = dict(value, source_kit_sha=candidate,
+                          target_kit_sha=next_candidate)
+        next_authorization.write_text(
+            json.dumps(next_value, sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+        run(self.product, "git", "add", str(next_authorization))
+        run(self.product, "git", "commit", "-qm", "carry checkpoint forward")
+        next_manifest = dict(
+            manifest, factory_sha=next_candidate,
+            source_factory_sha=candidate,
+        )
+        source_manifest = dict(
+            manifest, factory_sha=candidate, source_factory_sha=source,
+        )
+        write_source_passport(active_good)
+        with mock.patch.object(
+            ENVIRONMENT, "validate_qualification_manifest",
+            return_value=source_manifest,
+        ), mock.patch.object(
+            ENVIRONMENT, "verify_inflight_migration",
+            side_effect=lambda _product, _protected, target, *_args: (
+                "exact" if target == next_candidate else "replay"
+            ),
+        ):
+            ENVIRONMENT.validate_successor_upgrade_cohort(
+                self.factory, self.product, controller, "relay", candidate,
+                active_good, next_manifest,
+            )
+            with self.assertRaisesRegex(
+                ENVIRONMENT.EnvironmentError,
+                "successor qualification requires every selected ticket",
+            ):
+                ENVIRONMENT.validate_successor_upgrade_cohort(
+                    self.factory, self.product, controller, "relay", candidate,
+                    active_bad, next_manifest,
+                )
+
+        value = json.loads(authorization.read_text(encoding="utf-8"))
+        value["schema"] = (
+            "nysa.software-factory.inflight-release-authorization/v2"
+        )
+        value["tickets"][0]["source_kit_sha"] = "0" * 40
+        authorization.write_text(
+            json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+        run(self.product, "git", "add", str(authorization))
+        run(self.product, "git", "commit", "-qm", "foreign checkpoint source")
+        foreign_protected = run(self.product, "git", "rev-parse", "HEAD")
+        write_source_passport(foreign_protected)
+        with mock.patch.object(
+            ENVIRONMENT, "verify_inflight_migration", side_effect=verify_partial,
+        ), self.assertRaisesRegex(
             ENVIRONMENT.EnvironmentError,
             "successor qualification requires every selected ticket",
         ):

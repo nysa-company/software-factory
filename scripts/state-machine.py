@@ -23,9 +23,12 @@ from typing import Any
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
 from legacy_closeout import ValidationError, protected_dependency  # noqa: E402
+import operator_receipt  # noqa: E402
+from effective_ticket import operator_action, operator_fields  # noqa: E402
 from role_output import RoleOutputError, sha256 as role_output_sha256  # noqa: E402
 from ticket_state_transition import (  # noqa: E402
     TransitionError as TicketTransitionError,
+    field as ticket_text_field,
     qualification_epoch_text,
 )
 
@@ -982,6 +985,97 @@ def safe_operator_context(
     return readiness.returncode == 0 and readiness.stdout.strip() == "READINESS PASS"
 
 
+def qualification_resume_authority(
+    args: argparse.Namespace, resume_state: str,
+) -> dict[str, Any]:
+    if (
+        not getattr(args, "qualification_recovery", False)
+        or os.environ.get("FACTORY_KIT_TRUST_SCOPE")
+        != "qualification-candidate"
+        or os.environ.get("FACTORY_QUALIFICATION_MODE") != "isolated"
+    ):
+        raise StateError("qualification resume authority is unavailable")
+    map_path = Path(os.environ.get("FACTORY_OPERATOR_MAP", ""))
+    expected_map = args.state_dir.parent / "operator/operator-map.json"
+    descriptor = -1
+    try:
+        if (
+            not map_path.is_absolute()
+            or map_path.resolve(strict=True) != map_path
+            or map_path != expected_map
+        ):
+            raise StateError("qualification operator map is unavailable")
+        descriptor = os.open(
+            map_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        )
+        info = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or info.st_nlink != 1
+            or info.st_mode & 0o022
+            or info.st_size > 1_000_000
+        ):
+            raise StateError("qualification operator map is unsafe")
+        raw = os.read(descriptor, 1_000_001)
+        if len(raw) != info.st_size:
+            raise StateError("qualification operator map changed while reading")
+        mapping = json.loads(raw.decode("utf-8", "strict"))
+        operator = operator_fields(mapping, args.ticket)
+    except (OSError, UnicodeError, ValueError) as error:
+        raise StateError("qualification operator map is invalid") from error
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    pending = bool(operator)
+    if pending:
+        try:
+            action, binding = operator_action(operator)
+        except ValueError as error:
+            raise StateError("qualification resume projection is invalid") from error
+        if action != "resume" or binding != {"resume_stage": resume_state}:
+            raise StateError("qualification resume projection is invalid")
+    payload = {
+        "blocked_receipt_sha256": args.receipt,
+        "resume_stage": resume_state,
+    }
+    directory = args.state_dir / "operator-receipts" / args.ticket
+    try:
+        info = directory.lstat()
+        if (
+            directory.is_symlink()
+            or directory.resolve(strict=True) != directory
+            or not stat.S_ISDIR(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or stat.S_IMODE(info.st_mode) != 0o700
+        ):
+            raise StateError("qualification resume receipt state is unsafe")
+        matches = [
+            value for path in sorted(directory.glob("resume-*.json"))
+            if (value := operator_receipt.safe_receipt(path)).get("payload")
+            == payload
+        ]
+    except (OSError, operator_receipt.OperatorReceiptError) as error:
+        raise StateError("qualification resume receipt is invalid") from error
+    if len(matches) != 1:
+        raise StateError("qualification resume receipt is unavailable")
+    receipt = matches[0]
+    if (
+        receipt.get("ticket") != args.ticket
+        or receipt.get("action") != "resume"
+        or pending
+        and operator.get("receipt_sha256") != receipt.get("receipt_sha256")
+        or not pending
+        and receipt.get("consumed") is not True
+    ):
+        raise StateError("qualification resume receipt is invalid")
+    return {
+        "consumed": receipt["consumed"],
+        "pending": pending,
+        "receipt_sha256": receipt["receipt_sha256"],
+    }
+
+
 def operator_resume_role(
     args: argparse.Namespace, passport: dict[str, Any], blocked_role: str
 ) -> str:
@@ -1199,6 +1293,10 @@ def operator_resume_role(
             before.rstrip("\n")
             + f"\n\n{directive}\n{receipt_directive}\n"
         )
+        accepted = {
+            expected,
+            before.rstrip("\n") + f"\n{directive}\n{receipt_directive}\n",
+        }
     elif len(prior_directives) == 1 and not prior_receipts:
         expected = re.sub(
             r"^OPERATOR RESUME: (planner|spec-linter|test-author|builder)$",
@@ -1227,9 +1325,11 @@ def operator_resume_role(
             "resume_directives_ambiguous",
             "contract repair operator directive is invalid: prior directives are ambiguous",
         )
+    if prior_directives or prior_receipts:
+        accepted = {expected}
     changed = git(args.workdir, "diff", "--name-only", f"{parent}..{commit}").splitlines()
     current_head = git(args.workdir, "rev-parse", "HEAD")
-    if after != expected or changed != [relative]:
+    if after not in accepted or changed != [relative]:
         raise ContractResumeError(
             "resume_commit_content_mismatch",
             "contract repair operator directive is invalid: commit must contain only the exact directives",
@@ -1238,7 +1338,44 @@ def operator_resume_role(
             expected_bytes=len(expected.encode()),
             first_differing_line=first_differing_line(expected, after),
         )
-    if current_head not in {commit, prior_head}:
+    materialized = False
+    if (
+        current_head not in {commit, prior_head}
+        and getattr(args, "qualification_recovery", False)
+    ):
+        parents = git(
+            args.workdir, "rev-list", "--parents", "-n", "1", current_head
+        ).split()
+        identity = git(
+            args.workdir, "show", "-s", "--format=%an%x00%ae%x00%s",
+            current_head,
+        ).split("\0")
+        materialized_text = git(
+            args.workdir, "show", f"{current_head}:{relative}"
+        ) + "\n"
+        resume_state = ticket_text_field(after, "Resume-State")
+        expected_materialized = re.sub(
+            r"^State:\s*.*$", f"State: {resume_state}", after,
+            count=1, flags=re.I | re.M,
+        )
+        materialized = (
+            parents == [current_head, commit]
+            and identity == [
+                "Software Factory", "factory@local",
+                f"{args.ticket}: materialize ticket state",
+            ]
+            and git(
+                args.workdir, "diff", "--name-only", f"{commit}..{current_head}"
+            ).splitlines() == [relative]
+            and git(
+                args.workdir, "ls-tree", current_head, "--", relative
+            ).split()[:2] == ["100644", "blob"]
+            and resume_state in {"Planning", "Building", "Review"}
+            and materialized_text == expected_materialized
+        )
+        if materialized:
+            qualification_resume_authority(args, resume_state)
+    if current_head not in {commit, prior_head} and not materialized:
         raise ContractResumeError(
             "resume_ancestry_invalid",
             "contract repair operator directive is invalid: ancestry",
@@ -3153,10 +3290,17 @@ def govern_loop(
         f"OPERATOR AUTHORIZATION: {authorization_role} "
         f"round {authorization_round}"
     )
+    planner_cap_stage = (
+        "ESCALATE planner-spec-linter loop cap reached; "
+        f"attempts={attempt}; limit={LOOP_LIMIT}"
+    )
     authorization_required = (
         kind == "planner-spec-linter"
         and attempt >= LOOP_LIMIT - 1
-        and stage in {"RUN planner", "RUN spec-linter"}
+        and (
+            stage in {"RUN planner", "RUN spec-linter"}
+            or stage == planner_cap_stage
+        )
         or kind == "contract-repair"
         and cap_stage
         and attempt >= LOOP_LIMIT
@@ -3183,6 +3327,12 @@ def govern_loop(
                 "AWAIT-OPERATOR semantic-round authorization invalid; "
                 f"keep exactly one line: {authorization_line}"
             )
+    elif (
+        authorized
+        and kind == "planner-spec-linter"
+        and stage == planner_cap_stage
+    ):
+        stage = "RUN planner"
     return stage, loop
 
 
@@ -3471,7 +3621,7 @@ def reviewer_repair_catchup(args: argparse.Namespace, stage: str) -> bool:
     )
     alternating = [
         "planner" if index % 2 == 0 else "spec-linter"
-        for index in range(LOOP_LIMIT * 2)
+        for index in range(len(after))
     ]
     expected_stage = (
         "RUN spec-linter"
@@ -3502,11 +3652,15 @@ def verified_preflight_stage(
         and isinstance(loop, dict)
         and set(loop) == {"attempt", "capped", "kind", "limit"}
         and type(loop["attempt"]) is int
-        and 0 < loop["attempt"] < LOOP_LIMIT
+        and loop["attempt"] > 0
         and loop["capped"] is False
         and loop["kind"] == "planner-spec-linter"
         and loop["limit"] == LOOP_LIMIT
         and reviewer_repair_catchup(args, stage)
+        and (
+            loop["attempt"] < LOOP_LIMIT
+            or govern_loop(args, stage, False) == (stage, loop)
+        )
     )
     return "CATCHUP planner" if planner_catchup else stage
 
@@ -3775,10 +3929,23 @@ def resume_transition(args: argparse.Namespace) -> dict[str, Any]:
         passport,
     )
     state = current_state(args.workdir, args.ticket)
+    if state == target and getattr(args, "qualification_recovery", False):
+        authority = qualification_resume_authority(args, target)
+        if authority["pending"]:
+            run_helper(
+                args, "ticket-state.sh", "--ticket", args.ticket,
+                "--workdir", str(args.workdir), "--action", "materialize",
+                extra_environment={
+                    "FACTORY_BLOCKED_RECEIPT": args.receipt,
+                    "FACTORY_QUALIFICATION_REPLAY": "1",
+                },
+            )
+            state = current_state(args.workdir, args.ticket)
     if state == "Blocked-Escalated":
         run_helper(
             args, "ticket-state.sh", "--ticket", args.ticket,
             "--workdir", str(args.workdir), "--action", "materialize",
+            extra_environment={"FACTORY_BLOCKED_RECEIPT": args.receipt},
         )
         state = current_state(args.workdir, args.ticket)
     if state == "Blocked-Escalated":
@@ -3839,6 +4006,16 @@ def repair_check_transition(args: argparse.Namespace) -> dict[str, Any]:
     current_head = git(args.workdir, "rev-parse", "HEAD")
     try:
         repair_role = operator_resume_role(args, passport, role)
+        receipt_path = args.state_dir / f"{args.ticket}.json"
+        receipt = (
+            safe_receipt(receipt_path)
+            if receipt_path.exists() or receipt_path.is_symlink()
+            else {}
+        )
+        resume_state = ticket_field(args.workdir, args.ticket, "Resume-State")
+        resume_state = contract_block_resume_state(
+            args, role, resume_state, receipt, passport,
+        )
         status = "ready"
     except ContractResumeError as resume_error:
         context_head = prior_head
@@ -3875,16 +4052,28 @@ def repair_check_transition(args: argparse.Namespace) -> dict[str, Any]:
         ):
             raise resume_error
         repair_role = ""
+        resume_state = ""
         status = "waiting"
-    return {
+    current = current_state(args.workdir, args.ticket)
+    result = {
         "action": "repair-check",
+        "current_state": current,
         "head": current_head,
         "repair_role": repair_role,
+        "resume_state": resume_state,
         "role": role,
         "schema": SCHEMA,
         "status": status,
         "ticket": args.ticket,
     }
+    if status == "ready" and current == resume_state:
+        authority = qualification_resume_authority(args, resume_state)
+        result.update({
+            "operator_resume_projection_pending": authority["pending"],
+            "operator_resume_receipt_consumed": authority["consumed"],
+            "operator_resume_receipt_sha256": authority["receipt_sha256"],
+        })
+    return result
 
 
 def parser() -> argparse.ArgumentParser:
@@ -3907,6 +4096,7 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--receipt", default="")
     value.add_argument("--role", default="")
     value.add_argument("--require-used", action="store_true")
+    value.add_argument("--qualification-recovery", action="store_true")
     return value
 
 
@@ -3931,6 +4121,10 @@ def main() -> None:
                 and not args.receipt
             )
             or (args.action == "block" and not args.lease)
+            or (
+                args.qualification_recovery
+                and args.action not in {"repair-check", "resume"}
+            )
         ):
             raise StateError("invalid state-machine arguments")
         args.factory_root = args.factory_root.resolve(strict=True)

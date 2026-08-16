@@ -101,11 +101,13 @@
           "retry-preview --ticket <T-NNN> --operator-id <ID> --json",
           "authorize-round plan --ticket <T-NNN> --role <planner|spec-linter|test-author|builder|narrator> --round <N> --operator-id <ID> --json",
           "authorize-round apply --ticket <T-NNN> --role <planner|spec-linter|test-author|builder|narrator> --round <N> --operator-id <ID> --approve-hash <HASH> --json",
+          "contract-repair plan --ticket <T-NNN> --role <planner|spec-linter|test-author|builder> --operator-id <ID> --json",
+          "contract-repair apply --ticket <T-NNN> --role <planner|spec-linter|test-author|builder> --operator-id <ID> --approve-hash <HASH> --json",
           "reviewer-void plan --ticket <T-NNN> --run <N> --operator-id <ID> --json",
           "reviewer-void apply --ticket <T-NNN> --run <N> --operator-id <ID> --approve-hash <HASH> --json"
         ],
         "output_schema": "nysa.software-factory.controller/v1",
-        "authority": "records one exact passport-bound pause, explicitly reconstructs that ticket without scanning historical passports, plans and applies one exact semantic-round authorization child, or plans and applies one operator-selected authenticated duplicate Reviewer void child"
+        "authority": "records one exact passport-bound pause, explicitly reconstructs that ticket without scanning historical passports, plans and applies one exact semantic-round authorization child, plans and applies one exact receipt-bound contract-repair directive child, or plans and applies one operator-selected authenticated duplicate Reviewer void child"
       },
       "qualification": {
         "contract_version": "1.8.0",
@@ -115,6 +117,20 @@
         ],
         "output_schema": "nysa.software-factory.qualification-report/v1",
         "authority": "immutable exact reduction of an acyclic three-ticket ordered cohort or four-ticket concurrent cohort across authenticated passports, source-to-candidate migration, cumulative and candidate-only charges, controller history, protected checks, and GitHub merge truth"
+      },
+      "qualification-resume": {
+        "contract_version": "2.0.0",
+        "helper": "scripts/qualification-run.py",
+        "grammar": "--ticket <T-NNN> --blocked-receipt <SHA256> --json",
+        "output_schema": "nysa.software-factory.qualification-run/v1",
+        "authority": "isolated qualification only: after the ordinary contract-repair directive is exact, projects one selected ticket's blocked-receipt-bound one-use resume authority without changing product Git history"
+      },
+      "qualification-history-repair": {
+        "contract_version": "2.0.0",
+        "helper": "scripts/factory-controller.py",
+        "grammar": "--ticket <T-NNN> --blocked-receipt <SHA256> --json",
+        "output_schema": "nysa.software-factory.controller/v1",
+        "authority": "isolated successor qualification only: reconstructs one selected contract-blocked Test-author history as an exact protected-test snapshot followed by an exact same-ticket Factory snapshot, preserving the final tree under authenticated record, passport, and exact remote-head authority"
       },
       "dispatch-plan": {
         "minimum_contract_version": "1.6.0",

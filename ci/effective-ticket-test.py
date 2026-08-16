@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -102,6 +103,61 @@ class EffectiveTicketTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "unavailable"):
                 authoritative_operator_fields(
                     {"tickets": {"T-700": {"operator": base}}},
+                    "T-700", "2.0.0", state,
+                )
+
+            blocked = "b" * 64
+            resume = operator_receipt.issue(state, "T-700", "resume", {
+                "blocked_receipt_sha256": blocked,
+                "resume_stage": "Building",
+            })
+            projected = {
+                "state": "Building", "state_base": "blocked-escalated",
+                "observed_at": resume["issued_at"],
+                "receipt_sha256": resume["receipt_sha256"],
+            }
+            self.assertEqual(
+                authoritative_operator_fields(
+                    {"tickets": {"T-700": {"operator": projected}}},
+                    "T-700", "2.0.0", state,
+                ),
+                projected,
+            )
+            with (
+                mock.patch.dict(__import__("os").environ, {
+                    "FACTORY_BLOCKED_RECEIPT": "c" * 64,
+                }),
+                self.assertRaisesRegex(ValueError, "unavailable"),
+            ):
+                authoritative_operator_fields(
+                    {"tickets": {"T-700": {"operator": projected}}},
+                    "T-700", "2.0.0", state,
+                )
+            operator_receipt.verify_consume_exact(
+                state, "T-700", "resume", resume["receipt_sha256"],
+                resume["payload"],
+            )
+            environment = {
+                "FACTORY_KIT_TRUST_SCOPE": "qualification-candidate",
+                "FACTORY_BLOCKED_RECEIPT": blocked,
+                "FACTORY_QUALIFICATION_MODE": "isolated",
+                "FACTORY_QUALIFICATION_REPLAY": "1",
+            }
+            with mock.patch.dict(__import__("os").environ, environment):
+                self.assertEqual(
+                    authoritative_operator_fields(
+                        {"tickets": {"T-700": {"operator": projected}}},
+                        "T-700", "2.0.0", state,
+                    ),
+                    projected,
+                )
+            environment["FACTORY_BLOCKED_RECEIPT"] = "c" * 64
+            with (
+                mock.patch.dict(__import__("os").environ, environment),
+                self.assertRaisesRegex(ValueError, "unavailable"),
+            ):
+                authoritative_operator_fields(
+                    {"tickets": {"T-700": {"operator": projected}}},
                     "T-700", "2.0.0", state,
                 )
 

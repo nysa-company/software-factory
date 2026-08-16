@@ -29,6 +29,7 @@ from inflight_release import (  # noqa: E402
     AuthorizationError,
     authorize_ticket,
     parse_authorization,
+    ticket_source_kit,
     unique_object,
 )
 from legacy_closeout import (  # noqa: E402
@@ -186,6 +187,7 @@ class Validator:
     ) -> None:
         self.load_inflight_authorization()
         assert self.authorization is not None
+        expected = self.authorized.get(ticket)
         try:
             if not remote_tip or source_ref == "HEAD":
                 raise AuthorizationError("remote ticket ref is unavailable")
@@ -199,7 +201,7 @@ class Validator:
                 source_kit_sha=lease,
             )
         except AuthorizationError as error:
-            expected = self.authorized.get(ticket) or {
+            expected = expected or {
                 "branch": branch, "head": remote_tip, "state": state,
             }
             raise ActivationError(
@@ -210,9 +212,11 @@ class Validator:
                     f"expected branch={expected.get('branch', '')} "
                     f"head={expected.get('head', '')} "
                     f"state={expected.get('state', '')} "
-                    f"source_kit_sha={self.authorization['source_kit_sha']}"
+                    f"source_kit_sha={ticket_source_kit(self.authorization, expected)}"
                 ),
             ) from error
+        assert expected is not None
+        source_kit_sha = ticket_source_kit(self.authorization, expected)
         plan_path = f"factory/route-plans/{ticket}.json"
         result = self.git("show", f"{remote_tip}:{plan_path}")
         if result.returncode or len(result.stdout.encode("utf-8")) > 1024 * 1024:
@@ -226,7 +230,7 @@ class Validator:
             manager, catalog, routes, profiles = self.load_migration_policy()
             if (
                 plan.get("ticket") != ticket
-                or plan.get("kit_sha") != self.authorization["source_kit_sha"]
+                or plan.get("kit_sha") != source_kit_sha
             ):
                 raise ValueError("route plan identity mismatch")
             if plan.get("schema") == "ticket-model-route-plan/v1":

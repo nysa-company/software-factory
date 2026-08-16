@@ -14,6 +14,7 @@ import subprocess
 
 
 SCHEMA = "nysa.software-factory.inflight-release-authorization/v1"
+SCHEMA_V2 = "nysa.software-factory.inflight-release-authorization/v2"
 SHA = re.compile(r"^[0-9a-f]{40}$")
 TICKET = re.compile(r"^T-[0-9]+$")
 REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -83,7 +84,7 @@ def parse_authorization(
         or set(value) != {
             "schema", "repository", "source_kit_sha", "target_kit_sha", "tickets",
         }
-        or value.get("schema") != SCHEMA
+        or value.get("schema") not in {SCHEMA, SCHEMA_V2}
     ):
         raise AuthorizationError("in-flight release authorization is malformed")
     if value.get("repository") != repository:
@@ -103,8 +104,11 @@ def parse_authorization(
         raise AuthorizationError("in-flight release authorization kit binding is invalid")
     entries = {}
     ordered = []
+    entry_keys = {"ticket", "branch", "head", "state"}
+    if value["schema"] == SCHEMA_V2:
+        entry_keys.add("source_kit_sha")
     for item in value["tickets"]:
-        if not isinstance(item, dict) or set(item) != {"ticket", "branch", "head", "state"}:
+        if not isinstance(item, dict) or set(item) != entry_keys:
             raise AuthorizationError(
                 "in-flight release authorization ticket entry is malformed"
             )
@@ -118,6 +122,12 @@ def parse_authorization(
             or item.get("branch") != prefix + ticket
             or not SHA.fullmatch(item.get("head", ""))
             or item.get("state") not in STATES
+            or value["schema"] == SCHEMA_V2
+            and (
+                not isinstance(item.get("source_kit_sha"), str)
+                or not SHA.fullmatch(item["source_kit_sha"])
+                or item["source_kit_sha"] == target_kit_sha
+            )
             or ticket in entries
         ):
             raise AuthorizationError(
@@ -128,6 +138,10 @@ def parse_authorization(
     if ordered != sorted(ordered):
         raise AuthorizationError("in-flight release authorization tickets are not canonical")
     return value, entries
+
+
+def ticket_source_kit(authorization: dict, item: dict) -> str:
+    return item.get("source_kit_sha", authorization["source_kit_sha"])
 
 
 def authorize_ticket(
@@ -141,12 +155,12 @@ def authorize_ticket(
     source_kit_sha: str,
 ) -> dict:
     item = entries.get(ticket)
-    if (
-        source_kit_sha != authorization["source_kit_sha"]
-        or item != {
-            "ticket": ticket, "branch": branch, "head": head, "state": state,
-        }
-    ):
+    expected = {
+        "ticket": ticket, "branch": branch, "head": head, "state": state,
+    }
+    if authorization.get("schema") == SCHEMA_V2:
+        expected["source_kit_sha"] = source_kit_sha
+    if item != expected or ticket_source_kit(authorization, item) != source_kit_sha:
         raise AuthorizationError(
             "%s does not match its exact in-flight release authorization" % ticket
         )
@@ -300,7 +314,7 @@ def verify_migration(
     item = entries.get(ticket)
     if item is None or item["branch"] != branch:
         raise AuthorizationError("ticket is absent from in-flight release authorization")
-    source = authorization["source_kit_sha"]
+    source = ticket_source_kit(authorization, item)
     authorized_head = item["head"]
     source_ticket = _git(
         repo, "show", f"{authorized_head}:factory/tickets/{ticket}.md"

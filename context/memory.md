@@ -6,14 +6,15 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 
 - Product-agnostic factory kit; product repositories carry only their factory state and CI integration.
 - Durable decisions use repository-local numbering beginning at Decision 1.
-- Stable operating truth lives in `docs/`; prompts, templates, and evidence stay colocated with consumers. The operator preflight hydrates only evidence-bound immutable objects, batches read-only object checks, aggregates activation blockers, and makes network review explicit before certification. Qualification validates selected remote branches and exact prior-cohort control retries before publication, shares protected dependency truth, counts only role-control evidence appended after its sealed product SHA, and preserves one exact-head retry for a parked preview timeout.
+- Stable operating truth lives in `docs/`; prompts, templates, and evidence stay colocated with consumers. The operator preflight hydrates only evidence-bound immutable objects, batches read-only object checks, aggregates activation blockers, and makes network review explicit before certification. Qualification validates selected remote branches and exact prior-cohort control retries before publication, shares protected dependency truth, counts only role-control evidence appended after its sealed product SHA, preserves one exact-head retry for a parked preview timeout, reacquires parked semantic or contract-repair authority only at apply, admits exact source-release receipt warnings to controller-owned migration, maintains idle successor leases during long roles, and does not rerun new-admission checks once its exact cohort is fully accounted for.
 - Historical committed-role checks carry unchanged baseline symlinks; changed symlinks and every handoff snapshot symlink remain fail-closed.
-- Successor qualification can preserve an exact source-passport checkpoint or descendant only through the existing protected in-flight release authorization; migration fast-forwards it without deleting or rewriting ticket work.
+- Successor qualification can preserve an exact source-passport checkpoint or descendant only through the protected in-flight release authorization; v2 binds each ticket's authenticated current source after a partial batch, migration never deletes or rewrites ticket work, and prior failed roles reopen only across an exact signed route-only migration suffix.
+- An exactly migrated successor claim may chain a current transition receipt after its authenticated predecessor; predecessor evidence remains durable and unedited.
 - Nysa Agents baseline v3 as a toolkit; `bash ci/test-all.sh` is the unconditional full command.
 - Contract 2 live products resolve sealed exact-SHA releases from owner-only `active.json` records under `~/.factory/kits` via `~/.factory/bin/factory-launch`; the native controller is the only scheduler.
 - The local release canary is one code-driven, product-agnostic command that creates contained local origins, runs setup/resume, and times one authenticated Planning transition plus sealed mock planner; its repository-test evidence is never promotable.
 - Model routing is portfolio policy; routes pin at the ticket boundary and change only via the Contract 1.4 journal flow. One profile resolution shares model-independent native-adapter readiness across its routes and runs independent probes in bounded parallel; Cursor readiness stays model-specific. Sealed Cursor inventory verifies the exact configured CLI identity in an empty disposable owner-only home before copying credentials, then accepts only its bounded certified structure.
-- Linear is removed (Decision 398); the six operator authorities are one-use receipts via `factory-kit.sh operator ACTION`. The only emergency recovery is the receipt-bound `OPERATOR RESUME` ticket commit. No generic lifecycle bypass is approved.
+- Linear is removed (Decision 398); the six operator authorities are one-use receipts via `factory-kit.sh operator ACTION`. Qualification may issue one manifest-selected successor resume only after the exact sealed compact-repair check, including the explicit isolated close after an authenticated contract-repair directive; that exact new authority rearms one abandoned targeted recovery attempt, while unchanged evidence cannot loop. Production has no lifecycle bypass.
 - **Contract rules below in Operating contract are authoritative**; this summary is only what the session hook can inject.
 
 ## Operating contract
@@ -598,6 +599,11 @@ everything the Factory actually enforces lives here.
   evidence for that receipt. Its current exact-ticket lease must also be live.
   A successor controller may reconstruct fields cleared by an earlier upgrade
   only from that same latest terminal boundary.
+- The sealed successor qualification driver may issue one existing one-use
+  resume receipt only for the exact selected compact-repair warning already
+  linked to that prior transition receipt and a ready repair check. It writes
+  no ticket audit copy; production remains operator-issued. A consumed matching
+  receipt permits only exact post-materialization repair-record replay.
 - A signed contract-repair owner survives an intervening dependency wait and
   later Factory migration only when its bound passport uniquely begins a
   contiguous authenticated v2 migration suffix ending at the current passport.
@@ -6047,7 +6053,8 @@ After the existing qualification preparer seals a lane, the sealed
 `qualification-run` launcher command composes Doctor, the mandatory
 process-level controller restart, ordinary controller/state-machine
 reconciliation, and final evidence reduction. It stops on typed waits or
-blocks and never writes Factory authority itself. Operators and agents rerun
+blocks and writes no authority except the exact qualification-only successor
+resume in Decision 450. Operators and agents rerun
 the same command only after authenticated input changes; hand-edited tickets,
 claims, leases, receipts, passports, journals, or fabricated evidence are not
 part of qualification.
@@ -6194,3 +6201,245 @@ route at the descendant, and exact cohort membership. Descendant work remains
 incomplete source work. Route migration may CAS-fast-forward an ancestor remote
 through that checkpoint, but never deletes, rewinds, or rewrites its ticket
 history.
+
+## 2026-08-15 — Decision 439: Accounted qualification cohorts reconcile before admission
+
+Category: Reliability
+
+When every selected qualification target is represented by its own durable
+claim or protected Done evidence and no foreign claim exists, the controller
+skips both admission shadow and real claim. Existing claims still cross every
+ordinary passport, lease, route, recovery, provider, and lifecycle check; a
+partial or foreign cohort retains the fail-closed admission boundary.
+
+## 2026-08-15 — Decision 440: Successor receipt warnings enter exact recovery
+
+Category: Reliability
+
+The deterministic qualification driver admits a Doctor warning only when every
+transition incident is a unique selected-ticket `prior_kit_receipt` bound to
+the active successor Factory, or when one prior candidate covers the exact full
+selected cohort; the ordinary controller must then authenticate and migrate it.
+Runtime warnings retain their separate bounded shape, all other warnings stay
+blocked, and an empty controller result is a wait rather than terminal evidence.
+An unconsumed intermediate candidate may be skipped only when the lagging
+passport release has exact cohort authority in the previous sealed product.
+
+## 2026-08-15 — Decision 441: Qualification owns sealed route migration
+
+Category: Reliability
+
+When every selected successor claim is idle and blocked only on route migration,
+the deterministic qualification driver reads the owner-only claim/worktree
+bindings, runs the existing sealed batch preview, applies that exact digest as
+`qualification-run`, and reconciles again. Partial cohorts and unsafe state do
+not migrate. Qualification reads the authorization from its immutable sealed
+product SHA; production remains protected-main-only. The approval digest stays
+internal; ticket, route, journal, and remote mutations remain owned by the
+existing sealed migration command.
+
+## 2026-08-15 — Decision 442: Long successor roles retain cohort leases
+
+Category: Reliability
+
+While any successor worker is active, the controller renews each idle selected
+lease and releases leases for parked checkpoints. If an exact selected lease
+has already expired with no active run, provider activity, or runtime lock, the
+Doctor warning may enter the same controller, which verifies the current
+passport and ticket before replacing that lease. Non-successor, foreign,
+malformed, active-run, or provider-active stale state remains blocked.
+
+## 2026-08-15 — Decision 443: Migrated successor receipts reenter scheduling
+
+Category: Reliability
+
+After exact passport and route migration, a receipt-free successor claim is no
+longer excluded merely because its durable transition receipt belongs to the
+source kit. The ordinary state machine issues a current receipt chained to that
+authenticated predecessor; invalid, unmigrated, or terminal-bearing claims
+remain on their existing recovery paths.
+
+## 2026-08-15 — Decision 444: Exact source receipt warnings enter recovery
+
+Category: Reliability
+
+A successor Doctor warning from the manifest's exact authenticated source
+release may cover any selected-ticket subset. Older prior-release warnings must
+still cover the full cohort; the controller remains responsible for validating
+and migrating every receipt before scheduling.
+
+## 2026-08-15 — Decision 445: Parked semantic waits authorize at apply
+
+Category: Reliability
+
+A parked semantic-round wait may produce its read-only plan without retaining a
+dispatcher lease. Exact apply reacquires the lease before its ticket-only
+authorization commit; malformed, active, or non-semantic claims remain refused.
+
+## 2026-08-15 — Decision 446: Contract repair is a sealed ticket-only action
+
+Category: Reliability
+
+A contract-blocked role resumes only through `ticket-control contract-repair
+plan/apply`. The controller binds the plan to the exact claim, passport,
+transition, terminal evidence, and ticket head; apply reacquires a parked lease
+and appends one receipt-bound repair directive without rewriting ticket history.
+A successor may use the exact source-release transition and terminal only when
+the current passport authenticates their complete migration lineage.
+The writer uses a blank-line-separated pair; replay also accepts the earlier
+exact compact pair so an already-pushed repair is never rewritten.
+
+## 2026-08-15 — Decision 447: Mixed-source successor batches remain recoverable
+
+Category: Reliability
+
+In-flight release authorization v2 retains the manifest's source Factory as
+the cohort root and binds each selected ticket's exact current source Factory.
+After a partial batch, the next sealed candidate can migrate the authenticated
+mixed-source cohort without rewriting ticket history; v1 remains unchanged. A
+route-changed checkpoint is accepted only when the previous sealed product
+authorization verifies it as that passport release's exact migration replay,
+including when an intermediate candidate was sealed before reconciliation.
+
+## 2026-08-15 — Decision 448: Compact contract repairs enter successor recovery
+
+Category: Reliability
+
+The deterministic qualification driver may pass one historical
+`resume_commit_content_mismatch` to successor reconciliation only when it is
+the exact one-path, one-byte compact-pair shape and its selected ticket and
+blocked receipt match an already-authenticated prior-kit transition warning.
+The driver does not clear the warning; the controller revalidates the current
+Git repair and emits the durable recovery event. Every other contract-resume
+warning remains blocked.
+
+## 2026-08-15 — Decision 449: Route migration precedes targeted recovery
+
+Category: Reliability
+
+An upgraded claim blocked on `route-migration-required` does not enter
+targeted role recovery until its ticket and route are bound to the active
+Factory. The sealed qualification driver can therefore migrate the whole idle
+cohort first, then let the controller revalidate contract or role evidence.
+
+## 2026-08-15 — Decision 450: Qualification projects exact successor resume authority
+
+Category: Reliability
+
+Only when Doctor links one selected compact-repair mismatch to its authenticated
+prior-kit transition receipt, the sealed qualification driver runs the existing
+repair check and issues the existing one-use resume receipt without a product
+audit commit. The ordinary controller owns materialization and recovery;
+production never enters this issuer path. Replay after receipt consumption
+requires the exact resumed state and the matching post-incident receipt before
+the state machine may finish its signed repair record.
+
+## 2026-08-15 — Decision 451: The sealed planner cap enters its authorized round
+
+Category: Reliability
+
+The exact Planner–Spec-linter cap emitted after the third current-epoch FAIL is
+translated into the existing provider-free next-round authorization wait. A
+successor reuses ordinary claim migration/readmission; only one exact next-round
+line permits Planner through the existing authenticated catch-up preflight,
+while malformed cap text and missing, duplicate, or wrong-round authority
+remain closed without rewriting prior ticket evidence.
+
+## 2026-08-15 — Decision 452: Certified ticket heads refresh migration tracking
+
+Category: Reliability
+
+After protected in-flight authorization and an exact certified remote lookup,
+model migration may CAS-refresh only the stale local remote-tracking ref to that
+observed head. Existing authorization, worktree, TOCTOU, and exact push-lease
+checks still gate every product or remote mutation.
+
+## 2026-08-15 — Decision 453: Role prompts obey authorized semantic rounds
+
+Category: Reliability
+
+The Spec-linter and Dispatcher contracts obey the sequencer's exact
+provider-free round authorization for round three and every later round. They
+must not impose the superseded hard round-three ceiling after the authenticated
+state machine has accepted the exact next-round operator grant.
+
+## 2026-08-15 — Decision 454: Successor migration precedes prior-role recovery
+
+Category: Reliability
+
+After an exact successor passport migration, a prior-release protected-ticket
+failure without migrated semantic authority enters the existing targeted
+recovery before release-upgrade attempt settlement. This preserves its
+authenticated evidence while allowing the corrected successor role to retry.
+
+## 2026-08-15 — Decision 455: Route waits survive recovery settlement
+
+Category: Reliability
+
+When successor recovery discovers `route-migration-required`, its persisted
+attempt retains that exact retry reason. The sealed qualification driver can
+therefore prove the whole selected cohort and run one deterministic migration
+batch even if controller recovery reaches its bounded attempt limit first.
+
+## 2026-08-15 — Decision 456: Quarantine stays within the failed release
+
+Category: Reliability
+
+Protected-ticket failed-output quarantine runs only while the signed passport
+still belongs to the role's failed Factory. Once exact successor migrations
+have moved that passport, the controller preserves the migrated head and uses
+ordinary authenticated successor recovery instead of treating route commits as
+failed role output.
+
+## 2026-08-15 — Decision 457: Prior role recovery follows signed route migrations
+
+Category: Reliability
+
+A successor may reopen an authenticated prior-release protected-ticket failure
+after multiple migrations only when the passport carries one continuous v2
+release suffix and every head-changing edge is an exact Factory route-migration
+commit. Same-release retry, role output, and completed evidence remain closed.
+
+## 2026-08-15 — Decision 458: Contract repair and lifecycle resume remain separate
+
+Category: Reliability
+
+An explicit qualification contract-repair directive does not itself grant a
+lifecycle transition. The sealed isolated `qualification-resume` command closes
+that second boundary only for the selected ticket and exact blocked receipt,
+derives its stage through the ordinary repair check, and writes no product audit
+commit. Production and qualification takeover refuse the command.
+
+## 2026-08-15 — Decision 459: New repair evidence rearms recovery once
+
+Category: Reliability
+
+An abandoned targeted repair may reenter recovery only when its authenticated
+input gains the exact selected-ticket isolated-qualification resume receipt.
+The evidence digest becomes part of the bounded attempt fingerprint, so
+retrying unchanged evidence cannot create a loop; production and takeover do
+not admit this signal.
+
+## 2026-08-15 — Decision 460: Successful repair retires prior-receipt exclusion
+
+Category: Reliability
+
+After an exact contract resume or authenticated durable repair replay prepares
+the claim, the controller removes that ticket from its invocation-local
+prior-transition exclusion. The preserved prior receipt remains on disk and
+the ordinary state machine must issue the current chained transition before a
+role can run. A restart may retire the reconstructed exclusion only for an
+exact claimed, pending targeted repair with empty role/receipt and a current
+remote-valid passport; other pending claims remain quarantined.
+
+## 2026-08-15 — Decision 461: Qualification history repair preserves every final byte
+
+Category: Reliability
+
+Only a sealed isolated successor may reconstruct an exact selected
+contract-blocked Test-author branch. It replaces ancestry with one
+protected-test snapshot and one same-ticket Factory-evidence snapshot while
+requiring the final tree and ticket bytes to remain identical, both history
+gates to pass, an exact remote lease, and a passport rewrite bound to the
+durable replay record; production, takeover, product paths, and foreign-ticket
+state remain closed.

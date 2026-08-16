@@ -771,6 +771,7 @@ class ModelControlTest(unittest.TestCase):
     def test_migration_preview_binds_one_current_readiness_probe_per_command(self):
         self.command("pin", "--ticket", "T-901", "--workdir", str(self.workdir))
         source_kit_sha = "a" * 40
+        sibling_source_kit_sha = "d" * 40
         ticket_path = self.workdir / "factory" / "tickets" / "T-901.md"
         route_plan = self.workdir / "factory" / "route-plans" / "T-901.json"
         ticket_path.write_text(
@@ -826,10 +827,11 @@ class ModelControlTest(unittest.TestCase):
         )
         sibling_ticket = sibling_workdir / "factory" / "tickets" / "T-902.md"
         sibling_ticket.write_text(
-            sibling_ticket.read_text() + f"Kit-SHA: {source_kit_sha}\n"
+            sibling_ticket.read_text() + f"Kit-SHA: {sibling_source_kit_sha}\n"
         )
         sibling_plan = dict(source_plan)
         sibling_plan["ticket"] = "T-902"
+        sibling_plan["kit_sha"] = sibling_source_kit_sha
         sibling_route = sibling_workdir / "factory" / "route-plans" / "T-902.json"
         sibling_route.parent.mkdir(parents=True)
         sibling_route.write_text(
@@ -865,16 +867,18 @@ class ModelControlTest(unittest.TestCase):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(json.dumps({
                 "repository": "nysa-company/model-control-test",
-                "schema": "nysa.software-factory.inflight-release-authorization/v1",
+                "schema": "nysa.software-factory.inflight-release-authorization/v2",
                 "source_kit_sha": source_kit_sha,
                 "target_kit_sha": self.kit_sha,
                 "tickets": [
                     {
-                        "branch": "ticket/T-901", "head": head, "state": state,
+                        "branch": "ticket/T-901", "head": head,
+                        "source_kit_sha": source_kit_sha, "state": state,
                         "ticket": "T-901",
                     },
                     {
                         "branch": "ticket/T-902", "head": sibling_head,
+                        "source_kit_sha": sibling_source_kit_sha,
                         "state": "Ready", "ticket": "T-902",
                     },
                 ],
@@ -1179,6 +1183,88 @@ PY
             source_head,
         )
         authorize(source_head, "Ready")
+        qualification_authorization = subprocess.check_output(
+            ["git", "-C", str(self.product), "rev-parse", "HEAD"], text=True,
+        ).strip()
+        protected_without_authorization = subprocess.check_output(
+            ["git", "-C", str(self.product), "rev-parse", "HEAD^"], text=True,
+        ).strip()
+        subprocess.run(
+            [
+                "git", "--git-dir", str(self.remote), "update-ref",
+                "refs/heads/main", protected_without_authorization,
+                qualification_authorization,
+            ],
+            check=True,
+        )
+        subprocess.run(
+            [
+                "git", "-C", str(self.product), "update-ref",
+                "refs/remotes/origin/main", protected_without_authorization,
+            ],
+            check=True,
+        )
+        qualification_environment = {
+            **environment,
+            "FACTORY_KIT_TRUST_SCOPE": "qualification-candidate",
+            "FACTORY_QUALIFICATION_PRODUCT_SHA": qualification_authorization,
+        }
+        qualification_preview = migrate(
+            "migrate-plan", "--ticket", "T-901", "--workdir", str(self.workdir),
+            run_environment=qualification_environment,
+        )
+        qualification_applied = migrate(
+            "migrate", "--ticket", "T-901", "--workdir", str(self.workdir),
+            "--approve-hash", qualification_preview["preview_hash"],
+            "--readiness-hash", qualification_preview["readiness_sha256"],
+            "--approved-by", "tester",
+            run_environment=qualification_environment,
+        )
+        self.assertEqual(qualification_applied["ticket"], "T-901")
+        subprocess.run(
+            ["git", "-C", str(self.workdir), "reset", "--hard", "-q", source_head],
+            check=True,
+        )
+        subprocess.run(
+            [
+                "git", "--git-dir", str(self.remote), "update-ref",
+                "refs/heads/ticket/T-901", source_head,
+                qualification_applied["commit_sha"],
+            ],
+            check=True,
+        )
+        subprocess.run(
+            [
+                "git", "-C", str(self.workdir), "update-ref",
+                "refs/remotes/origin/ticket/T-901", source_head,
+            ],
+            check=True,
+        )
+        production_refusal = migrate(
+            "migrate", "--ticket", "T-901", "--workdir", str(self.workdir),
+            "--approve-hash", qualification_preview["preview_hash"],
+            "--readiness-hash", qualification_preview["readiness_sha256"],
+            "--approved-by", "tester",
+            check=False,
+        )
+        self.assertEqual(production_refusal.returncode, 2)
+        self.assertIn("exact protected in-flight", production_refusal.stdout)
+        subprocess.run(
+            [
+                "git", "--git-dir", str(self.remote), "update-ref",
+                "refs/heads/main", qualification_authorization,
+                protected_without_authorization,
+            ],
+            check=True,
+        )
+        subprocess.run(
+            [
+                "git", "-C", str(self.product), "update-ref",
+                "refs/remotes/origin/main", qualification_authorization,
+            ],
+            check=True,
+        )
+        network_trace.write_text("")
         (self.workdir / "fixture-note.txt").write_text("authorization head drift\n")
         subprocess.run(
             ["git", "-C", str(self.workdir), "add", "fixture-note.txt"], check=True,
@@ -1704,6 +1790,13 @@ PY
         )
         self.assertEqual(network_trace.read_text().splitlines().count("push"), 4)
 
+        stale_tracking = subprocess.check_output(
+            ["git", "-C", str(self.workdir), "rev-parse", "HEAD^"], text=True,
+        ).strip()
+        subprocess.run([
+            "git", "-C", str(self.workdir), "update-ref",
+            "refs/remotes/origin/ticket/T-901", stale_tracking, replay_head,
+        ], check=True)
         batch_arguments = (
             "--ticket", "T-901", "--workdir", str(self.workdir),
             "--ticket", "T-902", "--workdir", str(sibling_workdir),
@@ -1730,6 +1823,13 @@ PY
         self.assertIn("one to four tickets", oversized_batch.stdout)
         batch_preview = migrate("migrate-batch-plan", *batch_arguments)
         self.assertEqual(
+            subprocess.check_output([
+                "git", "-C", str(self.workdir), "rev-parse",
+                "refs/remotes/origin/ticket/T-901",
+            ], text=True).strip(),
+            stale_tracking,
+        )
+        self.assertEqual(
             batch_preview["schema"],
             "nysa.software-factory.model-migration-batch-preview/v1",
         )
@@ -1752,6 +1852,13 @@ PY
         )
         self.assertEqual(refused_batch.returncode, 2)
         self.assertIn("does not match preview", refused_batch.stdout)
+        self.assertEqual(
+            subprocess.check_output([
+                "git", "-C", str(self.workdir), "rev-parse",
+                "refs/remotes/origin/ticket/T-901",
+            ], text=True).strip(),
+            stale_tracking,
+        )
         self.assertEqual(
             subprocess.check_output(
                 ["git", "-C", str(sibling_workdir), "rev-parse", "HEAD"],
@@ -1791,6 +1898,13 @@ PY
         partial = json.loads(batch_journal.read_text())
         self.assertEqual(partial["status"], "in_progress")
         self.assertEqual(set(partial["results"]), {"T-901"})
+        self.assertEqual(
+            subprocess.check_output([
+                "git", "-C", str(self.workdir), "rev-parse",
+                "refs/remotes/origin/ticket/T-901",
+            ], text=True).strip(),
+            partial["results"]["T-901"]["commit_sha"],
+        )
         subprocess.run(
             [
                 "git", "--git-dir", str(self.remote), "update-ref",

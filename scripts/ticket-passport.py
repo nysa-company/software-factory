@@ -26,6 +26,7 @@ from release_lineage import (  # noqa: E402
 )
 from reorder_test_fixes import (  # noqa: E402
     verified_history_repair, verified_normalization_plan,
+    verified_test_snapshot_reconstruction,
 )
 from role_output import RoleOutputError, sha256 as role_output_sha256
 from cursor_model_identity import approved_reported_models
@@ -35,6 +36,7 @@ from failed_attempt_handoff import (  # noqa: E402
 from inflight_release import (  # noqa: E402
     AuthorizationError as InflightAuthorizationError,
     SCHEMA as INFLIGHT_SCHEMA,
+    SCHEMA_V2 as INFLIGHT_SCHEMA_V2,
     authorize_ticket as authorize_inflight_ticket,
     parse_authorization as parse_inflight_authorization,
 )
@@ -57,6 +59,9 @@ NORMALIZATION_SCHEMA = (
 )
 HISTORY_REPAIR_SCHEMA = (
     "nysa.software-factory.ticket-history-repair-authorization/v1"
+)
+QUALIFICATION_HISTORY_RECONSTRUCTION_SCHEMA = (
+    "nysa.software-factory.qualification-history-reconstruction/v1"
 )
 MIGRATION_SCHEMA = "nysa.software-factory.ticket-passport-migration/v2"
 LINEAGE_SCHEMA = "nysa.software-factory.ticket-passport-lineage-authorization/v1"
@@ -407,8 +412,7 @@ def authorized_inflight_rewrite(
     except InflightAuthorizationError:
         return False
     if (
-        authorization.get("source_kit_sha") != source
-        or not DIGEST.fullmatch(previous.get("route_plan_sha256", ""))
+        not DIGEST.fullmatch(previous.get("route_plan_sha256", ""))
         or previous["route_plan_sha256"] != route_digest(args.workdir, args.ticket)
     ):
         return False
@@ -568,6 +572,11 @@ def authorized_ticket_rewrite(
         or not DIGEST.fullmatch(route or "")
     ):
         return None
+    qualification = authorized_qualification_history_reconstruction(
+        args, previous, current, current_state, protected, test_paths, route,
+    )
+    if qualification is not None:
+        return qualification
     relative = (
         "factory/migrations/ticket-rewrite/"
         f"{current['head_sha']}.json"
@@ -626,6 +635,89 @@ def authorized_ticket_rewrite(
     ):
         return None
     return hashlib.sha256(canonical(authorization)).hexdigest()
+
+
+def authorized_qualification_history_reconstruction(
+    args: argparse.Namespace,
+    previous: dict[str, Any],
+    current: dict[str, Any],
+    current_state: str,
+    protected: str,
+    test_paths: str,
+    route: str,
+) -> str | None:
+    if (
+        os.environ.get("FACTORY_KIT_TRUST_SCOPE") != "qualification-candidate"
+        or os.environ.get("FACTORY_QUALIFICATION_MODE") != "isolated"
+    ):
+        return None
+    try:
+        root = safe_directory(args.state_dir / "history-reconstructions")
+        raw = read_regular(root / f"{args.ticket}.json", mode=0o600, maximum=1_000_000)
+        value = json.loads(raw, object_pairs_hook=unique_object)
+        if not isinstance(value, dict):
+            return None
+        digest = value.get("record_sha256", "")
+        unsigned = {key: item for key, item in value.items() if key != "record_sha256"}
+        consumed = receipt(
+            args.state_dir, args.ticket,
+            value.get("transition_receipt_sha256", ""),
+        )
+    except (
+        FileNotFoundError, json.JSONDecodeError, OSError, PassportError, ValueError,
+    ):
+        return None
+    expected_keys = {
+        "branch", "configured_test_paths", "factory_sha",
+        "new_head", "new_tree", "old_head", "old_tree", "passport_sha256",
+        "product_origin_sha256", "project", "protected_base_sha",
+        "record_sha256", "schema", "state", "ticket",
+        "transition_receipt_sha256",
+    }
+    configured = test_paths.split()
+    if (
+        set(value) != expected_keys
+        or not DIGEST.fullmatch(digest)
+        or digest != hashlib.sha256(canonical(unsigned)).hexdigest()
+        or raw != canonical(value)
+        or value.get("schema") != QUALIFICATION_HISTORY_RECONSTRUCTION_SCHEMA
+        or value.get("ticket") != args.ticket
+        or value.get("project") != args.project
+        or value.get("branch") != current.get("branch")
+        or value.get("factory_sha") != args.factory_sha
+        or value.get("configured_test_paths") != configured
+        or value.get("old_head") != previous.get("head_sha")
+        or value.get("old_tree") != previous.get("head_tree")
+        or value.get("passport_sha256") != previous.get("passport_sha256")
+        or value.get("product_origin_sha256")
+        != previous.get("product_origin_sha256")
+        or value.get("product_origin_sha256")
+        != current.get("product_origin_sha256")
+        or value.get("protected_base_sha") != protected
+        or value.get("protected_base_sha")
+        != previous.get("protected_base_sha")
+        or value.get("new_head") != current.get("head_sha")
+        or value.get("new_tree") != current.get("head_tree")
+        or value.get("old_tree") != value.get("new_tree")
+        or value.get("state") != current_state
+        or value.get("state") != "Blocked-Escalated"
+        or route != previous.get("route_plan_sha256")
+        or consumed.get("schema") != RECEIPT_SCHEMA
+        or consumed.get("receipt_sha256")
+        != value.get("transition_receipt_sha256")
+        or consumed.get("ticket") != args.ticket
+        or consumed.get("project") != args.project
+        or consumed.get("branch") != current.get("branch")
+        or consumed.get("role") != "test-author"
+        or consumed.get("stage") not in {"RUN test-author", "FIX test-author"}
+        or consumed.get("consumed") is not True
+        or not verified_test_snapshot_reconstruction(
+            str(args.workdir), protected, previous["head_sha"],
+            current["head_sha"], configured, args.ticket,
+        )
+    ):
+        return None
+    return digest
 
 
 def authorized_history_repair(

@@ -46,6 +46,7 @@ from effective_ticket import committed_ticket  # noqa: E402
 from inflight_release import (  # noqa: E402
     AuthorizationError as InflightAuthorizationError,
     parse_authorization as parse_inflight_authorization,
+    ticket_source_kit,
     verify_migration as verify_inflight_migration,
 )
 import operator_receipt  # noqa: E402
@@ -2191,11 +2192,13 @@ def completed_role_gap(
 
 
 def successor_checkpoint_authorizations(
-    product: Path, manifest: dict[str, Any],
+    product: Path, manifest: dict[str, Any], protected: str | None = None,
 ) -> tuple[dict[str, Any] | None, dict[str, dict[str, Any]]]:
     """Load one exact protected checkpoint set for a successor cohort."""
     target = manifest["factory_sha"]
-    protected = command("git", "-C", str(product), "rev-parse", "HEAD")
+    protected = protected or command("git", "-C", str(product), "rev-parse", "HEAD")
+    if not SHA.fullmatch(protected):
+        raise EnvironmentError("successor checkpoint authorization is invalid")
     relative = f"factory/migrations/inflight-release/{target}.json"
     entry = command(
         "git", "-C", str(product), "ls-tree", protected, "--", relative,
@@ -2266,6 +2269,61 @@ def validate_successor_upgrade_cohort(
             if ticket in absent:
                 continue
             value, _ = passport.load_passport(passports / f"{ticket}.json", secret)
+            passport_factory = value.get("factory_sha", "")
+            if not isinstance(passport_factory, str) or not SHA.fullmatch(
+                passport_factory
+            ):
+                raise EnvironmentError("successor passport release is invalid")
+            passport_release_authorized = passport_factory in {
+                source, active_factory_sha,
+            }
+            checkpoint_bridge = False
+            checkpoint = checkpoint_entries.get(ticket)
+            if (
+                not passport_release_authorized
+                and active_factory_sha == source
+                and checkpoint_authorization is not None
+                and checkpoint is not None
+                and ticket_source_kit(
+                    checkpoint_authorization, checkpoint,
+                ) == passport_factory
+            ):
+                source_manifest = validate_qualification_manifest(
+                    json.loads(command(
+                        "git", "-C", str(product), "show",
+                        f"{active_product_sha}:factory/QUALIFICATION.json",
+                    )),
+                    source,
+                )
+                source_authorization, source_entries = (
+                    successor_checkpoint_authorizations(
+                        product, source_manifest, active_product_sha,
+                    )
+                )
+                source_checkpoint = source_entries.get(ticket)
+                checkpoint_bridge = (
+                    source_manifest["tickets"] == manifest["tickets"]
+                    and source_authorization is not None
+                    and source_authorization.get("schema")
+                    == "nysa.software-factory.inflight-release-authorization/v2"
+                    and checkpoint_authorization.get("schema")
+                    == "nysa.software-factory.inflight-release-authorization/v2"
+                    and source_entries == checkpoint_entries
+                    and source_checkpoint is not None
+                    and ticket_source_kit(
+                        source_authorization, source_checkpoint,
+                    ) == passport_factory
+                )
+            if not passport_release_authorized and not checkpoint_bridge:
+                prior_manifest = dict(manifest, factory_sha=passport_factory)
+                prior, _ = successor_checkpoint_authorizations(
+                    product, prior_manifest, active_product_sha,
+                )
+                if prior is None:
+                    raise EnvironmentError(
+                        "successor passport release is not authorized"
+                    )
+                passport_release_authorized = True
             valid_sha = lambda item: (  # noqa: E731
                 isinstance(item, str) and SHA.fullmatch(item) is not None
             )
@@ -2348,13 +2406,11 @@ def validate_successor_upgrade_cohort(
                     )
                 )
             )
-            release_lineage_valid = (
+            release_history_valid = (
                 isinstance(history, list)
                 and releases
                 and len(releases) == len(history) == len(set(releases))
                 and releases[-1] == value.get("factory_sha")
-                and source in releases
-                and value.get("factory_sha") in {source, active_factory_sha}
                 and isinstance(migrations, list)
                 and all(passport.valid_v2_migration(item) for item in migrations)
                 and (
@@ -2372,8 +2428,21 @@ def validate_successor_upgrade_cohort(
                     and migrations[-1]["to_route_plan_sha256"]
                     == value.get("route_plan_sha256")
                 )
+            )
+            release_lineage_valid = (
+                release_history_valid
+                and source in releases
+                and passport_release_authorized
                 and successor_release_lineage(
                     history, migrations, source,
+                    value.get("factory_sha", ""), passport.valid_v2_migration,
+                )
+            )
+            checkpoint_bridge_valid = (
+                release_history_valid
+                and checkpoint_bridge
+                and successor_release_lineage(
+                    history, migrations, passport_factory,
                     value.get("factory_sha", ""), passport.valid_v2_migration,
                 )
             )
@@ -2417,7 +2486,6 @@ def validate_successor_upgrade_cohort(
             except (OSError, TypeError, ValueError, passport.PassportError):
                 strict_lineage_valid = False
             checkpoint_valid = False
-            checkpoint = checkpoint_entries.get(ticket)
             if checkpoint_authorization is not None and checkpoint is not None:
                 try:
                     passport_route = subprocess.run(
@@ -2436,8 +2504,30 @@ def validate_successor_upgrade_cohort(
                         ],
                         capture_output=True, check=False, timeout=120,
                     )
+                    passport_route_sha256 = hashlib.sha256(
+                        passport_route.stdout
+                    ).hexdigest()
+                    checkpoint_route_sha256 = hashlib.sha256(
+                        checkpoint_route.stdout
+                    ).hexdigest()
+                    route_checkpoint_valid = (
+                        passport_route_sha256 == value.get("route_plan_sha256")
+                        and (
+                            checkpoint_route_sha256
+                            == value.get("route_plan_sha256")
+                            or value.get("factory_sha") in releases
+                            and verify_inflight_migration(
+                                product, active_product_sha,
+                                value["factory_sha"], ticket,
+                                value.get("branch", ""), checkpoint["head"],
+                            ) == "replay"
+                        )
+                    )
                     checkpoint_valid = (
-                        release_lineage_valid
+                        (release_lineage_valid or checkpoint_bridge_valid)
+                        and ticket_source_kit(
+                            checkpoint_authorization, checkpoint,
+                        ) in releases
                         and verify_inflight_migration(
                             product,
                             command(
@@ -2465,10 +2555,7 @@ def validate_successor_upgrade_cohort(
                         ) == value.get("ticket_blob")
                         and passport_route.returncode == 0
                         and checkpoint_route.returncode == 0
-                        and hashlib.sha256(passport_route.stdout).hexdigest()
-                        == value.get("route_plan_sha256")
-                        and hashlib.sha256(checkpoint_route.stdout).hexdigest()
-                        == value.get("route_plan_sha256")
+                        and route_checkpoint_valid
                     )
                 except InflightAuthorizationError:
                     checkpoint_valid = False

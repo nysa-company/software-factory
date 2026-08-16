@@ -258,6 +258,54 @@ import json, sys
 assert "operator" not in json.load(open(sys.argv[1]))["tickets"]["T-700"]
 PY
 
+# A crash after receipt consumption but before map clear must replay exactly.
+sed -E 's/^State: .*/State: Blocked-Escalated/' \
+  "$PRODUCT/factory/tickets/T-700.md" > "$TMP/ticket"
+mv "$TMP/ticket" "$PRODUCT/factory/tickets/T-700.md"
+git -C "$PRODUCT" add factory/tickets/T-700.md
+git -C "$PRODUCT" -c user.name=test -c user.email=test@example.com \
+  commit -qm "blocked replay fixture"
+git -C "$PRODUCT" push -q "$REMOTE" HEAD:refs/heads/ticket/T-700
+STATE_DIR="$(cd "$TMP" && pwd -P)/controller"
+mkdir -m 700 "$STATE_DIR"
+BLOCKED_RECEIPT="$(printf 'b%.0s' {1..64})"
+RECEIPT_JSON="$(python3 "$ROOT/scripts/lib/operator_receipt.py" \
+  --state-dir "$STATE_DIR" issue --ticket T-700 --action resume \
+  --payload "{\"blocked_receipt_sha256\":\"$BLOCKED_RECEIPT\",\"resume_stage\":\"Building\"}")"
+RECEIPT_SHA="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["receipt_sha256"])' \
+  <<<"$RECEIPT_JSON")"
+python3 "$ROOT/scripts/lib/operator_receipt.py" --state-dir "$STATE_DIR" \
+  consume --ticket T-700 --action resume \
+  --payload "{\"blocked_receipt_sha256\":\"$BLOCKED_RECEIPT\",\"resume_stage\":\"Building\"}" \
+  >/dev/null
+python3 - "$PRODUCT/factory/operator-map.json" "$RECEIPT_JSON" <<'PY'
+import json, sys
+path = sys.argv[1]
+receipt = json.loads(sys.argv[2])
+json.dump({"tickets": {"T-700": {"operator": {
+    "observed_at": receipt["issued_at"],
+    "receipt_sha256": receipt["receipt_sha256"],
+    "state": "Building",
+    "state_base": "blocked-escalated",
+}}}}, open(path, "w"))
+PY
+FACTORY_BLOCKED_RECEIPT="$BLOCKED_RECEIPT" \
+FACTORY_CERTIFIED_PRODUCT_ORIGIN="$REMOTE" FACTORY_CONTROLLER_STATE_DIR="$STATE_DIR" \
+FACTORY_TRANSITION_STATE_DIR="$STATE_DIR" \
+FACTORY_KIT_TRUST_SCOPE=qualification-candidate FACTORY_OPERATOR_MAP="$PRODUCT/factory/operator-map.json" \
+FACTORY_QUALIFICATION_MODE=isolated FACTORY_QUALIFICATION_REPLAY=1 \
+FACTORY_RELEASE_CONTRACT_VERSION=2.0.0 FACTORY_ROOT="$PRODUCT" \
+  "$ROOT/scripts/ticket-state.sh" --ticket T-700 --workdir "$PRODUCT" \
+  --action materialize >/dev/null
+grep -q '^State: Building$' "$PRODUCT/factory/tickets/T-700.md"
+python3 - "$PRODUCT/factory/operator-map.json" "$STATE_DIR" "$RECEIPT_SHA" <<'PY'
+import json, sys
+assert "operator" not in json.load(open(sys.argv[1]))["tickets"]["T-700"]
+path = next(__import__("pathlib").Path(sys.argv[2]).glob("operator-receipts/T-700/resume-*.json"))
+receipt = json.load(open(path))
+assert receipt["receipt_sha256"] == sys.argv[3] and receipt["consumed"] is True
+PY
+
 printf '{"tickets":{"T-700":{}}}\n' > "$PRODUCT/factory/operator-map.json"
 
 # Reviewer reconciliation without a portable checkpoint must work under the

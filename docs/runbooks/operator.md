@@ -299,6 +299,39 @@ claim remains parked until a successor release contains the repair.
 The normal operator entrypoint is the sealed candidate's
 `factory-launch <project> qualification-run --json`. It performs that Doctor
 gate, the mandatory restart, reconciliation, and terminal reduction in code.
+For the exact authenticated successor compact-repair warning, it also projects
+the one-use qualification resume receipt after the sealed repair check. It does
+not create a product audit commit or grant the production controller authority
+to issue operator decisions.
+After an explicit `ticket-control contract-repair apply`, close the separate
+lifecycle boundary with the sealed isolated command below, then return to
+`qualification-run`:
+
+```bash
+factory-launch <project> qualification-resume \
+  --ticket <T-NNN> --blocked-receipt <SHA256> --json
+```
+
+The driver derives the stage from the exact repair check. Its exact new receipt
+rearms one abandoned targeted recovery attempt; replaying the unchanged receipt
+does not reopen the attempt. Production and qualification takeover refuse this
+command.
+For an explicit `role_exit_contract_blocked` Test-author history-shape failure,
+preserve the ticket and every final blob. In the sealed isolated successor,
+run:
+
+```bash
+factory-launch <project> qualification-history-repair \
+  --ticket <T-NNN> --blocked-receipt <SHA256> --json
+```
+
+Require `status=repaired` before `contract-repair plan/apply`,
+`qualification-resume`, and `qualification-run` continue. The command changes
+ancestry only; gate failure, remote movement, a wrong receipt, production, or
+takeover refuses without moving the authenticated branch or passport.
+Successful resume and durable repair replay both reenter ordinary scheduling;
+an exact crash replay repeats that preparation automatically. Do not clear the
+prior transition receipt by hand.
 On `waiting` or `blocked`, change only the named external/operator evidence and
 run the same command again; never hand-edit authority state.
 

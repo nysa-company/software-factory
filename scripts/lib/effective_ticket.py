@@ -150,9 +150,34 @@ def authoritative_operator_fields(
     if not path.is_absolute():
         raise ValueError("Contract 1.9 operator receipt state is unavailable")
     action, binding = operator_action(operator)
-    if operator_receipt.peek_exact(
+    receipt = operator_receipt.peek_exact(
         path, ticket_id, action, operator["receipt_sha256"], binding,
-    ) is None:
+    )
+    blocked = __import__("os").environ.get("FACTORY_BLOCKED_RECEIPT", "")
+    if (
+        receipt
+        and action == "resume"
+        and blocked
+        and "blocked_receipt_sha256" in receipt.get("payload", {})
+        and receipt["payload"].get("blocked_receipt_sha256") != blocked
+    ):
+        receipt = None
+    if (
+        receipt is None
+        and action == "resume"
+        and __import__("os").environ.get("FACTORY_QUALIFICATION_REPLAY") == "1"
+        and __import__("os").environ.get("FACTORY_KIT_TRUST_SCOPE")
+        == "qualification-candidate"
+        and __import__("os").environ.get("FACTORY_QUALIFICATION_MODE") == "isolated"
+    ):
+        receipt = operator_receipt.read_exact(
+            path, ticket_id, action, operator["receipt_sha256"], {
+                **binding, "blocked_receipt_sha256": blocked,
+            },
+        )
+        if not receipt or receipt.get("consumed") is not True:
+            receipt = None
+    if receipt is None:
         raise ValueError("Contract 1.9 operator receipt is unavailable")
     return operator
 

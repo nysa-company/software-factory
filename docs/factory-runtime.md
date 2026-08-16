@@ -215,13 +215,87 @@ authenticated boundary:
   <project> qualification-run --json
 ```
 
-It requires Doctor `ok` or the exact bounded runtime-only warning produced by
-active qualification leases, performs the one mandatory controller restart in
-a new process, runs the ordinary controller/state machine, and invokes the
-existing reducer only after terminal completion. Every other warning remains a
-typed block. Rerun after a named external or operator input changes; the driver
-never edits tickets, claims, leases, receipts, passports, journals, or provider
-state itself.
+It requires Doctor `ok`, the exact bounded runtime-only warning produced by
+active qualification leases, or—only for a successor—the exact selected-ticket
+`prior_kit_receipt` warning or idle selected-lease expiry that the controller
+itself must recover. One compact-pair `resume_commit_content_mismatch` may
+accompany that prior receipt only when its ticket, receipt, one-path shape, and
+one-byte delta match exactly. At that one successor boundary, the sealed driver
+runs the ordinary repair check and issues the existing one-use resume receipt
+without writing an audit commit into the ticket branch; the controller still
+owns the resume. A consumed receipt plus the exact resumed state closes the
+push-before-recovery-record crash window. Production operator authority is
+unchanged.
+After an explicit contract-repair apply, the separate lifecycle boundary is
+closed with the same sealed isolated release:
+
+```bash
+factory-launch <project> qualification-resume \
+  --ticket <T-NNN> --blocked-receipt <SHA256> --json
+```
+
+It derives the resume stage from the authenticated repair check, projects only
+that selected ticket's blocked-receipt-bound one-use authority, and writes no
+product audit commit. That exact new authority rearms one abandoned targeted
+recovery attempt; an unchanged receipt cannot reopen recovery repeatedly.
+Takeover and production launchers refuse it.
+If a contract-blocked Test-author cannot satisfy the frozen tests-first history
+shape without deleting evidence, an isolated successor may run:
+
+```bash
+factory-launch <project> qualification-history-repair \
+  --ticket <T-NNN> --blocked-receipt <SHA256> --json
+```
+
+It reconstructs exactly one protected-test snapshot followed by one
+same-ticket Factory-evidence snapshot, requires an unchanged final tree and
+both history gates, publishes with an exact force-with-lease, and migrates the
+passport through a durable replay record. Product paths, foreign-ticket state,
+production, and takeover remain closed.
+Once either the exact resume or its durable repair replay succeeds, the
+controller removes the prior transition from its invocation-local exclusion
+set so the ordinary state machine can issue the current chained transition.
+After a crash at that boundary, only an exact claimed, pending targeted repair
+with empty role/receipt and a current remote-valid passport may retire the
+reconstructed prior-receipt exclusion; ordinary state-machine validation still
+precedes any role.
+During a long successor role, the controller renews every
+idle cohort lease and releases a parked lease instead of allowing either to
+expire. A parked semantic-round wait remains plannable without a lease; exact
+apply reacquires that lease before its ticket-only authorization commit. A warning
+from the manifest's exact source release may cover any selected subset; a
+warning from an older prior candidate is accepted only when it covers the full
+selected cohort. The controller still authenticates and migrates every receipt. It
+clears the invocation-local prior-receipt exclusion only after that exact
+migration, allowing the ordinary state machine to issue the current chained
+receipt without deleting its predecessor. It
+performs the one mandatory controller restart in a new process, runs the ordinary
+controller/state machine, applies the existing sealed batch route migration
+when every selected successor claim is at that exact boundary, and invokes the
+existing reducer only after a nonempty set of terminal completion results. The
+batch reads its in-flight authorization from the sealed qualification product
+SHA; production continues to require protected-main authority. The preview
+digest stays inside the command; no human hash handoff is needed.
+Authorization v2 may bind a different exact source Factory per selected ticket
+while retaining the manifest source as the cohort root. This is the supported
+recovery after an interrupted batch leaves an authenticated mixed-source
+cohort; the next sealed batch still migrates every selected ticket to one target.
+If the prior batch moved a branch but not its passport, upgrade accepts that
+checkpoint only through the previous sealed authorization's exact replay proof.
+Contract-blocked roles use the same sealed boundary: `ticket-control
+contract-repair plan/apply` verifies the exact claim, passport, transition,
+terminal evidence, and ticket head before appending one receipt-bound resume
+directive. A successor accepts the exact source-release transition and terminal
+only through the passport's authenticated migration lineage. Apply reacquires a
+parked lease and commits only that ticket.
+Every other warning remains a typed block. Rerun after a named external or
+operator input changes; the driver never hand-edits tickets, claims, leases,
+receipts, passports, journals, or provider state.
+
+A successor upgrade may pass over an unconsumed intermediate candidate only
+when each lagging passport Factory has an exact selected-cohort authorization
+in the previous sealed product commit. Missing or changed authority blocks the
+upgrade; the controller remains responsible for the actual passport migration.
 
 Qualification must prove:
 

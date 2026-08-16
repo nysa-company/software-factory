@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import shlex
 import stat
 import subprocess
 import sys
@@ -36,6 +37,7 @@ from qualification_manifest import (  # noqa: E402
     ManifestError as QualificationManifestError,
     validate as validate_qualification_manifest,
 )
+from effective_ticket import operator_action, operator_fields  # noqa: E402
 from legacy_closeout import (  # noqa: E402
     ValidationError as ProtectedTerminalError,
     protected_terminal,
@@ -44,10 +46,16 @@ from route_evidence import (  # noqa: E402
     RouteEvidenceError, authenticated_fallback_head, exact_kit_sha_change,
     journal_extends, validate_route,
 )
+import operator_receipt  # noqa: E402
 from role_output import RoleOutputError, sha256 as role_output_sha256  # noqa: E402
 from ticket_state_transition import (  # noqa: E402
     TransitionError as TicketTransitionError,
     qualification_epoch_text,
+)
+from reorder_test_fixes import (  # noqa: E402
+    Fail as HistoryReconstructionError,
+    create_test_snapshot_reconstruction,
+    verified_test_snapshot_reconstruction,
 )
 
 
@@ -96,6 +104,9 @@ PREVIEW_IDENTITY_WAIT_SECONDS = 900
 RECOVERY_ATTEMPT_LIMIT = 3
 COMPLETION_CORRECTION_SCHEMA = (
     "nysa.software-factory.completed-role-correction/v1"
+)
+QUALIFICATION_HISTORY_RECONSTRUCTION_SCHEMA = (
+    "nysa.software-factory.qualification-history-reconstruction/v1"
 )
 MODEL_IDENTITY_CORRECTION_SCHEMA = (
     "nysa.software-factory.completed-role-correction/v2"
@@ -2179,6 +2190,18 @@ class Controller:
             and bool(DIGEST.fullmatch(claim.get("lease", "")))
         )
 
+    def qualification_cohort_accounted(
+        self, claims: list[dict[str, Any]],
+    ) -> bool:
+        if not self.qualification:
+            return False
+        selected = set(self.qualification["tickets"])
+        claimed = {claim["ticket"] for claim in claims}
+        return claimed <= selected and all(
+            ticket in claimed or self.product_ticket_done(ticket)
+            for ticket in selected
+        )
+
     @staticmethod
     def parked(claim: dict[str, Any]) -> bool:
         return claim.get("parked") is True
@@ -2261,6 +2284,57 @@ class Controller:
             "parked": claim.get("parked") is True,
             "status": claim.get("status", ""),
         }).encode()).hexdigest()
+
+    def targeted_recovery_evidence_sha256(
+        self, claim: dict[str, Any],
+    ) -> str:
+        evidence: dict[str, str] = {}
+        mapping_path = Path(os.environ.get("FACTORY_OPERATOR_MAP", ""))
+        ticket_receipts = (
+            self.state / "operator-receipts" / claim["ticket"]
+        )
+        expected_map = self.state.parent / "operator/operator-map.json"
+        if (
+            (self.qualification or {}).get("mode") == "successor"
+            and os.environ.get("FACTORY_QUALIFICATION_MODE") == "isolated"
+            and mapping_path.is_absolute()
+            and mapping_path == expected_map
+            and ticket_receipts.is_dir()
+        ):
+            try:
+                info = ticket_receipts.lstat()
+                if (
+                    ticket_receipts.is_symlink()
+                    or ticket_receipts.resolve(strict=True) != ticket_receipts
+                    or not stat.S_ISDIR(info.st_mode)
+                    or info.st_uid != os.geteuid()
+                    or stat.S_IMODE(info.st_mode) != 0o700
+                ):
+                    raise ControllerError(
+                        "qualification resume receipt state is unsafe"
+                    )
+                operator = operator_fields(
+                    read(mapping_path), claim["ticket"],
+                )
+                if operator:
+                    action, binding = operator_action(operator)
+                    receipt = operator_receipt.peek_exact(
+                        self.state, claim["ticket"], action,
+                        operator["receipt_sha256"], {
+                            **binding,
+                            "blocked_receipt_sha256": claim.get("receipt", ""),
+                        },
+                    )
+                    if action == "resume" and receipt is not None:
+                        evidence["operator_resume"] = receipt["receipt_sha256"]
+            except (OSError, TypeError, ValueError) as error:
+                raise ControllerError(
+                    "qualification resume recovery evidence is invalid"
+                ) from error
+        return (
+            hashlib.sha256(canonical(evidence).encode()).hexdigest()
+            if evidence else ""
+        )
 
     def recovery_input_sha256(
         self, claim: dict[str, Any], recovery: str,
@@ -2345,6 +2419,10 @@ class Controller:
             "ticket": ticket,
             "worktree": str(worktree),
         }
+        if recovery == "targeted-repair":
+            external = self.targeted_recovery_evidence_sha256(claim)
+            if external:
+                value["external_evidence_sha256"] = external
         return hashlib.sha256(canonical(value).encode()).hexdigest()
 
     def worktree_records(self) -> list[dict[str, str]]:
@@ -2647,7 +2725,10 @@ class Controller:
     def qualification_admission_preflight(
         self, existing: list[dict[str, Any]],
     ) -> dict[str, str] | None:
-        if not self.qualification:
+        if (
+            not self.qualification
+            or self.qualification_cohort_accounted(existing)
+        ):
             return None
         try:
             value = self.json_call(
@@ -2696,6 +2777,8 @@ class Controller:
         claims = list(existing)
         if not 0 <= reserved_capacity <= self.capacity:
             raise ControllerError("reserved controller capacity is invalid")
+        if self.qualification_cohort_accounted(claims):
+            return claims
         if not self.qualification:
             self.model_admission_outcome = None
         if self.qualification:
@@ -3546,6 +3629,7 @@ class Controller:
             except ControllerError:
                 if self.role_active(claim):
                     raise
+                self.release_expired_successor_lease(claim)
         lease = self.json_call("claim", "--ticket", claim["ticket"])
         if (
             lease.get("schema_version") != 1
@@ -3588,6 +3672,21 @@ class Controller:
                         "inactive_ticket_lease_released", claim["ticket"],
                         status=status,
                     )
+
+    def maintain_successor_leases(self, claims: list[dict[str, Any]]) -> None:
+        if not self.qualification or self.qualification.get("mode") != "successor":
+            return
+        for claim in claims:
+            if self.role_active(claim):
+                continue
+            if (
+                self.parked(claim)
+                and claim.get("status") in {"claimed", "running", "waiting"}
+                and DIGEST.fullmatch(claim.get("lease", ""))
+            ):
+                self.park_claim(claim)
+            elif self.consumes_capacity(claim):
+                self.ensure_lease(claim, "successor-cohort")
 
     def semantic_handoff_state(self, claim: dict[str, Any]) -> str:
         if (
@@ -3660,11 +3759,14 @@ class Controller:
         return self.semantic_handoff_state(claim) != "invalid"
 
     def release_expired_successor_lease(self, claim: dict[str, Any]) -> bool:
+        lease_id = claim.get("lease", "")
         if (
             self.qualification is None
             or self.qualification.get("mode") != "successor"
-            or not self.parked(claim)
-            or claim.get("lease") != ""
+            or not (
+                self.parked(claim) and lease_id == ""
+                or DIGEST.fullmatch(lease_id)
+            )
             or claim.get("publication_lease")
             or self.role_active(claim)
             or not self.ticket_release_current(claim)
@@ -3688,6 +3790,8 @@ class Controller:
         record = records.get(claim["ticket"])
         if record is None or record["expires_epoch"] > int(time.time()):
             return False
+        if lease_id and record["lease_id"] != lease_id:
+            raise ControllerError("expired dispatcher lease identity changed")
         result = self.json_call(
             "release-expired", "--ticket", claim["ticket"],
             "--lease", record["lease_id"],
@@ -3702,6 +3806,10 @@ class Controller:
                 record["lease_id"].encode()
             ).hexdigest(),
         )
+        if lease_id:
+            claim["lease"] = ""
+            claim.pop("lease_released", None)
+            self.save_claim(claim)
         return True
 
     def park_claim(self, claim: dict[str, Any]) -> bool:
@@ -3712,7 +3820,11 @@ class Controller:
             if claim["status"] in {"claimed", "running"}:
                 claim["status"] = "waiting"
             if DIGEST.fullmatch(claim.get("lease", "")):
-                self.release_ticket_lease(claim)
+                try:
+                    self.release_ticket_lease(claim)
+                except ControllerError:
+                    if not self.release_expired_successor_lease(claim):
+                        raise
                 claim["lease"] = ""
                 claim.pop("lease_released", None)
                 self.save_claim(claim)
@@ -6270,6 +6382,18 @@ class Controller:
             attempt["phase"] == "pending"
             and claim.get("status") in {"claimed", "running"}
         ):
+            if (
+                claim.get("status") == "claimed"
+                and attempt["recovery"] == name == "targeted-repair"
+                and claim["ticket"] in self.prior_transition_tickets
+                and not claim.get("receipt")
+                and not claim.get("role")
+            ):
+                try:
+                    if self.remote_passport_valid(claim):
+                        self.prior_transition_tickets.discard(claim["ticket"])
+                except ControllerError:
+                    pass
             return True
         if attempt["recovery"] != name:
             return True
@@ -6319,7 +6443,11 @@ class Controller:
             or claim.get("status") != "blocked"
             or claim.get("blocked_reason")
             != "recovery-abandoned:release-upgrade"
-            or claim.get("lease_released") is not True
+            or not (
+                claim.get("lease_released") is True
+                or claim.get("parked") is True
+                and claim.get("lease", "") == ""
+            )
             or claim.get("publication_lease")
         ):
             return False
@@ -6343,6 +6471,13 @@ class Controller:
                 )
                 if terminal is not None and passport is not None else None
             )
+            ordinary_route = authorization is None and passport is not None
+            if (
+                ordinary_route
+                and passport.get("factory_sha") == self.release_path.name
+                and SHA.fullmatch(passport.get("head_sha", ""))
+            ):
+                authorization = passport["head_sha"]
             remote_status, local_head, remote_head = (
                 self.remote_cell_head_status(claim)
             )
@@ -6370,6 +6505,7 @@ class Controller:
             or remote_status != "pushed"
             or remote_head != local_head
             or authorization is None
+            or ordinary_route and not route_ready
             or local_head != authorization and not route_ready
         ):
             return False
@@ -7214,7 +7350,10 @@ class Controller:
                     )
                 except (ControllerError, OSError, subprocess.SubprocessError):
                     pass
-                if not migrated_authorization:
+                if (
+                    not migrated_authorization
+                    and passport.get("factory_sha") == terminal.get("kit_sha")
+                ):
                     self.quarantine_legacy_protected_mutation(claim, terminal)
             if (
                 migrated_authorization
@@ -7360,6 +7499,12 @@ class Controller:
                         )
                 claim["status"] = "blocked"
                 claim["blocked_reason"] = "route-migration-required"
+                context = getattr(self.recovery_context, "value", None)
+                if context and context.get("ticket") == claim["ticket"]:
+                    context["attempt"].update(
+                        retry_reason="route-migration-required",
+                        retry_status="blocked",
+                    )
                 self.save_claim(claim)
                 marker = (
                     f"route-migration-required-{claim['ticket']}-"
@@ -7457,6 +7602,14 @@ class Controller:
                     "ticket": claim["ticket"],
                 })
                 continue
+            if (
+                claim.get("receipt")
+                and not migrated_authorization
+                and terminal is not None
+                and terminal.get("role_exit")
+                == "role_exit_protected_ticket_mutation"
+            ):
+                self.recover_repaired_failures([claim])
             terminal = (
                 self.terminal_for_receipt(claim["ticket"], claim["receipt"])
                 if claim.get("receipt")
@@ -7468,6 +7621,8 @@ class Controller:
                     and SHA.fullmatch(terminal.get("kit_sha", ""))
                     and terminal["kit_sha"] != self.release_path.name
                 )
+                if prior_release_launch_void:
+                    self.prior_transition_tickets.discard(claim["ticket"])
                 claim["status"] = (
                     "running"
                     if (
@@ -7483,6 +7638,7 @@ class Controller:
             else:
                 claim.update(receipt="", role="", status="claimed")
                 claim.pop("budget_sha256", None)
+                self.prior_transition_tickets.discard(claim["ticket"])
             if claim.get("blocked_reason") == "route-migration-required":
                 claim.pop("blocked_reason")
             self.save_claim(claim)
@@ -7606,6 +7762,7 @@ class Controller:
         self.ensure_lease(claim, "recorded-contract-repair")
         claim.update(receipt="", role="", status="claimed")
         self.save_claim(claim)
+        self.prior_transition_tickets.discard(claim["ticket"])
         self.event("recorded_contract_repair_prepared", claim["ticket"])
         return True
 
@@ -7972,7 +8129,10 @@ class Controller:
         ):
             raise ControllerError("semantic authorization request is invalid")
         claim = self.operator_control_claim(ticket, "semantic authorization")
-        if not DIGEST.fullmatch(claim.get("lease", "")):
+        if not (
+            DIGEST.fullmatch(claim.get("lease", ""))
+            or self.parked(claim) and claim.get("lease") == ""
+        ):
             raise ControllerError("semantic authorization authority is unavailable")
         transition = self.transition_receipt(claim, record=False)
         passport = self.authenticated_operator_passport(ticket)
@@ -8081,6 +8241,8 @@ class Controller:
             or approve_hash != plan["approval_hash"]
         ):
             raise ControllerError("semantic authorization approval hash does not match")
+        if not DIGEST.fullmatch(claim.get("lease", "")):
+            self.ensure_lease(claim, "semantic-round-authorization")
         head = self.apply_operator_ticket_change(
             claim, plan, after, observed_status, operator_id,
             f"Authorize {role} round {semantic_round} for {ticket}",
@@ -8094,6 +8256,700 @@ class Controller:
         return {
             "approval_hash": approve_hash, "authorization_head": head,
             "schema": SCHEMA, "status": "applied", "ticket": ticket,
+        }
+
+    def contract_repair_plan(
+        self, ticket: str, role: str, operator_id: str,
+    ) -> tuple[dict[str, Any], dict[str, Any], str, str]:
+        if (
+            not TICKET.fullmatch(ticket)
+            or role not in {"planner", "spec-linter", "test-author", "builder"}
+            or not OPERATOR_ID.fullmatch(operator_id)
+            or operator_id == "auto"
+        ):
+            raise ControllerError("contract repair request is invalid")
+        claim = self.operator_control_claim(ticket, "contract repair")
+        attempt = claim.get("recovery_attempt")
+        abandoned = (
+            claim.get("blocked_reason") == "recovery-abandoned:targeted-repair"
+            and self.valid_recovery_attempt(attempt)
+            and attempt.get("phase") == "abandoned"
+            and attempt.get("recovery") == "targeted-repair"
+        )
+        receipt = claim.get("receipt", "")
+        transition = self.transition_receipt(
+            claim, allow_prior=True, record=False,
+        )
+        passport = self.authenticated_operator_passport(ticket)
+        terminal = self.terminal_for_receipt(ticket, receipt)
+        evidence_factory = transition.get("factory_sha", "") if transition else ""
+        migrations = passport.get("migration_history") if passport else None
+        source_starts = [
+            index for index, edge in enumerate(migrations or [])
+            if valid_v2_migration(edge)
+            and edge["from_factory_sha"] == evidence_factory
+            and edge["to_factory_sha"] != evidence_factory
+        ]
+        source_suffix = (
+            migrations[source_starts[0]:]
+            if isinstance(migrations, list) and len(source_starts) == 1 else []
+        )
+        final_source_edge = source_suffix[-1] if source_suffix else {}
+        reconstruction_edge = self.qualification_reconstruction_edge(
+            ticket, claim, passport, final_source_edge,
+        )
+        source_head = (
+            final_source_edge.get("from_head_sha")
+            if reconstruction_edge else passport.get("head_sha")
+        ) if passport else ""
+        source_evidence = (
+            self.qualification
+            and self.qualification.get("mode") == "successor"
+            and evidence_factory == self.qualification.get("source_factory_sha")
+            and terminal is not None
+            and terminal.get("kit_sha") == evidence_factory
+            and passport is not None
+            and passport.get("factory_sha") == self.release_path.name
+            and transition.get("route_plan_sha256")
+            == passport.get("route_plan_sha256")
+            and source_suffix
+            and all(valid_v2_migration(edge) for edge in source_suffix)
+            and all(
+                edge["from_head_sha"] == edge["to_head_sha"]
+                == source_head
+                and edge["from_route_plan_sha256"]
+                == edge["to_route_plan_sha256"]
+                == passport.get("route_plan_sha256")
+                for edge in (
+                    source_suffix[:-1] if reconstruction_edge else source_suffix
+                )
+            )
+            and (
+                not reconstruction_edge
+                or final_source_edge["from_head_sha"] == source_head
+                and final_source_edge["to_head_sha"] == passport.get("head_sha")
+            )
+            and successor_release_lineage(
+                passport.get("factory_release_history"),
+                passport.get("migration_history"), evidence_factory,
+                self.release_path.name, valid_v2_migration,
+            )
+            and final_source_edge.get("from_passport_file_sha256")
+            == passport.get("parent_file_sha256")
+            and final_source_edge.get("from_passport_sha256")
+            == passport.get("parent_digest")
+        )
+        if (
+            claim.get("status") != "blocked"
+            or not (claim.get("blocked_reason") == "role-failure" or abandoned)
+            or not DIGEST.fullmatch(receipt)
+            or not claim.get("role")
+            or claim.get("publication_lease")
+            or self.role_active(claim)
+            or not (
+                DIGEST.fullmatch(claim.get("lease", ""))
+                or self.parked(claim) and claim.get("lease") == ""
+            )
+            or transition is None
+            or not (
+                evidence_factory == self.release_path.name
+                and terminal is not None
+                and terminal.get("kit_sha") == self.release_path.name
+                or source_evidence
+            )
+            or transition.get("receipt_sha256") != receipt
+            or transition.get("role") != claim["role"]
+            or transition.get("stage") not in {
+                f"RUN {claim['role']}", f"FIX {claim['role']}",
+            }
+            or passport is None
+            or passport.get("ticket") != ticket
+            or passport.get("project") != self.project
+            or passport.get("factory_sha") != self.release_path.name
+            or passport.get("branch") != claim.get("branch")
+            or passport.get("current_state") != "Blocked-Escalated"
+            or passport.get("current_stage") != transition.get("stage")
+            or passport.get("transition_receipt_sha256") != receipt
+            or terminal is None
+            or terminal.get("ticket") != ticket
+            or terminal.get("role") != claim["role"]
+            or terminal.get("transition_receipt_sha256") != receipt
+            or terminal.get("exit_status") != "12"
+            or terminal.get("role_exit") != "role_exit_contract_blocked"
+            or not self.remote_passport_valid(claim)
+        ):
+            raise ControllerError("contract repair authority is unavailable")
+        ticket_path = f"factory/tickets/{ticket}.md"
+        before = self.cell_git(claim, "show", f"{passport['head_sha']}:{ticket_path}")
+        if (
+            before.returncode
+            or self.contract_resume_directive_status(before.stdout, receipt)
+            != "waiting"
+        ):
+            raise ControllerError("contract repair ticket is invalid")
+        after = (
+            before.stdout.rstrip("\n")
+            + f"\n\nOPERATOR RESUME: {role}\n"
+            + f"OPERATOR RESUME RECEIPT: {receipt}\n"
+        )
+        observed_status = self.operator_ticket_change_status(
+            claim, passport, after,
+            lambda parent, child: self.exact_ticket_commit(claim, parent, child),
+            "contract repair",
+        )
+        plan = {
+            "blocked_receipt": receipt,
+            "blocked_role": claim["role"],
+            "branch": claim["branch"],
+            "claim_sha256": hashlib.sha256(canonical_document(claim)).hexdigest(),
+            "factory_sha": self.release_path.name,
+            "operator_id": operator_id,
+            "parent_sha": passport["head_sha"],
+            "passport_sha256": passport["passport_sha256"],
+            "project": self.project,
+            "repair_role": role,
+            "schema": SCHEMA,
+            "ticket": ticket,
+            "ticket_after_sha256": hashlib.sha256(after.encode()).hexdigest(),
+            "ticket_before_sha256": hashlib.sha256(before.stdout.encode()).hexdigest(),
+        }
+        plan["approval_hash"] = hashlib.sha256(canonical_document(plan)).hexdigest()
+        return plan, claim, after, observed_status
+
+    def qualification_reconstruction_edge(
+        self, ticket: str, claim: dict[str, Any], passport: dict[str, Any] | None,
+        edge: dict[str, Any],
+    ) -> bool:
+        if (
+            not passport
+            or os.environ.get("FACTORY_KIT_TRUST_SCOPE")
+            != "qualification-candidate"
+            or os.environ.get("FACTORY_QUALIFICATION_MODE") != "isolated"
+            or not self.qualification
+            or self.qualification.get("mode") != "successor"
+            or not valid_v2_migration(edge)
+            or edge.get("from_factory_sha") != self.release_path.name
+            or edge.get("to_factory_sha") != self.release_path.name
+            or edge.get("from_head_sha") == edge.get("to_head_sha")
+            or edge.get("to_head_sha") != passport.get("head_sha")
+            or edge.get("from_protected_base_sha")
+            != edge.get("to_protected_base_sha")
+            or edge.get("to_protected_base_sha")
+            != passport.get("protected_base_sha")
+            or edge.get("from_route_plan_sha256")
+            != edge.get("to_route_plan_sha256")
+            or edge.get("to_route_plan_sha256")
+            != passport.get("route_plan_sha256")
+            or edge.get("from_passport_file_sha256")
+            != passport.get("parent_file_sha256")
+            or edge.get("from_passport_sha256")
+            != passport.get("parent_digest")
+        ):
+            return False
+        try:
+            root = safe_directory(self.state / "history-reconstructions")
+            record = read(root / f"{ticket}.json")
+        except (ControllerError, FileNotFoundError, OSError, ValueError):
+            return False
+        digest = record.get("record_sha256", "")
+        unsigned = {
+            key: value for key, value in record.items()
+            if key != "record_sha256"
+        }
+        expected_keys = {
+            "branch", "configured_test_paths", "factory_sha", "new_head",
+            "new_tree", "old_head", "old_tree", "passport_sha256",
+            "product_origin_sha256", "project", "protected_base_sha",
+            "record_sha256", "schema", "state", "ticket",
+            "transition_receipt_sha256",
+        }
+        configured = record.get("configured_test_paths")
+        return bool(
+            set(record) == expected_keys
+            and DIGEST.fullmatch(digest)
+            and digest == hashlib.sha256(canonical_document(unsigned)).hexdigest()
+            and digest == edge.get("rewrite_authorization_sha256")
+            and record.get("schema")
+            == QUALIFICATION_HISTORY_RECONSTRUCTION_SCHEMA
+            and record.get("ticket") == ticket
+            and record.get("project") == self.project
+            and record.get("branch") == claim.get("branch")
+            and record.get("factory_sha") == self.release_path.name
+            and record.get("old_head") == edge.get("from_head_sha")
+            and record.get("new_head") == passport.get("head_sha")
+            and record.get("old_tree") == record.get("new_tree")
+            == passport.get("head_tree")
+            and record.get("product_origin_sha256")
+            == passport.get("product_origin_sha256")
+            and record.get("protected_base_sha")
+            == passport.get("protected_base_sha")
+            and record.get("state") == "Blocked-Escalated"
+            and record.get("transition_receipt_sha256") == claim.get("receipt")
+            and isinstance(configured, list) and configured
+            and all(isinstance(path, str) for path in configured)
+            and verified_test_snapshot_reconstruction(
+                claim["worktree"], record["protected_base_sha"],
+                record["old_head"], record["new_head"], configured, ticket,
+            )
+        )
+
+    def plan_contract_repair(
+        self, ticket: str, role: str, operator_id: str,
+    ) -> dict[str, Any]:
+        plan, _claim, _after, observed = self.contract_repair_plan(
+            ticket, role, operator_id,
+        )
+        return {**plan, "status": observed}
+
+    def apply_contract_repair(
+        self, ticket: str, role: str, operator_id: str, approve_hash: str,
+    ) -> dict[str, Any]:
+        plan, claim, after, observed = self.contract_repair_plan(
+            ticket, role, operator_id,
+        )
+        if not DIGEST.fullmatch(approve_hash) or approve_hash != plan["approval_hash"]:
+            raise ControllerError("contract repair approval hash does not match")
+        if not DIGEST.fullmatch(claim.get("lease", "")):
+            self.ensure_lease(claim, "contract-repair")
+        head = self.apply_operator_ticket_change(
+            claim, plan, after, observed, operator_id,
+            f"Route {ticket} contract repair to {role}",
+            lambda parent, child: self.exact_ticket_commit(claim, parent, child),
+            "contract repair",
+        )
+        return {
+            "approval_hash": approve_hash, "repair_head": head,
+            "schema": SCHEMA, "status": "applied", "ticket": ticket,
+        }
+
+    def qualification_history_repair(
+        self, ticket: str, blocked_receipt: str,
+    ) -> dict[str, Any]:
+        """Rebuild one blocked test-author branch without changing its tree."""
+        if (
+            os.environ.get("FACTORY_KIT_TRUST_SCOPE")
+            != "qualification-candidate"
+            or os.environ.get("FACTORY_QUALIFICATION_MODE") != "isolated"
+            or not self.qualification
+            or self.qualification.get("mode") != "successor"
+            or ticket not in self.qualification.get("tickets", [])
+            or not TICKET.fullmatch(ticket)
+            or not DIGEST.fullmatch(blocked_receipt)
+        ):
+            raise ControllerError(
+                "qualification history reconstruction authority is unavailable"
+            )
+        records_path = self.state / "history-reconstructions"
+        records = (
+            safe_directory(records_path)
+            if records_path.exists() or records_path.is_symlink() else None
+        )
+        record_path = records_path / f"{ticket}.json"
+        record = (
+            read(record_path)
+            if record_path.exists() or record_path.is_symlink() else None
+        )
+
+        if record is None:
+            plan, claim, _after, observed = self.contract_repair_plan(
+                ticket, "test-author", "qualification-history-repair",
+            )
+            if (
+                plan.get("blocked_receipt") != blocked_receipt
+                or plan.get("blocked_role") != "test-author"
+                or observed != "planned"
+            ):
+                raise ControllerError(
+                    "qualification history reconstruction authority is unavailable"
+                )
+            passport = self.authenticated_operator_passport(ticket)
+            if passport is None:
+                raise ControllerError(
+                    "qualification history reconstruction passport is unavailable"
+                )
+        else:
+            claim = self.operator_control_claim(
+                ticket, "qualification history reconstruction",
+            )
+            passport = self.authenticated_operator_passport(ticket)
+            transition = self.transition_receipt(
+                claim, allow_prior=True, record=False,
+            )
+            terminal = self.terminal_for_receipt(ticket, blocked_receipt)
+            evidence_factory = transition.get("factory_sha", "") if transition else ""
+            source = self.qualification.get("source_factory_sha")
+            source_valid = bool(
+                passport
+                and evidence_factory == source
+                and terminal
+                and terminal.get("kit_sha") == source
+                and successor_release_lineage(
+                    passport.get("factory_release_history"),
+                    passport.get("migration_history"), source,
+                    self.release_path.name, valid_v2_migration,
+                )
+            )
+            if (
+                claim.get("status") != "blocked"
+                or claim.get("blocked_reason") not in {
+                    "role-failure", "recovery-abandoned:targeted-repair",
+                }
+                or claim.get("receipt") != blocked_receipt
+                or claim.get("role") != "test-author"
+                or claim.get("publication_lease")
+                or self.role_active(claim)
+                or not (
+                    DIGEST.fullmatch(claim.get("lease", ""))
+                    or self.parked(claim) and claim.get("lease") == ""
+                )
+                or transition is None
+                or transition.get("receipt_sha256") != blocked_receipt
+                or transition.get("role") != "test-author"
+                or transition.get("stage")
+                not in {"RUN test-author", "FIX test-author"}
+                or transition.get("consumed") is not True
+                or not (
+                    evidence_factory == self.release_path.name or source_valid
+                )
+                or passport is None
+                or passport.get("ticket") != ticket
+                or passport.get("project") != self.project
+                or passport.get("factory_sha") != self.release_path.name
+                or passport.get("branch") != claim.get("branch")
+                or passport.get("current_state") != "Blocked-Escalated"
+                or passport.get("current_stage") != transition.get("stage")
+                or passport.get("transition_receipt_sha256") != blocked_receipt
+                or terminal is None
+                or terminal.get("ticket") != ticket
+                or terminal.get("role") != "test-author"
+                or terminal.get("transition_receipt_sha256") != blocked_receipt
+                or terminal.get("exit_status") != "12"
+                or terminal.get("role_exit") != "role_exit_contract_blocked"
+            ):
+                raise ControllerError(
+                    "qualification history reconstruction authority is unavailable"
+                )
+
+        worktree = Path(claim["worktree"])
+        old_head = record.get("old_head", "") if record else passport["head_sha"]
+        new_head = record.get("new_head", "") if record else ""
+        base = record.get("protected_base_sha", "") if record else passport[
+            "protected_base_sha"
+        ]
+        project = self.cell_git(
+            claim, "show", f"{base}:factory/PROJECT.env",
+        )
+        values = re.findall(r"(?m)^TEST_PATHS=(.*)$", project.stdout)
+        try:
+            configured = shlex.split(values[0], comments=False, posix=True)
+        except (IndexError, ValueError) as error:
+            raise ControllerError(
+                "qualification history reconstruction test paths are invalid"
+            ) from error
+        safe_path = re.compile(r"[A-Za-z0-9._][A-Za-z0-9._/-]*")
+        if (
+            project.returncode
+            or len(values) != 1
+            or not configured
+            or len(configured) != len(set(configured))
+            or any(
+                not safe_path.fullmatch(path.rstrip("/"))
+                or any(
+                    part in {"", ".", ".."}
+                    for part in path.rstrip("/").split("/")
+                )
+                or path.rstrip("/") == "factory"
+                or path.rstrip("/").startswith("factory/")
+                for path in configured
+            )
+        ):
+            raise ControllerError(
+                "qualification history reconstruction test paths are invalid"
+            )
+        normalized = [path.rstrip("/") for path in configured]
+        if any(
+            left == right
+            or left.startswith(right + "/")
+            or right.startswith(left + "/")
+            for index, left in enumerate(normalized)
+            for right in normalized[index + 1:]
+        ):
+            raise ControllerError(
+                "qualification history reconstruction test paths overlap"
+            )
+        certified = os.environ.get("FACTORY_CERTIFIED_PRODUCT_ORIGIN", "")
+        origin = self.cell_git(claim, "remote", "get-url", "--push", "origin")
+
+        def remote_head(branch: str) -> str:
+            observed = subprocess.run(
+                [
+                    "git", "-C", str(worktree), "ls-remote", "--exit-code",
+                    certified, f"refs/heads/{branch}",
+                ],
+                text=True, capture_output=True, check=False, timeout=120,
+            )
+            match = re.fullmatch(
+                rf"([0-9a-f]{{40}})\trefs/heads/{re.escape(branch)}\n",
+                observed.stdout,
+            )
+            if observed.returncode or match is None:
+                raise ControllerError(
+                    "qualification history reconstruction remote is unavailable"
+                )
+            return match.group(1)
+
+        branch = claim["branch"]
+        local_branch = self.cell_git(
+            claim, "symbolic-ref", "--quiet", "--short", "HEAD",
+        )
+        local = self.cell_git(claim, "rev-parse", "HEAD").stdout.strip()
+        tracking_ref = f"refs/remotes/origin/{branch}"
+        tracking_result = self.cell_git(
+            claim, "rev-parse", "--verify", tracking_ref,
+        )
+        tracking = tracking_result.stdout.strip()
+        dirty = self.cell_git(
+            claim, "status", "--porcelain=v1", "-z", "--untracked-files=all",
+            "--ignore-submodules=none",
+        )
+        if (
+            not certified
+            or any(character in certified for character in "\n\r\t")
+            or origin.returncode
+            or origin.stdout.rstrip("\n") != certified
+            or local_branch.returncode
+            or local_branch.stdout.strip() != branch
+            or dirty.returncode
+            or dirty.stdout
+            or not SHA.fullmatch(base)
+            or remote_head("main") != base
+            or tracking_result.returncode
+            or tracking not in {old_head, new_head}
+            or local not in {old_head, new_head}
+            or remote_head(branch) not in {old_head, new_head}
+        ):
+            raise ControllerError(
+                "qualification history reconstruction repository moved"
+            )
+
+        if record is None:
+            if local != old_head or tracking != old_head or remote_head(branch) != old_head:
+                raise ControllerError(
+                    "qualification history reconstruction repository moved"
+                )
+            try:
+                reconstruction = create_test_snapshot_reconstruction(
+                    str(worktree), base, old_head, configured, ticket,
+                )
+            except HistoryReconstructionError as error:
+                raise ControllerError(str(error)) from error
+            new_head = reconstruction["new_head"]
+            with tempfile.TemporaryDirectory(
+                prefix=f"history-reconstruction-{ticket}.", dir=self.state,
+            ) as temporary:
+                gate_cell = Path(temporary) / "cell"
+                added = subprocess.run(
+                    [
+                        "git", "-C", str(self.product), "worktree", "add",
+                        "--detach", str(gate_cell), new_head,
+                    ],
+                    text=True, capture_output=True, check=False, timeout=120,
+                )
+                if added.returncode:
+                    raise ControllerError(
+                        "qualification history reconstruction gate cell failed"
+                    )
+                try:
+                    environment = {
+                        "BASE_REF": base,
+                        "EXEMPT_PATHS": "factory/",
+                        "HOME": str(Path.home()),
+                        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                        "TEST_PATHS": " ".join(configured),
+                        "TMPDIR": os.environ.get("TMPDIR", "/tmp"),
+                    }
+                    for relative in (
+                        ".github/scripts/test-immutability-check.sh",
+                        ".github/scripts/builder-confinement-check.sh",
+                    ):
+                        gate = gate_cell / relative
+                        info = gate.lstat()
+                        if not stat.S_ISREG(info.st_mode) or gate.is_symlink():
+                            raise ControllerError(
+                                "qualification history reconstruction gate is unsafe"
+                            )
+                        checked = subprocess.run(
+                            ["/bin/bash", str(gate)], cwd=gate_cell,
+                            env=environment, text=True, capture_output=True,
+                            check=False, timeout=120,
+                        )
+                        if checked.returncode:
+                            raise ControllerError(
+                                "qualification history reconstruction gate failed"
+                            )
+                finally:
+                    subprocess.run(
+                        [
+                            "git", "-C", str(self.product), "worktree",
+                            "remove", "--force", str(gate_cell),
+                        ],
+                        text=True, capture_output=True, check=False, timeout=120,
+                    )
+            unsigned = {
+                "branch": branch,
+                "configured_test_paths": configured,
+                "factory_sha": self.release_path.name,
+                "new_head": new_head,
+                "new_tree": reconstruction["old_tree"],
+                "old_head": old_head,
+                "old_tree": reconstruction["old_tree"],
+                "passport_sha256": passport["passport_sha256"],
+                "product_origin_sha256": passport["product_origin_sha256"],
+                "project": self.project,
+                "protected_base_sha": base,
+                "schema": QUALIFICATION_HISTORY_RECONSTRUCTION_SCHEMA,
+                "state": "Blocked-Escalated",
+                "ticket": ticket,
+                "transition_receipt_sha256": blocked_receipt,
+            }
+            record = {
+                **unsigned,
+                "record_sha256": hashlib.sha256(
+                    canonical_document(unsigned),
+                ).hexdigest(),
+            }
+            if records is None:
+                records_path.mkdir(mode=0o700)
+                records = safe_directory(records_path)
+                record_path = records / f"{ticket}.json"
+            write(record_path, record)
+
+        unsigned = {
+            key: value for key, value in record.items()
+            if key != "record_sha256"
+        }
+        record_digest = record.get("record_sha256", "")
+        expected_keys = {
+            "branch", "configured_test_paths", "factory_sha", "new_head",
+            "new_tree", "old_head", "old_tree", "passport_sha256",
+            "product_origin_sha256", "project", "protected_base_sha",
+            "record_sha256", "schema", "state", "ticket",
+            "transition_receipt_sha256",
+        }
+        if (
+            set(record) != expected_keys
+            or not DIGEST.fullmatch(record_digest)
+            or record_digest
+            != hashlib.sha256(canonical_document(unsigned)).hexdigest()
+            or record.get("schema")
+            != QUALIFICATION_HISTORY_RECONSTRUCTION_SCHEMA
+            or record.get("ticket") != ticket
+            or record.get("project") != self.project
+            or record.get("branch") != branch
+            or record.get("factory_sha") != self.release_path.name
+            or record.get("configured_test_paths") != configured
+            or record.get("protected_base_sha") != base
+            or record.get("transition_receipt_sha256") != blocked_receipt
+            or record.get("state") != "Blocked-Escalated"
+            or record.get("old_tree") != record.get("new_tree")
+            or record.get("product_origin_sha256")
+            != passport.get("product_origin_sha256")
+            or not verified_test_snapshot_reconstruction(
+                str(worktree), base, record.get("old_head", ""),
+                record.get("new_head", ""), configured, ticket,
+            )
+        ):
+            raise ControllerError(
+                "qualification history reconstruction record is invalid"
+            )
+        old_head = record["old_head"]
+        new_head = record["new_head"]
+        migration = passport.get("migration_history", [])[-1:]
+        passport_old = (
+            passport.get("head_sha") == old_head
+            and passport.get("passport_sha256") == record["passport_sha256"]
+        )
+        passport_new = bool(
+            passport.get("head_sha") == new_head
+            and migration
+            and migration[0].get("from_head_sha") == old_head
+            and migration[0].get("to_head_sha") == new_head
+            and migration[0].get("rewrite_authorization_sha256")
+            == record_digest
+        )
+        if not (passport_old or passport_new):
+            raise ControllerError(
+                "qualification history reconstruction passport moved"
+            )
+        local = self.cell_git(claim, "rev-parse", "HEAD").stdout.strip()
+        tracking = self.cell_git(
+            claim, "rev-parse", "--verify", tracking_ref,
+        ).stdout.strip()
+        remote = remote_head(branch)
+        if any(head not in {old_head, new_head} for head in (local, tracking, remote)):
+            raise ControllerError(
+                "qualification history reconstruction repository moved"
+            )
+        if remote == old_head:
+            pushed = self.cell_git(
+                claim, "push", "--porcelain",
+                f"--force-with-lease=refs/heads/{branch}:{old_head}",
+                certified, f"{new_head}:refs/heads/{branch}",
+            )
+            if pushed.returncode and remote_head(branch) != new_head:
+                raise ControllerError(
+                    "qualification history reconstruction push failed"
+                )
+        if remote_head(branch) != new_head:
+            raise ControllerError(
+                "qualification history reconstruction remote moved"
+            )
+        if local == old_head and self.cell_git(
+            claim, "update-ref", f"refs/heads/{branch}", new_head, old_head,
+        ).returncode:
+            raise ControllerError(
+                "qualification history reconstruction local update failed"
+            )
+        if tracking == old_head and self.cell_git(
+            claim, "update-ref", tracking_ref, new_head, old_head,
+        ).returncode:
+            raise ControllerError(
+                "qualification history reconstruction tracking update failed"
+            )
+        if not passport_new:
+            migrated = self.migrate_passport(
+                claim, "preserve", expected_head=new_head,
+            )
+            passport = self.authenticated_operator_passport(ticket)
+            if (
+                migrated.get("status") != "ok"
+                or passport is None
+                or passport.get("head_sha") != new_head
+                or passport.get("migration_history", [])[-1].get(
+                    "rewrite_authorization_sha256"
+                ) != record_digest
+            ):
+                raise ControllerError(
+                    "qualification history reconstruction passport migration failed"
+                )
+        final_status = self.cell_git(
+            claim, "status", "--porcelain=v1", "-z", "--untracked-files=all",
+            "--ignore-submodules=none",
+        )
+        if final_status.returncode or final_status.stdout:
+            raise ControllerError(
+                "qualification history reconstruction left a dirty cell"
+            )
+        self.event_once(
+            "qualification_history_reconstructed", ticket,
+            old_head=old_head, new_head=new_head,
+            reconstruction_sha256=record_digest,
+            transition_receipt_sha256=blocked_receipt,
+        )
+        return {
+            "new_head": new_head, "old_head": old_head,
+            "record_sha256": record_digest, "schema": SCHEMA,
+            "status": "repaired", "ticket": ticket,
         }
 
     @staticmethod
@@ -9110,8 +9966,72 @@ class Controller:
             )
         )
 
+    def route_migrated_failed_role(
+        self, claim: dict[str, Any], terminal: dict[str, str],
+        passport: dict[str, Any],
+    ) -> bool:
+        source = terminal.get("role_head_before", "")
+        source_factory = terminal.get("kit_sha", "")
+        migrations = passport.get("migration_history")
+        starts = [
+            index for index, edge in enumerate(migrations or [])
+            if valid_v2_migration(edge)
+            and edge["from_factory_sha"] == source_factory
+            and edge["to_factory_sha"] != source_factory
+            and edge["from_head_sha"] == source
+        ]
+        suffix = (
+            migrations[starts[0]:]
+            if isinstance(migrations, list) and len(starts) == 1 else []
+        )
+        final = suffix[-1] if suffix else {}
+        return (
+            bool(suffix)
+            and all(valid_v2_migration(edge) for edge in suffix)
+            and all(
+                prior["to_factory_sha"] == following["from_factory_sha"]
+                and prior["to_head_sha"] == following["from_head_sha"]
+                and prior["to_protected_base_sha"]
+                == following["from_protected_base_sha"]
+                and prior["to_route_plan_sha256"]
+                == following["from_route_plan_sha256"]
+                for prior, following in zip(suffix, suffix[1:])
+            )
+            and all(
+                edge["from_head_sha"] == edge["to_head_sha"]
+                and edge["from_route_plan_sha256"]
+                == edge["to_route_plan_sha256"]
+                or edge["from_head_sha"] != edge["to_head_sha"]
+                and self.exact_route_migration_commit(
+                    claim, edge["from_head_sha"], edge["to_head_sha"],
+                )
+                for edge in suffix
+            )
+            and successor_release_lineage(
+                passport.get("factory_release_history"), migrations,
+                source_factory, self.release_path.name, valid_v2_migration,
+            )
+            and final.get("to_factory_sha") == passport.get("factory_sha")
+            == self.release_path.name
+            and final.get("to_head_sha") == passport.get("head_sha")
+            and final.get("to_protected_base_sha")
+            == passport.get("protected_base_sha")
+            and final.get("to_route_plan_sha256")
+            == passport.get("route_plan_sha256")
+            and final.get("from_passport_file_sha256")
+            == passport.get("parent_file_sha256")
+            and final.get("from_passport_sha256")
+            == passport.get("parent_digest")
+            and self.remote_passport_valid(claim)
+        )
+
     def recover_repaired_failures(self, claims: list[dict[str, Any]]) -> None:
         for claim in claims:
+            if (
+                claim.get("blocked_reason") == "route-migration-required"
+                and not self.ticket_release_current(claim)
+            ):
+                continue
             if self.restore_recorded_contract_repair(claim):
                 continue
             self.restore_contract_blocker(claim)
@@ -9487,9 +10407,18 @@ class Controller:
                         claim, terminal,
                     )
                 )
+                route_migrated_failure = (
+                    not semantic_authorization
+                    and passport.get("head_sha")
+                    != terminal.get("role_head_before")
+                    and self.route_migrated_failed_role(
+                        claim, terminal, passport,
+                    )
+                )
                 if (
                     passport.get("head_sha") != terminal.get("role_head_before")
                     and not semantic_authorization
+                    and not route_migrated_failure
                     or completed.count(expected) != 0
                 ):
                     continue
@@ -9667,7 +10596,6 @@ class Controller:
                     raise ControllerError(
                         "semantic-round recovery transition is invalid"
                     )
-                self.prior_transition_tickets.discard(claim["ticket"])
                 self.event_once(
                     "semantic_round_authorization_recovered_by_release_upgrade",
                     claim["ticket"], failed_run_id=failed_run,
@@ -9676,6 +10604,7 @@ class Controller:
             claim.update(receipt="", role="", status="claimed")
             claim.pop("blocked_reason", None)
             self.save_claim(claim)
+            self.prior_transition_tickets.discard(claim["ticket"])
             if semantic_authorization:
                 continue
             self.event(
@@ -11683,6 +12612,7 @@ class Controller:
                     and not self.role_active(claim)
                 ]
                 self.release_inactive_ticket_leases(idle)
+                self.maintain_successor_leases(idle)
                 if protected_main is None:
                     protected_main = self.cancellation_authority(idle)
                 before_retirement = {claim["ticket"] for claim in idle}
@@ -11878,6 +12808,8 @@ def main() -> None:
             "reconcile", "pause", "resume",
             "preview-timeout-retry",
             "authorize-round-plan", "authorize-round-apply",
+            "contract-repair-plan", "contract-repair-apply",
+            "qualification-history-repair",
             "reviewer-void-plan", "reviewer-void-apply",
         ),
         default="reconcile",
@@ -11890,6 +12822,7 @@ def main() -> None:
     parser.add_argument("--run-ordinal", default=0, type=int)
     parser.add_argument("--operator-id", default="")
     parser.add_argument("--approve-hash", default="")
+    parser.add_argument("--receipt", default="")
     args = parser.parse_args()
     lock_descriptor = -1
     try:
@@ -11899,24 +12832,24 @@ def main() -> None:
             (args.action == "reconcile" and any((
                 args.ticket, args.issue, args.factory_sha, args.role,
                 args.semantic_round, args.run_ordinal, args.operator_id,
-                args.approve_hash,
+                args.approve_hash, args.receipt,
             )))
             or (args.action == "pause" and any((
                 args.factory_sha, args.role, args.semantic_round,
                 args.run_ordinal, args.operator_id, args.approve_hash,
-                not args.issue,
+                args.receipt, not args.issue,
             )))
             or (args.action == "resume" and any((
                 args.issue, args.role, args.semantic_round,
                 args.run_ordinal, args.operator_id, args.approve_hash,
-                not args.factory_sha,
+                args.receipt, not args.factory_sha,
             )))
             or (
                 args.action == "preview-timeout-retry"
                 and any((
                     args.issue, args.factory_sha, not args.ticket, args.role,
                     args.semantic_round, args.run_ordinal,
-                    not args.operator_id, args.approve_hash,
+                    not args.operator_id, args.approve_hash, args.receipt,
                 ))
             )
             or (
@@ -11927,6 +12860,18 @@ def main() -> None:
                     not args.operator_id,
                     args.action == "authorize-round-plan" and args.approve_hash,
                     args.action == "authorize-round-apply" and not args.approve_hash,
+                    args.receipt,
+                ))
+            )
+            or (
+                args.action in {"contract-repair-plan", "contract-repair-apply"}
+                and any((
+                    args.issue, args.factory_sha, not args.ticket,
+                    not args.role, args.semantic_round, args.run_ordinal,
+                    not args.operator_id,
+                    args.action == "contract-repair-plan" and args.approve_hash,
+                    args.action == "contract-repair-apply" and not args.approve_hash,
+                    args.receipt,
                 ))
             )
             or (
@@ -11937,6 +12882,15 @@ def main() -> None:
                     not args.run_ordinal, not args.operator_id,
                     args.action == "reviewer-void-plan" and args.approve_hash,
                     args.action == "reviewer-void-apply" and not args.approve_hash,
+                    args.receipt,
+                ))
+            )
+            or (
+                args.action == "qualification-history-repair"
+                and any((
+                    args.issue, args.factory_sha, not args.ticket, args.role,
+                    args.semantic_round, args.run_ordinal, args.operator_id,
+                    args.approve_hash, not args.receipt,
                 ))
             )
         ):
@@ -11969,6 +12923,18 @@ def main() -> None:
             result = controller.apply_semantic_authorization(
                 args.ticket, args.role, args.semantic_round, args.operator_id,
                 args.approve_hash,
+            )
+        elif args.action == "contract-repair-plan":
+            result = controller.plan_contract_repair(
+                args.ticket, args.role, args.operator_id,
+            )
+        elif args.action == "contract-repair-apply":
+            result = controller.apply_contract_repair(
+                args.ticket, args.role, args.operator_id, args.approve_hash,
+            )
+        elif args.action == "qualification-history-repair":
+            result = controller.qualification_history_repair(
+                args.ticket, args.receipt,
             )
         elif args.action == "reviewer-void-plan":
             result = controller.plan_reviewer_void(

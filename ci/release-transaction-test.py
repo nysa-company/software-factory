@@ -441,6 +441,51 @@ class ReleaseTransactionTest(unittest.TestCase):
         self.assertEqual(hydrated, 1)
         self.assertEqual(order, ["head", "remote", "hydrate", "tickets", "terminal"])
 
+    def test_activation_uses_the_exact_per_ticket_migration_source(self) -> None:
+        ticket = "T-1"
+        source = "c" * 40
+        head = "d" * 40
+        validator = ACTIVATION.Validator(
+            self.product, self.sha, ROOT / "scripts", str(self.root / "origin"), "",
+        )
+        entry = {
+            "branch": f"ticket/{ticket}", "head": head,
+            "source_kit_sha": source, "state": "Ready", "ticket": ticket,
+        }
+        validator.authorization = {
+            "repository": "example/product",
+            "schema": "nysa.software-factory.inflight-release-authorization/v2",
+            "source_kit_sha": "a" * 40,
+            "target_kit_sha": self.sha,
+            "tickets": [entry],
+        }
+        validator.authorized = {ticket: entry}
+        validator.authorization_loaded = True
+        plan = {
+            "created_at": "1970-01-01T00:00:00Z", "kit_sha": source,
+            "resolution": {}, "schema": "ticket-model-route-plan/v1",
+            "ticket": ticket,
+        }
+        manager = mock.Mock()
+        with (
+            mock.patch.object(
+                validator, "git",
+                return_value=subprocess.CompletedProcess(
+                    [], 0, json.dumps(plan), "",
+                ),
+            ),
+            mock.patch.object(
+                validator, "load_migration_policy",
+                return_value=(manager, {}, {}, {}),
+            ),
+        ):
+            validator.authorize_inflight(
+                ticket, f"ticket/{ticket}", head,
+                f"refs/remotes/origin/ticket/{ticket}", "Ready", source,
+            )
+        self.assertEqual(validator.used_authorizations, {ticket})
+        manager._validate_pin.assert_called_once()
+
     def test_activation_main_check_ignores_repository_transport_rewrites(self) -> None:
         product = self.root / "trust-product"
         trusted = self.root / "trusted.git"

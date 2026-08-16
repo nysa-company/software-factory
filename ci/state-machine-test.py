@@ -259,6 +259,7 @@ class StateMachineTest(unittest.TestCase):
 
     def test_spec_lint_waits_for_each_round_after_three(self) -> None:
         ticket = self.product / "factory/tickets/T-110.md"
+        cap = "ESCALATE planner-spec-linter loop cap reached; attempts=3; limit=3"
         ticket.write_text(
             "# T-110\n\nState: Planning\n"
             "SPEC-LINT: FAIL — one\n"
@@ -276,6 +277,66 @@ class StateMachineTest(unittest.TestCase):
             "attempt": 3, "capped": True,
             "kind": "planner-spec-linter", "limit": 3,
         })
+        stage, loop = STATE.govern_loop(self.args, cap, False)
+        self.assertEqual(
+            stage,
+            "AWAIT-OPERATOR semantic-round authorization required; add exact "
+            "line: OPERATOR AUTHORIZATION: spec-linter round 4",
+        )
+        self.assertTrue(loop["capped"])
+        ticket.write_text(
+            ticket.read_text(encoding="utf-8")
+            + "OPERATOR AUTHORIZATION: spec-linter round 4\n",
+            encoding="utf-8",
+        )
+        stage, loop = STATE.govern_loop(self.args, cap, False)
+        self.assertEqual(stage, "RUN planner")
+        self.assertFalse(loop["capped"])
+        for malformed in (
+            "ESCALATE planner-spec-linter loop cap reached; attempts=4; limit=3",
+            "ESCALATE planner-spec-linter loop cap reached; attempts=3; limit=4",
+            cap + "; unexpected=true",
+        ):
+            with self.subTest(malformed=malformed):
+                stage, _loop = STATE.govern_loop(self.args, malformed, False)
+                self.assertEqual(stage, malformed)
+
+        for authorization, expected_stage in (
+            ("", "AWAIT-OPERATOR semantic-round authorization required; add "
+                 "exact line: OPERATOR AUTHORIZATION: spec-linter round 4"),
+            ("OPERATOR AUTHORIZATION: spec-linter round 4\n", "RUN planner"),
+        ):
+            with self.subTest(next_transition=expected_stage):
+                ticket.write_text(
+                    "# T-110\n\nState: Planning\n"
+                    "SPEC-LINT: FAIL — one\n"
+                    "SPEC-LINT: FAIL — two\n"
+                    "SPEC-LINT: FAIL — three\n"
+                    + authorization,
+                    encoding="utf-8",
+                )
+                with (
+                    mock.patch.object(
+                        STATE, "current_state", return_value="Planning",
+                    ),
+                    mock.patch.object(
+                        STATE, "declared_dependencies", return_value=[],
+                    ),
+                    mock.patch.object(
+                        STATE, "contract_repair_stage",
+                        return_value=(None, False),
+                    ),
+                    mock.patch.object(STATE, "resolve", return_value=cap),
+                    mock.patch.object(STATE, "migrate_passport"),
+                    mock.patch.object(
+                        STATE, "issue",
+                        side_effect=lambda _args, _stage, loop=None: {
+                            "loop": loop, "receipt_sha256": "d" * 64,
+                        },
+                    ),
+                ):
+                    transition = STATE.next_transition(self.args)
+                self.assertEqual(transition["stage"], expected_stage)
 
         ticket.write_text(
             "# T-110\n\nState: Building\n"
@@ -1038,6 +1099,9 @@ class StateMachineTest(unittest.TestCase):
             (("planner", "spec-linter"), "RUN test-author", "PASS"),
             (("planner", "spec-linter", "planner"), "RUN spec-linter", "FAIL"),
             (("planner", "spec-linter") * 3, "RUN planner", "FAIL"),
+            (("planner", "spec-linter") * 3 + ("planner",),
+             "RUN spec-linter", "FAIL"),
+            (("planner", "spec-linter") * 4, "RUN planner", "FAIL"),
         )
         for after, stage, spec in valid:
             with self.subTest(after=after, stage=stage, spec=spec):
@@ -1059,7 +1123,6 @@ class StateMachineTest(unittest.TestCase):
             (("planner", "spec-linter", "builder"), "RUN planner"),
             (("planner",), "RUN planner"),
             (("planner", "spec-linter"), "RUN spec-linter"),
-            (("planner", "spec-linter") * 3 + ("planner",), "RUN spec-linter"),
         )
         write()
         for after, stage in invalid:
@@ -1128,7 +1191,6 @@ class StateMachineTest(unittest.TestCase):
                     )
             for change in (
                 {"attempt": 0},
-                {"attempt": 3},
                 {"attempt": True},
                 {"capped": True},
                 {"kind": "builder-reviewer"},
@@ -1160,6 +1222,51 @@ class StateMachineTest(unittest.TestCase):
                         ),
                         "RUN planner",
                     )
+        with mock.patch.object(
+            STATE, "reviewer_repair_catchup", return_value=True,
+        ):
+            for attempt in (3, 4):
+                failures = "".join(
+                    f"SPEC-LINT: FAIL — failure {index}\n"
+                    for index in range(1, attempt + 1)
+                )
+                ticket.write_text(
+                    "# T-110\n\nState: Building\n" + failures
+                    + f"OPERATOR AUTHORIZATION: spec-linter round {attempt + 1}\n",
+                    encoding="utf-8",
+                )
+                receipt = {
+                    **valid_receipt,
+                    "loop": {**valid_receipt["loop"], "attempt": attempt},
+                }
+                with self.subTest(authorized_cap_attempt=attempt):
+                    self.assertEqual(
+                        STATE.verified_preflight_stage(self.args, receipt),
+                        "CATCHUP planner",
+                    )
+                    ticket.write_text(
+                        ticket.read_text(encoding="utf-8").replace(
+                            "OPERATOR AUTHORIZATION:", "OPERATOR AUTHORITY:"
+                        ),
+                        encoding="utf-8",
+                    )
+                    self.assertEqual(
+                        STATE.verified_preflight_stage(self.args, receipt),
+                        "RUN planner",
+                    )
+                    ticket.write_text(
+                        ticket.read_text(encoding="utf-8").replace(
+                            "OPERATOR AUTHORITY:", "OPERATOR AUTHORIZATION:"
+                        ),
+                        encoding="utf-8",
+                    )
+        with mock.patch.object(
+            STATE, "reviewer_repair_catchup", return_value=False,
+        ):
+            self.assertEqual(
+                STATE.verified_preflight_stage(self.args, receipt),
+                "RUN planner",
+            )
 
     def test_qualification_reviewer_catchup_requires_a_current_verdict(self) -> None:
         ticket = self.product / "factory/tickets/T-110.md"
@@ -2340,8 +2447,137 @@ class StateMachineTest(unittest.TestCase):
         run("git", "commit", "-qm", "resume canonical operator answer", cwd=self.product)
         fast = check()
         self.assertEqual(fast["status"], "ready")
+        self.assertEqual(fast["current_state"], "Blocked-Escalated")
+        self.assertEqual(fast["resume_state"], "Planning")
         canonical = check()
         self.assertEqual(canonical["status"], "ready")
+
+        ticket.write_text(
+            ticket.read_text(encoding="utf-8").replace(
+                "State: Blocked-Escalated", "State: Planning",
+            ),
+            encoding="utf-8",
+        )
+        run("git", "add", str(ticket), cwd=self.product)
+        run(
+            "git", "-c", "user.name=Software Factory",
+            "-c", "user.email=factory@local", "commit", "-qm",
+            "T-110: materialize ticket state", cwd=self.product,
+        )
+        materialized_head = run("git", "rev-parse", "HEAD", cwd=self.product)
+        self.args.qualification_recovery = True
+        operator_map = self.root / "operator/operator-map.json"
+        operator_map.parent.mkdir(mode=0o700)
+        operator_map.write_text(
+            json.dumps({
+                "_config": None, "_sync": {}, "initiatives": {},
+                "tickets": {},
+            }),
+            encoding="utf-8",
+        )
+        environment = {
+            "FACTORY_KIT_TRUST_SCOPE": "qualification-candidate",
+            "FACTORY_OPERATOR_MAP": str(operator_map),
+            "FACTORY_QUALIFICATION_MODE": "isolated",
+        }
+        secret = b"k" * 32
+        passport["passport_sha256"] = "e" * 64
+        for consumed in (False, True):
+            with self.subTest(consumed=consumed):
+                shutil.rmtree(
+                    self.state_dir / "operator-receipts", ignore_errors=True,
+                )
+                authority = STATE.operator_receipt.issue(
+                    self.state_dir, "T-110", "resume", {
+                        "blocked_receipt_sha256": self.args.receipt,
+                        "resume_stage": "Planning",
+                    },
+                )
+                if consumed:
+                    STATE.operator_receipt.verify_consume_exact(
+                        self.state_dir, "T-110", "resume",
+                        authority["receipt_sha256"], authority["payload"],
+                    )
+                operator_map.write_text(json.dumps({
+                    "_config": None, "_sync": {}, "initiatives": {},
+                    "tickets": {"T-110": {"operator": {
+                        "observed_at": authority["issued_at"],
+                        "receipt_sha256": authority["receipt_sha256"],
+                        "state": "Planning",
+                        "state_base": "blocked-escalated",
+                    }}},
+                }), encoding="utf-8")
+
+                def finish_materialization(*_args, **_kwargs) -> str:
+                    STATE.operator_receipt.verify_consume_replay_exact(
+                        self.state_dir, "T-110", "resume",
+                        authority["receipt_sha256"], authority["payload"],
+                    )
+                    operator_map.write_text(json.dumps({
+                        "_config": None, "_sync": {}, "initiatives": {},
+                        "tickets": {},
+                    }), encoding="utf-8")
+                    return ""
+
+                with (
+                    mock.patch.dict(os.environ, environment),
+                    mock.patch.object(
+                        STATE, "contract_blocked_receipt", return_value="planner",
+                    ),
+                    mock.patch.object(
+                        STATE, "authenticated_passport",
+                        return_value=(passport, secret),
+                    ),
+                    mock.patch.object(STATE, "migrate_passport"),
+                    mock.patch.object(
+                        STATE, "run_helper", side_effect=finish_materialization,
+                    ) as helper,
+                ):
+                    resumed = STATE.resume_transition(self.args)
+                self.assertEqual(resumed["status"], "ready")
+                helper.assert_called_once()
+                self.assertEqual(helper.call_args.kwargs["extra_environment"], {
+                    "FACTORY_BLOCKED_RECEIPT": self.args.receipt,
+                    "FACTORY_QUALIFICATION_REPLAY": "1",
+                })
+                self.assertTrue(STATE.operator_receipt.read_exact(
+                    self.state_dir, "T-110", "resume",
+                    authority["receipt_sha256"], authority["payload"],
+                )["consumed"])
+
+        shutil.rmtree(self.state_dir / "operator-receipts", ignore_errors=True)
+        authority = STATE.operator_receipt.issue(
+            self.state_dir, "T-110", "resume", {
+                "blocked_receipt_sha256": self.args.receipt,
+                "resume_stage": "Planning",
+            },
+        )
+        STATE.operator_receipt.verify_consume_exact(
+            self.state_dir, "T-110", "resume", authority["receipt_sha256"],
+            authority["payload"],
+        )
+        with mock.patch.dict(os.environ, environment):
+            materialized = check()
+        self.assertEqual(materialized["status"], "ready")
+        self.assertEqual(materialized["current_state"], "Planning")
+        self.assertEqual(materialized["resume_state"], "Planning")
+        with (
+            mock.patch.dict(os.environ, environment),
+            mock.patch.object(
+                STATE, "contract_blocked_receipt", return_value="planner",
+            ),
+            mock.patch.object(
+                STATE, "authenticated_passport",
+                return_value=(passport, secret),
+            ),
+            mock.patch.object(STATE, "migrate_passport"),
+        ):
+            resumed = STATE.resume_transition(self.args)
+        self.assertEqual(resumed["status"], "ready")
+        self.assertEqual(resumed["head"], materialized_head)
+        repair = STATE.load_signed_repair(STATE.repair_path(self.args), secret)
+        self.assertEqual(repair["blocked_receipt"], self.args.receipt)
+        self.assertEqual(repair["head_sha"], materialized_head)
 
     def test_operator_resume_accepts_coupled_conflict_fixture_and_answer(self) -> None:
         self.args.receipt = "b" * 64
@@ -2628,6 +2864,29 @@ class StateMachineTest(unittest.TestCase):
         self.assertEqual(error.evidence["actual_bytes"], len(path.read_bytes()))
         self.assertGreater(error.evidence["actual_bytes"], error.evidence["expected_bytes"])
         self.assertIsInstance(error.evidence["first_differing_line"], int)
+
+    def test_operator_resume_accepts_exact_compact_directive_pair(self) -> None:
+        self.args.receipt = "b" * 64
+        path = self.product / "factory/tickets/T-110.md"
+        passport = {
+            "branch": "ticket/T-110",
+            "factory_sha": self.args.factory_sha,
+            "head_sha": run("git", "rev-parse", "HEAD", cwd=self.product),
+            "ticket": "T-110",
+        }
+        path.write_text(
+            path.read_text(encoding="utf-8").rstrip("\n")
+            + "\nOPERATOR RESUME: planner\n"
+            + f"OPERATOR RESUME RECEIPT: {self.args.receipt}\n",
+            encoding="utf-8",
+        )
+        run("git", "add", str(path), cwd=self.product)
+        run("git", "commit", "-qm", "compact contract repair", cwd=self.product)
+
+        self.assertEqual(
+            STATE.operator_resume_role(self.args, passport, "planner"),
+            "planner",
+        )
 
     def test_operator_resume_names_ambiguous_directive_pairs(self) -> None:
         self.args.receipt = "b" * 64
