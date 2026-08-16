@@ -329,6 +329,9 @@ Require `status=repaired` before `contract-repair plan/apply`,
 `qualification-resume`, and `qualification-run` continue. The command changes
 ancestry only; gate failure, remote movement, a wrong receipt, production, or
 takeover refuses without moving the authenticated branch or passport.
+Historical resume pairs are preserved; the current repair appends a new exact
+pair after authenticating the full blocker-to-active release suffix and the
+ticket's protected source-to-active edge.
 Successful resume and durable repair replay both reenter ordinary scheduling;
 an exact crash replay repeats that preparation automatically. Do not clear the
 prior transition receipt by hand.

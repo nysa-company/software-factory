@@ -65,6 +65,13 @@ CONTROL_LINE = re.compile(
     re.IGNORECASE,
 )
 
+RESUME_CONTROL_LINE = re.compile(
+    r"(?:"
+    r"\s*OPERATOR RESUME:\s*(?:planner|spec-linter|test-author|builder)\s*"
+    r"|\s*OPERATOR RESUME RECEIPT:\s*[0-9a-f]{64}\s*"
+    r")",
+)
+
 
 def protocol_controls(text: str) -> list[str]:
     return [
@@ -91,6 +98,30 @@ def fresh_protocol_text(current: str, baseline: str) -> str:
         raise TransitionError(
             "protected qualification role-control history changed"
         )
+    return "".join(fresh)
+
+
+def fresh_resume_text(current: str, baseline: str) -> str:
+    protected = [
+        line for line in baseline.splitlines(keepends=True)
+        if RESUME_CONTROL_LINE.fullmatch(line.rstrip("\r\n"))
+    ]
+    remaining = iter(protected)
+    expected = next(remaining, None)
+    fresh: list[str] = []
+    for line in current.splitlines(keepends=True):
+        if expected is not None and RESUME_CONTROL_LINE.fullmatch(
+            line.rstrip("\r\n")
+        ):
+            if line != expected:
+                raise TransitionError(
+                    "blocked transition resume history changed"
+                )
+            expected = next(remaining, None)
+        else:
+            fresh.append(line)
+    if expected is not None:
+        raise TransitionError("blocked transition resume history changed")
     return "".join(fresh)
 
 

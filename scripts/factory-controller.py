@@ -35,7 +35,13 @@ from qualification_artifacts import (  # noqa: E402
 )
 from qualification_manifest import (  # noqa: E402
     ManifestError as QualificationManifestError,
+    committed_blob as committed_qualification_blob,
     validate as validate_qualification_manifest,
+)
+from inflight_release import (  # noqa: E402
+    AuthorizationError as InflightAuthorizationError,
+    parse_authorization as parse_inflight_authorization,
+    ticket_source_kit,
 )
 from effective_ticket import operator_action, operator_fields  # noqa: E402
 from legacy_closeout import (  # noqa: E402
@@ -50,6 +56,7 @@ import operator_receipt  # noqa: E402
 from role_output import RoleOutputError, sha256 as role_output_sha256  # noqa: E402
 from ticket_state_transition import (  # noqa: E402
     TransitionError as TicketTransitionError,
+    fresh_resume_text,
     qualification_epoch_text,
 )
 from reorder_test_fixes import (  # noqa: E402
@@ -5232,7 +5239,14 @@ class Controller:
         return self.remote_cell_head_status(claim)[0] == "pushed"
 
     @staticmethod
-    def contract_resume_directive_status(ticket_text: str, receipt: str) -> str:
+    def contract_resume_directive_status(
+        ticket_text: str, receipt: str, baseline_text: str = "",
+    ) -> str:
+        if baseline_text:
+            try:
+                ticket_text = fresh_resume_text(ticket_text, baseline_text)
+            except TicketTransitionError:
+                return "resume_directives_ambiguous"
         attempts = re.findall(r"^OPERATOR RESUME(?: RECEIPT)?:", ticket_text, re.M)
         if not attempts:
             return "waiting"
@@ -5265,6 +5279,33 @@ class Controller:
                 return "waiting"
             return "resume_receipt_mismatch"
         return "ready"
+
+    def contract_resume_status(
+        self, claim: dict[str, Any], ticket_text: str,
+        transition: dict[str, Any] | None = None,
+    ) -> str:
+        if not (
+            os.environ.get("FACTORY_KIT_TRUST_SCOPE")
+            == "qualification-candidate"
+            and os.environ.get("FACTORY_QUALIFICATION_MODE") == "isolated"
+            and self.qualification
+            and self.qualification.get("mode") == "successor"
+        ):
+            return self.contract_resume_directive_status(
+                ticket_text, claim.get("receipt", ""),
+            )
+        transition = transition or self.transition_receipt(
+            claim, allow_prior=True, record=False,
+        )
+        head = transition.get("head_sha", "") if transition else ""
+        baseline = self.cell_git(
+            claim, "show", f"{head}:factory/tickets/{claim['ticket']}.md",
+        ) if SHA.fullmatch(head) else None
+        if baseline is None or baseline.returncode:
+            return "resume_ancestry_invalid"
+        return self.contract_resume_directive_status(
+            ticket_text, claim.get("receipt", ""), baseline.stdout,
+        )
 
     def recover_terminal_exports(self, claims: list[dict[str, Any]]) -> None:
         for claim in claims:
@@ -8289,6 +8330,145 @@ class Controller:
             previous = commit[0]
         return previous == after
 
+    def historical_contract_source(
+        self, ticket: str, claim: dict[str, Any],
+        transition: dict[str, Any] | None, terminal: dict[str, Any] | None,
+        passport: dict[str, Any] | None,
+    ) -> bool:
+        evidence_factory = transition.get("factory_sha", "") if transition else ""
+        migrations = passport.get("migration_history") if passport else None
+        starts = [
+            index for index, edge in enumerate(migrations or [])
+            if valid_v2_migration(edge)
+            and edge["from_factory_sha"] == evidence_factory
+            and edge["to_factory_sha"] != evidence_factory
+        ]
+        suffix = (
+            migrations[starts[0]:]
+            if isinstance(migrations, list) and len(starts) == 1 else []
+        )
+        release_edges = [
+            edge for edge in suffix
+            if edge["from_factory_sha"] != edge["to_factory_sha"]
+        ]
+        source = self.qualification_ticket_source(ticket)
+        reconstruction = self.qualification_reconstruction_edge(
+            ticket, claim, passport, suffix[-1] if suffix else {},
+        )
+        return bool(
+            os.environ.get("FACTORY_KIT_TRUST_SCOPE")
+            == "qualification-candidate"
+            and os.environ.get("FACTORY_QUALIFICATION_MODE") == "isolated"
+            and self.qualification
+            and self.qualification.get("mode") == "successor"
+            and terminal is not None
+            and terminal.get("kit_sha") == evidence_factory
+            and passport is not None
+            and passport.get("factory_sha") == self.release_path.name
+            and suffix
+            and all(valid_v2_migration(edge) for edge in suffix)
+            and release_edges
+            and release_edges[-1]["from_factory_sha"] == source
+            and release_edges[-1]["to_factory_sha"] == self.release_path.name
+            and suffix[0]["from_route_plan_sha256"]
+            == transition.get("route_plan_sha256")
+            and self.exact_ticket_only_lineage(
+                claim, transition.get("head_sha", ""),
+                suffix[0]["from_head_sha"],
+            )
+            and passport_head_lineage(passport, suffix[0]["from_head_sha"])
+            and all(
+                left["to_factory_sha"] == right["from_factory_sha"]
+                and left["to_head_sha"] == right["from_head_sha"]
+                and left["to_protected_base_sha"]
+                == right["from_protected_base_sha"]
+                and left["to_route_plan_sha256"]
+                == right["from_route_plan_sha256"]
+                for left, right in zip(suffix, suffix[1:])
+            )
+            and suffix[-1]["to_factory_sha"] == passport.get("factory_sha")
+            and suffix[-1]["to_head_sha"] == passport.get("head_sha")
+            and suffix[-1]["to_protected_base_sha"]
+            == passport.get("protected_base_sha")
+            and suffix[-1]["to_route_plan_sha256"]
+            == passport.get("route_plan_sha256")
+            and suffix[-1]["from_passport_file_sha256"]
+            == passport.get("parent_file_sha256")
+            and suffix[-1]["from_passport_sha256"]
+            == passport.get("parent_digest")
+            and all(
+                edge["from_head_sha"] == edge["to_head_sha"]
+                or self.exact_route_migration_commit(
+                    claim, edge["from_head_sha"], edge["to_head_sha"],
+                )
+                or index == len(suffix) - 1 and reconstruction
+                for index, edge in enumerate(suffix)
+            )
+            and successor_release_lineage(
+                passport.get("factory_release_history"), migrations,
+                evidence_factory, self.release_path.name, valid_v2_migration,
+            )
+            and successor_release_lineage(
+                passport.get("factory_release_history"), migrations,
+                source, self.release_path.name, valid_v2_migration,
+            )
+        )
+
+    def qualification_ticket_source(self, ticket: str) -> str:
+        revision = os.environ.get("FACTORY_QUALIFICATION_PRODUCT_SHA", "")
+        if (
+            not self.qualification
+            or self.qualification.get("mode") != "successor"
+            or not SHA.fullmatch(revision)
+        ):
+            return ""
+        try:
+            authorization_raw = committed_qualification_blob(
+                self.product, revision,
+                f"factory/migrations/inflight-release/{self.release_path.name}.json",
+                1_048_576,
+            )
+            project_raw = committed_qualification_blob(
+                self.product, revision, "factory/PROJECT.env", 131_072,
+            )
+            if authorization_raw is None or project_raw is None:
+                return ""
+            authorization, entries = parse_inflight_authorization(
+                authorization_raw.decode("utf-8", "strict"),
+                project_raw.decode("utf-8", "strict"), self.release_path.name,
+            )
+        except (
+            InflightAuthorizationError, QualificationManifestError,
+            UnicodeDecodeError,
+        ):
+            return ""
+        if (
+            authorization.get("source_kit_sha")
+            != self.qualification.get("source_factory_sha")
+            or set(entries) != set(self.qualification.get("tickets", []))
+            or ticket not in entries
+        ):
+            return ""
+        return ticket_source_kit(authorization, entries[ticket])
+
+    def contract_repair_blocked(self, claim: dict[str, Any]) -> bool:
+        attempt = claim.get("recovery_attempt")
+        return bool(
+            claim.get("blocked_reason") == "role-failure"
+            or self.valid_recovery_attempt(attempt)
+            and attempt.get("recovery") == "targeted-repair"
+            and (
+                claim.get("blocked_reason")
+                == "recovery-abandoned:targeted-repair"
+                and attempt.get("phase") == "abandoned"
+                or not claim.get("blocked_reason")
+                and attempt.get("phase") == "settled"
+                and attempt.get("factory_sha") == self.release_path.name
+                and attempt.get("retry_reason") == ""
+                and attempt.get("retry_status") == "blocked"
+            )
+        )
+
     def contract_repair_plan(
         self, ticket: str, role: str, operator_id: str,
     ) -> tuple[dict[str, Any], dict[str, Any], str, str]:
@@ -8300,13 +8480,6 @@ class Controller:
         ):
             raise ControllerError("contract repair request is invalid")
         claim = self.operator_control_claim(ticket, "contract repair")
-        attempt = claim.get("recovery_attempt")
-        abandoned = (
-            claim.get("blocked_reason") == "recovery-abandoned:targeted-repair"
-            and self.valid_recovery_attempt(attempt)
-            and attempt.get("phase") == "abandoned"
-            and attempt.get("recovery") == "targeted-repair"
-        )
         receipt = claim.get("receipt", "")
         transition = self.transition_receipt(
             claim, allow_prior=True, record=False,
@@ -8314,81 +8487,12 @@ class Controller:
         passport = self.authenticated_operator_passport(ticket)
         terminal = self.terminal_for_receipt(ticket, receipt)
         evidence_factory = transition.get("factory_sha", "") if transition else ""
-        migrations = passport.get("migration_history") if passport else None
-        source_starts = [
-            index for index, edge in enumerate(migrations or [])
-            if valid_v2_migration(edge)
-            and edge["from_factory_sha"] == evidence_factory
-            and edge["to_factory_sha"] != evidence_factory
-        ]
-        source_suffix = (
-            migrations[source_starts[0]:]
-            if isinstance(migrations, list) and len(source_starts) == 1 else []
-        )
-        final_source_edge = source_suffix[-1] if source_suffix else {}
-        reconstruction_edge = self.qualification_reconstruction_edge(
-            ticket, claim, passport, final_source_edge,
-        )
-        source_evidence = (
-            self.qualification
-            and self.qualification.get("mode") == "successor"
-            and evidence_factory == self.qualification.get("source_factory_sha")
-            and terminal is not None
-            and terminal.get("kit_sha") == evidence_factory
-            and passport is not None
-            and passport.get("factory_sha") == self.release_path.name
-            and source_suffix
-            and all(valid_v2_migration(edge) for edge in source_suffix)
-            and source_suffix[0]["from_route_plan_sha256"]
-            == transition.get("route_plan_sha256")
-            and self.exact_ticket_only_lineage(
-                claim, transition.get("head_sha", ""),
-                source_suffix[0]["from_head_sha"],
-            )
-            and passport_head_lineage(
-                passport, source_suffix[0]["from_head_sha"],
-            )
-            and all(
-                left["to_factory_sha"] == right["from_factory_sha"]
-                and left["to_head_sha"] == right["from_head_sha"]
-                and left["to_protected_base_sha"]
-                == right["from_protected_base_sha"]
-                and left["to_route_plan_sha256"]
-                == right["from_route_plan_sha256"]
-                for left, right in zip(source_suffix, source_suffix[1:])
-            )
-            and source_suffix[-1]["to_factory_sha"]
-            == passport.get("factory_sha")
-            and source_suffix[-1]["to_head_sha"] == passport.get("head_sha")
-            and source_suffix[-1]["to_protected_base_sha"]
-            == passport.get("protected_base_sha")
-            and source_suffix[-1]["to_route_plan_sha256"]
-            == passport.get("route_plan_sha256")
-            and source_suffix[-1]["from_passport_file_sha256"]
-            == passport.get("parent_file_sha256")
-            and source_suffix[-1]["from_passport_sha256"]
-            == passport.get("parent_digest")
-            and all(
-                edge["from_head_sha"] == edge["to_head_sha"]
-                or self.exact_route_migration_commit(
-                    claim, edge["from_head_sha"], edge["to_head_sha"],
-                )
-                or index == len(source_suffix) - 1 and reconstruction_edge
-                for index, edge in enumerate(source_suffix)
-            )
-            and successor_release_lineage(
-                passport.get("factory_release_history"),
-                passport.get("migration_history"), evidence_factory,
-                self.release_path.name, valid_v2_migration,
-            )
-            and final_source_edge.get("from_passport_file_sha256")
-            == passport.get("parent_file_sha256")
-            and final_source_edge.get("from_passport_sha256")
-            == passport.get("parent_digest")
+        source_evidence = self.historical_contract_source(
+            ticket, claim, transition, terminal, passport,
         )
         if (
             claim.get("status") != "blocked"
-            or not (claim.get("blocked_reason") == "role-failure" or abandoned)
+            or not self.contract_repair_blocked(claim)
             or not DIGEST.fullmatch(receipt)
             or not claim.get("role")
             or claim.get("publication_lease")
@@ -8430,7 +8534,7 @@ class Controller:
         before = self.cell_git(claim, "show", f"{passport['head_sha']}:{ticket_path}")
         if (
             before.returncode
-            or self.contract_resume_directive_status(before.stdout, receipt)
+            or self.contract_resume_status(claim, before.stdout, transition)
             != "waiting"
         ):
             raise ControllerError("contract repair ticket is invalid")
@@ -8624,23 +8728,12 @@ class Controller:
             )
             terminal = self.terminal_for_receipt(ticket, blocked_receipt)
             evidence_factory = transition.get("factory_sha", "") if transition else ""
-            source = self.qualification.get("source_factory_sha")
-            source_valid = bool(
-                passport
-                and evidence_factory == source
-                and terminal
-                and terminal.get("kit_sha") == source
-                and successor_release_lineage(
-                    passport.get("factory_release_history"),
-                    passport.get("migration_history"), source,
-                    self.release_path.name, valid_v2_migration,
-                )
+            source_valid = self.historical_contract_source(
+                ticket, claim, transition, terminal, passport,
             )
             if (
                 claim.get("status") != "blocked"
-                or claim.get("blocked_reason") not in {
-                    "role-failure", "recovery-abandoned:targeted-repair",
-                }
+                or not self.contract_repair_blocked(claim)
                 or claim.get("receipt") != blocked_receipt
                 or claim.get("role") != "test-author"
                 or claim.get("publication_lease")
@@ -10328,8 +10421,8 @@ class Controller:
                             ).read_text(encoding="utf-8")
                         except (FileNotFoundError, OSError):
                             ticket_text = ""
-                        directive_status = self.contract_resume_directive_status(
-                            ticket_text, claim["receipt"]
+                        directive_status = self.contract_resume_status(
+                            claim, ticket_text,
                         )
                         if head_status != "pushed":
                             if (
@@ -10525,8 +10618,8 @@ class Controller:
                     ).read_text(encoding="utf-8")
                 except (FileNotFoundError, OSError):
                     continue
-                directive_status = self.contract_resume_directive_status(
-                    ticket_text, claim["receipt"]
+                directive_status = self.contract_resume_status(
+                    claim, ticket_text,
                 )
                 if directive_status == "waiting":
                     self.wait_for_recovery_receipt(claim)

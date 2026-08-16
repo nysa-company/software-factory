@@ -29,6 +29,7 @@ from role_output import RoleOutputError, sha256 as role_output_sha256  # noqa: E
 from ticket_state_transition import (  # noqa: E402
     TransitionError as TicketTransitionError,
     field as ticket_text_field,
+    fresh_resume_text,
     qualification_epoch_text,
 )
 
@@ -1081,15 +1082,40 @@ def operator_resume_role(
 ) -> str:
     relative = f"factory/tickets/{args.ticket}.md"
     prior_head = passport.get("head_sha", "")
+    qualification_history = (
+        os.environ.get("FACTORY_KIT_TRUST_SCOPE") == "qualification-candidate"
+        and os.environ.get("FACTORY_QUALIFICATION_MODE") == "isolated"
+    )
+    transition = (
+        safe_receipt(args.state_dir / f"{args.ticket}.json")
+        if qualification_history else {}
+    )
+    transition_head = transition.get("head_sha", "")
     if (
         passport.get("ticket") != args.ticket
         or passport.get("factory_sha") != args.factory_sha
         or passport.get("branch")
         != git(args.workdir, "symbolic-ref", "--quiet", "--short", "HEAD")
         or not SHA.fullmatch(prior_head)
+        or qualification_history and (
+            transition.get("receipt_sha256") != args.receipt
+            or transition.get("ticket") != args.ticket
+            or not SHA.fullmatch(transition_head)
+        )
     ):
         raise StateError("contract repair passport is invalid")
+    baseline = (
+        git(args.workdir, "show", f"{transition_head}:{relative}") + "\n"
+        if qualification_history else ""
+    )
     current = git(args.workdir, "show", f"HEAD:{relative}") + "\n"
+    if qualification_history:
+        try:
+            current = fresh_resume_text(current, baseline)
+        except TicketTransitionError as error:
+            raise ContractResumeError(
+                "resume_directives_ambiguous", str(error),
+            ) from error
     answer_lines = OPERATOR_ANSWER_LINE.findall(current)
     answers = OPERATOR_ANSWER.findall(current)
     answer_receipts = OPERATOR_ANSWER_RECEIPT.findall(current)
@@ -1138,13 +1164,14 @@ def operator_resume_role(
                 for name in ("from_head_sha", "to_head_sha")
                 if SHA.fullmatch(migration.get(name, ""))
             )
+    log_arguments = [
+        "log", "--format=%H", "-G^OPERATOR RESUME(:| RECEIPT:)",
+    ]
+    if qualification_history:
+        log_arguments.append(f"{transition_head}..HEAD")
     commits = git(
         args.workdir,
-        "log",
-        "--format=%H",
-        "-G^OPERATOR RESUME(:| RECEIPT:)",
-        "--",
-        relative,
+        *log_arguments, "--", relative,
     ).splitlines()
     candidates: list[tuple[str, str]] = []
     unmigrated_parents: list[str] = []
@@ -1154,6 +1181,11 @@ def operator_resume_role(
         candidate_ticket = git(
             args.workdir, "show", f"{candidate}:{relative}"
         ) + "\n"
+        if qualification_history:
+            try:
+                candidate_ticket = fresh_resume_text(candidate_ticket, baseline)
+            except TicketTransitionError:
+                continue
         if (
             re.findall(
                 r"^OPERATOR RESUME: "
@@ -1278,6 +1310,14 @@ def operator_resume_role(
     commit, parent = candidates[0]
     before = git(args.workdir, "show", f"{parent}:{relative}") + "\n"
     after = git(args.workdir, "show", f"{commit}:{relative}") + "\n"
+    if qualification_history:
+        try:
+            before = fresh_resume_text(before, baseline)
+            after = fresh_resume_text(after, baseline)
+        except TicketTransitionError as error:
+            raise ContractResumeError(
+                "resume_directives_ambiguous", str(error),
+            ) from error
     prior_directives = re.findall(
         r"^OPERATOR RESUME: (planner|spec-linter|test-author|builder)$",
         before,

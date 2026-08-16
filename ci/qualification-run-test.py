@@ -170,6 +170,7 @@ raise SystemExit(code)
     def run_scenario(
         self, scenario: dict[str, object],
         resume: tuple[str, str] | None = None,
+        qualification_mode: str = "isolated",
     ) -> tuple[int, dict[str, object]]:
         self.scenario.write_text(json.dumps(scenario), encoding="utf-8")
         command = [
@@ -189,7 +190,7 @@ raise SystemExit(code)
                 "FACTORY_CONTROLLER_STATE_DIR": str(self.controller_state),
                 "FACTORY_OPERATOR_MAP": str(self.operator_map),
                 "FACTORY_KIT_TRUST_SCOPE": "qualification-candidate",
-                "FACTORY_QUALIFICATION_MODE": "isolated",
+                "FACTORY_QUALIFICATION_MODE": qualification_mode,
                 "FACTORY_QUALIFICATION_MANIFEST": str(self.manifest),
                 "FACTORY_QUALIFICATION_PRODUCT_SHA": getattr(
                     self, "product_sha", "",
@@ -659,6 +660,59 @@ raise SystemExit(code)
                 self.assertEqual(
                     (code, value["reason"]), (3, "doctor_not_ready")
                 )
+                self.assertEqual(self.called(), ["doctor"])
+
+    def test_historical_resume_warning_reaches_reconcile_without_new_authority(
+        self,
+    ) -> None:
+        doctor, _worktree, _head, receipt = self.contract_recovery_fixture()
+        incident = {
+            "blocked_receipt_sha256": receipt,
+            "observed_at_epoch_ns": 2,
+            "reason_code": "resume_receipt_mismatch",
+            "ticket": "T-1",
+        }
+        doctor["checks"]["contract_resume"] = {
+            "incidents": [incident], "status": "warning",
+        }
+        code, value = self.run_scenario({
+            "doctor": doctor,
+            "reconcile": [self.controller("waiting_for_target")],
+            "qualification": self.report(),
+        })
+        self.assertEqual((code, value["reason"]), (3, "cohort_not_accounted"))
+        self.assertEqual(self.called(), ["doctor", "reconcile"])
+        self.assertFalse(self.operator_map.exists())
+
+        self.calls.unlink()
+        code, value = self.run_scenario({
+            "doctor": doctor,
+            "reconcile": [self.controller("waiting_for_target")],
+            "qualification": self.report(),
+        }, qualification_mode="takeover")
+        self.assertEqual((code, value["reason"]), (3, "doctor_not_ready"))
+        self.assertEqual(self.called(), ["doctor"])
+        self.assertFalse(self.operator_map.exists())
+
+        for label, key, changed in (
+            ("wrong-receipt", "blocked_receipt_sha256", "d" * 64),
+            ("wrong-reason", "reason_code", "resume_commit_not_pushed"),
+            ("early-incident", "observed_at_epoch_ns", 0),
+            ("foreign-ticket", "ticket", "T-9"),
+            ("extra-field", "local_head", "e" * 40),
+        ):
+            with self.subTest(label=label):
+                self.calls.unlink(missing_ok=True)
+                changed_doctor = copy.deepcopy(doctor)
+                changed_doctor["checks"]["contract_resume"]["incidents"][0][
+                    key
+                ] = changed
+                code, value = self.run_scenario({
+                    "doctor": changed_doctor,
+                    "reconcile": [self.controller("waiting_for_target")],
+                    "qualification": self.report(),
+                })
+                self.assertEqual((code, value["reason"]), (3, "doctor_not_ready"))
                 self.assertEqual(self.called(), ["doctor"])
 
     def test_explicit_qualification_resume_projects_exact_repair(self) -> None:
