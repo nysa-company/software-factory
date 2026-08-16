@@ -3187,7 +3187,7 @@ def approval(args, product, workdir, repo, prefix, remote, kit_sha, method):
             attestation_blob = git(
                 workdir, "hash-object", str(attestation_path)
             ).stdout.strip()
-            if operator_receipt.peek_exact(
+            if operator_receipt.read_exact(
                 operator_receipt_state_dir(), args.ticket, "approve",
                 operator.get("receipt_sha256", ""),
                 {"bundle_attestation_blob": attestation_blob},
@@ -3348,7 +3348,7 @@ def approval(args, product, workdir, repo, prefix, remote, kit_sha, method):
         raise Refusal("GitHub did not confirm auto-merge for the exact approved head")
     if exact_overlay:
         try:
-            operator_receipt.verify_consume_exact(
+            operator_receipt.verify_consume_replay_exact(
                 operator_receipt_state_dir(), args.ticket, "approve",
                 operator["receipt_sha256"],
                 {

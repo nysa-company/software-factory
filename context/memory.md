@@ -6562,4 +6562,7 @@ Category: Reliability
 operator map. It does not create a zero-authority audit commit because that
 would move the ticket beyond its authenticated passport before the controller
 can attest the approval. Trusted approval attestation remains the durable Git
-record and consumes the exact receipt through the ordinary closeout flow.
+record and consumes the exact receipt through the ordinary closeout flow. An
+exact completed attestation may replay receipt consumption to clear an
+unchanged overlay after a crash; unmatched or unattested consumed receipts
+remain refused.

@@ -830,7 +830,7 @@ else:
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("no unconsumed operator approval", result.stderr)
 
-    def test_second_approval_after_consumption_is_refused(self):
+    def test_second_approval_after_consumption_clears_replayed_overlay(self):
         self.bundle()
         self.approval_overlay()
         self.assertEqual(self.attest("approval").returncode, 0)
@@ -838,8 +838,13 @@ else:
         digest = json.loads(approval.read_text())["receipt_sha256"]
         self.write_operator_overlay("2099-01-01T00:00:00Z", digest)
         result = self.attest("approval")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("no unconsumed operator approve receipt", result.stderr)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn(
+            "operator",
+            json.loads(
+                (self.product / "factory/operator-map.json").read_text()
+            )["tickets"]["T-700"],
+        )
 
     def test_historical_linear_approval_validates_through_continuation(self):
         self.bundle()
