@@ -404,6 +404,8 @@ def _cmd_ticket_action(args: argparse.Namespace) -> dict:
         if args.stage not in STATES:
             raise OperatorCliError(f"resume stage is invalid: {args.stage}")
         payload = {"resume_stage": args.stage}
+        if args.qualification_runtime:
+            payload["blocked_receipt_sha256"] = args.qualification_receipt
         operator.update({
             "state": args.stage, "state_base": "blocked-escalated",
         })
@@ -431,6 +433,10 @@ def _cmd_ticket_action(args: argparse.Namespace) -> dict:
                 existing_action, existing_binding = operator_action(existing)
             except ValueError as error:
                 raise OperatorCliError("operator map has an invalid pending action") from error
+            if args.qualification_runtime and action == "resume":
+                existing_binding["blocked_receipt_sha256"] = (
+                    args.qualification_receipt
+                )
             if existing_action != action or existing_binding != payload:
                 raise OperatorCliError(
                     f"{args.ticket} already has a pending operator action"
@@ -470,11 +476,12 @@ def _cmd_ticket_action(args: argparse.Namespace) -> dict:
             / f"{action}-{receipt['sequence']}.json"
         )
         return operator_receipt.safe_receipt(path)
-    path = audit_copy(product, receipt)
-    commit_audit(
-        product, path,
-        f"{args.ticket}: operator {action} receipt {receipt['sequence']}",
-    )
+    if not args.qualification_runtime:
+        path = audit_copy(product, receipt)
+        commit_audit(
+            product, path,
+            f"{args.ticket}: operator {action} receipt {receipt['sequence']}",
+        )
     return receipt
 
 
@@ -583,6 +590,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--product", required=True)
     parser.add_argument("--state-dir", required=True)
     parser.add_argument("--expected-base-sha", default="")
+    parser.add_argument("--qualification-runtime", action="store_true")
+    parser.add_argument("--qualification-receipt", default="")
     commands = parser.add_subparsers(dest="command", required=True)
     for name in ("ready", "approve", "cancel", "init"):
         sub = commands.add_parser(name)
@@ -605,6 +614,18 @@ def main(argv: list[str] | None = None) -> int:
     commands.add_parser("pending")
     args = parser.parse_args(argv)
     try:
+        if args.qualification_runtime and (
+            args.command != "resume"
+            or os.environ.get("FACTORY_KIT_TRUST_SCOPE")
+            != "qualification-candidate"
+            or os.environ.get("FACTORY_QUALIFICATION_MODE") != "isolated"
+            or not operator_receipt.DIGEST.fullmatch(
+                args.qualification_receipt
+            )
+        ) or (
+            not args.qualification_runtime and args.qualification_receipt
+        ):
+            raise OperatorCliError("qualification runtime authority is unavailable")
         if args.command == "pending":
             result = cmd_pending(args)
         elif args.command == "initialize":

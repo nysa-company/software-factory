@@ -299,6 +299,10 @@ claim remains parked until a successor release contains the repair.
 The normal operator entrypoint is the sealed candidate's
 `factory-launch <project> qualification-run --json`. It performs that Doctor
 gate, the mandatory restart, reconciliation, and terminal reduction in code.
+For the exact authenticated successor compact-repair warning, it also projects
+the one-use qualification resume receipt after the sealed repair check. It does
+not create a product audit commit or grant the production controller authority
+to issue operator decisions.
 On `waiting` or `blocked`, change only the named external/operator evidence and
 run the same command again; never hand-edit authority state.
 

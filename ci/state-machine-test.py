@@ -2340,8 +2340,137 @@ class StateMachineTest(unittest.TestCase):
         run("git", "commit", "-qm", "resume canonical operator answer", cwd=self.product)
         fast = check()
         self.assertEqual(fast["status"], "ready")
+        self.assertEqual(fast["current_state"], "Blocked-Escalated")
+        self.assertEqual(fast["resume_state"], "Planning")
         canonical = check()
         self.assertEqual(canonical["status"], "ready")
+
+        ticket.write_text(
+            ticket.read_text(encoding="utf-8").replace(
+                "State: Blocked-Escalated", "State: Planning",
+            ),
+            encoding="utf-8",
+        )
+        run("git", "add", str(ticket), cwd=self.product)
+        run(
+            "git", "-c", "user.name=Software Factory",
+            "-c", "user.email=factory@local", "commit", "-qm",
+            "T-110: materialize ticket state", cwd=self.product,
+        )
+        materialized_head = run("git", "rev-parse", "HEAD", cwd=self.product)
+        self.args.qualification_recovery = True
+        operator_map = self.root / "operator/operator-map.json"
+        operator_map.parent.mkdir(mode=0o700)
+        operator_map.write_text(
+            json.dumps({
+                "_config": None, "_sync": {}, "initiatives": {},
+                "tickets": {},
+            }),
+            encoding="utf-8",
+        )
+        environment = {
+            "FACTORY_KIT_TRUST_SCOPE": "qualification-candidate",
+            "FACTORY_OPERATOR_MAP": str(operator_map),
+            "FACTORY_QUALIFICATION_MODE": "isolated",
+        }
+        secret = b"k" * 32
+        passport["passport_sha256"] = "e" * 64
+        for consumed in (False, True):
+            with self.subTest(consumed=consumed):
+                shutil.rmtree(
+                    self.state_dir / "operator-receipts", ignore_errors=True,
+                )
+                authority = STATE.operator_receipt.issue(
+                    self.state_dir, "T-110", "resume", {
+                        "blocked_receipt_sha256": self.args.receipt,
+                        "resume_stage": "Planning",
+                    },
+                )
+                if consumed:
+                    STATE.operator_receipt.verify_consume_exact(
+                        self.state_dir, "T-110", "resume",
+                        authority["receipt_sha256"], authority["payload"],
+                    )
+                operator_map.write_text(json.dumps({
+                    "_config": None, "_sync": {}, "initiatives": {},
+                    "tickets": {"T-110": {"operator": {
+                        "observed_at": authority["issued_at"],
+                        "receipt_sha256": authority["receipt_sha256"],
+                        "state": "Planning",
+                        "state_base": "blocked-escalated",
+                    }}},
+                }), encoding="utf-8")
+
+                def finish_materialization(*_args, **_kwargs) -> str:
+                    STATE.operator_receipt.verify_consume_replay_exact(
+                        self.state_dir, "T-110", "resume",
+                        authority["receipt_sha256"], authority["payload"],
+                    )
+                    operator_map.write_text(json.dumps({
+                        "_config": None, "_sync": {}, "initiatives": {},
+                        "tickets": {},
+                    }), encoding="utf-8")
+                    return ""
+
+                with (
+                    mock.patch.dict(os.environ, environment),
+                    mock.patch.object(
+                        STATE, "contract_blocked_receipt", return_value="planner",
+                    ),
+                    mock.patch.object(
+                        STATE, "authenticated_passport",
+                        return_value=(passport, secret),
+                    ),
+                    mock.patch.object(STATE, "migrate_passport"),
+                    mock.patch.object(
+                        STATE, "run_helper", side_effect=finish_materialization,
+                    ) as helper,
+                ):
+                    resumed = STATE.resume_transition(self.args)
+                self.assertEqual(resumed["status"], "ready")
+                helper.assert_called_once()
+                self.assertEqual(helper.call_args.kwargs["extra_environment"], {
+                    "FACTORY_BLOCKED_RECEIPT": self.args.receipt,
+                    "FACTORY_QUALIFICATION_REPLAY": "1",
+                })
+                self.assertTrue(STATE.operator_receipt.read_exact(
+                    self.state_dir, "T-110", "resume",
+                    authority["receipt_sha256"], authority["payload"],
+                )["consumed"])
+
+        shutil.rmtree(self.state_dir / "operator-receipts", ignore_errors=True)
+        authority = STATE.operator_receipt.issue(
+            self.state_dir, "T-110", "resume", {
+                "blocked_receipt_sha256": self.args.receipt,
+                "resume_stage": "Planning",
+            },
+        )
+        STATE.operator_receipt.verify_consume_exact(
+            self.state_dir, "T-110", "resume", authority["receipt_sha256"],
+            authority["payload"],
+        )
+        with mock.patch.dict(os.environ, environment):
+            materialized = check()
+        self.assertEqual(materialized["status"], "ready")
+        self.assertEqual(materialized["current_state"], "Planning")
+        self.assertEqual(materialized["resume_state"], "Planning")
+        with (
+            mock.patch.dict(os.environ, environment),
+            mock.patch.object(
+                STATE, "contract_blocked_receipt", return_value="planner",
+            ),
+            mock.patch.object(
+                STATE, "authenticated_passport",
+                return_value=(passport, secret),
+            ),
+            mock.patch.object(STATE, "migrate_passport"),
+        ):
+            resumed = STATE.resume_transition(self.args)
+        self.assertEqual(resumed["status"], "ready")
+        self.assertEqual(resumed["head"], materialized_head)
+        repair = STATE.load_signed_repair(STATE.repair_path(self.args), secret)
+        self.assertEqual(repair["blocked_receipt"], self.args.receipt)
+        self.assertEqual(repair["head_sha"], materialized_head)
 
     def test_operator_resume_accepts_coupled_conflict_fixture_and_answer(self) -> None:
         self.args.receipt = "b" * 64

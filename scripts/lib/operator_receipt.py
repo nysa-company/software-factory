@@ -311,6 +311,31 @@ def verify_consume_exact(
         return value
 
 
+def verify_consume_replay_exact(
+    state_dir: Path, ticket: str, action: str, receipt_sha256: str,
+    binding: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Consume an exact receipt, or verify the same consumed crash record."""
+    _validate_identity(ticket, action)
+    with _locked(state_dir):
+        found = _exact(state_dir, ticket, action, receipt_sha256)
+        if not found:
+            raise OperatorReceiptError(
+                f"operator {action} receipt is unavailable for {ticket}"
+            )
+        path, value = found
+        for key, expected in (binding or {}).items():
+            if value["payload"].get(key) != expected:
+                raise OperatorReceiptError(
+                    f"operator {action} receipt binding mismatch: {key}"
+                )
+        if not value["consumed"]:
+            value["consumed"] = True
+            value["consumed_at_epoch"] = int(time.time())
+            write_atomic(path, value)
+        return value
+
+
 def pending(state_dir: Path) -> list[dict[str, Any]]:
     with _locked(state_dir):
         root = receipt_root(state_dir)

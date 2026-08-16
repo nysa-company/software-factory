@@ -349,7 +349,7 @@ with lock.open("a") as handle:
         current_action, binding = operator_action(operator)
         if current_action != action:
             raise SystemExit("operator action changed during materialization")
-        operator_receipt.verify_consume_exact(
+        operator_receipt.verify_consume_replay_exact(
             Path(state_dir), ticket, action, operator["receipt_sha256"], binding,
         )
     entry.pop("operator", None)

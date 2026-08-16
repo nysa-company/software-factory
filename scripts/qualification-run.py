@@ -17,6 +17,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
 from qualification_manifest import ManifestError, validate as validate_manifest  # noqa: E402
+import operator_receipt  # noqa: E402
 
 
 SCHEMA = "nysa.software-factory.qualification-run/v1"
@@ -242,6 +243,209 @@ def route_migration_arguments(
         FileNotFoundError, json.JSONDecodeError, OSError, TypeError, UnicodeError,
     ) as error:
         raise QualificationRunError("qualification claim state is invalid") from error
+
+
+def contract_recovery_claim(ticket: str) -> dict[str, Any]:
+    state = Path(os.environ.get("FACTORY_CONTROLLER_STATE_DIR", ""))
+    path = state / "claims" / f"{ticket}.json"
+    descriptor = -1
+    try:
+        if (
+            not state.is_absolute()
+            or state.resolve(strict=True) != state
+            or state.is_symlink()
+        ):
+            raise QualificationRunError("qualification claim state is unsafe")
+        state_info = state.lstat()
+        if (
+            not stat.S_ISDIR(state_info.st_mode)
+            or state_info.st_uid != os.geteuid()
+            or state_info.st_mode & 0o022
+        ):
+            raise QualificationRunError("qualification claim state is unsafe")
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        info = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or info.st_nlink != 1
+            or stat.S_IMODE(info.st_mode) != 0o600
+            or info.st_size > 1_048_576
+        ):
+            raise QualificationRunError("qualification claim is unsafe")
+        raw = os.read(descriptor, 1_048_577)
+        if len(raw) != info.st_size:
+            raise QualificationRunError("qualification claim changed while reading")
+        claim = json.loads(raw.decode("utf-8", "strict"))
+        if not isinstance(claim, dict):
+            raise QualificationRunError("qualification recovery claim is invalid")
+        worktree = Path(claim.get("worktree", ""))
+        worktree_info = worktree.lstat()
+        if (
+            claim.get("ticket") != ticket
+            or claim.get("status") != "blocked"
+            or claim.get("parked") is not True
+            or claim.get("lease_released") is not True
+            or claim.get("role") not in {
+                "planner", "spec-linter", "test-author", "builder",
+            }
+            or not DIGEST.fullmatch(claim.get("receipt", ""))
+            or not worktree.is_absolute()
+            or worktree.is_symlink()
+            or worktree.resolve(strict=True) != worktree
+            or not stat.S_ISDIR(worktree_info.st_mode)
+            or worktree_info.st_uid != os.geteuid()
+            or worktree_info.st_mode & 0o022
+        ):
+            raise QualificationRunError("qualification recovery claim is invalid")
+        return claim
+    except (
+        FileNotFoundError, json.JSONDecodeError, OSError, TypeError, UnicodeError,
+    ) as error:
+        raise QualificationRunError("qualification claim state is invalid") from error
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def worktree_head(worktree: Path) -> str:
+    result = subprocess.run(
+        ["git", "-C", str(worktree), "rev-parse", "HEAD"],
+        capture_output=True, check=False, text=True, timeout=120,
+    )
+    head = result.stdout.strip()
+    if result.returncode or not SHA.fullmatch(head):
+        raise QualificationRunError("qualification recovery worktree is invalid")
+    return head
+
+
+def worktree_clean(worktree: Path) -> bool:
+    result = subprocess.run(
+        ["git", "-C", str(worktree), "status", "--porcelain=v1", "-z",
+         "--untracked-files=all", "--ignore-submodules=none"],
+        capture_output=True, check=False, timeout=120,
+    )
+    return result.returncode == 0 and not result.stdout
+
+
+def project_contract_recovery(
+    launcher: Path, project: str, doctor: dict[str, Any],
+    selected: set[str], phases: list[dict[str, Any]],
+) -> None:
+    contract = doctor["checks"]["contract_resume"]
+    incidents = contract.get("incidents")
+    if contract.get("status") != "warning" or not isinstance(incidents, list):
+        return
+    if len(incidents) != 1:
+        raise QualificationRunError("qualification contract recovery is ambiguous")
+    incident = incidents[0]
+    ticket = incident["ticket"]
+    if ticket not in selected:
+        raise QualificationRunError("qualification contract recovery is foreign")
+    claim = contract_recovery_claim(ticket)
+    if claim["receipt"] != incident["blocked_receipt_sha256"]:
+        raise QualificationRunError("qualification contract recovery receipt changed")
+    worktree = Path(claim["worktree"])
+    code, checked = invoke(
+        launcher, project, "state-machine", phases,
+        "repair-check", "--ticket", ticket, "--receipt", claim["receipt"],
+        "--workdir", str(worktree), "--qualification-recovery",
+    )
+    current = checked.get("current_state")
+    resume_state = checked.get("resume_state")
+    if (
+        code != 0
+        or checked.get("action") != "repair-check"
+        or checked.get("schema") != "nysa.software-factory.state-machine/v1"
+        or checked.get("status") != "ready"
+        or checked.get("ticket") != ticket
+        or checked.get("role") != claim["role"]
+        or checked.get("repair_role") not in {
+            "planner", "spec-linter", "test-author", "builder",
+        }
+        or resume_state not in {"Planning", "Building", "Review"}
+        or current not in {"Blocked-Escalated", resume_state}
+        or checked.get("head") != worktree_head(worktree)
+    ):
+        raise QualificationRunError("qualification contract recovery is invalid")
+    if current == resume_state:
+        if (
+            not DIGEST.fullmatch(
+                checked.get("operator_resume_receipt_sha256", "")
+            )
+            or not isinstance(
+                checked.get("operator_resume_receipt_consumed"), bool
+            )
+            or not isinstance(
+                checked.get("operator_resume_projection_pending"), bool
+            )
+        ):
+            raise QualificationRunError(
+                "qualification resume receipt is unavailable"
+            )
+        code, resumed = invoke(
+            launcher, project, "state-machine", phases,
+            "resume", "--ticket", ticket, "--receipt", claim["receipt"],
+            "--workdir", str(worktree), "--qualification-recovery",
+        )
+        if (
+            code != 0
+            or resumed.get("action") != "resume"
+            or resumed.get("schema")
+            != "nysa.software-factory.state-machine/v1"
+            or resumed.get("status") != "ready"
+            or resumed.get("ticket") != ticket
+            or resumed.get("role") != claim["role"]
+            or resumed.get("repair_role") != checked["repair_role"]
+            or not SHA.fullmatch(resumed.get("head", ""))
+        ):
+            raise QualificationRunError("qualification contract resume replay failed")
+        return
+    before = checked["head"]
+    if not worktree_clean(worktree):
+        raise QualificationRunError("qualification recovery worktree is dirty")
+    started_epoch_ms = time.time_ns() // 1_000_000
+    started = time.monotonic()
+    environment = dict(os.environ)
+    result = subprocess.run(
+        [
+            sys.executable, "-I", "-S", str(Path(__file__).with_name("operator-cli.py")),
+            "--product", str(worktree), "--state-dir",
+            os.environ["FACTORY_CONTROLLER_STATE_DIR"],
+            "--qualification-runtime", "--qualification-receipt",
+            claim["receipt"], "resume",
+            "--ticket", ticket, "--stage", resume_state,
+        ],
+        capture_output=True, check=False, text=True, timeout=120,
+        env=environment,
+    )
+    phases.append({
+        "elapsed_seconds": round(time.monotonic() - started, 3),
+        "name": "operator resume",
+        "started_epoch_ms": started_epoch_ms,
+    })
+    try:
+        receipt = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise QualificationRunError("qualification operator resume returned invalid JSON") from error
+    state = Path(os.environ["FACTORY_CONTROLLER_STATE_DIR"])
+    persisted = operator_receipt.read_exact(
+        state, ticket, "resume", receipt.get("receipt_sha256", ""),
+        {
+            "blocked_receipt_sha256": claim["receipt"],
+            "resume_stage": resume_state,
+        },
+    ) if isinstance(receipt, dict) else None
+    if (
+        result.returncode != 0
+        or persisted != receipt
+        or receipt.get("consumed") is not False
+        or receipt.get("ticket") != ticket
+        or receipt.get("action") != "resume"
+        or worktree_head(worktree) != before
+        or not worktree_clean(worktree)
+    ):
+        raise QualificationRunError("qualification operator resume projection failed")
 
 
 def migration_plan_result(
@@ -529,6 +733,8 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
             "schema": SCHEMA,
             "status": "blocked",
         }
+
+    project_contract_recovery(launcher, args.project, doctor, selected, phases)
 
     restarts = 0
     migration_applied = False

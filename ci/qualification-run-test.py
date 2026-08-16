@@ -15,6 +15,9 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts/lib"))
+import operator_receipt  # noqa: E402
+
 RUNNER = ROOT / "scripts/qualification-run.py"
 SCHEMA = "nysa.software-factory.qualification-run/v1"
 
@@ -33,6 +36,7 @@ class QualificationRunTest(unittest.TestCase):
         self.calls = self.root / "calls.json"
         self.manifest = self.root / "QUALIFICATION.json"
         self.controller_state = self.root / "controller"
+        self.operator_map = self.root / "operator/operator-map.json"
         self.launcher = self.root / "factory-launch"
         self.manifest.write_text(json.dumps({
             "budget_usd": "100.000000",
@@ -53,7 +57,11 @@ scenario = json.loads(pathlib.Path(os.environ["QUALIFICATION_RUN_SCENARIO"]).rea
 calls_path = pathlib.Path(os.environ["QUALIFICATION_RUN_CALLS"])
 calls = json.loads(calls_path.read_text()) if calls_path.exists() else []
 action = sys.argv[2]
-key = f"models:{sys.argv[3]}" if action == "models" else action
+key = (
+    f"models:{sys.argv[3]}" if action == "models"
+    else f"state-machine:{sys.argv[3]}" if action == "state-machine"
+    else action
+)
 index = sum(item == key for item in calls)
 calls.append(key)
 calls_path.write_text(json.dumps(calls))
@@ -68,6 +76,7 @@ raise SystemExit(code)
         )
         self.launcher.chmod(stat.S_IRWXU)
         (self.controller_state / "claims").mkdir(parents=True, mode=0o700)
+        self.controller_state.chmod(0o700)
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -167,6 +176,9 @@ raise SystemExit(code)
             env={
                 "PATH": "/usr/bin:/bin",
                 "FACTORY_CONTROLLER_STATE_DIR": str(self.controller_state),
+                "FACTORY_OPERATOR_MAP": str(self.operator_map),
+                "FACTORY_KIT_TRUST_SCOPE": "qualification-candidate",
+                "FACTORY_QUALIFICATION_MODE": "isolated",
                 "FACTORY_QUALIFICATION_MANIFEST": str(self.manifest),
                 "FACTORY_RELEASE_SHA": "a" * 40,
                 "QUALIFICATION_RUN_CALLS": str(self.calls),
@@ -177,6 +189,80 @@ raise SystemExit(code)
 
     def called(self) -> list[str]:
         return json.loads(self.calls.read_text())
+
+    def contract_recovery_fixture(
+        self, state: str = "Blocked-Escalated",
+    ) -> tuple[dict[str, object], Path, str, str]:
+        manifest = json.loads(self.manifest.read_text(encoding="utf-8"))
+        manifest.update({
+            "budget_usd": "300.000000",
+            "mode": "successor",
+            "per_run_budget_usd": "10.000000",
+            "per_ticket_budget_usd": "100.000000",
+            "source_factory_sha": "b" * 40,
+        })
+        self.manifest.write_text(json.dumps(manifest), encoding="utf-8")
+        worktree = self.root / "contract-recovery"
+        (worktree / "factory/tickets").mkdir(parents=True)
+        (worktree / "factory/tickets/T-1.md").write_text(
+            f"# T-1\n\nState: {state}\nResume-State: Building\n",
+            encoding="utf-8",
+        )
+        for command in (
+            ("init", "-q"),
+            ("config", "user.name", "Qualification Test"),
+            ("config", "user.email", "qualification@test.invalid"),
+            ("checkout", "-qb", "ticket/T-1"),
+            ("add", "factory/tickets/T-1.md"),
+            ("commit", "-qm", "seed contract recovery"),
+        ):
+            subprocess.run(
+                ["git", "-C", str(worktree), *command], check=True,
+                capture_output=True, text=True,
+            )
+        head = subprocess.run(
+            ["git", "-C", str(worktree), "rev-parse", "HEAD"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        receipt = "c" * 64
+        claim = self.controller_state / "claims/T-1.json"
+        claim.write_text(json.dumps({
+            "lease_released": True,
+            "parked": True,
+            "receipt": receipt,
+            "role": "test-author",
+            "status": "blocked",
+            "ticket": "T-1",
+            "worktree": str(worktree),
+        }), encoding="utf-8")
+        claim.chmod(0o600)
+        doctor = self.doctor("warning")
+        doctor["checks"]["runtime"]["status"] = "ok"
+        doctor["checks"]["transition_receipts"] = {
+            "incidents": [{
+                "active_factory_sha": "a" * 40,
+                "observed_at_epoch_ns": 1,
+                "reason_code": "prior_kit_receipt",
+                "receipt_factory_sha": "b" * 40,
+                "ticket": "T-1",
+                "transition_receipt_sha256": receipt,
+            }],
+            "status": "warning",
+        }
+        doctor["checks"]["contract_resume"] = {
+            "incidents": [{
+                "actual_bytes": 10,
+                "blocked_receipt_sha256": receipt,
+                "changed_path_count": 1,
+                "expected_bytes": 11,
+                "first_differing_line": 2,
+                "observed_at_epoch_ns": 2,
+                "reason_code": "resume_commit_content_mismatch",
+                "ticket": "T-1",
+            }],
+            "status": "warning",
+        }
+        return doctor, worktree, head, receipt
 
     def test_restart_boundary_then_reduction_is_one_command(self) -> None:
         code, value = self.run_scenario({
@@ -473,50 +559,64 @@ raise SystemExit(code)
                 self.assertEqual(self.called(), ["doctor"])
 
     def test_successor_prior_receipt_allows_its_exact_contract_recovery(self) -> None:
-        manifest = json.loads(self.manifest.read_text(encoding="utf-8"))
-        manifest.update({
-            "budget_usd": "300.000000",
-            "mode": "successor",
-            "per_run_budget_usd": "10.000000",
-            "per_ticket_budget_usd": "100.000000",
-            "source_factory_sha": "b" * 40,
-        })
-        self.manifest.write_text(json.dumps(manifest), encoding="utf-8")
-        doctor = self.doctor("warning")
-        doctor["checks"]["runtime"]["status"] = "ok"
-        receipt = "c" * 64
-        doctor["checks"]["transition_receipts"] = {
-            "incidents": [{
-                "active_factory_sha": "a" * 40,
-                "observed_at_epoch_ns": 1,
-                "reason_code": "prior_kit_receipt",
-                "receipt_factory_sha": "b" * 40,
-                "ticket": "T-1",
-                "transition_receipt_sha256": receipt,
-            }],
-            "status": "warning",
+        doctor, worktree, head, receipt = self.contract_recovery_fixture()
+        checked = {
+            "action": "repair-check",
+            "current_state": "Blocked-Escalated",
+            "head": head,
+            "repair_role": "planner",
+            "resume_state": "Building",
+            "role": "test-author",
+            "schema": "nysa.software-factory.state-machine/v1",
+            "status": "ready",
+            "ticket": "T-1",
         }
-        doctor["checks"]["contract_resume"] = {
-            "incidents": [{
-                "actual_bytes": 10,
-                "blocked_receipt_sha256": receipt,
-                "changed_path_count": 1,
-                "expected_bytes": 11,
-                "first_differing_line": 2,
-                "observed_at_epoch_ns": 2,
-                "reason_code": "resume_commit_content_mismatch",
-                "ticket": "T-1",
-            }],
-            "status": "warning",
-        }
+        stale = operator_receipt.issue(
+            self.controller_state, "T-1", "resume", {
+                "blocked_receipt_sha256": "d" * 64,
+                "resume_stage": "Building",
+            },
+        )
 
         code, value = self.run_scenario({
             "doctor": doctor,
+            "state-machine:repair-check": checked,
             "reconcile": [self.controller("waiting_for_target")],
             "qualification": self.report(),
         })
         self.assertEqual((code, value["reason"]), (3, "cohort_not_accounted"))
-        self.assertEqual(self.called(), ["doctor", "reconcile"])
+        self.assertEqual(
+            self.called(), ["doctor", "state-machine:repair-check", "reconcile"],
+        )
+        mapping = json.loads(self.operator_map.read_text(encoding="utf-8"))
+        operator = mapping["tickets"]["T-1"]["operator"]
+        self.assertEqual(
+            (operator["state"], operator["state_base"]),
+            ("Building", "blocked-escalated"),
+        )
+        receipt_path = next(
+            path for path in (
+                self.controller_state / "operator-receipts/T-1"
+            ).glob("resume-*.json")
+            if json.loads(path.read_text(encoding="utf-8"))[
+                "receipt_sha256"
+            ] == operator["receipt_sha256"]
+        )
+        projected = json.loads(receipt_path.read_text(encoding="utf-8"))
+        self.assertFalse(projected["consumed"])
+        self.assertEqual(projected["payload"], {
+            "blocked_receipt_sha256": receipt,
+            "resume_stage": "Building",
+        })
+        self.assertNotEqual(projected["receipt_sha256"], stale["receipt_sha256"])
+        self.assertEqual(
+            subprocess.run(
+                ["git", "-C", str(worktree), "status", "--porcelain=v1"],
+                check=True, capture_output=True, text=True,
+            ).stdout,
+            "",
+        )
+        self.assertFalse((worktree / "factory/receipts").exists())
 
         for label, key, changed in (
             ("wrong-receipt", "blocked_receipt_sha256", "d" * 64),
@@ -540,6 +640,164 @@ raise SystemExit(code)
                     (code, value["reason"]), (3, "doctor_not_ready")
                 )
                 self.assertEqual(self.called(), ["doctor"])
+
+    def test_contract_resume_projection_replays_after_receipt_consumption(self) -> None:
+        doctor, worktree, _head, _receipt = self.contract_recovery_fixture(
+            "Blocked-Escalated",
+        )
+        checked = {
+            "action": "repair-check",
+            "current_state": "Blocked-Escalated",
+            "head": subprocess.run(
+                ["git", "-C", str(worktree), "rev-parse", "HEAD"],
+                check=True, capture_output=True, text=True,
+            ).stdout.strip(),
+            "repair_role": "planner",
+            "resume_state": "Building",
+            "role": "test-author",
+            "schema": "nysa.software-factory.state-machine/v1",
+            "status": "ready",
+            "ticket": "T-1",
+        }
+        stale = operator_receipt.issue(
+            self.controller_state, "T-1", "resume", {
+                "blocked_receipt_sha256": "d" * 64,
+                "resume_stage": "Building",
+            },
+        )
+        operator_receipt.verify_consume_exact(
+            self.controller_state, "T-1", "resume",
+            stale["receipt_sha256"], stale["payload"],
+        )
+        self.run_scenario({
+            "doctor": doctor,
+            "state-machine:repair-check": checked,
+            "reconcile": [self.controller("waiting_for_target")],
+        })
+        subprocess.run(
+            [
+                sys.executable, str(ROOT / "scripts/lib/operator_receipt.py"),
+                "--state-dir", str(self.controller_state), "consume",
+                "--ticket", "T-1", "--action", "resume",
+                "--payload", json.dumps({
+                    "blocked_receipt_sha256": _receipt,
+                    "resume_stage": "Building",
+                }, sort_keys=True, separators=(",", ":")),
+            ],
+            check=True, capture_output=True, text=True,
+        )
+        mapping = json.loads(self.operator_map.read_text(encoding="utf-8"))
+        mapping["tickets"]["T-1"].pop("operator")
+        self.operator_map.write_text(json.dumps(mapping), encoding="utf-8")
+        ticket = worktree / "factory/tickets/T-1.md"
+        ticket.write_text(
+            ticket.read_text(encoding="utf-8").replace(
+                "State: Blocked-Escalated", "State: Building",
+            ),
+            encoding="utf-8",
+        )
+        subprocess.run(
+            ["git", "-C", str(worktree), "add", str(ticket)], check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(worktree), "commit", "-qm", "materialize resume"],
+            check=True,
+        )
+        head = subprocess.run(
+            ["git", "-C", str(worktree), "rev-parse", "HEAD"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        exact_receipt = next(
+            json.loads(path.read_text(encoding="utf-8"))
+            for path in (
+                self.controller_state / "operator-receipts/T-1"
+            ).glob("resume-*.json")
+            if json.loads(path.read_text(encoding="utf-8"))["payload"].get(
+                "blocked_receipt_sha256"
+            ) == _receipt
+        )
+        replay = {
+            **checked, "current_state": "Building", "head": head,
+            "operator_resume_projection_pending": False,
+            "operator_resume_receipt_consumed": True,
+            "operator_resume_receipt_sha256": exact_receipt["receipt_sha256"],
+        }
+        resumed = {
+            "action": "resume", "head": head, "repair_role": "planner",
+            "role": "test-author",
+            "schema": "nysa.software-factory.state-machine/v1",
+            "status": "ready", "ticket": "T-1",
+        }
+        self.calls.unlink()
+        code, value = self.run_scenario({
+            "doctor": doctor,
+            "state-machine:repair-check": replay,
+            "state-machine:resume": resumed,
+            "reconcile": [self.controller("waiting_for_target")],
+        })
+        self.assertEqual((code, value["reason"]), (3, "cohort_not_accounted"))
+        self.assertEqual(self.called(), [
+            "doctor", "state-machine:repair-check", "state-machine:resume",
+            "reconcile",
+        ])
+
+    def test_contract_resume_projection_rejects_drift_and_nonqualification_use(self) -> None:
+        doctor, worktree, head, _receipt = self.contract_recovery_fixture()
+        checked = {
+            "action": "repair-check",
+            "current_state": "Blocked-Escalated",
+            "head": head,
+            "repair_role": "planner",
+            "resume_state": "Building",
+            "role": "test-author",
+            "schema": "nysa.software-factory.state-machine/v1",
+            "status": "ready",
+            "ticket": "T-1",
+        }
+        for label, key, changed in (
+            ("head", "head", "d" * 40),
+            ("state", "current_state", "Planning"),
+            ("role", "role", "builder"),
+        ):
+            with self.subTest(label=label):
+                self.calls.unlink(missing_ok=True)
+                invalid = {**checked, key: changed}
+                code, value = self.run_scenario({
+                    "doctor": doctor,
+                    "state-machine:repair-check": invalid,
+                    "reconcile": [self.controller("waiting_for_target")],
+                })
+                self.assertEqual((code, value["status"]), (2, "error"))
+                self.assertFalse(self.operator_map.exists())
+                self.assertFalse(
+                    (self.controller_state / "operator-receipts").exists()
+                )
+        self.calls.unlink(missing_ok=True)
+        scratch = worktree / "untracked.txt"
+        scratch.write_text("local work\n", encoding="utf-8")
+        code, value = self.run_scenario({
+            "doctor": doctor,
+            "state-machine:repair-check": checked,
+            "reconcile": [self.controller("waiting_for_target")],
+        })
+        self.assertEqual((code, value["status"]), (2, "error"))
+        self.assertFalse(self.operator_map.exists())
+        self.assertFalse((self.controller_state / "operator-receipts").exists())
+        scratch.unlink()
+        result = subprocess.run(
+            [
+                sys.executable, "-I", "-S", str(ROOT / "scripts/operator-cli.py"),
+                "--product", str(worktree), "--state-dir",
+                str(self.controller_state), "--qualification-runtime",
+                "--qualification-receipt", "c" * 64, "resume",
+                "--ticket", "T-1", "--stage", "Building",
+            ],
+            capture_output=True, check=False, text=True,
+            env={"PATH": "/usr/bin:/bin", "FACTORY_OPERATOR_MAP": str(self.operator_map)},
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("qualification runtime authority is unavailable", result.stderr)
+        self.assertFalse(self.operator_map.exists())
 
     def test_bounded_inflight_doctor_warning_reaches_controller(self) -> None:
         code, value = self.run_scenario({

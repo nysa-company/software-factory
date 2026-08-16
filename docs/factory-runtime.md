@@ -220,7 +220,12 @@ active qualification leases, or—only for a successor—the exact selected-tick
 `prior_kit_receipt` warning or idle selected-lease expiry that the controller
 itself must recover. One compact-pair `resume_commit_content_mismatch` may
 accompany that prior receipt only when its ticket, receipt, one-path shape, and
-one-byte delta match exactly; the controller still revalidates the Git repair.
+one-byte delta match exactly. At that one successor boundary, the sealed driver
+runs the ordinary repair check and issues the existing one-use resume receipt
+without writing an audit commit into the ticket branch; the controller still
+owns the resume. A consumed receipt plus the exact resumed state closes the
+push-before-recovery-record crash window. Production operator authority is
+unchanged.
 During a long successor role, the controller renews every
 idle cohort lease and releases a parked lease instead of allowing either to
 expire. A parked semantic-round wait remains plannable without a lease; exact

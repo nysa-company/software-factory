@@ -887,6 +887,7 @@ if [[ "$QUALIFICATION_LAUNCHER" == "1" ]]; then
     "FACTORY_CLI_LANE_ROOT=$QUALIFICATION_ROOT"
     "FACTORY_PROVIDER_PRODUCT_ID=$PROJECT:$KIT_SHA"
     "FACTORY_QUALIFICATION_MANIFEST=$PRODUCT_ROOT/factory/QUALIFICATION.json"
+    "FACTORY_QUALIFICATION_MODE=$QUALIFICATION_MODE"
     "FACTORY_QUALIFICATION_PRODUCT_SHA=$ACTIVE_PRODUCT_SHA"
     "FACTORY_QUALIFICATION_PRODUCT_TREE=$ACTIVE_PRODUCT_TREE"
     "FACTORY_QUALIFICATION_FALLBACK_READINESS_SHA256=$ACTIVE_FALLBACK_READINESS_SHA256"
@@ -1626,6 +1627,7 @@ PY
     [[ "$ACTIVE_CONTRACT" == "1.8.0" || "$ACTIVE_CONTRACT" == "2.0.0" ]] ||
       die "deterministic state-machine requires contract 1.8.0 or newer"
     STATE_ACTION="next" STATE_EXPECTED_HEAD="" TRANSITION_RECEIPT=""
+    STATE_QUALIFICATION_RECOVERY=0
     if [[ "${1:-}" == "block" && $# -eq 10 &&
           "$2" == "--ticket" && "$4" == "--lease" &&
           "$6" == "--receipt" && "$8" == "--workdir" &&
@@ -1637,6 +1639,13 @@ PY
             "$6" == "--workdir" && "$8" == "--json" ]]; then
       STATE_ACTION="$1" TICKET="$3" LEASE_ID=""
       TRANSITION_RECEIPT="$5" TICKET_WORKDIR="$7"
+    elif [[ "${1:-}" =~ ^(repair-check|resume)$ && $# -eq 9 &&
+            "$2" == "--ticket" && "$4" == "--receipt" &&
+            "$6" == "--workdir" && "$8" == "--qualification-recovery" &&
+            "$9" == "--json" && "$QUALIFICATION_MODE" == "isolated" ]]; then
+      STATE_ACTION="$1" TICKET="$3" LEASE_ID=""
+      TRANSITION_RECEIPT="$5" TICKET_WORKDIR="$7"
+      STATE_QUALIFICATION_RECOVERY=1
     elif [[ $# -eq 9 && "$1" == "--ticket" && "$3" == "--lease" &&
             "$5" == "--workdir" && "$7" == "--expected-head" &&
             "$9" == "--json" ]]; then
@@ -1677,6 +1686,8 @@ PY
       STATE_ARGS+=(--receipt "$TRANSITION_RECEIPT")
     [[ -z "$STATE_EXPECTED_HEAD" ]] ||
       STATE_ARGS+=(--expected-head "$STATE_EXPECTED_HEAD")
+    [[ "$STATE_QUALIFICATION_RECOVERY" == "0" ]] ||
+      STATE_ARGS+=(--qualification-recovery)
     cleanup_runtime
     trap - EXIT HUP INT TERM
     exec "${HELPER_ENV[@]}" "$PYTHON_BIN" -I -S \

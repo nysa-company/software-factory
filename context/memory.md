@@ -14,7 +14,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Contract 2 live products resolve sealed exact-SHA releases from owner-only `active.json` records under `~/.factory/kits` via `~/.factory/bin/factory-launch`; the native controller is the only scheduler.
 - The local release canary is one code-driven, product-agnostic command that creates contained local origins, runs setup/resume, and times one authenticated Planning transition plus sealed mock planner; its repository-test evidence is never promotable.
 - Model routing is portfolio policy; routes pin at the ticket boundary and change only via the Contract 1.4 journal flow. One profile resolution shares model-independent native-adapter readiness across its routes and runs independent probes in bounded parallel; Cursor readiness stays model-specific. Sealed Cursor inventory verifies the exact configured CLI identity in an empty disposable owner-only home before copying credentials, then accepts only its bounded certified structure.
-- Linear is removed (Decision 398); the six operator authorities are one-use receipts via `factory-kit.sh operator ACTION`. The only emergency recovery is the receipt-bound `OPERATOR RESUME` ticket commit. No generic lifecycle bypass is approved.
+- Linear is removed (Decision 398); the six operator authorities are one-use receipts via `factory-kit.sh operator ACTION`. Qualification may issue one manifest-selected successor resume only after the exact sealed compact-repair check; production has no lifecycle bypass.
 - **Contract rules below in Operating contract are authoritative**; this summary is only what the session hook can inject.
 
 ## Operating contract
@@ -599,6 +599,11 @@ everything the Factory actually enforces lives here.
   evidence for that receipt. Its current exact-ticket lease must also be live.
   A successor controller may reconstruct fields cleared by an earlier upgrade
   only from that same latest terminal boundary.
+- The sealed successor qualification driver may issue one existing one-use
+  resume receipt only for the exact selected compact-repair warning already
+  linked to that prior transition receipt and a ready repair check. It writes
+  no ticket audit copy; production remains operator-issued. A consumed matching
+  receipt permits only exact post-materialization repair-record replay.
 - A signed contract-repair owner survives an intervening dependency wait and
   later Factory migration only when its bound passport uniquely begins a
   contiguous authenticated v2 migration suffix ending at the current passport.
@@ -6048,7 +6053,8 @@ After the existing qualification preparer seals a lane, the sealed
 `qualification-run` launcher command composes Doctor, the mandatory
 process-level controller restart, ordinary controller/state-machine
 reconciliation, and final evidence reduction. It stops on typed waits or
-blocks and never writes Factory authority itself. Operators and agents rerun
+blocks and writes no authority except the exact qualification-only successor
+resume in Decision 450. Operators and agents rerun
 the same command only after authenticated input changes; hand-edited tickets,
 claims, leases, receipts, passports, journals, or fabricated evidence are not
 part of qualification.
@@ -6315,3 +6321,15 @@ An upgraded claim blocked on `route-migration-required` does not enter
 targeted role recovery until its ticket and route are bound to the active
 Factory. The sealed qualification driver can therefore migrate the whole idle
 cohort first, then let the controller revalidate contract or role evidence.
+
+## 2026-08-15 — Decision 450: Qualification projects exact successor resume authority
+
+Category: Reliability
+
+Only when Doctor links one selected compact-repair mismatch to its authenticated
+prior-kit transition receipt, the sealed qualification driver runs the existing
+repair check and issues the existing one-use resume receipt without a product
+audit commit. The ordinary controller owns materialization and recovery;
+production never enters this issuer path. Replay after receipt consumption
+requires the exact resumed state and the matching post-incident receipt before
+the state machine may finish its signed repair record.
