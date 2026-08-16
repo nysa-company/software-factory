@@ -26,6 +26,6 @@ Why: T-009's PR preview served a web bundle still pointing at the production API
 
 Mint a least-privilege Railway project token once via the dashboard (Settings → Tokens), scoped to this product's services only. Store it at `~/.factory/secrets/railway-token`, `chmod 600`, following the owner-only `~/.factory/secrets/` convention used for Factory-managed credentials.
 
-Usage: export it as `RAILWAY_TOKEN` for the `railway` CLI so redeploys and variable changes never wait on an operator browser session. Never commit it, never print it.
+Usage: export it as `RAILWAY_TOKEN` for the `railway` CLI when an operator changes variables or redeploys. Narrator preview identity uses exact-head GitHub Deployment and per-service commit-status evidence and does not require the Railway CLI or token. Never commit the token, never print it.
 
 This file gets extended during each product's shakedown with whatever reality required (exact start commands, health checks, quirks) — it is deliberately not exhaustive up front.

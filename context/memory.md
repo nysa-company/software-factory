@@ -6542,3 +6542,14 @@ passport edge, its transition passport, unchanged protected base and route,
 and the current remote head. Ordinary role commits between older authenticated
 passport snapshots need not be migration edges; malformed final edges and
 unbound parents remain refused.
+
+## 2026-08-16 — Decision 471: Preview identity is GitHub-hosted and service-complete
+
+Category: Publication
+
+Narrator binds the trusted Railway comment to one successful exact-head GitHub
+commit status for every linked service and one successful exact-head transient,
+non-production GitHub Deployment from the same bot. Stale or unavailable
+evidence waits; malformed, duplicate, production, foreign-bot, or hostname-
+mismatched evidence refuses. The Railway CLI remains an operator mutation tool,
+not a publication prerequisite.

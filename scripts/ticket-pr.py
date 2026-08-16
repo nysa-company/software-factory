@@ -657,7 +657,7 @@ def required_check_status(repo: str, number: int) -> tuple[str, list[str]]:
 
 
 def railway_preview_evidence(
-    repo: str, number: int, branch: str, head: str,
+    repo: str, number: int, head: str,
 ) -> tuple[list[str], dict[str, object]]:
     result = run([
         "gh", "pr", "view", str(number), "--repo", repo,
@@ -700,13 +700,11 @@ def railway_preview_evidence(
         raise Refusal("Railway preview comment has no service evidence")
     urls = []
     deployments = []
-    railway = Path.home() / ".railway/bin/railway"
-    if not railway.is_file() or not os.access(railway, os.X_OK):
-        return [], {
-            "expected": head, "observed": [], "reason": "cli_unavailable",
-            "status": "wait",
-        }
+    services = []
     for service, status_cell, candidate in rows:
+        service_name = service.strip()
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,99}", service_name):
+            raise Refusal("Railway preview service name is malformed")
         parsed = urlsplit(candidate)
         if (
             parsed.scheme != "https"
@@ -741,59 +739,187 @@ def railway_preview_evidence(
             )
         ):
             raise Refusal("Railway preview deployment link is malformed")
-        project, service_id = match.groups()
         deployment_id = query["id"][0]
-        environment = query["environmentId"][0]
-        result = subprocess.run(
-            [
-                str(railway), "deployment", "list", "-p", project,
-                "-e", environment, "-s", service_id, "--limit", "100", "--json",
-            ],
-            text=True, capture_output=True, check=False,
+        services.append({
+            "deployment_id": deployment_id,
+            "service": service_name,
+            "log_url": links[0],
+            "url": candidate.rstrip("/"),
+            "hostname": parsed.hostname,
+        })
+    if (
+        len({item["service"] for item in services}) != len(services)
+        or len({item["log_url"] for item in services}) != len(services)
+        or len({item["url"] for item in services}) != len(services)
+    ):
+        raise Refusal("Railway preview service evidence is ambiguous")
+    try:
+        deployment_result = run([
+            "gh", "api", f"repos/{repo}/deployments?sha={head}&per_page=100",
+        ])
+        deployment_values = json.loads(deployment_result.stdout)
+    except Refusal:
+        return urls, {
+            "expected": head, "observed": [], "reason": "github_unavailable",
+            "status": "wait",
+        }
+    except json.JSONDecodeError as error:
+        raise Refusal("GitHub returned invalid deployment evidence") from error
+    if (
+        not isinstance(deployment_values, list)
+        or len(deployment_values) > 100
+        or any(not isinstance(item, dict) for item in deployment_values)
+    ):
+        raise Refusal("GitHub returned invalid deployment evidence")
+    ids = [item.get("id") for item in deployment_values]
+    if any(not isinstance(value, int) or value <= 0 for value in ids) or len(ids) != len(set(ids)):
+        raise Refusal("GitHub returned ambiguous deployment evidence")
+    exact_deployments = [
+        item for item in deployment_values
+        if item.get("sha") == head and item.get("ref") == head
+    ]
+    if not exact_deployments:
+        return urls, {
+            "expected": head, "observed": [], "reason": "stale_or_pending",
+            "status": "wait",
+        }
+    deployment = max(exact_deployments, key=lambda item: item["id"])
+    creator = deployment.get("creator")
+    login = creator.get("login") if isinstance(creator, dict) else None
+    provider = login.removesuffix("[bot]") if isinstance(login, str) else None
+    environment_name = deployment.get("environment")
+    if (
+        deployment.get("task") != "deploy"
+        or deployment.get("transient_environment") is not True
+        or deployment.get("production_environment") is not False
+        or provider != "railway-app"
+        or not isinstance(environment_name, str)
+        or not environment_name
+    ):
+        raise Refusal("GitHub deployment identity is invalid")
+    try:
+        status_result = run([
+            "gh", "api",
+            f"repos/{repo}/deployments/{deployment['id']}/statuses?per_page=100",
+        ])
+        status_values = json.loads(status_result.stdout)
+        commit_result = run(["gh", "api", f"repos/{repo}/commits/{head}/status"])
+        commit_value = json.loads(commit_result.stdout)
+        detailed_result = run([
+            "gh", "api", f"repos/{repo}/commits/{head}/statuses?per_page=100",
+        ])
+        detailed_statuses = json.loads(detailed_result.stdout)
+    except Refusal:
+        return urls, {
+            "expected": head, "observed": [], "reason": "github_unavailable",
+            "status": "wait",
+        }
+    except json.JSONDecodeError as error:
+        raise Refusal("GitHub returned invalid preview status evidence") from error
+    if (
+        not isinstance(status_values, list)
+        or len(status_values) > 100
+        or any(not isinstance(item, dict) for item in status_values)
+    ):
+        raise Refusal("GitHub returned invalid deployment status evidence")
+    if not status_values:
+        return urls, {
+            "expected": head, "observed": [], "reason": "stale_or_pending",
+            "status": "wait",
+        }
+    status_ids = [item.get("id") for item in status_values]
+    if (
+        any(not isinstance(value, int) or value <= 0 for value in status_ids)
+        or len(status_ids) != len(set(status_ids))
+    ):
+        raise Refusal("GitHub returned ambiguous deployment status evidence")
+    deployment_status = max(status_values, key=lambda item: item["id"])
+    status_creator = deployment_status.get("creator")
+    status_login = status_creator.get("login") if isinstance(status_creator, dict) else None
+    status_provider = status_login.removesuffix("[bot]") if isinstance(status_login, str) else None
+    if (
+        deployment_status.get("environment") != environment_name
+        or status_provider != provider
+    ):
+        raise Refusal("GitHub deployment status identity is invalid")
+    if deployment_status.get("state") != "success":
+        return urls, {
+            "expected": head, "observed": [], "reason": "stale_or_pending",
+            "status": "wait",
+        }
+    repository = commit_value.get("repository") if isinstance(commit_value, dict) else None
+    statuses = commit_value.get("statuses") if isinstance(commit_value, dict) else None
+    if (
+        not isinstance(commit_value, dict)
+        or commit_value.get("sha") != head
+        or not isinstance(repository, dict)
+        or repository.get("full_name") != repo
+        or not isinstance(statuses, list)
+        or len(statuses) > 100
+        or any(not isinstance(item, dict) for item in statuses)
+        or not isinstance(detailed_statuses, list)
+        or len(detailed_statuses) > 100
+        or any(not isinstance(item, dict) for item in detailed_statuses)
+    ):
+        raise Refusal("GitHub returned invalid commit status evidence")
+    status_ids = [item.get("id") for item in statuses]
+    detailed_ids = [item.get("id") for item in detailed_statuses]
+    if (
+        any(not isinstance(value, int) or value <= 0 for value in status_ids)
+        or len(status_ids) != len(set(status_ids))
+        or any(not isinstance(value, int) or value <= 0 for value in detailed_ids)
+        or len(detailed_ids) != len(set(detailed_ids))
+    ):
+        raise Refusal("GitHub returned ambiguous commit status evidence")
+    for service in services:
+        matching = [item for item in statuses if item.get("target_url") == service["log_url"]]
+        if len(matching) != 1:
+            if not matching:
+                return urls, {
+                    "expected": head, "observed": deployments,
+                    "reason": "stale_or_pending", "status": "wait",
+                }
+            raise Refusal("GitHub preview service status is ambiguous")
+        item = matching[0]
+        detailed = [value for value in detailed_statuses if value.get("id") == item["id"]]
+        if len(detailed) != 1:
+            raise Refusal("GitHub preview service status identity is invalid")
+        service_creator = detailed[0].get("creator")
+        service_login = (
+            service_creator.get("login")
+            if isinstance(service_creator, dict) else None
         )
-        if result.returncode:
+        service_provider = (
+            service_login.removesuffix("[bot]")
+            if isinstance(service_login, str) else None
+        )
+        if (
+            service_provider != provider
+            or any(
+                detailed[0].get(key) != item.get(key)
+                for key in ("description", "state", "target_url")
+            )
+        ):
+            raise Refusal("GitHub preview service status identity is invalid")
+        if item.get("state") != "success":
             return urls, {
                 "expected": head, "observed": deployments,
-                "reason": "cli_unavailable", "status": "wait",
+                "reason": "stale_or_pending", "status": "wait",
             }
-        try:
-            values = json.loads(result.stdout)
-        except json.JSONDecodeError as error:
-            raise Refusal("Railway returned invalid deployment evidence") from error
-        if not isinstance(values, list):
-            raise Refusal("Railway returned invalid deployment evidence")
-        matching = [
-            item for item in values
-            if isinstance(item, dict) and item.get("id") == deployment_id
-        ]
-        if len(matching) != 1:
-            deployments.append({"service": service.strip(), "sha": None})
-            continue
-        deployment = matching[0]
-        metadata = deployment.get("meta")
-        if not isinstance(metadata, dict):
-            raise Refusal("Railway returned malformed deployment evidence")
-        observed = metadata.get("commitHash")
-        if observed is not None and not re.fullmatch(r"[0-9a-f]{40}", observed):
-            raise Refusal("Railway returned malformed deployment commit")
+        if item.get("description") != f"Success - {service['hostname']}":
+            raise Refusal("GitHub preview service hostname is invalid")
         deployments.append({
-            "deployment_id": deployment_id,
-            "service": service.strip(),
-            "sha": observed,
-            "status": deployment.get("status"),
-            "url": candidate.rstrip("/"),
+            "deployment_id": service["deployment_id"],
+            "service": service["service"],
+            "sha": head,
+            "status": "SUCCESS",
+            "url": service["url"],
         })
-        if metadata.get("repo") != repo or metadata.get("branch") != branch:
-            raise Refusal("Railway deployment repository or branch is invalid")
-    exact = bool(deployments) and len(deployments) == len(rows) and all(
-        item.get("sha") == head and item.get("status") == "SUCCESS"
-        for item in deployments
-    )
     return list(dict.fromkeys(urls)), {
         "expected": head,
         "observed": deployments,
-        "reason": None if exact else "stale_or_pending",
-        "status": "pass" if exact else "wait",
+        "reason": None,
+        "status": "pass",
     }
 
 
@@ -956,7 +1082,7 @@ def main() -> None:
                     raise Refusal("preview_capability_missing")
                 publication_mode = "railway"
                 preview_urls, preview_identity = railway_preview_evidence(
-                    repo, pr["number"], branch, head,
+                    repo, pr["number"], head,
                 )
                 if preview_identity["status"] != "pass":
                     check_status = "wait"

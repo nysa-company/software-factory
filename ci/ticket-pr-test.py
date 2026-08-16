@@ -167,6 +167,74 @@ elif args[:2] == ['api', 'repos/example/product/rules/branches/main?per_page=100
                 for name in names[1:]
             ]},
     }]]))
+elif args[:1] == ['api'] and args[1].startswith('repos/example/product/deployments?'):
+    mutation = os.environ.get('FAKE_PREVIEW_MUTATION', '')
+    values = [] if mutation == 'absent_deployment' else [{
+        'id': 900,
+        'sha': os.environ['FAKE_DEPLOYED_SHA'],
+        'ref': os.environ['FAKE_DEPLOYED_SHA'],
+        'task': 'build' if mutation == 'wrong_task' else 'deploy',
+        'transient_environment': mutation != 'not_transient',
+        'production_environment': mutation == 'production',
+        'environment': 'nysa-app / pr-7',
+        'creator': {'login': 'other-app[bot]' if mutation == 'wrong_bot' else 'railway-app[bot]'},
+    }]
+    print(json.dumps(values))
+elif args[:1] == ['api'] and '/deployments/900/statuses?' in args[1]:
+    mutation = os.environ.get('FAKE_PREVIEW_MUTATION', '')
+    values = [] if mutation == 'absent_status' else [{
+        'id': 901,
+        'state': 'pending' if mutation == 'deployment_pending' else 'success',
+        'environment': 'wrong' if mutation == 'wrong_environment' else 'nysa-app / pr-7',
+        'creator': {'login': 'other-app[bot]' if mutation == 'wrong_status_bot' else 'railway-app[bot]'},
+    }]
+    print(json.dumps(values))
+elif args[:1] == ['api'] and '/commits/' in args[1] and args[1].endswith('/status'):
+    mutation = os.environ.get('FAKE_PREVIEW_MUTATION', '')
+    api_log = 'https://railway.com/project/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/service/11111111-1111-1111-1111-111111111111?id=33333333-3333-3333-3333-333333333333&environmentId=bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'
+    web_log = 'https://railway.com/project/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/service/22222222-2222-2222-2222-222222222222?id=44444444-4444-4444-4444-444444444444&environmentId=bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'
+    statuses = [
+        {
+            'id': 902,
+            'state': 'pending' if mutation == 'service_pending' else 'success',
+            'description': 'Success - wrong.up.railway.app' if mutation == 'host_mismatch' else 'Success - api-example-pr-7.up.railway.app',
+            'target_url': api_log,
+        },
+        {
+            'id': 903,
+            'state': 'success',
+            'description': 'Success - web-example-pr-7.up.railway.app',
+            'target_url': web_log,
+        },
+    ]
+    if mutation == 'missing_service': statuses.pop()
+    if mutation == 'duplicate_service': statuses.append({**statuses[0], 'id': 904})
+    value = {
+        'sha': os.environ['FAKE_DEPLOYED_SHA'],
+        'repository': {'full_name': 'example/product'},
+        'statuses': statuses,
+    }
+    print(json.dumps([] if mutation == 'malformed_commit' else value))
+elif args[:1] == ['api'] and '/commits/' in args[1] and '/statuses?' in args[1]:
+    mutation = os.environ.get('FAKE_PREVIEW_MUTATION', '')
+    api_log = 'https://railway.com/project/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/service/11111111-1111-1111-1111-111111111111?id=33333333-3333-3333-3333-333333333333&environmentId=bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'
+    web_log = 'https://railway.com/project/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/service/22222222-2222-2222-2222-222222222222?id=44444444-4444-4444-4444-444444444444&environmentId=bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'
+    print(json.dumps([
+        {
+            'id': 902,
+            'state': 'pending' if mutation == 'service_pending' else 'success',
+            'description': 'Success - wrong.up.railway.app' if mutation == 'host_mismatch' else 'Success - api-example-pr-7.up.railway.app',
+            'target_url': api_log,
+            'creator': {'login': 'other-app[bot]' if mutation == 'wrong_service_status_bot' else 'railway-app[bot]'},
+        },
+        {
+            'id': 903,
+            'state': 'success',
+            'description': 'Success - web-example-pr-7.up.railway.app',
+            'target_url': web_log,
+            'creator': {'login': 'railway-app[bot]'},
+        },
+    ]))
 elif args[:1] == ['api']:
     for item in json.loads(os.environ['FAKE_PR_FILES']):
         print(base64.b64encode(json.dumps(item).encode()).decode())
@@ -176,30 +244,7 @@ else:
         )
         (self.bin / "gh").chmod(0o700)
         self.home = self.root / "home"
-        railway_bin = self.home / ".railway/bin"
-        railway_bin.mkdir(parents=True)
-        (railway_bin / "railway").write_text(
-            """#!/usr/bin/env python3
-import json, os, sys
-args = sys.argv[1:]
-service = args[args.index('-s') + 1]
-deployment = (
-    '33333333-3333-3333-3333-333333333333'
-    if service.startswith('1111') else
-    '44444444-4444-4444-4444-444444444444'
-)
-print(json.dumps([{
-    'id': deployment,
-    'status': 'SUCCESS',
-    'meta': {
-        'branch': 'ticket/T-100',
-        'commitHash': os.environ['FAKE_DEPLOYED_SHA'],
-        'repo': 'example/product',
-    },
-}]))
-"""
-        )
-        (railway_bin / "railway").chmod(0o700)
+        self.home.mkdir()
 
     def tearDown(self):
         self.temp.cleanup()
@@ -282,6 +327,7 @@ print(json.dumps([{
         self, expected=0, bucket="pass", lease_id=LEASE_ID,
         contract="", stage="", receipt="", deployed_sha=None,
         preview_reported=True, pr_files=None, check_names="ci",
+        preview_mutation="",
         required_contexts="ci",
     ):
         head = subprocess.run(
@@ -305,6 +351,7 @@ print(json.dumps([{
                 "FAKE_CHECK_NAMES": check_names,
                 "FAKE_REQUIRED_CONTEXTS": required_contexts,
                 "FAKE_DEPLOYED_SHA": deployed_sha or head,
+                "FAKE_PREVIEW_MUTATION": preview_mutation,
                 "FAKE_PREVIEW_REPORTED": "1" if preview_reported else "0",
                 "FAKE_PR_FILES": json.dumps(pr_files or [
                     {"filename": "app/tools/offline.js", "status": "added"},
@@ -790,10 +837,7 @@ print(json.dumps([{
         stale = self.command(deployed_sha="d" * 40)
         self.assertEqual(stale["status"], "wait")
         self.assertEqual(stale["preview_identity"]["reason"], "stale_or_pending")
-        self.assertEqual(
-            {item["sha"] for item in stale["preview_identity"]["observed"]},
-            {"d" * 40},
-        )
+        self.assertEqual(stale["preview_identity"]["observed"], [])
 
         (self.product / "implementation.txt").write_text("changed after review\n")
         subprocess.run(["git", "-C", self.product, "add", "implementation.txt"], check=True)
@@ -811,6 +855,38 @@ print(json.dumps([{
         self.state.write_text(json.dumps(prs))
         refused = self.command(expected=2)
         self.assertIn("implementation changed", refused["error"])
+
+    def test_preview_identity_uses_exact_github_deployment_evidence(self):
+        self.assertEqual(self.command()["status"], "prepared")
+        self.prepare_narrator()
+        current = subprocess.run(
+            ["git", "-C", self.product, "rev-parse", "HEAD"],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+        prs = json.loads(self.state.read_text())
+        prs[0]["headRefOid"] = current
+        self.state.write_text(json.dumps(prs))
+
+        self.assertFalse((self.home / ".railway").exists())
+        self.assertEqual(self.command()["preview_identity"]["status"], "pass")
+        for mutation in (
+            "absent_deployment", "absent_status", "deployment_pending", "service_pending",
+            "missing_service",
+        ):
+            with self.subTest(mutation=mutation):
+                waiting = self.command(preview_mutation=mutation)
+                self.assertEqual(waiting["status"], "wait")
+                self.assertEqual(
+                    waiting["preview_identity"]["reason"], "stale_or_pending",
+                )
+        for mutation in (
+            "wrong_task", "not_transient", "production", "wrong_bot",
+            "wrong_environment", "wrong_status_bot", "host_mismatch",
+            "wrong_service_status_bot", "duplicate_service", "malformed_commit",
+        ):
+            with self.subTest(mutation=mutation):
+                refused = self.command(expected=2, preview_mutation=mutation)
+                self.assertIn("error", refused)
 
     def test_configured_preview_preflight_gates_narrator(self):
         self.configure_preview_preflight("fail", "production_origin")

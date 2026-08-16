@@ -340,6 +340,56 @@ Merge-Policy: manual
             "commit", "-qm", message, cwd=self.product,
         )
 
+    def assert_receipt_only_refresh_replay(self, checklist, error=None):
+        ticket = self.product / "factory/tickets/T-700.md"
+        text = self.ticket("Review")
+        start = text.index("- [ ] Evidence bundle posted")
+        end = text.index("- [ ] PR merged and staging confirmed")
+        ticket.write_text(
+            text[:start] + checklist + text[end:] + "\nreviewer round 1: APPROVE\n",
+            encoding="utf-8",
+        )
+        if command("git", "diff", "--quiet", cwd=self.product, check=False).returncode:
+            self.commit("set historical refresh checklist")
+            command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
+        old_head = self.head()
+        updater = self.temp / "receipt-only-main"
+        command("git", "clone", "-q", "--branch", "main", str(self.remote), str(updater))
+        (updater / "main.txt").write_text("advance main\n", encoding="utf-8")
+        command("git", "add", ".", cwd=updater)
+        command(
+            "git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+            "commit", "-qm", "advance main", cwd=updater,
+        )
+        base_head = self.head_at(updater)
+        command("git", "push", "-q", "origin", "main", cwd=updater)
+        command("git", "fetch", "-q", "origin", "main", cwd=self.product)
+        command("git", "merge", "-q", "--no-ff", "--no-edit", base_head, cwd=self.product)
+        merge_head = self.head()
+        receipt = self.product / "factory/attestations/T-700/refresh.json"
+        receipt.parent.mkdir(parents=True)
+        receipt.write_text(json.dumps({
+            "schema": "nysa.software-factory.ticket-refresh/v1",
+            "ticket": "T-700", "generation": 1,
+            "old_head": old_head, "base_head": base_head, "merge_head": merge_head,
+            "prior_reviewer_runs": 1, "prior_approve_verdicts": 1,
+            "prior_request_changes_verdicts": 0, "prior_narrator_runs": 1,
+            "prior_bundle_blob": None, "prior_approval_blob": None,
+            "refreshed_at": "2026-07-17T14:00:00Z",
+        }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        self.commit("record receipt-only refresh")
+        command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
+        if error:
+            with self.assertRaisesRegex(TICKET_ATTEST.Refusal, error):
+                TICKET_ATTEST.publication_refresh_replay(
+                    self.product, "T-700", "ticket/T-700", str(self.remote), base_head,
+                )
+            return
+        result = TICKET_ATTEST.publication_refresh_replay(
+            self.product, "T-700", "ticket/T-700", str(self.remote), base_head,
+        )
+        self.assertEqual(result["head"], self.head())
+
     def head(self):
         return command("git", "rev-parse", "HEAD", cwd=self.product).stdout.strip()
 
@@ -1300,6 +1350,27 @@ else:
         command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
         self.bundle()
         self.assertIn("already based", self.attest("refresh").stderr)
+
+    def test_receipt_only_refresh_replay_accepts_missing_rows(self):
+        self.assert_receipt_only_refresh_replay("")
+
+    def test_receipt_only_refresh_replay_accepts_unchecked_rows(self):
+        self.assert_receipt_only_refresh_replay(
+            "- [ ] Evidence bundle posted\n- [ ] Operator approved\n",
+        )
+
+    def test_receipt_only_refresh_replay_refuses_checked_row(self):
+        self.assert_receipt_only_refresh_replay(
+            "- [x] Evidence bundle posted\n- [ ] Operator approved\n",
+            "changed unauthorized paths",
+        )
+
+    def test_receipt_only_refresh_replay_refuses_duplicate_row(self):
+        self.assert_receipt_only_refresh_replay(
+            "- [ ] Evidence bundle posted\n- [ ] Evidence bundle posted\n"
+            "- [ ] Operator approved\n",
+            "ticket reset is ambiguous",
+        )
 
     def test_control_only_refresh_preserves_review_and_narrator(self):
         self.bundle()
