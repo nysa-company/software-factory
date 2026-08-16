@@ -581,12 +581,18 @@ raise SystemExit(code)
         code, value = self.run_scenario({
             "doctor": doctor,
             "state-machine:repair-check": checked,
-            "reconcile": [self.controller("waiting_for_target")],
+            "reconcile": [
+                self.controller("waiting_for_target"),
+                self.controller("waiting_for_target"),
+            ],
             "qualification": self.report(),
         })
         self.assertEqual((code, value["reason"]), (3, "cohort_not_accounted"))
         self.assertEqual(
-            self.called(), ["doctor", "state-machine:repair-check", "reconcile"],
+            self.called(), [
+                "doctor", "reconcile", "doctor",
+                "state-machine:repair-check", "reconcile",
+            ],
         )
         mapping = json.loads(self.operator_map.read_text(encoding="utf-8"))
         operator = mapping["tickets"]["T-1"]["operator"]
@@ -672,7 +678,10 @@ raise SystemExit(code)
         self.run_scenario({
             "doctor": doctor,
             "state-machine:repair-check": checked,
-            "reconcile": [self.controller("waiting_for_target")],
+            "reconcile": [
+                self.controller("waiting_for_target"),
+                self.controller("waiting_for_target"),
+            ],
         })
         subprocess.run(
             [
@@ -733,12 +742,15 @@ raise SystemExit(code)
             "doctor": doctor,
             "state-machine:repair-check": replay,
             "state-machine:resume": resumed,
-            "reconcile": [self.controller("waiting_for_target")],
+            "reconcile": [
+                self.controller("waiting_for_target"),
+                self.controller("waiting_for_target"),
+            ],
         })
         self.assertEqual((code, value["reason"]), (3, "cohort_not_accounted"))
         self.assertEqual(self.called(), [
-            "doctor", "state-machine:repair-check", "state-machine:resume",
-            "reconcile",
+            "doctor", "reconcile", "doctor", "state-machine:repair-check",
+            "state-machine:resume", "reconcile",
         ])
 
     def test_contract_resume_projection_rejects_drift_and_nonqualification_use(self) -> None:

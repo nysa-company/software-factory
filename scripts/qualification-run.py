@@ -734,10 +734,11 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
             "status": "blocked",
         }
 
-    project_contract_recovery(launcher, args.project, doctor, selected, phases)
-
     restarts = 0
     migration_applied = False
+    contract_recovery_pending = (
+        doctor["checks"]["contract_resume"]["status"] == "warning"
+    )
     while True:
         code, controller = invoke(launcher, args.project, "reconcile", phases)
         controller_result(controller)
@@ -754,6 +755,24 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
                 "status": "error",
             }
         if controller["status"] != "restart_required":
+            if contract_recovery_pending:
+                code, refreshed = invoke(
+                    launcher, args.project, "doctor", phases,
+                )
+                if code != 0 or not doctor_allows_reconcile(
+                    refreshed, args.project, selected, capacity, successor,
+                    factory_sha, source_factory_sha,
+                ):
+                    raise QualificationRunError(
+                        "qualification Doctor changed during contract recovery"
+                    )
+                doctor = refreshed
+                contract_recovery_pending = False
+                if doctor["checks"]["contract_resume"]["status"] == "warning":
+                    project_contract_recovery(
+                        launcher, args.project, doctor, selected, phases,
+                    )
+                    continue
             if (
                 not migration_applied
                 and successor
