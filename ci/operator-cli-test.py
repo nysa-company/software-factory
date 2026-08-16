@@ -347,7 +347,15 @@ class OperatorCliTest(unittest.TestCase):
         attest_dir = self.product / "factory" / "attestations" / "T-1"
         attest_dir.mkdir(parents=True)
         (attest_dir / "bundle.json").write_text('{"schema": "bundle"}\n')
+        run_git(self.product, "add", "factory/attestations/T-1/bundle.json")
+        run_git(self.product, "commit", "--quiet", "-m", "attest bundle")
+        head = run_git(self.product, "rev-parse", "HEAD")
         receipt = self.cli("approve", "--ticket", "T-1")
+        self.assertEqual(run_git(self.product, "rev-parse", "HEAD"), head)
+        self.assertEqual(run_git(self.product, "status", "--porcelain"), "")
+        self.assertFalse(
+            (self.product / "factory/receipts/T-1/approve-1.json").exists()
+        )
         blob = run_git(
             self.product, "hash-object",
             str(attest_dir / "bundle.json"),

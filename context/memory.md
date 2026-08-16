@@ -15,7 +15,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Contract 2 live products resolve sealed exact-SHA releases from owner-only `active.json` records under `~/.factory/kits` via `~/.factory/bin/factory-launch`; the native controller is the only scheduler.
 - The local release canary is one code-driven, product-agnostic command that creates contained local origins, runs setup/resume, and times one authenticated Planning transition plus sealed mock planner; its repository-test evidence is never promotable.
 - Model routing is portfolio policy; routes pin at the ticket boundary and change only via the Contract 1.4 journal flow. One profile resolution shares model-independent native-adapter readiness across its routes and runs independent probes in bounded parallel; Cursor readiness stays model-specific. Sealed Cursor inventory verifies the exact configured CLI identity in an empty disposable owner-only home before copying credentials, then accepts only its bounded certified structure.
-- Linear is removed (Decision 398); the six operator authorities are one-use receipts via `factory-kit.sh operator ACTION`. Qualification may issue one manifest-selected successor resume only after the exact sealed compact-repair check, including the explicit isolated close after an authenticated contract-repair directive; that exact new authority rearms one abandoned targeted recovery attempt, while unchanged evidence cannot loop. Production has no lifecycle bypass.
+- Linear is removed (Decision 398); the six operator authorities are one-use receipts via `factory-kit.sh operator ACTION`. Approval changes only the ignored operator map and owner-only receipt until trusted approval attestation records it in Git. Qualification may issue one manifest-selected successor resume only after the exact sealed compact-repair check, including the explicit isolated close after an authenticated contract-repair directive; that exact new authority rearms one abandoned targeted recovery attempt, while unchanged evidence cannot loop. Production has no lifecycle bypass.
 - **Contract rules below in Operating contract are authoritative**; this summary is only what the session hook can inject.
 
 ## Operating contract
@@ -6553,3 +6553,13 @@ non-production GitHub Deployment from the same bot. Stale or unavailable
 evidence waits; malformed, duplicate, production, foreign-bot, or hostname-
 mismatched evidence refuses. The Railway CLI remains an operator mutation tool,
 not a publication prerequisite.
+
+## 2026-08-16 — Decision 472: Approval leaves the ticket head unchanged
+
+Category: Reliability
+
+`operator approve` projects only its owner-local one-use receipt and ignored
+operator map. It does not create a zero-authority audit commit because that
+would move the ticket beyond its authenticated passport before the controller
+can attest the approval. Trusted approval attestation remains the durable Git
+record and consumes the exact receipt through the ordinary closeout flow.
