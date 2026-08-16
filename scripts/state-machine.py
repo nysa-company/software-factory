@@ -268,16 +268,36 @@ def load_repair(args: argparse.Namespace, secret: bytes) -> dict[str, Any] | Non
     return load_signed_repair(path, secret)
 
 
-def completed_repair_matches_directive(
+def operator_resume_pairs(text: str) -> list[tuple[str, str]] | None:
+    pairs = re.findall(
+        r"^OPERATOR RESUME: "
+        r"(planner|spec-linter|test-author|builder)$\n"
+        r"^OPERATOR RESUME RECEIPT: ([0-9a-f]{64})$",
+        text,
+        re.M,
+    )
+    lines = re.findall(r"^OPERATOR RESUME[^\r\n]*$", text, re.M)
+    expected = [
+        line
+        for role, receipt in pairs
+        for line in (
+            f"OPERATOR RESUME: {role}",
+            f"OPERATOR RESUME RECEIPT: {receipt}",
+        )
+    ]
+    if lines != expected or len({receipt for _, receipt in pairs}) != len(pairs):
+        return None
+    return pairs
+
+
+def completed_repair_records(
     args: argparse.Namespace,
     passport: dict[str, Any],
     secret: bytes,
-    role: str,
-    receipt: str,
-) -> bool:
+) -> list[dict[str, Any]]:
     directory = repair_path(args).parent / "completed"
     if not directory.exists() and not directory.is_symlink():
-        return False
+        return []
     info = directory.lstat()
     if (
         directory.is_symlink()
@@ -286,7 +306,7 @@ def completed_repair_matches_directive(
         or stat.S_IMODE(info.st_mode) != 0o700
     ):
         raise StateError("completed contract repair directory is unsafe")
-    matched = False
+    records = []
     for path in sorted(directory.glob(f"{args.ticket}-*.json")):
         record = load_signed_repair(path, secret)
         digest = record.get("repair_sha256", "")
@@ -298,17 +318,14 @@ def completed_repair_matches_directive(
             or record.get("branch") != passport.get("branch")
             or record.get("repair_role")
             not in {"planner", "spec-linter", "test-author", "builder"}
+            or not SHA.fullmatch(record.get("factory_sha", ""))
             or not SHA.fullmatch(record.get("head_sha", ""))
+            or not DIGEST.fullmatch(record.get("blocked_receipt", ""))
+            or not DIGEST.fullmatch(record.get("passport_sha256", ""))
         ):
             raise StateError("completed contract repair record is invalid")
-        if (
-            record["repair_role"] != role
-            or record.get("blocked_receipt") != receipt
-        ):
-            continue
-        if branch_contains(args, record["head_sha"]):
-            matched = True
-    return matched
+        records.append(record)
+    return records
 
 
 def write_atomic(path: Path, value: dict[str, Any]) -> None:
@@ -3056,28 +3073,43 @@ def contract_repair_stage(args: argparse.Namespace) -> tuple[str | None, bool]:
     record = load_repair(args, secret)
     if record is None:
         if has_directive:
-            directives = re.findall(
-                r"^OPERATOR RESUME: (planner|spec-linter|test-author|builder)$",
-                text,
-                re.M,
-            )
-            receipts = re.findall(
-                r"^OPERATOR RESUME RECEIPT: ([0-9a-f]{64})$",
-                text,
-                re.M,
-            )
-            if (
-                len(directives) != 1
-                or len(receipts) != 1
-                or not completed_repair_matches_directive(
-                    args, passport, secret, directives[0], receipts[0]
+            pairs = operator_resume_pairs(text)
+            records = completed_repair_records(args, passport, secret)
+            matched = [] if not pairs else [
+                [
+                    record for record in records
+                    if record["repair_role"] == role
+                    and record["blocked_receipt"] == receipt
+                ]
+                for role, receipt in pairs
+            ]
+            if not pairs or any(len(matches) != 1 for matches in matched):
+                raise StateError(
+                    "operator resume lacks authenticated contract repair state"
                 )
+            matched_records = [matches[0] for matches in matched]
+            if any(
+                not contract_block_head_in_lineage(args, record, passport)
+                for record in matched_records
             ):
                 raise StateError(
                     "operator resume lacks authenticated contract repair state"
                 )
+            relative = f"factory/tickets/{args.ticket}.md"
+            snapshots = [
+                record for record in matched_records
+                if branch_contains(args, record["head_sha"])
+                and operator_resume_pairs(
+                    git(args.workdir, "show", f"{record['head_sha']}:{relative}")
+                ) == pairs
+            ]
+            if len(snapshots) != 1:
+                raise StateError(
+                    "operator resume lacks authenticated contract repair state"
+                )
+            role, _ = pairs[-1]
             current = current_state(args.workdir, args.ticket)
-            if directives[0] == "planner" and current in {"Building", "Review"}:
+            if role == "planner" and current in {"Building", "Review"}:
                 stage = resolve(args)
                 role = stage_role(stage)
                 order = {"Planning": 1, "Building": 2, "Review": 3}

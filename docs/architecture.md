@@ -1027,8 +1027,12 @@ An operator appends the first
 exact repair-owner and blocked-receipt directive pair, or replaces the one
 visible pair for a later blocker, without changing any other path. In an
 isolated successor, exact pairs already present at the authenticated blocked
-transition are immutable history; the current repair appends one fresh pair
-and the state machine validates only that fresh suffix:
+transition are immutable history; the current repair appends one fresh pair.
+The state machine requires the complete visible sequence to contain only adjacent,
+unique canonical pairs, exactly one signed completed record for each pair, and one
+newest in-branch signed record whose ticket blob preserves that exact sequence.
+Older record heads may survive only through the passport's authenticated migration
+lineage:
 `OPERATOR RESUME: <role>` and
 `OPERATOR RESUME RECEIPT: <transition-receipt-sha256>`.
 The ticket records the blocked-state timestamp once per substantive blocker. Exact

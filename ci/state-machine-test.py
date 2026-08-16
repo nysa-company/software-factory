@@ -3352,25 +3352,58 @@ class StateMachineTest(unittest.TestCase):
         self,
     ) -> None:
         self.args.receipt = "b" * 64
+        prior_receipt = "a" * 64
         secret = b"k" * 32
         (self.state_dir / "passport.key").write_bytes(secret)
         os.chmod(self.state_dir / "passport.key", 0o600)
         ticket = self.product / "factory/tickets/T-110.md"
         ticket.write_text(
             ticket.read_text(encoding="utf-8").rstrip("\n")
-            + "\n\nOPERATOR RESUME: planner\n"
+            + "\n\nOPERATOR RESUME: test-author\n"
+            + f"OPERATOR RESUME RECEIPT: {prior_receipt}\n",
+            encoding="utf-8",
+        )
+        run("git", "add", str(ticket), cwd=self.product)
+        run("git", "commit", "-qm", "preserve historical directive", cwd=self.product)
+        prior_head = run("git", "rev-parse", "HEAD", cwd=self.product)
+        prior_tree = run("git", "rev-parse", "HEAD^{tree}", cwd=self.product)
+        ticket.write_text(
+            ticket.read_text(encoding="utf-8")
+            + "OPERATOR RESUME: planner\n"
             + f"OPERATOR RESUME RECEIPT: {self.args.receipt}\n",
             encoding="utf-8",
         )
         run("git", "add", str(ticket), cwd=self.product)
-        run("git", "commit", "-qm", "preserve consumed planner directive", cwd=self.product)
-        head = run("git", "rev-parse", "HEAD", cwd=self.product)
+        tree = run("git", "write-tree", cwd=self.product)
+        head = run(
+            "git", "commit-tree", tree, "-m", "reconstruct repair history",
+            cwd=self.product,
+        )
+        run("git", "update-ref", "HEAD", head, cwd=self.product)
         passports = self.state_dir / "passports"
         passports.mkdir(mode=0o700)
+        protected_base = "c" * 40
+        route = "d" * 64
         body = {
             "branch": "ticket/T-110",
             "factory_sha": self.args.factory_sha,
             "head_sha": head,
+            "migration_history": [{
+                "from_factory_sha": self.args.factory_sha,
+                "from_head_sha": prior_head,
+                "from_passport_file_sha256": "e" * 64,
+                "from_passport_sha256": "f" * 64,
+                "from_protected_base_sha": protected_base,
+                "from_route_plan_sha256": route,
+                "rewrite_authorization_sha256": "9" * 64,
+                "schema": STATE.PASSPORT_MIGRATION_SCHEMA,
+                "to_factory_sha": self.args.factory_sha,
+                "to_head_sha": head,
+                "to_protected_base_sha": protected_base,
+                "to_route_plan_sha256": route,
+            }],
+            "protected_base_sha": protected_base,
+            "route_plan_sha256": route,
             "schema": STATE.PASSPORT_SCHEMA,
             "ticket": "T-110",
         }
@@ -3402,6 +3435,18 @@ class StateMachineTest(unittest.TestCase):
             completed / f"T-110-{record['repair_sha256']}.json",
             record,
         )
+        prior = STATE.signed_repair({
+            **{
+                key: value for key, value in record.items()
+                if key not in {"authentication_sha256", "repair_sha256"}
+            },
+            "blocked_receipt": prior_receipt,
+            "head_sha": prior_head,
+            "head_tree": prior_tree,
+            "repair_role": "test-author",
+        }, secret)
+        prior_path = completed / f"T-110-{prior['repair_sha256']}.json"
+        STATE.write_atomic(prior_path, prior)
 
         self.assertEqual(STATE.contract_repair_stage(self.args), (None, False))
         with (
@@ -3418,6 +3463,69 @@ class StateMachineTest(unittest.TestCase):
         transition.assert_not_called()
         migrate.assert_called_once_with(self.args)
         self.assertEqual(result["stage"], "RUN spec-linter")
+
+        original = ticket.read_text(encoding="utf-8")
+        prior_pair = (
+            "OPERATOR RESUME: test-author\n"
+            f"OPERATOR RESUME RECEIPT: {prior_receipt}\n"
+        )
+        current_pair = (
+            "OPERATOR RESUME: planner\n"
+            f"OPERATOR RESUME RECEIPT: {self.args.receipt}\n"
+        )
+        invalid = {
+            "malformed": original + "OPERATOR RESUME: admin\n",
+            "reordered": original.replace(
+                prior_pair + current_pair, current_pair + prior_pair,
+            ),
+        }
+        for label, text in invalid.items():
+            with self.subTest(label=label):
+                ticket.write_text(text, encoding="utf-8")
+                with self.assertRaisesRegex(
+                    STATE.StateError,
+                    "operator resume lacks authenticated contract repair state",
+                ):
+                    STATE.contract_repair_stage(self.args)
+
+        ticket.write_text(original, encoding="utf-8")
+        duplicate = STATE.signed_repair({
+            **{
+                key: value for key, value in record.items()
+                if key not in {"authentication_sha256", "repair_sha256"}
+            },
+            "passport_sha256": "1" * 64,
+        }, secret)
+        duplicate_path = completed / f"T-110-{duplicate['repair_sha256']}.json"
+        STATE.write_atomic(duplicate_path, duplicate)
+        with self.assertRaisesRegex(
+            STATE.StateError,
+            "operator resume lacks authenticated contract repair state",
+        ):
+            STATE.contract_repair_stage(self.args)
+        duplicate_path.unlink()
+
+        prior_path.unlink()
+        unrelated_head = run(
+            "git", "commit-tree", prior_tree, "-m", "unrelated repair",
+            cwd=self.product,
+        )
+        unrelated = STATE.signed_repair({
+            **{
+                key: value for key, value in prior.items()
+                if key not in {"authentication_sha256", "repair_sha256"}
+            },
+            "head_sha": unrelated_head,
+        }, secret)
+        STATE.write_atomic(
+            completed / f"T-110-{unrelated['repair_sha256']}.json",
+            unrelated,
+        )
+        with self.assertRaisesRegex(
+            STATE.StateError,
+            "operator resume lacks authenticated contract repair state",
+        ):
+            STATE.contract_repair_stage(self.args)
 
     def test_repeated_blocker_hands_back_to_earlier_owner_then_continues(
         self,
