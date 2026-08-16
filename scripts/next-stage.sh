@@ -782,7 +782,12 @@ PY
       { echo "REFUSE repaired checkpoint lacks a publication repair directive"; exit 1; }
     CHECKPOINT_AWAIT_REOPENED=1
   fi
-  if [[ "$CHECKPOINT_NEXT_STAGE" == AWAIT-OPERATOR* ]]; then
+  if { [[ "$CHECKPOINT_NEXT_STAGE" == \
+      "AWAIT-OPERATOR semantic-round authorization required; add exact line: OPERATOR AUTHORIZATION: spec-linter round "* ]] ||
+       [[ "$CHECKPOINT_NEXT_STAGE" == \
+      "AWAIT-OPERATOR semantic-round authorization invalid; keep exactly one line: OPERATOR AUTHORIZATION: spec-linter round "* ]]; }; then
+    :
+  elif [[ "$CHECKPOINT_NEXT_STAGE" == AWAIT-OPERATOR* ]]; then
     if [[ "$LOCAL_TA" -eq 0 && "$LOCAL_B" -eq 0 ]]; then
       emit_stage "$CHECKPOINT_NEXT_STAGE"
     fi

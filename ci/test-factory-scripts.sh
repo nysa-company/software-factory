@@ -2873,6 +2873,43 @@ if expect_stage "RUN spec-linter" "$SPEC_ROUNDS" T-301; then
   pass "the next exact grant opens only its named lint round"
 fi
 
+# A checkpointed semantic wait is re-derived from the current one-use grant.
+SPEC_CHECKPOINT_ROOT="$TMP/nysa-sf-dev.semantic-checkpoint"
+SPEC_CHECKPOINT="$SPEC_CHECKPOINT_ROOT/runtime/product-checkpoint-import.json"
+SPEC_CHECKPOINT_HEAD="$(git -C "$SPEC_ROUNDS" rev-parse HEAD)"
+SPEC_CHECKPOINT_TREE="$(git -C "$SPEC_ROUNDS" rev-parse 'HEAD^{tree}')"
+mkdir -p "$SPEC_CHECKPOINT_ROOT/runtime"
+printf '%s\n' '{"mode":"product"}' > "$SPEC_CHECKPOINT_ROOT/marker.json"
+cat > "$SPEC_CHECKPOINT" <<EOF
+{"schema":"factory-dev-product-checkpoint-import/v2","checkpoint_sha256":"0000000000000000000000000000000000000000000000000000000000000000","tickets":[{"ticket":"T-301","import_head":"$SPEC_CHECKPOINT_HEAD","import_tree":"$SPEC_CHECKPOINT_TREE","roles":["planner","spec-linter","planner","spec-linter","planner","spec-linter","planner"],"spec_verdicts":["SPEC-LINT: FAIL — first","SPEC-LINT: FAIL — second","SPEC-LINT: PASS"],"expected_next_stage":"AWAIT-OPERATOR semantic-round authorization required; add exact line: OPERATOR AUTHORIZATION: spec-linter round 4"}]}
+EOF
+chmod 600 "$SPEC_CHECKPOINT_ROOT/marker.json" "$SPEC_CHECKPOINT"
+ledger_header > "$SPEC_ROUNDS/factory/ledger.csv"
+sed -i.bak '/^OPERATOR AUTHORIZATION: spec-linter round 4$/d' \
+  "$SPEC_ROUNDS/factory/tickets/T-301.md"
+rm -f "$SPEC_ROUNDS/factory/tickets/T-301.md.bak"
+export FACTORY_CLI_LANE_ROOT="$SPEC_CHECKPOINT_ROOT"
+export FACTORY_DEV_PRODUCT_CHECKPOINT="$SPEC_CHECKPOINT"
+if expect_stage "AWAIT-OPERATOR semantic-round authorization required; add exact line: OPERATOR AUTHORIZATION: spec-linter round 4" "$SPEC_ROUNDS" T-301; then
+  pass "checkpoint replay preserves a missing semantic grant wait"
+fi
+printf '%s\n' 'OPERATOR AUTHORIZATION: spec-linter round 4' >> \
+  "$SPEC_ROUNDS/factory/tickets/T-301.md"
+if expect_stage "RUN spec-linter" "$SPEC_ROUNDS" T-301; then
+  pass "checkpoint replay re-derives the role after the exact grant"
+fi
+ledger_row T-301 spec-linter >> "$SPEC_ROUNDS/factory/ledger.csv"
+printf '%s\n' 'SPEC-LINT: PASS' >> "$SPEC_ROUNDS/factory/tickets/T-301.md"
+ledger_row T-301 test-author >> "$SPEC_ROUNDS/factory/ledger.csv"
+if expect_stage "RUN builder" "$SPEC_ROUNDS" T-301; then
+  pass "semantic checkpoint replay continues through Test-author"
+fi
+ledger_row T-301 builder >> "$SPEC_ROUNDS/factory/ledger.csv"
+if expect_stage "RUN reviewer" "$SPEC_ROUNDS" T-301; then
+  pass "semantic checkpoint replay continues through Builder"
+fi
+unset FACTORY_CLI_LANE_ROOT FACTORY_DEV_PRODUCT_CHECKPOINT
+
 # Qualification starts one sealed role-control epoch without rewriting the
 # protected ticket's historical audit log.
 QUALIFICATION_EPOCH="$TMP/qualification-role-epoch"
