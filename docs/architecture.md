@@ -446,7 +446,10 @@ and is excluded from ordinary recovery, admission, and scheduling for that
 sweep. An inactive invalid claim releases its lease without rewriting the
 receipt; a live role is untouched. Existing typed release-upgrade, terminal,
 and contract-blocker recovery may still use a digest-valid prior receipt under
-their stricter bindings. One roleless prior-release maintenance refusal may
+their stricter bindings. After passport migration, an exact prior-release
+protected-ticket failure with no migrated semantic authority enters that
+existing targeted recovery before the release-upgrade attempt can be
+abandoned. One roleless prior-release maintenance refusal may
 also re-enter ordinary scheduling after its exact protected in-flight release
 and route migration is complete. Admission requires the authenticated current
 Review passport, one contiguous release/head/base/route suffix from the

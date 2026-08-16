@@ -6362,3 +6362,12 @@ The Spec-linter and Dispatcher contracts obey the sequencer's exact
 provider-free round authorization for round three and every later round. They
 must not impose the superseded hard round-three ceiling after the authenticated
 state machine has accepted the exact next-round operator grant.
+
+## 2026-08-15 — Decision 454: Successor migration precedes prior-role recovery
+
+Category: Reliability
+
+After an exact successor passport migration, a prior-release protected-ticket
+failure without migrated semantic authority enters the existing targeted
+recovery before release-upgrade attempt settlement. This preserves its
+authenticated evidence while allowing the corrected successor role to retry.

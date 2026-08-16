@@ -7515,6 +7515,14 @@ class Controller:
                     "ticket": claim["ticket"],
                 })
                 continue
+            if (
+                claim.get("receipt")
+                and not migrated_authorization
+                and terminal is not None
+                and terminal.get("role_exit")
+                == "role_exit_protected_ticket_mutation"
+            ):
+                self.recover_repaired_failures([claim])
             terminal = (
                 self.terminal_for_receipt(claim["ticket"], claim["receipt"])
                 if claim.get("receipt")

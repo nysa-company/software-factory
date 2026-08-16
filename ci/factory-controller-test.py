@@ -8740,6 +8740,64 @@ class FactoryControllerTest(unittest.TestCase):
             claims, recovery, "release-upgrade", concurrent=True
         )
 
+    def test_release_upgrade_recovers_prior_role_failure_after_migration(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        source = "b" * 40
+        receipt = "c" * 64
+        passport_path = self.state / "passports/T-110.json"
+        passport_path.parent.mkdir(mode=0o700)
+        CONTROL.write(passport_path, {"factory_sha": source})
+        claim = {
+            "blocked_reason": "role-failure",
+            "branch": "ticket/T-110",
+            "lease": "d" * 64,
+            "receipt": receipt,
+            "role": "spec-linter",
+            "status": "blocked",
+            "ticket": "T-110",
+            "worktree": str(self.product),
+        }
+        terminal = {
+            "kit_sha": source,
+            "role_exit": "role_exit_protected_ticket_mutation",
+        }
+        controller.terminal_for_receipt = (
+            lambda _ticket, value: terminal if value == receipt else None
+        )
+        controller.authenticated_operator_passport = lambda _ticket: None
+        controller.quarantine_legacy_protected_mutation = (
+            lambda _claim, _terminal: False
+        )
+        controller.ticket_release_current = lambda _claim: True
+        controller.renew = lambda _claim: None
+        controller.migrate_passport = lambda _claim, _mode: CONTROL.write(
+            passport_path, {"factory_sha": self.release.name}
+        )
+        recovered = []
+
+        def recover(items):
+            recovered.append(items[0]["ticket"])
+            items[0].update(receipt="", role="", status="claimed")
+
+        controller.recover_repaired_failures = recover
+        controller.recover_upgraded_claims([claim])
+
+        self.assertEqual(recovered, ["T-110"])
+        self.assertEqual(claim["status"], "claimed")
+        self.assertEqual((claim["receipt"], claim["role"]), ("", ""))
+
+        recovered.clear()
+        claim.update(
+            blocked_reason="role-failure", receipt=receipt,
+            role="spec-linter", status="blocked",
+        )
+        terminal["role_exit"] = "provider_failed"
+        CONTROL.write(passport_path, {"factory_sha": source})
+        controller.recover_upgraded_claims([claim])
+        self.assertEqual(recovered, [])
+        self.assertEqual((claim["status"], claim["receipt"]), ("blocked", receipt))
+
+
     def test_recovery_failures_dedupe_and_release_new_nonlive_lease(self) -> None:
         controller = CONTROL.Controller(self.args)
         claim = {
