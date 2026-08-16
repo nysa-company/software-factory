@@ -476,7 +476,7 @@ def _cmd_ticket_action(args: argparse.Namespace) -> dict:
             / f"{action}-{receipt['sequence']}.json"
         )
         return operator_receipt.safe_receipt(path)
-    if not args.qualification_runtime:
+    if not args.qualification_runtime and action != "approve":
         path = audit_copy(product, receipt)
         commit_audit(
             product, path,
