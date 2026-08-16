@@ -6443,3 +6443,13 @@ requiring the final tree and ticket bytes to remain identical, both history
 gates to pass, an exact remote lease, and a passport rewrite bound to the
 durable replay record; production, takeover, product paths, and foreign-ticket
 state remain closed.
+
+## 2026-08-16 — Decision 462: History repair composes after route migration
+
+Category: Reliability
+
+An isolated successor may reconstruct an authenticated source-release blocker
+after route migration only when its v2 migration suffix is continuous from the
+blocker's route digest through the current passport head and route. This keeps
+qualification command ordering deterministic without weakening production or
+the final tree-identical reconstruction proof.

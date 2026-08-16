@@ -8258,6 +8258,37 @@ class Controller:
             "schema": SCHEMA, "status": "applied", "ticket": ticket,
         }
 
+    def exact_ticket_only_lineage(
+        self, claim: dict[str, Any], before: str, after: str,
+    ) -> bool:
+        if before == after:
+            return SHA.fullmatch(before) is not None
+        if not SHA.fullmatch(before) or not SHA.fullmatch(after):
+            return False
+        history = self.cell_git(
+            claim, "rev-list", "--reverse", "--parents", f"{before}..{after}",
+        )
+        rows = history.stdout.splitlines()
+        if history.returncode or not 1 <= len(rows) <= 8:
+            return False
+        previous = before
+        ticket_path = f"factory/tickets/{claim['ticket']}.md"
+        for row in rows:
+            commit = row.split()
+            paths = self.cell_git(
+                claim, "diff-tree", "--no-commit-id", "--name-only",
+                "--no-renames", "-r", commit[0],
+            )
+            if (
+                len(commit) != 2
+                or commit[1] != previous
+                or paths.returncode
+                or paths.stdout.splitlines() != [ticket_path]
+            ):
+                return False
+            previous = commit[0]
+        return previous == after
+
     def contract_repair_plan(
         self, ticket: str, role: str, operator_id: str,
     ) -> tuple[dict[str, Any], dict[str, Any], str, str]:
@@ -8298,10 +8329,6 @@ class Controller:
         reconstruction_edge = self.qualification_reconstruction_edge(
             ticket, claim, passport, final_source_edge,
         )
-        source_head = (
-            final_source_edge.get("from_head_sha")
-            if reconstruction_edge else passport.get("head_sha")
-        ) if passport else ""
         source_evidence = (
             self.qualification
             and self.qualification.get("mode") == "successor"
@@ -8310,24 +8337,44 @@ class Controller:
             and terminal.get("kit_sha") == evidence_factory
             and passport is not None
             and passport.get("factory_sha") == self.release_path.name
-            and transition.get("route_plan_sha256")
-            == passport.get("route_plan_sha256")
             and source_suffix
             and all(valid_v2_migration(edge) for edge in source_suffix)
+            and source_suffix[0]["from_route_plan_sha256"]
+            == transition.get("route_plan_sha256")
+            and self.exact_ticket_only_lineage(
+                claim, transition.get("head_sha", ""),
+                source_suffix[0]["from_head_sha"],
+            )
+            and passport_head_lineage(
+                passport, source_suffix[0]["from_head_sha"],
+            )
+            and all(
+                left["to_factory_sha"] == right["from_factory_sha"]
+                and left["to_head_sha"] == right["from_head_sha"]
+                and left["to_protected_base_sha"]
+                == right["from_protected_base_sha"]
+                and left["to_route_plan_sha256"]
+                == right["from_route_plan_sha256"]
+                for left, right in zip(source_suffix, source_suffix[1:])
+            )
+            and source_suffix[-1]["to_factory_sha"]
+            == passport.get("factory_sha")
+            and source_suffix[-1]["to_head_sha"] == passport.get("head_sha")
+            and source_suffix[-1]["to_protected_base_sha"]
+            == passport.get("protected_base_sha")
+            and source_suffix[-1]["to_route_plan_sha256"]
+            == passport.get("route_plan_sha256")
+            and source_suffix[-1]["from_passport_file_sha256"]
+            == passport.get("parent_file_sha256")
+            and source_suffix[-1]["from_passport_sha256"]
+            == passport.get("parent_digest")
             and all(
                 edge["from_head_sha"] == edge["to_head_sha"]
-                == source_head
-                and edge["from_route_plan_sha256"]
-                == edge["to_route_plan_sha256"]
-                == passport.get("route_plan_sha256")
-                for edge in (
-                    source_suffix[:-1] if reconstruction_edge else source_suffix
+                or self.exact_route_migration_commit(
+                    claim, edge["from_head_sha"], edge["to_head_sha"],
                 )
-            )
-            and (
-                not reconstruction_edge
-                or final_source_edge["from_head_sha"] == source_head
-                and final_source_edge["to_head_sha"] == passport.get("head_sha")
+                or index == len(source_suffix) - 1 and reconstruction_edge
+                for index, edge in enumerate(source_suffix)
             )
             and successor_release_lineage(
                 passport.get("factory_release_history"),
