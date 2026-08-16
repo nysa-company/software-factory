@@ -259,6 +259,7 @@ class StateMachineTest(unittest.TestCase):
 
     def test_spec_lint_waits_for_each_round_after_three(self) -> None:
         ticket = self.product / "factory/tickets/T-110.md"
+        cap = "ESCALATE planner-spec-linter loop cap reached; attempts=3; limit=3"
         ticket.write_text(
             "# T-110\n\nState: Planning\n"
             "SPEC-LINT: FAIL — one\n"
@@ -276,6 +277,66 @@ class StateMachineTest(unittest.TestCase):
             "attempt": 3, "capped": True,
             "kind": "planner-spec-linter", "limit": 3,
         })
+        stage, loop = STATE.govern_loop(self.args, cap, False)
+        self.assertEqual(
+            stage,
+            "AWAIT-OPERATOR semantic-round authorization required; add exact "
+            "line: OPERATOR AUTHORIZATION: spec-linter round 4",
+        )
+        self.assertTrue(loop["capped"])
+        ticket.write_text(
+            ticket.read_text(encoding="utf-8")
+            + "OPERATOR AUTHORIZATION: spec-linter round 4\n",
+            encoding="utf-8",
+        )
+        stage, loop = STATE.govern_loop(self.args, cap, False)
+        self.assertEqual(stage, "RUN planner")
+        self.assertFalse(loop["capped"])
+        for malformed in (
+            "ESCALATE planner-spec-linter loop cap reached; attempts=4; limit=3",
+            "ESCALATE planner-spec-linter loop cap reached; attempts=3; limit=4",
+            cap + "; unexpected=true",
+        ):
+            with self.subTest(malformed=malformed):
+                stage, _loop = STATE.govern_loop(self.args, malformed, False)
+                self.assertEqual(stage, malformed)
+
+        for authorization, expected_stage in (
+            ("", "AWAIT-OPERATOR semantic-round authorization required; add "
+                 "exact line: OPERATOR AUTHORIZATION: spec-linter round 4"),
+            ("OPERATOR AUTHORIZATION: spec-linter round 4\n", "RUN planner"),
+        ):
+            with self.subTest(next_transition=expected_stage):
+                ticket.write_text(
+                    "# T-110\n\nState: Planning\n"
+                    "SPEC-LINT: FAIL — one\n"
+                    "SPEC-LINT: FAIL — two\n"
+                    "SPEC-LINT: FAIL — three\n"
+                    + authorization,
+                    encoding="utf-8",
+                )
+                with (
+                    mock.patch.object(
+                        STATE, "current_state", return_value="Planning",
+                    ),
+                    mock.patch.object(
+                        STATE, "declared_dependencies", return_value=[],
+                    ),
+                    mock.patch.object(
+                        STATE, "contract_repair_stage",
+                        return_value=(None, False),
+                    ),
+                    mock.patch.object(STATE, "resolve", return_value=cap),
+                    mock.patch.object(STATE, "migrate_passport"),
+                    mock.patch.object(
+                        STATE, "issue",
+                        side_effect=lambda _args, _stage, loop=None: {
+                            "loop": loop, "receipt_sha256": "d" * 64,
+                        },
+                    ),
+                ):
+                    transition = STATE.next_transition(self.args)
+                self.assertEqual(transition["stage"], expected_stage)
 
         ticket.write_text(
             "# T-110\n\nState: Building\n"

@@ -6333,3 +6333,13 @@ audit commit. The ordinary controller owns materialization and recovery;
 production never enters this issuer path. Replay after receipt consumption
 requires the exact resumed state and the matching post-incident receipt before
 the state machine may finish its signed repair record.
+
+## 2026-08-15 — Decision 451: The sealed planner cap enters its authorized round
+
+Category: Reliability
+
+The exact Planner–Spec-linter cap emitted after the third current-epoch FAIL is
+translated into the existing provider-free next-round authorization wait. A
+successor reuses ordinary claim migration/readmission; only one exact round-4
+line permits Planner, while malformed cap text and missing, duplicate, or
+wrong-round authority remain closed without rewriting prior ticket evidence.

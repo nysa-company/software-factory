@@ -7584,6 +7584,7 @@ class FactoryControllerTest(unittest.TestCase):
             "role": "",
             "schema": CONTROL.CLAIM_SCHEMA,
             "status": "blocked",
+            "blocked_reason": "state-machine-escalation",
             "ticket": "T-110",
             "worktree": str(cell),
         }
@@ -7638,6 +7639,7 @@ class FactoryControllerTest(unittest.TestCase):
         )
         controller.recover_upgraded_claims([claim])
         self.assertEqual(claim["status"], "claimed")
+        self.assertNotIn("blocked_reason", claim)
         self.assertEqual(claim["lease"], "c" * 64)
         self.assertNotIn("lease_released", claim)
         self.assertEqual(

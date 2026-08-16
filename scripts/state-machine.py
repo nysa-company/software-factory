@@ -3290,10 +3290,17 @@ def govern_loop(
         f"OPERATOR AUTHORIZATION: {authorization_role} "
         f"round {authorization_round}"
     )
+    planner_cap_stage = (
+        "ESCALATE planner-spec-linter loop cap reached; "
+        f"attempts={attempt}; limit={LOOP_LIMIT}"
+    )
     authorization_required = (
         kind == "planner-spec-linter"
         and attempt >= LOOP_LIMIT - 1
-        and stage in {"RUN planner", "RUN spec-linter"}
+        and (
+            stage in {"RUN planner", "RUN spec-linter"}
+            or stage == planner_cap_stage
+        )
         or kind == "contract-repair"
         and cap_stage
         and attempt >= LOOP_LIMIT
@@ -3320,6 +3327,12 @@ def govern_loop(
                 "AWAIT-OPERATOR semantic-round authorization invalid; "
                 f"keep exactly one line: {authorization_line}"
             )
+    elif (
+        authorized
+        and kind == "planner-spec-linter"
+        and stage == planner_cap_stage
+    ):
+        stage = "RUN planner"
     return stage, loop
 
 
