@@ -6353,3 +6353,12 @@ After protected in-flight authorization and an exact certified remote lookup,
 model migration may CAS-refresh only the stale local remote-tracking ref to that
 observed head. Existing authorization, worktree, TOCTOU, and exact push-lease
 checks still gate every product or remote mutation.
+
+## 2026-08-15 — Decision 453: Role prompts obey authorized semantic rounds
+
+Category: Reliability
+
+The Spec-linter and Dispatcher contracts obey the sequencer's exact
+provider-free round authorization for round three and every later round. They
+must not impose the superseded hard round-three ceiling after the authenticated
+state machine has accepted the exact next-round operator grant.
