@@ -4204,6 +4204,7 @@ class FactoryControllerTest(unittest.TestCase):
         second.recover_terminal_exports = lambda _claims: None
         second.recover_repaired_failures = lambda _claims: None
         second.claim_new = lambda claims: claims
+        second.maintain_successor_leases = lambda _claims: None
         second.pin_routes = lambda _claims: []
         second.reconcile_ticket = lambda claim: {
             "status": "active", "ticket": claim["ticket"],
@@ -18346,7 +18347,12 @@ class FactoryControllerTest(unittest.TestCase):
                 ticket, transition["receipt_sha256"],
             )
         third = subprocess.run(
-            ["git", "-C", str(cell), "commit-tree", old_tree, "-p", new_head],
+            [
+                "git", "-C", str(cell),
+                "-c", "user.name=Qualification test",
+                "-c", "user.email=qualification@example.invalid",
+                "commit-tree", old_tree, "-p", new_head,
+            ],
             input="unrelated\n", text=True, capture_output=True, check=True,
         ).stdout.strip()
         subprocess.run([
