@@ -1204,6 +1204,9 @@ operator legibility but are no longer invisible.
 Each exact grant is armed in ticket order and consumed by the next Spec-linter
 verdict, whether PASS or FAIL; any later Planner–Spec-linter cycle therefore
 waits for the next numbered grant instead of reusing a prior successful round.
+Importing that exact ticket-only grant validates its final same-release passport
+edge directly. Ordinary role commits between older passport snapshots are not
+migration edges and do not invalidate the authenticated grant.
 The first task-submitted terminal failed Cursor attempt for a protected
 qualification keeps its claim and authenticated evidence while the controller
 appends the existing same-family direct-CLI fallback and resumes the same

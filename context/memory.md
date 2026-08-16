@@ -6532,3 +6532,13 @@ later Planner–Spec-linter cycle waits provider-free for the next numbered
 grant. The state machine, direct stage reducer, and operator plan/apply path
 share this ordered ticket-control projection; wrong, skipped, stale, or
 duplicate grants remain non-runnable.
+
+## 2026-08-16 — Decision 470: Operator grant imports bind the final passport edge
+
+Category: Reliability
+
+Semantic-round and Reviewer-void imports validate the exact final same-release
+passport edge, its transition passport, unchanged protected base and route,
+and the current remote head. Ordinary role commits between older authenticated
+passport snapshots need not be migration edges; malformed final edges and
+unbound parents remain refused.
