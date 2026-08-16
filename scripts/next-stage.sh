@@ -596,26 +596,33 @@ if [[ -z "${FACTORY_LEDGER:-}" || "$REFRESH_RUNTIME_LEDGER" == "1" ]] &&
   echo "REFUSE effective ledger could not be reduced"
   exit 1
 fi
-SEMANTIC_SPEC_FAILURES="$(grep -ciE '^[[:space:]]*SPEC-LINT:[[:space:]]*FAIL([[:space:]]+—[[:space:]]+.*)?[[:space:]]*$' "$TICKET_FILE" || true)"
-SEMANTIC_SPEC_FAILURES="${SEMANTIC_SPEC_FAILURES:-0}"
-SEMANTIC_AUTHORIZATIONS="$(grep -cFx 'OPERATOR AUTHORIZATION: spec-linter round 3' "$TICKET_FILE" || true)"
-SEMANTIC_AUTHORIZATIONS="${SEMANTIC_AUTHORIZATIONS:-0}"
+SEMANTIC_SPEC_GATE="$(python3 - "$KIT_DIR/scripts/lib" "$TICKET_FILE" <<'PY'
+import sys
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[1])
+from ticket_state_transition import planner_spec_linter_authorization
+
+value = planner_spec_linter_authorization(Path(sys.argv[2]).read_text(encoding="utf-8"))
+print("" if value is None else f"{value[0]}|{value[1]}")
+PY
+)" || {
+  echo "REFUSE semantic-round authorization could not be reduced"
+  exit 1
+}
 emit_stage() {
   local stage="$1"
   local budget_stage="AVAILABLE"
-  if [[ "$stage" == "RUN planner" && "$SEMANTIC_SPEC_FAILURES" -ge 3 ]]; then
-    printf 'ESCALATE planner-spec-linter loop cap reached; attempts=%s; limit=3\n' \
-      "$SEMANTIC_SPEC_FAILURES"
-    exit 0
+  local semantic_round=""
+  local semantic_status=""
+  IFS='|' read -r semantic_round semantic_status <<<"$SEMANTIC_SPEC_GATE"
+  if [[ "$semantic_status" == "invalid" ]]; then
+    echo "REFUSE semantic-round authorization is ambiguous; spec-linter grants are not ordered one-use controls"
+    exit 1
   elif [[ ( "$stage" == "RUN planner" || "$stage" == "RUN spec-linter" ) &&
-        "$SEMANTIC_SPEC_FAILURES" -eq 2 ]]; then
-    if [[ "$SEMANTIC_AUTHORIZATIONS" -eq 0 ]]; then
-      printf '%s\n' "AWAIT-OPERATOR semantic-round authorization required; add exact line: OPERATOR AUTHORIZATION: spec-linter round 3"
-      exit 0
-    elif [[ "$SEMANTIC_AUTHORIZATIONS" -ne 1 ]]; then
-      printf '%s\n' "AWAIT-OPERATOR semantic-round authorization invalid; keep exactly one line: OPERATOR AUTHORIZATION: spec-linter round 3"
-      exit 0
-    fi
+          -n "$semantic_round" && "$semantic_status" == "required" ]]; then
+    printf 'AWAIT-OPERATOR semantic-round authorization required; add exact line: OPERATOR AUTHORIZATION: spec-linter round %s\n' "$semantic_round"
+    exit 0
   fi
   if [[ ( "$CONTRACT_VERSION" == "1.8.0" || "$CONTRACT_VERSION" == "2.0.0" ) &&
         ( "$stage" == RUN\ * || "$stage" == FIX\ * ) ]]; then

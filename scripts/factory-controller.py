@@ -58,6 +58,7 @@ from role_output import RoleOutputError, sha256 as role_output_sha256  # noqa: E
 from ticket_state_transition import (  # noqa: E402
     TransitionError as TicketTransitionError,
     fresh_resume_text,
+    planner_spec_linter_authorization,
     qualification_epoch_text,
 )
 from reorder_test_fixes import (  # noqa: E402
@@ -7867,26 +7868,31 @@ class Controller:
             text + "\n" + authorization_line,
             text + "\n" + required,
         }
+        old_authorization = planner_spec_linter_authorization(old_epoch)
+        new_authorization = planner_spec_linter_authorization(new_epoch)
+        normalized = (
+            os.environ.get("FACTORY_KIT_TRUST_SCOPE")
+            != "qualification-candidate"
+            and old_count > 1
+            and new_count == 1
+            and new.stdout in appended(without_grants(old.stdout))
+        )
         return (
             old.returncode == new.returncode == 0
             and (
                 semantic_kind != "planner-spec-linter"
-                or len(re.findall(
-                    r"^\s*SPEC-LINT:\s*FAIL(?:\s+—\s+.*)?\s*$",
-                    old_epoch, re.I | re.M,
-                )) == semantic_round - 1
+                or new_authorization == (semantic_round, "authorized")
+                and (
+                    old_authorization == (semantic_round, "required")
+                    or normalized
+                    and old_authorization == (semantic_round, "invalid")
+                )
             )
             and new_count == 1
             and (
                 old_count == 0
                 and new.stdout in appended(old.stdout)
-                or (
-                    os.environ.get("FACTORY_KIT_TRUST_SCOPE")
-                    != "qualification-candidate"
-                    and old_count > 1
-                    and new_count == 1
-                    and new.stdout in appended(without_grants(old.stdout))
-                )
+                or normalized
             )
         )
 
@@ -8225,10 +8231,8 @@ class Controller:
         if (
             old_lines.count(line) != 0
             or context[3] == "planner-spec-linter"
-            and len(re.findall(
-                r"^\s*SPEC-LINT:\s*FAIL(?:\s+—\s+.*)?\s*$",
-                epoch_before, re.I | re.M,
-            )) != semantic_round - 1
+            and planner_spec_linter_authorization(epoch_before)
+            != (semantic_round, "required")
         ):
             raise ControllerError("semantic authorization ticket is invalid")
         after = before.stdout + ("" if before.stdout.endswith("\n") else "\n") + line + "\n"

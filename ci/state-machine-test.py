@@ -264,6 +264,7 @@ class StateMachineTest(unittest.TestCase):
             "# T-110\n\nState: Planning\n"
             "SPEC-LINT: FAIL — one\n"
             "SPEC-LINT: FAIL — two\n"
+            "OPERATOR AUTHORIZATION: spec-linter round 3\n"
             "SPEC-LINT: FAIL — three\n",
             encoding="utf-8",
         )
@@ -311,6 +312,7 @@ class StateMachineTest(unittest.TestCase):
                     "# T-110\n\nState: Planning\n"
                     "SPEC-LINT: FAIL — one\n"
                     "SPEC-LINT: FAIL — two\n"
+                    "OPERATOR AUTHORIZATION: spec-linter round 3\n"
                     "SPEC-LINT: FAIL — three\n"
                     + authorization,
                     encoding="utf-8",
@@ -455,12 +457,13 @@ class StateMachineTest(unittest.TestCase):
         governed, _loop = STATE.govern_loop(self.args, "RUN planner", False)
         self.assertEqual(
             governed,
-            "AWAIT-OPERATOR semantic-round authorization invalid; keep exactly "
-            "one line: OPERATOR AUTHORIZATION: spec-linter round 3",
+            "REFUSE semantic-round authorization is ambiguous; "
+            "spec-linter grants are not ordered one-use controls",
         )
 
         ticket.write_text(
             prefix
+            + authorization
             + "SPEC-LINT: FAIL — three\n"
             + "OPERATOR AUTHORIZATION: spec-linter round 4\n",
             encoding="utf-8",
@@ -471,6 +474,7 @@ class StateMachineTest(unittest.TestCase):
 
         ticket.write_text(
             prefix
+            + authorization
             + "SPEC-LINT: FAIL — three\n"
             + authorization,
             encoding="utf-8",
@@ -478,6 +482,53 @@ class StateMachineTest(unittest.TestCase):
         governed, loop = STATE.govern_loop(self.args, "RUN planner", False)
         self.assertIn("OPERATOR AUTHORIZATION: spec-linter round 4", governed)
         self.assertTrue(loop["capped"])
+
+    def test_consumed_spec_lint_grant_requires_the_next_round(self) -> None:
+        ticket = self.product / "factory/tickets/T-110.md"
+        history = (
+            "# T-110\n\nState: Building\n"
+            "SPEC-LINT: FAIL — one\n"
+            "SPEC-LINT: PASS\n"
+            "SPEC-LINT: FAIL — two\n"
+            "OPERATOR AUTHORIZATION: spec-linter round 3\n"
+            "SPEC-LINT: FAIL — three\n"
+            "OPERATOR AUTHORIZATION: spec-linter round 4\n"
+            "SPEC-LINT: PASS\n"
+        )
+        expected = (
+            "AWAIT-OPERATOR semantic-round authorization required; add exact "
+            "line: OPERATOR AUTHORIZATION: spec-linter round 5"
+        )
+        ticket.write_text(history, encoding="utf-8")
+        for raw in ("RUN planner", "RUN spec-linter"):
+            with self.subTest(raw=raw):
+                stage, loop = STATE.govern_loop(self.args, raw, False)
+                self.assertEqual(stage, expected)
+                self.assertEqual(loop, {
+                    "attempt": 4, "capped": True,
+                    "kind": "planner-spec-linter", "limit": 3,
+                })
+        grant = "OPERATOR AUTHORIZATION: spec-linter round 5\n"
+        ticket.write_text(history + grant, encoding="utf-8")
+        stage, loop = STATE.govern_loop(self.args, "RUN spec-linter", False)
+        self.assertEqual(stage, "RUN spec-linter")
+        self.assertFalse(loop["capped"])
+        ticket.write_text(history + grant * 2, encoding="utf-8")
+        stage, _loop = STATE.govern_loop(self.args, "RUN spec-linter", False)
+        self.assertIn("authorization is ambiguous", stage)
+        ticket.write_text(
+            history.replace(
+                "OPERATOR AUTHORIZATION: spec-linter round 4\n", "",
+            ),
+            encoding="utf-8",
+        )
+        stage, loop = STATE.govern_loop(self.args, "RUN test-author", False)
+        self.assertEqual(
+            stage,
+            "REFUSE semantic-round authorization is ambiguous; "
+            "spec-linter grants are not ordered one-use controls",
+        )
+        self.assertEqual(loop["attempt"], 3)
 
     def test_qualification_semantic_round_uses_only_the_sealed_epoch(self) -> None:
         ticket = self.product / "factory/tickets/T-110.md"
@@ -517,7 +568,7 @@ class StateMachineTest(unittest.TestCase):
 
             ticket.write_text(historical + fresh + grant * 2, encoding="utf-8")
             stage, _loop = STATE.govern_loop(self.args, "RUN planner", False)
-            self.assertIn("authorization invalid", stage)
+            self.assertIn("authorization is ambiguous", stage)
 
     def test_later_narrator_correction_wait_binds_exact_round(self) -> None:
         ticket = self.product / "factory/tickets/T-110.md"
@@ -1226,13 +1277,20 @@ class StateMachineTest(unittest.TestCase):
             STATE, "reviewer_repair_catchup", return_value=True,
         ):
             for attempt in (3, 4):
-                failures = "".join(
-                    f"SPEC-LINT: FAIL — failure {index}\n"
-                    for index in range(1, attempt + 1)
+                controls = (
+                    "SPEC-LINT: FAIL — failure 1\n"
+                    "SPEC-LINT: FAIL — failure 2\n"
+                    + "".join(
+                        "OPERATOR AUTHORIZATION: spec-linter "
+                        f"round {semantic_round}\n"
+                        f"SPEC-LINT: FAIL — failure {semantic_round}\n"
+                        for semantic_round in range(3, attempt + 1)
+                    )
+                    + "OPERATOR AUTHORIZATION: spec-linter "
+                    f"round {attempt + 1}\n"
                 )
                 ticket.write_text(
-                    "# T-110\n\nState: Building\n" + failures
-                    + f"OPERATOR AUTHORIZATION: spec-linter round {attempt + 1}\n",
+                    "# T-110\n\nState: Building\n" + controls,
                     encoding="utf-8",
                 )
                 receipt = {

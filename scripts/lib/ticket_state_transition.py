@@ -80,6 +80,47 @@ def protocol_controls(text: str) -> list[str]:
     ]
 
 
+def planner_spec_linter_authorization(text: str) -> tuple[int, str] | None:
+    """Return the next gated round and whether its one-use grant is armed."""
+    failures = 0
+    required = 0
+    armed = 0
+    invalid = False
+    for line in protocol_controls(text):
+        verdict = re.fullmatch(
+            r"\s*SPEC-LINT:\s*(PASS|FAIL)(?:\s+—\s+.*)?\s*",
+            line.rstrip("\r\n"),
+            re.IGNORECASE,
+        )
+        if verdict:
+            if required:
+                if armed != required:
+                    invalid = True
+                else:
+                    armed = 0
+                    required += 1
+            if verdict[1].upper() == "FAIL":
+                failures += 1
+                if failures == 2 and required == 0:
+                    required = 3
+            continue
+        grant = re.fullmatch(
+            r"OPERATOR AUTHORIZATION: spec-linter round ([1-9][0-9]*)",
+            line.rstrip("\r\n"),
+        )
+        if grant and required:
+            semantic_round = int(grant[1])
+            if semantic_round != required:
+                continue
+            if armed:
+                invalid = True
+            else:
+                armed = semantic_round
+    if not required:
+        return None
+    return required, "invalid" if invalid else "authorized" if armed else "required"
+
+
 def fresh_protocol_text(current: str, baseline: str) -> str:
     protected = protocol_controls(baseline)
     remaining = iter(protected)

@@ -1600,7 +1600,7 @@ class FactoryControllerTest(unittest.TestCase):
         self, name: str, ticket: str = "T-110", *, duplicates: bool = False,
         role: str = "spec-linter", semantic_round: int = 3,
         semantic_kind: str = "planner-spec-linter",
-        historical_controls: str = "",
+        historical_controls: str = "", spec_controls: str | None = None,
     ) -> tuple[CONTROL.Controller, dict, Path, dict, dict]:
         cell = self.root / name
         remote = self.root / f"{name}.git"
@@ -1616,9 +1616,12 @@ class FactoryControllerTest(unittest.TestCase):
         authorization = (
             f"OPERATOR AUTHORIZATION: {role} round {semantic_round}\n"
         )
-        spec_failures = (
+        spec_failures = spec_controls if spec_controls is not None else (
             "".join(
-                f"SPEC-LINT: FAIL — {index}\n"
+                (
+                    "" if index < 3 else
+                    f"OPERATOR AUTHORIZATION: spec-linter round {index}\n"
+                ) + f"SPEC-LINT: FAIL — {index}\n"
                 for index in range(1, semantic_round)
             )
             if semantic_kind == "planner-spec-linter" else ""
@@ -11753,7 +11756,17 @@ class FactoryControllerTest(unittest.TestCase):
             )
         ticket = cell / "factory/tickets/T-110.md"
         ticket.parent.mkdir(parents=True)
-        ticket.write_text("# T-110\n\nState: Planning\n", encoding="utf-8")
+        live_controls = (
+            "# T-110\n\nState: Building\n"
+            "SPEC-LINT: FAIL — one\n"
+            "SPEC-LINT: PASS\n"
+            "SPEC-LINT: FAIL — two\n"
+            "OPERATOR AUTHORIZATION: spec-linter round 3\n"
+            "SPEC-LINT: FAIL — three\n"
+            "OPERATOR AUTHORIZATION: spec-linter round 4\n"
+            "SPEC-LINT: PASS\n"
+        )
+        ticket.write_text(live_controls, encoding="utf-8")
         subprocess.run(["git", "-C", str(cell), "add", "."], check=True)
         subprocess.run(
             ["git", "-C", str(cell), "commit", "-qm", "input"], check=True,
@@ -11778,7 +11791,7 @@ class FactoryControllerTest(unittest.TestCase):
             capture_output=True, check=True,
         ).stdout.strip()
         ticket.write_text(
-            "# T-110\n\nState: Planning\n\nKit-SHA: stale\n",
+            live_controls + "OPERATOR NOTE: missing round-5 authorization\n",
             encoding="utf-8",
         )
         subprocess.run(["git", "-C", str(cell), "add", "."], check=True)
@@ -11795,8 +11808,9 @@ class FactoryControllerTest(unittest.TestCase):
         predecessor = "e" * 40
         claim = {
             "branch": "ticket/T-110",
+            "lease": "a" * 64,
             "receipt": receipt,
-            "role": "planner",
+            "role": "spec-linter",
             "status": "blocked",
             "ticket": "T-110",
             "worktree": str(cell),
@@ -11805,7 +11819,7 @@ class FactoryControllerTest(unittest.TestCase):
         CONTROL.write(self.state / "passports/T-110.json", {
             "branch": claim["branch"],
             "charge_records": [{
-                "role": "planner", "run_id": run_id,
+                "role": "spec-linter", "run_id": run_id,
                 "transition_receipt_sha256": receipt,
             }],
             "completed_role_evidence": [],
@@ -11823,7 +11837,7 @@ class FactoryControllerTest(unittest.TestCase):
             "kit_sha": predecessor,
             "phase": "completed",
             "reserved_usd": "2.00",
-            "role": "planner",
+            "role": "spec-linter",
             "role_branch_before": claim["branch"],
             "role_exit": "role_exit_protected_ticket_mutation",
             "role_head_before": input_head,
@@ -11860,6 +11874,54 @@ class FactoryControllerTest(unittest.TestCase):
             ["git", "-C", str(cell), "status", "--porcelain=v1", "-z"],
             capture_output=True, check=True,
         ).stdout)
+        self.assertEqual(ticket.read_text(encoding="utf-8"), live_controls)
+
+        passport_path = self.state / "passports/T-110.json"
+        migrated = CONTROL.read(passport_path)
+        migrated.update(factory_sha=self.release.name, head_sha=input_head)
+        CONTROL.write(passport_path, migrated)
+        controller.terminal_for_receipt = lambda *_args: terminal
+        controller.remote_passport_valid = lambda _claim: True
+        controller.restore_recorded_contract_repair = lambda _claim: False
+        controller.restore_contract_blocker = lambda _claim: False
+        controller.role_active = lambda _claim: False
+        controller.ensure_lease = lambda *_args: None
+        controller.recover_repaired_failures([claim])
+        self.assertEqual(
+            (claim["status"], claim["receipt"], claim["role"]),
+            ("claimed", "", ""),
+        )
+
+        state_args = argparse.Namespace(workdir=cell, ticket="T-110")
+        stage, loop = STATE.govern_loop(state_args, "RUN spec-linter", False)
+        self.assertEqual(
+            stage,
+            "AWAIT-OPERATOR semantic-round authorization required; add exact "
+            "line: OPERATOR AUTHORIZATION: spec-linter round 5",
+        )
+        self.assertEqual(loop, {
+            "attempt": 4, "capped": True,
+            "kind": "planner-spec-linter", "limit": 3,
+        })
+        route = cell / "factory/route-plans/T-110.json"
+        route.parent.mkdir()
+        route.write_text("{}\n", encoding="utf-8")
+        transition = state_transition(stage, ticket="T-110")
+        transition["loop"] = loop
+        controller.finish_pending_run = lambda _claim: True
+        controller.refresh_dependency_tracking = lambda _claim: True
+        controller.ticket_merged = lambda _claim: False
+        controller.run_role = lambda *_args: self.fail("provider relaunched")
+        controller.json_call = lambda *args, **_kwargs: (
+            transition if args[0] == "state-machine" else {"status": "absent"}
+        )
+        result = controller.reconcile_ticket(claim)
+        self.assertEqual(result, {"status": "waiting", "ticket": "T-110"})
+        self.assertEqual(
+            claim["blocked_reason"],
+            "semantic-round-authorization:spec-linter:5",
+        )
+        self.assertEqual(ticket.read_text(encoding="utf-8"), live_controls)
 
     def test_t198_semantic_authorization_recovery_is_exact_and_one_use(self) -> None:
         source_factory = CONTROL.T198_FACTORY_SHA
@@ -18752,6 +18814,37 @@ class FactoryControllerTest(unittest.TestCase):
                 self.assertEqual(len(imported), 1)
                 self.assertEqual(imported[0]["role"], role)
                 self.assertEqual(imported[0]["semantic_round"], semantic_round)
+
+        live_controls = (
+            "SPEC-LINT: FAIL — one\n"
+            "SPEC-LINT: PASS\n"
+            "SPEC-LINT: FAIL — two\n"
+            "OPERATOR AUTHORIZATION: spec-linter round 3\n"
+            "SPEC-LINT: FAIL — three\n"
+            "OPERATOR AUTHORIZATION: spec-linter round 4\n"
+            "SPEC-LINT: PASS\n"
+        )
+        controller, _claim, _cell, _passport, _transition = (
+            self.semantic_wait_fixture(
+                "consumed-spec-grant", "T-247", semantic_round=5,
+                spec_controls=live_controls,
+            )
+        )
+        for wrong_round in (4, 6):
+            with self.subTest(wrong_round=wrong_round), self.assertRaisesRegex(
+                CONTROL.ControllerError,
+                "semantic authorization authority is unavailable",
+            ):
+                controller.plan_semantic_authorization(
+                    "T-247", "spec-linter", wrong_round, "operator",
+                )
+        plan = controller.plan_semantic_authorization(
+            "T-247", "spec-linter", 5, "operator",
+        )
+        result = controller.apply_semantic_authorization(
+            "T-247", "spec-linter", 5, "operator", plan["approval_hash"],
+        )
+        self.assertEqual(result["status"], "applied")
 
     def test_reviewer_void_plan_apply_and_import_are_exact_and_replayable(
         self,

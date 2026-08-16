@@ -22,6 +22,7 @@ from ticket_state_transition import (  # noqa: E402
     field,
     fresh_protocol_text,
     fresh_resume_text,
+    planner_spec_linter_authorization,
     qualification_epoch_text,
     validate_action_transition,
     validate_materialization,
@@ -73,6 +74,30 @@ RESUME_STATE_CONTRACTS = ("1.7.0", "1.8.0", "2.0.0")
 
 
 class TicketTransitionPolicyTest(unittest.TestCase):
+    def test_spec_linter_grants_are_ordered_and_one_use(self) -> None:
+        fail = "SPEC-LINT: FAIL — reason\n"
+        passed = "SPEC-LINT: PASS\n"
+        grant3 = "OPERATOR AUTHORIZATION: spec-linter round 3\n"
+        grant4 = "OPERATOR AUTHORIZATION: spec-linter round 4\n"
+        grant5 = "OPERATOR AUTHORIZATION: spec-linter round 5\n"
+        prefix = fail + passed + fail
+        cases = {
+            prefix: (3, "required"),
+            prefix + grant3: (3, "authorized"),
+            prefix + grant3 + fail: (4, "required"),
+            prefix + grant3 + fail + grant4: (4, "authorized"),
+            prefix + grant3 + fail + grant4 + passed: (5, "required"),
+            prefix + grant3 + fail + grant4 + passed + grant5:
+                (5, "authorized"),
+            prefix + grant3 + fail + passed: (4, "invalid"),
+            prefix + grant4: (3, "required"),
+            prefix + grant3 * 2: (3, "invalid"),
+        }
+        for text, expected in cases.items():
+            with self.subTest(expected=expected):
+                self.assertEqual(planner_spec_linter_authorization(text), expected)
+        self.assertIsNone(planner_spec_linter_authorization(fail + passed))
+
     def test_blocked_transition_projects_only_fresh_resume_controls(self) -> None:
         prior = "a" * 64
         current = "b" * 64
