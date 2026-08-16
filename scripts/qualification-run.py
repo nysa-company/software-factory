@@ -419,9 +419,28 @@ def project_contract_recovery(
             incident["ticket"], incident["blocked_receipt_sha256"],
         )
     else:
-        if contract.get("status") != "ok" or incidents not in (None, []):
-            raise QualificationRunError("qualification contract recovery is ambiguous")
         ticket, expected_receipt = authority
+        historical = (
+            contract.get("status") == "warning"
+            and isinstance(incidents, list)
+            and len(incidents) == 1
+            and isinstance(incidents[0], dict)
+            and set(incidents[0]) == {
+                "blocked_receipt_sha256", "observed_at_epoch_ns",
+                "reason_code", "ticket",
+            }
+            and incidents[0].get("ticket") == ticket
+            and incidents[0].get("blocked_receipt_sha256") == expected_receipt
+            and incidents[0].get("reason_code") == "resume_receipt_mismatch"
+            and isinstance(incidents[0].get("observed_at_epoch_ns"), int)
+            and not isinstance(incidents[0]["observed_at_epoch_ns"], bool)
+            and incidents[0]["observed_at_epoch_ns"] >= 0
+        )
+        if not (
+            contract.get("status") == "ok" and incidents in (None, [])
+            or historical
+        ):
+            raise QualificationRunError("qualification contract recovery is ambiguous")
     if ticket not in selected:
         raise QualificationRunError("qualification contract recovery is foreign")
     claim = contract_recovery_claim(ticket)

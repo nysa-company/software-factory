@@ -799,7 +799,15 @@ raise SystemExit(code)
 
     def test_explicit_qualification_resume_projects_exact_repair(self) -> None:
         doctor, worktree, head, receipt = self.contract_recovery_fixture()
-        doctor["checks"]["contract_resume"] = {"incidents": [], "status": "ok"}
+        doctor["checks"]["contract_resume"] = {
+            "incidents": [{
+                "blocked_receipt_sha256": receipt,
+                "observed_at_epoch_ns": 0,
+                "reason_code": "resume_receipt_mismatch",
+                "ticket": "T-1",
+            }],
+            "status": "warning",
+        }
         checked = {
             "action": "repair-check", "current_state": "Blocked-Escalated",
             "head": head, "repair_role": "planner", "resume_state": "Building",
@@ -828,6 +836,33 @@ raise SystemExit(code)
             ["git", "-C", str(worktree), "status", "--porcelain=v1"],
             check=True, capture_output=True, text=True,
         ).stdout, "")
+
+        for source, target in (
+            (self.controller_state / "claims/T-1.json",
+             self.controller_state / "claims/T-2.json"),
+            (self.controller_state / "T-1.json",
+             self.controller_state / "T-2.json"),
+        ):
+            value = json.loads(source.read_text(encoding="utf-8"))
+            value.update(ticket="T-2", branch="ticket/T-2")
+            target.write_text(json.dumps(value), encoding="utf-8")
+            target.chmod(0o600)
+        self.calls.unlink()
+        code, value = self.run_scenario({
+            "doctor": doctor, "state-machine:repair-check": checked,
+        }, resume=("T-2", receipt))
+        self.assertEqual((code, value["status"]), (2, "error"))
+        self.assertEqual(self.called(), ["doctor"])
+
+        doctor["checks"]["contract_resume"] = {
+            "incidents": [], "status": "ok",
+        }
+        self.calls.unlink()
+        code, value = self.run_scenario({
+            "doctor": doctor, "state-machine:repair-check": checked,
+        }, resume=("T-1", receipt))
+        self.assertEqual((code, value["status"]), (0, "projected"))
+        self.assertEqual(self.called(), ["doctor", "state-machine:repair-check"])
 
         self.calls.unlink()
         code, value = self.run_scenario(
