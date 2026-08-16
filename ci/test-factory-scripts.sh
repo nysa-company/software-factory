@@ -3716,43 +3716,54 @@ BUNDLE
 expect_stage "AWAIT-OPERATOR" "$REFRESH_ROOT" T-510 || REFRESH_OK=0
 [[ "$REFRESH_OK" -eq 1 ]] && pass "refresh requires fresh review then fresh narration"
 
-# A Review ticket whose reset is byte-for-byte a no-op legitimately commits
-# only the refresh receipt.
-NOOP_REFRESH_ROOT="$TMP/noop-refresh-sequence"
-write_envelope "$NOOP_REFRESH_ROOT"
-cat > "$NOOP_REFRESH_ROOT/factory/tickets/T-511.md" <<TICKET
+noop_refresh_case() {
+  local variant="$1" expected="$2" root="$TMP/noop-refresh-$1"
+  local old_head branch base_head merge_head
+  write_envelope "$root"
+  cat > "$root/factory/tickets/T-511.md" <<TICKET
 # T-511
 State: Review
+Resume-State: Building
 Kit-SHA: $KIT_SHA
-- [ ] Evidence bundle posted
-- [ ] Operator approved
 TICKET
-{
-  ledger_header
-  ledger_row T-511 planner
-  ledger_row T-511 test-author
-  ledger_row T-511 builder
-} > "$NOOP_REFRESH_ROOT/factory/ledger.csv"
-git -C "$NOOP_REFRESH_ROOT" add factory
-git -C "$NOOP_REFRESH_ROOT" -c user.name=test -c user.email=test@example.com \
-  commit -qm "pre-refresh Review ticket"
-NOOP_OLD_HEAD="$(git -C "$NOOP_REFRESH_ROOT" rev-parse HEAD)"
-NOOP_BRANCH="$(git -C "$NOOP_REFRESH_ROOT" branch --show-current)"
-git -C "$NOOP_REFRESH_ROOT" checkout -qb noop-refresh-base
-printf 'new protected base\n' > "$NOOP_REFRESH_ROOT/base.txt"
-printf '\nProtected-main note: harmless context.\n' >> \
-  "$NOOP_REFRESH_ROOT/factory/tickets/T-511.md"
-git -C "$NOOP_REFRESH_ROOT" add base.txt factory/tickets/T-511.md
-git -C "$NOOP_REFRESH_ROOT" -c user.name=test -c user.email=test@example.com \
-  commit -qm "advance protected base"
-NOOP_BASE_HEAD="$(git -C "$NOOP_REFRESH_ROOT" rev-parse HEAD)"
-git -C "$NOOP_REFRESH_ROOT" checkout -q "$NOOP_BRANCH"
-git -C "$NOOP_REFRESH_ROOT" -c user.name=test -c user.email=test@example.com \
-  merge -q --no-ff noop-refresh-base -m "refresh protected base"
-NOOP_MERGE_HEAD="$(git -C "$NOOP_REFRESH_ROOT" rev-parse HEAD)"
-mkdir -p "$NOOP_REFRESH_ROOT/factory/attestations/T-511"
-python3 - "$NOOP_REFRESH_ROOT/factory/attestations/T-511/refresh.json" \
-  "$NOOP_OLD_HEAD" "$NOOP_BASE_HEAD" "$NOOP_MERGE_HEAD" <<'PY'
+  case "$variant" in
+    unchecked)
+      printf '%s\n' '- [ ] Evidence bundle posted' '- [ ] Operator approved' >> \
+        "$root/factory/tickets/T-511.md"
+      ;;
+    checked)
+      printf '%s\n' '- [x] Evidence bundle posted' >> \
+        "$root/factory/tickets/T-511.md"
+      ;;
+    duplicate)
+      printf '%s\n' '- [ ] Evidence bundle posted' \
+        '- [ ] Evidence bundle posted' >> "$root/factory/tickets/T-511.md"
+      ;;
+  esac
+  {
+    ledger_header
+    ledger_row T-511 planner
+    ledger_row T-511 test-author
+    ledger_row T-511 builder
+  } > "$root/factory/ledger.csv"
+  git -C "$root" add factory
+  git -C "$root" -c user.name=test -c user.email=test@example.com \
+    commit -qm "pre-refresh Review ticket"
+  old_head="$(git -C "$root" rev-parse HEAD)"
+  branch="$(git -C "$root" branch --show-current)"
+  git -C "$root" checkout -qb noop-refresh-base
+  printf 'new protected base\n' > "$root/base.txt"
+  git -C "$root" add base.txt
+  git -C "$root" -c user.name=test -c user.email=test@example.com \
+    commit -qm "advance protected base"
+  base_head="$(git -C "$root" rev-parse HEAD)"
+  git -C "$root" checkout -q "$branch"
+  git -C "$root" -c user.name=test -c user.email=test@example.com \
+    merge -q --no-ff noop-refresh-base -m "refresh protected base"
+  merge_head="$(git -C "$root" rev-parse HEAD)"
+  mkdir -p "$root/factory/attestations/T-511"
+  python3 - "$root/factory/attestations/T-511/refresh.json" \
+    "$old_head" "$base_head" "$merge_head" <<'PY'
 import json
 import sys
 json.dump({
@@ -3771,11 +3782,19 @@ json.dump({
     "refreshed_at": "2026-07-21T12:00:00Z",
 }, open(sys.argv[1], "w", encoding="utf-8"), sort_keys=True)
 PY
-git -C "$NOOP_REFRESH_ROOT" add factory/attestations/T-511/refresh.json
-git -C "$NOOP_REFRESH_ROOT" -c user.name=test -c user.email=test@example.com \
-  commit -qm "record no-op refresh receipt"
-if expect_stage "RUN reviewer" "$NOOP_REFRESH_ROOT" T-511; then
-  pass "refresh accepts an authenticated no-op Review ticket reset"
+  git -C "$root" add factory/attestations/T-511/refresh.json
+  git -C "$root" -c user.name=test -c user.email=test@example.com \
+    commit -qm "record no-op refresh receipt"
+  expect_stage "$expected" "$root" T-511
+}
+
+if noop_refresh_case missing "RUN reviewer" &&
+   noop_refresh_case unchecked "RUN reviewer" &&
+   noop_refresh_case checked \
+     "REFUSE omitted refresh ticket change was not an exact no-op reset" &&
+   noop_refresh_case duplicate \
+     "REFUSE omitted refresh ticket change was not an exact no-op reset"; then
+  pass "refresh accepts only absent or one unchecked publication row"
 fi
 
 # Successor qualification holds two sealed run reservations for one exact

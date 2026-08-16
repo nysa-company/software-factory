@@ -18124,6 +18124,29 @@ class FactoryControllerTest(unittest.TestCase):
             "ticket": "T-216",
             "transition_receipt_sha256": transition["receipt_sha256"],
         }
+        lease_events = []
+        original_apply = controller.apply_operator_ticket_change
+
+        def ensure_lease(current, label):
+            lease_events.append(("ensure", label))
+            current["lease"] = "d" * 64
+            current.pop("lease_released", None)
+            controller.save_claim(current)
+
+        def apply_change(current, *args, **kwargs):
+            lease_events.append(("apply", "contract-repair"))
+            self.assertEqual(current["lease"], "d" * 64)
+            self.assertNotIn("lease_released", current)
+            return original_apply(current, *args, **kwargs)
+
+        def release_lease(current):
+            lease_events.append(("release", "contract-repair"))
+            current["lease_released"] = True
+            controller.save_claim(current)
+
+        controller.ensure_lease = ensure_lease
+        controller.apply_operator_ticket_change = apply_change
+        controller.release_ticket_lease = release_lease
         plan = controller.plan_contract_repair("T-216", "planner", "operator")
         self.assertEqual(plan["status"], "planned")
         self.assertEqual(controller.cell_git(claim, "rev-parse", "HEAD").stdout.strip(), head)
@@ -18135,6 +18158,11 @@ class FactoryControllerTest(unittest.TestCase):
             "T-216", "planner", "operator", plan["approval_hash"],
         )
         self.assertEqual(result["status"], "applied")
+        self.assertEqual(lease_events, [
+            ("ensure", "contract-repair"), ("apply", "contract-repair"),
+            ("release", "contract-repair"),
+        ])
+        self.assertTrue(CONTROL.read(controller.claim_path("T-216"))["lease_released"])
         after = ticket.read_text(encoding="utf-8")
         self.assertEqual(
             after,
@@ -18153,6 +18181,16 @@ class FactoryControllerTest(unittest.TestCase):
             ["approval_hash"],
             plan["approval_hash"],
         )
+        replay = controller.apply_contract_repair(
+            "T-216", "planner", "operator", plan["approval_hash"],
+        )
+        self.assertEqual(replay["repair_head"], result["repair_head"])
+        self.assertEqual(lease_events, [
+            ("ensure", "contract-repair"), ("apply", "contract-repair"),
+            ("release", "contract-repair"),
+            ("ensure", "contract-repair"), ("apply", "contract-repair"),
+            ("release", "contract-repair"),
+        ])
         controller.terminal_for_receipt = lambda *_args: {
             "exit_status": "1", "kit_sha": source,
             "role": "test-author", "role_exit": "role_exit_contract_blocked",

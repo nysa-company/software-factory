@@ -243,7 +243,7 @@ raise SystemExit(code)
         claim = self.controller_state / "claims/T-1.json"
         claim.write_text(json.dumps({
             "branch": "ticket/T-1",
-            "lease_released": True,
+            "lease": "",
             "parked": True,
             "receipt": receipt,
             "role": "test-author",
@@ -836,6 +836,26 @@ raise SystemExit(code)
             ["git", "-C", str(worktree), "status", "--porcelain=v1"],
             check=True, capture_output=True, text=True,
         ).stdout, "")
+
+        claim_path = self.controller_state / "claims/T-1.json"
+        baseline_claim = json.loads(claim_path.read_text(encoding="utf-8"))
+        for label, changed in (
+            ("active-lease", {"lease": "1" * 64}),
+            ("not-parked", {"parked": False}),
+        ):
+            with self.subTest(label=label):
+                invalid_claim = {**baseline_claim, **changed}
+                claim_path.write_text(json.dumps(invalid_claim), encoding="utf-8")
+                self.calls.unlink(missing_ok=True)
+                code, refused = self.run_scenario({
+                    "doctor": doctor, "state-machine:repair-check": checked,
+                }, resume=("T-1", receipt))
+                self.assertEqual(
+                    (code, refused["status"], refused["reason"]),
+                    (3, "blocked", "doctor_not_ready"),
+                )
+                self.assertEqual(self.called(), ["doctor"])
+        claim_path.write_text(json.dumps(baseline_claim), encoding="utf-8")
 
         for source, target in (
             (self.controller_state / "claims/T-1.json",

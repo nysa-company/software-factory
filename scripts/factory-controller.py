@@ -8557,7 +8557,10 @@ class Controller:
             "blocked_receipt": receipt,
             "blocked_role": claim["role"],
             "branch": claim["branch"],
-            "claim_sha256": hashlib.sha256(canonical_document(claim)).hexdigest(),
+            "claim_sha256": hashlib.sha256(canonical_document({
+                key: value for key, value in claim.items()
+                if key not in {"lease", "lease_released"}
+            })).hexdigest(),
             "factory_sha": self.release_path.name,
             "operator_id": operator_id,
             "parent_sha": passport["head_sha"],
@@ -8672,14 +8675,14 @@ class Controller:
         )
         if not DIGEST.fullmatch(approve_hash) or approve_hash != plan["approval_hash"]:
             raise ControllerError("contract repair approval hash does not match")
-        if not DIGEST.fullmatch(claim.get("lease", "")):
-            self.ensure_lease(claim, "contract-repair")
+        self.ensure_lease(claim, "contract-repair")
         head = self.apply_operator_ticket_change(
             claim, plan, after, observed, operator_id,
             f"Route {ticket} contract repair to {role}",
             lambda parent, child: self.exact_ticket_commit(claim, parent, child),
             "contract repair",
         )
+        self.release_ticket_lease(claim)
         return {
             "approval_hash": approve_hash, "repair_head": head,
             "schema": SCHEMA, "status": "applied", "ticket": ticket,

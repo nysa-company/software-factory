@@ -738,10 +738,11 @@ provider also requires a strict nonempty `NONVISUAL_PATHS` policy, and every
 selected ticket must declare exact Builder-owned files wholly inside it before
 qualification publishes state. Ambiguity or deployable work therefore stops
 before a claim, lease, or provider attempt.
-Narrator admission additionally requires every Railway preview deployment
-linked by the trusted bot comment to report the exact reviewed repository,
-branch, and commit; stale or unavailable identity waits without a role charge
-and becomes one typed timeout. The sealed `ticket-control retry-preview` action
+Narrator admission additionally requires the trusted Railway comment's service
+links to match one successful exact-head GitHub commit status per service and
+one successful exact-head transient, non-production GitHub Deployment from the
+same bot. Stale or unavailable identity waits without a role charge and becomes
+one typed timeout. The sealed `ticket-control retry-preview` action
 may restart only that exact expired wait against its unchanged pushed head,
 receipt, passport, and released lease; it resets no evidence and ordinary
 reconciliation still requires the preview identity to pass. A product-configured preview preflight runs only

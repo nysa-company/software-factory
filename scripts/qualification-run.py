@@ -339,11 +339,14 @@ def contract_recovery_claim(ticket: str) -> dict[str, Any]:
     try:
         worktree = Path(claim.get("worktree", ""))
         worktree_info = worktree.lstat()
+        released = claim.get("lease_released") is True or (
+            claim.get("lease") == "" and "lease_released" not in claim
+        )
         if (
             claim.get("ticket") != ticket
             or claim.get("status") != "blocked"
             or claim.get("parked") is not True
-            or claim.get("lease_released") is not True
+            or not released
             or claim.get("role") not in {
                 "planner", "spec-linter", "test-author", "builder",
             }

@@ -715,9 +715,15 @@ def publication_refresh_replay(workdir, ticket, branch, remote, expected_base):
     ticket_path = f"factory/tickets/{ticket}.md"
     bundle_path = f"factory/attestations/{ticket}/bundle.json"
     approval_path = f"factory/attestations/{ticket}/approval.json"
-    expected_ticket = git(
+    merged_ticket = git(
         workdir, "show", f"{receipt['merge_head']}:{ticket_path}",
     ).stdout
+    if any(
+        len(re.findall(rf"^- \[[ xX]\] {re.escape(label)}\s*$", merged_ticket, re.M)) > 1
+        for label in ("Evidence bundle posted", "Operator approved")
+    ):
+        raise Refusal("dependency publication replay ticket reset is ambiguous")
+    expected_ticket = merged_ticket
     expected_ticket = replace_field(expected_ticket, "State", "Review")
     expected_ticket = remove_field(expected_ticket, "Operator-Approval")
     expected_ticket = uncheck_item(expected_ticket, "Evidence bundle posted")
@@ -727,7 +733,9 @@ def publication_refresh_replay(workdir, ticket, branch, remote, expected_base):
         bundle_path: receipt["prior_bundle_blob"],
         approval_path: receipt["prior_approval_blob"],
     }
-    expected_status = {f"M\t{ticket_path}"}
+    expected_status = set()
+    if expected_ticket != merged_ticket:
+        expected_status.add(f"M\t{ticket_path}")
     old_receipt = git(
         workdir, "cat-file", "-e", f"{receipt['old_head']}:{relative}", check=False,
     ).returncode == 0

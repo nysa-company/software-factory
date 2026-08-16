@@ -453,7 +453,8 @@ if len(states) != 1 or states[0].lower() != "review":
 if re.search(r"^Operator-Approval:", text, re.I | re.M):
     raise SystemExit(1)
 for label in ("Evidence bundle posted", "Operator approved"):
-    if len(re.findall(rf"^- \[ \] {re.escape(label)}\s*$", text, re.M)) != 1:
+    rows = re.findall(rf"^- \[([ xX])\] {re.escape(label)}\s*$", text, re.M)
+    if rows not in ([], [" "]):
         raise SystemExit(1)
 PY
     then
