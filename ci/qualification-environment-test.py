@@ -3138,6 +3138,17 @@ class QualificationEnvironmentTest(unittest.TestCase):
         self.assertEqual(calls, [
             (base, source), (partial_protected, candidate),
         ])
+        calls.clear()
+        with mock.patch.object(
+            ENVIRONMENT, "verify_inflight_migration", side_effect=verify_partial,
+        ):
+            ENVIRONMENT.validate_successor_upgrade_cohort(
+                self.factory, self.product, controller, "relay", "6" * 40,
+                partial_protected, manifest,
+            )
+        self.assertEqual(calls, [
+            (partial_protected, source), (partial_protected, candidate),
+        ])
 
         value = json.loads(authorization.read_text(encoding="utf-8"))
         value["schema"] = (

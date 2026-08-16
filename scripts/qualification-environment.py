@@ -2468,10 +2468,10 @@ def validate_successor_upgrade_cohort(
                         and (
                             checkpoint_route_sha256
                             == value.get("route_plan_sha256")
-                            or value.get("factory_sha") == active_factory_sha
+                            or value.get("factory_sha") in releases
                             and verify_inflight_migration(
                                 product, active_product_sha,
-                                active_factory_sha, ticket,
+                                value["factory_sha"], ticket,
                                 value.get("branch", ""), checkpoint["head"],
                             ) == "replay"
                         )
