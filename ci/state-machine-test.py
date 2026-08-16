@@ -568,7 +568,7 @@ class StateMachineTest(unittest.TestCase):
 
             ticket.write_text(historical + fresh + grant * 2, encoding="utf-8")
             stage, _loop = STATE.govern_loop(self.args, "RUN planner", False)
-            self.assertIn("authorization invalid", stage)
+            self.assertIn("authorization is ambiguous", stage)
 
     def test_later_narrator_correction_wait_binds_exact_round(self) -> None:
         ticket = self.product / "factory/tickets/T-110.md"
@@ -1277,13 +1277,20 @@ class StateMachineTest(unittest.TestCase):
             STATE, "reviewer_repair_catchup", return_value=True,
         ):
             for attempt in (3, 4):
-                failures = "".join(
-                    f"SPEC-LINT: FAIL — failure {index}\n"
-                    for index in range(1, attempt + 1)
+                controls = (
+                    "SPEC-LINT: FAIL — failure 1\n"
+                    "SPEC-LINT: FAIL — failure 2\n"
+                    + "".join(
+                        "OPERATOR AUTHORIZATION: spec-linter "
+                        f"round {semantic_round}\n"
+                        f"SPEC-LINT: FAIL — failure {semantic_round}\n"
+                        for semantic_round in range(3, attempt + 1)
+                    )
+                    + "OPERATOR AUTHORIZATION: spec-linter "
+                    f"round {attempt + 1}\n"
                 )
                 ticket.write_text(
-                    "# T-110\n\nState: Building\n" + failures
-                    + f"OPERATOR AUTHORIZATION: spec-linter round {attempt + 1}\n",
+                    "# T-110\n\nState: Building\n" + controls,
                     encoding="utf-8",
                 )
                 receipt = {
