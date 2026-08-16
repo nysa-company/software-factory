@@ -1755,6 +1755,9 @@ class StateMachineTest(unittest.TestCase):
         run("git", "commit", "-qm", "old history tip", cwd=self.product)
         old_tip = run("git", "rev-parse", "HEAD", cwd=self.product)
         old_tree = run("git", "rev-parse", "HEAD^{tree}", cwd=self.product)
+        run("git", "commit", "--allow-empty", "-qm", "ordinary role commit",
+            cwd=self.product)
+        gap = run("git", "rev-parse", "HEAD", cwd=self.product)
         normalized = subprocess.run(
             ["git", "commit-tree", old_tree],
             cwd=self.product,
@@ -1783,7 +1786,7 @@ class StateMachineTest(unittest.TestCase):
         }
         rewrite = {
             "from_factory_sha": current_factory,
-            "from_head_sha": old_tip,
+            "from_head_sha": gap,
             "from_passport_file_sha256": "3" * 64,
             "from_passport_sha256": "4" * 64,
             "from_protected_base_sha": protected,

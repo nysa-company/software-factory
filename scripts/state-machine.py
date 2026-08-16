@@ -643,7 +643,7 @@ def contract_block_head_in_lineage(
         )
         or not all(
             prior["to_factory_sha"] == following["from_factory_sha"]
-            and prior["to_head_sha"] == following["from_head_sha"]
+            and ancestor(prior["to_head_sha"], following["from_head_sha"])
             and prior["to_protected_base_sha"]
             == following["from_protected_base_sha"]
             and prior["to_route_plan_sha256"]
