@@ -1082,12 +1082,14 @@ def operator_resume_role(
 ) -> str:
     relative = f"factory/tickets/{args.ticket}.md"
     prior_head = passport.get("head_sha", "")
+    transition_path = args.state_dir / f"{args.ticket}.json"
     qualification_history = (
         os.environ.get("FACTORY_KIT_TRUST_SCOPE") == "qualification-candidate"
         and os.environ.get("FACTORY_QUALIFICATION_MODE") == "isolated"
+        and (transition_path.exists() or transition_path.is_symlink())
     )
     transition = (
-        safe_receipt(args.state_dir / f"{args.ticket}.json")
+        safe_receipt(transition_path)
         if qualification_history else {}
     )
     transition_head = transition.get("head_sha", "")
