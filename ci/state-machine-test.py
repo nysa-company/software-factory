@@ -1099,6 +1099,9 @@ class StateMachineTest(unittest.TestCase):
             (("planner", "spec-linter"), "RUN test-author", "PASS"),
             (("planner", "spec-linter", "planner"), "RUN spec-linter", "FAIL"),
             (("planner", "spec-linter") * 3, "RUN planner", "FAIL"),
+            (("planner", "spec-linter") * 3 + ("planner",),
+             "RUN spec-linter", "FAIL"),
+            (("planner", "spec-linter") * 4, "RUN planner", "FAIL"),
         )
         for after, stage, spec in valid:
             with self.subTest(after=after, stage=stage, spec=spec):
@@ -1120,7 +1123,6 @@ class StateMachineTest(unittest.TestCase):
             (("planner", "spec-linter", "builder"), "RUN planner"),
             (("planner",), "RUN planner"),
             (("planner", "spec-linter"), "RUN spec-linter"),
-            (("planner", "spec-linter") * 3 + ("planner",), "RUN spec-linter"),
         )
         write()
         for after, stage in invalid:
@@ -1189,7 +1191,6 @@ class StateMachineTest(unittest.TestCase):
                     )
             for change in (
                 {"attempt": 0},
-                {"attempt": 3},
                 {"attempt": True},
                 {"capped": True},
                 {"kind": "builder-reviewer"},
@@ -1221,6 +1222,51 @@ class StateMachineTest(unittest.TestCase):
                         ),
                         "RUN planner",
                     )
+        with mock.patch.object(
+            STATE, "reviewer_repair_catchup", return_value=True,
+        ):
+            for attempt in (3, 4):
+                failures = "".join(
+                    f"SPEC-LINT: FAIL — failure {index}\n"
+                    for index in range(1, attempt + 1)
+                )
+                ticket.write_text(
+                    "# T-110\n\nState: Building\n" + failures
+                    + f"OPERATOR AUTHORIZATION: spec-linter round {attempt + 1}\n",
+                    encoding="utf-8",
+                )
+                receipt = {
+                    **valid_receipt,
+                    "loop": {**valid_receipt["loop"], "attempt": attempt},
+                }
+                with self.subTest(authorized_cap_attempt=attempt):
+                    self.assertEqual(
+                        STATE.verified_preflight_stage(self.args, receipt),
+                        "CATCHUP planner",
+                    )
+                    ticket.write_text(
+                        ticket.read_text(encoding="utf-8").replace(
+                            "OPERATOR AUTHORIZATION:", "OPERATOR AUTHORITY:"
+                        ),
+                        encoding="utf-8",
+                    )
+                    self.assertEqual(
+                        STATE.verified_preflight_stage(self.args, receipt),
+                        "RUN planner",
+                    )
+                    ticket.write_text(
+                        ticket.read_text(encoding="utf-8").replace(
+                            "OPERATOR AUTHORITY:", "OPERATOR AUTHORIZATION:"
+                        ),
+                        encoding="utf-8",
+                    )
+        with mock.patch.object(
+            STATE, "reviewer_repair_catchup", return_value=False,
+        ):
+            self.assertEqual(
+                STATE.verified_preflight_stage(self.args, receipt),
+                "RUN planner",
+            )
 
     def test_qualification_reviewer_catchup_requires_a_current_verdict(self) -> None:
         ticket = self.product / "factory/tickets/T-110.md"

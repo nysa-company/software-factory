@@ -3621,7 +3621,7 @@ def reviewer_repair_catchup(args: argparse.Namespace, stage: str) -> bool:
     )
     alternating = [
         "planner" if index % 2 == 0 else "spec-linter"
-        for index in range(LOOP_LIMIT * 2)
+        for index in range(len(after))
     ]
     expected_stage = (
         "RUN spec-linter"
@@ -3652,11 +3652,15 @@ def verified_preflight_stage(
         and isinstance(loop, dict)
         and set(loop) == {"attempt", "capped", "kind", "limit"}
         and type(loop["attempt"]) is int
-        and 0 < loop["attempt"] < LOOP_LIMIT
+        and loop["attempt"] > 0
         and loop["capped"] is False
         and loop["kind"] == "planner-spec-linter"
         and loop["limit"] == LOOP_LIMIT
         and reviewer_repair_catchup(args, stage)
+        and (
+            loop["attempt"] < LOOP_LIMIT
+            or govern_loop(args, stage, False) == (stage, loop)
+        )
     )
     return "CATCHUP planner" if planner_catchup else stage
 

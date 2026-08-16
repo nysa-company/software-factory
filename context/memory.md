@@ -6340,6 +6340,7 @@ Category: Reliability
 
 The exact Planner–Spec-linter cap emitted after the third current-epoch FAIL is
 translated into the existing provider-free next-round authorization wait. A
-successor reuses ordinary claim migration/readmission; only one exact round-4
-line permits Planner, while malformed cap text and missing, duplicate, or
-wrong-round authority remain closed without rewriting prior ticket evidence.
+successor reuses ordinary claim migration/readmission; only one exact next-round
+line permits Planner through the existing authenticated catch-up preflight,
+while malformed cap text and missing, duplicate, or wrong-round authority
+remain closed without rewriting prior ticket evidence.

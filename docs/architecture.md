@@ -1046,8 +1046,10 @@ role prefix, exact branch/head/passport identity, and uncapped
 preflight admission. Ordinary `RUN planner`, missing or malformed loop data,
 an impossible role order, a stale receipt, and a malformed cap remain closed.
 The exact sealed cap enters the existing provider-free next-round authorization
-wait; it runs Planner again only after that one exact grant. No ticket state is
-rewound and the receipt schema is unchanged.
+wait; it runs Planner again only after that one exact grant. Its authenticated
+receipt maps to the existing Planner catch-up preflight when the coarse ticket
+state is still Building or Review. No ticket state is rewound and the receipt
+schema is unchanged.
 If that exact backward repair blocks again, the active signed repair also
 authorizes the block at the unchanged coarse state. The block records that
 coarse state as its resume target, and the same signed repair must authenticate
