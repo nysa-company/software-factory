@@ -6219,10 +6219,12 @@ class FactoryControllerTest(unittest.TestCase):
 
         calls.clear()
         resume_status = "error"
+        controller.prior_transition_tickets.add("T-110")
         with patch.object(CONTROL.subprocess, "run", return_value=remote):
             controller.recover_repaired_failures([claim])
         self.assertIn(("contract_resume_refused",), calls)
         self.assertEqual(claim["status"], "blocked")
+        self.assertIn("T-110", controller.prior_transition_tickets)
 
         calls.clear()
         resume_status = "ready"
@@ -6233,6 +6235,7 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(claim["receipt"], "")
         self.assertEqual(claim["role"], "")
         self.assertIn(("contract_blocker_recovered",), calls)
+        self.assertNotIn("T-110", controller.prior_transition_tickets)
 
     def test_normalized_contract_block_exports_before_block_transition(self) -> None:
         controller = CONTROL.Controller(self.args)
@@ -6318,6 +6321,7 @@ class FactoryControllerTest(unittest.TestCase):
         controller.event = lambda name, *_args, **kwargs: calls.append(
             (name, kwargs)
         )
+        controller.prior_transition_tickets.add("T-110")
 
         controller.recover_repaired_failures([claim])
 
@@ -6332,7 +6336,58 @@ class FactoryControllerTest(unittest.TestCase):
             ),
             calls,
         )
+        self.assertNotIn("T-110", controller.prior_transition_tickets)
         self.assertFalse(any(call[0] == "state-machine" for call in calls))
+
+        prior = {
+            "branch": claim["branch"],
+            "consumed": True,
+            "contract_version": "2.0.0",
+            "factory_sha": "b" * 40,
+            "project": "relay",
+            "schema": "nysa.software-factory.transition-receipt/v1",
+            "ticket": "T-110",
+        }
+        prior["receipt_sha256"] = hashlib.sha256(
+            CONTROL.canonical_document({
+                key: value for key, value in prior.items()
+                if key not in {"consumed", "receipt_sha256"}
+            })
+        ).hexdigest()
+        CONTROL.write(self.state / "T-110.json", prior)
+        claim.pop("parked")
+        claim["recovery_attempt"] = {
+            "count": 0,
+            "factory_sha": self.release.name,
+            "input_sha256": controller.recovery_input_sha256(
+                claim, "targeted-repair",
+            ),
+            "outcome_sha256": "",
+            "phase": "pending", "recovery": "targeted-repair",
+            "retry_reason": "", "retry_status": "blocked",
+        }
+        controller.save_claim(claim)
+        (repairs / "T-110.json").unlink()
+        restarted = CONTROL.Controller(self.args)
+        persisted = restarted.load_claims()[0]
+        self.assertIsNone(restarted.operator_transition(persisted))
+        self.assertIn("T-110", restarted.prior_transition_tickets)
+        restarted.remote_passport_valid = lambda _claim: False
+        restarted.recover_each(
+            [persisted], restarted.recover_repaired_failures,
+            "targeted-repair",
+        )
+        self.assertEqual(persisted["status"], "claimed")
+        self.assertEqual(persisted["recovery_attempt"]["phase"], "pending")
+        self.assertIn("T-110", restarted.prior_transition_tickets)
+        restarted.remote_passport_valid = lambda _claim: True
+        restarted.recover_each(
+            [persisted], restarted.recover_repaired_failures,
+            "targeted-repair",
+        )
+        self.assertEqual(persisted["status"], "claimed")
+        self.assertEqual(persisted["recovery_attempt"]["phase"], "pending")
+        self.assertNotIn("T-110", restarted.prior_transition_tickets)
 
     def test_recorded_repair_recovers_claim_left_at_blocked_terminal(
         self,
@@ -6415,12 +6470,14 @@ class FactoryControllerTest(unittest.TestCase):
         calls = []
         controller.json_call = lambda *args, **_kwargs: calls.append(args)
         controller.remote_passport_valid = lambda _claim: True
+        controller.prior_transition_tickets.add("T-110")
 
         self.assertFalse(controller.restore_recorded_contract_repair(claim))
 
         self.assertEqual(claim["status"], "blocked")
         self.assertEqual(claim["receipt"], "d" * 64)
         self.assertEqual(claim["role"], "builder")
+        self.assertIn("T-110", controller.prior_transition_tickets)
         self.assertEqual(calls, [])
 
     def test_invalid_recorded_repair_fails_in_the_single_ordinary_resolution(

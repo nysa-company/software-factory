@@ -6373,6 +6373,18 @@ class Controller:
             attempt["phase"] == "pending"
             and claim.get("status") in {"claimed", "running"}
         ):
+            if (
+                claim.get("status") == "claimed"
+                and attempt["recovery"] == name == "targeted-repair"
+                and claim["ticket"] in self.prior_transition_tickets
+                and not claim.get("receipt")
+                and not claim.get("role")
+            ):
+                try:
+                    if self.remote_passport_valid(claim):
+                        self.prior_transition_tickets.discard(claim["ticket"])
+                except ControllerError:
+                    pass
             return True
         if attempt["recovery"] != name:
             return True
@@ -7741,6 +7753,7 @@ class Controller:
         self.ensure_lease(claim, "recorded-contract-repair")
         claim.update(receipt="", role="", status="claimed")
         self.save_claim(claim)
+        self.prior_transition_tickets.discard(claim["ticket"])
         self.event("recorded_contract_repair_prepared", claim["ticket"])
         return True
 
@@ -10053,7 +10066,6 @@ class Controller:
                     raise ControllerError(
                         "semantic-round recovery transition is invalid"
                     )
-                self.prior_transition_tickets.discard(claim["ticket"])
                 self.event_once(
                     "semantic_round_authorization_recovered_by_release_upgrade",
                     claim["ticket"], failed_run_id=failed_run,
@@ -10062,6 +10074,7 @@ class Controller:
             claim.update(receipt="", role="", status="claimed")
             claim.pop("blocked_reason", None)
             self.save_claim(claim)
+            self.prior_transition_tickets.discard(claim["ticket"])
             if semantic_authorization:
                 continue
             self.event(

@@ -6419,3 +6419,15 @@ input gains the exact selected-ticket isolated-qualification resume receipt.
 The evidence digest becomes part of the bounded attempt fingerprint, so
 retrying unchanged evidence cannot create a loop; production and takeover do
 not admit this signal.
+
+## 2026-08-15 — Decision 460: Successful repair retires prior-receipt exclusion
+
+Category: Reliability
+
+After an exact contract resume or authenticated durable repair replay prepares
+the claim, the controller removes that ticket from its invocation-local
+prior-transition exclusion. The preserved prior receipt remains on disk and
+the ordinary state machine must issue the current chained transition before a
+role can run. A restart may retire the reconstructed exclusion only for an
+exact claimed, pending targeted repair with empty role/receipt and a current
+remote-valid passport; other pending claims remain quarantined.

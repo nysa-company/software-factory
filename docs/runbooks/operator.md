@@ -316,6 +316,9 @@ The driver derives the stage from the exact repair check. Its exact new receipt
 rearms one abandoned targeted recovery attempt; replaying the unchanged receipt
 does not reopen the attempt. Production and qualification takeover refuse this
 command.
+Successful resume and durable repair replay both reenter ordinary scheduling;
+an exact crash replay repeats that preparation automatically. Do not clear the
+prior transition receipt by hand.
 On `waiting` or `blocked`, change only the named external/operator evidence and
 run the same command again; never hand-edit authority state.
 

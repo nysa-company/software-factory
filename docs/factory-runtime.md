@@ -239,6 +239,13 @@ that selected ticket's blocked-receipt-bound one-use authority, and writes no
 product audit commit. That exact new authority rearms one abandoned targeted
 recovery attempt; an unchanged receipt cannot reopen recovery repeatedly.
 Takeover and production launchers refuse it.
+Once either the exact resume or its durable repair replay succeeds, the
+controller removes the prior transition from its invocation-local exclusion
+set so the ordinary state machine can issue the current chained transition.
+After a crash at that boundary, only an exact claimed, pending targeted repair
+with empty role/receipt and a current remote-valid passport may retire the
+reconstructed prior-receipt exclusion; ordinary state-machine validation still
+precedes any role.
 During a long successor role, the controller renews every
 idle cohort lease and releases a parked lease instead of allowing either to
 expire. A parked semantic-round wait remains plannable without a lease; exact
