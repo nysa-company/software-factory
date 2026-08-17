@@ -19961,6 +19961,7 @@ class FactoryControllerTest(unittest.TestCase):
             "priority": "normal",
             "publication_lease": "",
             "receipt": "",
+            "release_refresh_required": True,
             "role": "",
             "schema": CONTROL.CLAIM_SCHEMA,
             "status": "blocked",
@@ -19971,6 +19972,9 @@ class FactoryControllerTest(unittest.TestCase):
         calls = []
         controller.role_active = lambda _claim: False
         controller.ticket_release_current = lambda _claim: True
+        controller.cell_git = lambda _claim, *_args: subprocess.CompletedProcess(
+            _args, 0, stdout=f"{head}\n", stderr="",
+        )
         controller.ensure_lease = lambda item, label: (
             calls.append(("ensure", label)), item.update(lease="a" * 64)
         )
@@ -19998,6 +20002,7 @@ class FactoryControllerTest(unittest.TestCase):
 
         self.assertEqual(claim["status"], "claimed")
         self.assertNotIn("blocked_reason", claim)
+        self.assertNotIn("release_refresh_required", claim)
         self.assertEqual(
             calls,
             [
@@ -20012,6 +20017,27 @@ class FactoryControllerTest(unittest.TestCase):
                 ("event", "publication_refresh_recovered"),
             ],
         )
+
+    def test_historical_publication_refresh_is_not_replayed(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "cell-historical-publication-refresh"
+        refresh = cell / "factory/attestations/T-110/refresh.json"
+        refresh.parent.mkdir(parents=True)
+        refresh.write_text("{}\n", encoding="utf-8")
+        claim = {
+            "branch": "ticket/T-110", "lease": "", "receipt": "",
+            "role": "", "ticket": "T-110", "worktree": str(cell),
+        }
+        calls = []
+        heads = iter(("e" * 40, "d" * 40))
+        controller.cell_git = lambda _claim, *_args: subprocess.CompletedProcess(
+            _args, 0, stdout=f"{next(heads)}\n", stderr="",
+        )
+        controller.ensure_lease = lambda *_args: calls.append("ensure")
+        controller.json_call = lambda *_args, **_kwargs: calls.append("replay")
+
+        self.assertFalse(controller.recover_pushed_publication_refresh(claim))
+        self.assertEqual(calls, [])
 
     def test_stale_base_refreshes_before_reviewer_without_provider_run(self) -> None:
         controller = CONTROL.Controller(self.args)
