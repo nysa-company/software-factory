@@ -1972,9 +1972,73 @@ PY
         self.assertIn("journal is unsafe", unsafe_journal.stdout)
         batch_journal.chmod(0o600)
 
+        route_history = json.loads(route_plan.read_text())
+        historical_kit = route_history["revisions"][0]["body"]["old_kit_sha"]
+        historical_route = route_history["revisions"][0]["body"][
+            "legacy_plan_sha256"
+        ]
+        intermediate_head = subprocess.check_output(
+            ["git", "-C", str(self.workdir), "rev-parse", "HEAD"], text=True,
+        ).strip()
+        intermediate_state = next(
+            line.removeprefix("State: ").strip()
+            for line in ticket_path.read_text().splitlines()
+            if line.startswith("State: ")
+        )
+        final_kit = "e" * 40
+        (self.product / "factory/KIT_PIN").write_text(final_kit + "\n")
+        final_authorization = (
+            self.product / "factory/migrations/inflight-release"
+            / f"{final_kit}.json"
+        )
+        final_authorization.write_text(json.dumps({
+            "repository": "nysa-company/model-control-test",
+            "schema": "nysa.software-factory.inflight-release-authorization/v2",
+            "source_kit_sha": self.kit_sha,
+            "target_kit_sha": final_kit,
+            "tickets": [{
+                "branch": "ticket/T-901", "head": intermediate_head,
+                "source_kit_sha": self.kit_sha, "state": intermediate_state,
+                "ticket": "T-901",
+            }],
+        }, sort_keys=True, separators=(",", ":")) + "\n")
+        subprocess.run(
+            ["git", "-C", str(self.product), "add", "factory"], check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.product), "commit", "-qm", "final release"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.product), "push", "-q", str(self.remote),
+             "main:refs/heads/main"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.product), "update-ref",
+             "refs/remotes/origin/main", "HEAD"],
+            check=True,
+        )
+        final_environment = {**environment, "FACTORY_RELEASE_SHA": final_kit}
+        final_preview = migrate(
+            "migrate-plan", "--ticket", "T-901", "--workdir", str(self.workdir),
+            run_environment=final_environment,
+        )
+        migrate(
+            "migrate", "--ticket", "T-901", "--workdir", str(self.workdir),
+            "--approve-hash", final_preview["preview_hash"],
+            "--readiness-hash", final_preview["readiness_sha256"],
+            "--approved-by", "tester", run_environment=final_environment,
+        )
+
         bundle = self.workdir / "factory/attestations/T-901/bundle.json"
         bundle.parent.mkdir(parents=True)
-        bundle.write_text(json.dumps({"kit_sha": "b" * 40}) + "\n")
+        bundle.write_text(json.dumps({
+            "kit_sha": historical_kit,
+            "route_plan_sha256": historical_route,
+            "schema": "nysa.software-factory.ticket-bundle/v1",
+            "ticket": "T-901",
+        }, sort_keys=True) + "\n")
         subprocess.run(
             ["git", "-C", str(self.workdir), "add", str(bundle)], check=True,
         )
@@ -1986,18 +2050,64 @@ PY
             ],
             check=True,
         )
-        stale = subprocess.run(
-            [
-                str(release / "scripts/model-control.sh"), "migrate-plan",
-                "--ticket", "T-901", "--workdir", str(self.workdir),
-            ],
-            env=environment, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        migrate(
+            "migrate-plan", "--ticket", "T-901", "--workdir", str(self.workdir),
+            run_environment=final_environment,
         )
-        self.assertEqual(stale.returncode, 2)
-        self.assertIn(
+
+        def assert_preview_refuses(message):
+            result = subprocess.run(
+                [str(release / "scripts/model-control.sh"), "migrate-plan",
+                 "--ticket", "T-901", "--workdir", str(self.workdir)],
+                env=final_environment, text=True,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn(message, result.stdout)
+
+        invalid_bundle = json.loads(bundle.read_text())
+        invalid_bundle["route_plan_sha256"] = "0" * 64
+        bundle.write_text(json.dumps(invalid_bundle, sort_keys=True) + "\n")
+        subprocess.run(
+            ["git", "-C", str(self.workdir), "add", str(bundle)], check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.workdir), "commit", "--amend", "-q", "--no-edit"],
+            check=True,
+        )
+        assert_preview_refuses(
             "bundle attestation must be invalidated before route migration",
-            stale.stdout,
         )
+        invalid_bundle.update(
+            kit_sha="b" * 40, route_plan_sha256=historical_route,
+        )
+        bundle.write_text(json.dumps(invalid_bundle, sort_keys=True) + "\n")
+        subprocess.run(
+            ["git", "-C", str(self.workdir), "add", str(bundle)], check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.workdir), "commit", "--amend", "-q", "--no-edit"],
+            check=True,
+        )
+        assert_preview_refuses(
+            "bundle attestation must be invalidated before route migration",
+        )
+        invalid_bundle["kit_sha"] = historical_kit
+        bundle.write_text(json.dumps(invalid_bundle, sort_keys=True) + "\n")
+        invalid_route = json.loads(route_plan.read_text())
+        invalid_route["revisions"][1]["body"]["old_kit_sha"] = "c" * 40
+        route_plan.write_text(
+            json.dumps(invalid_route, sort_keys=True, separators=(",", ":")) + "\n"
+        )
+        subprocess.run(
+            ["git", "-C", str(self.workdir), "add", str(bundle), str(route_plan)],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.workdir), "commit", "--amend", "-q", "--no-edit"],
+            check=True,
+        )
+        assert_preview_refuses("route migration preview failed")
 
 
 if __name__ == "__main__":
