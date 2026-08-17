@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -1972,6 +1973,7 @@ PY
         self.assertIn("journal is unsafe", unsafe_journal.stdout)
         batch_journal.chmod(0o600)
 
+        intermediate_route_digest = hashlib.sha256(route_plan.read_bytes()).hexdigest()
         route_history = json.loads(route_plan.read_text())
         historical_kit = route_history["revisions"][0]["body"]["old_kit_sha"]
         historical_route = route_history["revisions"][0]["body"][
@@ -2034,8 +2036,8 @@ PY
         bundle = self.workdir / "factory/attestations/T-901/bundle.json"
         bundle.parent.mkdir(parents=True)
         bundle.write_text(json.dumps({
-            "kit_sha": historical_kit,
-            "route_plan_sha256": historical_route,
+            "kit_sha": self.kit_sha,
+            "route_plan_sha256": intermediate_route_digest,
             "schema": "nysa.software-factory.ticket-bundle/v1",
             "ticket": "T-901",
         }, sort_keys=True) + "\n")
@@ -2048,6 +2050,46 @@ PY
                 "-c", "user.email=test@example.com", "commit", "-qm",
                 "stale bundle fixture",
             ],
+            check=True,
+        )
+        migrate(
+            "migrate-plan", "--ticket", "T-901", "--workdir", str(self.workdir),
+            run_environment=final_environment,
+        )
+
+        invalid_continuation = json.loads(bundle.read_text())
+        invalid_continuation["route_plan_sha256"] = "0" * 64
+        bundle.write_text(json.dumps(invalid_continuation, sort_keys=True) + "\n")
+        subprocess.run(
+            ["git", "-C", str(self.workdir), "add", str(bundle)], check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.workdir), "commit", "--amend", "-q", "--no-edit"],
+            check=True,
+        )
+        invalid_continuation_result = subprocess.run(
+            [str(release / "scripts/model-control.sh"), "migrate-plan",
+             "--ticket", "T-901", "--workdir", str(self.workdir)],
+            env=final_environment, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        self.assertEqual(invalid_continuation_result.returncode, 2)
+        self.assertIn(
+            "bundle attestation must be invalidated before route migration",
+            invalid_continuation_result.stdout,
+        )
+
+        bundle.write_text(json.dumps({
+            "kit_sha": historical_kit,
+            "route_plan_sha256": historical_route,
+            "schema": "nysa.software-factory.ticket-bundle/v1",
+            "ticket": "T-901",
+        }, sort_keys=True) + "\n")
+        subprocess.run(
+            ["git", "-C", str(self.workdir), "add", str(bundle)], check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.workdir), "commit", "--amend", "-q", "--no-edit"],
             check=True,
         )
         migrate(

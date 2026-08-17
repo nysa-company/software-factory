@@ -907,7 +907,7 @@ PY
         json_error "bundle attestation is unsafe"
       python3 - "$bundle" "$CONTROL_PLAN_FILE" "$FACTORY_KIT_SHA" \
         "$workdir" "$ticket" <<'PY' ||
-import json, re, subprocess, sys
+import hashlib, json, re, subprocess, sys
 bundle = json.load(open(sys.argv[1]))
 route = json.load(open(sys.argv[2]))
 bundle_kit = bundle.get("kit_sha", "") if isinstance(bundle, dict) else ""
@@ -945,6 +945,42 @@ historical = (
     and first.get("legacy_plan_sha256") == bundle.get("route_plan_sha256")
     and re.fullmatch(r"[0-9a-f]{64}", bundle.get("route_plan_sha256", ""))
 )
+continued = []
+if (
+    bundle.get("schema") in {
+        "nysa.software-factory.ticket-bundle/v1",
+        "nysa.software-factory.ticket-bundle/v2",
+    }
+    and bundle.get("ticket") == route.get("ticket") == sys.argv[5]
+    and route.get("schema") == "ticket-model-route-journal/v2"
+    and isinstance(revisions, list)
+    and re.fullmatch(r"[0-9a-f]{64}", bundle.get("route_plan_sha256", ""))
+):
+    for index, revision in enumerate(revisions):
+        body = revision.get("body") if isinstance(revision, dict) else None
+        if not isinstance(body, dict) or body.get("new_kit_sha") != bundle_kit:
+            continue
+        prefix = dict(route, kit_sha=bundle_kit, revisions=revisions[:index + 1])
+        prefix_digest = hashlib.sha256(
+            (json.dumps(prefix, sort_keys=True, separators=(",", ":")) + "\n").encode()
+        ).hexdigest()
+        current = bundle_kit
+        valid = bool(revisions[index + 1:])
+        for item in revisions[index + 1:]:
+            tail = item.get("body") if isinstance(item, dict) else None
+            if (
+                not isinstance(tail, dict)
+                or tail.get("kind") != "release-migration"
+                or tail.get("old_kit_sha") != current
+                or not re.fullmatch(r"[0-9a-f]{40}", tail.get("new_kit_sha", ""))
+                or "new_resolution" in tail
+            ):
+                valid = False
+                break
+            current = tail["new_kit_sha"]
+        if valid and current == route_kit and prefix_digest == bundle["route_plan_sha256"]:
+            continued.append(index)
+historical = historical or len(continued) == 1
 if bundle_kit != sys.argv[3] and not (
     bundle_kit == source_kit and source_kit != sys.argv[3]
     or historical
