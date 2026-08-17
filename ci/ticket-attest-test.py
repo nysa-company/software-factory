@@ -767,6 +767,7 @@ else:
         stamp = "2099-01-01T00:00:00Z"
         receipt = self.issue_approve_receipt(issued_at=stamp)
         self.write_operator_overlay(stamp, receipt["receipt_sha256"])
+        return receipt
 
     def project_approval_overlay(self):
         (self.product / "factory/operator-map.json").write_text(json.dumps({
@@ -1355,8 +1356,18 @@ else:
             "FACTORY_QUALIFICATION_PRODUCT_SHA": baseline,
         })
         self.bundle()
-        self.approval_overlay()
+        legacy_receipt = self.approval_overlay()
         self.assertEqual(self.attest("approval").returncode, 0)
+        audit = {
+            key: value for key, value in legacy_receipt.items()
+            if key != "nonce"
+        }
+        audit["audit"] = "no-authority"
+        audit_path = self.product / "factory/receipts/T-700/approve-1.json"
+        audit_path.parent.mkdir(parents=True)
+        audit_path.write_text(json.dumps(audit, indent=2, sort_keys=True) + "\n")
+        self.commit("record legacy approval audit")
+        command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
         self.approval_overlay()
         mapping = json.loads((self.product / "factory/operator-map.json").read_text())
         mapping["tickets"]["T-700"]["operator"]["priority"] = "urgent"

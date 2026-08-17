@@ -23,6 +23,9 @@ from approval_evidence import (  # noqa: E402
     ApprovalEvidenceError,
     trusted_approval_continuation_paths,
 )
+from legacy_approval_audit import (  # noqa: E402
+    trusted_legacy_approval_audit_paths,
+)
 from narrator_evidence import (  # noqa: E402
     MAX_NARRATOR_EVIDENCE_BYTES,
     MAX_NARRATOR_EVIDENCE_FILES,
@@ -462,82 +465,6 @@ def preserved_refresh_metadata(
         relative,
         *retained_control_paths(workdir, head, receipt["base_head"], changed),
     }
-
-
-def trusted_legacy_approval_audit_paths(
-    workdir: Path, ticket: str, head: str, changed: set[str],
-    refresh_metadata: set[str],
-) -> set[str]:
-    prefix = f"factory/receipts/{ticket}/approve-"
-    candidates = sorted(path for path in changed if path.startswith(prefix))
-    if len(candidates) != 1:
-        return set()
-    relative = candidates[0]
-    match = re.fullmatch(
-        rf"factory/receipts/{re.escape(ticket)}/approve-([1-9][0-9]*)\.json",
-        relative,
-    )
-    state_dir = Path(os.environ.get("FACTORY_CONTROLLER_STATE_DIR", ""))
-    if (
-        match is None
-        or not state_dir.is_absolute()
-        or not state_dir.is_dir()
-        or not (state_dir / "operator-receipts").is_dir()
-    ):
-        return set()
-    try:
-        if not re.fullmatch(
-            rf"100644 blob [0-9a-f]{{40}}\t{re.escape(relative)}",
-            git(workdir, "ls-tree", head, "--", relative),
-        ):
-            return set()
-        audit_text = run([
-            "git", "-C", str(workdir), "show", f"{head}:{relative}",
-        ]).stdout
-        audit = json.loads(audit_text)
-        if not isinstance(audit, dict):
-            return set()
-        try:
-            bundle_blob = git(
-                workdir, "rev-parse",
-                f"{head}:factory/attestations/{ticket}/bundle.json",
-            )
-        except Refusal:
-            refresh_path = f"factory/attestations/{ticket}/refresh.json"
-            if refresh_path not in refresh_metadata:
-                return set()
-            refresh = json.loads(git(workdir, "show", f"{head}:{refresh_path}"))
-            if not isinstance(refresh, dict):
-                return set()
-            bundle_blob = refresh.get("prior_bundle_blob", "")
-            if (
-                not re.fullmatch(r"[0-9a-f]{40}", bundle_blob)
-                or git(
-                    workdir, "rev-parse",
-                    f"{refresh.get('old_head', '')}:factory/attestations/"
-                    f"{ticket}/bundle.json",
-                ) != bundle_blob
-            ):
-                return set()
-        receipt = operator_receipt.read_exact(
-            state_dir, ticket, "approve", audit.get("receipt_sha256", ""),
-            {"bundle_attestation_blob": bundle_blob},
-        )
-    except (
-        json.JSONDecodeError, OSError, Refusal, TypeError,
-        operator_receipt.OperatorReceiptError,
-    ):
-        return set()
-    if receipt is None or receipt.get("sequence") != int(match.group(1)):
-        return set()
-    expected = {
-        key: value for key, value in receipt.items()
-        if key not in {"nonce", "consumed_at_epoch"}
-    }
-    expected["consumed"] = False
-    expected["audit"] = "no-authority"
-    canonical = json.dumps(expected, indent=2, sort_keys=True) + "\n"
-    return {relative} if audit_text == canonical else set()
 
 
 def validate_review_lineage(product: Path, workdir: Path, ticket: str, head: str) -> None:
