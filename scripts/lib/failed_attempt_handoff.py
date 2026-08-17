@@ -787,7 +787,7 @@ def _validate_committed_changes(
     repo, baseline, head, role, policy, *, allow_spec_lint_append=False
 ):
     if baseline == head:
-        return
+        return ()
     _git(repo, ["merge-base", "--is-ancestor", baseline, head])
     baseline_tree = _parse_tree(
         _git(repo, ["ls-tree", "-rz", "--full-tree", baseline]),
@@ -811,6 +811,7 @@ def _validate_committed_changes(
         ],
     )
     allowed = policy.paths_for(role)
+    entries = []
     for raw_path in changed.split(b"\0"):
         if not raw_path:
             continue
@@ -854,6 +855,22 @@ def _validate_committed_changes(
                 )
             ):
                 raise HandoffError("protected ticket evidence changed")
+        entries.append(
+            SnapshotEntry(path=path, state="deleted")
+            if current is None else SnapshotEntry(
+                path=path, state="file", mode=mode, blob_oid=oid,
+                content_sha256=_sha256(content), size=len(content),
+            )
+        )
+    return tuple(entries)
+
+
+def validate_committed_output(repo, *, baseline, head, role, policy):
+    """Re-run the committed-output checks used by handoff preview."""
+    _reject_provider_commits(repo, baseline, head, policy.provider_identities)
+    return _snapshot_digest(
+        _validate_committed_changes(repo, baseline, head, role, policy)
+    )
 
 
 def _preview_payload(preview):
@@ -917,11 +934,9 @@ def preview_handoff(
     )
     if remote_head != expected_remote_head:
         raise HandoffError("remote branch drifted from the expected commit")
-    _reject_provider_commits(
-        root, provider_scan_base or expected_head, head, policy.provider_identities
-    )
-    _validate_committed_changes(
-        root, provider_scan_base or expected_head, head, role, policy
+    validate_committed_output(
+        root, baseline=provider_scan_base or expected_head, head=head,
+        role=role, policy=policy,
     )
     tree = _parse_tree(_git(root, ["ls-tree", "-rz", "--full-tree", "HEAD"]))
     index_raw = _git(root, ["ls-files", "-z", "--stage"])

@@ -14676,6 +14676,7 @@ class FactoryControllerTest(unittest.TestCase):
         receipt_digest = "c" * 64
         input_head = "d" * 40
         current_head = "e" * 40
+        handoff_head = "f" * 40
         old_route = "1" * 64
         current_route = "2" * 64
         old_base = "3" * 40
@@ -14716,12 +14717,12 @@ class FactoryControllerTest(unittest.TestCase):
             "from_route_plan_sha256": old_route,
             "schema": CONTROL.PASSPORT_MIGRATION_SCHEMA,
             "to_factory_sha": self.release.name,
-            "to_head_sha": input_head,
+            "to_head_sha": handoff_head,
             "to_protected_base_sha": current_base,
             "to_route_plan_sha256": old_route,
         }, {
             "from_factory_sha": self.release.name,
-            "from_head_sha": input_head,
+            "from_head_sha": handoff_head,
             "from_passport_file_sha256": parent_file,
             "from_passport_sha256": parent_digest,
             "from_protected_base_sha": current_base,
@@ -14764,14 +14765,31 @@ class FactoryControllerTest(unittest.TestCase):
         controller.terminal_for_receipt = lambda *_args: terminal
         controller.ticket_release_current = lambda _claim: True
         controller.remote_passport_valid = lambda _claim: True
-        controller.exact_route_migration_commit = lambda *_args, **_kwargs: True
-        environment = {
-            "FACTORY_KIT_TRUST_SCOPE": "qualification-candidate",
-            "FACTORY_QUALIFICATION_MODE": "isolated",
-        }
+        controller.exact_route_migration_commit = (
+            lambda _claim, before, after: (before, after)
+            == (handoff_head, current_head)
+        )
+        handoffs = []
+        with patch.object(
+            CONTROL, "validate_committed_output",
+            side_effect=lambda *args, **kwargs: handoffs.append((args, kwargs)),
+        ):
+            environment = {
+                "FACTORY_KIT_TRUST_SCOPE": "qualification-candidate",
+                "FACTORY_QUALIFICATION_MODE": "isolated",
+            }
 
-        with patch.dict(os.environ, environment):
-            controller.readmit_prior_provider_failures([claim])
+            with patch.dict(os.environ, environment):
+                controller.readmit_prior_provider_failures([claim])
+        self.assertEqual(
+            handoffs,
+            [((cell,), {
+                "baseline": input_head,
+                "head": handoff_head,
+                "policy": CONTROL._handoff_policy(ticket),
+                "role": "reviewer",
+            })],
+        )
 
         self.assertEqual(
             (claim["status"], claim["receipt"], claim["role"]),

@@ -96,7 +96,7 @@ class FallbackTest(unittest.TestCase):
             "tickets": ["T-1"],
         }))
         (self.repo / "factory/tickets/T-1.md").write_text(
-            "State: in-progress\nKit-SHA: " + "a" * 40 + "\n"
+            "State: Building\nKit-SHA: " + "a" * 40 + "\n"
         )
         (self.repo / "src/app.txt").write_text("before\n")
         git(self.repo, "add", ".")
@@ -659,6 +659,129 @@ class FallbackTest(unittest.TestCase):
             "qualification-apply", check=False, environment=rotated,
         )
         self.assertIn("qualification fallback authority changed", refused.stderr)
+
+    def test_qualification_recovers_authenticated_cross_release_output(self):
+        source = self.head
+        git(self.repo, "add", "src/app.txt")
+        git(self.repo, "commit", "-m", "preserve provider output")
+        output = git(self.repo, "rev-parse", "HEAD")
+
+        route = self.repo / "factory/route-plans/T-1.json"
+        journal = json.loads(route.read_text())
+        catalog, routes, _profiles, profile_map = ROUTER.load_policy()
+        intermediate = "f" * 40
+        target = "9" * 40
+        migrated = MANAGER.migrate_v2_journal(
+            journal, source, intermediate,
+            dt.datetime.fromtimestamp(
+                int(git(self.repo, "show", "-s", "--format=%ct", source)),
+                dt.timezone.utc,
+            ).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+            catalog, routes, profile_map,
+        )
+        route.write_text(ROUTER.canonical_json(migrated) + "\n")
+        ticket = self.repo / "factory/tickets/T-1.md"
+        ticket.write_text(ticket.read_text().replace("a" * 40, intermediate))
+        git(self.repo, "add", "factory/route-plans/T-1.json", "factory/tickets/T-1.md")
+        git(self.repo, "commit", "-m", "migrate preserved output once")
+        first_recovery = git(self.repo, "rev-parse", "HEAD")
+        migrated_again = MANAGER.migrate_v2_journal(
+            migrated, first_recovery, target,
+            dt.datetime.fromtimestamp(
+                int(git(self.repo, "show", "-s", "--format=%ct", first_recovery)),
+                dt.timezone.utc,
+            ).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+            catalog, routes, profile_map,
+        )
+        route.write_text(ROUTER.canonical_json(migrated_again) + "\n")
+        ticket.write_text(ticket.read_text().replace(intermediate, target))
+        git(self.repo, "add", "factory/route-plans/T-1.json", "factory/tickets/T-1.md")
+        git(self.repo, "commit", "-m", "migrate preserved output twice")
+        recovery = git(self.repo, "rev-parse", "HEAD")
+        git(self.repo, "push", "origin", "ticket/T-1")
+
+        authority = self.repo.parent / "authority"
+        git(self.repo, "worktree", "add", "-q", "-b", "authority", str(authority), recovery)
+        (authority / "factory/PROJECT.env").write_text(
+            "GH_REPO=nysa-company/nysa-app\nTICKET_BRANCH_PREFIX=ticket/\n"
+        )
+        qualification = authority / "factory/QUALIFICATION.json"
+        qualification.write_text(json.dumps({
+            "budget_usd": "300.000000",
+            "capacity": 3,
+            "contract_version": "1.8.0",
+            "factory_sha": target,
+            "generation": 2,
+            "mode": "successor",
+            "per_run_budget_usd": "10.000000",
+            "per_ticket_budget_usd": "100.000000",
+            "schema": "nysa.software-factory.qualification/v2",
+            "source_factory_sha": intermediate,
+            "target_done": 3,
+            "tickets": ["T-1", "T-2", "T-3"],
+        }))
+        authorization_root = authority / "factory/migrations/inflight-release"
+        authorization_root.mkdir(parents=True)
+
+        def seal(authorized_head):
+            (authorization_root / f"{intermediate}.json").write_text(json.dumps({
+                "repository": "nysa-company/nysa-app",
+                "schema": "nysa.software-factory.inflight-release-authorization/v2",
+                "source_kit_sha": "a" * 40,
+                "target_kit_sha": intermediate,
+                "tickets": [{
+                    "branch": "ticket/T-1",
+                    "head": authorized_head,
+                    "source_kit_sha": "a" * 40,
+                    "state": "Building",
+                    "ticket": "T-1",
+                }],
+            }))
+            (authorization_root / f"{target}.json").write_text(json.dumps({
+                "repository": "nysa-company/nysa-app",
+                "schema": "nysa.software-factory.inflight-release-authorization/v2",
+                "source_kit_sha": intermediate,
+                "target_kit_sha": target,
+                "tickets": [{
+                    "branch": "ticket/T-1",
+                    "head": first_recovery,
+                    "source_kit_sha": intermediate,
+                    "state": "Building",
+                    "ticket": "T-1",
+                }],
+            }))
+            git(authority, "add", "factory")
+            git(authority, "commit", "-m", "seal successor authority")
+            return {
+                "FACTORY_KIT_TRUST_SCOPE": "qualification-candidate",
+                "FACTORY_QUALIFICATION_MANIFEST": str(qualification),
+                "FACTORY_QUALIFICATION_PRODUCT_SHA": git(authority, "rev-parse", "HEAD"),
+                "FACTORY_QUALIFICATION_PRODUCT_TREE": git(authority, "rev-parse", "HEAD^{tree}"),
+                "FACTORY_RELEASE_SHA": target,
+                "FACTORY_ROOT": str(authority),
+            }
+
+        bad = self.command(
+            "qualification-apply", check=False, environment=seal(source),
+        )
+        self.assertIn("historical qualification handoff is invalid", bad.stderr)
+        environment = seal(output)
+        applied = self.command("qualification-apply", environment=environment)
+        current = json.loads(route.read_text())
+        body = current["revisions"][-1]["body"]
+        proof = body["approval_receipt"]["historical_handoff"]
+        self.assertEqual(proof["source_head"], source)
+        self.assertEqual(proof["authorized_head"], output)
+        self.assertEqual(proof["recovery_head"], recovery)
+        self.assertEqual(body["approved_snapshot_digest"], proof["snapshot_digest"])
+        self.assertEqual(
+            git(self.repo, "diff-tree", "--no-commit-id", "--name-only", "-r", applied["commit_sha"]),
+            "factory/route-plans/T-1.json",
+        )
+
+        recovered = self.command("qualification-apply", environment=environment)
+        self.assertTrue(recovered["recovered"])
+        self.assertEqual(recovered["commit_sha"], applied["commit_sha"])
 
     def test_sealed_successor_refuses_unbound_source_factory(self):
         qualification = self.product / "factory/QUALIFICATION.json"

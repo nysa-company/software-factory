@@ -25,6 +25,7 @@ from failed_attempt_handoff import (  # noqa: E402
     build_handoff_commit,
     github_https_remote,
     preview_handoff,
+    validate_committed_output,
 )
 
 
@@ -41,6 +42,10 @@ LEDGER = load_module("ledger_view_fallback", ROOT / "scripts/ledger-view.py")
 QUALIFICATION = load_module(
     "qualification_manifest_fallback",
     ROOT / "scripts/lib/qualification_manifest.py",
+)
+INFLIGHT = load_module(
+    "inflight_release_fallback",
+    ROOT / "scripts/lib/inflight_release.py",
 )
 ROLE_ORDER = ("planner", "spec-linter", "test-author", "builder", "reviewer", "narrator")
 PRODUCER_BOUNDARY = {"planner": "P", "test-author": "T", "builder": "B"}
@@ -244,7 +249,105 @@ def load_policy_files(catalog_path, profiles_path):
     return ROUTER.load_policy(catalog_path, profiles_path)
 
 
-def calculate(args, nonce, migrate_legacy=False, failed_role_only=False):
+def historical_qualification_handoff(args, failed, journal, authority, head):
+    if (
+        authority is None
+        or authority["manifest"].get("mode") != "successor"
+        or journal.get("kit_sha") != authority["release_sha"]
+    ):
+        raise FallbackError("failed attempt provenance does not match the journal or Git state")
+    repo = Path(args.workdir).resolve()
+    product = authority["product"]
+    try:
+        project = git(
+            product, "show", f"{authority['product_sha']}:factory/PROJECT.env",
+        ).decode()
+        branch = git(
+            repo, "symbolic-ref", "--quiet", "--short", "HEAD",
+        ).decode().strip()
+        if (
+            failed.get("role_remote_before") != failed.get("role_head_before")
+            or failed.get("role_branch_before") != branch
+        ):
+            raise FallbackError("historical qualification handoff is invalid")
+        target_kit = authority["release_sha"]
+        migration_head = head
+        seen = set()
+        for _ in range(64):
+            if target_kit in seen:
+                raise FallbackError("historical qualification migration loop")
+            seen.add(target_kit)
+            raw = git(
+                product, "show",
+                f"{authority['product_sha']}:factory/migrations/inflight-release/"
+                f"{target_kit}.json",
+            ).decode()
+            authorization, entries = INFLIGHT.parse_authorization(
+                raw, project, target_kit,
+            )
+            item = entries[args.ticket]
+            source_kit = INFLIGHT.ticket_source_kit(authorization, item)
+            if INFLIGHT.verify_migration(
+                product, authority["product_sha"], target_kit,
+                args.ticket, branch, migration_head,
+            ) != "replay":
+                raise FallbackError("historical qualification migration is invalid")
+            migration_head = item["head"]
+            if source_kit == failed.get("kit_sha"):
+                break
+            target_kit = source_kit
+        else:
+            raise FallbackError("historical qualification migration chain is too long")
+        source_raw = git(
+            repo, "show",
+            f"{failed['role_head_before']}:factory/route-plans/{args.ticket}.json",
+        )
+        source_journal = json.loads(source_raw)
+        catalog, routes, _profiles, profile_map = load_policy_files(
+            args.catalog, args.profiles,
+        )
+        MANAGER.validate_journal(
+            source_journal, catalog, routes, profile_map,
+            allow_historical_active=True,
+        )
+        source_policy = MANAGER.active_resolution(source_journal)["policy_hash"]
+        current_policy = MANAGER.active_resolution(journal)["policy_hash"]
+        if (
+            source_journal.get("kit_sha") != source_kit
+            or failed.get("policy_hash") != source_policy
+            or current_policy != source_policy
+        ):
+            raise FallbackError("historical qualification route policy changed")
+        snapshot = validate_committed_output(
+            repo, baseline=failed["role_head_before"], head=item["head"],
+            role=failed["role"],
+            policy=policy_for(Path(args.boundaries), args.ticket),
+        )
+        commit_snapshot = validate_committed_output(
+            repo, baseline=head, head=head, role=failed["role"],
+            policy=policy_for(Path(args.boundaries), args.ticket),
+        )
+    except (
+        FallbackError, HandoffError, INFLIGHT.AuthorizationError, KeyError,
+        OSError, TypeError, ValueError, json.JSONDecodeError,
+    ) as error:
+        if isinstance(error, FallbackError):
+            raise
+        raise FallbackError("historical qualification handoff is invalid") from error
+    return {
+        "authorized_head": item["head"],
+        "commit_snapshot_digest": commit_snapshot,
+        "recovery_head": head,
+        "snapshot_digest": snapshot,
+        "source_factory_sha": source_kit,
+        "source_head": failed["role_head_before"],
+    }
+
+
+def calculate(
+    args, nonce, migrate_legacy=False, failed_role_only=False,
+    qualification=None,
+):
     repo = Path(args.workdir).resolve()
     factory_root = Path(args.factory_root).resolve()
     plan_path = repo / f"factory/route-plans/{args.ticket}.json"
@@ -293,13 +396,17 @@ def calculate(args, nonce, migrate_legacy=False, failed_role_only=False):
         f"refs/heads/{branch}",
         git_auth=args.git_auth,
     ).decode().split()[0]
-    if (
+    ordinary_provenance = (
         failed.get("role_remote_before") != remote_head
         or failed.get("role_branch_before") != branch
         or failed.get("kit_sha") != journal["kit_sha"]
         or failed.get("policy_hash") != MANAGER.active_resolution(journal)["policy_hash"]
-    ):
-        raise FallbackError("failed attempt provenance does not match the journal or Git state")
+    )
+    historical = None
+    if ordinary_provenance:
+        historical = historical_qualification_handoff(
+            args, failed, journal, qualification, expected_head,
+        )
     handoff = preview_handoff(
         repo,
         role=role,
@@ -310,8 +417,11 @@ def calculate(args, nonce, migrate_legacy=False, failed_role_only=False):
         remote_branch=branch,
         expected_remote_head=remote_head,
         remote_destination=args.remote,
-        provider_scan_base=role_head_before,
+        provider_scan_base=(expected_head if historical else role_head_before),
         git_auth=args.git_auth,
+    )
+    approved_snapshot_digest = (
+        historical["snapshot_digest"] if historical else handoff.snapshot_digest
     )
     readiness = json.loads(Path(args.readiness).read_text())
     contributors = contributors_from(journal, manifests)
@@ -353,20 +463,26 @@ def calculate(args, nonce, migrate_legacy=False, failed_role_only=False):
         "remote_head": remote_head,
         "remote_url": handoff.remote_url,
         "resolution": resolution,
-        "snapshot_digest": handoff.snapshot_digest,
+        "snapshot_digest": approved_snapshot_digest,
         "snapshot_preview_digest": handoff.preview_digest,
         "ticket": args.ticket,
     }
+    if historical:
+        if historical["commit_snapshot_digest"] != handoff.snapshot_digest:
+            raise FallbackError("historical qualification handoff changed")
+        payload["historical_handoff"] = historical
     return {
         "approval_hash": digest(canonical(payload).encode()),
         "failed": failed,
         "failed_manifest_digest": digest(failed_raw),
         "handoff": handoff,
+        "historical_handoff": payload.get("historical_handoff"),
         "journal": journal,
         "journal_path": plan_path,
         "nonce": nonce,
         "payload": payload,
         "policy": policy_for(Path(args.boundaries), args.ticket),
+        "approved_snapshot_digest": approved_snapshot_digest,
         "resolution": resolution,
         "catalog": catalog,
         "routes": routes,
@@ -436,6 +552,7 @@ def qualification_authority(journal_kit):
         "product_tree": product_tree,
         "raw": raw,
         "release_sha": release_sha,
+        "product": product,
     }
 
 
@@ -455,6 +572,7 @@ def recover_applied(args, approval):
     MANAGER.validate_journal(
         journal, catalog, routes, profile_map, allow_historical_active=True
     )
+    authority = None
     if (
         approval.get("schema") == "ticket-model-fallback-qualification/v1"
         and (
@@ -516,6 +634,27 @@ def recover_applied(args, approval):
             handoff_commits.append(commit)
     if len(handoff_commits) != 1:
         raise FallbackError("existing fallback journal is not committed by its handoff")
+    historical = approval.get("historical_handoff")
+    if historical is not None:
+        try:
+            parent = git(
+                repo, "show", "-s", "--format=%P", handoff_commits[0],
+            ).decode().split()
+            prior_journal = {**journal, "revisions": journal["revisions"][:index]}
+            expected = historical_qualification_handoff(
+                args, _failed, prior_journal, authority, historical["recovery_head"],
+            )
+        except (KeyError, TypeError) as error:
+            raise FallbackError("historical qualification fallback is invalid") from error
+        if (
+            parent != [historical["recovery_head"]]
+            or historical != {
+                **expected,
+            }
+            or body.get("approved_snapshot_digest")
+            != historical.get("snapshot_digest")
+        ):
+            raise FallbackError("historical qualification fallback is invalid")
     descriptor, temporary_index = tempfile.mkstemp(prefix=".fallback-index.")
     os.close(descriptor)
     os.unlink(temporary_index)
@@ -587,7 +726,7 @@ def apply_result(args, approval, result):
         result["journal"],
         result["resolution"],
         result["failed_manifest_digest"],
-        result["handoff"].snapshot_digest,
+        result["approved_snapshot_digest"],
         args.reason,
         approval,
         created_at,
@@ -617,7 +756,7 @@ def apply_result(args, approval, result):
         "failed_run_id": args.failed_run,
         "revision_hash": revision_hash,
         "schema": "ticket-model-fallback-result/v1",
-        "snapshot_digest": result["handoff"].snapshot_digest,
+        "snapshot_digest": result["approved_snapshot_digest"],
     }
 
 
@@ -653,6 +792,7 @@ def qualification_apply(args):
         args, secrets.token_hex(16),
         migrate_legacy=True,
         failed_role_only=True,
+        qualification=authority,
     )
     failed = result["failed"]
     if not failed.get("route_id", "").startswith("cursor-"):
@@ -715,6 +855,9 @@ def qualification_apply(args):
             "product_sha": authority["product_sha"],
             "product_tree": authority["product_tree"],
         } if authority is not None else {}),
+        **({
+            "historical_handoff": result["historical_handoff"],
+        } if result["historical_handoff"] is not None else {}),
         "schema": "ticket-model-fallback-qualification/v1",
     }
     return apply_result(args, approval, result)

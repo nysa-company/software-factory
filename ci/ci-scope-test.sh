@@ -10,7 +10,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORKFLOW="$ROOT/.github/workflows/ci.yml"
 [[ "$(grep -Fc 'actions/checkout@v5' "$WORKFLOW")" -eq 5 &&
     "$(grep -Fc 'actions/setup-node@v5' "$WORKFLOW")" -eq 2 &&
-    "$(grep -Fc 'actions/setup-python@v6' "$WORKFLOW")" -eq 1 &&
+    "$(grep -Fc 'actions/setup-python@v6' "$WORKFLOW")" -eq 2 &&
     "$(grep -Fc 'HOMEBREW_NO_AUTO_UPDATE: "1"' "$WORKFLOW")" -eq 1 &&
     "$(grep -Fc 'HOMEBREW_ALLOWED_TAPS: homebrew/core' "$WORKFLOW")" -eq 1 &&
     "$(grep -Fc 'command -v timeout' "$WORKFLOW")" -eq 1 &&
@@ -50,6 +50,13 @@ WORKFLOW="$ROOT/.github/workflows/ci.yml"
     "$(grep -Fc 'name: linux-group-${{ matrix.group }}' "$WORKFLOW")" -eq 1 &&
     "$(grep -Fc 'name: macos-bash-3-group-${{ matrix.group }}' "$WORKFLOW")" -eq 1 ]] || {
   echo "FAIL: shared pull requests and main must expand into four complete-suite groups" >&2
+  exit 1
+}
+[[ "$(grep -Fc 'bash ci/macos-required-change.sh "$BASE_SHA" "$GITHUB_SHA"' "$WORKFLOW")" -eq 1 &&
+    "$(grep -Fc "needs.scope.outputs.macos == 'true'" "$WORKFLOW")" -eq 1 &&
+    "$(grep -Fc 'MACOS_REQUIRED: ${{ needs.scope.outputs.macos }}' "$WORKFLOW")" -eq 1 &&
+    "$(grep -Fc 'test "$MACOS_REQUIRED" = false' "$WORKFLOW")" -eq 1 ]] || {
+  echo "FAIL: the macOS requirement classifier must gate both the macOS job and the ci context" >&2
   exit 1
 }
 [[ "$(grep -Fc 'name: linux-${{ matrix.shard }}' "$WORKFLOW")" -eq 1 &&

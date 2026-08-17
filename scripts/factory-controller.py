@@ -49,9 +49,12 @@ from legacy_closeout import (  # noqa: E402
     ValidationError as ProtectedTerminalError,
     protected_terminal,
 )
+from failed_attempt_handoff import (  # noqa: E402
+    HandoffError, validate_committed_output,
+)
 from route_evidence import (  # noqa: E402
-    RouteEvidenceError, authenticated_fallback_head, exact_kit_sha_change,
-    journal_extends, validate_route,
+    RouteEvidenceError, _handoff_policy, authenticated_fallback_head,
+    exact_kit_sha_change, journal_extends, validate_route,
 )
 import operator_receipt  # noqa: E402
 from role_output import RoleOutputError, sha256 as role_output_sha256  # noqa: E402
@@ -10427,7 +10430,9 @@ class Controller:
                 and self.exact_route_migration_commit(
                     claim, edge["from_head_sha"], edge["to_head_sha"],
                 )
-                for edge in suffix
+                or index == 0
+                and self.failed_role_output_handoff(claim, terminal, edge)
+                for index, edge in enumerate(suffix)
             )
             and successor_release_lineage(
                 passport.get("factory_release_history"), migrations,
@@ -10446,6 +10451,32 @@ class Controller:
             == passport.get("parent_digest")
             and self.remote_passport_valid(claim)
         )
+
+    def failed_role_output_handoff(
+        self, claim: dict[str, Any], terminal: dict[str, str], edge: dict[str, Any],
+    ) -> bool:
+        if (
+            terminal.get("role_exit") != "provider_failed"
+            or terminal.get("task_submitted") != "1"
+            or not terminal.get("route_id", "").startswith("cursor-")
+            or terminal.get("role") != claim.get("role")
+            or edge.get("from_factory_sha") != terminal.get("kit_sha")
+            or edge.get("to_factory_sha") != self.release_path.name
+            or edge.get("from_head_sha") != terminal.get("role_head_before")
+            or edge.get("from_head_sha") == edge.get("to_head_sha")
+            or edge.get("from_route_plan_sha256")
+            != edge.get("to_route_plan_sha256")
+        ):
+            return False
+        try:
+            validate_committed_output(
+                Path(claim["worktree"]),
+                baseline=edge["from_head_sha"], head=edge["to_head_sha"],
+                role=claim["role"], policy=_handoff_policy(claim["ticket"]),
+            )
+        except (HandoffError, OSError, TypeError, ValueError):
+            return False
+        return True
 
     def recover_repaired_failures(self, claims: list[dict[str, Any]]) -> None:
         for claim in claims:
