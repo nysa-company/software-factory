@@ -146,7 +146,10 @@ everything the Factory actually enforces lives here.
 - Qualification fallback reads the strict manifest at the receipt-bound
   protected product commit. Ordinary lanes authorize only their active Factory;
   a successor additionally authorizes its exact source Factory. A changed
-  product commit, tree, or manifest digest invalidates restart recovery.
+  product commit, tree, or manifest digest invalidates restart recovery. When
+  valid provider output precedes successor migration, the exact in-flight
+  authorization, role-bound snapshot, unchanged route policy, and exact route
+  child are required before fallback and again on replay.
 - Ordinary admission isolates a ticket with malformed dependency syntax and
   reports its exact ID in controller results, events, and durable incident
   evidence while eligible siblings continue. A selected qualification ticket
