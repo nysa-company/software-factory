@@ -709,6 +709,7 @@ else:
 
     def prepare_approval_continuation(
         self, mode="valid", successor=False, refreshed_review=False,
+        prior_approval=False,
     ):
         route_plan, journal = self.prepare_route_migration()
         approval_kit_sha = "d" * 40 if successor else KIT_SHA
@@ -732,6 +733,13 @@ else:
                 ["git", "-C", self.product, "rev-parse", "HEAD"],
                 text=True, capture_output=True, check=True,
             ).stdout.strip()
+        if prior_approval:
+            retired = self.product / "factory/attestations/T-100/approval.json"
+            retired.parent.mkdir(parents=True, exist_ok=True)
+            retired.write_text('{"retired":true}\n')
+            self.commit_and_push("record prior approval")
+            retired.unlink()
+            self.commit_and_push("retire prior approval")
         branch_head = subprocess.run(
             ["git", "-C", self.product, "rev-parse", "HEAD"],
             text=True, capture_output=True, check=True,
@@ -1336,6 +1344,12 @@ else:
 
     def test_publication_accepts_exact_factory_approval_continuation(self):
         self.prepare_approval_continuation()
+        ready = self.publication_command()
+        self.assertEqual(ready["boundary"], "publication")
+        self.assertEqual(ready["status"], "ready")
+
+    def test_publication_accepts_current_approval_after_retired_addition(self):
+        self.prepare_approval_continuation(prior_approval=True)
         ready = self.publication_command()
         self.assertEqual(ready["boundary"], "publication")
         self.assertEqual(ready["status"], "ready")

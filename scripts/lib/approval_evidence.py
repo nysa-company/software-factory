@@ -304,11 +304,17 @@ def validate_approval_continuation(
         workdir, "log", "--format=%H", "--diff-filter=A",
         f"{reviewed}..{head}", "--", relative,
     ).splitlines()
-    if len(additions) != 1 or not OID.fullmatch(additions[0]):
+    current_blob = _blob_at(workdir, head, relative)
+    matching = [
+        commit for commit in additions
+        if OID.fullmatch(commit)
+        and _blob_at(workdir, commit, relative) == current_blob
+    ]
+    if len(matching) != 1:
         raise ApprovalEvidenceError(
             "approval continuation addition lineage is invalid"
         )
-    approval_commit = additions[0]
+    approval_commit = matching[0]
     bundle = _read_json_at(
         workdir, approval_commit, bundle_relative, "bundle attestation",
     )

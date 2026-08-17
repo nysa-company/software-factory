@@ -6716,3 +6716,13 @@ A successor bundle refresh may also reissue the exact prior non-role
 merge-pending. The same unique release/head/base/route suffix, source passport
 file, active lease, current passport, one-use parent digest, and unmerged PR
 checks remain mandatory; other post-approval stages refuse.
+
+## 2026-08-17 — Decision 485: Approval continuation follows the current blob
+
+Category: Reliability
+
+After a protected-base refresh deletes an older approval and a later exact
+approval is attested, continuation selects the unique addition whose blob is
+still present at the authenticated head. Every existing bundle, receipt,
+ticket, route, Kit-SHA, and later-change check still applies; no deleted or
+duplicate matching addition grants authority.
