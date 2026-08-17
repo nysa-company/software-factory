@@ -52,6 +52,13 @@ WORKFLOW="$ROOT/.github/workflows/ci.yml"
   echo "FAIL: shared pull requests and main must expand into four complete-suite groups" >&2
   exit 1
 }
+[[ "$(grep -Fc 'bash ci/macos-required-change.sh "$BASE_SHA" "$GITHUB_SHA"' "$WORKFLOW")" -eq 1 &&
+    "$(grep -Fc "needs.scope.outputs.macos == 'true'" "$WORKFLOW")" -eq 1 &&
+    "$(grep -Fc 'MACOS_REQUIRED: ${{ needs.scope.outputs.macos }}' "$WORKFLOW")" -eq 1 &&
+    "$(grep -Fc 'test "$MACOS_REQUIRED" = false' "$WORKFLOW")" -eq 1 ]] || {
+  echo "FAIL: the macOS requirement classifier must gate both the macOS job and the ci context" >&2
+  exit 1
+}
 [[ "$(grep -Fc 'name: linux-${{ matrix.shard }}' "$WORKFLOW")" -eq 1 &&
     "$(grep -Fc 'name: macos-bash-3-${{ matrix.shard }}' "$WORKFLOW")" -eq 1 &&
     "$(grep -Fc 'needs: [scope, linux]' "$WORKFLOW")" -eq 1 &&

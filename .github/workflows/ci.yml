@@ -23,6 +23,7 @@ jobs:
       base: ${{ steps.classify.outputs.base }}
       full: ${{ steps.classify.outputs.full }}
       groups: ${{ steps.classify.outputs.groups }}
+      macos: ${{ steps.classify.outputs.macos }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -33,6 +34,15 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
           echo "base=$BASE_SHA" >> "$GITHUB_OUTPUT"
+          # Protected main always proves macOS. Pull requests add it only for the
+          # shell, CI, deployment, and shared-script surfaces that system Bash 3.2
+          # can actually break.
+          if test "$GITHUB_EVENT_NAME" = push ||
+            bash ci/macos-required-change.sh "$BASE_SHA" "$GITHUB_SHA"; then
+            echo "macos=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "macos=false" >> "$GITHUB_OUTPUT"
+          fi
           if test "$GITHUB_EVENT_NAME" = push; then
             echo "behavioral=true" >> "$GITHUB_OUTPUT"
             echo "full=true" >> "$GITHUB_OUTPUT"
@@ -109,8 +119,11 @@ jobs:
   macos-bash-3:
     name: macos-bash-3-group-${{ matrix.group }}
     needs: scope
-    if: needs.scope.outputs.behavioral == 'true'
-    runs-on: macos-14
+    if: needs.scope.outputs.behavioral == 'true' && needs.scope.outputs.macos == 'true'
+    # One protected-main group runs on the self-hosted Apple Silicon runner to
+    # drop a quarter of the 10x hosted macOS minutes. Pull requests stay fully
+    # hosted so no laptop sits in the pull-request gate.
+    runs-on: ${{ (github.event_name == 'push' && matrix.group == 4) && fromJSON('["self-hosted","macOS","ARM64"]') || 'macos-14' }}
     strategy:
       fail-fast: false
       matrix:
@@ -192,13 +205,14 @@ jobs:
           SCOPE_RESULT: ${{ needs.scope.result }}
           POLICY_RESULT: ${{ needs.policy.result }}
           BEHAVIORAL: ${{ needs.scope.outputs.behavioral }}
+          MACOS_REQUIRED: ${{ needs.scope.outputs.macos }}
           LINUX_RESULT: ${{ needs.linux.result }}
           MACOS_RESULT: ${{ needs.macos-bash-3.result }}
         run: |
           test "$SCOPE_RESULT" = success
           test "$POLICY_RESULT" = success
           test "$LINUX_RESULT" = success
-          if test "$BEHAVIORAL" = false; then
+          if test "$BEHAVIORAL" = false || test "$MACOS_REQUIRED" = false; then
             test "$MACOS_RESULT" = skipped
           else
             test "$MACOS_RESULT" = success
