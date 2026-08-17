@@ -120,10 +120,11 @@ jobs:
     name: macos-bash-3-group-${{ matrix.group }}
     needs: scope
     if: needs.scope.outputs.behavioral == 'true' && needs.scope.outputs.macos == 'true'
-    # One protected-main group runs on the self-hosted Apple Silicon runner to
-    # drop a quarter of the 10x hosted macOS minutes. Pull requests stay fully
-    # hosted so no laptop sits in the pull-request gate.
-    runs-on: ${{ (github.event_name == 'push' && matrix.group == 4) && fromJSON('["self-hosted","macOS","ARM64"]') || 'macos-14' }}
+    # One group of every four-group expansion runs on the self-hosted Apple
+    # Silicon runner to drop a quarter of the 10x hosted macOS minutes. Targeted
+    # pull requests expand to a single "pr" group and stay hosted, so the
+    # self-hosted runner is never the only macOS proof for a change.
+    runs-on: ${{ matrix.group == 4 && fromJSON('["self-hosted","macOS","ARM64"]') || 'macos-14' }}
     strategy:
       fail-fast: false
       matrix:
