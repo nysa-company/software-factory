@@ -2110,14 +2110,14 @@ def completed_charge_matches(
             charge.get("accounting_state") == "completed"
             or charge.get("accounting_state") == "abandoned_conservative"
             and (
-                conservative_success_evidence(
-                    passport, product, ticket, charge, completed,
-                )
-                or (
+                (
                     completed["run_id"],
                     completed["transition_receipt_sha256"],
                     completed["factory_sha"],
                 ) in (corrected or ())
+                or conservative_success_evidence(
+                    passport, product, ticket, charge, completed,
+                )
             )
         )
     )
