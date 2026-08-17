@@ -491,6 +491,9 @@ pending. Done and Canceled claims retire before this check,
 while Doctor reports the latest unresolved receipt incident per ticket.
 Transition receipts and ticket passports are authenticated over the exact
 newline-terminated canonical JSON document bytes emitted by their writers.
+When a refresh retires an older approval, continuation selects the unique
+approval addition whose blob is still present at the authenticated head;
+older deleted additions provide no authority.
 The controller does not accept an alternate encoding or re-stamp either
 artifact.
 The role runner retains the validated project only in a non-exported host
