@@ -19,6 +19,8 @@ import urllib.parse
 from pathlib import Path
 from typing import Optional, Tuple
 
+from narrator_evidence import valid_png
+
 
 GITHUB_AUTH_ENVIRONMENT = (
     "FACTORY_GITHUB_TOKEN_FD",
@@ -110,6 +112,10 @@ DEFAULT_SECRETS = (
 )
 ZERO_OID_RE = re.compile(r"^0+$")
 HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
+NARRATOR_PNG_RE = re.compile(
+    r"^factory/tickets/T-[0-9]+-evidence/"
+    r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.png$"
+)
 
 
 def _canonical_json(value):
@@ -564,7 +570,11 @@ def _read_regular(root_fd, path, maximum):
             os.close(descriptor)
 
 
-def _validate_content(path, content, policy):
+def _validate_content(path, content, policy, mode="100644"):
+    if NARRATOR_PNG_RE.fullmatch(path):
+        if mode != "100644" or not valid_png(content):
+            raise HandoffError(f"Narrator PNG evidence is invalid: {path}")
+        return
     if b"\0" in content:
         raise HandoffError(f"binary file is forbidden: {path}")
     try:
@@ -698,7 +708,7 @@ def validate_handoff_commit(
             content = _git(repo, ["cat-file", "blob", oid])
             if len(content) > policy.max_file_bytes:
                 raise HandoffError(f"handoff path is oversized: {path}")
-            _validate_content(path, content, policy)
+            _validate_content(path, content, policy, mode)
             entry = SnapshotEntry(
                 path=path, state="file", mode=mode, blob_oid=oid,
                 content_sha256=_sha256(content), size=len(content),
@@ -828,7 +838,7 @@ def _validate_committed_changes(
             content = _git(repo, ["cat-file", "blob", oid])
             if len(content) > policy.max_file_bytes:
                 raise HandoffError(f"committed file exceeds size limit: {path}")
-            _validate_content(path, content, policy)
+            _validate_content(path, content, policy, mode)
         if re.fullmatch(r"factory/tickets/T-[0-9]+\.md", path):
             if previous is None or current is None:
                 raise HandoffError("ticket file creation or deletion is forbidden")
@@ -959,7 +969,7 @@ def preview_handoff(
                 oid = _git(root, ["hash-object", "--stdin"], input_bytes=content).decode().strip()
                 if previous == (mode, oid):
                     continue
-                _validate_content(path, content, policy)
+                _validate_content(path, content, policy, mode)
                 entry = SnapshotEntry(
                     path=path,
                     state="file",

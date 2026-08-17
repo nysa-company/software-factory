@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Focused security regressions for failed-attempt snapshot handoffs."""
 
+import base64
+import json
 import os
 import shutil
 import subprocess
@@ -248,6 +250,52 @@ class HandoffTest(unittest.TestCase):
         forbidden_head = git(self.repo, "rev-parse", "HEAD")
         with self.assertRaisesRegex(HandoffError, "outside"):
             self.preview(expected_head=forbidden_head)
+
+    def test_committed_narrator_handoff_accepts_only_current_ticket_png_evidence(self):
+        value = json.loads(
+            (ROOT / "scripts/model-routing/handoff-boundaries-v1.json").read_text()
+            .replace("TICKET", "T-1")
+        )
+        policy = RoleBoundaryPolicy.from_dict(value)
+        png = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
+            "+A8AAQUBAScY42YAAAAASUVORK5CYII="
+        )
+
+        def committed(relative, content, mode=0o644):
+            path = self.repo / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
+            path.chmod(mode)
+            git(self.repo, "add", relative)
+            git(self.repo, "commit", "-qm", "record narrator evidence")
+            return git(self.repo, "rev-parse", "HEAD")
+
+        bundle = "factory/tickets/T-1-bundle.md"
+        screenshot = "factory/tickets/T-1-evidence/preview.png"
+        (self.repo / bundle).parent.mkdir(parents=True, exist_ok=True)
+        (self.repo / bundle).write_text("![Preview](T-1-evidence/preview.png)\n")
+        head = committed(screenshot, png)
+        self.preview(
+            role="narrator", policy=policy, expected_head=head,
+            provider_scan_base=self.head,
+        )
+
+        cases = (
+            ("factory/tickets/T-2-evidence/preview.png", png, 0o644, "outside"),
+            ("factory/tickets/T-1-evidence/nested/preview.png", png, 0o644, "outside"),
+            ("factory/tickets/T-1-evidence/preview.png", b"not a png\n", 0o644, "PNG"),
+            ("factory/tickets/T-1-evidence/preview.png", png, 0o755, "PNG"),
+        )
+        for relative, content, mode, message in cases:
+            with self.subTest(relative=relative):
+                git(self.repo, "reset", "--hard", "-q", self.head)
+                head = committed(relative, content, mode)
+                with self.assertRaisesRegex(HandoffError, message):
+                    self.preview(
+                        role="narrator", policy=policy, expected_head=head,
+                        provider_scan_base=self.head,
+                    )
 
     def test_committed_role_validation_allows_only_unchanged_symlinks(self):
         link = self.repo / "src/baseline-link"

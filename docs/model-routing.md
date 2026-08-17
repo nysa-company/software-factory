@@ -277,6 +277,11 @@ Only `credits_exhausted` and `provider_unavailable` are eligible mid-ticket
 reasons. Logic errors, test failures, unsafe worktree changes, stale evidence,
 and ambiguous accounting do not authorize a model fallback.
 
+A failed Narrator handoff may preserve its current-ticket bundle and flat
+`factory/tickets/T-NNN-evidence/*.png` screenshots. The handoff reuses the
+same strict PNG parser as publication evidence; sibling-ticket, nested,
+non-PNG, executable, oversized, or otherwise out-of-bound files still refuse.
+
 For a certified `https://github.com/...` product origin, fallback and route
 migration give their exact `ls-remote`, push, and remote-verification Git
 subprocesses the ownership-validated `gh auth git-credential` helper. They use

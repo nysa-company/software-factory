@@ -6767,3 +6767,14 @@ provider-free waits. Authentication and authorization failures, malformed
 evidence, and unknown states still refuse. A temporary GitHub outage therefore
 does not persist a same-release `controller-error` or require a successor to
 retry an otherwise unchanged publication boundary.
+
+## 2026-08-17 — Decision 490: Narrator fallback preserves strict PNG evidence
+
+Category: Reliability
+
+An authenticated failed-attempt handoff for Narrator may preserve the exact
+current-ticket bundle plus flat current-ticket PNG screenshots required by the
+role contract. Screenshot bytes reuse the publication boundary's strict PNG
+parser and remain regular, non-executable, size-bounded files. Sibling-ticket,
+nested, malformed, non-PNG, secret-bearing text, or unrelated paths remain
+outside the sealed role boundary.
