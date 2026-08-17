@@ -139,8 +139,13 @@ jobs:
           package-manager-cache: false
       # Pin Python explicitly rather than inheriting the runner image default.
       # Self-hosted macOS resolves python3 to the system 3.9, which cannot run
-      # the suite's 3.10+ syntax.
+      # the suite's 3.10+ syntax. The upstream installer falls back to the
+      # hosted-image path /Users/runner when AGENT_TOOLSDIRECTORY is unset, so
+      # pass the runner's own tool cache: identical to the default on hosted
+      # runners, and a writable path inside the work directory on self-hosted.
       - uses: actions/setup-python@v6
+        env:
+          AGENT_TOOLSDIRECTORY: ${{ runner.tool_cache }}
         with:
           python-version: "3.12"
       - name: install GNU timeout
