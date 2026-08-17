@@ -852,7 +852,9 @@ partial evidence still requires repair and must not be waived.
 A controller restart after an exact publication refresh push uses the sealed,
 lease-bound `dependency-refresh-replay` action. It authenticates the committed
 refresh receipt and completes the post-push tail; it never reuses the consumed
-transition receipt or creates a second merge or push.
+transition receipt or creates a second merge or push. Tickets declaring
+`Depends-On: none` use this same replay because the receipt, not a dependency,
+is the post-push authority.
 A clean, correctly named, un-attested closeout retry is fast-forwarded to the
 current protected main. Closeouts are serialized; a sibling waits while an
 earlier exact Done closeout remains unmerged. If protected main advances and

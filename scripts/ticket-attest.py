@@ -2983,12 +2983,13 @@ def dependency_publication_replay(args, product, workdir, prefix, remote):
         "review", "awaiting approval", "approved",
     }:
         raise Refusal("dependency publication replay requires publication state")
-    current_dependencies = [
-        item.strip() for item in field(ticket, "Depends-On").split(",")
-    ]
+    current_raw = field(ticket, "Depends-On")
+    current_dependencies = (
+        [] if current_raw.casefold() == "none" else
+        [item.strip() for item in current_raw.split(",")]
+    )
     if (
-        not current_dependencies
-        or len(current_dependencies) != len(set(current_dependencies))
+        len(current_dependencies) != len(set(current_dependencies))
         or any(
             not re.fullmatch(r"T-[0-9]+", item)
             for item in current_dependencies
@@ -3002,9 +3003,11 @@ def dependency_publication_replay(args, product, workdir, prefix, remote):
         workdir, "show",
         f"{receipt['old_head']}:factory/tickets/{args.ticket}.md",
     ).stdout
-    dependencies = [
-        item.strip() for item in field(old_ticket, "Depends-On").split(",")
-    ]
+    old_raw = field(old_ticket, "Depends-On")
+    dependencies = (
+        [] if old_raw.casefold() == "none" else
+        [item.strip() for item in old_raw.split(",")]
+    )
     if dependencies != current_dependencies:
         raise Refusal("dependency publication replay dependencies changed")
     configured = git(
