@@ -6693,3 +6693,14 @@ next ordinary reconcile materializes exactly one refresh before retiring the
 flag and permitting approval. A preserved legacy no-authority approval audit
 remains trusted metadata only when the authenticated refresh receipt binds its
 exact prior bundle blob and that blob matches the recorded old head.
+
+## 2026-08-17 — Decision 483: Artifact retention accepts signed role corrections
+
+Category: Reliability
+
+Qualification artifact closure recognizes both authenticated completion
+correction schemas already accepted by the ticket passport. The v1 schema keeps
+its issue-defined Builder or Spec-linter role; the v2 model-identity schema must
+name the exact completed role and may not change the signed run, receipt,
+release, terminal, progress, or artifact digests. Unknown, mismatched, or
+ambiguous corrections still block before provider dispatch.

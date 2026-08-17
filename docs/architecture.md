@@ -662,10 +662,11 @@ outputs, and progress journals under the owner-only controller root. It
 restores those bytes into the ignored qualification run directory before
 admission, and the controller repeats the same digest check immediately before
 every role dispatch. When completed evidence has one authenticated correction,
-retention keeps the immutable failed terminal and accepts only the exact typed
-exit authorized by that correction; its progress identity comes from the same
-signed record. Missing, changed, unsafe, ambiguous, uncorrected, or mismatched
-evidence blocks before a provider starts.
+retention keeps the immutable failed terminal and accepts both the fixed-role
+v1 record and the role-explicit v2 model-identity record only for the exact
+typed exit authorized by that correction; its progress identity comes from the
+same signed record. Missing, changed, unsafe, ambiguous, uncorrected, or
+mismatched evidence blocks before a provider starts.
 A sealed qualification scopes provider product- and ticket-budget admission to
 the exact project and frozen candidate SHA. Different qualification roots for
 that same candidate share the scope, while predecessor-candidate charges stay

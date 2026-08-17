@@ -97,7 +97,7 @@ class QualificationArtifactsTest(unittest.TestCase):
 
     def write_corrected(
         self, issue: str, role: str, exit_status: str, role_exit: str,
-        manifest_progress: bool,
+        manifest_progress: bool, passportless: bool = False,
     ) -> dict:
         progress_events = "1" if manifest_progress else ""
         progress_digest = (
@@ -135,9 +135,14 @@ class QualificationArtifactsTest(unittest.TestCase):
             "receipt_parent_file_sha256": "f" * 64,
             "recovery_factory_sha": "0" * 40,
             "run_id": self.run_id,
-            "schema": ARTIFACTS.CORRECTION_SCHEMA,
+            "schema": (
+                ARTIFACTS.PASSPORTLESS_CORRECTION_SCHEMA
+                if passportless else ARTIFACTS.CORRECTION_SCHEMA
+            ),
             "transition_receipt_sha256": self.receipt,
         }
+        if passportless:
+            correction["role"] = role
         body = {
             "completed_role_corrections": [correction],
             "completed_role_evidence": [evidence],
@@ -225,6 +230,22 @@ class QualificationArtifactsTest(unittest.TestCase):
         self.write_passport(body)
         with self.assertRaisesRegex(
             ARTIFACTS.ArtifactError, "manifest identity mismatch"
+        ):
+            ARTIFACTS.ensure_ticket(self.product, self.state, self.ticket)
+
+    def test_passportless_reviewer_correction_retains_artifacts(self) -> None:
+        body = self.write_corrected(
+            "https://github.com/nysa-company/software-factory/issues/390",
+            "reviewer", "9", "provider_failed", True, passportless=True,
+        )
+        self.assertEqual(
+            ARTIFACTS.ensure_ticket(self.product, self.state, self.ticket),
+            {"artifacts": 3, "runs": 1},
+        )
+        body["completed_role_corrections"][0]["role"] = "builder"
+        self.write_passport(body)
+        with self.assertRaisesRegex(
+            ARTIFACTS.ArtifactError, "correction evidence is invalid"
         ):
             ARTIFACTS.ensure_ticket(self.product, self.state, self.ticket)
 
