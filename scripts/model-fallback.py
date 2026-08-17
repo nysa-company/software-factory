@@ -259,30 +259,45 @@ def historical_qualification_handoff(args, failed, journal, authority, head):
     repo = Path(args.workdir).resolve()
     product = authority["product"]
     try:
-        raw = git(
-            product, "show",
-            f"{authority['product_sha']}:factory/migrations/inflight-release/"
-            f"{authority['release_sha']}.json",
-        ).decode()
         project = git(
             product, "show", f"{authority['product_sha']}:factory/PROJECT.env",
         ).decode()
-        authorization, entries = INFLIGHT.parse_authorization(
-            raw, project, authority["release_sha"],
-        )
-        item = entries[args.ticket]
-        source_kit = INFLIGHT.ticket_source_kit(authorization, item)
+        branch = git(
+            repo, "symbolic-ref", "--quiet", "--short", "HEAD",
+        ).decode().strip()
         if (
-            source_kit != failed.get("kit_sha")
-            or failed.get("role_remote_before") != failed.get("role_head_before")
-            or failed.get("role_branch_before")
-            != git(repo, "symbolic-ref", "--quiet", "--short", "HEAD").decode().strip()
-            or INFLIGHT.verify_migration(
-                product, authority["product_sha"], authority["release_sha"],
-                args.ticket, failed["role_branch_before"], head,
-            ) != "replay"
+            failed.get("role_remote_before") != failed.get("role_head_before")
+            or failed.get("role_branch_before") != branch
         ):
             raise FallbackError("historical qualification handoff is invalid")
+        target_kit = authority["release_sha"]
+        migration_head = head
+        seen = set()
+        for _ in range(64):
+            if target_kit in seen:
+                raise FallbackError("historical qualification migration loop")
+            seen.add(target_kit)
+            raw = git(
+                product, "show",
+                f"{authority['product_sha']}:factory/migrations/inflight-release/"
+                f"{target_kit}.json",
+            ).decode()
+            authorization, entries = INFLIGHT.parse_authorization(
+                raw, project, target_kit,
+            )
+            item = entries[args.ticket]
+            source_kit = INFLIGHT.ticket_source_kit(authorization, item)
+            if INFLIGHT.verify_migration(
+                product, authority["product_sha"], target_kit,
+                args.ticket, branch, migration_head,
+            ) != "replay":
+                raise FallbackError("historical qualification migration is invalid")
+            migration_head = item["head"]
+            if source_kit == failed.get("kit_sha"):
+                break
+            target_kit = source_kit
+        else:
+            raise FallbackError("historical qualification migration chain is too long")
         source_raw = git(
             repo, "show",
             f"{failed['role_head_before']}:factory/route-plans/{args.ticket}.json",

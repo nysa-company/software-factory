@@ -669,9 +669,10 @@ class FallbackTest(unittest.TestCase):
         route = self.repo / "factory/route-plans/T-1.json"
         journal = json.loads(route.read_text())
         catalog, routes, _profiles, profile_map = ROUTER.load_policy()
-        target = "f" * 40
+        intermediate = "f" * 40
+        target = "9" * 40
         migrated = MANAGER.migrate_v2_journal(
-            journal, source, target,
+            journal, source, intermediate,
             dt.datetime.fromtimestamp(
                 int(git(self.repo, "show", "-s", "--format=%ct", source)),
                 dt.timezone.utc,
@@ -680,9 +681,22 @@ class FallbackTest(unittest.TestCase):
         )
         route.write_text(ROUTER.canonical_json(migrated) + "\n")
         ticket = self.repo / "factory/tickets/T-1.md"
-        ticket.write_text(ticket.read_text().replace("a" * 40, target))
+        ticket.write_text(ticket.read_text().replace("a" * 40, intermediate))
         git(self.repo, "add", "factory/route-plans/T-1.json", "factory/tickets/T-1.md")
-        git(self.repo, "commit", "-m", "migrate preserved output")
+        git(self.repo, "commit", "-m", "migrate preserved output once")
+        first_recovery = git(self.repo, "rev-parse", "HEAD")
+        migrated_again = MANAGER.migrate_v2_journal(
+            migrated, first_recovery, target,
+            dt.datetime.fromtimestamp(
+                int(git(self.repo, "show", "-s", "--format=%ct", first_recovery)),
+                dt.timezone.utc,
+            ).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+            catalog, routes, profile_map,
+        )
+        route.write_text(ROUTER.canonical_json(migrated_again) + "\n")
+        ticket.write_text(ticket.read_text().replace(intermediate, target))
+        git(self.repo, "add", "factory/route-plans/T-1.json", "factory/tickets/T-1.md")
+        git(self.repo, "commit", "-m", "migrate preserved output twice")
         recovery = git(self.repo, "rev-parse", "HEAD")
         git(self.repo, "push", "origin", "ticket/T-1")
 
@@ -702,25 +716,36 @@ class FallbackTest(unittest.TestCase):
             "per_run_budget_usd": "10.000000",
             "per_ticket_budget_usd": "100.000000",
             "schema": "nysa.software-factory.qualification/v2",
-            "source_factory_sha": "a" * 40,
+            "source_factory_sha": intermediate,
             "target_done": 3,
             "tickets": ["T-1", "T-2", "T-3"],
         }))
-        authorization_path = (
-            authority / f"factory/migrations/inflight-release/{target}.json"
-        )
-        authorization_path.parent.mkdir(parents=True)
+        authorization_root = authority / "factory/migrations/inflight-release"
+        authorization_root.mkdir(parents=True)
 
         def seal(authorized_head):
-            authorization_path.write_text(json.dumps({
+            (authorization_root / f"{intermediate}.json").write_text(json.dumps({
                 "repository": "nysa-company/nysa-app",
                 "schema": "nysa.software-factory.inflight-release-authorization/v2",
                 "source_kit_sha": "a" * 40,
-                "target_kit_sha": target,
+                "target_kit_sha": intermediate,
                 "tickets": [{
                     "branch": "ticket/T-1",
                     "head": authorized_head,
                     "source_kit_sha": "a" * 40,
+                    "state": "Building",
+                    "ticket": "T-1",
+                }],
+            }))
+            (authorization_root / f"{target}.json").write_text(json.dumps({
+                "repository": "nysa-company/nysa-app",
+                "schema": "nysa.software-factory.inflight-release-authorization/v2",
+                "source_kit_sha": intermediate,
+                "target_kit_sha": target,
+                "tickets": [{
+                    "branch": "ticket/T-1",
+                    "head": first_recovery,
+                    "source_kit_sha": intermediate,
                     "state": "Building",
                     "ticket": "T-1",
                 }],

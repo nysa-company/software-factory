@@ -147,9 +147,9 @@ everything the Factory actually enforces lives here.
   protected product commit. Ordinary lanes authorize only their active Factory;
   a successor additionally authorizes its exact source Factory. A changed
   product commit, tree, or manifest digest invalidates restart recovery. When
-  valid provider output precedes successor migration, the exact in-flight
-  authorization, role-bound snapshot, unchanged route policy, and exact route
-  child are required before fallback and again on replay.
+  valid provider output precedes successor migration, the exact retained
+  in-flight authorization chain, role-bound snapshot, unchanged route policy,
+  and exact route children are required before fallback and again on replay.
 - Ordinary admission isolates a ticket with malformed dependency syntax and
   reports its exact ID in controller results, events, and durable incident
   evidence while eligible siblings continue. A selected qualification ticket
@@ -6787,9 +6787,10 @@ outside the sealed role boundary.
 Category: Reliability
 
 When a submitted provider failure commits valid role output before successor
-route migration, automatic qualification fallback may continue only from the
-exact protected in-flight authorization head and its exact route-migration
-child. The fallback revalidates the source run, source route policy, role-bound
+route migration, automatic qualification fallback may continue only through
+the exact retained protected in-flight authorization chain and its exact
+route-migration children. The fallback revalidates the source run, source route
+policy, role-bound
 output snapshot, current sealed product authority, and empty current handoff;
 it then commits only the fallback route revision. Crash replay recomputes the
 same proof before accepting the committed result. Production, takeover,

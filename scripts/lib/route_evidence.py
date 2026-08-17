@@ -250,16 +250,61 @@ def authenticated_fallback_head(
                 ["git", "-C", str(worktree), "show", "-s", "--format=%P", commit],
                 text=True, capture_output=True, check=True, timeout=120,
             ).stdout.split()
-            recovery_parents = subprocess.run(
-                ["git", "-C", str(worktree), "show", "-s", "--format=%P",
-                 historical["recovery_head"]],
+            lineage = subprocess.run(
+                ["git", "-C", str(worktree), "rev-list", "--reverse",
+                 "--ancestry-path",
+                 f"{historical['authorized_head']}..{historical['recovery_head']}"],
                 text=True, capture_output=True, check=True, timeout=120,
-            ).stdout.split()
+            ).stdout.splitlines()
+            parent = historical["authorized_head"]
+            prior_route = subprocess.run(
+                ["git", "-C", str(worktree), "show",
+                 f"{parent}:factory/route-plans/{ticket}.json"],
+                capture_output=True, check=True, timeout=120,
+            ).stdout
+            prior_ticket = subprocess.run(
+                ["git", "-C", str(worktree), "show",
+                 f"{parent}:factory/tickets/{ticket}.md"],
+                capture_output=True, check=True, timeout=120,
+            ).stdout
+            migration_valid = bool(lineage)
+            for migrated in lineage:
+                parents = subprocess.run(
+                    ["git", "-C", str(worktree), "show", "-s", "--format=%P",
+                     migrated],
+                    text=True, capture_output=True, check=True, timeout=120,
+                ).stdout.split()
+                paths = subprocess.run(
+                    ["git", "-C", str(worktree), "diff-tree", "--no-commit-id",
+                     "--name-only", "--no-renames", "-r", migrated],
+                    text=True, capture_output=True, check=True, timeout=120,
+                ).stdout.splitlines()
+                route = subprocess.run(
+                    ["git", "-C", str(worktree), "show",
+                     f"{migrated}:factory/route-plans/{ticket}.json"],
+                    capture_output=True, check=True, timeout=120,
+                ).stdout
+                ticket_raw = subprocess.run(
+                    ["git", "-C", str(worktree), "show",
+                     f"{migrated}:factory/tickets/{ticket}.md"],
+                    capture_output=True, check=True, timeout=120,
+                ).stdout
+                migration_valid = migration_valid and (
+                    parents == [parent]
+                    and sorted(paths) == sorted((
+                        f"factory/route-plans/{ticket}.json",
+                        f"factory/tickets/{ticket}.md",
+                    ))
+                    and journal_extends(prior_route, route)
+                    and exact_kit_sha_change(prior_ticket, ticket_raw)
+                )
+                parent, prior_route, prior_ticket = migrated, route, ticket_raw
             if (
                 historical["source_head"] != failed["role_head_before"]
                 or historical["snapshot_digest"] != body["approved_snapshot_digest"]
                 or commit_parents != [historical["recovery_head"]]
-                or recovery_parents != [historical["authorized_head"]]
+                or parent != historical["recovery_head"]
+                or not migration_valid
                 or validate_committed_output(
                     worktree, baseline=historical["source_head"],
                     head=historical["authorized_head"], role="planner",
