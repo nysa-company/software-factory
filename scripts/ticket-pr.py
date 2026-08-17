@@ -466,6 +466,7 @@ def preserved_refresh_metadata(
 
 def trusted_legacy_approval_audit_paths(
     workdir: Path, ticket: str, head: str, changed: set[str],
+    refresh_metadata: set[str],
 ) -> set[str]:
     prefix = f"factory/receipts/{ticket}/approve-"
     candidates = sorted(path for path in changed if path.startswith(prefix))
@@ -496,10 +497,28 @@ def trusted_legacy_approval_audit_paths(
         audit = json.loads(audit_text)
         if not isinstance(audit, dict):
             return set()
-        bundle_blob = git(
-            workdir, "rev-parse",
-            f"{head}:factory/attestations/{ticket}/bundle.json",
-        )
+        try:
+            bundle_blob = git(
+                workdir, "rev-parse",
+                f"{head}:factory/attestations/{ticket}/bundle.json",
+            )
+        except Refusal:
+            refresh_path = f"factory/attestations/{ticket}/refresh.json"
+            if refresh_path not in refresh_metadata:
+                return set()
+            refresh = json.loads(git(workdir, "show", f"{head}:{refresh_path}"))
+            if not isinstance(refresh, dict):
+                return set()
+            bundle_blob = refresh.get("prior_bundle_blob", "")
+            if (
+                not re.fullmatch(r"[0-9a-f]{40}", bundle_blob)
+                or git(
+                    workdir, "rev-parse",
+                    f"{refresh.get('old_head', '')}:factory/attestations/"
+                    f"{ticket}/bundle.json",
+                ) != bundle_blob
+            ):
+                return set()
         receipt = operator_receipt.read_exact(
             state_dir, ticket, "approve", audit.get("receipt_sha256", ""),
             {"bundle_attestation_blob": bundle_blob},
@@ -535,9 +554,10 @@ def validate_review_lineage(product: Path, workdir: Path, ticket: str, head: str
         f"factory/tickets/{ticket}-bundle.md",
         f"factory/tickets/{ticket}.md",
     }
-    trusted_metadata.update(
-        preserved_refresh_metadata(workdir, ticket, reviewed, head, changed)
+    refresh_metadata = preserved_refresh_metadata(
+        workdir, ticket, reviewed, head, changed,
     )
+    trusted_metadata.update(refresh_metadata)
     trusted_metadata.update(
         trusted_narrator_evidence_paths(
             workdir, ticket, reviewed, head, changed,
@@ -553,7 +573,9 @@ def validate_review_lineage(product: Path, workdir: Path, ticket: str, head: str
         )
     )
     trusted_metadata.update(
-        trusted_legacy_approval_audit_paths(workdir, ticket, head, changed)
+        trusted_legacy_approval_audit_paths(
+            workdir, ticket, head, changed, refresh_metadata,
+        )
     )
     approval_path = f"factory/attestations/{ticket}/approval.json"
     if approval_path in changed:

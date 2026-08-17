@@ -377,7 +377,9 @@ else:
         self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
         return json.loads(result.stdout)
 
-    def prepare_control_refresh(self):
+    def prepare_control_refresh(
+        self, *, prior_bundle_blob=None, remove_bundle=False,
+    ):
         old_head = subprocess.run(
             ["git", "-C", self.product, "rev-parse", "HEAD"],
             text=True, capture_output=True, check=True,
@@ -413,7 +415,7 @@ else:
             text=True, capture_output=True, check=True,
         ).stdout.strip()
         refresh = self.product / "factory/attestations/T-100/refresh.json"
-        refresh.parent.mkdir(parents=True)
+        refresh.parent.mkdir(parents=True, exist_ok=True)
         refresh.write_text(json.dumps({
             "schema": "nysa.software-factory.ticket-refresh/v2",
             "ticket": "T-100",
@@ -425,13 +427,15 @@ else:
             "prior_approve_verdicts": 1,
             "prior_request_changes_verdicts": 0,
             "prior_narrator_runs": 0,
-            "prior_bundle_blob": None,
+            "prior_bundle_blob": prior_bundle_blob,
             "prior_approval_blob": None,
             "revalidation_budget_micro_usd": 20_000_000,
             "revalidation_factory_sha": "a" * 40,
             "revalidation_generation": 1,
             "refreshed_at": "2026-07-20T00:02:00Z",
         }, sort_keys=True) + "\n")
+        if remove_bundle:
+            (self.product / "factory/attestations/T-100/bundle.json").unlink()
         subprocess.run(["git", "-C", self.product, "add", "."], check=True)
         subprocess.run(
             ["git", "-C", self.product, "commit", "-qm", "record refresh evidence"],
@@ -441,6 +445,7 @@ else:
             ["git", "-C", self.product, "push", "-q", "origin", "ticket/T-100"],
             check=True,
         )
+        self.sync_fake_pr_head()
 
     def prepare_route_migration(self):
         route_plans = self.product / "factory/route-plans"
@@ -535,6 +540,19 @@ else:
             ["git", "-C", self.product, "push", "-q", "origin", "ticket/T-100"],
             check=True,
         )
+
+    def sync_fake_pr_head(self):
+        if not self.state.exists():
+            return
+        head = subprocess.run(
+            ["git", "-C", self.product, "rev-parse", "HEAD"],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+        prs = json.loads(self.state.read_text())
+        for pr in prs:
+            if pr.get("headRefName") == "ticket/T-100":
+                pr["headRefOid"] = head
+        self.state.write_text(json.dumps(prs))
 
     def write_narrator_passport(
         self, head, parent, *, current_factory=KIT_SHA, valid_lineage=True,
@@ -1153,10 +1171,63 @@ else:
         )
         self.assertEqual(self.command()["status"], "ready")
 
+        audit_head = subprocess.run(
+            ["git", "-C", self.product, "rev-parse", "HEAD"],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+        self.prepare_control_refresh(
+            prior_bundle_blob=bundle_blob, remove_bundle=True,
+        )
+        self.assertEqual(
+            self.command(
+                contract="2.0.0", stage="RUN narrator", receipt="f" * 64,
+            )["status"],
+            "ready",
+        )
+
         audit["receipt_sha256"] = "0" * 64
         audit_path.write_text(json.dumps(audit, indent=2, sort_keys=True) + "\n")
-        self.commit_and_push("tamper legacy approval audit")
-        refused = self.command(expected=2)
+        subprocess.run(["git", "-C", self.product, "add", "."], check=True)
+        subprocess.run(
+            ["git", "-C", self.product, "commit", "--amend", "--no-edit", "-q"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", self.product, "push", "-q", "--force", "origin",
+             "ticket/T-100"],
+            check=True,
+        )
+        self.sync_fake_pr_head()
+        refused = self.command(
+            expected=2, contract="2.0.0", stage="RUN narrator",
+            receipt="f" * 64,
+        )
+        self.assertIn("implementation changed", refused["error"])
+
+        subprocess.run(
+            ["git", "-C", self.product, "restore", "--source", audit_head,
+             "--", "factory/receipts/T-100/approve-1.json"],
+            check=True,
+        )
+        refresh_path = self.product / "factory/attestations/T-100/refresh.json"
+        refresh = json.loads(refresh_path.read_text())
+        refresh["prior_bundle_blob"] = "0" * 40
+        refresh_path.write_text(json.dumps(refresh, sort_keys=True) + "\n")
+        subprocess.run(["git", "-C", self.product, "add", "."], check=True)
+        subprocess.run(
+            ["git", "-C", self.product, "commit", "--amend", "--no-edit", "-q"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", self.product, "push", "-q", "--force", "origin",
+             "ticket/T-100"],
+            check=True,
+        )
+        self.sync_fake_pr_head()
+        refused = self.command(
+            expected=2, contract="2.0.0", stage="RUN narrator",
+            receipt="f" * 64,
+        )
         self.assertIn("implementation changed", refused["error"])
 
     def test_publication_accepts_referenced_current_ticket_png_evidence(self):
