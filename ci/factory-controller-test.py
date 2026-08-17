@@ -8315,10 +8315,50 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual((self.state / "T-110.json").read_bytes(), receipt_bytes)
         self.assertEqual(claim["status"], "claimed")
         self.assertNotIn("blocked_reason", claim)
-        self.assertNotIn("release_refresh_required", claim)
+        self.assertTrue(claim["release_refresh_required"])
         self.assertTrue(restarted.marker(
             f"passport-route-migration-complete-T-110-{target}"
         ))
+
+        calls = []
+
+        def reconcile_call(*arguments, **_kwargs):
+            calls.append(arguments)
+            if arguments[0] == "state-machine":
+                return state_transition(
+                    "AWAIT-OPERATOR operator approval observed; trusted "
+                    "approval attestation is required",
+                    "f" * 64,
+                    ticket_id,
+                )
+            if arguments[0] == "ticket-attest":
+                return {"action": "refresh", "head": "d" * 40}
+            if arguments[:2] == ("publication", "withdraw"):
+                return {"status": "absent"}
+            return {}
+
+        restarted.json_call = reconcile_call
+        restarted.finish_pending_run = lambda _claim: True
+        restarted.refresh_dependency_tracking = lambda _claim: True
+        restarted.ticket_merged = lambda _claim: False
+        restarted.renew = lambda _claim: None
+        restarted.migrate_passport = lambda *_args: passport_calls.append(
+            "passport-refresh"
+        )
+        self.assertEqual(
+            restarted.reconcile_ticket(claim),
+            {"status": "blocked", "ticket": ticket_id},
+        )
+
+        self.assertEqual(
+            passport_calls,
+            ["passport", "passport-rotated-lease-replay", "passport-refresh"],
+        )
+        self.assertEqual(
+            sum(call[0] == "ticket-attest" for call in calls if call), 1,
+        )
+        self.assertEqual(claim["blocked_reason"], "route-migration-required")
+        self.assertNotIn("release_refresh_required", claim)
 
     def migrated_bundle_passport(
         self, ticket: str, prior: str, head: str = "b" * 40,

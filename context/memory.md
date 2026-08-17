@@ -6686,6 +6686,8 @@ Category: Reliability
 
 After successor bundle refresh has produced its exact current-release receipt
 and immutable marker, a later parked-claim lease rotation does not repeat the
-refresh. Recovery revalidates that marker against the unchanged receipt,
-authenticated passport, and complete migration suffix, retires the transient
-refresh flag, and returns to ordinary lease-bound state-machine issuance.
+handoff. Recovery revalidates that marker against the unchanged receipt,
+authenticated passport, and complete migration suffix, preserves the pending
+refresh flag, and returns to ordinary lease-bound state-machine issuance. The
+next ordinary reconcile materializes exactly one refresh before retiring the
+flag and permitting approval.

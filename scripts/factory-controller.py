@@ -7740,14 +7740,12 @@ class Controller:
                     self.release_ticket_lease(claim)
                     raise
                 passport = read(path)
-                if (
+                if not (
                     claim.get("release_refresh_required") is True
                     and self.bundle_refresh_handoff_pending(
                         claim, rotated_lease=True,
                     )
                 ):
-                    claim.pop("release_refresh_required")
-                else:
                     bundle_refresh = self.release_bundle_refreshable(
                         claim, passport,
                     )
