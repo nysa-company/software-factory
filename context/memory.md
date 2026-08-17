@@ -6726,3 +6726,11 @@ approval is attested, continuation selects the unique addition whose blob is
 still present at the authenticated head. Every existing bundle, receipt,
 ticket, route, Kit-SHA, and later-change check still applies; no deleted or
 duplicate matching addition grants authority.
+
+## 2026-08-17 — Decision 486: Closeout retries preserve JSON stdout
+
+Category: Reliability
+
+The controller captures the output of its idempotent closeout fast-forward.
+Git's ordinary already-current message may not precede the reconcile JSON or
+make a valid closeout retry unreadable to a sealed qualification caller.
