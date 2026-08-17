@@ -556,6 +556,40 @@ class CursorStreamTest(unittest.TestCase):
                 )
                 self.assertEqual(refused.returncode, 11)
 
+    def test_exact_sonnet_vendor_alias_normalizes_only_its_certified_route(self) -> None:
+        accepted = self.run_stream(
+            [
+                {
+                    "type": "system",
+                    "subtype": "init",
+                    "model": "Claude Sonnet 5 300K High",
+                },
+                {"type": "result", "subtype": "success"},
+            ],
+            0,
+            model="claude-sonnet-5-thinking-high",
+            reported_model="Sonnet 5 300K High",
+        )
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        self.assertIn(
+            "reported_model=Claude Sonnet 5 300K High", accepted.metrics,
+        )
+
+        refused = self.run_stream(
+            [
+                {
+                    "type": "system",
+                    "subtype": "init",
+                    "model": "Claude Sonnet 5 300K High",
+                },
+                {"type": "result", "subtype": "success"},
+            ],
+            0,
+            model="claude-opus-5-thinking-medium",
+            reported_model="Opus 5 300K Medium",
+        )
+        self.assertEqual(refused.returncode, 11)
+
         for wrong_model, wrong_report in (
             ("gpt-5.6-sol-high", "GPT-5.6 Sol 1M Medium"),
             ("gpt-5.6-terra", "GPT-5.6 Sol 1M High"),

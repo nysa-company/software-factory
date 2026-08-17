@@ -4862,26 +4862,18 @@ class Controller:
         suffix = migrations[starts[0]:]
         release_edges = suffix[:-1]
         final = suffix[-1] if suffix else {}
-        source_head = suffix[0]["from_head_sha"] if suffix else ""
-        source_route = suffix[0]["from_route_plan_sha256"] if suffix else ""
         return suffix if (
             bool(release_edges)
             and all(
                 valid_v2_migration(item)
                 and item["from_factory_sha"] != item["to_factory_sha"]
-                and item["from_head_sha"]
-                == item["to_head_sha"] == source_head
-                and item["from_route_plan_sha256"]
-                == item["to_route_plan_sha256"] == source_route
                 for item in release_edges
             )
             and valid_v2_migration(final)
             and final["from_factory_sha"] == final["to_factory_sha"]
             == passport.get("factory_sha")
-            and final["from_head_sha"] == source_head
             and final["to_head_sha"] == head
             and final["from_head_sha"] != final["to_head_sha"]
-            and final["from_route_plan_sha256"] == source_route
             and final["to_route_plan_sha256"] == route
             and final["from_route_plan_sha256"]
             != final["to_route_plan_sha256"]
@@ -5412,6 +5404,47 @@ class Controller:
         if not path.exists():
             write(path, value)
 
+    def recover_pushed_publication_refresh(
+        self, claim: dict[str, Any],
+    ) -> bool:
+        refresh = (
+            Path(claim["worktree"]) / "factory" / "attestations"
+            / claim["ticket"] / "refresh.json"
+        )
+        try:
+            info = refresh.lstat()
+        except OSError:
+            return False
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or refresh.is_symlink()
+            or info.st_nlink != 1
+            or info.st_size > 1_000_000
+        ):
+            return False
+        self.ensure_lease(claim, "publication-refresh-replay")
+        value = self.json_call(
+            "ticket-attest", "--ticket", claim["ticket"],
+            "--lease", claim["lease"], "--workdir", claim["worktree"],
+            "--action", "dependency-refresh-replay", "--json",
+        )
+        if (
+            value.get("action") != "dependency-publication-refresh"
+            or not SHA.fullmatch(value.get("head", ""))
+        ):
+            raise ControllerError("publication refresh replay was not exact")
+        self.migrate_passport(claim, "validating")
+        if not self.remote_passport_valid(claim):
+            raise ControllerError("publication refresh replay passport is invalid")
+        claim.update(receipt="", role="", status="claimed")
+        claim.pop("blocked_reason", None)
+        self.save_claim(claim)
+        self.event_once(
+            "publication_refresh_recovered", claim["ticket"],
+            head_sha=value["head"],
+        )
+        return True
+
     def recover_prepublication_attestations(
         self, claims: list[dict[str, Any]]
     ) -> None:
@@ -5426,10 +5459,16 @@ class Controller:
                 or claim.get("publication_lease")
                 or claim.get("parked") is not True
                 or self.role_active(claim)
-                or not marker_path.exists()
                 or not passport_path.exists()
                 or not self.ticket_release_current(claim)
             ):
+                continue
+            if (
+                not marker_path.exists()
+                and self.recover_pushed_publication_refresh(claim)
+            ):
+                continue
+            if not marker_path.exists():
                 continue
             marker = read(marker_path)
             passport = read(passport_path)
@@ -6548,7 +6587,6 @@ class Controller:
             or remote_status != "pushed"
             or remote_head != local_head
             or authorization is None
-            or ordinary_route and not route_ready
             or local_head != authorization and not route_ready
         ):
             return False
@@ -11009,17 +11047,19 @@ class Controller:
                     "model-identity-recovery-refused:" + self.release_path.name,
                 )
                 recovery_kind = "model_identity_success"
+                recovery_reason = safe_error(str(error))
             except (ControllerError, OSError, subprocess.SubprocessError) as error:
                 self.block(
                     claim,
                     "model-identity-delivery-retry:" + self.release_path.name,
                 )
                 recovery_kind = "model_identity_delivery"
+                recovery_reason = safe_error(str(error))
             self.release_ticket_lease(claim)
             self.event_once(
                 "typed_recovery_refused", claim["ticket"],
                 recovery_kind=recovery_kind,
-                reason=safe_error(str(error)),
+                reason=recovery_reason,
             )
             return False
         if not qualification_fallback:

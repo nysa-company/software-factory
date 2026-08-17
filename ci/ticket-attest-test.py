@@ -340,9 +340,15 @@ Merge-Policy: manual
             "commit", "-qm", message, cwd=self.product,
         )
 
-    def assert_receipt_only_refresh_replay(self, checklist, error=None):
+    def assert_receipt_only_refresh_replay(
+        self, checklist, error=None, *, dependency_replay=False,
+    ):
         ticket = self.product / "factory/tickets/T-700.md"
         text = self.ticket("Review")
+        if dependency_replay:
+            text = text.replace(
+                "Priority: normal", "Priority: normal\nDepends-On: none",
+            )
         start = text.index("- [ ] Evidence bundle posted")
         end = text.index("- [ ] PR merged and staging confirmed")
         ticket.write_text(
@@ -385,9 +391,23 @@ Merge-Policy: manual
                     self.product, "T-700", "ticket/T-700", str(self.remote), base_head,
                 )
             return
-        result = TICKET_ATTEST.publication_refresh_replay(
-            self.product, "T-700", "ticket/T-700", str(self.remote), base_head,
-        )
+        if dependency_replay:
+            with patch.object(TICKET_ATTEST, "exact_pr", return_value={
+                "autoMergeRequest": None,
+                "headRefOid": self.head(),
+                "isDraft": True,
+            }):
+                result = TICKET_ATTEST.dependency_publication_replay(
+                    argparse.Namespace(ticket="T-700"), self.product,
+                    self.product, "ticket/", str(self.remote),
+                )
+            self.assertEqual(result["dependencies"], [])
+            self.assertEqual(result["dependency_terminals"], [])
+        else:
+            result = TICKET_ATTEST.publication_refresh_replay(
+                self.product, "T-700", "ticket/T-700", str(self.remote),
+                base_head,
+            )
         self.assertEqual(result["head"], self.head())
 
     def head(self):
@@ -1358,6 +1378,9 @@ else:
 
     def test_receipt_only_refresh_replay_accepts_missing_rows(self):
         self.assert_receipt_only_refresh_replay("")
+
+    def test_dependency_publication_replay_accepts_no_dependencies(self):
+        self.assert_receipt_only_refresh_replay("", dependency_replay=True)
 
     def test_receipt_only_refresh_replay_accepts_unchecked_rows(self):
         self.assert_receipt_only_refresh_replay(

@@ -870,7 +870,9 @@ refresh receipt, retired evidence diff, remote branch, and draft PR, then
 continues the same post-push reduction without another merge or push. The
 sealed `dependency-refresh-replay` action requires the ticket's exact dispatcher
 lease; the committed refresh receipt replaces, rather than reuses, the consumed
-transition receipt as replay authority.
+transition receipt as replay authority. The same exact replay also accepts
+`Depends-On: none`; the action name is historical, while its authority is the
+committed publication-refresh receipt rather than dependency membership.
 That atomic introduction may also contain the exact in-flight release
 authorization for the same target Factory SHA. No other migration,
 application, test, contract, or CI path is admitted.

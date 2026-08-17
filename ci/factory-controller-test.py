@@ -8606,6 +8606,15 @@ class FactoryControllerTest(unittest.TestCase):
         passport, _file = self.migrated_bundle_passport(
             "T-110", prior, intermediates=(intermediate,),
         )
+        edges = passport["migration_history"]
+        edges[0]["to_head_sha"] = "a" * 40
+        edges[0]["to_route_plan_sha256"] = "1" * 64
+        edges[1]["from_head_sha"] = "a" * 40
+        edges[1]["from_route_plan_sha256"] = "1" * 64
+        edges[1]["to_head_sha"] = "9" * 40
+        edges[1]["to_route_plan_sha256"] = "2" * 64
+        edges[2]["from_head_sha"] = "9" * 40
+        edges[2]["from_route_plan_sha256"] = "2" * 64
         self.assertEqual(
             len(CONTROL.Controller.bundle_refresh_migration_suffix(
                 passport, prior, "7" * 64,
@@ -9719,6 +9728,49 @@ class FactoryControllerTest(unittest.TestCase):
         controller.exact_route_migration_commit = lambda _claim, old, new: (
             old == source and new == target
         )
+
+        self.assertTrue(
+            controller.readmit_stranded_route_upgrade(claim, "release-upgrade")
+        )
+        self.assertEqual(claim["blocked_reason"], "route-migration-required")
+        self.assertNotIn("recovery_attempt", claim)
+
+    def test_converged_route_upgrade_readmits_abandoned_upgrade(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        claim = self.recovery_claim()
+        head = "9" * 40
+        claim.update({
+            "blocked_reason": "recovery-abandoned:release-upgrade",
+            "lease_released": True,
+            "recovery_attempt": {
+                "count": CONTROL.RECOVERY_ATTEMPT_LIMIT,
+                "factory_sha": self.release.name,
+                "input_sha256": "c" * 64,
+                "outcome_sha256": "d" * 64,
+                "phase": "abandoned",
+                "recovery": "release-upgrade",
+                "retry_reason": "route-migration-required",
+                "retry_status": "blocked",
+            },
+        })
+        controller.marker(
+            f"passport-route-migration-pending-T-110-{self.release.name}",
+            {
+                "factory_sha": self.release.name,
+                "schema": CONTROL.EVENT_SCHEMA,
+                "ticket": "T-110",
+            },
+        )
+        controller.terminal_for_receipt = lambda *_args: None
+        controller.authenticated_operator_passport = lambda _ticket: {
+            "factory_sha": self.release.name,
+            "head_sha": head,
+        }
+        controller.remote_cell_head_status = lambda _claim: (
+            "pushed", head, head,
+        )
+        controller.ticket_release_current = lambda _claim: True
+        controller.exact_route_migration_commit = lambda *_args: False
 
         self.assertTrue(
             controller.readmit_stranded_route_upgrade(claim, "release-upgrade")
@@ -11646,6 +11698,48 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertTrue(controller.finish_pending_run(claim))
         self.assertEqual(calls, ["recover"])
         self.assertEqual(claim["status"], "claimed")
+
+    def test_first_model_identity_refusal_is_durably_blocked(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        controller.qualification = {"tickets": ["T-177"]}
+        claim = {
+            "branch": "ticket/T-177", "lease": "8" * 64,
+            "publication_lease": "", "receipt": "9" * 64,
+            "role": "reviewer", "status": "running", "ticket": "T-177",
+            "worktree": str(self.root / "cell-first-model-refusal"),
+        }
+        Path(claim["worktree"]).mkdir()
+        terminal = {
+            "exit_status": "9", "role_exit": "provider_failed",
+            "route_id": "cursor-claude-sonnet-5-thinking-high",
+            "run_id": "paid-success", "task_submitted": "1",
+        }
+        calls = []
+        controller.terminal_for_receipt = lambda *_args: terminal
+        controller.emit_attempt_terminal = lambda *_args: None
+        controller.direct_model_identity_candidate = lambda *_args: True
+        controller.recover_direct_model_identity_success = (
+            lambda *_args: (_ for _ in ()).throw(
+                CONTROL.ModelIdentityEvidenceError("model evidence mismatch")
+            )
+        )
+        controller.block = lambda item, reason: (
+            calls.append(("block", reason)),
+            item.update(status="blocked", blocked_reason=reason),
+        )
+        controller.release_ticket_lease = lambda _claim: calls.append("release")
+        controller.event_once = (
+            lambda name, _ticket, **details: calls.append((name, details))
+        )
+
+        self.assertFalse(controller.finish_pending_run(claim))
+        self.assertEqual(
+            claim["blocked_reason"],
+            "model-identity-recovery-refused:" + self.release.name,
+        )
+        self.assertEqual(calls[1], "release")
+        self.assertEqual(calls[2][0], "typed_recovery_refused")
+        self.assertEqual(calls[2][1]["reason"], "model evidence mismatch")
 
     def test_model_identity_recovery_retries_only_operational_failures(self) -> None:
         controller = CONTROL.Controller(self.args)
@@ -19471,6 +19565,75 @@ class FactoryControllerTest(unittest.TestCase):
             [
                 "git-lock", "base", "release", "refresh", "passport", "event",
                 "git-unlock",
+            ],
+        )
+
+    def test_pushed_publication_refresh_recovers_without_another_provider(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "cell-publication-refresh-replay"
+        refresh = cell / "factory/attestations/T-110/refresh.json"
+        refresh.parent.mkdir(parents=True)
+        refresh.write_text("{}\n", encoding="utf-8")
+        passport_path = self.state / "passports/T-110.json"
+        passport_path.parent.mkdir(mode=0o700)
+        CONTROL.write(passport_path, {})
+        claim = {
+            "blocked_reason": "controller-error",
+            "branch": "ticket/T-110",
+            "lease": "",
+            "parked": True,
+            "priority": "normal",
+            "publication_lease": "",
+            "receipt": "",
+            "role": "",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "blocked",
+            "ticket": "T-110",
+            "worktree": str(cell),
+        }
+        head = "d" * 40
+        calls = []
+        controller.role_active = lambda _claim: False
+        controller.ticket_release_current = lambda _claim: True
+        controller.ensure_lease = lambda item, label: (
+            calls.append(("ensure", label)), item.update(lease="a" * 64)
+        )
+
+        def json_call(*arguments, **_kwargs):
+            calls.append(("replay", arguments))
+            self.assertEqual(arguments[-2:], ("dependency-refresh-replay", "--json"))
+            return {
+                "action": "dependency-publication-refresh",
+                "head": head,
+            }
+
+        controller.json_call = json_call
+        controller.migrate_passport = lambda _claim, state: calls.append(
+            ("passport", state)
+        )
+        controller.remote_passport_valid = lambda _claim: (
+            calls.append("remote") or True
+        )
+        controller.event_once = (
+            lambda name, _ticket, **_details: calls.append(("event", name))
+        )
+
+        controller.recover_prepublication_attestations([claim])
+
+        self.assertEqual(claim["status"], "claimed")
+        self.assertNotIn("blocked_reason", claim)
+        self.assertEqual(
+            calls,
+            [
+                ("ensure", "publication-refresh-replay"),
+                ("replay", (
+                    "ticket-attest", "--ticket", "T-110", "--lease",
+                    "a" * 64, "--workdir", str(cell), "--action",
+                    "dependency-refresh-replay", "--json",
+                )),
+                ("passport", "validating"),
+                "remote",
+                ("event", "publication_refresh_recovered"),
             ],
         )
 

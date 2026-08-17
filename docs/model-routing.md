@@ -31,7 +31,9 @@ and OpenRouter. It is not in any profile and is never selected by the current
 workflow.
 
 Cursor model evidence is exact. The Opus selection currently reports
-`Opus 5 300K Medium`. The GPT-5.6 Sol High selection may report either its
+`Opus 5 300K Medium`. The Sonnet 5 Thinking High selection may report its
+canonical `Sonnet 5 300K High` label or the certified vendor-prefixed
+`Claude Sonnet 5 300K High` label. The GPT-5.6 Sol High selection may report either its
 canonical `GPT-5.6 Sol 272K High` label or the explicitly certified
 `GPT-5.6 Sol 1M High` task-context label. Every other context-window, effort,
 selection, or family label is rejected. Native Claude fallback defaults to the

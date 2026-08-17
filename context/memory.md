@@ -6596,3 +6596,17 @@ Kit-SHA, and route-plan digest bind revision zero of the current v2 route
 journal. The existing route validator must still authenticate the complete
 hash-linked journal and current route before any migration; malformed,
 unrelated, or substituted history refuses.
+
+## 2026-08-16 — Decision 476: Exact successor recovery reuses existing proofs
+
+Category: Reliability
+
+Successor bundle refresh accepts head, protected-base, and route changes across
+a fully continuous authenticated migration suffix; the final same-release
+refresh edge and current passport remain exact. An already-converged route head
+may re-enter its abandoned route-migration recovery. A pushed publication
+refresh, including a ticket with `Depends-On: none`, replays through the
+existing sealed refresh verifier before passport migration. Cursor presentation
+aliases remain finite and route-bound; the certified Sonnet vendor prefix does
+not authorize another selection. Typed recovery failures persist their captured
+reason before leaving the exception scope.
