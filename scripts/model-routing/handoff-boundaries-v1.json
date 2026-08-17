@@ -38,7 +38,8 @@
     ],
     "narrator": [
       "factory/tickets/TICKET.md",
-      "factory/tickets/TICKET-bundle.md"
+      "factory/tickets/TICKET-bundle.md",
+      "factory/tickets/TICKET-evidence/*.png"
     ],
     "planner": [
       "factory/tickets/TICKET.md"
