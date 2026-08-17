@@ -6690,4 +6690,6 @@ handoff. Recovery revalidates that marker against the unchanged receipt,
 authenticated passport, and complete migration suffix, preserves the pending
 refresh flag, and returns to ordinary lease-bound state-machine issuance. The
 next ordinary reconcile materializes exactly one refresh before retiring the
-flag and permitting approval.
+flag and permitting approval. A preserved legacy no-authority approval audit
+remains trusted metadata only when the authenticated refresh receipt binds its
+exact prior bundle blob and that blob matches the recorded old head.

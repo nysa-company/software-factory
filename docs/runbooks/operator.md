@@ -842,7 +842,8 @@ If parking rotates the lease after that current receipt is durable, the next
 reconcile validates the unchanged marker, receipt, and signed passport before
 returning to ordinary receipt issuance. It does not reissue the handoff; the
 next ordinary reconcile materializes the one pending bundle refresh before
-approval.
+approval. A legacy no-authority approval audit may remain in history, but it is
+ignored only after the refresh receipt rebinds it to the exact prior bundle.
 When a dependency completes after bundle or approval, do not delete evidence
 manually. The exact dependency receipt invokes the publication refresh, which
 drafts the PR, retires the stale bundle/approval, and returns the ticket to
