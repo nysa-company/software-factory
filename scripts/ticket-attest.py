@@ -259,6 +259,122 @@ def successful_runs(product, workdir, ticket):
     return manifests
 
 
+def completed_role_runs(workdir, ticket, manifests):
+    state_dir = Path(os.environ.get("FACTORY_CONTROLLER_STATE_DIR", ""))
+    passport_path = state_dir / "passports" / f"{ticket}.json"
+    if not state_dir.is_absolute() or not os.path.lexists(passport_path):
+        return manifests
+    passport = authenticated_passport(ticket, state_dir)
+    module = passport_module()
+    try:
+        corrections = module.validate_completion_corrections(
+            passport.get("completed_role_corrections", []),
+            passport.get("completed_role_evidence", []),
+        )
+    except (OSError, ValueError) as error:
+        raise Refusal("authenticated completed-role evidence is invalid") from error
+    head = git(workdir, "rev-parse", "HEAD").stdout.strip()
+    branch = git(workdir, "symbolic-ref", "--short", "HEAD").stdout.strip()
+    if any((
+        passport.get("ticket") != ticket,
+        passport.get("project") != os.environ.get("FACTORY_PROJECT"),
+        passport.get("branch") != branch,
+        passport.get("head_sha") != head,
+        passport.get("factory_sha") != os.environ.get("FACTORY_RELEASE_SHA"),
+        passport.get("contract_version")
+        != os.environ.get("FACTORY_RELEASE_CONTRACT_VERSION"),
+        not isinstance(passport.get("factory_release_history"), list),
+    )):
+        raise Refusal("authenticated completed-role evidence is outside the current ticket")
+    evidence = passport.get("completed_role_evidence")
+    if not isinstance(evidence, list):
+        raise Refusal("authenticated completed-role evidence is invalid")
+    by_run = {item.get("run_id"): item for item in manifests}
+    if len(by_run) != len(manifests):
+        raise Refusal("authenticated completed-role evidence is ambiguous")
+    corrected = {
+        (item.get("run_id"), item.get("transition_receipt_sha256")): item
+        for item in corrections
+    }
+
+    def retained_head(value):
+        if not valid_oid(value):
+            return False
+        ancestry = git(
+            workdir, "merge-base", "--is-ancestor", value, head, check=False,
+        )
+        if ancestry.returncode not in {0, 1}:
+            raise Refusal("authenticated completed-role ancestry is invalid")
+        return ancestry.returncode == 0 or passport_head_lineage(passport, value)
+
+    expected = {
+        "contract_version", "factory_sha", "head_before", "manifest_sha256",
+        "output_sha256", "role", "run_id", "transition_receipt_sha256",
+    }
+    completed = []
+    seen = set()
+    for index, item in enumerate(evidence):
+        run_id = item.get("run_id") if isinstance(item, dict) else None
+        if (
+            not isinstance(item, dict)
+            or set(item) != expected
+            or not re.fullmatch(r"[A-Za-z0-9._-]{1,200}", run_id or "")
+            or run_id in seen
+            or item.get("role") not in ROLES
+            or item.get("contract_version") not in {"1.8.0", "1.9.0", "2.0.0"}
+            or not valid_oid(item.get("factory_sha", ""))
+            or not retained_head(item.get("head_before", ""))
+            or any(
+                not re.fullmatch(r"[0-9a-f]{64}", item.get(name, ""))
+                for name in (
+                    "manifest_sha256", "output_sha256",
+                    "transition_receipt_sha256",
+                )
+            )
+            or {
+                "contract_version": item.get("contract_version"),
+                "factory_sha": item.get("factory_sha"),
+            } not in passport.get("factory_release_history", [])
+        ):
+            raise Refusal("authenticated completed-role evidence is invalid")
+        manifest = by_run.get(run_id)
+        if manifest is not None:
+            if any((
+                manifest.get("_manifest_sha256") != item.get("manifest_sha256"),
+                manifest.get("role") != item.get("role"),
+                manifest.get("role_head_before") != item.get("head_before"),
+                manifest.get("kit_sha") != item.get("factory_sha"),
+                manifest.get("contract_version") != item.get("contract_version"),
+                manifest.get("output_sha256") != item.get("output_sha256"),
+                manifest.get("transition_receipt_sha256")
+                != item.get("transition_receipt_sha256"),
+            )):
+                raise Refusal("authenticated completed-role manifest changed")
+            value = dict(manifest)
+        else:
+            correction = corrected.get(
+                (run_id, item.get("transition_receipt_sha256"))
+            )
+            if (
+                correction is None
+                or not retained_head(item.get("head_before", ""))
+                or not retained_head(correction.get("output_head_sha", ""))
+            ):
+                raise Refusal("authenticated completed-role artifact is missing")
+            value = {
+                "role": item.get("role"),
+                "role_head_before": item.get("head_before"),
+                "run_id": run_id,
+            }
+        value["_ledger_index"] = index
+        value["_passport_order"] = True
+        completed.append(value)
+        seen.add(run_id)
+    if set(by_run) - seen:
+        raise Refusal("successful run is absent from authenticated completed-role evidence")
+    return completed
+
+
 def route_revision_hash(index, parent, body):
     return hashlib.sha256(json.dumps(
         {"body": body, "parent_hash": parent, "revision": index},
@@ -616,9 +732,16 @@ def review_evidence(text, manifests, workdir):
         raise Refusal("latest reviewer manifest lacks a reviewed SHA")
     if not re.fullmatch(r"[0-9a-f]{40}", narrator_head):
         raise Refusal("latest narrator manifest lacks branch lineage")
-    if timestamp(narrator.get("terminal_at"), "Narrator completion") <= timestamp(
-        reviewer.get("terminal_at"), "Reviewer completion"
-    ) or narrator["_ledger_index"] <= reviewer["_ledger_index"]:
+    if (
+        narrator["_ledger_index"] <= reviewer["_ledger_index"]
+        or (
+            not reviewer.get("_passport_order")
+            and not narrator.get("_passport_order")
+            and timestamp(
+                narrator.get("terminal_at"), "Narrator completion",
+            ) <= timestamp(reviewer.get("terminal_at"), "Reviewer completion")
+        )
+    ):
         raise Refusal("Narrator evidence is not after the latest Reviewer")
     if git(
         workdir, "merge-base", "--is-ancestor", reviewed, narrator_head, check=False,
@@ -899,7 +1022,13 @@ def validate_refresh_review_evidence(workdir, ticket, text, manifests, reviewer,
     if (
         preserved is not None
         and belongs_to_old_head(reviewer)
-        and belongs_to_old_head(narrator)
+        and (
+            belongs_to_old_head(narrator)
+            or not git(
+                workdir, "merge-base", "--is-ancestor", receipt_commit,
+                narrator.get("role_head_before", ""), check=False,
+            ).returncode
+        )
     ):
         return receipt["base_head"]
     if (
@@ -2354,7 +2483,9 @@ def refresh(
         ):
             raise Refusal("GitHub did not make the exact stale PR head a draft")
 
-    manifests = successful_runs(product, workdir, args.ticket)
+    manifests = completed_role_runs(
+        workdir, args.ticket, successful_runs(product, workdir, args.ticket),
+    )
     reviewers, approvals, requests, narrators = refresh_baselines(
         epoch_ticket_text(workdir, args.ticket, text), manifests,
     )
@@ -3081,11 +3212,12 @@ def bundle(args, product, workdir, repo, prefix, remote, kit_sha):
         raise Refusal("evidence bundle lacks the operator approval question")
     manifests = successful_runs(product, workdir, args.ticket)
     route_plan = route_plan_evidence(workdir, product, args.ticket, kit_sha, manifests)
+    completed = completed_role_runs(workdir, args.ticket, manifests)
     reviewer, narrator, reviewed = review_evidence(
-        epoch_ticket_text(workdir, args.ticket, text), manifests, workdir,
+        epoch_ticket_text(workdir, args.ticket, text), completed, workdir,
     )
     preserved_base = validate_refresh_review_evidence(
-        workdir, args.ticket, text, manifests, reviewer, narrator,
+        workdir, args.ticket, text, completed, reviewer, narrator,
     )
     allowed = {
         f"factory/route-plans/{args.ticket}.json",

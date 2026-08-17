@@ -331,6 +331,10 @@ everything the Factory actually enforces lives here.
   ledger remains the sequencing source only before a ticket has a passport;
   release migration or qualification takeover cannot erase successful roles
   from scheduling while retaining them in authenticated history.
+- Publication refresh and bundle attestation use that same signed completed-
+  role order for Reviewer/Narrator evidence, including exact authenticated
+  completion corrections. Raw successful-run manifests remain independent
+  route and accounting provenance and are never synthesized.
 - A durable-GO exit 125 with no submission marker, progress, or usable
   telemetry exports its full conservative reservation into the ordinary
   passport and remains blocked under the same release without invoking model
@@ -6639,3 +6643,18 @@ the current Git blob remains byte-identical and valid. Current-bundle images kee
 the ordinary path, size, mode, and PNG checks. Missing, foreign, stale,
 non-ancestral, changed, malformed, or unsigned evidence remains implementation
 drift.
+
+## 2026-08-16 — Decision 479: Publication uses signed corrected role order
+
+Category: Reliability
+
+Publication refresh and bundle attestation derive effective Reviewer/Narrator
+ordering from the current authenticated passport whenever it exists, matching
+the state-machine sequencer. Every ordinary entry remains bound to its exact
+successful-run manifest; an entry without that artifact is accepted only when
+one signed completion correction names the same run and receipt and its input
+and output remain in authenticated head lineage. Raw successful manifests stay
+the route and accounting source and are never fabricated. A control-only base
+refresh may therefore keep an authenticated corrected Reviewer and run only the
+missing Narrator afterward; malformed, ambiguous, unsigned, or unrelated
+evidence refuses.
