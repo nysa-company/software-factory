@@ -6778,3 +6778,17 @@ role contract. Screenshot bytes reuse the publication boundary's strict PNG
 parser and remain regular, non-executable, size-bounded files. Sibling-ticket,
 nested, malformed, non-PNG, secret-bearing text, or unrelated paths remain
 outside the sealed role boundary.
+
+## 2026-08-17 — Decision 491: Successor fallback authenticates earlier output
+
+Category: Reliability
+
+When a submitted provider failure commits valid role output before successor
+route migration, automatic qualification fallback may continue only from the
+exact protected in-flight authorization head and its exact route-migration
+child. The fallback revalidates the source run, source route policy, role-bound
+output snapshot, current sealed product authority, and empty current handoff;
+it then commits only the fallback route revision. Crash replay recomputes the
+same proof before accepting the committed result. Production, takeover,
+ordinary unsealed fallback, and mismatched output or migration heads remain
+closed.

@@ -1267,6 +1267,13 @@ successor qualification manifest must bind the executing release SHA. The
 handoff makes the cell clean before the ordinary release-migration revision;
 an unsealed, non-successor, differently headed, or differently routed recovery
 still fails closed.
+If the provider output was committed before the successor migration, the
+successor may append the fallback afterward only when its protected in-flight
+authorization names that exact output head and the current head is the exact
+ticket-and-route migration child. Recovery revalidates the historical role
+boundary, unchanged active route policy, failed source head, and both snapshot
+digests before appending a route-only fallback commit. Restart repeats those
+checks and reuses the same commit.
 If that release-migration revision already follows the handoff when the
 controller restarts, recovery validates the complete journal, requires the
 exact fallback revision and a suffix containing only release migrations, and

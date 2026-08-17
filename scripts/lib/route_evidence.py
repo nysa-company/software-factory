@@ -14,7 +14,8 @@ import stat
 import subprocess
 
 from failed_attempt_handoff import (
-    HandoffError, RoleBoundaryPolicy, validate_handoff_commit,
+    HandoffError, RoleBoundaryPolicy, validate_committed_output,
+    validate_handoff_commit,
 )
 
 
@@ -147,9 +148,15 @@ def authenticated_fallback_head(
             "approval_hash", "failed_run_id", "generation", "manifest_digest",
             "nonce", "schema",
         }
+        historical = approval.get("historical_handoff")
+        allowed_keys = (
+            base_keys,
+            base_keys | {"product_sha", "product_tree"},
+            base_keys | {"product_sha", "product_tree", "historical_handoff"},
+        )
         if (
             not isinstance(approval, dict)
-            or set(approval) not in (base_keys, base_keys | {"product_sha", "product_tree"})
+            or set(approval) not in allowed_keys
             or approval.get("schema") != "ticket-model-fallback-qualification/v1"
             or not re.fullmatch(r"[0-9a-f]{64}", approval.get("approval_hash", ""))
             or not re.fullmatch(r"[A-Za-z0-9._-]{1,200}", approval.get("failed_run_id", ""))
@@ -179,12 +186,35 @@ def authenticated_fallback_head(
             failed[key] = value
         prior = body["prior_resolution"]
         selection = prior["selections"]["planner"]
+        historical_keys = {
+            "authorized_head", "commit_snapshot_digest", "recovery_head",
+            "snapshot_digest", "source_factory_sha", "source_head",
+        }
+        if historical is not None and (
+            not isinstance(historical, dict)
+            or set(historical) != historical_keys
+            or any(
+                not re.fullmatch(r"[0-9a-f]{40}", historical.get(key, ""))
+                for key in (
+                    "authorized_head", "recovery_head", "source_factory_sha",
+                    "source_head",
+                )
+            )
+            or any(
+                not re.fullmatch(r"[0-9a-f]{64}", historical.get(key, ""))
+                for key in ("commit_snapshot_digest", "snapshot_digest")
+            )
+        ):
+            raise RouteEvidenceError("historical fallback approval is invalid")
         if any((
             body.get("failed_manifest_digest") != hashlib.sha256(failed_raw).hexdigest(),
             failed.get("run_id") != approval["failed_run_id"],
             failed.get("ticket") != ticket,
             failed.get("role") != "planner",
-            failed.get("kit_sha") != journal.get("kit_sha"),
+            failed.get("kit_sha") != (
+                historical["source_factory_sha"]
+                if historical is not None else journal.get("kit_sha")
+            ),
             failed.get("role_branch_before") != branch,
             failed.get("phase") not in {"completed", "abandoned", "cancelled_conservative"},
             failed.get("go_issued") != "1",
@@ -213,11 +243,37 @@ def authenticated_fallback_head(
             or message.count("Model-Route-Revision: " + revision["revision_hash"]) != 1
         ):
             raise RouteEvidenceError("fallback handoff commit is invalid")
+        provider_scan_base = failed["role_head_before"]
+        snapshot_digest = body["approved_snapshot_digest"]
+        if historical is not None:
+            commit_parents = subprocess.run(
+                ["git", "-C", str(worktree), "show", "-s", "--format=%P", commit],
+                text=True, capture_output=True, check=True, timeout=120,
+            ).stdout.split()
+            recovery_parents = subprocess.run(
+                ["git", "-C", str(worktree), "show", "-s", "--format=%P",
+                 historical["recovery_head"]],
+                text=True, capture_output=True, check=True, timeout=120,
+            ).stdout.split()
+            if (
+                historical["source_head"] != failed["role_head_before"]
+                or historical["snapshot_digest"] != body["approved_snapshot_digest"]
+                or commit_parents != [historical["recovery_head"]]
+                or recovery_parents != [historical["authorized_head"]]
+                or validate_committed_output(
+                    worktree, baseline=historical["source_head"],
+                    head=historical["authorized_head"], role="planner",
+                    policy=_handoff_policy(ticket),
+                ) != historical["snapshot_digest"]
+            ):
+                raise RouteEvidenceError("historical fallback handoff is invalid")
+            provider_scan_base = historical["recovery_head"]
+            snapshot_digest = historical["commit_snapshot_digest"]
         validate_handoff_commit(
             worktree, commit=commit, role="planner",
-            provider_scan_base=failed["role_head_before"],
+            provider_scan_base=provider_scan_base,
             policy=_handoff_policy(ticket),
-            expected_snapshot_digest=body["approved_snapshot_digest"],
+            expected_snapshot_digest=snapshot_digest,
             expected_revision_hash=revision["revision_hash"],
             expected_subject=f"{ticket}: preserve failed attempt and revise model route",
         )
