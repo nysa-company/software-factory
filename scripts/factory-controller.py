@@ -5448,6 +5448,17 @@ class Controller:
             or info.st_size > 1_000_000
         ):
             return False
+        head = self.cell_git(claim, "rev-parse", "HEAD")
+        refresh_head = self.cell_git(
+            claim, "log", "-n", "1", "--format=%H", "--",
+            f"factory/attestations/{claim['ticket']}/refresh.json",
+        )
+        if (
+            head.returncode
+            or refresh_head.returncode
+            or head.stdout.strip() != refresh_head.stdout.strip()
+        ):
+            return False
         self.ensure_lease(claim, "publication-refresh-replay")
         value = self.json_call(
             "ticket-attest", "--ticket", claim["ticket"],
@@ -5464,6 +5475,7 @@ class Controller:
             raise ControllerError("publication refresh replay passport is invalid")
         claim.update(receipt="", role="", status="claimed")
         claim.pop("blocked_reason", None)
+        claim.pop("release_refresh_required", None)
         self.save_claim(claim)
         self.event_once(
             "publication_refresh_recovered", claim["ticket"],

@@ -6745,3 +6745,14 @@ migrates only the remaining route-blocked claims and validates its plan and
 journal against that subset. A missing, malformed, foreign, or stale marker
 keeps the all-or-none batch closed before model-route mutation; final reduction
 still authenticates the complete terminal adoption proof.
+
+## 2026-08-17 — Decision 488: Publication replay retires the refresh handoff
+
+Category: Reliability
+
+An authenticated dependency-publication refresh replay clears the successor
+`release_refresh_required` handoff after passport migration and remote
+validation. Restart therefore cannot request the same refresh again after its
+branch is already based on protected main; failed or unvalidated replay keeps
+the handoff unchanged. A retained historical refresh artifact is not an
+in-flight replay candidate once a later authenticated commit is at `HEAD`.
