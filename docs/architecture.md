@@ -1596,6 +1596,11 @@ rewrites the preserved ticket history.
 Activation and mutating model-route migration use the same strict authorization
 parser. Migration revalidates current protected main, the selected remote ticket
 head, repository, source and target kit, branch, and state before changing Git.
+Successor activation accepts an `abandoned_conservative` charge as completed
+only through its exact raw success artifact or one authenticated passport
+completion correction for the same run, receipt, role, and failed release.
+The correction's failed and recovery releases must both remain in the signed
+passport history; cancelled, ambiguous, or unrelated evidence stays closed.
 Authorization v1 retains one source kit for the whole cohort. V2 retains that
 source as the successor root and binds each ticket's exact current source kit,
 so a replayed partial batch can advance a mixed-source cohort without relabeling
