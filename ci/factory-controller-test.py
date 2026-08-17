@@ -8280,38 +8280,43 @@ class FactoryControllerTest(unittest.TestCase):
             locally_valid_operator_passport
         )
         controller.renew = lambda _claim: None
-        original_event_once = controller.event_once
-
-        def crash_after_receipt(name, *arguments, **keywords):
-            if name == "prior_release_receipt_refreshed":
-                raise RuntimeError("crash after receipt")
-            return original_event_once(name, *arguments, **keywords)
-
-        controller.event_once = crash_after_receipt
-        with self.assertRaisesRegex(RuntimeError, "crash after receipt"):
-            controller.recover_upgraded_claims([claim])
+        controller.recover_upgraded_claims([claim])
 
         receipt_bytes = (self.state / "T-110.json").read_bytes()
+        self.assertEqual(claim["status"], "claimed")
+        self.assertTrue(claim["release_refresh_required"])
+        self.assertFalse(controller.marker(
+            f"passport-route-migration-complete-T-110-{target}"
+        ))
+
+        rotated_lease = "e" * 64
+        claim.update(lease=rotated_lease, status="waiting")
+        controller.save_claim(claim)
         restarted = CONTROL.Controller(args)
         restarted.locally_valid_operator_passport = (
             locally_valid_operator_passport
         )
         restarted.renew = lambda _claim: None
         restarted.json_call = lambda *_args, **_kwargs: self.fail(
-            "restart must reuse the current durable receipt"
+            "rotated lease must reuse the completed receipt handoff"
         )
         restarted.migrate_passport = lambda *_args: passport_calls.append(
-            "passport-replay"
+            "passport-rotated-lease-replay"
+        )
+        restarted.release_bundle_refreshable = lambda *_args: self.fail(
+            "completed receipt handoff must not refresh again"
         )
         claim = restarted.load_claims()[0]
         restarted.recover_upgraded_claims([claim])
 
-        self.assertEqual(passport_calls, ["passport", "passport-replay"])
+        self.assertEqual(
+            passport_calls, ["passport", "passport-rotated-lease-replay"],
+        )
         self.assertEqual((self.state / "T-110.json").read_bytes(), receipt_bytes)
         self.assertEqual(claim["status"], "claimed")
-        self.assertTrue(claim["release_refresh_required"])
         self.assertNotIn("blocked_reason", claim)
-        self.assertFalse(restarted.marker(
+        self.assertNotIn("release_refresh_required", claim)
+        self.assertTrue(restarted.marker(
             f"passport-route-migration-complete-T-110-{target}"
         ))
 
@@ -8890,6 +8895,12 @@ class FactoryControllerTest(unittest.TestCase):
                 controller.release_ticket_lease = released.append
                 controller.release_inactive_ticket_leases([claim])
                 self.assertEqual(released, [claim])
+                claim.update(
+                    lease="b" * 64, lease_released=True, status="waiting",
+                )
+                self.assertFalse(controller.bundle_refresh_handoff_pending(
+                    claim, rotated_lease=True,
+                ))
 
     def test_release_bundle_refresh_returns_to_route_migration_gate(self) -> None:
         controller = CONTROL.Controller(self.args)

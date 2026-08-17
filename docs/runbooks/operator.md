@@ -838,6 +838,9 @@ ordinary reconcile. The controller admits only the exact authenticated
 migration suffix and requires the state machine's durable current parent-linked
 receipt before removing the prior-release exclusion; any mismatch stays
 ticket-local and parked.
+If parking rotates the lease after that current receipt is durable, the next
+reconcile validates the unchanged marker, receipt, and signed passport before
+returning to ordinary receipt issuance; it does not repeat bundle refresh.
 When a dependency completes after bundle or approval, do not delete evidence
 manually. The exact dependency receipt invokes the publication refresh, which
 drafts the PR, retires the stale bundle/approval, and returns the ticket to

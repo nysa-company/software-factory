@@ -6679,3 +6679,13 @@ canonical Awaiting-Approval boundary: bundle attested while approval is absent,
 or operator approval observed while its trusted attestation is pending. The
 receipt, source passport file, release/head/base/route suffix, active lease,
 current passport, and one-use parent digest remain exact; other waits refuse.
+
+## 2026-08-17 — Decision 482: Durable bundle handoff survives lease rotation
+
+Category: Reliability
+
+After successor bundle refresh has produced its exact current-release receipt
+and immutable marker, a later parked-claim lease rotation does not repeat the
+refresh. Recovery revalidates that marker against the unchanged receipt,
+authenticated passport, and complete migration suffix, retires the transient
+refresh flag, and returns to ordinary lease-bound state-machine issuance.

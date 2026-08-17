@@ -4903,13 +4903,19 @@ class Controller:
             == passport["parent_digest"]
         ) else None
 
-    def bundle_refresh_handoff_pending(self, claim: dict[str, Any]) -> bool:
+    def bundle_refresh_handoff_pending(
+        self, claim: dict[str, Any], *, rotated_lease: bool = False,
+    ) -> bool:
         if (
-            claim.get("status") != "blocked"
+            (
+                claim.get("status") != "blocked"
+                if not rotated_lease else
+                claim.get("status") not in {"blocked", "claimed", "waiting"}
+            )
             or claim.get("receipt")
             or claim.get("role")
             or not DIGEST.fullmatch(claim.get("lease", ""))
-            or claim.get("lease_released") is True
+            or not rotated_lease and claim.get("lease_released") is True
             or claim.get("publication_lease")
             or self.role_active(claim)
         ):
@@ -4937,6 +4943,11 @@ class Controller:
             if passport is not None else None
         )
         current_lease = hashlib.sha256(claim["lease"].encode()).hexdigest()
+        handoff_lease = (
+            marker.get("lease_sha256") if rotated_lease else current_lease
+        )
+        if not DIGEST.fullmatch(handoff_lease or ""):
+            return False
         stage = receipt.get("stage", "") if receipt else ""
         expected = {
             "factory_sha": self.release_path.name,
@@ -4946,7 +4957,7 @@ class Controller:
             ),
             "from_receipt_sha256": marker.get("from_receipt_sha256"),
             "head_sha": passport.get("head_sha") if passport else None,
-            "lease_sha256": current_lease,
+            "lease_sha256": handoff_lease,
             "passport_file_sha256": passport_file,
             "route_plan_sha256": (
                 passport.get("route_plan_sha256") if passport else None
@@ -4995,7 +5006,7 @@ class Controller:
                     )
                     and receipt.get("parent_digest")
                     == marker["from_receipt_sha256"]
-                    and receipt.get("lease_sha256") == current_lease
+                    and receipt.get("lease_sha256") == handoff_lease
                     and receipt.get("passport_sha256") == passport_file
                     and receipt.get("head_sha") == marker["head_sha"]
                     and receipt.get("route_plan_sha256")
@@ -7729,9 +7740,17 @@ class Controller:
                     self.release_ticket_lease(claim)
                     raise
                 passport = read(path)
-                bundle_refresh = self.release_bundle_refreshable(
-                    claim, passport,
-                )
+                if (
+                    claim.get("release_refresh_required") is True
+                    and self.bundle_refresh_handoff_pending(
+                        claim, rotated_lease=True,
+                    )
+                ):
+                    claim.pop("release_refresh_required")
+                else:
+                    bundle_refresh = self.release_bundle_refreshable(
+                        claim, passport,
+                    )
             if merged_closeout:
                 claim.update(receipt="", role="", status="claimed")
                 if claim.get("blocked_reason") == "route-migration-required":
