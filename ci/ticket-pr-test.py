@@ -123,6 +123,15 @@ state = pathlib.Path(os.environ['FAKE_PR_STATE'])
 trace = pathlib.Path(os.environ['FAKE_PR_TRACE'])
 args = sys.argv[1:]
 with trace.open('a') as handle: handle.write(' '.join(args) + '\\n')
+outage = os.environ.get('FAKE_GITHUB_OUTAGE', '')
+outage_command, _, outage_kind = outage.partition(':')
+if outage and (
+    (outage_command == 'list' and args[:2] == ['pr', 'list'])
+    or (outage_command == 'checks' and args[:2] == ['pr', 'checks'])
+):
+    code = '503' if outage_kind == 'transient' else '401'
+    print(f'HTTP {code}: GitHub unavailable', file=sys.stderr)
+    raise SystemExit(1)
 prs = json.loads(state.read_text()) if state.exists() else []
 if args[:2] == ['pr', 'list']:
     requested = args[args.index('--state') + 1]
@@ -331,6 +340,7 @@ else:
         preview_reported=True, pr_files=None, check_names="ci",
         preview_mutation="",
         required_contexts="ci",
+        github_outage="",
     ):
         head = subprocess.run(
             ["git", "-C", self.product, "rev-parse", "HEAD"],
@@ -356,6 +366,7 @@ else:
                 "FAKE_DEPLOYED_SHA": deployed_sha or head,
                 "FAKE_PREVIEW_MUTATION": preview_mutation,
                 "FAKE_PREVIEW_REPORTED": "1" if preview_reported else "0",
+                "FAKE_GITHUB_OUTAGE": github_outage,
                 "FAKE_PR_FILES": json.dumps(pr_files or [
                     {"filename": "app/tools/offline.js", "status": "added"},
                     {"filename": "app/tests/offline.test.js", "status": "added"},
@@ -376,6 +387,44 @@ else:
         )
         self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
         return json.loads(result.stdout)
+
+    def test_transient_github_outage_waits_but_auth_failure_refuses(self):
+        for command in ("list", "checks"):
+            with self.subTest(command=command):
+                waiting = self.command(
+                    github_outage=f"{command}:transient",
+                )
+                self.assertEqual(waiting["status"], "wait")
+                self.assertEqual(waiting["checks"], ["github unavailable"])
+                self.assertEqual(waiting["ticket"], "T-100")
+
+        refused = self.command(expected=2, github_outage="list:auth")
+        self.assertEqual(refused["status"], "error")
+        self.assertIn("HTTP 401", refused["error"])
+
+    def test_github_transport_classifier_is_narrow(self):
+        for message in (
+            "HTTP 503: unavailable",
+            "HTTP 599: unavailable",
+            "could not resolve host api.github.com",
+            "error connecting to api.github.com",
+            "connection reset by peer",
+            "network is unreachable",
+            "TLS handshake timeout",
+        ):
+            with self.subTest(message=message):
+                self.assertTrue(
+                    TICKET_PR.github_temporarily_unavailable(message)
+                )
+        for message in (
+            "HTTP 401: authentication required",
+            "HTTP 403: forbidden",
+            "GitHub returned malformed required-check evidence",
+        ):
+            with self.subTest(message=message):
+                self.assertFalse(
+                    TICKET_PR.github_temporarily_unavailable(message)
+                )
 
     def prepare_control_refresh(
         self, *, prior_bundle_blob=None, remove_bundle=False,

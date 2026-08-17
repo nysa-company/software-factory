@@ -58,10 +58,31 @@ class Refusal(ValueError):
     pass
 
 
+class GitHubUnavailable(Refusal):
+    pass
+
+
+def github_temporarily_unavailable(message: str) -> bool:
+    lowered = message.casefold()
+    return bool(re.search(r"\bHTTP 5[0-9]{2}\b", message)) or any(
+        value in lowered for value in (
+            "could not resolve host",
+            "temporary failure in name resolution",
+            "error connecting to api.github.com",
+            "connection reset by peer",
+            "network is unreachable",
+            "tls handshake timeout",
+        )
+    )
+
+
 def run(command: list[str], *, cwd: Path | None = None) -> subprocess.CompletedProcess:
     result = subprocess.run(command, cwd=cwd, text=True, capture_output=True, check=False)
     if result.returncode:
-        raise Refusal(result.stderr.strip() or result.stdout.strip() or "command failed")
+        message = result.stderr.strip() or result.stdout.strip() or "command failed"
+        if command[:1] == ["gh"] and github_temporarily_unavailable(message):
+            raise GitHubUnavailable(message)
+        raise Refusal(message)
     return result
 
 
@@ -642,8 +663,15 @@ def required_check_status(repo: str, number: int) -> tuple[str, list[str]]:
         ],
         text=True, capture_output=True, check=False,
     )
+    message = result.stderr.strip() or result.stdout.strip()
+    if (
+        result.returncode
+        and not result.stdout.strip()
+        and github_temporarily_unavailable(message)
+    ):
+        raise GitHubUnavailable(message)
     if result.returncode not in (0, 1, 8):
-        raise Refusal(result.stderr.strip() or "GitHub required-check query failed")
+        raise Refusal(message or "GitHub required-check query failed")
     if (
         result.returncode == 1
         and not result.stdout.strip()
@@ -1066,6 +1094,7 @@ def main() -> None:
             validate_review_lineage(product, workdir, args.ticket, head)
         repo = project_repo(factory)
         fields = "number,headRefName,baseRefName,headRefOid,url,state"
+        pr: dict = {}
 
         def candidates() -> list[dict]:
             value = json.loads(run([
@@ -1154,6 +1183,22 @@ def main() -> None:
             "preview_preflight": preview_gate,
             "schema": SCHEMA,
             "status": status,
+            "ticket": args.ticket,
+            "url": pr.get("url"),
+        }, sort_keys=True, separators=(",", ":")))
+    except GitHubUnavailable:
+        print(json.dumps({
+            "boundary": boundary,
+            "branch": branch,
+            "checks": ["github unavailable"],
+            "head": head,
+            "pr_number": pr.get("number"),
+            "publication_mode": None,
+            "preview_urls": [],
+            "preview_identity": None,
+            "preview_preflight": None,
+            "schema": SCHEMA,
+            "status": "wait",
             "ticket": args.ticket,
             "url": pr.get("url"),
         }, sort_keys=True, separators=(",", ":")))
