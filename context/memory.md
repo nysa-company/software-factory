@@ -6669,3 +6669,13 @@ authenticated passport contains one exact completion correction for the same
 run, receipt, role, and failed release. Both correction releases must remain in
 the signed release history. The same corrected identity binds ordinary role
 gaps; cancelled, ambiguous, malformed, or unrelated evidence still refuses.
+
+## 2026-08-17 — Decision 481: Bundle refresh preserves either approval wait
+
+Category: Reliability
+
+A successor bundle refresh may reissue a prior non-role receipt from either
+canonical Awaiting-Approval boundary: bundle attested while approval is absent,
+or operator approval observed while its trusted attestation is pending. The
+receipt, source passport file, release/head/base/route suffix, active lease,
+current passport, and one-use parent digest remain exact; other waits refuse.

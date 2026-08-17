@@ -8391,6 +8391,7 @@ class FactoryControllerTest(unittest.TestCase):
     def stale_release_receipt(
         self, ticket: str, prior: str, lease: str, head: str = "b" * 40,
         route: str = "e" * 64, passport_file: str = "7" * 64,
+        stage: str = "AWAIT-OPERATOR bundle attested; await operator approval",
     ) -> dict[str, object]:
         value = {
             "branch": f"ticket/{ticket}",
@@ -8405,7 +8406,7 @@ class FactoryControllerTest(unittest.TestCase):
             "role": None,
             "route_plan_sha256": route,
             "schema": "nysa.software-factory.transition-receipt/v1",
-            "stage": "AWAIT-OPERATOR bundle attested; await operator approval",
+            "stage": stage,
             "ticket": ticket,
         }
         value["receipt_sha256"] = hashlib.sha256(STATE.canonical({
@@ -8529,6 +8530,10 @@ class FactoryControllerTest(unittest.TestCase):
         )
         stale = self.stale_release_receipt(
             "T-110", prior, old_lease,
+            stage=(
+                "AWAIT-OPERATOR operator approval observed; trusted approval "
+                "attestation is required"
+            ),
         )
         claim = {
             "blocked_reason": "route-migration-required",
