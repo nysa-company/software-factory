@@ -6756,3 +6756,14 @@ validation. Restart therefore cannot request the same refresh again after its
 branch is already based on protected main; failed or unvalidated replay keeps
 the handoff unchanged. A retained historical refresh artifact is not an
 in-flight replay candidate once a later authenticated commit is at `HEAD`.
+
+## 2026-08-17 — Decision 489: GitHub outages remain publication waits
+
+Category: Reliability
+
+Ticket PR discovery and required-check polling classify only recognized
+transient GitHub transport, DNS, connection, and HTTP 5xx failures as
+provider-free waits. Authentication and authorization failures, malformed
+evidence, and unknown states still refuse. A temporary GitHub outage therefore
+does not persist a same-release `controller-error` or require a successor to
+retry an otherwise unchanged publication boundary.

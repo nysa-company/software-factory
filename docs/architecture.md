@@ -784,6 +784,10 @@ before the idempotent Done action. Only that request may reopen a clean parked
 `controller-error`; unrelated errors remain blocked. Later protected-main
 advancement remains eligible only when the recorded base and both bound merge
 commits are ancestors and the protected ticket blob is byte-identical.
+Transient GitHub transport, DNS, connection, or HTTP 5xx failures during PR
+discovery and required-check polling remain provider-free waits. Authentication,
+authorization, malformed evidence, and unknown response states remain hard
+refusals and never gain publication authority.
 A ticket
 whose terminal boundary spans one or more Factory migrations reuses that
 evidence only when one unique contiguous authenticated migration suffix links
