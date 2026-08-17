@@ -380,20 +380,24 @@ else:
     def prepare_control_refresh(
         self, *, prior_bundle_blob=None, remove_bundle=False,
     ):
+        generation = getattr(self, "control_refresh_generation", 0) + 1
+        self.control_refresh_generation = generation
         old_head = subprocess.run(
             ["git", "-C", self.product, "rev-parse", "HEAD"],
             text=True, capture_output=True, check=True,
         ).stdout.strip()
-        base = self.root / "base"
+        base = self.root / f"base-{generation}"
         subprocess.run(
             ["git", "-C", self.product, "worktree", "add", "-q", base, "main"],
             check=True,
         )
-        target = "e" * 40
+        target = f"{15 - generation:x}" * 40
         (base / "factory/KIT_PIN").write_text(target + "\n")
-        (base / "factory/QUALIFICATION.json").write_text('{"generation":2}\n')
+        (base / "factory/QUALIFICATION.json").write_text(
+            json.dumps({"generation": generation + 1}) + "\n"
+        )
         migration = base / "factory/migrations/inflight-release" / f"{target}.json"
-        migration.parent.mkdir(parents=True)
+        migration.parent.mkdir(parents=True, exist_ok=True)
         migration.write_text("{}\n")
         subprocess.run(["git", "-C", base, "add", "."], check=True)
         subprocess.run(
@@ -405,6 +409,10 @@ else:
             ["git", "-C", base, "rev-parse", "HEAD"],
             text=True, capture_output=True, check=True,
         ).stdout.strip()
+        subprocess.run(
+            ["git", "-C", self.product, "worktree", "remove", "--force", base],
+            check=True,
+        )
         subprocess.run(
             ["git", "-C", self.product, "merge", "--no-ff", "-m",
              "merge protected control metadata", base_head],
@@ -419,7 +427,7 @@ else:
         refresh.write_text(json.dumps({
             "schema": "nysa.software-factory.ticket-refresh/v2",
             "ticket": "T-100",
-            "generation": 1,
+            "generation": generation,
             "old_head": old_head,
             "base_head": base_head,
             "merge_head": merge_head,
@@ -431,7 +439,7 @@ else:
             "prior_approval_blob": None,
             "revalidation_budget_micro_usd": 20_000_000,
             "revalidation_factory_sha": "a" * 40,
-            "revalidation_generation": 1,
+            "revalidation_generation": generation,
             "refreshed_at": "2026-07-20T00:02:00Z",
         }, sort_keys=True) + "\n")
         if remove_bundle:
@@ -1188,6 +1196,22 @@ else:
         )
         attestation.write_text('{"schema":"new-bundle"}\n')
         self.commit_and_push("attest replacement bundle")
+        self.sync_fake_pr_head()
+        self.assertEqual(
+            self.command(
+                contract="2.0.0", stage="RUN narrator", receipt="f" * 64,
+            )["status"],
+            "ready",
+        )
+        replacement_blob = subprocess.run(
+            ["git", "-C", self.product, "hash-object", attestation],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+        self.prepare_control_refresh(
+            prior_bundle_blob=replacement_blob, remove_bundle=True,
+        )
+        attestation.write_text('{"schema":"second-new-bundle"}\n')
+        self.commit_and_push("attest second replacement bundle")
         self.sync_fake_pr_head()
         self.assertEqual(
             self.command(

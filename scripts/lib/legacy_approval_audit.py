@@ -70,17 +70,17 @@ def trusted_legacy_approval_audit_paths(
             refresh_path = f"factory/attestations/{ticket}/refresh.json"
             if refresh_path not in refresh_metadata:
                 return set()
-            refresh = json.loads(
-                _git(workdir, "show", f"{head}:{refresh_path}", raw=True)
-            )
-            if not isinstance(refresh, dict):
+            additions = _git(
+                workdir, "log", "--format=%H", "--diff-filter=A", head,
+                "--", relative,
+            ).splitlines()
+            if len(additions) != 1:
                 return set()
             if (
-                refresh.get("prior_bundle_blob") != bundle_blob
-                or _git(
-                    workdir, "rev-parse",
-                    f"{refresh.get('old_head', '')}:{bundle_path}",
-                ) != bundle_blob
+                _git(workdir, "rev-parse", f"{additions[0]}:{relative}")
+                != _git(workdir, "rev-parse", f"{head}:{relative}")
+                or _git(workdir, "rev-parse", f"{additions[0]}:{bundle_path}")
+                != bundle_blob
             ):
                 return set()
         receipt = operator_receipt.read_exact(
