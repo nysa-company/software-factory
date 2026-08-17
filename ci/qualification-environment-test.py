@@ -3049,6 +3049,9 @@ class QualificationEnvironmentTest(unittest.TestCase):
                 self.factory, self.product, controller, "relay", source,
                 product_sha, manifest,
             )
+        for artifact in (self.product / "factory/runs").iterdir():
+            artifact.unlink()
+        (self.product / "factory/runs").rmdir()
         failed = "a" * 40
         self.write_passport(path, secret, "T-102", source, failed)
         corrected_charge = {
