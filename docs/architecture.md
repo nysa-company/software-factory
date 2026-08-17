@@ -1446,6 +1446,10 @@ attestation binds a different Kit-SHA; evidence is never silently rewritten.
 The typed terminal-adoption marker and event seal the manifest source, immediate
 passport predecessor, source/candidate passport digests, and protected Done/PR
 identity.
+A sealed successor route-migration batch treats that exact current-candidate
+terminal-adoption marker as an accounted cohort member and migrates only the
+remaining live route-blocked claims. A missing or malformed marker still blocks
+the complete batch before preview or mutation.
 A valid marker and exact event make later reconciliation a no-op. The reducer
 exempts only that adopted ticket from a candidate publication lease pair and
 rejects duplicate adoption, completion, acquisition, or release evidence.

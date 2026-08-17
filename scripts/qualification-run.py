@@ -30,6 +30,9 @@ DOCTOR_SCHEMA = "nysa.software-factory.doctor/v2"
 REPORT_SCHEMA = "nysa.software-factory.qualification-report/v1"
 MIGRATION_PLAN_SCHEMA = "nysa.software-factory.model-migration-batch-preview/v1"
 MIGRATION_JOURNAL_SCHEMA = "nysa.software-factory.model-migration-batch-journal/v1"
+TERMINAL_ADOPTION_SCHEMA = (
+    "nysa.software-factory.qualification-terminal-adoption/v2"
+)
 PROJECT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 TICKET = re.compile(r"T-[0-9]+")
 SHA = re.compile(r"[0-9a-f]{40}")
@@ -199,11 +202,11 @@ def qualification_basis() -> tuple[
 
 def route_migration_arguments(
     selected: set[str], factory_sha: str,
-) -> tuple[str, ...]:
+) -> tuple[tuple[str, ...], set[str]]:
     state = Path(os.environ.get("FACTORY_CONTROLLER_STATE_DIR", ""))
     try:
         if not state.is_absolute() or state.resolve(strict=True) != state:
-            return ()
+            return (), set()
         for directory in (state, state / "claims"):
             info = directory.lstat()
             if (
@@ -215,9 +218,54 @@ def route_migration_arguments(
                 raise QualificationRunError("qualification claim state is unsafe")
         pairs: list[str] = []
         migration_tickets: set[str] = set()
+        terminal_tickets: set[str] = set()
         for ticket in sorted(selected):
             path = state / f"claims/{ticket}.json"
-            descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            try:
+                descriptor = os.open(
+                    path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                )
+            except FileNotFoundError:
+                marker = controller_state_json(Path(
+                    f"qualification-terminal-adoption-{factory_sha}-{ticket}.json"
+                ))
+                if (
+                    set(marker) != {
+                        "approved_pr_head", "candidate_passport_sha256",
+                        "done_sha256", "factory_sha", "merge_commit",
+                        "passport_source_factory_sha", "pr_number", "schema",
+                        "source_current_state", "source_factory_sha",
+                        "source_passport_sha256", "source_publication_state",
+                        "ticket",
+                    }
+                    or marker.get("schema") != TERMINAL_ADOPTION_SCHEMA
+                    or marker.get("ticket") != ticket
+                    or marker.get("factory_sha") != factory_sha
+                    or marker.get("source_current_state") != "Approved"
+                    or marker.get("source_publication_state") != "merged"
+                    or not isinstance(marker.get("pr_number"), int)
+                    or isinstance(marker["pr_number"], bool)
+                    or marker["pr_number"] <= 0
+                    or any(
+                        not SHA.fullmatch(marker.get(key, ""))
+                        for key in (
+                            "approved_pr_head", "merge_commit",
+                            "passport_source_factory_sha", "source_factory_sha",
+                        )
+                    )
+                    or any(
+                        not DIGEST.fullmatch(marker.get(key, ""))
+                        for key in (
+                            "candidate_passport_sha256", "done_sha256",
+                            "source_passport_sha256",
+                        )
+                    )
+                ):
+                    raise QualificationRunError(
+                        "qualification terminal adoption is invalid"
+                    )
+                terminal_tickets.add(ticket)
+                continue
             try:
                 info = os.fstat(descriptor)
                 if (
@@ -283,7 +331,9 @@ def route_migration_arguments(
                 raise QualificationRunError("qualification worktree is unsafe")
             migration_tickets.add(ticket)
             pairs.extend(("--ticket", ticket, "--workdir", str(worktree)))
-        return tuple(pairs) if migration_tickets == selected else ()
+        if migration_tickets | terminal_tickets != selected:
+            return (), set()
+        return tuple(pairs), migration_tickets
     except (
         FileNotFoundError, json.JSONDecodeError, OSError, TypeError, UnicodeError,
     ) as error:
@@ -949,7 +999,7 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
                 and controller["active"] == 0
                 and controller["results"] == []
             ):
-                migration_arguments = route_migration_arguments(
+                migration_arguments, migration_tickets = route_migration_arguments(
                     selected, factory_sha,
                 )
                 if migration_arguments:
@@ -960,7 +1010,7 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
                     if code != 0:
                         raise QualificationRunError("route migration preview failed")
                     approval = migration_plan_result(
-                        plan, selected, capacity, factory_sha,
+                        plan, migration_tickets, capacity, factory_sha,
                     )
                     code, migration = invoke(
                         launcher, args.project, "models", phases,
@@ -969,7 +1019,7 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
                     )
                     if code != 0:
                         raise QualificationRunError("route migration failed")
-                    migration_apply_result(migration, plan, selected)
+                    migration_apply_result(migration, plan, migration_tickets)
                     migration_applied = True
                     continue
             break

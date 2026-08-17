@@ -463,6 +463,80 @@ raise SystemExit(code)
         self.assertEqual(value["reason"], "authenticated_wait")
         self.assertEqual(self.called(), ["doctor", "reconcile"])
 
+        self.calls.unlink()
+        partial.unlink()
+        marker = (
+            self.controller_state
+            / f"qualification-terminal-adoption-{'a' * 40}-T-3.json"
+        )
+        marker.write_text(json.dumps({
+            "approved_pr_head": "1" * 40,
+            "candidate_passport_sha256": "2" * 64,
+            "done_sha256": "3" * 64,
+            "factory_sha": "a" * 40,
+            "merge_commit": "4" * 40,
+            "passport_source_factory_sha": "b" * 40,
+            "pr_number": 3,
+            "schema": (
+                "nysa.software-factory.qualification-terminal-adoption/v2"
+            ),
+            "source_current_state": "Approved",
+            "source_factory_sha": "b" * 40,
+            "source_passport_sha256": "5" * 64,
+            "source_publication_state": "merged",
+            "ticket": "T-3",
+        }), encoding="utf-8")
+        marker.chmod(0o600)
+        terminal_plan = copy.deepcopy(plan)
+        terminal_plan["items"] = [
+            item for item in terminal_plan["items"] if item["ticket"] != "T-3"
+        ]
+        terminal_plan["max_workers"] = 2
+        terminal_plan["approval_sha256"] = hashlib.sha256(
+            canonical({
+                key: item for key, item in terminal_plan.items()
+                if key != "approval_sha256"
+            }) + b"\n",
+        ).hexdigest()
+        terminal_journal = copy.deepcopy(journal)
+        terminal_journal["plan"] = terminal_plan
+        terminal_journal["results"].pop("T-3")
+        terminal_journal["record_sha256"] = hashlib.sha256(
+            canonical({
+                key: item for key, item in terminal_journal.items()
+                if key != "record_sha256"
+            }) + b"\n",
+        ).hexdigest()
+        code, value = self.run_scenario({
+            "doctor": self.doctor(),
+            "models:migrate-batch-plan": terminal_plan,
+            "models:migrate-batch": terminal_journal,
+            "reconcile": [
+                self.controller("ok"),
+                self.controller("ok", results=[
+                    {"status": "complete", "ticket": ticket}
+                    for ticket in ("T-1", "T-2", "T-3")
+                ]),
+            ],
+            "qualification": self.report(),
+        })
+        self.assertEqual(code, 0)
+        self.assertEqual(value["status"], "green")
+        self.assertEqual(self.called(), [
+            "doctor", "reconcile", "models:migrate-batch-plan",
+            "models:migrate-batch", "reconcile", "qualification",
+        ])
+
+        self.calls.unlink()
+        marker.unlink()
+        code, value = self.run_scenario({
+            "doctor": self.doctor(),
+            "reconcile": [self.controller("ok")],
+        })
+        self.assertEqual(code, 2)
+        self.assertEqual(value["error"], "qualification claim state is invalid")
+        self.assertEqual(self.called(), ["doctor", "reconcile"])
+
     def test_cohort_and_busy_waits_are_typed_and_single_attempt(self) -> None:
         for controller, reason in (
             (self.controller("waiting_for_target"), "cohort_not_accounted"),

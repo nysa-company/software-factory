@@ -6734,3 +6734,14 @@ Category: Reliability
 The controller captures the output of its idempotent closeout fast-forward.
 Git's ordinary already-current message may not precede the reconcile JSON or
 make a valid closeout retry unreadable to a sealed qualification caller.
+
+## 2026-08-17 — Decision 487: Terminal adoption closes route batches
+
+Category: Reliability
+
+Successor route migration treats one exact owner-only current-candidate
+terminal-adoption marker as an accounted claimless cohort member. The batch
+migrates only the remaining route-blocked claims and validates its plan and
+journal against that subset. A missing, malformed, foreign, or stale marker
+keeps the all-or-none batch closed before model-route mutation; final reduction
+still authenticates the complete terminal adoption proof.
