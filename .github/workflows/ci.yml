@@ -137,15 +137,19 @@ jobs:
         with:
           node-version: 22
           package-manager-cache: false
-      # Pin Python explicitly rather than inheriting the runner image default.
-      # Self-hosted macOS resolves python3 to the system 3.9, which cannot run
-      # the suite's 3.10+ syntax. The upstream installer falls back to the
-      # hosted-image path /Users/runner when AGENT_TOOLSDIRECTORY is unset, so
-      # pass the runner's own tool cache: identical to the default on hosted
-      # runners, and a writable path inside the work directory on self-hosted.
+      # Pin Python explicitly rather than inheriting the runner image default:
+      # self-hosted macOS resolves python3 to the system 3.9, which cannot run
+      # the suite's 3.10+ syntax. The self-hosted group also needs an explicit
+      # tool cache. The upstream installer places Python using
+      # AGENT_TOOLSDIRECTORY and the action then locates it using
+      # RUNNER_TOOL_CACHE, so both must name the same writable directory;
+      # otherwise the installer falls back to the hosted-image path
+      # /Users/runner, which does not exist off GitHub's images. Hosted groups
+      # keep their prewarmed cache.
       - uses: actions/setup-python@v6
         env:
-          AGENT_TOOLSDIRECTORY: ${{ runner.tool_cache }}
+          AGENT_TOOLSDIRECTORY: ${{ matrix.group == 4 && format('{0}/tool', runner.temp) || runner.tool_cache }}
+          RUNNER_TOOL_CACHE: ${{ matrix.group == 4 && format('{0}/tool', runner.temp) || runner.tool_cache }}
         with:
           python-version: "3.12"
       - name: install GNU timeout
