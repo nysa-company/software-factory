@@ -652,7 +652,7 @@ everything the Factory actually enforces lives here.
   and undeclared/test/policy/security/configuration side effects never persist.
 - External products require one full `factory/KIT_PIN`, and the first role launch records a durable ticket `Kit-SHA`; only the in-repository conformance test bed has an implicit runtime pin.
 - Release activation is maintenance-gated, receipt-bound, and journaled. Failed-cutover recovery keeps `MAINTENANCE`, stops product factory services, reconciles any interrupted transaction, restores the protected previous pin/tree, and calls rollback only for a committed active candidate; automatic pruning is intentionally unavailable.
-- The required aggregate `ci` status always reports. Pull requests retain policy and applicable targeted checks; every merged SHA runs complete Linux and macOS verification before it can become a release. Relay generation 4 runs documentation-only release `35c2e10` with healthy generation 3 on `3b63cc7` retained as its exact current-tree rollback baseline; the five-minute outage target and formal rollback RTO remain unaccepted.
+- The required aggregate `ci` status always reports. Pull requests retain policy and applicable Linux checks, including the complete four-group suite for shared diffs, and skip hosted macOS; every merged SHA runs complete Linux and macOS verification before it can become a release. Relay generation 4 runs documentation-only release `35c2e10` with healthy generation 3 on `3b63cc7` retained as its exact current-tree rollback baseline; the five-minute outage target and formal rollback RTO remain unaccepted.
 - A composite Factory successor may batch only independently green, already
   authorized issue commits from isolated branches. It starts from the exact
   protected base, preserves issue/source/candidate commit provenance, passes
@@ -1223,9 +1223,11 @@ Category: System change
 
 Contract 1.3 makes the operator's Awaiting Approval → Approved Linear transition the sole business approval. Trusted bundle and approval attestations bind the latest non-void approved review, later Narrator lineage, bundle blob, exact PR/head, role runs, kit SHA, configured merge method, and newer Linear observation before requesting ordinary protected auto-merge; Done starts exactly at authoritative main and binds the protected approval blobs, exact merged PR head, collision-free configured merge-commit contexts, and projected accounting. Done then owns one retryable closeout commit and exact factory metadata/accounting PR, requesting protected auto-merge without another approval. At concurrency two every attestation requires the matching opaque lease without recording it; only protected-main terminal evidence produces `COMPLETE` and authorizes release. Contract 1.2 remains fail-closed at Review.
 
-## 2026-07-17 — Decision 37: Required CI gets a documentation fast path
+## 2026-07-17 — Decision 37: Required CI gets a documentation fast path (superseded by Decision 488)
 
 Category: Decision
+
+Superseded by Decision 488.
 
 The required workflow remains reporting and fail-closed. Diffs limited to the explicit inert-metadata allowlist skip expensive suites while retaining repository, secret, artifact, and immutability checks; every other change runs Linux. Pull requests add macOS only for shell/platform-sensitive paths, while every non-lightweight merged kit SHA runs both platforms before release and instantiated products run full verification on every `main` push. Commit size and Markdown suffixes are not safety signals; ambiguous comparisons fail closed.
 
@@ -6745,3 +6747,14 @@ migrates only the remaining route-blocked claims and validates its plan and
 journal against that subset. A missing, malformed, foreign, or stale marker
 keeps the all-or-none batch closed before model-route mutation; final reduction
 still authenticates the complete terminal adoption proof.
+
+## 2026-08-17 — Decision 488: Pull requests skip hosted macOS
+
+Category: Decision
+
+Hosted macOS system-Bash groups run only on protected-main pushes so release
+evidence stays bound to Darwin proof without paying for a second macOS matrix
+on every PR. Pull requests keep Linux: mapped leaves stay targeted-or-deferred,
+and shared diffs still run the complete four-group Linux suite before merge.
+The aggregate `ci` context treats skipped macOS as success on pull requests and
+requires macOS success on `main`. Kit install is unchanged.

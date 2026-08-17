@@ -31,12 +31,12 @@ do not reset the gate. This permits an authenticated Planner correction to
 reopen Test-author ownership without rewriting Git history; tests remain
 frozen after the first implementation commit in each epoch.
 
-Every behavioral pull request runs fail-closed targeted-or-deferred selection
-on Linux and macOS system Bash. Mapped leaf changes execute their applicable
-suites. Unknown, shared, mixed, dependency, CI, selector, addition, deletion,
-and rename changes run policy gates and defer complete coverage. Repository
-policy runs once per run in its own `policy` job and gates the aggregate `ci`
-context. Every push to
+Every behavioral pull request runs Linux only. Mapped leaf changes execute
+their applicable suites. Unknown, shared, mixed, dependency, CI, selector,
+addition, deletion, and rename changes run the complete Linux four-group
+suite before merge. Repository policy runs once per run in its own `policy`
+job and gates the aggregate `ci` context. Hosted macOS system-Bash groups do
+not run on pull requests. Every push to
 `main` runs four groups on both platforms, balanced from observed run
 durations, then publishes the three
 stable shard evidence aliases per platform, so release verification remains
@@ -57,8 +57,8 @@ CI before release. Do not put `paths-ignore` on a required workflow; GitHub
 leaves its check pending
 instead of reporting success. Mixed changes, renames from outside the
 allowlist, executable Markdown, missing comparison commits, and classifier
-errors run both platform policy jobs and defer to complete `main`
-verification. Each product owns
+errors run policy plus complete Linux verification on the pull request, then
+complete Linux and macOS verification on `main`. Each product owns
 its instantiated helper and must review any allowlist change against paths
 that can affect its runtime.
 
@@ -148,10 +148,12 @@ sequencing. Contracts through `1.5.0` retain the bound of four; only Contract
 
 - Require a pull request before merging; no direct pushes.
 - Required status checks: `ci` and `test-immutability`, strict (branch up to
-  date). The `ci` context is an aggregate job that succeeds only when all four
-  Linux groups and all four macOS system-Bash groups succeed. The six stable
-  shard aliases record that same complete group result for release evidence; a
-  separate green group or alias is not sufficient.
+  date). On a pull request the `ci` context succeeds when policy and the
+  applicable Linux groups succeed and macOS is skipped. On a push to `main`
+  it succeeds only when all four Linux groups and all four macOS system-Bash
+  groups succeed. The six stable shard aliases record that same complete
+  `main` group result for release evidence; a separate green group or alias
+  is not sufficient.
 - Block force pushes and deletion.
 - Bypass list: **empty**. The release verifier fails closed on any bypass actor,
   including organization admins, because the certified commit must be proven to

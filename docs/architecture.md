@@ -107,9 +107,10 @@ contracts, launchers, roles, CI or selector changes, malformed modes, and empty,
 duplicate, or unknown suite IDs. Only explicitly mapped single leaf components
 can recommend their direct and transitive suites plus CI-scope, immutability,
 and artifact-policy checks. The six audited leaf mappings remain available for
-focused local work. Pull requests run the same targeted-or-deferred selection
-on Linux and macOS: mapped leaf changes execute their suites, while broad work
-runs policy gates and defers complete coverage. Repository policy — baseline,
+focused local work. Pull requests run Linux only: mapped leaf changes execute
+their suites, while broad work runs the complete Linux four-group suite before
+merge. Hosted macOS system-Bash groups run only on pushes to `main`.
+Repository policy — baseline,
 secret scan, and artifact check — runs once per run in its own job and gates
 the aggregate `ci` context rather than repeating inside every platform group.
 Pushes to `main` partition the

@@ -1,5 +1,5 @@
-# Live CI for the factory repository. Pull requests receive targeted/policy
-# proof; protected main receives complete Linux and macOS proof.
+# Live CI for the factory repository. Pull requests receive Linux targeted or
+# complete proof; protected main receives complete Linux and macOS proof.
 # Managed local verification: bash ci/test-all.sh --changed-or-defer origin/main HEAD
 name: ci
 
@@ -109,7 +109,7 @@ jobs:
   macos-bash-3:
     name: macos-bash-3-group-${{ matrix.group }}
     needs: scope
-    if: needs.scope.outputs.behavioral == 'true'
+    if: github.event_name == 'push'
     runs-on: macos-14
     strategy:
       fail-fast: false
@@ -134,13 +134,7 @@ jobs:
               exit 1
             fi
           fi
-      - name: targeted or deferred pull-request verification under system Bash
-        if: github.event_name == 'pull_request' && needs.scope.outputs.full != 'true'
-        env:
-          BASE_SHA: ${{ needs.scope.outputs.base }}
-        run: CI_SUMMARY_FILE="$GITHUB_STEP_SUMMARY" /bin/bash ci/test-all.sh --changed-or-defer "$BASE_SHA" "$GITHUB_SHA"
       - name: complete suite under system Bash
-        if: github.event_name == 'push' || (github.event_name == 'pull_request' && needs.scope.outputs.full == 'true')
         env:
           CI_FORCE_FULL: "1"
         run: CI_SUMMARY_FILE="$GITHUB_STEP_SUMMARY" /bin/bash ci/test-all.sh --group "${{ matrix.group }}"
@@ -181,7 +175,7 @@ jobs:
           test "$SCOPE_RESULT" = success
           test "$GROUP_RESULT" = success
 
-  # Keep the required context stable while all eight platform groups execute.
+  # Keep the required context stable. Pull requests skip macOS; main requires it.
   ci:
     if: always()
     needs: [scope, policy, linux, macos-bash-3]
@@ -189,19 +183,19 @@ jobs:
     steps:
       - name: require applicable verification
         env:
+          EVENT_NAME: ${{ github.event_name }}
           SCOPE_RESULT: ${{ needs.scope.result }}
           POLICY_RESULT: ${{ needs.policy.result }}
-          BEHAVIORAL: ${{ needs.scope.outputs.behavioral }}
           LINUX_RESULT: ${{ needs.linux.result }}
           MACOS_RESULT: ${{ needs.macos-bash-3.result }}
         run: |
           test "$SCOPE_RESULT" = success
           test "$POLICY_RESULT" = success
           test "$LINUX_RESULT" = success
-          if test "$BEHAVIORAL" = false; then
-            test "$MACOS_RESULT" = skipped
-          else
+          if test "$EVENT_NAME" = push; then
             test "$MACOS_RESULT" = success
+          else
+            test "$MACOS_RESULT" = skipped
           fi
 
   test-immutability:
