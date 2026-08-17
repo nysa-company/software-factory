@@ -31,6 +31,9 @@ from narrator_evidence import (  # noqa: E402
     authenticated_narrator_parent,
     trusted_narrator_evidence_paths,
 )
+from legacy_approval_audit import (  # noqa: E402
+    trusted_legacy_approval_audit_paths,
+)
 import operator_receipt  # noqa: E402
 from approval_evidence import (  # noqa: E402
     ApprovalEvidenceError,
@@ -3237,6 +3240,15 @@ def bundle(args, product, workdir, repo, prefix, remote, kit_sha):
                 os.environ.get("FACTORY_RELEASE_CONTRACT_VERSION", ""),
                 head,
             ),
+        )
+    )
+    refresh_metadata = (
+        {f"factory/attestations/{args.ticket}/refresh.json"}
+        if preserved_base else set()
+    )
+    allowed.update(
+        trusted_legacy_approval_audit_paths(
+            workdir, args.ticket, head, changed, refresh_metadata,
         )
     )
     if preserved_base:
