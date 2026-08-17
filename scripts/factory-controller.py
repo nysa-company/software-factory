@@ -4977,7 +4977,7 @@ class Controller:
                 "Awaiting Approval", "Approved",
             }
             and passport.get("publication_state") != "merged"
-            and receipt.get("consumed") is False
+            and (prior or receipt.get("consumed") is False)
             and receipt.get("role") is None
             and (
                 (
@@ -5099,7 +5099,6 @@ class Controller:
                 or receipt.get("route_plan_sha256")
                 != first["from_route_plan_sha256"]
                 or not DIGEST.fullmatch(receipt.get("lease_sha256", ""))
-                or receipt.get("consumed") is not False
                 or receipt.get("role") is not None
                 or receipt.get("stage") not in BUNDLE_REFRESH_PRIOR_STAGES
             ):

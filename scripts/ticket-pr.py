@@ -510,6 +510,14 @@ def validate_review_lineage(product: Path, workdir: Path, ticket: str, head: str
         kit_shas = re.findall(r"^Kit-SHA:\s*([0-9a-f]{40})\s*$", ticket_text, re.MULTILINE)
         if len(kit_shas) != 1:
             raise Refusal("approval continuation Kit-SHA is missing or ambiguous")
+        continuation_reviewed = reviewed
+        if refresh_metadata:
+            try:
+                continuation_reviewed = json.loads(
+                    git(workdir, "show", f"{head}:{approval_path}")
+                ).get("reviewed_sha", "")
+            except (AttributeError, json.JSONDecodeError):
+                continuation_reviewed = ""
         try:
             trusted_metadata.update(trusted_approval_continuation_paths(
                 workdir,
@@ -518,7 +526,7 @@ def validate_review_lineage(product: Path, workdir: Path, ticket: str, head: str
                 ticket_branch_prefix(product / "factory") + ticket,
                 kit_shas[0],
                 project_auto_merge_method(product / "factory"),
-                reviewed,
+                continuation_reviewed,
                 head,
                 changed,
             ))

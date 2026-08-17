@@ -54,9 +54,19 @@ def trusted_legacy_approval_audit_paths(
         if not isinstance(audit, dict):
             return set()
         bundle_path = f"factory/attestations/{ticket}/bundle.json"
+        payload = audit.get("payload")
+        if not isinstance(payload, dict):
+            return set()
+        bundle_blob = payload.get("bundle_attestation_blob", "")
+        if not re.fullmatch(r"[0-9a-f]{40}", bundle_blob):
+            return set()
         try:
-            bundle_blob = _git(workdir, "rev-parse", f"{head}:{bundle_path}")
+            current_bundle_blob = _git(
+                workdir, "rev-parse", f"{head}:{bundle_path}"
+            )
         except ValueError:
+            current_bundle_blob = ""
+        if current_bundle_blob != bundle_blob:
             refresh_path = f"factory/attestations/{ticket}/refresh.json"
             if refresh_path not in refresh_metadata:
                 return set()
@@ -65,9 +75,8 @@ def trusted_legacy_approval_audit_paths(
             )
             if not isinstance(refresh, dict):
                 return set()
-            bundle_blob = refresh.get("prior_bundle_blob", "")
             if (
-                not re.fullmatch(r"[0-9a-f]{40}", bundle_blob)
+                refresh.get("prior_bundle_blob") != bundle_blob
                 or _git(
                     workdir, "rev-parse",
                     f"{refresh.get('old_head', '')}:{bundle_path}",
