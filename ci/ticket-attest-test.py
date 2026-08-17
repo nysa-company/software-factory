@@ -10,6 +10,7 @@ import hmac
 import importlib.util
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -456,14 +457,33 @@ Merge-Policy: manual
         (self.controller / "passport.key").chmod(0o600)
         passports = self.controller / "passports"
         passports.mkdir(mode=0o700, exist_ok=True)
-        signed = module.authenticate({
-            "branch": "ticket/T-700",
-            "completed_role_evidence": [{
+        completed = []
+        for role, receipt in (("reviewer", "1" * 64), ("narrator", "2" * 64)):
+            path = self.product / f"factory/runs/{role}-1.meta"
+            raw = re.sub(
+                r"(?m)^role_head_before=[0-9a-f]{40}$",
+                f"role_head_before={parent if role == 'narrator' else self.reviewed}",
+                path.read_text(),
+            )
+            raw += (
+                f"contract_version=1.8.0\noutput_sha256={'3' * 64}\n"
+                f"transition_receipt_sha256={receipt}\n"
+            )
+            path.write_text(raw)
+            value = TICKET_ATTEST.meta(path)
+            completed.append({
                 "contract_version": "1.8.0",
                 "factory_sha": KIT_SHA,
-                "head_before": parent,
-                "role": "narrator",
-            }],
+                "head_before": value["role_head_before"],
+                "manifest_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                "output_sha256": "3" * 64,
+                "role": role,
+                "run_id": f"{role}-1",
+                "transition_receipt_sha256": receipt,
+            })
+        signed = module.authenticate({
+            "branch": "ticket/T-700",
+            "completed_role_evidence": completed,
             "contract_version": "1.8.0",
             "factory_release_history": [{
                 "contract_version": "1.8.0", "factory_sha": KIT_SHA,
@@ -822,7 +842,6 @@ else:
         command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
         head = self.head()
 
-        self.write_narrator_passport(head, "0" * 40)
         result = self.attest("bundle")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("changed after", result.stderr)
@@ -1438,6 +1457,167 @@ else:
         command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
         self.bundle()
         self.assertIn("already based", self.attest("refresh").stderr)
+
+    def test_refresh_counts_authenticated_corrected_reviewer_completion(self):
+        ticket = self.product / "factory/tickets/T-700.md"
+        ticket.write_text(
+            ticket.read_text()
+            + "\nOPERATOR NOTE: reviewer run 1 void — duplicate\n",
+            encoding="utf-8",
+        )
+        self.commit("void superseded reviewer")
+        command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
+        old_head = self.head()
+
+        completed = []
+        for role, receipt in (("reviewer", "1" * 64), ("narrator", "2" * 64)):
+            manifest = self.product / f"factory/runs/{role}-1.meta"
+            manifest.write_text(
+                manifest.read_text()
+                + f"contract_version=1.8.0\noutput_sha256={'3' * 64}\n"
+                + f"transition_receipt_sha256={receipt}\n",
+                encoding="utf-8",
+            )
+            completed.append({
+                "contract_version": "1.8.0",
+                "factory_sha": KIT_SHA,
+                "head_before": self.reviewed,
+                "manifest_sha256": hashlib.sha256(manifest.read_bytes()).hexdigest(),
+                "output_sha256": "3" * 64,
+                "role": role,
+                "run_id": f"{role}-1",
+                "transition_receipt_sha256": receipt,
+            })
+        corrected_receipt = "4" * 64
+        corrected_factory = "e" * 40
+        completed.append({
+            "contract_version": "1.8.0",
+            "factory_sha": corrected_factory,
+            "head_before": self.reviewed,
+            "manifest_sha256": "5" * 64,
+            "output_sha256": "6" * 64,
+            "role": "reviewer",
+            "run_id": "reviewer-corrected",
+            "transition_receipt_sha256": corrected_receipt,
+        })
+        correction = {
+            "failed_factory_sha": corrected_factory,
+            "issue": "https://github.com/nysa-company/software-factory/issues/390",
+            "output_head_sha": old_head,
+            "progress_events": 1,
+            "progress_journal_sha256": "7" * 64,
+            "receipt_parent_file_sha256": "8" * 64,
+            "recovery_factory_sha": KIT_SHA,
+            "role": "reviewer",
+            "run_id": "reviewer-corrected",
+            "schema": "nysa.software-factory.completed-role-correction/v2",
+            "transition_receipt_sha256": corrected_receipt,
+        }
+        module = TICKET_ATTEST.passport_module()
+        secret = b"p" * 32
+        (self.controller / "passport.key").write_bytes(secret)
+        (self.controller / "passport.key").chmod(0o600)
+        passports = self.controller / "passports"
+        passports.mkdir(mode=0o700)
+        passport_body = {
+            "branch": "ticket/T-700",
+            "completed_role_corrections": [correction],
+            "completed_role_evidence": completed,
+            "contract_version": "1.8.0",
+            "factory_release_history": [
+                {"contract_version": "1.8.0", "factory_sha": corrected_factory},
+                {"contract_version": "1.8.0", "factory_sha": KIT_SHA},
+            ],
+            "factory_sha": KIT_SHA,
+            "head_sha": old_head,
+            "migration_history": [],
+            "project": "example-product",
+            "schema": "nysa.software-factory.ticket-passport/v1",
+            "ticket": "T-700",
+        }
+        passport = module.authenticate(passport_body, secret)
+        passport_path = passports / "T-700.json"
+        passport_path.write_bytes(module.canonical(passport))
+        passport_path.chmod(0o600)
+        without_correction = module.authenticate({
+            **passport_body, "completed_role_corrections": [],
+        }, secret)
+        passport_path.write_bytes(module.canonical(without_correction))
+        with (
+            patch.dict(os.environ, self.env, clear=True),
+            self.assertRaisesRegex(
+                TICKET_ATTEST.Refusal,
+                "authenticated completed-role artifact is missing",
+            ),
+        ):
+            TICKET_ATTEST.completed_role_runs(
+                self.product, "T-700",
+                TICKET_ATTEST.successful_runs(
+                    self.product, self.product, "T-700",
+                ),
+            )
+        passport_path.write_bytes(module.canonical(passport))
+
+        updater = self.temp / "corrected-review-main-update"
+        command("git", "clone", "-q", "--branch", "main", str(self.remote), str(updater))
+        (updater / "factory/QUALIFICATION.json").write_text(
+            '{"generation": 2}\n', encoding="utf-8",
+        )
+        command("git", "add", ".", cwd=updater)
+        command(
+            "git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+            "commit", "-qm", "advance protected control", cwd=updater,
+        )
+        command("git", "push", "-q", "origin", "main", cwd=updater)
+        self.update_state(merge_state="UNKNOWN")
+
+        result = self.attest("refresh")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        receipt = json.loads(
+            (self.product / "factory/attestations/T-700/refresh.json").read_text()
+        )
+        self.assertEqual(receipt["prior_reviewer_runs"], 1)
+        self.assertEqual(receipt["prior_approve_verdicts"], 1)
+        self.assertEqual(receipt["prior_narrator_runs"], 1)
+
+        refreshed = self.head()
+        prior = self.product / "factory/runs/narrator-1.meta"
+        current = self.product / "factory/runs/narrator-2.meta"
+        current.write_text(
+            prior.read_text()
+            .replace("run_id=narrator-1", "run_id=narrator-2")
+            .replace(f"role_head_before={self.reviewed}", f"role_head_before={refreshed}")
+            .replace("terminal_at=2026-07-17T12:02:00Z", "terminal_at=2026-07-17T14:02:00Z")
+            .replace(f"transition_receipt_sha256={'2' * 64}",
+                     f"transition_receipt_sha256={'9' * 64}"),
+            encoding="utf-8",
+        )
+        ledger = self.product / "factory/runtime-ledger.csv"
+        ledger.write_text(
+            ledger.read_text()
+            + "2026-07-17,14:02:00,T-700,narrator,mock,1,1,0.1,0,narrator-2,"
+            "anthropic,mock,pinned_route_plan,reported,1\n",
+            encoding="utf-8",
+        )
+        completed.append({
+            "contract_version": "1.8.0",
+            "factory_sha": KIT_SHA,
+            "head_before": refreshed,
+            "manifest_sha256": hashlib.sha256(current.read_bytes()).hexdigest(),
+            "output_sha256": "3" * 64,
+            "role": "narrator",
+            "run_id": "narrator-2",
+            "transition_receipt_sha256": "9" * 64,
+        })
+        passport_body.update(
+            completed_role_evidence=completed,
+            head_sha=refreshed,
+        )
+        passport_path.write_bytes(module.canonical(
+            module.authenticate(passport_body, secret)
+        ))
+        result = self.attest("bundle")
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_receipt_only_refresh_replay_accepts_missing_rows(self):
         self.assert_receipt_only_refresh_replay("")

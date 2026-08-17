@@ -1457,6 +1457,11 @@ reruns Reviewer and downstream Narrator, while a missing or orphaned Narrator
 reruns only Narrator. Every application, test, contract, CI, configuration,
 rename, type, deletion, and unknown-path change invalidates review. A malformed
 or stale refresh receipt refuses sequencing.
+Refresh and bundle attestation derive that effective Reviewer/Narrator order
+from the same authenticated passport completed-role sequence as the state
+machine, including exact signed completion corrections. Raw successful-run
+manifests remain the independent route and accounting provenance; the attestor
+does not fabricate a missing corrected runtime artifact.
 The early ticket-PR boundary applies that same decision instead of comparing
 only commit SHAs. It accepts retained control paths only under Contract 1.8,
 an exact receipt-authorized stage, a committed direct-after-merge refresh
