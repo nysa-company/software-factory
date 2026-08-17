@@ -20109,6 +20109,8 @@ class FactoryControllerTest(unittest.TestCase):
 
         def run(command, **_kwargs):
             commands.append(command)
+            if "merge" in command:
+                self.assertTrue(_kwargs.get("capture_output"))
             output = "chore/t110-closeout\n" if "symbolic-ref" in command else ""
             return CONTROL.subprocess.CompletedProcess(command, 0, output, "")
 

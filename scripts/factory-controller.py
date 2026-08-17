@@ -11869,7 +11869,7 @@ class Controller:
                             "git", "-C", str(worktree), "merge", "--ff-only",
                             "origin/main",
                         ],
-                        check=True, timeout=120,
+                        check=True, capture_output=True, timeout=120,
                     )
         self.terminal_request(claim, branch, create=True)
         try:

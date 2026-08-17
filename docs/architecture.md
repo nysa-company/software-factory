@@ -494,6 +494,8 @@ newline-terminated canonical JSON document bytes emitted by their writers.
 When a refresh retires an older approval, continuation selects the unique
 approval addition whose blob is still present at the authenticated head;
 older deleted additions provide no authority.
+Controller-owned Git retry output is captured so the reconcile stdout remains
+one canonical JSON document even when a closeout branch is already current.
 The controller does not accept an alternate encoding or re-stamp either
 artifact.
 The role runner retains the validated project only in a non-exported host
