@@ -8570,15 +8570,23 @@ class FactoryControllerTest(unittest.TestCase):
         current_lease = "c" * 64
         cell = self.root / "parked/T-110"
         cell.mkdir(parents=True)
-        self.migrated_bundle_passport(
+        passport, _passport_file = self.migrated_bundle_passport(
             "T-110", prior, intermediates=(intermediate,),
+        )
+        passport = PASSPORT.authenticate({
+            **{
+                key: value for key, value in passport.items()
+                if key not in {"authentication_sha256", "passport_sha256"}
+            },
+            "current_state": "Approved",
+            "publication_state": "merge-pending",
+        }, (self.state / "passport.key").read_bytes())
+        PASSPORT.write_atomic(
+            self.state / "passports/T-110.json", passport,
         )
         stale = self.stale_release_receipt(
             "T-110", prior, old_lease,
-            stage=(
-                "AWAIT-OPERATOR operator approval observed; trusted approval "
-                "attestation is required"
-            ),
+            stage="AWAIT-MERGE approval attested; protected auto-merge request pending",
         )
         stale["consumed"] = True
         stale["consumed_at_epoch"] = 1
@@ -8625,7 +8633,10 @@ class FactoryControllerTest(unittest.TestCase):
                 parent_digest=stale["receipt_sha256"],
                 passport_sha256=passport_file,
                 route_plan_sha256="d" * 64,
-                stage="AWAIT-OPERATOR operator approval observed",
+                stage=(
+                    "AWAIT-MERGE approval attested; protected auto-merge request "
+                    "pending"
+                ),
             )
             value.pop("consumed_at_epoch", None)
             value.pop("receipt_sha256")
@@ -8647,6 +8658,7 @@ class FactoryControllerTest(unittest.TestCase):
         current = CONTROL.read(self.state / "T-110.json")
 
         self.assertEqual(current["receipt_sha256"], refreshed)
+        self.assertEqual(current["stage"], stale["stage"])
         self.assertEqual(current["parent_digest"], stale["receipt_sha256"])
         self.assertEqual(
             current["lease_sha256"],
@@ -8861,10 +8873,18 @@ class FactoryControllerTest(unittest.TestCase):
         controller = CONTROL.Controller(self.args)
         controller.role_active = lambda _claim: False
 
-        for ticket in ("T-110", "T-111", "T-112"):
+        for ticket in ("T-110", "T-111", "T-112", "T-113"):
             (self.root / f"parked/{ticket}").mkdir(parents=True)
             _, current_file = self.migrated_bundle_passport(ticket, prior)
-            stale = self.stale_release_receipt(ticket, prior, lease)
+            stale = self.stale_release_receipt(
+                ticket, prior, lease,
+                stage=(
+                    "AWAIT-MERGE approval attested; protected auto-merge request "
+                    "pending"
+                    if ticket == "T-113" else
+                    "AWAIT-OPERATOR bundle attested; await operator approval"
+                ),
+            )
             claim = {
                 "branch": f"ticket/{ticket}", "lease": lease,
                 "priority": "normal", "publication_lease": "",
@@ -8883,7 +8903,7 @@ class FactoryControllerTest(unittest.TestCase):
                     })
                 ).hexdigest()
                 CONTROL.write(self.state / f"{ticket}.json", stale)
-            else:
+            elif ticket != "T-113":
                 parent = stale["receipt_sha256"]
                 stale.update(
                     factory_sha=self.release.name,

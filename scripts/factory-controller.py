@@ -104,6 +104,9 @@ BUNDLE_REFRESH_PRIOR_STAGES = frozenset({
     "AWAIT-OPERATOR bundle attested; await operator approval",
     "AWAIT-OPERATOR operator approval observed; trusted approval attestation is required",
 })
+BUNDLE_REFRESH_APPROVED_STAGE = (
+    "AWAIT-MERGE approval attested; protected auto-merge request pending"
+)
 PREFLIGHT_CORRECTION_FIELDS = (
     "Product-Decisions", "Builder ownership", "Fixture-Seams",
     "Authentication-Seams",
@@ -4982,7 +4985,11 @@ class Controller:
             and (
                 (
                     prior
-                    and stage in BUNDLE_REFRESH_PRIOR_STAGES
+                    and (
+                        stage in BUNDLE_REFRESH_PRIOR_STAGES
+                        or stage == BUNDLE_REFRESH_APPROVED_STAGE
+                        and passport.get("current_state") == "Approved"
+                    )
                     and receipt.get("factory_sha")
                     == marker["from_factory_sha"]
                     and receipt.get("passport_sha256")
@@ -5100,7 +5107,11 @@ class Controller:
                 != first["from_route_plan_sha256"]
                 or not DIGEST.fullmatch(receipt.get("lease_sha256", ""))
                 or receipt.get("role") is not None
-                or receipt.get("stage") not in BUNDLE_REFRESH_PRIOR_STAGES
+                or not (
+                    receipt.get("stage") in BUNDLE_REFRESH_PRIOR_STAGES
+                    or receipt.get("stage") == BUNDLE_REFRESH_APPROVED_STAGE
+                    and passport.get("current_state") == "Approved"
+                )
             ):
                 raise ControllerError(
                     "bundle-refresh prior receipt is invalid"
