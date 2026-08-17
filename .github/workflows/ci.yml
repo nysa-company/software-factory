@@ -110,7 +110,7 @@ jobs:
     name: macos-bash-3-group-${{ matrix.group }}
     needs: scope
     if: needs.scope.outputs.behavioral == 'true'
-    runs-on: macos-14
+    runs-on: [self-hosted, macOS, ARM64]
     strategy:
       fail-fast: false
       matrix:
