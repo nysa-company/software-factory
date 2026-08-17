@@ -92,6 +92,8 @@ class TicketPrTest(unittest.TestCase):
         self.ledger = factory / "runtime-ledger.csv"
         self.model_state = self.root / "model-state"
         self.model_state.mkdir(mode=0o700)
+        self.controller_state = self.root / "controller-state"
+        self.controller_state.mkdir(mode=0o700)
         self.catalog, self.routes, _, self.profiles = ROUTER.load_policy()
         self.readiness = {
             route_id: {
@@ -343,6 +345,7 @@ else:
                 "FACTORY_CERTIFIED_PRODUCT_ORIGIN": str(self.remote),
                 "FACTORY_DISPATCH_LEASE_ID": lease_id,
                 "FACTORY_MODEL_STATE_ROOT": str(self.model_state),
+                "FACTORY_CONTROLLER_STATE_DIR": str(self.controller_state),
                 "FACTORY_PROJECT": "example-product",
                 "FAKE_PR_STATE": str(self.state),
                 "FAKE_PR_TRACE": str(self.trace),
@@ -532,6 +535,77 @@ else:
             ["git", "-C", self.product, "push", "-q", "origin", "ticket/T-100"],
             check=True,
         )
+
+    def write_narrator_passport(
+        self, head, parent, *, current_factory=KIT_SHA, valid_lineage=True,
+    ):
+        module_path = ROOT / "scripts/ticket-passport.py"
+        spec = importlib.util.spec_from_file_location(
+            "ticket_pr_test_passport", module_path,
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        secret = b"p" * 32
+        (self.controller_state / "passport.key").write_bytes(secret)
+        (self.controller_state / "passport.key").chmod(0o600)
+        passports = self.controller_state / "passports"
+        passports.mkdir(mode=0o700, exist_ok=True)
+        history = [{"contract_version": "1.8.0", "factory_sha": KIT_SHA}]
+        migrations = []
+        if current_factory != KIT_SHA:
+            history.append({
+                "contract_version": "1.8.0", "factory_sha": current_factory,
+            })
+            migrations.append({
+                "from_factory_sha": KIT_SHA if valid_lineage else "f" * 40,
+                "from_head_sha": parent,
+                "from_passport_file_sha256": "1" * 64,
+                "from_passport_sha256": "2" * 64,
+                "from_protected_base_sha": "3" * 40,
+                "from_route_plan_sha256": "4" * 64,
+                "schema": "nysa.software-factory.ticket-passport-migration/v2",
+                "to_factory_sha": current_factory,
+                "to_head_sha": head,
+                "to_protected_base_sha": "5" * 40,
+                "to_route_plan_sha256": "6" * 64,
+            })
+        signed = module.authenticate({
+            "branch": "ticket/T-100",
+            "completed_role_evidence": [{
+                "contract_version": "1.8.0",
+                "factory_sha": KIT_SHA,
+                "head_before": parent,
+                "role": "narrator",
+            }],
+            "contract_version": "1.8.0",
+            "factory_release_history": history,
+            "factory_sha": current_factory,
+            "head_sha": head,
+            "migration_history": migrations,
+            "project": "example-product",
+            "schema": "nysa.software-factory.ticket-passport/v1",
+            "ticket": "T-100",
+        }, secret)
+        path = passports / "T-100.json"
+        path.write_bytes(module.canonical(signed))
+        path.chmod(0o600)
+
+    def test_authenticated_narrator_parent_follows_successor_release(self):
+        parent = subprocess.run(
+            ["git", "-C", self.product, "rev-parse", "HEAD"],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+        current = "c" * 40
+        self.write_narrator_passport(parent, parent, current_factory=current)
+        arguments = (
+            self.controller_state, "T-100", "example-product", "ticket/T-100",
+            current, "1.8.0", parent,
+        )
+        self.assertEqual(TICKET_PR.authenticated_narrator_parent(*arguments), parent)
+        self.write_narrator_passport(
+            parent, parent, current_factory=current, valid_lineage=False,
+        )
+        self.assertEqual(TICKET_PR.authenticated_narrator_parent(*arguments), "")
 
     def prepare_post_review_evidence(self, mode="valid"):
         bundle = self.product / "factory/tickets/T-100-bundle.md"
@@ -1051,6 +1125,40 @@ else:
         self.assertEqual(recovered["boundary"], "narrator")
         self.assertEqual(recovered["status"], "ready")
 
+    def test_narrator_accepts_only_exact_legacy_approval_audit(self):
+        self.prepare_narrator()
+        attestation = self.product / "factory/attestations/T-100/bundle.json"
+        attestation.parent.mkdir(parents=True)
+        attestation.write_text('{"schema":"bundle"}\n')
+        self.commit_and_push("attest bundle")
+        bundle_blob = subprocess.run(
+            ["git", "-C", self.product, "hash-object", attestation],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+        receipt = TICKET_PR.operator_receipt.issue(
+            self.controller_state, "T-100", "approve",
+            {"bundle_attestation_blob": bundle_blob},
+        )
+        audit = {key: value for key, value in receipt.items() if key != "nonce"}
+        audit["audit"] = "no-authority"
+        audit_path = self.product / "factory/receipts/T-100/approve-1.json"
+        audit_path.parent.mkdir(parents=True)
+        audit_path.write_text(json.dumps(audit, indent=2, sort_keys=True) + "\n")
+        self.commit_and_push("record legacy approval audit")
+
+        self.assertEqual(self.command()["status"], "ready")
+        TICKET_PR.operator_receipt.verify_consume_exact(
+            self.controller_state, "T-100", "approve",
+            receipt["receipt_sha256"], {"bundle_attestation_blob": bundle_blob},
+        )
+        self.assertEqual(self.command()["status"], "ready")
+
+        audit["receipt_sha256"] = "0" * 64
+        audit_path.write_text(json.dumps(audit, indent=2, sort_keys=True) + "\n")
+        self.commit_and_push("tamper legacy approval audit")
+        refused = self.command(expected=2)
+        self.assertIn("implementation changed", refused["error"])
+
     def test_publication_accepts_referenced_current_ticket_png_evidence(self):
         self.prepare_post_review_evidence()
         ready = self.publication_command()
@@ -1066,6 +1174,59 @@ else:
         self.prepare_post_review_evidence("limit")
         ready = self.publication_command()
         self.assertEqual(ready["status"], "ready")
+
+    def test_publication_retains_only_unchanged_authenticated_narrator_png(self):
+        self.prepare_narrator()
+        bundle = self.product / "factory/tickets/T-100-bundle.md"
+        evidence = self.product / "factory/tickets/T-100-evidence"
+        evidence.mkdir()
+        retained = evidence / "retained.png"
+        retained.write_bytes(PNG)
+        bundle.write_text("![Retained](T-100-evidence/retained.png)\n")
+        self.commit_and_push("record prior narrator bundle")
+        parent = subprocess.run(
+            ["git", "-C", self.product, "rev-parse", "HEAD"],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+
+        (evidence / "current.png").write_bytes(PNG)
+        bundle.write_text("![Current](T-100-evidence/current.png)\n")
+        self.commit_and_push("replace narrator bundle")
+        ticket = self.product / "factory/tickets/T-100.md"
+        ticket.write_text(ticket.read_text() + "Publication evidence refreshed.\n")
+        self.commit_and_push("record later factory metadata")
+        head = subprocess.run(
+            ["git", "-C", self.product, "rev-parse", "HEAD"],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+
+        refused = self.publication_command(expected=2)
+        self.assertIn("implementation changed", refused["error"])
+        self.write_narrator_passport(head, parent)
+        self.assertEqual(self.publication_command()["status"], "ready")
+
+        self.write_narrator_passport(head, "0" * 40)
+        refused = self.publication_command(expected=2)
+        self.assertIn("implementation changed", refused["error"])
+
+        retained.write_bytes(png_with_text("changed"))
+        subprocess.run(["git", "-C", self.product, "add", str(retained)], check=True)
+        subprocess.run(
+            ["git", "-C", self.product, "commit", "--amend", "--no-edit", "-q"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", self.product, "push", "-q", "--force-with-lease",
+             "origin", "ticket/T-100"],
+            check=True,
+        )
+        changed_head = subprocess.run(
+            ["git", "-C", self.product, "rev-parse", "HEAD"],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+        self.write_narrator_passport(changed_head, parent)
+        refused = self.publication_command(expected=2)
+        self.assertIn("implementation changed", refused["error"])
 
     def test_publication_accepts_exact_factory_approval_continuation(self):
         self.prepare_approval_continuation()

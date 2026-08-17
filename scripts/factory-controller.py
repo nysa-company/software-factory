@@ -4826,10 +4826,9 @@ class Controller:
             and not self.protected_base_current(claim, passport.get("head_sha", ""))
         )
 
-    @staticmethod
     def bundle_refresh_migration_suffix(
-        passport: dict[str, Any], source_factory: str,
-        source_passport_file: str,
+        self, claim: dict[str, Any], passport: dict[str, Any],
+        source_factory: str, source_passport_file: str,
     ) -> list[dict[str, Any]] | None:
         migrations = passport.get("migration_history")
         head = passport.get("head_sha", "")
@@ -4866,7 +4865,13 @@ class Controller:
             bool(release_edges)
             and all(
                 valid_v2_migration(item)
-                and item["from_factory_sha"] != item["to_factory_sha"]
+                and (
+                    item["from_factory_sha"] != item["to_factory_sha"]
+                    or self.exact_route_migration_commit(
+                        claim, item["from_head_sha"], item["to_head_sha"],
+                        migration=item,
+                    )
+                )
                 for item in release_edges
             )
             and valid_v2_migration(final)
@@ -4922,7 +4927,7 @@ class Controller:
             return False
         suffix = (
             self.bundle_refresh_migration_suffix(
-                passport, marker.get("from_factory_sha", ""),
+                claim, passport, marker.get("from_factory_sha", ""),
                 marker.get("from_passport_file_sha256", ""),
             )
             if passport is not None else None
@@ -5033,7 +5038,7 @@ class Controller:
             source_passport_file = receipt.get("passport_sha256", "")
         suffix = (
             self.bundle_refresh_migration_suffix(
-                passport, source_factory, source_passport_file,
+                claim, passport, source_factory, source_passport_file,
             )
             if passport is not None else None
         )
@@ -5933,6 +5938,99 @@ class Controller:
                 else "interrupted_claim_recovered",
                 claim["ticket"],
             )
+
+    def prior_provider_failure_successor(
+        self, claim: dict[str, Any],
+    ) -> bool:
+        if (
+            os.environ.get("FACTORY_KIT_TRUST_SCOPE")
+            != "qualification-candidate"
+            or os.environ.get("FACTORY_QUALIFICATION_MODE") != "isolated"
+            or not self.qualification
+            or self.qualification.get("mode") != "successor"
+            or claim["ticket"] not in self.prior_transition_tickets
+            or claim.get("status") != "running"
+            or claim.get("role") not in {
+                "planner", "spec-linter", "test-author", "builder",
+                "reviewer", "narrator",
+            }
+            or not DIGEST.fullmatch(claim.get("receipt", ""))
+            or not DIGEST.fullmatch(claim.get("lease", ""))
+            or claim.get("lease_released") is True
+            or claim.get("parked") is True
+            or claim.get("publication_lease")
+            or self.role_active(claim)
+        ):
+            return False
+        try:
+            receipt = self.transition_receipt(
+                claim, allow_prior=True, record=False,
+            )
+            passport = self.authenticated_operator_passport(claim["ticket"])
+            terminal = self.terminal_for_receipt(
+                claim["ticket"], claim["receipt"],
+            )
+            clean = subprocess.run(
+                [
+                    "git", "-C", claim["worktree"], "status",
+                    "--porcelain=v1", "-z",
+                ],
+                text=True, capture_output=True, check=True, timeout=120,
+            ).stdout
+        except (
+            ControllerError, json.JSONDecodeError, OSError,
+            subprocess.SubprocessError, UnicodeError,
+        ):
+            return False
+        migrations = passport.get("migration_history") if passport else None
+        starts = [
+            edge for edge in migrations or []
+            if valid_v2_migration(edge)
+            and edge["from_factory_sha"] == receipt.get("factory_sha")
+            and edge["from_head_sha"] == receipt.get("head_sha")
+            and edge["from_passport_file_sha256"]
+            == receipt.get("passport_sha256")
+            and edge["from_route_plan_sha256"]
+            == receipt.get("route_plan_sha256")
+        ] if receipt is not None and isinstance(migrations, list) else []
+        role = claim["role"]
+        if (
+            receipt is None
+            or passport is None
+            or terminal is None
+            or len(starts) != 1
+            or receipt.get("receipt_sha256") != claim["receipt"]
+            or receipt.get("factory_sha") == self.release_path.name
+            or receipt.get("stage") != f"RUN {role}"
+            or receipt.get("role") != role
+            or receipt.get("consumed") is not True
+            or terminal.get("kit_sha") != receipt.get("factory_sha")
+            or terminal.get("role") != role
+            or terminal.get("role_head_before") != receipt.get("head_sha")
+            or terminal.get("transition_receipt_sha256") != claim["receipt"]
+            or terminal.get("role_exit") != "provider_failed"
+            or terminal.get("task_submitted") != "1"
+            or not terminal.get("route_id", "").startswith("cursor-")
+            or passport.get("ticket") != claim["ticket"]
+            or passport.get("branch") != claim["branch"]
+            or passport.get("factory_sha") != self.release_path.name
+            or passport.get("current_state") not in INFLIGHT_STATES
+            or passport.get("publication_state") == "merged"
+            or bool(clean)
+            or not self.ticket_release_current(claim)
+            or not self.route_migrated_failed_role(
+                claim, terminal, passport,
+            )
+        ):
+            return False
+        return True
+
+    def readmit_prior_provider_failures(
+        self, claims: list[dict[str, Any]],
+    ) -> None:
+        for claim in claims:
+            if self.prior_provider_failure_successor(claim):
+                self.prior_transition_tickets.discard(claim["ticket"])
 
     def retire_refusal_readmission_attempt(
         self, claim: dict[str, Any], path: Path,
@@ -9646,6 +9744,7 @@ class Controller:
 
     def exact_route_migration_commit(
         self, claim: dict[str, Any], before: str, after: str,
+        *, migration: dict[str, Any] | None = None,
     ) -> bool:
         ticket_path = f"factory/tickets/{claim['ticket']}.md"
         route_path = f"factory/route-plans/{claim['ticket']}.json"
@@ -9668,10 +9767,16 @@ class Controller:
         )
         try:
             route_value = json.loads(route.stdout)
-            validate_route(
-                self.product, Path(claim["worktree"]), claim["ticket"],
-                self.release_path.name,
+            if not isinstance(route_value, dict):
+                return False
+            old_route_value = (
+                json.loads(old_route.stdout) if migration is not None else None
             )
+            if migration is None:
+                validate_route(
+                    self.product, Path(claim["worktree"]), claim["ticket"],
+                    self.release_path.name,
+                )
         except (json.JSONDecodeError, OSError, RouteEvidenceError, ValueError):
             return False
         ticket_raw = ticket.stdout.encode()
@@ -9699,6 +9804,29 @@ class Controller:
             and re.findall(
                 rb"^Kit-SHA:\s*([0-9a-f]{40})\s*$", ticket_raw, re.M,
             ) == [route_value.get("kit_sha", "").encode()]
+            and (
+                migration is None
+                or valid_v2_migration(migration)
+                and migration["from_factory_sha"]
+                == migration["to_factory_sha"]
+                and migration["from_head_sha"] == before
+                and migration["to_head_sha"] == after
+                and migration["from_protected_base_sha"]
+                == migration["to_protected_base_sha"]
+                and migration["from_route_plan_sha256"]
+                == hashlib.sha256(old_route.stdout.encode()).hexdigest()
+                and migration["to_route_plan_sha256"]
+                == hashlib.sha256(route.stdout.encode()).hexdigest()
+                and isinstance(old_route_value, dict)
+                and old_route_value.get("ticket")
+                == route_value.get("ticket") == claim["ticket"]
+                and route_value.get("kit_sha")
+                == migration["to_factory_sha"]
+                and re.findall(
+                    rb"^Kit-SHA:\s*([0-9a-f]{40})\s*$",
+                    old_ticket.stdout.encode(), re.M,
+                ) == [old_route_value.get("kit_sha", "").encode()]
+            )
         )
 
     def migrate_stranded_route_upgrade(
@@ -12644,6 +12772,7 @@ class Controller:
             claim for claim in existing
             if claim["ticket"] not in self.invalid_transition_tickets
         ])
+        self.readmit_prior_provider_failures(existing)
         self.recover_each(
             existing, self.recover_interrupted_claims, "interrupted-reconciliation",
         )
@@ -12884,6 +13013,7 @@ class Controller:
                     ]
                 self.recover_missing_passport_claims(claims)
                 self.recover_terminal_requests(idle)
+                self.readmit_prior_provider_failures(idle)
                 self.recover_each(
                     idle, self.recover_prepublication_attestations,
                     "prepublication-attestation",

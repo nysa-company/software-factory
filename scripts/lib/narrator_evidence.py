@@ -2,17 +2,76 @@
 
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
 import re
 import struct
 import subprocess
 import zlib
 
+from release_lineage import successor_release_lineage, valid_v2_migration
+
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 PNG_END = b"\x00\x00\x00\x00IEND\xaeB\x60\x82"
 MAX_NARRATOR_EVIDENCE_FILES = 32
 MAX_NARRATOR_EVIDENCE_BYTES = 2_000_000
+
+
+def authenticated_narrator_parent(
+    state_dir: Path, ticket: str, project: str, branch: str,
+    factory_sha: str, contract_version: str, head: str,
+) -> str:
+    if not state_dir.is_absolute():
+        return ""
+    module_path = Path(__file__).resolve().parents[1] / "ticket-passport.py"
+    spec = importlib.util.spec_from_file_location(
+        "narrator_evidence_ticket_passport", module_path,
+    )
+    if spec is None or spec.loader is None:
+        return ""
+    module = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(module)
+        state_dir = module.safe_directory(state_dir)
+        secret = module.read_regular(state_dir / "passport.key", 0o600, 32)
+        if len(secret) != 32:
+            return ""
+        passport, _ = module.load_passport(
+            state_dir / "passports" / f"{ticket}.json", secret,
+        )
+    except (FileNotFoundError, OSError, ValueError):
+        return ""
+    evidence = passport.get("completed_role_evidence")
+    latest = evidence[-1] if isinstance(evidence, list) and evidence else {}
+    source_factory = (
+        latest.get("factory_sha", "") if isinstance(latest, dict) else ""
+    )
+    source_contract = (
+        latest.get("contract_version", "") if isinstance(latest, dict) else ""
+    )
+    history = passport.get("factory_release_history")
+    migrations = passport.get("migration_history")
+    if (
+        passport.get("ticket") != ticket
+        or passport.get("project") != project
+        or passport.get("contract_version") != contract_version
+        or passport.get("factory_sha") != factory_sha
+        or passport.get("branch") != branch
+        or passport.get("head_sha") != head
+        or not isinstance(latest, dict)
+        or latest.get("role") != "narrator"
+        or not re.fullmatch(r"[0-9a-f]{40}", latest.get("head_before", ""))
+        or {"contract_version": source_contract, "factory_sha": source_factory}
+        not in (history if isinstance(history, list) else [])
+        or {"contract_version": contract_version, "factory_sha": factory_sha}
+        not in (history if isinstance(history, list) else [])
+        or not successor_release_lineage(
+            history, migrations, source_factory, factory_sha, valid_v2_migration,
+        )
+    ):
+        return ""
+    return latest["head_before"]
 
 
 def git_text(workdir: Path, *arguments: str) -> str:
@@ -125,6 +184,7 @@ def png_blob(workdir: Path, entry: str, path: str) -> bytes | None:
 
 def trusted_narrator_evidence_paths(
     workdir: Path, ticket: str, reviewed: str, head: str, changed: set[str],
+    retained_parent: str = "",
 ) -> set[str]:
     prefix = f"factory/tickets/{ticket}-evidence/"
     candidates = {path for path in changed if path.startswith(prefix)}
@@ -132,12 +192,28 @@ def trusted_narrator_evidence_paths(
         return set()
     prior_references = bundle_png_paths(workdir, reviewed, ticket)
     current_references = bundle_png_paths(workdir, head, ticket)
+    retained_references = set()
+    if retained_parent and all(
+        subprocess.run(
+            ["git", "-C", str(workdir), "merge-base", "--is-ancestor", *edge],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+        ).returncode == 0
+        for edge in ((reviewed, retained_parent), (retained_parent, head))
+    ):
+        retained_references = bundle_png_paths(workdir, retained_parent, ticket)
     trusted = set()
     for path in candidates:
         current_entry = git_text(workdir, "ls-tree", head, "--", path)
         if current_entry:
             blob = png_blob(workdir, current_entry, path)
             if path in current_references and blob is not None:
+                trusted.add(path)
+            elif (
+                path in retained_references
+                and current_entry
+                == git_text(workdir, "ls-tree", retained_parent, "--", path)
+                and blob is not None
+            ):
                 trusted.add(path)
             continue
         prior_entry = git_text(workdir, "ls-tree", reviewed, "--", path)

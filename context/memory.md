@@ -6610,3 +6610,32 @@ existing sealed refresh verifier before passport migration. Cursor presentation
 aliases remain finite and route-bound; the certified Sonnet vendor prefix does
 not authorize another selection. Typed recovery failures persist their captured
 reason before leaving the exception scope.
+
+## 2026-08-16 — Decision 477: Successor recovery reuses exact migrated failures
+
+Category: Reliability
+
+An isolated successor may remove the invocation-local prior-transition
+exclusion for an exact submitted Cursor `provider_failed` terminal only after
+its consumed role receipt uniquely anchors a continuous authenticated
+release/head/base/route suffix to the clean current remote passport. The
+existing qualification fallback remains the only consumer and authority; the
+readmission writes no claim, receipt, passport, or ticket state. Bundle refresh
+uses the same signed suffix and additionally admits an intermediate
+same-release edge only when Git proves the exact direct two-path Software
+Factory route migration, including both route digests and ticket Kit-SHA
+changes. Arbitrary same-release commits and non-Cursor failures remain inert.
+
+## 2026-08-16 — Decision 478: Narrator refreshes may retain authenticated images
+
+Category: Trust boundary
+
+Ticket-PR readiness and bundle attestation may retain a current-ticket PNG that
+the newest bundle no longer references only when the authenticated current
+passport's latest completed role is Narrator, its exact role-input head is an
+ancestor of the passport head, its release has authenticated successor lineage
+to the passport's current release, that input bundle references the path, and
+the current Git blob remains byte-identical and valid. Current-bundle images keep
+the ordinary path, size, mode, and PNG checks. Missing, foreign, stale,
+non-ancestral, changed, malformed, or unsigned evidence remains implementation
+drift.

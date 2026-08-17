@@ -451,7 +451,13 @@ protected-ticket failure with no migrated semantic authority enters that
 existing targeted recovery before the release-upgrade attempt can be
 abandoned. Legacy failed-output quarantine runs only while the signed passport
 still belongs to that failed role's Factory; an already-migrated passport
-continues through ordinary successor recovery. A release-upgrade attempt that discovers the route-migration
+continues through ordinary successor recovery. An isolated successor may also
+retire only the invocation-local prior-receipt exclusion for an exact submitted
+Cursor `provider_failed` terminal. The consumed role receipt must uniquely
+anchor the authenticated release/head/base/route suffix to the current clean
+remote passport; the existing qualification fallback then consumes the
+terminal normally. This readmission changes no claim, receipt, passport, or
+ticket evidence. A release-upgrade attempt that discovers the route-migration
 boundary retains that exact retry reason so the sealed qualification driver
 can prove and migrate the complete cohort. One roleless prior-release maintenance refusal may
 also re-enter ordinary scheduling after its exact protected in-flight release
@@ -465,8 +471,11 @@ removes the prior-receipt exclusion; the recovery grants no direct role,
 provider, or publication authority. The one unmerged
 stale-bundle recovery may ask the
 state machine for a current receipt only after one unique contiguous suffix of
-authenticated release-changing migration edges binds the old receipt and
-passport-file digest to the current passport without changing head or route.
+authenticated release-changing edges and exact same-release route-migration
+commits binds the old receipt and passport-file digest to the current passport.
+Each same-release edge must be a direct two-path Software Factory route commit
+whose before/after route and ticket blobs match its signed migration fields;
+arbitrary same-release ticket work remains refused.
 When the approved route commit is already pushed, recovery migrates the
 passport to that clean commit before testing whether the retained bundle is
 refreshable; restart may replay the idempotent passport migration.
@@ -1361,7 +1370,12 @@ publication candidate. Ticket-PR and bundle attestation share one
 fail-closed Narrator-evidence classifier: only bounded ordinary PNG blobs under
 the current ticket's evidence directory are admitted, additions and updates
 must be referenced by the current bundle, and deletions must have been
-referenced by the reviewed bundle. The classifier validates the complete PNG
+referenced by the reviewed bundle. A later successful Narrator may retain an
+unchanged image from its immediately authenticated input bundle even when the
+new bundle no longer references it; the current signed passport must bind that
+Narrator input through its authenticated Factory-release history and as an
+ancestor of its exact current head, and the Git blob must remain byte-identical.
+The classifier validates the complete PNG
 chunk stream and refuses unreferenced, nested, sibling, executable, malformed,
 or excessive evidence. The subsequent approval head is validated by one shared
 ticket-PR/attestation helper: it must be the direct child of the exact bundle

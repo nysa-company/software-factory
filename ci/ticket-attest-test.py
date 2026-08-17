@@ -178,7 +178,9 @@ class TicketAttestTests(unittest.TestCase):
             "FACTORY_ROOT": str(self.product),
             "FACTORY_CERTIFIED_PRODUCT_ORIGIN": str(self.remote),
             "FACTORY_RELEASE_SHA": KIT_SHA,
+            "FACTORY_RELEASE_CONTRACT_VERSION": "1.8.0",
             "FACTORY_CONTROLLER_STATE_DIR": str(self.controller),
+            "FACTORY_PROJECT": "example-product",
             "FAKE_GH_STATE": str(self.state),
             "FAKE_WORKDIR": str(self.product),
         })
@@ -446,6 +448,36 @@ Merge-Policy: manual
                 "anthropic,mock,pinned_route_plan,reported,1\n"
             )
         (self.product / "factory/runtime-ledger.csv").write_text(fields + "".join(rows))
+
+    def write_narrator_passport(self, head, parent):
+        module = TICKET_ATTEST.passport_module()
+        secret = b"p" * 32
+        (self.controller / "passport.key").write_bytes(secret)
+        (self.controller / "passport.key").chmod(0o600)
+        passports = self.controller / "passports"
+        passports.mkdir(mode=0o700, exist_ok=True)
+        signed = module.authenticate({
+            "branch": "ticket/T-700",
+            "completed_role_evidence": [{
+                "contract_version": "1.8.0",
+                "factory_sha": KIT_SHA,
+                "head_before": parent,
+                "role": "narrator",
+            }],
+            "contract_version": "1.8.0",
+            "factory_release_history": [{
+                "contract_version": "1.8.0", "factory_sha": KIT_SHA,
+            }],
+            "factory_sha": KIT_SHA,
+            "head_sha": head,
+            "migration_history": [],
+            "project": "example-product",
+            "schema": "nysa.software-factory.ticket-passport/v1",
+            "ticket": "T-700",
+        }, secret)
+        path = passports / "T-700.json"
+        path.write_bytes(module.canonical(signed))
+        path.chmod(0o600)
 
     def add_legacy_planner(self):
         old_kit = "e" * 40
@@ -765,6 +797,37 @@ else:
 
     def test_bundle_accepts_referenced_current_ticket_png_evidence(self):
         self.prepare_post_review_evidence()
+        self.bundle()
+
+    def test_bundle_retains_authenticated_prior_narrator_png(self):
+        bundle = self.product / "factory/tickets/T-700-bundle.md"
+        evidence = self.product / "factory/tickets/T-700-evidence"
+        evidence.mkdir()
+        (evidence / "retained.png").write_bytes(PNG)
+        bundle.write_text(bundle.read_text().replace(
+            "## Screenshots\nNo visual change.\n",
+            "## Screenshots\n![Retained](T-700-evidence/retained.png)\n",
+        ))
+        self.commit("record prior narrator bundle")
+        parent = self.head()
+        (evidence / "current.png").write_bytes(PNG)
+        bundle.write_text(bundle.read_text().replace(
+            "![Retained](T-700-evidence/retained.png)",
+            "![Current](T-700-evidence/current.png)",
+        ))
+        self.commit("replace narrator bundle")
+        ticket = self.product / "factory/tickets/T-700.md"
+        ticket.write_text(ticket.read_text() + "Publication evidence refreshed.\n")
+        self.commit("record later factory metadata")
+        command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
+        head = self.head()
+
+        self.write_narrator_passport(head, "0" * 40)
+        result = self.attest("bundle")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("changed after", result.stderr)
+
+        self.write_narrator_passport(head, parent)
         self.bundle()
 
     def test_bundle_counts_only_current_qualification_review_evidence(self):
