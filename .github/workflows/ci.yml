@@ -120,11 +120,11 @@ jobs:
     name: macos-bash-3-group-${{ matrix.group }}
     needs: scope
     if: needs.scope.outputs.behavioral == 'true' && needs.scope.outputs.macos == 'true'
-    # One group of every four-group expansion runs on the self-hosted Apple
-    # Silicon runner to drop a quarter of the 10x hosted macOS minutes. Targeted
-    # pull requests expand to a single "pr" group and stay hosted, so the
-    # self-hosted runner is never the only macOS proof for a change.
-    runs-on: ${{ matrix.group == 4 && fromJSON('["self-hosted","macOS","ARM64"]') || 'macos-14' }}
+    # Pull requests stay on hosted runners so review feedback is fast and no
+    # laptop sits in the pull-request gate. Protected main runs entirely on the
+    # self-hosted Apple Silicon runner, removing the 10x hosted macOS minutes
+    # from the branch nobody waits on.
+    runs-on: ${{ github.event_name == 'push' && fromJSON('["self-hosted","macOS","ARM64"]') || 'macos-14' }}
     strategy:
       fail-fast: false
       matrix:
@@ -146,7 +146,7 @@ jobs:
       # instead, exported through GITHUB_PATH by the job rather than through
       # runner service configuration.
       - name: use Homebrew Python on the self-hosted runner
-        if: matrix.group == 4
+        if: github.event_name == 'push'
         run: |
           BIN=/opt/homebrew/opt/python@3.12/libexec/bin
           test -x "$BIN/python3" || {
@@ -155,7 +155,7 @@ jobs:
           }
           echo "$BIN" >> "$GITHUB_PATH"
       - uses: actions/setup-python@v6
-        if: matrix.group != 4
+        if: github.event_name != 'push'
         with:
           python-version: "3.12"
       - name: install GNU timeout
