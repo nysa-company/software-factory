@@ -484,9 +484,10 @@ the controller's current active lease. A release-scoped marker is durable
 before issuance, so restart
 reuses the exact current receipt; its digest stays out of the claim's pending
 role field and authorizes only the launcher's existing `ticket-attest refresh`
-boundary. The prior receipt may be either exact Awaiting-Approval publication
-wait: bundle attested and awaiting approval, or approval observed and awaiting
-its trusted attestation. Done and Canceled claims retire before this check,
+boundary. The prior receipt may be any exact unmerged publication wait: bundle
+attested and awaiting approval, approval observed and awaiting its trusted
+attestation, or approval attested while the protected auto-merge request is
+pending. Done and Canceled claims retire before this check,
 while Doctor reports the latest unresolved receipt incident per ticket.
 Transition receipts and ticket passports are authenticated over the exact
 newline-terminated canonical JSON document bytes emitted by their writers.

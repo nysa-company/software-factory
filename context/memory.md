@@ -6674,6 +6674,8 @@ gaps; cancelled, ambiguous, malformed, or unrelated evidence still refuses.
 
 Category: Reliability
 
+Superseded by Decision 484.
+
 A successor bundle refresh may reissue a prior non-role receipt from either
 canonical Awaiting-Approval boundary: bundle attested while approval is absent,
 or operator approval observed while its trusted attestation is pending. The
@@ -6704,3 +6706,13 @@ its issue-defined Builder or Spec-linter role; the v2 model-identity schema must
 name the exact completed role and may not change the signed run, receipt,
 release, terminal, progress, or artifact digests. Unknown, mismatched, or
 ambiguous corrections still block before provider dispatch.
+
+## 2026-08-17 — Decision 484: Bundle refresh preserves the merge wait
+
+Category: Reliability
+
+A successor bundle refresh may also reissue the exact prior non-role
+`AWAIT-MERGE` receipt when the authenticated passport is Approved and still
+merge-pending. The same unique release/head/base/route suffix, source passport
+file, active lease, current passport, one-use parent digest, and unmerged PR
+checks remain mandatory; other post-approval stages refuse.
