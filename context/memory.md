@@ -6658,3 +6658,14 @@ the route and accounting source and are never fabricated. A control-only base
 refresh may therefore keep an authenticated corrected Reviewer and run only the
 missing Narrator afterward; malformed, ambiguous, unsigned, or unrelated
 evidence refuses.
+
+## 2026-08-16 — Decision 480: Successor activation honors signed corrections
+
+Category: Reliability
+
+Successor cohort validation treats an abandoned-conservative role charge as
+completed only when either its exact raw success artifact remains valid or the
+authenticated passport contains one exact completion correction for the same
+run, receipt, role, and failed release. Both correction releases must remain in
+the signed release history. The same corrected identity binds ordinary role
+gaps; cancelled, ambiguous, malformed, or unrelated evidence still refuses.

@@ -3049,6 +3049,49 @@ class QualificationEnvironmentTest(unittest.TestCase):
                 self.factory, self.product, controller, "relay", source,
                 product_sha, manifest,
             )
+        failed = "a" * 40
+        self.write_passport(path, secret, "T-102", source, failed)
+        corrected_charge = {
+            **charge(failed, "corrected-reviewer"),
+            "accounting_state": "abandoned_conservative",
+            "role": "reviewer",
+        }
+        corrected_completion = {
+            **completion(failed, "corrected-reviewer"),
+            "role": "reviewer",
+        }
+        correction = {
+            "failed_factory_sha": failed,
+            "issue": "https://github.com/nysa-company/software-factory/issues/390",
+            "output_head_sha": "5" * 40,
+            "progress_events": 1,
+            "progress_journal_sha256": "6" * 64,
+            "receipt_parent_file_sha256": "7" * 64,
+            "recovery_factory_sha": source,
+            "role": "reviewer",
+            "run_id": "corrected-reviewer",
+            "schema": "nysa.software-factory.completed-role-correction/v2",
+            "transition_receipt_sha256": "3" * 64,
+        }
+        rewrite(lambda value: value.update(
+            charge_records=[corrected_charge],
+            completed_role_corrections=[correction],
+            completed_role_evidence=[corrected_completion],
+            cumulative_charges_micro_usd=1,
+        ))
+        ENVIRONMENT.validate_successor_upgrade_cohort(
+            self.factory, self.product, controller, "relay", source,
+            product_sha, manifest,
+        )
+        rewrite(lambda value: value.update(completed_role_corrections=[]))
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError,
+            "T-102: successor qualification requires every selected ticket",
+        ):
+            ENVIRONMENT.validate_successor_upgrade_cohort(
+                self.factory, self.product, controller, "relay", source,
+                product_sha, manifest,
+            )
         conservative_charge, conservative_completion = conservative_records()
         for accounting_state in ("cancelled", "cancelled_conservative"):
             with self.subTest(accounting_state=accounting_state):

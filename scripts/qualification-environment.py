@@ -2096,6 +2096,7 @@ def conservative_success_evidence(
 def completed_charge_matches(
     passport: Any, product: Path, ticket: str,
     charge: dict[str, Any], completed: dict[str, Any],
+    corrected: set[tuple[str, str, str]] | None = None,
 ) -> bool:
     return (
         charge.get("run_id") == completed["run_id"]
@@ -2108,8 +2109,15 @@ def completed_charge_matches(
         and (
             charge.get("accounting_state") == "completed"
             or charge.get("accounting_state") == "abandoned_conservative"
-            and conservative_success_evidence(
-                passport, product, ticket, charge, completed,
+            and (
+                conservative_success_evidence(
+                    passport, product, ticket, charge, completed,
+                )
+                or (
+                    completed["run_id"],
+                    completed["transition_receipt_sha256"],
+                    completed["factory_sha"],
+                ) in (corrected or ())
             )
         )
     )
@@ -2119,6 +2127,7 @@ def completed_role_gap(
     factory: Path, product: Path, passport: Any, ticket: str,
     charges: list[dict[str, Any]], completed: list[dict[str, Any]],
     start: str, end: str, source: str,
+    corrected: set[tuple[str, str, str]] | None = None,
 ) -> bool:
     """Bind a migration head gap to exact successful role-owned commits."""
     if not SHA.fullmatch(start) or not SHA.fullmatch(end) or start == end:
@@ -2158,7 +2167,7 @@ def completed_role_gap(
             positions[following] <= positions[item["head_before"]]
             or sum(
                 completed_charge_matches(
-                    passport, product, ticket, charge, item,
+                    passport, product, ticket, charge, item, corrected,
                 )
                 for charge in charges
             ) != 1
@@ -2364,6 +2373,20 @@ def validate_successor_upgrade_cohort(
                 if isinstance(item, dict)
                 and isinstance(item.get("run_id"), str)
             }
+            corrections = value.get("completed_role_corrections", [])
+            try:
+                corrections = passport.validate_completion_corrections(
+                    corrections, completed if isinstance(completed, list) else []
+                )
+            except (AttributeError, ValueError):
+                corrections = None
+            corrected = {
+                (
+                    item["run_id"], item["transition_receipt_sha256"],
+                    item["failed_factory_sha"],
+                )
+                for item in corrections or []
+            }
             core_valid = (
                 value.get("schema") == "nysa.software-factory.ticket-passport/v1"
                 and value.get("contract_version") in SUPPORTED_CONTRACTS
@@ -2468,7 +2491,7 @@ def validate_successor_upgrade_cohort(
                                     factory, product, passport, ticket,
                                     charges, completed, prior["to_head_sha"],
                                     following["from_head_sha"],
-                                    prior["to_factory_sha"],
+                                    prior["to_factory_sha"], corrected,
                                 )
                             )
                             for prior, following in zip(
@@ -2604,7 +2627,7 @@ def validate_successor_upgrade_cohort(
                     and valid_digest(item.get("transition_receipt_sha256"))
                     and sum(
                         completed_charge_matches(
-                            passport, product, ticket, charge, item,
+                            passport, product, ticket, charge, item, corrected,
                         )
                         for charge in charges
                     ) == 1
@@ -2617,13 +2640,6 @@ def validate_successor_upgrade_cohort(
                     item["charge_micro_usd"] for item in charges
                 )
             )
-            corrections = value.get("completed_role_corrections", [])
-            try:
-                corrections = passport.validate_completion_corrections(
-                    corrections, completed if isinstance(completed, list) else []
-                )
-            except (AttributeError, ValueError):
-                corrections = None
             if (
                 value.get("ticket") != ticket
                 or value.get("project") != project
