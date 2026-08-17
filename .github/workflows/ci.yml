@@ -137,6 +137,12 @@ jobs:
         with:
           node-version: 22
           package-manager-cache: false
+      # Pin Python explicitly rather than inheriting the runner image default.
+      # Self-hosted macOS resolves python3 to the system 3.9, which cannot run
+      # the suite's 3.10+ syntax.
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
       - name: install GNU timeout
         env:
           HOMEBREW_ALLOWED_TAPS: homebrew/core

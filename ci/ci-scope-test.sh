@@ -10,7 +10,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORKFLOW="$ROOT/.github/workflows/ci.yml"
 [[ "$(grep -Fc 'actions/checkout@v5' "$WORKFLOW")" -eq 5 &&
     "$(grep -Fc 'actions/setup-node@v5' "$WORKFLOW")" -eq 2 &&
-    "$(grep -Fc 'actions/setup-python@v6' "$WORKFLOW")" -eq 1 &&
+    "$(grep -Fc 'actions/setup-python@v6' "$WORKFLOW")" -eq 2 &&
     "$(grep -Fc 'HOMEBREW_NO_AUTO_UPDATE: "1"' "$WORKFLOW")" -eq 1 &&
     "$(grep -Fc 'HOMEBREW_ALLOWED_TAPS: homebrew/core' "$WORKFLOW")" -eq 1 &&
     "$(grep -Fc 'command -v timeout' "$WORKFLOW")" -eq 1 &&
