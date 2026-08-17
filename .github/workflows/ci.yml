@@ -138,18 +138,24 @@ jobs:
           node-version: 22
           package-manager-cache: false
       # Pin Python explicitly rather than inheriting the runner image default:
-      # self-hosted macOS resolves python3 to the system 3.9, which cannot run
-      # the suite's 3.10+ syntax. The self-hosted group also needs an explicit
-      # tool cache. The upstream installer places Python using
-      # AGENT_TOOLSDIRECTORY and the action then locates it using
-      # RUNNER_TOOL_CACHE, so both must name the same writable directory;
-      # otherwise the installer falls back to the hosted-image path
-      # /Users/runner, which does not exist off GitHub's images. Hosted groups
-      # keep their prewarmed cache.
+      # macOS resolves python3 to the system 3.9, which cannot run the suite's
+      # 3.10+ syntax. The published macOS artifact for setup-python installs
+      # into the hosted-image path /Users/runner regardless of the documented
+      # AGENT_TOOLSDIRECTORY and RUNNER_TOOL_CACHE overrides, so it cannot run
+      # off GitHub's images. The self-hosted group uses the Homebrew formula
+      # instead, exported through GITHUB_PATH by the job rather than through
+      # runner service configuration.
+      - name: use Homebrew Python on the self-hosted runner
+        if: matrix.group == 4
+        run: |
+          BIN=/opt/homebrew/opt/python@3.12/libexec/bin
+          test -x "$BIN/python3" || {
+            echo "missing $BIN/python3; run: brew install python@3.12" >&2
+            exit 1
+          }
+          echo "$BIN" >> "$GITHUB_PATH"
       - uses: actions/setup-python@v6
-        env:
-          AGENT_TOOLSDIRECTORY: ${{ matrix.group == 4 && format('{0}/tool', runner.temp) || runner.tool_cache }}
-          RUNNER_TOOL_CACHE: ${{ matrix.group == 4 && format('{0}/tool', runner.temp) || runner.tool_cache }}
+        if: matrix.group != 4
         with:
           python-version: "3.12"
       - name: install GNU timeout
