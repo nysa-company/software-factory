@@ -100,6 +100,10 @@ CONTRACT_RESUME_REFUSALS = frozenset({
     "resume_parent_not_migrated",
     "resume_receipt_mismatch",
 })
+BUNDLE_REFRESH_PRIOR_STAGES = frozenset({
+    "AWAIT-OPERATOR bundle attested; await operator approval",
+    "AWAIT-OPERATOR operator approval observed; trusted approval attestation is required",
+})
 PREFLIGHT_CORRECTION_FIELDS = (
     "Product-Decisions", "Builder ownership", "Fixture-Seams",
     "Authentication-Seams",
@@ -4967,9 +4971,7 @@ class Controller:
             and (
                 (
                     prior
-                    and stage.startswith(
-                        "AWAIT-OPERATOR bundle attested;"
-                    )
+                    and stage in BUNDLE_REFRESH_PRIOR_STAGES
                     and receipt.get("factory_sha")
                     == marker["from_factory_sha"]
                     and receipt.get("passport_sha256")
@@ -5088,9 +5090,7 @@ class Controller:
                 or not DIGEST.fullmatch(receipt.get("lease_sha256", ""))
                 or receipt.get("consumed") is not False
                 or receipt.get("role") is not None
-                or not receipt.get("stage", "").startswith(
-                    "AWAIT-OPERATOR bundle attested;"
-                )
+                or receipt.get("stage") not in BUNDLE_REFRESH_PRIOR_STAGES
             ):
                 raise ControllerError(
                     "bundle-refresh prior receipt is invalid"
