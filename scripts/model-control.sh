@@ -927,8 +927,27 @@ if bundle_kit != sys.argv[3] and route_kit == sys.argv[3]:
     except json.JSONDecodeError:
         prior = None
     source_kit = prior.get("kit_sha", "") if isinstance(prior, dict) else ""
+revisions = route.get("revisions") if isinstance(route, dict) else None
+first = revisions[0].get("body") if (
+    isinstance(revisions, list) and revisions
+    and isinstance(revisions[0], dict)
+) else None
+historical = (
+    bundle.get("schema") in {
+        "nysa.software-factory.ticket-bundle/v1",
+        "nysa.software-factory.ticket-bundle/v2",
+    }
+    and bundle.get("ticket") == route.get("ticket") == sys.argv[5]
+    and route.get("schema") == "ticket-model-route-journal/v2"
+    and isinstance(first, dict)
+    and first.get("kind") == "migration"
+    and first.get("old_kit_sha") == bundle_kit
+    and first.get("legacy_plan_sha256") == bundle.get("route_plan_sha256")
+    and re.fullmatch(r"[0-9a-f]{64}", bundle.get("route_plan_sha256", ""))
+)
 if bundle_kit != sys.argv[3] and not (
     bundle_kit == source_kit and source_kit != sys.argv[3]
+    or historical
 ):
     raise SystemExit(1)
 PY

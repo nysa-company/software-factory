@@ -6586,3 +6586,13 @@ still precedes the already-pushed authorized route commit. It first migrates
 the passport to that exact clean commit, then evaluates the existing sealed
 bundle-refresh predicates. Restart may replay the idempotent passport migration
 without adding another edge or weakening bundle authority.
+
+## 2026-08-16 — Decision 475: Historical bundles bind route-journal roots
+
+Category: Reliability
+
+A retained bundle may cross multiple release migrations only when its ticket,
+Kit-SHA, and route-plan digest bind revision zero of the current v2 route
+journal. The existing route validator must still authenticate the complete
+hash-linked journal and current route before any migration; malformed,
+unrelated, or substituted history refuses.

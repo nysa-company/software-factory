@@ -223,6 +223,12 @@ No-change revisions bind the prior resolution by SHA-256 instead of copying it;
 full refreshed evidence is recorded only when its physical identity changes.
 Legacy revisions containing full prior resolutions remain valid.
 
+A retained bundle may cross more than one release migration only when its
+ticket, Kit-SHA, and route-plan digest bind revision zero of the current v2
+route journal. The normal journal validator must still authenticate the full
+hash-linked release history before migration; malformed or unrelated history
+refuses.
+
 Contract 2.0 may preview one to four authorized ticket worktrees together with
 `models migrate-batch-plan`. Its approval hash binds the protected-main
 snapshot and every ticket's branch, head, worktree, migration preview, and
