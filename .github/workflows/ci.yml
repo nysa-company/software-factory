@@ -23,6 +23,7 @@ jobs:
       base: ${{ steps.classify.outputs.base }}
       full: ${{ steps.classify.outputs.full }}
       groups: ${{ steps.classify.outputs.groups }}
+      macos: ${{ steps.classify.outputs.macos }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -33,6 +34,15 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
           echo "base=$BASE_SHA" >> "$GITHUB_OUTPUT"
+          # Protected main always proves macOS. Pull requests add it only for the
+          # shell, CI, deployment, and shared-script surfaces that system Bash 3.2
+          # can actually break.
+          if test "$GITHUB_EVENT_NAME" = push ||
+            bash ci/macos-required-change.sh "$BASE_SHA" "$GITHUB_SHA"; then
+            echo "macos=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "macos=false" >> "$GITHUB_OUTPUT"
+          fi
           if test "$GITHUB_EVENT_NAME" = push; then
             echo "behavioral=true" >> "$GITHUB_OUTPUT"
             echo "full=true" >> "$GITHUB_OUTPUT"
@@ -109,8 +119,12 @@ jobs:
   macos-bash-3:
     name: macos-bash-3-group-${{ matrix.group }}
     needs: scope
-    if: needs.scope.outputs.behavioral == 'true'
-    runs-on: macos-14
+    if: needs.scope.outputs.behavioral == 'true' && needs.scope.outputs.macos == 'true'
+    # Pull requests stay on hosted runners so review feedback is fast and no
+    # laptop sits in the pull-request gate. Protected main runs entirely on the
+    # self-hosted Apple Silicon runner, removing the 10x hosted macOS minutes
+    # from the branch nobody waits on.
+    runs-on: ${{ github.event_name == 'push' && fromJSON('["self-hosted","macOS","ARM64"]') || 'macos-14' }}
     strategy:
       fail-fast: false
       matrix:
@@ -123,6 +137,27 @@ jobs:
         with:
           node-version: 22
           package-manager-cache: false
+      # Pin Python explicitly rather than inheriting the runner image default:
+      # macOS resolves python3 to the system 3.9, which cannot run the suite's
+      # 3.10+ syntax. The published macOS artifact for setup-python installs
+      # into the hosted-image path /Users/runner regardless of the documented
+      # AGENT_TOOLSDIRECTORY and RUNNER_TOOL_CACHE overrides, so it cannot run
+      # off GitHub's images. The self-hosted group uses the Homebrew formula
+      # instead, exported through GITHUB_PATH by the job rather than through
+      # runner service configuration.
+      - name: use Homebrew Python on the self-hosted runner
+        if: github.event_name == 'push'
+        run: |
+          BIN=/opt/homebrew/opt/python@3.12/libexec/bin
+          test -x "$BIN/python3" || {
+            echo "missing $BIN/python3; run: brew install python@3.12" >&2
+            exit 1
+          }
+          echo "$BIN" >> "$GITHUB_PATH"
+      - uses: actions/setup-python@v6
+        if: github.event_name != 'push'
+        with:
+          python-version: "3.12"
       - name: install GNU timeout
         env:
           HOMEBREW_ALLOWED_TAPS: homebrew/core
@@ -192,13 +227,14 @@ jobs:
           SCOPE_RESULT: ${{ needs.scope.result }}
           POLICY_RESULT: ${{ needs.policy.result }}
           BEHAVIORAL: ${{ needs.scope.outputs.behavioral }}
+          MACOS_REQUIRED: ${{ needs.scope.outputs.macos }}
           LINUX_RESULT: ${{ needs.linux.result }}
           MACOS_RESULT: ${{ needs.macos-bash-3.result }}
         run: |
           test "$SCOPE_RESULT" = success
           test "$POLICY_RESULT" = success
           test "$LINUX_RESULT" = success
-          if test "$BEHAVIORAL" = false; then
+          if test "$BEHAVIORAL" = false || test "$MACOS_REQUIRED" = false; then
             test "$MACOS_RESULT" = skipped
           else
             test "$MACOS_RESULT" = success
