@@ -27,7 +27,10 @@ from refresh_semantics import (  # noqa: E402
     preserved_control_paths,
     retained_control_paths,
 )
-from narrator_evidence import trusted_narrator_evidence_paths  # noqa: E402
+from narrator_evidence import (  # noqa: E402
+    authenticated_narrator_parent,
+    trusted_narrator_evidence_paths,
+)
 import operator_receipt  # noqa: E402
 from approval_evidence import (  # noqa: E402
     ApprovalEvidenceError,
@@ -3093,6 +3096,15 @@ def bundle(args, product, workdir, repo, prefix, remote, kit_sha):
     allowed.update(
         trusted_narrator_evidence_paths(
             workdir, args.ticket, reviewed, head, changed,
+            authenticated_narrator_parent(
+                Path(os.environ.get("FACTORY_CONTROLLER_STATE_DIR", "")),
+                args.ticket,
+                os.environ.get("FACTORY_PROJECT", ""),
+                branch,
+                kit_sha,
+                os.environ.get("FACTORY_RELEASE_CONTRACT_VERSION", ""),
+                head,
+            ),
         )
     )
     if preserved_base:

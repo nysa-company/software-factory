@@ -8603,6 +8603,8 @@ class FactoryControllerTest(unittest.TestCase):
     def test_bundle_refresh_migration_suffix_is_exact(self) -> None:
         prior = "f" * 40
         intermediate = "d" * 40
+        controller = CONTROL.Controller(self.args)
+        claim = {"ticket": "T-110", "worktree": str(self.product)}
         passport, _file = self.migrated_bundle_passport(
             "T-110", prior, intermediates=(intermediate,),
         )
@@ -8616,11 +8618,43 @@ class FactoryControllerTest(unittest.TestCase):
         edges[2]["from_head_sha"] = "9" * 40
         edges[2]["from_route_plan_sha256"] = "2" * 64
         self.assertEqual(
-            len(CONTROL.Controller.bundle_refresh_migration_suffix(
-                passport, prior, "7" * 64,
+            len(controller.bundle_refresh_migration_suffix(
+                claim, passport, prior, "7" * 64,
             )),
             3,
         )
+        with_route = copy.deepcopy(passport)
+        route_edge = copy.deepcopy(with_route["migration_history"][-1])
+        route_edge.update(
+            from_head_sha="9" * 40,
+            from_passport_file_sha256="3" * 64,
+            from_passport_sha256="4" * 64,
+            from_route_plan_sha256="2" * 64,
+            to_head_sha="8" * 40,
+            to_route_plan_sha256="3" * 64,
+        )
+        with_route["migration_history"].insert(-1, route_edge)
+        with_route["migration_history"][-1].update(
+            from_head_sha="8" * 40,
+            from_route_plan_sha256="3" * 64,
+        )
+        observed = []
+        controller.exact_route_migration_commit = (
+            lambda _claim, before, after, **kwargs:
+            observed.append((before, after, kwargs.get("migration")))
+            or kwargs.get("migration") == route_edge
+        )
+        self.assertEqual(
+            len(controller.bundle_refresh_migration_suffix(
+                claim, with_route, prior, "7" * 64,
+            )),
+            4,
+        )
+        self.assertEqual(observed, [("9" * 40, "8" * 40, route_edge)])
+        controller.exact_route_migration_commit = lambda *_args, **_kwargs: False
+        self.assertIsNone(controller.bundle_refresh_migration_suffix(
+            claim, with_route, prior, "7" * 64,
+        ))
         mutations = []
         for name in (
             "first-passport", "gap", "reorder", "duplicate", "head",
@@ -8670,10 +8704,101 @@ class FactoryControllerTest(unittest.TestCase):
         for name, invalid in mutations:
             with self.subTest(name=name):
                 self.assertIsNone(
-                    CONTROL.Controller.bundle_refresh_migration_suffix(
-                        invalid, prior, "7" * 64,
+                    controller.bundle_refresh_migration_suffix(
+                        claim, invalid, prior, "7" * 64,
                     )
                 )
+
+    def test_bundle_refresh_accepts_only_exact_lagged_route_migration(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        ticket = "T-110"
+        source = "b" * 40
+        target = self.release.name
+        cell = self.root / "cell-bundle-route"
+        subprocess.run(
+            ["git", "init", "-q", "-b", f"ticket/{ticket}", str(cell)],
+            check=True,
+        )
+        ticket_path = cell / f"factory/tickets/{ticket}.md"
+        route_path = cell / f"factory/route-plans/{ticket}.json"
+        ticket_path.parent.mkdir(parents=True)
+        route_path.parent.mkdir(parents=True)
+        ticket_path.write_text(
+            f"State: Awaiting Approval\nKit-SHA: {source}\n",
+            encoding="utf-8",
+        )
+        route_path.write_text(CONTROL.canonical({
+            "kit_sha": source, "schema": "ticket-model-route-plan/v1",
+            "ticket": ticket,
+        }) + "\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(cell), "add", "."], check=True)
+        subprocess.run([
+            "git", "-C", str(cell), "-c", "user.name=Fixture",
+            "-c", "user.email=fixture@example.invalid", "commit", "-qm", "base",
+        ], check=True)
+        before = subprocess.run(
+            ["git", "-C", str(cell), "rev-parse", "HEAD"], text=True,
+            capture_output=True, check=True,
+        ).stdout.strip()
+        old_route = route_path.read_bytes()
+        ticket_path.write_text(
+            f"State: Awaiting Approval\nKit-SHA: {target}\n",
+            encoding="utf-8",
+        )
+        route_path.write_text(CONTROL.canonical({
+            "kit_sha": target,
+            "revisions": [{"body": {
+                "kind": "migration",
+                "legacy_plan_b64": base64.b64encode(old_route).decode(),
+                "legacy_plan_sha256": hashlib.sha256(old_route).hexdigest(),
+                "new_kit_sha": source, "old_kit_sha": source,
+            }}, {"body": {
+                "kind": "release-migration", "new_kit_sha": target,
+                "old_kit_sha": source,
+            }}],
+            "schema": "ticket-model-route-journal/v2", "ticket": ticket,
+        }) + "\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(cell), "add", "."], check=True)
+        subprocess.run([
+            "git", "-C", str(cell), "-c", "user.name=Software Factory",
+            "-c", "user.email=factory@local", "commit", "-qm",
+            f"{ticket}: migrate model route journal",
+        ], check=True)
+        after = subprocess.run(
+            ["git", "-C", str(cell), "rev-parse", "HEAD"], text=True,
+            capture_output=True, check=True,
+        ).stdout.strip()
+        migration = {
+            "from_factory_sha": target, "from_head_sha": before,
+            "from_passport_file_sha256": "1" * 64,
+            "from_passport_sha256": "2" * 64,
+            "from_protected_base_sha": "3" * 40,
+            "from_route_plan_sha256": hashlib.sha256(old_route).hexdigest(),
+            "schema": CONTROL.PASSPORT_MIGRATION_SCHEMA,
+            "to_factory_sha": target, "to_head_sha": after,
+            "to_protected_base_sha": "3" * 40,
+            "to_route_plan_sha256": hashlib.sha256(
+                route_path.read_bytes()
+            ).hexdigest(),
+        }
+        claim = {"ticket": ticket, "worktree": str(cell)}
+
+        self.assertTrue(controller.exact_route_migration_commit(
+            claim, before, after, migration=migration,
+        ))
+        wrong = dict(migration, from_route_plan_sha256="4" * 64)
+        self.assertFalse(controller.exact_route_migration_commit(
+            claim, before, after, migration=wrong,
+        ))
+        cell_git = controller.cell_git
+        controller.cell_git = lambda item, *args: (
+            subprocess.CompletedProcess(args, 0, "[]\n", "")
+            if args == ("show", f"{after}:{route_path.relative_to(cell)}")
+            else cell_git(item, *args)
+        )
+        self.assertFalse(controller.exact_route_migration_commit(
+            claim, before, after, migration=migration,
+        ))
 
     def test_bundle_refresh_receipt_handoff_refuses_unbound_evidence(self) -> None:
         prior = "f" * 40
@@ -14459,6 +14584,176 @@ class FactoryControllerTest(unittest.TestCase):
         controller.remote_passport_valid = lambda _claim: True
         controller.recover_interrupted_claims([claim])
         self.assertEqual(claim["status"], "claimed")
+
+    def test_successor_readmits_prior_provider_failure(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        controller.qualification = {
+            "generation": 1, "mode": "successor", "tickets": ["T-110"],
+        }
+        ticket = "T-110"
+        source = "b" * 40
+        receipt_digest = "c" * 64
+        input_head = "d" * 40
+        current_head = "e" * 40
+        old_route = "1" * 64
+        current_route = "2" * 64
+        old_base = "3" * 40
+        current_base = "4" * 40
+        source_file = "5" * 64
+        parent_file = "6" * 64
+        parent_digest = "7" * 64
+        cell = self.root / "cell-prior-role"
+        subprocess.run(["git", "init", "-q", str(cell)], check=True)
+        claim = {
+            "branch": f"ticket/{ticket}", "lease": "8" * 64,
+            "priority": "normal", "publication_lease": "",
+            "receipt": receipt_digest, "role": "reviewer",
+            "schema": CONTROL.CLAIM_SCHEMA, "status": "running",
+            "ticket": ticket, "worktree": str(cell),
+            "recovery_attempt": {
+                "count": 0, "factory_sha": self.release.name,
+                "input_sha256": "9" * 64, "outcome_sha256": "",
+                "phase": "pending", "recovery": "release-upgrade",
+                "retry_reason": "route-migration-required",
+                "retry_status": "blocked",
+            },
+        }
+        receipt = {
+            "branch": claim["branch"], "consumed": True,
+            "contract_version": "2.0.0", "factory_sha": source,
+            "head_sha": input_head, "passport_sha256": source_file,
+            "project": "relay", "receipt_sha256": receipt_digest,
+            "role": "reviewer", "route_plan_sha256": old_route,
+            "schema": "nysa.software-factory.transition-receipt/v1",
+            "stage": "RUN reviewer", "ticket": ticket,
+        }
+        migrations = [{
+            "from_factory_sha": source, "from_head_sha": input_head,
+            "from_passport_file_sha256": source_file,
+            "from_passport_sha256": "a" * 64,
+            "from_protected_base_sha": old_base,
+            "from_route_plan_sha256": old_route,
+            "schema": CONTROL.PASSPORT_MIGRATION_SCHEMA,
+            "to_factory_sha": self.release.name,
+            "to_head_sha": input_head,
+            "to_protected_base_sha": current_base,
+            "to_route_plan_sha256": old_route,
+        }, {
+            "from_factory_sha": self.release.name,
+            "from_head_sha": input_head,
+            "from_passport_file_sha256": parent_file,
+            "from_passport_sha256": parent_digest,
+            "from_protected_base_sha": current_base,
+            "from_route_plan_sha256": old_route,
+            "schema": CONTROL.PASSPORT_MIGRATION_SCHEMA,
+            "to_factory_sha": self.release.name,
+            "to_head_sha": current_head,
+            "to_protected_base_sha": current_base,
+            "to_route_plan_sha256": current_route,
+        }]
+        passport = {
+            "branch": claim["branch"], "current_stage": "FIX builder",
+            "current_state": "Review",
+            "factory_release_history": [
+                {"contract_version": "2.0.0", "factory_sha": source},
+                {"contract_version": "2.0.0",
+                 "factory_sha": self.release.name},
+            ],
+            "factory_sha": self.release.name, "head_sha": current_head,
+            "migration_history": migrations, "parent_digest": parent_digest,
+            "parent_file_sha256": parent_file,
+            "passport_sha256": "b" * 64, "protected_base_sha": current_base,
+            "publication_state": "validating",
+            "route_plan_sha256": current_route, "ticket": ticket,
+        }
+        passport_path = self.state / f"passports/{ticket}.json"
+        passport_path.parent.mkdir(mode=0o700)
+        CONTROL.write(passport_path, passport)
+        controller.prior_transition_tickets.add(ticket)
+        controller.transition_receipt = lambda *_args, **_kwargs: receipt
+        controller.authenticated_operator_passport = lambda _ticket: passport
+        terminal = {
+            "accounting_state": "abandoned_conservative",
+            "exit_status": "9", "kit_sha": source, "role": "reviewer",
+            "role_exit": "provider_failed", "role_head_before": input_head,
+            "route_id": "cursor-opus-v1", "run_id": "failed-reviewer",
+            "task_submitted": "1",
+            "transition_receipt_sha256": receipt_digest,
+        }
+        controller.terminal_for_receipt = lambda *_args: terminal
+        controller.ticket_release_current = lambda _claim: True
+        controller.remote_passport_valid = lambda _claim: True
+        controller.exact_route_migration_commit = lambda *_args, **_kwargs: True
+        environment = {
+            "FACTORY_KIT_TRUST_SCOPE": "qualification-candidate",
+            "FACTORY_QUALIFICATION_MODE": "isolated",
+        }
+
+        with patch.dict(os.environ, environment):
+            controller.readmit_prior_provider_failures([claim])
+
+        self.assertEqual(
+            (claim["status"], claim["receipt"], claim["role"]),
+            ("running", receipt_digest, "reviewer"),
+        )
+        self.assertNotIn(ticket, controller.prior_transition_tickets)
+        pending = copy.deepcopy(claim)
+        calls = []
+        controller.direct_model_identity_candidate = lambda *_args: False
+        controller.emit_attempt_terminal = lambda *_args: calls.append("terminal")
+        controller.json_call = lambda *args, **_kwargs: (
+            calls.append(args[:2])
+            or {"failed_run_id": terminal["run_id"]}
+        )
+        controller.migrate_passport = lambda *_args: calls.append("passport")
+        controller.event = lambda name, *_args, **_kwargs: calls.append(name)
+        self.assertTrue(controller.finish_pending_run(claim))
+        self.assertEqual(
+            (claim["status"], claim["receipt"], claim["role"]),
+            ("claimed", "", ""),
+        )
+        self.assertIn(("models", "fallback-auto"), calls)
+        self.assertIn("provider_fallback", calls)
+
+        claim = pending
+        controller.prior_transition_tickets.add(ticket)
+        controller.terminal_for_receipt = lambda *_args: {
+            **terminal, "route_id": "codex-gpt-5.6-sol",
+        }
+        with patch.dict(os.environ, environment):
+            controller.readmit_prior_provider_failures([claim])
+        self.assertIn(ticket, controller.prior_transition_tickets)
+
+        controller.terminal_for_receipt = lambda *_args: terminal
+        for name, qualification, mode in (
+            ("production", None, ""),
+            (
+                "initial",
+                {"generation": 1, "mode": "initial", "tickets": [ticket]},
+                "isolated",
+            ),
+            (
+                "takeover",
+                {"generation": 1, "mode": "successor", "tickets": [ticket]},
+                "takeover",
+            ),
+        ):
+            with self.subTest(authority=name):
+                claim = copy.deepcopy(pending)
+                controller.qualification = qualification
+                controller.prior_transition_tickets.add(ticket)
+                with patch.dict(os.environ, {
+                    "FACTORY_KIT_TRUST_SCOPE": (
+                        "qualification-candidate" if qualification else ""
+                    ),
+                    "FACTORY_QUALIFICATION_MODE": mode,
+                }):
+                    controller.readmit_prior_provider_failures([claim])
+                self.assertIn(ticket, controller.prior_transition_tickets)
+                self.assertEqual(
+                    (claim["status"], claim["receipt"], claim["role"]),
+                    ("running", receipt_digest, "reviewer"),
+                )
 
     def test_changed_state_machine_refusal_is_readmitted_ticket_locally(self) -> None:
         controller = CONTROL.Controller(self.args)

@@ -18,6 +18,7 @@ from urllib.parse import parse_qs, urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
 from effective_ticket import ticket_branch_prefix  # noqa: E402
+import operator_receipt  # noqa: E402
 from approval_evidence import (  # noqa: E402
     ApprovalEvidenceError,
     trusted_approval_continuation_paths,
@@ -27,6 +28,7 @@ from narrator_evidence import (  # noqa: E402
     MAX_NARRATOR_EVIDENCE_FILES,
     PNG_END,
     PNG_SIGNATURE,
+    authenticated_narrator_parent,
     trusted_narrator_evidence_paths,
 )
 from runtime_paths import canonical_factory_file  # noqa: E402
@@ -462,10 +464,70 @@ def preserved_refresh_metadata(
     }
 
 
+def trusted_legacy_approval_audit_paths(
+    workdir: Path, ticket: str, head: str, changed: set[str],
+) -> set[str]:
+    prefix = f"factory/receipts/{ticket}/approve-"
+    candidates = sorted(path for path in changed if path.startswith(prefix))
+    if len(candidates) != 1:
+        return set()
+    relative = candidates[0]
+    match = re.fullmatch(
+        rf"factory/receipts/{re.escape(ticket)}/approve-([1-9][0-9]*)\.json",
+        relative,
+    )
+    state_dir = Path(os.environ.get("FACTORY_CONTROLLER_STATE_DIR", ""))
+    if (
+        match is None
+        or not state_dir.is_absolute()
+        or not state_dir.is_dir()
+        or not (state_dir / "operator-receipts").is_dir()
+    ):
+        return set()
+    try:
+        if not re.fullmatch(
+            rf"100644 blob [0-9a-f]{{40}}\t{re.escape(relative)}",
+            git(workdir, "ls-tree", head, "--", relative),
+        ):
+            return set()
+        audit_text = run([
+            "git", "-C", str(workdir), "show", f"{head}:{relative}",
+        ]).stdout
+        audit = json.loads(audit_text)
+        if not isinstance(audit, dict):
+            return set()
+        bundle_blob = git(
+            workdir, "rev-parse",
+            f"{head}:factory/attestations/{ticket}/bundle.json",
+        )
+        receipt = operator_receipt.read_exact(
+            state_dir, ticket, "approve", audit.get("receipt_sha256", ""),
+            {"bundle_attestation_blob": bundle_blob},
+        )
+    except (
+        json.JSONDecodeError, OSError, Refusal, TypeError,
+        operator_receipt.OperatorReceiptError,
+    ):
+        return set()
+    if receipt is None or receipt.get("sequence") != int(match.group(1)):
+        return set()
+    expected = {
+        key: value for key, value in receipt.items()
+        if key not in {"nonce", "consumed_at_epoch"}
+    }
+    expected["consumed"] = False
+    expected["audit"] = "no-authority"
+    canonical = json.dumps(expected, indent=2, sort_keys=True) + "\n"
+    return {relative} if audit_text == canonical else set()
+
+
 def validate_review_lineage(product: Path, workdir: Path, ticket: str, head: str) -> None:
     reviewed = latest_reviewer_head(product, workdir, ticket)
     run(["git", "-C", str(workdir), "merge-base", "--is-ancestor", reviewed, head])
     changed = set(git(workdir, "diff", "--name-only", f"{reviewed}..{head}").splitlines())
+    ticket_text = git(workdir, "show", f"{head}:factory/tickets/{ticket}.md")
+    kit_shas = re.findall(r"^Kit-SHA:\s*([0-9a-f]{40})\s*$", ticket_text, re.MULTILINE)
+    kit_sha = kit_shas[0] if len(kit_shas) == 1 else ""
     route_path = f"factory/route-plans/{ticket}.json"
     trusted_metadata = {
         route_path,
@@ -477,7 +539,21 @@ def validate_review_lineage(product: Path, workdir: Path, ticket: str, head: str
         preserved_refresh_metadata(workdir, ticket, reviewed, head, changed)
     )
     trusted_metadata.update(
-        trusted_narrator_evidence_paths(workdir, ticket, reviewed, head, changed)
+        trusted_narrator_evidence_paths(
+            workdir, ticket, reviewed, head, changed,
+            authenticated_narrator_parent(
+                Path(os.environ.get("FACTORY_CONTROLLER_STATE_DIR", "")),
+                ticket,
+                os.environ.get("FACTORY_PROJECT", ""),
+                ticket_branch_prefix(product / "factory") + ticket,
+                kit_sha,
+                os.environ.get("FACTORY_RELEASE_CONTRACT_VERSION", ""),
+                head,
+            ),
+        )
+    )
+    trusted_metadata.update(
+        trusted_legacy_approval_audit_paths(workdir, ticket, head, changed)
     )
     approval_path = f"factory/attestations/{ticket}/approval.json"
     if approval_path in changed:
