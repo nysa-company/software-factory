@@ -8580,6 +8580,9 @@ class FactoryControllerTest(unittest.TestCase):
                 "attestation is required"
             ),
         )
+        stale["consumed"] = True
+        stale["consumed_at_epoch"] = 1
+        CONTROL.write(self.state / "T-110.json", stale)
         claim = {
             "blocked_reason": "route-migration-required",
             "branch": "ticket/T-110", "lease": current_lease,
@@ -8615,6 +8618,7 @@ class FactoryControllerTest(unittest.TestCase):
             )
             value = dict(stale)
             value.update(
+                consumed=False,
                 factory_sha=self.release.name,
                 head_sha="c" * 40,
                 lease_sha256=hashlib.sha256(current_lease.encode()).hexdigest(),
@@ -8623,6 +8627,7 @@ class FactoryControllerTest(unittest.TestCase):
                 route_plan_sha256="d" * 64,
                 stage="AWAIT-OPERATOR operator approval observed",
             )
+            value.pop("consumed_at_epoch", None)
             value.pop("receipt_sha256")
             value["receipt_sha256"] = hashlib.sha256(STATE.canonical({
                 key: item for key, item in value.items()

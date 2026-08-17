@@ -699,7 +699,9 @@ else:
             raise ValueError(mode)
         self.commit_and_push("refresh narrator evidence")
 
-    def prepare_approval_continuation(self, mode="valid", successor=False):
+    def prepare_approval_continuation(
+        self, mode="valid", successor=False, refreshed_review=False,
+    ):
         route_plan, journal = self.prepare_route_migration()
         approval_kit_sha = "d" * 40 if successor else KIT_SHA
         if successor:
@@ -716,6 +718,12 @@ else:
             for line in (self.product / "factory/runs/run-5.meta").read_text().splitlines()
             if line.startswith("role_head_before=")
         )
+        if refreshed_review:
+            self.prepare_control_refresh()
+            reviewed = subprocess.run(
+                ["git", "-C", self.product, "rev-parse", "HEAD"],
+                text=True, capture_output=True, check=True,
+            ).stdout.strip()
         branch_head = subprocess.run(
             ["git", "-C", self.product, "rev-parse", "HEAD"],
             text=True, capture_output=True, check=True,
@@ -733,7 +741,7 @@ else:
             "State: Building", "State: Awaiting Approval", 1,
         ))
         attestation_root = self.product / "factory/attestations/T-100"
-        attestation_root.mkdir(parents=True)
+        attestation_root.mkdir(parents=True, exist_ok=True)
         bundle_receipt = {
             "schema": "nysa.software-factory.ticket-bundle/v1",
             "ticket": "T-100",
@@ -1178,6 +1186,9 @@ else:
         self.prepare_control_refresh(
             prior_bundle_blob=bundle_blob, remove_bundle=True,
         )
+        attestation.write_text('{"schema":"new-bundle"}\n')
+        self.commit_and_push("attest replacement bundle")
+        self.sync_fake_pr_head()
         self.assertEqual(
             self.command(
                 contract="2.0.0", stage="RUN narrator", receipt="f" * 64,
@@ -1301,6 +1312,12 @@ else:
 
     def test_publication_accepts_exact_factory_approval_continuation(self):
         self.prepare_approval_continuation()
+        ready = self.publication_command()
+        self.assertEqual(ready["boundary"], "publication")
+        self.assertEqual(ready["status"], "ready")
+
+    def test_publication_accepts_refreshed_review_approval_continuation(self):
+        self.prepare_approval_continuation(refreshed_review=True)
         ready = self.publication_command()
         self.assertEqual(ready["boundary"], "publication")
         self.assertEqual(ready["status"], "ready")
