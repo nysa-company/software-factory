@@ -688,6 +688,13 @@ raise SystemExit(1 if failed else 0)
                 str(launcher), self.project, "qualification-run", "--json",
                 timeout=max(1, int(530 - (time.monotonic() - self.started))),
             )
+            if launched.returncode == 2:
+                reduced = self.sealed(
+                    str(launcher), self.project, "qualification", "--json",
+                    timeout=max(1, int(530 - (time.monotonic() - self.started))),
+                )
+                reason = json.loads(reduced.stdout).get("error", "unclassified")
+                self.fail(f"qualification reduction failed: {reason}")
             self.assertIn(launched.returncode, (0, 3), launched.stdout + launched.stderr)
             replay = json.loads(launched.stdout)
             new_events = [
