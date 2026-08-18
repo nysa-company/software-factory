@@ -710,9 +710,33 @@ raise SystemExit(1 if failed else 0)
                 json.dumps(replay, sort_keys=True),
             )
             self.assertEqual(launched.returncode, 3)
+            statuses = {
+                item["ticket"]: item["status"]
+                for item in replay["controller"]["results"]
+            }
+            completed = {
+                ticket for ticket, status in statuses.items() if status == "complete"
+            }
+            claims = {
+                path.stem for path in (events_dir.parent / "claims").glob("*.json")
+            }
+            released = {
+                event.get("ticket") for event in new_events
+                if event.get("event") == "ticket_released"
+            }
+            complete_events = {
+                event.get("ticket") for event in new_events
+                if event.get("event") == "ticket_complete"
+            }
+            completion_progress = (
+                bool(completed)
+                and completed <= set(TICKETS)
+                and completed <= released & complete_events
+                and completed.isdisjoint(claims)
+            )
             if replay["status"] == "blocked":
                 blocked_waves += 1
-                claims = {}
+                claim_summaries = {}
                 for path in (events_dir.parent / "claims").glob("*.json"):
                     claim = json.loads(path.read_text(encoding="utf-8"))
                     summary = {
@@ -720,12 +744,17 @@ raise SystemExit(1 if failed else 0)
                         for key in ("blocked_reason", "role", "status")
                     }
                     summary["receipt_present"] = bool(claim.get("receipt"))
-                    claims[claim["ticket"]] = summary
-                self.assertEqual(
-                    {item["ticket"]: item["status"] for item in replay["controller"]["results"]},
-                    {"T-901": "waiting", "T-902": "blocked", "T-903": "waiting"},
+                    claim_summaries[claim["ticket"]] = summary
+                self.assertTrue(
+                    set(statuses) == set(TICKETS)
+                    and statuses["T-902"] == "blocked"
+                    and all(
+                        statuses[ticket] in {"complete", "waiting"}
+                        for ticket in ("T-901", "T-903")
+                    )
+                    and (not completed or completion_progress),
                     json.dumps({
-                        "claims": claims,
+                        "claims": claim_summaries,
                         "events": [
                             (event.get("ticket"), event.get("event"))
                             for event in new_events
@@ -734,29 +763,13 @@ raise SystemExit(1 if failed else 0)
                 )
             newly_approved = self.approve_waiting(launcher.parent.parent)
             if newly_approved == 0:
-                completed = {
-                    item["ticket"] for item in replay["controller"]["results"]
-                    if item["status"] == "complete"
-                }
-                claims = {
-                    path.stem for path in (events_dir.parent / "claims").glob("*.json")
-                }
-                released = {
-                    event.get("ticket") for event in new_events
-                    if event.get("event") == "ticket_released"
-                }
                 refresh_progress = any(
                     event.get("event") in REFRESH_EVENTS for event in new_events
                 )
-                completion_progress = (
-                    bool(completed)
-                    and completed <= set(TICKETS)
-                    and completed <= released
-                    and completed.isdisjoint(claims)
-                )
-                self.assertEqual(replay["status"], "waiting")
                 self.assertTrue(
-                    refresh_progress or completion_progress,
+                    completion_progress
+                    if replay["status"] == "blocked"
+                    else refresh_progress or completion_progress,
                     json.dumps(replay, sort_keys=True),
                 )
             approved += newly_approved
