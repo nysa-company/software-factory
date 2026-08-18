@@ -787,6 +787,12 @@ everything the Factory actually enforces lives here.
 
 ## Log
 
+## 2026-08-18 — Public dual license is AGPLv3 plus paid commercial
+
+Category: Decision
+
+The kit repository stays public and follows the Ultralytics YOLO licensing model: `LICENSE` is the pure AGPL-3.0 text (so GitHub license detection works) and the dual-license framing lives in the README. AGPL-3.0 covers students, researchers, and non-commercial use for free; organizations that want proprietary or closed hosted use without AGPL source-disclosure buy a commercial license from Nysa via a GitHub issue titled `Commercial license`. Vendored `vendor/spec-kit/` remains MIT from upstream.
+
 ## 2026-08-14 — Local release canary became one command
 
 Category: System change
