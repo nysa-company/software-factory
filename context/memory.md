@@ -6925,4 +6925,7 @@ enter reduction, the controller refreshes protected main and validates the
 full manifest target through the existing protected Done authority. A partial
 terminal set returns the existing `waiting_for_target` status with its current
 results preserved; reducer evidence is not attempted until the cohort is
-durably terminal.
+durably terminal. After response loss, an empty recovered invocation may
+reconstruct complete results only when the refreshed protected authority
+validates the entire target; incomplete empty results retain the existing
+successor-migration wait path.

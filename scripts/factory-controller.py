@@ -13331,14 +13331,24 @@ class Controller:
             else "error"
         )
         if (
-            self.qualification and ordered and active == 0
-            and all(item["status"] == "complete" for item in ordered)
+            self.qualification and active == 0
+            and (
+                not ordered
+                or all(item["status"] == "complete" for item in ordered)
+            )
         ):
             self.protected_main_head()
-            if sum(
-                self.product_ticket_done(ticket)
-                for ticket in self.qualification["tickets"]
-            ) < self.qualification["target_done"]:
+            done = sorted(
+                ticket for ticket in self.qualification["tickets"]
+                if self.product_ticket_done(ticket)
+            )
+            if len(done) == self.qualification["target_done"]:
+                if not ordered:
+                    ordered = [
+                        {"status": "complete", "ticket": ticket}
+                        for ticket in done
+                    ]
+            elif ordered:
                 status = "waiting_for_target"
         return {
             "active": active,

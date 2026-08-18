@@ -1499,7 +1499,9 @@ Because controller results describe only the current invocation, a terminal
 result subset is not cohort completion. Before returning an apparent final
 qualification wave, the controller refreshes protected main and returns
 `waiting_for_target` until the manifest's full target count has validated Done
-evidence; only then may the driver enter reduction.
+evidence; only then may the driver enter reduction. If a restart loses the
+final invocation response after all targets become Done, that same protected
+proof reconstructs complete results so reduction remains reachable.
 Every qualification event also binds the exact protected manifest generation
 and canonical manifest digest. Reduction selects only that boundary, rejects
 partial or malformed current-boundary metadata, and leaves older same-release

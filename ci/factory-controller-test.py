@@ -16173,6 +16173,47 @@ class FactoryControllerTest(unittest.TestCase):
         )
         self.assertEqual(refreshed, [True])
 
+    def test_qualification_empty_restart_recovers_protected_targets(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        tickets = ["T-110", "T-111", "T-112"]
+        controller.qualification = {"target_done": 3, "tickets": tickets}
+        controller.capacity = 3
+        controller.load_claims = lambda: []
+        controller.qualification_admission_preflight = lambda _claims: None
+        controller.qualification_marker = lambda *_args, **_kwargs: True
+        controller.clear_admission_failure = lambda: None
+        controller.record_qualification_done_targets = lambda: None
+        controller.recover_missing_passport_claims = lambda _claims: None
+        controller.recover_upgraded_claims = lambda _claims: None
+        controller.recover_terminal_exports = lambda _claims: None
+        controller.recover_repaired_failures = lambda _claims: None
+        controller.claim_new = lambda current, *_args: current
+        controller.pin_routes = lambda _claims: []
+        controller.event = lambda *_args, **_kwargs: None
+        done = set(tickets)
+        refreshed = []
+        observed = []
+        controller.protected_main_head = lambda: refreshed.append(True) or "f" * 40
+
+        def protected_done(ticket):
+            observed.append(len(refreshed))
+            return ticket in done
+
+        controller.product_ticket_done = protected_done
+
+        recovered = controller.reconcile()
+        done.clear()
+        unfinished = controller.reconcile()
+
+        self.assertEqual(recovered["status"], "ok")
+        self.assertEqual(recovered["results"], [
+            {"status": "complete", "ticket": ticket} for ticket in tickets
+        ])
+        self.assertEqual(unfinished["status"], "ok")
+        self.assertEqual(unfinished["results"], [])
+        self.assertEqual(refreshed, [True, True])
+        self.assertEqual(observed, [1, 1, 1, 2, 2, 2])
+
     def test_qualification_controller_error_stops_sibling_next_role_launches(
         self,
     ) -> None:
