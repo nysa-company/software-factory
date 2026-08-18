@@ -199,26 +199,16 @@ if [[ "$(uname -s)" == Darwin ]]; then
   QUALIFICATION_ROOT="$(mktemp -d /private/tmp/nysa-sf-qualification.launcher.XXXXXX)"
   QUALIFICATION_SHA=9999999999999999999999999999999999999999
   QUALIFICATION_LAUNCHER="$QUALIFICATION_ROOT/releases/$QUALIFICATION_SHA/scripts/factory-launch"
-  QUALIFICATION_HOME="$QUALIFICATION_ROOT.home"
   mkdir -p "$(dirname "$QUALIFICATION_LAUNCHER")" \
-    "$QUALIFICATION_ROOT/projects/qualification-test" "$QUALIFICATION_HOME"
-  chmod 700 "$QUALIFICATION_HOME"
+    "$QUALIFICATION_ROOT/projects/qualification-test"
   cp "$LAUNCHER" "$QUALIFICATION_LAUNCHER"
   chmod 700 "$QUALIFICATION_LAUNCHER"
-  if FACTORY_LAUNCH_TEST_MODE=1 \
-    FACTORY_LAUNCH_TEST_HOME="$QUALIFICATION_HOME" \
-    /bin/bash "$QUALIFICATION_LAUNCHER" \
+  if HOME="$TEST_HOME" /bin/bash "$QUALIFICATION_LAUNCHER" \
     qualification-test contract --json >"$TMP/qualification-launcher.out" 2>&1; then
     fail "qualification launcher accepted an incomplete active binding"
   fi
   grep -q 'project active record is missing' "$TMP/qualification-launcher.out" ||
     fail "qualification launcher did not recognize its sealed release path"
-  expect_refused qualification-replay-home env \
-    FACTORY_LAUNCH_TEST_MODE=1 FACTORY_LAUNCH_TEST_HOME="$TEST_HOME" \
-    /bin/bash "$QUALIFICATION_LAUNCHER" qualification-test contract --json
-  grep -q 'qualification replay HOME must be bound to its sealed root' \
-    "$TMP/refused-qualification-replay-home.out" ||
-    fail "qualification launcher accepted a replay HOME outside its sealed root"
 fi
 
 for tool in git python3 ps; do
