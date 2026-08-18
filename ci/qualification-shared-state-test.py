@@ -674,8 +674,9 @@ raise SystemExit(1 if failed else 0)
         launcher = Path(value["launcher"])
         self.assertTrue(launcher.is_file())
         approved = 0
+        blocked_waves = 0
         restarts = 0
-        for _ in range(4):
+        for _ in range(6):
             launched = self.sealed(
                 str(launcher), self.project, "qualification-run", "--json",
                 timeout=max(1, int(530 - (time.monotonic() - self.started))),
@@ -686,15 +687,24 @@ raise SystemExit(1 if failed else 0)
             if replay["status"] == "green":
                 self.assertEqual(launched.returncode, 0)
                 break
-            self.assertEqual(replay["status"], "waiting", json.dumps(replay, sort_keys=True))
+            self.assertIn(
+                replay["status"], {"blocked", "waiting"},
+                json.dumps(replay, sort_keys=True),
+            )
             self.assertEqual(launched.returncode, 3)
+            if replay["status"] == "blocked":
+                blocked_waves += 1
+                self.assertEqual(
+                    {item["ticket"]: item["status"] for item in replay["controller"]["results"]},
+                    {"T-901": "waiting", "T-902": "blocked", "T-903": "waiting"},
+                )
             newly_approved = self.approve_waiting(Path(value["release_path"]))
             self.assertGreater(newly_approved, 0, json.dumps(replay, sort_keys=True))
             approved += newly_approved
         else:
             self.fail("shared qualification did not converge")
         self.assertEqual(replay["status"], "green", json.dumps(replay, sort_keys=True))
-        self.assertEqual(approved, 6)
+        self.assertEqual(blocked_waves, 1)
         self.assertEqual(restarts, 1)
         events = [
             json.loads(path.read_text(encoding="utf-8"))
@@ -711,6 +721,10 @@ raise SystemExit(1 if failed else 0)
             }
         ]
         self.assertEqual(len(refreshes), 3)
+        self.assertEqual(
+            approved,
+            3 + sum(event.get("event") == "protected_base_refreshed" for event in events),
+        )
         calls = json.loads(self.provider_calls.read_text(encoding="utf-8"))
         expected = {
             f"{ticket}:{role}:agent": 1
