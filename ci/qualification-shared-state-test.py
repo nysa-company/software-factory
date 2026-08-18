@@ -707,13 +707,33 @@ raise SystemExit(1 if failed else 0)
                 )
             newly_approved = self.approve_waiting(launcher.parent.parent)
             if newly_approved == 0:
+                completed = {
+                    item["ticket"] for item in replay["controller"]["results"]
+                    if item["status"] == "complete"
+                }
+                claims = {
+                    path.stem for path in (events_dir.parent / "claims").glob("*.json")
+                }
                 new_events = [
                     json.loads(path.read_text(encoding="utf-8"))
                     for path in events_dir.glob("*.json") if path not in prior_events
                 ]
+                released = {
+                    event.get("ticket") for event in new_events
+                    if event.get("event") == "ticket_released"
+                }
+                refresh_progress = any(
+                    event.get("event") in REFRESH_EVENTS for event in new_events
+                )
+                completion_progress = (
+                    bool(completed)
+                    and completed <= set(TICKETS)
+                    and completed <= released
+                    and completed.isdisjoint(claims)
+                )
                 self.assertEqual(replay["status"], "waiting")
                 self.assertTrue(
-                    any(event.get("event") in REFRESH_EVENTS for event in new_events),
+                    refresh_progress or completion_progress,
                     json.dumps(replay, sort_keys=True),
                 )
             approved += newly_approved
