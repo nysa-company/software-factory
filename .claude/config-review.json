@@ -1,5 +1,5 @@
 {
-  "next-review": "2026-08-13",
+  "next-review": "2026-09-18",
   "cadence-months": 1,
-  "scope": "LSP, plugins, hook set, CLAUDE.md/AGENTS.md staleness, skill candidates (rule of three). The session runs this review itself when due — the user only approves adoptions."
+  "scope": "LSP, plugins, hook set, CLAUDE.md/AGENTS.md staleness, skill candidates (rule of three). The session runs this review itself when due \u2014 the user only approves adoptions."
 }
