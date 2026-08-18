@@ -6817,3 +6817,15 @@ Category: Reliability
 All four protected-main macOS groups run on separate hosted runners. The small
 per-push compute cost is accepted while Factory qualification is stabilizing
 because serial execution delayed candidate feedback by roughly 30–40 minutes.
+
+## 2026-08-17 — Decision 494: Qualification defects reproduce without providers
+
+Category: Reliability
+
+One fast replay composes the existing deterministic qualification regressions
+for terminal adoption and partial migration, publication and closeout restart,
+provider handoff fallback, and three-ticket reduction. Named refusal cases keep
+incomplete cohorts waiting and reject repeated restart, changed reducer,
+unbound handoff, unbound fallback, and unsafe closeout evidence. The replay
+strips credentials, blocks outbound tools, uses a disposable home, refuses
+repository mutation, and fails after 120 seconds.

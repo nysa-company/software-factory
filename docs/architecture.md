@@ -155,6 +155,17 @@ GitHub runs share the same grouping; an explicit whole-shard command remains
 sequential for diagnosis. Suites within each group keep their existing order,
 and fixtures remain group-isolated.
 
+The credential-free qualification-lane replay composes existing driver,
+controller, state-machine, handoff, fallback, and reducer regressions around
+four convergence checkpoints: terminal adoption and partial migration,
+publication refresh and closeout across restart, provider fallback with
+retained handoff, and a green three-ticket reduction. Explicit refusal cases
+also prove that incomplete cohorts remain waiting, malformed restart or reducer
+evidence fails closed, unbound fallback or handoff evidence cannot advance,
+and unsafe closeout cannot complete. The replay runs under a disposable home
+with credentials removed and outbound tools blocked, refuses repository
+mutation, and has a 120-second total deadline.
+
 Installation requires remote full-suite evidence for an exact `origin/main`
 SHA with a successful authenticated GitHub Actions push run whose three Linux,
 three macOS, aggregate, and immutability jobs all passed. It then runs a
