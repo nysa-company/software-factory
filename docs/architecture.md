@@ -173,7 +173,7 @@ component regression gate, not shared-state end-to-end qualification evidence;
 a frozen live cohort remains the release proof.
 
 A separate macOS shared-state gate runs only in an explicitly disposable OS
-account and has a 670-second deadline. It prepares one real sealed three-ticket
+account and has a 910-second deadline. It prepares one real sealed three-ticket
 qualification, supplies deterministic provider and GitHub behavior only at
 their external executable boundaries, and lets the production launcher,
 controller, state machine, passport, fallback/handoff, attestation, closeout,

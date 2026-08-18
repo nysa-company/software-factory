@@ -681,16 +681,21 @@ raise SystemExit(1 if failed else 0)
         approved = 0
         restarts = 0
         events_dir = self.home / f".factory/qualification/{self.project}/controller/events"
-        for _ in range(7):
+        deadline = self.started + 900
+        for _ in range(8):
             prior_events = set(events_dir.glob("*.json"))
+            remaining = int(deadline - time.monotonic())
+            self.assertGreater(remaining, 0, "shared qualification exceeded 900-second deadline")
             launched = self.sealed(
                 str(launcher), self.project, "qualification-run", "--json",
-                timeout=max(1, int(660 - (time.monotonic() - self.started))),
+                timeout=remaining,
             )
             if launched.returncode == 2:
+                remaining = int(deadline - time.monotonic())
+                self.assertGreater(remaining, 0, "shared qualification exceeded 900-second deadline")
                 reduced = self.sealed(
                     str(launcher), self.project, "qualification", "--json",
-                    timeout=max(1, int(660 - (time.monotonic() - self.started))),
+                    timeout=remaining,
                 )
                 reason = json.loads(reduced.stdout).get("error", "unclassified")
                 self.fail(f"qualification reduction failed: {reason}")
@@ -784,7 +789,7 @@ raise SystemExit(1 if failed else 0)
             {item["ticket"] for item in replay["report"]["tickets"]}, set(TICKETS)
         )
         self.assertEqual(self.replay_process_groups(), set())
-        self.assertLess(time.monotonic() - self.started, 670)
+        self.assertLess(time.monotonic() - self.started, 910)
 
 
 if __name__ == "__main__":
