@@ -300,6 +300,8 @@ claim remains parked until a successor release contains the repair.
 The normal operator entrypoint is the sealed candidate's
 `factory-launch <project> qualification-run --json`. It performs that Doctor
 gate, the mandatory restart, reconciliation, and terminal reduction in code.
+An initial `doctor_not_ready` result includes the exact sanitized Doctor report
+so the failed check remains diagnosable without repeating the sealed command.
 For the exact authenticated successor compact-repair warning, it also projects
 the one-use qualification resume receipt after the sealed repair check. It does
 not create a product audit commit or grant the production controller authority

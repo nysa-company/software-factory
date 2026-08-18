@@ -6880,3 +6880,12 @@ unchanged tracked link and the first repair must preserve it while carrying
 only the intended file. The remaining scenarios are component fixtures, so the
 replay is not shared-state or sealed end-to-end qualification evidence; the
 frozen live cohort remains the release proof.
+
+## 2026-08-18 — Decision 499: Qualification preserves blocked Doctor evidence
+
+Category: Reliability
+
+When the qualification driver refuses its initial Doctor gate, its typed result
+includes the exact sanitized Doctor document it evaluated. Operators can name
+the failed check without repeating the sealed command; the gate remains
+fail-closed and does not retry, weaken readiness, or enter reconciliation.
