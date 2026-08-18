@@ -1981,6 +1981,9 @@ while unrelated provider entry cannot starve a heartbeat. Each heartbeat owns
 an isolated process group, uses lock-free signal handling, and publishes its
 PID/start identity beside the wrapper so ordinary completion and the kill
 switch can apply bounded TERM-to-KILL shutdown without PID-reuse risk.
+Fresh dispatcher claims wait up to 60 seconds for a transient provider
+pre-GO launch-lock holder, then retain the existing typed refusal without
+reclaiming the lock. KILL and MAINTENANCE are rechecked after acquisition.
 
 The retired Contract 1.6/1.7 external supervisor was deliberately one-shot: one invocation
 asks the stable launcher for one deterministic claim, starts at most one

@@ -12811,11 +12811,26 @@ class Controller:
             claim["status"] = "blocked"
             claim["blocked_reason"] = "controller-error"
             self.save_claim(claim)
-            self.withdraw_publication(claim)
-            if not self.role_active(claim):
-                self.release_ticket_lease(claim)
+            cleanup_deferred = []
+            for name, cleanup in (
+                ("publication", lambda: self.withdraw_publication(claim)),
+                ("lease", lambda: self.release_ticket_lease(claim)),
+            ):
+                if name == "lease" and (
+                    self.role_active(claim)
+                    or not DIGEST.fullmatch(claim.get("lease", ""))
+                ):
+                    continue
+                try:
+                    cleanup()
+                except (
+                    ControllerError, json.JSONDecodeError, OSError,
+                    subprocess.SubprocessError, UnicodeError,
+                ):
+                    cleanup_deferred.append(name)
             self.event(
                 "controller_error", claim["ticket"],
+                cleanup_deferred=cleanup_deferred,
                 error=safe_error(error),
                 failure_class=(
                     "factory_defect" if isinstance(error, FactoryDefect)
