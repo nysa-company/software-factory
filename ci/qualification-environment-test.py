@@ -1855,6 +1855,76 @@ class QualificationEnvironmentTest(unittest.TestCase):
         self.assertEqual(len(mapping["tickets"]), 3)
         self.assertEqual(run(self.product, "git", "status", "--porcelain"), "")
 
+    def test_unconsumed_ready_receipt_reaches_materialization_replay(self) -> None:
+        args = argparse.Namespace(
+            factory_root=self.factory, product_root=self.product,
+            project="relay", root=self.root,
+        )
+
+        def interrupt(_factory, _product, map_path, _ledger_path, state_dir):
+            receipt = ENVIRONMENT.operator_receipt.issue(
+                state_dir, "T-101", "ready", {},
+            )
+            mapping = ENVIRONMENT.read(map_path)
+            mapping["tickets"]["T-101"] = {
+                "operator_fields_initialized": True,
+                "operator": {
+                    "observed_at": receipt["issued_at"],
+                    "receipt_sha256": receipt["receipt_sha256"],
+                    "state": "Ready",
+                    "state_base": "backlog",
+                },
+            }
+            mapping["_sync"]["selected_ticket_success_at"] = {
+                "T-101": "2026-08-18T00:00:00Z",
+            }
+            ENVIRONMENT.replace(map_path, mapping)
+            raise ENVIRONMENT.EnvironmentError("simulated materialization failure")
+
+        with (
+            mock.patch.object(
+                ENVIRONMENT, "initialize_selected_operator", side_effect=interrupt,
+            ),
+            self.assertRaisesRegex(
+                ENVIRONMENT.EnvironmentError, "simulated materialization failure",
+            ),
+        ):
+            ENVIRONMENT.prepare(args)
+
+        map_path = (
+            self.home
+            / ".factory/qualification/relay/operator/operator-map.json"
+        )
+        exact = ENVIRONMENT.read(map_path)
+        changed = json.loads(json.dumps(exact))
+        changed["tickets"]["T-101"]["operator"]["receipt_sha256"] = "f" * 64
+        ENVIRONMENT.replace(map_path, changed)
+        with (
+            mock.patch.object(
+                ENVIRONMENT, "initialize_selected_operator",
+                side_effect=AssertionError("changed projection must not replay"),
+            ),
+            self.assertRaisesRegex(
+                ENVIRONMENT.EnvironmentError, "qualification controller is active",
+            ),
+        ):
+            ENVIRONMENT.prepare(args)
+        ENVIRONMENT.replace(map_path, exact)
+
+        with (
+            mock.patch.object(
+                ENVIRONMENT, "initialize_selected_operator",
+                side_effect=ENVIRONMENT.EnvironmentError(
+                    "operator materialization replay reached"
+                ),
+            ),
+            self.assertRaisesRegex(
+                ENVIRONMENT.EnvironmentError,
+                "operator materialization replay reached",
+            ),
+        ):
+            ENVIRONMENT.prepare(args)
+
     def test_partial_bootstrap_ignores_later_seed_change(self) -> None:
         args = argparse.Namespace(
             factory_root=self.factory, product_root=self.product,
@@ -2138,6 +2208,60 @@ class QualificationEnvironmentTest(unittest.TestCase):
             self.assertEqual(
                 call.kwargs["env"]["FACTORY_CONTROLLER_STATE_DIR"], str(state_dir),
             )
+
+    def test_selected_operator_retries_pending_ready_projection(self) -> None:
+        mapping = self.workspace / "pending-ready-operator-map.json"
+        ENVIRONMENT.write(mapping, {
+            "_config": {},
+            "_sync": {"selected_ticket_success_at": {
+                "T-101": "2026-08-18T00:00:00Z",
+            }},
+            "initiatives": {},
+            "tickets": {
+                "T-101": {
+                    "operator_fields_initialized": True,
+                    "operator": {
+                        "observed_at": "2026-08-18T00:00:00Z",
+                        "receipt_sha256": "a" * 64,
+                        "state": "Ready",
+                        "state_base": "backlog",
+                    },
+                },
+            },
+        })
+        ledger = self.workspace / "pending-ready-runtime-ledger.csv"
+        state_dir = self.workspace / "pending-ready-controller"
+        commands = []
+
+        def complete(command, **_kwargs):
+            commands.append(command)
+            if "operator-cli.py" in command[1]:
+                ticket = command[-1]
+                value = ENVIRONMENT.read(mapping)
+                entry = value["tickets"].setdefault(ticket, {})
+                entry["operator_fields_initialized"] = True
+                entry.pop("operator", None)
+                value["_sync"].setdefault(
+                    "selected_ticket_success_at", {}
+                )[ticket] = "2026-08-18T00:01:00Z"
+                ENVIRONMENT.replace(mapping, value)
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        with (
+            mock.patch.object(
+                ENVIRONMENT, "committed_ticket",
+                return_value=("State: Backlog\n", "HEAD"),
+            ),
+            mock.patch.object(ENVIRONMENT.subprocess, "run", side_effect=complete),
+        ):
+            ENVIRONMENT.initialize_selected_operator(
+                self.factory, self.product, mapping, ledger, state_dir,
+            )
+
+        self.assertEqual(
+            [(command[-3], command[-1]) for command in commands[:3]],
+            [("ready", "T-101"), ("ready", "T-102"), ("ready", "T-103")],
+        )
 
     def test_selected_operator_readies_backlog_cohort(self) -> None:
         mapping = self.workspace / "backlog-operator-map.json"

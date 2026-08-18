@@ -127,8 +127,11 @@ everything the Factory actually enforces lives here.
   release from a same-directory temporary tree, and writes the environment
   before the registry. Torn, mismatched, active, or unexpected state refuses
   without deletion. A pre-publication controller may retain only the exact
-  owner-only locks and consumed Ready receipts created for selected Backlog
-  materialization; every other controller artifact still refuses. The signed
+  owner-only locks and Ready receipts created for selected Backlog
+  materialization. A consumed receipt is complete; one unconsumed receipt is
+  replayable only with its exact pending Ready map projection, after which the
+  existing idempotent materializer runs again. Every other controller artifact
+  still refuses. The signed
   safe-pause restore boundary remains unchanged.
 - Selected-only Linear initialization uses one bounded exact-title query and a
   ticket-, team-, Project-, and title-bound create intent. It persists a
@@ -6829,3 +6832,13 @@ incomplete cohorts waiting and reject repeated restart, changed reducer,
 unbound handoff, unbound fallback, and unsafe closeout evidence. The replay
 strips credentials, blocks outbound tools, uses a disposable home, refuses
 repository mutation, and fails after 120 seconds.
+
+## 2026-08-17 — Decision 495: Qualification replays interrupted Ready materialization
+
+Category: Reliability
+
+Fresh qualification may resume one exact pre-publication Ready receipt that is
+still unconsumed only when the lane-local operator map carries its byte-equal
+pending Ready projection. Retry calls the existing idempotent Git materializer,
+then continues through the ordinary consumed-and-cleared prefix. Foreign,
+changed, malformed, or post-publication pending authority remains fail-closed.

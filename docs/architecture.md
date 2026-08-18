@@ -162,7 +162,8 @@ publication refresh and closeout across restart, provider fallback with
 retained handoff, and a green three-ticket reduction. Explicit refusal cases
 also prove that incomplete cohorts remain waiting, malformed restart or reducer
 evidence fails closed, unbound fallback or handoff evidence cannot advance,
-and unsafe closeout cannot complete. The replay runs under a disposable home
+unsafe closeout cannot complete, and interrupted operator Ready materialization
+reuses its exact receipt instead of stranding preparation. The replay runs under a disposable home
 with credentials removed and outbound tools blocked, refuses repository
 mutation, and has a 120-second total deadline.
 
@@ -574,7 +575,7 @@ state-machine envelope: schema, status, ticket, action, detail, receipt digest,
 typed stage, and exact stage-to-role mapping. Any mutation blocks and releases
 the lease before provider or publication work.
 Operator authority is expressed entirely through one-use receipts (`scripts/lib/operator_receipt.py`, issued by `scripts/operator-cli.py`), anchored in the controller's state directory. There is no external system to reconcile, poll, or retry against, so there is no scheduled cycle, quota cooldown, or comment/description sync to describe: `factory/operator-map.json` is computed on demand from committed ticket state and consumed receipts, each map mutation owns only a short map lock, and staleness has no meaning for a pure projection. During ordinary admission, malformed dependency syntax is isolated to that exact ticket and reported in controller results, events, and incident evidence while eligible siblings continue. The same defect in a selected qualification ticket remains globally fail-closed for the sealed cohort. A missing operator initiative remains authoritative, but if it removes a Ready ticket's effective initiative, admission emits a named `initiative_missing` refusal while eligible siblings continue. Initiative assignment is a direct ticket-only Git commit setting `Initiative:` — there is no external Project object to mark, adopt, or reconcile.
-Qualification preparation applies the same operator lifecycle to its fixed cohort: a selected Backlog ticket receives a one-use Ready receipt and local ticket-branch materialization, while an already-durable Ready ticket needs only projection initialization. Admission accepts the normal consumed-and-cleared projection after materialization but still rejects malformed or uninitialized entries. Because the reducer proves protected GitHub publication truth, preparation binds the certified push origin to the exact repository declared by `factory/PROJECT.env` and refuses a local-only origin before it publishes lane state. After bounded historical-object hydration, preparation also requires every dependency outside the cohort to satisfy the shared protected dependency predicate: normal terminal evidence or one exact protected dependency-fulfillment receipt. Later independently authorized batches live under an immutable directory named by their target Factory SHA; the original flat batch remains valid and unchanged. An isolated lane is never published with a dependency that dispatch cannot honor.
+Qualification preparation applies the same operator lifecycle to its fixed cohort: a selected Backlog ticket receives a one-use Ready receipt and local ticket-branch materialization, while an already-durable Ready ticket needs only projection initialization. Admission accepts the normal consumed-and-cleared projection after materialization. If Git materialization stops first, preparation accepts only the exact unconsumed Ready receipt paired with its byte-equal pending map projection and calls the existing idempotent materializer again; every other pending, malformed, or uninitialized entry remains refused. Because the reducer proves protected GitHub publication truth, preparation binds the certified push origin to the exact repository declared by `factory/PROJECT.env` and refuses a local-only origin before it publishes lane state. After bounded historical-object hydration, preparation also requires every dependency outside the cohort to satisfy the shared protected dependency predicate: normal terminal evidence or one exact protected dependency-fulfillment receipt. Later independently authorized batches live under an immutable directory named by their target Factory SHA; the original flat batch remains valid and unchanged. An isolated lane is never published with a dependency that dispatch cannot honor.
 Qualification role sequencing treats the ticket at the sealed product SHA as
 the immutable prior epoch. One shared read-only projection requires every
 parser-recognized spec, review, void, and semantic-authorization control line
@@ -739,8 +740,11 @@ predecessor, materialization remnant, active controller/provider, or unexpected
 entry refuses without deletion. This does not widen the signed safe-pause
 `--restore` boundary and adds no cleanup authority.
 The pre-publication controller prefix may retain only the exact owner-only
-locks and consumed Ready receipts created while materializing the selected
-Backlog cohort. Those zero-authority audit records are validated on replay;
+locks and Ready receipts created while materializing the selected Backlog
+cohort. A consumed receipt is the ordinary completed prefix. One unconsumed
+receipt is replayable only when the lane map carries its exact pending Ready
+projection; retry invokes the same idempotent materializer before continuing.
+Those records are validated on replay;
 claims, passports, runs, other receipts, or malformed entries still refuse.
 Initial create or adoption
 uses one bounded exact-title query. Before creation it records a ticket-, team-,
