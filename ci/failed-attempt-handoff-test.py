@@ -22,6 +22,7 @@ from failed_attempt_handoff import (  # noqa: E402
     build_handoff_commit,
     preview_handoff,
     revalidate_handoff,
+    validate_handoff_commit,
 )
 import failed_attempt_handoff as HANDOFF  # noqa: E402
 
@@ -321,6 +322,57 @@ class HandoffTest(unittest.TestCase):
                 self.repo, baseline, git(self.repo, "rev-parse", "HEAD"),
                 "builder", self.policy,
             )
+
+    def test_preview_and_replay_preserve_only_exact_tracked_symlinks(self):
+        (self.repo / "skills").mkdir()
+        (self.repo / "skills/README.md").write_text("# Skills\n")
+        (self.repo / ".claude").mkdir()
+        link = self.repo / ".claude/skills"
+        link.symlink_to("../skills")
+        git(self.repo, "add", "skills", ".claude/skills")
+        git(self.repo, "commit", "-qm", "add repository skill bridge")
+        git(self.repo, "push", "-q", "origin", "main")
+        self.head = git(self.repo, "rev-parse", "HEAD")
+
+        (self.repo / "src/kept.txt").write_text("handoff\n")
+        preview = self.preview()
+        self.assertEqual([entry.path for entry in preview.entries], ["src/kept.txt"])
+        result = build_handoff_commit(
+            preview,
+            self.policy,
+            revision_hash="a" * 64,
+            commit_timestamp="1784390400 +0000",
+            journal_content=b'{"schema":"ticket-model-route-journal/v2"}\n',
+        )
+        validate_handoff_commit(
+            self.repo,
+            commit=result.commit,
+            role="builder",
+            provider_scan_base=self.head,
+            policy=self.policy,
+            expected_snapshot_digest=preview.snapshot_digest,
+            expected_revision_hash="a" * 64,
+            expected_subject="Preserve failed attempt for trusted handoff",
+        )
+        self.assertEqual(
+            git(self.repo, "show", f"{result.commit}:.claude/skills"), "../skills"
+        )
+
+        for target, staged in (("../other", False), ("../other", True)):
+            with self.subTest(target=target, staged=staged):
+                link.unlink()
+                link.symlink_to(target)
+                if staged:
+                    git(self.repo, "add", ".claude/skills")
+                with self.assertRaisesRegex(HandoffError, "symlink"):
+                    self.preview()
+                link.unlink()
+                link.symlink_to("../skills")
+                git(self.repo, "add", ".claude/skills")
+
+        link.unlink()
+        with self.assertRaisesRegex(HandoffError, "symlink"):
+            self.preview()
 
     def test_rejects_path_boundary_protected_binary_large_and_secret_content(self):
         cases = (

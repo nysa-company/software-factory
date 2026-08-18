@@ -200,10 +200,12 @@ are identical; only the lane's mutable runtime file is isolated.
 
 Failed-attempt handoff snapshots cover the Git tree, index, and non-ignored
 untracked files. Git-ignored dependency/build trees are outside that snapshot;
-every tracked or non-ignored symlink, hardlink, special file, nested repository,
-unsafe mode, or unsafe parent path remains forbidden.
-Historical committed-role validation may carry an unchanged symlink from its
-authenticated baseline, but any added, removed, or changed symlink still fails.
+an unchanged tracked symlink may cross preview and replay only when its Git
+tree blob, index entry, and race-checked worktree target are exact. Added,
+removed, changed, staged, or non-ignored untracked symlinks remain forbidden,
+as do hardlinks, special files, nested repositories, unsafe modes, and unsafe
+parent paths. Historical committed-role validation applies the same unchanged
+baseline rule.
 
 ```bash
 # ~/.factory/global.env — no credentials in this file

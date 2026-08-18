@@ -7,7 +7,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Product-agnostic factory kit; product repositories carry only their factory state and CI integration.
 - Durable decisions use repository-local numbering beginning at Decision 1.
 - Stable operating truth lives in `docs/`; prompts, templates, and evidence stay colocated with consumers. The operator preflight hydrates only evidence-bound immutable objects, batches read-only object checks, aggregates activation blockers, and makes network review explicit before certification. Qualification validates selected remote branches and exact prior-cohort control retries before publication, shares protected dependency truth, counts only role-control evidence appended after its sealed product SHA, preserves one exact-head retry for a parked preview timeout, reacquires parked semantic or contract-repair authority only at apply, admits exact source-release receipt warnings to controller-owned migration, maintains idle successor leases during long roles, and does not rerun new-admission checks once its exact cohort is fully accounted for.
-- Historical committed-role checks carry unchanged baseline symlinks; changed symlinks and every handoff snapshot symlink remain fail-closed.
+- Failed-attempt preview, replay, and historical committed-role checks carry only unchanged tracked baseline symlinks whose tree, index, and filesystem targets agree; every added, removed, changed, staged, or untracked symlink remains fail-closed.
 - Successor qualification can preserve an exact source-passport checkpoint or descendant only through the protected in-flight release authorization; v2 binds each ticket's authenticated current source after a partial batch, migration never deletes or rewrites ticket work, and prior failed roles reopen only across an exact signed route-only migration suffix.
 - Isolated successor contract repair may use an older authenticated blocker only through its complete signed release suffix ending at the exact protected per-ticket source. Prior resume pairs remain immutable transition history and are accepted only as an ordered canonical sequence with one signed completed record per pair and one newest in-branch snapshot of the full sequence. Passport snapshots may omit ordinary descendant ticket commits, while Factory/base/route junctions remain exact. During or after prior-kit receipt migration, the driver admits its historical resume mismatch only while the exact blocked claim and transition digest bind that selected ticket and receipt; event observation order is not authority.
 - An exactly migrated successor claim may chain a current transition receipt after its authenticated predecessor; predecessor evidence remains durable and unedited.
@@ -6188,14 +6188,14 @@ and restores the authenticated input before publishing the typed failure. A
 retry therefore starts from the same clean local and remote head; any branch,
 dirty-worktree, or remote mismatch remains a control-plane mutation.
 
-## 2026-08-15 — Decision 437: Historical role validation preserves baseline symlinks
+## 2026-08-15 — Decision 437: Historical role validation preserves baseline symlinks (superseded by Decision 492)
 
 Category: Reliability
 
 Committed-role validation may carry a symlink only when its mode and blob are
 unchanged from the authenticated baseline. Added, removed, or modified
-symlinks remain invalid, and failed-attempt snapshots retain their stricter
-no-symlink boundary.
+symlinks remain invalid. Decision 492 extends that exact unchanged-baseline
+rule to failed-attempt preview and replay.
 
 ## 2026-08-15 — Decision 438: Successor checkpoints preserve ticket work
 
@@ -6798,3 +6798,14 @@ that complete retained successor suffix; the first authenticated output edge
 need not jump directly to the newest release. Production, takeover,
 ordinary unsealed fallback, and mismatched output or migration heads remain
 closed.
+
+## 2026-08-17 — Decision 492: Handoff preserves exact tracked symlinks
+
+Category: Reliability
+
+Failed-attempt preview and replay may carry a tracked symlink only when its
+HEAD tree blob, index entry, and race-checked filesystem target are identical.
+The symlink is never opened or added to the handoff snapshot. Added, removed,
+changed, staged, type-replaced, or non-ignored untracked symlinks remain
+forbidden, as do symlink ancestors and every existing hardlink, special-file,
+nested-repository, path-boundary, and content refusal.
