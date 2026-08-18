@@ -267,7 +267,7 @@ class QualificationSharedStateTest(unittest.TestCase):
             encoding="utf-8",
         )
         (self.product / "factory/ENVELOPE.env").write_text(
-            "PER_RUN_BUDGET_USD=10.000000\n"
+            "PER_RUN_BUDGET_USD=9.000000\n"
             "PER_TICKET_BUDGET_USD=100.000000\n"
             "PER_RUN_MAX_TURNS=10\n"
             "PER_RUN_TIMEOUT_MIN=2\n"
