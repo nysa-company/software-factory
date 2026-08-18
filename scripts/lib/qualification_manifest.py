@@ -121,6 +121,14 @@ def validate(
     if not isinstance(value, dict):
         raise ManifestError("qualification manifest must be an object")
     successor = value.get("mode") == "successor"
+    budget_profile = (
+        value.get("budget_usd"),
+        value.get("per_ticket_budget_usd"),
+        value.get("per_run_budget_usd"),
+    )
+    extended = budget_profile == (
+        "300.000000", "100.000000", "10.000000",
+    )
     expected_keys = {
         "budget_usd", "capacity", "contract_version", "factory_sha",
         "generation", "per_run_budget_usd", "per_ticket_budget_usd",
@@ -156,10 +164,12 @@ def validate(
             or not SHA.fullmatch(value.get("source_factory_sha", ""))
             or value["source_factory_sha"] == factory_sha
         )
+        or extended and (capacity != 3 or target != 3)
         or not successor and (
-            value.get("budget_usd") != "100.000000"
-            or value.get("per_ticket_budget_usd") != "25.000000"
-            or value.get("per_run_budget_usd") != "2.000000"
+            budget_profile not in {
+                ("100.000000", "25.000000", "2.000000"),
+                ("300.000000", "100.000000", "10.000000"),
+            }
         )
     ):
         raise ManifestError("qualification manifest is invalid")

@@ -811,8 +811,9 @@ esac
             "if [ \"${1:-}\" = --version ]; then\n"
             "  echo 'codex-cli 0.144.1'\n"
             "else\n"
-            "  printf '%s\\n' "
-            "'{\"input_tokens\":10,\"output_tokens\":4}'\n"
+            "  printf '{\"input_tokens\":%s,\"output_tokens\":%s}\\n' "
+            "\"${STUB_CODEX_INPUT_TOKENS:-10}\" "
+            "\"${STUB_CODEX_OUTPUT_TOKENS:-4}\"\n"
             "fi\n"
         )
         fake_codex.chmod(0o700)
@@ -826,26 +827,27 @@ esac
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
             "TMPDIR": str(runtime / "tmp"),
         }
+        command = [
+            str(CODEX_ADAPTER),
+            "--budget",
+            "1",
+            "--max-turns",
+            "1",
+            "--timeout-min",
+            "1",
+            "--prompt-file",
+            "/dev/null",
+            "--workdir",
+            str(self.root),
+            "--model",
+            "test",
+            "--effort",
+            "low",
+            "--",
+            "mock task",
+        ]
         result = subprocess.run(
-            [
-                str(CODEX_ADAPTER),
-                "--budget",
-                "1",
-                "--max-turns",
-                "1",
-                "--timeout-min",
-                "1",
-                "--prompt-file",
-                "/dev/null",
-                "--workdir",
-                str(self.root),
-                "--model",
-                "test",
-                "--effort",
-                "low",
-                "--",
-                "mock task",
-            ],
+            command,
             text=True,
             capture_output=True,
             check=False,
@@ -854,6 +856,24 @@ esac
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn('"input_tokens":10', result.stdout)
+        over_budget = subprocess.run(
+            command,
+            text=True,
+            capture_output=True,
+            check=False,
+            env={
+                **environment,
+                "STUB_CODEX_INPUT_TOKENS": "1000000",
+                "STUB_CODEX_OUTPUT_TOKENS": "1000000",
+            },
+            timeout=10,
+        )
+        self.assertEqual(over_budget.returncode, 7)
+        self.assertIn(
+            "BUDGET EXCEEDED: run cost $11.2500 > per-run budget $1",
+            over_budget.stderr,
+        )
+        self.assertIn("turns=1 cost_usd=11.2500", over_budget.stdout)
         self.cleanup_runtime("codex", "adapter-codex", runtime)
         self.assertFalse(runtime.exists())
 

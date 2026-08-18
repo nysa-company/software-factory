@@ -224,6 +224,14 @@ def verify(
     factory_sha = manifest.get("factory_sha")
     target_done = manifest.get("target_done")
     successor = manifest.get("mode") == "successor"
+    budget_profile = (
+        manifest.get("budget_usd"),
+        manifest.get("per_ticket_budget_usd"),
+        manifest.get("per_run_budget_usd"),
+    )
+    extended = budget_profile == (
+        "300.000000", "100.000000", "10.000000",
+    )
     source_factory_sha = manifest.get("source_factory_sha")
     reconciliations = protected_reconciliations(events, factory_sha)
     reconciled = set(reconciliations)
@@ -255,14 +263,16 @@ def verify(
                 or manifest.get("per_run_budget_usd") != "10.000000"
             )
         )
+        or extended and (target_done != 3 or manifest.get("capacity") != 3)
         or (
             not successor
             and (
                 "mode" in manifest
                 or "source_factory_sha" in manifest
-                or manifest.get("budget_usd") != "100.000000"
-                or manifest.get("per_ticket_budget_usd") != "25.000000"
-                or manifest.get("per_run_budget_usd") != "2.000000"
+                or budget_profile not in {
+                    ("100.000000", "25.000000", "2.000000"),
+                    ("300.000000", "100.000000", "10.000000"),
+                }
             )
         )
         or not SHA.fullmatch(factory_sha or "")
@@ -744,7 +754,12 @@ def effective_ticket_caps(
     spec.loader.exec_module(module)
     try:
         base = Decimal(manifest["per_ticket_budget_usd"])
-        if manifest.get("mode") == "successor":
+        extended = (
+            manifest.get("budget_usd"),
+            manifest.get("per_ticket_budget_usd"),
+            manifest.get("per_run_budget_usd"),
+        ) == ("300.000000", "100.000000", "10.000000")
+        if manifest.get("mode") == "successor" or extended:
             return {
                 ticket: int(base * 1_000_000)
                 for ticket in manifest["tickets"]

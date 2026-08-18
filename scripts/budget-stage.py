@@ -13,7 +13,6 @@ import sys
 
 
 QUALIFICATION_SCHEMA = "nysa.software-factory.qualification/v2"
-SHA = re.compile(r"^[0-9a-f]{40}$")
 TICKET = re.compile(r"^T-[0-9]+$")
 PAID_STAGE = re.compile(
     r"^(?:RUN (?:planner|spec-linter|test-author|builder|reviewer|narrator)"
@@ -56,37 +55,26 @@ def resolve(
         and qualification.get("schema") == QUALIFICATION_SCHEMA
         and qualification.get("mode") == "successor"
     )
-    if successor:
-        tickets = qualification.get("tickets")
-        expected = {
-            "budget_usd", "capacity", "contract_version", "factory_sha",
-            "generation", "mode", "per_run_budget_usd",
-            "per_ticket_budget_usd", "schema", "source_factory_sha",
-            "target_done", "tickets",
-        }
+    extended = (
+        isinstance(qualification, dict)
+        and (
+            qualification.get("budget_usd"),
+            qualification.get("per_ticket_budget_usd"),
+            qualification.get("per_run_budget_usd"),
+        ) == ("300.000000", "100.000000", "10.000000")
+    )
+    if successor or extended:
         current = factory_sha or qualification.get("factory_sha")
-        if (
-            set(qualification) != expected
-            or qualification.get("contract_version") not in {"1.8.0", "2.0.0"}
-            or qualification.get("capacity") != 3
-            or qualification.get("target_done") != 3
-            or qualification.get("budget_usd") != "300.000000"
-            or qualification.get("per_ticket_budget_usd") != "100.000000"
-            or qualification.get("per_run_budget_usd") != "10.000000"
-            or not SHA.fullmatch(current or "")
-            or qualification.get("factory_sha") != current
-            or not SHA.fullmatch(qualification.get("source_factory_sha", ""))
-            or qualification["source_factory_sha"] == current
-            or not isinstance(qualification.get("generation"), int)
-            or isinstance(qualification.get("generation"), bool)
-            or qualification["generation"] < 1
-            or not isinstance(tickets, list)
-            or len(tickets) != 3
-            or any(not isinstance(item, str) or not TICKET.fullmatch(item) for item in tickets)
-            or len(set(tickets)) != 3
-            or ticket not in tickets
-        ):
-            raise ValueError("successor qualification budget is invalid")
+        manifest = module(
+            "qualification_manifest_budget",
+            kit / "scripts/lib/qualification_manifest.py",
+        )
+        try:
+            manifest.validate(qualification, current)
+        except (AttributeError, TypeError, ValueError) as error:
+            raise ValueError("qualification budget is invalid") from error
+        if ticket not in qualification["tickets"]:
+            raise ValueError("qualification budget ticket is not selected")
         cap = 100_000_000
         run_cap = 10_000_000
     else:
@@ -107,7 +95,7 @@ def resolve(
         item["charge_micro_usd"] for item in charges
         if not successor or item.get("factory_sha") == current
     )
-    if successor:
+    if extended:
         if not isinstance(stage, str) or not PAID_STAGE.fullmatch(stage):
             raise ValueError("successor qualification budget stage is invalid")
         reserve = run_cap * 2

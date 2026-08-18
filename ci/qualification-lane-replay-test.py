@@ -98,6 +98,13 @@ SCENARIOS = (
         ),
     ),
     (
+        "provider_budget_overflow_fails_closed",
+        (
+            "provider-production-concurrency-test.py",
+            "ProductionConcurrencyTest.test_codex_adapter_uses_the_attempt_local_home",
+        ),
+    ),
+    (
         "malformed_restart_and_reducer_evidence_fail_closed",
         (
             "qualification-run-test.py",
@@ -145,12 +152,13 @@ def main() -> int:
     started = time.monotonic()
     local_commands = {
         command: shutil.which(command)
-        for command in ("git", "node", "npm", "npx", "python3")
+        for command in (
+            "awk", "bash", "cat", "chmod", "dirname", "git", "head", "mkdir",
+            "node", "npm", "npx", "ps", "python3", "sed", "tail", "timeout",
+        )
     }
     if any(path is None for path in local_commands.values()):
-        raise SystemExit(
-            "qualification replay requires git, node, npm, npx, and python3"
-        )
+        raise SystemExit("qualification replay is missing a required local command")
 
     with tempfile.TemporaryDirectory(
         prefix="qualification-lane-replay.", dir=Path.home()

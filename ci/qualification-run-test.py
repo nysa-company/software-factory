@@ -292,6 +292,13 @@ raise SystemExit(code)
         return doctor, worktree, head, receipt
 
     def test_restart_boundary_then_reduction_is_one_command(self) -> None:
+        manifest = json.loads(self.manifest.read_text(encoding="utf-8"))
+        manifest.update({
+            "budget_usd": "300.000000",
+            "per_run_budget_usd": "10.000000",
+            "per_ticket_budget_usd": "100.000000",
+        })
+        self.manifest.write_text(json.dumps(manifest), encoding="utf-8")
         code, value = self.run_scenario({
             "doctor": self.doctor(),
             "reconcile": [

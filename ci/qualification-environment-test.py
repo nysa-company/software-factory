@@ -1310,6 +1310,27 @@ class QualificationEnvironmentTest(unittest.TestCase):
                     ENVIRONMENT.validate_qualification_budget(
                         self.factory, self.product, manifest, global_config,
                     )
+
+        manifest.update({
+            "budget_usd": "300.000000",
+            "per_run_budget_usd": "10.000000",
+            "per_ticket_budget_usd": "100.000000",
+        })
+        envelope.write_text(
+            original.replace(
+                "PER_RUN_BUDGET_USD=2.000000", "PER_RUN_BUDGET_USD=10.000000",
+            ).replace(
+                "PER_TICKET_BUDGET_USD=25.000000",
+                "PER_TICKET_BUDGET_USD=100.000000",
+            ).replace(
+                "DAILY_CAP_USD=100.000000", "DAILY_CAP_USD=300.000000",
+            ),
+            encoding="utf-8",
+        )
+        ENVIRONMENT.validate_qualification_budget(
+            self.factory, self.product, manifest,
+            b"GLOBAL_DAILY_CAP_USD=300.000000\n",
+        )
         envelope.write_text(original, encoding="utf-8")
 
     def test_prepare_recovers_each_exact_crash_prefix_and_response_loss(self) -> None:
