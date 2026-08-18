@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+from concurrent.futures import ThreadPoolExecutor
 import copy
 from contextlib import redirect_stdout
 import hashlib
@@ -16115,6 +16116,201 @@ class FactoryControllerTest(unittest.TestCase):
         result = controller.reconcile()
         self.assertEqual(result["status"], "ok")
         self.assertEqual(calls, {"T-110": 2, "T-111": 1})
+
+    def test_qualification_controller_error_stops_sibling_next_role_launches(
+        self,
+    ) -> None:
+        controller = CONTROL.Controller(self.args)
+        controller.qualification = {
+            "target_done": 3,
+            "tickets": ["T-110", "T-111", "T-112"],
+        }
+        controller.capacity = 2
+        controller.protected_main_head = lambda: "f" * 40
+        claims = []
+        for number, ticket in enumerate(controller.qualification["tickets"], 1):
+            cell = self.root / f"cell-{number}"
+            route = cell / f"factory/route-plans/{ticket}.json"
+            route.parent.mkdir(parents=True)
+            route.write_text("{}\n", encoding="utf-8")
+            claims.append({
+                "branch": f"ticket/{ticket}",
+                "lease": f"{number:064x}",
+                "priority": "normal",
+                "publication_lease": "",
+                "receipt": "",
+                "role": "",
+                "schema": CONTROL.CLAIM_SCHEMA,
+                "status": "claimed",
+                "ticket": ticket,
+                "worktree": str(cell),
+            })
+        controller.load_claims = lambda: claims
+        controller.qualification_admission_preflight = lambda _claims: None
+        controller.qualification_marker = lambda *_args, **_kwargs: True
+        controller.record_qualification_done_targets = lambda: None
+        controller.recover_missing_passport_claims = lambda _claims: None
+        controller.recover_upgraded_claims = lambda _claims: None
+        controller.recover_terminal_exports = lambda _claims: None
+        controller.recover_repaired_failures = lambda _claims: None
+        controller.claim_new = lambda current, *_args: current
+        controller.pin_routes = lambda _claims: []
+        controller.event = lambda *_args, **_kwargs: None
+        controller.park_claim = lambda _claim: True
+        controller.save_claim = lambda _claim: None
+        controller.withdraw_publication = lambda _claim: None
+        controller.release_ticket_lease = lambda _claim: None
+        barrier = threading.Barrier(2)
+        calls = {claim["ticket"]: 0 for claim in claims}
+        real_reconcile = controller.reconcile_ticket
+
+        def ensure_lease(claim, _label):
+            if claim["ticket"] == "T-110":
+                barrier.wait(timeout=2)
+                raise CONTROL.ControllerError("causal controller error")
+
+        controller.ensure_lease = ensure_lease
+
+        def reconcile(claim):
+            ticket = claim["ticket"]
+            calls[ticket] += 1
+            if ticket == "T-112":
+                raise AssertionError("queued sibling started after cohort error")
+            if calls[ticket] > 1:
+                raise AssertionError("sibling started its next role after cohort error")
+            if ticket == "T-110":
+                return real_reconcile(claim)
+            barrier.wait(timeout=2)
+            self.assertTrue(
+                controller.qualification_cohort_error.wait(1),
+                "cohort error was not latched",
+            )
+            return {"status": "progressed", "ticket": ticket}
+
+        controller.reconcile_ticket = reconcile
+        result = controller.reconcile()
+
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(calls, {"T-110": 1, "T-111": 1, "T-112": 0})
+        self.assertEqual(
+            next(item for item in result["results"] if item["ticket"] == "T-110"),
+            {
+                "error": "causal controller error",
+                "status": "error",
+                "ticket": "T-110",
+            },
+        )
+
+    def test_qualification_worker_exception_latches_before_sibling_next_role(
+        self,
+    ) -> None:
+        controller = CONTROL.Controller(self.args)
+        controller.qualification = {"tickets": ["T-110", "T-111"]}
+        controller.park_claim = lambda _claim: True
+        barrier = threading.Barrier(2)
+        calls = {"T-110": 0, "T-111": 0}
+        claims = [
+            {"receipt": "", "ticket": ticket}
+            for ticket in calls
+        ]
+
+        def reconcile(claim):
+            ticket = claim["ticket"]
+            calls[ticket] += 1
+            if calls[ticket] > 1:
+                raise AssertionError("sibling started after worker exception")
+            barrier.wait(timeout=2)
+            if ticket == "T-110":
+                raise RuntimeError("worker defect")
+            self.assertTrue(
+                controller.qualification_cohort_error.wait(1),
+                "worker exception did not latch in its worker",
+            )
+            return {"status": "progressed", "ticket": ticket}
+
+        controller.reconcile_ticket = reconcile
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            failed = executor.submit(
+                controller.reconcile_ticket_until_wait, claims[0]
+            )
+            sibling = executor.submit(
+                controller.reconcile_ticket_until_wait, claims[1]
+            )
+            with self.assertRaisesRegex(RuntimeError, "worker defect"):
+                failed.result(timeout=2)
+            self.assertEqual(
+                sibling.result(timeout=2).get("wait_reason"),
+                "qualification-cohort-error",
+            )
+        self.assertEqual(calls, {"T-110": 1, "T-111": 1})
+
+    def test_qualification_latch_blocks_role_at_atomic_launch_gate(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        controller.qualification = {"tickets": ["T-110"]}
+        claim = {
+            "lease": "1" * 64,
+            "ticket": "T-110",
+            "worktree": str(self.root / "cell-1"),
+        }
+        controller.ensure_execution_cell = lambda _claim: None
+        controller.save_claim = lambda _claim: None
+        events = []
+        controller.event = lambda name, *_args, **_kwargs: events.append(name)
+        preflight_started = threading.Event()
+        release_preflight = threading.Event()
+
+        def preflight(*_args, **_kwargs):
+            preflight_started.set()
+            self.assertTrue(release_preflight.wait(1))
+            return {"exit_code": 0, "status": "ok"}
+
+        controller.json_call = preflight
+        with (
+            patch.object(CONTROL, "ensure_qualification_artifacts"),
+            patch.object(CONTROL.subprocess, "Popen") as popen,
+            ThreadPoolExecutor(max_workers=1) as executor,
+        ):
+            role = executor.submit(
+                controller.run_role, claim, "planner", "b" * 64, []
+            )
+            self.assertTrue(preflight_started.wait(1))
+            controller.latch_qualification_cohort_error()
+            release_preflight.set()
+            self.assertFalse(role.result(timeout=2))
+
+        popen.assert_not_called()
+        self.assertNotIn("attempt_started", events)
+        self.assertNotIn("receipt", claim)
+
+    def test_qualification_latch_accounts_existing_terminal_before_stopping(
+        self,
+    ) -> None:
+        controller = CONTROL.Controller(self.args)
+        controller.qualification = {"tickets": ["T-110"]}
+        claim = {"receipt": "b" * 64, "ticket": "T-110"}
+        calls = []
+        controller.ensure_lease = lambda _claim, label: calls.append(label)
+
+        def finish(_claim):
+            calls.append("finish")
+            claim["status"] = "blocked"
+            return False
+
+        controller.finish_pending_run = finish
+        parked = []
+        controller.park_claim = lambda item: parked.append(item["ticket"]) or True
+        controller.role_active = lambda _claim: False
+        controller.settle_recovery_attempt = lambda _claim: False
+        controller.run_role = lambda *_args, **_kwargs: (
+            (_ for _ in ()).throw(AssertionError("successor role launched"))
+        )
+        controller.qualification_cohort_error.set()
+
+        result = controller.reconcile_ticket_until_wait(claim)
+
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(calls, ["terminal-accounting", "finish"])
+        self.assertEqual(parked, ["T-110"])
 
     def test_scheduler_tracks_each_concurrent_ticket_once(self) -> None:
         import threading

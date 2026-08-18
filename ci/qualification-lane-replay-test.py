@@ -112,6 +112,16 @@ SCENARIOS = (
         ),
     ),
     (
+        "qualification_controller_error_stops_sibling_launches",
+        (
+            "factory-controller-test.py",
+            "FactoryControllerTest.test_qualification_controller_error_stops_sibling_next_role_launches",
+            "FactoryControllerTest.test_qualification_worker_exception_latches_before_sibling_next_role",
+            "FactoryControllerTest.test_qualification_latch_blocks_role_at_atomic_launch_gate",
+            "FactoryControllerTest.test_qualification_latch_accounts_existing_terminal_before_stopping",
+        ),
+    ),
+    (
         "malformed_restart_and_reducer_evidence_fail_closed",
         (
             "qualification-run-test.py",
