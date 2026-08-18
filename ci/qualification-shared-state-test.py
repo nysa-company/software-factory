@@ -698,7 +698,7 @@ raise SystemExit(1 if failed else 0)
                     {item["ticket"]: item["status"] for item in replay["controller"]["results"]},
                     {"T-901": "waiting", "T-902": "blocked", "T-903": "waiting"},
                 )
-            newly_approved = self.approve_waiting(Path(value["release_path"]))
+            newly_approved = self.approve_waiting(launcher.parent.parent)
             self.assertGreater(newly_approved, 0, json.dumps(replay, sort_keys=True))
             approved += newly_approved
         else:
