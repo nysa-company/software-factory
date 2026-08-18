@@ -701,6 +701,10 @@ raise SystemExit(1 if failed else 0)
                 json.loads(path.read_text(encoding="utf-8"))
                 for path in sorted(events_dir.glob("*.json")) if path not in prior_events
             ]
+            prior_event_records = [
+                json.loads(path.read_text(encoding="utf-8"))
+                for path in sorted(prior_events)
+            ]
             restarts += replay["restarts"]
             if replay["status"] == "green":
                 self.assertEqual(launched.returncode, 0)
@@ -714,6 +718,8 @@ raise SystemExit(1 if failed else 0)
                 item["ticket"]: item["status"]
                 for item in replay["controller"]["results"]
             }
+            observed = set(statuses)
+            omitted = set(TICKETS) - observed
             completed = {
                 ticket for ticket, status in statuses.items() if status == "complete"
             }
@@ -728,6 +734,14 @@ raise SystemExit(1 if failed else 0)
                 event.get("ticket") for event in new_events
                 if event.get("event") == "ticket_complete"
             }
+            prior_terminal = {
+                event.get("ticket") for event in prior_event_records
+                if event.get("event") == "ticket_complete"
+            } & {
+                event.get("ticket") for event in prior_event_records
+                if event.get("event") == "ticket_released"
+            }
+            prior_settled = prior_terminal - claims
             completion_progress = (
                 bool(completed)
                 and completed <= set(TICKETS)
@@ -746,12 +760,14 @@ raise SystemExit(1 if failed else 0)
                     summary["receipt_present"] = bool(claim.get("receipt"))
                     claim_summaries[claim["ticket"]] = summary
                 self.assertTrue(
-                    set(statuses) == set(TICKETS)
-                    and statuses["T-902"] == "blocked"
+                    observed <= set(TICKETS)
+                    and statuses.get("T-902") == "blocked"
                     and all(
-                        statuses[ticket] in {"complete", "waiting"}
-                        for ticket in ("T-901", "T-903")
+                        status in {"complete", "waiting"}
+                        for ticket, status in statuses.items()
+                        if ticket != "T-902"
                     )
+                    and omitted <= prior_settled
                     and (not completed or completion_progress),
                     json.dumps({
                         "claims": claim_summaries,
@@ -759,17 +775,23 @@ raise SystemExit(1 if failed else 0)
                             (event.get("ticket"), event.get("event"))
                             for event in new_events
                         ],
+                        "statuses": statuses,
                     }, sort_keys=True),
                 )
             newly_approved = self.approve_waiting(launcher.parent.parent)
             if newly_approved == 0:
                 refresh_progress = any(
-                    event.get("event") in REFRESH_EVENTS for event in new_events
+                    event.get("event") in REFRESH_EVENTS
+                    and statuses.get(event.get("ticket")) == "waiting"
+                    for event in new_events
                 )
                 self.assertTrue(
                     completion_progress
-                    if replay["status"] == "blocked"
-                    else refresh_progress or completion_progress,
+                    or refresh_progress
+                    and (
+                        replay["status"] == "waiting"
+                        or bool(omitted) and omitted <= prior_settled
+                    ),
                     json.dumps(replay, sort_keys=True),
                 )
             approved += newly_approved
