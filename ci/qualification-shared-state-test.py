@@ -89,17 +89,15 @@ class QualificationSharedStateTest(unittest.TestCase):
 
     def cleanup_paths(self) -> None:
         self.stop_replay_processes()
-        for path in (self.root,):
+        for path in (self.root, *self.account_paths):
             if not path.exists() or path.is_symlink():
                 continue
             for item in sorted(path.rglob("*"), key=lambda value: len(value.parts), reverse=True):
                 if not item.is_symlink():
                     item.chmod(item.stat().st_mode | stat.S_IWUSR)
+            path.chmod(path.stat().st_mode | stat.S_IWUSR)
             shutil.rmtree(path)
         self.workspace_object.cleanup()
-        for path in self.account_paths:
-            if path.exists() and not path.is_symlink():
-                shutil.rmtree(path)
 
     def stop_replay_processes(self) -> None:
         output = subprocess.run(
@@ -257,7 +255,7 @@ class QualificationSharedStateTest(unittest.TestCase):
             "TICKET_BRANCH_PREFIX=ticket/\n"
             "TEST_PATHS=tests/\n"
             "PREVIEW_PROVIDER=none\n"
-            "NONVISUAL_PATHS=app/,tests/\n"
+            "NONVISUAL_PATHS=app/,factory/,tests/\n"
             "DONE_REQUIRED_CHECKS=ci\n"
             "AUTO_MERGE_METHOD=merge\n"
             "MAX_CONCURRENT_TICKETS=3\n",
