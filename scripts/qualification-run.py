@@ -922,6 +922,7 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
         source_factory_sha, ticket_sources,
     ):
         return {
+            "doctor": doctor,
             "doctor_status": doctor.get("overall_status"),
             "elapsed_seconds": round(time.monotonic() - started, 3),
             "phases": phases,

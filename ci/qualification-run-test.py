@@ -571,6 +571,20 @@ raise SystemExit(code)
         self.assertEqual(value["reason"], "doctor_not_ready")
         self.assertEqual(self.called(), ["doctor"])
 
+    def test_doctor_error_returns_exact_report_before_controller_mutation(self) -> None:
+        doctor = self.doctor("error")
+        doctor["checks"]["fallback_readiness"]["status"] = "error"
+        code, value = self.run_scenario({
+            "doctor": doctor,
+            "reconcile": [self.controller("ok")],
+            "qualification": self.report(),
+        })
+        self.assertEqual(code, 3)
+        self.assertEqual(value["status"], "blocked")
+        self.assertEqual(value["reason"], "doctor_not_ready")
+        self.assertEqual(value["doctor"], doctor)
+        self.assertEqual(self.called(), ["doctor"])
+
     def test_provider_pin_not_ready_blocks_before_controller_mutation(self) -> None:
         for status in ("not_applicable", "warning", "error"):
             with self.subTest(status=status):
