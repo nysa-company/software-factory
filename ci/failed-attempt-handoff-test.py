@@ -374,6 +374,11 @@ class HandoffTest(unittest.TestCase):
         with self.assertRaisesRegex(HandoffError, "symlink"):
             self.preview()
 
+        link.write_text("not a symlink\n")
+        with self.assertRaisesRegex(HandoffError, "symlink"):
+            self.preview()
+        link.unlink()
+
         link.symlink_to("../skills")
         git(self.repo, "add", ".claude/skills")
         journal = self.repo / "factory/model-route-journal.json"
@@ -385,6 +390,45 @@ class HandoffTest(unittest.TestCase):
         self.head = git(self.repo, "rev-parse", "HEAD")
         with self.assertRaisesRegex(HandoffError, "symlink"):
             self.preview()
+
+    def test_replay_refuses_deleting_a_tracked_symlink(self):
+        (self.repo / "skills").mkdir()
+        (self.repo / "skills/README.md").write_text("# Skills\n")
+        (self.repo / ".claude").mkdir()
+        link = self.repo / ".claude/skills"
+        link.symlink_to("../skills")
+        git(self.repo, "add", "skills", ".claude/skills")
+        git(self.repo, "commit", "-qm", "add repository skill bridge")
+        parent = git(self.repo, "rev-parse", "HEAD")
+
+        digest = HANDOFF._snapshot_digest(
+            (HANDOFF.SnapshotEntry(path=".claude/skills", state="deleted"),)
+        )
+        link.unlink()
+        (self.repo / "factory/model-route-journal.json").write_text(
+            '{"schema":"ticket-model-route-journal/v2"}\n'
+        )
+        git(self.repo, "add", "-A")
+        git(
+            self.repo,
+            "commit",
+            "-qm",
+            "Preserve failed attempt for trusted handoff\n\n"
+            f"Failed-Attempt-Snapshot: {digest}\n"
+            f"Model-Route-Revision: {'a' * 64}",
+        )
+        commit = git(self.repo, "rev-parse", "HEAD")
+        with self.assertRaisesRegex(HandoffError, "unsafe mode"):
+            validate_handoff_commit(
+                self.repo,
+                commit=commit,
+                role="builder",
+                provider_scan_base=parent,
+                policy=self.policy,
+                expected_snapshot_digest=digest,
+                expected_revision_hash="a" * 64,
+                expected_subject="Preserve failed attempt for trusted handoff",
+            )
 
     def test_rejects_path_boundary_protected_binary_large_and_secret_content(self):
         cases = (
