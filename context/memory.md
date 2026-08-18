@@ -6929,3 +6929,11 @@ durably terminal. After response loss, an empty recovered invocation may
 reconstruct complete results only when the refreshed protected authority
 validates the entire target; incomplete empty results retain the existing
 successor-migration wait path.
+
+Recovered blocked and budget claims are projected back into controller results
+so a restart cannot turn an authenticated refusal into a generic wait. Exact
+route-migration waits, prior-release transitions, and invalid transition
+evidence remain excluded. Publication manager mutations, lease-digest events,
+and claim checkpoints are serialized, with evidence durable before the claim
+checkpoint so response loss can replay one lease without losing or inventing
+publication history.

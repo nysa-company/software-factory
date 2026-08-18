@@ -544,6 +544,7 @@ class Controller:
         self.invalid_transition_tickets: set[str] = set()
         self.prior_transition_tickets: set[str] = set()
         self.fallback_lock = Lock()
+        self.publication_lock = Lock()
         self.qualification_cohort_error = Event()
         self.qualification_launch_lock = Lock()
         # ponytail: cells share one Git common directory; use per-cell refs only if refresh throughput matters.
@@ -3589,20 +3590,28 @@ class Controller:
         self.event("ticket_released", claim["ticket"])
 
     def release_publication(self, claim: dict[str, Any]) -> None:
-        try:
-            self.json_call(
-                "publication", "release", "--ticket", claim["ticket"],
-                "--lease", claim["publication_lease"], "--json",
+        with self.publication_lock:
+            lease_sha256 = hashlib.sha256(
+                claim["publication_lease"].encode()
+            ).hexdigest()
+            try:
+                self.json_call(
+                    "publication", "release", "--ticket", claim["ticket"],
+                    "--lease", claim["publication_lease"], "--json",
+                )
+            except ControllerError as error:
+                recovered = self.json_call(
+                    "publication", "withdraw", "--ticket", claim["ticket"],
+                    "--json",
+                )
+                if recovered.get("status") != "absent":
+                    raise error
+            self.event_once(
+                "publication_released", claim["ticket"],
+                publication_lease_sha256=lease_sha256,
             )
-        except ControllerError as error:
-            recovered = self.json_call(
-                "publication", "withdraw", "--ticket", claim["ticket"], "--json",
-            )
-            if recovered.get("status") != "absent":
-                raise error
-        claim["publication_lease"] = ""
-        self.save_claim(claim)
-        self.event_once("publication_released", claim["ticket"])
+            claim["publication_lease"] = ""
+            self.save_claim(claim)
 
     def withdraw_publication(self, claim: dict[str, Any]) -> None:
         if claim.get("publication_lease"):
@@ -11553,24 +11562,31 @@ class Controller:
             claim, receipt, head, "protected_base_refreshed"
         ):
             return False
-        prior = claim.get("publication_lease", "")
-        self.json_call(
-            "publication", "ready", "--ticket", claim["ticket"],
-            "--head", head, "--priority", claim["priority"], "--json",
-        )
-        lease = self.json_call(
-            "publication", "acquire", "--ticket", claim["ticket"],
-            "--head", head, "--priority", claim["priority"], "--json",
-        )
-        if lease.get("status") != "acquired":
-            return False
-        claim["publication_lease"] = lease["lease"]
-        self.save_claim(claim)
-        self.event(
-            "publication_renewed" if prior == lease["lease"] else "publication_acquired",
-            claim["ticket"], head_sha=head,
-        )
-        return True
+        with self.publication_lock:
+            prior = claim.get("publication_lease", "")
+            self.json_call(
+                "publication", "ready", "--ticket", claim["ticket"],
+                "--head", head, "--priority", claim["priority"], "--json",
+            )
+            lease = self.json_call(
+                "publication", "acquire", "--ticket", claim["ticket"],
+                "--head", head, "--priority", claim["priority"], "--json",
+            )
+            if lease.get("status") != "acquired":
+                return False
+            lease_sha256 = hashlib.sha256(lease["lease"].encode()).hexdigest()
+            self.event_once(
+                "publication_acquired", claim["ticket"], head_sha=head,
+                publication_lease_sha256=lease_sha256,
+            )
+            if prior == lease["lease"]:
+                self.event(
+                    "publication_renewed", claim["ticket"], head_sha=head,
+                    publication_lease_sha256=lease_sha256,
+                )
+            claim["publication_lease"] = lease["lease"]
+            self.save_claim(claim)
+            return True
 
     def request_protected_auto_merge(
         self, claim: dict[str, Any], receipt: str, pr: dict[str, Any]

@@ -18161,6 +18161,10 @@ class FactoryControllerTest(unittest.TestCase):
         )
         with self.assertRaisesRegex(RuntimeError, "crash after publication release"):
             controller.release_publication(claim)
+        self.assertEqual(len([
+            path for path in controller.events.glob("*.json")
+            if CONTROL.read(path).get("event") == "publication_released"
+        ]), 1)
 
         persisted = CONTROL.read(controller.claim_path("T-110"))
         self.assertEqual(persisted["publication_lease"], "b" * 64)
@@ -18180,7 +18184,6 @@ class FactoryControllerTest(unittest.TestCase):
         restarted.json_call = json_call
         restarted.product_ticket_canceled = lambda _ticket, _main=None: True
         restarted.role_active = lambda _claim: False
-        restarted.event_once = lambda *_args, **_kwargs: None
 
         self.assertEqual(
             restarted.retire_canceled_claims([persisted], "f" * 40), []
@@ -18194,6 +18197,10 @@ class FactoryControllerTest(unittest.TestCase):
             ],
         )
         self.assertFalse(restarted.claim_path("T-110").exists())
+        self.assertEqual(len([
+            path for path in restarted.events.glob("*.json")
+            if CONTROL.read(path).get("event") == "publication_released"
+        ]), 1)
 
     def test_retired_claims_do_not_reduce_live_capacity_or_repeat_events(self) -> None:
         (self.product / "factory/PROJECT.env").write_text(
@@ -20353,6 +20360,104 @@ class FactoryControllerTest(unittest.TestCase):
                 "git-unlock",
             ],
         )
+
+    def test_publication_events_follow_serialized_lease_order(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        release_event = threading.Event()
+        allow_release_event = threading.Event()
+        acquired = threading.Event()
+        events = []
+        first = {
+            "priority": "normal", "publication_lease": "a" * 64,
+            "ticket": "T-110",
+        }
+        second = {
+            "priority": "normal", "publication_lease": "",
+            "ticket": "T-111",
+        }
+        controller.refresh_stale_protected_base = lambda *_args: False
+
+        def json_call(*arguments, **_kwargs):
+            if arguments[:2] == ("publication", "release"):
+                return {"status": "released"}
+            if arguments[:2] == ("publication", "ready"):
+                return {"status": "ready"}
+            if arguments[:2] == ("publication", "acquire"):
+                acquired.set()
+                return {"lease": "b" * 64, "status": "acquired"}
+            raise AssertionError(arguments)
+
+        def event(name, ticket, **_details):
+            if name == "publication_released":
+                release_event.set()
+                self.assertTrue(allow_release_event.wait(1))
+            events.append((name, ticket))
+
+        controller.json_call = json_call
+        controller.save_claim = lambda _claim: None
+        controller.event = event
+        controller.event_once = event
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            releasing = executor.submit(controller.release_publication, first)
+            self.assertTrue(release_event.wait(1))
+            acquiring = executor.submit(
+                controller.publication_ready, second, "c" * 64, "d" * 40,
+            )
+            self.assertFalse(acquired.wait(0.2))
+            allow_release_event.set()
+            releasing.result(timeout=2)
+            self.assertTrue(acquiring.result(timeout=2))
+
+        self.assertEqual(events, [
+            ("publication_released", "T-110"),
+            ("publication_acquired", "T-111"),
+        ])
+
+    def test_publication_acquisition_event_recovers_before_claim_save(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        lease = ["a" * 64]
+        claim = {
+            "priority": "normal", "publication_lease": "", "ticket": "T-110",
+        }
+        controller.refresh_stale_protected_base = lambda *_args: False
+        controller.json_call = lambda *arguments, **_kwargs: (
+            {"lease": lease[0], "status": "acquired"}
+            if arguments[:2] == ("publication", "acquire")
+            else {"status": "ready"}
+        )
+        controller.save_claim = lambda _claim: (_ for _ in ()).throw(
+            RuntimeError("crash before claim save")
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "crash before claim save"):
+            controller.publication_ready(claim, "b" * 64, "c" * 40)
+        self.assertEqual(len([
+            path for path in controller.events.glob("*.json")
+            if CONTROL.read(path).get("event") == "publication_acquired"
+        ]), 1)
+
+        restarted = CONTROL.Controller(self.args)
+        recovered = dict(claim, publication_lease="")
+        restarted.refresh_stale_protected_base = lambda *_args: False
+        restarted.json_call = controller.json_call
+        saved = []
+        restarted.save_claim = lambda item: saved.append(dict(item))
+        self.assertTrue(
+            restarted.publication_ready(recovered, "b" * 64, "c" * 40)
+        )
+        self.assertEqual(saved[0]["publication_lease"], "a" * 64)
+        self.assertEqual(len([
+            path for path in restarted.events.glob("*.json")
+            if CONTROL.read(path).get("event") == "publication_acquired"
+        ]), 1)
+        lease[0] = "d" * 64
+        self.assertTrue(
+            restarted.publication_ready(recovered, "b" * 64, "c" * 40)
+        )
+        self.assertEqual(len([
+            path for path in restarted.events.glob("*.json")
+            if CONTROL.read(path).get("event") == "publication_acquired"
+        ]), 2)
 
     def test_pushed_publication_refresh_recovers_without_another_provider(self) -> None:
         controller = CONTROL.Controller(self.args)
