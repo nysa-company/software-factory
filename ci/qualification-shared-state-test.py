@@ -220,7 +220,7 @@ class QualificationSharedStateTest(unittest.TestCase):
             path.chmod(0o600)
 
     def make_product(self) -> None:
-        run("git", "init", "--bare", "-q", str(self.remote), cwd=self.workspace)
+        run("git", "init", "--bare", "-q", "-b", "main", str(self.remote), cwd=self.workspace)
         (self.product / "factory/tickets").mkdir(parents=True)
         (self.product / "factory/initiatives").mkdir()
         (self.product / "app").mkdir()
