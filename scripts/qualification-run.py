@@ -300,7 +300,7 @@ def route_migration_arguments(
                 }
                 and isinstance(attempt.get("count"), int)
                 and not isinstance(attempt["count"], bool)
-                and attempt["count"] > 0
+                and attempt["count"] == 3
                 and attempt.get("factory_sha") == factory_sha
                 and isinstance(attempt.get("input_sha256"), str)
                 and DIGEST.fullmatch(attempt["input_sha256"])
@@ -310,6 +310,7 @@ def route_migration_arguments(
                 and attempt.get("recovery") == "release-upgrade"
                 and attempt.get("retry_reason") == "route-migration-required"
                 and attempt.get("retry_status") == "blocked"
+                and not claim.get("publication_lease")
                 and (
                     claim.get("lease_released") is True
                     or claim.get("parked") is True

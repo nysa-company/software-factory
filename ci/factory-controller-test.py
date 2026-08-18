@@ -16117,6 +16117,182 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertEqual(calls, {"T-110": 2, "T-111": 1})
 
+    def test_qualification_complete_subset_waits_for_protected_target(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        controller.qualification = {
+            "target_done": 3,
+            "tickets": ["T-110", "T-111", "T-112"],
+        }
+        controller.capacity = 3
+        cell = self.root / "cell-1"
+        route = cell / "factory/route-plans/T-110.json"
+        route.parent.mkdir(parents=True)
+        route.write_text("{}\n", encoding="utf-8")
+        claim = {
+            "branch": "ticket/T-110", "lease": "1" * 64,
+            "priority": "normal", "publication_lease": "", "receipt": "",
+            "role": "", "schema": CONTROL.CLAIM_SCHEMA, "status": "claimed",
+            "ticket": "T-110", "worktree": str(cell),
+        }
+        claims = [claim]
+        done = set()
+        controller.load_claims = lambda: list(claims)
+        controller.qualification_admission_preflight = lambda _claims: None
+        controller.qualification_marker = lambda *_args, **_kwargs: True
+        controller.clear_admission_failure = lambda: None
+        controller.record_qualification_done_targets = lambda: None
+        controller.recover_missing_passport_claims = lambda _claims: None
+        controller.recover_upgraded_claims = lambda _claims: None
+        controller.recover_terminal_exports = lambda _claims: None
+        controller.recover_repaired_failures = lambda _claims: None
+        controller.claim_new = lambda current, *_args: current
+        controller.pin_routes = lambda _claims: []
+        controller.event = lambda *_args, **_kwargs: None
+        controller.mark_reconciling = lambda _claim: None
+        refreshed = []
+        controller.protected_main_head = lambda: refreshed.append(True) or "f" * 40
+
+        def protected_done(ticket):
+            if done:
+                self.assertEqual(refreshed, [True])
+            return ticket in done
+
+        controller.product_ticket_done = protected_done
+
+        def complete(item):
+            done.add(item["ticket"])
+            claims.clear()
+            return {"status": "complete", "ticket": item["ticket"]}
+
+        controller.reconcile_ticket_until_wait = complete
+        result = controller.reconcile()
+
+        self.assertEqual(result["status"], "waiting_for_target", result)
+        self.assertEqual(
+            result["results"], [{"status": "complete", "ticket": "T-110"}],
+        )
+        self.assertEqual(refreshed, [True])
+
+    def test_qualification_empty_restart_recovers_protected_targets(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        tickets = ["T-110", "T-111", "T-112"]
+        controller.qualification = {"target_done": 3, "tickets": tickets}
+        controller.capacity = 3
+        controller.load_claims = lambda: []
+        controller.qualification_admission_preflight = lambda _claims: None
+        controller.qualification_marker = lambda *_args, **_kwargs: True
+        controller.clear_admission_failure = lambda: None
+        controller.record_qualification_done_targets = lambda: None
+        controller.recover_missing_passport_claims = lambda _claims: None
+        controller.recover_upgraded_claims = lambda _claims: None
+        controller.recover_terminal_exports = lambda _claims: None
+        controller.recover_repaired_failures = lambda _claims: None
+        controller.claim_new = lambda current, *_args: current
+        controller.pin_routes = lambda _claims: []
+        controller.event = lambda *_args, **_kwargs: None
+        done = set(tickets)
+        refreshed = []
+        observed = []
+        controller.protected_main_head = lambda: refreshed.append(True) or "f" * 40
+
+        def protected_done(ticket):
+            observed.append(len(refreshed))
+            return ticket in done
+
+        controller.product_ticket_done = protected_done
+
+        recovered = controller.reconcile()
+        done.clear()
+        unfinished = controller.reconcile()
+
+        self.assertEqual(recovered["status"], "ok")
+        self.assertEqual(recovered["results"], [
+            {"status": "complete", "ticket": ticket} for ticket in tickets
+        ])
+        self.assertEqual(unfinished["status"], "ok")
+        self.assertEqual(unfinished["results"], [])
+        self.assertEqual(refreshed, [True, True])
+        self.assertEqual(observed, [1, 1, 1, 2, 2, 2])
+
+    def test_qualification_restart_surfaces_durable_blocked_claims(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        tickets = ["T-110", "T-111", "T-112", "T-113"]
+        controller.qualification = {"target_done": 4, "tickets": tickets}
+        claims = [
+            {
+                "status": status, "ticket": ticket,
+                "worktree": str(self.root / "parked" / ticket),
+            }
+            for ticket, status in zip(
+                tickets, ("blocked", "budget", "blocked", "blocked"),
+                strict=True,
+            )
+        ]
+        claims[2]["blocked_reason"] = "route-migration-required"
+        claims[3].update(
+            blocked_reason="recovery-abandoned:release-upgrade",
+            lease_released=True,
+            recovery_attempt={
+                "count": CONTROL.RECOVERY_ATTEMPT_LIMIT,
+                "factory_sha": controller.release_path.name,
+                "input_sha256": "a" * 64,
+                "outcome_sha256": "b" * 64,
+                "phase": "abandoned",
+                "recovery": "release-upgrade",
+                "retry_reason": "route-migration-required",
+                "retry_status": "blocked",
+            },
+        )
+        controller.load_claims = lambda: claims
+        controller.qualification_admission_preflight = lambda _claims: None
+        controller.qualification_marker = lambda *_args, **_kwargs: True
+        controller.cancellation_authority = lambda _claims: None
+        controller.retire_canceled_claims = lambda current, *_args: current
+        controller.quarantine_invalid_transition_claims = lambda _claims: None
+        controller.reclaim_orphaned_execution_cells = lambda _claims: None
+        excluded = False
+
+        def operator_transition(claim):
+            if excluded and claim["ticket"] == "T-112":
+                controller.invalid_transition_tickets.add(claim["ticket"])
+            if excluded and claim["ticket"] == "T-113":
+                controller.prior_transition_tickets.add(claim["ticket"])
+
+        controller.operator_transition = operator_transition
+        controller.release_inactive_ticket_leases = lambda _claims: None
+        controller.recover_changed_state_machine_refusals = lambda *_args: None
+        controller.recover_operator_action_events = lambda _claims: None
+        controller.record_qualification_done_targets = lambda: None
+        controller.recover_missing_passport_claims = lambda _claims: None
+        controller.recover_terminal_requests = lambda _claims: None
+        controller.readmit_prior_provider_failures = lambda _claims: None
+        controller.recover_each = lambda *_args, **_kwargs: None
+        controller.recover_prior_maintenance_receipts = lambda _claims: None
+        controller.claim_new = lambda current, *_args: current
+        controller.clear_admission_failure = lambda: None
+        controller.maintain_successor_leases = lambda _claims: None
+        controller.pin_routes = lambda _claims: []
+        controller.product_ticket_done = lambda _ticket: False
+        controller.event = lambda *_args, **_kwargs: None
+        controller.role_active = lambda _claim: False
+
+        migration = controller.reconcile()
+        claims[2].pop("blocked_reason")
+        claims[3].pop("blocked_reason")
+        claims[3].pop("lease_released")
+        claims[3].pop("recovery_attempt")
+        excluded = True
+        transition = controller.reconcile()
+
+        expected = [
+            {"status": "blocked", "ticket": "T-110"},
+            {"status": "budget", "ticket": "T-111"},
+        ]
+        self.assertEqual(migration["results"], expected)
+        self.assertEqual(transition["results"], expected)
+        self.assertIn("T-112", controller.invalid_transition_tickets)
+        self.assertIn("T-113", controller.prior_transition_tickets)
+
     def test_qualification_controller_error_stops_sibling_next_role_launches(
         self,
     ) -> None:
@@ -17985,6 +18161,10 @@ class FactoryControllerTest(unittest.TestCase):
         )
         with self.assertRaisesRegex(RuntimeError, "crash after publication release"):
             controller.release_publication(claim)
+        self.assertEqual(len([
+            path for path in controller.events.glob("*.json")
+            if CONTROL.read(path).get("event") == "publication_released"
+        ]), 1)
 
         persisted = CONTROL.read(controller.claim_path("T-110"))
         self.assertEqual(persisted["publication_lease"], "b" * 64)
@@ -18004,7 +18184,6 @@ class FactoryControllerTest(unittest.TestCase):
         restarted.json_call = json_call
         restarted.product_ticket_canceled = lambda _ticket, _main=None: True
         restarted.role_active = lambda _claim: False
-        restarted.event_once = lambda *_args, **_kwargs: None
 
         self.assertEqual(
             restarted.retire_canceled_claims([persisted], "f" * 40), []
@@ -18018,6 +18197,10 @@ class FactoryControllerTest(unittest.TestCase):
             ],
         )
         self.assertFalse(restarted.claim_path("T-110").exists())
+        self.assertEqual(len([
+            path for path in restarted.events.glob("*.json")
+            if CONTROL.read(path).get("event") == "publication_released"
+        ]), 1)
 
     def test_retired_claims_do_not_reduce_live_capacity_or_repeat_events(self) -> None:
         (self.product / "factory/PROJECT.env").write_text(
@@ -20177,6 +20360,104 @@ class FactoryControllerTest(unittest.TestCase):
                 "git-unlock",
             ],
         )
+
+    def test_publication_events_follow_serialized_lease_order(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        release_event = threading.Event()
+        allow_release_event = threading.Event()
+        acquired = threading.Event()
+        events = []
+        first = {
+            "priority": "normal", "publication_lease": "a" * 64,
+            "ticket": "T-110",
+        }
+        second = {
+            "priority": "normal", "publication_lease": "",
+            "ticket": "T-111",
+        }
+        controller.refresh_stale_protected_base = lambda *_args: False
+
+        def json_call(*arguments, **_kwargs):
+            if arguments[:2] == ("publication", "release"):
+                return {"status": "released"}
+            if arguments[:2] == ("publication", "ready"):
+                return {"status": "ready"}
+            if arguments[:2] == ("publication", "acquire"):
+                acquired.set()
+                return {"lease": "b" * 64, "status": "acquired"}
+            raise AssertionError(arguments)
+
+        def event(name, ticket, **_details):
+            if name == "publication_released":
+                release_event.set()
+                self.assertTrue(allow_release_event.wait(1))
+            events.append((name, ticket))
+
+        controller.json_call = json_call
+        controller.save_claim = lambda _claim: None
+        controller.event = event
+        controller.event_once = event
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            releasing = executor.submit(controller.release_publication, first)
+            self.assertTrue(release_event.wait(1))
+            acquiring = executor.submit(
+                controller.publication_ready, second, "c" * 64, "d" * 40,
+            )
+            self.assertFalse(acquired.wait(0.2))
+            allow_release_event.set()
+            releasing.result(timeout=2)
+            self.assertTrue(acquiring.result(timeout=2))
+
+        self.assertEqual(events, [
+            ("publication_released", "T-110"),
+            ("publication_acquired", "T-111"),
+        ])
+
+    def test_publication_acquisition_event_recovers_before_claim_save(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        lease = ["a" * 64]
+        claim = {
+            "priority": "normal", "publication_lease": "", "ticket": "T-110",
+        }
+        controller.refresh_stale_protected_base = lambda *_args: False
+        controller.json_call = lambda *arguments, **_kwargs: (
+            {"lease": lease[0], "status": "acquired"}
+            if arguments[:2] == ("publication", "acquire")
+            else {"status": "ready"}
+        )
+        controller.save_claim = lambda _claim: (_ for _ in ()).throw(
+            RuntimeError("crash before claim save")
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "crash before claim save"):
+            controller.publication_ready(claim, "b" * 64, "c" * 40)
+        self.assertEqual(len([
+            path for path in controller.events.glob("*.json")
+            if CONTROL.read(path).get("event") == "publication_acquired"
+        ]), 1)
+
+        restarted = CONTROL.Controller(self.args)
+        recovered = dict(claim, publication_lease="")
+        restarted.refresh_stale_protected_base = lambda *_args: False
+        restarted.json_call = controller.json_call
+        saved = []
+        restarted.save_claim = lambda item: saved.append(dict(item))
+        self.assertTrue(
+            restarted.publication_ready(recovered, "b" * 64, "c" * 40)
+        )
+        self.assertEqual(saved[0]["publication_lease"], "a" * 64)
+        self.assertEqual(len([
+            path for path in restarted.events.glob("*.json")
+            if CONTROL.read(path).get("event") == "publication_acquired"
+        ]), 1)
+        lease[0] = "d" * 64
+        self.assertTrue(
+            restarted.publication_ready(recovered, "b" * 64, "c" * 40)
+        )
+        self.assertEqual(len([
+            path for path in restarted.events.glob("*.json")
+            if CONTROL.read(path).get("event") == "publication_acquired"
+        ]), 2)
 
     def test_pushed_publication_refresh_recovers_without_another_provider(self) -> None:
         controller = CONTROL.Controller(self.args)

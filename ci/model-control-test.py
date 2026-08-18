@@ -357,17 +357,23 @@ class ModelControlTest(unittest.TestCase):
         )
         before_locks = tuple((path.exists(), path.is_symlink()) for path in lock_paths)
         self.assertFalse((self.product / "factory/runs/failed-run-1.meta").exists())
+        command = [
+            str(release / "scripts/model-control.sh"), "fallback-auto",
+            "--ticket", "T-901", "--failed-run", "failed-run-1",
+            "--workdir", str(self.workdir), "--reason", "provider_unavailable",
+        ]
+        lock_paths[0].mkdir()
+        releaser = subprocess.Popen([
+            "/bin/sh", "-c", 'sleep 5; rmdir "$1"', "_", str(lock_paths[0]),
+        ])
         result = subprocess.run(
-            [
-                str(release / "scripts/model-control.sh"), "fallback-auto",
-                "--ticket", "T-901", "--failed-run", "failed-run-1",
-                "--workdir", str(self.workdir), "--reason", "provider_unavailable",
-            ],
+            command,
             env=environment,
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
+        self.assertEqual(releaser.wait(timeout=10), 0)
         self.assertEqual(result.returncode, 2)
         self.assertEqual(
             json.loads(result.stdout),
@@ -378,6 +384,25 @@ class ModelControlTest(unittest.TestCase):
             result.stderr,
         )
         self.assertEqual(result.stderr, "")
+        maintenance = self.product / "factory/MAINTENANCE"
+        lock_paths[0].mkdir()
+        publisher = subprocess.Popen([
+            "/bin/sh", "-c", 'sleep 5; touch "$2"; rmdir "$1"', "_",
+            str(lock_paths[0]), str(maintenance),
+        ])
+        paused = subprocess.run(
+            command, env=environment, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        self.assertEqual(publisher.wait(timeout=10), 0)
+        self.assertEqual(paused.returncode, 2)
+        self.assertEqual(json.loads(paused.stdout), {
+            "error": "MAINTENANCE appeared while waiting for launch lock",
+            "status": "error",
+        })
+        self.assertEqual(paused.stderr, "")
+        self.assertTrue(maintenance.is_file())
+        maintenance.unlink()
         self.assertEqual(
             tuple((path.exists(), path.is_symlink()) for path in lock_paths),
             before_locks,

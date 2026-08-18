@@ -8,13 +8,13 @@ unset CI_FORCE_FULL
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 WORKFLOW="$ROOT/.github/workflows/ci.yml"
-[[ "$(grep -Fc 'actions/checkout@v5' "$WORKFLOW")" -eq 5 &&
-    "$(grep -Fc 'actions/setup-node@v5' "$WORKFLOW")" -eq 2 &&
-    "$(grep -Fc 'actions/setup-python@v6' "$WORKFLOW")" -eq 2 &&
-    "$(grep -Fc 'HOMEBREW_NO_AUTO_UPDATE: "1"' "$WORKFLOW")" -eq 1 &&
-    "$(grep -Fc 'HOMEBREW_ALLOWED_TAPS: homebrew/core' "$WORKFLOW")" -eq 1 &&
-    "$(grep -Fc 'command -v timeout' "$WORKFLOW")" -eq 1 &&
-    "$(grep -Fc 'brew install --formula coreutils >"$RUNNER_TEMP/brew-coreutils.log" 2>&1' "$WORKFLOW")" -eq 1 &&
+[[ "$(grep -Fc 'actions/checkout@v5' "$WORKFLOW")" -eq 6 &&
+    "$(grep -Fc 'actions/setup-node@v5' "$WORKFLOW")" -eq 3 &&
+    "$(grep -Fc 'actions/setup-python@v6' "$WORKFLOW")" -eq 3 &&
+    "$(grep -Fc 'HOMEBREW_NO_AUTO_UPDATE: "1"' "$WORKFLOW")" -eq 2 &&
+    "$(grep -Fc 'HOMEBREW_ALLOWED_TAPS: homebrew/core' "$WORKFLOW")" -eq 2 &&
+    "$(grep -Fc 'command -v timeout' "$WORKFLOW")" -eq 2 &&
+    "$(grep -Fc 'brew install --formula coreutils >"$RUNNER_TEMP/brew-coreutils.log" 2>&1' "$WORKFLOW")" -eq 2 &&
     "$(grep -Ec 'HOMEBREW_NO_REQUIRE_TAP_TRUST|brew (trust|untap)' "$WORKFLOW")" -eq 0 ]] || {
   echo "FAIL: CI actions must use Node 24 runtimes and macOS install must avoid tap updates" >&2
   exit 1
@@ -28,12 +28,23 @@ WORKFLOW="$ROOT/.github/workflows/ci.yml"
   echo "FAIL: both protected-main platform jobs must force the full suite" >&2
   exit 1
 }
-[[ "$(grep -Fc 'runs-on: macos-14' "$WORKFLOW")" -eq 1 &&
+[[ "$(grep -Fc 'runs-on: macos-14' "$WORKFLOW")" -eq 2 &&
     "$(grep -Fc 'self-hosted' "$WORKFLOW")" -eq 0 ]] || {
   echo "FAIL: all macOS groups must run in parallel on hosted runners" >&2
   exit 1
 }
-[[ "$(grep -c '^    needs: scope$' "$WORKFLOW")" -eq 3 ]] || {
+[[ "$(grep -Fc 'FACTORY_EPHEMERAL_QUALIFICATION_REPLAY: "1"' "$WORKFLOW")" -eq 1 &&
+    "$(grep -Fc 'run: python3 ci/qualification-shared-state-test.py' "$WORKFLOW")" -eq 1 &&
+    "$(grep -Fc '          SHARED_RESULT: ${{ needs.macos-sealed-qualification.result }}' "$WORKFLOW")" -eq 1 &&
+    "$(grep -Fc 'test "$SHARED_RESULT" = success' "$WORKFLOW")" -eq 1 &&
+    "$(grep -Fc 'MACOS_SHARED_RESULT: ${{ needs.macos-sealed-qualification.result }}' "$WORKFLOW")" -eq 1 &&
+    "$(grep -Fc 'test "$MACOS_SHARED_RESULT" = skipped' "$WORKFLOW")" -eq 1 &&
+    "$(grep -Fc 'test "$MACOS_SHARED_RESULT" = success' "$WORKFLOW")" -eq 1 &&
+    "$(grep -Fc 'qualification-shared-state' "$ROOT/ci/suite-registry.sh")" -eq 0 ]] || {
+  echo "FAIL: sealed qualification must run once and gate aggregate macOS evidence" >&2
+  exit 1
+}
+[[ "$(grep -c '^    needs: scope$' "$WORKFLOW")" -eq 4 ]] || {
   echo "FAIL: policy and platform jobs must depend only on classification so they can run in parallel" >&2
   exit 1
 }
@@ -41,7 +52,7 @@ WORKFLOW="$ROOT/.github/workflows/ci.yml"
     "$(grep -Fc 'scripts/secret-scan' "$WORKFLOW")" -eq 1 &&
     "$(grep -Fc 'scripts/artifact-check --base "$BASE_SHA"' "$WORKFLOW")" -eq 1 &&
     "$(grep -Fc 'python3 ci/no-"her""mes"-dependency-test.py' "$WORKFLOW")" -eq 1 &&
-    "$(grep -Fc 'needs: [scope, policy, linux, macos-bash-3]' "$WORKFLOW")" -eq 1 &&
+    "$(grep -Fc 'needs: [scope, policy, linux, macos-bash-3, macos-sealed-qualification]' "$WORKFLOW")" -eq 1 &&
     "$(grep -c '^    if: always()$' "$WORKFLOW")" -eq 1 &&
     "$(grep -Fc 'POLICY_RESULT: ${{ needs.policy.result }}' "$WORKFLOW")" -eq 1 &&
     "$(grep -Fc 'test "$POLICY_RESULT" = success' "$WORKFLOW")" -eq 1 ]] || {
@@ -58,7 +69,7 @@ WORKFLOW="$ROOT/.github/workflows/ci.yml"
   exit 1
 }
 [[ "$(grep -Fc 'bash ci/macos-required-change.sh "$BASE_SHA" "$GITHUB_SHA"' "$WORKFLOW")" -eq 1 &&
-    "$(grep -Fc "needs.scope.outputs.macos == 'true'" "$WORKFLOW")" -eq 1 &&
+    "$(grep -Fc "needs.scope.outputs.macos == 'true'" "$WORKFLOW")" -eq 2 &&
     "$(grep -Fc 'MACOS_REQUIRED: ${{ needs.scope.outputs.macos }}' "$WORKFLOW")" -eq 1 &&
     "$(grep -Fc 'test "$MACOS_REQUIRED" = false' "$WORKFLOW")" -eq 1 ]] || {
   echo "FAIL: the macOS requirement classifier must gate both the macOS job and the ci context" >&2
@@ -67,7 +78,7 @@ WORKFLOW="$ROOT/.github/workflows/ci.yml"
 [[ "$(grep -Fc 'name: linux-${{ matrix.shard }}' "$WORKFLOW")" -eq 1 &&
     "$(grep -Fc 'name: macos-bash-3-${{ matrix.shard }}' "$WORKFLOW")" -eq 1 &&
     "$(grep -Fc 'needs: [scope, linux]' "$WORKFLOW")" -eq 1 &&
-    "$(grep -Fc 'needs: [scope, macos-bash-3]' "$WORKFLOW")" -eq 1 ]] || {
+    "$(grep -Fc 'needs: [scope, macos-bash-3, macos-sealed-qualification]' "$WORKFLOW")" -eq 1 ]] || {
   echo "FAIL: stable release-evidence shard contexts must aggregate every platform group" >&2
   exit 1
 }

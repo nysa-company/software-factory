@@ -6889,3 +6889,51 @@ When the qualification driver refuses its initial Doctor gate, its typed result
 includes the exact sanitized Doctor document it evaluated. Operators can name
 the failed check without repeating the sealed command; the gate remains
 fail-closed and does not retry, weaken readiness, or enter reconciliation.
+
+## 2026-08-18 — Decision 500: Shared qualification runs only in disposable CI
+
+Category: Reliability
+
+The fast credential-free replay remains a component gate. A separate macOS
+gate may spend up to 910 seconds in an explicitly disposable OS account to run
+one real sealed three-ticket state chain with deterministic provider and GitHub
+executables. Production code owns every receipt, passport, fallback handoff,
+restart, publication, closeout, and reducer artifact; no live credentials or
+provider inference are available. The shared gate proves fresh-cohort
+composition, while successor migration, terminal adoption, and live provider
+quality retain their separate evidence boundaries.
+
+## 2026-08-18 — Decision 501: Qualification fallback waits without crossing pause
+
+Category: Reliability
+
+Automatic and operator-approved fallback wait up to 60 seconds for a sibling's
+transient product launch-lock window. They never infer or reclaim stale lock
+ownership. `MAINTENANCE` is checked during the wait and immediately after lock
+acquisition, so an operator pause wins before any fallback handoff, route
+journal mutation, commit, or push. A causal regression holds the launch lock,
+proves ordinary fallback resumes after release, then publishes maintenance
+before release and proves the mutation remains refused.
+
+## 2026-08-18 — Decision 502: Qualification reduction waits for protected cohort truth
+
+Category: Reliability
+
+Controller results are invocation-local and may contain only the ticket that
+completed in the current wave. Before an active-free, all-complete result may
+enter reduction, the controller refreshes protected main and validates the
+full manifest target through the existing protected Done authority. A partial
+terminal set returns the existing `waiting_for_target` status with its current
+results preserved; reducer evidence is not attempted until the cohort is
+durably terminal. After response loss, an empty recovered invocation may
+reconstruct complete results only when the refreshed protected authority
+validates the entire target; incomplete empty results retain the existing
+successor-migration wait path.
+
+Recovered blocked and budget claims are projected back into controller results
+so a restart cannot turn an authenticated refusal into a generic wait. Exact
+route-migration waits, prior-release transitions, and invalid transition
+evidence remain excluded. Publication manager mutations, lease-digest events,
+and claim checkpoints are serialized, with evidence durable before the claim
+checkpoint so response loss can replay one lease without losing or inventing
+publication history.

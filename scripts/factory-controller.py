@@ -544,6 +544,7 @@ class Controller:
         self.invalid_transition_tickets: set[str] = set()
         self.prior_transition_tickets: set[str] = set()
         self.fallback_lock = Lock()
+        self.publication_lock = Lock()
         self.qualification_cohort_error = Event()
         self.qualification_launch_lock = Lock()
         # ponytail: cells share one Git common directory; use per-cell refs only if refresh throughput matters.
@@ -3589,20 +3590,28 @@ class Controller:
         self.event("ticket_released", claim["ticket"])
 
     def release_publication(self, claim: dict[str, Any]) -> None:
-        try:
-            self.json_call(
-                "publication", "release", "--ticket", claim["ticket"],
-                "--lease", claim["publication_lease"], "--json",
+        with self.publication_lock:
+            lease_sha256 = hashlib.sha256(
+                claim["publication_lease"].encode()
+            ).hexdigest()
+            try:
+                self.json_call(
+                    "publication", "release", "--ticket", claim["ticket"],
+                    "--lease", claim["publication_lease"], "--json",
+                )
+            except ControllerError as error:
+                recovered = self.json_call(
+                    "publication", "withdraw", "--ticket", claim["ticket"],
+                    "--json",
+                )
+                if recovered.get("status") != "absent":
+                    raise error
+            self.event_once(
+                "publication_released", claim["ticket"],
+                publication_lease_sha256=lease_sha256,
             )
-        except ControllerError as error:
-            recovered = self.json_call(
-                "publication", "withdraw", "--ticket", claim["ticket"], "--json",
-            )
-            if recovered.get("status") != "absent":
-                raise error
-        claim["publication_lease"] = ""
-        self.save_claim(claim)
-        self.event_once("publication_released", claim["ticket"])
+            claim["publication_lease"] = ""
+            self.save_claim(claim)
 
     def withdraw_publication(self, claim: dict[str, Any]) -> None:
         if claim.get("publication_lease"):
@@ -6650,24 +6659,9 @@ class Controller:
     def readmit_stranded_route_upgrade(
         self, claim: dict[str, Any], name: str,
     ) -> bool:
-        attempt = claim.get("recovery_attempt")
         if (
             name != "release-upgrade"
-            or not self.valid_recovery_attempt(attempt)
-            or attempt.get("phase") != "abandoned"
-            or attempt.get("count") != RECOVERY_ATTEMPT_LIMIT
-            or attempt.get("recovery") != name
-            or attempt.get("retry_reason") != "route-migration-required"
-            or attempt.get("retry_status") != "blocked"
-            or claim.get("status") != "blocked"
-            or claim.get("blocked_reason")
-            != "recovery-abandoned:release-upgrade"
-            or not (
-                claim.get("lease_released") is True
-                or claim.get("parked") is True
-                and claim.get("lease", "") == ""
-            )
-            or claim.get("publication_lease")
+            or not self.stranded_route_upgrade_wait(claim)
         ):
             return False
         pending = (
@@ -6737,6 +6731,26 @@ class Controller:
             authorization_head=authorization,
         )
         return True
+
+    def stranded_route_upgrade_wait(self, claim: dict[str, Any]) -> bool:
+        attempt = claim.get("recovery_attempt")
+        return (
+            self.valid_recovery_attempt(attempt)
+            and attempt["factory_sha"] == self.release_path.name
+            and attempt["phase"] == "abandoned"
+            and attempt["recovery"] == "release-upgrade"
+            and attempt["retry_reason"] == "route-migration-required"
+            and attempt["retry_status"] == "blocked"
+            and claim.get("status") == "blocked"
+            and claim.get("blocked_reason")
+            == "recovery-abandoned:release-upgrade"
+            and (
+                claim.get("lease_released") is True
+                or claim.get("parked") is True
+                and claim.get("lease", "") == ""
+            )
+            and not claim.get("publication_lease")
+        )
 
     def recover_each(
         self,
@@ -11548,24 +11562,31 @@ class Controller:
             claim, receipt, head, "protected_base_refreshed"
         ):
             return False
-        prior = claim.get("publication_lease", "")
-        self.json_call(
-            "publication", "ready", "--ticket", claim["ticket"],
-            "--head", head, "--priority", claim["priority"], "--json",
-        )
-        lease = self.json_call(
-            "publication", "acquire", "--ticket", claim["ticket"],
-            "--head", head, "--priority", claim["priority"], "--json",
-        )
-        if lease.get("status") != "acquired":
-            return False
-        claim["publication_lease"] = lease["lease"]
-        self.save_claim(claim)
-        self.event(
-            "publication_renewed" if prior == lease["lease"] else "publication_acquired",
-            claim["ticket"], head_sha=head,
-        )
-        return True
+        with self.publication_lock:
+            prior = claim.get("publication_lease", "")
+            self.json_call(
+                "publication", "ready", "--ticket", claim["ticket"],
+                "--head", head, "--priority", claim["priority"], "--json",
+            )
+            lease = self.json_call(
+                "publication", "acquire", "--ticket", claim["ticket"],
+                "--head", head, "--priority", claim["priority"], "--json",
+            )
+            if lease.get("status") != "acquired":
+                return False
+            lease_sha256 = hashlib.sha256(lease["lease"].encode()).hexdigest()
+            self.event_once(
+                "publication_acquired", claim["ticket"], head_sha=head,
+                publication_lease_sha256=lease_sha256,
+            )
+            if prior == lease["lease"]:
+                self.event(
+                    "publication_renewed", claim["ticket"], head_sha=head,
+                    publication_lease_sha256=lease_sha256,
+                )
+            claim["publication_lease"] = lease["lease"]
+            self.save_claim(claim)
+            return True
 
     def request_protected_auto_merge(
         self, claim: dict[str, Any], receipt: str, pr: dict[str, Any]
@@ -13321,18 +13342,62 @@ class Controller:
         claims = self.load_claims()
         for ticket, refusal in self.admission_refusals.items():
             results.setdefault(ticket, refusal)
+        if self.qualification:
+            selected = set(self.qualification["tickets"])
+            for claim in claims:
+                route_migration_wait = (
+                    claim["status"] == "blocked"
+                    and (
+                        claim.get("blocked_reason") == "route-migration-required"
+                        or self.stranded_route_upgrade_wait(claim)
+                    )
+                )
+                if (
+                    claim["ticket"] in selected
+                    and claim["ticket"] not in (
+                        self.invalid_transition_tickets
+                        | self.prior_transition_tickets
+                    )
+                    and claim["status"] in {"blocked", "budget"}
+                    and not route_migration_wait
+                ):
+                    results.setdefault(claim["ticket"], {
+                        "status": claim["status"], "ticket": claim["ticket"],
+                    })
         ordered = [results[ticket] for ticket in sorted(results)]
+        active = len([
+            item for item in claims if self.consumes_capacity(item)
+        ])
+        status = (
+            "ok"
+            if all(item["status"] != "error" for item in ordered)
+            else "error"
+        )
+        if (
+            self.qualification and active == 0
+            and (
+                not ordered
+                or all(item["status"] == "complete" for item in ordered)
+            )
+        ):
+            self.protected_main_head()
+            done = sorted(
+                ticket for ticket in self.qualification["tickets"]
+                if self.product_ticket_done(ticket)
+            )
+            if len(done) == self.qualification["target_done"]:
+                if not ordered:
+                    ordered = [
+                        {"status": "complete", "ticket": ticket}
+                        for ticket in done
+                    ]
+            elif ordered:
+                status = "waiting_for_target"
         return {
-            "active": len(
-                [item for item in claims if self.consumes_capacity(item)]
-            ),
+            "active": active,
             "results": ordered,
             "schema": SCHEMA,
-            "status": (
-                "ok"
-                if all(item["status"] != "error" for item in ordered)
-                else "error"
-            ),
+            "status": status,
         }
 
 

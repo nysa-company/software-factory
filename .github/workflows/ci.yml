@@ -120,8 +120,8 @@ jobs:
     name: macos-bash-3-group-${{ matrix.group }}
     needs: scope
     if: needs.scope.outputs.behavioral == 'true' && needs.scope.outputs.macos == 'true'
-    # Keep all four groups on separate hosted runners so protected-main
-    # qualification receives the same fast feedback as pull requests.
+    # Keep the ordinary suites on four hosted runners; sealed qualification
+    # has its own runner below so it cannot dominate group 4.
     runs-on: macos-14
     strategy:
       fail-fast: false
@@ -160,6 +160,38 @@ jobs:
           CI_FORCE_FULL: "1"
         run: CI_SUMMARY_FILE="$GITHUB_STEP_SUMMARY" /bin/bash ci/test-all.sh --group "${{ matrix.group }}"
 
+  macos-sealed-qualification:
+    name: macos-sealed-qualification
+    needs: scope
+    if: needs.scope.outputs.behavioral == 'true' && needs.scope.outputs.macos == 'true'
+    runs-on: macos-14
+    env:
+      FACTORY_EPHEMERAL_QUALIFICATION_REPLAY: "1"
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: install GNU timeout
+        env:
+          HOMEBREW_ALLOWED_TAPS: homebrew/core
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+        run: |
+          if ! command -v timeout >/dev/null 2>&1; then
+            if ! brew install --formula coreutils >"$RUNNER_TEMP/brew-coreutils.log" 2>&1; then
+              cat "$RUNNER_TEMP/brew-coreutils.log"
+              exit 1
+            fi
+          fi
+      - name: sealed credential-free shared qualification replay
+        run: python3 ci/qualification-shared-state-test.py
+
   # Preserve the installed release-evidence contexts while the implementation
   # fans out to four balanced hosted runners per platform.
   linux-shard-evidence:
@@ -182,7 +214,7 @@ jobs:
   macos-shard-evidence:
     name: macos-bash-3-${{ matrix.shard }}
     if: always() && github.event_name == 'push'
-    needs: [scope, macos-bash-3]
+    needs: [scope, macos-bash-3, macos-sealed-qualification]
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -192,14 +224,17 @@ jobs:
         env:
           SCOPE_RESULT: ${{ needs.scope.result }}
           GROUP_RESULT: ${{ needs.macos-bash-3.result }}
+          SHARED_RESULT: ${{ needs.macos-sealed-qualification.result }}
         run: |
           test "$SCOPE_RESULT" = success
           test "$GROUP_RESULT" = success
+          test "$SHARED_RESULT" = success
 
-  # Keep the required context stable while all eight platform groups execute.
+  # Keep the required context stable while all eight platform groups and the
+  # sealed shared-state qualification execute.
   ci:
     if: always()
-    needs: [scope, policy, linux, macos-bash-3]
+    needs: [scope, policy, linux, macos-bash-3, macos-sealed-qualification]
     runs-on: ubuntu-latest
     steps:
       - name: require applicable verification
@@ -210,14 +245,17 @@ jobs:
           MACOS_REQUIRED: ${{ needs.scope.outputs.macos }}
           LINUX_RESULT: ${{ needs.linux.result }}
           MACOS_RESULT: ${{ needs.macos-bash-3.result }}
+          MACOS_SHARED_RESULT: ${{ needs.macos-sealed-qualification.result }}
         run: |
           test "$SCOPE_RESULT" = success
           test "$POLICY_RESULT" = success
           test "$LINUX_RESULT" = success
           if test "$BEHAVIORAL" = false || test "$MACOS_REQUIRED" = false; then
             test "$MACOS_RESULT" = skipped
+            test "$MACOS_SHARED_RESULT" = skipped
           else
             test "$MACOS_RESULT" = success
+            test "$MACOS_SHARED_RESULT" = success
           fi
 
   test-immutability:

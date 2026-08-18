@@ -172,6 +172,25 @@ the exact pre-fix blob and passes the first repaired blob. This is a fast
 component regression gate, not shared-state end-to-end qualification evidence;
 a frozen live cohort remains the release proof.
 
+A separate macOS shared-state gate runs only in an explicitly disposable OS
+account and has a 910-second deadline. It prepares one real sealed three-ticket
+qualification, supplies deterministic provider and GitHub behavior only at
+their external executable boundaries, and lets the production launcher,
+controller, state machine, passport, fallback/handoff, attestation, closeout,
+and reducer code create and consume one shared artifact chain. One ticket takes
+the Cursor-to-Codex Builder fallback, and serialized publication forces the
+remaining tickets through real protected-base refresh and reapproval. The gate
+never uses live credentials or provider inference. It proves fresh-cohort
+restart, fallback, publication, closeout, and reduction composition; successor
+migration and terminal adoption remain covered by the fast component replay,
+and a frozen live cohort remains the release proof.
+
+Recovered qualification responses surface durable blocked and budget claims,
+while exact route-migration waits remain empty so the sealed driver can apply
+the authorized migration. Publication acquire/release manager transitions,
+lease-digest events, and claim checkpoints share one controller lock; response
+loss reuses the same lease evidence, while a new lease remains distinct.
+
 Installation requires remote full-suite evidence for an exact `origin/main`
 SHA with a successful authenticated GitHub Actions push run whose three Linux,
 three macOS, aggregate, and immutability jobs all passed. It then runs a
@@ -632,6 +651,11 @@ Automatic qualification fallback serializes and reroutes only the failed
 role. Future pinned roles keep their selections and are re-probed only when
 they reach provider admission; later task-bearing roles retain four-way
 execution.
+Fallback waits up to 60 seconds for a sibling's transient product launch-lock
+window instead of turning ordinary qualification concurrency into a controller
+error. It never reclaims an existing lock, and it checks `MAINTENANCE` while
+waiting and immediately after acquisition so a published pause always wins
+before route or handoff mutation.
 If interruption occurs after a terminal role was exported but before its claim
 was cleared, restart identifies the exact run, role, and transition receipt in
 both passport charge and completed-role evidence. It authenticates and
@@ -1477,6 +1501,13 @@ Qualification restart and recovery count those protected Done targets together
 with runnable claims, retain the complete cohort in their boundary events, and
 schedule only unfinished tickets. The controller also records one
 candidate-bound completion event for each claimless protected Done target.
+Because controller results describe only the current invocation, a terminal
+result subset is not cohort completion. Before returning an apparent final
+qualification wave, the controller refreshes protected main and returns
+`waiting_for_target` until the manifest's full target count has validated Done
+evidence; only then may the driver enter reduction. If a restart loses the
+final invocation response after all targets become Done, that same protected
+proof reconstructs complete results so reduction remains reachable.
 Every qualification event also binds the exact protected manifest generation
 and canonical manifest digest. Reduction selects only that boundary, rejects
 partial or malformed current-boundary metadata, and leaves older same-release
