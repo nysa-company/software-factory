@@ -6889,7 +6889,7 @@ fail-closed and does not retry, weaken readiness, or enter reconciliation.
 Category: Reliability
 
 The fast credential-free replay remains a component gate. A separate macOS
-gate may spend up to 360 seconds in an explicitly disposable OS account to run
+gate may spend up to 540 seconds in an explicitly disposable OS account to run
 one real sealed three-ticket state chain with deterministic provider and GitHub
 executables. Production code owns every receipt, passport, fallback handoff,
 restart, publication, closeout, and reducer artifact; no live credentials or

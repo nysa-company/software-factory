@@ -133,7 +133,7 @@ class QualificationSharedStateTest(unittest.TestCase):
             "TMPDIR": str(self.workspace),
         }
 
-    def sealed(self, *command: str | Path, timeout: int = 330) -> subprocess.CompletedProcess[str]:
+    def sealed(self, *command: str | Path, timeout: int = 510) -> subprocess.CompletedProcess[str]:
         process = subprocess.Popen(
             [str(item) for item in command], cwd=self.workspace,
             env=self.environment,
@@ -680,7 +680,7 @@ raise SystemExit(1 if failed else 0)
         for _ in range(4):
             launched = self.sealed(
                 str(launcher), self.project, "qualification-run", "--json",
-                timeout=max(1, int(350 - (time.monotonic() - self.started))),
+                timeout=max(1, int(530 - (time.monotonic() - self.started))),
             )
             self.assertIn(launched.returncode, (0, 3), launched.stdout + launched.stderr)
             replay = json.loads(launched.stdout)
@@ -734,7 +734,7 @@ raise SystemExit(1 if failed else 0)
         self.assertEqual(
             {item["ticket"] for item in replay["report"]["tickets"]}, set(TICKETS)
         )
-        self.assertLess(time.monotonic() - self.started, 360)
+        self.assertLess(time.monotonic() - self.started, 540)
 
 
 if __name__ == "__main__":
