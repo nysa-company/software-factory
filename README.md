@@ -4,6 +4,8 @@ A product-agnostic kit for running an AI software factory: agents plan, build, r
 
 Built July 2026 for the Nysa project, factored out so any product can use it. Design decisions and their history live in the [Nysa product repository](https://github.com/nysa-company/nysa/blob/main/deliverables/2026-07-11-autonomous-software-factory-brief.md).
 
+This repository is **public**. It is **not** licensed under MIT. The public license is GNU AGPLv3, with a paid commercial license available from Nysa. See [License](#license).
+
 ## What's in the box
 
 | Folder | Contents |
@@ -203,3 +205,14 @@ authorization step. A completed replay is read-only.
 For the complete transition and ownership rules, see
 [`docs/workflows/ticket-flow.md`](docs/workflows/ticket-flow.md) and
 [`docs/runbooks/operator.md`](docs/runbooks/operator.md).
+
+## License
+
+This repository is public so anyone can read the source. It is **not** released under the MIT License.
+
+Software Factory Kit is dual-licensed:
+
+1. **GNU Affero General Public License v3.0 (AGPLv3)** — the public license. Personal, research, and other non-commercial use is allowed under AGPLv3. You may also use the kit commercially under AGPLv3 if you follow it, including offering complete corresponding source to users who interact with a modified version over a network. The full text is in [`LICENSE`](LICENSE).
+2. **Commercial license (paid)** — required when you want to use this software in a proprietary product or hosted service **without** AGPLv3 source-disclosure obligations. Open a GitHub issue titled `Commercial license` on this repository to request terms.
+
+Vendored third-party material keeps its own license. `vendor/spec-kit/` remains MIT-licensed from upstream [github/spec-kit](https://github.com/github/spec-kit).

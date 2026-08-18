@@ -787,6 +787,12 @@ everything the Factory actually enforces lives here.
 
 ## Log
 
+## 2026-08-18 — Public dual license is AGPLv3 plus paid commercial
+
+Category: Decision
+
+The kit repository stays public and is not MIT-licensed. The public license is GNU AGPLv3; organizations that need proprietary or closed hosted use without AGPL source-disclosure buy a commercial license from Nysa. Vendored `vendor/spec-kit/` remains MIT from upstream.
+
 ## 2026-08-14 — Local release canary became one command
 
 Category: System change
