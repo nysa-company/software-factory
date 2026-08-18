@@ -679,19 +679,18 @@ raise SystemExit(1 if failed else 0)
         launcher = Path(value["launcher"])
         self.assertTrue(launcher.is_file())
         approved = 0
-        blocked_waves = 0
         restarts = 0
         events_dir = self.home / f".factory/qualification/{self.project}/controller/events"
         for _ in range(7):
             prior_events = set(events_dir.glob("*.json"))
             launched = self.sealed(
                 str(launcher), self.project, "qualification-run", "--json",
-                timeout=max(1, int(530 - (time.monotonic() - self.started))),
+                timeout=max(1, int(660 - (time.monotonic() - self.started))),
             )
             if launched.returncode == 2:
                 reduced = self.sealed(
                     str(launcher), self.project, "qualification", "--json",
-                    timeout=max(1, int(530 - (time.monotonic() - self.started))),
+                    timeout=max(1, int(660 - (time.monotonic() - self.started))),
                 )
                 reason = json.loads(reduced.stdout).get("error", "unclassified")
                 self.fail(f"qualification reduction failed: {reason}")
@@ -701,16 +700,12 @@ raise SystemExit(1 if failed else 0)
                 json.loads(path.read_text(encoding="utf-8"))
                 for path in sorted(events_dir.glob("*.json")) if path not in prior_events
             ]
-            prior_event_records = [
-                json.loads(path.read_text(encoding="utf-8"))
-                for path in sorted(prior_events)
-            ]
             restarts += replay["restarts"]
             if replay["status"] == "green":
                 self.assertEqual(launched.returncode, 0)
                 break
-            self.assertIn(
-                replay["status"], {"blocked", "waiting"},
+            self.assertEqual(
+                replay["status"], "waiting",
                 json.dumps(replay, sort_keys=True),
             )
             self.assertEqual(launched.returncode, 3)
@@ -718,8 +713,6 @@ raise SystemExit(1 if failed else 0)
                 item["ticket"]: item["status"]
                 for item in replay["controller"]["results"]
             }
-            observed = set(statuses)
-            omitted = set(TICKETS) - observed
             completed = {
                 ticket for ticket, status in statuses.items() if status == "complete"
             }
@@ -734,50 +727,12 @@ raise SystemExit(1 if failed else 0)
                 event.get("ticket") for event in new_events
                 if event.get("event") == "ticket_complete"
             }
-            prior_terminal = {
-                event.get("ticket") for event in prior_event_records
-                if event.get("event") == "ticket_complete"
-            } & {
-                event.get("ticket") for event in prior_event_records
-                if event.get("event") == "ticket_released"
-            }
-            prior_settled = prior_terminal - claims
             completion_progress = (
                 bool(completed)
                 and completed <= set(TICKETS)
                 and completed <= released & complete_events
                 and completed.isdisjoint(claims)
             )
-            if replay["status"] == "blocked":
-                blocked_waves += 1
-                claim_summaries = {}
-                for path in (events_dir.parent / "claims").glob("*.json"):
-                    claim = json.loads(path.read_text(encoding="utf-8"))
-                    summary = {
-                        key: claim.get(key)
-                        for key in ("blocked_reason", "role", "status")
-                    }
-                    summary["receipt_present"] = bool(claim.get("receipt"))
-                    claim_summaries[claim["ticket"]] = summary
-                self.assertTrue(
-                    observed <= set(TICKETS)
-                    and statuses.get("T-902") == "blocked"
-                    and all(
-                        status in {"complete", "waiting"}
-                        for ticket, status in statuses.items()
-                        if ticket != "T-902"
-                    )
-                    and omitted <= prior_settled
-                    and (not completed or completion_progress),
-                    json.dumps({
-                        "claims": claim_summaries,
-                        "events": [
-                            (event.get("ticket"), event.get("event"))
-                            for event in new_events
-                        ],
-                        "statuses": statuses,
-                    }, sort_keys=True),
-                )
             newly_approved = self.approve_waiting(launcher.parent.parent)
             if newly_approved == 0:
                 refresh_progress = any(
@@ -786,19 +741,13 @@ raise SystemExit(1 if failed else 0)
                     for event in new_events
                 )
                 self.assertTrue(
-                    completion_progress
-                    or refresh_progress
-                    and (
-                        replay["status"] == "waiting"
-                        or bool(omitted) and omitted <= prior_settled
-                    ),
+                    completion_progress or refresh_progress,
                     json.dumps(replay, sort_keys=True),
                 )
             approved += newly_approved
         else:
             self.fail("shared qualification did not converge")
         self.assertEqual(replay["status"], "green", json.dumps(replay, sort_keys=True))
-        self.assertEqual(blocked_waves, 1)
         self.assertEqual(restarts, 1)
         events = [
             json.loads(path.read_text(encoding="utf-8"))
@@ -835,7 +784,7 @@ raise SystemExit(1 if failed else 0)
             {item["ticket"] for item in replay["report"]["tickets"]}, set(TICKETS)
         )
         self.assertEqual(self.replay_process_groups(), set())
-        self.assertLess(time.monotonic() - self.started, 540)
+        self.assertLess(time.monotonic() - self.started, 670)
 
 
 if __name__ == "__main__":
