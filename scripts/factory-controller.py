@@ -10461,7 +10461,6 @@ class Controller:
             or not terminal.get("route_id", "").startswith("cursor-")
             or terminal.get("role") != claim.get("role")
             or edge.get("from_factory_sha") != terminal.get("kit_sha")
-            or edge.get("to_factory_sha") != self.release_path.name
             or edge.get("from_head_sha") != terminal.get("role_head_before")
             or edge.get("from_head_sha") == edge.get("to_head_sha")
             or edge.get("from_route_plan_sha256")
