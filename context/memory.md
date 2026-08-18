@@ -6883,3 +6883,16 @@ When the qualification driver refuses its initial Doctor gate, its typed result
 includes the exact sanitized Doctor document it evaluated. Operators can name
 the failed check without repeating the sealed command; the gate remains
 fail-closed and does not retry, weaken readiness, or enter reconciliation.
+
+## 2026-08-18 — Decision 500: Shared qualification runs only in disposable CI
+
+Category: Reliability
+
+The fast credential-free replay remains a component gate. A separate macOS
+gate may spend up to 360 seconds in an explicitly disposable OS account to run
+one real sealed three-ticket state chain with deterministic provider and GitHub
+executables. Production code owns every receipt, passport, fallback handoff,
+restart, publication, closeout, and reducer artifact; no live credentials or
+provider inference are available. The shared gate proves fresh-cohort
+composition, while successor migration, terminal adoption, and live provider
+quality retain their separate evidence boundaries.

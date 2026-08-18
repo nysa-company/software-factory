@@ -172,6 +172,19 @@ the exact pre-fix blob and passes the first repaired blob. This is a fast
 component regression gate, not shared-state end-to-end qualification evidence;
 a frozen live cohort remains the release proof.
 
+A separate macOS shared-state gate runs only in an explicitly disposable OS
+account and has a 360-second deadline. It prepares one real sealed three-ticket
+qualification, supplies deterministic provider and GitHub behavior only at
+their external executable boundaries, and lets the production launcher,
+controller, state machine, passport, fallback/handoff, attestation, closeout,
+and reducer code create and consume one shared artifact chain. One ticket takes
+the Cursor-to-Codex Builder fallback, and serialized publication forces the
+remaining tickets through real protected-base refresh and reapproval. The gate
+never uses live credentials or provider inference. It proves fresh-cohort
+restart, fallback, publication, closeout, and reduction composition; successor
+migration and terminal adoption remain covered by the fast component replay,
+and a frozen live cohort remains the release proof.
+
 Installation requires remote full-suite evidence for an exact `origin/main`
 SHA with a successful authenticated GitHub Actions push run whose three Linux,
 three macOS, aggregate, and immutability jobs all passed. It then runs a

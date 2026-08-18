@@ -123,6 +123,8 @@ jobs:
     # Keep all four groups on separate hosted runners so protected-main
     # qualification receives the same fast feedback as pull requests.
     runs-on: macos-14
+    env:
+      FACTORY_EPHEMERAL_QUALIFICATION_REPLAY: "1"
     strategy:
       fail-fast: false
       matrix:

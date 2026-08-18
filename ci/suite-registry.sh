@@ -39,6 +39,7 @@ suite_registry() {
   "$callback" qualification-environment "sealed live qualification environment suite" python3 "$ROOT/ci/qualification-environment-test.py"
   "$callback" qualification-run "deterministic qualification driver suite" python3 "$ROOT/ci/qualification-run-test.py"
   "$callback" qualification-lane-replay "credential-free qualification lane replay" python3 "$ROOT/ci/qualification-lane-replay-test.py"
+  "$callback" qualification-shared-state "sealed credential-free shared qualification replay" python3 "$ROOT/ci/qualification-shared-state-test.py"
   "$callback" qualification-manifest "committed qualification manifest suite" python3 "$ROOT/ci/qualification-manifest-test.py"
   "$callback" qualification-artifacts "qualification artifact closure suite" python3 "$ROOT/ci/qualification-artifacts-test.py"
   "$callback" budget-stage "budget-only delivery stop suite" python3 "$ROOT/ci/budget-stage-test.py"
