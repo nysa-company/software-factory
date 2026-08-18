@@ -38,6 +38,7 @@ suite_registry() {
   "$callback" qualification-reducer "exact qualification evidence reducer suite" python3 "$ROOT/ci/qualification-reducer-test.py"
   "$callback" qualification-environment "sealed live qualification environment suite" python3 "$ROOT/ci/qualification-environment-test.py"
   "$callback" qualification-run "deterministic qualification driver suite" python3 "$ROOT/ci/qualification-run-test.py"
+  "$callback" qualification-lane-replay "credential-free qualification lane replay" python3 "$ROOT/ci/qualification-lane-replay-test.py"
   "$callback" qualification-manifest "committed qualification manifest suite" python3 "$ROOT/ci/qualification-manifest-test.py"
   "$callback" qualification-artifacts "qualification artifact closure suite" python3 "$ROOT/ci/qualification-artifacts-test.py"
   "$callback" budget-stage "budget-only delivery stop suite" python3 "$ROOT/ci/budget-stage-test.py"
