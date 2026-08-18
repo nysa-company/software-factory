@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_CEILING
 import hashlib
 import hmac
 import json
@@ -261,9 +261,11 @@ def micro_usd(value: dict[str, str]) -> int:
         amount = Decimal(raw)
     except InvalidOperation as error:
         raise PassportError("run charge is invalid") from error
-    if amount < 0 or amount.as_tuple().exponent < -6:
+    if not amount.is_finite() or amount < 0:
         raise PassportError("run charge is invalid")
-    return int(amount * 1_000_000)
+    return int(
+        (amount * 1_000_000).to_integral_value(rounding=ROUND_CEILING)
+    )
 
 
 def _run_evidence(

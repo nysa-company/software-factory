@@ -105,6 +105,13 @@ SCENARIOS = (
         ),
     ),
     (
+        "provider_cost_precision_stays_authenticatable",
+        (
+            "ticket-passport-test.py",
+            "TicketPassportTest.test_provider_cost_precision_rounds_up_to_micro_usd",
+        ),
+    ),
+    (
         "malformed_restart_and_reducer_evidence_fail_closed",
         (
             "qualification-run-test.py",

@@ -112,6 +112,32 @@ class TicketPassportTest(unittest.TestCase):
         self.origin.stop()
         self.temporary.cleanup()
 
+    def test_provider_cost_precision_rounds_up_to_micro_usd(self) -> None:
+        secret = PASSPORT.key(self.state_dir)
+        issued = STATE.issue(self.state_args, "RUN planner")
+        self.state_args.receipt = issued["receipt_sha256"]
+        STATE.verify(self.state_args, consume=True)
+        self.terminal(
+            "run-precision", "planner", issued["receipt_sha256"], "a" * 40,
+            effective_cost="3.1494725000000003",
+        )
+        self.passport_args.receipt = issued["receipt_sha256"]
+        exported = PASSPORT.export(self.passport_args, secret)
+        self.assertEqual(exported["cumulative_charges_micro_usd"], 3_149_473)
+
+        for raw, expected in (
+            ("2.5851889999999993", 2_585_189),
+            ("3.0829095", 3_082_910),
+            ("1.2345670000000000", 1_234_567),
+        ):
+            with self.subTest(raw=raw):
+                self.assertEqual(
+                    PASSPORT.micro_usd({"effective_cost": raw}), expected
+                )
+        for raw in ("-0.0000001", "NaN", "Infinity"):
+            with self.subTest(raw=raw), self.assertRaises(PASSPORT.PassportError):
+                PASSPORT.micro_usd({"effective_cost": raw})
+
     def test_concurrent_key_initialization_never_exposes_partial_key(self) -> None:
         started = __import__("threading").Event()
         release = __import__("threading").Event()
@@ -198,6 +224,7 @@ class TicketPassportTest(unittest.TestCase):
         receipt: str,
         factory_sha: str,
         content: bytes | None = None,
+        effective_cost: str = "1.500000",
     ) -> None:
         output_path = self.product / f"factory/runs/{run_id}.out"
         published = subprocess.run(
@@ -217,7 +244,7 @@ class TicketPassportTest(unittest.TestCase):
             "phase=completed\n"
             "accounting_state=completed\n"
             "task_submitted=1\n"
-            "effective_cost=1.500000\n"
+            f"effective_cost={effective_cost}\n"
             "exit_status=0\n"
             "ticket=T-110\n"
             f"role={role}\n"

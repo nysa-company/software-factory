@@ -400,6 +400,9 @@ transactional isolated-worker protocol. The provider coordinator serializes
 only short SQLite admission and terminalization transactions. Those
 transactions enforce machine-day, product-day, and ticket caps in integer
 micro-USD using active reservations plus terminal charges. The executor
+rounds provider-reported decimal charges up to the next micro-USD when it
+authenticates them into a ticket passport, so sub-micro precision never
+understates spend or blocks otherwise valid evidence.
 copies a sanitized source and immutable input into an unprivileged,
 digest-pinned ephemeral container and streams only bounded artifacts back.
 Worker identity binds ticket, role, attempt, base SHA, route, policy, image,
