@@ -6650,24 +6650,9 @@ class Controller:
     def readmit_stranded_route_upgrade(
         self, claim: dict[str, Any], name: str,
     ) -> bool:
-        attempt = claim.get("recovery_attempt")
         if (
             name != "release-upgrade"
-            or not self.valid_recovery_attempt(attempt)
-            or attempt.get("phase") != "abandoned"
-            or attempt.get("count") != RECOVERY_ATTEMPT_LIMIT
-            or attempt.get("recovery") != name
-            or attempt.get("retry_reason") != "route-migration-required"
-            or attempt.get("retry_status") != "blocked"
-            or claim.get("status") != "blocked"
-            or claim.get("blocked_reason")
-            != "recovery-abandoned:release-upgrade"
-            or not (
-                claim.get("lease_released") is True
-                or claim.get("parked") is True
-                and claim.get("lease", "") == ""
-            )
-            or claim.get("publication_lease")
+            or not self.stranded_route_upgrade_wait(claim)
         ):
             return False
         pending = (
@@ -6737,6 +6722,26 @@ class Controller:
             authorization_head=authorization,
         )
         return True
+
+    def stranded_route_upgrade_wait(self, claim: dict[str, Any]) -> bool:
+        attempt = claim.get("recovery_attempt")
+        return (
+            self.valid_recovery_attempt(attempt)
+            and attempt["factory_sha"] == self.release_path.name
+            and attempt["phase"] == "abandoned"
+            and attempt["recovery"] == "release-upgrade"
+            and attempt["retry_reason"] == "route-migration-required"
+            and attempt["retry_status"] == "blocked"
+            and claim.get("status") == "blocked"
+            and claim.get("blocked_reason")
+            == "recovery-abandoned:release-upgrade"
+            and (
+                claim.get("lease_released") is True
+                or claim.get("parked") is True
+                and claim.get("lease", "") == ""
+            )
+            and not claim.get("publication_lease")
+        )
 
     def recover_each(
         self,
@@ -13321,6 +13326,28 @@ class Controller:
         claims = self.load_claims()
         for ticket, refusal in self.admission_refusals.items():
             results.setdefault(ticket, refusal)
+        if self.qualification:
+            selected = set(self.qualification["tickets"])
+            for claim in claims:
+                route_migration_wait = (
+                    claim["status"] == "blocked"
+                    and (
+                        claim.get("blocked_reason") == "route-migration-required"
+                        or self.stranded_route_upgrade_wait(claim)
+                    )
+                )
+                if (
+                    claim["ticket"] in selected
+                    and claim["ticket"] not in (
+                        self.invalid_transition_tickets
+                        | self.prior_transition_tickets
+                    )
+                    and claim["status"] in {"blocked", "budget"}
+                    and not route_migration_wait
+                ):
+                    results.setdefault(claim["ticket"], {
+                        "status": claim["status"], "ticket": claim["ticket"],
+                    })
         ordered = [results[ticket] for ticket in sorted(results)]
         active = len([
             item for item in claims if self.consumes_capacity(item)

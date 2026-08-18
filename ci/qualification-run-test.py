@@ -458,6 +458,32 @@ raise SystemExit(code)
         self.calls.unlink()
         partial = self.controller_state / "claims/T-3.json"
         claim = json.loads(partial.read_text(encoding="utf-8"))
+        claim["recovery_attempt"]["count"] = 1
+        partial.write_text(json.dumps(claim), encoding="utf-8")
+        partial.chmod(0o600)
+        code, value = self.run_scenario({
+            "doctor": self.doctor(),
+            "reconcile": [self.controller("ok")],
+        })
+        self.assertEqual(code, 3)
+        self.assertEqual(value["reason"], "authenticated_wait")
+        self.assertEqual(self.called(), ["doctor", "reconcile"])
+
+        self.calls.unlink()
+        claim["recovery_attempt"]["count"] = 3
+        claim["publication_lease"] = "8" * 64
+        partial.write_text(json.dumps(claim), encoding="utf-8")
+        partial.chmod(0o600)
+        code, value = self.run_scenario({
+            "doctor": self.doctor(),
+            "reconcile": [self.controller("ok")],
+        })
+        self.assertEqual(code, 3)
+        self.assertEqual(value["reason"], "authenticated_wait")
+        self.assertEqual(self.called(), ["doctor", "reconcile"])
+
+        self.calls.unlink()
+        claim.pop("publication_lease")
         claim["status"] = "waiting"
         partial.write_text(json.dumps(claim), encoding="utf-8")
         partial.chmod(0o600)

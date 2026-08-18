@@ -16214,6 +16214,85 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(refreshed, [True, True])
         self.assertEqual(observed, [1, 1, 1, 2, 2, 2])
 
+    def test_qualification_restart_surfaces_durable_blocked_claims(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        tickets = ["T-110", "T-111", "T-112", "T-113"]
+        controller.qualification = {"target_done": 4, "tickets": tickets}
+        claims = [
+            {
+                "status": status, "ticket": ticket,
+                "worktree": str(self.root / "parked" / ticket),
+            }
+            for ticket, status in zip(
+                tickets, ("blocked", "budget", "blocked", "blocked"),
+                strict=True,
+            )
+        ]
+        claims[2]["blocked_reason"] = "route-migration-required"
+        claims[3].update(
+            blocked_reason="recovery-abandoned:release-upgrade",
+            lease_released=True,
+            recovery_attempt={
+                "count": CONTROL.RECOVERY_ATTEMPT_LIMIT,
+                "factory_sha": controller.release_path.name,
+                "input_sha256": "a" * 64,
+                "outcome_sha256": "b" * 64,
+                "phase": "abandoned",
+                "recovery": "release-upgrade",
+                "retry_reason": "route-migration-required",
+                "retry_status": "blocked",
+            },
+        )
+        controller.load_claims = lambda: claims
+        controller.qualification_admission_preflight = lambda _claims: None
+        controller.qualification_marker = lambda *_args, **_kwargs: True
+        controller.cancellation_authority = lambda _claims: None
+        controller.retire_canceled_claims = lambda current, *_args: current
+        controller.quarantine_invalid_transition_claims = lambda _claims: None
+        controller.reclaim_orphaned_execution_cells = lambda _claims: None
+        excluded = False
+
+        def operator_transition(claim):
+            if excluded and claim["ticket"] == "T-112":
+                controller.invalid_transition_tickets.add(claim["ticket"])
+            if excluded and claim["ticket"] == "T-113":
+                controller.prior_transition_tickets.add(claim["ticket"])
+
+        controller.operator_transition = operator_transition
+        controller.release_inactive_ticket_leases = lambda _claims: None
+        controller.recover_changed_state_machine_refusals = lambda *_args: None
+        controller.recover_operator_action_events = lambda _claims: None
+        controller.record_qualification_done_targets = lambda: None
+        controller.recover_missing_passport_claims = lambda _claims: None
+        controller.recover_terminal_requests = lambda _claims: None
+        controller.readmit_prior_provider_failures = lambda _claims: None
+        controller.recover_each = lambda *_args, **_kwargs: None
+        controller.recover_prior_maintenance_receipts = lambda _claims: None
+        controller.claim_new = lambda current, *_args: current
+        controller.clear_admission_failure = lambda: None
+        controller.maintain_successor_leases = lambda _claims: None
+        controller.pin_routes = lambda _claims: []
+        controller.product_ticket_done = lambda _ticket: False
+        controller.event = lambda *_args, **_kwargs: None
+        controller.role_active = lambda _claim: False
+
+        migration = controller.reconcile()
+        claims[2].pop("blocked_reason")
+        claims[3].pop("blocked_reason")
+        claims[3].pop("lease_released")
+        claims[3].pop("recovery_attempt")
+        excluded = True
+        transition = controller.reconcile()
+
+        expected = [
+            {"status": "blocked", "ticket": "T-110"},
+            {"status": "budget", "ticket": "T-111"},
+        ]
+        self.assertEqual(migration["results"], expected)
+        self.assertEqual(transition["results"], expected)
+        self.assertIn("T-112", controller.invalid_transition_tickets)
+        self.assertIn("T-113", controller.prior_transition_tickets)
+
     def test_qualification_controller_error_stops_sibling_next_role_launches(
         self,
     ) -> None:
