@@ -567,7 +567,7 @@ else:
     elif role == "test-author":
         target=work/"tests"/f"{{ticket}}.txt"; target.write_text("test\\n")
     elif role == "builder":
-        target=work/"app"/f"{{ticket}}.txt"; target.write_text("built\\n")
+        target=work/"app"/f"{{ticket}}.txt"; target.write_text(f"built by {{name}} {{ordinal}}\\n")
     elif role == "narrator":
         target=work/"factory"/"tickets"/f"{{ticket}}-bundle.md"
         target.write_text(f"# What this does\\nDone.\\n# Preview\\nNot applicable — backend-only contract.\\n# Screenshots\\nNot applicable — backend-only contract.\\n# Acceptance criteria\\nPass.\\n# Risk\\nLow.\\n# Cost\\nFixture {{name}} {{ordinal}}.\\n# Rollback\\nRevert.\\nApprove to merge?\\n")
