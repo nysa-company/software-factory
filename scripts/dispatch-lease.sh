@@ -43,8 +43,8 @@ cleanup() {
 trap cleanup EXIT HUP INT TERM
 
 acquire() {
-  local path="$1" label="$2" i
-  for i in $(seq 1 100); do
+  local path="$1" label="$2" attempts="${3:-100}" i
+  for i in $(seq 1 "$attempts"); do
     mkdir "$path" 2>/dev/null && return 0
     sleep 0.1
   done
@@ -62,7 +62,9 @@ MAXIMUM="$(factory_dispatch_max_tickets "$ROOT" 2>/dev/null)" || {
 }
 
 if [[ "$OPERATION" != "renew" ]]; then
-  acquire "$LAUNCH_LOCK" "launch" || exit 8
+  LAUNCH_ATTEMPTS=100
+  [[ "$OPERATION" != "claim" ]] || LAUNCH_ATTEMPTS=600
+  acquire "$LAUNCH_LOCK" "launch" "$LAUNCH_ATTEMPTS" || exit 8
   HELD_LAUNCH=1
 fi
 if [[ "$OPERATION" == "claim" ]]; then

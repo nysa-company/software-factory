@@ -16030,6 +16030,34 @@ class FactoryControllerTest(unittest.TestCase):
         ]
         self.assertEqual(len(events), 1)
 
+    def test_reconciliation_cleanup_preserves_causal_error(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        claim = {
+            "branch": "ticket/T-110", "lease": "", "priority": "normal",
+            "publication_lease": "", "receipt": "", "role": "",
+            "schema": CONTROL.CLAIM_SCHEMA, "status": "claimed",
+            "ticket": "T-110", "worktree": str(self.root / "cell-1"),
+        }
+        controller.ensure_lease = lambda *_args: (_ for _ in ()).throw(
+            CONTROL.ControllerError("launch lock stuck")
+        )
+        controller.withdraw_publication = lambda *_args: None
+        controller.release_ticket_lease = lambda *_args: (_ for _ in ()).throw(
+            CONTROL.ControllerError("factory-launch: invalid dispatcher lease")
+        )
+
+        result = controller.reconcile_ticket(claim)
+
+        self.assertEqual(result, {
+            "error": "launch lock stuck", "status": "error", "ticket": "T-110",
+        })
+        event = next(
+            CONTROL.read(path) for path in controller.events.glob("*.json")
+            if CONTROL.read(path).get("event") == "controller_error"
+        )
+        self.assertEqual(event["error"], "launch lock stuck")
+        self.assertEqual(event["cleanup_deferred"], [])
+
     def test_interrupted_two_ticket_recovery_is_independent(self) -> None:
         controller = CONTROL.Controller(self.args)
         passports = self.state / "passports"

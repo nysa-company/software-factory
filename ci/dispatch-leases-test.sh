@@ -47,6 +47,41 @@ git -C "$PRODUCT" config user.name dispatch-test
 git -C "$PRODUCT" add .gitignore factory
 git -C "$PRODUCT" commit -qm fixture
 
+mkdir "$PRODUCT/factory/.launch.lock"
+( sleep 11; rmdir "$PRODUCT/factory/.launch.lock" ) &
+TRANSIENT_LOCK_PID=$!
+TRANSIENT_RC=0
+TRANSIENT_CLAIM="$(FACTORY_ROOT="$PRODUCT" "$LEASE" claim --ticket T-901 \
+  2> "$TMP/transient-claim.err")" || TRANSIENT_RC=$?
+wait "$TRANSIENT_LOCK_PID"
+TRANSIENT_LEASE=""
+if [[ "$TRANSIENT_RC" -eq 0 ]]; then
+  TRANSIENT_LEASE="$(printf '%s\n' "$TRANSIENT_CLAIM" | python3 -c \
+    'import json,sys; print(json.load(sys.stdin)["lease_id"])')"
+  FACTORY_ROOT="$PRODUCT" "$LEASE" release --ticket T-901 \
+    --lease "$TRANSIENT_LEASE" >/dev/null
+fi
+if [[ "$TRANSIENT_RC" -eq 0 && "$TRANSIENT_LEASE" =~ ^[0-9a-f]{64}$ ]]; then
+  pass "dispatcher claim outwaits transient provider launch setup"
+else
+  fail "dispatcher claim outwaits transient provider launch setup"
+fi
+
+mkdir "$PRODUCT/factory/.launch.lock"
+( sleep 1; : > "$PRODUCT/factory/MAINTENANCE"; rmdir "$PRODUCT/factory/.launch.lock" ) &
+MAINTENANCE_LOCK_PID=$!
+MAINTENANCE_CLAIM_RC=0
+FACTORY_ROOT="$PRODUCT" "$LEASE" claim --ticket T-901 >/dev/null 2>&1 ||
+  MAINTENANCE_CLAIM_RC=$?
+wait "$MAINTENANCE_LOCK_PID"
+rm "$PRODUCT/factory/MAINTENANCE"
+if [[ "$MAINTENANCE_CLAIM_RC" -eq 4 &&
+      ! -e "$PRODUCT/factory/.dispatch-leases/T-901.json" ]]; then
+  pass "maintenance appearing during claim wait wins before admission"
+else
+  fail "maintenance appearing during claim wait wins before admission"
+fi
+
 pids=""
 for ticket in T-901 T-902 T-903 T-904 T-905 T-906 T-907; do
   FACTORY_ROOT="$PRODUCT" "$LEASE" claim --ticket "$ticket" \

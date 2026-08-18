@@ -6937,3 +6937,15 @@ evidence remain excluded. Publication manager mutations, lease-digest events,
 and claim checkpoints are serialized, with evidence durable before the claim
 checkpoint so response loss can replay one lease without losing or inventing
 publication history.
+
+## 2026-08-18 — Decision 503: Dispatcher claims outwait provider pre-GO setup
+
+Category: Reliability
+
+Q31 exposed a parked preview-wait ticket reclaiming while a sibling held the
+product launch lock during pre-GO setup. Dispatcher claim acquisition now uses
+the existing 60-second transient launch-lock bound while dispatcher-lock and
+release bounds remain unchanged; KILL and MAINTENANCE still win after the wait.
+Controller failure cleanup records deferred cleanup and cannot replace the
+causal reconciliation error with a secondary empty-lease refusal. Q31 remains
+frozen failed evidence and cannot qualify the release.
