@@ -1041,7 +1041,8 @@ done
 
 PROVIDER_CLI_PIN_STATUS="not_applicable"
 PROVIDER_CLI_PIN_JSON="null"
-if [[ "${FACTORY_KIT_TRUST_SCOPE:-}" == "production-certified" ]]; then
+if [[ "${FACTORY_KIT_TRUST_SCOPE:-}" == "production-certified" ||
+      "${FACTORY_KIT_TRUST_SCOPE:-}" == "qualification-candidate" ]]; then
   # Legacy releases without the pin helper warn. Modern releases delegate to
   # Factory-kit so the receipt-selected sealed authority can check this release.
   PROVIDER_CLI_PIN_STATUS="warning"
@@ -1058,7 +1059,9 @@ value = json.load(sys.stdin)
 assert value.get("schema") == "nysa.software-factory.provider-cli-pin-status/v1"
 assert value.get("status") in {"ready", "unready"}
 items = value.get("items")
-assert isinstance(items, list) and {item.get("name") for item in items} == {"claude", "codex", "agent"}
+assert isinstance(items, list) and {item.get("name") for item in items} == {
+    "claude", "codex", "codex-code-mode-host", "agent",
+}
 assert all(item.get("status") in {"ok", "warning", "error"} for item in items)
 print(json.dumps(value, sort_keys=True, separators=(",", ":")))
 print("warning" if items and all(item["status"] == "warning" for item in items) else

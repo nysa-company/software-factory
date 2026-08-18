@@ -420,6 +420,11 @@ ticket- and execution-cell-neutral state; concurrent Codex, Claude Code, and
 Cursor processes never share writable CLI homes. Contract 1.6
 and non-activated 1.7 routes keep the
 serialized path unchanged.
+The owner provider-pin transaction treats Codex and its adjacent
+`codex-code-mode-host` as one physical bundle. Both executable hashes, help
+contracts, links, receipt entries, and rollback snapshots advance atomically;
+qualification Doctor refuses before controller reconciliation when that bundle
+is absent or changed.
 Production and qualification retain separate provider lifecycle and financial
 databases. A task-bearing Cursor role additionally acquires one owner-only
 machine-local account-route lease before durable GO and holds it until its

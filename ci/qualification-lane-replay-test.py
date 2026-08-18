@@ -84,6 +84,17 @@ SCENARIOS = (
         ),
     ),
     (
+        "missing_codex_companion_blocks_before_controller_mutation",
+        (
+            "provider-cli-pin-test.py",
+            "ProviderCliPinTest.test_codex_companion_is_required_and_receipt_bound",
+        ),
+        (
+            "qualification-run-test.py",
+            "QualificationRunTest.test_provider_pin_not_ready_blocks_before_controller_mutation",
+        ),
+    ),
+    (
         "malformed_restart_and_reducer_evidence_fail_closed",
         (
             "qualification-run-test.py",
@@ -130,10 +141,13 @@ def main() -> int:
     before = repository_status()
     started = time.monotonic()
     local_commands = {
-        command: shutil.which(command) for command in ("git", "node", "npm", "npx")
+        command: shutil.which(command)
+        for command in ("git", "node", "npm", "npx", "python3")
     }
     if any(path is None for path in local_commands.values()):
-        raise SystemExit("qualification replay requires git, node, npm, and npx")
+        raise SystemExit(
+            "qualification replay requires git, node, npm, npx, and python3"
+        )
 
     with tempfile.TemporaryDirectory(prefix="qualification-lane-replay.") as raw:
         sandbox = Path(raw)
