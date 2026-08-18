@@ -21,6 +21,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 TICKETS = ("T-901", "T-902", "T-903")
+REFRESH_EVENTS = {"protected_base_refreshed", "protected_base_refreshed_before_evidence"}
 
 
 def run(*command: str | Path, cwd: Path, env: dict[str, str] | None = None) -> str:
@@ -680,7 +681,9 @@ raise SystemExit(1 if failed else 0)
         approved = 0
         blocked_waves = 0
         restarts = 0
-        for _ in range(6):
+        events_dir = self.home / f".factory/qualification/{self.project}/controller/events"
+        for _ in range(7):
+            prior_events = set(events_dir.glob("*.json"))
             launched = self.sealed(
                 str(launcher), self.project, "qualification-run", "--json",
                 timeout=max(1, int(530 - (time.monotonic() - self.started))),
@@ -703,7 +706,16 @@ raise SystemExit(1 if failed else 0)
                     {"T-901": "waiting", "T-902": "blocked", "T-903": "waiting"},
                 )
             newly_approved = self.approve_waiting(launcher.parent.parent)
-            self.assertGreater(newly_approved, 0, json.dumps(replay, sort_keys=True))
+            if newly_approved == 0:
+                new_events = [
+                    json.loads(path.read_text(encoding="utf-8"))
+                    for path in events_dir.glob("*.json") if path not in prior_events
+                ]
+                self.assertEqual(replay["status"], "waiting")
+                self.assertTrue(
+                    any(event.get("event") in REFRESH_EVENTS for event in new_events),
+                    json.dumps(replay, sort_keys=True),
+                )
             approved += newly_approved
         else:
             self.fail("shared qualification did not converge")
@@ -712,17 +724,13 @@ raise SystemExit(1 if failed else 0)
         self.assertEqual(restarts, 1)
         events = [
             json.loads(path.read_text(encoding="utf-8"))
-            for path in sorted(
-                (self.home / f".factory/qualification/{self.project}/controller/events").glob("*.json")
-            )
+            for path in sorted(events_dir.glob("*.json"))
         ]
         fallback = [event for event in events if event.get("event") == "provider_fallback"]
         self.assertEqual([event["ticket"] for event in fallback], ["T-902"])
         refreshes = [
             event for event in events
-            if event.get("event") in {
-                "protected_base_refreshed", "protected_base_refreshed_before_evidence",
-            }
+            if event.get("event") in REFRESH_EVENTS
         ]
         self.assertEqual(len(refreshes), 3)
         self.assertEqual(
@@ -739,9 +747,7 @@ raise SystemExit(1 if failed else 0)
         for ticket in TICKETS:
             refresh_count = sum(
                 event.get("ticket") == ticket
-                and event.get("event") in {
-                    "protected_base_refreshed", "protected_base_refreshed_before_evidence",
-                }
+                and event.get("event") in REFRESH_EVENTS
                 for event in events
             )
             expected[f"{ticket}:reviewer:agent"] = 1 + refresh_count
