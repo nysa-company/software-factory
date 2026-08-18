@@ -6793,6 +6793,8 @@ route-migration children. The fallback revalidates the source run, source route
 policy, role-bound
 output snapshot, current sealed product authority, and empty current handoff;
 it then commits only the fallback route revision. Crash replay recomputes the
-same proof before accepting the committed result. Production, takeover,
+same proof before accepting the committed result. Controller readmission uses
+that complete retained successor suffix; the first authenticated output edge
+need not jump directly to the newest release. Production, takeover,
 ordinary unsealed fallback, and mismatched output or migration heads remain
 closed.

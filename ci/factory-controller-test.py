@@ -14673,6 +14673,7 @@ class FactoryControllerTest(unittest.TestCase):
         }
         ticket = "T-110"
         source = "b" * 40
+        intermediate = "0" * 40
         receipt_digest = "c" * 64
         input_head = "d" * 40
         current_head = "e" * 40
@@ -14716,6 +14717,18 @@ class FactoryControllerTest(unittest.TestCase):
             "from_protected_base_sha": old_base,
             "from_route_plan_sha256": old_route,
             "schema": CONTROL.PASSPORT_MIGRATION_SCHEMA,
+            "to_factory_sha": intermediate,
+            "to_head_sha": handoff_head,
+            "to_protected_base_sha": current_base,
+            "to_route_plan_sha256": old_route,
+        }, {
+            "from_factory_sha": intermediate,
+            "from_head_sha": handoff_head,
+            "from_passport_file_sha256": "a" * 64,
+            "from_passport_sha256": "b" * 64,
+            "from_protected_base_sha": current_base,
+            "from_route_plan_sha256": old_route,
+            "schema": CONTROL.PASSPORT_MIGRATION_SCHEMA,
             "to_factory_sha": self.release.name,
             "to_head_sha": handoff_head,
             "to_protected_base_sha": current_base,
@@ -14738,6 +14751,7 @@ class FactoryControllerTest(unittest.TestCase):
             "current_state": "Review",
             "factory_release_history": [
                 {"contract_version": "2.0.0", "factory_sha": source},
+                {"contract_version": "2.0.0", "factory_sha": intermediate},
                 {"contract_version": "2.0.0",
                  "factory_sha": self.release.name},
             ],
@@ -14780,6 +14794,12 @@ class FactoryControllerTest(unittest.TestCase):
             }
 
             with patch.dict(os.environ, environment):
+                self.assertTrue(
+                    controller.route_migrated_failed_role(
+                        claim, terminal, passport,
+                    )
+                )
+                handoffs.clear()
                 controller.readmit_prior_provider_failures([claim])
         self.assertEqual(
             handoffs,
