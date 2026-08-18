@@ -4,7 +4,7 @@ A product-agnostic kit for running an AI software factory: agents plan, build, r
 
 Built July 2026 for the Nysa project, factored out so any product can use it. Design decisions and their history live in the [Nysa product repository](https://github.com/nysa-company/nysa/blob/main/deliverables/2026-07-11-autonomous-software-factory-brief.md).
 
-This repository is **public**. It is **not** licensed under MIT. The public license is GNU AGPLv3, with a paid commercial license available from Nysa. See [License](#license).
+This repository is public and dual-licensed: free under AGPL-3.0, or a paid commercial license from Nysa for proprietary use. See [License](#license).
 
 ## What's in the box
 
@@ -208,11 +208,9 @@ For the complete transition and ownership rules, see
 
 ## License
 
-This repository is public so anyone can read the source. It is **not** released under the MIT License.
+Software Factory Kit offers two licensing options:
 
-Software Factory Kit is dual-licensed:
-
-1. **GNU Affero General Public License v3.0 (AGPLv3)** — the public license. Personal, research, and other non-commercial use is allowed under AGPLv3. You may also use the kit commercially under AGPLv3 if you follow it, including offering complete corresponding source to users who interact with a modified version over a network. The full text is in [`LICENSE`](LICENSE).
-2. **Commercial license (paid)** — required when you want to use this software in a proprietary product or hosted service **without** AGPLv3 source-disclosure obligations. Open a GitHub issue titled `Commercial license` on this repository to request terms.
+- **AGPL-3.0 License**: This [OSI-approved](https://opensource.org/license/agpl-3.0) open-source license is ideal for students, researchers, and personal or other non-commercial projects. See the [`LICENSE`](LICENSE) file for full details.
+- **Commercial License**: For integrating the kit into proprietary products or hosted services without the open-source obligations of AGPL-3.0. To request terms, open a GitHub issue titled `Commercial license` on this repository.
 
 Vendored third-party material keeps its own license. `vendor/spec-kit/` remains MIT-licensed from upstream [github/spec-kit](https://github.com/github/spec-kit).
