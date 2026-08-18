@@ -451,7 +451,7 @@ def _parse_tree(raw, *, allow_symlinks=False):
     return entries
 
 
-def _parse_index(raw):
+def _parse_index(raw, *, allow_symlinks=False):
     entries = {}
     for record in raw.split(b"\0"):
         if not record:
@@ -466,15 +466,20 @@ def _parse_index(raw):
             raise HandoffError(f"unmerged index entry is forbidden: {path}")
         if mode == "160000":
             raise HandoffError(f"submodules are forbidden: {path}")
-        if mode == "120000":
+        if mode == "120000" and not allow_symlinks:
             raise HandoffError(f"symlinks are forbidden: {path}")
-        if mode not in ("100644", "100755") or ZERO_OID_RE.fullmatch(oid):
+        allowed_modes = (
+            ("100644", "100755", "120000")
+            if allow_symlinks else ("100644", "100755")
+        )
+        if mode not in allowed_modes or ZERO_OID_RE.fullmatch(oid):
             raise HandoffError(f"unsupported index entry: {path}")
         entries[path] = (mode, oid)
     return entries
 
 
-def _filesystem_hazard_check(root, ignored):
+def _filesystem_hazard_check(root, ignored, tracked_symlinks=()):
+    tracked_symlinks = set(tracked_symlinks)
     for directory, names, files in os.walk(root, topdown=True, followlinks=False):
         relative = os.path.relpath(directory, root)
         if relative == ".":
@@ -499,6 +504,8 @@ def _filesystem_hazard_check(root, ignored):
                     f"unsafe filesystem entry at {item_relative}: {error}"
                 ) from error
             if stat.S_ISLNK(metadata.st_mode):
+                if item_relative in tracked_symlinks:
+                    continue
                 raise HandoffError(f"symlink is forbidden: {item_relative}")
             if not (stat.S_ISDIR(metadata.st_mode) or stat.S_ISREG(metadata.st_mode)):
                 raise HandoffError(
@@ -506,6 +513,47 @@ def _filesystem_hazard_check(root, ignored):
                 )
             if stat.S_ISREG(metadata.st_mode) and metadata.st_nlink != 1:
                 raise HandoffError(f"hardlinked file is forbidden: {item_relative}")
+
+
+def _read_symlink(root_fd, path):
+    descriptors = []
+    try:
+        current = os.dup(root_fd)
+        descriptors.append(current)
+        components = path.split("/")
+        directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        nofollow = getattr(os, "O_NOFOLLOW", 0)
+        for component in components[:-1]:
+            current = os.open(component, directory_flags | nofollow, dir_fd=current)
+            descriptors.append(current)
+        try:
+            before = os.stat(components[-1], dir_fd=current, follow_symlinks=False)
+        except FileNotFoundError:
+            return None
+        if not stat.S_ISLNK(before.st_mode):
+            raise HandoffError(f"tracked symlink changed type: {path}")
+        target = os.readlink(os.fsencode(components[-1]), dir_fd=current)
+        after = os.stat(components[-1], dir_fd=current, follow_symlinks=False)
+        if (
+            before.st_dev,
+            before.st_ino,
+            before.st_mode,
+            before.st_size,
+            before.st_mtime_ns,
+        ) != (
+            after.st_dev,
+            after.st_ino,
+            after.st_mode,
+            after.st_size,
+            after.st_mtime_ns,
+        ):
+            raise HandoffError(f"symlink changed while being snapshotted: {path}")
+        return target
+    except OSError as error:
+        raise HandoffError(f"unsafe filesystem entry at {path}: {error}") from error
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
 
 
 def _read_regular(root_fd, path, maximum):
@@ -668,8 +716,14 @@ def validate_handoff_commit(
         repo, provider_scan_base, parent, policy.provider_identities,
     )
     _validate_committed_changes(repo, provider_scan_base, parent, role, policy)
-    parent_tree = _parse_tree(_git(repo, ["ls-tree", "-rz", "--full-tree", parent]))
-    commit_tree = _parse_tree(_git(repo, ["ls-tree", "-rz", "--full-tree", commit]))
+    parent_tree = _parse_tree(
+        _git(repo, ["ls-tree", "-rz", "--full-tree", parent]),
+        allow_symlinks=True,
+    )
+    commit_tree = _parse_tree(
+        _git(repo, ["ls-tree", "-rz", "--full-tree", commit]),
+        allow_symlinks=True,
+    )
     changed = sorted(
         _decode_path(item)
         for item in _git(
@@ -686,6 +740,11 @@ def validate_handoff_commit(
         _validate_path_text(path)
         previous = parent_tree.get(path)
         current = commit_tree.get(path)
+        if any(
+            item is not None and item[0] == "120000"
+            for item in (previous, current)
+        ):
+            raise HandoffError(f"handoff path has an unsafe mode: {path}")
         if path == policy.journal_path:
             if current is None or current[0] != "100644":
                 raise HandoffError("handoff route journal mode is unsafe")
@@ -938,9 +997,23 @@ def preview_handoff(
         root, baseline=provider_scan_base or expected_head, head=head,
         role=role, policy=policy,
     )
-    tree = _parse_tree(_git(root, ["ls-tree", "-rz", "--full-tree", "HEAD"]))
+    tree = _parse_tree(
+        _git(root, ["ls-tree", "-rz", "--full-tree", "HEAD"]),
+        allow_symlinks=True,
+    )
     index_raw = _git(root, ["ls-files", "-z", "--stage"])
-    index = _parse_index(index_raw)
+    index = _parse_index(index_raw, allow_symlinks=True)
+    tracked_symlinks = {
+        path for path, entry in tree.items() if entry[0] == "120000"
+    }
+    for path in set(tree) | set(index):
+        previous = tree.get(path)
+        staged = index.get(path)
+        if any(
+            item is not None and item[0] == "120000"
+            for item in (previous, staged)
+        ) and previous != staged:
+            raise HandoffError(f"tracked symlink changed in index: {path}")
     untracked_raw = _git(
         root, ["ls-files", "-z", "--others", "--exclude-standard", "--"]
     )
@@ -963,17 +1036,34 @@ def preview_handoff(
         _decode_path(item[:-1] if item.endswith(b"/") else item)
         for item in ignored_raw.split(b"\0") if item
     }
-    _filesystem_hazard_check(root, ignored)
+    _filesystem_hazard_check(root, ignored, tracked_symlinks)
     candidates = sorted(set(tree) | set(index) | untracked, key=lambda item: item.encode())
     allowed = policy.paths_for(role)
     entries = []
     root_fd = os.open(root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     try:
         for path in candidates:
+            previous = tree.get(path)
+            staged = index.get(path)
+            if (
+                path == policy.journal_path
+                and previous is not None
+                and previous[0] == "120000"
+            ):
+                raise HandoffError("handoff route journal symlink is forbidden")
             if path == policy.journal_path:
                 continue
+            if previous is not None and previous[0] == "120000":
+                target = _read_symlink(root_fd, path)
+                if target is None:
+                    raise HandoffError(f"tracked symlink was deleted: {path}")
+                oid = _git(
+                    root, ["hash-object", "--stdin"], input_bytes=target
+                ).decode().strip()
+                if previous != staged or previous != ("120000", oid):
+                    raise HandoffError(f"tracked symlink changed: {path}")
+                continue
             current = _read_regular(root_fd, path, policy.max_file_bytes)
-            previous = tree.get(path)
             if current is None:
                 if previous is not None:
                     entry = SnapshotEntry(path=path, state="deleted")
