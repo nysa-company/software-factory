@@ -570,7 +570,7 @@ else:
         target=work/"app"/f"{{ticket}}.txt"; target.write_text("built\\n")
     elif role == "narrator":
         target=work/"factory"/"tickets"/f"{{ticket}}-bundle.md"
-        target.write_text("# What this does\\nDone.\\n# Preview\\nNot applicable — backend-only contract.\\n# Screenshots\\nNot applicable — backend-only contract.\\n# Acceptance criteria\\nPass.\\n# Risk\\nLow.\\n# Cost\\nFixture.\\n# Rollback\\nRevert.\\nApprove to merge?\\n")
+        target.write_text(f"# What this does\\nDone.\\n# Preview\\nNot applicable — backend-only contract.\\n# Screenshots\\nNot applicable — backend-only contract.\\n# Acceptance criteria\\nPass.\\n# Risk\\nLow.\\n# Cost\\nFixture {{name}} {{ordinal}}.\\n# Rollback\\nRevert.\\nApprove to merge?\\n")
     subprocess.run(["git","-C",str(work),"add","."],check=True)
     subprocess.run(["git","-C",str(work),"-c","user.name=Replay Provider","-c","user.email=replay@example.invalid","commit","-qm",f"{{ticket}}: {{role}} fixture"],check=True)
 failed = ticket == "T-902" and role == "builder" and name == "agent" and ordinal == 1
@@ -690,6 +690,10 @@ raise SystemExit(1 if failed else 0)
             )
             self.assertIn(launched.returncode, (0, 3), launched.stdout + launched.stderr)
             replay = json.loads(launched.stdout)
+            new_events = [
+                json.loads(path.read_text(encoding="utf-8"))
+                for path in sorted(events_dir.glob("*.json")) if path not in prior_events
+            ]
             restarts += replay["restarts"]
             if replay["status"] == "green":
                 self.assertEqual(launched.returncode, 0)
@@ -701,9 +705,25 @@ raise SystemExit(1 if failed else 0)
             self.assertEqual(launched.returncode, 3)
             if replay["status"] == "blocked":
                 blocked_waves += 1
+                claims = {}
+                for path in (events_dir.parent / "claims").glob("*.json"):
+                    claim = json.loads(path.read_text(encoding="utf-8"))
+                    summary = {
+                        key: claim.get(key)
+                        for key in ("blocked_reason", "role", "status")
+                    }
+                    summary["receipt_present"] = bool(claim.get("receipt"))
+                    claims[claim["ticket"]] = summary
                 self.assertEqual(
                     {item["ticket"]: item["status"] for item in replay["controller"]["results"]},
                     {"T-901": "waiting", "T-902": "blocked", "T-903": "waiting"},
+                    json.dumps({
+                        "claims": claims,
+                        "events": [
+                            (event.get("ticket"), event.get("event"))
+                            for event in new_events
+                        ],
+                    }, sort_keys=True),
                 )
             newly_approved = self.approve_waiting(launcher.parent.parent)
             if newly_approved == 0:
@@ -714,10 +734,6 @@ raise SystemExit(1 if failed else 0)
                 claims = {
                     path.stem for path in (events_dir.parent / "claims").glob("*.json")
                 }
-                new_events = [
-                    json.loads(path.read_text(encoding="utf-8"))
-                    for path in events_dir.glob("*.json") if path not in prior_events
-                ]
                 released = {
                     event.get("ticket") for event in new_events
                     if event.get("event") == "ticket_released"
