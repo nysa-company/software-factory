@@ -1043,10 +1043,16 @@ def preview_handoff(
     root_fd = os.open(root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     try:
         for path in candidates:
-            if path == policy.journal_path:
-                continue
             previous = tree.get(path)
             staged = index.get(path)
+            if (
+                path == policy.journal_path
+                and previous is not None
+                and previous[0] == "120000"
+            ):
+                raise HandoffError("handoff route journal symlink is forbidden")
+            if path == policy.journal_path:
+                continue
             if previous is not None and previous[0] == "120000":
                 target = _read_symlink(root_fd, path)
                 if target is None:

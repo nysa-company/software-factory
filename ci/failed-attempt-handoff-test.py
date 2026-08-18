@@ -374,6 +374,18 @@ class HandoffTest(unittest.TestCase):
         with self.assertRaisesRegex(HandoffError, "symlink"):
             self.preview()
 
+        link.symlink_to("../skills")
+        git(self.repo, "add", ".claude/skills")
+        journal = self.repo / "factory/model-route-journal.json"
+        journal.unlink()
+        journal.symlink_to("../src/kept.txt")
+        git(self.repo, "add", "factory/model-route-journal.json")
+        git(self.repo, "commit", "-qm", "replace route journal with symlink")
+        git(self.repo, "push", "-q", "origin", "main")
+        self.head = git(self.repo, "rev-parse", "HEAD")
+        with self.assertRaisesRegex(HandoffError, "symlink"):
+            self.preview()
+
     def test_rejects_path_boundary_protected_binary_large_and_secret_content(self):
         cases = (
             ("outside.txt", b"text\n", self.policy, "outside"),
