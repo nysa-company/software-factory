@@ -155,7 +155,7 @@ GitHub runs share the same grouping; an explicit whole-shard command remains
 sequential for diagnosis. Suites within each group keep their existing order,
 and fixtures remain group-isolated.
 
-The credential-free qualification-lane replay composes existing driver,
+The credential-free qualification-lane replay selects existing driver,
 controller, state-machine, handoff, fallback, and reducer regressions around
 four convergence checkpoints: terminal adoption and partial migration,
 publication refresh and closeout across restart, provider fallback with
@@ -165,7 +165,9 @@ evidence fails closed, unbound fallback or handoff evidence cannot advance,
 unsafe closeout cannot complete, and interrupted operator Ready materialization
 reuses its exact receipt instead of stranding preparation. The replay runs under a disposable home
 with credentials removed and outbound tools blocked, refuses repository
-mutation, and has a 120-second total deadline.
+mutation, and has a 120-second total deadline. It is a fast component
+regression gate, not shared-state end-to-end qualification evidence; a frozen
+live cohort remains the release proof.
 
 Installation requires remote full-suite evidence for an exact `origin/main`
 SHA with a successful authenticated GitHub Actions push run whose three Linux,

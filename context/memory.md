@@ -6853,3 +6853,13 @@ Codex candidate, probes and receipt-binds both physical files, and atomically
 installs or rolls back both links. Qualification Doctor requires that exact
 pin status before controller reconciliation, so a missing or changed companion
 cannot consume a role call.
+
+## 2026-08-17 — Decision 497: Qualification replay claims only component coverage
+
+Category: Reliability
+
+The credential-free replay selects exact component regressions and reports
+only blocked external calls and an unchanged repository. It does not claim
+that independent fixtures share lifecycle state or that runtime authority has
+no residue. One shared-state integration gate and a frozen live cohort remain
+required before qualification is called proven.
