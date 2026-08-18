@@ -403,7 +403,7 @@ micro-USD using active reservations plus terminal charges. The executor
 rounds provider-reported decimal charges up to the next micro-USD when it
 authenticates them into a ticket passport, so sub-micro precision never
 understates spend or blocks otherwise valid evidence.
-copies a sanitized source and immutable input into an unprivileged,
+The executor copies a sanitized source and immutable input into an unprivileged,
 digest-pinned ephemeral container and streams only bounded artifacts back.
 Worker identity binds ticket, role, attempt, base SHA, route, policy, image,
 input, source, and command. The release-owned image lock pins the exact worker
@@ -835,7 +835,12 @@ classifies it as merge-ready; an active lease still requires its exact
 capability-bound release. Each controller worker continues its ticket through
 deterministic terminal boundaries until that ticket reaches a real wait;
 sibling workers do not wait for its checkpoint. A dispatch lease heartbeat
-starts before route resolution and provider admission queues. The controller
+starts before route resolution and provider admission queues. In a fixed
+qualification cohort, the first controller or worker error latches the whole
+cohort: launchers admitted before the latch terminalize for accounting, but
+the latch and the final process-launch boundary are atomic so no sibling may
+start another role afterward. Production rolling lanes remain ticket-isolated.
+The controller
 serializes only protected-base Git mutations because disposable
 cells share one Git common directory. Refresh proves staleness from the exact
 certified remote tip, ancestry, and exact open PR identity; GitHub's lagging

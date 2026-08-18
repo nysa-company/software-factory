@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import nullcontext
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 import fcntl
 import hashlib
@@ -18,7 +19,7 @@ import stat
 import subprocess
 import sys
 import tempfile
-from threading import Lock, local
+from threading import Event, Lock, local
 import time
 from typing import Any
 from urllib.parse import urlsplit
@@ -543,6 +544,8 @@ class Controller:
         self.invalid_transition_tickets: set[str] = set()
         self.prior_transition_tickets: set[str] = set()
         self.fallback_lock = Lock()
+        self.qualification_cohort_error = Event()
+        self.qualification_launch_lock = Lock()
         # ponytail: cells share one Git common directory; use per-cell refs only if refresh throughput matters.
         self.git_lock = Lock()
         # ponytail: closeouts are rare; serialize them until throughput requires a queue.
@@ -11949,7 +11952,9 @@ class Controller:
     def run_role(
         self, claim: dict[str, Any], role: str, receipt: str,
         failed_checks: list[str], publication: dict[str, Any] | None = None,
-    ) -> None:
+    ) -> bool:
+        if self.qualification and self.qualification_cohort_error.is_set():
+            return False
         self.ensure_execution_cell(claim)
         if self.qualification:
             try:
@@ -11974,19 +11979,13 @@ class Controller:
                         transition_receipt_sha256=receipt,
                     )
                     self.block(claim, "preflight-evidence")
-                    return
+                    return False
                 self.event(
                     "preflight_refused", claim["ticket"], **evidence,
                     transition_receipt_sha256=receipt,
                 )
                 self.block(claim, "preflight")
-                return
-        claim.update(receipt=receipt, role=role, status="running")
-        self.save_claim(claim)
-        self.event(
-            "attempt_started", claim["ticket"], role=role,
-            transition_receipt_sha256=receipt,
-        )
+                return False
         task = f"Execute {role} for {claim['ticket']} from its frozen contract and repository state."
         if failed_checks:
             task += " Required GitHub checks failed: " + ", ".join(failed_checks)
@@ -12076,7 +12075,20 @@ class Controller:
         ]
         log_path = self.logs / f"{claim['ticket']}-{role}.log"
         with log_path.open("a", encoding="utf-8") as log:
-            process = subprocess.Popen(command, stdout=log, stderr=log)
+            launch_gate = (
+                self.qualification_launch_lock
+                if self.qualification else nullcontext()
+            )
+            with launch_gate:
+                if self.qualification and self.qualification_cohort_error.is_set():
+                    return False
+                claim.update(receipt=receipt, role=role, status="running")
+                self.save_claim(claim)
+                self.event(
+                    "attempt_started", claim["ticket"], role=role,
+                    transition_receipt_sha256=receipt,
+                )
+                process = subprocess.Popen(command, stdout=log, stderr=log)
             while True:
                 try:
                     exit_status = process.wait(
@@ -12095,11 +12107,33 @@ class Controller:
                 exit_status=exit_status, role=role,
                 transition_receipt_sha256=receipt,
             )
-            return
+            return True
         self.finish_pending_run(claim)
+        return True
+
+    def latch_qualification_cohort_error(self) -> None:
+        if self.qualification:
+            with self.qualification_launch_lock:
+                self.qualification_cohort_error.set()
 
     def reconcile_ticket(self, claim: dict[str, Any]) -> dict[str, str]:
         try:
+            if self.qualification and self.qualification_cohort_error.is_set():
+                if claim.get("receipt"):
+                    self.ensure_lease(claim, "terminal-accounting")
+                    if not self.finish_pending_run(claim):
+                        return {
+                            "status": (
+                                claim["status"]
+                                if claim["status"] in {"blocked", "cancelled"}
+                                else "active"
+                            ),
+                            "ticket": claim["ticket"],
+                        }
+                return {
+                    "status": "waiting", "ticket": claim["ticket"],
+                    "wait_reason": "qualification-cohort-error",
+                }
             if (self.product / "factory/MAINTENANCE").exists():
                 return {"status": "maintenance", "ticket": claim["ticket"]}
             self.ensure_lease(claim, "reconciliation")
@@ -12111,6 +12145,11 @@ class Controller:
                         else "active"
                     ),
                     "ticket": claim["ticket"],
+                }
+            if self.qualification and self.qualification_cohort_error.is_set():
+                return {
+                    "status": "waiting", "ticket": claim["ticket"],
+                    "wait_reason": "qualification-cohort-error",
                 }
             repository_test_before_head = ""
             if self.repository_test:
@@ -12352,9 +12391,22 @@ class Controller:
                         failed_checks = list(pr.get("checks", []))
                 if role == "narrator":
                     self.clear_preview_identity_wait(claim)
-                    self.run_role(claim, role, receipt, failed_checks, pr)
+                    launched = self.run_role(
+                        claim, role, receipt, failed_checks, pr
+                    )
                 else:
-                    self.run_role(claim, role, receipt, failed_checks)
+                    launched = self.run_role(
+                        claim, role, receipt, failed_checks
+                    )
+                if (
+                    not launched
+                    and self.qualification
+                    and self.qualification_cohort_error.is_set()
+                ):
+                    return {
+                        "status": "waiting", "ticket": claim["ticket"],
+                        "wait_reason": "qualification-cohort-error",
+                    }
                 return {
                     "status": (
                         claim["status"]
@@ -12734,6 +12786,7 @@ class Controller:
                 f"unsupported deterministic stage: {stage}",
             )
         except (ControllerError, json.JSONDecodeError, OSError, subprocess.SubprocessError) as error:
+            self.latch_qualification_cohort_error()
             claim["status"] = "blocked"
             claim["blocked_reason"] = "controller-error"
             self.save_claim(claim)
@@ -12756,7 +12809,23 @@ class Controller:
 
     def reconcile_ticket_until_wait(self, claim: dict[str, Any]) -> dict[str, str]:
         while True:
-            result = self.reconcile_ticket(claim)
+            if (
+                self.qualification
+                and self.qualification_cohort_error.is_set()
+                and not claim.get("receipt")
+            ):
+                if not self.role_active(claim):
+                    self.park_claim(claim)
+                self.settle_recovery_attempt(claim)
+                return {
+                    "status": "waiting", "ticket": claim["ticket"],
+                    "wait_reason": "qualification-cohort-error",
+                }
+            try:
+                result = self.reconcile_ticket(claim)
+            except Exception:
+                self.latch_qualification_cohort_error()
+                raise
             if result.get("status") != "progressed":
                 if (
                     result.get("status") in {
@@ -12769,6 +12838,7 @@ class Controller:
                 return result
 
     def reconcile(self) -> dict[str, Any]:
+        self.qualification_cohort_error.clear()
         self.admission_refusals = {}
         self.model_admission_outcome = None
         self.invalid_transition_tickets.clear()
@@ -12960,10 +13030,19 @@ class Controller:
         worker_limit = min(4, self.capacity)
         executor = ThreadPoolExecutor(max_workers=worker_limit)
 
+        def reconcile_worker(claim: dict[str, Any]) -> dict[str, str]:
+            try:
+                return self.reconcile_ticket_until_wait(claim)
+            except Exception:
+                self.latch_qualification_cohort_error()
+                raise
+
         def submit_ready(
             candidates: list[dict[str, Any]],
             all_claims: list[dict[str, Any]],
         ) -> None:
+            if self.qualification and self.qualification_cohort_error.is_set():
+                return
             available = worker_limit - len(futures)
             reserved_live = sum(
                 not self.consumes_capacity(claim)
@@ -13044,7 +13123,7 @@ class Controller:
                 if needs_capacity:
                     capacity_slots -= 1
                 future = executor.submit(
-                    self.reconcile_ticket_until_wait, claim
+                    reconcile_worker, claim
                 )
                 futures[future] = claim
                 available -= 1
@@ -13198,6 +13277,7 @@ class Controller:
                         item = future.result()
                     except Exception as error:
                         worker_failed = True
+                        self.latch_qualification_cohort_error()
                         claim["status"] = "blocked"
                         claim["blocked_reason"] = "worker-error"
                         self.save_claim(claim)
@@ -13213,6 +13293,11 @@ class Controller:
                             "status": "error",
                             "ticket": claim["ticket"],
                         }
+                    if (
+                        self.qualification
+                        and item.get("status") == "error"
+                    ):
+                        self.latch_qualification_cohort_error()
                     if not worker_failed:
                         self.reconciliation_marker(claim["ticket"]).unlink(
                             missing_ok=True
