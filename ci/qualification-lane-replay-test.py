@@ -14,6 +14,46 @@ import time
 
 
 ROOT = Path(__file__).resolve().parents[1]
+HISTORICAL_BAD_SHA = "3968fba242c1943f0eda449ce108902c8aa8d176"
+HISTORICAL_FIXED_SHA = "441873ddfe7b44f1713bb127e380437aa87b04e9"
+HISTORICAL_LIBRARIES = (
+    "failed_attempt_handoff.py",
+    "narrator_evidence.py",
+    "release_lineage.py",
+)
+HISTORICAL_PROBE = r"""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[1])
+from failed_attempt_handoff import HandoffError, RoleBoundaryPolicy, preview_handoff
+
+repo = Path(sys.argv[2])
+expected = sys.argv[3]
+head = sys.argv[4]
+policy = RoleBoundaryPolicy.from_dict({
+    "schema": "nysa.software-factory.handoff-boundary/v1",
+    "roles": {"builder": ["src/**", ".gitattributes"]},
+    "protected_paths": [
+        ".git", ".git/**", "factory/tickets/**", "factory/attestations/**",
+    ],
+    "journal_path": "factory/model-route-journal.json",
+    "max_file_bytes": 128,
+    "provider_identities": ["provider@example.test"],
+})
+try:
+    preview = preview_handoff(
+        repo, role="builder", policy=policy, expected_head=head,
+        expected_branch="main", remote="origin", remote_branch="main",
+        expected_remote_head=head, provider_scan_base=head,
+    )
+except HandoffError as error:
+    if expected == "reject" and str(error) == "symlinks are forbidden: .claude/skills":
+        raise SystemExit(0)
+    raise
+if expected != "accept" or [entry.path for entry in preview.entries] != ["src/kept.txt"]:
+    raise SystemExit("historical tracked-symlink result changed")
+"""
 SENSITIVE_ENV = re.compile(
     r"key|token|secret|password|url|dsn|conn|auth|credential|proxy",
     re.IGNORECASE,
@@ -164,6 +204,74 @@ def repository_status() -> bytes:
     ).stdout
 
 
+def historical_tracked_symlink_sensitivity(
+    sandbox: Path, environment: dict[str, str], timeout: float,
+) -> None:
+    """Compare only the unchanged tracked-symlink handoff invariant."""
+    fixture = sandbox / "historical-tracked-symlink"
+    repo = fixture / "product"
+    remote = fixture / "product.git"
+    subprocess.run(
+        ["git", "init", "--bare", "-q", str(remote)],
+        check=True, env=environment,
+    )
+    subprocess.run(
+        ["git", "init", "-q", "-b", "main", str(repo)],
+        check=True, env=environment,
+    )
+    for key, value in (
+        ("user.name", "Qualification Replay"),
+        ("user.email", "replay@example.invalid"),
+    ):
+        subprocess.run(
+            ["git", "-C", str(repo), "config", key, value],
+            check=True, env=environment,
+        )
+    subprocess.run(
+        ["git", "-C", str(repo), "remote", "add", "origin", str(remote)],
+        check=True, env=environment,
+    )
+    for directory in (repo / "src", repo / "factory", repo / "skills", repo / ".claude"):
+        directory.mkdir(parents=True, exist_ok=True)
+    (repo / "src/kept.txt").write_text("original\n", encoding="utf-8")
+    (repo / "factory/model-route-journal.json").write_text("{}\n", encoding="utf-8")
+    (repo / "skills/README.md").write_text("# Skills\n", encoding="utf-8")
+    (repo / ".claude/skills").symlink_to("../skills")
+    for arguments in (("add", "."), ("commit", "-qm", "tracked symlink baseline")):
+        subprocess.run(
+            ["git", "-C", str(repo), *arguments], check=True, env=environment,
+        )
+    subprocess.run(
+        ["git", "-C", str(repo), "push", "-q", "-u", "origin", "main"],
+        check=True, env=environment,
+    )
+    head = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        check=True, capture_output=True, env=environment, text=True,
+    ).stdout.strip()
+    (repo / "src/kept.txt").write_text("handoff\n", encoding="utf-8")
+
+    for sha, expected in (
+        (HISTORICAL_BAD_SHA, "reject"),
+        (HISTORICAL_FIXED_SHA, "accept"),
+    ):
+        library = fixture / sha / "scripts/lib"
+        library.mkdir(parents=True)
+        for name in HISTORICAL_LIBRARIES:
+            source = subprocess.run(
+                ["git", "-C", str(ROOT), "show", f"{sha}:scripts/lib/{name}"],
+                check=True, capture_output=True, env=environment,
+            ).stdout
+            (library / name).write_bytes(source)
+        subprocess.run(
+            [
+                sys.executable, "-I", "-S", "-c", HISTORICAL_PROBE,
+                str(library), str(repo), expected, head,
+            ],
+            check=True, env=environment, timeout=timeout,
+        )
+
+
 def main() -> int:
     before = repository_status()
     started = time.monotonic()
@@ -209,6 +317,20 @@ def main() -> int:
             "XDG_CONFIG_HOME": str(home / ".config"),
         })
 
+        scenario_started = time.monotonic()
+        try:
+            historical_tracked_symlink_sensitivity(
+                sandbox, environment,
+                TIME_LIMIT_SECONDS - (time.monotonic() - started),
+            )
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            print("FAIL: historical_tracked_symlink_sensitivity", file=sys.stderr)
+            return 1
+        print(
+            "PASS: historical_tracked_symlink_sensitivity "
+            f"({time.monotonic() - scenario_started:.1f}s)"
+        )
+
         for name, *commands in SCENARIOS:
             scenario_started = time.monotonic()
             for test_file, *tests in commands:
@@ -242,12 +364,16 @@ def main() -> int:
             return 1
 
     elapsed = time.monotonic() - started
+    if sandbox.exists():
+        print("FAIL: replay left its disposable sandbox", file=sys.stderr)
+        return 1
     if elapsed > TIME_LIMIT_SECONDS:
         print(f"FAIL: replay exceeded 120 seconds ({elapsed:.1f}s)", file=sys.stderr)
         return 1
     print(
         f"PASS: qualification lane replay "
-        f"({elapsed:.1f}s, external_calls=0, repository_changed=0)"
+        f"({elapsed:.1f}s, blocked_external_cli_calls=0, "
+        "repository_changed=0, sandbox_residue=0)"
     )
     return 0
 

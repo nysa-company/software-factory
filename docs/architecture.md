@@ -165,9 +165,12 @@ evidence fails closed, unbound fallback or handoff evidence cannot advance,
 unsafe closeout cannot complete, and interrupted operator Ready materialization
 reuses its exact receipt instead of stranding preparation. The replay runs under a disposable home
 with credentials removed and outbound tools blocked, refuses repository
-mutation, and has a 120-second total deadline. It is a fast component
-regression gate, not shared-state end-to-end qualification evidence; a frozen
-live cohort remains the release proof.
+mutation, and has a 120-second total deadline. Its three-ticket checkpoint uses
+a synthetic three-ticket evidence set to exercise the production reducer. A
+historical A/B check proves that the unchanged-tracked-symlink invariant rejects
+the exact pre-fix blob and passes the first repaired blob. This is a fast
+component regression gate, not shared-state end-to-end qualification evidence;
+a frozen live cohort remains the release proof.
 
 Installation requires remote full-suite evidence for an exact `origin/main`
 SHA with a successful authenticated GitHub Actions push run whose three Linux,

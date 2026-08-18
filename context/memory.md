@@ -6858,8 +6858,19 @@ cannot consume a role call.
 
 Category: Reliability
 
-The credential-free replay selects exact component regressions and reports
+Superseded in part by Decision 498. The credential-free replay selects exact component regressions and reports
 only blocked external calls and an unchanged repository. It does not claim
 that independent fixtures share lifecycle state or that runtime authority has
 no residue. One shared-state integration gate and a frozen live cohort remain
 required before qualification is called proven.
+
+## 2026-08-18 — Decision 498: Qualification replay proves one historical invariant
+
+Category: Reliability
+
+The credential-free replay binds the tracked-symlink handoff invariant to the
+exact pre-fix and first-fix production blobs: the old parser must reject the
+unchanged tracked link and the first repair must preserve it while carrying
+only the intended file. The remaining scenarios are component fixtures, so the
+replay is not shared-state or sealed end-to-end qualification evidence; the
+frozen live cohort remains the release proof.
