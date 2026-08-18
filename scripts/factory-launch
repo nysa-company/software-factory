@@ -100,7 +100,21 @@ if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
 PY
       die "qualification release root is unsafe"
     QUALIFICATION_LAUNCHER=1
-    HOME="$ACCOUNT_HOME"
+    if [[ "${FACTORY_LAUNCH_TEST_MODE:-0}" == "1" ]]; then
+      [[ "${FACTORY_LAUNCH_TEST_HOME:-}" == "$QUALIFICATION_ROOT.home" ]] ||
+        die "qualification replay HOME must be bound to its sealed root"
+      "$BOOTSTRAP_PYTHON" -I -S - "$FACTORY_LAUNCH_TEST_HOME" <<'PY' ||
+import os, stat, sys
+path = os.path.realpath(sys.argv[1])
+info = os.stat(path)
+if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
+    raise SystemExit(1)
+PY
+        die "qualification replay HOME is unsafe"
+      HOME="$FACTORY_LAUNCH_TEST_HOME"
+    else
+      HOME="$ACCOUNT_HOME"
+    fi
     RAW_KITS_ROOT="$QUALIFICATION_ROOT"
   else
     [[ "${FACTORY_LAUNCH_TEST_MODE:-0}" == "1" ]] ||
@@ -895,6 +909,12 @@ if [[ "$QUALIFICATION_LAUNCHER" == "1" ]]; then
     "FACTORY_DURABLE_LEDGER=$PRODUCT_ROOT/factory/ledger.csv"
     "FACTORY_REFRESH_RUNTIME_LEDGER=1"
   )
+  if [[ "${FACTORY_LAUNCH_TEST_MODE:-0}" == "1" ]]; then
+    HELPER_ENV+=(
+      "FACTORY_LAUNCH_TEST_MODE=1"
+      "FACTORY_LAUNCH_TEST_HOME=$HOME"
+    )
+  fi
 fi
 if [[ "$ISOLATED_TEST_LAUNCHER" == "1" ]]; then
   HELPER_ENV+=(
