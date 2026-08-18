@@ -645,6 +645,11 @@ Automatic qualification fallback serializes and reroutes only the failed
 role. Future pinned roles keep their selections and are re-probed only when
 they reach provider admission; later task-bearing roles retain four-way
 execution.
+Fallback waits up to 60 seconds for a sibling's transient product launch-lock
+window instead of turning ordinary qualification concurrency into a controller
+error. It never reclaims an existing lock, and it checks `MAINTENANCE` while
+waiting and immediately after acquisition so a published pause always wins
+before route or handoff mutation.
 If interruption occurs after a terminal role was exported but before its claim
 was cleared, restart identifies the exact run, role, and transition receipt in
 both passport charge and completed-role evidence. It authenticates and

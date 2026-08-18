@@ -100,6 +100,17 @@ class QualificationSharedStateTest(unittest.TestCase):
         self.workspace_object.cleanup()
 
     def stop_replay_processes(self) -> None:
+        groups = self.replay_process_groups()
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            for group in groups:
+                try:
+                    os.killpg(group, sig)
+                except ProcessLookupError:
+                    pass
+            if sig == signal.SIGTERM and groups:
+                time.sleep(1)
+
+    def replay_process_groups(self) -> set[int]:
         output = subprocess.run(
             ["ps", "-axo", "pid=,pgid=,command="], text=True,
             capture_output=True, check=False,
@@ -112,14 +123,7 @@ class QualificationSharedStateTest(unittest.TestCase):
             _, group, command = fields
             if (str(self.root) in command or self.project in command) and int(group) != os.getpgrp():
                 groups.add(int(group))
-        for sig in (signal.SIGTERM, signal.SIGKILL):
-            for group in groups:
-                try:
-                    os.killpg(group, sig)
-                except ProcessLookupError:
-                    pass
-            if sig == signal.SIGTERM and groups:
-                time.sleep(1)
+        return groups
 
     @property
     def environment(self) -> dict[str, str]:
@@ -374,7 +378,7 @@ class QualificationSharedStateTest(unittest.TestCase):
         self.github_state.chmod(0o600)
         gh = self.home / ".factory/bin/gh"
         gh.write_text(f'''#!/usr/bin/env python3
-import base64, datetime, fcntl, json, pathlib, subprocess, sys, tempfile
+import base64, fcntl, json, pathlib, subprocess, sys, tempfile
 state=pathlib.Path({str(self.github_state)!r})
 remote=pathlib.Path({str(self.remote)!r})
 args=sys.argv[1:]
@@ -746,6 +750,7 @@ raise SystemExit(1 if failed else 0)
         self.assertEqual(
             {item["ticket"] for item in replay["report"]["tickets"]}, set(TICKETS)
         )
+        self.assertEqual(self.replay_process_groups(), set())
         self.assertLess(time.monotonic() - self.started, 540)
 
 

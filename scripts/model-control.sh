@@ -66,6 +66,24 @@ PY
   exit 2
 }
 
+acquire_fallback_launch_lock() {
+  local launch_lock="$1" attempt
+  for attempt in $(seq 1 600); do
+    if mkdir "$launch_lock" 2>/dev/null; then
+      FALLBACK_LAUNCH_LOCK="$launch_lock"
+      [[ ! -e "$FACTORY_ROOT/factory/MAINTENANCE" &&
+         ! -L "$FACTORY_ROOT/factory/MAINTENANCE" ]] ||
+        json_error "MAINTENANCE appeared while waiting for launch lock"
+      return
+    fi
+    [[ ! -e "$FACTORY_ROOT/factory/MAINTENANCE" &&
+       ! -L "$FACTORY_ROOT/factory/MAINTENANCE" ]] ||
+      json_error "MAINTENANCE appeared while waiting for launch lock"
+    sleep 0.1
+  done
+  json_error "launch lock is busy"
+}
+
 json_resolution_error() {
   local operation="$1" reason="$2" profile_id="$3" readiness="$4" prefix
   case "$operation" in
@@ -1263,8 +1281,7 @@ PY
       launch_lock="$FACTORY_ROOT/factory/.launch.lock"
       provider_lock="$FACTORY_ROOT/factory/.provider.lock"
       ledger_lock="$FACTORY_ROOT/factory/.ledger.lock"
-      mkdir "$launch_lock" 2>/dev/null || json_error "launch lock is busy"
-      FALLBACK_LAUNCH_LOCK="$launch_lock"
+      acquire_fallback_launch_lock "$launch_lock"
       [[ ! -e "$provider_lock" && ! -L "$provider_lock" &&
          ! -e "$ledger_lock" && ! -L "$ledger_lock" ]] ||
         json_error "provider or accounting state is busy"
@@ -1325,8 +1342,7 @@ PY
     launch_lock="$FACTORY_ROOT/factory/.launch.lock"
     provider_lock="$FACTORY_ROOT/factory/.provider.lock"
     ledger_lock="$FACTORY_ROOT/factory/.ledger.lock"
-    mkdir "$launch_lock" 2>/dev/null || json_error "launch lock is busy"
-    FALLBACK_LAUNCH_LOCK="$launch_lock"
+    acquire_fallback_launch_lock "$launch_lock"
     [[ ! -e "$provider_lock" && ! -L "$provider_lock" &&
        ! -e "$ledger_lock" && ! -L "$ledger_lock" ]] ||
       json_error "provider or accounting state is busy"

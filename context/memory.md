@@ -6902,3 +6902,15 @@ restart, publication, closeout, and reducer artifact; no live credentials or
 provider inference are available. The shared gate proves fresh-cohort
 composition, while successor migration, terminal adoption, and live provider
 quality retain their separate evidence boundaries.
+
+## 2026-08-18 — Decision 501: Qualification fallback waits without crossing pause
+
+Category: Reliability
+
+Automatic and operator-approved fallback wait up to 60 seconds for a sibling's
+transient product launch-lock window. They never infer or reclaim stale lock
+ownership. `MAINTENANCE` is checked during the wait and immediately after lock
+acquisition, so an operator pause wins before any fallback handoff, route
+journal mutation, commit, or push. A causal regression holds the launch lock,
+proves ordinary fallback resumes after release, then publishes maintenance
+before release and proves the mutation remains refused.
