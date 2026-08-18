@@ -76,6 +76,14 @@ SCENARIOS = (
         ),
     ),
     (
+        "operator_ready_materialization_failure_replays",
+        (
+            "qualification-environment-test.py",
+            "QualificationEnvironmentTest.test_unconsumed_ready_receipt_reaches_materialization_replay",
+            "QualificationEnvironmentTest.test_selected_operator_retries_pending_ready_projection",
+        ),
+    ),
+    (
         "malformed_restart_and_reducer_evidence_fail_closed",
         (
             "qualification-run-test.py",
@@ -121,9 +129,11 @@ def repository_status() -> bytes:
 def main() -> int:
     before = repository_status()
     started = time.monotonic()
-    git = shutil.which("git")
-    if not git:
-        raise SystemExit("qualification replay requires git")
+    local_commands = {
+        command: shutil.which(command) for command in ("git", "node", "npm", "npx")
+    }
+    if any(path is None for path in local_commands.values()):
+        raise SystemExit("qualification replay requires git, node, npm, and npx")
 
     with tempfile.TemporaryDirectory(prefix="qualification-lane-replay.") as raw:
         sandbox = Path(raw)
@@ -131,7 +141,8 @@ def main() -> int:
         home = sandbox / "home"
         binary.mkdir()
         home.mkdir()
-        (binary / "git").symlink_to(git)
+        for command, path in local_commands.items():
+            (binary / command).symlink_to(path)
         calls = sandbox / "external-calls"
         for command in ("claude", "codex", "cursor", "curl", "gh", "scp", "ssh", "wget"):
             path = binary / command

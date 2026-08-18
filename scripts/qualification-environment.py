@@ -1414,6 +1414,11 @@ def selected_operator_ready(mapping: dict[str, Any], ticket: str) -> bool:
     return bool(
         isinstance(entry, dict)
         and entry.get("operator_fields_initialized") is True
+        and not (
+            isinstance(entry.get("operator"), dict)
+            and entry["operator"].get("state") == "Ready"
+            and entry["operator"].get("state_base") == "backlog"
+        )
         and isinstance(initialized, dict)
         and isinstance(initialized.get(ticket), str)
     )
@@ -3338,6 +3343,7 @@ def validate_authority_prepare_shape(
         receipts = entries.get("operator-receipts")
         if receipts is not None:
             safe_directory(receipts)
+            mapping = read(authority / "operator/operator-map.json")
             for ticket_dir in receipts.iterdir():
                 if ticket_dir.name not in selected:
                     raise EnvironmentError("qualification controller is active")
@@ -3356,8 +3362,20 @@ def validate_authority_prepare_shape(
                     or receipt.get("action") != "ready"
                     or receipt.get("sequence") != 1
                     or receipt.get("payload") != {}
-                    or receipt.get("consumed") is not True
-                    or not isinstance(receipt.get("consumed_at_epoch"), int)
+                    or not (
+                        receipt.get("consumed") is True
+                        and isinstance(receipt.get("consumed_at_epoch"), int)
+                        or receipt.get("consumed") is False
+                        and "consumed_at_epoch" not in receipt
+                        and mapping["tickets"].get(ticket_dir.name, {}).get(
+                            "operator"
+                        ) == {
+                            "observed_at": receipt.get("issued_at"),
+                            "receipt_sha256": receipt.get("receipt_sha256"),
+                            "state": "Ready",
+                            "state_base": "backlog",
+                        }
+                    )
                 ):
                     raise EnvironmentError("qualification controller is active")
 
@@ -3640,7 +3658,10 @@ def _prepare(args: argparse.Namespace) -> dict[str, Any]:
             mapping = read(map_path)
             advanced = (
                 root.exists() and any(root.iterdir())
-            ) or (authority / "controller").exists()
+            ) or any(
+                (authority / name).exists() or (authority / name).is_symlink()
+                for name in ("authority.json", "provider")
+            )
             if advanced and not all(
                 selected_operator_ready(mapping, ticket)
                 for ticket in manifest["tickets"]
