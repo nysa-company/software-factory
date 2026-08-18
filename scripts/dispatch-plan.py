@@ -195,6 +195,14 @@ def qualification(
             "schema", "target_done", "tickets",
         }
         successor = value.get("mode") == "successor"
+        budget_profile = (
+            value.get("budget_usd"),
+            value.get("per_ticket_budget_usd"),
+            value.get("per_run_budget_usd"),
+        )
+        extended = budget_profile == (
+            "300.000000", "100.000000", "10.000000",
+        )
         keys = fresh_keys | ({"mode", "source_factory_sha"} if successor else set())
         tickets = value.get("tickets")
         target_done = value.get("target_done")
@@ -229,13 +237,13 @@ def qualification(
                     or value.get("per_run_budget_usd") != "10.000000"
                 )
             )
+            or extended and (target_done != 3 or selected_capacity != 3)
             or (
                 not successor
-                and (
-                    value.get("budget_usd") != "100.000000"
-                    or value.get("per_ticket_budget_usd") != "25.000000"
-                    or value.get("per_run_budget_usd") != "2.000000"
-                )
+                and budget_profile not in {
+                    ("100.000000", "25.000000", "2.000000"),
+                    ("300.000000", "100.000000", "10.000000"),
+                }
             )
             or configured_capacity != selected_capacity
         ):

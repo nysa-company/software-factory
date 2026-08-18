@@ -146,7 +146,7 @@ class DispatchPlanTest(unittest.TestCase):
 
     def write_contract_18_qualification(
         self, target=4, dependencies=None, successor=False,
-        contract_version="1.8.0",
+        contract_version="1.8.0", high_budget=False,
     ):
         tickets = [f"T-{number}" for number in range(110, 110 + target)]
         for ticket in tickets:
@@ -159,14 +159,15 @@ class DispatchPlanTest(unittest.TestCase):
         (self.product / "factory/PROJECT.env").write_text(
             f"TICKET_BRANCH_PREFIX=ticket/\nMAX_CONCURRENT_TICKETS={target}\n"
         )
+        extended_budget = successor or high_budget
         manifest = {
-            "budget_usd": "300.000000" if successor else "100.000000",
+            "budget_usd": "300.000000" if extended_budget else "100.000000",
             "capacity": target,
             "contract_version": contract_version,
             "factory_sha": "a" * 40,
             "generation": 1,
-            "per_run_budget_usd": "10.000000" if successor else "2.000000",
-            "per_ticket_budget_usd": "100.000000" if successor else "25.000000",
+            "per_run_budget_usd": "10.000000" if extended_budget else "2.000000",
+            "per_ticket_budget_usd": "100.000000" if extended_budget else "25.000000",
             "schema": "nysa.software-factory.qualification/v2",
             "target_done": target,
             "tickets": tickets,
@@ -2316,6 +2317,21 @@ class DispatchPlanTest(unittest.TestCase):
         path.write_text(path.read_text() + "Depends-On: T-112\n")
         with self.assertRaisesRegex(DISPATCH.DispatchError, "cycle"):
             DISPATCH.qualification(self.product, self.product / "factory", 3)
+
+    def test_contract_18_qualification_accepts_high_budget_fresh_cohort(self):
+        tickets = self.write_contract_18_qualification(3, high_budget=True)
+        with mock.patch.object(
+            DISPATCH, "protected_terminal", side_effect=DISPATCH.ValidationError("not done")
+        ):
+            value = DISPATCH.qualification(
+                self.product, self.product / "factory", 3
+            )
+        self.assertEqual(value["tickets"], tickets)
+        self.assertNotIn("mode", value)
+
+        self.write_contract_18_qualification(4, high_budget=True)
+        with self.assertRaisesRegex(DISPATCH.DispatchError, "manifest is invalid"):
+            DISPATCH.qualification(self.product, self.product / "factory", 4)
 
     def test_contract_18_successor_qualification_uses_production_envelope(self):
         tickets = self.write_contract_18_qualification(3, {

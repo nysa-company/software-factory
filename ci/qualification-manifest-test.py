@@ -110,8 +110,18 @@ class QualificationManifestTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, "QUALIFICATION MANIFEST VALIDATED\n")
 
+        high_budget = ordinary()
+        high_budget.update({
+            "budget_usd": "300.000000",
+            "per_run_budget_usd": "10.000000",
+            "per_ticket_budget_usd": "100.000000",
+        })
+        high_budget_head = self.write_manifest(root, high_budget, "high-budget ordinary")
+        result = self.invoke(root, ordinary_head, high_budget_head)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
         successor_head = self.write_manifest(root, successor(), "successor")
-        result = self.invoke(root, ordinary_head, successor_head)
+        result = self.invoke(root, high_budget_head, successor_head)
         self.assertEqual(result.returncode, 0, result.stderr)
 
         four = ordinary()
@@ -129,8 +139,7 @@ class QualificationManifestTest(unittest.TestCase):
         value = ordinary(); value.update({
             "budget_usd": "300.000000",
             "per_run_budget_usd": "10.000000",
-            "per_ticket_budget_usd": "100.000000",
-        }); cases["cross-mode budget"] = value
+        }); cases["mixed budget profile"] = value
         value = ordinary(); value.pop("generation"); cases["missing key"] = value
         value = ordinary(); value["extra"] = True; cases["extra key"] = value
         value = ordinary(); value["tickets"][0] = "ticket-101"; cases["malformed ticket"] = value
@@ -138,6 +147,14 @@ class QualificationManifestTest(unittest.TestCase):
         value = ordinary(); value["factory_sha"] = SOURCE_SHA; cases["wrong Factory SHA"] = value
         value = ordinary(); value["capacity"] = 2; cases["invalid capacity"] = value
         value = ordinary(); value["target_done"] = 4; cases["invalid target"] = value
+        value = ordinary(); value.update({
+            "budget_usd": "300.000000",
+            "capacity": 4,
+            "per_run_budget_usd": "10.000000",
+            "per_ticket_budget_usd": "100.000000",
+            "target_done": 4,
+            "tickets": ["T-101", "T-102", "T-103", "T-104"],
+        }); cases["extended capacity four"] = value
         value = successor(); value["capacity"] = 4; cases["invalid successor capacity"] = value
         value = successor(); value["source_factory_sha"] = "invalid"; cases["invalid source SHA"] = value
         value = successor(); value["source_factory_sha"] = KIT_SHA; cases["same source SHA"] = value

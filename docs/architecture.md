@@ -864,8 +864,10 @@ three-ticket boundary. An excluded claim remains parked and untouched except tha
 startup withdraws any lease-free publication queue record that could block
 selected tickets. Historical role, charge, publication, and merge evidence
 keeps its original Factory SHA inside each passport's authenticated release
-history. A fresh cohort retains the $2 run, $25 ticket, and $100 cohort
-envelope. A production successor binds the installed source Factory SHA,
+history. A fresh cohort selects one exact reviewed envelope: the retained $2
+run, $25 ticket, and $100 cohort profile or the extended $10 run, $100 ticket,
+and $300 cohort profile. Mixed values remain invalid. A production successor
+binds the installed source Factory SHA,
 reuses canonical controller passports and provider accounting in place, and
 limits only new candidate spend to $10 per run, $100 per ticket, and $300 for
 the cohort. Its reducer requires an authenticated source-to-candidate passport

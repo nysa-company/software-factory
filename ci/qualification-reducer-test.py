@@ -129,6 +129,53 @@ class QualificationReducerTest(unittest.TestCase):
         ):
             REDUCER.verify(*evidence)
 
+    def test_high_budget_fresh_evidence_passes(self):
+        evidence = list(self.evidence())
+        manifest, passports, events, terminals, prs, caps = evidence
+        removed = manifest["tickets"].pop()
+        manifest.update({
+            "budget_usd": "300.000000",
+            "capacity": 3,
+            "per_run_budget_usd": "10.000000",
+            "per_ticket_budget_usd": "100.000000",
+            "target_done": 3,
+        })
+        for values in (passports, terminals, prs, caps):
+            del values[removed]
+        events[:] = [item for item in events if item.get("ticket") != removed]
+        for event in events:
+            if event.get("event") in {"restart_boundary", "controller_recovered"}:
+                event["tickets"] = manifest["tickets"]
+        caps.update({ticket: 100_000_000 for ticket in caps})
+        self.assertEqual(REDUCER.verify(*evidence)["status"], "green")
+
+        invalid = list(self.evidence())
+        invalid[0].update({
+            "budget_usd": "300.000000",
+            "per_run_budget_usd": "10.000000",
+            "per_ticket_budget_usd": "100.000000",
+        })
+        with self.assertRaisesRegex(
+            REDUCER.QualificationError, "qualification inputs are incomplete",
+        ):
+            REDUCER.verify(*invalid)
+
+    def test_high_budget_fresh_ticket_caps_ignore_runtime_overrides(self):
+        manifest = self.evidence()[0]
+        manifest.update({
+            "budget_usd": "300.000000",
+            "capacity": 3,
+            "per_run_budget_usd": "10.000000",
+            "per_ticket_budget_usd": "100.000000",
+            "target_done": 3,
+            "tickets": manifest["tickets"][:3],
+        })
+        with tempfile.TemporaryDirectory() as temporary:
+            self.assertEqual(
+                REDUCER.effective_ticket_caps(Path(temporary), ROOT, manifest),
+                {ticket: 100_000_000 for ticket in manifest["tickets"]},
+            )
+
     def test_protected_terminal_reconciliation_is_zero_cost_and_fail_closed(self):
         evidence = list(self.evidence())
         manifest, passports, events, terminals, prs, _caps = evidence
