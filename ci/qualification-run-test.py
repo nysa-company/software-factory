@@ -86,14 +86,14 @@ raise SystemExit(code)
         required = {
             "active_binding", "clis", "contract_resume", "credentials",
             "fallback_readiness", "isolated_provider", "kit", "kit_pin",
-            "transition_receipts",
+            "provider_cli_pins", "transition_receipts",
         }
         return {
             "checks": {
                 **{name: {"status": "ok"} for name in required},
                 **{
                     name: {"status": "not_applicable"}
-                    for name in ("controller", "model_readiness", "provider_cli_pins")
+                    for name in ("controller", "model_readiness")
                 },
                 "runtime": {"status": status},
             },
@@ -563,6 +563,20 @@ raise SystemExit(code)
         self.assertEqual(value["status"], "blocked")
         self.assertEqual(value["reason"], "doctor_not_ready")
         self.assertEqual(self.called(), ["doctor"])
+
+    def test_provider_pin_not_ready_blocks_before_controller_mutation(self) -> None:
+        for status in ("not_applicable", "warning", "error"):
+            with self.subTest(status=status):
+                self.calls.unlink(missing_ok=True)
+                doctor = self.doctor()
+                doctor["checks"]["provider_cli_pins"]["status"] = status
+                code, value = self.run_scenario({
+                    "doctor": doctor,
+                    "reconcile": [self.controller("ok")],
+                    "qualification": self.report(),
+                })
+                self.assertEqual((code, value["reason"]), (3, "doctor_not_ready"))
+                self.assertEqual(self.called(), ["doctor"])
 
     def test_successor_prior_receipts_reach_only_controller_recovery(self) -> None:
         manifest = json.loads(self.manifest.read_text(encoding="utf-8"))

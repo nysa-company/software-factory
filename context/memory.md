@@ -6842,3 +6842,24 @@ still unconsumed only when the lane-local operator map carries its byte-equal
 pending Ready projection. Retry calls the existing idempotent Git materializer,
 then continues through the ordinary consumed-and-cleared prefix. Foreign,
 changed, malformed, or post-publication pending authority remains fail-closed.
+
+## 2026-08-17 — Decision 496: Codex provider pins include the code-mode host
+
+Category: Reliability
+
+Codex is one two-executable provider bundle. The owner provider-pin transaction
+derives `codex-code-mode-host` only as an executable sibling of the resolved
+Codex candidate, probes and receipt-binds both physical files, and atomically
+installs or rolls back both links. Qualification Doctor requires that exact
+pin status before controller reconciliation, so a missing or changed companion
+cannot consume a role call.
+
+## 2026-08-17 — Decision 497: Qualification replay claims only component coverage
+
+Category: Reliability
+
+The credential-free replay selects exact component regressions and reports
+only blocked external calls and an unchanged repository. It does not claim
+that independent fixtures share lifecycle state or that runtime authority has
+no residue. One shared-state integration gate and a frozen live cohort remain
+required before qualification is called proven.

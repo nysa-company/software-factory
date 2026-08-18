@@ -57,6 +57,8 @@ TOOLS = {
         "flags": ("--print", "--output-format", "--workspace", "--model", "--force", "--trust"),
     },
 }
+COMPANIONS = ("codex-code-mode-host",)
+MANAGED_LINKS = tuple(TOOLS) + COMPANIONS
 PIN_KEYS = tuple(value["pin"] for value in TOOLS.values())
 REQUIRED_RELEASE_FILES = (
     "scripts/factory-launch",
@@ -262,6 +264,32 @@ def probe_candidate(name: str, source: Path, factory_bin: Path) -> dict[str, str
     }
 
 
+def probe_companion(name: str, source: Path) -> dict[str, str]:
+    resolved, binary_hash = executable(source, f"{name} candidate")
+    with tempfile.TemporaryDirectory(prefix="provider-cli-pin-probe.") as scratch_raw:
+        scratch = Path(scratch_raw)
+        scratch.chmod(0o700)
+        help_stdout, help_all = probe(
+            [str(resolved), "--help"],
+            {"HOME": str(scratch), "PATH": SAFE_PATH_SUFFIX, "TMPDIR": str(scratch)},
+        )
+        if (
+            len(help_all) > MAX_JSON or b"\0" in help_all
+            or re.search(
+                r"(?<![A-Za-z0-9_-])--listen(?![A-Za-z0-9_-])",
+                help_all.decode(errors="replace"),
+            ) is None
+        ):
+            raise PinError(f"{name} contract probe failed")
+    return {
+        "executable_sha256": binary_hash,
+        "help_sha256": sha256(help_stdout),
+        "link_target": str(resolved),
+        "name": name,
+        "physical_path": str(resolved),
+    }
+
+
 def parse_config(raw: bytes) -> dict[str, str]:
     if len(raw) > MAX_CONFIG or any(char in raw for char in (b"\0", b"\r", b"\t")):
         raise PinError("global config is unsafe")
@@ -367,7 +395,7 @@ def inspect_link(path: Path) -> dict[str, Any]:
 def links(factory_bin: Path) -> list[dict[str, Any]]:
     return [
         {"name": name, "path": str(factory_bin / name), **inspect_link(factory_bin / name)}
-        for name in TOOLS
+        for name in MANAGED_LINKS
     ]
 
 
@@ -785,7 +813,10 @@ def file_snapshot(path: Path, label: str) -> dict[str, Any]:
 def journal_value(home_factory: Path) -> dict[str, Any]:
     unsigned = {
         "config": file_snapshot(home_factory / "global.env", "global config"),
-        "links": {name: inspect_link(home_factory / "bin" / name)["link_target"] for name in TOOLS},
+        "links": {
+            name: inspect_link(home_factory / "bin" / name)["link_target"]
+            for name in MANAGED_LINKS
+        },
         "phase": "prepared", "receipt": file_snapshot(home_factory / "provider-cli-pin.json", "provider CLI pin receipt"),
         "schema": JOURNAL_SCHEMA,
     }
@@ -840,7 +871,7 @@ def read_journal(home_factory: Path) -> dict[str, Any] | None:
     decoded_snapshot(unsigned["receipt"])
     links_value = unsigned["links"]
     if (
-        not isinstance(links_value, dict) or set(links_value) != set(TOOLS)
+        not isinstance(links_value, dict) or set(links_value) != set(MANAGED_LINKS)
         or any(target is not None and (not isinstance(target, str) or not target)
                for target in links_value.values())
     ):
@@ -893,10 +924,21 @@ def build_plan(
     release = Path(candidate_release["release_path"])
     config, raw, values = config_snapshot(home_factory / "global.env", release)
     cursor = cursor_setting(values, home_factory)
-    probed = [probe_candidate(name, candidates[name], home_factory / "bin") for name in TOOLS]
-    if len({item["physical_path"] for item in probed}) != len(TOOLS):
-        raise PinError("provider CLI candidates must be distinct")
-    desired = {item["pin_key"]: item["version"] for item in probed}
+    probed = [
+        probe_candidate(name, candidates[name], home_factory / "bin")
+        for name in TOOLS
+    ]
+    codex = next(item for item in probed if item["name"] == "codex")
+    probed.append(probe_companion(
+        "codex-code-mode-host",
+        Path(codex["physical_path"]).parent / "codex-code-mode-host",
+    ))
+    if len({item["physical_path"] for item in probed}) != len(MANAGED_LINKS):
+        raise PinError("provider CLI candidates and companions must be distinct")
+    desired = {
+        item["pin_key"]: item["version"]
+        for item in probed if item["name"] in TOOLS
+    }
     after = render_config(raw, desired)
     prior = home_factory / "provider-cli-pin.json"
     value = {
@@ -977,6 +1019,41 @@ def check_status(
         if global_reason:
             item.update(reason=global_reason, status="error")
         items.append(item)
+    for name in COMPANIONS:
+        item = {
+            "expected_version": None, "managed_state": "unsafe", "name": name,
+            "reason": "managed_pin_unsafe", "status": "error", "target": None,
+            "version": None,
+        }
+        try:
+            link = inspect_link(home_factory / "bin" / name)
+            item["managed_state"] = link["state"]
+            item["target"] = link["link_target"]
+            wanted = expected.get(name)
+            managed = evidence is not None or wanted is not None
+            if link["state"] == "absent":
+                item.update(
+                    reason="managed_pin_absent" if managed else "provider_cli_unmanaged",
+                    status="error" if managed else "warning",
+                )
+            elif link["state"] == "dangling":
+                item["reason"] = "managed_pin_target_missing"
+            elif evidence is None:
+                item["reason"] = "receipt_missing"
+            else:
+                observed = probe_companion(name, Path(link["physical_path"]))
+                if wanted != observed or link["link_target"] != wanted.get("link_target"):
+                    item["reason"] = "receipt_drift"
+                else:
+                    item.update(reason="exact_pin_ready", status="ok")
+        except (OSError, PinError):
+            item["reason"] = (
+                "contract_probe_failed"
+                if item["managed_state"] == "linked" else "managed_pin_unsafe"
+            )
+        if global_reason:
+            item.update(reason=global_reason, status="error")
+        items.append(item)
     ready = evidence is not None and not global_reason and all(item["status"] == "ok" for item in items)
     return {
         "active_releases": active_identities, "global_config_sha256": config.get("sha256"),
@@ -1010,7 +1087,10 @@ def apply_plan(
         raise PinError("provider CLI pin approval hash does not match")
     release = Path(candidate_release["release_path"])
     _, config_raw, _ = config_snapshot(home_factory / "global.env", release)
-    desired = {item["pin_key"]: item["version"] for item in planned["candidates"]}
+    desired = {
+        item["pin_key"]: item["version"]
+        for item in planned["candidates"] if item["name"] in TOOLS
+    }
     after = render_config(config_raw, desired)
     journal_path = home_factory / "provider-cli-pin.transaction.json"
     atomic_write(journal_path, canonical(journal_value(home_factory)) + b"\n")
@@ -1107,7 +1187,11 @@ def main() -> int:
         if requested != authority:
             raise PinError("plan/apply candidate does not match the sealed authority helper")
         with flock(lock, "provider CLI pin lock"):
-            candidates = {"claude": args.claude_bin, "codex": args.codex_bin, "agent": args.cursor_bin}
+            candidates = {
+                "claude": args.claude_bin,
+                "codex": args.codex_bin,
+                "agent": args.cursor_bin,
+            }
             with operation_guard(home_factory, kits_root) as projects:
                 recover(home_factory)
                 if args.command == "plan":

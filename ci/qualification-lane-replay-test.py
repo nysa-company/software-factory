@@ -54,6 +54,9 @@ SCENARIOS = (
         (
             "failed-attempt-handoff-test.py",
             "HandoffTest.test_committed_narrator_handoff_accepts_only_current_ticket_png_evidence",
+            "HandoffTest.test_committed_role_validation_allows_only_unchanged_symlinks",
+            "HandoffTest.test_preview_and_replay_preserve_only_exact_tracked_symlinks",
+            "HandoffTest.test_replay_refuses_deleting_a_tracked_symlink",
         ),
     ),
     (
@@ -81,6 +84,17 @@ SCENARIOS = (
             "qualification-environment-test.py",
             "QualificationEnvironmentTest.test_unconsumed_ready_receipt_reaches_materialization_replay",
             "QualificationEnvironmentTest.test_selected_operator_retries_pending_ready_projection",
+        ),
+    ),
+    (
+        "missing_codex_companion_blocks_before_controller_mutation",
+        (
+            "provider-cli-pin-test.py",
+            "ProviderCliPinTest.test_codex_companion_is_required_and_receipt_bound",
+        ),
+        (
+            "qualification-run-test.py",
+            "QualificationRunTest.test_provider_pin_not_ready_blocks_before_controller_mutation",
         ),
     ),
     (
@@ -130,12 +144,17 @@ def main() -> int:
     before = repository_status()
     started = time.monotonic()
     local_commands = {
-        command: shutil.which(command) for command in ("git", "node", "npm", "npx")
+        command: shutil.which(command)
+        for command in ("git", "node", "npm", "npx", "python3")
     }
     if any(path is None for path in local_commands.values()):
-        raise SystemExit("qualification replay requires git, node, npm, and npx")
+        raise SystemExit(
+            "qualification replay requires git, node, npm, npx, and python3"
+        )
 
-    with tempfile.TemporaryDirectory(prefix="qualification-lane-replay.") as raw:
+    with tempfile.TemporaryDirectory(
+        prefix="qualification-lane-replay.", dir=Path.home()
+    ) as raw:
         sandbox = Path(raw)
         binary = sandbox / "bin"
         home = sandbox / "home"
@@ -201,7 +220,10 @@ def main() -> int:
     if elapsed > TIME_LIMIT_SECONDS:
         print(f"FAIL: replay exceeded 120 seconds ({elapsed:.1f}s)", file=sys.stderr)
         return 1
-    print(f"PASS: qualification lane replay ({elapsed:.1f}s, external_calls=0, residual_state=0)")
+    print(
+        f"PASS: qualification lane replay "
+        f"({elapsed:.1f}s, external_calls=0, repository_changed=0)"
+    )
     return 0
 
 

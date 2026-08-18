@@ -155,7 +155,7 @@ GitHub runs share the same grouping; an explicit whole-shard command remains
 sequential for diagnosis. Suites within each group keep their existing order,
 and fixtures remain group-isolated.
 
-The credential-free qualification-lane replay composes existing driver,
+The credential-free qualification-lane replay selects existing driver,
 controller, state-machine, handoff, fallback, and reducer regressions around
 four convergence checkpoints: terminal adoption and partial migration,
 publication refresh and closeout across restart, provider fallback with
@@ -165,7 +165,9 @@ evidence fails closed, unbound fallback or handoff evidence cannot advance,
 unsafe closeout cannot complete, and interrupted operator Ready materialization
 reuses its exact receipt instead of stranding preparation. The replay runs under a disposable home
 with credentials removed and outbound tools blocked, refuses repository
-mutation, and has a 120-second total deadline.
+mutation, and has a 120-second total deadline. It is a fast component
+regression gate, not shared-state end-to-end qualification evidence; a frozen
+live cohort remains the release proof.
 
 Installation requires remote full-suite evidence for an exact `origin/main`
 SHA with a successful authenticated GitHub Actions push run whose three Linux,
@@ -420,6 +422,11 @@ ticket- and execution-cell-neutral state; concurrent Codex, Claude Code, and
 Cursor processes never share writable CLI homes. Contract 1.6
 and non-activated 1.7 routes keep the
 serialized path unchanged.
+The owner provider-pin transaction treats Codex and its adjacent
+`codex-code-mode-host` as one physical bundle. Both executable hashes, help
+contracts, links, receipt entries, and rollback snapshots advance atomically;
+qualification Doctor refuses before controller reconciliation when that bundle
+is absent or changed.
 Production and qualification retain separate provider lifecycle and financial
 databases. A task-bearing Cursor role additionally acquires one owner-only
 machine-local account-route lease before durable GO and holds it until its

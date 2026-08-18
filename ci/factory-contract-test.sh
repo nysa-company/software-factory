@@ -563,7 +563,9 @@ python3 - "$TMP/qualification-ready-doctor.json" \
 import json, pathlib, sys
 value = json.load(open(sys.argv[1], encoding="utf-8"))
 assert pathlib.Path(sys.argv[2]).read_bytes() == b""
-assert int(sys.argv[3]) in {0, 1}, sys.argv[3]
+assert int(sys.argv[3]) in {0, 1}, (
+    sys.argv[3], {name: check["status"] for name, check in value["checks"].items()},
+)
 assert value["checks"]["fallback_readiness"]["status"] == "ok"
 assert value["checks"]["fallback_readiness"]["report"]["status"] == "ready"
 assert value["overall_status"] == "warning", {
@@ -613,8 +615,8 @@ assert checks["contract_resume"] == {"incidents": [], "status": "ok"}
 assert checks["transition_receipts"] == {"incidents": [], "status": "ok"}
 PY
 
-# The deterministic qualification driver accepts that real, cohort-bound
-# runtime-only warning and reaches reconciliation.
+# The deterministic qualification driver refuses that real Doctor result
+# before reconciliation because this fixture has no exact provider pin receipt.
 python3 - "$TMP/qualification-manifest.json" "$SHA_B" <<'PY'
 import json, os, pathlib, sys
 path, sha = pathlib.Path(sys.argv[1]), sys.argv[2]
@@ -658,10 +660,10 @@ python3 - "$TMP/qualification-driver.json" "$QUALIFICATION_DRIVER_RC" \
 import json, pathlib, sys
 value = json.load(open(sys.argv[1], encoding="utf-8"))
 assert int(sys.argv[2]) == 3
-assert pathlib.Path(sys.argv[3]).is_file()
+assert not pathlib.Path(sys.argv[3]).exists()
 assert value["doctor_status"] == "warning"
-assert value["reason"] == "cohort_not_accounted"
-assert value["status"] == "waiting"
+assert value["reason"] == "doctor_not_ready"
+assert value["status"] == "blocked"
 PY
 
 mkdir -p "$PRODUCT/factory/.active-runs/T-1.planner.lock"

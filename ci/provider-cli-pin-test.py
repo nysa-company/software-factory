@@ -125,6 +125,9 @@ exit 2
             name="claude",
         )
         self.tool(root / "codex", codex, "--json --model", name="codex")
+        host = root / "codex-code-mode-host"
+        host.write_text("#!/bin/sh\necho --listen\n")
+        host.chmod(0o755)
         self.tool(
             root / "agent", agent,
             "--print --output-format --workspace --model --force --trust",
@@ -177,8 +180,23 @@ exit 2
             {item["reason"] for item in json.loads(first.stdout)["items"]},
             {"exact_pin_ready"},
         )
-        for name in ("claude", "codex", "agent"):
+        for name in ("claude", "codex", "codex-code-mode-host", "agent"):
             self.assertEqual(os.readlink(self.factory / "bin" / name), str(self.vendor / name))
+
+    def test_codex_companion_is_required_and_receipt_bound(self) -> None:
+        host = self.vendor / "codex-code-mode-host"
+        host.unlink()
+        self.assertNotEqual(self.command("plan").returncode, 0)
+        host.write_text("#!/bin/sh\necho --listen\n")
+        host.chmod(0o755)
+        self.assertEqual(self.apply().returncode, 0)
+        host.write_text("#!/bin/sh\necho changed --listen\n")
+        status = json.loads(self.command("check").stdout)
+        companion = next(
+            item for item in status["items"]
+            if item["name"] == "codex-code-mode-host"
+        )
+        self.assertEqual(companion["reason"], "receipt_drift")
 
     def test_benign_stderr_warning_does_not_break_the_version_probe(self) -> None:
         """A provider CLI may warn on stderr and still be pinnable.
@@ -646,11 +664,17 @@ exit 2
         self.assertEqual(self.apply().returncode, 0)
         prior_config = (self.factory / "global.env").read_bytes()
         prior_receipt = (self.factory / "provider-cli-pin.json").read_bytes()
-        prior_links = {name: os.readlink(self.factory / "bin" / name) for name in ("claude", "codex", "agent")}
+        prior_links = {
+            name: os.readlink(self.factory / "bin" / name)
+            for name in ("claude", "codex", "codex-code-mode-host", "agent")
+        }
         v2 = self.home / "vendor/v2/bin"
         self.write_candidates(v2, "2.1.227", "0.148.0", "2026.08.02")
         plan = self.plan(v2)
-        failure_env = {**self.env, "FACTORY_PROVIDER_CLI_PIN_TEST_FAIL_AFTER": "codex"}
+        failure_env = {
+            **self.env,
+            "FACTORY_PROVIDER_CLI_PIN_TEST_FAIL_AFTER": "codex-code-mode-host",
+        }
         failed = self.command("apply", root=v2, approval=plan["approval_sha256"], env=failure_env)
         self.assertNotEqual(failed.returncode, 0)
         self.assertEqual((self.factory / "global.env").read_bytes(), prior_config)

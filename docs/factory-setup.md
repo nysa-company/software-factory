@@ -142,11 +142,15 @@ provider state, ticket branches, or paid roles are created.
   ```
 
   The transaction updates only the three exact global pin keys and the
-  `~/.factory/bin/{claude,codex,agent}` links. It binds the sealed candidate,
+  `~/.factory/bin/{claude,codex,codex-code-mode-host,agent}` links. The Codex
+  companion must be an executable sibling of the resolved `--codex-bin`; the
+  transaction derives it without searching `PATH`, and binds both binaries as
+  one bundle. It binds the sealed candidate,
   the exact compatible active-release allowlist, raw link targets, physical
   executable hashes, parsed versions, and fixed flag contracts. An absent link
   is only an unmanaged warning before any pin or receipt exists; a missing or
-  dangling managed target is an error. Do not widen PATH, use `current` or a
+  dangling managed target is an error. Qualification Doctor requires the same
+  complete receipt before the controller may submit a role. Do not widen PATH, use `current` or a
   version range, hand-edit the receipt, or resume dispatch until Doctor reports
   the exact pins ready.
 - For a product with certification plan v2, pin its exact Node/npm runtime

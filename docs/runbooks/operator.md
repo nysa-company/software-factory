@@ -645,6 +645,9 @@ then idempotently initializes their local operator-map entries behind the
 dispatch barrier. It never chooses migration tickets or advances ticket state.
 Activation blockers therefore stop before product runtime preparation,
 certification, maintenance, host reservation, or approval generation.
+The resolved `--codex-bin` must have an executable
+`codex-code-mode-host` sibling. Provider pinning installs and receipt-binds
+both links atomically; never supply or create the companion separately.
 
 Tests run by default. Use `--skip-optional-tests` only when the product's
 committed plan marks exact phases with `kind: "test", "optional": true`. The
