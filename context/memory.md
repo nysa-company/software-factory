@@ -6809,3 +6809,11 @@ The symlink is never opened or added to the handoff snapshot. Added, removed,
 changed, staged, type-replaced, or non-ignored untracked symlinks remain
 forbidden, as do symlink ancestors and every existing hardlink, special-file,
 nested-repository, path-boundary, and content refusal.
+
+## 2026-08-17 — Decision 493: Protected-main macOS feedback stays parallel
+
+Category: Reliability
+
+All four protected-main macOS groups run on separate hosted runners. The small
+per-push compute cost is accepted while Factory qualification is stabilizing
+because serial execution delayed candidate feedback by roughly 30–40 minutes.

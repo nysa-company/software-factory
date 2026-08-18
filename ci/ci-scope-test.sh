@@ -28,6 +28,11 @@ WORKFLOW="$ROOT/.github/workflows/ci.yml"
   echo "FAIL: both protected-main platform jobs must force the full suite" >&2
   exit 1
 }
+[[ "$(grep -Fc 'runs-on: macos-14' "$WORKFLOW")" -eq 1 &&
+    "$(grep -Fc 'self-hosted' "$WORKFLOW")" -eq 0 ]] || {
+  echo "FAIL: all macOS groups must run in parallel on hosted runners" >&2
+  exit 1
+}
 [[ "$(grep -c '^    needs: scope$' "$WORKFLOW")" -eq 3 ]] || {
   echo "FAIL: policy and platform jobs must depend only on classification so they can run in parallel" >&2
   exit 1
