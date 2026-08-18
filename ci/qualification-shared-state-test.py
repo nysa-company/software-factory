@@ -255,7 +255,7 @@ class QualificationSharedStateTest(unittest.TestCase):
             "TICKET_BRANCH_PREFIX=ticket/\n"
             "TEST_PATHS=tests/\n"
             "PREVIEW_PROVIDER=none\n"
-            "NONVISUAL_PATHS=app/,factory/,tests/\n"
+            "NONVISUAL_PATHS=app/,tests/\n"
             "DONE_REQUIRED_CHECKS=ci\n"
             "AUTO_MERGE_METHOD=merge\n"
             "MAX_CONCURRENT_TICKETS=3\n",
@@ -554,8 +554,8 @@ if role == "reviewer":
     text="## Verdict: APPROVE\\n\\nNo findings."
 else:
     if role == "planner":
-        target=work/"factory"/"plans"/f"{{ticket}}.md"
-        target.parent.mkdir(parents=True,exist_ok=True); target.write_text("plan\\n")
+        target=work/"factory"/"tickets"/f"{{ticket}}.md"
+        target.write_text(target.read_text()+"\\nPLAN: fixture\\n")
     elif role == "spec-linter":
         target=work/"factory"/"tickets"/f"{{ticket}}.md"
         target.write_text(target.read_text()+"\\nSPEC-LINT: PASS\\n")
