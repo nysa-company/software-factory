@@ -13322,17 +13322,29 @@ class Controller:
         for ticket, refusal in self.admission_refusals.items():
             results.setdefault(ticket, refusal)
         ordered = [results[ticket] for ticket in sorted(results)]
+        active = len([
+            item for item in claims if self.consumes_capacity(item)
+        ])
+        status = (
+            "ok"
+            if all(item["status"] != "error" for item in ordered)
+            else "error"
+        )
+        if (
+            self.qualification and ordered and active == 0
+            and all(item["status"] == "complete" for item in ordered)
+        ):
+            self.protected_main_head()
+            if sum(
+                self.product_ticket_done(ticket)
+                for ticket in self.qualification["tickets"]
+            ) < self.qualification["target_done"]:
+                status = "waiting_for_target"
         return {
-            "active": len(
-                [item for item in claims if self.consumes_capacity(item)]
-            ),
+            "active": active,
             "results": ordered,
             "schema": SCHEMA,
-            "status": (
-                "ok"
-                if all(item["status"] != "error" for item in ordered)
-                else "error"
-            ),
+            "status": status,
         }
 
 

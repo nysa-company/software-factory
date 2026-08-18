@@ -6914,3 +6914,15 @@ acquisition, so an operator pause wins before any fallback handoff, route
 journal mutation, commit, or push. A causal regression holds the launch lock,
 proves ordinary fallback resumes after release, then publishes maintenance
 before release and proves the mutation remains refused.
+
+## 2026-08-18 — Decision 502: Qualification reduction waits for protected cohort truth
+
+Category: Reliability
+
+Controller results are invocation-local and may contain only the ticket that
+completed in the current wave. Before an active-free, all-complete result may
+enter reduction, the controller refreshes protected main and validates the
+full manifest target through the existing protected Done authority. A partial
+terminal set returns the existing `waiting_for_target` status with its current
+results preserved; reducer evidence is not attempted until the cohort is
+durably terminal.

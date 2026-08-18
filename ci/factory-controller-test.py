@@ -16117,6 +16117,62 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertEqual(calls, {"T-110": 2, "T-111": 1})
 
+    def test_qualification_complete_subset_waits_for_protected_target(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        controller.qualification = {
+            "target_done": 3,
+            "tickets": ["T-110", "T-111", "T-112"],
+        }
+        controller.capacity = 3
+        cell = self.root / "cell-1"
+        route = cell / "factory/route-plans/T-110.json"
+        route.parent.mkdir(parents=True)
+        route.write_text("{}\n", encoding="utf-8")
+        claim = {
+            "branch": "ticket/T-110", "lease": "1" * 64,
+            "priority": "normal", "publication_lease": "", "receipt": "",
+            "role": "", "schema": CONTROL.CLAIM_SCHEMA, "status": "claimed",
+            "ticket": "T-110", "worktree": str(cell),
+        }
+        claims = [claim]
+        done = set()
+        controller.load_claims = lambda: list(claims)
+        controller.qualification_admission_preflight = lambda _claims: None
+        controller.qualification_marker = lambda *_args, **_kwargs: True
+        controller.clear_admission_failure = lambda: None
+        controller.record_qualification_done_targets = lambda: None
+        controller.recover_missing_passport_claims = lambda _claims: None
+        controller.recover_upgraded_claims = lambda _claims: None
+        controller.recover_terminal_exports = lambda _claims: None
+        controller.recover_repaired_failures = lambda _claims: None
+        controller.claim_new = lambda current, *_args: current
+        controller.pin_routes = lambda _claims: []
+        controller.event = lambda *_args, **_kwargs: None
+        controller.mark_reconciling = lambda _claim: None
+        refreshed = []
+        controller.protected_main_head = lambda: refreshed.append(True) or "f" * 40
+
+        def protected_done(ticket):
+            if done:
+                self.assertEqual(refreshed, [True])
+            return ticket in done
+
+        controller.product_ticket_done = protected_done
+
+        def complete(item):
+            done.add(item["ticket"])
+            claims.clear()
+            return {"status": "complete", "ticket": item["ticket"]}
+
+        controller.reconcile_ticket_until_wait = complete
+        result = controller.reconcile()
+
+        self.assertEqual(result["status"], "waiting_for_target", result)
+        self.assertEqual(
+            result["results"], [{"status": "complete", "ticket": "T-110"}],
+        )
+        self.assertEqual(refreshed, [True])
+
     def test_qualification_controller_error_stops_sibling_next_role_launches(
         self,
     ) -> None:
