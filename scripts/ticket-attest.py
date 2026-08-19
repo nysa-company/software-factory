@@ -1075,6 +1075,14 @@ def exact_pr(repo, branch, state):
     return pr
 
 
+def exact_pr_after_push(repo, branch, head):
+    for attempt in range(31):
+        pr = exact_pr(repo, branch, "open")
+        if pr.get("headRefOid") == head or attempt == 30:
+            return pr
+        time.sleep(2)
+
+
 def exact_pr_number(repo, branch, number):
     if isinstance(number, bool) or not isinstance(number, int) or number <= 0:
         raise Refusal("approval attestation lacks an exact PR number")
@@ -2607,7 +2615,7 @@ def refresh(
         product, workdir, remote, branch, f"{args.ticket}: refresh protected base evidence",
         changed_paths,
     )
-    refreshed_pr = exact_pr(repo, branch, "open")
+    refreshed_pr = exact_pr_after_push(repo, branch, result_head)
     if (
         refreshed_pr.get("number") != pr["number"]
         or refreshed_pr.get("headRefOid") != result_head
@@ -2868,7 +2876,7 @@ def dependency_refresh(args, product, workdir, prefix, remote, kit_sha):
             result = publication_refresh_replay(
                 workdir, args.ticket, branch, remote, expected_base,
             )
-            refreshed_pr = exact_pr(repo, branch, "open")
+            refreshed_pr = exact_pr_after_push(repo, branch, result["head"])
             if (
                 refreshed_pr.get("headRefOid") != result["head"]
                 or not refreshed_pr.get("isDraft")
@@ -3174,7 +3182,7 @@ def dependency_publication_replay(args, product, workdir, prefix, remote):
     )
     git(workdir, "update-ref", f"refs/remotes/origin/{branch}", head)
     repo, _, _, _ = parse_project(product / "factory" / "PROJECT.env")
-    refreshed_pr = exact_pr(repo, branch, "open")
+    refreshed_pr = exact_pr_after_push(repo, branch, result["head"])
     if (
         refreshed_pr.get("headRefOid") != result["head"]
         or not refreshed_pr.get("isDraft")
