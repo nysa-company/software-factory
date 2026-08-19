@@ -16630,7 +16630,7 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(calls, {"T-110": 1, "T-111": 1, "T-112": 1})
         self.assertEqual(peak, 3)
 
-    def test_pr_gated_waiting_ticket_rechecks_while_sibling_worker_is_live(
+    def test_transient_gate_waiters_recheck_while_sibling_worker_is_live(
         self,
     ) -> None:
         import threading
@@ -16639,7 +16639,7 @@ class FactoryControllerTest(unittest.TestCase):
         controller = CONTROL.Controller(self.args)
         controller.protected_main_head = lambda: "f" * 40
         claims = []
-        for number, ticket in enumerate(("T-110", "T-111"), 1):
+        for number, ticket in enumerate(("T-110", "T-111", "T-112"), 1):
             cell = self.root / f"cell-{number}"
             route = cell / f"factory/route-plans/{ticket}.json"
             route.parent.mkdir(parents=True)
@@ -16664,21 +16664,24 @@ class FactoryControllerTest(unittest.TestCase):
         controller.claim_new = lambda current: current
         controller.pin_routes = lambda _claims: []
         controller.event = lambda *_args, **_kwargs: None
-        first_waited = threading.Event()
-        calls = {"T-110": 0, "T-111": 0}
+        waited = {ticket: threading.Event() for ticket in ("T-110", "T-111")}
+        calls = {ticket: 0 for ticket in ("T-110", "T-111", "T-112")}
 
         def reconcile(claim):
             ticket = claim["ticket"]
             calls[ticket] += 1
-            if ticket == "T-110":
-                first_waited.set()
+            if ticket in waited:
+                waited[ticket].set()
                 if calls[ticket] == 1:
                     return {
                         "status": "waiting", "ticket": ticket,
-                        "wait_reason": "pr-gate",
+                        "wait_reason": (
+                            "pr-gate" if ticket == "T-110"
+                            else "publication-lease"
+                        ),
                     }
             else:
-                self.assertTrue(first_waited.wait(1))
+                self.assertTrue(all(event.wait(1) for event in waited.values()))
                 time.sleep(0.1)
             return {"status": "waiting", "ticket": ticket}
 
@@ -16686,7 +16689,7 @@ class FactoryControllerTest(unittest.TestCase):
         with patch.object(CONTROL, "RECONCILE_INTERVAL_SECONDS", 0.02):
             result = controller.reconcile()
         self.assertEqual(result["status"], "ok")
-        self.assertEqual(calls, {"T-110": 2, "T-111": 1})
+        self.assertEqual(calls, {"T-110": 2, "T-111": 2, "T-112": 1})
 
     def test_scheduler_wakes_new_ticket_while_provider_future_is_live(self) -> None:
         import threading
@@ -20448,6 +20451,27 @@ class FactoryControllerTest(unittest.TestCase):
                 "git-unlock",
             ],
         )
+
+    def test_publication_refresh_counts_as_merge_request_progress(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        claim = {"ticket": "T-110", "worktree": str(self.root / "cell-1")}
+        controller.publication_ready = lambda *_args: False
+        controller.cell_git = lambda *_args: subprocess.CompletedProcess(
+            [], 0, "e" * 40 + "\n", "",
+        )
+        controller.json_call = lambda *_args, **_kwargs: self.fail(
+            "a refresh must not request auto-merge on the stale PR"
+        )
+
+        self.assertTrue(controller.request_protected_auto_merge(
+            claim, "c" * 64, {"head": "d" * 40},
+        ))
+        controller.cell_git = lambda *_args: subprocess.CompletedProcess(
+            [], 0, "d" * 40 + "\n", "",
+        )
+        self.assertFalse(controller.request_protected_auto_merge(
+            claim, "c" * 64, {"head": "d" * 40},
+        ))
 
     def test_publication_events_follow_serialized_lease_order(self) -> None:
         controller = CONTROL.Controller(self.args)

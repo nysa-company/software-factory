@@ -3604,8 +3604,8 @@ git -C "$REFRESH_ROOT" -c user.name=test -c user.email=test@example.com \
 REFRESH_OLD_HEAD="$(git -C "$REFRESH_ROOT" rev-parse HEAD)"
 REFRESH_BRANCH="$(git -C "$REFRESH_ROOT" branch --show-current)"
 git -C "$REFRESH_ROOT" checkout -qb refresh-base
-printf 'protected base advanced\n' > "$REFRESH_ROOT/base.txt"
-git -C "$REFRESH_ROOT" add base.txt
+printf 'protected base advanced\n' > "$REFRESH_ROOT/factory/unknown-control.txt"
+git -C "$REFRESH_ROOT" add factory/unknown-control.txt
 git -C "$REFRESH_ROOT" -c user.name=test -c user.email=test@example.com \
   commit -qm "protected base"
 REFRESH_BASE_HEAD="$(git -C "$REFRESH_ROOT" rev-parse HEAD)"
@@ -3866,8 +3866,9 @@ git -C "$REFRESH_RESERVE_ROOT" -c user.name=test -c user.email=test@example.com 
 RESERVE_OLD_HEAD="$(git -C "$REFRESH_RESERVE_ROOT" rev-parse HEAD)"
 RESERVE_BRANCH="$(git -C "$REFRESH_RESERVE_ROOT" branch --show-current)"
 git -C "$REFRESH_RESERVE_ROOT" checkout -qb reserve-base
-printf 'semantic protected advance\n' > "$REFRESH_RESERVE_ROOT/product.txt"
-git -C "$REFRESH_RESERVE_ROOT" add product.txt
+printf 'semantic protected advance\n' > \
+  "$REFRESH_RESERVE_ROOT/factory/unknown-control.txt"
+git -C "$REFRESH_RESERVE_ROOT" add factory/unknown-control.txt
 git -C "$REFRESH_RESERVE_ROOT" -c user.name=test -c user.email=test@example.com \
   commit -qm "advance protected product"
 RESERVE_BASE_HEAD="$(git -C "$REFRESH_RESERVE_ROOT" rev-parse HEAD)"
@@ -3945,8 +3946,8 @@ git -C "$REFRESH_RESERVE_ROOT" checkout -q -- factory/ledger.csv
 # Neither a discontinuous receipt nor a same-Factory reset may unlock it.
 git -C "$REFRESH_RESERVE_ROOT" checkout -q reserve-base
 printf 'second semantic protected advance\n' >> \
-  "$REFRESH_RESERVE_ROOT/product.txt"
-git -C "$REFRESH_RESERVE_ROOT" add product.txt
+  "$REFRESH_RESERVE_ROOT/factory/unknown-control.txt"
+git -C "$REFRESH_RESERVE_ROOT" add factory/unknown-control.txt
 git -C "$REFRESH_RESERVE_ROOT" -c user.name=test -c user.email=test@example.com \
   commit -qm "advance protected product again"
 RESERVE_SECOND_BASE_HEAD="$(git -C "$REFRESH_RESERVE_ROOT" rev-parse HEAD)"

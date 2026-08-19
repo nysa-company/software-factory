@@ -714,13 +714,16 @@ class CertificationRunnerTest(unittest.TestCase):
                 "name,delay=sys.argv[1],float(sys.argv[2])\n"
                 "count=pathlib.Path(name+'.count')\n"
                 "count.write_text(str(int(count.read_text())+1) if count.exists() else '1')\n"
+                "while len(sys.argv)>3 and not pathlib.Path(sys.argv[3]).exists(): time.sleep(.01)\n"
                 "time.sleep(delay)\n"
                 "pathlib.Path(name+'.ready').write_text('ready')\n"
             )
             phases = [
                 {
                     "artifacts": ["fast.ready"],
-                    "command": [sys.executable, str(helper), "fast", "0"],
+                    "command": [
+                        sys.executable, str(helper), "fast", "0", "slow.count",
+                    ],
                     "depends_on": [],
                     "kind": "build",
                     "name": "fast",

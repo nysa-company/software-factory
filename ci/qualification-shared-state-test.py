@@ -681,18 +681,18 @@ raise SystemExit(1 if failed else 0)
         approved = 0
         restarts = 0
         events_dir = self.home / f".factory/qualification/{self.project}/controller/events"
-        deadline = self.started + 900
-        for _ in range(8):
+        deadline = self.started + 710
+        for wave in range(8):
             prior_events = set(events_dir.glob("*.json"))
             remaining = int(deadline - time.monotonic())
-            self.assertGreater(remaining, 0, "shared qualification exceeded 900-second deadline")
+            self.assertGreater(remaining, 0, "shared qualification exceeded 710-second deadline")
             launched = self.sealed(
                 str(launcher), self.project, "qualification-run", "--json",
                 timeout=remaining,
             )
             if launched.returncode == 2:
                 remaining = int(deadline - time.monotonic())
-                self.assertGreater(remaining, 0, "shared qualification exceeded 900-second deadline")
+                self.assertGreater(remaining, 0, "shared qualification exceeded 710-second deadline")
                 reduced = self.sealed(
                     str(launcher), self.project, "qualification", "--json",
                     timeout=remaining,
@@ -750,6 +750,34 @@ raise SystemExit(1 if failed else 0)
                     json.dumps(replay, sort_keys=True),
                 )
             approved += newly_approved
+            print(json.dumps({
+                "approved": newly_approved,
+                "elapsed_seconds": round(time.monotonic() - self.started, 3),
+                "events": [
+                    [item.get("ticket"), item.get("event")]
+                    for item in new_events
+                ],
+                "phases": [
+                    {
+                        "elapsed_seconds": item["elapsed_seconds"],
+                        "name": item["name"],
+                    }
+                    for item in replay["phases"]
+                ],
+                "provider_calls": sum(json.loads(
+                    self.provider_calls.read_text(encoding="utf-8")
+                ).values()),
+                "results": [
+                    {
+                        "status": item.get("status"),
+                        "ticket": item.get("ticket"),
+                        "wait_reason": item.get("wait_reason"),
+                    }
+                    for item in replay["controller"]["results"]
+                ],
+                "status": replay["status"],
+                "wave": wave + 1,
+            }, sort_keys=True), flush=True)
         else:
             self.fail("shared qualification did not converge")
         self.assertEqual(replay["status"], "green", json.dumps(replay, sort_keys=True))
@@ -777,19 +805,14 @@ raise SystemExit(1 if failed else 0)
         }
         expected["T-902:builder:codex"] = 1
         for ticket in TICKETS:
-            refresh_count = sum(
-                event.get("ticket") == ticket
-                and event.get("event") in REFRESH_EVENTS
-                for event in events
-            )
-            expected[f"{ticket}:reviewer:agent"] = 1 + refresh_count
-            expected[f"{ticket}:narrator:agent"] = 1 + refresh_count
+            expected[f"{ticket}:reviewer:agent"] = 1
+            expected[f"{ticket}:narrator:agent"] = 1
         self.assertEqual(calls, expected)
         self.assertEqual(
             {item["ticket"] for item in replay["report"]["tickets"]}, set(TICKETS)
         )
         self.assertEqual(self.replay_process_groups(), set())
-        self.assertLess(time.monotonic() - self.started, 910)
+        self.assertLess(time.monotonic() - self.started, 720)
 
 
 if __name__ == "__main__":

@@ -11614,7 +11614,10 @@ class Controller:
         self, claim: dict[str, Any], receipt: str, pr: dict[str, Any]
     ) -> bool:
         if not self.publication_ready(claim, receipt, pr["head"]):
-            return False
+            current = self.cell_git(claim, "rev-parse", "HEAD")
+            if current.returncode or not SHA.fullmatch(current.stdout.strip()):
+                raise ControllerError("publication worktree head is unavailable")
+            return current.stdout.strip() != pr["head"]
         approval = self.json_call(
             "ticket-attest", "--ticket", claim["ticket"],
             "--lease", claim["lease"], "--receipt", receipt,
@@ -12569,7 +12572,10 @@ class Controller:
                 if pr.get("status") != "ready":
                     return {"status": "waiting", "ticket": claim["ticket"]}
                 if not self.request_protected_auto_merge(claim, receipt, pr):
-                    return {"status": "waiting", "ticket": claim["ticket"]}
+                    return {
+                        "status": "waiting", "ticket": claim["ticket"],
+                        "wait_reason": "publication-lease",
+                    }
                 return {"status": "progressed", "ticket": claim["ticket"]}
             if stage.startswith("AWAIT_DEPENDENCY"):
                 claim["status"] = "waiting"
@@ -13363,7 +13369,9 @@ class Controller:
                     results[claim["ticket"]] = item
                     if (
                         item.get("status") == "waiting"
-                        and item.get("wait_reason") == "pr-gate"
+                        and item.get("wait_reason") in {
+                            "pr-gate", "publication-lease",
+                        }
                         and futures
                     ):
                         retry_after[claim["ticket"]] = (

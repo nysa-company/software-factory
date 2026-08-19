@@ -1740,6 +1740,51 @@ else:
             self.attest("bundle").stderr,
         )
 
+    def test_disjoint_refresh_preserves_but_overlap_invalidates_review(self):
+        self.bundle()
+        updater = self.temp / "disjoint-main-update"
+        command("git", "clone", "-q", "--branch", "main", str(self.remote), str(updater))
+        (updater / "sibling.txt").write_text("unrelated protected change\n")
+        (updater / "factory/tickets/T-701.md").write_text("# T-701\n")
+        (updater / "factory/route-plans/T-701.json").write_text("{}\n")
+        ledger = updater / "factory/ledger.csv"
+        ledger.write_text(ledger.read_text() + (
+            "2026-08-19,00:00:00,T-701,narrator,mock,v1,1,0.000000,0,"
+            "sibling-run,anthropic,mock,pinned_route_plan,provider_reported,1\n"
+        ))
+        sibling_attestations = updater / "factory/attestations/T-701"
+        sibling_attestations.mkdir(parents=True)
+        (sibling_attestations / "done.json").write_text("{}\n")
+        command("git", "add", ".", cwd=updater)
+        command(
+            "git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+            "commit", "-qm", "merge unrelated sibling", cwd=updater,
+        )
+        command("git", "push", "-q", "origin", "main", cwd=updater)
+        self.update_state(merge_state="UNKNOWN")
+
+        refreshed = self.attest("refresh")
+        self.assertEqual(refreshed.returncode, 0, refreshed.stderr)
+        rebundled = self.attest("bundle")
+        self.assertEqual(rebundled.returncode, 0, rebundled.stderr)
+        attestation = json.loads(
+            (self.product / "factory/attestations/T-700/bundle.json").read_text()
+        )
+        self.assertEqual(attestation["reviewer_run_id"], "reviewer-1")
+        self.assertEqual(attestation["narrator_run_id"], "narrator-1")
+
+        (updater / "app.txt").write_text("reviewed code\n")
+        command("git", "add", ".", cwd=updater)
+        command(
+            "git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+            "commit", "-qm", "merge overlapping sibling", cwd=updater,
+        )
+        command("git", "push", "-q", "origin", "main", cwd=updater)
+        self.update_state(merge_state="UNKNOWN")
+        refreshed = self.attest("refresh")
+        self.assertEqual(refreshed.returncode, 0, refreshed.stderr)
+        self.assertIn("post-refresh Reviewer", self.attest("bundle").stderr)
+
     def test_control_only_refresh_invalidates_orphaned_review_lineage(self):
         tree = command(
             "git", "rev-parse", "HEAD^{tree}", cwd=self.product,
@@ -1889,6 +1934,9 @@ else:
         updater = self.temp / "approved-dependency-main-update"
         command("git", "clone", "-q", "--branch", "main", str(self.remote), str(updater))
         (updater / "dependency.txt").write_text("terminal dependency\n")
+        (updater / "factory/tickets/T-094.md").write_text(
+            "# T-094\n\nState: Done\n"
+        )
         command("git", "add", ".", cwd=updater)
         command(
             "git", "-c", "user.name=test", "-c", "user.email=test@example.com",
