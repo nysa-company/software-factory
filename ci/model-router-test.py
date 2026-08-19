@@ -175,18 +175,22 @@ class ModelRouterTest(unittest.TestCase):
         )
 
     def test_cursor_opus_default_uses_native_sonnet_fallback(self):
-        legacy = self.profile_map["cursor-balanced-v2"]["portfolios"][0]
-        opus = self.profile_map["cursor-opus-v1"]["portfolios"][0]
+        legacy = self.profile_map["cursor-opus-v1"]["portfolios"][0]
+        opus = self.profile_map["cursor-opus-v2"]["portfolios"][0]
         for role in ("planner", "builder", "narrator", "reviewer"):
             self.assertEqual(opus["roles"][role], legacy["roles"][role])
         for role in ("spec-linter", "test-author"):
+            self.assertEqual(
+                legacy["roles"][role]["candidates"],
+                ["cursor-claude-opus-5-thinking-medium", "claude-fable"],
+            )
             self.assertEqual(
                 opus["roles"][role]["candidates"],
                 ["cursor-claude-opus-5-thinking-medium", "claude-sonnet"],
             )
             self.assertEqual(opus["roles"][role]["effort"], "medium")
 
-        selected = self.resolve("cursor-opus-v1")["selections"]
+        selected = self.resolve("cursor-opus-v2")["selections"]
         for role in ("spec-linter", "test-author"):
             self.assertEqual(
                 selected[role]["route_id"],
@@ -195,7 +199,7 @@ class ModelRouterTest(unittest.TestCase):
 
         readiness = self.readiness()
         readiness["cursor-claude-opus-5-thinking-medium"]["state"] = "UNAVAILABLE"
-        fallback = self.resolve("cursor-opus-v1", readiness)["selections"]
+        fallback = self.resolve("cursor-opus-v2", readiness)["selections"]
         for role in ("spec-linter", "test-author"):
             self.assertEqual(fallback[role]["route_id"], "claude-sonnet")
 

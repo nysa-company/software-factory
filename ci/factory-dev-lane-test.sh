@@ -792,7 +792,7 @@ sed -n '/^product_probe_and_plan()/,/^}/p' "$LANE" |
   grep -F 'GLOBAL_DAILY_CAP_USD=%s' >/dev/null ||
   fail "fresh product planning does not derive the machine cap from its isolated envelope"
 sed -n '/^product_probe_and_plan()/,/^}/p' "$LANE" |
-  grep -F 'profile=cursor-opus-v1' >/dev/null ||
+  grep -F 'profile=cursor-opus-v2' >/dev/null ||
   fail "product planning does not use the approved Cursor-first profile"
 grep -Fq 'physical /private/tmp' "$LANE" &&
   grep -Fq 'tmp_parent="$(lane_tmp_parent)"' "$LANE" ||

@@ -6,7 +6,7 @@ role, what “fallback” means, and when the factory must stop.
 ## Default model order
 
 If the operator has not activated another profile, the factory uses
-`cursor-opus-v1`. Its primary and secondary routes are:
+`cursor-opus-v2`. Its primary and secondary routes are:
 
 | Role | Lane | Primary route | Secondary route | Effort |
 |---|---|---|---|---|

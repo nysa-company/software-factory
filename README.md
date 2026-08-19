@@ -20,7 +20,7 @@ This repository is public and dual-licensed: free under AGPL-3.0, or a paid comm
 ## Worker model portfolios
 
 There is no single global primary/secondary chain; each role has one. With no
-operator activation, `cursor-opus-v1` is the default:
+operator activation, `cursor-opus-v2` is the default:
 
 | Role | Primary | Secondary |
 |---|---|---|

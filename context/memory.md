@@ -7014,9 +7014,9 @@ Q42 proved that Cursor may prefix an Anthropic runtime identity with `Claude `
 even when the route catalog's canonical identity omits that presentation word.
 The Factory now derives that one exact alias for every allowlisted
 `claude-*` Cursor selection and tests every enabled Cursor route against every
-foreign route identity. The no-record `cursor-opus-v1` profile keeps Cursor
+foreign route identity. The no-record `cursor-opus-v2` profile keeps Cursor
 Opus primary but now uses native Sonnet, not Fable, as the Spec-linter and
-Test-author fallback. Historical profiles and already-pinned route plans are
+Test-author fallback. `cursor-opus-v1` and already-pinned route plans remain
 unchanged. Q42 remains frozen failed evidence.
 
 ## 2026-08-19 — Decision 509: Heartbeat shutdown outwaits bounded renewal
