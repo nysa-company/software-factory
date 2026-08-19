@@ -1320,19 +1320,16 @@ grep -Fq 'backend-only HTTP API' "$ROOT/roles/narrator.md" ||
 grep -Fq 'Deferred — publication visual gate' "$ROOT/roles/narrator.md" ||
   fail "Narrator cannot defer visual evidence to trusted publication"
 product_role_source="$(sed -n '/^product_role_run()/,/^product_transition_contract_blocked()/p' "$LANE")"
-printf '%s\n' "$product_role_source" |
-  grep -Fq 'Trusted host marker: FACTORY_DEV_PRLESS_EVIDENCE_V1' ||
+grep -Fq 'Trusted host marker: FACTORY_DEV_PRLESS_EVIDENCE_V1' \
+  <<<"$product_role_source" ||
   fail "development product runner did not supply the PR-less evidence marker"
-printf '%s\n' "$product_role_source" |
-  grep -Fq 'including a backend-only HTTP API' ||
+grep -Fq 'including a backend-only HTTP API' <<<"$product_role_source" ||
   fail "development product runner still excludes backend-only HTTP APIs"
-printf '%s\n' "$product_role_source" |
-  grep -Fq 'trusted publication gate must resolve every deferral before merge' ||
+grep -Fq 'trusted publication gate must resolve every deferral before merge' \
+  <<<"$product_role_source" ||
   fail "development Narrator does not preserve the publication visual gate"
-printf '%s\n' "$product_role_source" |
-  grep -Fq -- '--action qualification-backlog' &&
-  printf '%s\n' "$product_role_source" |
-    grep -Fq 'SPEC-LINT:[[:space:]]*FAIL' ||
+grep -Fq -- '--action qualification-backlog' <<<"$product_role_source" &&
+  grep -Fq 'SPEC-LINT:[[:space:]]*FAIL' <<<"$product_role_source" ||
   fail "qualification Spec-lint failure does not return directly to Backlog"
 for boundary in \
   'planner || "$role" == spec-linter' \
@@ -1689,17 +1686,15 @@ product_scheduler_source="$(sed -n '/^run_product_internal()/,/^product_export_p
 if grep -Fq 'subscription_provider_wait 120' <<<"$product_scheduler_source"; then
   fail "product lifecycle still waits for unrelated subscription providers"
 fi
-printf '%s\n' "$product_role_source" |
-  grep -Fq 'FACTORY_DEV_PROVIDER_WAIT_SECONDS=900' ||
+grep -Fq 'FACTORY_DEV_PROVIDER_WAIT_SECONDS=900' <<<"$product_role_source" ||
   fail "development product wait is not the bounded fifteen-minute policy"
-printf '%s\n' "$product_role_source" |
-  grep -Fq "latest quoted 'Reviewer round N signed detail' block" ||
+grep -Fq "latest quoted 'Reviewer round N signed detail' block" \
+  <<<"$product_role_source" ||
   fail "development repair roles are not bound to durable reviewer detail"
-printf '%s\n' "$product_role_source" |
-  grep -Fq '\$(git rev-parse --show-toplevel)/../../runtime/product-db/$ticket.env' ||
+grep -Fq '\$(git rev-parse --show-toplevel)/../../runtime/product-db/$ticket.env' \
+  <<<"$product_role_source" ||
   fail "product role instruction does not use a portable database path"
-if printf '%s\n' "$product_role_source" |
-   grep -Fq "source '\$root/runtime/product-db"; then
+if grep -Fq "source '\$root/runtime/product-db" <<<"$product_role_source"; then
   fail "product role instruction still exposes a physical lane path"
 fi
 seed_source="$(sed -n \
