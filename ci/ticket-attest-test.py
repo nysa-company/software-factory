@@ -1747,6 +1747,9 @@ else:
         (updater / "sibling.txt").write_text("unrelated protected change\n")
         (updater / "factory/tickets/T-701.md").write_text("# T-701\n")
         (updater / "factory/route-plans/T-701.json").write_text("{}\n")
+        sibling_receipts = updater / "factory/receipts/T-701"
+        sibling_receipts.mkdir(parents=True)
+        (sibling_receipts / "ready-1.json").write_text("{}\n")
         sibling_attestations = updater / "factory/attestations/T-701"
         sibling_attestations.mkdir(parents=True)
         (sibling_attestations / "done.json").write_text("{}\n")

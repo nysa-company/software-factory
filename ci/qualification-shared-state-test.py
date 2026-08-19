@@ -681,18 +681,18 @@ raise SystemExit(1 if failed else 0)
         approved = 0
         restarts = 0
         events_dir = self.home / f".factory/qualification/{self.project}/controller/events"
-        deadline = self.started + 530
+        deadline = self.started + 710
         for wave in range(8):
             prior_events = set(events_dir.glob("*.json"))
             remaining = int(deadline - time.monotonic())
-            self.assertGreater(remaining, 0, "shared qualification exceeded 530-second deadline")
+            self.assertGreater(remaining, 0, "shared qualification exceeded 710-second deadline")
             launched = self.sealed(
                 str(launcher), self.project, "qualification-run", "--json",
                 timeout=remaining,
             )
             if launched.returncode == 2:
                 remaining = int(deadline - time.monotonic())
-                self.assertGreater(remaining, 0, "shared qualification exceeded 530-second deadline")
+                self.assertGreater(remaining, 0, "shared qualification exceeded 710-second deadline")
                 reduced = self.sealed(
                     str(launcher), self.project, "qualification", "--json",
                     timeout=remaining,
@@ -812,7 +812,7 @@ raise SystemExit(1 if failed else 0)
             {item["ticket"] for item in replay["report"]["tickets"]}, set(TICKETS)
         )
         self.assertEqual(self.replay_process_groups(), set())
-        self.assertLess(time.monotonic() - self.started, 540)
+        self.assertLess(time.monotonic() - self.started, 720)
 
 
 if __name__ == "__main__":

@@ -14,6 +14,7 @@ TICKET_FILE = re.compile(r"factory/tickets/(T-[0-9]+)\.md")
 TICKET_ARTIFACT = re.compile(
     r"factory/(?:"
     r"tickets/(T-[0-9]+)(?:\.md|-bundle\.md|-evidence/[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.png)|"
+    r"receipts/(T-[0-9]+)/ready-[1-9][0-9]*\.json|"
     r"route-plans/(T-[0-9]+)\.json|"
     r"attestations/(T-[0-9]+)/(?:approval|bundle|dependency-refresh|done|refresh)\.json"
     r")"
