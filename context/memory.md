@@ -7041,3 +7041,14 @@ push once and treats a remote that already contains the local head as a
 successful lost response. Git's existing fast-forward or exact-lease guard
 still rejects any unsafe remote movement. Q43 stays frozen failed evidence and
 incurred no provider attempt.
+
+## 2026-08-19 — Decision 511: Test-author verification stays ticket-scoped
+
+Category: Reliability
+
+Q44 T-388 committed its valid focused acceptance tests, then spent the rest of
+its ninety-minute role window inside the product's broad local CI command and
+terminalized as `provider_failed`. Test-author now runs only the narrowest
+command covering its added or changed tests; protected CI and final
+certification own broad verification. Q44 stays frozen failed evidence. Its
+independent T-390 budget refusal is not waived by this repair.
