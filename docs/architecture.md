@@ -2247,6 +2247,8 @@ Planner, Builder, and Narrator use the selected portfolio's production family.
 Spec-linter, Test-author, and Reviewer use its distinct checking family.
 Test-author and Builder keep ticket-log bookkeeping in separate commits from
 test and implementation paths so product confinement checks remain composable.
+Test-author runs only the narrowest command covering its added or changed tests;
+protected CI and final certification own broad verification.
 Planner, Spec-linter, and Test-author independently evaluate exact generated
 fixture values from their frozen initializer or reset; an unproducible value
 or a repair scope excluding its required setup correction is a contract block.
