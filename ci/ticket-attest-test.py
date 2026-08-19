@@ -197,6 +197,21 @@ class TicketAttestTests(unittest.TestCase):
         self.assertEqual(result.stdout, passed.stdout)
         self.assertEqual(call.call_count, 2)
 
+    def test_post_push_pr_confirmation_waits_for_github_head_convergence(self):
+        head = "b" * 40
+        stale = {"headRefOid": "a" * 40}
+        current = {"headRefOid": head}
+        with (
+            patch.object(TICKET_ATTEST, "exact_pr", side_effect=[stale, current]) as exact,
+            patch.object(TICKET_ATTEST.time, "sleep") as sleep,
+        ):
+            result = TICKET_ATTEST.exact_pr_after_push(
+                "acme/product", "ticket/T-700", head,
+            )
+        self.assertEqual(result, current)
+        self.assertEqual(exact.call_count, 2)
+        sleep.assert_called_once_with(2)
+
     def test_successful_runs_use_canonical_worktree_ledger(self):
         canonical = self.temp / "canonical-product"
         canonical.mkdir()
