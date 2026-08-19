@@ -657,6 +657,25 @@ raise SystemExit(1 if failed else 0)
             approved += 1
         return approved
 
+    def refresh_base_paths(self, controller: Path) -> dict[str, list[str]]:
+        paths = {}
+        for claim_path in sorted((controller / "claims").glob("T-*.json")):
+            claim = json.loads(claim_path.read_text(encoding="utf-8"))
+            worktree = Path(claim["worktree"])
+            receipt = worktree / f"factory/attestations/{claim['ticket']}/refresh.json"
+            if not receipt.is_file():
+                continue
+            value = json.loads(receipt.read_text(encoding="utf-8"))
+            base = run(
+                "git", "merge-base", value["old_head"], value["base_head"],
+                cwd=worktree,
+            )
+            paths[claim["ticket"]] = run(
+                "git", "diff", "--name-status", "--no-renames", base,
+                value["base_head"], cwd=worktree,
+            ).splitlines()
+        return paths
+
     def test_shared_cohort_runs_through_real_sealed_qualification(self) -> None:
         result = subprocess.run(
             [
@@ -767,6 +786,7 @@ raise SystemExit(1 if failed else 0)
                 "provider_calls": sum(json.loads(
                     self.provider_calls.read_text(encoding="utf-8")
                 ).values()),
+                "refresh_base_paths": self.refresh_base_paths(events_dir.parent),
                 "results": [
                     {
                         "status": item.get("status"),
