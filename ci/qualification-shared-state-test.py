@@ -701,18 +701,6 @@ raise SystemExit(1 if failed else 0)
                 self.fail(f"qualification reduction failed: {reason}")
             self.assertIn(launched.returncode, (0, 3), launched.stdout + launched.stderr)
             replay = json.loads(launched.stdout)
-            print(json.dumps({
-                "elapsed_seconds": round(time.monotonic() - self.started, 3),
-                "phases": [
-                    {
-                        "elapsed_seconds": item["elapsed_seconds"],
-                        "name": item["name"],
-                    }
-                    for item in replay["phases"]
-                ],
-                "status": replay["status"],
-                "wave": wave + 1,
-            }, sort_keys=True), flush=True)
             new_events = [
                 json.loads(path.read_text(encoding="utf-8"))
                 for path in sorted(events_dir.glob("*.json")) if path not in prior_events
@@ -762,6 +750,34 @@ raise SystemExit(1 if failed else 0)
                     json.dumps(replay, sort_keys=True),
                 )
             approved += newly_approved
+            print(json.dumps({
+                "approved": newly_approved,
+                "elapsed_seconds": round(time.monotonic() - self.started, 3),
+                "events": [
+                    [item.get("ticket"), item.get("event")]
+                    for item in new_events
+                ],
+                "phases": [
+                    {
+                        "elapsed_seconds": item["elapsed_seconds"],
+                        "name": item["name"],
+                    }
+                    for item in replay["phases"]
+                ],
+                "provider_calls": sum(json.loads(
+                    self.provider_calls.read_text(encoding="utf-8")
+                ).values()),
+                "results": [
+                    {
+                        "status": item.get("status"),
+                        "ticket": item.get("ticket"),
+                        "wait_reason": item.get("wait_reason"),
+                    }
+                    for item in replay["controller"]["results"]
+                ],
+                "status": replay["status"],
+                "wave": wave + 1,
+            }, sort_keys=True), flush=True)
         else:
             self.fail("shared qualification did not converge")
         self.assertEqual(replay["status"], "green", json.dumps(replay, sort_keys=True))
