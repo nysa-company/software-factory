@@ -37,6 +37,11 @@ fail() {
   exit 1
 }
 
+grep -Fqx -- '- Keep failing-test commits test-only. Commit required ticket-log comments separately as bookkeeping-only commits; never mix `factory/tickets/` paths with test paths in one commit.' \
+  "$ROOT/roles/test-author.md" || fail "Test-author may mix ticket bookkeeping with tests"
+grep -Fqx -- '- Keep implementation commits implementation-only. Commit required ticket-log notes separately as bookkeeping-only commits; never mix `factory/tickets/` paths with implementation paths in one commit.' \
+  "$ROOT/roles/builder.md" || fail "Builder may mix ticket bookkeeping with implementation"
+
 assert_no_secret() {
   ! grep -Fq 'caller-secret-must-not-pass' "$1" ||
     fail "caller secret reached launcher output"
