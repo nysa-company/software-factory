@@ -245,6 +245,9 @@ baseline rule.
 
 ```bash
 # ~/.factory/global.env — no credentials in this file
+export CODEX_USD_PER_MTOK_IN="RATE"
+export CODEX_USD_PER_MTOK_CACHE="RATE"
+export CODEX_USD_PER_MTOK_OUT="RATE"
 export FACTORY_CURSOR_FALLBACK_ENABLED=0
 export AGENT_CLI_CREDENTIAL_STORE="EXACT_STORE_TOKEN"
 export CURSOR_AGENT_VERSION="EXACT_VERSION_TOKEN"
@@ -257,6 +260,12 @@ export CURSOR_OPENAI_USD_PER_MTOK_OUT="RATE"
 export CURSOR_ANTHROPIC_USD_PER_MTOK_IN="RATE"
 export CURSOR_ANTHROPIC_USD_PER_MTOK_OUT="RATE"
 ```
+
+Codex usage reports cached input as a subset of total input. The adapter prices
+that subset at the cache rate instead of charging it again at the full input
+rate. Known GPT-5.6 routes default to their published long-context rates; the
+three global keys override that complete bundle. Malformed or contradictory
+token counts keep the conservative reservation.
 
 `run-agent.sh` parses both configuration files as whitelisted `KEY=value`
 data. Shell commands, substitutions, and unsupported keys are rejected.

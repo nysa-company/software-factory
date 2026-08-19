@@ -107,13 +107,23 @@ STATUS="${STATUS:-0}"
 # — the wrapper then keeps its conservative full-budget reservation instead of
 # silently logging $0 against the caps.
 IN_TOK="$(printf '%s' "$OUT" | sed -n 's/.*"input_tokens"[: ]*\([0-9]*\).*/\1/p' | tail -n1)"
+CACHED_TOK="$(printf '%s' "$OUT" | sed -n 's/.*"cached_input_tokens"[: ]*\([0-9]*\).*/\1/p' | tail -n1)"
 OUT_TOK="$(printf '%s' "$OUT" | sed -n 's/.*"output_tokens"[: ]*\([0-9]*\).*/\1/p' | tail -n1)"
+CACHED_TOK="${CACHED_TOK:-0}"
+case "$MODEL" in
+  gpt-5.6-sol) DEFAULT_IN_RATE=5; DEFAULT_CACHE_RATE=0.5; DEFAULT_OUT_RATE=22.5;;
+  gpt-5.6-terra) DEFAULT_IN_RATE=2.5; DEFAULT_CACHE_RATE=0.25; DEFAULT_OUT_RATE=11.25;;
+  gpt-5.6-luna) DEFAULT_IN_RATE=1; DEFAULT_CACHE_RATE=0.1; DEFAULT_OUT_RATE=4.5;;
+  *) DEFAULT_IN_RATE=1.25; DEFAULT_CACHE_RATE=0.125; DEFAULT_OUT_RATE=10;;
+esac
 COST=""
-if [[ -n "$IN_TOK" && -n "$OUT_TOK" ]]; then
-  COST="$(awk -v i="$IN_TOK" -v o="$OUT_TOK" \
-    -v in_rate="${CODEX_USD_PER_MTOK_IN:-1.25}" \
-    -v out_rate="${CODEX_USD_PER_MTOK_OUT:-10}" \
-    'BEGIN{printf "%.4f", (i*in_rate + o*out_rate)/1000000}')"
+if [[ -n "$IN_TOK" && -n "$OUT_TOK" && "$CACHED_TOK" =~ ^[0-9]+$ ]] &&
+   awk -v i="$IN_TOK" -v c="$CACHED_TOK" 'BEGIN { exit !(c <= i) }'; then
+  COST="$(awk -v i="$IN_TOK" -v c="$CACHED_TOK" -v o="$OUT_TOK" \
+    -v in_rate="${CODEX_USD_PER_MTOK_IN:-$DEFAULT_IN_RATE}" \
+    -v cache_rate="${CODEX_USD_PER_MTOK_CACHE:-$DEFAULT_CACHE_RATE}" \
+    -v out_rate="${CODEX_USD_PER_MTOK_OUT:-$DEFAULT_OUT_RATE}" \
+    'BEGIN{printf "%.4f", ((i-c)*in_rate + c*cache_rate + o*out_rate)/1000000}')"
 else
   echo "WARNING: no token usage in codex output — wrapper will keep its conservative reservation. Reconcile with console." >&2
 fi
