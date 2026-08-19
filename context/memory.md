@@ -7001,4 +7001,7 @@ artifacts, overlap, deletion, rename, type or executable-mode change, unknown
 Factory state, malformed topology, and orphaned role lineage still require
 fresh evidence. The sealed three-ticket gate therefore keeps real refresh and
 reapproval while avoiding six redundant model calls and enforcing its
-540-second ceiling.
+540-second ceiling. Publication-lease waiters recheck only while a sibling
+worker is live, and a materialized refresh counts as progress; this collapses
+otherwise idle controller invocations without weakening serialized
+publication.

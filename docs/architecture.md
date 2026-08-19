@@ -190,6 +190,11 @@ restart, fallback, publication, closeout, and reduction composition; successor
 migration and terminal adoption remain covered by the fast component replay,
 and a frozen live cohort remains the release proof.
 
+Within one controller invocation, a ticket waiting on the serialized
+publication lease rechecks only while a sibling worker remains live. A
+materialized protected-base refresh counts as progress, so the refreshed ticket
+can continue to its next authenticated wait without another Doctor cycle.
+
 Recovered qualification responses surface durable blocked and budget claims,
 while exact route-migration waits remain empty so the sealed driver can apply
 the authorized migration. Publication acquire/release manager transitions,
