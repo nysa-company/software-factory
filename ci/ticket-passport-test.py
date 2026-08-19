@@ -413,7 +413,7 @@ class TicketPassportTest(unittest.TestCase):
         route = routes[selected["route_id"]]
         actual = {
             "gpt-5.6-sol-high": "GPT-5.6 Sol 1M High",
-            "claude-opus-5-thinking-medium": "Opus 5 300K Medium",
+            "claude-opus-5-thinking-medium": "Claude Opus 5 300K Medium",
         }.get(route["selection_id"], route["expected_reported_identity"])
         adapter = route["adapter"]
         output_path = self.product / f"factory/runs/{run_id}.out"
