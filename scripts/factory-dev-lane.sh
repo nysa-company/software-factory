@@ -3624,7 +3624,7 @@ CURSOR_ANTHROPIC_MODEL=claude-opus-5-thinking-medium
 EOF
   chmod 600 "$root/home/.factory/global.env"
   for ticket in "${PRODUCT_TICKETS[@]}"; do
-    profile=cursor-opus-v1
+    profile=cursor-opus-v2
     profile_hash="$(python3 - "$root/kit/scripts/model-routing/profiles-v1.json" "$profile" <<'PY'
 import hashlib, json, sys
 value=json.load(open(sys.argv[1], encoding="utf-8"))

@@ -247,9 +247,10 @@ for path in root.glob("*.meta"):
 print(count)
 PY
 )"
-if [[ "$STUBBORN_RC" -eq 0 && "$STUBBORN_ELAPSED" -lt 20 &&
+if [[ "$STUBBORN_RC" -eq 0 && "$STUBBORN_ELAPSED" -lt 90 &&
       "$STUBBORN_TERMINALS" -eq 1 &&
       ! -e "$PRODUCT/factory/runs/"*.wrapper &&
+      ! -e "$PRODUCT/factory/.dispatch-leases.lock" &&
       ! -e "$PRODUCT/factory/.active-runs/$SECOND_TICKET.planner.lock" ]]; then
   pass "nonresponsive heartbeat is killed within a bounded wait and terminalizes once"
 else
@@ -327,7 +328,7 @@ HEARTBEAT_IGNORE_READY="$TMP/heartbeat-ignore-started"
 HEARTBEAT_IGNORE_LOCK="$TMP/heartbeat-ignore.lock"
 HEARTBEAT_IGNORE_RENEW="$TMP/heartbeat-ignore.sh"
 printf '%s\n' '#!/usr/bin/env bash' \
-  'trap '\''rmdir "$HEARTBEAT_IGNORE_LOCK"; exit 143'\'' TERM' \
+  'trap '\''sleep 3; rmdir "$HEARTBEAT_IGNORE_LOCK"; exit 143'\'' TERM' \
   'mkdir "$HEARTBEAT_IGNORE_LOCK"' \
   'touch "$HEARTBEAT_IGNORE_READY"' \
   'while :; do sleep 1; done' > "$HEARTBEAT_IGNORE_RENEW"
@@ -345,9 +346,9 @@ for _try in $(seq 1 500); do
   sleep 0.02
 done
 kill -TERM -- "-$HEARTBEAT_IGNORE_PID" 2>/dev/null || true
-for _try in $(seq 1 100); do
+for _try in $(seq 1 50); do
   kill -0 "$HEARTBEAT_IGNORE_PID" 2>/dev/null || break
-  sleep 0.02
+  sleep 0.1
 done
 if kill -0 "$HEARTBEAT_IGNORE_PID" 2>/dev/null; then
   kill -KILL -- "-$HEARTBEAT_IGNORE_PID" 2>/dev/null || true

@@ -16,10 +16,14 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts/lib"))
+from cursor_model_identity import approved_reported_models
+
+
 STREAM = ROOT / "scripts/lib/cursor-stream.py"
 ADAPTER = ROOT / "scripts/adapters/cursor-anthropic.sh"
 VERDICT = ROOT / "scripts/lib/reviewer-verdict.py"
 RECONCILE = ROOT / "scripts/lib/reviewer-reconcile.py"
+CATALOG = ROOT / "scripts/model-routing/catalog-v1.json"
 
 
 class CursorStreamTest(unittest.TestCase):
@@ -611,6 +615,75 @@ class CursorStreamTest(unittest.TestCase):
                 )
                 self.assertEqual(refused.returncode, 11)
                 self.assertIn("unapproved model", refused.stderr)
+
+    def test_enabled_cursor_model_names_follow_provider_contract(self) -> None:
+        routes = [
+            route
+            for route in json.loads(CATALOG.read_text())["routes"]
+            if route["enabled"] and route["transport"] == "cursor-cli"
+        ]
+        self.assertEqual(
+            {route["provider_family"] for route in routes},
+            {"anthropic", "openai"},
+        )
+        for route in routes:
+            selection = route["selection_id"]
+            canonical = route["expected_reported_identity"]
+            approved = approved_reported_models(selection, canonical)
+            with self.subTest(route=route["route_id"]):
+                self.assertIn(selection, approved)
+                self.assertIn(canonical, approved)
+                if route["provider_family"] == "anthropic":
+                    family = selection.removeprefix("claude-").split("-", 1)[0]
+                    self.assertEqual(route["adapter"], "cursor-anthropic")
+                    self.assertTrue(selection.startswith("claude-"))
+                    self.assertTrue(canonical.startswith(f"{family.title()} "))
+                    self.assertIn(f"Claude {canonical}", approved)
+                else:
+                    self.assertEqual(route["adapter"], "cursor-openai")
+                    self.assertTrue(selection.startswith("gpt-"))
+                    self.assertTrue(canonical.startswith("GPT-"))
+
+    def test_enabled_cursor_runtime_names_remain_route_bound(self) -> None:
+        routes = [
+            route
+            for route in json.loads(CATALOG.read_text())["routes"]
+            if route["enabled"] and route["transport"] == "cursor-cli"
+        ]
+        identities = {
+            route["route_id"]: approved_reported_models(
+                route["selection_id"], route["expected_reported_identity"]
+            )
+            for route in routes
+        }
+        for route in routes:
+            for identity in identities[route["route_id"]]:
+                with self.subTest(route=route["route_id"], identity=identity):
+                    accepted = self.run_stream(
+                        [
+                            {"type": "system", "subtype": "init", "model": identity},
+                            {"type": "result", "subtype": "success"},
+                        ],
+                        0,
+                        model=route["selection_id"],
+                        reported_model=route["expected_reported_identity"],
+                    )
+                    self.assertEqual(accepted.returncode, 0, accepted.stderr)
+            foreign = set().union(*(
+                value for key, value in identities.items() if key != route["route_id"]
+            ))
+            for identity in foreign:
+                with self.subTest(route=route["route_id"], foreign=identity):
+                    refused = self.run_stream(
+                        [
+                            {"type": "system", "subtype": "init", "model": identity},
+                            {"type": "result", "subtype": "success"},
+                        ],
+                        0,
+                        model=route["selection_id"],
+                        reported_model=route["expected_reported_identity"],
+                    )
+                    self.assertEqual(refused.returncode, 11)
 
     def test_structured_events_create_sequenced_progress_evidence(self) -> None:
         result = self.run_stream(

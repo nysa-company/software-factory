@@ -220,7 +220,7 @@ ticket boundary, the first portfolio that resolves all six roles is selected.
 `INVALID` or `UNKNOWN` hard-stops; only `UNAVAILABLE` advances to another
 candidate or portfolio. Every portfolio declares distinct production and
 checking families. The operator activates a profile by approving its exact
-preview hash. Without an activation record, `cursor-opus-v1` is the
+preview hash. Without an activation record, `cursor-opus-v2` is the
 default; its OpenAI-production/Anthropic-checking split is profile policy, not
 a fixed architectural requirement. Contract 1.4 can append an
 operator-approved mid-ticket route revision after an eligible failed attempt;
@@ -2282,7 +2282,7 @@ sequencer authenticates that exact commit before Test-author, preserving
 test-before-implementation history. Planner's runtime PATH blocks package
 manager entry points so a contract-only repair cannot launch broad product
 suites; the protected CI and certification boundaries retain those suites.
-`cursor-opus-v1` is the no-record default. `cursor-balanced-v2`, `balanced-v2`,
+`cursor-opus-v2` is the no-record default. `cursor-balanced-v2`, `balanced-v2`,
 and `legacy-balanced-v1` remain available for compatibility with prior
 activation records and migrations.
 `balanced-v2`, `openai-priority-v1`, `claude-priority-v1`, and

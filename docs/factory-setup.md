@@ -438,7 +438,7 @@ provider state, ticket branches, or paid roles are created.
 - Review model policy through the sealed launcher. Run `models profiles --json`,
   preview the intended profile with `models plan [--profile <id>] --json`, and
   activate only with that profile's exact returned hash and an operator ID.
-  `cursor-opus-v1` is the no-record default.
+  `cursor-opus-v2` is the no-record default.
 
 - Create a separate sandbox product and sealed qualification environment. Do
   not copy production secrets, state, ledgers, or LaunchAgents. Run the native
@@ -468,7 +468,7 @@ All boxes checked = the factory may start. Any box unchecked = it may not.
 - [ ] Exact-SHA release exists under `~/.factory/kits/releases/`, is sealed read-only, and has a current, unexpired tuple-bound receipt
 - [ ] The active Contract 2 receipt and `active.json` remain owner-only mode `0600`; the receipt binds the exact project, product path/tree, Factory release, and single configured push destination
 - [ ] `~/.factory/bin/factory-launch`, the product-plan Node/npm/npx pins, and the receipt-bound exact provider CLI links are installed; `provider-cli-pin check` is ready, `contract --json` returns the expected version, `contract-test.sh --routes` passes, and `doctor --json` has no error category
-- [ ] `models profiles --json` and `models plan --json` were reviewed; the operator approved the exact profile hash, or explicitly retained default `cursor-opus-v1`
+- [ ] `models profiles --json` and `models plan --json` were reviewed; the operator approved the exact profile hash, or explicitly retained default `cursor-opus-v2`
 - [ ] A clean sample ticket passed `models pin --ticket <T-NNN> --workdir <exact-worktree> --json`, creating one pushed commit containing both `Kit-SHA` and the exact six-role route plan
 - [ ] Kimi remains disabled and absent from every profile; no live/billed-pilot claim is recorded, and credential rotation plus broker/OS isolation are prerequisites to a pilot
 - [ ] `active.json.product_path` is the sole product registry and the native controller LaunchAgent resolves only the installed Factory launcher

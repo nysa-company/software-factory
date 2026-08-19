@@ -934,9 +934,12 @@ stop_lease_heartbeat() {
     fi
     requested=1
     kill -TERM -- "-$LEASE_HEARTBEAT_PGID" 2>/dev/null || true
-    for _heartbeat_stop_try in $(seq 1 100); do
+    # The heartbeat's renewal subprocess has a 30-second hard timeout. Let that
+    # bounded child run its EXIT trap before escalating, or its mkdir lock can
+    # survive a group SIGKILL and block every later dispatcher operation.
+    for _heartbeat_stop_try in $(seq 1 350); do
       kill -0 "$LEASE_HEARTBEAT_PID" 2>/dev/null || break
-      sleep 0.02
+      sleep 0.1
     done
     if kill -0 "$LEASE_HEARTBEAT_PID" 2>/dev/null; then
       current_start="$(process_start_identity "$LEASE_HEARTBEAT_PID")"
