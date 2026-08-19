@@ -10,6 +10,14 @@ import sys
 
 SHA = re.compile(r"[0-9a-f]{40}")
 MIGRATION = re.compile(r"factory/migrations/inflight-release/[0-9a-f]{40}\.json")
+TICKET_FILE = re.compile(r"factory/tickets/(T-[0-9]+)\.md")
+TICKET_ARTIFACT = re.compile(
+    r"factory/(?:"
+    r"tickets/(T-[0-9]+)(?:\.md|-bundle\.md|-evidence/[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.png)|"
+    r"route-plans/(T-[0-9]+)\.json|"
+    r"attestations/(T-[0-9]+)/(?:approval|bundle|dependency-refresh|done|refresh)\.json"
+    r")"
+)
 MODIFIED_CONTROL = {"factory/KIT_PIN", "factory/QUALIFICATION.json"}
 
 
@@ -34,8 +42,28 @@ def regular_blob(repo, commit, path):
     return len(rows) == 1 and rows[0].startswith(f"100644 blob ") and rows[0].endswith(f"\t{path}")
 
 
+def ticket_dependencies(repo, commit, ticket):
+    value = git(repo, "show", f"{commit}:factory/tickets/{ticket}.md")
+    fields = re.findall(r"(?m)^Depends-On:\s*(\S(?:.*\S)?)\s*$", value.stdout)
+    if len(fields) > 1:
+        return None
+    if not fields or fields[0].casefold() == "none":
+        return set()
+    dependencies = [item.strip() for item in fields[0].split(",")]
+    if len(dependencies) != len(set(dependencies)) or any(
+        not re.fullmatch(r"T-[0-9]+", item) for item in dependencies
+    ):
+        return None
+    return set(dependencies)
+
+
+def ticket_artifact(path):
+    match = TICKET_ARTIFACT.fullmatch(path)
+    return next((ticket for ticket in match.groups() if ticket), None) if match else None
+
+
 def preserved_control_paths(repo, old_head, base_head):
-    """Return exact non-semantic paths, or None when review must be invalidated."""
+    """Return exact review-preserving base paths, or None when review changed."""
     if not SHA.fullmatch(old_head) or not SHA.fullmatch(base_head):
         raise ClassificationError("invalid protected-base identity")
     for commit in (old_head, base_head):
@@ -45,6 +73,24 @@ def preserved_control_paths(repo, old_head, base_head):
     if len(bases) != 1 or not SHA.fullmatch(bases[0]):
         raise ClassificationError("protected-base lineage is ambiguous")
     previous_base = bases[0]
+    ticket_paths = git(
+        repo, "diff", "--name-only", "-z", "--no-renames", previous_base, old_head,
+    ).stdout.split("\0")
+    if ticket_paths[-1:] == [""]:
+        ticket_paths.pop()
+    if len(ticket_paths) != len(set(ticket_paths)):
+        raise ClassificationError("ticket diff contains a duplicate path")
+    ticket_paths = set(ticket_paths)
+    ticket_ids = {
+        match.group(1) for path in ticket_paths
+        if (match := TICKET_FILE.fullmatch(path))
+    }
+    if len(ticket_ids) != 1:
+        return None
+    ticket_id = next(iter(ticket_ids))
+    dependencies = ticket_dependencies(repo, old_head, ticket_id)
+    if dependencies is None:
+        return None
     fields = git(
         repo, "diff", "--name-status", "-z", "--no-renames", previous_base, base_head,
     ).stdout.split("\0")
@@ -64,18 +110,26 @@ def preserved_control_paths(repo, old_head, base_head):
             if status != "A":
                 return None
         else:
-            return None
+            artifact = ticket_artifact(path)
+            if path.startswith("factory/") and (
+                artifact is None or artifact == ticket_id or artifact in dependencies
+            ):
+                return None
+            if (
+                path in ticket_paths
+                or status not in {"A", "M"}
+                or status == "M" and not regular_blob(repo, previous_base, path)
+            ):
+                return None
         if not regular_blob(repo, base_head, path):
             return None
     return paths
 
 
 def retained_control_paths(repo, head, base_head, paths):
-    """Return reviewed-range control paths that exactly match protected base."""
+    """Return reviewed-range base paths that still match protected main exactly."""
     retained = set()
     for path in paths:
-        if path not in MODIFIED_CONTROL and not MIGRATION.fullmatch(path):
-            continue
         if not regular_blob(repo, head, path) or not regular_blob(repo, base_head, path):
             continue
         head_blob = git(repo, "rev-parse", f"{head}:{path}").stdout.strip()

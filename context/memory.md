@@ -551,12 +551,15 @@ everything the Factory actually enforces lives here.
   passport migration and the durable pre-route pending marker on its next
   one-shot.
 - Contract 1.8 ticket-PR validation preserves Reviewer/Narrator evidence across
-  a control-only refresh only when the receipt-authorized stage, committed
-  direct-after-merge refresh topology, shared semantic classifier, and exact
-  retained protected-base blobs all agree. The latest effective Reviewer and
-  later Narrator must also belong to the receipt-bound old head; earlier
-  discarded-lineage rows remain auditable but do not disqualify a later valid
-  pair. Unknown and semantic changes still invalidate review.
+  a refresh only when the receipt-authorized stage, committed direct-after-merge
+  topology, shared semantic classifier, and exact retained protected-base blobs
+  all agree. Beyond the existing control allowlist, every imported path must be
+  an ordinary regular blob, disjoint from the reviewed ticket diff, and outside
+  unknown Factory state; only exact artifacts owned by a different ticket are
+  admitted under `factory/`. The latest effective Reviewer and later Narrator
+  must also belong to the receipt-bound old head. Overlap, deletion, type or
+  mode changes, unsafe shapes, unknown Factory paths, and discarded lineage
+  still invalidate review.
 - Ticket-PR publication and bundle attestation use one shared fail-closed
   classifier for post-review Narrator screenshots. It admits at most 32
   current-ticket regular PNG blobs of at most 2 MB whose complete chunk stream
@@ -6984,3 +6987,18 @@ and latches qualification before another role launch. A dirty failed cell is
 preserved as blocked evidence without attempting a clean passport export, so
 the external provider failure remains causal instead of becoming a secondary
 controller error. Q39 stays frozen failed evidence.
+
+## 2026-08-19 — Decision 507: Unchanged ticket diffs keep review across refresh
+
+Category: Reliability
+
+Protected-main movement no longer invalidates Reviewer and Narrator evidence
+when one shared fail-closed classifier proves that every imported change is an
+ordinary regular blob, disjoint from the reviewed ticket diff, and either a
+non-Factory path or an exact artifact owned by another ticket. Exact protected
+control files retain their prior narrow authority. Declared-dependency
+artifacts, overlap, deletion, rename, type or executable-mode change, unknown
+Factory state, malformed topology, and orphaned role lineage still require
+fresh evidence. The sealed three-ticket gate therefore keeps real refresh and
+reapproval while avoiding six redundant model calls and enforcing its
+540-second ceiling.

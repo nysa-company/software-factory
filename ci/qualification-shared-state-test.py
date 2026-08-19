@@ -267,7 +267,7 @@ class QualificationSharedStateTest(unittest.TestCase):
             encoding="utf-8",
         )
         (self.product / "factory/ENVELOPE.env").write_text(
-            "PER_RUN_BUDGET_USD=9.000000\n"
+            "PER_RUN_BUDGET_USD=10.000000\n"
             "PER_TICKET_BUDGET_USD=100.000000\n"
             "PER_RUN_MAX_TURNS=10\n"
             "PER_RUN_TIMEOUT_MIN=2\n"
@@ -681,18 +681,18 @@ raise SystemExit(1 if failed else 0)
         approved = 0
         restarts = 0
         events_dir = self.home / f".factory/qualification/{self.project}/controller/events"
-        deadline = self.started + 900
+        deadline = self.started + 530
         for _ in range(8):
             prior_events = set(events_dir.glob("*.json"))
             remaining = int(deadline - time.monotonic())
-            self.assertGreater(remaining, 0, "shared qualification exceeded 900-second deadline")
+            self.assertGreater(remaining, 0, "shared qualification exceeded 530-second deadline")
             launched = self.sealed(
                 str(launcher), self.project, "qualification-run", "--json",
                 timeout=remaining,
             )
             if launched.returncode == 2:
                 remaining = int(deadline - time.monotonic())
-                self.assertGreater(remaining, 0, "shared qualification exceeded 900-second deadline")
+                self.assertGreater(remaining, 0, "shared qualification exceeded 530-second deadline")
                 reduced = self.sealed(
                     str(launcher), self.project, "qualification", "--json",
                     timeout=remaining,
@@ -777,19 +777,14 @@ raise SystemExit(1 if failed else 0)
         }
         expected["T-902:builder:codex"] = 1
         for ticket in TICKETS:
-            refresh_count = sum(
-                event.get("ticket") == ticket
-                and event.get("event") in REFRESH_EVENTS
-                for event in events
-            )
-            expected[f"{ticket}:reviewer:agent"] = 1 + refresh_count
-            expected[f"{ticket}:narrator:agent"] = 1 + refresh_count
+            expected[f"{ticket}:reviewer:agent"] = 1
+            expected[f"{ticket}:narrator:agent"] = 1
         self.assertEqual(calls, expected)
         self.assertEqual(
             {item["ticket"] for item in replay["report"]["tickets"]}, set(TICKETS)
         )
         self.assertEqual(self.replay_process_groups(), set())
-        self.assertLess(time.monotonic() - self.started, 910)
+        self.assertLess(time.monotonic() - self.started, 540)
 
 
 if __name__ == "__main__":

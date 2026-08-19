@@ -173,14 +173,19 @@ component regression gate, not shared-state end-to-end qualification evidence;
 a frozen live cohort remains the release proof.
 
 A separate macOS shared-state gate runs only in an explicitly disposable OS
-account and has a 910-second deadline. It prepares one real sealed three-ticket
+account and has a 540-second deadline. It prepares one real sealed three-ticket
 qualification, supplies deterministic provider and GitHub behavior only at
 their external executable boundaries, and lets the production launcher,
 controller, state machine, passport, fallback/handoff, attestation, closeout,
 and reducer code create and consume one shared artifact chain. One ticket takes
 the Cursor-to-Codex Builder fallback, and serialized publication forces the
-remaining tickets through real protected-base refresh and reapproval. The gate
-never uses live credentials or provider inference. It proves fresh-cohort
+remaining tickets through real protected-base refresh and reapproval. When the
+imported protected changes are regular, ticket-scoped or non-Factory paths
+disjoint from the reviewed ticket diff, the shared classifier preserves the
+existing Reviewer and Narrator evidence; overlap, unsafe file shape, and
+unknown Factory state still invalidate it. Artifacts for a declared dependency
+remain related and also invalidate the evidence. The gate never uses live
+credentials or provider inference. It proves fresh-cohort
 restart, fallback, publication, closeout, and reduction composition; successor
 migration and terminal adoption remain covered by the fast component replay,
 and a frozen live cohort remains the release proof.
