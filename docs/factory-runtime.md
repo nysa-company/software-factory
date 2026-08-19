@@ -173,6 +173,8 @@ is not held to a version probe's deadline. A timeout or malformed readiness
 response remains a typed error report rather than breaking Doctor's JSON
 contract. Doctor never returns account data, credential values, command output,
 or credential-bearing URLs.
+Doctor's readiness window is 120 seconds, matching qualification preparation;
+individual cheap CLI probes keep their separate shorter bound.
 
 ## Qualification
 

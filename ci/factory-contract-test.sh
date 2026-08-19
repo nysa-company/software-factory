@@ -43,6 +43,8 @@ grep -Fqx -- '- Run only the narrowest existing command that executes the added 
   "$ROOT/roles/test-author.md" || fail "Test-author may run broad verification"
 grep -Fqx -- '- Keep implementation commits implementation-only. Commit required ticket-log notes separately as bookkeeping-only commits; never mix `factory/tickets/` paths with implementation paths in one commit.' \
   "$ROOT/roles/builder.md" || fail "Builder may mix ticket bookkeeping with implementation"
+grep -Fqx -- 'READINESS_TIMEOUT_SECONDS="${FACTORY_DOCTOR_READINESS_TIMEOUT_SECONDS:-120}"' \
+  "$DOCTOR" || fail "Doctor readiness timeout differs from qualification preparation"
 
 assert_no_secret() {
   ! grep -Fq 'caller-secret-must-not-pass' "$1" ||

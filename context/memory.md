@@ -7052,3 +7052,14 @@ terminalized as `provider_failed`. Test-author now runs only the narrowest
 command covering its added or changed tests; protected CI and final
 certification own broad verification. Q44 stays frozen failed evidence. Its
 independent T-390 budget refusal is not waived by this repair.
+
+## 2026-08-19 — Decision 512: Doctor outwaits qualification readiness
+
+Category: Reliability
+
+Q45 preparation produced the exact green fallback-readiness digest, but sealed
+Doctor killed the same healthy multi-route scan at its older 30-second default
+after the live CLI set took roughly 31–33 seconds. Doctor now uses the same
+120-second readiness bound as qualification preparation while retaining the
+shorter per-CLI probe bound. Q45 made no provider inference or ticket admission
+before this refusal.
