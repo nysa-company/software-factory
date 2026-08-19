@@ -164,7 +164,7 @@ jobs:
     name: macos-sealed-qualification
     needs: scope
     if: needs.scope.outputs.behavioral == 'true' && needs.scope.outputs.macos == 'true'
-    runs-on: macos-14
+    runs-on: macos-15-xlarge
     env:
       FACTORY_EPHEMERAL_QUALIFICATION_REPLAY: "1"
     steps:
