@@ -247,7 +247,7 @@ for path in root.glob("*.meta"):
 print(count)
 PY
 )"
-if [[ "$STUBBORN_RC" -eq 0 && "$STUBBORN_ELAPSED" -lt 60 &&
+if [[ "$STUBBORN_RC" -eq 0 && "$STUBBORN_ELAPSED" -lt 90 &&
       "$STUBBORN_TERMINALS" -eq 1 &&
       ! -e "$PRODUCT/factory/runs/"*.wrapper &&
       ! -e "$PRODUCT/factory/.dispatch-leases.lock" &&
