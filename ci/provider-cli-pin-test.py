@@ -137,7 +137,7 @@ exit 2
     def command(
         self, action: str, *, root: Path | None = None, approval: str = "", env=None,
         helper: Path | None = None, release: Path | None = None,
-        sha: str = SHA, tree: str = TREE,
+        sha: str = SHA, tree: str = TREE, stdin=None,
     ):
         candidate = root or self.vendor
         requested = release or self.release
@@ -157,7 +157,7 @@ exit 2
             command += ["--approve-hash", approval]
         return subprocess.run(
             command, capture_output=True, text=True, check=False,
-            env=env or self.env, timeout=30,
+            env=env or self.env, stdin=stdin, timeout=30,
         )
 
     def plan(self, root: Path | None = None) -> dict:
@@ -182,6 +182,34 @@ exit 2
         )
         for name in ("claude", "codex", "codex-code-mode-host", "agent"):
             self.assertEqual(os.readlink(self.factory / "bin" / name), str(self.vendor / name))
+
+    def test_check_is_independent_of_a_controlling_terminal(self) -> None:
+        codex = self.vendor / "codex"
+        codex.write_text(
+            "#!/bin/sh\n"
+            "if [ \"$1\" = --version ]; then echo 'codex-cli 0.147.0'; exit 0; fi\n"
+            "if [ \"$1\" = exec ] && [ \"$2\" = --help ]; then\n"
+            "  [ -t 0 ] && echo '--json --model terminal' || echo '--json --model'\n"
+            "  exit 0\n"
+            "fi\n"
+            "exit 2\n"
+        )
+        codex.chmod(0o755)
+        host = self.vendor / "codex-code-mode-host"
+        host.write_text(
+            "#!/bin/sh\n"
+            "[ -t 0 ] && echo '--listen terminal' || echo --listen\n"
+        )
+        host.chmod(0o755)
+        self.assertEqual(self.apply().returncode, 0)
+        master, slave = os.openpty()
+        try:
+            checked = self.command("check", stdin=slave)
+        finally:
+            os.close(slave)
+            os.close(master)
+        self.assertEqual(checked.returncode, 0, checked.stderr)
+        self.assertEqual(json.loads(checked.stdout)["status"], "ready")
 
     def test_codex_companion_is_required_and_receipt_bound(self) -> None:
         host = self.vendor / "codex-code-mode-host"

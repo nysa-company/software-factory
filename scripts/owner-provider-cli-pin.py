@@ -197,7 +197,10 @@ def probe(command: list[str], env: dict[str, str]) -> tuple[bytes, bytes]:
     version line.
     """
     try:
-        result = subprocess.run(command, capture_output=True, env=env, timeout=20)
+        result = subprocess.run(
+            command, capture_output=True, env=env, stdin=subprocess.DEVNULL,
+            timeout=20,
+        )
     except (OSError, subprocess.TimeoutExpired) as error:
         raise PinError("provider CLI probe failed") from error
     combined = result.stdout + result.stderr
