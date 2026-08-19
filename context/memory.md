@@ -6,7 +6,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 
 - Product-agnostic factory kit; product repositories carry only their factory state and CI integration.
 - Durable decisions use repository-local numbering beginning at Decision 1.
-- Stable operating truth lives in `docs/`; prompts, templates, and evidence stay colocated with consumers. The operator preflight hydrates only evidence-bound immutable objects, batches read-only object checks, aggregates activation blockers, and makes network review explicit before certification. Qualification validates selected remote branches and exact prior-cohort control retries before publication, shares protected dependency truth, counts only role-control evidence appended after its sealed product SHA, preserves one exact-head retry for a parked preview timeout, reacquires parked semantic or contract-repair authority only at apply, admits exact source-release receipt warnings to controller-owned migration, maintains idle successor leases during long roles, and does not rerun new-admission checks once its exact cohort is fully accounted for.
+- Stable operating truth lives in `docs/`; prompts, templates, and evidence stay colocated with consumers. Test-author and Builder ticket-log bookkeeping uses separate commits from test and implementation changes. The operator preflight hydrates only evidence-bound immutable objects, batches read-only object checks, aggregates activation blockers, and makes network review explicit before certification. Qualification validates selected remote branches and exact prior-cohort control retries before publication, shares protected dependency truth, counts only role-control evidence appended after its sealed product SHA, preserves one exact-head retry for a parked preview timeout, reacquires parked semantic or contract-repair authority only at apply, admits exact source-release receipt warnings to controller-owned migration, maintains idle successor leases during long roles, and does not rerun new-admission checks once its exact cohort is fully accounted for.
 - Failed-attempt preview, replay, and historical committed-role checks carry only unchanged tracked baseline symlinks whose tree, index, and filesystem targets agree; every added, removed, changed, staged, or untracked symlink remains fail-closed.
 - Successor qualification can preserve an exact source-passport checkpoint or descendant only through the protected in-flight release authorization; v2 binds each ticket's authenticated current source after a partial batch, migration never deletes or rewrites ticket work, and prior failed roles reopen only across an exact signed route-only migration suffix.
 - Isolated successor contract repair may use an older authenticated blocker only through its complete signed release suffix ending at the exact protected per-ticket source. Prior resume pairs remain immutable transition history and are accepted only as an ordered canonical sequence with one signed completed record per pair and one newest in-branch snapshot of the full sequence. Passport snapshots may omit ordinary descendant ticket commits, while Factory/base/route junctions remain exact. During or after prior-kit receipt migration, the driver admits its historical resume mismatch only while the exact blocked claim and transition digest bind that selected ticket and receipt; event observation order is not authority.
@@ -6961,3 +6961,13 @@ subtracts the cached subset from ordinary input and prices it through the
 allowlisted cache rate. Known GPT-5.6 routes use their published long-context
 rates by default; missing or contradictory usage remains conservative.
 Q32 stays frozen failed evidence.
+
+## 2026-08-19 — Decision 505: Role bookkeeping commits stay separate
+
+Category: Reliability
+
+Q37 proved that mixing a Test-author or Builder ticket-log update with its test
+or implementation path makes product confinement checks reject otherwise valid
+work. Both role contracts now require ticket-log notes in separate
+bookkeeping-only commits; the controller and authenticated history remain
+unchanged. Q37 stays frozen failed evidence.

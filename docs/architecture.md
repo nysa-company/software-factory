@@ -2229,6 +2229,8 @@ implemented; referenced and rollback-eligible releases are retained.
 
 Planner, Builder, and Narrator use the selected portfolio's production family.
 Spec-linter, Test-author, and Reviewer use its distinct checking family.
+Test-author and Builder keep ticket-log bookkeeping in separate commits from
+test and implementation paths so product confinement checks remain composable.
 Planner, Spec-linter, and Test-author independently evaluate exact generated
 fixture values from their frozen initializer or reset; an unproducible value
 or a repair scope excluding its required setup correction is a contract block.
