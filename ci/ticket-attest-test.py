@@ -1747,9 +1747,11 @@ else:
         (updater / "sibling.txt").write_text("unrelated protected change\n")
         (updater / "factory/tickets/T-701.md").write_text("# T-701\n")
         (updater / "factory/route-plans/T-701.json").write_text("{}\n")
-        sibling_receipts = updater / "factory/receipts/T-701"
-        sibling_receipts.mkdir(parents=True)
-        (sibling_receipts / "ready-1.json").write_text("{}\n")
+        ledger = updater / "factory/ledger.csv"
+        ledger.write_text(ledger.read_text() + (
+            "2026-08-19,00:00:00,T-701,narrator,mock,v1,1,0.000000,0,"
+            "sibling-run,anthropic,mock,pinned_route_plan,provider_reported,1\n"
+        ))
         sibling_attestations = updater / "factory/attestations/T-701"
         sibling_attestations.mkdir(parents=True)
         (sibling_attestations / "done.json").write_text("{}\n")
