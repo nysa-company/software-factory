@@ -7029,3 +7029,15 @@ the dispatcher lock. The renewed lease was durable but the shell EXIT trap
 never removed the lock, blocking later terminal cleanup. Heartbeat shutdown
 now outwaits the renewal subprocess's 30-second hard timeout before the same
 identity-checked force-kill. It does not reclaim or infer stale lock ownership.
+
+## 2026-08-19 — Decision 510: Ticket-state retries one unchanged remote push
+
+Category: Reliability
+
+Q43 proved that one transient Git push refusal could leave an exact clean
+fast-forward transition committed locally while the certified ticket remote
+remained unchanged. Ticket-state now retries that same no-force or exact-lease
+push once and treats a remote that already contains the local head as a
+successful lost response. Git's existing fast-forward or exact-lease guard
+still rejects any unsafe remote movement. Q43 stays frozen failed evidence and
+incurred no provider attempt.

@@ -286,11 +286,18 @@ if [[ -n "$EXPECTED_REMOTE_HEAD" ]]; then
   }
   PUSH_MODE=("--force-with-lease=refs/heads/$BRANCH:$EXPECTED_REMOTE_HEAD")
 fi
-git -C "$WORKDIR" push "${PUSH_MODE[@]}" -- "$PRODUCT_REMOTE" \
-  "$LOCAL_HEAD:refs/heads/$BRANCH" >/dev/null 2>&1 || {
-  echo "ticket-state remote compare-and-swap failed" >&2
-  exit 1
-}
+for attempt in 1 2; do
+  git -C "$WORKDIR" push "${PUSH_MODE[@]}" -- "$PRODUCT_REMOTE" \
+    "$LOCAL_HEAD:refs/heads/$BRANCH" >/dev/null 2>&1 && break
+  REMOTE_HEAD="$(git -C "$WORKDIR" ls-remote --heads -- "$PRODUCT_REMOTE" \
+    "refs/heads/$BRANCH" 2>/dev/null | awk 'NR==1 {print $1; exit}')"
+  [[ "$REMOTE_HEAD" == "$LOCAL_HEAD" ]] && break
+  [[ "$attempt" == "1" ]] || {
+    echo "ticket-state remote compare-and-swap failed" >&2
+    exit 1
+  }
+  sleep 1
+done
 REMOTE_HEAD="$(git -C "$WORKDIR" ls-remote --heads -- "$PRODUCT_REMOTE" \
   "refs/heads/$BRANCH" 2>/dev/null | awk 'NR==1 {print $1; exit}')"
 [[ "$REMOTE_HEAD" == "$LOCAL_HEAD" ]] || { echo "ticket-state remote verification failed" >&2; exit 1; }

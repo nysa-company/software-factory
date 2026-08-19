@@ -30,6 +30,10 @@ git -C "$PRODUCT" remote add origin "$REMOTE"
 git -C "$PRODUCT" push -q -u origin ticket/T-700
 cat > "$REMOTE/hooks/pre-receive" <<EOF
 #!/usr/bin/env bash
+if [[ -f '$TMP/reject-next-push' ]]; then
+  rm -f '$TMP/reject-next-push'
+  exit 1
+fi
 python3 - '$PRODUCT/factory/operator-map.json' '$TMP/volatile-refreshed' <<'PY'
 import json, sys
 from pathlib import Path
@@ -106,8 +110,10 @@ import json, sys
 assert "operator" not in json.load(open(sys.argv[1]))["tickets"]["T-700"]
 PY
 
+touch "$TMP/reject-next-push"
 ticket_state \
   --ticket T-700 --workdir "$PRODUCT" --action transition --state Planning >/dev/null
+[[ ! -e "$TMP/reject-next-push" ]]
 grep -q '^State: Planning$' "$PRODUCT/factory/tickets/T-700.md"
 # Keep the integration boundary on the active contract; the pure policy matrix
 # separately exercises every Resume-State contract retained by the writer.
