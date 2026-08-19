@@ -163,6 +163,10 @@ case "${1:-}" in
     [[ "${2:-}" == "status" ]] && exit 0 ;;
   -p)
     [[ -z "${FACTORY_TEST_TRACE:-}" ]] || echo "claude-task" >> "$FACTORY_TEST_TRACE"
+    if [[ "${STUB_CLAUDE_SPEND_LIMIT:-0}" == "1" ]]; then
+      echo '{"type":"result","subtype":"success","is_error":true,"stop_reason":"stop_sequence","terminal_reason":"api_error","api_error_status":429,"result":"You have reached your individual spend limit because account credit is exhausted","num_turns":4,"total_cost_usd":0.389103}'
+      exit 1
+    fi
     echo '{"type":"result","num_turns":2,"total_cost_usd":0.10}'
     exit "${STUB_CLAUDE_STATUS:-0}"
     ;;
@@ -1591,6 +1595,49 @@ if [[ "$PINNED_STATUS" -eq 0 && -n "$PINNED_META" &&
 else
   fail "profile changes do not affect pinned runs and manifests record provenance" \
     "status=$PINNED_STATUS probes=$(cat "$PINNED_PROBE_TRACE")"
+fi
+
+SPEND_LIMIT="$TMP/provider-spend-limit"
+write_envelope "$SPEND_LIMIT"
+write_ticket "$SPEND_LIMIT" T-220
+SPEND_LIMIT_REMOTE="$TMP/provider-spend-limit-origin.git"
+git init --bare -q "$SPEND_LIMIT_REMOTE"
+git -C "$SPEND_LIMIT" add .gitignore factory/tickets/T-220.md
+git -C "$SPEND_LIMIT" -c user.name=test -c user.email=test@example.com \
+  commit -qm "Add spend-limit ticket"
+git -C "$SPEND_LIMIT" remote add origin "$SPEND_LIMIT_REMOTE"
+git -C "$SPEND_LIMIT" push -qu origin HEAD
+SPEND_LIMIT_PLAN="$SPEND_LIMIT/factory/route-plans/T-220.json"
+python3 "$ROOT/scripts/model-manager.py" pin \
+  --state-root "$PINNED_STATE" --project pinned-test \
+  --ticket T-220 --kit-sha "$KIT_SHA" \
+  --resolution-file "$PROFILE_PLAN" --output "$SPEND_LIMIT_PLAN" >/dev/null
+git -C "$SPEND_LIMIT" add "$SPEND_LIMIT_PLAN"
+git -C "$SPEND_LIMIT" -c user.name=test -c user.email=test@example.com \
+  commit -qm "Pin spend-limit route"
+git -C "$SPEND_LIMIT" push -q
+SPEND_LIMIT_STATUS=0
+SPEND_LIMIT_ERR="$TMP/provider-spend-limit.err"
+PATH="$STUB_BIN:$PATH" FACTORY_ROOT="$SPEND_LIMIT" \
+  FACTORY_GLOBAL_ENV="$PINNED_READY_GLOBAL" \
+  FACTORY_MODEL_STATE_ROOT="$PINNED_STATE" FACTORY_PROJECT=pinned-test \
+  FACTORY_CERTIFIED_PRODUCT_ORIGIN="$SPEND_LIMIT_REMOTE" \
+  FACTORY_TEST_ENFORCE_ROLE_EXIT=1 \
+  STUB_CLAUDE_SPEND_LIMIT=1 \
+  "$RUN_AGENT" --role planner --ticket T-220 -- "spend limit" \
+  >/dev/null 2>"$SPEND_LIMIT_ERR" ||
+  SPEND_LIMIT_STATUS=$?
+SPEND_LIMIT_META="$(ls "$SPEND_LIMIT/factory/runs/"*.meta 2>/dev/null || true)"
+if [[ "$SPEND_LIMIT_STATUS" -eq 1 && -n "$SPEND_LIMIT_META" ]] &&
+   grep -q '^task_submitted=1$' "$SPEND_LIMIT_META" &&
+   grep -q '^role_exit=provider_failed$' "$SPEND_LIMIT_META" &&
+   grep -q '^terminal_reason_code=provider_spend_limit$' "$SPEND_LIMIT_META" &&
+   grep -q '^accounting_state=completed$' "$SPEND_LIMIT_META" &&
+   grep -q '^effective_cost=0.389103$' "$SPEND_LIMIT_META"; then
+  pass "Claude individual spend limit is typed without losing accounting"
+else
+  fail "Claude individual spend limit is typed without losing accounting" \
+    "status=$SPEND_LIMIT_STATUS error=$(sed -n '1p' "$SPEND_LIMIT_ERR") reason=$(sed -n 's/^terminal_reason_code=//p' "$SPEND_LIMIT_META") accounting=$(sed -n 's/^accounting_state=//p' "$SPEND_LIMIT_META") cost=$(sed -n 's/^effective_cost=//p' "$SPEND_LIMIT_META")"
 fi
 
 # A non-task UNAVAILABLE probe selects family-matched Cursor before reservation.

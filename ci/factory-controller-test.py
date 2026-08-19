@@ -16516,6 +16516,66 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(calls, ["terminal-accounting", "finish"])
         self.assertEqual(parked, ["T-110"])
 
+    def test_qualification_spend_limit_latches_and_preserves_dirty_failure(
+        self,
+    ) -> None:
+        controller = CONTROL.Controller(self.args)
+        controller.qualification = {"tickets": ["T-110"]}
+        claim = {
+            "branch": "ticket/T-110",
+            "lease": "a" * 64,
+            "publication_lease": "",
+            "receipt": "b" * 64,
+            "role": "test-author",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "running",
+            "ticket": "T-110",
+            "worktree": str(self.root / "cell-1"),
+        }
+        terminal = {
+            "accounting_state": "completed",
+            "exit_status": "1",
+            "go_issued": "1",
+            "role_exit": "provider_failed",
+            "route_id": "claude-fable",
+            "run_id": "spend-limit",
+            "task_submitted": "1",
+            "terminal_reason_code": "provider_spend_limit",
+        }
+        calls = []
+        controller.ensure_lease = lambda *_args: None
+        controller.role_active = lambda _claim: False
+        controller.terminal_for_receipt = lambda *_args: terminal
+        controller.emit_attempt_terminal = lambda *_args: calls.append("terminal")
+        controller.cell_git = lambda *_args: subprocess.CompletedProcess(
+            [], 0, " M apps/web/tests/example.test.tsx\0", ""
+        )
+        controller.passport = lambda *_args: (
+            (_ for _ in ()).throw(AssertionError("dirty failure checkpointed"))
+        )
+        controller.archive_emergency_admission = lambda *_args: None
+        controller.save_claim = lambda *_args: calls.append("save")
+        controller.release_ticket_lease = lambda *_args: calls.append("release")
+        controller.passport_sha256 = lambda *_args: "c" * 64
+        controller.event = (
+            lambda name, _ticket, **details: calls.append((name, details))
+        )
+        controller.park_claim = lambda *_args: calls.append("park") or False
+        controller.settle_recovery_attempt = lambda *_args: False
+
+        result = controller.reconcile_ticket_until_wait(claim)
+
+        self.assertEqual(result, {"status": "blocked", "ticket": "T-110"})
+        self.assertTrue(controller.qualification_cohort_error.is_set())
+        self.assertEqual(claim["blocked_reason"], "role-failure")
+        self.assertIn("release", calls)
+        self.assertIn("park", calls)
+        blocked = next(item for item in calls if isinstance(item, tuple))
+        self.assertEqual(blocked[0], "role_blocked")
+        self.assertEqual(
+            blocked[1]["terminal_reason_code"], "provider_spend_limit"
+        )
+
     def test_scheduler_tracks_each_concurrent_ticket_once(self) -> None:
         import threading
 

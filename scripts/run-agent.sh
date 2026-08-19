@@ -3200,6 +3200,19 @@ elif [[ "$ROLE_EXIT_ENFORCED" -eq 1 ]]; then
   fi
 fi
 
+if [[ "$ROLE_OUTPUT_VALID" -eq 1 &&
+      "$TASK_SUBMITTED" -eq 1 &&
+      "$ADAPTER" == "claude-code" &&
+      "$ROLE_EXIT_STATUS" == "provider_failed" &&
+      -z "$TERMINAL_REASON_CODE" ]]; then
+  CLASSIFIED_TERMINAL_REASON="$(python3 \
+    "$KIT_DIR/scripts/lib/role_output.py" terminal-reason-code \
+    "$RUNS_DIR/$RUN_ID.out" "$ADAPTER" 2>/dev/null || true)"
+  if [[ "$CLASSIFIED_TERMINAL_REASON" == "provider_spend_limit" ]]; then
+    TERMINAL_REASON_CODE="$CLASSIFIED_TERMINAL_REASON"
+  fi
+fi
+
 METRICS_LINE=""
 if [[ "$ROLE_OUTPUT_VALID" -eq 1 ]]; then
   METRICS_LINE="$(tail -n1 "$RUNS_DIR/$RUN_ID.out")"

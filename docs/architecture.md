@@ -876,6 +876,12 @@ qualification cohort, the first controller or worker error latches the whole
 cohort: launchers admitted before the latch terminalize for accounting, but
 the latch and the final process-launch boundary are atomic so no sibling may
 start another role afterward. Production rolling lanes remain ticket-isolated.
+The Claude adapter also classifies only its strict submitted 429 result shape
+with the bounded `individual spend limit` reason. Qualification latches that
+typed, accounted `provider_failed` terminal at the same launch boundary. A
+dirty failure cell remains blocked evidence and is not exported as a clean
+passport checkpoint, so the provider failure cannot be replaced by a
+secondary clean-cell controller error.
 The controller
 serializes only protected-base Git mutations because disposable
 cells share one Git common directory. Refresh proves staleness from the exact
