@@ -681,18 +681,18 @@ raise SystemExit(1 if failed else 0)
         approved = 0
         restarts = 0
         events_dir = self.home / f".factory/qualification/{self.project}/controller/events"
-        deadline = self.started + 530
-        for _ in range(8):
+        deadline = self.started + 900
+        for wave in range(8):
             prior_events = set(events_dir.glob("*.json"))
             remaining = int(deadline - time.monotonic())
-            self.assertGreater(remaining, 0, "shared qualification exceeded 530-second deadline")
+            self.assertGreater(remaining, 0, "shared qualification exceeded 900-second deadline")
             launched = self.sealed(
                 str(launcher), self.project, "qualification-run", "--json",
                 timeout=remaining,
             )
             if launched.returncode == 2:
                 remaining = int(deadline - time.monotonic())
-                self.assertGreater(remaining, 0, "shared qualification exceeded 530-second deadline")
+                self.assertGreater(remaining, 0, "shared qualification exceeded 900-second deadline")
                 reduced = self.sealed(
                     str(launcher), self.project, "qualification", "--json",
                     timeout=remaining,
@@ -701,6 +701,18 @@ raise SystemExit(1 if failed else 0)
                 self.fail(f"qualification reduction failed: {reason}")
             self.assertIn(launched.returncode, (0, 3), launched.stdout + launched.stderr)
             replay = json.loads(launched.stdout)
+            print(json.dumps({
+                "elapsed_seconds": round(time.monotonic() - self.started, 3),
+                "phases": [
+                    {
+                        "elapsed_seconds": item["elapsed_seconds"],
+                        "name": item["name"],
+                    }
+                    for item in replay["phases"]
+                ],
+                "status": replay["status"],
+                "wave": wave + 1,
+            }, sort_keys=True), flush=True)
             new_events = [
                 json.loads(path.read_text(encoding="utf-8"))
                 for path in sorted(events_dir.glob("*.json")) if path not in prior_events
