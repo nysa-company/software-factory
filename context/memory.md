@@ -7005,3 +7005,27 @@ reapproval while avoiding six redundant model calls and enforcing its
 worker is live, and a materialized refresh counts as progress; this collapses
 otherwise idle controller invocations without weakening serialized
 publication.
+
+## 2026-08-19 — Decision 508: Cursor provider names stay route-bound
+
+Category: Model policy
+
+Q42 proved that Cursor may prefix an Anthropic runtime identity with `Claude `
+even when the route catalog's canonical identity omits that presentation word.
+The Factory now derives that one exact alias for every allowlisted
+`claude-*` Cursor selection and tests every enabled Cursor route against every
+foreign route identity. The no-record `cursor-opus-v1` profile keeps Cursor
+Opus primary but now uses native Sonnet, not Fable, as the Spec-linter and
+Test-author fallback. Historical profiles and already-pinned route plans are
+unchanged. Q42 remains frozen failed evidence.
+
+## 2026-08-19 — Decision 509: Heartbeat shutdown outwaits bounded renewal
+
+Category: Reliability
+
+Q42 also proved that a role wrapper could force-kill its dispatcher heartbeat
+after two seconds while the heartbeat's already-bounded renewal still owned
+the dispatcher lock. The renewed lease was durable but the shell EXIT trap
+never removed the lock, blocking later terminal cleanup. Heartbeat shutdown
+now outwaits the renewal subprocess's 30-second hard timeout before the same
+identity-checked force-kill. It does not reclaim or infer stale lock ownership.

@@ -174,7 +174,7 @@ class ModelRouterTest(unittest.TestCase):
             {role: self.resolve("balanced-v2")["selections"][role]["route_id"] for role in ROUTER.ROLES},
         )
 
-    def test_cursor_opus_default_preserves_legacy_profile_and_native_fallback(self):
+    def test_cursor_opus_default_uses_native_sonnet_fallback(self):
         legacy = self.profile_map["cursor-balanced-v2"]["portfolios"][0]
         opus = self.profile_map["cursor-opus-v1"]["portfolios"][0]
         for role in ("planner", "builder", "narrator", "reviewer"):
@@ -182,7 +182,7 @@ class ModelRouterTest(unittest.TestCase):
         for role in ("spec-linter", "test-author"):
             self.assertEqual(
                 opus["roles"][role]["candidates"],
-                ["cursor-claude-opus-5-thinking-medium", "claude-fable"],
+                ["cursor-claude-opus-5-thinking-medium", "claude-sonnet"],
             )
             self.assertEqual(opus["roles"][role]["effort"], "medium")
 
@@ -197,7 +197,7 @@ class ModelRouterTest(unittest.TestCase):
         readiness["cursor-claude-opus-5-thinking-medium"]["state"] = "UNAVAILABLE"
         fallback = self.resolve("cursor-opus-v1", readiness)["selections"]
         for role in ("spec-linter", "test-author"):
-            self.assertEqual(fallback[role]["route_id"], "claude-fable")
+            self.assertEqual(fallback[role]["route_id"], "claude-sonnet")
 
     def test_hashes_and_resolution_are_deterministic(self):
         profile = self.profile_map["legacy-balanced-v1"]
