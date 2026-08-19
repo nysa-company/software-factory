@@ -811,8 +811,9 @@ esac
             "if [ \"${1:-}\" = --version ]; then\n"
             "  echo 'codex-cli 0.144.1'\n"
             "else\n"
-            "  printf '{\"input_tokens\":%s,\"output_tokens\":%s}\\n' "
+            "  printf '{\"input_tokens\":%s,\"cached_input_tokens\":%s,\"output_tokens\":%s}\\n' "
             "\"${STUB_CODEX_INPUT_TOKENS:-10}\" "
+            "\"${STUB_CODEX_CACHED_INPUT_TOKENS:-0}\" "
             "\"${STUB_CODEX_OUTPUT_TOKENS:-4}\"\n"
             "fi\n"
         )
@@ -856,6 +857,24 @@ esac
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn('"input_tokens":10', result.stdout)
+        cached_command = list(command)
+        cached_command[cached_command.index("--budget") + 1] = "10"
+        cached_command[cached_command.index("--model") + 1] = "gpt-5.6-terra"
+        cached = subprocess.run(
+            cached_command,
+            text=True,
+            capture_output=True,
+            check=False,
+            env={
+                **environment,
+                "STUB_CODEX_INPUT_TOKENS": "8098204",
+                "STUB_CODEX_CACHED_INPUT_TOKENS": "7935232",
+                "STUB_CODEX_OUTPUT_TOKENS": "32434",
+            },
+            timeout=10,
+        )
+        self.assertEqual(cached.returncode, 0, cached.stdout + cached.stderr)
+        self.assertIn("turns=1 cost_usd=2.7561", cached.stdout)
         over_budget = subprocess.run(
             command,
             text=True,

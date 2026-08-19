@@ -6949,3 +6949,15 @@ release bounds remain unchanged; KILL and MAINTENANCE still win after the wait.
 Controller failure cleanup records deferred cleanup and cannot replace the
 causal reconciliation error with a secondary empty-lease refusal. Q31 remains
 frozen failed evidence and cannot qualify the release.
+
+## 2026-08-19 — Decision 504: Codex cached input is priced once
+
+Category: Reliability
+
+Q32 proved that Codex's cumulative `input_tokens` includes its separately
+reported `cached_input_tokens`. Pricing the full input count at the uncached
+rate falsely rejected a successful Narrator as over budget. The adapter now
+subtracts the cached subset from ordinary input and prices it through the
+allowlisted cache rate. Known GPT-5.6 routes use their published long-context
+rates by default; missing or contradictory usage remains conservative.
+Q32 stays frozen failed evidence.
