@@ -984,6 +984,56 @@ class TicketPassportTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "8388608-byte limit"):
             PASSPORT.run_evidence(self.product / "factory", "T-110")
 
+    def test_claude_spend_limit_reason_is_strict(self) -> None:
+        output = self.product / "factory/runs/claude-spend-limit.out"
+        incident = {
+            "api_error_status": 429,
+            "is_error": True,
+            "result": (
+                "You've reached your individual spend limit because account "
+                "credit is exhausted"
+            ),
+            "stop_reason": "stop_sequence",
+            "subtype": "success",
+            "terminal_reason": "api_error",
+            "type": "result",
+        }
+
+        def classify(value, *, adapter="claude-code", extra=""):
+            output.write_text(
+                json.dumps(value, separators=(",", ":"))
+                + "\nturns=4 cost_usd=0.389103\n"
+                + extra,
+                encoding="utf-8",
+            )
+            os.chmod(output, 0o600)
+            return ROLE_OUTPUT.terminal_reason_code(output, adapter)
+
+        self.assertEqual(classify(incident), "provider_spend_limit")
+        self.assertEqual(classify(incident, adapter="codex"), "")
+        for changed in (
+            {**incident, "api_error_status": True},
+            {**incident, "api_error_status": "429"},
+            {**incident, "is_error": False},
+            {**incident, "terminal_reason": "rate_limit"},
+            {**incident, "result": "You've hit an ordinary rate limit"},
+            {**incident, "result": {"message": incident["result"]}},
+        ):
+            self.assertEqual(classify(changed), "")
+        self.assertEqual(classify(incident, extra="{}\n"), "")
+        output.write_text(
+            '{"type":"result","type":"result","subtype":"success",'
+            '"is_error":true,"stop_reason":"stop_sequence",'
+            '"terminal_reason":"api_error","api_error_status":429,'
+            f'"result":{json.dumps(incident["result"])}' + "}\n"
+            "turns=4 cost_usd=0.389103\n",
+            encoding="utf-8",
+        )
+        os.chmod(output, 0o600)
+        self.assertEqual(
+            ROLE_OUTPUT.terminal_reason_code(output, "claude-code"), ""
+        )
+
     def test_run_agent_terminalizes_oversized_role_output(self) -> None:
         factory_sha = run("git", "rev-parse", "HEAD", cwd=ROOT)
         release = self.root / "release"

@@ -11191,6 +11191,17 @@ class Controller:
             self.save_claim(claim)
             return True
         self.emit_attempt_terminal(claim, terminal)
+        qualification_spend_limit = bool(
+            self.qualification
+            and terminal.get("accounting_state") in TERMINAL_ACCOUNTING
+            and terminal.get("go_issued") == "1"
+            and terminal.get("task_submitted") == "1"
+            and terminal.get("exit_status") != "0"
+            and terminal.get("role_exit") == "provider_failed"
+            and terminal.get("terminal_reason_code") == "provider_spend_limit"
+        )
+        if qualification_spend_limit:
+            self.latch_qualification_cohort_error()
         if self.repository_test:
             if (
                 claim.get("role") == "planner"
@@ -11277,15 +11288,26 @@ class Controller:
             )
             return False
         if not qualification_fallback:
-            if self.terminal_already_exported(claim, terminal):
-                self.migrate_passport(claim, publication)
-                self.event(
-                    "terminal_export_recovered", claim["ticket"],
-                    run_id=terminal.get("run_id"),
+            dirty_spend_limit = False
+            if qualification_spend_limit:
+                status = self.cell_git(
+                    claim, "status", "--porcelain=v1", "-z",
                 )
-            else:
-                self.passport(claim, publication)
-            self.archive_emergency_admission(claim, terminal)
+                if status.returncode:
+                    raise ControllerError(
+                        "provider spend-limit cell status is unavailable"
+                    )
+                dirty_spend_limit = bool(status.stdout)
+            if not dirty_spend_limit:
+                if self.terminal_already_exported(claim, terminal):
+                    self.migrate_passport(claim, publication)
+                    self.event(
+                        "terminal_export_recovered", claim["ticket"],
+                        run_id=terminal.get("run_id"),
+                    )
+                else:
+                    self.passport(claim, publication)
+                self.archive_emergency_admission(claim, terminal)
         if (
             terminal.get("accounting_state") in {"cancelled", "cancelled_conservative"}
             or terminal.get("role_exit") == "cancelled"

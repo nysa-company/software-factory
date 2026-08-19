@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import os
 from pathlib import Path
+import re
 import secrets
 import stat
 import sys
@@ -86,6 +88,101 @@ def sha256(path: Path) -> str:
         os.close(descriptor)
 
 
+def _stable_bytes(path: Path) -> bytes:
+    descriptor = os.open(path, FILE_FLAGS)
+    try:
+        before = os.fstat(descriptor)
+        _validate_file(before, path, 0o600)
+        chunks = []
+        total = 0
+        while chunk := os.read(descriptor, CHUNK_BYTES):
+            total += len(chunk)
+            if total > MAX_BYTES:
+                raise RoleOutputTooLarge(
+                    f"role output exceeds {MAX_BYTES}-byte limit"
+                )
+            chunks.append(chunk)
+        after = os.fstat(descriptor)
+        _validate_file(after, path, 0o600)
+        if (
+            total != before.st_size
+            or (
+                before.st_dev,
+                before.st_ino,
+                before.st_size,
+                before.st_mtime_ns,
+                before.st_ctime_ns,
+            )
+            != (
+                after.st_dev,
+                after.st_ino,
+                after.st_size,
+                after.st_mtime_ns,
+                after.st_ctime_ns,
+            )
+        ):
+            raise RoleOutputError(f"role output changed while reading: {path.name}")
+        return b"".join(chunks)
+    finally:
+        os.close(descriptor)
+
+
+def terminal_reason_code(path: Path, adapter: str) -> str:
+    """Classify one exact, bounded provider terminal without copying its text."""
+    if adapter != "claude-code":
+        return ""
+
+    def unique_object(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError("duplicate JSON key")
+            value[key] = item
+        return value
+
+    try:
+        lines = _stable_bytes(path).decode("utf-8").splitlines()
+        if (
+            len(lines) != 2
+            or re.fullmatch(
+                r"turns=[0-9]{1,4}(?: cost_usd=[0-9]{1,7}(?:[.][0-9]{1,18})?)?",
+                lines[1],
+            ) is None
+        ):
+            return ""
+        result = json.loads(lines[0], object_pairs_hook=unique_object)
+    except (
+        json.JSONDecodeError,
+        OSError,
+        RoleOutputError,
+        UnicodeDecodeError,
+        ValueError,
+    ):
+        return ""
+    if not isinstance(result, dict):
+        return ""
+    message = result.get("result")
+    status = result.get("api_error_status")
+    if (
+        result.get("type") != "result"
+        or result.get("subtype") != "success"
+        or result.get("is_error") is not True
+        or result.get("stop_reason") != "stop_sequence"
+        or result.get("terminal_reason") != "api_error"
+        or isinstance(status, bool)
+        or status != 429
+        or not isinstance(message, str)
+        or re.fullmatch(
+            r"(?i)(?=[^\r\n]{1,256}\Z)"
+            r"(?=[^\r\n]*\bindividual spend limit\b)"
+            r"you[^\r\n]*",
+            message,
+        ) is None
+    ):
+        return ""
+    return "provider_spend_limit"
+
+
 def publish(path: Path, source) -> str:
     """Stream a bounded artifact to an atomic owner-only file and return its hash."""
     path = Path(os.path.abspath(path))
@@ -137,8 +234,14 @@ def publish(path: Path, source) -> str:
 
 
 def main() -> None:
+    if len(sys.argv) == 4 and sys.argv[1] == "terminal-reason-code":
+        print(terminal_reason_code(Path(sys.argv[2]), sys.argv[3]))
+        return
     if len(sys.argv) != 3 or sys.argv[1] != "publish":
-        raise SystemExit("usage: role_output.py publish TARGET")
+        raise SystemExit(
+            "usage: role_output.py publish TARGET | "
+            "terminal-reason-code TARGET ADAPTER"
+        )
     try:
         print(publish(Path(sys.argv[2]), sys.stdin.buffer))
     except RoleOutputTooLarge as error:

@@ -152,6 +152,17 @@ SCENARIOS = (
         ),
     ),
     (
+        "provider_spend_limit_is_typed_and_latched",
+        (
+            "ticket-passport-test.py",
+            "TicketPassportTest.test_claude_spend_limit_reason_is_strict",
+        ),
+        (
+            "factory-controller-test.py",
+            "FactoryControllerTest.test_qualification_spend_limit_latches_and_preserves_dirty_failure",
+        ),
+    ),
+    (
         "qualification_controller_error_stops_sibling_launches",
         (
             "factory-controller-test.py",
