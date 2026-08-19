@@ -104,6 +104,13 @@ def controller_result(value: dict[str, Any]) -> None:
         "busy", "error", "ok", "restart_required", "waiting_for_target",
     }:
         raise QualificationRunError("controller returned an invalid result")
+    if (
+        status == "error"
+        and set(value) == {"error", "schema", "status"}
+        and isinstance(value["error"], str)
+        and value["error"]
+    ):
+        return
     if status != "busy" and (
         not isinstance(value.get("active"), int)
         or isinstance(value.get("active"), bool)

@@ -1468,6 +1468,24 @@ raise SystemExit(code)
         self.assertEqual(value["controller"]["results"][0]["ticket"], "T-1")
         self.assertEqual(self.called(), ["doctor", "reconcile"])
 
+    def test_top_level_controller_error_is_typed_and_preserved(self) -> None:
+        controller = {
+            "error": "typed top-level failure",
+            "schema": "nysa.software-factory.controller/v1",
+            "status": "error",
+            "_returncode": 1,
+        }
+        code, value = self.run_scenario({
+            "doctor": self.doctor(),
+            "reconcile": [controller],
+            "qualification": self.report(),
+        })
+        self.assertEqual(code, 2)
+        self.assertEqual(value["status"], "error")
+        self.assertEqual(value["reason"], "controller_error")
+        self.assertEqual(value["controller"]["error"], "typed top-level failure")
+        self.assertEqual(self.called(), ["doctor", "reconcile"])
+
     def test_malformed_result_and_repeated_restart_fail_closed(self) -> None:
         scenarios = (
             {
