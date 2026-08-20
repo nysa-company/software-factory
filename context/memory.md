@@ -7163,8 +7163,8 @@ Category: Reliability
 Q56 completed sixteen authenticated roles before a read-only ticket-PR
 `ls-remote` DNS failure was collapsed into `controller-error`. Recognized GitHub
 and Git transport failures now return one bounded `external_unavailable` wait
-through the sealed controller and reducer boundaries. Role, bundle, approval,
-publication-refresh, model-control, and publication-repair commits use exact
+through the sealed controller and reducer boundaries. Role, ticket-state,
+bundle, approval, publication-refresh, model-control, and publication-repair commits use exact
 remote confirmation and receipt/passport-bound replay, so a lost push response
 or locally committed child continues without another provider call. Provider
 disconnects after GO remain terminal-accounted failures and are never relabeled

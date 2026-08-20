@@ -73,7 +73,8 @@ PRODUCT_REMOTE="$(factory_capture_product_remote "$PRODUCT_ROOT" "$FACTORY_TRUST
 TMP="$(mktemp "${TMPDIR:-/tmp}/ticket-state.XXXXXX")"
 OPERATOR_VERSION_FILE="$(mktemp "${TMPDIR:-/tmp}/ticket-state-version.XXXXXX")"
 OPERATOR_ACTION_FILE="$(mktemp "${TMPDIR:-/tmp}/ticket-state-action.XXXXXX")"
-trap 'rm -f "$TMP" "$OPERATOR_VERSION_FILE" "$OPERATOR_ACTION_FILE"' EXIT
+REMOTE_ERROR_FILE="$(mktemp "${TMPDIR:-/tmp}/ticket-state-remote.XXXXXX")"
+trap 'rm -f "$TMP" "$OPERATOR_VERSION_FILE" "$OPERATOR_ACTION_FILE" "$REMOTE_ERROR_FILE"' EXIT
 python3 "$KIT_DIR/scripts/lib/effective_ticket.py" \
   --ticket-file "$TICKET_FILE" --operator-map "$MAP" --ticket "$TICKET" \
   --operator-version-file "$OPERATOR_VERSION_FILE" \
@@ -286,20 +287,37 @@ if [[ -n "$EXPECTED_REMOTE_HEAD" ]]; then
   }
   PUSH_MODE=("--force-with-lease=refs/heads/$BRANCH:$EXPECTED_REMOTE_HEAD")
 fi
+external_wait() {
+  printf '%s\n' '{"reason_code":"external_unavailable","status":"wait"}'
+  exit 75
+}
+remote_failure_is_transient() {
+  python3 -B "$KIT_DIR/scripts/lib/external_transport.py" < "$REMOTE_ERROR_FILE"
+}
 for attempt in 1 2; do
   git -C "$WORKDIR" push "${PUSH_MODE[@]}" -- "$PRODUCT_REMOTE" \
-    "$LOCAL_HEAD:refs/heads/$BRANCH" >/dev/null 2>&1 && break
-  REMOTE_HEAD="$(git -C "$WORKDIR" ls-remote --heads -- "$PRODUCT_REMOTE" \
-    "refs/heads/$BRANCH" 2>/dev/null | awk 'NR==1 {print $1; exit}')"
-  [[ "$REMOTE_HEAD" == "$LOCAL_HEAD" ]] && break
+    "$LOCAL_HEAD:refs/heads/$BRANCH" >/dev/null 2>"$REMOTE_ERROR_FILE" && break
+  PUSH_ERROR="$(<"$REMOTE_ERROR_FILE")"
+  if REMOTE_HEAD="$(git -C "$WORKDIR" ls-remote --heads -- "$PRODUCT_REMOTE" \
+      "refs/heads/$BRANCH" 2>"$REMOTE_ERROR_FILE" | awk 'NR==1 {print $1; exit}')"; then
+    [[ "$REMOTE_HEAD" == "$LOCAL_HEAD" ]] && break
+    printf '%s\n' "$PUSH_ERROR" > "$REMOTE_ERROR_FILE"
+  else
+    printf '%s\n%s\n' "$PUSH_ERROR" "$(<"$REMOTE_ERROR_FILE")" > "$REMOTE_ERROR_FILE"
+  fi
   [[ "$attempt" == "1" ]] || {
+    remote_failure_is_transient && external_wait
     echo "ticket-state remote compare-and-swap failed" >&2
     exit 1
   }
   sleep 1
 done
-REMOTE_HEAD="$(git -C "$WORKDIR" ls-remote --heads -- "$PRODUCT_REMOTE" \
-  "refs/heads/$BRANCH" 2>/dev/null | awk 'NR==1 {print $1; exit}')"
+if ! REMOTE_HEAD="$(git -C "$WORKDIR" ls-remote --heads -- "$PRODUCT_REMOTE" \
+    "refs/heads/$BRANCH" 2>"$REMOTE_ERROR_FILE" | awk 'NR==1 {print $1; exit}')"; then
+  remote_failure_is_transient && external_wait
+  echo "ticket-state remote verification failed" >&2
+  exit 1
+fi
 [[ "$REMOTE_HEAD" == "$LOCAL_HEAD" ]] || { echo "ticket-state remote verification failed" >&2; exit 1; }
 factory_update_tracking_ref "$WORKDIR" "$BRANCH" "$LOCAL_HEAD" "$TRACKING_HEAD" || {
   echo "ticket-state remote tracking update failed" >&2

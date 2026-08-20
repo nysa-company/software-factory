@@ -128,7 +128,7 @@ an in-flight manifest or backdate an override.
 ## Internet or GitHub unavailable
 
 - Notice: the sealed command returns `external_unavailable`, or publication remains at a GitHub wait with no new role attempt.
-- Do: let already-admitted attempts terminalize, restore connectivity, then rerun the same sealed `qualification-finish` or ordinary reconcile command. Exact pushed or locally committed role, bundle, approval, refresh, repair, and closeout evidence is replayed deterministically; first confirm Doctor shows no unknown worker.
+- Do: let already-admitted attempts terminalize, restore connectivity, then rerun the same sealed `qualification-finish` or ordinary reconcile command. Exact pushed or locally committed role, ticket-state, bundle, approval, refresh, repair, and closeout evidence is replayed deterministically; first confirm Doctor shows no unknown worker.
 - Don't: rerun a role, rewrite a claim/passport, move a branch, or infer failure from a lost push response. A disconnect after provider GO remains terminal-accounted and may continue only through the authenticated fallback flow.
 
 ## Leaked secret (a key appears in a file, log, or commit)
