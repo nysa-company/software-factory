@@ -3205,24 +3205,25 @@ elif [[ "$ROLE_EXIT_ENFORCED" -eq 1 ]]; then
       ROLE_EXIT_STATUS="role_exit_remote_mismatch"
     else
       ROLE_TRACKING_BEFORE="$(factory_remote_tracking_tip "$WORKDIR" "$ROLE_BRANCH_BEFORE")"
-      if ! "$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" push --no-force -- "$PRODUCT_REMOTE" \
-        "$ROLE_HEAD_AFTER:refs/heads/$ROLE_BRANCH_BEFORE" >/dev/null 2>&1; then
+      ROLE_PUSH_STATUS=0
+      "$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" push --no-force -- "$PRODUCT_REMOTE" \
+        "$ROLE_HEAD_AFTER:refs/heads/$ROLE_BRANCH_BEFORE" >/dev/null 2>&1 ||
+        ROLE_PUSH_STATUS=$?
+      if ! REMOTE_HEAD="$(role_remote_head)"; then
         ROLE_EXIT_STATUS="role_exit_push_failed"
+      elif [[ "$REMOTE_HEAD" != "$ROLE_HEAD_AFTER" &&
+              "$ROLE_PUSH_STATUS" -ne 0 ]]; then
+        ROLE_EXIT_STATUS="role_exit_push_failed"
+      elif [[ "$REMOTE_HEAD" != "$ROLE_HEAD_AFTER" ]]; then
+        ROLE_EXIT_STATUS="role_exit_remote_mismatch"
+      elif ! factory_update_tracking_ref "$WORKDIR" "$ROLE_BRANCH_BEFORE" \
+        "$ROLE_HEAD_AFTER" "$ROLE_TRACKING_BEFORE"; then
+        ROLE_EXIT_STATUS="role_exit_remote_mismatch"
       else
-        if ! REMOTE_HEAD="$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" ls-remote --heads -- "$PRODUCT_REMOTE" \
-          "refs/heads/$ROLE_BRANCH_BEFORE" 2>/dev/null | awk 'NR==1 {print $1; exit}')"; then
-          ROLE_EXIT_STATUS="role_exit_push_failed"
-        elif [[ "$REMOTE_HEAD" != "$ROLE_HEAD_AFTER" ]]; then
-          ROLE_EXIT_STATUS="role_exit_remote_mismatch"
-        elif ! factory_update_tracking_ref "$WORKDIR" "$ROLE_BRANCH_BEFORE" \
-          "$ROLE_HEAD_AFTER" "$ROLE_TRACKING_BEFORE"; then
-          ROLE_EXIT_STATUS="role_exit_remote_mismatch"
+        if [[ "$ROLE_ESCALATION_REQUESTED" -eq 1 ]]; then
+          ROLE_EXIT_STATUS="role_exit_contract_blocked"
         else
-          if [[ "$ROLE_ESCALATION_REQUESTED" -eq 1 ]]; then
-            ROLE_EXIT_STATUS="role_exit_contract_blocked"
-          else
-            ROLE_EXIT_STATUS="ok"
-          fi
+          ROLE_EXIT_STATUS="ok"
         fi
       fi
     fi

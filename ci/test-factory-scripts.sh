@@ -4576,6 +4576,13 @@ ROLE_GIT_COUNT="$TMP/role-git-count"
 ROLE_GIT_WRAPPER="$TMP/git"
 cat > "$ROLE_GIT_WRAPPER" <<'STUB'
 #!/usr/bin/env bash
+if [[ " $* " == *" push "* && -n "${FACTORY_TEST_GIT_ACCEPTED:-}" &&
+      ! -f "$FACTORY_TEST_GIT_ACCEPTED" ]]; then
+  "$FACTORY_TEST_GIT_REAL" "$@"
+  : > "$FACTORY_TEST_GIT_ACCEPTED"
+  echo 'send-pack: unexpected disconnect while reading sideband packet' >&2
+  exit 128
+fi
 if [[ " $* " == *" ls-remote "* ]]; then
   count=0
   [[ ! -f "$FACTORY_TEST_GIT_COUNT" ]] ||
@@ -4605,6 +4612,29 @@ if [[ "$ROLE_REMOTE_RETRY" -eq 0 &&
 else
   fail "role exit retries one failed remote observation without replay" \
     "status=$ROLE_REMOTE_RETRY reads=$(cat "$ROLE_GIT_COUNT" 2>/dev/null || true)"
+fi
+
+setup_role_exit_fixture T-663
+ROLE_PUSH_ACCEPTED="$TMP/role-push-accepted"
+ROLE_PUSH_RESPONSE_STATUS=0
+PATH="$TMP:$PATH" FACTORY_TEST_GIT_REAL="$ROLE_REAL_GIT" \
+  FACTORY_TEST_GIT_ACCEPTED="$ROLE_PUSH_ACCEPTED" \
+  MOCK_COMMIT_WORKDIR=1 FACTORY_ROOT="$ROLE_EXIT_ROOT" \
+  FACTORY_GLOBAL_ENV="$TMP/no-global.env" FACTORY_TEST_MODE=1 \
+  FACTORY_CERTIFIED_PRODUCT_ORIGIN="$ROLE_EXIT_REMOTE" \
+  FACTORY_TEST_ENFORCE_ROLE_EXIT=1 FACTORY_ADAPTER_OVERRIDE=mock \
+  "$RUN_AGENT" --role planner --ticket T-663 --workdir "$ROLE_EXIT_WORKTREE" -- \
+    "accepted push lost response" > "$TMP/role-push-response.out" 2>&1 ||
+  ROLE_PUSH_RESPONSE_STATUS=$?
+ROLE_PUSH_META="$(ls "$ROLE_EXIT_ROOT"/factory/runs/*.meta)"
+if [[ "$ROLE_PUSH_RESPONSE_STATUS" -eq 0 && -f "$ROLE_PUSH_ACCEPTED" &&
+      "$(git -C "$ROLE_EXIT_WORKTREE" rev-parse HEAD)" == \
+        "$(git --git-dir="$ROLE_EXIT_REMOTE" rev-parse refs/heads/ticket/T-663)" ]] &&
+   grep -q '^role_exit=ok$' "$ROLE_PUSH_META"; then
+  pass "role exit accepts an exact push after its response is lost"
+else
+  fail "role exit did not confirm an accepted push after response loss" \
+    "status=$ROLE_PUSH_RESPONSE_STATUS"
 fi
 
 ROLE_LANE_ROOT="$TMP/nysa-sf-dev.role-output"
