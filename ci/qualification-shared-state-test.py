@@ -156,6 +156,51 @@ class QualificationSharedStateTest(unittest.TestCase):
             raise
         return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 
+    def failure_evidence(self, replay: dict[str, object]) -> str:
+        controller = self.home / f".factory/qualification/{self.project}/controller"
+        claims = []
+        for path in sorted((controller / "claims").glob("T-*.json")):
+            claim = json.loads(path.read_text(encoding="utf-8"))
+            claims.append({
+                "blocked_reason": claim.get("blocked_reason"),
+                "lease_present": bool(claim.get("lease")),
+                "receipt_present": bool(claim.get("receipt")),
+                "role": claim.get("role"),
+                "status": claim.get("status"),
+                "ticket": claim.get("ticket"),
+            })
+        event_names = {
+            "attempt_terminal", "controller_error", "external_service_wait",
+            "provider_fallback", "push_failure_recovered", "role_blocked",
+            "ticket_worker_failed", "typed_recovery_refused",
+        }
+        events = []
+        for path in sorted((controller / "events").glob("*.json")):
+            event = json.loads(path.read_text(encoding="utf-8"))
+            if event.get("event") not in event_names:
+                continue
+            events.append({
+                key: event.get(key)
+                for key in (
+                    "event", "failure_class", "reason_code", "recovery_kind",
+                    "role", "role_exit", "terminal_reason_code", "ticket",
+                )
+                if event.get(key) is not None
+            })
+        calls = (
+            json.loads(self.provider_calls.read_text(encoding="utf-8"))
+            if self.provider_calls.is_file() else {}
+        )
+        return json.dumps({
+            "calls": calls,
+            "claims": claims,
+            "events": events,
+            "replay": {
+                "reason": replay.get("reason"),
+                "status": replay.get("status"),
+            },
+        }, sort_keys=True)
+
     def make_home(self) -> None:
         factory = self.home / ".factory"
         release = self.installed_release
@@ -669,8 +714,10 @@ raise SystemExit(1 if failed else 0)
             str(launcher), self.project, "qualification-finish", "--json",
             timeout=remaining,
         )
-        self.assertEqual(launched.returncode, 0, launched.stdout + launched.stderr)
         replay = json.loads(launched.stdout)
+        self.assertEqual(
+            launched.returncode, 0, self.failure_evidence(replay),
+        )
         self.assertEqual(replay["status"], "green", json.dumps(replay, sort_keys=True))
         self.assertEqual(replay["restarts"], 1)
         events = [
