@@ -689,6 +689,18 @@ raise SystemExit(1 if failed else 0)
         self.assertEqual(
             {item["ticket"] for item in replay["report"]["tickets"]}, set(TICKETS)
         )
+        repeated = self.sealed(
+            str(launcher), self.project, "qualification-finish", "--json",
+            timeout=120,
+        )
+        self.assertEqual(repeated.returncode, 0, repeated.stdout + repeated.stderr)
+        repeated_replay = json.loads(repeated.stdout)
+        self.assertEqual(repeated_replay["status"], "green")
+        self.assertEqual(repeated_replay["approvals"], [])
+        self.assertEqual(repeated_replay["report"], replay["report"])
+        self.assertEqual(
+            json.loads(self.provider_calls.read_text(encoding="utf-8")), calls,
+        )
         final_doctor = self.sealed(
             str(launcher), self.project, "doctor", "--json", timeout=120,
         )

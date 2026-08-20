@@ -181,6 +181,11 @@ SCENARIOS = (
             "CursorStreamTest.test_enabled_cursor_runtime_names_remain_route_bound",
         ),
         (
+            "model-router-test.py",
+            "ModelRouterTest.test_catalog_has_exact_current_routes_and_disabled_experimental_kimi",
+            "ModelRouterTest.test_cursor_opus_default_uses_native_sonnet_fallback",
+        ),
+        (
             "factory-controller-test.py",
             "FactoryControllerTest.test_model_identity_success_recovers_before_provider_fallback",
             "FactoryControllerTest.test_first_model_identity_success_observation_never_replays_provider",
