@@ -687,6 +687,40 @@ raise SystemExit(1 if failed else 0)
         self.assertEqual(
             {item["ticket"] for item in replay["report"]["tickets"]}, set(TICKETS)
         )
+        final_doctor = self.sealed(
+            str(launcher), self.project, "doctor", "--json", timeout=120,
+        )
+        self.assertEqual(final_doctor.returncode, 0)
+        doctor = json.loads(final_doctor.stdout)
+        self.assertEqual(doctor["overall_status"], "ok")
+        runtime = doctor["checks"]["runtime"]
+        zero_fields = (
+            "active_run_claims", "active_runs", "dispatch_lease_records",
+            "malformed_active_run_claims", "malformed_dispatch_leases",
+            "malformed_runs", "run_records", "stale_dispatch_leases", "stale_runs",
+        )
+        self.assertEqual(
+            {key: runtime[key] for key in zero_fields},
+            dict.fromkeys(zero_fields, 0),
+        )
+        self.assertEqual(
+            (runtime["active_run_tickets"], runtime["dispatch_leases"],
+             runtime["runs"], runtime["provider_lock_state"]),
+            ([], [], [], "absent"),
+        )
+        self.assertFalse(runtime["maintenance"] or any(runtime["locks"].values()))
+        provider = doctor["checks"]["isolated_provider"]
+        zero_fields = (
+            "active_attempts", "active_tokens", "legacy_intervals", "unknown_workers",
+        )
+        self.assertEqual(
+            {key: provider[key] for key in zero_fields},
+            dict.fromkeys(zero_fields, 0),
+        )
+        controller = self.home / f".factory/qualification/{self.project}/controller"
+        self.assertEqual(len(list((controller / "claims").glob("*.json"))), 0)
+        self.assertFalse((controller / "publication/active.json").exists())
+        self.assertEqual(len(list((controller / "publication/queue").glob("*.json"))), 0)
         self.assertEqual(self.replay_process_groups(), set())
         self.assertLess(time.monotonic() - self.started, 720)
 
