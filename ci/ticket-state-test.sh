@@ -54,6 +54,34 @@ ticket_state() {
     "$ROOT/scripts/ticket-state.sh" "$@"
 }
 
+REAL_GIT="$(command -v git)"
+TRANSPORT_BIN="$TMP/transport-bin"
+mkdir "$TRANSPORT_BIN"
+cat > "$TRANSPORT_BIN/git" <<'EOF'
+#!/usr/bin/env bash
+set -eu
+remote=0
+for argument in "$@"; do
+  [[ "$argument" != "push" && "$argument" != "ls-remote" ]] || remote=1
+done
+if [[ "$remote" -eq 1 && -n "${FACTORY_TEST_GIT_OFFLINE:-}" &&
+      -f "$FACTORY_TEST_GIT_OFFLINE" ]]; then
+  echo 'fatal: Could not resolve host: github.com' >&2
+  exit 1
+fi
+if [[ "$remote" -eq 1 && -n "${FACTORY_TEST_GIT_LOST_RESPONSE:-}" &&
+      -f "$FACTORY_TEST_GIT_LOST_RESPONSE" &&
+      ! -f "$FACTORY_TEST_GIT_ACCEPTED" ]]; then
+  "$FACTORY_TEST_REAL_GIT" "$@"
+  : > "$FACTORY_TEST_GIT_ACCEPTED"
+  echo 'send-pack: unexpected disconnect while reading sideband packet' >&2
+  echo 'fatal: connection reset by peer' >&2
+  exit 1
+fi
+exec "$FACTORY_TEST_REAL_GIT" "$@"
+EOF
+chmod +x "$TRANSPORT_BIN/git"
+
 ticket_state \
   --ticket T-700 --workdir "$PRODUCT" --action materialize >/dev/null
 [[ -f "$TMP/volatile-refreshed" ]]
@@ -123,6 +151,23 @@ grep -q '^State: Blocked-Escalated$' "$PRODUCT/factory/tickets/T-700.md"
 grep -q '^Resume-State: Planning$' "$PRODUCT/factory/tickets/T-700.md"
 printf '{"tickets":{"T-700":{"operator":{"state":"Planning","state_base":"blocked-escalated"}}}}\n' \
   > "$PRODUCT/factory/operator-map.json"
+OFFLINE_MARKER="$TMP/git-offline"
+touch "$OFFLINE_MARKER"
+OFFLINE_STATUS=0
+OFFLINE_OUTPUT="$(PATH="$TRANSPORT_BIN:$PATH" \
+  FACTORY_TEST_REAL_GIT="$REAL_GIT" FACTORY_TEST_GIT_OFFLINE="$OFFLINE_MARKER" \
+  ticket_state --ticket T-700 --workdir "$PRODUCT" --action materialize)" ||
+  OFFLINE_STATUS=$?
+[[ "$OFFLINE_STATUS" -eq 75 ]]
+[[ "$OFFLINE_OUTPUT" == '{"reason_code":"external_unavailable","status":"wait"}' ]]
+grep -q '^State: Planning$' "$PRODUCT/factory/tickets/T-700.md"
+git --git-dir="$REMOTE" show refs/heads/ticket/T-700:factory/tickets/T-700.md |
+  grep -q '^State: Blocked-Escalated$'
+python3 - "$PRODUCT/factory/operator-map.json" <<'PY'
+import json, sys
+assert json.load(open(sys.argv[1]))["tickets"]["T-700"]["operator"]["state"] == "Planning"
+PY
+mv "$OFFLINE_MARKER" "$OFFLINE_MARKER.done"
 ticket_state --ticket T-700 --workdir "$PRODUCT" --action materialize >/dev/null
 grep -q '^State: Planning$' "$PRODUCT/factory/tickets/T-700.md"
 BEFORE="$(git -C "$PRODUCT" rev-parse HEAD)"
@@ -264,14 +309,19 @@ import json, sys
 assert "operator" not in json.load(open(sys.argv[1]))["tickets"]["T-700"]
 PY
 
+LOST_RESPONSE="$TMP/git-lost-response"
+ACCEPTED_PUSH="$TMP/git-accepted"
+touch "$LOST_RESPONSE"
+PATH="$TRANSPORT_BIN:$PATH" FACTORY_TEST_REAL_GIT="$REAL_GIT" \
+FACTORY_TEST_GIT_LOST_RESPONSE="$LOST_RESPONSE" \
+FACTORY_TEST_GIT_ACCEPTED="$ACCEPTED_PUSH" \
+  TEST_CONTRACT=2.0.0 ticket_state --ticket T-700 --workdir "$PRODUCT" \
+    --action transition --state Blocked-Escalated >/dev/null
+[[ -f "$ACCEPTED_PUSH" ]]
+[[ "$(git -C "$PRODUCT" rev-parse HEAD)" == \
+   "$(git --git-dir="$REMOTE" rev-parse refs/heads/ticket/T-700)" ]]
+
 # A crash after receipt consumption but before map clear must replay exactly.
-sed -E 's/^State: .*/State: Blocked-Escalated/' \
-  "$PRODUCT/factory/tickets/T-700.md" > "$TMP/ticket"
-mv "$TMP/ticket" "$PRODUCT/factory/tickets/T-700.md"
-git -C "$PRODUCT" add factory/tickets/T-700.md
-git -C "$PRODUCT" -c user.name=test -c user.email=test@example.com \
-  commit -qm "blocked replay fixture"
-git -C "$PRODUCT" push -q "$REMOTE" HEAD:refs/heads/ticket/T-700
 STATE_DIR="$(cd "$TMP" && pwd -P)/controller"
 mkdir -m 700 "$STATE_DIR"
 BLOCKED_RECEIPT="$(printf 'b%.0s' {1..64})"

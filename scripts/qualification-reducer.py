@@ -26,6 +26,7 @@ from legacy_closeout import (  # noqa: E402
     ValidationError as ProtectedTerminalError,
     protected_terminal,
 )
+from external_transport import remote_command, temporarily_unavailable  # noqa: E402
 
 
 SCHEMA = "nysa.software-factory.qualification-report/v1"
@@ -50,6 +51,10 @@ ROLES = {"planner", "spec-linter", "test-author", "builder", "reviewer", "narrat
 
 
 class QualificationError(ValueError):
+    pass
+
+
+class ExternalUnavailable(QualificationError):
     pass
 
 
@@ -79,9 +84,19 @@ def regular(path: Path, mode: int | None = None, limit: int = 5_000_000) -> byte
 
 
 def command(*arguments: str, cwd: Path | None = None) -> str:
-    result = subprocess.run(
-        arguments, cwd=cwd, text=True, capture_output=True, check=False, timeout=120,
-    )
+    try:
+        result = subprocess.run(
+            arguments, cwd=cwd, text=True, capture_output=True, check=False,
+            timeout=120,
+        )
+    except subprocess.TimeoutExpired as error:
+        if remote_command(list(arguments)):
+            raise ExternalUnavailable from error
+        raise
+    if result.returncode and remote_command(
+        list(arguments)
+    ) and temporarily_unavailable(result.stderr or result.stdout):
+        raise ExternalUnavailable
     if result.returncode:
         raise QualificationError(
             result.stderr.strip() or result.stdout.strip() or "evidence query failed"
@@ -932,6 +947,9 @@ def main() -> None:
                 stream.flush()
                 os.fsync(stream.fileno())
         print(canonical(report))
+    except ExternalUnavailable:
+        print('{"reason_code":"external_unavailable","status":"wait"}')
+        raise SystemExit(75)
     except (
         FileNotFoundError, json.JSONDecodeError, OSError, QualificationError,
         subprocess.SubprocessError,

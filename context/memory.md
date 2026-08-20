@@ -10,6 +10,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Failed-attempt preview, replay, and historical committed-role checks carry only unchanged tracked baseline symlinks whose tree, index, and filesystem targets agree; every added, removed, changed, staged, or untracked symlink remains fail-closed.
 - A submitted Claude individual-spend-limit terminal is release-typed, fully accounted, and qualification-latched before another role launch; dirty role evidence stays blocked and unexported rather than becoming a secondary clean-cell controller error.
 - Any nonrecoverable role terminal in a fixed qualification cohort latches the same atomic launch boundary before the claim blocks or cancels; bounded invalid-output, prior-release launch-void, direct-model identity, and authenticated Cursor fallback recovery remain runnable, while already-admitted siblings only drain and account.
+- Recognized GitHub/Git transport loss is a typed wait, never a cohort defect. Exact remote confirmation and receipt/passport-bound replay resume post-provider role and publication commits without another model call; a disconnect inside a submitted provider attempt remains terminal-accounted and is not transport-replayed.
 - Successor qualification can preserve an exact source-passport checkpoint or descendant only through the protected in-flight release authorization; v2 binds each ticket's authenticated current source after a partial batch, migration never deletes or rewrites ticket work, and prior failed roles reopen only across an exact signed route-only migration suffix.
 - Isolated successor contract repair may use an older authenticated blocker only through its complete signed release suffix ending at the exact protected per-ticket source. Prior resume pairs remain immutable transition history and are accepted only as an ordered canonical sequence with one signed completed record per pair and one newest in-branch snapshot of the full sequence. Passport snapshots may omit ordinary descendant ticket commits, while Factory/base/route junctions remain exact. During or after prior-kit receipt migration, the driver admits its historical resume mismatch only while the exact blocked claim and transition digest bind that selected ticket and receipt; event observation order is not authority.
 - An exactly migrated successor claim may chain a current transition receipt after its authenticated predecessor; predecessor evidence remains durable and unedited.
@@ -7154,3 +7155,20 @@ readiness now validates the exact route-bound displayed label from `agent
 models` before admission, while a finite set of previously certified labels
 remains valid for authenticated in-flight evidence. The sealed qualification
 fixture uses the active Cursor Opus/Sonnet profile and no Fable route.
+
+## 2026-08-20 — Decision 520: Internet loss resumes exact post-provider work
+
+Category: Reliability
+
+Q56 completed sixteen authenticated roles before a read-only ticket-PR
+`ls-remote` DNS failure was collapsed into `controller-error`. Recognized GitHub
+and Git transport failures now return one bounded `external_unavailable` wait
+through the sealed controller and reducer boundaries. Role, ticket-state,
+bundle, approval, publication-refresh, model-control, and publication-repair commits use exact
+remote confirmation and receipt/passport-bound replay, so a lost push response
+or locally committed child continues without another provider call. Provider
+disconnects after GO remain terminal-accounted failures and are never relabeled
+as safe transport replay. Authentication, remote drift, malformed evidence, and
+unknown errors still fail closed. The sealed provider-free cohort injects one
+post-provider Git readback outage and requires exactly one push recovery with no
+extra model invocation.

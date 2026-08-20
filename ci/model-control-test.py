@@ -162,6 +162,52 @@ class ModelControlTest(unittest.TestCase):
         self.assertEqual(selected["profile_id"], "claude-priority-v1")
         self.assertEqual(selected["selections"]["planner"]["adapter"], "claude-code")
 
+    def test_pin_accepts_an_exact_push_with_a_lost_response(self):
+        binary = self.base / "bin"
+        binary.mkdir()
+        marker = self.base / "lost-response"
+        real_git = shutil.which("git")
+        self.assertIsNotNone(real_git)
+        wrapper = binary / "git"
+        wrapper.write_text(
+            "#!/bin/sh\nset -eu\n"
+            "for arg in \"$@\"; do\n"
+            "  if test \"$arg\" = push && test ! -e \"$FACTORY_LOST_RESPONSE\"; then\n"
+            "    : > \"$FACTORY_LOST_RESPONSE\"\n"
+            "    \"$FACTORY_REAL_GIT\" \"$@\"\n"
+            "    exit 128\n"
+            "  fi\n"
+            "done\n"
+            "exec \"$FACTORY_REAL_GIT\" \"$@\"\n",
+            encoding="utf-8",
+        )
+        wrapper.chmod(0o700)
+        self.environment.update({
+            "FACTORY_LOST_RESPONSE": str(marker),
+            "FACTORY_REAL_GIT": real_git,
+            "PATH": str(binary) + os.pathsep + self.environment["PATH"],
+        })
+
+        result = self.command(
+            "pin", "--ticket", "T-901", "--workdir", str(self.workdir),
+        )
+        head = subprocess.check_output(
+            [real_git, "-C", str(self.workdir), "rev-parse", "HEAD"], text=True,
+        ).strip()
+
+        self.assertTrue(marker.is_file())
+        self.assertEqual(json.loads(result.stdout)["commit_sha"], head)
+        self.assertEqual(
+            subprocess.check_output(
+                [
+                    real_git, "--git-dir", str(self.remote), "rev-parse",
+                    "refs/heads/ticket/T-901",
+                ],
+                text=True,
+            ).strip(),
+            head,
+        )
+
     def test_plan_failure_reports_every_sanitized_route_readiness(self):
         self.global_env.write_text(
             self.global_env.read_text()
@@ -402,7 +448,33 @@ class ModelControlTest(unittest.TestCase):
         })
         self.assertEqual(paused.stderr, "")
         self.assertTrue(maintenance.is_file())
+
         maintenance.unlink()
+        fallback = release / "scripts/model-fallback.py"
+        fallback.write_text(
+            "#!/usr/bin/env python3\n"
+            "import sys\n"
+            "print('fatal: Could not resolve host: github.com', file=sys.stderr)\n"
+            "raise SystemExit(1)\n",
+            encoding="utf-8",
+        )
+        release_tree = subprocess.check_output(
+            [
+                "bash", "-c", 'source "$1"; factory_directory_tree "$2"', "_",
+                str(ROOT / "scripts/lib/kit-pin.sh"), str(release),
+            ],
+            text=True,
+        ).strip()
+        unavailable = subprocess.run(
+            command,
+            env={**environment, "FACTORY_RELEASE_TREE": release_tree},
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        self.assertEqual(unavailable.returncode, 75)
+        self.assertEqual(json.loads(unavailable.stderr), {
+            "reason_code": "external_unavailable", "status": "wait",
+        })
+        self.assertEqual(unavailable.stdout, "")
         self.assertEqual(
             tuple((path.exists(), path.is_symlink()) for path in lock_paths),
             before_locks,

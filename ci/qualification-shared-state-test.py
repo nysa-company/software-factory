@@ -82,6 +82,7 @@ class QualificationSharedStateTest(unittest.TestCase):
         self.product = self.workspace / "product"
         self.provider_calls = self.workspace / "provider-calls.json"
         self.github_state = self.workspace / "github-state.json"
+        self.transport_outage = self.workspace / "transport-outage"
 
         self.make_home()
         self.make_product()
@@ -154,6 +155,51 @@ class QualificationSharedStateTest(unittest.TestCase):
                 process.communicate()
             raise
         return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+    def failure_evidence(self, replay: dict[str, object]) -> str:
+        controller = self.home / f".factory/qualification/{self.project}/controller"
+        claims = []
+        for path in sorted((controller / "claims").glob("T-*.json")):
+            claim = json.loads(path.read_text(encoding="utf-8"))
+            claims.append({
+                "blocked_reason": claim.get("blocked_reason"),
+                "lease_present": bool(claim.get("lease")),
+                "receipt_present": bool(claim.get("receipt")),
+                "role": claim.get("role"),
+                "status": claim.get("status"),
+                "ticket": claim.get("ticket"),
+            })
+        event_names = {
+            "attempt_terminal", "controller_error", "external_service_wait",
+            "provider_fallback", "push_failure_recovered", "role_blocked",
+            "ticket_worker_failed", "typed_recovery_refused",
+        }
+        events = []
+        for path in sorted((controller / "events").glob("*.json")):
+            event = json.loads(path.read_text(encoding="utf-8"))
+            if event.get("event") not in event_names:
+                continue
+            events.append({
+                key: event.get(key)
+                for key in (
+                    "event", "failure_class", "reason_code", "recovery_kind",
+                    "role", "role_exit", "terminal_reason_code", "ticket",
+                )
+                if event.get(key) is not None
+            })
+        calls = (
+            json.loads(self.provider_calls.read_text(encoding="utf-8"))
+            if self.provider_calls.is_file() else {}
+        )
+        return json.dumps({
+            "calls": calls,
+            "claims": claims,
+            "events": events,
+            "replay": {
+                "reason": replay.get("reason"),
+                "status": replay.get("status"),
+            },
+        }, sort_keys=True)
 
     def make_home(self) -> None:
         factory = self.home / ".factory"
@@ -356,14 +402,26 @@ class QualificationSharedStateTest(unittest.TestCase):
         self.vendor = vendor
 
         ssh = self.home / ".factory/bin/ssh"
-        ssh.write_text(
-            "#!/bin/sh\nset -eu\n"
-            "case \"$*\" in\n"
-            f"  *git-upload-pack*) exec git-upload-pack '{self.remote}' ;;\n"
-            f"  *git-receive-pack*) exec git-receive-pack '{self.remote}' ;;\n"
-            "esac\nexit 2\n",
-            encoding="utf-8",
-        )
+        ssh.write_text(f'''#!/usr/bin/env python3
+import json, os, pathlib, subprocess, sys
+remote={str(self.remote)!r}
+calls=pathlib.Path({str(self.provider_calls)!r})
+outage=pathlib.Path({str(self.transport_outage)!r})
+command=" ".join(sys.argv[1:])
+if "git-upload-pack" in command:
+    os.execvp("git-upload-pack", ["git-upload-pack", remote])
+if "git-receive-pack" in command:
+    count=sum(json.loads(calls.read_text()).values()) if calls.exists() else 0
+    if count >= 19 and not outage.exists():
+        completed=subprocess.run(["git-receive-pack", remote])
+        if completed.returncode:
+            raise SystemExit(completed.returncode)
+        outage.write_text("injected\\n")
+        print("ssh: connection reset by peer", file=sys.stderr)
+        raise SystemExit(255)
+    os.execvp("git-receive-pack", ["git-receive-pack", remote])
+raise SystemExit(2)
+''', encoding="utf-8")
         ssh.chmod(0o700)
         for name in ("curl", "scp", "wget"):
             blocked = self.home / f".factory/bin/{name}"
@@ -656,8 +714,10 @@ raise SystemExit(1 if failed else 0)
             str(launcher), self.project, "qualification-finish", "--json",
             timeout=remaining,
         )
-        self.assertEqual(launched.returncode, 0, launched.stdout + launched.stderr)
         replay = json.loads(launched.stdout)
+        self.assertEqual(
+            launched.returncode, 0, self.failure_evidence(replay),
+        )
         self.assertEqual(replay["status"], "green", json.dumps(replay, sort_keys=True))
         self.assertEqual(replay["restarts"], 1)
         events = [
@@ -666,6 +726,14 @@ raise SystemExit(1 if failed else 0)
         ]
         fallback = [event for event in events if event.get("event") == "provider_fallback"]
         self.assertEqual([event["ticket"] for event in fallback], ["T-902"])
+        self.assertTrue(self.transport_outage.is_file())
+        self.assertEqual(
+            len([
+                event for event in events
+                if event.get("event") == "push_failure_recovered"
+            ]),
+            0,
+        )
         refreshes = [
             event for event in events
             if event.get("event") in REFRESH_EVENTS

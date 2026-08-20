@@ -1878,6 +1878,43 @@ raise SystemExit(code)
         self.assertEqual(value["status"], "error")
         self.assertEqual(self.called(), ["doctor", "reconcile", "qualification"])
 
+    def test_reducer_network_wait_preserves_completed_controller_evidence(self) -> None:
+        complete = self.controller("ok", results=[
+            {"status": "complete", "ticket": ticket}
+            for ticket in ("T-1", "T-2", "T-3")
+        ])
+        code, value = self.run_scenario({
+            "doctor": self.doctor(),
+            "reconcile": complete,
+            "qualification": {
+                "_returncode": 75,
+                "reason_code": "external_unavailable",
+                "status": "wait",
+            },
+        })
+
+        self.assertEqual((code, value["status"]), (3, "waiting"))
+        self.assertEqual(value["reason"], "external_unavailable")
+        self.assertEqual(value["controller"], complete)
+        self.assertEqual(self.called(), ["doctor", "reconcile", "qualification"])
+
+    def test_controller_network_wait_stops_before_reduction(self) -> None:
+        wait = {
+            "_returncode": 75,
+            "reason_code": "external_unavailable",
+            "status": "wait",
+        }
+        code, value = self.run_scenario({
+            "doctor": self.doctor(), "reconcile": wait,
+        })
+
+        self.assertEqual((code, value["status"]), (3, "waiting"))
+        self.assertEqual(value["reason"], "external_unavailable")
+        self.assertEqual(value["controller"], {
+            "reason_code": "external_unavailable", "status": "wait",
+        })
+        self.assertEqual(self.called(), ["doctor", "reconcile"])
+
     def test_reducer_refusal_returns_only_a_bounded_reason_code(self) -> None:
         complete = self.controller("ok", results=[
             {"status": "complete", "ticket": ticket}

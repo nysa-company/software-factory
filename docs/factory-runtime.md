@@ -232,6 +232,14 @@ without writing an audit commit into the ticket branch; the controller still
 owns the resume. A consumed receipt plus the exact resumed state closes the
 push-before-recovery-record crash window. Production operator authority is
 unchanged.
+Transient GitHub or Git transport loss returns the bounded
+`external_unavailable` wait from the same sealed command. Reinvoke that command
+after connectivity returns; the controller confirms or pushes only the exact
+receipt/passport-bound child and resumes the deterministic tail without rerunning
+a completed role. Never hand-edit a claim, passport, receipt, or remote-tracking
+ref. A disconnect during a provider attempt is different: the terminal and its
+accounting remain authoritative and only the existing authenticated fallback
+path may continue it.
 After an explicit contract-repair apply, the separate lifecycle boundary is
 closed with the same sealed isolated release:
 

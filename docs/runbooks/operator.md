@@ -125,6 +125,12 @@ an in-flight manifest or backdate an override.
 - Do: check Railway's dashboard for the failing deploy log; the usual fix is reverting the last merged PR per `docs/operations/rollback-drill.md`. If staging is down but no recent merge happened, restart the Railway service from its dashboard. When the Factory has already emitted `preview-identity-timeout` and the same pushed head should be checked again, run `factory-launch <project> ticket-control retry-preview --ticket <T-NNN> --operator-id <ID> --json`; it extends only that exact wait and does not waive preview evidence.
 - Don't: approve anything while staging is broken — bundles can't be verified.
 
+## Internet or GitHub unavailable
+
+- Notice: the sealed command returns `external_unavailable`, or publication remains at a GitHub wait with no new role attempt.
+- Do: let already-admitted attempts terminalize, restore connectivity, then rerun the same sealed `qualification-finish` or ordinary reconcile command. Exact pushed or locally committed role, ticket-state, bundle, approval, refresh, repair, and closeout evidence is replayed deterministically; first confirm Doctor shows no unknown worker.
+- Don't: rerun a role, rewrite a claim/passport, move a branch, or infer failure from a lost push response. A disconnect after provider GO remains terminal-accounted and may continue only through the authenticated fallback flow.
+
 ## Leaked secret (a key appears in a file, log, or commit)
 
 - Notice: a scanner alert, a reviewer comment, or you see a key string somewhere it shouldn't be.

@@ -24,6 +24,14 @@ SPEC.loader.exec_module(REDUCER)
 
 
 class QualificationReducerTest(unittest.TestCase):
+    def test_remote_timeout_is_typed_but_local_timeout_is_not(self):
+        timeout = subprocess.TimeoutExpired(["gh", "pr", "view"], 120)
+        with patch.object(REDUCER.subprocess, "run", side_effect=timeout):
+            with self.assertRaises(REDUCER.ExternalUnavailable):
+                REDUCER.command("gh", "pr", "view", "1")
+            with self.assertRaises(subprocess.TimeoutExpired):
+                REDUCER.command("git", "status")
+
     def evidence(self):
         candidate = "a" * 40
         tickets = [f"T-{number}" for number in range(110, 114)]

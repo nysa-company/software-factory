@@ -334,6 +334,33 @@ else:
                 TICKET_PR.git(self.product, "ls-remote", "origin")
             self.assertEqual(run.call_count, 2)
 
+    def test_git_ls_remote_github_outage_waits(self):
+        failure = subprocess.CompletedProcess(
+            ["git", "ls-remote"], 128, stdout="",
+            stderr="fatal: unable to access '<redacted>': "
+            "Could not resolve host: github.com",
+        )
+        commands = (
+            ["git", "ls-remote", "https://github.com/example/product.git"],
+            ["git", "-C", str(self.product), "ls-remote", "origin"],
+        )
+        for command in commands:
+            with self.subTest(command=command), patch.object(
+                TICKET_PR.subprocess, "run", return_value=failure,
+            ):
+                with self.assertRaises(TICKET_PR.GitHubUnavailable):
+                    TICKET_PR.run(command)
+        for command in (
+            ["git", "push", "origin", "main"],
+            ["git", "-C", str(self.product), "fetch", "origin"],
+        ):
+            with self.subTest(command=command), patch.object(
+                TICKET_PR.subprocess, "run", return_value=failure,
+            ):
+                with self.assertRaises(TICKET_PR.Refusal) as refused:
+                    TICKET_PR.run(command)
+                self.assertIs(type(refused.exception), TICKET_PR.Refusal)
+
     def command(
         self, expected=0, bucket="pass", lease_id=LEASE_ID,
         contract="", stage="", receipt="", deployed_sha=None,
@@ -407,9 +434,13 @@ else:
             "HTTP 503: unavailable",
             "HTTP 599: unavailable",
             "could not resolve host api.github.com",
+            "could not resolve hostname github.com",
             "error connecting to api.github.com",
+            "failed to connect to github.com port 443",
             "connection reset by peer",
+            "connection timed out",
             "network is unreachable",
+            "operation timed out",
             "TLS handshake timeout",
         ):
             with self.subTest(message=message):
@@ -425,6 +456,16 @@ else:
                 self.assertFalse(
                     TICKET_PR.github_temporarily_unavailable(message)
                 )
+
+    def test_read_only_timeout_waits_but_local_timeout_does_not(self):
+        timeout = subprocess.TimeoutExpired(["gh", "pr", "list"], 120)
+        with patch.object(TICKET_PR.subprocess, "run", side_effect=timeout):
+            with self.assertRaises(TICKET_PR.GitHubUnavailable):
+                TICKET_PR.run(["gh", "pr", "list"])
+            with self.assertRaises(TICKET_PR.GitHubUnavailable):
+                TICKET_PR.run(["git", "ls-remote", "origin"])
+            with self.assertRaises(subprocess.TimeoutExpired):
+                TICKET_PR.run(["git", "status"])
 
     def prepare_control_refresh(
         self, *, prior_bundle_blob=None, remove_bundle=False,

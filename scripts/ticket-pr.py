@@ -19,6 +19,9 @@ from urllib.parse import parse_qs, urlsplit
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
 from effective_ticket import ticket_branch_prefix  # noqa: E402
 import operator_receipt  # noqa: E402
+from external_transport import (  # noqa: E402
+    temporarily_unavailable as github_temporarily_unavailable,
+)
 from approval_evidence import (  # noqa: E402
     ApprovalEvidenceError,
     trusted_approval_continuation_paths,
@@ -62,25 +65,21 @@ class GitHubUnavailable(Refusal):
     pass
 
 
-def github_temporarily_unavailable(message: str) -> bool:
-    lowered = message.casefold()
-    return bool(re.search(r"\bHTTP 5[0-9]{2}\b", message)) or any(
-        value in lowered for value in (
-            "could not resolve host",
-            "temporary failure in name resolution",
-            "error connecting to api.github.com",
-            "connection reset by peer",
-            "network is unreachable",
-            "tls handshake timeout",
-        )
-    )
-
-
 def run(command: list[str], *, cwd: Path | None = None) -> subprocess.CompletedProcess:
-    result = subprocess.run(command, cwd=cwd, text=True, capture_output=True, check=False)
+    try:
+        result = subprocess.run(
+            command, cwd=cwd, text=True, capture_output=True, check=False,
+            timeout=120,
+        )
+    except subprocess.TimeoutExpired as error:
+        if command[:1] == ["gh"] or "ls-remote" in command:
+            raise GitHubUnavailable("GitHub request timed out") from error
+        raise
     if result.returncode:
         message = result.stderr.strip() or result.stdout.strip() or "command failed"
-        if command[:1] == ["gh"] and github_temporarily_unavailable(message):
+        if (
+            command[:1] == ["gh"] or "ls-remote" in command
+        ) and github_temporarily_unavailable(message):
             raise GitHubUnavailable(message)
         raise Refusal(message)
     return result

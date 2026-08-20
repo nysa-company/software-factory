@@ -10,8 +10,12 @@ from pathlib import Path
 import re
 import stat
 import subprocess
+import sys
 import tempfile
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
+from external_transport import temporarily_unavailable  # noqa: E402
 
 
 SCHEMA = "nysa.software-factory.ci-rerun/v1"
@@ -29,6 +33,10 @@ class RerunError(ValueError):
 
 
 class NotTransient(RerunError):
+    pass
+
+
+class ExternalUnavailable(RerunError):
     pass
 
 
@@ -117,9 +125,17 @@ def project_repo(factory: Path) -> str:
 
 
 def gh(*arguments: str) -> str:
-    result = subprocess.run(
-        ["gh", *arguments], text=True, capture_output=True, check=False, timeout=120
-    )
+    try:
+        result = subprocess.run(
+            ["gh", *arguments], text=True, capture_output=True, check=False,
+            timeout=120,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise ExternalUnavailable from error
+    if result.returncode and temporarily_unavailable(
+        result.stderr or result.stdout
+    ):
+        raise ExternalUnavailable
     if result.returncode not in (0, 1, 8):
         raise RerunError(result.stderr.strip() or "GitHub query failed")
     return result.stdout
@@ -180,10 +196,17 @@ def main() -> None:
                 "status": "refused", "ticket": args.ticket,
             }))
             return
-        result = subprocess.run(
-            ["gh", "run", "rerun", str(run_id), "--repo", repo, "--failed"],
-            text=True, capture_output=True, check=False, timeout=120,
-        )
+        try:
+            result = subprocess.run(
+                ["gh", "run", "rerun", str(run_id), "--repo", repo, "--failed"],
+                text=True, capture_output=True, check=False, timeout=120,
+            )
+        except subprocess.TimeoutExpired as error:
+            raise ExternalUnavailable from error
+        if result.returncode and temporarily_unavailable(
+            result.stderr or result.stdout
+        ):
+            raise ExternalUnavailable
         if result.returncode:
             raise RerunError(result.stderr.strip() or "GitHub rerun request failed")
         write_once(record, {
@@ -199,6 +222,9 @@ def main() -> None:
             "head": head, "job_id": job_id, "run_id": run_id,
             "schema": SCHEMA, "status": "rerun", "ticket": args.ticket,
         }))
+    except ExternalUnavailable:
+        print('{"reason_code":"external_unavailable","status":"wait"}')
+        raise SystemExit(75)
     except NotTransient as error:
         print(canonical({
             "reason": str(error), "schema": SCHEMA, "status": "refused",

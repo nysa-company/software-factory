@@ -62,9 +62,14 @@ from ticket_state_transition import (  # noqa: E402
     TransitionError as TicketTransitionError,
     qualification_epoch_text,
 )
+from external_transport import remote_command, temporarily_unavailable  # noqa: E402
 
 
 class Refusal(ValueError):
+    pass
+
+
+class ExternalUnavailable(Refusal):
     pass
 
 
@@ -90,10 +95,21 @@ EMERGENCY_PAUSE_KEYS = {
 
 
 def run(argv, *, cwd=None, input_text=None, check=True):
-    result = subprocess.run(
-        argv, cwd=cwd, input=input_text, text=True,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-    )
+    try:
+        result = subprocess.run(
+            argv, cwd=cwd, input=input_text, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120,
+        )
+    except subprocess.TimeoutExpired as error:
+        if remote_command(argv):
+            raise ExternalUnavailable(
+                "external service is temporarily unavailable"
+            ) from error
+        raise
+    if result.returncode and remote_command(argv) and temporarily_unavailable(
+        result.stderr or result.stdout
+    ):
+        raise ExternalUnavailable("external service is temporarily unavailable")
     if check and result.returncode:
         raise Refusal(result.stderr.strip() or result.stdout.strip() or f"{argv[0]} failed")
     return result
@@ -107,6 +123,13 @@ def git(root, *args, check=True):
     if check and result.returncode:
         raise Refusal(f"Git operation failed: {args[0]}")
     return result
+
+
+def attempted_push(root, *args):
+    try:
+        return git(root, *args, check=False), None
+    except ExternalUnavailable as error:
+        return None, error
 
 
 def gh(*args):
@@ -894,8 +917,21 @@ def publication_refresh_replay(workdir, ticket, branch, remote, expected_base):
     remote_head = git(
         workdir, "ls-remote", "--heads", "--", remote, f"refs/heads/{branch}",
     ).stdout.split()
+    push_failure = None
+    if remote_head == [receipt["old_head"], f"refs/heads/{branch}"]:
+        _, push_failure = attempted_push(
+            workdir, "push", "--no-force", "--", remote,
+            f"{head}:refs/heads/{branch}",
+        )
+        remote_head = git(
+            workdir, "ls-remote", "--heads", "--", remote,
+            f"refs/heads/{branch}",
+        ).stdout.split()
     if remote_head != [head, f"refs/heads/{branch}"]:
+        if push_failure is not None:
+            raise push_failure
         raise Refusal("dependency publication replay is not pushed exactly")
+    git(workdir, "update-ref", f"refs/remotes/origin/{branch}", head)
     return {"action": "refresh", "head": head, "attestation": receipt}
 
 
@@ -1237,9 +1273,9 @@ def restart_stale_closeout(
         raise Refusal("configured origin no longer matches the certified product origin")
     git(workdir, "update-ref", f"refs/heads/{branch}", main, head)
     git(workdir, "restore", "--source", main, "--staged", "--worktree", "--", ".")
-    pushed = git(
+    pushed, push_failure = attempted_push(
         workdir, "push", f"--force-with-lease=refs/heads/{branch}:{head}",
-        "--", remote, f"{main}:refs/heads/{branch}", check=False,
+        "--", remote, f"{main}:refs/heads/{branch}",
     )
     observed = git(
         workdir, "ls-remote", "--heads", "--", remote, f"refs/heads/{branch}",
@@ -1248,8 +1284,11 @@ def restart_stale_closeout(
         if observed[:1] == [head]:
             git(workdir, "update-ref", f"refs/heads/{branch}", head, main)
             git(workdir, "restore", "--source", head, "--staged", "--worktree", "--", ".")
+        if push_failure is not None:
+            raise push_failure
         raise Refusal(
-            pushed.stderr.strip() or "remote did not confirm regenerated closeout branch"
+            (pushed.stderr.strip() if pushed else "")
+            or "remote did not confirm regenerated closeout branch"
         )
     git(workdir, "update-ref", f"refs/remotes/origin/{branch}", main)
     if (
@@ -1270,7 +1309,13 @@ def ensure_clean_branch(product, workdir, expected, *, based_on_main=False, requ
     if require_remote:
         remote = git(workdir, "rev-parse", f"refs/remotes/origin/{branch}", check=False)
         if remote.returncode or remote.stdout.strip() != local:
-            raise Refusal("local branch must exactly match its origin tracking tip")
+            observed = git(
+                workdir, "ls-remote", "--heads", "--", "origin",
+                f"refs/heads/{branch}",
+            ).stdout.split()
+            if observed != [local, f"refs/heads/{branch}"]:
+                raise Refusal("local branch must exactly match its remote tip")
+            git(workdir, "update-ref", f"refs/remotes/origin/{branch}", local)
     if based_on_main and git(
         workdir, "merge-base", "--is-ancestor", "origin/main", "HEAD", check=False
     ).returncode:
@@ -2262,12 +2307,17 @@ def push_head(product, workdir, remote, branch, head):
     configured = git(product, "remote", "get-url", "--push", "--all", "origin").stdout.splitlines()
     if configured != [remote]:
         raise Refusal("configured origin no longer matches the certified product origin")
-    git(workdir, "push", "--no-force", "--", remote, f"{head}:refs/heads/{branch}")
+    _, push_failure = attempted_push(
+        workdir, "push", "--no-force", "--", remote,
+        f"{head}:refs/heads/{branch}",
+    )
     observed = git(
         workdir, "ls-remote", "--heads", "--", remote,
         f"refs/heads/{branch}",
     ).stdout.split()
     if observed != [head, f"refs/heads/{branch}"]:
+        if push_failure is not None:
+            raise push_failure
         raise Refusal("remote did not confirm the attestation commit")
     if os.environ.get("FACTORY_TEST_REFRESH_CRASH_AFTER_PUSH") == "1":
         raise SystemExit(92)
@@ -3202,13 +3252,32 @@ def dependency_publication_replay(args, product, workdir, prefix, remote):
 
 def bundle(args, product, workdir, repo, prefix, remote, kit_sha):
     branch = f"{prefix}{args.ticket}"
-    head = ensure_clean_branch(product, workdir, branch)
+    head = ensure_clean_branch(
+        product, workdir, branch, require_remote=False,
+    )
     ticket_path = workdir / "factory" / "tickets" / f"{args.ticket}.md"
     bundle_path = workdir / "factory" / "tickets" / f"{args.ticket}-bundle.md"
     text = ticket_path.read_text()
+    state = field(text, "State").lower()
+    attestation_path = workdir / "factory" / "attestations" / args.ticket / "bundle.json"
+    if state == "awaiting approval" and attestation_path.is_file():
+        attestation = validate_bundle_attestation(
+            json.loads(attestation_path.read_text()), args.ticket, repo,
+            branch, kit_sha, workdir,
+        )
+        validate_bundle_commit(workdir, args.ticket, attestation, head)
+        push_head(product, workdir, remote, branch, head)
+        pr = exact_pr(repo, branch, "open")
+        if (
+            pr.get("number") != attestation.get("pr_number")
+            or pr.get("headRefOid") != head
+        ):
+            raise Refusal("existing bundle attestation PR identity changed")
+        return {"action": "bundle", "head": head, "attestation": attestation}
+    ensure_clean_branch(product, workdir, branch)
     if merge_policy(text) != protected_merge_policy(workdir, args.ticket):
         raise Refusal("Merge-Policy differs from protected origin/main")
-    if field(text, "State").lower() != "review":
+    if state != "review":
         raise Refusal("bundle requires ticket State Review")
     bundle_text = bundle_path.read_text()
     if re.search(r"\bNOT\s+APPROVABLE\s*:", bundle_text, re.I):
@@ -3268,7 +3337,6 @@ def bundle(args, product, workdir, repo, prefix, remote, kit_sha):
     if pr.get("headRefOid") != head:
         raise Refusal("PR head does not match the exact ticket branch")
     blob = git(workdir, "hash-object", str(bundle_path)).stdout.strip()
-    attestation_path = workdir / "factory" / "attestations" / args.ticket / "bundle.json"
     attestation = {
         "schema": (
             "nysa.software-factory.ticket-bundle/v2"
@@ -3306,11 +3374,13 @@ def bundle(args, product, workdir, repo, prefix, remote, kit_sha):
 def approval(args, product, workdir, repo, prefix, remote, kit_sha, method):
     attest_only = getattr(args, "attest_only", False)
     branch = f"{prefix}{args.ticket}"
-    head = ensure_clean_branch(product, workdir, branch)
     ticket_path = workdir / "factory" / "tickets" / f"{args.ticket}.md"
     bundle_path = workdir / "factory" / "tickets" / f"{args.ticket}-bundle.md"
     attestation_path = workdir / "factory" / "attestations" / args.ticket / "bundle.json"
     approval_path = attestation_path.with_name("approval.json")
+    head = ensure_clean_branch(
+        product, workdir, branch, require_remote=not approval_path.exists(),
+    )
     bundle_value = json.loads(attestation_path.read_text())
     map_path = operator_map_path(product)
     mapping = json.loads(map_path.read_text()) if map_path.is_file() else {}
@@ -3397,6 +3467,8 @@ def approval(args, product, workdir, repo, prefix, remote, kit_sha, method):
         ).encode()).hexdigest()
     if git(workdir, "hash-object", str(bundle_path)).stdout.strip() != bundle_att.get("bundle_blob"):
         raise Refusal("evidence bundle changed after attestation")
+    if existing_approval:
+        push_head(product, workdir, remote, branch, head)
     pr = exact_pr(repo, branch, "open")
     if pr.get("number") != bundle_att.get("pr_number") or pr.get("headRefOid") != head:
         raise Refusal("PR identity or head changed before approval")
@@ -4142,6 +4214,11 @@ def main():
 if __name__ == "__main__":
     try:
         main()
+    except ExternalUnavailable:
+        print(json.dumps({
+            "reason_code": "external_unavailable", "status": "wait",
+        }, sort_keys=True, separators=(",", ":")))
+        raise SystemExit(75)
     except (KeyError, OSError, json.JSONDecodeError, Refusal) as error:
         print(f"ticket-attest: {error}", file=sys.stderr)
         raise SystemExit(1)

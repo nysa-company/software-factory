@@ -579,6 +579,7 @@ Merge-Policy: manual
             "create_fail": False, "closeout_merge_fail": False,
             "closeout_auto_merge": True,
             "historical_head_ref": None,
+            "network_fail": False,
         }
         value.update(updates)
         self.state.write_text(json.dumps(value))
@@ -595,6 +596,9 @@ import json, os, subprocess, sys, urllib.parse
 from pathlib import Path
 s = json.loads(Path(os.environ["FAKE_GH_STATE"]).read_text())
 a = sys.argv[1:]
+if s.get("network_fail"):
+    print("Could not resolve host: github.com", file=sys.stderr)
+    raise SystemExit(1)
 head = subprocess.check_output(["git", "-C", os.environ["FAKE_WORKDIR"], "rev-parse", "HEAD"], text=True).strip()
 if a[:2] == ["pr", "list"]:
     state = a[a.index("--state") + 1]
@@ -809,6 +813,94 @@ else:
         self.assertFalse(state["draft"])
         self.assertIn("--squash", state["merge_argv"])
         self.assertNotIn("--merge", state["merge_argv"])
+
+    def test_bundle_recovers_confirmed_push_after_tracking_update_loss(self):
+        self.env["FACTORY_TEST_REFRESH_CRASH_AFTER_PUSH"] = "1"
+        crashed = self.attest("bundle")
+        self.env.pop("FACTORY_TEST_REFRESH_CRASH_AFTER_PUSH")
+        self.assertEqual(crashed.returncode, 92, crashed.stderr)
+        attested = self.head()
+        self.assertEqual(
+            command(
+                "git", "ls-remote", "--heads", str(self.remote),
+                "refs/heads/ticket/T-700",
+            ).stdout.split()[0],
+            attested,
+        )
+
+        retried = self.attest("bundle")
+
+        self.assertEqual(retried.returncode, 0, retried.stderr)
+        self.assertEqual(self.head(), attested)
+        self.assertEqual(json.loads(retried.stdout)["action"], "bundle")
+
+    def test_bundle_network_outage_waits_without_mutation(self):
+        before = self.head()
+        self.update_state(network_fail=True)
+
+        waiting = self.attest("bundle")
+
+        self.assertEqual(waiting.returncode, 75, waiting.stderr)
+        self.assertEqual(json.loads(waiting.stdout), {
+            "reason_code": "external_unavailable", "status": "wait",
+        })
+        self.assertEqual(self.head(), before)
+        self.update_state(network_fail=False)
+        self.assertEqual(self.attest("bundle").returncode, 0)
+
+    def test_remote_timeout_is_typed_without_classifying_local_timeout(self):
+        timeout = subprocess.TimeoutExpired(["gh", "pr", "view"], 120)
+        with patch.object(TICKET_ATTEST.subprocess, "run", side_effect=timeout):
+            with self.assertRaises(TICKET_ATTEST.ExternalUnavailable):
+                TICKET_ATTEST.run(["gh", "pr", "view"])
+            with self.assertRaises(subprocess.TimeoutExpired):
+                TICKET_ATTEST.run(["git", "status"])
+
+    def test_push_accepts_an_exact_head_after_lost_response(self):
+        head = "b" * 40
+        results = [
+            subprocess.CompletedProcess([], 0, str(self.remote) + "\n", ""),
+            subprocess.CompletedProcess(
+                [], 128, "", "connection reset by peer",
+            ),
+            subprocess.CompletedProcess(
+                [], 0, f"{head}\trefs/heads/ticket/T-700\n", "",
+            ),
+            subprocess.CompletedProcess([], 0, "", ""),
+        ]
+        with patch.object(TICKET_ATTEST.subprocess, "run", side_effect=results):
+            self.assertEqual(
+                TICKET_ATTEST.push_head(
+                    self.product, self.product, str(self.remote),
+                    "ticket/T-700", head,
+                ),
+                head,
+            )
+
+    def test_bundle_retries_a_locally_committed_rejected_push(self):
+        hook = self.remote / "hooks/pre-receive"
+        hook.write_text("#!/bin/sh\nexit 1\n")
+        hook.chmod(0o755)
+        failed = self.attest("bundle")
+        committed = self.head()
+        hook.unlink()
+
+        retried = self.attest("bundle")
+
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertEqual(retried.returncode, 0, retried.stderr)
+        self.assertEqual(self.head(), committed)
+
+    def test_bundle_retry_refuses_an_unrelated_later_head(self):
+        self.bundle()
+        (self.product / "unrelated.txt").write_text("later\n")
+        self.commit("unrelated post-bundle commit")
+        command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
+
+        retried = self.attest("bundle")
+
+        self.assertNotEqual(retried.returncode, 0)
+        self.assertIn("bundle attestation commit", retried.stderr)
 
     def test_approval_refuses_cleanly_when_operator_map_is_absent(self):
         self.bundle()
@@ -1287,6 +1379,39 @@ else:
         self.assertEqual(second["head"], attested_head)
         self.assertTrue(second["auto_merge"])
         self.assertTrue(json.loads(self.state.read_text())["auto_merge"])
+
+    def test_approval_recovers_confirmed_push_after_tracking_update_loss(self):
+        self.bundle()
+        self.approval_overlay()
+        self.env["FACTORY_TEST_REFRESH_CRASH_AFTER_PUSH"] = "1"
+        crashed = self.attest("approval", attest_only=True)
+        self.env.pop("FACTORY_TEST_REFRESH_CRASH_AFTER_PUSH")
+        self.assertEqual(crashed.returncode, 92, crashed.stderr)
+        attested = self.head()
+
+        retried = self.attest("approval", attest_only=True)
+
+        self.assertEqual(retried.returncode, 0, retried.stderr)
+        self.assertEqual(self.head(), attested)
+        self.assertEqual(
+            json.loads(retried.stdout)["action"], "approval-attested",
+        )
+
+    def test_approval_retries_a_locally_committed_rejected_push(self):
+        self.bundle()
+        self.approval_overlay()
+        hook = self.remote / "hooks/pre-receive"
+        hook.write_text("#!/bin/sh\nexit 1\n")
+        hook.chmod(0o755)
+        failed = self.attest("approval", attest_only=True)
+        committed = self.head()
+        hook.unlink()
+
+        retried = self.attest("approval", attest_only=True)
+
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertEqual(retried.returncode, 0, retried.stderr)
+        self.assertEqual(self.head(), committed)
 
     def test_projected_overlay_retries_approval_after_successor_route(self):
         self.bundle()
@@ -3256,7 +3381,7 @@ else:
         hook.write_text("#!/bin/sh\nexit 1\n")
         hook.chmod(0o755)
         failed = self.attest("done")
-        self.assertIn("Git operation failed: push", failed.stderr)
+        self.assertIn("remote did not confirm", failed.stderr)
         closeout_head = self.head_at(self.workdir)
         hook.unlink()
         retried = self.attest("done")

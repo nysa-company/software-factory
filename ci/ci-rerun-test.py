@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+import subprocess
 import unittest
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -16,6 +18,14 @@ SPEC.loader.exec_module(RERUN)
 
 
 class CiRerunTest(unittest.TestCase):
+    def test_github_timeout_is_typed(self) -> None:
+        with patch.object(
+            RERUN.subprocess, "run",
+            side_effect=subprocess.TimeoutExpired(["gh", "pr", "view"], 120),
+        ):
+            with self.assertRaises(RERUN.ExternalUnavailable):
+                RERUN.gh("pr", "view", "1")
+
     def test_only_one_exact_application_test_job_is_retryable(self) -> None:
         run, job, name = RERUN.classify([
             {"bucket": "pass", "link": "", "name": "Security policy"},
