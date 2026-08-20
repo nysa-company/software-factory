@@ -83,7 +83,9 @@ case "\${1:-}" in
     [[ "$status" == "0" ]] && echo '{"authenticated":true}'
     exit "$status" ;;
   models)
-    printf '%s\n' 'gpt-5.6-sol-high' 'claude-sonnet-5-thinking-high'
+    printf '%s\n' \
+      'gpt-5.6-sol-high - GPT-5.6 Sol 1M High' \
+      'claude-sonnet-5-thinking-high - Claude Sonnet 5 1M Thinking'
     exit 0 ;;
 esac
 exit 0

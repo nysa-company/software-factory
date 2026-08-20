@@ -405,6 +405,7 @@ factory_probe_adapter() {
   local claude_bin secret_file minimal_path required_flag
   local claude_config_dir claude_probe_config claude_oauth_state
   local cursor_bin="${CURSOR_AGENT_BIN:-agent}" auth_ready model_ready attempt
+  local expected_identity models_output identity_ready
   local credential_reason
   local cursor_source_home="${FACTORY_CURSOR_SESSION_HOME:-$HOME}"
   local cursor_home=""
@@ -575,6 +576,10 @@ factory_probe_adapter() {
       if [[ "$actual_family" != "$expected_family" ]]; then
         PROBE_STATE="INVALID"; PROBE_REASON="model_not_allowlisted"; return 0
       fi
+      expected_identity="$(factory_model_report_name "$model" 2>/dev/null || true)"
+      if [[ -z "$expected_identity" ]]; then
+        PROBE_STATE="INVALID"; PROBE_REASON="model_not_allowlisted"; return 0
+      fi
       if ! command -v "$cursor_bin" >/dev/null 2>&1; then
         PROBE_STATE="UNAVAILABLE"; PROBE_REASON="executable_missing"; return 0
       fi
@@ -628,24 +633,33 @@ factory_probe_adapter() {
       fi
       if [[ -n "$installed_version" && "$PROBE_REASON" == "unclassified" ]]; then
         model_ready=0
+        identity_ready=0
+        models_output="$cursor_home/models"
+        : > "$models_output"
+        chmod 600 "$models_output"
         for attempt in 1 2; do
-          if HOME="$cursor_home" timeout "$probe_timeout" "$cursor_bin" models 2>/dev/null |
-               awk -v model="$model" '{ for (i=1; i<=NF; i++) if ($i==model) found=1 } END { exit !found }'; then
+          if HOME="$cursor_home" timeout "$probe_timeout" "$cursor_bin" models \
+               >"$models_output" 2>/dev/null &&
+             awk -v model="$model" \
+               '{ for (i=1; i<=NF; i++) if ($i==model) found=1 } END { exit !found }' \
+               "$models_output"; then
             model_ready=1
-            break
+            if python3 "$FACTORY_POLICY_DIR/cursor_model_identity.py" \
+                "$model" "$expected_identity" "$models_output"; then
+              identity_ready=1
+              break
+            fi
           fi
         done
         if [[ "$model_ready" != 1 ]]; then
           PROBE_STATE="INVALID"; PROBE_REASON="model_unavailable"
+        elif [[ "$identity_ready" != 1 ]]; then
+          PROBE_STATE="INVALID"; PROBE_REASON="reported_identity_mismatch"
         fi
       fi
       if [[ -n "$installed_version" && "$PROBE_REASON" == "unclassified" ]]; then
-        PROBE_REPORTED_IDENTITY="$(factory_model_report_name "$model" 2>/dev/null || true)"
-        if [[ -z "$PROBE_REPORTED_IDENTITY" ]]; then
-          PROBE_STATE="INVALID"; PROBE_REASON="model_not_allowlisted"
-        else
-          PROBE_STATE="READY"; PROBE_REASON="local_contract_ready"
-        fi
+        PROBE_REPORTED_IDENTITY="$expected_identity"
+        PROBE_STATE="READY"; PROBE_REASON="local_contract_ready"
       fi
       rm -rf "$cursor_home"
       ;;

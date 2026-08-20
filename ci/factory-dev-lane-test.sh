@@ -143,8 +143,10 @@ case "${1:-}" in
   --help) printf '%s\n' --print --output-format --workspace --model --force --trust --sandbox ;;
   status) printf '{"authenticated":true}\n' ;;
   models) printf '%s\n' \
-    gpt-5.6-sol-high claude-fable-5-thinking-medium \
-    claude-opus-5-thinking-medium claude-sonnet-5-thinking-high ;;
+    'gpt-5.6-sol-high - GPT-5.6 Sol 1M High' \
+    'claude-fable-5-thinking-medium - Claude Fable 5 1M Medium Thinking (NO ZDR)' \
+    'claude-opus-5-thinking-medium - Claude Opus 5 1M Medium Thinking' \
+    'claude-sonnet-5-thinking-high - Claude Sonnet 5 1M Thinking' ;;
   *) printf '%s\n' "$@" >"$(dirname "$0")/cursor-args"; exit 42 ;;
 esac
 EOF

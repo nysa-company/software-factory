@@ -16,7 +16,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts/lib"))
-from cursor_model_identity import approved_reported_models
+from cursor_model_identity import approved_reported_models, listed_reported_model
 
 
 STREAM = ROOT / "scripts/lib/cursor-stream.py"
@@ -529,7 +529,7 @@ class CursorStreamTest(unittest.TestCase):
             {
                 "type": "system",
                 "subtype": "init",
-                "model": "GPT-5.6 Sol 1M High",
+                "model": "GPT-5.6 Sol 272K High",
             },
             {"type": "result", "subtype": "success"},
         ]
@@ -537,10 +537,10 @@ class CursorStreamTest(unittest.TestCase):
             events,
             0,
             model="gpt-5.6-sol-high",
-            reported_model="GPT-5.6 Sol 272K High",
+            reported_model="GPT-5.6 Sol 1M High",
         )
         self.assertEqual(accepted.returncode, 0, accepted.stderr)
-        self.assertIn("reported_model=GPT-5.6 Sol 1M High", accepted.metrics)
+        self.assertIn("reported_model=GPT-5.6 Sol 272K High", accepted.metrics)
 
         for identities in (
             ("GPT-5.6 Sol 1M Medium", "GPT-5.6 Sol 1M High"),
@@ -556,7 +556,7 @@ class CursorStreamTest(unittest.TestCase):
                     + [{"type": "result", "subtype": "success"}],
                     0,
                     model="gpt-5.6-sol-high",
-                    reported_model="GPT-5.6 Sol 272K High",
+                    reported_model="GPT-5.6 Sol 1M High",
                 )
                 self.assertEqual(refused.returncode, 11)
 
@@ -572,7 +572,7 @@ class CursorStreamTest(unittest.TestCase):
             ],
             0,
             model="claude-sonnet-5-thinking-high",
-            reported_model="Sonnet 5 300K High",
+            reported_model="Claude Sonnet 5 1M Thinking",
         )
         self.assertEqual(accepted.returncode, 0, accepted.stderr)
         self.assertIn(
@@ -590,7 +590,7 @@ class CursorStreamTest(unittest.TestCase):
             ],
             0,
             model="claude-opus-5-thinking-medium",
-            reported_model="Opus 5 300K Medium",
+            reported_model="Claude Opus 5 1M Medium Thinking",
         )
         self.assertEqual(refused.returncode, 11)
 
@@ -637,8 +637,9 @@ class CursorStreamTest(unittest.TestCase):
                     family = selection.removeprefix("claude-").split("-", 1)[0]
                     self.assertEqual(route["adapter"], "cursor-anthropic")
                     self.assertTrue(selection.startswith("claude-"))
-                    self.assertTrue(canonical.startswith(f"{family.title()} "))
-                    self.assertIn(f"Claude {canonical}", approved)
+                    self.assertTrue(canonical.startswith(
+                        (f"{family.title()} ", f"Claude {family.title()} ")
+                    ))
                 else:
                     self.assertEqual(route["adapter"], "cursor-openai")
                     self.assertTrue(selection.startswith("gpt-"))
@@ -684,6 +685,33 @@ class CursorStreamTest(unittest.TestCase):
                         reported_model=route["expected_reported_identity"],
                     )
                     self.assertEqual(refused.returncode, 11)
+
+    def test_cursor_inventory_identity_is_exact_and_unambiguous(self) -> None:
+        selection = "claude-opus-5-thinking-medium"
+        current = "Claude Opus 5 1M Medium Thinking"
+        for raw in (
+            f"{selection} - {current}\n",
+            f"\x1b[32m{selection} - {current}\x1b[0m (current)\n",
+            "Available models\n"
+            "gpt-5.6-sol-high - GPT-5.6 Sol 1M High (default)\n"
+            f"{selection} - {current} (current)\n",
+        ):
+            with self.subTest(raw=raw):
+                self.assertEqual(listed_reported_model(raw, selection), current)
+
+        for raw in (
+            f"{selection}\n",
+            f"prefix-{selection} - {current}\n",
+            f"{selection} - Opus 5 1M Medium Thinking\n",
+            f"{selection} - Claude Opus 6 1M Medium Thinking\n",
+            f"{selection} - {current}\n{selection} - {current}\n",
+        ):
+            with self.subTest(raw=raw):
+                reported = listed_reported_model(raw, selection)
+                self.assertNotIn(
+                    reported,
+                    approved_reported_models(selection, current),
+                )
 
     def test_structured_events_create_sequenced_progress_evidence(self) -> None:
         result = self.run_stream(
@@ -783,7 +811,7 @@ class CursorStreamTest(unittest.TestCase):
                 """#!/usr/bin/env bash
 case "${1:-}" in
   --version) printf '2026.07.test\\n'; exit ;;
-  models) printf 'claude-sonnet-5-thinking-high\\n'; exit ;;
+  models) printf 'claude-sonnet-5-thinking-high - Claude Sonnet 5 1M Thinking\\n'; exit ;;
 esac
 printf '%s\\n' "$$" >"$FAKE_CURSOR_PID_FILE"
 printf '%s\\n' '{"type":"system","subtype":"init"}'

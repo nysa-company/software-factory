@@ -563,7 +563,7 @@ case "${1:-}" in
   --version) printf '%s\\n' 'agent 2026.07.test' ;;
   --help) printf '%s\\n' '--print --output-format --workspace --model --force --trust' ;;
   status) printf '%s\\n' '{"authenticated":true}' ;;
-  models) printf '%s\\n' 'gpt-5.6-sol-high' ;;
+  models) printf '%s\\n' 'gpt-5.6-sol-high - GPT-5.6 Sol 1M High' ;;
   *) exit 2 ;;
 esac
 """

@@ -174,6 +174,45 @@ SCENARIOS = (
         ),
     ),
     (
+        "model_inventory_and_identity_recovery_are_exact",
+        (
+            "cursor-stream-test.py",
+            "CursorStreamTest.test_cursor_inventory_identity_is_exact_and_unambiguous",
+            "CursorStreamTest.test_enabled_cursor_runtime_names_remain_route_bound",
+        ),
+        (
+            "factory-controller-test.py",
+            "FactoryControllerTest.test_model_identity_success_recovers_before_provider_fallback",
+            "FactoryControllerTest.test_first_model_identity_success_observation_never_replays_provider",
+        ),
+        (
+            "ticket-passport-test.py",
+            "TicketPassportTest.test_reverted_model_identity_success_is_restored_without_replay",
+        ),
+    ),
+    (
+        "qualification_finish_operator_boundaries_fail_closed",
+        (
+            "qualification-run-test.py",
+            "QualificationRunTest.test_finish_projects_exact_approval_and_continues_to_green",
+            "QualificationRunTest.test_finish_refuses_dirty_approval_claim",
+            "QualificationRunTest.test_finish_refuses_foreign_operator_authority",
+            "QualificationRunTest.test_finish_refuses_concurrent_controller",
+        ),
+    ),
+    (
+        "terminal_restart_and_publication_evidence_recover_once",
+        (
+            "factory-controller-test.py",
+            "FactoryControllerTest.test_qualification_missing_terminal_latches_after_process",
+            "FactoryControllerTest.test_delayed_terminal_is_finished_without_rerunning_role",
+            "FactoryControllerTest.test_qualification_empty_restart_recovers_protected_targets",
+            "FactoryControllerTest.test_qualification_restart_surfaces_durable_blocked_claims",
+            "FactoryControllerTest.test_publication_events_follow_serialized_lease_order",
+            "FactoryControllerTest.test_publication_acquisition_event_recovers_before_claim_save",
+        ),
+    ),
+    (
         "malformed_restart_and_reducer_evidence_fail_closed",
         (
             "qualification-run-test.py",
