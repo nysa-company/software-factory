@@ -4285,6 +4285,25 @@ install_ticket_mode_hooks() {
   chmod +x "$hook"
 }
 
+install_spec_lint_hook() {
+  local ticket="$1" shape="$2" hook
+  hook="$(git -C "$ROLE_EXIT_WORKTREE" rev-parse --git-path hooks/pre-commit)"
+  {
+    printf '%s\n' '#!/usr/bin/env bash' 'set -eu'
+    if [[ "$shape" == "formatted" ]]; then
+      printf "sed -i.bak 's/^SPEC-LINT: PASS$/\\*\\*SPEC-LINT: PASS\\*\\*/' %q\n" \
+        "$ROLE_EXIT_WORKTREE/factory/tickets/$ticket.md"
+    else
+      printf "sed -i.bak '1s/^# /# rewritten /' %q\n" \
+        "$ROLE_EXIT_WORKTREE/factory/tickets/$ticket.md"
+    fi
+    printf 'rm -f %q\n' "$ROLE_EXIT_WORKTREE/factory/tickets/$ticket.md.bak"
+    printf 'git -C %q add %q\n' "$ROLE_EXIT_WORKTREE" \
+      "factory/tickets/$ticket.md"
+  } >"$hook"
+  chmod +x "$hook"
+}
+
 if [[ "$SUBSET" == "role-exit-git" ]]; then
 setup_role_exit_fixture T-606
 git -C "$ROLE_EXIT_ROOT" checkout -q --detach HEAD
@@ -4890,6 +4909,53 @@ if [[ "$ROLE_SPEC_APPEND_STATUS" -eq 0 &&
 else
   fail "spec-linter may append exactly one canonical verdict" \
     "status=$ROLE_SPEC_APPEND_STATUS"
+fi
+
+setup_role_exit_fixture T-613 spec-linter
+install_spec_lint_hook T-613 formatted
+ROLE_SPEC_FORMAT_BEFORE="$(git -C "$ROLE_EXIT_WORKTREE" rev-parse HEAD)"
+ROLE_SPEC_FORMAT_STATUS=0
+MOCK_SPEC_LINT_VERDICT=PASS FACTORY_ROOT="$ROLE_EXIT_ROOT" \
+  FACTORY_GLOBAL_ENV="$TMP/no-global.env" FACTORY_TEST_MODE=1 \
+  FACTORY_TEST_ENFORCE_ROLE_EXIT=1 FACTORY_ADAPTER_OVERRIDE=mock \
+  FACTORY_CERTIFIED_PRODUCT_ORIGIN="$ROLE_EXIT_REMOTE" \
+  "$RUN_AGENT" --role spec-linter --ticket T-613 --workdir "$ROLE_EXIT_WORKTREE" -- \
+    "formatted lint" > "$TMP/role-spec-format.out" 2>&1 ||
+  ROLE_SPEC_FORMAT_STATUS=$?
+if [[ "$ROLE_SPEC_FORMAT_STATUS" -eq 11 &&
+      "$(git -C "$ROLE_EXIT_WORKTREE" rev-parse HEAD)" == "$ROLE_SPEC_FORMAT_BEFORE" &&
+      "$(git --git-dir="$ROLE_EXIT_REMOTE" rev-parse refs/heads/ticket/T-613)" == \
+        "$ROLE_SPEC_FORMAT_BEFORE" ]] &&
+   grep -q 'role_exit_invalid_output' "$TMP/role-spec-format.out" &&
+   ! grep -q 'role_exit_protected_ticket_mutation' "$TMP/role-spec-format.out"; then
+  pass "formatted spec verdict is retryable invalid output"
+else
+  fail "formatted spec verdict is retryable invalid output" \
+    "status=$ROLE_SPEC_FORMAT_STATUS"
+fi
+
+setup_role_exit_fixture T-614 spec-linter
+install_spec_lint_hook T-614 rewrite
+ROLE_SPEC_REWRITE_BEFORE="$(git -C "$ROLE_EXIT_WORKTREE" rev-parse HEAD)"
+ROLE_SPEC_REWRITE_STATUS=0
+MOCK_SPEC_LINT_VERDICT=PASS FACTORY_ROOT="$ROLE_EXIT_ROOT" \
+  FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
+  FACTORY_TEST_MODE=1 FACTORY_TEST_ENFORCE_ROLE_EXIT=1 \
+  FACTORY_ADAPTER_OVERRIDE=mock \
+  FACTORY_CERTIFIED_PRODUCT_ORIGIN="$ROLE_EXIT_REMOTE" \
+  "$RUN_AGENT" --role spec-linter --ticket T-614 --workdir "$ROLE_EXIT_WORKTREE" -- \
+    "rewritten lint" > "$TMP/role-spec-rewrite.out" 2>&1 ||
+  ROLE_SPEC_REWRITE_STATUS=$?
+if [[ "$ROLE_SPEC_REWRITE_STATUS" -eq 11 &&
+      "$(git -C "$ROLE_EXIT_WORKTREE" rev-parse HEAD)" == "$ROLE_SPEC_REWRITE_BEFORE" &&
+      "$(git --git-dir="$ROLE_EXIT_REMOTE" rev-parse refs/heads/ticket/T-614)" == \
+        "$ROLE_SPEC_REWRITE_BEFORE" ]] &&
+   grep -q 'role_exit_protected_ticket_mutation' \
+     "$TMP/role-spec-rewrite.out"; then
+  pass "spec-linter cannot rewrite prior ticket bytes"
+else
+  fail "spec-linter cannot rewrite prior ticket bytes" \
+    "status=$ROLE_SPEC_REWRITE_STATUS"
 fi
 
 setup_role_exit_fixture T-609

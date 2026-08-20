@@ -7092,3 +7092,14 @@ only a stale dispatcher lock through the existing owner-aware protocol, and
 refuses release-owned maintenance. Operators never delete leases, locks, or
 maintenance by hand; signed release transactions still finish through their
 own activation path.
+
+## 2026-08-19 — Decision 515: Current Spec-lint output is byte-append-only
+
+Category: Reliability
+
+Q48 T-467 appended a complete report but wrapped its final verdict in Markdown
+bold. Current role exit now distinguishes a clean noncanonical append from
+protected history mutation: the former is quarantined as invalid output for the
+existing bounded retry, while success requires the prior ticket blob as an
+exact byte prefix plus one new canonical verdict. Historical successor recovery
+keeps its older exact-delta replay contract and is not retroactively narrowed.

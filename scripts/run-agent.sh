@@ -1130,22 +1130,48 @@ print(json.dumps(snapshot, sort_keys=True, separators=(",", ":")))
 PY
 }
 
-ticket_evidence_is_legal() {
-  python3 - "$1" "$2" "$3" <<'PY'
+ticket_evidence_status() {
+  python3 - "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" <<'PY'
 import json
+import subprocess
 import sys
 
 before, after = (json.loads(value) for value in sys.argv[1:3])
 role = sys.argv[3]
+git, workdir, before_head, after_head, ticket = sys.argv[4:]
 for key in ("fields", "authorizations", "reviewer_verdicts", "reviewer_voids"):
     if before[key] != after[key]:
-        raise SystemExit(1)
+        print("protected-mutation")
+        raise SystemExit
 if role == "spec-linter":
-    if (len(after["spec_lint"]) != len(before["spec_lint"]) + 1 or
-            after["spec_lint"][:-1] != before["spec_lint"]):
-        raise SystemExit(1)
+    prior = before["spec_lint"]
+    current = after["spec_lint"]
+    if current[:len(prior)] != prior:
+        print("protected-mutation")
+        raise SystemExit
+    path = f"factory/tickets/{ticket}.md"
+    blobs = []
+    for revision in (before_head, after_head):
+        result = subprocess.run(
+            [git, "-C", workdir, "show", f"{revision}:{path}"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False,
+        )
+        if result.returncode:
+            print("protected-mutation")
+            raise SystemExit
+        blobs.append(result.stdout)
+    if not blobs[1].startswith(blobs[0]):
+        print("protected-mutation")
+    elif before_head == after_head:
+        print("legal")
+    elif len(current) == len(prior) + 1:
+        print("legal")
+    else:
+        print("invalid-output")
 elif before["spec_lint"] != after["spec_lint"]:
-    raise SystemExit(1)
+    print("protected-mutation")
+else:
+    print("legal")
 PY
 }
 
@@ -3115,6 +3141,13 @@ elif [[ "$ROLE_EXIT_ENFORCED" -eq 1 ]]; then
     contract-blocked) ROLE_ESCALATION_REQUESTED=1 ;;
     *) ROLE_ESCALATION_INVALID=1 ;;
   esac
+  ROLE_TICKET_EVIDENCE_STATUS="protected-mutation"
+  if [[ "$ROLE_PROTECTED_AFTER" != "__invalid__" ]]; then
+    ROLE_TICKET_EVIDENCE_STATUS="$(ticket_evidence_status \
+      "$ROLE_PROTECTED_BEFORE" "$ROLE_PROTECTED_AFTER" "$ROLE" \
+      "$FACTORY_TRUSTED_GIT_BIN" "$WORKDIR" "$ROLE_HEAD_BEFORE" \
+      "$ROLE_HEAD_AFTER" "$TICKET" 2>/dev/null || true)"
+  fi
   if [[ "$PROVIDER_STATUS" -eq 0 ]]; then
     if [[ "$ROLE_ESCALATION_INVALID" -eq 1 ]]; then
       ROLE_EXIT_STATUS="role_exit_invalid_escalation"
@@ -3125,9 +3158,13 @@ elif [[ "$ROLE_EXIT_ENFORCED" -eq 1 ]]; then
     elif [[ "$ROLE" == "reviewer" &&
             ( -n "$ROLE_DIRTY" || "$ROLE_HEAD_AFTER" != "$ROLE_HEAD_BEFORE" ) ]]; then
       ROLE_EXIT_STATUS="reviewer_mutated_worktree"
-    elif [[ "$ROLE_PROTECTED_AFTER" == "__invalid__" ]] ||
-         ! ticket_evidence_is_legal "$ROLE_PROTECTED_BEFORE" \
-           "$ROLE_PROTECTED_AFTER" "$ROLE"; then
+    elif [[ "$ROLE_TICKET_EVIDENCE_STATUS" == "invalid-output" ]]; then
+      if quarantine_rewritten_role_history; then
+        ROLE_EXIT_STATUS="role_exit_invalid_output"
+      else
+        ROLE_EXIT_STATUS="role_exit_control_plane_mutation"
+      fi
+    elif [[ "$ROLE_TICKET_EVIDENCE_STATUS" != "legal" ]]; then
       if [[ "$ROLE" == "test-author" || "$ROLE" == "reviewer" ]]; then
         ROLE_EXIT_STATUS="role_exit_protected_ticket_mutation"
       elif quarantine_rewritten_role_history; then
