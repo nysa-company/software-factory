@@ -277,6 +277,10 @@ expect_refused repository-test-qualification-run run_launcher qualification-run 
 grep -Fxq 'factory-launch: qualification run requires a sealed qualification launcher' \
   "$TMP/refused-repository-test-qualification-run.out" ||
   fail "repository-test qualification-run did not reach the sealed-lane guard"
+expect_refused repository-test-qualification-finish run_launcher qualification-finish --json
+grep -Fxq 'factory-launch: qualification finish requires a sealed isolated qualification launcher' \
+  "$TMP/refused-repository-test-qualification-finish.out" ||
+  fail "repository-test qualification-finish did not reach the sealed-lane guard"
 expect_refused repository-test-qualification-resume run_launcher qualification-resume \
   --ticket T-1 --blocked-receipt "$(printf 'a%.0s' {1..64})" --json
 grep -Fxq 'factory-launch: qualification resume requires a sealed isolated qualification launcher' \

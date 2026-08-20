@@ -430,14 +430,10 @@ def _cmd_ticket_action(args: argparse.Namespace) -> dict:
             )
         if existing:
             try:
-                existing_action, existing_binding = operator_action(existing)
+                existing_action, _ = operator_action(existing)
             except ValueError as error:
                 raise OperatorCliError("operator map has an invalid pending action") from error
-            if args.qualification_runtime and action == "resume":
-                existing_binding["blocked_receipt_sha256"] = (
-                    args.qualification_receipt
-                )
-            if existing_action != action or existing_binding != payload:
+            if existing_action != action:
                 raise OperatorCliError(
                     f"{args.ticket} already has a pending operator action"
                 )

@@ -16,7 +16,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Contract 2 live products resolve sealed exact-SHA releases from owner-only `active.json` records under `~/.factory/kits` via `~/.factory/bin/factory-launch`; the native controller is the only scheduler.
 - The local release canary is one code-driven, product-agnostic command that creates contained local origins, runs setup/resume, and times one authenticated Planning transition plus sealed mock planner; its repository-test evidence is never promotable.
 - Model routing is portfolio policy; routes pin at the ticket boundary and change only via the Contract 1.4 journal flow. One profile resolution shares model-independent native-adapter readiness across its routes and runs independent probes in bounded parallel; Cursor readiness stays model-specific. Sealed Cursor inventory verifies the exact configured CLI identity in an empty disposable owner-only home before copying credentials, then accepts only its bounded certified structure.
-- Linear is removed (Decision 398); the six operator authorities are one-use receipts via `factory-kit.sh operator ACTION`. Approval changes only the ignored operator map and owner-only receipt until trusted approval attestation records it in Git. Qualification may issue one manifest-selected successor resume only after the exact sealed compact-repair check, including the explicit isolated close after an authenticated contract-repair directive; that exact new authority rearms one abandoned targeted recovery attempt, while unchanged evidence cannot loop. Production has no lifecycle bypass.
+- Linear is removed (Decision 398); the six operator authorities are one-use receipts via `factory-kit.sh operator ACTION`. Approval changes only the ignored operator map and owner-only receipt until trusted approval attestation records it in Git. An explicitly invoked isolated `qualification-finish` may approve only exact selected clean parked bundle checkpoints, then drives the existing publication, closeout, and reducer chain until green or a typed external wait; production and takeover retain separate human approval. Qualification may issue one manifest-selected successor resume only after the exact sealed compact-repair check, including the explicit isolated close after an authenticated contract-repair directive; that exact new authority rearms one abandoned targeted recovery attempt, while unchanged evidence cannot loop. Production has no lifecycle bypass.
 - **Contract rules below in Operating contract are authoritative**; this summary is only what the session hook can inject.
 
 ## Operating contract
@@ -7063,3 +7063,18 @@ after the live CLI set took roughly 31–33 seconds. Doctor now uses the same
 120-second readiness bound as qualification preparation while retaining the
 shorter per-CLI probe bound. Q45 made no provider inference or ticket admission
 before this refusal.
+
+## 2026-08-19 — Decision 513: Qualification finish owns the post-bundle chain
+
+Category: Reliability
+
+Q46 proved that ordinary `factory-kit operator approve` cannot infer a sealed
+qualification's parked worktree, controller authority, or lane-local operator
+map; supplying the cell manually wrote the approval into the wrong authority
+and dirtied all three cells. The isolated sealed `qualification-finish` command
+now approves only manifest-selected clean idle parked Awaiting Approval claims,
+binds each one-use receipt to its committed bundle in the exact lane authority,
+and reuses the existing driver through publication, closeout, and reduction.
+It repeats only after a new receipt, protected-base refresh, or authenticated
+completion, returns bounded reducer reason codes, and remains unavailable to
+production and takeover. Q46 remains frozen failed evidence.

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import copy
+import fcntl
 import hashlib
 import json
 from pathlib import Path
@@ -52,7 +53,7 @@ class QualificationRunTest(unittest.TestCase):
         }), encoding="utf-8")
         self.launcher.write_text(
             """#!/usr/bin/env python3
-import json, os, pathlib, sys
+import hashlib, json, os, pathlib, sys
 scenario = json.loads(pathlib.Path(os.environ["QUALIFICATION_RUN_SCENARIO"]).read_text())
 calls_path = pathlib.Path(os.environ["QUALIFICATION_RUN_CALLS"])
 calls = json.loads(calls_path.read_text()) if calls_path.exists() else []
@@ -69,6 +70,17 @@ value = scenario[key]
 if isinstance(value, list):
     value = value[index]
 code = value.pop("_returncode", 0) if isinstance(value, dict) else 0
+event = value.pop("_event", None) if isinstance(value, dict) else None
+if isinstance(event, dict):
+    supplied_digest = event.pop("event_sha256", None)
+    event["event_sha256"] = supplied_digest or hashlib.sha256(json.dumps(
+        event, ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+    ).encode()).hexdigest()
+    events = pathlib.Path(os.environ["FACTORY_CONTROLLER_STATE_DIR"]) / "events"
+    events.mkdir(mode=0o700, exist_ok=True)
+    path = events / f"{len(calls):020d}.json"
+    path.write_text(json.dumps(event, sort_keys=True, separators=(",", ":")))
+    path.chmod(0o600)
 print(json.dumps(value, sort_keys=True, separators=(",", ":")))
 raise SystemExit(code)
 """,
@@ -171,6 +183,8 @@ raise SystemExit(code)
         self, scenario: dict[str, object],
         resume: tuple[str, str] | None = None,
         qualification_mode: str = "isolated",
+        finish: bool = False,
+        operator_map: Path | None = None,
     ) -> tuple[int, dict[str, object]]:
         self.scenario.write_text(json.dumps(scenario), encoding="utf-8")
         command = [
@@ -181,6 +195,8 @@ raise SystemExit(code)
             command.extend((
                 "--resume-ticket", resume[0], "--resume-receipt", resume[1],
             ))
+        if finish:
+            command.append("--finish")
         command.append("--json")
         result = subprocess.run(
             command,
@@ -188,7 +204,7 @@ raise SystemExit(code)
             env={
                 "PATH": "/usr/bin:/bin",
                 "FACTORY_CONTROLLER_STATE_DIR": str(self.controller_state),
-                "FACTORY_OPERATOR_MAP": str(self.operator_map),
+                "FACTORY_OPERATOR_MAP": str(operator_map or self.operator_map),
                 "FACTORY_KIT_TRUST_SCOPE": "qualification-candidate",
                 "FACTORY_QUALIFICATION_MODE": qualification_mode,
                 "FACTORY_QUALIFICATION_MANIFEST": str(self.manifest),
@@ -201,6 +217,66 @@ raise SystemExit(code)
             },
         )
         return result.returncode, json.loads(result.stdout)
+
+    def approval_fixture(
+        self, *, dirty: bool = False, foreign: bool = False,
+        state: str = "Awaiting Approval", ticket: str = "T-1",
+    ) -> Path:
+        parked = self.controller_state / "parked"
+        parked.mkdir(mode=0o700, exist_ok=True)
+        worktree = self.root / f"foreign-{ticket}" if foreign else parked / ticket
+        (worktree / "factory/tickets").mkdir(parents=True)
+        (worktree / f"factory/attestations/{ticket}").mkdir(parents=True)
+        (worktree / f"factory/tickets/{ticket}.md").write_text(
+            f"# {ticket}\n\nState: {state}\n", encoding="utf-8",
+        )
+        (worktree / f"factory/tickets/{ticket}-bundle.md").write_text(
+            f"# {ticket} bundle\n", encoding="utf-8",
+        )
+        (worktree / f"factory/attestations/{ticket}/bundle.json").write_text(
+            json.dumps({"schema": "fixture", "ticket": ticket}) + "\n",
+            encoding="utf-8",
+        )
+        for command in (
+            ("init", "-q"),
+            ("config", "user.name", "Qualification Test"),
+            ("config", "user.email", "qualification@test.invalid"),
+            ("checkout", "-qb", f"ticket/{ticket}"),
+            ("add", "factory"),
+            ("commit", "-qm", "seed approval checkpoint"),
+        ):
+            subprocess.run(
+                ["git", "-C", str(worktree), *command], check=True,
+                capture_output=True, text=True,
+            )
+        claim = self.controller_state / "claims" / f"{ticket}.json"
+        claim.write_text(json.dumps({
+            "branch": f"ticket/{ticket}",
+            "lease": "",
+            "parked": True,
+            "receipt": "",
+            "role": "",
+            "status": "waiting",
+            "ticket": ticket,
+            "worktree": str(worktree),
+        }), encoding="utf-8")
+        claim.chmod(0o600)
+        self.operator_authority(ticket)
+        if dirty:
+            (worktree / "untracked.txt").write_text("dirty\n", encoding="utf-8")
+        return worktree
+
+    def operator_authority(self, *tickets: str) -> None:
+        self.operator_map.parent.mkdir(mode=0o700, exist_ok=True)
+        mapping = (
+            json.loads(self.operator_map.read_text(encoding="utf-8"))
+            if self.operator_map.exists()
+            else {"_config": None, "_sync": {}, "initiatives": {}, "tickets": {}}
+        )
+        for ticket in tickets:
+            mapping["tickets"][ticket] = {"operator_fields_initialized": True}
+        self.operator_map.write_text(json.dumps(mapping), encoding="utf-8")
+        self.operator_map.chmod(0o600)
 
     def called(self) -> list[str]:
         return json.loads(self.calls.read_text())
@@ -1486,6 +1562,279 @@ raise SystemExit(code)
         self.assertEqual(value["controller"]["error"], "typed top-level failure")
         self.assertEqual(self.called(), ["doctor", "reconcile"])
 
+    def test_finish_projects_exact_approval_and_continues_to_green(self) -> None:
+        worktree = self.approval_fixture()
+        before = subprocess.run(
+            ["git", "-C", str(worktree), "rev-parse", "HEAD"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        waiting = self.controller("ok", results=[
+            {"status": "waiting", "ticket": ticket}
+            for ticket in ("T-1", "T-2", "T-3")
+        ])
+        complete = self.controller("ok", results=[
+            {"status": "complete", "ticket": ticket}
+            for ticket in ("T-1", "T-2", "T-3")
+        ])
+
+        code, value = self.run_scenario({
+            "doctor": [self.doctor(), self.doctor()],
+            "reconcile": [waiting, complete],
+            "qualification": self.report(),
+        }, finish=True)
+
+        self.assertEqual((code, value["status"]), (0, "green"))
+        self.assertEqual(value["approvals"], ["T-1"])
+        self.assertEqual(value["restarts"], 0)
+        self.assertEqual(self.called(), [
+            "doctor", "reconcile", "doctor", "reconcile", "qualification",
+        ])
+        mapping = json.loads(self.operator_map.read_text(encoding="utf-8"))
+        operator = mapping["tickets"]["T-1"]["operator"]
+        self.assertEqual(
+            (operator["state"], operator["state_base"], operator["approval"]),
+            ("Approved", "awaiting approval", "Receipt"),
+        )
+        receipts = list(
+            (self.controller_state / "operator-receipts/T-1").glob("approve-*.json")
+        )
+        self.assertEqual(len(receipts), 1)
+        receipt = operator_receipt.safe_receipt(receipts[0])
+        self.assertEqual(receipt["receipt_sha256"], operator["receipt_sha256"])
+        self.assertFalse(receipt["consumed"])
+        self.assertNotIn("nonce", value)
+        self.assertEqual(
+            subprocess.run(
+                ["git", "-C", str(worktree), "rev-parse", "HEAD"],
+                check=True, capture_output=True, text=True,
+            ).stdout.strip(),
+            before,
+        )
+        self.assertEqual(
+            subprocess.run(
+                ["git", "-C", str(worktree), "status", "--porcelain=v1", "-z"],
+                check=True, capture_output=True,
+            ).stdout,
+            b"",
+        )
+
+    def test_finish_continues_on_completion_without_an_approval(self) -> None:
+        self.operator_authority()
+        partial = self.controller("ok", results=[
+            {"status": "complete", "ticket": "T-1"},
+            {"status": "waiting", "ticket": "T-2"},
+            {"status": "waiting", "ticket": "T-3"},
+        ])
+        complete = self.controller("ok", results=[
+            {"status": "complete", "ticket": ticket}
+            for ticket in ("T-1", "T-2", "T-3")
+        ])
+
+        code, value = self.run_scenario({
+            "doctor": [self.doctor(), self.doctor()],
+            "reconcile": [partial, complete],
+            "qualification": self.report(),
+        }, finish=True)
+
+        self.assertEqual((code, value["status"]), (0, "green"))
+        self.assertEqual(value["approvals"], [])
+        self.assertEqual(self.called(), [
+            "doctor", "reconcile", "doctor", "reconcile", "qualification",
+        ])
+
+    def test_finish_continues_on_authenticated_refresh_without_an_approval(self) -> None:
+        self.operator_authority()
+        waiting = self.controller("ok", results=[
+            {"status": "waiting", "ticket": ticket}
+            for ticket in ("T-1", "T-2", "T-3")
+        ])
+        waiting["_event"] = {
+            "event": "protected_base_refreshed",
+            "factory_sha": "a" * 40,
+            "schema": "nysa.software-factory.controller-event/v1",
+            "ticket": "T-2",
+        }
+        complete = self.controller("ok", results=[
+            {"status": "complete", "ticket": ticket}
+            for ticket in ("T-1", "T-2", "T-3")
+        ])
+
+        code, value = self.run_scenario({
+            "doctor": [self.doctor(), self.doctor()],
+            "reconcile": [waiting, complete],
+            "qualification": self.report(),
+        }, finish=True)
+
+        self.assertEqual((code, value["status"]), (0, "green"))
+        self.assertEqual(value["approvals"], [])
+        self.assertEqual(self.called(), [
+            "doctor", "reconcile", "doctor", "reconcile", "qualification",
+        ])
+
+    def test_finish_rejects_forged_refresh_progress(self) -> None:
+        waiting = self.controller("ok", results=[
+            {"status": "waiting", "ticket": ticket}
+            for ticket in ("T-1", "T-2", "T-3")
+        ])
+        waiting["_event"] = {
+            "event": "protected_base_refreshed",
+            "event_sha256": "0" * 64,
+            "schema": "nysa.software-factory.controller-event/v1",
+            "ticket": "T-2",
+        }
+
+        code, value = self.run_scenario({
+            "doctor": self.doctor(), "reconcile": waiting,
+        }, finish=True)
+
+        self.assertEqual((code, value["status"]), (2, "error"))
+        self.assertEqual(self.called(), ["doctor", "reconcile"])
+
+    def test_finish_stops_without_approval_when_ticket_is_not_ready(self) -> None:
+        self.approval_fixture(state="Review")
+        code, value = self.run_scenario({
+            "doctor": self.doctor(),
+            "reconcile": self.controller("ok", results=[
+                {"status": "waiting", "ticket": "T-1"},
+            ]),
+        }, finish=True)
+        self.assertEqual((code, value["status"]), (3, "waiting"))
+        self.assertEqual(value["approvals"], [])
+        self.assertEqual(self.called(), ["doctor", "reconcile"])
+        self.assertFalse((self.controller_state / "operator-receipts").exists())
+
+    def test_finish_refuses_dirty_approval_claim(self) -> None:
+        self.approval_fixture(dirty=True)
+        code, value = self.run_scenario({
+            "doctor": self.doctor(),
+            "reconcile": self.controller("ok", results=[
+                {"status": "waiting", "ticket": "T-1"},
+            ]),
+        }, finish=True)
+        self.assertEqual((code, value["status"]), (2, "error"))
+        self.assertEqual(self.called(), ["doctor", "reconcile"])
+        self.assertFalse((self.controller_state / "operator-receipts").exists())
+
+    def test_finish_prevalidates_all_approvals_before_issuing_any(self) -> None:
+        self.approval_fixture(ticket="T-1")
+        self.approval_fixture(ticket="T-2", dirty=True)
+
+        code, value = self.run_scenario({
+            "doctor": self.doctor(),
+            "reconcile": self.controller("ok", results=[
+                {"status": "waiting", "ticket": "T-1"},
+                {"status": "waiting", "ticket": "T-2"},
+            ]),
+        }, finish=True)
+
+        self.assertEqual((code, value["status"]), (2, "error"))
+        self.assertFalse((self.controller_state / "operator-receipts").exists())
+        mapping = json.loads(self.operator_map.read_text(encoding="utf-8"))
+        self.assertNotIn("operator", mapping["tickets"]["T-1"])
+        self.assertNotIn("operator", mapping["tickets"]["T-2"])
+
+    def test_finish_does_not_approve_blocked_or_active_claims(self) -> None:
+        self.approval_fixture(ticket="T-1")
+        self.approval_fixture(ticket="T-2")
+        active_path = self.controller_state / "claims/T-2.json"
+        active = json.loads(active_path.read_text(encoding="utf-8"))
+        active.update(parked=False, receipt="d" * 64, role="narrator")
+        active_path.write_text(json.dumps(active), encoding="utf-8")
+        active_path.chmod(0o600)
+
+        code, value = self.run_scenario({
+            "doctor": self.doctor(),
+            "reconcile": self.controller("ok", results=[
+                {"status": "blocked", "ticket": "T-1"},
+                {"status": "active", "ticket": "T-2"},
+            ]),
+        }, finish=True)
+
+        self.assertEqual((code, value["status"]), (3, "blocked"))
+        self.assertFalse((self.controller_state / "operator-receipts").exists())
+
+    def test_finish_refuses_foreign_approval_claim(self) -> None:
+        self.approval_fixture(foreign=True)
+        code, value = self.run_scenario({
+            "doctor": self.doctor(),
+            "reconcile": self.controller("ok", results=[
+                {"status": "waiting", "ticket": "T-1"},
+            ]),
+        }, finish=True)
+        self.assertEqual((code, value["status"]), (2, "error"))
+        self.assertEqual(self.called(), ["doctor", "reconcile"])
+        self.assertFalse((self.controller_state / "operator-receipts").exists())
+
+    def test_finish_refuses_foreign_operator_authority(self) -> None:
+        self.approval_fixture()
+        foreign_map = self.root / "operator-map.json"
+        foreign_map.write_bytes(self.operator_map.read_bytes())
+        foreign_map.chmod(0o600)
+        code, value = self.run_scenario({
+            "doctor": self.doctor(),
+            "reconcile": self.controller("ok", results=[
+                {"status": "waiting", "ticket": "T-1"},
+            ]),
+        }, finish=True, operator_map=foreign_map)
+        self.assertEqual((code, value["status"]), (2, "error"))
+        self.assertEqual(self.called(), ["doctor", "reconcile"])
+        self.assertFalse((self.controller_state / "operator-receipts").exists())
+
+    def test_finish_refuses_concurrent_controller(self) -> None:
+        self.approval_fixture()
+        lock = self.controller_state / "reconcile.lock"
+        descriptor = lock.open("a+")
+        lock.chmod(0o600)
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            code, value = self.run_scenario({
+                "doctor": self.doctor(),
+                "reconcile": self.controller("ok", results=[
+                    {"status": "waiting", "ticket": "T-1"},
+                ]),
+            }, finish=True)
+        finally:
+            descriptor.close()
+        self.assertEqual((code, value["status"]), (2, "error"))
+        self.assertEqual(self.called(), ["doctor", "reconcile"])
+        self.assertFalse((self.controller_state / "operator-receipts").exists())
+
+    def test_finish_does_not_approve_before_doctor_passes(self) -> None:
+        self.approval_fixture()
+        doctor = self.doctor("error")
+        code, value = self.run_scenario({
+            "doctor": doctor,
+            "reconcile": self.controller("ok", results=[
+                {"status": "waiting", "ticket": "T-1"},
+            ]),
+        }, finish=True)
+        self.assertEqual((code, value["reason"]), (3, "doctor_not_ready"))
+        self.assertEqual(value["approvals"], [])
+        self.assertEqual(self.called(), ["doctor"])
+        self.assertFalse((self.controller_state / "operator-receipts").exists())
+
+    def test_finish_replays_one_approval_without_duplicating_it(self) -> None:
+        self.approval_fixture()
+        waiting = self.controller("ok", results=[
+            {"status": "waiting", "ticket": "T-1"},
+        ])
+        code, value = self.run_scenario({
+            "doctor": [self.doctor(), self.doctor()],
+            "reconcile": [waiting, waiting],
+        }, finish=True)
+        self.assertEqual((code, value["status"]), (3, "waiting"))
+        self.assertEqual(value["approvals"], ["T-1"])
+        self.assertEqual(self.called(), [
+            "doctor", "reconcile", "doctor", "reconcile",
+        ])
+        self.assertEqual(
+            len(list(
+                (self.controller_state / "operator-receipts/T-1")
+                .glob("approve-*.json")
+            )),
+            1,
+        )
+
     def test_malformed_result_and_repeated_restart_fail_closed(self) -> None:
         scenarios = (
             {
@@ -1528,6 +1877,44 @@ raise SystemExit(code)
         self.assertEqual(code, 2)
         self.assertEqual(value["status"], "error")
         self.assertEqual(self.called(), ["doctor", "reconcile", "qualification"])
+
+    def test_reducer_refusal_returns_only_a_bounded_reason_code(self) -> None:
+        complete = self.controller("ok", results=[
+            {"status": "complete", "ticket": ticket}
+            for ticket in ("T-1", "T-2", "T-3")
+        ])
+        for error, expected in (
+            (
+                "T-2 role evidence was replayed or is incomplete",
+                {"reducer_reason_code": "role_evidence_replayed", "ticket": "T-2"},
+            ),
+            (
+                "provider-private-detail-123",
+                {"reducer_reason_code": "unclassified"},
+            ),
+        ):
+            with self.subTest(error=error):
+                self.calls.unlink(missing_ok=True)
+                reducer = {
+                    "_returncode": 1,
+                    "error": error,
+                    "schema": "nysa.software-factory.qualification-report/v1",
+                    "status": "error",
+                }
+                code, value = self.run_scenario({
+                    "doctor": self.doctor(),
+                    "reconcile": complete,
+                    "qualification": reducer,
+                })
+                self.assertEqual((code, value["status"]), (2, "error"))
+                self.assertEqual(value["reason"], "qualification_reduction_failed")
+                self.assertEqual(
+                    {key: value[key] for key in expected}, expected,
+                )
+                self.assertNotIn(error, json.dumps(value, sort_keys=True))
+                self.assertEqual(
+                    self.called(), ["doctor", "reconcile", "qualification"],
+                )
 
 
 if __name__ == "__main__":

@@ -366,6 +366,12 @@ class OperatorCliTest(unittest.TestCase):
         self.assertEqual(operator["approval"], "Receipt")
         self.assertEqual(operator["state_base"], "awaiting approval")
         self.assertEqual(operator["receipt_sha256"], receipt["receipt_sha256"])
+        replayed = self.cli("approve", "--ticket", "T-1")
+        self.assertEqual(replayed, receipt)
+        self.assertEqual(
+            len(list((self.state / "operator-receipts/T-1").glob("approve-*.json"))),
+            1,
+        )
         consumed = receipts.verify_consume(
             self.state, "T-1", "approve", {"bundle_attestation_blob": blob},
         )
