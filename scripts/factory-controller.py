@@ -11237,6 +11237,7 @@ class Controller:
             reason = terminal.get("terminal_reason_code", "")
             if not re.fullmatch(r"[a-z0-9_]{0,64}", reason):
                 reason = "invalid_pre_go_reason"
+            self.latch_qualification_cohort_error()
             claim["status"] = "blocked"
             claim["blocked_reason"] = "pre-go-failure"
             self.save_claim(claim)
@@ -11267,6 +11268,7 @@ class Controller:
                 )
                 return True
             except ModelIdentityEvidenceError as error:
+                self.latch_qualification_cohort_error()
                 self.block(
                     claim,
                     "model-identity-recovery-refused:" + self.release_path.name,
@@ -11274,6 +11276,7 @@ class Controller:
                 recovery_kind = "model_identity_success"
                 recovery_reason = safe_error(str(error))
             except (ControllerError, OSError, subprocess.SubprocessError) as error:
+                self.latch_qualification_cohort_error()
                 self.block(
                     claim,
                     "model-identity-delivery-retry:" + self.release_path.name,
@@ -11287,6 +11290,16 @@ class Controller:
                 reason=recovery_reason,
             )
             return False
+        terminal_failed = (
+            terminal.get("exit_status") != "0"
+            or terminal.get("role_exit") != "ok"
+        )
+        if (
+            not qualification_fallback
+            and terminal.get("role_exit") != "role_exit_invalid_output"
+            and terminal_failed
+        ):
+            self.latch_qualification_cohort_error()
         if not qualification_fallback:
             dirty_spend_limit = False
             if qualification_spend_limit:
@@ -11327,7 +11340,7 @@ class Controller:
                 run_id=terminal.get("run_id"),
             )
             return True
-        if terminal.get("exit_status") != "0" or terminal.get("role_exit") != "ok":
+        if terminal_failed:
             if qualification_fallback:
                 try:
                     with self.fallback_lock:
@@ -11346,6 +11359,7 @@ class Controller:
                     if match is None:
                         raise
                     reason_code = match.group(1)
+                    self.latch_qualification_cohort_error()
                     self.block(
                         claim,
                         f"qualification-fallback-refused:{reason_code}:"
@@ -12144,6 +12158,7 @@ class Controller:
                 except subprocess.TimeoutExpired:
                     self.observe_attempt_safely(claim)
         if self.terminal_for_receipt(claim["ticket"], receipt) is None:
+            self.latch_qualification_cohort_error()
             claim["status"] = "blocked"
             claim["blocked_reason"] = "missing-terminal"
             self.save_claim(claim)

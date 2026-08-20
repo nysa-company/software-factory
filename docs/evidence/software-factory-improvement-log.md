@@ -5853,6 +5853,27 @@ without that optional field retain their existing readiness contract.
 Validation: the preflight fixture proves exact match succeeds and mismatch fails;
 the same check deterministically rejects frozen Q50 before preparation.
 
+## FI-20260820-227 — A terminal role failure did not stop sibling stages
+
+Status: Focused regression implemented; protected CI and qualification pending
+Priority: P0
+Area: qualification containment
+Owner: Factory
+Impact: Q53 T-482 correctly quarantined a Spec-linter protected-ticket mutation,
+but T-483 and T-484 started Test-author afterward. The fixed cohort was already
+unable to qualify, so those later provider calls could not contribute to a
+passing result.
+Smallest repair: latch the existing atomic qualification launch gate before any
+nonrecoverable role terminal, cancellation, pre-GO refusal, missing terminal, or
+typed recovery refusal is persisted. Keep the bounded invalid-output retry,
+prior-release launch-void recovery, direct-model identity recovery, and
+authenticated Cursor fallback runnable. Already-admitted siblings still drain
+and account exactly once; production rolling lanes remain ticket-isolated.
+Validation: the causal concurrency regression holds a sibling immediately before
+process launch, terminalizes the causal ticket with Q53's exact failure class,
+and proves no sibling attempt or process is created. Adjacent tests cover both
+recoverable and terminal branches.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling
