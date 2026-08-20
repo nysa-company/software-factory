@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -43,6 +44,35 @@ REQUIRED_CHECKS = {
     "provider_cli_pins", "transition_receipts",
 }
 NEUTRAL_CHECKS = {"controller", "model_readiness"}
+REDUCER_REASONS = {
+    "controller event evidence is invalid": "event_evidence_invalid",
+    "qualification event boundary is malformed": "event_boundary_malformed",
+    "qualification event boundary is missing": "event_boundary_missing",
+    "qualification event boundary is incomplete": "event_boundary_incomplete",
+    "qualification event boundary changed": "event_boundary_changed",
+    "qualification inputs are incomplete": "inputs_incomplete",
+    "run or charge evidence was duplicated": "duplicate_run_charge",
+    "qualification exceeded its total budget": "total_budget",
+    "Factory candidate changed after its final freeze": "candidate_changed",
+    "terminal adoption proof is invalid": "terminal_adoption_invalid",
+    "restart, relocation, or completion proof is missing": "restart_completion_missing",
+    "publication leases overlapped": "publication_overlap",
+    "publication lease release is out of order": "publication_release_order",
+    "publication serialization proof is incomplete": "publication_incomplete",
+    "target PRs did not validate concurrently": "target_pr_concurrency",
+    "authenticated ticket caps are invalid": "ticket_caps_invalid",
+    "immutable qualification report changed": "report_changed",
+}
+REDUCER_TICKET_REASONS = {
+    "passport is not terminal": "passport_not_terminal",
+    "successor migration is missing": "successor_migration_missing",
+    "charges do not match the envelope": "charges_envelope",
+    "role evidence was replayed or is incomplete": "role_evidence_replayed",
+    "protected merge truth does not match": "protected_merge_mismatch",
+    "protected checks are not green": "protected_checks_not_green",
+    "protected terminal reconciliation is invalid": "terminal_reconciliation_invalid",
+    "protected terminal reconciliation changed": "terminal_reconciliation_changed",
+}
 
 
 class QualificationRunError(RuntimeError):
@@ -129,6 +159,28 @@ def report_result(value: dict[str, Any]) -> None:
         or digest != hashlib.sha256(canonical(unsigned)).hexdigest()
     ):
         raise QualificationRunError("qualification reducer returned invalid evidence")
+
+
+def reducer_failure(value: dict[str, Any]) -> dict[str, str]:
+    error = value.get("error")
+    if (
+        value.get("schema") != REPORT_SCHEMA
+        or value.get("status") != "error"
+        or not isinstance(error, str)
+        or not error
+        or len(error) > 512
+    ):
+        return {"reducer_reason_code": "invalid_reducer_error"}
+    reason = REDUCER_REASONS.get(error)
+    if reason:
+        return {"reducer_reason_code": reason}
+    match = re.fullmatch(r"(T-[0-9]+) (.+)", error)
+    if match and match[2] in REDUCER_TICKET_REASONS:
+        return {
+            "reducer_reason_code": REDUCER_TICKET_REASONS[match[2]],
+            "ticket": match[1],
+        }
+    return {"reducer_reason_code": "unclassified"}
 
 
 def qualification_basis() -> tuple[
@@ -461,6 +513,204 @@ def worktree_clean(worktree: Path) -> bool:
         capture_output=True, check=False, timeout=120,
     )
     return result.returncode == 0 and not result.stdout
+
+
+def project_qualification_approvals(
+    selected: set[str], phases: list[dict[str, Any]],
+) -> list[tuple[str, str]]:
+    if (
+        os.environ.get("FACTORY_KIT_TRUST_SCOPE") != "qualification-candidate"
+        or os.environ.get("FACTORY_QUALIFICATION_MODE") != "isolated"
+    ):
+        raise QualificationRunError("qualification finish authority is unavailable")
+    state = Path(os.environ.get("FACTORY_CONTROLLER_STATE_DIR", ""))
+    operator_map = Path(os.environ.get("FACTORY_OPERATOR_MAP", ""))
+    expected_map = state.parent / "operator/operator-map.json"
+    try:
+        state_info = state.lstat()
+        map_info = operator_map.lstat()
+        if (
+            not state.is_absolute()
+            or state.is_symlink()
+            or state.resolve(strict=True) != state
+            or not stat.S_ISDIR(state_info.st_mode)
+            or state_info.st_uid != os.geteuid()
+            or stat.S_IMODE(state_info.st_mode) != 0o700
+            or operator_map != expected_map
+            or operator_map.is_symlink()
+            or operator_map.resolve(strict=True) != operator_map
+            or not stat.S_ISREG(map_info.st_mode)
+            or map_info.st_uid != os.geteuid()
+            or map_info.st_nlink != 1
+            or stat.S_IMODE(map_info.st_mode) != 0o600
+        ):
+            raise QualificationRunError("qualification finish authority is unsafe")
+    except OSError as error:
+        raise QualificationRunError(
+            "qualification finish authority is unavailable"
+        ) from error
+
+    lock_path = state / "reconcile.lock"
+    descriptor = os.open(
+        lock_path,
+        os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+    )
+    try:
+        lock_info = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(lock_info.st_mode)
+            or lock_info.st_uid != os.geteuid()
+            or lock_info.st_nlink != 1
+            or stat.S_IMODE(lock_info.st_mode) != 0o600
+        ):
+            raise QualificationRunError("qualification reconcile lock is unsafe")
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise QualificationRunError("qualification controller is busy") from error
+
+        projected = []
+        for ticket in sorted(selected):
+            claim_path = state / "claims" / f"{ticket}.json"
+            if not claim_path.exists():
+                continue
+            claim = controller_state_json(Path("claims") / f"{ticket}.json")
+            if not (
+                claim.get("ticket") == ticket
+                and claim.get("status") == "waiting"
+                and claim.get("parked") is True
+                and claim.get("lease", "") == ""
+                and claim.get("receipt", "") == ""
+                and claim.get("role", "") == ""
+                and not claim.get("publication_lease")
+            ):
+                continue
+            worktree = Path(claim.get("worktree", ""))
+            expected_worktree = state / "parked" / ticket
+            try:
+                worktree_info = worktree.lstat()
+            except OSError as error:
+                raise QualificationRunError(
+                    "qualification approval worktree is unavailable"
+                ) from error
+            if (
+                worktree != expected_worktree
+                or not worktree.is_absolute()
+                or worktree.is_symlink()
+                or worktree.resolve(strict=True) != worktree
+                or not stat.S_ISDIR(worktree_info.st_mode)
+                or worktree_info.st_uid != os.geteuid()
+                or worktree_info.st_mode & 0o022
+                or not worktree_clean(worktree)
+            ):
+                raise QualificationRunError(
+                    "qualification approval worktree is unsafe"
+                )
+            branch = subprocess.run(
+                ["git", "-C", str(worktree), "symbolic-ref", "--quiet", "--short", "HEAD"],
+                capture_output=True, check=False, text=True, timeout=120,
+            )
+            ticket_file = subprocess.run(
+                ["git", "-C", str(worktree), "show", f"HEAD:factory/tickets/{ticket}.md"],
+                capture_output=True, check=False, text=True, timeout=120,
+            )
+            states = re.findall(
+                r"(?mi)^State:\s*(.*?)\s*$", ticket_file.stdout,
+            ) if ticket_file.returncode == 0 else []
+            if branch.returncode or branch.stdout.strip() != claim.get("branch"):
+                raise QualificationRunError(
+                    "qualification approval branch is invalid"
+                )
+            if states != ["Awaiting Approval"]:
+                continue
+
+            before = worktree_head(worktree)
+            started_epoch_ms = time.time_ns() // 1_000_000
+            started = time.monotonic()
+            result = subprocess.run(
+                [
+                    sys.executable, "-I", "-S",
+                    str(Path(__file__).with_name("operator-cli.py")),
+                    "--product", str(worktree), "--state-dir", str(state),
+                    "approve", "--ticket", ticket,
+                ],
+                capture_output=True, check=False, text=True, timeout=120,
+                env={**os.environ, "FACTORY_OPERATOR_AUDIT_COMMIT": "0"},
+            )
+            phases.append({
+                "elapsed_seconds": round(time.monotonic() - started, 3),
+                "name": f"operator approve {ticket}",
+                "started_epoch_ms": started_epoch_ms,
+            })
+            try:
+                receipt = json.loads(result.stdout)
+            except json.JSONDecodeError as error:
+                raise QualificationRunError(
+                    "qualification operator approval returned invalid JSON"
+                ) from error
+            payload = receipt.get("payload") if isinstance(receipt, dict) else None
+            persisted = operator_receipt.read_exact(
+                state, ticket, "approve", receipt.get("receipt_sha256", ""),
+                {"bundle_attestation_blob": payload.get("bundle_attestation_blob")},
+            ) if isinstance(payload, dict) else None
+            if (
+                result.returncode != 0
+                or persisted != receipt
+                or receipt.get("consumed") is not False
+                or receipt.get("ticket") != ticket
+                or receipt.get("action") != "approve"
+                or not DIGEST.fullmatch(receipt.get("receipt_sha256", ""))
+                or worktree_head(worktree) != before
+                or not worktree_clean(worktree)
+            ):
+                raise QualificationRunError(
+                    "qualification operator approval projection failed"
+                )
+            projected.append((ticket, receipt["receipt_sha256"]))
+        return projected
+    finally:
+        os.close(descriptor)
+
+
+def qualification_event_names() -> set[str]:
+    state = Path(os.environ.get("FACTORY_CONTROLLER_STATE_DIR", ""))
+    events = state / "events"
+    try:
+        info = events.lstat()
+    except FileNotFoundError:
+        return set()
+    if (
+        events.is_symlink()
+        or events.resolve(strict=True) != events
+        or not stat.S_ISDIR(info.st_mode)
+        or info.st_uid != os.geteuid()
+        or stat.S_IMODE(info.st_mode) != 0o700
+    ):
+        raise QualificationRunError("qualification event state is unsafe")
+    return {path.name for path in events.glob("*.json")}
+
+
+def qualification_refresh_progress(
+    names: set[str], selected: set[str],
+) -> bool:
+    for name in names:
+        value = controller_state_json(Path("events") / name)
+        digest = value.pop("event_sha256", "")
+        if (
+            value.get("schema") != "nysa.software-factory.controller-event/v1"
+            or digest != hashlib.sha256(canonical(value)).hexdigest()
+        ):
+            raise QualificationRunError("qualification event evidence is invalid")
+        if (
+            value.get("event") in {
+                "protected_base_refreshed",
+                "protected_base_refreshed_before_evidence",
+            }
+            and value.get("ticket") in selected
+        ):
+            return True
+    return False
 
 
 def project_contract_recovery(
@@ -1074,7 +1324,13 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
 
     code, report = invoke(launcher, args.project, "qualification", phases)
     if code != 0:
-        raise QualificationRunError("qualification reduction failed")
+        return {
+            **base,
+            **reducer_failure(report),
+            "elapsed_seconds": round(time.monotonic() - started, 3),
+            "reason": "qualification_reduction_failed",
+            "status": "error",
+        }
     report_result(report)
     return {
         **base,
@@ -1084,22 +1340,93 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def execute_finish(args: argparse.Namespace) -> dict[str, Any]:
+    selected, *_ = qualification_basis()
+    started = time.monotonic()
+    phases: list[dict[str, Any]] = []
+    approvals: list[str] = []
+    seen_receipts: set[str] = set()
+    seen_completions: set[str] = set()
+    restarts = 0
+    events = qualification_event_names()
+    # ponytail: a closed cohort can create at most one approval per protected
+    # base generation; widen only if qualification admits unrelated main churn.
+    for _ in range(len(selected) ** 2 + len(selected) + 1):
+        result = execute(args)
+        current_events = qualification_event_names()
+        refreshed = qualification_refresh_progress(
+            current_events - events, selected,
+        )
+        events = current_events
+        restarts += result.get("restarts", 0)
+        if result.get("status") != "waiting":
+            phases.extend(result.get("phases", []))
+            return {
+                **result,
+                "approvals": approvals,
+                "elapsed_seconds": round(time.monotonic() - started, 3),
+                "phases": phases,
+                "restarts": restarts,
+            }
+        if result.get("reason") != "authenticated_wait":
+            phases.extend(result.get("phases", []))
+            return {
+                **result,
+                "approvals": approvals,
+                "elapsed_seconds": round(time.monotonic() - started, 3),
+                "phases": phases,
+                "restarts": restarts,
+            }
+        projected = project_qualification_approvals(
+            selected, result.get("phases", []),
+        )
+        phases.extend(result.get("phases", []))
+        new_receipts = [
+            (ticket, receipt) for ticket, receipt in projected
+            if receipt not in seen_receipts
+        ]
+        completions = {
+            item.get("ticket")
+            for item in result.get("controller", {}).get("results", [])
+            if isinstance(item, dict)
+            and item.get("status") == "complete"
+            and item.get("ticket") in selected
+        }
+        new_completions = completions - seen_completions
+        if not new_receipts and not new_completions and not refreshed:
+            return {
+                **result,
+                "approvals": approvals,
+                "elapsed_seconds": round(time.monotonic() - started, 3),
+                "phases": phases,
+                "restarts": restarts,
+            }
+        approvals.extend(ticket for ticket, _receipt in new_receipts)
+        seen_receipts.update(receipt for _ticket, receipt in new_receipts)
+        seen_completions.update(new_completions)
+    raise QualificationRunError("qualification finish did not converge")
+
+
 def arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--launcher", required=True, type=Path)
     parser.add_argument("--project", required=True)
     parser.add_argument("--resume-ticket", default="")
     parser.add_argument("--resume-receipt", default="")
+    parser.add_argument("--finish", action="store_true")
     parser.add_argument("--json", action="store_true", required=True)
     args = parser.parse_args()
     if bool(args.resume_ticket) != bool(args.resume_receipt):
         parser.error("qualification resume requires ticket and receipt")
+    if args.finish and args.resume_ticket:
+        parser.error("qualification finish cannot resume a ticket")
     return args
 
 
 def main() -> int:
     try:
-        result = execute(arguments())
+        args = arguments()
+        result = execute_finish(args) if args.finish else execute(args)
         code = 0 if result["status"] in {"green", "projected"} else (
             2 if result["status"] == "error" else 3
         )

@@ -297,9 +297,16 @@ Cursor role or edit its claim/passport: exact identity-only success is recovered
 without another provider call, while a typed `qualification-fallback-refused`
 claim remains parked until a successor release contains the repair.
 
-The normal operator entrypoint is the sealed candidate's
-`factory-launch <project> qualification-run --json`. It performs that Doctor
-gate, the mandatory restart, reconciliation, and terminal reduction in code.
+The normal operator entrypoint for an explicitly authorized isolated
+qualification cohort is the sealed candidate's
+`factory-launch <project> qualification-finish --json`. It performs that Doctor
+gate, the mandatory restart, reconciliation, exact bundle-bound qualification
+approvals, serialized publication, closeout, and terminal reduction in code.
+It approves only selected clean, idle, parked Awaiting Approval claims through
+the sealed lane operator map and stops at the first wait without a new receipt,
+protected-base refresh, or authenticated completion. It never approves a
+production or takeover lane. Use `qualification-run --json` instead when each
+bundle requires a separate human approval command.
 An initial `doctor_not_ready` result includes the exact sanitized Doctor report
 so the failed check remains diagnosable without repeating the sealed command.
 For the exact authenticated successor compact-repair warning, it also projects
@@ -339,7 +346,9 @@ Successful resume and durable repair replay both reenter ordinary scheduling;
 an exact crash replay repeats that preparation automatically. Do not clear the
 prior transition receipt by hand.
 On `waiting` or `blocked`, change only the named external/operator evidence and
-run the same command again; never hand-edit authority state.
+run the same command again; never hand-edit authority state. A reducer refusal
+returns only its allowlisted `reducer_reason_code` and optional ticket, never
+raw provider or command output.
 
 Kimi K2.6 remains disabled experimental through Claude CLI/OpenRouter/Moonshot.
 No live or billed pilot has run. Rotate the credential before a pilot; direct

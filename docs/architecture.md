@@ -177,7 +177,12 @@ account and has a 720-second deadline. It prepares one real sealed three-ticket
 qualification, supplies deterministic provider and GitHub behavior only at
 their external executable boundaries, and lets the production launcher,
 controller, state machine, passport, fallback/handoff, attestation, closeout,
-and reducer code create and consume one shared artifact chain. One ticket takes
+and reducer code create and consume one shared artifact chain. The gate invokes
+the same sealed `qualification-finish` command operators use; it has no direct
+operator-receipt helper. That command serializes against reconciliation,
+projects an approval only from an exact selected clean parked claim and its
+committed bundle, and repeats reconciliation only after a new approval,
+protected-base refresh, or authenticated completion. One ticket takes
 the Cursor-to-Codex Builder fallback, and serialized publication forces the
 remaining tickets through real protected-base refresh and reapproval. When the
 imported protected changes are regular, ticket-scoped or non-Factory paths

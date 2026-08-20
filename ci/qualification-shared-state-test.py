@@ -625,38 +625,6 @@ raise SystemExit(1 if failed else 0)
             env=environment,
         )
 
-    def approve_waiting(self, release: Path) -> int:
-        controller = self.home / f".factory/qualification/{self.project}/controller"
-        operator_map = (
-            self.home / f".factory/qualification/{self.project}/operator/operator-map.json"
-        )
-        approved = 0
-        for path in sorted((controller / "claims").glob("T-*.json")):
-            claim = json.loads(path.read_text(encoding="utf-8"))
-            worktree = Path(claim["worktree"])
-            ticket = claim["ticket"]
-            text = (worktree / f"factory/tickets/{ticket}.md").read_text(encoding="utf-8")
-            if "State: Awaiting Approval" not in text:
-                continue
-            result = subprocess.run(
-                [
-                    sys.executable, "-I", "-S", str(release / "scripts/operator-cli.py"),
-                    "--product", str(worktree), "--state-dir", str(controller),
-                    "approve", "--ticket", ticket,
-                ],
-                cwd=self.workspace,
-                env={
-                    **self.environment,
-                    "FACTORY_OPERATOR_AUDIT_COMMIT": "0",
-                    "FACTORY_OPERATOR_MAP": str(operator_map),
-                    "FACTORY_RELEASE_CONTRACT_VERSION": "2.0.0",
-                },
-                text=True, capture_output=True, check=False, timeout=120,
-            )
-            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            approved += 1
-        return approved
-
     def test_shared_cohort_runs_through_real_sealed_qualification(self) -> None:
         result = subprocess.run(
             [
@@ -678,110 +646,18 @@ raise SystemExit(1 if failed else 0)
         self.assertEqual(value["factory_sha"], self.factory_sha)
         launcher = Path(value["launcher"])
         self.assertTrue(launcher.is_file())
-        approved = 0
-        restarts = 0
         events_dir = self.home / f".factory/qualification/{self.project}/controller/events"
         deadline = self.started + 710
-        for wave in range(8):
-            prior_events = set(events_dir.glob("*.json"))
-            remaining = int(deadline - time.monotonic())
-            self.assertGreater(remaining, 0, "shared qualification exceeded 710-second deadline")
-            launched = self.sealed(
-                str(launcher), self.project, "qualification-run", "--json",
-                timeout=remaining,
-            )
-            if launched.returncode == 2:
-                remaining = int(deadline - time.monotonic())
-                self.assertGreater(remaining, 0, "shared qualification exceeded 710-second deadline")
-                reduced = self.sealed(
-                    str(launcher), self.project, "qualification", "--json",
-                    timeout=remaining,
-                )
-                reason = json.loads(reduced.stdout).get("error", "unclassified")
-                self.fail(f"qualification reduction failed: {reason}")
-            self.assertIn(launched.returncode, (0, 3), launched.stdout + launched.stderr)
-            replay = json.loads(launched.stdout)
-            new_events = [
-                json.loads(path.read_text(encoding="utf-8"))
-                for path in sorted(events_dir.glob("*.json")) if path not in prior_events
-            ]
-            restarts += replay["restarts"]
-            if replay["status"] == "green":
-                self.assertEqual(launched.returncode, 0)
-                break
-            self.assertEqual(
-                replay["status"], "waiting",
-                json.dumps(replay, sort_keys=True),
-            )
-            self.assertEqual(launched.returncode, 3)
-            statuses = {
-                item["ticket"]: item["status"]
-                for item in replay["controller"]["results"]
-            }
-            completed = {
-                ticket for ticket, status in statuses.items() if status == "complete"
-            }
-            claims = {
-                path.stem for path in (events_dir.parent / "claims").glob("*.json")
-            }
-            released = {
-                event.get("ticket") for event in new_events
-                if event.get("event") == "ticket_released"
-            }
-            complete_events = {
-                event.get("ticket") for event in new_events
-                if event.get("event") == "ticket_complete"
-            }
-            completion_progress = (
-                bool(completed)
-                and completed <= set(TICKETS)
-                and completed <= released & complete_events
-                and completed.isdisjoint(claims)
-            )
-            newly_approved = self.approve_waiting(launcher.parent.parent)
-            if newly_approved == 0:
-                refresh_progress = any(
-                    event.get("event") in REFRESH_EVENTS
-                    and statuses.get(event.get("ticket")) == "waiting"
-                    for event in new_events
-                )
-                self.assertTrue(
-                    completion_progress or refresh_progress,
-                    json.dumps(replay, sort_keys=True),
-                )
-            approved += newly_approved
-            print(json.dumps({
-                "approved": newly_approved,
-                "elapsed_seconds": round(time.monotonic() - self.started, 3),
-                "events": [
-                    [item.get("ticket"), item.get("event")]
-                    for item in new_events
-                ],
-                "phases": [
-                    {
-                        "elapsed_seconds": item["elapsed_seconds"],
-                        "name": item["name"],
-                    }
-                    for item in replay["phases"]
-                ],
-                "provider_calls": sum(json.loads(
-                    self.provider_calls.read_text(encoding="utf-8")
-                ).values()),
-                "results": [
-                    {
-                        "status": item.get("status"),
-                        "ticket": item.get("ticket"),
-                        "wait_reason": item.get("wait_reason"),
-                    }
-                    for item in replay["controller"]["results"]
-                ],
-                "status": replay["status"],
-                "wave": wave + 1,
-            }, sort_keys=True), flush=True)
-        else:
-            self.fail("shared qualification did not converge")
+        remaining = int(deadline - time.monotonic())
+        self.assertGreater(remaining, 0, "shared qualification exceeded 710-second deadline")
+        launched = self.sealed(
+            str(launcher), self.project, "qualification-finish", "--json",
+            timeout=remaining,
+        )
+        self.assertEqual(launched.returncode, 0, launched.stdout + launched.stderr)
+        replay = json.loads(launched.stdout)
         self.assertEqual(replay["status"], "green", json.dumps(replay, sort_keys=True))
-        self.assertEqual(restarts, 1)
+        self.assertEqual(replay["restarts"], 1)
         events = [
             json.loads(path.read_text(encoding="utf-8"))
             for path in sorted(events_dir.glob("*.json"))
@@ -794,7 +670,7 @@ raise SystemExit(1 if failed else 0)
         ]
         self.assertEqual(len(refreshes), 3)
         self.assertEqual(
-            approved,
+            len(replay["approvals"]),
             3 + sum(event.get("event") == "protected_base_refreshed" for event in events),
         )
         calls = json.loads(self.provider_calls.read_text(encoding="utf-8"))
