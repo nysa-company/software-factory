@@ -1752,6 +1752,7 @@ class FactoryControllerTest(unittest.TestCase):
         )
         ticket_path = cell / f"factory/tickets/{ticket}.md"
         route_path = cell / f"factory/route-plans/{ticket}.json"
+        pin_path = cell / "factory/KIT_PIN"
         ticket_path.parent.mkdir(parents=True)
         route_path.parent.mkdir(parents=True)
         authorization = (
@@ -1782,6 +1783,7 @@ class FactoryControllerTest(unittest.TestCase):
             }) + "\n",
             encoding="utf-8",
         )
+        pin_path.write_text(self.release.name + "\n", encoding="utf-8")
         subprocess.run(["git", "-C", str(cell), "add", "."], check=True)
         subprocess.run([
             "git", "-C", str(cell), "-c", "user.name=Test",
@@ -2088,6 +2090,9 @@ class FactoryControllerTest(unittest.TestCase):
             )
         ticket_dir = self.product / "factory/tickets"
         ticket_dir.mkdir()
+        (self.product / "factory/KIT_PIN").write_text(
+            self.release.name + "\n", encoding="utf-8",
+        )
         for ticket in tickets:
             (ticket_dir / f"{ticket}.md").write_text(
                 f"# {ticket}\n\nState: Ready\n", encoding="utf-8",
@@ -5048,6 +5053,7 @@ class FactoryControllerTest(unittest.TestCase):
         worktree = Path(claim["worktree"])
         ticket = worktree / "factory/tickets/T-177.md"
         ticket.write_text(ticket.read_text().replace(self.release.name, successor.name))
+        (worktree / "factory/KIT_PIN").write_text(successor.name + "\n")
         route = worktree / "factory/route-plans/T-177.json"
         catalog, routes, _profiles, profile_map = ROUTER.load_policy()
         value = MANAGER.migrate_v2_journal(
@@ -5057,7 +5063,11 @@ class FactoryControllerTest(unittest.TestCase):
         route.write_text(ROUTER.canonical_json(value) + "\n")
         subprocess.run(["git", "-C", worktree, "add", "factory"], check=True)
         subprocess.run(
-            ["git", "-C", worktree, "commit", "-qm", "migrate route"], check=True,
+            [
+                "git", "-C", worktree, "-c", "user.name=Software Factory",
+                "-c", "user.email=factory@local", "commit", "-qm",
+                "migrate route",
+            ], check=True,
         )
         subprocess.run(
             ["git", "-C", worktree, "push", "-q", "origin", "ticket/T-177"],
@@ -7578,6 +7588,9 @@ class FactoryControllerTest(unittest.TestCase):
             f"# T-110\n\nState: Review\nKit-SHA: {self.release.name}\n",
             encoding="utf-8",
         )
+        (cell / "factory/KIT_PIN").write_text(
+            self.release.name + "\n", encoding="utf-8",
+        )
         claim = {
             "branch": "ticket/T-110",
             "lease": "e" * 64,
@@ -7832,6 +7845,8 @@ class FactoryControllerTest(unittest.TestCase):
             f"# T-110\n\nState: Review\nKit-SHA: {'b' * 40}\n",
             encoding="utf-8",
         )
+        pin = cell / "factory/KIT_PIN"
+        pin.write_text("b" * 40 + "\n", encoding="utf-8")
         claim = {
             "branch": "ticket/T-110",
             "lease": "a" * 64,
@@ -7895,6 +7910,7 @@ class FactoryControllerTest(unittest.TestCase):
             f"# T-110\n\nState: Review\nKit-SHA: {'a' * 40}\n",
             encoding="utf-8",
         )
+        pin.write_text("a" * 40 + "\n", encoding="utf-8")
         controller.recover_upgraded_claims([claim])
         self.assertEqual(claim["status"], "claimed")
         self.assertNotIn("blocked_reason", claim)
@@ -7983,6 +7999,9 @@ class FactoryControllerTest(unittest.TestCase):
         ticket.write_text(
             f"# T-110\n\nState: Review\nKit-SHA: {self.release.name}\n",
             encoding="utf-8",
+        )
+        (cell / "factory/KIT_PIN").write_text(
+            self.release.name + "\n", encoding="utf-8",
         )
         self.initialize_parked_branch(cell, "ticket/T-110")
         claim = {
@@ -8985,12 +9004,14 @@ class FactoryControllerTest(unittest.TestCase):
         )
         ticket_path = cell / f"factory/tickets/{ticket}.md"
         route_path = cell / f"factory/route-plans/{ticket}.json"
+        pin_path = cell / "factory/KIT_PIN"
         ticket_path.parent.mkdir(parents=True)
         route_path.parent.mkdir(parents=True)
         ticket_path.write_text(
             f"State: Awaiting Approval\nKit-SHA: {source}\n",
             encoding="utf-8",
         )
+        pin_path.write_text(source + "\n", encoding="utf-8")
         route_path.write_text(CONTROL.canonical({
             "kit_sha": source, "schema": "ticket-model-route-plan/v1",
             "ticket": ticket,
@@ -9009,6 +9030,7 @@ class FactoryControllerTest(unittest.TestCase):
             f"State: Awaiting Approval\nKit-SHA: {target}\n",
             encoding="utf-8",
         )
+        pin_path.write_text(target + "\n", encoding="utf-8")
         route_path.write_text(CONTROL.canonical({
             "kit_sha": target,
             "revisions": [{"body": {
@@ -9054,6 +9076,15 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertFalse(controller.exact_route_migration_commit(
             claim, before, after, migration=wrong,
         ))
+        controller.cell_git = lambda item, *args: (
+            subprocess.CompletedProcess(args, 0, source + "\n", "")
+            if args == ("show", f"{after}:factory/KIT_PIN")
+            else CONTROL.Controller.cell_git(item, *args)
+        )
+        self.assertFalse(controller.exact_route_migration_commit(
+            claim, before, after, migration=migration,
+        ))
+        controller.cell_git = CONTROL.Controller.cell_git
         cell_git = controller.cell_git
         controller.cell_git = lambda item, *args: (
             subprocess.CompletedProcess(args, 0, "[]\n", "")
@@ -11078,6 +11109,8 @@ class FactoryControllerTest(unittest.TestCase):
             f"# T-110\n\nState: Building\nKit-SHA: {'b' * 40}\n",
             encoding="utf-8",
         )
+        pin = cell / "factory/KIT_PIN"
+        pin.write_text("b" * 40 + "\n", encoding="utf-8")
         self.initialize_parked_branch(cell, "ticket/T-110")
         claim = {
             "branch": "ticket/T-110",
@@ -11139,6 +11172,7 @@ class FactoryControllerTest(unittest.TestCase):
             f"# T-110\n\nState: Building\nKit-SHA: {self.release.name}\n",
             encoding="utf-8",
         )
+        pin.write_text(self.release.name + "\n", encoding="utf-8")
         controller.recover_upgraded_claims([claim])
 
         self.assertEqual(claim["status"], "claimed")
@@ -12518,6 +12552,7 @@ class FactoryControllerTest(unittest.TestCase):
                 )
             ticket = cell / "factory/tickets/T-198.md"
             route = cell / "factory/route-plans/T-198.json"
+            pin = cell / "factory/KIT_PIN"
             ticket.parent.mkdir(parents=True)
             route.parent.mkdir(parents=True)
             ticket.write_text(
@@ -12535,6 +12570,7 @@ class FactoryControllerTest(unittest.TestCase):
             }
             old_route_raw = (CONTROL.canonical(old_route_value) + "\n").encode()
             route.write_bytes(old_route_raw)
+            pin.write_text(source_factory + "\n", encoding="utf-8")
             (cell / "factory/PROJECT.env").write_text(
                 "MAX_CONCURRENT_TICKETS=4\n", encoding="utf-8",
             )
@@ -12652,6 +12688,7 @@ class FactoryControllerTest(unittest.TestCase):
             parent_file = "1" * 64
             parent_digest = "2" * 64
             if route_migration:
+                pin.write_text(self.release.name + "\n", encoding="utf-8")
                 ticket.write_text(
                     ticket.read_text(encoding="utf-8").replace(
                         "Kit-SHA: " + source_factory,
@@ -12682,7 +12719,10 @@ class FactoryControllerTest(unittest.TestCase):
                 ).encode()
                 route.write_bytes(new_route_raw)
                 subprocess.run(
-                    ["git", "-C", str(cell), "add", str(ticket), str(route)],
+                    [
+                        "git", "-C", str(cell), "add", str(pin), str(ticket),
+                        str(route),
+                    ],
                     check=True,
                 )
                 subprocess.run(
@@ -13258,6 +13298,9 @@ class FactoryControllerTest(unittest.TestCase):
                 self.assertEqual(args[9], model_preview["readiness_sha256"])
                 self.assertEqual(args[11], "release-upgrade")
                 if not upgrade.ticket_release_current(upgrade_claim):
+                    (Path(upgrade_claim["worktree"]) / "factory/KIT_PIN").write_text(
+                        self.release.name + "\n", encoding="utf-8",
+                    )
                     ticket = Path(upgrade_claim["worktree"]) / (
                         "factory/tickets/T-198.md"
                     )
@@ -13274,6 +13317,7 @@ class FactoryControllerTest(unittest.TestCase):
                     )
                     subprocess.run([
                         "git", "-C", upgrade_claim["worktree"], "add", "--",
+                        "factory/KIT_PIN",
                         "factory/tickets/T-198.md",
                         "factory/route-plans/T-198.json",
                     ], check=True)
@@ -15937,6 +15981,8 @@ class FactoryControllerTest(unittest.TestCase):
             f"# {ticket}\n\nState: Review\nKit-SHA: {source_factory}\n",
             encoding="utf-8",
         )
+        pin = cell / "factory/KIT_PIN"
+        pin.write_text(source_factory + "\n", encoding="utf-8")
         subprocess.run(["git", "-C", str(cell), "add", "."], check=True)
         subprocess.run([
             "git", "-C", str(cell), "-c", "user.name=Factory",
@@ -16003,6 +16049,7 @@ class FactoryControllerTest(unittest.TestCase):
             f"# {ticket}\n\nState: Review\nKit-SHA: {self.release.name}\n",
             encoding="utf-8",
         )
+        pin.write_text(self.release.name + "\n", encoding="utf-8")
         subprocess.run(["git", "-C", str(cell), "add", "."], check=True)
         subprocess.run([
             "git", "-C", str(cell), "-c", "user.name=Factory",

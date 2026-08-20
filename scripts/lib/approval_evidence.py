@@ -292,6 +292,7 @@ def validate_approval_continuation(
     bundle_document = f"factory/tickets/{ticket}-bundle.md"
     ticket_relative = f"factory/tickets/{ticket}.md"
     route_relative = f"factory/route-plans/{ticket}.json"
+    pin_relative = "factory/KIT_PIN"
     if not OID.fullmatch(reviewed):
         raise ApprovalEvidenceError("approval continuation reviewed SHA is invalid")
     try:
@@ -354,7 +355,15 @@ def validate_approval_continuation(
         != _blob_at(workdir, approval_commit, bundle_relative)
         or _blob_at(workdir, head, bundle_document) != bundle.get("bundle_blob")
         or current_ticket != expected_ticket
-        or later_changed - {ticket_relative, route_relative}
+        or later_changed - {pin_relative, ticket_relative, route_relative}
+        or (
+            pin_relative in later_changed
+            and (
+                _mode_at(workdir, head, pin_relative) != "100644"
+                or _git_raw(workdir, "show", f"{head}:{pin_relative}")
+                != kit_sha + "\n"
+            )
+        )
         or (head != approval_commit and route_relative not in later_changed)
         or (kit_sha != approval_kit_sha and route_relative not in later_changed)
     ):
@@ -381,4 +390,4 @@ def trusted_approval_continuation_paths(
     validate_approval_continuation(
         workdir, ticket, repo, branch, kit_sha, method, reviewed, head,
     )
-    return {relative}
+    return {relative, "factory/KIT_PIN"} & changed

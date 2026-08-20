@@ -260,7 +260,8 @@ provider state, ticket branches, or paid roles are created.
   an exact descendant with the same route and current state. Upgrade keeps
   descendant work incomplete and source evidence historical, then model
   migration may fast-forward an ancestor remote to that checkpoint and the
-  candidate Kit-SHA in one CAS-protected push; it never resets ticket work.
+  candidate Kit-SHA in `factory/KIT_PIN`, the ticket, and its route journal in
+  one CAS-protected push; it never resets ticket work.
   If an interrupted sealed batch leaves selected tickets on different
   authenticated releases, authorization v2 keeps `source_kit_sha` at the
   manifest's source root and adds each ticket's exact current

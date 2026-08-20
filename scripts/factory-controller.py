@@ -4641,17 +4641,28 @@ class Controller:
     def ticket_release_current(self, claim: dict[str, Any]) -> bool:
         try:
             route = json.loads(self.route_path(claim).read_text(encoding="utf-8"))
+            pin_path = Path(claim["worktree"]) / "factory" / "KIT_PIN"
+            pin_info = pin_path.lstat()
+            if (
+                not stat.S_ISREG(pin_info.st_mode)
+                or pin_path.is_symlink()
+                or pin_info.st_uid != os.geteuid()
+                or pin_info.st_size > 100
+            ):
+                return False
+            pin = pin_path.read_text(encoding="utf-8")
             ticket = (
                 Path(claim["worktree"])
                 / "factory" / "tickets" / f"{claim['ticket']}.md"
             ).read_text(encoding="utf-8")
-        except (FileNotFoundError, json.JSONDecodeError, OSError):
+        except (FileNotFoundError, json.JSONDecodeError, OSError, UnicodeError):
             return False
         leases = re.findall(r"^Kit-SHA:\s*(.*?)\s*$", ticket, re.M)
         return (
             isinstance(route, dict)
             and route.get("ticket") == claim["ticket"]
             and route.get("kit_sha") == self.release_path.name
+            and pin == self.release_path.name + "\n"
             and leases == [self.release_path.name]
         )
 
@@ -4763,6 +4774,7 @@ class Controller:
         worktree = Path(claim["worktree"])
         ticket_path = f"factory/tickets/{claim['ticket']}.md"
         route_path = f"factory/route-plans/{claim['ticket']}.json"
+        pin_path = "factory/KIT_PIN"
         old_head = receipt.get("head_sha", "")
         try:
             current_head = subprocess.run(
@@ -4802,59 +4814,16 @@ class Controller:
                 ["git", "-C", str(worktree), "show", f"{old_head}:{route_path}"],
                 capture_output=True, check=True, timeout=120,
             ).stdout
-            old_ticket = subprocess.run(
-                ["git", "-C", str(worktree), "show", f"{old_head}:{ticket_path}"],
-                capture_output=True, check=True, timeout=120,
-            ).stdout
             authenticated_fallback_head(
                 self.product, worktree, claim["ticket"], claim["branch"],
                 old_head, old_route,
             )
             parent = old_head
-            previous_route = old_route
-            previous_ticket = old_ticket
             for commit in lineage:
-                parents = subprocess.run(
-                    ["git", "-C", str(worktree), "rev-list", "--parents",
-                     "-n", "1", commit],
-                    text=True, capture_output=True, check=True, timeout=120,
-                ).stdout.split()
-                paths = subprocess.run(
-                    ["git", "-C", str(worktree), "diff-tree", "--no-commit-id",
-                     "--name-only", "--no-renames", "-r", commit],
-                    text=True, capture_output=True, check=True, timeout=120,
-                ).stdout.splitlines()
-                if parents != [commit, parent] or sorted(paths) != sorted(
-                    (ticket_path, route_path)
+                if not self.exact_route_migration_commit(
+                    claim, parent, commit,
                 ):
                     return False
-                route_raw = subprocess.run(
-                    ["git", "-C", str(worktree), "show", f"{commit}:{route_path}"],
-                    capture_output=True, check=True, timeout=120,
-                ).stdout
-                ticket_raw = subprocess.run(
-                    ["git", "-C", str(worktree), "show", f"{commit}:{ticket_path}"],
-                    capture_output=True, check=True, timeout=120,
-                ).stdout
-                route_value = json.loads(route_raw)
-                ticket_kits = re.findall(
-                    rb"^Kit-SHA:\s*([0-9a-f]{40})\s*$", ticket_raw, re.M,
-                )
-                modes = subprocess.run(
-                    ["git", "-C", str(worktree), "ls-tree", commit, "--",
-                     ticket_path, route_path],
-                    text=True, capture_output=True, check=True, timeout=120,
-                ).stdout.splitlines()
-                if (
-                    len(modes) != 2
-                    or any(not line.startswith("100644 blob ") for line in modes)
-                    or not journal_extends(previous_route, route_raw)
-                    or not exact_kit_sha_change(previous_ticket, ticket_raw)
-                    or ticket_kits != [route_value.get("kit_sha", "").encode()]
-                ):
-                    return False
-                previous_route = route_raw
-                previous_ticket = ticket_raw
                 parent = commit
             branch = subprocess.run(
                 ["git", "-C", str(worktree), "symbolic-ref", "--quiet", "--short", "HEAD"],
@@ -4898,7 +4867,8 @@ class Controller:
             not commits.isdigit() or not 1 <= int(commits) <= 32,
             len(lineage) != (int(commits) if commits.isdigit() else -1),
             bool(merges),
-            sorted(changed) != sorted((ticket_path, route_path)),
+            set(changed) != {ticket_path, route_path}
+            and set(changed) != {pin_path, ticket_path, route_path},
             not self.ticket_release_current(claim),
             not self.remote_cell_head_valid(claim),
         ))
@@ -10073,15 +10043,13 @@ class Controller:
     ) -> bool:
         ticket_path = f"factory/tickets/{claim['ticket']}.md"
         route_path = f"factory/route-plans/{claim['ticket']}.json"
+        pin_path = "factory/KIT_PIN"
         parents = self.cell_git(
             claim, "rev-list", "--parents", "-n", "1", after,
         )
         paths = self.cell_git(
             claim, "diff-tree", "--no-commit-id", "--name-only",
             "--no-renames", "-r", after,
-        )
-        modes = self.cell_git(
-            claim, "ls-tree", after, "--", ticket_path, route_path,
         )
         old_route = self.cell_git(claim, "show", f"{before}:{route_path}")
         route = self.cell_git(claim, "show", f"{after}:{route_path}")
@@ -10094,6 +10062,32 @@ class Controller:
             route_value = json.loads(route.stdout)
             if not isinstance(route_value, dict):
                 return False
+            current_migration = (
+                route_value.get("kit_sha") == self.release_path.name
+            )
+            old_pin = (
+                self.cell_git(claim, "show", f"{before}:{pin_path}")
+                if current_migration
+                else subprocess.CompletedProcess((), 0, "", "")
+            )
+            expected_paths = (
+                (ticket_path, route_path, pin_path)
+                if current_migration
+                and old_pin.stdout != self.release_path.name + "\n"
+                else (ticket_path, route_path)
+            )
+            controlled_paths = (
+                (ticket_path, route_path, pin_path)
+                if current_migration else expected_paths
+            )
+            modes = self.cell_git(
+                claim, "ls-tree", after, "--", *controlled_paths,
+            )
+            pin = (
+                self.cell_git(claim, "show", f"{after}:{pin_path}")
+                if current_migration
+                else subprocess.CompletedProcess((), 0, "", "")
+            )
             old_route_value = (
                 json.loads(old_route.stdout) if migration is not None else None
             )
@@ -10108,14 +10102,14 @@ class Controller:
         return (
             not any(item.returncode for item in (
                 parents, paths, modes, old_route, route, old_ticket, ticket,
-                author,
+                old_pin, pin, author,
             ))
             and parents.stdout.split() == [after, before]
             and author.stdout.rstrip("\n")
             == "Software Factory\x00factory@local"
             and sorted(paths.stdout.splitlines())
-            == sorted((ticket_path, route_path))
-            and len(modes.stdout.splitlines()) == 2
+            == sorted(expected_paths)
+            and len(modes.stdout.splitlines()) == len(controlled_paths)
             and all(
                 line.startswith("100644 blob ")
                 for line in modes.stdout.splitlines()
@@ -10129,6 +10123,14 @@ class Controller:
             and re.findall(
                 rb"^Kit-SHA:\s*([0-9a-f]{40})\s*$", ticket_raw, re.M,
             ) == [route_value.get("kit_sha", "").encode()]
+            and (
+                not current_migration
+                or (
+                    SHA.fullmatch(old_pin.stdout.rstrip("\n")) is not None
+                    and old_pin.stdout.count("\n") == 1
+                    and pin.stdout == route_value.get("kit_sha", "") + "\n"
+                )
+            )
             and (
                 migration is None
                 or valid_v2_migration(migration)

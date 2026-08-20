@@ -24,6 +24,7 @@ unset FACTORY_CERTIFIED_PRODUCT_ORIGIN
 
 PIN_PRECOMMIT=0
 PIN_WORKDIR=""
+PIN_KIT_RELATIVE=""
 PIN_TICKET_RELATIVE=""
 PIN_PLAN_RELATIVE=""
 PIN_PLAN_EXISTED=0
@@ -41,6 +42,10 @@ cleanup() {
   [[ -z "$TEMPORARY_DIR" ]] || rm -rf "$TEMPORARY_DIR"
   [[ -z "$FALLBACK_LAUNCH_LOCK" ]] || rmdir "$FALLBACK_LAUNCH_LOCK" 2>/dev/null || true
   if [[ "$PIN_PRECOMMIT" -eq 1 && -n "$PIN_WORKDIR" ]]; then
+    if [[ -n "$PIN_KIT_RELATIVE" ]]; then
+      git -C "$PIN_WORKDIR" restore --staged --worktree -- \
+        "$PIN_KIT_RELATIVE" >/dev/null 2>&1 || true
+    fi
     git -C "$PIN_WORKDIR" restore --staged --worktree -- \
       "$PIN_TICKET_RELATIVE" >/dev/null 2>&1 || true
     if [[ "$PIN_PLAN_EXISTED" -eq 1 ]]; then
@@ -1135,6 +1140,7 @@ PY
     recheck_inflight_migration_authority
     PIN_PRECOMMIT=1
     PIN_WORKDIR="$workdir"
+    PIN_KIT_RELATIVE="factory/KIT_PIN"
     PIN_TICKET_RELATIVE="factory/tickets/$ticket.md"
     PIN_PLAN_RELATIVE="factory/route-plans/$ticket.json"
     PIN_PLAN_EXISTED=1
@@ -1151,6 +1157,8 @@ path.write_text(text[:matches[0].start()] + "Kit-SHA: " + new +
                 text[matches[0].end():])
 PY
       json_error "ticket Kit-SHA migration failed"
+    printf '%s\n' "$FACTORY_KIT_SHA" > "$workdir/$PIN_KIT_RELATIVE" ||
+      json_error "factory KIT_PIN migration failed"
     manager migrate --ticket-plan "$CONTROL_PLAN_FILE" \
       --pin-commit "$pin_commit" --kit-sha "$FACTORY_KIT_SHA" \
       --migrated-at "$migrated_at" --approve-hash "$approve_hash" \
@@ -1158,7 +1166,7 @@ PY
       --output "$CONTROL_PLAN_FILE" >/dev/null ||
       json_error "route journal migration failed"
     if git -C "$workdir" diff --quiet -- \
-      "$PIN_TICKET_RELATIVE" "$PIN_PLAN_RELATIVE"; then
+      "$PIN_KIT_RELATIVE" "$PIN_TICKET_RELATIVE" "$PIN_PLAN_RELATIVE"; then
       PIN_PRECOMMIT=0
       commit_sha="$(push_exact_head "$workdir" "$CONTROL_BRANCH" \
         "$CONTROL_REMOTE" "$expected_remote_head")"
@@ -1170,12 +1178,14 @@ print(json.dumps(value, sort_keys=True, separators=(",", ":")))
 PY
       exit 0
     fi
-    git -C "$workdir" add -- "$PIN_TICKET_RELATIVE" "$PIN_PLAN_RELATIVE" ||
+    git -C "$workdir" add -- \
+      "$PIN_KIT_RELATIVE" "$PIN_TICKET_RELATIVE" "$PIN_PLAN_RELATIVE" ||
       json_error "could not stage route migration"
     git -C "$workdir" -c user.name="Software Factory" \
       -c user.email="factory@local" commit \
       -m "$ticket: migrate model route journal" -- \
-      "$PIN_TICKET_RELATIVE" "$PIN_PLAN_RELATIVE" >/dev/null ||
+      "$PIN_KIT_RELATIVE" "$PIN_TICKET_RELATIVE" \
+      "$PIN_PLAN_RELATIVE" >/dev/null ||
       json_error "could not commit route migration"
     PIN_PRECOMMIT=0
     commit_sha="$(push_exact_head "$workdir" "$CONTROL_BRANCH" \
