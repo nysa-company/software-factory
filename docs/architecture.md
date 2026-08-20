@@ -891,6 +891,12 @@ qualification cohort, the first controller or worker error latches the whole
 cohort: launchers admitted before the latch terminalize for accounting, but
 the latch and the final process-launch boundary are atomic so no sibling may
 start another role afterward. Production rolling lanes remain ticket-isolated.
+An exact role terminal that cannot continue through the bounded invalid-output
+retry, prior-release launch-void recovery, direct-model identity recovery, or
+authenticated Cursor fallback latches that same qualification boundary before
+the claim is blocked or cancelled. A role process that exits without its
+receipt-bound terminal does the same. Already-admitted siblings still drain and
+account once; no later role may start in the fixed cohort.
 The Claude adapter also classifies only its strict submitted 429 result shape
 with the bounded `individual spend limit` reason. Qualification latches that
 typed, accounted `provider_failed` terminal at the same launch boundary. A

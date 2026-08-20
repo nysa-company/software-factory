@@ -3602,6 +3602,7 @@ class FactoryControllerTest(unittest.TestCase):
 
     def test_launch_void_blocks_once_and_preserves_role_receipt(self) -> None:
         controller = CONTROL.Controller(self.args)
+        controller.qualification = {"generation": 1, "tickets": ["T-110"]}
         receipt = "b" * 64
         claim = {
             "branch": "ticket/T-110",
@@ -3662,9 +3663,11 @@ class FactoryControllerTest(unittest.TestCase):
             item for item in events if item["event"] == "pre_go_failure_blocked"
         )
         self.assertEqual(blocked["reason"], "cursor_credential_unsafe")
+        self.assertTrue(controller.qualification_cohort_error.is_set())
 
     def test_prior_release_launch_void_retries_stage_once(self) -> None:
         controller = CONTROL.Controller(self.args)
+        controller.qualification = {"generation": 1, "tickets": ["T-110"]}
         receipt = "b" * 64
         claim = {
             "branch": "ticket/T-110",
@@ -3713,6 +3716,7 @@ class FactoryControllerTest(unittest.TestCase):
             ),
             1,
         )
+        self.assertFalse(controller.qualification_cohort_error.is_set())
 
     def test_attempt_progress_is_content_free_and_monotonic(self) -> None:
         controller = CONTROL.Controller(self.args)
@@ -5406,6 +5410,40 @@ class FactoryControllerTest(unittest.TestCase):
             [("T-110", 0, []), ("T-111", 3, ["lease"])],
         )
 
+    def test_qualification_missing_terminal_latches_after_process(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        controller.qualification = {"generation": 1, "tickets": ["T-110"]}
+        claim = {
+            "branch": "ticket/T-110", "lease": "a" * 64,
+            "publication_lease": "", "receipt": "", "role": "",
+            "schema": CONTROL.CLAIM_SCHEMA, "status": "claimed",
+            "ticket": "T-110", "worktree": str(self.root / "cell-1"),
+        }
+        Path(claim["worktree"]).mkdir()
+        controller.ensure_execution_cell = lambda _claim: None
+        controller.terminal_for_receipt = lambda *_args: None
+        controller.release_ticket_lease = lambda *_args: None
+
+        class MissingTerminalProcess:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            @staticmethod
+            def wait(timeout=None):
+                return 0
+
+        with (
+            patch.object(CONTROL, "ensure_qualification_artifacts"),
+            patch.object(CONTROL.subprocess, "Popen", MissingTerminalProcess),
+        ):
+            self.assertTrue(
+                controller.run_role(claim, "builder", "b" * 64, [])
+            )
+
+        self.assertEqual(claim["status"], "blocked")
+        self.assertEqual(claim["blocked_reason"], "missing-terminal")
+        self.assertTrue(controller.qualification_cohort_error.is_set())
+
     def test_delayed_terminal_is_finished_without_rerunning_role(self) -> None:
         controller = CONTROL.Controller(self.args)
         receipt = "b" * 64
@@ -5872,6 +5910,7 @@ class FactoryControllerTest(unittest.TestCase):
                 for call in calls
             )
         )
+        self.assertFalse(controller.qualification_cohort_error.is_set())
 
         claim.update(
             lease="a" * 64, receipt="b" * 64, role="planner", status="running",
@@ -5897,6 +5936,7 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(typed[0][0], ("typed_recovery_refused", "T-112"))
         self.assertEqual(typed[0][1]["reason"], "manifest")
         self.assertEqual(typed[0][1]["recovery_kind"], "qualification_fallback")
+        self.assertTrue(controller.qualification_cohort_error.is_set())
         calls.clear()
         controller.restore_recorded_contract_repair = lambda _claim: False
         controller.restore_contract_blocker = lambda _claim: False
@@ -6054,6 +6094,7 @@ class FactoryControllerTest(unittest.TestCase):
 
     def test_invalid_reviewer_output_retries_only_reviewer(self) -> None:
         controller = CONTROL.Controller(self.args)
+        controller.qualification = {"tickets": ["T-110"]}
         claim = {
             "lease": "a" * 64,
             "publication_lease": "",
@@ -6088,6 +6129,7 @@ class FactoryControllerTest(unittest.TestCase):
                 "role_output_rejected",
             ]
         )
+        self.assertFalse(controller.qualification_cohort_error.is_set())
 
     def test_contract_block_waits_for_exact_resume_then_reclaims(self) -> None:
         controller = CONTROL.Controller(self.args)
@@ -7553,6 +7595,7 @@ class FactoryControllerTest(unittest.TestCase):
 
     def test_cancelled_run_releases_every_controller_resource(self) -> None:
         controller = CONTROL.Controller(self.args)
+        controller.qualification = {"tickets": ["T-110"]}
         claim = {
             "branch": "ticket/T-110",
             "lease": "a" * 64,
@@ -7589,6 +7632,7 @@ class FactoryControllerTest(unittest.TestCase):
                 "attempt_cancelled",
             ],
         )
+        self.assertTrue(controller.qualification_cohort_error.is_set())
 
     def test_complete_releases_claim(self) -> None:
         controller = CONTROL.Controller(self.args)
@@ -11911,6 +11955,7 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertTrue(controller.finish_pending_run(claim))
         self.assertEqual(calls, ["recover"])
         self.assertEqual(claim["status"], "claimed")
+        self.assertFalse(controller.qualification_cohort_error.is_set())
 
     def test_first_model_identity_refusal_is_durably_blocked(self) -> None:
         controller = CONTROL.Controller(self.args)
@@ -11953,6 +11998,7 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(calls[1], "release")
         self.assertEqual(calls[2][0], "typed_recovery_refused")
         self.assertEqual(calls[2][1]["reason"], "model evidence mismatch")
+        self.assertTrue(controller.qualification_cohort_error.is_set())
 
     def test_model_identity_recovery_retries_only_operational_failures(self) -> None:
         controller = CONTROL.Controller(self.args)
@@ -16491,6 +16537,75 @@ class FactoryControllerTest(unittest.TestCase):
         popen.assert_not_called()
         self.assertNotIn("attempt_started", events)
         self.assertNotIn("receipt", claim)
+
+    def test_qualification_protected_mutation_latches_before_sibling_launch(
+        self,
+    ) -> None:
+        controller = CONTROL.Controller(self.args)
+        controller.qualification = {"tickets": ["T-110", "T-111"]}
+        failed = {
+            "branch": "ticket/T-110", "lease": "a" * 64,
+            "publication_lease": "", "receipt": "b" * 64,
+            "role": "spec-linter", "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "running", "ticket": "T-110",
+            "worktree": str(self.root / "cell-1"),
+        }
+        sibling = {
+            "lease": "c" * 64, "ticket": "T-111",
+            "worktree": str(self.root / "cell-2"),
+        }
+        terminal = {
+            "accounting_state": "completed", "exit_status": "11",
+            "go_issued": "1",
+            "role_exit": "role_exit_protected_ticket_mutation",
+            "route_id": "cursor-claude-opus-5-thinking-medium",
+            "run_id": "protected-mutation", "task_submitted": "1",
+            "terminal_reason_code": "",
+        }
+        controller.terminal_for_receipt = (
+            lambda ticket, _receipt: terminal if ticket == "T-110" else None
+        )
+        controller.emit_attempt_terminal = lambda *_args: None
+        controller.terminal_already_exported = lambda *_args: False
+        controller.passport = lambda *_args: self.assertTrue(
+            controller.qualification_cohort_error.is_set()
+        )
+        controller.archive_emergency_admission = lambda *_args: None
+        controller.save_claim = lambda *_args: None
+        controller.release_ticket_lease = lambda *_args: None
+        controller.passport_sha256 = lambda *_args: "d" * 64
+        preflight_started = threading.Event()
+        release_preflight = threading.Event()
+
+        def json_call(*_args, **_kwargs):
+            preflight_started.set()
+            self.assertTrue(release_preflight.wait(1))
+            return {"exit_code": 0, "status": "ok"}
+
+        controller.json_call = json_call
+        controller.ensure_execution_cell = lambda _claim: None
+
+        def event(name, *_args, **_kwargs):
+            if name == "role_blocked":
+                self.assertTrue(controller.qualification_cohort_error.is_set())
+
+        controller.event = event
+        with (
+            patch.object(CONTROL, "ensure_qualification_artifacts"),
+            patch.object(CONTROL.subprocess, "Popen") as popen,
+            ThreadPoolExecutor(max_workers=1) as executor,
+        ):
+            role = executor.submit(
+                controller.run_role, sibling, "planner", "e" * 64, []
+            )
+            self.assertTrue(preflight_started.wait(1))
+            self.assertFalse(controller.finish_pending_run(failed))
+            release_preflight.set()
+            self.assertFalse(role.result(timeout=2))
+
+        popen.assert_not_called()
+        self.assertEqual(failed["blocked_reason"], "role-failure")
+        self.assertTrue(controller.qualification_cohort_error.is_set())
 
     def test_qualification_latch_accounts_existing_terminal_before_stopping(
         self,
