@@ -323,6 +323,68 @@ class HandoffTest(unittest.TestCase):
                 "builder", self.policy,
             )
 
+    def test_spec_lint_fallback_preserves_one_legal_verdict_append(self):
+        ticket = self.repo / "factory/tickets/T-366.md"
+        ticket.parent.mkdir()
+        ticket.write_text("State: In Progress\n")
+        git(self.repo, "add", str(ticket.relative_to(self.repo)))
+        git(self.repo, "commit", "-qm", "seed qualification ticket")
+        git(self.repo, "push", "-q", "origin", "main")
+        baseline = git(self.repo, "rev-parse", "HEAD")
+        policy = self.make_policy(
+            roles={"spec-linter": ["factory/tickets/T-366.md"]},
+            protected_paths=[".git", ".git/**"],
+        )
+
+        ticket.write_text("State: In Progress\nSPEC-LINT: FAIL — missing proof\n")
+        git(self.repo, "add", str(ticket.relative_to(self.repo)))
+        git(self.repo, "commit", "-qm", "T-366: spec-lint round 1 verdict FAIL")
+        head = git(self.repo, "rev-parse", "HEAD")
+        preview = preview_handoff(
+            self.repo,
+            role="spec-linter",
+            policy=policy,
+            expected_head=head,
+            expected_branch="main",
+            remote="origin",
+            remote_branch="main",
+            expected_remote_head=baseline,
+            provider_scan_base=baseline,
+        )
+        result = build_handoff_commit(
+            preview,
+            policy,
+            revision_hash="a" * 64,
+            commit_timestamp="1784390400 +0000",
+            journal_content=b'{"schema":"ticket-model-route-journal/v2"}\n',
+        )
+        validate_handoff_commit(
+            self.repo,
+            commit=result.commit,
+            role="spec-linter",
+            provider_scan_base=baseline,
+            policy=policy,
+            expected_snapshot_digest=preview.snapshot_digest,
+            expected_revision_hash="a" * 64,
+            expected_subject="Preserve failed attempt for trusted handoff",
+        )
+
+        ticket.write_text("State: Done\nSPEC-LINT: FAIL — missing proof\n")
+        git(self.repo, "add", str(ticket.relative_to(self.repo)))
+        git(self.repo, "commit", "-qm", "mutate protected ticket state")
+        with self.assertRaisesRegex(HandoffError, "protected ticket evidence changed"):
+            preview_handoff(
+                self.repo,
+                role="spec-linter",
+                policy=policy,
+                expected_head=git(self.repo, "rev-parse", "HEAD"),
+                expected_branch="main",
+                remote="origin",
+                remote_branch="main",
+                expected_remote_head=baseline,
+                provider_scan_base=baseline,
+            )
+
     def test_preview_and_replay_preserve_only_exact_tracked_symlinks(self):
         (self.repo / "skills").mkdir()
         (self.repo / "skills/README.md").write_text("# Skills\n")

@@ -715,7 +715,10 @@ def validate_handoff_commit(
     _reject_provider_commits(
         repo, provider_scan_base, parent, policy.provider_identities,
     )
-    _validate_committed_changes(repo, provider_scan_base, parent, role, policy)
+    _validate_committed_changes(
+        repo, provider_scan_base, parent, role, policy,
+        allow_spec_lint_append=True,
+    )
     parent_tree = _parse_tree(
         _git(repo, ["ls-tree", "-rz", "--full-tree", parent]),
         allow_symlinks=True,
@@ -928,7 +931,10 @@ def validate_committed_output(repo, *, baseline, head, role, policy):
     """Re-run the committed-output checks used by handoff preview."""
     _reject_provider_commits(repo, baseline, head, policy.provider_identities)
     return _snapshot_digest(
-        _validate_committed_changes(repo, baseline, head, role, policy)
+        _validate_committed_changes(
+            repo, baseline, head, role, policy,
+            allow_spec_lint_append=True,
+        )
     )
 
 

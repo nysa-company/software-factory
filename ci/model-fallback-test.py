@@ -436,6 +436,92 @@ class FallbackTest(unittest.TestCase):
         self.assertTrue(recovered["recovered"])
         self.assertEqual(recovered["commit_sha"], applied["commit_sha"])
 
+    def test_qualification_apply_preserves_committed_spec_lint_verdict(self):
+        git(self.repo, "restore", "src/app.txt")
+        ticket = self.repo / "factory/tickets/T-1.md"
+        ticket.write_text(
+            ticket.read_text() + "SPEC-LINT: FAIL — stalled after verdict\n"
+        )
+        git(self.repo, "add", "factory/tickets/T-1.md")
+        git(self.repo, "commit", "-m", "T-1: spec-lint round 1 verdict FAIL")
+
+        journal = json.loads(
+            (self.repo / "factory/route-plans/T-1.json").read_text()
+        )
+        resolution = MANAGER.active_resolution(journal)
+        failed = resolution["selections"]["spec-linter"]
+        manifest_path = self.product / "factory/runs/run-failed-1.meta"
+        manifest = dict(
+            line.split("=", 1)
+            for line in manifest_path.read_text().splitlines()
+        )
+        manifest.update({
+            "adapter": failed["adapter"],
+            "model_id": failed["selection_id"],
+            "provider_family": failed["provider_family"],
+            "role": "spec-linter",
+            "route_id": failed["route_id"],
+        })
+        manifest_path.write_text("".join(
+            f"{key}={value}\n" for key, value in sorted(manifest.items())
+        ))
+        readiness = json.loads(self.readiness.read_text())
+        for route_id in (
+            resolution["selections"]["builder"]["route_id"],
+            failed["route_id"],
+        ):
+            readiness[route_id].update(reason="ok", state="READY")
+        readiness[failed["route_id"]].update(
+            reason="provider_unavailable", state="UNAVAILABLE",
+        )
+        self.readiness.write_text(ROUTER.canonical_json(readiness) + "\n")
+
+        qualification = self.product / "factory/QUALIFICATION.json"
+        qualification.write_text(json.dumps({
+            "budget_usd": "300.000000",
+            "capacity": 3,
+            "contract_version": "2.0.0",
+            "factory_sha": "a" * 40,
+            "generation": 1,
+            "per_run_budget_usd": "10.000000",
+            "per_ticket_budget_usd": "100.000000",
+            "schema": "nysa.software-factory.qualification/v2",
+            "target_done": 3,
+            "tickets": ["T-1", "T-2", "T-3"],
+        }))
+        git(self.product, "init", "-q", "-b", "main")
+        git(self.product, "config", "user.name", "Test")
+        git(self.product, "config", "user.email", "test@example.test")
+        git(self.product, "add", ".")
+        git(self.product, "commit", "-m", "qualification authority")
+        environment = {
+            "FACTORY_KIT_TRUST_SCOPE": "qualification-candidate",
+            "FACTORY_QUALIFICATION_MANIFEST": str(qualification),
+            "FACTORY_QUALIFICATION_PRODUCT_SHA": git(
+                self.product, "rev-parse", "HEAD"
+            ),
+            "FACTORY_QUALIFICATION_PRODUCT_TREE": git(
+                self.product, "rev-parse", "HEAD^{tree}"
+            ),
+            "FACTORY_RELEASE_SHA": "a" * 40,
+            "FACTORY_ROOT": str(self.product),
+        }
+
+        applied = self.command("qualification-apply", environment=environment)
+        revised = json.loads(
+            git(self.repo, "show", "HEAD:factory/route-plans/T-1.json")
+        )
+        self.assertEqual(
+            revised["revisions"][-1]["body"]["new_resolution"]
+            ["selections"]["spec-linter"]["adapter"],
+            "claude-code",
+        )
+        self.assertEqual(git(self.repo, "rev-parse", "HEAD"), applied["commit_sha"])
+        self.assertIn(
+            "SPEC-LINT: FAIL — stalled after verdict",
+            git(self.repo, "show", "HEAD^:factory/tickets/T-1.md"),
+        )
+
     def test_qualification_fallback_is_scoped_to_failure_generation(self):
         first = self.command("qualification-apply")
         route = self.repo / "factory/route-plans/T-1.json"
