@@ -66,6 +66,16 @@ PY
   exit 2
 }
 
+external_wait() {
+  printf '%s\n' '{"reason_code":"external_unavailable","status":"wait"}' >&2
+  exit 75
+}
+
+transport_unavailable() {
+  printf '%s' "$1" |
+    python3 -B "$KIT_DIR/scripts/lib/external_transport.py"
+}
+
 acquire_fallback_launch_lock() {
   local launch_lock="$1" attempt
   for attempt in $(seq 1 600); do
@@ -397,18 +407,27 @@ git_network_error() {
 
 push_exact_head() {
   local workdir="$1" branch="$2" remote="$3" expected_old="$4"
-  local head tracking actual
+  local head tracking actual observation push_error push_rc=0 remote_rc=0
   head="$(git -C "$workdir" rev-parse HEAD)" || json_error "cannot resolve commit"
   tracking="$(factory_remote_tracking_tip "$workdir" "$branch")"
   [[ "$tracking" == "$expected_old" ]] ||
     json_error "remote tracking state changed before push"
-  control_git "$workdir" push \
+  push_error="$(control_git "$workdir" push \
     "--force-with-lease=refs/heads/$branch:$expected_old" \
-    "$remote" "$head:refs/heads/$branch" >/dev/null 2>&1 ||
-    git_network_error "could not push exact model-control commit"
-  actual="$(control_git "$workdir" ls-remote --heads -- "$remote" \
-    "refs/heads/$branch" 2>/dev/null | awk 'NR==1 {print $1; exit}')"
-  [[ "$actual" == "$head" ]] || git_network_error "remote verification failed"
+    "$remote" "$head:refs/heads/$branch" 2>&1 >/dev/null)" || push_rc=$?
+  observation="$(control_git "$workdir" ls-remote --heads -- "$remote" \
+    "refs/heads/$branch" 2>&1)" || remote_rc=$?
+  actual="$(printf '%s\n' "$observation" | awk 'NR==1 {print $1; exit}')"
+  if [[ "$actual" != "$head" ]]; then
+    if transport_unavailable "$push_error
+$observation"; then
+      external_wait
+    fi
+    [[ "$push_rc" -eq 0 ]] ||
+      git_network_error "could not push exact model-control commit"
+    [[ "$remote_rc" -eq 0 ]] || git_network_error "remote verification failed"
+    git_network_error "remote verification failed"
+  fi
   factory_update_tracking_ref "$workdir" "$branch" "$head" "$tracking" ||
     json_error "remote tracking update failed"
   printf '%s\n' "$head"
@@ -417,7 +436,10 @@ push_exact_head() {
 remote_branch_head() {
   local branch="$1" lines
   lines="$(control_git "$CONTROL_WORKDIR" ls-remote --heads -- "$CONTROL_REMOTE" \
-    "refs/heads/$branch" 2>/dev/null)" || return 1
+    "refs/heads/$branch" 2>&1)" || {
+      transport_unavailable "$lines" && external_wait
+      return 1
+    }
   python3 - "$branch" "$lines" <<'PY'
 import re, sys
 branch, raw = sys.argv[1:]
@@ -434,16 +456,20 @@ PY
 }
 
 validate_inflight_migration_authority() {
-  local current_head tracking_ticket tracking_main actual_ticket expected_parent
+  local current_head tracking_ticket tracking_main actual_ticket expected_parent rc
   local qualification_head
   current_head="$(git -C "$CONTROL_WORKDIR" rev-parse HEAD)" ||
     json_error "cannot resolve ticket head"
   tracking_ticket="$(factory_remote_tracking_tip \
     "$CONTROL_WORKDIR" "$CONTROL_BRANCH")"
-  actual_ticket="$(remote_branch_head "$CONTROL_BRANCH")" ||
+  actual_ticket="$(remote_branch_head "$CONTROL_BRANCH")" || {
+    rc=$?; [[ "$rc" -ne 75 ]] || exit 75
     git_network_error "remote ticket head lookup failed"
-  CONTROL_PROTECTED_MAIN="$(remote_branch_head main)" ||
+  }
+  CONTROL_PROTECTED_MAIN="$(remote_branch_head main)" || {
+    rc=$?; [[ "$rc" -ne 75 ]] || exit 75
     git_network_error "protected main head lookup failed"
+  }
   tracking_main="$(factory_remote_tracking_tip "$CONTROL_WORKDIR" main)"
   [[ "$tracking_main" == "$CONTROL_PROTECTED_MAIN" ]] ||
     json_error "protected main tracking state is stale"
@@ -493,17 +519,21 @@ validate_inflight_migration_authority() {
 }
 
 recheck_inflight_migration_authority() {
-  local current_head tracking_ticket tracking_main actual_ticket protected authority
+  local current_head tracking_ticket tracking_main actual_ticket protected authority rc
   local qualification_head worktree_status
   current_head="$(git -C "$CONTROL_WORKDIR" rev-parse HEAD)" ||
     json_error "cannot resolve ticket head"
   tracking_ticket="$(factory_remote_tracking_tip \
     "$CONTROL_WORKDIR" "$CONTROL_BRANCH")"
   tracking_main="$(factory_remote_tracking_tip "$CONTROL_WORKDIR" main)"
-  actual_ticket="$(remote_branch_head "$CONTROL_BRANCH")" ||
+  actual_ticket="$(remote_branch_head "$CONTROL_BRANCH")" || {
+    rc=$?; [[ "$rc" -ne 75 ]] || exit 75
     git_network_error "remote ticket head lookup failed"
-  protected="$(remote_branch_head main)" ||
+  }
+  protected="$(remote_branch_head main)" || {
+    rc=$?; [[ "$rc" -ne 75 ]] || exit 75
     git_network_error "protected main head lookup failed"
+  }
   [[ "$current_head" == "$CONTROL_AUTHORIZED_LOCAL_HEAD" &&
      "$tracking_ticket" == "$CONTROL_EXPECTED_REMOTE_HEAD" &&
      "$actual_ticket" == "$CONTROL_EXPECTED_REMOTE_HEAD" ]] ||
@@ -1298,6 +1328,10 @@ PY
         --failed-run "$failed_run" --reason "$reason" \
         --readiness "$readiness" --remote "$CONTROL_REMOTE" \
         > "$apply_file" 2> "$error_file"; then
+        if python3 -B "$KIT_DIR/scripts/lib/external_transport.py" < "$error_file"; then
+          rm -f "$apply_file" "$error_file"
+          external_wait
+        fi
         reason_code="$(python3 -B "$KIT_DIR/scripts/lib/fallback_refusal.py" "$error_file")"
         rm -f "$apply_file"
         rm -f "$error_file"
@@ -1596,15 +1630,8 @@ EOF
       factory_product_remote_matches "$workdir" "$product_remote" ||
         json_error "$FACTORY_PRODUCT_REMOTE_ERROR"
       tracking_sha="$(factory_remote_tracking_tip "$workdir" "$branch")"
-      git -C "$workdir" push --no-force -- "$product_remote" \
-        "$commit_sha:refs/heads/$branch" >/dev/null 2>&1 ||
-        json_error "could not push exact existing ticket pin"
-      remote_sha="$(git -C "$workdir" ls-remote --heads -- "$product_remote" \
-        "refs/heads/$branch" 2>/dev/null | awk 'NR==1 {print $1; exit}')"
-      [[ "$remote_sha" == "$commit_sha" ]] ||
-        json_error "existing ticket pin remote verification failed"
-      factory_update_tracking_ref "$workdir" "$branch" "$commit_sha" "$tracking_sha" ||
-        json_error "existing ticket pin remote tracking update failed"
+      commit_sha="$(push_exact_head \
+        "$workdir" "$branch" "$product_remote" "$tracking_sha")"
       pin_hash="$(python3 - "$output" <<'PY'
 import hashlib
 import sys
@@ -1695,15 +1722,8 @@ PY
     commit_sha="$(git -C "$workdir" rev-parse HEAD)" ||
       json_error "could not resolve ticket pin commit"
     tracking_sha="$(factory_remote_tracking_tip "$workdir" "$branch")"
-    git -C "$workdir" push --no-force -- "$product_remote" \
-      "$commit_sha:refs/heads/$branch" >/dev/null 2>&1 ||
-      json_error "could not push ticket pin commit"
-    remote_sha="$(git -C "$workdir" ls-remote --heads -- "$product_remote" \
-      "refs/heads/$branch" 2>/dev/null | awk 'NR==1 {print $1; exit}')"
-    [[ "$remote_sha" == "$commit_sha" ]] ||
-      json_error "ticket pin remote verification failed"
-    factory_update_tracking_ref "$workdir" "$branch" "$commit_sha" "$tracking_sha" ||
-      json_error "ticket pin remote tracking update failed"
+    commit_sha="$(push_exact_head \
+      "$workdir" "$branch" "$product_remote" "$tracking_sha")"
     pin_hash="$(python3 - "$output" <<'PY'
 import hashlib
 import sys

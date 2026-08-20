@@ -70,6 +70,7 @@ from reorder_test_fixes import (  # noqa: E402
     create_test_snapshot_reconstruction,
     verified_test_snapshot_reconstruction,
 )
+from external_transport import temporarily_unavailable  # noqa: E402
 
 
 SCHEMA = "nysa.software-factory.controller/v1"
@@ -155,6 +156,10 @@ class ControllerError(ValueError):
     pass
 
 
+class ExternalUnavailable(RuntimeError):
+    pass
+
+
 class FactoryDefect(ControllerError):
     def __init__(self, reason_code: str, message: str):
         super().__init__(message)
@@ -219,6 +224,71 @@ def safe_error(error: BaseException) -> str:
         redacted.append(line)
     detail = "".join(redacted)
     return " ".join(detail.split())[:500] or "recovery refused"
+
+
+def require_external_result(
+    result: subprocess.CompletedProcess, label: str,
+) -> subprocess.CompletedProcess:
+    if result.returncode:
+        if temporarily_unavailable(result.stderr or result.stdout):
+            raise ExternalUnavailable("external service is temporarily unavailable")
+        raise ControllerError(label)
+    return result
+
+
+def run_external(command: list[str], label: str) -> subprocess.CompletedProcess:
+    try:
+        result = subprocess.run(
+            command, text=True, capture_output=True, check=False, timeout=120,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise ExternalUnavailable(
+            "external service is temporarily unavailable"
+        ) from error
+    return require_external_result(result, label)
+
+
+def push_exact_head(
+    worktree: str, branch: str, head: str, expected_remote: str,
+) -> None:
+    command = [
+        "git", "-C", worktree, "push",
+        f"--force-with-lease=refs/heads/{branch}:{expected_remote}", "--",
+        "origin", f"{head}:refs/heads/{branch}",
+    ]
+    try:
+        pushed = subprocess.run(
+            command, text=True, capture_output=True, check=False, timeout=120,
+        )
+    except subprocess.TimeoutExpired:
+        pushed = None
+    observed = run_external(
+        [
+            "git", "-C", worktree, "ls-remote", "--exit-code", "origin",
+            f"refs/heads/{branch}",
+        ],
+        "role output remote verification failed",
+    )
+    if observed.stdout != f"{head}\trefs/heads/{branch}\n":
+        if pushed is None or temporarily_unavailable(
+            pushed.stderr or pushed.stdout
+        ):
+            raise ExternalUnavailable(
+                "external service is temporarily unavailable"
+            )
+        raise ControllerError("role output push was not accepted")
+    tracking = f"refs/remotes/origin/{branch}"
+    current = subprocess.run(
+        ["git", "-C", worktree, "rev-parse", "--verify", tracking],
+        text=True, capture_output=True, check=False, timeout=120,
+    ).stdout.strip()
+    if current == expected_remote:
+        subprocess.run(
+            ["git", "-C", worktree, "update-ref", tracking, head, current],
+            check=True, timeout=120,
+        )
+    elif current != head:
+        raise ControllerError("role output remote tracking changed")
 
 
 def semantic_authorization_wait(stage: str) -> tuple[str, str, int] | None:
@@ -2037,7 +2107,23 @@ class Controller:
         timeout: int | None = 300,
     ) -> dict[str, Any]:
         result = self.call(*arguments, timeout=timeout)
+        if result.returncode == 75:
+            try:
+                wait = json.loads(result.stdout or result.stderr)
+            except json.JSONDecodeError as error:
+                raise ControllerError(
+                    "external wait response is malformed"
+                ) from error
+            if wait != {
+                "reason_code": "external_unavailable", "status": "wait",
+            }:
+                raise ControllerError("external wait response is malformed")
+            raise ExternalUnavailable("external service is temporarily unavailable")
         if result.returncode not in allow:
+            if temporarily_unavailable(result.stderr or result.stdout):
+                raise ExternalUnavailable(
+                    "external service is temporarily unavailable"
+                )
             raise ControllerError(
                 result.stderr.strip() or result.stdout.strip() or "launcher command failed"
             )
@@ -2958,29 +3044,28 @@ class Controller:
         return len(states) == 1 and states[0].casefold() == "done"
 
     def protected_main_head(self) -> str:
-        observed = subprocess.run(
+        observed = run_external(
             [
                 "git", "-C", str(self.product), "ls-remote", "--heads",
                 "origin", "refs/heads/main",
             ],
-            text=True, capture_output=True, check=False, timeout=120,
+            "protected main cancellation authority is unavailable",
         )
         fields = observed.stdout.split()
         if (
-            observed.returncode
-            or len(fields) != 2
+            len(fields) != 2
             or not SHA.fullmatch(fields[0])
             or fields[1] != "refs/heads/main"
         ):
             raise ControllerError("protected main cancellation authority is unavailable")
         with self.git_lock:
-            subprocess.run(
+            run_external(
                 [
                     "git", "-C", str(self.product), "fetch", "--quiet",
                     "--no-tags", "origin",
                     "+refs/heads/main:refs/remotes/origin/main",
                 ],
-                check=True, timeout=120,
+                "protected main cancellation fetch failed",
             )
             fetched = subprocess.run(
                 [
@@ -4484,12 +4569,26 @@ class Controller:
             "--run-id", terminal["run_id"],
             "--workdir", claim["worktree"], "--json",
         )
+        if response.returncode and temporarily_unavailable(
+            response.stderr or response.stdout
+        ):
+            raise ExternalUnavailable(
+                "external service is temporarily unavailable"
+            )
         try:
             result = json.loads(response.stdout)
         except json.JSONDecodeError as error:
             raise ControllerError("model identity recovery returned malformed JSON") from error
         if not isinstance(result, dict):
             raise ControllerError("model identity recovery returned malformed JSON")
+        if response.returncode == 75:
+            if result == {
+                "reason_code": "external_unavailable", "status": "wait",
+            }:
+                raise ExternalUnavailable(
+                    "external service is temporarily unavailable"
+                )
+            raise ControllerError("external wait response is malformed")
         if response.returncode:
             if (
                 result.get("schema") == "nysa.software-factory.ticket-passport/v1"
@@ -4523,15 +4622,9 @@ class Controller:
         status, local_head, remote_head = self.remote_cell_head_status(claim)
         input_head = terminal.get("role_head_before", "")
         if status == "resume_commit_not_pushed" and remote_head in {"", input_head}:
-            pushed = subprocess.run(
-                ["git", "-C", claim["worktree"], "push", "--no-force", "--",
-                 "origin", f"{local_head}:refs/heads/{claim['branch']}"],
-                text=True, capture_output=True, check=False, timeout=120,
+            push_exact_head(
+                claim["worktree"], claim["branch"], local_head, remote_head,
             )
-            if pushed.returncode:
-                raise ControllerError(
-                    safe_error(pushed.stderr or "model identity output push failed")
-                )
         elif status != "pushed" or remote_head != local_head:
             raise ControllerError("model identity recovery remote moved")
         if not self.remote_passport_valid(claim):
@@ -5214,13 +5307,24 @@ class Controller:
             return False
         head = passport["head_sha"]
         branch = passport["branch"]
-        remote = subprocess.run(
-            [
-                "git", "-C", claim["worktree"], "ls-remote", "--exit-code",
-                "origin", f"refs/heads/{branch}",
-            ],
-            text=True, capture_output=True, check=False, timeout=120,
-        )
+        try:
+            remote = subprocess.run(
+                [
+                    "git", "-C", claim["worktree"], "ls-remote", "--exit-code",
+                    "origin", f"refs/heads/{branch}",
+                ],
+                text=True, capture_output=True, check=False, timeout=120,
+            )
+        except subprocess.TimeoutExpired as error:
+            raise ExternalUnavailable(
+                "external service is temporarily unavailable"
+            ) from error
+        if remote.returncode and temporarily_unavailable(
+            remote.stderr or remote.stdout
+        ):
+            raise ExternalUnavailable(
+                "external service is temporarily unavailable"
+            )
         return remote.returncode == 0 and remote.stdout == (
             f"{head}\trefs/heads/{branch}\n"
         )
@@ -5234,13 +5338,24 @@ class Controller:
         ).stdout.strip()
         if not SHA.fullmatch(head):
             return "remote_unavailable", "", ""
-        remote = subprocess.run(
-            [
-                "git", "-C", claim["worktree"], "ls-remote", "--exit-code",
-                "origin", f"refs/heads/{claim['branch']}",
-            ],
-            text=True, capture_output=True, check=False, timeout=120,
-        )
+        try:
+            remote = subprocess.run(
+                [
+                    "git", "-C", claim["worktree"], "ls-remote", "--exit-code",
+                    "origin", f"refs/heads/{claim['branch']}",
+                ],
+                text=True, capture_output=True, check=False, timeout=120,
+            )
+        except subprocess.TimeoutExpired as error:
+            raise ExternalUnavailable(
+                "external service is temporarily unavailable"
+            ) from error
+        if remote.returncode and temporarily_unavailable(
+            remote.stderr or remote.stdout
+        ):
+            raise ExternalUnavailable(
+                "external service is temporarily unavailable"
+            )
         if remote.returncode == 2 and not remote.stdout:
             return "resume_commit_not_pushed", head, ""
         match = re.fullmatch(
@@ -5448,6 +5563,22 @@ class Controller:
     def recover_pushed_publication_refresh(
         self, claim: dict[str, Any],
     ) -> bool:
+        marker_path = self.reconciliation_marker(claim["ticket"])
+        passport_path = self.state / "passports" / f"{claim['ticket']}.json"
+        if (
+            claim.get("status") != "blocked"
+            or claim.get("blocked_reason") not in {
+                "controller-error", "external-unavailable",
+            }
+            or claim.get("receipt")
+            or claim.get("role")
+            or claim.get("publication_lease")
+            or self.role_active(claim)
+            or not marker_path.exists()
+            or not passport_path.exists()
+            or not self.ticket_release_current(claim)
+        ):
+            return False
         refresh = (
             Path(claim["worktree"]) / "factory" / "attestations"
             / claim["ticket"] / "refresh.json"
@@ -5463,15 +5594,40 @@ class Controller:
             or info.st_size > 1_000_000
         ):
             return False
-        head = self.cell_git(claim, "rev-parse", "HEAD")
+        try:
+            passport = self.authenticated_operator_passport(claim["ticket"])
+            marker = read(marker_path)
+        except (
+            ControllerError, FileNotFoundError, json.JSONDecodeError, OSError,
+            UnicodeError,
+        ):
+            return False
+        if passport is None or marker != {
+            "branch": claim["branch"],
+            "factory_sha": self.release_path.name,
+            "head_sha": passport.get("head_sha"),
+            "passport_sha256": passport.get("passport_sha256"),
+            "run_snapshot_sha256": self.ticket_run_snapshot(claim["ticket"]),
+            "schema": "nysa.software-factory.reconciliation-boundary/v1",
+            "ticket": claim["ticket"],
+        }:
+            return False
+        status, head, remote = self.remote_cell_head_status(claim)
         refresh_head = self.cell_git(
             claim, "log", "-n", "1", "--format=%H", "--",
             f"factory/attestations/{claim['ticket']}/refresh.json",
         )
+        clean = self.cell_git(claim, "status", "--porcelain=v1", "-z")
         if (
-            head.returncode
-            or refresh_head.returncode
-            or head.stdout.strip() != refresh_head.stdout.strip()
+            refresh_head.returncode
+            or head != refresh_head.stdout.strip()
+            or head == passport.get("head_sha")
+            or clean.returncode
+            or clean.stdout
+            or status not in {"pushed", "resume_commit_not_pushed"}
+            or status == "pushed" and remote != head
+            or status == "resume_commit_not_pushed"
+            and remote != passport.get("head_sha")
         ):
             return False
         self.ensure_lease(claim, "publication-refresh-replay")
@@ -5492,9 +5648,98 @@ class Controller:
         claim.pop("blocked_reason", None)
         claim.pop("release_refresh_required", None)
         self.save_claim(claim)
+        marker_path.unlink()
         self.event_once(
             "publication_refresh_recovered", claim["ticket"],
             head_sha=value["head"],
+        )
+        return True
+
+    def recover_pushed_prepublication_attestation(
+        self, claim: dict[str, Any],
+    ) -> bool:
+        marker_path = self.reconciliation_marker(claim["ticket"])
+        passport_path = self.state / "passports" / f"{claim['ticket']}.json"
+        if (
+            claim.get("status") != "blocked"
+            or claim.get("blocked_reason") not in {
+                "controller-error", "external-unavailable",
+            }
+            or claim.get("receipt")
+            or claim.get("role")
+            or claim.get("publication_lease")
+            or self.role_active(claim)
+            or not marker_path.exists()
+            or not passport_path.exists()
+            or not self.ticket_release_current(claim)
+        ):
+            return False
+        try:
+            passport = self.authenticated_operator_passport(claim["ticket"])
+            marker = read(marker_path)
+            transition = self.transition_receipt(claim, record=False)
+        except (
+            ControllerError, FileNotFoundError, json.JSONDecodeError, OSError,
+            UnicodeError,
+        ):
+            return False
+        if passport is None or transition is None or marker != {
+            "branch": claim["branch"],
+            "factory_sha": self.release_path.name,
+            "head_sha": passport.get("head_sha"),
+            "passport_sha256": passport.get("passport_sha256"),
+            "run_snapshot_sha256": self.ticket_run_snapshot(claim["ticket"]),
+            "schema": "nysa.software-factory.reconciliation-boundary/v1",
+            "ticket": claim["ticket"],
+        }:
+            return False
+        status, head, remote = self.remote_cell_head_status(claim)
+        clean = self.cell_git(claim, "status", "--porcelain=v1", "-z")
+        if (
+            head == passport.get("head_sha")
+            or clean.returncode
+            or clean.stdout
+            or status not in {"pushed", "resume_commit_not_pushed"}
+            or status == "pushed" and remote != head
+            or status == "resume_commit_not_pushed"
+            and remote != passport.get("head_sha")
+        ):
+            return False
+        if passport.get("current_state") == "Review":
+            action, publication, recovery = "bundle", "validating", "bundle"
+        elif passport.get("current_state") == "Awaiting Approval":
+            action, publication, recovery = (
+                "approval", "merge-pending", "approval",
+            )
+        else:
+            return False
+        self.ensure_lease(claim, "pushed-prepublication-attestation")
+        arguments = [
+            "ticket-attest", "--ticket", claim["ticket"], "--lease",
+            claim["lease"], "--receipt", transition["receipt_sha256"],
+            "--workdir", claim["worktree"], "--action", action,
+        ]
+        if action == "approval":
+            arguments.append("--attest-only")
+        value = self.json_call(*arguments, "--json")
+        if (
+            value.get("action")
+            != ("approval-attested" if action == "approval" else "bundle")
+            or value.get("head") != head
+        ):
+            raise ControllerError("prepublication attestation replay was not exact")
+        migrated = self.migrate_passport(
+            claim, publication, expected_head=head,
+        )
+        if migrated.get("status") != "ok" or not self.remote_passport_valid(claim):
+            raise ControllerError("pushed prepublication passport is invalid")
+        claim.update(receipt="", role="", status="claimed")
+        claim.pop("blocked_reason", None)
+        self.save_claim(claim)
+        marker_path.unlink()
+        self.event_once(
+            "pushed_prepublication_attestation_recovered", claim["ticket"],
+            head_sha=head, recovery=recovery,
         )
         return True
 
@@ -5502,11 +5747,18 @@ class Controller:
         self, claims: list[dict[str, Any]]
     ) -> None:
         for claim in claims:
+            if (
+                self.recover_pushed_publication_refresh(claim)
+                or self.recover_pushed_prepublication_attestation(claim)
+            ):
+                continue
             marker_path = self.prepublication_retry_path(claim["ticket"])
             passport_path = self.state / "passports" / f"{claim['ticket']}.json"
             if (
                 claim.get("status") != "blocked"
-                or claim.get("blocked_reason") != "controller-error"
+                or claim.get("blocked_reason") not in {
+                    "controller-error", "external-unavailable",
+                }
                 or claim.get("receipt")
                 or claim.get("role")
                 or claim.get("publication_lease")
@@ -5514,11 +5766,6 @@ class Controller:
                 or self.role_active(claim)
                 or not passport_path.exists()
                 or not self.ticket_release_current(claim)
-            ):
-                continue
-            if (
-                not marker_path.exists()
-                and self.recover_pushed_publication_refresh(claim)
             ):
                 continue
             if not marker_path.exists():
@@ -5938,13 +6185,18 @@ class Controller:
     def recover_interrupted_claims(self, claims: list[dict[str, Any]]) -> None:
         for claim in claims:
             worker_error = claim.get("blocked_reason") == "worker-error"
+            controller_error = claim.get("blocked_reason") == "controller-error"
+            external_wait = claim.get("blocked_reason") == "external-unavailable"
             marker_path = self.reconciliation_marker(claim["ticket"])
             passport_path = self.state / "passports" / f"{claim['ticket']}.json"
             if (
                 claim["status"] != "blocked"
                 or claim.get("receipt")
                 or claim.get("role")
-                or claim.get("blocked_reason") not in {None, "worker-error"}
+                or claim.get("blocked_reason") not in {
+                    None, "controller-error", "external-unavailable",
+                    "worker-error",
+                }
                 or worker_error and claim.get("parked") is not True
                 or self.pause_path(claim["ticket"]).exists()
                 or self.role_active(claim)
@@ -5982,8 +6234,10 @@ class Controller:
             self.save_claim(claim)
             marker_path.unlink()
             self.event_once(
-                "worker_error_recovered" if worker_error
-                else "interrupted_claim_recovered",
+                "worker_error_recovered" if worker_error else
+                "controller_error_recovered" if controller_error else
+                "external_service_recovered" if external_wait else
+                "interrupted_claim_recovered",
                 claim["ticket"],
             )
 
@@ -6482,7 +6736,9 @@ class Controller:
             request_path = self.terminal_request_path(claim["ticket"])
             if (
                 claim.get("status") != "blocked"
-                or claim.get("blocked_reason") != "controller-error"
+                or claim.get("blocked_reason") not in {
+                    "controller-error", "external-unavailable",
+                }
                 or claim.get("receipt")
                 or claim.get("role")
                 or claim.get("publication_lease")
@@ -6799,6 +7055,16 @@ class Controller:
                 }
                 context_set = True
                 recovery([claim])
+            except ExternalUnavailable:
+                prepared = {}
+                self.recovery_context.value["attempt"] = prior_attempt
+                claim["status"] = "blocked"
+                claim["blocked_reason"] = "external-unavailable"
+                self.save_claim(claim)
+                self.event_once(
+                    "external_service_wait", claim["ticket"],
+                    reason_code="external_unavailable",
+                )
             except (
                 ControllerError,
                 json.JSONDecodeError,
@@ -10494,6 +10760,45 @@ class Controller:
             return False
         return True
 
+    def resume_push_failed_role(
+        self, claim: dict[str, Any], terminal: dict[str, str],
+    ) -> bool:
+        status, local, remote = self.remote_cell_head_status(claim)
+        after = terminal.get("role_head_after", "")
+        if (
+            after and local != after
+            or terminal.get("kit_sha") == self.release_path.name
+            and not SHA.fullmatch(after)
+            or subprocess.run(
+                [
+                    "git", "-C", claim["worktree"], "status",
+                    "--porcelain=v1", "-z",
+                ],
+                capture_output=True, check=False, timeout=120,
+            ).stdout
+        ):
+            return False
+        if status == "pushed":
+            return local == remote
+        before = terminal.get("role_head_before", "")
+        if (
+            status != "resume_commit_not_pushed"
+            or terminal.get("role_branch_before") != claim["branch"]
+            or terminal.get("role_remote_before") != before
+            or not SHA.fullmatch(before)
+            or remote != before
+            or subprocess.run(
+                [
+                    "git", "-C", claim["worktree"], "merge-base",
+                    "--is-ancestor", before, local,
+                ],
+                check=False, timeout=120,
+            ).returncode
+        ):
+            return False
+        push_exact_head(claim["worktree"], claim["branch"], local, before)
+        return True
+
     def recover_repaired_failures(self, claims: list[dict[str, Any]]) -> None:
         for claim in claims:
             if (
@@ -10612,6 +10917,19 @@ class Controller:
                 terminal is not None
                 and terminal.get("role_exit") == "role_exit_push_failed"
             )
+            if push_failure:
+                try:
+                    if not self.resume_push_failed_role(claim, terminal):
+                        continue
+                except ExternalUnavailable:
+                    claim["status"] = "blocked"
+                    claim["blocked_reason"] = "external-unavailable"
+                    self.save_claim(claim)
+                    self.event_once(
+                        "external_service_wait", claim["ticket"],
+                        reason_code="external_unavailable",
+                    )
+                    continue
             quarantined_role_failure = (
                 terminal is not None
                 and terminal.get("phase") == "completed"
@@ -11490,13 +11808,14 @@ class Controller:
         if not values or values[0].casefold() == "none":
             return True
         with self.git_lock:
-            observed = subprocess.run(
+            observation = run_external(
                 [
                     "git", "-C", claim["worktree"], "ls-remote", "--heads",
                     "origin", "refs/heads/main",
                 ],
-                text=True, capture_output=True, check=True, timeout=120,
-            ).stdout.split()
+                "protected main dependency observation failed",
+            )
+            observed = observation.stdout.split()
             if (
                 len(observed) != 2
                 or not SHA.fullmatch(observed[0])
@@ -11505,13 +11824,13 @@ class Controller:
                 raise ControllerError(
                     "protected main dependency observation is ambiguous"
                 )
-            subprocess.run(
+            run_external(
                 [
                     "git", "-C", claim["worktree"], "fetch", "--quiet",
                     "--no-tags", "origin",
                     "+refs/heads/main:refs/remotes/origin/main",
                 ],
-                check=True, timeout=120,
+                "protected main dependency fetch failed",
             )
             local = subprocess.run(
                 [
@@ -11556,9 +11875,9 @@ class Controller:
         )
 
     def protected_base_current(self, claim: dict[str, Any], head: str) -> bool:
-        subprocess.run(
+        run_external(
             ["git", "-C", claim["worktree"], "fetch", "--quiet", "origin", "main"],
-            check=True, timeout=120,
+            "protected main refresh failed",
         )
         return subprocess.run(
             [
@@ -11700,15 +12019,13 @@ class Controller:
                 "--state", "merged", "--head", branch,
             ]
         )
-        result = subprocess.run(
+        result = run_external(
             [
                 *command, "--json",
                 "number,headRefName,baseRefName,headRefOid,mergeCommit,state,mergedAt",
             ],
-            text=True, capture_output=True, check=False, timeout=120,
+            "GitHub merge query failed",
         )
-        if result.returncode:
-            raise ControllerError(result.stderr.strip() or "GitHub merge query failed")
         try:
             evidence = json.loads(result.stdout)
         except json.JSONDecodeError as error:
@@ -11765,12 +12082,12 @@ class Controller:
         ):
             return False
         with self.git_lock:
-            subprocess.run(
+            run_external(
                 [
                     "git", "-C", str(self.product), "fetch", "--quiet",
                     "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main",
                 ],
-                check=True, timeout=120,
+                "terminal request refresh failed",
             )
             commits = [
                 expected,
@@ -11821,23 +12138,23 @@ class Controller:
             or not DIGEST.fullmatch(passport.get("passport_sha256", ""))
         ):
             raise ControllerError("terminal request passport is invalid")
-        remote = subprocess.run(
+        remote = run_external(
             [
                 "git", "-C", str(self.product), "ls-remote", "--heads", "origin",
                 "refs/heads/main",
             ],
-            text=True, capture_output=True, check=False, timeout=120,
+            "protected main terminal expectation is unavailable",
         )
         fields = remote.stdout.split()
-        if remote.returncode or len(fields) != 2 or not SHA.fullmatch(fields[0]):
+        if len(fields) != 2 or not SHA.fullmatch(fields[0]):
             raise ControllerError("protected main terminal expectation is unavailable")
         with self.git_lock:
-            subprocess.run(
+            run_external(
                 [
                     "git", "-C", str(self.product), "fetch", "--quiet",
                     "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main",
                 ],
-                check=True, timeout=120,
+                "protected main terminal fetch failed",
             )
             ticket_blob = subprocess.run(
                 [
@@ -11925,9 +12242,9 @@ class Controller:
         branch = f"chore/{ticket.lower().replace('-', '')}-closeout"
         worktree = root / f"closeout-{ticket}"
         with self.git_lock:
-            subprocess.run(
+            run_external(
                 ["git", "-C", str(self.product), "fetch", "--quiet", "origin", "main"],
-                check=True, timeout=120,
+                "protected main closeout fetch failed",
             )
             if not worktree.exists():
                 exists = subprocess.run(
@@ -12857,6 +13174,18 @@ class Controller:
                 "unsupported_deterministic_stage",
                 f"unsupported deterministic stage: {stage}",
             )
+        except ExternalUnavailable:
+            claim["status"] = "blocked"
+            claim["blocked_reason"] = "external-unavailable"
+            self.save_claim(claim)
+            self.event_once(
+                "external_service_wait", claim["ticket"],
+                reason_code="external_unavailable",
+            )
+            return {
+                "status": "waiting", "ticket": claim["ticket"],
+                "wait_reason": "external-unavailable",
+            }
         except (ControllerError, json.JSONDecodeError, OSError, subprocess.SubprocessError) as error:
             self.latch_qualification_cohort_error()
             claim["status"] = "blocked"
@@ -13426,6 +13755,19 @@ class Controller:
                         self.invalid_transition_tickets
                         | self.prior_transition_tickets
                     )
+                    and claim["status"] == "blocked"
+                    and claim.get("blocked_reason") == "external-unavailable"
+                ):
+                    results.setdefault(claim["ticket"], {
+                        "status": "waiting", "ticket": claim["ticket"],
+                        "wait_reason": "external-unavailable",
+                    })
+                elif (
+                    claim["ticket"] in selected
+                    and claim["ticket"] not in (
+                        self.invalid_transition_tickets
+                        | self.prior_transition_tickets
+                    )
                     and claim["status"] in {"blocked", "budget"}
                     and not route_migration_wait
                 ):
@@ -13448,7 +13790,15 @@ class Controller:
                 or all(item["status"] == "complete" for item in ordered)
             )
         ):
-            self.protected_main_head()
+            try:
+                self.protected_main_head()
+            except ExternalUnavailable:
+                return {
+                    "active": active,
+                    "results": ordered,
+                    "schema": SCHEMA,
+                    "status": "waiting_for_target",
+                }
             done = sorted(
                 ticket for ticket in self.qualification["tickets"]
                 if self.product_ticket_done(ticket)
@@ -13626,6 +13976,9 @@ def main() -> None:
         print(canonical(result))
         if result["status"] == "error":
             raise SystemExit(1)
+    except ExternalUnavailable:
+        print('{"reason_code":"external_unavailable","status":"wait"}')
+        raise SystemExit(75)
     except (
         FileNotFoundError, json.JSONDecodeError, OSError, ControllerError,
         subprocess.SubprocessError,

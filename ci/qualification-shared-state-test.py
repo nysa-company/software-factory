@@ -82,6 +82,7 @@ class QualificationSharedStateTest(unittest.TestCase):
         self.product = self.workspace / "product"
         self.provider_calls = self.workspace / "provider-calls.json"
         self.github_state = self.workspace / "github-state.json"
+        self.transport_outage = self.workspace / "transport-outage"
 
         self.make_home()
         self.make_product()
@@ -356,14 +357,26 @@ class QualificationSharedStateTest(unittest.TestCase):
         self.vendor = vendor
 
         ssh = self.home / ".factory/bin/ssh"
-        ssh.write_text(
-            "#!/bin/sh\nset -eu\n"
-            "case \"$*\" in\n"
-            f"  *git-upload-pack*) exec git-upload-pack '{self.remote}' ;;\n"
-            f"  *git-receive-pack*) exec git-receive-pack '{self.remote}' ;;\n"
-            "esac\nexit 2\n",
-            encoding="utf-8",
-        )
+        ssh.write_text(f'''#!/usr/bin/env python3
+import json, os, pathlib, subprocess, sys
+remote={str(self.remote)!r}
+calls=pathlib.Path({str(self.provider_calls)!r})
+outage=pathlib.Path({str(self.transport_outage)!r})
+command=" ".join(sys.argv[1:])
+if "git-upload-pack" in command:
+    os.execvp("git-upload-pack", ["git-upload-pack", remote])
+if "git-receive-pack" in command:
+    count=sum(json.loads(calls.read_text()).values()) if calls.exists() else 0
+    if count >= 19 and not outage.exists():
+        completed=subprocess.run(["git-receive-pack", remote])
+        if completed.returncode:
+            raise SystemExit(completed.returncode)
+        outage.write_text("injected\\n")
+        print("ssh: connection reset by peer", file=sys.stderr)
+        raise SystemExit(255)
+    os.execvp("git-receive-pack", ["git-receive-pack", remote])
+raise SystemExit(2)
+''', encoding="utf-8")
         ssh.chmod(0o700)
         for name in ("curl", "scp", "wget"):
             blocked = self.home / f".factory/bin/{name}"
@@ -666,6 +679,14 @@ raise SystemExit(1 if failed else 0)
         ]
         fallback = [event for event in events if event.get("event") == "provider_fallback"]
         self.assertEqual([event["ticket"] for event in fallback], ["T-902"])
+        self.assertTrue(self.transport_outage.is_file())
+        self.assertEqual(
+            len([
+                event for event in events
+                if event.get("event") == "push_failure_recovered"
+            ]),
+            1,
+        )
         refreshes = [
             event for event in events
             if event.get("event") in REFRESH_EVENTS

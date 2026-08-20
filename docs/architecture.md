@@ -863,9 +863,15 @@ before the idempotent Done action. Only that request may reopen a clean parked
 advancement remains eligible only when the recorded base and both bound merge
 commits are ancestors and the protected ticket blob is byte-identical.
 Transient GitHub transport, DNS, connection, or HTTP 5xx failures during PR
-discovery and required-check polling remain provider-free waits. Authentication,
-authorization, malformed evidence, and unknown response states remain hard
-refusals and never gain publication authority.
+discovery, protected-main reads, evidence reduction, and required-check polling
+remain provider-free waits. A post-provider Git push is confirmed against the
+exact remote head even when its response is lost; if only the local exact child
+exists, restart pushes that child with the recorded remote lease and resumes the
+attestation or role tail without another provider call. Authentication,
+authorization, head drift, malformed evidence, and unknown response states
+remain hard refusals and never gain publication authority. A disconnect inside
+the provider call itself remains terminal-accounted provider evidence and is
+never blindly replayed as transport recovery.
 A ticket
 whose terminal boundary spans one or more Factory migrations reuses that
 evidence only when one unique contiguous authenticated migration suffix links

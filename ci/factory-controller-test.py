@@ -24,7 +24,7 @@ import tempfile
 import threading
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -224,6 +224,27 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(json.loads(output.getvalue())["status"], "busy")
         self.assertEqual(after, before)
 
+    def test_controller_level_external_outage_is_a_safe_wait(self) -> None:
+        arguments = [
+            "factory-controller.py", "--launcher", str(self.launcher),
+            "--project", "relay", "--product-root", str(self.product),
+            "--release-path", str(self.release), "--state-dir", str(self.state),
+        ]
+        controller = Mock()
+        controller.reconcile.side_effect = CONTROL.ExternalUnavailable()
+        output = io.StringIO()
+        with (
+            patch.object(CONTROL.sys, "argv", arguments),
+            patch.object(CONTROL, "Controller", return_value=controller),
+            redirect_stdout(output),
+            self.assertRaisesRegex(SystemExit, "75"),
+        ):
+            CONTROL.main()
+        self.assertEqual(json.loads(output.getvalue()), {
+            "reason_code": "external_unavailable",
+            "status": "wait",
+        })
+
     def test_terminal_event_is_idempotent_across_restart(self) -> None:
         controller = CONTROL.Controller(self.args)
         details = {"protected_main": "b" * 40, "terminal_basis": "attested-done"}
@@ -234,6 +255,125 @@ class FactoryControllerTest(unittest.TestCase):
             if json.loads(path.read_text()).get("event") == "operator_terminal_recorded"
         ]
         self.assertEqual(len(matching), 1)
+
+    def test_external_wait_is_typed_and_does_not_latch_qualification(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        controller.call = lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            [], 75,
+            '{"reason_code":"external_unavailable","status":"wait"}\n',
+            "",
+        )
+        with self.assertRaises(CONTROL.ExternalUnavailable):
+            controller.json_call("ticket-attest")
+        controller.call = lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            [], 1, "", "Could not resolve host: github.com",
+        )
+        with self.assertRaises(CONTROL.ExternalUnavailable):
+            controller.json_call("ci-rerun")
+
+        claim = {
+            "branch": "ticket/T-110", "lease": "a" * 64,
+            "priority": "normal", "publication_lease": "",
+            "receipt": "", "role": "", "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "claimed", "ticket": "T-110",
+            "worktree": str(self.root / "cell-1"),
+        }
+        controller.ensure_lease = lambda *_args: None
+        controller.finish_pending_run = lambda *_args: True
+        controller.route_path = lambda *_args: self.product / "route.json"
+        (self.product / "route.json").write_text("{}\n")
+        controller.refresh_dependency_tracking = lambda *_args: True
+        controller.json_call = lambda *_args, **_kwargs: (
+            (_ for _ in ()).throw(CONTROL.ExternalUnavailable())
+        )
+
+        result = controller.reconcile_ticket(claim)
+
+        self.assertEqual(result, {
+            "status": "waiting", "ticket": "T-110",
+            "wait_reason": "external-unavailable",
+        })
+        self.assertEqual(claim["blocked_reason"], "external-unavailable")
+        self.assertFalse(controller.qualification_cohort_error.is_set())
+        with self.assertRaises(CONTROL.ExternalUnavailable):
+            CONTROL.require_external_result(
+                subprocess.CompletedProcess(
+                    ["git", "fetch"], 128, "",
+                    "Could not resolve host: github.com",
+                ),
+                "fetch failed",
+            )
+        with self.assertRaisesRegex(CONTROL.ControllerError, "fetch failed"):
+            CONTROL.require_external_result(
+                subprocess.CompletedProcess(
+                    ["git", "fetch"], 128, "", "authentication failed",
+                ),
+                "fetch failed",
+            )
+        with (
+            patch.object(
+                CONTROL.subprocess, "run",
+                side_effect=subprocess.TimeoutExpired(["git", "fetch"], 120),
+            ),
+            self.assertRaises(CONTROL.ExternalUnavailable),
+        ):
+            CONTROL.run_external(["git", "fetch"], "fetch failed")
+
+    def test_exact_push_accepts_lost_response_and_waits_on_outage(self) -> None:
+        branch = "ticket/T-110"
+        head, before = "b" * 40, "a" * 40
+        accepted = [
+            subprocess.CompletedProcess([], 128, "", "connection reset by peer"),
+            subprocess.CompletedProcess(
+                [], 0, f"{head}\trefs/heads/{branch}\n", "",
+            ),
+            subprocess.CompletedProcess([], 0, before + "\n", ""),
+            subprocess.CompletedProcess([], 0, "", ""),
+        ]
+        with patch.object(CONTROL.subprocess, "run", side_effect=accepted):
+            CONTROL.push_exact_head("/cell", branch, head, before)
+
+        unavailable = [
+            subprocess.TimeoutExpired(["git", "push"], 120),
+            subprocess.CompletedProcess(
+                [], 0, f"{before}\trefs/heads/{branch}\n", "",
+            ),
+        ]
+        with (
+            patch.object(CONTROL.subprocess, "run", side_effect=unavailable),
+            self.assertRaises(CONTROL.ExternalUnavailable),
+        ):
+            CONTROL.push_exact_head("/cell", branch, head, before)
+
+        controller = CONTROL.Controller(self.args)
+        claim = {"branch": branch, "ticket": "T-110", "worktree": "/cell"}
+        terminal = {
+            "role_branch_before": branch, "role_head_before": before,
+            "role_head_after": head, "role_remote_before": before,
+            "kit_sha": controller.release_path.name,
+        }
+        controller.remote_cell_head_status = lambda _claim: (
+            "resume_commit_not_pushed", head, before,
+        )
+        with (
+            patch.object(
+                CONTROL.subprocess, "run",
+                side_effect=[
+                    subprocess.CompletedProcess([], 0, "", ""),
+                    subprocess.CompletedProcess([], 0, "", ""),
+                ],
+            ),
+            patch.object(CONTROL, "push_exact_head") as resumed,
+        ):
+            self.assertTrue(controller.resume_push_failed_role(claim, terminal))
+        resumed.assert_called_once_with("/cell", branch, head, before)
+
+        terminal["role_head_after"] = "c" * 40
+        with patch.object(
+            CONTROL.subprocess, "run",
+            return_value=subprocess.CompletedProcess([], 0, "", ""),
+        ):
+            self.assertFalse(controller.resume_push_failed_role(claim, terminal))
 
     def test_concurrent_event_publication_is_monotonic_across_restart(self) -> None:
         controller = CONTROL.Controller(self.args)
@@ -6238,7 +6378,13 @@ class FactoryControllerTest(unittest.TestCase):
         remote = CONTROL.subprocess.CompletedProcess(
             [], 0, f"{head}\trefs/heads/{claim['branch']}\n", ""
         )
-        with patch.object(CONTROL.subprocess, "run", return_value=remote):
+        with patch.object(
+            CONTROL.subprocess, "run",
+            side_effect=lambda command, **_kwargs: (
+                CONTROL.subprocess.CompletedProcess(command, 0, "", "")
+                if "status" in command else remote
+            ),
+        ):
             controller.recover_repaired_failures([claim])
         self.assertEqual(claim["status"], "blocked")
         self.assertIn(("claim", "--ticket", "T-110"), calls)
@@ -9334,6 +9480,27 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertTrue(all("never-print" not in item["error"] for item in events))
         self.assertEqual(len(released), 3)
 
+    def test_external_recovery_wait_does_not_consume_retry_budget(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        claim = self.recovery_claim()
+        controller.role_active = lambda _claim: False
+        controller.recovery_input_sha256 = lambda *_args: "a" * 64
+
+        controller.recover_each(
+            [claim],
+            lambda _items: (_ for _ in ()).throw(
+                CONTROL.ExternalUnavailable()
+            ),
+            "prepublication-attestation",
+        )
+
+        self.assertEqual(claim["blocked_reason"], "external-unavailable")
+        self.assertNotIn("recovery_attempt", claim)
+        self.assertFalse(any(
+            CONTROL.read(path).get("event") == "ticket_recovery_failed"
+            for path in controller.events.glob("*.json")
+        ))
+
     def test_recovery_error_redaction_covers_structured_secrets(self) -> None:
         error = CONTROL.ControllerError(
             "Authorization: Bearer SUPERSECRET\n"
@@ -11195,10 +11362,22 @@ class FactoryControllerTest(unittest.TestCase):
             calls.append(("passport", "export"))
 
         controller.passport = export
+        controller.remote_cell_head_status = lambda _claim: (
+            "pushed", head, head,
+        )
         remote = CONTROL.subprocess.CompletedProcess(
             [], 0, f"{head}\trefs/heads/{claim['branch']}\n", ""
         )
-        with patch.object(CONTROL.subprocess, "run", return_value=remote):
+        controller.remote_cell_head_status = lambda _claim: (
+            "pushed", head, head,
+        )
+        with patch.object(
+            CONTROL.subprocess, "run",
+            side_effect=lambda command, **_kwargs: (
+                CONTROL.subprocess.CompletedProcess(command, 0, "", "")
+                if "status" in command else remote
+            ),
+        ):
             controller.recover_repaired_failures([claim])
         self.assertEqual(claim["status"], "claimed")
         self.assertEqual(claim["receipt"], "")
@@ -11340,7 +11519,16 @@ class FactoryControllerTest(unittest.TestCase):
         remote = CONTROL.subprocess.CompletedProcess(
             [], 0, f"{head}\trefs/heads/{claim['branch']}\n", ""
         )
-        with patch.object(CONTROL.subprocess, "run", return_value=remote):
+        controller.remote_cell_head_status = lambda _claim: (
+            "pushed", head, head,
+        )
+        with patch.object(
+            CONTROL.subprocess, "run",
+            side_effect=lambda command, **_kwargs: (
+                CONTROL.subprocess.CompletedProcess(command, 0, "", "")
+                if "status" in command else remote
+            ),
+        ):
             controller.recover_repaired_failures([claim])
         self.assertEqual(claim["status"], "claimed")
         self.assertEqual(claim["lease"], "f" * 64)
@@ -12025,6 +12213,16 @@ class FactoryControllerTest(unittest.TestCase):
 
         controller.call = lambda *_args, **_kwargs: response("evidence")
         with self.assertRaises(CONTROL.ModelIdentityEvidenceError):
+            controller.recover_direct_model_identity_success(
+                claim, terminal, "9" * 64,
+            )
+
+        controller.call = lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            [], 75,
+            '{"reason_code":"external_unavailable","status":"wait"}\n',
+            "",
+        )
+        with self.assertRaises(CONTROL.ExternalUnavailable):
             controller.recover_direct_model_identity_success(
                 claim, terminal, "9" * 64,
             )
@@ -14719,6 +14917,16 @@ class FactoryControllerTest(unittest.TestCase):
         controller.recover_interrupted_claims([claim])
         self.assertEqual(claim["status"], "claimed")
 
+        claim.update(status="blocked", blocked_reason="controller-error")
+        controller.mark_reconciling(claim)
+        controller.recover_interrupted_claims([claim])
+        self.assertEqual(claim["status"], "claimed")
+        self.assertNotIn("blocked_reason", claim)
+        self.assertEqual(len([
+            path for path in controller.events.glob("*.json")
+            if CONTROL.read(path).get("event") == "controller_error_recovered"
+        ]), 1)
+
     def test_successor_readmits_prior_provider_failure(self) -> None:
         controller = CONTROL.Controller(self.args)
         controller.qualification = {
@@ -16363,6 +16571,8 @@ class FactoryControllerTest(unittest.TestCase):
         claims[3].pop("recovery_attempt")
         excluded = True
         transition = controller.reconcile()
+        claims[0]["blocked_reason"] = "external-unavailable"
+        external = controller.reconcile()
 
         expected = [
             {"status": "blocked", "ticket": "T-110"},
@@ -16370,6 +16580,13 @@ class FactoryControllerTest(unittest.TestCase):
         ]
         self.assertEqual(migration["results"], expected)
         self.assertEqual(transition["results"], expected)
+        self.assertEqual(external["results"], [
+            {
+                "status": "waiting", "ticket": "T-110",
+                "wait_reason": "external-unavailable",
+            },
+            {"status": "budget", "ticket": "T-111"},
+        ])
         self.assertIn("T-112", controller.invalid_transition_tickets)
         self.assertIn("T-113", controller.prior_transition_tickets)
 
@@ -17447,6 +17664,108 @@ class FactoryControllerTest(unittest.TestCase):
             == "prepublication_attestation_recovered"
         ]
         self.assertEqual(len(events), 1)
+
+    def test_pushed_prepublication_attestations_recover_without_role_replay(
+        self,
+    ) -> None:
+        cases = (
+            ("T-110", "Review", "validating", "bundle"),
+            (
+                "T-111", "Awaiting Approval", "merge-pending",
+                "approval",
+            ),
+        )
+        for ticket, state, publication, recovery in cases:
+            with self.subTest(recovery=recovery):
+                controller = CONTROL.Controller(self.args)
+                old_head = ("b" if ticket == "T-110" else "c") * 40
+                new_head = ("d" if ticket == "T-110" else "e") * 40
+                digest = self.operator_passport(
+                    ticket, state, "validating", head_sha=old_head,
+                )
+                claim = {
+                    "blocked_reason": (
+                        "external-unavailable"
+                        if recovery == "bundle" else "controller-error"
+                    ),
+                    "branch": f"ticket/{ticket}", "lease": "",
+                    "priority": "normal", "publication_lease": "",
+                    "receipt": "", "role": "",
+                    "schema": CONTROL.CLAIM_SCHEMA, "status": "blocked",
+                    "ticket": ticket, "worktree": str(self.root / ticket),
+                }
+                CONTROL.write(controller.reconciliation_marker(ticket), {
+                    "branch": claim["branch"],
+                    "factory_sha": self.release.name,
+                    "head_sha": old_head,
+                    "passport_sha256": digest,
+                    "run_snapshot_sha256": controller.ticket_run_snapshot(ticket),
+                    "schema": (
+                        "nysa.software-factory.reconciliation-boundary/v1"
+                    ),
+                    "ticket": ticket,
+                })
+                calls = []
+                controller.role_active = lambda _claim: False
+                controller.ticket_release_current = lambda _claim: True
+                controller.remote_cell_head_status = lambda _claim: (
+                    ("pushed", new_head, new_head)
+                    if recovery == "bundle" else
+                    ("resume_commit_not_pushed", new_head, old_head)
+                )
+                controller.cell_git = lambda *_args: subprocess.CompletedProcess(
+                    _args, 0, stdout="", stderr="",
+                )
+                controller.transition_receipt = lambda *_args, **_kwargs: {
+                    "receipt_sha256": "f" * 64,
+                }
+                controller.ensure_lease = lambda item, label: (
+                    calls.append(("lease", label)), item.update(lease="a" * 64)
+                )
+                controller.migrate_passport = (
+                    lambda _claim, target, expected_head="": (
+                        calls.append(("passport", target, expected_head))
+                        or {"status": "ok"}
+                    )
+                )
+                controller.remote_passport_valid = lambda _claim: True
+                controller.save_claim = lambda _claim: calls.append("save")
+                controller.event_once = (
+                    lambda name, _ticket, **details:
+                    calls.append(("event", name, details["recovery"]))
+                )
+                controller.json_call = lambda *arguments, **_kwargs: (
+                    calls.append(("attest", arguments))
+                    or {
+                        "action": (
+                            "approval-attested"
+                            if recovery == "approval" else "bundle"
+                        ),
+                        "head": new_head,
+                    }
+                )
+                self.assertTrue(
+                    controller.recover_pushed_prepublication_attestation(
+                        claim,
+                    )
+                )
+
+                self.assertEqual(claim["status"], "claimed")
+                self.assertNotIn("blocked_reason", claim)
+                self.assertFalse(
+                    controller.reconciliation_marker(ticket).exists()
+                )
+                self.assertIn(
+                    ("passport", publication, new_head), calls,
+                )
+                self.assertIn(
+                    (
+                        "event",
+                        "pushed_prepublication_attestation_recovered",
+                        recovery,
+                    ),
+                    calls,
+                )
 
     def test_projected_approval_stage_still_requests_exact_auto_merge(self) -> None:
         controller = CONTROL.Controller(self.args)
@@ -20699,13 +21018,14 @@ class FactoryControllerTest(unittest.TestCase):
         refresh.parent.mkdir(parents=True)
         refresh.write_text("{}\n", encoding="utf-8")
         passport_path = self.state / "passports/T-110.json"
-        passport_path.parent.mkdir(mode=0o700)
-        CONTROL.write(passport_path, {})
+        old_head = "c" * 40
+        digest = self.operator_passport(
+            "T-110", "Approved", "validating", head_sha=old_head,
+        )
         claim = {
-            "blocked_reason": "controller-error",
+            "blocked_reason": "external-unavailable",
             "branch": "ticket/T-110",
             "lease": "",
-            "parked": True,
             "priority": "normal",
             "publication_lease": "",
             "receipt": "",
@@ -20717,11 +21037,25 @@ class FactoryControllerTest(unittest.TestCase):
             "worktree": str(cell),
         }
         head = "d" * 40
+        CONTROL.write(controller.reconciliation_marker("T-110"), {
+            "branch": claim["branch"],
+            "factory_sha": self.release.name,
+            "head_sha": old_head,
+            "passport_sha256": digest,
+            "run_snapshot_sha256": controller.ticket_run_snapshot("T-110"),
+            "schema": "nysa.software-factory.reconciliation-boundary/v1",
+            "ticket": "T-110",
+        })
         calls = []
         controller.role_active = lambda _claim: False
         controller.ticket_release_current = lambda _claim: True
-        controller.cell_git = lambda _claim, *_args: subprocess.CompletedProcess(
-            _args, 0, stdout=f"{head}\n", stderr="",
+        controller.remote_cell_head_status = lambda _claim: (
+            "resume_commit_not_pushed", head, old_head,
+        )
+        controller.cell_git = lambda _claim, *arguments: subprocess.CompletedProcess(
+            arguments, 0,
+            stdout=(f"{head}\n" if arguments[0] == "log" else ""),
+            stderr="",
         )
         controller.ensure_lease = lambda item, label: (
             calls.append(("ensure", label)), item.update(lease="a" * 64)
@@ -20751,6 +21085,7 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(claim["status"], "claimed")
         self.assertNotIn("blocked_reason", claim)
         self.assertNotIn("release_refresh_required", claim)
+        self.assertFalse(controller.reconciliation_marker("T-110").exists())
         self.assertEqual(
             calls,
             [
@@ -21024,7 +21359,10 @@ class FactoryControllerTest(unittest.TestCase):
             },
         }
 
-        with patch.object(CONTROL.subprocess, "run"):
+        with patch.object(
+            CONTROL.subprocess, "run",
+            return_value=subprocess.CompletedProcess([], 0, "", ""),
+        ):
             self.assertTrue(controller.closeout({
                 "lease": "a" * 64,
                 "ticket": "T-110",
@@ -21046,7 +21384,10 @@ class FactoryControllerTest(unittest.TestCase):
         }
 
         with (
-            patch.object(CONTROL.subprocess, "run"),
+            patch.object(
+                CONTROL.subprocess, "run",
+                return_value=subprocess.CompletedProcess([], 0, "", ""),
+            ),
             self.assertRaisesRegex(CONTROL.ControllerError, "protected terminal"),
         ):
             controller.closeout({
@@ -21067,7 +21408,10 @@ class FactoryControllerTest(unittest.TestCase):
                 "ticket-attest: required post-merge check is pending: ci"
             ))
         )
-        with patch.object(CONTROL.subprocess, "run"):
+        with patch.object(
+            CONTROL.subprocess, "run",
+            return_value=subprocess.CompletedProcess([], 0, "", ""),
+        ):
             self.assertFalse(controller.closeout({
                 "lease": "a" * 64,
                 "ticket": "T-110",

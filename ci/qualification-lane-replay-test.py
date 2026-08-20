@@ -82,6 +82,29 @@ SCENARIOS = (
         ),
     ),
     (
+        "internet_loss_waits_and_replays_exact_outputs",
+        (
+            "ticket-pr-test.py",
+            "TicketPrTest.test_git_ls_remote_github_outage_waits",
+        ),
+        (
+            "ticket-attest-test.py",
+            "TicketAttestTests.test_bundle_network_outage_waits_without_mutation",
+            "TicketAttestTests.test_bundle_recovers_confirmed_push_after_tracking_update_loss",
+        ),
+        (
+            "factory-controller-test.py",
+            "FactoryControllerTest.test_external_wait_is_typed_and_does_not_latch_qualification",
+            "FactoryControllerTest.test_exact_push_accepts_lost_response_and_waits_on_outage",
+            "FactoryControllerTest.test_pushed_prepublication_attestations_recover_without_role_replay",
+        ),
+        (
+            "qualification-run-test.py",
+            "QualificationRunTest.test_controller_network_wait_stops_before_reduction",
+            "QualificationRunTest.test_reducer_network_wait_preserves_completed_controller_evidence",
+        ),
+    ),
+    (
         "provider_fallback_preserves_handoff",
         (
             "factory-controller-test.py",

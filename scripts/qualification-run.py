@@ -1221,6 +1221,20 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
     )
     while True:
         code, controller = invoke(launcher, args.project, "reconcile", phases)
+        if code == 75 and controller == {
+            "reason_code": "external_unavailable", "status": "wait",
+        }:
+            return {
+                "controller": controller,
+                "doctor_status": doctor["overall_status"],
+                "elapsed_seconds": round(time.monotonic() - started, 3),
+                "phases": phases,
+                "project": args.project,
+                "reason": "external_unavailable",
+                "restarts": restarts,
+                "schema": SCHEMA,
+                "status": "waiting",
+            }
         controller_result(controller)
         if code != 0 or controller["status"] == "error":
             return {
@@ -1325,6 +1339,15 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
         return {**base, "reason": "authenticated_wait", "status": "waiting"}
 
     code, report = invoke(launcher, args.project, "qualification", phases)
+    if code == 75 and report == {
+        "reason_code": "external_unavailable", "status": "wait",
+    }:
+        return {
+            **base,
+            "elapsed_seconds": round(time.monotonic() - started, 3),
+            "reason": "external_unavailable",
+            "status": "waiting",
+        }
     if code != 0:
         return {
             **base,

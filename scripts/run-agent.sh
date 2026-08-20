@@ -738,6 +738,7 @@ write_manifest() {
     echo "role_exit=$(meta_value "${ROLE_EXIT_STATUS:-}")"
     echo "role_branch_before=$(meta_value "${ROLE_BRANCH_BEFORE:-}")"
     echo "role_head_before=$(meta_value "${ROLE_HEAD_BEFORE:-}")"
+    echo "role_head_after=$(meta_value "${ROLE_HEAD_AFTER:-}")"
     echo "role_remote_before=$(meta_value "${ROLE_REMOTE_BEFORE:-}")"
     echo "transition_receipt_sha256=$(meta_value "${FACTORY_TRANSITION_RECEIPT_SHA256:-}")"
     echo "output_sha256=$(meta_value "$RUN_OUTPUT_SHA256")"
@@ -3208,9 +3209,10 @@ elif [[ "$ROLE_EXIT_ENFORCED" -eq 1 ]]; then
         "$ROLE_HEAD_AFTER:refs/heads/$ROLE_BRANCH_BEFORE" >/dev/null 2>&1; then
         ROLE_EXIT_STATUS="role_exit_push_failed"
       else
-        REMOTE_HEAD="$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" ls-remote --heads -- "$PRODUCT_REMOTE" \
-          "refs/heads/$ROLE_BRANCH_BEFORE" 2>/dev/null | awk 'NR==1 {print $1; exit}')"
-        if [[ "$REMOTE_HEAD" != "$ROLE_HEAD_AFTER" ]]; then
+        if ! REMOTE_HEAD="$("$FACTORY_TRUSTED_GIT_BIN" -C "$WORKDIR" ls-remote --heads -- "$PRODUCT_REMOTE" \
+          "refs/heads/$ROLE_BRANCH_BEFORE" 2>/dev/null | awk 'NR==1 {print $1; exit}')"; then
+          ROLE_EXIT_STATUS="role_exit_push_failed"
+        elif [[ "$REMOTE_HEAD" != "$ROLE_HEAD_AFTER" ]]; then
           ROLE_EXIT_STATUS="role_exit_remote_mismatch"
         elif ! factory_update_tracking_ref "$WORKDIR" "$ROLE_BRANCH_BEFORE" \
           "$ROLE_HEAD_AFTER" "$ROLE_TRACKING_BEFORE"; then

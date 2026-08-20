@@ -14,8 +14,12 @@ from pathlib import Path
 import re
 import stat
 import subprocess
+import sys
 import tempfile
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
+from external_transport import remote_command, temporarily_unavailable  # noqa: E402
 
 
 SCHEMA = "nysa.software-factory.publication-repair/v1"
@@ -28,6 +32,10 @@ class RepairError(ValueError):
     pass
 
 
+class ExternalUnavailable(RepairError):
+    pass
+
+
 def canonical(value: Any) -> bytes:
     return (
         json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
@@ -36,9 +44,19 @@ def canonical(value: Any) -> bytes:
 
 
 def command(*arguments: str, cwd: Path | None = None) -> str:
-    result = subprocess.run(
-        arguments, cwd=cwd, text=True, capture_output=True, check=False, timeout=120,
-    )
+    try:
+        result = subprocess.run(
+            arguments, cwd=cwd, text=True, capture_output=True, check=False,
+            timeout=120,
+        )
+    except subprocess.TimeoutExpired as error:
+        if remote_command(list(arguments)):
+            raise ExternalUnavailable from error
+        raise
+    if result.returncode and remote_command(
+        list(arguments)
+    ) and temporarily_unavailable(result.stderr or result.stdout):
+        raise ExternalUnavailable
     if result.returncode:
         raise RepairError(
             result.stderr.strip() or result.stdout.strip() or "publication repair failed"
@@ -134,6 +152,38 @@ def replace_field(text: str, name: str, value: str) -> str:
     )
 
 
+def push_head(
+    workdir: Path, origin: str, branch: str, head: str, expected: str,
+) -> None:
+    failure: RepairError | None = None
+    try:
+        command(
+            "git", "-C", str(workdir), "push",
+            f"--force-with-lease=refs/heads/{branch}:{expected}", "--", origin,
+            f"{head}:refs/heads/{branch}",
+        )
+    except RepairError as error:
+        failure = error
+    remote = command(
+        "git", "ls-remote", "--heads", origin, f"refs/heads/{branch}",
+    ).split()
+    if len(remote) != 2 or remote[0] != head:
+        if failure is not None:
+            raise failure
+        raise RepairError("publication repair push was not confirmed")
+    tracking = command(
+        "git", "-C", str(workdir), "rev-parse", "--verify",
+        f"refs/remotes/origin/{branch}",
+    )
+    if tracking == expected:
+        command(
+            "git", "-C", str(workdir), "update-ref",
+            f"refs/remotes/origin/{branch}", head, expected,
+        )
+    elif tracking != head:
+        raise RepairError("publication repair tracking state changed")
+
+
 def project_value(product: Path, name: str, pattern: str) -> str:
     values = re.findall(
         rf"^(?:export\s+)?{re.escape(name)}\s*=\s*['\"]?({pattern})['\"]?\s*$",
@@ -205,6 +255,25 @@ def create(args: argparse.Namespace, secret: bytes) -> dict[str, Any]:
     origin = os.environ.get("FACTORY_CERTIFIED_PRODUCT_ORIGIN", "")
     if command("git", "-C", str(product), "remote", "get-url", "--push", "--all", "origin").splitlines() != [origin]:
         raise RepairError("certified product origin changed")
+    repairs = safe_directory(args.state_dir / "publication-repairs", create=True)
+    repair_path = repairs / f"{args.ticket}.json"
+    if repair_path.exists() or repair_path.is_symlink():
+        record = load(repair_path, secret)
+        if (
+            record.get("schema") != SCHEMA
+            or record.get("ticket") != args.ticket
+            or record.get("branch") != branch
+            or record.get("factory_sha") != args.factory_sha
+            or record.get("pr_number") != args.pr
+            or record.get("reset_head") != head
+            or command("git", "-C", str(workdir), "rev-parse", "HEAD^")
+            != record.get("original_head")
+        ):
+            raise RepairError("publication repair replay changed")
+        push_head(
+            workdir, origin, branch, head, record["original_head"],
+        )
+        return record
     remote = command(
         "git", "ls-remote", "--heads", origin, f"refs/heads/{branch}"
     ).split()
@@ -302,11 +371,6 @@ def create(args: argparse.Namespace, secret: bytes) -> dict[str, Any]:
         f"{args.ticket}: reopen protected publication repair",
     )
     reset_head = command("git", "-C", str(workdir), "rev-parse", "HEAD")
-    command(
-        "git", "-C", str(workdir), "push", "--no-force", "--", origin,
-        f"{reset_head}:refs/heads/{branch}",
-    )
-    repairs = safe_directory(args.state_dir / "publication-repairs", create=True)
     value = signed({
         "branch": branch,
         "check_name": check_name,
@@ -320,7 +384,8 @@ def create(args: argparse.Namespace, secret: bytes) -> dict[str, Any]:
         "ticket": args.ticket,
         "verdict_baseline": baseline,
     }, secret)
-    write(repairs / f"{args.ticket}.json", value)
+    write(repair_path, value)
+    push_head(workdir, origin, branch, reset_head, head)
     return value
 
 
@@ -425,6 +490,9 @@ def main() -> None:
             }, sort_keys=True))
         else:
             print(stage(args, secret))
+    except ExternalUnavailable:
+        print('{"reason_code":"external_unavailable","status":"wait"}')
+        raise SystemExit(75)
     except (
         FileNotFoundError, json.JSONDecodeError, OSError, RepairError,
         subprocess.SubprocessError, ValueError,
