@@ -12147,9 +12147,17 @@ class Controller:
             claim["status"] = "blocked"
             claim["blocked_reason"] = "missing-terminal"
             self.save_claim(claim)
-            self.release_ticket_lease(claim)
+            cleanup_deferred = []
+            try:
+                self.release_ticket_lease(claim)
+            except (
+                ControllerError, json.JSONDecodeError, OSError,
+                subprocess.SubprocessError, UnicodeError,
+            ):
+                cleanup_deferred = ["lease"]
             self.event(
                 "role_launch_missing_terminal", claim["ticket"],
+                cleanup_deferred=cleanup_deferred,
                 exit_status=exit_status, role=role,
                 transition_receipt_sha256=receipt,
             )

@@ -7103,3 +7103,16 @@ protected history mutation: the former is quarantined as invalid output for the
 existing bounded retry, while success requires the prior ticket blob as an
 exact byte prefix plus one new canonical verdict. Historical successor recovery
 keeps its older exact-delta replay contract and is not retroactively narrowed.
+
+## 2026-08-20 — Decision 516: Missing-terminal truth survives cleanup contention
+
+Category: Reliability
+
+Q49 proved that a role launcher can durably reach the missing-terminal boundary
+while a sibling still owns the product launch lock. Dispatcher lease release is
+cleanup, not causal role evidence: a bounded release refusal now leaves the
+missing-terminal claim intact and records deferred cleanup for the existing
+inactive-lease sweep. No release guard or lock-ownership rule is weakened. Q49
+remains frozen failed evidence; the simultaneous Cursor terminations had live
+progress and no Factory timeout marker, so they remain an external/provider
+runtime interruption unless a deterministic Factory cause is reproduced.

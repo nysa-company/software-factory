@@ -5819,6 +5819,24 @@ Validation: the role-exit fixture proves a bold verdict is quarantined as
 retryable invalid output and a prior-ticket rewrite plus canonical verdict is
 quarantined as protected mutation; the full Factory script suite is green.
 
+## FI-20260820-225 — Lease cleanup masked a missing role terminal
+
+Status: Focused regression implemented; protected CI and qualification pending
+Priority: P0
+Area: role-launch recovery
+Owner: Factory
+Impact: Q49 T-470 persisted a missing-terminal block after its fallback launcher
+refused a transient pinned-route readiness probe. Releasing that ticket's
+dispatcher lease then waited on a healthy sibling's product launch lock and
+raised `launch lock stuck`, replacing the recoverable causal state with a cohort
+controller error.
+Smallest repair: preserve the missing-terminal claim and event when immediate
+lease release fails. The existing inactive-lease sweep retries cleanup only
+after the role is no longer active; no lock is deleted, reclaimed, or bypassed.
+Validation: the focused launcher regression proves both immediate release and
+deferred release, while existing recovery checks cover active-role exclusion,
+sibling isolation, and delayed-terminal continuation without rerunning a role.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling
