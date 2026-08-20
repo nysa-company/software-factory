@@ -5361,9 +5361,12 @@ class FactoryControllerTest(unittest.TestCase):
                 return exit_statuses.pop(0)
 
         controller.ensure_execution_cell = lambda _claim: None
-        controller.release_ticket_lease = lambda claim: releases.append(
-            claim["ticket"]
-        )
+        def release_ticket_lease(claim):
+            releases.append(claim["ticket"])
+            if claim["ticket"] == "T-111":
+                raise CONTROL.ControllerError("launch lock stuck")
+
+        controller.release_ticket_lease = release_ticket_lease
         with patch.object(CONTROL.subprocess, "Popen", MissingTerminalProcess):
             for number in (110, 111):
                 ticket = f"T-{number}"
@@ -5396,8 +5399,11 @@ class FactoryControllerTest(unittest.TestCase):
             if item["event"] == "role_launch_missing_terminal"
         ]
         self.assertEqual(
-            [(item["ticket"], item["exit_status"]) for item in missing],
-            [("T-110", 0), ("T-111", 3)],
+            [
+                (item["ticket"], item["exit_status"], item["cleanup_deferred"])
+                for item in missing
+            ],
+            [("T-110", 0, []), ("T-111", 3, ["lease"])],
         )
 
     def test_delayed_terminal_is_finished_without_rerunning_role(self) -> None:
