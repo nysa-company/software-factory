@@ -570,7 +570,7 @@ def project_qualification_approvals(
         except BlockingIOError as error:
             raise QualificationRunError("qualification controller is busy") from error
 
-        projected = []
+        candidates: list[tuple[str, Path, str]] = []
         for ticket in sorted(selected):
             claim_path = state / "claims" / f"{ticket}.json"
             if not claim_path.exists():
@@ -624,8 +624,10 @@ def project_qualification_approvals(
                 )
             if states != ["Awaiting Approval"]:
                 continue
+            candidates.append((ticket, worktree, worktree_head(worktree)))
 
-            before = worktree_head(worktree)
+        projected = []
+        for ticket, worktree, before in candidates:
             started_epoch_ms = time.time_ns() // 1_000_000
             started = time.monotonic()
             result = subprocess.run(
