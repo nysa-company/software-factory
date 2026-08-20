@@ -986,6 +986,7 @@ def validate_qualification_control_branch(
         previous = commit[0]
     main_ticket = git(product, "show", f"{main}:{ticket_path}")
     remote_ticket = git(product, "show", f"{remote_head}:{ticket_path}")
+    target_pin = git(product, "show", f"{main}:factory/KIT_PIN").strip()
     if (
         field(before, "State").casefold() != "ready"
         or field(pinned, "State").casefold() != "ready"
@@ -998,9 +999,10 @@ def validate_qualification_control_branch(
             and (
                 receipt_paths
                 or before != pinned
-                or before != main_ticket
                 or field(before, "Kit-SHA")
                 != authorization.source_factory_sha
+                or not SHA.fullmatch(target_pin)
+                or field(main_ticket, "Kit-SHA") != target_pin
             )
         )
         or (

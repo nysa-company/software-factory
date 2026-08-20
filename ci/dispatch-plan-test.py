@@ -388,6 +388,10 @@ class DispatchPlanTest(unittest.TestCase):
         })
         manifest.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n")
         (self.product / "factory/KIT_PIN").write_text("a" * 40 + "\n")
+        if source_pinned:
+            ticket.write_text(
+                ticket.read_text().replace("b" * 40, "a" * 40)
+            )
         self.authorize_qualification_control_reset(head, source_product_sha)
         return head, source_product_sha
 
@@ -1669,6 +1673,22 @@ class DispatchPlanTest(unittest.TestCase):
             ),
             run("git", "show", f"{main}:factory/tickets/T-110.md", cwd=self.product),
         )
+
+    def test_qualification_control_retry_refuses_wrong_target_ticket_pin(self):
+        self.qualification_control_branch(source_ready=True, source_pinned=True)
+        ticket = self.product / "factory/tickets/T-110.md"
+        ticket.write_text(ticket.read_text().replace("a" * 40, "c" * 40))
+        run("git", "add", str(ticket), cwd=self.product)
+        run("git", "commit", "-qm", "use wrong target ticket pin", cwd=self.product)
+        run("git", "push", "-q", "origin", "main", cwd=self.product)
+        with self.assertRaisesRegex(
+            DISPATCH.DispatchError,
+            "qualification control reset evidence is invalid",
+        ):
+            DISPATCH.inspect_selected_preprovider_branches(
+                self.product, self.product / "factory", self.qualification_state(),
+                str(self.remote), exact_authorizations=True,
+            )
 
     def test_qualification_control_retry_refuses_noncanonical_ready_prefix(self):
         old_head, _ = self.qualification_control_branch(

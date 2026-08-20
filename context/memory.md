@@ -7187,3 +7187,15 @@ the ticket is Ready at the source Factory SHA, no operator-ready receipt is pres
 and all existing source-generation and ticket-only suffix checks pass. Q58 remains
 frozen integrity evidence; a later protected generation may canonically reset and
 retry the same ticket identities without manual branch or controller edits.
+
+## 2026-08-20 — Decision 522: Qualification reset binds both source and target pins
+
+Category: Reliability
+
+The first pinned-Ready reset fix still required the source ticket and the new
+protected ticket to be byte-identical, conflicting with ticket readiness when a
+new Factory candidate changes `factory/KIT_PIN`. The reset validator now keeps
+the source pre-pin and pin commits byte-exact at the source Factory SHA while
+requiring the protected target ticket to carry the target protected `KIT_PIN`.
+The ticket body must remain identical after control fields are removed, so this
+permits only the intended source-to-target authority rotation.
