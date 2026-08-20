@@ -732,7 +732,7 @@ raise SystemExit(1 if failed else 0)
                 event for event in events
                 if event.get("event") == "push_failure_recovered"
             ]),
-            1,
+            0,
         )
         refreshes = [
             event for event in events
