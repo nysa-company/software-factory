@@ -947,11 +947,13 @@ def validate_qualification_control_branch(
     pin_index = pins[0]
     pin = commits[pin_index]
     parents = pin[1].split()
+    pin_paths = set(git(
+        product, "diff-tree", "--no-commit-id", "--name-only", "-r", pin[0],
+    ).splitlines())
+    protected_pinned = pin_paths == {plan_path}
     if (
         len(parents) != 1
-        or set(git(
-            product, "diff-tree", "--no-commit-id", "--name-only", "-r", pin[0],
-        ).splitlines()) != {ticket_path, plan_path}
+        or pin_paths not in ({ticket_path, plan_path}, {plan_path})
     ):
         raise DispatchError("qualification control reset pin is invalid")
     if receipt_paths:
@@ -986,13 +988,25 @@ def validate_qualification_control_branch(
     remote_ticket = git(product, "show", f"{remote_head}:{ticket_path}")
     if (
         field(before, "State").casefold() != "ready"
-        or field(before, "Kit-SHA")
         or field(pinned, "State").casefold() != "ready"
         or field(pinned, "Kit-SHA") != authorization.source_factory_sha
         or ticket_without_control(before) != ticket_without_control(pinned)
         or field(main_ticket, "State").casefold()
         != ("backlog" if receipt_paths else "ready")
-        or field(main_ticket, "Kit-SHA")
+        or (
+            protected_pinned
+            and (
+                receipt_paths
+                or before != pinned
+                or before != main_ticket
+                or field(before, "Kit-SHA")
+                != authorization.source_factory_sha
+            )
+        )
+        or (
+            not protected_pinned
+            and (field(before, "Kit-SHA") or field(main_ticket, "Kit-SHA"))
+        )
         or (
             not receipt_paths
             and ticket_without_control(before) != ticket_without_control(main_ticket)
