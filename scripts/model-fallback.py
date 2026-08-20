@@ -289,7 +289,7 @@ def historical_qualification_handoff(args, failed, journal, authority, head):
             source_kit = INFLIGHT.ticket_source_kit(authorization, item)
             if INFLIGHT.verify_migration(
                 product, authority["product_sha"], target_kit,
-                args.ticket, branch, migration_head,
+                args.ticket, branch, migration_head, allow_legacy_pinless=True,
             ) != "replay":
                 raise FallbackError("historical qualification migration is invalid")
             migration_head = item["head"]

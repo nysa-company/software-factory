@@ -870,8 +870,10 @@ class ModelControlTest(unittest.TestCase):
         self.command("pin", "--ticket", "T-901", "--workdir", str(self.workdir))
         source_kit_sha = "a" * 40
         sibling_source_kit_sha = "d" * 40
+        pin_path = self.workdir / "factory" / "KIT_PIN"
         ticket_path = self.workdir / "factory" / "tickets" / "T-901.md"
         route_plan = self.workdir / "factory" / "route-plans" / "T-901.json"
+        pin_path.write_text(source_kit_sha + "\n")
         ticket_path.write_text(
             ticket_path.read_text().replace(self.kit_sha, source_kit_sha)
         )
@@ -924,6 +926,9 @@ class ModelControlTest(unittest.TestCase):
             check=True,
         )
         sibling_ticket = sibling_workdir / "factory" / "tickets" / "T-902.md"
+        (sibling_workdir / "factory/KIT_PIN").write_text(
+            self.kit_sha + "\n"
+        )
         sibling_ticket.write_text(
             sibling_ticket.read_text() + f"Kit-SHA: {sibling_source_kit_sha}\n"
         )
@@ -2041,6 +2046,13 @@ PY
         self.assertEqual(
             json.loads(sibling_route.read_text())["kit_sha"], self.kit_sha,
         )
+        self.assertEqual(
+            sorted(subprocess.check_output([
+                "git", "-C", str(sibling_workdir), "diff-tree",
+                "--no-commit-id", "--name-only", "-r", sibling_migrated_head,
+            ], text=True).splitlines()),
+            ["factory/route-plans/T-902.json", "factory/tickets/T-902.md"],
+        )
         push_count = network_trace.read_text().splitlines().count("push")
         replayed_batch = migrate(
             "migrate-batch", "--approve-hash", batch_preview["approval_sha256"],
@@ -2076,14 +2088,32 @@ PY
         historical_route = route_history["revisions"][0]["body"][
             "legacy_plan_sha256"
         ]
-        intermediate_head = subprocess.check_output(
-            ["git", "-C", str(self.workdir), "rev-parse", "HEAD"], text=True,
-        ).strip()
         intermediate_state = next(
             line.removeprefix("State: ").strip()
             for line in ticket_path.read_text().splitlines()
             if line.startswith("State: ")
         )
+        pin_path.write_text("c" * 40 + "\n")
+        subprocess.run(
+            ["git", "-C", str(self.workdir), "add", "factory/KIT_PIN"],
+            check=True,
+        )
+        subprocess.run([
+            "git", "-C", str(self.workdir), "-c", "user.name=test",
+            "-c", "user.email=test@example.com", "commit", "-qm",
+            "preserve stale branch pin",
+        ], check=True)
+        subprocess.run([
+            "git", "-C", str(self.workdir), "push", "-q", str(self.remote),
+            "ticket/T-901",
+        ], check=True)
+        subprocess.run([
+            "git", "-C", str(self.workdir), "update-ref",
+            "refs/remotes/origin/ticket/T-901", "HEAD",
+        ], check=True)
+        intermediate_head = subprocess.check_output(
+            ["git", "-C", str(self.workdir), "rev-parse", "HEAD"], text=True,
+        ).strip()
         final_kit = "e" * 40
         (self.product / "factory/KIT_PIN").write_text(final_kit + "\n")
         final_authorization = (
@@ -2123,11 +2153,22 @@ PY
             "migrate-plan", "--ticket", "T-901", "--workdir", str(self.workdir),
             run_environment=final_environment,
         )
-        migrate(
+        final_migration = migrate(
             "migrate", "--ticket", "T-901", "--workdir", str(self.workdir),
             "--approve-hash", final_preview["preview_hash"],
             "--readiness-hash", final_preview["readiness_sha256"],
             "--approved-by", "tester", run_environment=final_environment,
+        )
+        self.assertEqual(pin_path.read_text(), final_kit + "\n")
+        self.assertEqual(
+            sorted(subprocess.check_output([
+                "git", "-C", str(self.workdir), "diff-tree", "--no-commit-id",
+                "--name-only", "-r", final_migration["commit_sha"],
+            ], text=True).splitlines()),
+            [
+                "factory/KIT_PIN", "factory/route-plans/T-901.json",
+                "factory/tickets/T-901.md",
+            ],
         )
 
         bundle = self.workdir / "factory/attestations/T-901/bundle.json"

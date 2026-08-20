@@ -584,6 +584,7 @@ else:
             self.catalog, self.routes, self.profiles, self.readiness,
         )
         route_plan.write_text(ROUTER.canonical_json(migrated) + "\n")
+        (self.product / "factory/KIT_PIN").write_text(KIT_SHA + "\n")
         subprocess.run(["git", "-C", self.product, "add", "."], check=True)
         subprocess.run(
             ["git", "-C", self.product, "commit", "-qm", "migrate route metadata"],
@@ -808,6 +809,9 @@ else:
             ticket_path.write_text(ticket_path.read_text().replace(
                 f"Kit-SHA: {KIT_SHA}", f"Kit-SHA: {approval_kit_sha}", 1,
             ))
+            (self.product / "factory/KIT_PIN").write_text(
+                approval_kit_sha + "\n"
+            )
         bundle_path = self.product / "factory/tickets/T-100-bundle.md"
         bundle_path.write_text("# Evidence bundle\n\nApprove to merge?\n")
         self.commit_and_push("record narrator bundle")
@@ -1496,6 +1500,20 @@ else:
         refused = self.publication_command(expected=2)
         self.assertIn("approval continuation", refused["error"])
         self.assertFalse(self.trace.exists())
+
+    def test_publication_rejects_wrong_pin_after_successor_migration(self):
+        route_plan, journal, prior_kit = self.prepare_approval_continuation(
+            successor=True,
+        )
+        ticket = self.product / "factory/tickets/T-100.md"
+        ticket.write_text(ticket.read_text().replace(
+            f"Kit-SHA: {prior_kit}", f"Kit-SHA: {KIT_SHA}", 1,
+        ))
+        self.append_route_migration(route_plan, journal)
+        (self.product / "factory/KIT_PIN").write_text("e" * 40 + "\n")
+        self.commit_and_push("tamper with migrated KIT_PIN")
+        refused = self.publication_command(expected=2)
+        self.assertIn("approval continuation", refused["error"])
 
     def test_publication_rejects_tampered_approval_receipt(self):
         self.prepare_approval_continuation("tampered-receipt")

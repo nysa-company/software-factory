@@ -543,9 +543,12 @@ stale-bundle recovery may ask the
 state machine for a current receipt only after one unique contiguous suffix of
 authenticated release-changing edges and exact same-release route-migration
 commits binds the old receipt and passport-file digest to the current passport.
-Each same-release edge must be a direct two-path Software Factory route commit
-whose before/after route and ticket blobs match its signed migration fields;
-arbitrary same-release ticket work remains refused.
+Each current-release same-release edge must be a direct Software Factory route
+commit whose target `factory/KIT_PIN` and before/after route and ticket blobs
+match its signed migration fields. The pin is changed exactly when the
+authorized parent does not already contain the target. Authenticated predecessor edges
+may retain their historical two-path shape; arbitrary same-release ticket work
+remains refused.
 When the approved route commit is already pushed, recovery migrates the
 passport to that clean commit before testing whether the retained bundle is
 refreshable; restart may replay the idempotent passport migration.
@@ -1373,7 +1376,7 @@ still fails closed.
 If the provider output was committed before the successor migration, the
 successor may append the fallback afterward only when its retained protected
 in-flight authorizations form one exact chain from that output head to the
-current exact ticket-and-route migration head. Recovery revalidates the
+current exact pin/ticket/route migration head. Recovery revalidates the
 historical role
 boundary, unchanged active route policy, failed source head, and both snapshot
 digests before appending a route-only fallback commit. Restart repeats those
@@ -1508,7 +1511,8 @@ approval receipt, preserve all ticket text except the sealed
 Awaiting Approval → Approved receipt transformation, and bind the same reviewed
 SHA, repository, branch, Kit-SHA, PR, bundle blobs, merge method, and ordered
 timestamps. A later sealed successor may append a validated release-migration
-route commit and replace only the ticket's Kit-SHA; the approval and bundle
+route commit and replace only the branch `factory/KIT_PIN` and ticket Kit-SHA;
+the approval and bundle
 receipts, bundle document, and all other approved ticket text remain
 byte-identical. Phase two may use that immutable approval receipt after the
 operator map projects the transient approval overlay away; partial overlays still refuse.
@@ -1744,15 +1748,16 @@ checkpoint only when the previous sealed product authorization proves it is
 the exact one-child replay of that active release's migration.
 The first application starts at the exact authorized head. An interrupted
 idempotent retry may start only at its one direct child when that commit changes
-only the selected ticket's Kit-SHA and its exact append-only release-migration
-journal, with both paths committed as regular `100644` blobs; sibling entries
+only the selected ticket's Kit-SHA, its exact append-only release-migration
+journal, and `factory/KIT_PIN` when the authorized parent pin differs, with every
+path committed as a regular `100644` blob; sibling entries
 remain neither consumed nor reinterpreted. Every other
 head, state, path, or route-history change requires a new protected
 authorization.
 The historical T-198 semantic-authorization recovery consumes that same
 protected entry itself after its first passport edge. It binds the writer's
 preview and readiness hashes, requires the legacy plan to become the writer's
-two-revision v2 journal, and accepts only the exact pushed two-path child
+two-revision v2 journal, and accepts only the exact pushed control child
 authored by `Software Factory <factory@local>` before recording the second
 passport edge. A crash after the commit or push resumes through the sealed
 writer from that exact child, and the passport advances only after the
@@ -1809,7 +1814,7 @@ the current catalog identity, contains one terminal success and the exact
 identity-rejection diagnostic, and whose progress journal independently ends
 in one success. The local history must be exactly receipt input, one
 ticket-only output commit, its exact revert, a bounded contiguous chain of one
-or more authenticated ticket-and-route migrations ending at the current kit,
+or more authenticated pin/ticket/route migrations ending at the current kit,
 and optionally the controller's ticket-only revert-of-revert. The active route
 selection is resolved across that journal because an unchanged release
 migration intentionally carries only its prior-resolution digest. Recovery
@@ -1826,8 +1831,9 @@ proofs remain identical.
 The state machine never migrates a passport for a `REFUSE` transition; the
 controller blocks the claim first so the next one-shot owns that boundary and
 its durable pending marker.
-After the preview-bound route migration commits the successor Kit-SHA to both
-the ticket and route journal, a second ordinary descendant migration updates
+After the preview-bound route migration commits the successor Kit-SHA to the
+branch `factory/KIT_PIN`, ticket, and route journal, a second ordinary descendant
+migration updates
 the passport route digest and only then reopens the claim. A durable
 controller marker makes the between-migrations restart boundary idempotent.
 The exact T-198 occurrence abandoned by the predecessor implementation is

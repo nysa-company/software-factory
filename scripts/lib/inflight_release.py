@@ -304,6 +304,8 @@ def verify_migration(
     ticket: str,
     branch: str,
     current_head: str,
+    *,
+    allow_legacy_pinless: bool = False,
 ) -> str:
     if not all(SHA.fullmatch(value) for value in (protected, target, current_head)):
         raise AuthorizationError("in-flight release authorization ref is invalid")
@@ -325,10 +327,23 @@ def verify_migration(
         head=authorized_head, state=source_state, source_kit_sha=source_kit,
     )
     migration_paths = (
-        f"factory/tickets/{ticket}.md", f"factory/route-plans/{ticket}.json",
+        "factory/KIT_PIN", f"factory/tickets/{ticket}.md",
+        f"factory/route-plans/{ticket}.json",
     )
-    for relative in migration_paths:
+    checked_paths = migration_paths[1:]
+    for relative in checked_paths:
         _regular_blob(repo, authorized_head, relative)
+    source_pin_line = _git(
+        repo, "ls-tree", authorized_head, "--", "factory/KIT_PIN",
+    ).rstrip("\n")
+    source_pin = ""
+    if source_pin_line:
+        _regular_blob(repo, authorized_head, "factory/KIT_PIN")
+        source_pin = _git(repo, "show", f"{authorized_head}:factory/KIT_PIN")
+        if not SHA.fullmatch(source_pin.rstrip("\n")) or source_pin.count("\n") != 1:
+            raise AuthorizationError("authorized factory KIT_PIN is invalid")
+    elif not allow_legacy_pinless:
+        raise AuthorizationError("authorized factory KIT_PIN is invalid")
     if current_head == authorized_head:
         return "exact"
     parents = _git(repo, "show", "-s", "--format=%P", current_head).split()
@@ -336,15 +351,27 @@ def verify_migration(
         repo, "diff-tree", "--no-commit-id", "--name-status", "--no-renames",
         "-r", current_head,
     ).splitlines()
-    expected_paths = sorted([
+    expected_paths = [
         f"M\tfactory/route-plans/{ticket}.json",
         f"M\tfactory/tickets/{ticket}.md",
-    ])
-    if parents != [authorized_head] or sorted(changed) != expected_paths:
+    ]
+    changed_paths = set(changed)
+    if (
+        (not allow_legacy_pinless and source_pin != target + "\n")
+        or "M\tfactory/KIT_PIN" in changed_paths
+    ):
+        expected_paths.append("M\tfactory/KIT_PIN")
+    if parents != [authorized_head] or sorted(changed) != sorted(expected_paths):
         raise AuthorizationError("current head is not the exact authorized migration child")
     current_ticket = _git(repo, "show", f"{current_head}:factory/tickets/{ticket}.md")
     current_state, current_kit = _ticket_fields(current_ticket)
-    for relative in migration_paths:
+    validate_target_pin = (
+        not allow_legacy_pinless or "M\tfactory/KIT_PIN" in changed_paths
+    )
+    checked_current_paths = (
+        migration_paths if validate_target_pin else checked_paths
+    )
+    for relative in checked_current_paths:
         _regular_blob(repo, current_head, relative)
     pattern = re.compile(
         rf"(?mi)^Kit-SHA:[ \t]*{re.escape(source)}[ \t]*$"
@@ -356,6 +383,10 @@ def verify_migration(
         or pattern.sub("Kit-SHA: " + target, source_ticket) != current_ticket
     ):
         raise AuthorizationError("replayed ticket migration changed unauthorized fields")
+    if validate_target_pin and _git(
+        repo, "show", f"{current_head}:factory/KIT_PIN",
+    ) != target + "\n":
+        raise AuthorizationError("replayed factory KIT_PIN migration is invalid")
     _verify_replay_route(repo, authorized_head, current_head, ticket, source, target)
     return "replay"
 

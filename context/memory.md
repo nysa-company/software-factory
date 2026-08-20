@@ -7199,3 +7199,18 @@ the source pre-pin and pin commits byte-exact at the source Factory SHA while
 requiring the protected target ticket to carry the target protected `KIT_PIN`.
 The ticket body must remain identical after control fields are removed, so this
 permits only the intended source-to-target authority rotation.
+
+## 2026-08-20 — Decision 523: Route migration advances the branch pin atomically
+
+Category: Reliability
+
+Q58 proved that changing only the ticket `Kit-SHA` and route journal leaves the
+ticket branch's `factory/KIT_PIN` on the predecessor Factory, so provider-free
+readiness correctly refuses the next role. Current successor migration now
+commits the selected ticket and route journal plus `factory/KIT_PIN` when that
+authorized parent pin differs, as one CAS-pushed child, and verifies the target
+pin on replay. The authorized
+parent may carry one stale but well-formed pin so this same transaction repairs
+branches created by the old bug. Historical two-path migrations remain readable
+only while validating predecessor evidence; they cannot authorize a new current
+release migration.
