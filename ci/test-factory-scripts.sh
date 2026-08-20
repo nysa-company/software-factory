@@ -197,8 +197,19 @@ case "${1:-}" in
     if [[ -n "${STUB_CURSOR_MODELS_FAIL_ONCE_FILE:-}" &&
           ! -f "$STUB_CURSOR_MODELS_FAIL_ONCE_FILE" ]]; then
       : > "$STUB_CURSOR_MODELS_FAIL_ONCE_FILE"
+    elif [[ -n "${STUB_CURSOR_MODELS_OUTPUT:-}" ]]; then
+      printf '%s\n' "$STUB_CURSOR_MODELS_OUTPUT"
     else
-      printf '%s\n' ${STUB_CURSOR_MODELS:-gpt-5.6-sol-high claude-sonnet-5-thinking-high}
+      for model in ${STUB_CURSOR_MODELS:-gpt-5.6-sol-high claude-sonnet-5-thinking-high}; do
+        case "$model" in
+          gpt-5.6-sol-high) label="GPT-5.6 Sol 1M High" ;;
+          claude-fable-5-thinking-medium) label="Claude Fable 5 1M Medium Thinking (NO ZDR)" ;;
+          claude-opus-5-thinking-medium) label="Claude Opus 5 1M Medium Thinking" ;;
+          claude-sonnet-5-thinking-high) label="Claude Sonnet 5 1M Thinking" ;;
+          *) label="$model" ;;
+        esac
+        printf '%s - %s\n' "$model" "$label"
+      done
     fi
     exit 0 ;;
 esac
@@ -219,10 +230,10 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 case "$MODEL" in
-  gpt-5.6-sol-high) REPORTED_MODEL="GPT-5.6 Sol 272K High" ;;
-  claude-fable-5-thinking-medium) REPORTED_MODEL="Fable 5 300K Medium" ;;
-  claude-opus-5-thinking-medium) REPORTED_MODEL="Opus 5 300K Medium" ;;
-  claude-sonnet-5-thinking-high) REPORTED_MODEL="Sonnet 5 300K High" ;;
+  gpt-5.6-sol-high) REPORTED_MODEL="GPT-5.6 Sol 1M High" ;;
+  claude-fable-5-thinking-medium) REPORTED_MODEL="Claude Fable 5 1M Medium Thinking (NO ZDR)" ;;
+  claude-opus-5-thinking-medium) REPORTED_MODEL="Claude Opus 5 1M Medium Thinking" ;;
+  claude-sonnet-5-thinking-high) REPORTED_MODEL="Claude Sonnet 5 1M Thinking" ;;
   *) REPORTED_MODEL="$MODEL" ;;
 esac
 REPORTED_MODEL="${STUB_CURSOR_REPORTED_MODEL:-$REPORTED_MODEL}"
@@ -406,6 +417,19 @@ if [[ "$SUBSTRING_MODEL_PROBE" == "INVALID:model_unavailable" &&
 else
   fail "Cursor readiness rejects substring model and version matches" \
     "model=$SUBSTRING_MODEL_PROBE version=$SUBSTRING_VERSION_PROBE"
+fi
+
+STALE_IDENTITY_PROBE="$(PATH="$STUB_BIN:$PATH" FACTORY_CURSOR_FALLBACK_ENABLED=1 \
+  CURSOR_AGENT_VERSION=2026.07.test \
+  CURSOR_ANTHROPIC_MODEL=claude-opus-5-thinking-medium \
+  STUB_CURSOR_MODELS_OUTPUT='claude-opus-5-thinking-medium - Claude Opus 6 1M Medium Thinking' \
+  bash -c 'source "$1"; factory_probe_adapter cursor-anthropic; echo "$PROBE_STATE:$PROBE_REASON"' \
+  _ "$ROOT/scripts/lib/backend-policy.sh")"
+if [[ "$STALE_IDENTITY_PROBE" == "INVALID:reported_identity_mismatch" ]]; then
+  pass "Cursor readiness rejects an uncertified provider model label"
+else
+  fail "Cursor readiness rejects an uncertified provider model label" \
+    "$STALE_IDENTITY_PROBE"
 fi
 
 FALSE_AUTH_PROBE="$(PATH="$STUB_BIN:$PATH" FACTORY_CURSOR_FALLBACK_ENABLED=1 \

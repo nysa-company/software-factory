@@ -488,10 +488,10 @@ with state.open("r+",encoding="utf-8") as stream:
                 "cursor-claude-sonnet-5-thinking-high", "claude-sonnet", "high",
             ),
             "spec-linter": (
-                "cursor-claude-fable-5-thinking-medium", "claude-fable", "medium",
+                "cursor-claude-opus-5-thinking-medium", "claude-sonnet", "medium",
             ),
             "test-author": (
-                "cursor-claude-fable-5-thinking-medium", "claude-fable", "medium",
+                "cursor-claude-opus-5-thinking-medium", "claude-sonnet", "medium",
             ),
         }
         return {
@@ -536,7 +536,9 @@ if name == "agent" and args[:1] == ["--help"]:
 if name == "agent" and args[:1] == ["status"]:
     print('{{"authenticated":true}}'); raise SystemExit(0)
 if name == "agent" and args[:1] == ["models"]:
-    print("gpt-5.6-sol-high claude-fable-5-thinking-medium claude-sonnet-5-thinking-high")
+    print("gpt-5.6-sol-high - GPT-5.6 Sol 1M High")
+    print("claude-opus-5-thinking-medium - Claude Opus 5 1M Medium Thinking")
+    print("claude-sonnet-5-thinking-high - Claude Sonnet 5 1M Thinking")
     raise SystemExit(0)
 
 work=pathlib.Path.cwd()
@@ -577,9 +579,9 @@ failed = ticket == "T-902" and role == "builder" and name == "agent" and ordinal
 if name == "agent":
     model=args[args.index("--model")+1]
     reports={{
-        "gpt-5.6-sol-high":"GPT-5.6 Sol 272K High",
-        "claude-fable-5-thinking-medium":"Fable 5 300K Medium",
-        "claude-sonnet-5-thinking-high":"Sonnet 5 300K High",
+        "gpt-5.6-sol-high":"GPT-5.6 Sol 1M High",
+        "claude-opus-5-thinking-medium":"Claude Opus 5 1M Medium Thinking",
+        "claude-sonnet-5-thinking-high":"Claude Sonnet 5 1M Thinking",
     }}
     print(json.dumps({{"type":"system","subtype":"init","model":reports[model]}}))
     print(json.dumps({{"type":"assistant","message":{{"content":text}}}}))
@@ -687,8 +689,25 @@ raise SystemExit(1 if failed else 0)
         self.assertEqual(
             {item["ticket"] for item in replay["report"]["tickets"]}, set(TICKETS)
         )
+        remaining = int(deadline - time.monotonic())
+        self.assertGreater(remaining, 0, "shared qualification exceeded 710-second deadline")
+        repeated = self.sealed(
+            str(launcher), self.project, "qualification-finish", "--json",
+            timeout=min(120, remaining),
+        )
+        self.assertEqual(repeated.returncode, 0, repeated.stdout + repeated.stderr)
+        repeated_replay = json.loads(repeated.stdout)
+        self.assertEqual(repeated_replay["status"], "green")
+        self.assertEqual(repeated_replay["approvals"], [])
+        self.assertEqual(repeated_replay["report"], replay["report"])
+        self.assertEqual(
+            json.loads(self.provider_calls.read_text(encoding="utf-8")), calls,
+        )
+        remaining = int(deadline - time.monotonic())
+        self.assertGreater(remaining, 0, "shared qualification exceeded 710-second deadline")
         final_doctor = self.sealed(
-            str(launcher), self.project, "doctor", "--json", timeout=120,
+            str(launcher), self.project, "doctor", "--json",
+            timeout=min(120, remaining),
         )
         self.assertEqual(final_doctor.returncode, 0)
         doctor = json.loads(final_doctor.stdout)

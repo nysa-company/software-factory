@@ -30,13 +30,14 @@ Kimi K2.6 is a disabled experimental Moonshot-family route through Claude CLI
 and OpenRouter. It is not in any profile and is never selected by the current
 workflow.
 
-Cursor model evidence is exact. Anthropic selections may report either their
-canonical route-bound label or the same label with Cursor's certified `Claude `
-presentation prefix. The GPT-5.6 Sol High selection may report either its
-canonical `GPT-5.6 Sol 272K High` label or the explicitly certified
-`GPT-5.6 Sol 1M High` task-context label. Every other context-window, effort,
-selection, or family label is rejected. Native Claude fallback defaults to the
-certified CLI version `2.1.223`.
+Cursor model evidence is exact. Readiness now verifies both the selection ID and
+its displayed provider label before a ticket can launch. Current canonical labels
+are `GPT-5.6 Sol 1M High`, `Claude Opus 5 1M Medium Thinking`, and
+`Claude Sonnet 5 1M Thinking`; the enabled legacy Fable route is
+`Claude Fable 5 1M Medium Thinking (NO ZDR)`. Finite route-bound legacy labels remain accepted
+for authenticated in-flight work. Every other context-window, effort, selection,
+or family label is rejected. Native Claude fallback defaults to the certified CLI
+version `2.1.223`.
 Native Claude readiness runs version, help, OAuth, and authenticated-status
 checks through one disposable owner-only configuration containing only a
 validated credential copy. Ambient Claude settings and hooks therefore cannot

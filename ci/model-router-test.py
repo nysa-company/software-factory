@@ -81,20 +81,30 @@ class ModelRouterTest(unittest.TestCase):
         self.assertEqual(kimi["selection_id"], "moonshotai/kimi-k2.6")
         self.assertFalse(kimi["enabled"])
         self.assertEqual(kimi["lifecycle"], "experimental")
+        self.assertEqual(
+            self.routes["cursor-gpt-5.6-sol-high"]["expected_reported_identity"],
+            "GPT-5.6 Sol 1M High",
+        )
         cursor_fable = self.routes["cursor-claude-fable-5-thinking-medium"]
         self.assertEqual(cursor_fable["selection_id"], "claude-fable-5-thinking-medium")
         self.assertEqual(
             cursor_fable["expected_reported_identity"],
-            "Fable 5 300K Medium",
+            "Claude Fable 5 1M Medium Thinking (NO ZDR)",
         )
         self.assertTrue(cursor_fable["enabled"])
         cursor_opus = self.routes["cursor-claude-opus-5-thinking-medium"]
         self.assertEqual(cursor_opus["selection_id"], "claude-opus-5-thinking-medium")
         self.assertEqual(
             cursor_opus["expected_reported_identity"],
-            "Opus 5 300K Medium",
+            "Claude Opus 5 1M Medium Thinking",
         )
         self.assertTrue(cursor_opus["enabled"])
+        self.assertEqual(
+            self.routes["cursor-claude-sonnet-5-thinking-high"][
+                "expected_reported_identity"
+            ],
+            "Claude Sonnet 5 1M Thinking",
+        )
         serialized = ROUTER.canonical_json(self.catalog)
         self.assertEqual(ROUTER.DEFAULT_CATALOG.read_text().strip(), serialized)
 

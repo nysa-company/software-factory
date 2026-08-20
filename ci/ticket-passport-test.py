@@ -337,10 +337,10 @@ class TicketPassportTest(unittest.TestCase):
                 str(output_path),
             ],
             input=(
-                b'{"model":"Opus 5 300K Medium","subtype":"init",'
+                b'{"model":"Claude Opus 5 1M Medium Thinking","subtype":"init",'
                 b'"type":"system"}\n'
                 b'{"subtype":"success","type":"result"}\n'
-                b'cursor reported unapproved model: Opus 5 300K Medium\n'
+                b'cursor reported unapproved model: Claude Opus 5 1M Medium Thinking\n'
                 b'Cursor output validation/redaction failed\n'
             ),
             capture_output=True,
@@ -413,7 +413,7 @@ class TicketPassportTest(unittest.TestCase):
         route = routes[selected["route_id"]]
         actual = {
             "gpt-5.6-sol-high": "GPT-5.6 Sol 1M High",
-            "claude-opus-5-thinking-medium": "Claude Opus 5 300K Medium",
+            "claude-opus-5-thinking-medium": "Claude Opus 5 1M Medium Thinking",
         }.get(route["selection_id"], route["expected_reported_identity"])
         adapter = route["adapter"]
         output_path = self.product / f"factory/runs/{run_id}.out"
@@ -1281,7 +1281,7 @@ class TicketPassportTest(unittest.TestCase):
         PASSPORT.migrate(self.passport_args, secret)
         current_selection = {
             "adapter": "cursor-anthropic",
-            "reported_identity": "Opus 5 300K Medium",
+            "reported_identity": "Claude Opus 5 1M Medium Thinking",
             "route_id": "cursor-claude-opus-5-thinking-medium",
         }
         journal = {
