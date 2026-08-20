@@ -7078,3 +7078,17 @@ and reuses the existing driver through publication, closeout, and reduction.
 It repeats only after a new receipt, protected-base refresh, or authenticated
 completion, returns bounded reducer reason codes, and remains unavailable to
 production and takeover. Q46 remains frozen failed evidence.
+
+## 2026-08-19 — Decision 514: Paused lease recovery has a deterministic exit
+
+Category: Reliability
+
+Q47 preparation was provider-free, but an interrupted prior lane left two
+stale dispatcher leases behind an ownerless lock. The supported recovery first
+published maintenance and reclaimed the named leases, yet no command could
+remove an ordinary pause without a new activation. `factory-kit unpause` now
+requires a fully drained product and the exact ordinary pause marker, reclaims
+only a stale dispatcher lock through the existing owner-aware protocol, and
+refuses release-owned maintenance. Operators never delete leases, locks, or
+maintenance by hand; signed release transactions still finish through their
+own activation path.

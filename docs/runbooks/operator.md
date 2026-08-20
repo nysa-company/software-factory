@@ -933,7 +933,11 @@ copy an opaque lease into the authorization.
 If a dispatcher lease is stale, keep maintenance published and run
 `factory-kit.sh recover-lease --project <project> --product <path> --ticket
 <T-NNN>`. Recovery refuses while any role run is recorded. Never delete or
-replace the lease by hand.
+replace the lease or its lock by hand. After recovering every named lease,
+use `factory-kit.sh unpause --project <project> --product <path>` only when the
+maintenance marker came from an ordinary `factory-kit pause`. A signed release
+transaction owns its maintenance marker and must finish through activation
+instead.
 
 If an idle parked ticket reports `state-machine-refusal` and protected main has
 since changed, run ordinary reconcile before using ticket pause/resume. The

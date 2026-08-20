@@ -2219,12 +2219,66 @@ expect_failure "pause refuses an undrained dispatcher lease" \
 [[ "$LAST_OUTPUT" == *"MAINTENANCE remains published"* &&
    "$LAST_OUTPUT" == *"recover-lease"* ]] ||
   fail "pause lease refusal names the supported recovery sequence" "$LAST_OUTPUT"
+mkdir "$PRODUCT_ONE/factory/.dispatch-leases.lock"
+export FACTORY_KIT_LOCK_OWNER_GRACE_SECONDS=0
+expect_failure "unpause refuses an undrained dispatcher lease" \
+  unpause --project alpha --product "$PRODUCT_ONE"
+[[ -f "$PRODUCT_ONE/factory/MAINTENANCE" &&
+   -f "$PRODUCT_ONE/factory/.dispatch-leases/T-004.json" ]] ||
+  fail "failed unpause preserves maintenance and dispatcher lease"
+mkdir "$PRODUCT_ONE/factory/.dispatch-leases.lock"
 expect_success "operator recovers stale lease only under maintenance" \
   recover-lease --project alpha --product "$PRODUCT_ONE" --ticket T-004
+unset FACTORY_KIT_LOCK_OWNER_GRACE_SECONDS
 [[ ! -e "$PRODUCT_ONE/factory/.dispatch-leases/T-004.json" ]] &&
   pass "stale lease recovery removes only the named ticket" ||
   fail "stale lease recovery removes only the named ticket"
+[[ ! -e "$PRODUCT_ONE/factory/.dispatch-leases.lock" ]] &&
+  pass "stale lease recovery reclaims an abandoned dispatcher lock" ||
+  fail "stale lease recovery reclaims an abandoned dispatcher lock"
 rm -rf "$PRODUCT_ONE/factory/.dispatch-leases"
+
+mkdir "$PRODUCT_ONE/factory/.provider.lock"
+expect_failure "unpause refuses an active provider lock" \
+  unpause --project alpha --product "$PRODUCT_ONE"
+[[ -f "$PRODUCT_ONE/factory/MAINTENANCE" ]] ||
+  fail "provider-lock refusal preserves maintenance"
+rmdir "$PRODUCT_ONE/factory/.provider.lock"
+mkdir -p "$PRODUCT_ONE/factory/.active-runs"
+printf 'pid=999999\n' > "$PRODUCT_ONE/factory/.active-runs/run.pid"
+expect_failure "unpause refuses an active run" \
+  unpause --project alpha --product "$PRODUCT_ONE"
+[[ -f "$PRODUCT_ONE/factory/MAINTENANCE" ]] ||
+  fail "failed unpause preserves maintenance"
+rm "$PRODUCT_ONE/factory/.active-runs/run.pid"
+rmdir "$PRODUCT_ONE/factory/.active-runs"
+python3 - "$PRODUCT_ONE/factory/MAINTENANCE" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+value = json.loads(path.read_text())
+value["cutover_owner"] = "b" * 64
+path.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n")
+PY
+expect_failure "unpause preserves release-owned maintenance" \
+  unpause --project alpha --product "$PRODUCT_ONE"
+python3 - "$PRODUCT_ONE/factory/MAINTENANCE" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+value = json.loads(path.read_text())
+value.pop("cutover_owner")
+path.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n")
+PY
+expect_success "unpause resumes a fully drained product" \
+  unpause --project alpha --product "$PRODUCT_ONE"
+[[ ! -e "$PRODUCT_ONE/factory/MAINTENANCE" &&
+   ! -e "$PRODUCT_ONE/factory/.launch.lock" &&
+   ! -e "$PRODUCT_ONE/factory/.dispatch-leases.lock" ]] &&
+  pass "unpause removes only its maintenance and locks" ||
+  fail "unpause removes only its maintenance and locks"
+expect_failure "unpause requires an exact maintenance marker" \
+  unpause --project alpha --product "$PRODUCT_ONE"
+expect_success "pause can follow a completed unpause" \
+  pause --project alpha --product "$PRODUCT_ONE"
 
 # First activation holds the project lock; a concurrent replay cannot read/advance state.
 export FACTORY_KIT_TEST_HOLD_PROJECT_LOCK_SECONDS=1

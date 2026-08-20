@@ -195,6 +195,7 @@ Usage:
   $PROGRAM preflight-report --project SLUG --product PRODUCT_REPO --sha FULL_SHA [--ticket T-NNN] --json
   $PROGRAM plan      --project SLUG --product PRODUCT_REPO --sha FULL_SHA [--receipt FILE]
   $PROGRAM pause     --project SLUG --product PRODUCT_REPO
+  $PROGRAM unpause   --project SLUG --product PRODUCT_REPO
   $PROGRAM operator ACTION --project SLUG --product PRODUCT_REPO [--ticket T-NNN]
              ACTION: ready|approve|cancel|init (--ticket), resume (--ticket --stage STAGE),
              priority (--ticket --priority none|urgent|high|normal|low),
@@ -1395,7 +1396,7 @@ require_no_host_cutover() {
 host_cutover_mutation_requested() {
   local action="${POSITIONALS[0]:-}"
   case "$COMMAND" in
-    certify|bootstrap|pause|activate|reconcile|rollback|recover-lease|runtime-pin)
+    certify|bootstrap|pause|unpause|activate|reconcile|rollback|recover-lease|runtime-pin)
       return 0
       ;;
     operator) [[ "$action" != "pending" ]] ;;
@@ -3091,6 +3092,82 @@ cmd_pause() {
   fi
   release_lock "$launch_lock"
   say "PAUSE OK: project=$slug"
+}
+
+cmd_unpause() {
+  local slug="$1" product="$2" product_top launch_lock lease_lock marker runtime_lock
+  validate_slug "$slug"
+  validate_managed_layout "$slug"
+  require_host_cutover_access "$slug"
+  product_top="$(absolute_dir "$product")"
+  require_test_product "$product_top"
+  launch_lock="$product_top/factory/.launch.lock"
+  acquire_lock "$launch_lock" "product launch"
+  require_maintenance_after_lock "$slug" "$product_top"
+  has_active_runs "$product_top" &&
+    die "product has active runs; MAINTENANCE remains published"
+  for runtime_lock in .provider.lock .ledger.lock; do
+    [[ ! -e "$product_top/factory/$runtime_lock" &&
+       ! -L "$product_top/factory/$runtime_lock" ]] ||
+      die "product has an active $runtime_lock; MAINTENANCE remains published"
+  done
+  lease_lock="$(factory_dispatch_lock_dir "$product_top")"
+  acquire_lock "$lease_lock" "dispatcher lease"
+  require_dispatch_drained "$product_top"
+  marker="$(maintenance_file_for "$product_top")"
+  python3 -I -S - "$marker" "$slug" "$product_top" <<'PY' ||
+import json, os, pathlib, stat, sys
+
+path, project, product = pathlib.Path(sys.argv[1]), *sys.argv[2:]
+def unique(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError
+        value[key] = item
+    return value
+
+fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+try:
+    before = os.fstat(fd)
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or before.st_uid != os.geteuid()
+        or before.st_nlink != 1
+        or stat.S_IMODE(before.st_mode) & 0o022
+        or before.st_size > 4096
+    ):
+        raise ValueError
+    raw = os.read(fd, before.st_size + 1)
+    after = os.fstat(fd)
+    if len(raw) != before.st_size or (
+        before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns
+    ) != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
+        raise ValueError
+finally:
+    os.close(fd)
+value = json.loads(raw.decode("utf-8", "strict"), object_pairs_hook=unique)
+if (
+    set(value) != {"product_path", "project", "published_at", "schema_version"}
+    or value.get("schema_version") != 1
+    or value.get("project") != project
+    or value.get("product_path") != product
+):
+    raise SystemExit("maintenance marker is not an ordinary factory-kit pause")
+current = path.lstat()
+if (current.st_dev, current.st_ino) != (before.st_dev, before.st_ino):
+    raise SystemExit("maintenance marker changed before unpause")
+path.unlink()
+directory = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+try:
+    os.fsync(directory)
+finally:
+    os.close(directory)
+PY
+    die "MAINTENANCE remains published"
+  release_lock "$lease_lock"
+  release_lock "$launch_lock"
+  say "UNPAUSE OK: project=$slug"
 }
 
 cmd_operator() {
@@ -4957,6 +5034,12 @@ case "$COMMAND" in
     [[ -n "$PRODUCT" ]] || PRODUCT="${POSITIONALS[1]:-}"
     [[ -n "$PROJECT" && -n "$PRODUCT" ]] || { usage >&2; exit 2; }
     cmd_pause "$PROJECT" "$PRODUCT"
+    ;;
+  unpause)
+    [[ -n "$PROJECT" ]] || PROJECT="${POSITIONALS[0]:-}"
+    [[ -n "$PRODUCT" ]] || PRODUCT="${POSITIONALS[1]:-}"
+    [[ -n "$PROJECT" && -n "$PRODUCT" ]] || { usage >&2; exit 2; }
+    cmd_unpause "$PROJECT" "$PRODUCT"
     ;;
   operator)
     ACTION="${POSITIONALS[0]:-}"
