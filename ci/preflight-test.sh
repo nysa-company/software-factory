@@ -836,6 +836,32 @@ else
   echo "FAIL: contract 1.8 provider-free readiness rejected executable seams"
   FAILURES=$((FAILURES + 1))
 fi
+cp "$READINESS/factory/tickets/T-110.md" "$TMP/readiness-before-kit-pin.md"
+printf '\nKit-SHA: 0000000000000000000000000000000000000000\n' \
+  >> "$READINESS/factory/tickets/T-110.md"
+if python3 "$KIT_DIR/scripts/ticket-readiness.py" \
+     --ticket T-110 --workdir "$READINESS" > "$TMP/readiness-kit-mismatch.out"; then
+  echo "FAIL: readiness accepted a ticket pinned to a different Factory"
+  FAILURES=$((FAILURES + 1))
+elif grep -qF 'ticket Kit-SHA does not match factory/KIT_PIN' \
+     "$TMP/readiness-kit-mismatch.out"; then
+  echo "PASS: readiness rejects a ticket pinned to a different Factory"
+else
+  echo "FAIL: ticket Kit-SHA mismatch returned the wrong readiness refusal"
+  FAILURES=$((FAILURES + 1))
+fi
+cp "$TMP/readiness-before-kit-pin.md" "$READINESS/factory/tickets/T-110.md"
+printf '\nKit-SHA: %s\n' "$KIT_HEAD_NOW" \
+  >> "$READINESS/factory/tickets/T-110.md"
+if python3 "$KIT_DIR/scripts/ticket-readiness.py" \
+     --ticket T-110 --workdir "$READINESS" > "$TMP/readiness-kit-match.out" &&
+   grep -qx 'READINESS PASS' "$TMP/readiness-kit-match.out"; then
+  echo "PASS: readiness accepts the exact product Factory pin"
+else
+  echo "FAIL: readiness rejected the exact product Factory pin"
+  FAILURES=$((FAILURES + 1))
+fi
+cp "$TMP/readiness-before-kit-pin.md" "$READINESS/factory/tickets/T-110.md"
 printf '\nState: historical prose must not become authority\n' \
   >> "$READINESS/factory/tickets/T-110.md"
 if python3 "$KIT_DIR/scripts/ticket-readiness.py" \

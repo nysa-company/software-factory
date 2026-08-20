@@ -5837,6 +5837,22 @@ Validation: the focused launcher regression proves both immediate release and
 deferred release, while existing recovery checks cover active-role exclusion,
 sibling isolation, and delayed-terminal continuation without rerunning a role.
 
+## FI-20260820-226 — Ticket readiness ignored its declared Factory pin
+
+Status: Focused regression implemented; protected CI and qualification pending
+Priority: P0
+Area: qualification intake
+Owner: Factory
+Impact: Q50's three Ready contracts and qualification manifest named the new
+Factory SHA, but the product `factory/KIT_PIN` still named the prior release.
+All three provider-free readiness checks passed, so the mismatch was caught only
+after merge by qualification preparation. No provider task or inference ran.
+Smallest repair: when a ticket declares `Kit-SHA`, ticket readiness now requires
+one full SHA and an exact owner-safe regular `factory/KIT_PIN` match. Tickets
+without that optional field retain their existing readiness contract.
+Validation: the preflight fixture proves exact match succeeds and mismatch fails;
+the same check deterministically rejects frozen Q50 before preparation.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling
