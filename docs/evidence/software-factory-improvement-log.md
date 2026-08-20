@@ -5801,6 +5801,24 @@ Validation: the role-exit integration fixture produces an oversized output and
 proves status 11, exact invalid-output evidence, preserved diagnostic head,
 clean restored worktree, and unchanged bare remote.
 
+## FI-20260819-224 — Formatted Spec-lint verdict looked like ticket corruption
+
+Status: Focused regression implemented; protected CI and qualification pending
+Priority: P1
+Area: role-exit evidence classification
+Owner: Factory
+Impact: Q48 T-467 appended a complete lint report but emphasized its final
+verdict. The wrapper found no canonical verdict, classified the clean append as
+protected-ticket mutation, and blocked instead of using the existing bounded
+invalid-output retry.
+Smallest repair: classify current Spec-linter output as legal, retryable invalid
+output, or protected mutation. Require the prior ticket blob to remain an exact
+byte prefix and one new canonical verdict for success. Keep historical
+successor replay under its existing exact-delta contract.
+Validation: the role-exit fixture proves a bold verdict is quarantined as
+retryable invalid output and a prior-ticket rewrite plus canonical verdict is
+quarantined as protected mutation; the full Factory script suite is green.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling
