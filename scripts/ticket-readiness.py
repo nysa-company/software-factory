@@ -159,6 +159,26 @@ def validate(ticket: str, workdir: Path) -> None:
         raise ReadinessError("ticket contract is unsafe")
     text = ticket_path.read_text(encoding="utf-8")
     field(text, "State")
+    kit_shas = re.findall(
+        r"^Kit-SHA:\s*(.*?)\s*$", text, re.IGNORECASE | re.MULTILINE
+    )
+    if kit_shas:
+        pin_path = workdir / "factory" / "KIT_PIN"
+        pin_info = pin_path.lstat()
+        if (
+            len(kit_shas) != 1
+            or not re.fullmatch(r"[0-9a-f]{40}", kit_shas[0])
+            or not stat.S_ISREG(pin_info.st_mode)
+            or pin_path.is_symlink()
+            or pin_info.st_uid != os.geteuid()
+            or pin_info.st_size > 100
+        ):
+            raise ReadinessError("ticket Kit-SHA or factory/KIT_PIN is invalid")
+        pin = pin_path.read_text(encoding="utf-8").strip()
+        if not re.fullmatch(r"[0-9a-f]{40}", pin):
+            raise ReadinessError("ticket Kit-SHA or factory/KIT_PIN is invalid")
+        if kit_shas[0] != pin:
+            raise ReadinessError("ticket Kit-SHA does not match factory/KIT_PIN")
     if field(text, "Product-Decisions").casefold() != "frozen":
         raise ReadinessError("product decisions are not frozen")
     builder_paths(text)

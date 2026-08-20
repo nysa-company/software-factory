@@ -7116,3 +7116,15 @@ inactive-lease sweep. No release guard or lock-ownership rule is weakened. Q49
 remains frozen failed evidence; the simultaneous Cursor terminations had live
 progress and no Factory timeout marker, so they remain an external/provider
 runtime interruption unless a deterministic Factory cause is reproduced.
+
+## 2026-08-20 — Decision 517: Ticket readiness binds an explicit Kit-SHA
+
+Category: Reliability
+
+Q50 updated its selected tickets and qualification manifest to the candidate
+Factory but omitted the product `factory/KIT_PIN`. The existing provider-free
+readiness command checked scope and seams only, so the product PR merged before
+qualification preparation rejected the mismatch. When a ticket includes the
+optional `Kit-SHA` authority, readiness now requires one full SHA and an exact,
+owner-safe regular product pin. Q50 made no provider attempt and is replaced by
+fresh identities after this guard reaches protected main.
