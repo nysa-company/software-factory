@@ -689,9 +689,11 @@ raise SystemExit(1 if failed else 0)
         self.assertEqual(
             {item["ticket"] for item in replay["report"]["tickets"]}, set(TICKETS)
         )
+        remaining = int(deadline - time.monotonic())
+        self.assertGreater(remaining, 0, "shared qualification exceeded 710-second deadline")
         repeated = self.sealed(
             str(launcher), self.project, "qualification-finish", "--json",
-            timeout=120,
+            timeout=min(120, remaining),
         )
         self.assertEqual(repeated.returncode, 0, repeated.stdout + repeated.stderr)
         repeated_replay = json.loads(repeated.stdout)
@@ -701,8 +703,11 @@ raise SystemExit(1 if failed else 0)
         self.assertEqual(
             json.loads(self.provider_calls.read_text(encoding="utf-8")), calls,
         )
+        remaining = int(deadline - time.monotonic())
+        self.assertGreater(remaining, 0, "shared qualification exceeded 710-second deadline")
         final_doctor = self.sealed(
-            str(launcher), self.project, "doctor", "--json", timeout=120,
+            str(launcher), self.project, "doctor", "--json",
+            timeout=min(120, remaining),
         )
         self.assertEqual(final_doctor.returncode, 0)
         doctor = json.loads(final_doctor.stdout)
