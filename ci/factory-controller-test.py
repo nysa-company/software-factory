@@ -4853,6 +4853,112 @@ class FactoryControllerTest(unittest.TestCase):
         ]
         self.assertEqual(len(recovered), 1)
 
+    def test_passport_preflight_recovery_resumes_authenticated_frontier(
+        self,
+    ) -> None:
+        ticket = "T-110"
+        source = "b" * 40
+        target = "c" * 40
+        self.operator_passport(ticket, "Planning", "none", head_sha=source)
+        passport_path = self.state / f"passports/{ticket}.json"
+        passport = CONTROL.read(passport_path)
+        passport.pop("authentication_sha256")
+        passport.pop("passport_sha256")
+        passport["completed_role_evidence"] = [
+            {
+                "contract_version": "1.8.0",
+                "factory_sha": self.release.name,
+                "head_before": source,
+                "manifest_sha256": str(index) * 64,
+                "output_sha256": str(index + 2) * 64,
+                "role": role,
+                "run_id": f"run-{role}",
+                "transition_receipt_sha256": str(index + 4) * 64,
+            }
+            for index, role in enumerate(("planner", "spec-linter"), 1)
+        ]
+        passport = PASSPORT.authenticate(
+            passport, (self.state / "passport.key").read_bytes(),
+        )
+        PASSPORT.write_atomic(passport_path, passport)
+        transition = {
+            "branch": f"ticket/{ticket}", "consumed": False,
+            "contract_version": "1.8.0", "factory_sha": self.release.name,
+            "head_sha": source,
+            "lease_sha256": hashlib.sha256(("a" * 64).encode()).hexdigest(),
+            "passport_sha256": hashlib.sha256(
+                passport_path.read_bytes()
+            ).hexdigest(),
+            "project": "relay", "role": "planner",
+            "route_plan_sha256": "d" * 64,
+            "schema": "nysa.software-factory.transition-receipt/v1",
+            "stage": "RUN planner", "ticket": ticket,
+        }
+        transition["receipt_sha256"] = hashlib.sha256(STATE.canonical({
+            key: value for key, value in transition.items()
+            if key not in {"consumed", "receipt_sha256"}
+        })).hexdigest()
+        CONTROL.write(self.state / f"{ticket}.json", transition)
+        controller = CONTROL.Controller(self.args)
+        controller.event(
+            "preflight_refused", ticket,
+            preflight_exit_code=1,
+            preflight_failure_lines=["PREFLIGHT FAIL: stale planner receipt"],
+            preflight_output_sha256="e" * 64,
+            preflight_reason_code="deterministic_refusal",
+            transition_receipt_sha256=transition["receipt_sha256"],
+        )
+        claim = {
+            "blocked_reason": "preflight", "branch": f"ticket/{ticket}",
+            "lease": "a" * 64, "lease_released": True,
+            "publication_lease": "", "receipt": "", "role": "",
+            "schema": CONTROL.CLAIM_SCHEMA, "status": "blocked",
+            "ticket": ticket, "worktree": str(self.product),
+        }
+        controller.remote_cell_head_status = lambda _claim: (
+            "pushed", target, target,
+        )
+        controller.preflight_correction_valid = lambda *_args: True
+        controller.remote_passport_valid = lambda _claim: True
+        controller.ensure_lease = lambda item, _reason: item.update(
+            lease="f" * 64, lease_released=False,
+        )
+        controller.release_ticket_lease = lambda item: item.update(
+            lease_released=True,
+        )
+        preflight_roles = []
+
+        def json_call(*arguments, **_kwargs):
+            if arguments[0] == "state-machine":
+                current = {
+                    **transition, "head_sha": target,
+                    "lease_sha256": hashlib.sha256(
+                        claim["lease"].encode()
+                    ).hexdigest(),
+                    "parent_digest": transition["receipt_sha256"],
+                    "role": "test-author", "stage": "RUN test-author",
+                }
+                current["receipt_sha256"] = hashlib.sha256(STATE.canonical({
+                    key: value for key, value in current.items()
+                    if key not in {"consumed", "receipt_sha256"}
+                })).hexdigest()
+                CONTROL.write(self.state / f"{ticket}.json", current)
+                return state_transition(
+                    "RUN test-author", current["receipt_sha256"], ticket,
+                )
+            if arguments[0] == "preflight":
+                preflight_roles.append(arguments[arguments.index("--role") + 1])
+                return {"exit_code": 0, "status": "ok"}
+            raise AssertionError(arguments)
+
+        controller.json_call = json_call
+        controller.recover_passport_preflight_blocks([claim])
+
+        self.assertEqual(preflight_roles, ["test-author"])
+        self.assertEqual(claim["status"], "claimed")
+        self.assertEqual(claim["receipt"], "")
+        self.assertEqual(claim["role"], "")
+
     def test_corrected_passportless_preflight_block_reopens_fail_closed(self) -> None:
         tickets = ["T-110", "T-111", "T-112"]
         (self.product / "factory/PROJECT.env").write_text(
