@@ -7172,3 +7172,18 @@ as safe transport replay. Authentication, remote drift, malformed evidence, and
 unknown errors still fail closed. The sealed provider-free cohort injects one
 post-provider Git readback outage and requires exactly one push recovery with no
 extra model invocation.
+
+## 2026-08-20 — Decision 521: Qualification reset accepts protected pinned Ready sources
+
+Category: Reliability
+
+Q58 correctly stopped when T-531's Spec-linter rewrote protected ticket evidence,
+but the documented v2 retry reset then rejected all three Factory-created branches.
+Their protected Ready tickets already carried the source `Kit-SHA`, so the normal
+pin commit added only the route plan; the reset validator had modeled only an
+unpinned Ready source whose pin commit changes both files. Reset now accepts the
+plan-only form only when the protected, pre-pin, and pinned ticket bytes are exact,
+the ticket is Ready at the source Factory SHA, no operator-ready receipt is present,
+and all existing source-generation and ticket-only suffix checks pass. Q58 remains
+frozen integrity evidence; a later protected generation may canonically reset and
+retry the same ticket identities without manual branch or controller edits.

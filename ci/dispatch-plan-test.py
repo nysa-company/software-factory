@@ -321,7 +321,7 @@ class DispatchPlanTest(unittest.TestCase):
 
     def qualification_control_branch(
         self, *, product_change=False, source_ready=False,
-        source_includes_ticket=True, extra_pre_pin=False,
+        source_includes_ticket=True, extra_pre_pin=False, source_pinned=False,
     ):
         self.write_contract_18_qualification()
         manifest = self.product / "factory/QUALIFICATION.json"
@@ -335,6 +335,8 @@ class DispatchPlanTest(unittest.TestCase):
         ticket = self.product / "factory/tickets/T-110.md"
         if not source_ready:
             ticket.write_text(ticket.read_text().replace("State: Ready", "State: Backlog"))
+        if source_pinned:
+            ticket.write_text(ticket.read_text() + f"\nKit-SHA: {'b' * 40}\n")
         run("git", "add", ".", cwd=self.product)
         run("git", "commit", "-qm", "prepare source qualification", cwd=self.product)
         run("git", "push", "-q", "origin", "main", cwd=self.product)
@@ -350,7 +352,8 @@ class DispatchPlanTest(unittest.TestCase):
                 "git", "commit", "--allow-empty", "-qm",
                 "uncanonical pre-pin work", cwd=self.product,
             )
-        ticket.write_text(ticket.read_text() + f"\nKit-SHA: {'b' * 40}\n")
+        if not source_pinned:
+            ticket.write_text(ticket.read_text() + f"\nKit-SHA: {'b' * 40}\n")
         plan = self.product / "factory/route-plans/T-110.json"
         plan.parent.mkdir(exist_ok=True)
         plan.write_text(json.dumps({
@@ -1611,6 +1614,36 @@ class DispatchPlanTest(unittest.TestCase):
 
     def test_qualification_control_retry_accepts_durable_ready_source(self):
         old_head, _ = self.qualification_control_branch(source_ready=True)
+        state = self.qualification_state()
+        authorizations = DISPATCH.preprovider_reset_authorizations(
+            self.product / "factory", state, "ticket/",
+        )
+        self.assertEqual(
+            DISPATCH.inspect_selected_preprovider_branches(
+                self.product, self.product / "factory", state,
+                str(self.remote), exact_authorizations=True,
+            ),
+            {"T-110": old_head},
+        )
+        main = run("git", "rev-parse", "origin/main", cwd=self.product).strip()
+        reset = DISPATCH.reconcile_authorized_preprovider_branches(
+            self.product, self.worktrees, "ticket/", str(self.remote),
+            authorizations, main,
+        )
+        self.assertEqual(reset["T-110"][0], old_head)
+        self.assertEqual(
+            run(
+                "git", "show",
+                f"{reset['T-110'][1]}:factory/tickets/T-110.md",
+                cwd=self.product,
+            ),
+            run("git", "show", f"{main}:factory/tickets/T-110.md", cwd=self.product),
+        )
+
+    def test_qualification_control_retry_accepts_protected_pinned_ready_source(self):
+        old_head, _ = self.qualification_control_branch(
+            source_ready=True, source_pinned=True,
+        )
         state = self.qualification_state()
         authorizations = DISPATCH.preprovider_reset_authorizations(
             self.product / "factory", state, "ticket/",
