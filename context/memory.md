@@ -7227,3 +7227,14 @@ but accepted and preflighted only Planner. Recovery now binds the returned role
 and stage to the durable transition receipt and preflights that authenticated
 stage, so a PASS frontier resumes Test-author while a required replan remains
 Planner.
+
+## 2026-08-20 — Decision 525: Stale PR bases refresh before pending checks wait
+
+Category: Reliability
+
+Q58 exposed a deadlock after protected `main` advanced: T-531 and T-532 were
+conflicting, so GitHub correctly published no pull-request checks, while the
+controller treated the missing checks as a wait before reaching its existing
+stale-base refresh. Reviewer and Narrator PR gates now refresh a stale protected
+base for every recognized helper status, including `wait`, before interpreting
+pending check evidence. A current-base wait remains provider-free and unchanged.

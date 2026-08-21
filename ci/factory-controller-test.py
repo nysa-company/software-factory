@@ -21281,6 +21281,7 @@ class FactoryControllerTest(unittest.TestCase):
         route = cell / "factory/route-plans/T-110.json"
         route.parent.mkdir(parents=True)
         route.write_text("{}\n", encoding="utf-8")
+        pr_status = ["wait"]
         claim = {
             "branch": "ticket/T-110", "lease": "a" * 64,
             "priority": "normal", "publication_lease": "", "receipt": "",
@@ -21304,7 +21305,10 @@ class FactoryControllerTest(unittest.TestCase):
             if arguments[0] == "state-machine":
                 return state_transition("RUN reviewer", "b" * 64)
             if arguments[0] == "ticket-pr":
-                return {"head": "d" * 40, "pr_number": 24, "status": "prepared"}
+                return {
+                    "head": "d" * 40, "pr_number": 24,
+                    "status": pr_status[0],
+                }
             if arguments[0] == "ticket-attest":
                 calls.append("refresh")
                 return {"action": "refresh", "head": "e" * 40}
@@ -21320,6 +21324,7 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertIn("protected_base_refreshed_before_evidence", calls)
 
         calls.clear()
+        pr_status[0] = "prepared"
         controller.protected_base_current = lambda *_args: True
         controller.reconcile_ticket(claim)
         self.assertEqual(calls, ["withdraw", "provider"])
