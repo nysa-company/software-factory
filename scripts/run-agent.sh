@@ -1161,7 +1161,17 @@ if role == "spec-linter":
             print("protected-mutation")
             raise SystemExit
         blobs.append(result.stdout)
-    if not blobs[1].startswith(blobs[0]):
+    footer = (
+        "Planner → Spec-linter → Test-author → Builder → Reviewer → Narrator.\n"
+    ).encode()
+    before_footer = blobs[0][:-len(footer)] if blobs[0].endswith(footer) else b""
+    footer_insert = bool(
+        before_footer
+        and blobs[1].startswith(before_footer)
+        and blobs[1].endswith(footer)
+        and len(blobs[1]) > len(blobs[0])
+    )
+    if not blobs[1].startswith(blobs[0]) and not footer_insert:
         print("protected-mutation")
     elif before_head == after_head:
         print("legal")

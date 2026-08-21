@@ -7295,3 +7295,16 @@ TEST_PATHS grammar across missing, duplicate, overlapping, reserved, malformed,
 and symlinked inputs. These remain component boundaries under the 120-second
 gate; they reduce live discovery cost but do not replace the sealed shared-state
 or frozen live cohort evidence.
+
+## 2026-08-21 — Decision 530: Spec-lint preserves an immutable pipeline footer
+
+Category: Reliability
+
+Q60 T-605 and T-607 each produced one canonical Spec-lint verdict and changed no
+protected field or prior verdict, but Opus 5 placed the new report immediately
+before the ticket's existing pipeline footer. The byte-prefix-only validator
+classified both as protected mutation. Current validation accepts exactly the
+old byte prefix plus inserted report plus the unchanged final
+`Planner → Spec-linter → Test-author → Builder → Reviewer → Narrator.` line.
+EOF append remains valid; any changed footer, earlier byte, protected field,
+prior verdict, or duplicate verdict still fails closed.
