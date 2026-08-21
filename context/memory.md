@@ -7238,3 +7238,19 @@ controller treated the missing checks as a wait before reaching its existing
 stale-base refresh. Reviewer and Narrator PR gates now refresh a stale protected
 base for every recognized helper status, including `wait`, before interpreting
 pending check evidence. A current-base wait remains provider-free and unchanged.
+
+## 2026-08-20 — Decision 526: Successor control changes compose before qualification resumes
+
+Category: Reliability
+
+Q58 exposed three adjacent successor boundaries after the stale-base gate was
+fixed. Git could not combine a protected ticket's Kit-SHA-only authorization
+with the branch's legitimate ticket evidence; post-review lineage then treated
+the authenticated `factory/KIT_PIN` migration as implementation; and upgrade
+could publish the successor before the owner pin receipt approved it. Refresh
+now resolves only the exact regular-file Kit-SHA conflict when protected main
+changes nothing else in that ticket and both sides already carry the candidate
+pin. Review lineage accepts that pin only beside a valid append-only route
+migration. Preparation and upgrade require the same exact provider CLI pin
+status as Doctor before any lane authority is published. Every other conflict,
+pin mismatch, stale release, duplicate tool entry, or receipt drift still stops.

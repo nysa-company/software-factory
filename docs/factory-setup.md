@@ -152,7 +152,9 @@ provider state, ticket branches, or paid roles are created.
   dangling managed target is an error. Qualification Doctor requires the same
   complete receipt before the controller may submit a role. Do not widen PATH, use `current` or a
   version range, hand-edit the receipt, or resume dispatch until Doctor reports
-  the exact pins ready.
+  the exact pins ready. Fresh qualification preparation and successor upgrade
+  require this same exact candidate pin check before creating or replacing any
+  lane authority; install and approve the candidate pins first.
 - For a product with certification plan v2, pin its exact Node/npm runtime
   without changing the system-wide Homebrew link:
 

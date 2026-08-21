@@ -1255,11 +1255,53 @@ else:
 
     def test_narrator_recovery_accepts_current_ticket_route_metadata(self):
         route_plan, journal = self.prepare_route_migration()
+        ticket = self.product / "factory/tickets/T-100.md"
+        ticket.write_text(ticket.read_text().replace(KIT_SHA, "d" * 40))
+        (self.product / "factory/KIT_PIN").write_text("d" * 40 + "\n")
+        subprocess.run(["git", "-C", self.product, "add", "."], check=True)
+        subprocess.run(
+            ["git", "-C", self.product, "commit", "-qm", "restore source release"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", self.product, "push", "-q", "origin", "ticket/T-100"],
+            check=True,
+        )
         self.prepare_narrator(accounting_state="abandoned_conservative")
+        ticket.write_text(ticket.read_text().replace("d" * 40, KIT_SHA))
         self.append_route_migration(route_plan, journal)
         recovered = self.command()
         self.assertEqual(recovered["boundary"], "narrator")
         self.assertEqual(recovered["status"], "ready")
+
+        (self.product / "factory/KIT_PIN").write_text("e" * 40 + "\n")
+        subprocess.run(["git", "-C", self.product, "add", "."], check=True)
+        subprocess.run(
+            ["git", "-C", self.product, "commit", "-qm", "tamper successor pin"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", self.product, "push", "-q", "origin", "ticket/T-100"],
+            check=True,
+        )
+        head = subprocess.run(
+            ["git", "-C", self.product, "rev-parse", "HEAD"],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+        with (
+            patch.dict(os.environ, {
+                "FACTORY_CONTROLLER_STATE_DIR": str(self.controller_state),
+                "FACTORY_MODEL_STATE_ROOT": str(self.model_state),
+                "FACTORY_PROJECT": "example-product",
+            }),
+            self.assertRaisesRegex(
+                TICKET_PR.Refusal,
+                "post-review route migration Kit-SHA is invalid",
+            ),
+        ):
+            TICKET_PR.validate_review_lineage(
+                self.product, self.product, "T-100", head,
+            )
 
     def test_narrator_accepts_only_exact_legacy_approval_audit(self):
         self.prepare_narrator()
