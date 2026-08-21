@@ -589,6 +589,22 @@ printf 'unmerged\n' > "$KIT_REPO/unmerged.txt"
 commit_all "$KIT_REPO" "unmerged candidate"
 UNMERGED_SHA="$(git -C "$KIT_REPO" rev-parse HEAD)"
 
+# The installer accepts any clean checkout of the canonical repository, not
+# only one whose local branches already contain the fetched origin/main tip.
+REMOTE_ONLY_REPO="$TMP/remote-only-source"
+git clone -q --branch main "$CANONICAL" "$REMOTE_ONLY_REPO"
+printf 'remote-only release\n' > "$REMOTE_ONLY_REPO/remote-only.txt"
+commit_all "$REMOTE_ONLY_REPO" "remote-only release"
+REMOTE_ONLY_SHA="$(git -C "$REMOTE_ONLY_REPO" rev-parse HEAD)"
+push_main "$REMOTE_ONLY_REPO"
+git -C "$KIT_REPO" fetch -q origin main
+if git -C "$KIT_REPO" for-each-ref --format='%(refname)' --contains "$REMOTE_ONLY_SHA" refs/heads/ |
+   grep -q .; then
+  fail "remote-only install fixture is absent from every local branch"
+else
+  pass "remote-only install fixture is absent from every local branch"
+fi
+
 # Every managed root/component rejects symlink traversal before state reads.
 SYMLINK_TARGET="$TMP/symlink-target"
 mkdir "$SYMLINK_TARGET"
@@ -786,6 +802,13 @@ unset FACTORY_KIT_SANDBOX_EXEC
 
 expect_success "exact ancestor installs with policy discovery" \
   install --repo "$KIT_REPO" --sha "$SHA_A"
+expect_success "fetched origin/main commit installs from a non-main source checkout" \
+  install --repo "$KIT_REPO" --sha "$REMOTE_ONLY_SHA"
+if [[ "$(<"$STATE/releases/$REMOTE_ONLY_SHA/remote-only.txt")" == "remote-only release" ]]; then
+  pass "remote-only origin/main tree is materialized exactly"
+else
+  fail "remote-only origin/main tree is materialized exactly"
+fi
 if [[ "$(<"$STATE/releases/$SHA_A/tracked.out")" == "tracked release evidence" ]]; then
   pass "tracked export-ignored files remain in exact release tree"
 else

@@ -3731,6 +3731,8 @@ cmd_install() {
   checkout="$workspace/checkout"
   git clone -q --no-local "$source_top" "$checkout" ||
     die "could not create disposable candidate clone"
+  git -C "$checkout" fetch -q "$source_top" refs/remotes/origin/main ||
+    die "could not copy fetched origin/main into disposable candidate clone"
   git -C "$checkout" remote set-url origin "$origin"
   git -C "$checkout" checkout -q --detach "$sha"
   prepare_pinned_scanner "$source_top" "$checkout" "$workspace/tmp" ||
