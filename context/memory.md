@@ -7372,3 +7372,15 @@ reported no conflict because it compared only selected siblings. The report
 now also compares selected Builder paths with every other canonical protected
 Ready ticket, while Backlog, terminal, and malformed historical tickets remain
 outside the reservation exactly as in fresh qualification preparation.
+
+## 2026-08-21 — Decision 536: Broker overlap tests allow bounded cold-start variance
+
+Category: Reliability
+
+The exact protected-main run for 644b22e passed the sealed qualification gate
+but macOS group 4 failed because four independent provider-runtime processes did
+not all reach the test broker within five seconds. The same merge tree passed
+the PR run and ten local repetitions, so the concurrency assertion now allows a
+bounded 20-second process-start window. Provider, cancellation, drain, charge,
+and production timeout behavior is unchanged; failure to reach the broker still
+fails closed.
