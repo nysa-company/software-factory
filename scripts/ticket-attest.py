@@ -3342,8 +3342,9 @@ def bundle(args, product, workdir, repo, prefix, remote, kit_sha):
     preserved_base = validate_refresh_review_evidence(
         workdir, args.ticket, text, completed, reviewer, narrator,
     )
+    route_path = f"factory/route-plans/{args.ticket}.json"
     allowed = {
-        f"factory/route-plans/{args.ticket}.json",
+        route_path,
         f"factory/tickets/{args.ticket}.md",
         f"factory/tickets/{args.ticket}-bundle.md",
     }
@@ -3374,8 +3375,22 @@ def bundle(args, product, workdir, repo, prefix, remote, kit_sha):
     if preserved_base:
         allowed.add(f"factory/attestations/{args.ticket}/refresh.json")
         allowed.update(retained_control_paths(workdir, head, preserved_base, changed))
-    if not changed or changed - allowed:
+    pin_path = "factory/KIT_PIN"
+    untrusted = changed - allowed
+    if (
+        not changed
+        or untrusted - {pin_path}
+        or pin_path in untrusted and route_path not in changed
+    ):
         raise Refusal("product or code changed after the reviewed SHA")
+    if pin_path in untrusted and (
+        not re.fullmatch(
+            rf"100644 blob [0-9a-f]{{40}}\t{re.escape(pin_path)}\n?",
+            git(workdir, "ls-tree", head, "--", pin_path).stdout,
+        )
+        or git(workdir, "show", f"{head}:{pin_path}").stdout != kit_sha + "\n"
+    ):
+        raise Refusal("post-review route migration Kit-SHA is invalid")
     pr = exact_pr(repo, branch, "open")
     if pr.get("headRefOid") != head:
         raise Refusal("PR head does not match the exact ticket branch")
