@@ -7281,3 +7281,17 @@ ownership path to be outside it, using the same quoted, exact-file,
 duplicate/overlap, and reserved-path rules as protected history validation.
 The protected product policy remains the authority; a ticket cannot reclassify
 its own paths.
+
+## 2026-08-20 — Decision 529: Qualification replay covers release identity and recovery authority
+
+Category: Reliability
+
+Before another live qualification, the credential-free replay now composes the
+existing causal regressions for exact Factory-SHA/successor authority, atomic
+KIT_PIN migration through passport and publication consumers, provider CLI pins
+and reported model identity, fallback generation/history/accounting, and
+exact-once cancellation/charges. Ticket readiness also mutates the protected
+TEST_PATHS grammar across missing, duplicate, overlapping, reserved, malformed,
+and symlinked inputs. These remain component boundaries under the 120-second
+gate; they reduce live discovery cost but do not replace the sealed shared-state
+or frozen live cohort evidence.

@@ -60,6 +60,32 @@ SENSITIVE_ENV = re.compile(
 )
 SCENARIOS = (
     (
+        "factory_sha_and_successor_authority_are_exact",
+        (
+            "qualification-manifest-test.py",
+            "QualificationManifestTest.test_exact_ordinary_and_successor_manifests_pass",
+        ),
+        (
+            "factory-controller-test.py",
+            "FactoryControllerTest.test_passportless_kit_refusal_recovers_after_exact_route_migration",
+            "FactoryControllerTest.test_passportless_kit_refusal_rejects_intermediate_kit_mismatch",
+            "FactoryControllerTest.test_factory_upgrade_authenticates_passport_before_route_migration",
+        ),
+    ),
+    (
+        "kit_pin_migration_reaches_every_trusted_consumer",
+        (
+            "ticket-passport-test.py",
+            "TicketPassportTest.test_terminal_export_accepts_exact_authenticated_release_migration",
+            "TicketPassportTest.test_terminal_export_accepts_only_a_contiguous_migration_suffix",
+        ),
+        (
+            "ticket-pr-test.py",
+            "TicketPrTest.test_publication_accepts_approval_then_successor_route_migration",
+            "TicketPrTest.test_publication_rejects_wrong_pin_after_successor_migration",
+        ),
+    ),
+    (
         "terminal_adoption_and_partial_migration_are_once_only",
         (
             "qualification-run-test.py",
@@ -165,6 +191,40 @@ SCENARIOS = (
         ),
     ),
     (
+        "provider_cli_pins_and_reported_models_are_exact",
+        (
+            "provider-cli-pin-test.py",
+            "ProviderCliPinTest.test_healthy_links_exact_receipt_and_idempotent_check",
+            "ProviderCliPinTest.test_benign_stderr_warning_does_not_break_the_version_probe",
+            "ProviderCliPinTest.test_sensitive_stderr_still_refuses_the_version_probe",
+            "ProviderCliPinTest.test_receipt_authority_checks_a_distinct_allowed_release",
+        ),
+        (
+            "qualification-environment-test.py",
+            "QualificationEnvironmentTest.test_provider_cli_pin_gate_rejects_ambiguous_or_stale_evidence",
+        ),
+        (
+            "model-router-test.py",
+            "ModelRouterTest.test_invalid_and_unknown_hard_stop_without_fallback",
+            "ModelRouterTest.test_cursor_reported_identity_mismatch_is_invalid",
+            "ModelRouterTest.test_historical_catalog_is_accepted_only_for_compatible_migration",
+        ),
+    ),
+    (
+        "fallback_history_generation_and_accounting_are_exact",
+        (
+            "model-fallback-test.py",
+            "FallbackTest.test_qualification_fallback_is_scoped_to_failure_generation",
+            "FallbackTest.test_fallback_reduces_authoritative_accounting_not_runtime_view",
+            "FallbackTest.test_builder_handoff_accepts_only_its_own_ticket_log",
+        ),
+        (
+            "model-router-test.py",
+            "ModelRouterTest.test_history_aware_fallback_excludes_failed_route_and_resolves_future_roles",
+            "ModelRouterTest.test_fallback_advances_only_unavailable_and_hard_stops_bad_evidence",
+        ),
+    ),
+    (
         "provider_budget_overflow_fails_closed",
         (
             "provider-production-concurrency-test.py",
@@ -176,6 +236,17 @@ SCENARIOS = (
         (
             "ticket-passport-test.py",
             "TicketPassportTest.test_provider_cost_precision_rounds_up_to_micro_usd",
+        ),
+    ),
+    (
+        "attempt_charges_and_cancellation_replay_exactly_once",
+        (
+            "ticket-passport-test.py",
+            "TicketPassportTest.test_passport_chains_receipts_without_replay_or_double_charge",
+        ),
+        (
+            "attempt-cancel-test.py",
+            "AttemptCancellationTest.test_pre_go_cancel_is_zero_cost_and_replay_safe",
         ),
     ),
     (

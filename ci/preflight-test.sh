@@ -882,6 +882,42 @@ else
   FAILURES=$((FAILURES + 1))
 fi
 cp "$TMP/readiness-partition-ticket.md" "$READINESS/factory/tickets/T-110.md"
+for config_case in missing ambiguous overlap reserved malformed; do
+  case "$config_case" in
+    missing) : ;;
+    ambiguous) printf '%s\n' 'TEST_PATHS=app/tests/' 'TEST_PATHS=tests/' ;;
+    overlap) printf '%s\n' 'TEST_PATHS="app/tests/ app/tests/unit/"' ;;
+    reserved) printf '%s\n' 'TEST_PATHS=factory/' ;;
+    malformed) printf '%s\n' 'TEST_PATHS="app/tests/' ;;
+  esac > "$READINESS/factory/PROJECT.env"
+  if python3 "$KIT_DIR/scripts/ticket-readiness.py" \
+       --ticket T-110 --workdir "$READINESS" > "$TMP/readiness-$config_case.out"; then
+    echo "FAIL: readiness accepted $config_case TEST_PATHS"
+    FAILURES=$((FAILURES + 1))
+  elif grep -Eq 'repository TEST_PATHS is (missing or ambiguous|invalid)' \
+       "$TMP/readiness-$config_case.out"; then
+    echo "PASS: readiness rejects $config_case TEST_PATHS"
+  else
+    echo "FAIL: $config_case TEST_PATHS returned the wrong readiness refusal"
+    FAILURES=$((FAILURES + 1))
+  fi
+done
+printf '%s\n' 'TEST_PATHS="app/tests/"' > "$TMP/readiness-project.env"
+rm "$READINESS/factory/PROJECT.env"
+ln -s "$TMP/readiness-project.env" "$READINESS/factory/PROJECT.env"
+if python3 "$KIT_DIR/scripts/ticket-readiness.py" \
+     --ticket T-110 --workdir "$READINESS" > "$TMP/readiness-project-symlink.out"; then
+  echo "FAIL: readiness accepted a symlinked PROJECT.env"
+  FAILURES=$((FAILURES + 1))
+elif grep -qF 'repository TEST_PATHS is unsafe' \
+     "$TMP/readiness-project-symlink.out"; then
+  echo "PASS: readiness rejects a symlinked PROJECT.env"
+else
+  echo "FAIL: symlinked PROJECT.env returned the wrong readiness refusal"
+  FAILURES=$((FAILURES + 1))
+fi
+rm "$READINESS/factory/PROJECT.env"
+cp "$TMP/readiness-project.env" "$READINESS/factory/PROJECT.env"
 cp "$READINESS/factory/tickets/T-110.md" "$TMP/readiness-before-kit-pin.md"
 printf '\nKit-SHA: 0000000000000000000000000000000000000000\n' \
   >> "$READINESS/factory/tickets/T-110.md"

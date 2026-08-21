@@ -157,9 +157,12 @@ and fixtures remain group-isolated.
 
 The credential-free qualification-lane replay selects existing driver,
 controller, state-machine, handoff, fallback, and reducer regressions around
-four convergence checkpoints: terminal adoption and partial migration,
-publication refresh and closeout across restart, provider fallback with
-retained handoff, and a green three-ticket reduction. Explicit refusal cases
+Factory-SHA and successor authority, atomic KIT_PIN migration through passport
+and publication consumers, exact CLI pins and reported model identities,
+fallback generation/history/accounting, exact-once cancellation and charges,
+terminal adoption and partial migration, publication refresh and closeout
+across restart, provider fallback with retained handoff, and a green
+three-ticket reduction. Explicit refusal cases
 also prove that incomplete cohorts remain waiting, malformed restart or reducer
 evidence fails closed, unbound fallback or handoff evidence cannot advance,
 unsafe closeout cannot complete, and interrupted operator Ready materialization
