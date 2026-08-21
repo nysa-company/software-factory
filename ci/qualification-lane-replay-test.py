@@ -268,6 +268,23 @@ SCENARIOS = (
         ),
     ),
     (
+        "provider_reservations_overlap_and_drain_independently",
+        (
+            "provider-production-concurrency-test.py",
+            "ProductionConcurrencyTest.test_configuration_lock_serializes_apply_and_reservation",
+            "ProductionConcurrencyTest.test_three_distinct_cli_routes_overlap_then_drain_independently",
+        ),
+    ),
+    (
+        "cancellation_races_fail_closed_and_replay_once",
+        (
+            "attempt-cancel-test.py",
+            "AttemptCancellationTest.test_term_then_kill_escalation_revalidates_members",
+            "AttemptCancellationTest.test_competing_request_is_not_treated_as_replay",
+            "AttemptCancellationTest.test_stale_process_converges_without_signalling_or_replay",
+        ),
+    ),
+    (
         "provider_spend_limit_is_typed_and_latched",
         (
             "ticket-passport-test.py",
@@ -331,6 +348,17 @@ SCENARIOS = (
             "FactoryControllerTest.test_qualification_restart_surfaces_durable_blocked_claims",
             "FactoryControllerTest.test_publication_events_follow_serialized_lease_order",
             "FactoryControllerTest.test_publication_acquisition_event_recovers_before_claim_save",
+        ),
+    ),
+    (
+        "durable_events_and_scheduler_restarts_are_once_only",
+        (
+            "factory-controller-test.py",
+            "FactoryControllerTest.test_terminal_event_is_idempotent_across_restart",
+            "FactoryControllerTest.test_concurrent_event_publication_is_monotonic_across_restart",
+            "FactoryControllerTest.test_operator_events_backfill_each_durable_crash_boundary_once",
+            "FactoryControllerTest.test_scheduler_tracks_each_concurrent_ticket_once",
+            "FactoryControllerTest.test_restart_does_not_resubmit_externally_active_role",
         ),
     ),
     (
