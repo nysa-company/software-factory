@@ -1910,6 +1910,124 @@ else:
         self.assertEqual(refreshed.returncode, 0, refreshed.stderr)
         self.assertIn("post-refresh Reviewer", self.attest("bundle").stderr)
 
+    def test_refresh_resolves_only_exact_successor_ticket_pin_conflict(self):
+        old_kit = "b" * 40
+        ticket = self.product / "factory/tickets/T-700.md"
+
+        command("git", "switch", "-q", "main", cwd=self.product)
+        ticket.write_text(
+            self.ticket("Review").replace(
+                "Priority: normal",
+                f"Kit-SHA: {old_kit}\nFocused-Check: old\nPriority: normal",
+            )
+        )
+        (self.product / "factory/KIT_PIN").write_text(old_kit + "\n")
+        self.commit("record source release")
+        command("git", "push", "-q", "origin", "main", cwd=self.product)
+
+        command("git", "switch", "-q", "ticket/T-700", cwd=self.product)
+        command("git", "merge", "-q", "--no-edit", "main", cwd=self.product)
+        ticket.write_text(
+            ticket.read_text()
+            .replace(old_kit, KIT_SHA)
+            .replace("Focused-Check: old", "Focused-Check: new")
+        )
+        (self.product / "factory/KIT_PIN").write_text(KIT_SHA + "\n")
+        self.commit("migrate ticket release")
+        command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
+        old_head = self.head()
+
+        updater = self.temp / "successor-pin-main"
+        command("git", "clone", "-q", "--branch", "main", str(self.remote), str(updater))
+        protected_ticket = updater / "factory/tickets/T-700.md"
+        protected_ticket.write_text(protected_ticket.read_text().replace(old_kit, KIT_SHA))
+        (updater / "factory/KIT_PIN").write_text(KIT_SHA + "\n")
+        command("git", "add", ".", cwd=updater)
+        command(
+            "git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+            "commit", "-qm", "authorize successor release", cwd=updater,
+        )
+        protected = self.head_at(updater)
+        command("git", "push", "-q", "origin", "main", cwd=updater)
+        self.update_state(merge_state="UNKNOWN")
+
+        refreshed = self.attest("refresh")
+        self.assertEqual(refreshed.returncode, 0, refreshed.stderr)
+        self.assertIn("Focused-Check: new", ticket.read_text())
+        merge = json.loads(refreshed.stdout)["attestation"]["merge_head"]
+        self.assertEqual(
+            command(
+                "git", "rev-list", "--parents", "-n", "1", merge,
+                cwd=self.product,
+            ).stdout.split(),
+            [merge, old_head, protected],
+        )
+
+        command("git", "reset", "--hard", "-q", old_head, cwd=self.product)
+        command("git", "push", "-q", "--force", "origin", "ticket/T-700", cwd=self.product)
+        extra = self.temp / "unsafe-successor-pin-main"
+        command("git", "clone", "-q", "--branch", "main", str(self.remote), str(extra))
+        extra_ticket = extra / "factory/tickets/T-700.md"
+        extra_ticket.write_text(extra_ticket.read_text() + "\nprotected content change\n")
+        command("git", "add", ".", cwd=extra)
+        command(
+            "git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+            "commit", "-qm", "change protected ticket content", cwd=extra,
+        )
+        command("git", "push", "-q", "origin", "main", cwd=extra)
+        self.update_state(merge_state="UNKNOWN")
+        refused = self.attest("refresh")
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("protected main conflicts", refused.stderr)
+        self.assertEqual(self.head(), old_head)
+
+    def test_successor_ticket_pin_conflict_accepts_only_trailing_blank_normalization(self):
+        work = self.temp / "trailing-pin-conflict"
+        command("git", "init", "-q", "-b", "main", str(work))
+        command("git", "config", "user.name", "test", cwd=work)
+        command("git", "config", "user.email", "test@example.com", cwd=work)
+        ticket = work / "factory/tickets/T-800.md"
+        ticket.parent.mkdir(parents=True)
+        ticket.write_text(
+            f"# T-800\nKit-SHA: {'b' * 40}\nFocused-Check: old\n\n"
+        )
+        (work / "factory/KIT_PIN").write_text("b" * 40 + "\n")
+        command("git", "add", ".", cwd=work)
+        command("git", "commit", "-qm", "source", cwd=work)
+
+        command("git", "switch", "-qc", "ticket/T-800", cwd=work)
+        ticket.write_text(
+            ticket.read_text()
+            .replace("b" * 40, KIT_SHA)
+            .replace("Focused-Check: old", "Focused-Check: new")
+        )
+        (work / "factory/KIT_PIN").write_text(KIT_SHA + "\n")
+        command("git", "add", ".", cwd=work)
+        command("git", "commit", "-qm", "ticket migration", cwd=work)
+        ticket_head = self.head_at(work)
+
+        command("git", "switch", "-q", "main", cwd=work)
+        ticket.write_text(ticket.read_text().replace("b" * 40, KIT_SHA).rstrip() + "\n")
+        (work / "factory/KIT_PIN").write_text(KIT_SHA + "\n")
+        command("git", "add", ".", cwd=work)
+        command("git", "commit", "-qm", "protected migration", cwd=work)
+        protected = self.head_at(work)
+        command("git", "switch", "-q", "ticket/T-800", cwd=work)
+        self.assertNotEqual(
+            command("git", "merge", "--no-ff", "--no-edit", protected, cwd=work, check=False).returncode,
+            0,
+        )
+        self.assertTrue(
+            TICKET_ATTEST.resolve_successor_ticket_pin_conflict(
+                work, "T-800", KIT_SHA,
+            )
+        )
+        merge = self.head_at(work)
+        self.assertEqual(
+            command("git", "rev-list", "--parents", "-n", "1", merge, cwd=work).stdout.split(),
+            [merge, ticket_head, protected],
+        )
+
     def test_control_only_refresh_invalidates_orphaned_review_lineage(self):
         tree = command(
             "git", "rev-parse", "HEAD^{tree}", cwd=self.product,

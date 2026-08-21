@@ -2450,6 +2450,47 @@ def refresh_baselines(text, manifests):
     return reviewer_count, approvals, requests, len(narrators)
 
 
+def resolve_successor_ticket_pin_conflict(workdir, ticket, kit_sha):
+    relative = f"factory/tickets/{ticket}.md"
+    try:
+        conflicts = conflict_index(workdir)
+        if len(conflicts) != 1 or conflicts[0]["path"] != relative:
+            return False
+        values = [
+            git(workdir, "show", f":{stage}:{relative}").stdout
+            for stage in (1, 2, 3)
+        ]
+        pins = [
+            re.findall(r"^Kit-SHA:\s*([0-9a-f]{40})\s*$", value, re.M)
+            for value in values
+        ]
+        protected_ticket = replace_field(values[0], "Kit-SHA", kit_sha)
+        pin_path = workdir / "factory/KIT_PIN"
+        info = pin_path.lstat()
+        if (
+            any(len(pin) != 1 for pin in pins)
+            or pins[0][0] == kit_sha
+            or pins[1:] != [[kit_sha], [kit_sha]]
+            or values[2] not in {
+                protected_ticket, protected_ticket.rstrip("\n") + "\n",
+            }
+            or not stat.S_ISREG(info.st_mode)
+            or info.st_nlink != 1
+            or pin_path.read_text(encoding="utf-8") != kit_sha + "\n"
+        ):
+            return False
+        git(workdir, "checkout", "--ours", "--", relative)
+        git(workdir, "add", "--", relative)
+        if git(workdir, "diff", "--name-only", "--diff-filter=U").stdout:
+            return False
+        return not git(
+            workdir, "-c", "user.name=Software Factory", "-c",
+            "user.email=factory@local", "commit", "--no-edit", check=False,
+        ).returncode
+    except (OSError, UnicodeError, Refusal):
+        return False
+
+
 def refresh(
     args, product, workdir, repo, prefix, remote, kit_sha, *, expected_base=None,
 ):
@@ -2598,7 +2639,9 @@ def refresh(
         "user.email=factory@local", "merge", "--no-ff", "--no-edit", base_head,
         check=False,
     )
-    if merged.returncode:
+    if merged.returncode and not resolve_successor_ticket_pin_conflict(
+        workdir, args.ticket, kit_sha,
+    ):
         git(workdir, "merge", "--abort", check=False)
         if git(workdir, "rev-parse", "HEAD").stdout.strip() != old_head:
             raise Refusal("base refresh conflict could not restore the ticket head")

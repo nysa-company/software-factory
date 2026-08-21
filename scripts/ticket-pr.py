@@ -552,7 +552,9 @@ def validate_review_lineage(product: Path, workdir: Path, ticket: str, head: str
             ))
         except ApprovalEvidenceError as error:
             raise Refusal(str(error)) from error
-    if changed - trusted_metadata:
+    pin_path = "factory/KIT_PIN"
+    untrusted = changed - trusted_metadata
+    if untrusted - {pin_path} or pin_path in untrusted and route_path not in changed:
         raise Refusal("ticket implementation changed after the latest successful review")
     if route_path not in changed:
         return
@@ -609,6 +611,18 @@ def validate_review_lineage(product: Path, workdir: Path, ticket: str, head: str
         or any(item.get("body", {}).get("kind") != "release-migration" for item in suffix)
     ):
         raise Refusal("post-review route migration lineage is invalid")
+    if pin_path in untrusted and (
+        not re.fullmatch(
+            rf"100644 blob [0-9a-f]{{40}}\t{re.escape(pin_path)}\n?",
+            run([
+                "git", "-C", str(workdir), "ls-tree", head, "--", pin_path,
+            ]).stdout,
+        )
+        or run([
+            "git", "-C", str(workdir), "show", f"{head}:{pin_path}",
+        ]).stdout != release_sha + "\n"
+    ):
+        raise Refusal("post-review route migration Kit-SHA is invalid")
 
 
 def required_check_names(repo: str) -> set[str]:

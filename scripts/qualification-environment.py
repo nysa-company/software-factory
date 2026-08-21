@@ -89,6 +89,45 @@ def command(*arguments: str, cwd: Path | None = None) -> str:
     return result.stdout.strip()
 
 
+def validate_provider_cli_pins(factory: Path, sha: str) -> None:
+    try:
+        result = subprocess.run(
+            [
+                "bash", str(factory / "scripts/factory-kit.sh"),
+                "provider-cli-pin", "check", "--sha", sha,
+            ],
+            text=True, capture_output=True, check=False, timeout=120,
+        )
+        value = json.loads(result.stdout)
+        items = value.get("items")
+        ready = (
+            not result.returncode
+            and value.get("schema")
+            == "nysa.software-factory.provider-cli-pin-status/v1"
+            and value.get("status") == "ready"
+            and value.get("requested_release", {}).get("factory_sha") == sha
+            and isinstance(items, list)
+            and len(items) == 4
+            and {item.get("name") for item in items} == {
+                "claude", "codex", "codex-code-mode-host", "agent",
+            }
+            and all(
+                item.get("status") == "ok"
+                and item.get("reason") == "exact_pin_ready"
+                for item in items
+            )
+        )
+    except (
+        AttributeError, json.JSONDecodeError, OSError,
+        subprocess.TimeoutExpired, TypeError,
+    ):
+        ready = False
+    if not ready:
+        raise EnvironmentError(
+            "qualification candidate provider CLI pins are not ready"
+        )
+
+
 def canonical(value: dict[str, Any]) -> bytes:
     return (
         json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
@@ -3522,6 +3561,7 @@ def _prepare(args: argparse.Namespace) -> dict[str, Any]:
     if contract not in SUPPORTED_CONTRACTS:
         raise EnvironmentError("qualification requires a supported Factory Contract")
     manifest = qualification_manifest(product, sha)
+    validate_provider_cli_pins(factory, sha)
     capacity = manifest["capacity"]
     origin = product_origin(product)
     qualification_publication_origin(product, origin)
@@ -3837,6 +3877,7 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
     if contract not in SUPPORTED_CONTRACTS:
         raise EnvironmentError("qualification requires a supported Factory Contract")
     manifest = qualification_manifest(product, sha)
+    validate_provider_cli_pins(factory, sha)
     capacity = manifest["capacity"]
     validate_selected_contracts(product, manifest)
     active_path = root / f"projects/{args.project}/active.json"

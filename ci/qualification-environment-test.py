@@ -75,6 +75,24 @@ class QualificationEnvironmentTest(unittest.TestCase):
         launcher = self.factory / "scripts/factory-launch"
         launcher.write_text("#!/bin/sh\n", encoding="utf-8")
         launcher.chmod(0o755)
+        factory_kit = self.factory / "scripts/factory-kit.sh"
+        factory_kit.write_text(
+            "#!/bin/sh\n"
+            "if [ \"${FACTORY_TEST_PROVIDER_PIN_UNREADY:-0}\" = 1 ]; then\n"
+            "  status=unready; item_status=error; reason=requested_release_not_approved\n"
+            "else\n"
+            "  status=ready; item_status=ok; reason=exact_pin_ready\n"
+            "fi\n"
+            "printf '%s\\n' '{\"schema\":\"nysa.software-factory.provider-cli-pin-status/v1\","
+            "\"status\":\"'$status'\",\"requested_release\":{\"factory_sha\":\"'$4'\"},"
+            "\"items\":["
+            "{\"name\":\"claude\",\"status\":\"'$item_status'\",\"reason\":\"'$reason'\"},"
+            "{\"name\":\"codex\",\"status\":\"'$item_status'\",\"reason\":\"'$reason'\"},"
+            "{\"name\":\"codex-code-mode-host\",\"status\":\"'$item_status'\",\"reason\":\"'$reason'\"},"
+            "{\"name\":\"agent\",\"status\":\"'$item_status'\",\"reason\":\"'$reason'\"}]}'\n",
+            encoding="utf-8",
+        )
+        factory_kit.chmod(0o755)
         model_control = self.factory / "scripts/model-control.sh"
         model_control.parent.mkdir(exist_ok=True)
         model_control.write_text(
@@ -381,6 +399,43 @@ class QualificationEnvironmentTest(unittest.TestCase):
                 self.original_operator_seed
             )
         shutil.rmtree(self.workspace)
+
+    def test_provider_cli_pin_gate_rejects_ambiguous_or_stale_evidence(self) -> None:
+        sha = "a" * 40
+        items = [
+            {"name": name, "status": "ok", "reason": "exact_pin_ready"}
+            for name in ("claude", "codex", "codex-code-mode-host", "agent")
+        ]
+        ready = {
+            "schema": "nysa.software-factory.provider-cli-pin-status/v1",
+            "status": "ready",
+            "requested_release": {"factory_sha": sha},
+            "items": items,
+        }
+        with mock.patch.object(
+            ENVIRONMENT.subprocess, "run",
+            return_value=subprocess.CompletedProcess([], 0, json.dumps(ready), ""),
+        ):
+            ENVIRONMENT.validate_provider_cli_pins(self.factory, sha)
+
+        invalid = (
+            {**ready, "status": "unready"},
+            {**ready, "requested_release": {"factory_sha": "b" * 40}},
+            {**ready, "items": items + [items[0]]},
+            {**ready, "items": [{**items[0], "reason": "receipt_drift"}, *items[1:]]},
+        )
+        for value in invalid:
+            with self.subTest(value=value), mock.patch.object(
+                ENVIRONMENT.subprocess, "run",
+                return_value=subprocess.CompletedProcess(
+                    [], 0, json.dumps(value), "sensitive provider detail",
+                ),
+            ), self.assertRaisesRegex(
+                ENVIRONMENT.EnvironmentError,
+                "qualification candidate provider CLI pins are not ready",
+            ) as refused:
+                ENVIRONMENT.validate_provider_cli_pins(self.factory, sha)
+            self.assertNotIn("sensitive provider detail", str(refused.exception))
 
     def use_real_branch_preflight(self) -> Path:
         self.branch_preflight.stop()
@@ -2919,6 +2974,28 @@ class QualificationEnvironmentTest(unittest.TestCase):
         manifest_path.write_text(json.dumps(manifest) + "\n")
         run(self.product, "git", "add", "factory/QUALIFICATION.json")
         run(self.product, "git", "commit", "-qm", "authorize successor")
+
+        before_pin_refusal = {
+            path.relative_to(self.root): path.read_bytes()
+            for path in self.root.rglob("*") if path.is_file()
+        }
+        with (
+            mock.patch.dict(
+                os.environ, {"FACTORY_TEST_PROVIDER_PIN_UNREADY": "1"},
+            ),
+            self.assertRaisesRegex(
+                ENVIRONMENT.EnvironmentError,
+                "qualification candidate provider CLI pins are not ready",
+            ),
+        ):
+            ENVIRONMENT.upgrade(argparse.Namespace(
+                **vars(args), global_env=replacement,
+            ))
+        self.assertEqual(before_pin_refusal, {
+            path.relative_to(self.root): path.read_bytes()
+            for path in self.root.rglob("*") if path.is_file()
+        })
+        self.assertFalse((self.root / f"releases/{successor}").exists())
 
         original_replace = ENVIRONMENT.replace
         crashed = False
