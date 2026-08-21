@@ -99,6 +99,9 @@ value = {
 path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 PY
   cp "$DOCTOR" "$release/scripts/factory-doctor-real.sh"
+  cp "$ROOT/scripts/ticket-readiness.py" "$release/scripts/ticket-readiness.py"
+  cp "$ROOT/scripts/lib/qualification_manifest.py" \
+    "$release/scripts/lib/qualification_manifest.py"
   cp "$ROOT/scripts/lib/dispatch-leases.sh" \
     "$release/scripts/lib/dispatch-leases.sh"
   cat > "$release/scripts/factory-doctor.sh" <<'EOF'
@@ -464,7 +467,7 @@ assert set(checks) == {
     "active_binding", "kit", "kit_pin", "runtime", "clis",
     "provider_cli_pins", "fallback_readiness", "model_readiness",
     "credentials", "contract_resume", "transition_receipts", "controller",
-    "isolated_provider",
+    "isolated_provider", "qualification_ticket_readiness",
 }
 assert checks["active_binding"] == {
     "status": "ok",
@@ -486,6 +489,9 @@ assert checks["model_readiness"] == {
 assert checks["credentials"]["status"] == "ok"
 assert checks["isolated_provider"]["concurrency_required"] is False
 assert checks["isolated_provider"]["concurrency_ready"] is False
+assert checks["qualification_ticket_readiness"] == {
+    "reason_code": None, "status": "not_applicable", "tickets": [],
+}
 assert "registry" not in checks
 PY
 
@@ -648,6 +654,93 @@ path.write_text(json.dumps({
     "tickets": ["T-1", "T-2", "T-3"],
 }, sort_keys=True) + "\n", encoding="utf-8")
 os.chmod(path, 0o600)
+PY
+
+# Qualification Doctor repeats the shared ticket validator before provider
+# readiness, exposing only typed ticket IDs when protected source evidence
+# contradicts a selected ticket.
+QUALIFICATION_PRODUCT="$TMP/qualification-product"
+mkdir -p "$QUALIFICATION_PRODUCT/app" "$QUALIFICATION_PRODUCT/tests" \
+  "$QUALIFICATION_PRODUCT/factory/tickets" \
+  "$QUALIFICATION_PRODUCT/factory/initiatives"
+cp "$TMP/qualification-manifest.json" \
+  "$QUALIFICATION_PRODUCT/factory/QUALIFICATION.json"
+printf '%s\n' "$SHA_B" > "$QUALIFICATION_PRODUCT/factory/KIT_PIN"
+printf '%s\n' 'MAX_CONCURRENT_TICKETS=3' 'TEST_PATHS="tests/"' \
+  > "$QUALIFICATION_PRODUCT/factory/PROJECT.env"
+printf '%s\n' '# Qualification initiative' '' 'Status: active' \
+  > "$QUALIFICATION_PRODUCT/factory/initiatives/I-1.md"
+printf '%s\n' 'fixture' > "$QUALIFICATION_PRODUCT/README.md"
+printf '%s\n' '<button data-testid="reload-app">Reload</button>' \
+  > "$QUALIFICATION_PRODUCT/app/main.tsx"
+printf '%s\n' 'fixture' > "$QUALIFICATION_PRODUCT/tests/fixture.txt"
+cat > "$QUALIFICATION_PRODUCT/tests/main-boundary.test.tsx" <<'EOF'
+import { readFileSync } from 'node:fs';
+const source = readFileSync('app/main.tsx', 'utf8');
+expect(source).toContain('<button data-testid="reload-app"');
+EOF
+for ticket in T-1 T-2 T-3; do
+  owner=README.md
+  [[ "$ticket" != T-2 ]] || owner=app/main.tsx
+  cat > "$QUALIFICATION_PRODUCT/factory/tickets/$ticket.md" <<EOF
+# $ticket — qualification Doctor fixture
+
+State: Ready
+Priority: normal
+Initiative: I-1
+Depends-On: none
+Product-Decisions: frozen
+Builder ownership: $owner only
+Fixture-Seams: tests/fixture.txt
+Authentication-Seams: none
+Protected-Test-Conflicts: none
+EOF
+done
+git -C "$QUALIFICATION_PRODUCT" init -q -b main
+git -C "$QUALIFICATION_PRODUCT" config user.name "Qualification Doctor"
+git -C "$QUALIFICATION_PRODUCT" config user.email "doctor@example.invalid"
+git -C "$QUALIFICATION_PRODUCT" add -A
+git -C "$QUALIFICATION_PRODUCT" commit -qm "seed qualification Doctor"
+cp "$RELEASE_B/scripts/model-control.sh" "$TMP/model-control-ticket.saved"
+cat > "$RELEASE_B/scripts/model-control.sh" <<EOF
+#!/usr/bin/env bash
+: > "$TMP/qualification-ticket-provider-probed"
+printf '%s\n' '{"checks":[],"readiness_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","schema":"nysa.software-factory.qualification-fallback-readiness/v1","status":"ready"}'
+EOF
+chmod 700 "$RELEASE_B/scripts/model-control.sh"
+QUALIFICATION_TICKET_DOCTOR_RC=0
+HOME="$TEST_HOME" PATH="$TEST_BIN:/usr/bin:/bin" \
+  FACTORY_TEST_MODE=1 FACTORY_TRUSTED_TEST_HARNESS=1 \
+  FACTORY_DOCTOR_TIMEOUT_SECONDS=1 \
+  FACTORY_DOCTOR_READINESS_TIMEOUT_SECONDS=5 \
+  FACTORY_KIT_TRUST_SCOPE=qualification-candidate \
+  FACTORY_QUALIFICATION_MANIFEST="$QUALIFICATION_PRODUCT/factory/QUALIFICATION.json" \
+  FACTORY_PROVIDER_POLICY="$TMP/provider/provider-policy.json" \
+  /bin/bash "$RELEASE_B/scripts/factory-doctor-real.sh" --json \
+    --project "$PROJECT" --kit-dir "$RELEASE_B" \
+    --product-root "$QUALIFICATION_PRODUCT" --kit-sha "$SHA_B" \
+    > "$TMP/qualification-ticket-doctor.json" || QUALIFICATION_TICKET_DOCTOR_RC=$?
+mv "$TMP/model-control-ticket.saved" "$RELEASE_B/scripts/model-control.sh"
+python3 - "$TMP/qualification-ticket-doctor.json" \
+  "$QUALIFICATION_TICKET_DOCTOR_RC" \
+  "$TMP/qualification-ticket-provider-probed" <<'PY'
+import json, pathlib, sys
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+assert int(sys.argv[2]) == 1
+assert value["overall_status"] == "error"
+assert value["checks"]["qualification_ticket_readiness"] == {
+    "reason_code": "ticket_readiness_invalid",
+    "status": "error",
+    "tickets": [
+        {"status": "ok", "ticket": "T-1"},
+        {"status": "error", "ticket": "T-2"},
+        {"status": "ok", "ticket": "T-3"},
+    ],
+}
+assert value["checks"]["fallback_readiness"] == {
+    "report": None, "status": "not_applicable",
+}
+assert not pathlib.Path(sys.argv[3]).exists()
 PY
 cat > "$TMP/qualification-driver-launcher" <<'EOF'
 #!/usr/bin/env bash

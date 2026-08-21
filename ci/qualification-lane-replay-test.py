@@ -64,6 +64,7 @@ SCENARIOS = (
         (
             "qualification-manifest-test.py",
             "QualificationManifestTest.test_exact_ordinary_and_successor_manifests_pass",
+            "QualificationManifestTest.test_duplicate_raw_fields_refuse_before_last_value_wins",
         ),
         (
             "factory-controller-test.py",
@@ -189,6 +190,11 @@ SCENARIOS = (
             "QualificationEnvironmentTest.test_rejects_protected_ready_builder_ownership_conflicts",
             "QualificationEnvironmentTest.test_rejects_selected_protected_source_hash_before_lane_creation",
             "QualificationEnvironmentTest.test_takeover_reuses_authenticated_live_state_without_copying_it",
+        ),
+        (
+            "qualification-run-test.py",
+            "QualificationRunTest.test_doctor_error_returns_exact_report_before_controller_mutation",
+            "QualificationRunTest.test_ticket_readiness_blocks_before_controller_mutation",
         ),
     ),
     (

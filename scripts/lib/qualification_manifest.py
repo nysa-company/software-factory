@@ -21,6 +21,15 @@ class ManifestError(ValueError):
     pass
 
 
+def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ManifestError("qualification manifest has duplicate fields")
+        value[key] = item
+    return value
+
+
 def command(root: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
     return subprocess.run(
         ["git", "-C", str(root), *args], capture_output=True, check=False,
@@ -106,7 +115,9 @@ def validate_committed(
         raise ManifestError("factory/KIT_PIN is missing")
     try:
         pin = pin_raw.decode("ascii", "strict")
-        value = json.loads(raw.decode("utf-8", "strict"))
+        value = json.loads(
+            raw.decode("utf-8", "strict"), object_pairs_hook=unique_object,
+        )
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise ManifestError("qualification manifest is invalid") from error
     if not re.fullmatch(r"[0-9a-f]{40}\n?", pin):

@@ -98,7 +98,8 @@ raise SystemExit(code)
         required = {
             "active_binding", "clis", "contract_resume", "credentials",
             "fallback_readiness", "isolated_provider", "kit", "kit_pin",
-            "provider_cli_pins", "transition_receipts",
+            "provider_cli_pins", "qualification_ticket_readiness",
+            "transition_receipts",
         }
         return {
             "checks": {
@@ -106,6 +107,14 @@ raise SystemExit(code)
                 **{
                     name: {"status": "not_applicable"}
                     for name in ("controller", "model_readiness")
+                },
+                "qualification_ticket_readiness": {
+                    "reason_code": None,
+                    "status": "ok",
+                    "tickets": [
+                        {"status": "ok", "ticket": ticket}
+                        for ticket in ("T-1", "T-2", "T-3")
+                    ],
                 },
                 "runtime": {"status": status},
             },
@@ -700,6 +709,26 @@ raise SystemExit(code)
                 })
                 self.assertEqual((code, value["reason"]), (3, "doctor_not_ready"))
                 self.assertEqual(self.called(), ["doctor"])
+
+    def test_ticket_readiness_blocks_before_controller_mutation(self) -> None:
+        doctor = self.doctor("error")
+        doctor["checks"]["qualification_ticket_readiness"] = {
+            "reason_code": "ticket_readiness_invalid",
+            "status": "error",
+            "tickets": [
+                {"status": "ok", "ticket": "T-1"},
+                {"status": "error", "ticket": "T-2"},
+                {"status": "ok", "ticket": "T-3"},
+            ],
+        }
+        code, value = self.run_scenario({
+            "doctor": doctor,
+            "reconcile": [self.controller("ok")],
+            "qualification": self.report(),
+        })
+        self.assertEqual((code, value["reason"]), (3, "doctor_not_ready"))
+        self.assertEqual(value["doctor"], doctor)
+        self.assertEqual(self.called(), ["doctor"])
 
     def test_successor_prior_receipts_reach_only_controller_recovery(self) -> None:
         manifest = json.loads(self.manifest.read_text(encoding="utf-8"))

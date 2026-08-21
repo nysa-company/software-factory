@@ -1039,10 +1039,76 @@ for cli_name in claude codex agent gh; do
     "$(printf '%s' "$cli_version" | sanitize | tr '\t\r\n' '___')" >> "$CLI_FILE"
 done
 
+QUALIFICATION_TICKET_READINESS_STATUS="not_applicable"
+QUALIFICATION_TICKET_READINESS_REASON_CODE=""
+QUALIFICATION_TICKET_READINESS_FILE="$TMP/qualification-ticket-readiness.tsv"
+: > "$QUALIFICATION_TICKET_READINESS_FILE"
+if [[ "${FACTORY_KIT_TRUST_SCOPE:-}" == "qualification-candidate" &&
+      -n "${FACTORY_QUALIFICATION_MANIFEST:-}" ]]; then
+  QUALIFICATION_TICKET_READINESS_STATUS="error"
+  QUALIFICATION_TICKET_READINESS_REASON_CODE="manifest_invalid"
+  QUALIFICATION_TICKETS_FILE="$TMP/qualification-tickets.txt"
+  if "$PYTHON_BIN" -I -S - \
+      "$FACTORY_QUALIFICATION_MANIFEST" "$PRODUCT_ROOT/factory/QUALIFICATION.json" \
+      "$KIT_SHA" "$KIT_DIR/scripts/lib" > "$QUALIFICATION_TICKETS_FILE" <<'PY'
+import json
+import os
+from pathlib import Path
+import stat
+import sys
+
+manifest, expected, factory_sha, library = sys.argv[1:]
+sys.path.insert(0, library)
+from qualification_manifest import unique_object, validate  # noqa: E402
+
+
+path = Path(manifest)
+if not path.is_absolute() or path != Path(expected):
+    raise ValueError("qualification manifest is unsafe")
+descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+try:
+    info = os.fstat(descriptor)
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or info.st_uid != os.geteuid()
+        or info.st_nlink != 1
+        or info.st_mode & 0o022
+        or info.st_size > 131_072
+    ):
+        raise ValueError("qualification manifest is unsafe")
+    raw = os.read(descriptor, 131_073)
+    if len(raw) != info.st_size:
+        raise ValueError("qualification manifest changed while reading")
+finally:
+    os.close(descriptor)
+value = json.loads(raw.decode("utf-8", "strict"), object_pairs_hook=unique_object)
+for ticket in validate(value, factory_sha)["tickets"]:
+    print(ticket)
+PY
+  then
+    QUALIFICATION_TICKET_READINESS_STATUS="ok"
+    QUALIFICATION_TICKET_READINESS_REASON_CODE=""
+    while IFS= read -r ticket; do
+      output="$TMP/qualification-ticket-$ticket.out"
+      if bounded_command "$READINESS_TIMEOUT_SECONDS" "$output" \
+          "$PYTHON_BIN" -I -S "$KIT_DIR/scripts/ticket-readiness.py" \
+          --ticket "$ticket" --workdir "$PRODUCT_ROOT" &&
+         [[ "$(cat "$output")" == "READINESS PASS" ]]; then
+        printf '%s\tok\n' "$ticket" >> "$QUALIFICATION_TICKET_READINESS_FILE"
+      else
+        printf '%s\terror\n' "$ticket" >> "$QUALIFICATION_TICKET_READINESS_FILE"
+        QUALIFICATION_TICKET_READINESS_STATUS="error"
+        QUALIFICATION_TICKET_READINESS_REASON_CODE="ticket_readiness_invalid"
+      fi
+    done < "$QUALIFICATION_TICKETS_FILE"
+  fi
+fi
+
 PROVIDER_CLI_PIN_STATUS="not_applicable"
 PROVIDER_CLI_PIN_JSON="null"
 if [[ "${FACTORY_KIT_TRUST_SCOPE:-}" == "production-certified" ||
-      "${FACTORY_KIT_TRUST_SCOPE:-}" == "qualification-candidate" ]]; then
+      ( "${FACTORY_KIT_TRUST_SCOPE:-}" == "qualification-candidate" &&
+        "$QUALIFICATION_TICKET_READINESS_STATUS" != "error" ) ]]; then
   # Legacy releases without the pin helper warn. Modern releases delegate to
   # Factory-kit so the receipt-selected sealed authority can check this release.
   PROVIDER_CLI_PIN_STATUS="warning"
@@ -1075,7 +1141,8 @@ fi
 
 FALLBACK_READINESS_STATUS="not_applicable"
 FALLBACK_READINESS_JSON="null"
-if [[ "${FACTORY_KIT_TRUST_SCOPE:-}" == "qualification-candidate" ]]; then
+if [[ "${FACTORY_KIT_TRUST_SCOPE:-}" == "qualification-candidate" &&
+      "$QUALIFICATION_TICKET_READINESS_STATUS" != "error" ]]; then
   FALLBACK_READINESS_STATUS="error"
   FALLBACK_READINESS_FILE="$TMP/fallback-readiness.raw"
   if bounded_command "$READINESS_TIMEOUT_SECONDS" "$FALLBACK_READINESS_FILE" \
@@ -1421,7 +1488,8 @@ for check_status in "$BINDING_STATUS" "$KIT_STATUS" "$PIN_STATUS" "$RUNTIME_STAT
                     "$PROVIDER_RUNTIME_STATUS" "$CONTRACT_RESUME_STATUS" \
                     "$TRANSITION_RECEIPT_STATUS" "$CONTROLLER_STATUS" \
                     "$FALLBACK_READINESS_STATUS" "$MODEL_READINESS_STATUS" \
-                    "$PROVIDER_CLI_PIN_STATUS"; do
+                    "$PROVIDER_CLI_PIN_STATUS" \
+                    "$QUALIFICATION_TICKET_READINESS_STATUS"; do
   if [[ "$check_status" == "error" ]]; then
     OVERALL_STATUS="error"
     break
@@ -1456,6 +1524,9 @@ export CONTROLLER_STATUS CONTROLLER_SERVICE_STATE CONTROLLER_LAST_EXIT_STATUS
 export FALLBACK_READINESS_STATUS FALLBACK_READINESS_JSON
 export MODEL_READINESS_STATUS MODEL_READINESS_JSON
 export PROVIDER_CLI_PIN_STATUS PROVIDER_CLI_PIN_JSON
+export QUALIFICATION_TICKET_READINESS_STATUS
+export QUALIFICATION_TICKET_READINESS_REASON_CODE
+export QUALIFICATION_TICKET_READINESS_FILE
 
 if [[ "$JSON_MODE" -eq 1 ]]; then
   "$PYTHON_BIN" <<'PY'
@@ -1502,6 +1573,12 @@ with open(os.environ["LEASE_FILE"], encoding="utf-8") as handle:
     for line in handle:
         ticket, state = line.rstrip("\n").split("\t", 1)
         leases.append({"ticket": ticket, "state": state})
+
+qualification_tickets = []
+with open(os.environ["QUALIFICATION_TICKET_READINESS_FILE"], encoding="utf-8") as handle:
+    for line in handle:
+        ticket, status = line.rstrip("\n").split("\t", 1)
+        qualification_tickets.append({"status": status, "ticket": ticket})
 
 with open(os.environ["CONTRACT_RESUME_FILE"], encoding="utf-8") as handle:
     contract_resume_incidents = json.load(handle)
@@ -1564,6 +1641,11 @@ document = {
             "status": os.environ["PROVIDER_CLI_PIN_STATUS"],
             "report": json.loads(os.environ["PROVIDER_CLI_PIN_JSON"]),
         },
+        "qualification_ticket_readiness": {
+            "status": os.environ["QUALIFICATION_TICKET_READINESS_STATUS"],
+            "reason_code": optional("QUALIFICATION_TICKET_READINESS_REASON_CODE"),
+            "tickets": qualification_tickets,
+        },
         "fallback_readiness": {
             "status": os.environ["FALLBACK_READINESS_STATUS"],
             "report": json.loads(os.environ["FALLBACK_READINESS_JSON"]),
@@ -1617,6 +1699,7 @@ else
     echo "CLI $cli_name [$cli_item_status]: ${cli_version:-unavailable} (${cli_path:-not found})"
   done < "$CLI_FILE"
   echo "Provider CLI pins [$PROVIDER_CLI_PIN_STATUS]"
+  echo "Qualification ticket readiness [$QUALIFICATION_TICKET_READINESS_STATUS]: reason=${QUALIFICATION_TICKET_READINESS_REASON_CODE:-none}"
   echo "Credentials [$CREDENTIAL_STATUS]: github_authenticated=$GH_AUTH_READY"
   echo "Isolated provider [$PROVIDER_RUNTIME_STATUS]: activated=$PROVIDER_ACTIVATED concurrency_required=$PROVIDER_CONCURRENCY_REQUIRED concurrency_ready=$PROVIDER_CONCURRENCY_READY mode=${PROVIDER_EXECUTION_MODE:-none} attempts=$PROVIDER_ACTIVE_ATTEMPTS tokens=$PROVIDER_ACTIVE_TOKENS unknown_workers=$PROVIDER_UNKNOWN_WORKERS legacy=$PROVIDER_LEGACY_INTERVALS"
   echo "Contract resume [$CONTRACT_RESUME_STATUS]: incidents=$("$PYTHON_BIN" -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$CONTRACT_RESUME_FILE")"

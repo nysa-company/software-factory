@@ -167,6 +167,15 @@ class QualificationManifestTest(unittest.TestCase):
                 self.assertEqual(result.returncode, 1, result.stdout)
                 self.assertIn("QUALIFICATION MANIFEST FAIL:", result.stderr)
 
+    def test_duplicate_raw_fields_refuse_before_last_value_wins(self) -> None:
+        root, base = self.repository()
+        raw = json.dumps(ordinary(), sort_keys=True)[:-1] + ',"generation":2}\n'
+        (root / "factory/QUALIFICATION.json").write_text(raw, encoding="utf-8")
+        head = commit(root, "duplicate manifest field")
+        result = self.invoke(root, base, head)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("qualification manifest has duplicate fields", result.stderr)
+
     def test_committed_blobs_are_authoritative_and_deletion_is_inert(self) -> None:
         root, base = self.repository()
         head = self.write_manifest(root, ordinary(), "valid")

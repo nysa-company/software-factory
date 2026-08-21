@@ -7426,3 +7426,22 @@ that protected test to be an exact declared conflict and Fixture-Seam. The
 historical T-642 shape, typed variables, template literals, exact ownership,
 and unasserted-read negative control are covered. Dynamic and other semantic
 guards remain role work.
+
+## 2026-08-21 — Decision 540: Qualification Doctor rechecks selected tickets
+
+Category: Reliability
+
+The sealed qualification Doctor now reruns the shared strict manifest and
+ticket-readiness validators before provider pin or fallback readiness. It
+returns only typed ticket IDs and statuses, blocks reconciliation on refusal,
+and suppresses later provider readiness probes for that invalid cohort. This
+is defense in depth after preparation, not a second admission parser.
+
+## 2026-08-21 — Decision 541: Qualification manifests reject duplicate raw fields
+
+Category: Integrity
+
+The protected committed-manifest parser now rejects duplicate JSON fields
+before shape validation. This closes Python's prior last-value-wins ambiguity
+at the protected product boundary; Doctor independently applies the same raw
+field uniqueness rule to the active sealed manifest.
