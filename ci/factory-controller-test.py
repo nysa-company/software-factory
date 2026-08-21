@@ -16673,7 +16673,6 @@ class FactoryControllerTest(unittest.TestCase):
             }
             for ticket, status in zip(
                 tickets, ("blocked", "budget", "blocked", "blocked"),
-                strict=True,
             )
         ]
         claims[2]["blocked_reason"] = "route-migration-required"
