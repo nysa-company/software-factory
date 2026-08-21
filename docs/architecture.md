@@ -2289,6 +2289,9 @@ assertions, and snapshots. A conflict is executable only when the operator
 declares exact `<test path> => <literal>` evidence in
 `Protected-Test-Conflicts` and includes that tracked test in `Fixture-Seams`;
 unknown checks and unowned declarations fail before Builder.
+Provider-free ticket readiness also binds that ownership split to the
+repository `PROJECT.env` `TEST_PATHS`: Builder paths must stay outside the
+protected test partition and every Fixture-Seams path must be inside it.
 An escalated blocker may carry one direct, ticket-only operator-context commit
 before its byte-exact resume commit. The context commit appends or exactly
 replaces one bounded single-line `OPERATOR ANSWER` paired with the current

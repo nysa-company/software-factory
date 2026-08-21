@@ -7266,3 +7266,18 @@ code. Bundle attestation now admits the pin only beside the changed authenticate
 route journal, as an ordinary regular blob whose exact contents equal the sealed
 candidate SHA. A missing route migration, wrong pin, wrong file mode, or any
 additional post-review path remains refused.
+
+## 2026-08-20 — Decision 528: Ticket readiness binds role ownership to protected test paths
+
+Category: Reliability
+
+Q58 reached protected CI before discovering that T-532 assigned
+`scripts/analytics-redaction-check.mjs` to Test-author through `Fixture-Seams`
+while the repository `TEST_PATHS` still classified it as implementation.
+Builder confinement correctly rejected the history, but provider-free readiness
+had admitted an impossible ownership split. Readiness now requires every
+Fixture-Seams path to be inside the repository `TEST_PATHS` and every Builder
+ownership path to be outside it, using the same quoted, exact-file,
+duplicate/overlap, and reserved-path rules as protected history validation.
+The protected product policy remains the authority; a ticket cannot reclassify
+its own paths.

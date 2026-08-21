@@ -115,6 +115,7 @@ ENV
   echo "date,time,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status" > "$dir/factory/ledger.csv"
   printf '%s\n' "factory/runtime-ledger.csv" "factory/runs/" > "$dir/.gitignore"
   printf '%s\n' "$KIT_HEAD_NOW" > "$dir/factory/KIT_PIN"
+  printf '%s\n' 'TEST_PATHS="tests/"' > "$dir/factory/PROJECT.env"
 }
 
 write_ready_ticket() {
@@ -815,9 +816,10 @@ fi
 
 # Contract 1.8 readiness is deterministic and runs before provider probing.
 READINESS="$TMP/readiness"
-mkdir -p "$READINESS/app/tests"
+mkdir -p "$READINESS/app/tests" "$READINESS/scripts"
 write_envelope "$READINESS"
 write_ready_ticket "$READINESS" "T-110"
+printf '%s\n' 'TEST_PATHS="app/tests/"' > "$READINESS/factory/PROJECT.env"
 printf '%s\n' \
   'Product-Decisions: frozen' \
   'Fixture-Seams: app/tests/fixture.js' \
@@ -829,6 +831,8 @@ printf '%s\n' "const allowed = ['./db.js'];" \
   > "$READINESS/app/tests/source-boundary.test.js"
 printf '%s\n' 'screen.queryByText("Skip", { exact: false });' \
   > "$READINESS/app/tests/global-shell.test.tsx"
+printf '%s\n' 'export const regression = true;' \
+  > "$READINESS/scripts/analytics-redaction-check.mjs"
 init_git_repo "$READINESS"
 if python3 "$KIT_DIR/scripts/ticket-readiness.py" \
      --ticket T-110 --workdir "$READINESS" > "$TMP/readiness-pass.out" &&
@@ -838,6 +842,46 @@ else
   echo "FAIL: contract 1.8 provider-free readiness rejected executable seams"
   FAILURES=$((FAILURES + 1))
 fi
+cp "$READINESS/factory/tickets/T-110.md" "$TMP/readiness-partition-ticket.md"
+sed 's#Fixture-Seams: app/tests/fixture.js#Fixture-Seams: scripts/analytics-redaction-check.mjs#' \
+  "$TMP/readiness-partition-ticket.md" > "$READINESS/factory/tickets/T-110.md"
+if python3 "$KIT_DIR/scripts/ticket-readiness.py" \
+     --ticket T-110 --workdir "$READINESS" > "$TMP/readiness-fixture-partition.out"; then
+  echo "FAIL: readiness accepted a Fixture-Seams path outside TEST_PATHS"
+  FAILURES=$((FAILURES + 1))
+elif grep -qF 'Fixture-Seams path is outside TEST_PATHS: scripts/analytics-redaction-check.mjs' \
+     "$TMP/readiness-fixture-partition.out"; then
+  echo "PASS: readiness rejects the historical T-532 Fixture-Seams partition"
+else
+  echo "FAIL: Fixture-Seams partition returned the wrong readiness refusal"
+  FAILURES=$((FAILURES + 1))
+fi
+printf '%s\n' \
+  'TEST_PATHS="app/tests/ scripts/analytics-redaction-check.mjs"' \
+  > "$READINESS/factory/PROJECT.env"
+if python3 "$KIT_DIR/scripts/ticket-readiness.py" \
+     --ticket T-110 --workdir "$READINESS" > "$TMP/readiness-exact-test-path.out" &&
+   grep -qx 'READINESS PASS' "$TMP/readiness-exact-test-path.out"; then
+  echo "PASS: readiness accepts an exact protected test file"
+else
+  echo "FAIL: readiness rejected an exact protected test file"
+  FAILURES=$((FAILURES + 1))
+fi
+printf '%s\n' 'TEST_PATHS="app/tests/"' > "$READINESS/factory/PROJECT.env"
+sed 's#Builder ownership: README.md only#Builder ownership: app/tests/fixture.js only#' \
+  "$TMP/readiness-partition-ticket.md" > "$READINESS/factory/tickets/T-110.md"
+if python3 "$KIT_DIR/scripts/ticket-readiness.py" \
+     --ticket T-110 --workdir "$READINESS" > "$TMP/readiness-builder-partition.out"; then
+  echo "FAIL: readiness accepted Builder ownership inside TEST_PATHS"
+  FAILURES=$((FAILURES + 1))
+elif grep -qF 'Builder ownership path is inside TEST_PATHS: app/tests/fixture.js' \
+     "$TMP/readiness-builder-partition.out"; then
+  echo "PASS: readiness rejects Builder ownership classified as a test"
+else
+  echo "FAIL: Builder ownership partition returned the wrong readiness refusal"
+  FAILURES=$((FAILURES + 1))
+fi
+cp "$TMP/readiness-partition-ticket.md" "$READINESS/factory/tickets/T-110.md"
 cp "$READINESS/factory/tickets/T-110.md" "$TMP/readiness-before-kit-pin.md"
 printf '\nKit-SHA: 0000000000000000000000000000000000000000\n' \
   >> "$READINESS/factory/tickets/T-110.md"
