@@ -4681,6 +4681,9 @@ class FactoryControllerTest(unittest.TestCase):
         ticket = "T-110"
         ticket_path = self.product / f"factory/tickets/{ticket}.md"
         ticket_path.parent.mkdir(parents=True)
+        (self.product / "factory/PROJECT.env").write_text(
+            "TEST_PATHS=apps/existing.test.ts\n", encoding="utf-8",
+        )
         existing = self.product / "apps/existing.test.ts"
         existing.parent.mkdir()
         existing.write_text("test\n", encoding="utf-8")

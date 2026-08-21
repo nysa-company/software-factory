@@ -7,6 +7,7 @@ import argparse
 import os
 from pathlib import Path, PurePosixPath
 import re
+import shlex
 import stat
 import subprocess
 
@@ -181,8 +182,61 @@ def validate(ticket: str, workdir: Path) -> None:
             raise ReadinessError("ticket Kit-SHA does not match factory/KIT_PIN")
     if field(text, "Product-Decisions").casefold() != "frozen":
         raise ReadinessError("product decisions are not frozen")
-    builder_paths(text)
+    builder = builder_paths(text)
     fixture_seams = paths(text, "Fixture-Seams", workdir)
+    project_path = workdir / "factory" / "PROJECT.env"
+    project_info = project_path.lstat()
+    if (
+        not stat.S_ISREG(project_info.st_mode)
+        or project_path.is_symlink()
+        or project_info.st_uid != os.geteuid()
+    ):
+        raise ReadinessError("repository TEST_PATHS is unsafe")
+    values = re.findall(
+        r"(?m)^TEST_PATHS=(.*)$", project_path.read_text(encoding="utf-8")
+    )
+    if len(values) != 1:
+        raise ReadinessError("repository TEST_PATHS is missing or ambiguous")
+    try:
+        test_paths = " ".join(
+            shlex.split(values[0], comments=False, posix=True)
+        ).split()
+    except ValueError as error:
+        raise ReadinessError("repository TEST_PATHS is invalid") from error
+    safe = re.compile(r"[A-Za-z0-9._][A-Za-z0-9._/-]*")
+    normalized = [value.rstrip("/") for value in test_paths]
+    if (
+        not test_paths
+        or len(test_paths) != len(set(test_paths))
+        or any(
+            not safe.fullmatch(value)
+            or any(part in {"", ".", ".."} for part in value.split("/"))
+            or value == "factory"
+            or value.startswith("factory/")
+            for value in normalized
+        )
+        or any(
+            left == right
+            or left.startswith(right + "/")
+            or right.startswith(left + "/")
+            for index, left in enumerate(normalized)
+            for right in normalized[index + 1:]
+        )
+    ):
+        raise ReadinessError("repository TEST_PATHS is invalid")
+
+    def is_test_path(value: str) -> bool:
+        return any(
+            value == prefix or value.startswith(prefix + "/")
+            for prefix in normalized
+        )
+
+    for value in builder:
+        if is_test_path(value):
+            raise ReadinessError(f"Builder ownership path is inside TEST_PATHS: {value}")
+    for value in fixture_seams:
+        if not is_test_path(value):
+            raise ReadinessError(f"Fixture-Seams path is outside TEST_PATHS: {value}")
     paths(text, "Authentication-Seams", workdir)
     protected_test_conflicts(text, workdir, fixture_seams)
 

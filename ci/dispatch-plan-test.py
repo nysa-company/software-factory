@@ -48,7 +48,7 @@ class DispatchPlanTest(unittest.TestCase):
         factory = self.product / "factory"
         (factory / "tickets").mkdir(parents=True)
         (factory / "PROJECT.env").write_text(
-            "TICKET_BRANCH_PREFIX=ticket/\nMAX_CONCURRENT_TICKETS=2\n"
+            "TICKET_BRANCH_PREFIX=ticket/\nMAX_CONCURRENT_TICKETS=2\nTEST_PATHS=tests/\n"
         )
         (factory / "KIT_PIN").write_text("a" * 40 + "\n")
         (self.product / ".gitignore").write_text(
@@ -158,6 +158,7 @@ class DispatchPlanTest(unittest.TestCase):
             )
         (self.product / "factory/PROJECT.env").write_text(
             f"TICKET_BRANCH_PREFIX=ticket/\nMAX_CONCURRENT_TICKETS={target}\n"
+            "TEST_PATHS=tests/\n"
         )
         extended_budget = successor or high_budget
         manifest = {

@@ -325,6 +325,7 @@ GH_REPO=example/test-product
 CERTIFY_SCRIPT=factory/certify.sh
 PREVIEW_PROVIDER=none
 NONVISUAL_PATHS=app/tools/,app/tests/
+TEST_PATHS=app/tests/
 EOF
   node_version="$(node --version)"
   npm_version="$(npm --version)"
@@ -992,12 +993,16 @@ PY
 
 PRODUCT_PREFLIGHT="$(make_product product-preflight)"
 set_pin "$PRODUCT_PREFLIGHT" "$SHA_A"
+mkdir -p "$PRODUCT_PREFLIGHT/app/tests"
+printf 'fixture\n' > "$PRODUCT_PREFLIGHT/app/tests/one.test.js"
+printf 'fixture\n' > "$PRODUCT_PREFLIGHT/app/tests/two.test.js"
+printf 'fixture\n' > "$PRODUCT_PREFLIGHT/app/tests/three.test.js"
 printf 'State: Backlog\n' > "$PRODUCT_PREFLIGHT/factory/tickets/T-004.md"
 cat > "$PRODUCT_PREFLIGHT/factory/tickets/T-001.md" <<'EOF'
 State: Ready
 Product-Decisions: frozen
 Builder ownership: app/one.js only
-Fixture-Seams: factory/certify.sh
+Fixture-Seams: app/tests/one.test.js
 Authentication-Seams: factory/certify.sh
 Protected-Test-Conflicts: none
 EOF
@@ -1005,7 +1010,7 @@ cat > "$PRODUCT_PREFLIGHT/factory/tickets/T-002.md" <<'EOF'
 State: Ready
 Product-Decisions: frozen
 Builder ownership: app/two.js only
-Fixture-Seams: factory/certify.sh
+Fixture-Seams: app/tests/two.test.js
 Authentication-Seams: factory/certify.sh
 Protected-Test-Conflicts: none
 EOF
@@ -1013,7 +1018,7 @@ cat > "$PRODUCT_PREFLIGHT/factory/tickets/T-003.md" <<'EOF'
 State: Backlog
 Product-Decisions: frozen
 Builder ownership: app/three.js only
-Fixture-Seams: factory/certify.sh
+Fixture-Seams: app/tests/three.test.js
 Authentication-Seams: factory/certify.sh
 Protected-Test-Conflicts: none
 EOF

@@ -157,9 +157,12 @@ and fixtures remain group-isolated.
 
 The credential-free qualification-lane replay selects existing driver,
 controller, state-machine, handoff, fallback, and reducer regressions around
-four convergence checkpoints: terminal adoption and partial migration,
-publication refresh and closeout across restart, provider fallback with
-retained handoff, and a green three-ticket reduction. Explicit refusal cases
+Factory-SHA and successor authority, atomic KIT_PIN migration through passport
+and publication consumers, exact CLI pins and reported model identities,
+fallback generation/history/accounting, exact-once cancellation and charges,
+terminal adoption and partial migration, publication refresh and closeout
+across restart, provider fallback with retained handoff, and a green
+three-ticket reduction. Explicit refusal cases
 also prove that incomplete cohorts remain waiting, malformed restart or reducer
 evidence fails closed, unbound fallback or handoff evidence cannot advance,
 unsafe closeout cannot complete, and interrupted operator Ready materialization
@@ -2289,6 +2292,9 @@ assertions, and snapshots. A conflict is executable only when the operator
 declares exact `<test path> => <literal>` evidence in
 `Protected-Test-Conflicts` and includes that tracked test in `Fixture-Seams`;
 unknown checks and unowned declarations fail before Builder.
+Provider-free ticket readiness also binds that ownership split to the
+repository `PROJECT.env` `TEST_PATHS`: Builder paths must stay outside the
+protected test partition and every Fixture-Seams path must be inside it.
 An escalated blocker may carry one direct, ticket-only operator-context commit
 before its byte-exact resume commit. The context commit appends or exactly
 replaces one bounded single-line `OPERATOR ANSWER` paired with the current

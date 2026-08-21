@@ -231,7 +231,8 @@ class QualificationEnvironmentTest(unittest.TestCase):
             encoding="utf-8",
         )
         (self.product / "factory/PROJECT.env").write_text(
-            "GH_REPO=example/product\nPREVIEW_PROVIDER=railway\n", encoding="utf-8",
+            "GH_REPO=example/product\nPREVIEW_PROVIDER=railway\nTEST_PATHS=tests/\n",
+            encoding="utf-8",
         )
         (self.product / "factory/ENVELOPE.env").write_text(
             "PER_RUN_BUDGET_USD=2.000000\n"
