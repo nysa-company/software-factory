@@ -1608,7 +1608,10 @@ ancestor of the receipt-bound old head. Earlier historical rows from a
 discarded force-pushed lineage remain auditable; the latest effective Reviewer
 and the later effective Narrator decide reuse. An orphaned latest Reviewer
 reruns Reviewer and downstream Narrator, while a missing or orphaned Narrator
-reruns only Narrator. Every application, test, contract, CI, configuration,
+reruns only Narrator. That Narrator is satisfied by the first exact successful
+run after the receipt's authenticated baseline whose pre-run head belongs to
+the refreshed branch; unchanged reconciliation does not request it again.
+Every application, test, contract, CI, configuration,
 rename, type, deletion, and unknown-path change invalidates review. A malformed
 or stale refresh receipt refuses sequencing.
 Refresh and bundle attestation derive that effective Reviewer/Narrator order

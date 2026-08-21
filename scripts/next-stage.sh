@@ -1176,11 +1176,20 @@ if [[ "$REFRESH_ACTIVE" -eq 1 && "$REFRESH_PRESERVE_REVIEW" -eq 1 ]]; then
   fi
 fi
 
-if [[ "$REFRESH_ACTIVE" -eq 1 && "$REFRESH_PRESERVE_REVIEW" -eq 0 ]]; then
-  if ! FRESH_REVIEW_ROWS="$(refresh_manifest_rows reviewer \
-    "$REFRESH_RAW_REVIEWERS" "$VOID_RUNS")" ||
-     ! FRESH_NARRATOR_ROWS="$(refresh_manifest_rows narrator \
-    "$REFRESH_NARRATORS" "")"; then
+FRESH_REVIEW_ROWS=""
+FRESH_NARRATOR_ROWS=""
+if [[ "$REFRESH_ACTIVE" -eq 1 ]]; then
+  if [[ "$REFRESH_PRESERVE_REVIEW" -eq 0 ]]; then
+    if ! FRESH_REVIEW_ROWS="$(refresh_manifest_rows reviewer \
+      "$REFRESH_RAW_REVIEWERS" "$VOID_RUNS")" ||
+       ! FRESH_NARRATOR_ROWS="$(refresh_manifest_rows narrator \
+      "$REFRESH_NARRATORS" "")"; then
+      echo "REFUSE post-refresh evidence lacks an exact successful run manifest"
+      exit 1
+    fi
+  elif [[ "$REFRESH_PRESERVE_NARRATOR" -eq 0 ]] &&
+       ! FRESH_NARRATOR_ROWS="$(refresh_manifest_rows narrator \
+      "$REFRESH_NARRATORS" "")"; then
     echo "REFUSE post-refresh evidence lacks an exact successful run manifest"
     exit 1
   fi
@@ -1379,8 +1388,12 @@ elif [[ "$A" -ge 1 &&
           "$LATEST_VERDICT" == "APPROVE" ) ]]; then
   if [[ "$REFRESH_ACTIVE" -eq 1 &&
         "$REFRESH_PRESERVE_REVIEW" -eq 1 &&
-        "$REFRESH_PRESERVE_NARRATOR" -eq 0 ]]; then
-    emit_stage "RUN narrator"
+        "$REFRESH_PRESERVE_NARRATOR" -eq 0 &&
+        "$REVIEWER_RUNS" -eq "$REFRESH_REVIEWERS" ]]; then
+    FRESH_NARRATOR_ROW_COUNT="$(printf '%s\n' "$FRESH_NARRATOR_ROWS" | \
+      awk -F'|' 'NF==2 { count++ } END { print count+0 }')"
+    narrator_bundle_stage "$FRESH_NARRATOR_ROW_COUNT"
+    exit 0
   fi
   if [[ "$CHECKPOINT_AWAIT_REOPENED" -eq 1 && "$LOCAL_N" -eq 0 ]]; then
     emit_stage "RUN narrator"
