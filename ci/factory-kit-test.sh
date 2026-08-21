@@ -1305,6 +1305,80 @@ else
   fail "preflight report blocks pairwise Builder ownership conflicts" \
     "$PREFLIGHT_CONFLICT_OUTPUT"
 fi
+sed 's|Builder ownership: app/one.js only|Builder ownership: app/two.js only|' \
+  "$PRODUCT_PREFLIGHT/factory/tickets/T-002.md" > "$TMP/preflight-restored-ticket"
+mv "$TMP/preflight-restored-ticket" "$PRODUCT_PREFLIGHT/factory/tickets/T-002.md"
+cat > "$PRODUCT_PREFLIGHT/factory/tickets/T-007.md" <<'EOF'
+State: Ready
+Product-Decisions: frozen
+Builder ownership: app/one.js only
+Fixture-Seams: app/tests/one.test.js
+Authentication-Seams: factory/certify.sh
+Protected-Test-Conflicts: none
+EOF
+cp "$PRODUCT_PREFLIGHT/factory/tickets/T-007.md" \
+  "$PRODUCT_PREFLIGHT/factory/tickets/T-010.md"
+commit_all "$PRODUCT_PREFLIGHT" "create protected Ready ownership conflict"
+push_main "$PRODUCT_PREFLIGHT"
+export FACTORY_KIT_CERTIFICATION_NETWORK_REVIEWED=1
+PREFLIGHT_READY_CONFLICT_OUTPUT="$(run_kit preflight-report --project preflight \
+  --product "$PRODUCT_PREFLIGHT" --sha "$SHA_A" \
+  --ticket T-001 --ticket T-002 --json 2>&1)"
+PREFLIGHT_READY_CONFLICT_STATUS=$?
+unset FACTORY_KIT_CERTIFICATION_NETWORK_REVIEWED
+if [[ "$PREFLIGHT_READY_CONFLICT_STATUS" -eq 2 ]] &&
+   python3 - "$PREFLIGHT_READY_CONFLICT_OUTPUT" <<'PY'
+import json, sys
+value = json.loads(sys.argv[1])
+assert value["ownership_conflicts"] == [
+    {"path": "app/one.js", "tickets": ["T-001", "T-007", "T-010"]}
+]
+assert {item["reason_code"] for item in value["blockers"]} == {
+    "builder_ownership_conflict"
+}
+PY
+then
+  pass "preflight report blocks protected Ready Builder ownership conflicts"
+else
+  fail "preflight report blocks protected Ready Builder ownership conflicts" \
+    "$PREFLIGHT_READY_CONFLICT_OUTPUT"
+fi
+for ticket in T-007 T-010; do
+  sed -i.bak 's/State: Ready/State: Backlog/' \
+    "$PRODUCT_PREFLIGHT/factory/tickets/$ticket.md"
+  rm "$PRODUCT_PREFLIGHT/factory/tickets/$ticket.md.bak"
+done
+for ticket in T-008 T-009; do
+  cat > "$PRODUCT_PREFLIGHT/factory/tickets/$ticket.md" <<'EOF'
+State: Ready
+Product-Decisions: frozen
+Builder ownership: app/three.js only
+Fixture-Seams: app/tests/three.test.js
+Authentication-Seams: factory/certify.sh
+Protected-Test-Conflicts: none
+EOF
+done
+commit_all "$PRODUCT_PREFLIGHT" "retire protected ownership conflict"
+push_main "$PRODUCT_PREFLIGHT"
+export FACTORY_KIT_CERTIFICATION_NETWORK_REVIEWED=1
+PREFLIGHT_RETIRED_OUTPUT="$(run_kit preflight-report --project preflight \
+  --product "$PRODUCT_PREFLIGHT" --sha "$SHA_A" \
+  --ticket T-001 --ticket T-002 --json 2>&1)"
+PREFLIGHT_RETIRED_STATUS=$?
+unset FACTORY_KIT_CERTIFICATION_NETWORK_REVIEWED
+if [[ "$PREFLIGHT_RETIRED_STATUS" -eq 0 ]] &&
+   python3 - "$PREFLIGHT_RETIRED_OUTPUT" <<'PY'
+import json, sys
+value = json.loads(sys.argv[1])
+assert value["status"] == "pass"
+assert value["ownership_conflicts"] == []
+PY
+then
+  pass "preflight report ignores non-Ready and unrelated Ready ownership"
+else
+  fail "preflight report ignores non-Ready and unrelated Ready ownership" \
+    "$PREFLIGHT_RETIRED_OUTPUT"
+fi
 if python3 - "$ROOT" "$PRODUCT_PREFLIGHT" "$PREFLIGHT_PUSH_ORIGIN" <<'PY'
 import importlib.util, pathlib, subprocess, sys
 from unittest import mock
