@@ -7347,3 +7347,17 @@ test is an exact declared conflict and Fixture-Seam. Static-template and case
 variants remain covered, tracked symlinks fail closed, unrelated payload
 hashes/source reads do not collide, and semantic or dynamic guards remain role
 work.
+
+## 2026-08-21 — Decision 534: Closeout settles only exact historical pre-GO orphans
+
+Category: Reliability
+
+Q65 T-620 merged successfully, but deterministic Done closeout stopped because
+global ledger projection found Q40 T-323's ignored legacy Planner manifest at
+`phase=resolved`. That process had been interrupted before GO and left no task
+submission, process identity, output, progress, active claim, PID, or ledger
+row. Projection now converts only that exact orphan shape, under the existing
+launch and ledger locks, into a zero-cost `launch_void` before normal or
+emergency closeout hashes the ledger. The original update time is the terminal
+time, reruns are byte-idempotent, and any evidence of provider work or live or
+ambiguous execution still stops without rewriting any candidate.

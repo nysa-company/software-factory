@@ -3871,6 +3871,10 @@ def emergency_done(
             "--ticket", args.ticket,
         ]
         if journal_path is not None:
+            run([
+                sys.executable, "-I", "-S", str(ledger),
+                "settle-orphaned-pre-go", "--factory-root", str(product),
+            ])
             projection_preview = run([
                 sys.executable, "-I", "-S", str(ledger), "print",
                 "--factory-root", str(product),

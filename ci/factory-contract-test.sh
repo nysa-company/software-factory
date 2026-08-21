@@ -45,6 +45,8 @@ grep -Fqx -- '- Keep implementation commits implementation-only. Commit required
   "$ROOT/roles/builder.md" || fail "Builder may mix ticket bookkeeping with implementation"
 grep -Fqx -- 'READINESS_TIMEOUT_SECONDS="${FACTORY_DOCTOR_READINESS_TIMEOUT_SECONDS:-120}"' \
   "$DOCTOR" || fail "Doctor readiness timeout differs from qualification preparation"
+PYTHONWARNINGS=error python3 "$ROOT/scripts/secret-scan" --help >/dev/null ||
+  fail "secret-scan is not warning-free under the supported Python runtime"
 
 assert_no_secret() {
   ! grep -Fq 'caller-secret-must-not-pass' "$1" ||
