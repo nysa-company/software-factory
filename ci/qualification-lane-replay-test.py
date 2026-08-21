@@ -143,9 +143,11 @@ SCENARIOS = (
         (
             "model-fallback-test.py",
             "FallbackTest.test_qualification_recovers_authenticated_cross_release_output",
+            "FallbackTest.test_qualification_apply_preserves_committed_spec_lint_verdict",
         ),
         (
             "failed-attempt-handoff-test.py",
+            "HandoffTest.test_spec_lint_fallback_preserves_one_legal_verdict_append",
             "HandoffTest.test_committed_narrator_handoff_accepts_only_current_ticket_png_evidence",
             "HandoffTest.test_committed_role_validation_allows_only_unchanged_symlinks",
             "HandoffTest.test_preview_and_replay_preserve_only_exact_tracked_symlinks",

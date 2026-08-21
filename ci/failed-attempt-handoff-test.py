@@ -326,7 +326,12 @@ class HandoffTest(unittest.TestCase):
     def test_spec_lint_fallback_preserves_one_legal_verdict_append(self):
         ticket = self.repo / "factory/tickets/T-366.md"
         ticket.parent.mkdir()
-        ticket.write_text("State: In Progress\n")
+        baseline_ticket = (
+            "State: In Progress\n"
+            "## Goal\nPreserve the original request.\n\n"
+            "Planner → Spec-linter → Test-author → Builder → Reviewer → Narrator.\n"
+        )
+        ticket.write_text(baseline_ticket)
         git(self.repo, "add", str(ticket.relative_to(self.repo)))
         git(self.repo, "commit", "-qm", "seed qualification ticket")
         git(self.repo, "push", "-q", "origin", "main")
@@ -334,9 +339,16 @@ class HandoffTest(unittest.TestCase):
         policy = self.make_policy(
             roles={"spec-linter": ["factory/tickets/T-366.md"]},
             protected_paths=[".git", ".git/**"],
+            max_file_bytes=1024,
         )
 
-        ticket.write_text("State: In Progress\nSPEC-LINT: FAIL — missing proof\n")
+        ticket.write_text(
+            baseline_ticket.replace(
+                "Planner →",
+                "## Spec-lint report\nMissing proof.\n"
+                "SPEC-LINT: FAIL — missing proof\n\nPlanner →",
+            )
+        )
         git(self.repo, "add", str(ticket.relative_to(self.repo)))
         git(self.repo, "commit", "-qm", "T-366: spec-lint round 1 verdict FAIL")
         head = git(self.repo, "rev-parse", "HEAD")
@@ -369,9 +381,66 @@ class HandoffTest(unittest.TestCase):
             expected_subject="Preserve failed attempt for trusted handoff",
         )
 
-        ticket.write_text("State: Done\nSPEC-LINT: FAIL — missing proof\n")
+        git(self.repo, "reset", "--hard", "-q", baseline)
+        ticket.write_text(
+            baseline_ticket.replace("original request", "rewritten request").replace(
+                "Planner →",
+                "SPEC-LINT: PASS\n\nPlanner →",
+            )
+        )
         git(self.repo, "add", str(ticket.relative_to(self.repo)))
-        git(self.repo, "commit", "-qm", "mutate protected ticket state")
+        git(self.repo, "commit", "-qm", "rewrite ticket and append verdict")
+        with self.assertRaisesRegex(HandoffError, "protected ticket evidence changed"):
+            preview_handoff(
+                self.repo,
+                role="spec-linter",
+                policy=policy,
+                expected_head=git(self.repo, "rev-parse", "HEAD"),
+                expected_branch="main",
+                remote="origin",
+                remote_branch="main",
+                expected_remote_head=baseline,
+                provider_scan_base=baseline,
+            )
+
+        footer = "Planner → Spec-linter → Test-author → Builder → Reviewer → Narrator.\n"
+        dirty_cases = (
+            ("report-only", baseline_ticket.replace(footer, "Report in progress.\n" + footer), True),
+            ("verdict", baseline_ticket.replace(footer, "SPEC-LINT: PASS\n" + footer), True),
+            ("footer-deleted", baseline_ticket.replace(footer, "SPEC-LINT: PASS\n"), False),
+        )
+        for name, content, accepted in dirty_cases:
+            with self.subTest(name=name):
+                git(self.repo, "reset", "--hard", "-q", baseline)
+                ticket.write_text(content)
+                call = lambda: preview_handoff(
+                    self.repo,
+                    role="spec-linter",
+                    policy=policy,
+                    expected_head=baseline,
+                    expected_branch="main",
+                    remote="origin",
+                    remote_branch="main",
+                    expected_remote_head=baseline,
+                    provider_scan_base=baseline,
+                )
+                if accepted:
+                    self.assertEqual(call().entries[0].path, ticket.relative_to(self.repo).as_posix())
+                else:
+                    with self.assertRaisesRegex(
+                        HandoffError, "protected ticket evidence changed",
+                    ):
+                        call()
+
+        git(self.repo, "reset", "--hard", "-q", baseline)
+        ticket.write_text(
+            baseline_ticket.replace(
+                "Planner →",
+                "SPEC-LINT: PASS\nSPEC-LINT: FAIL — duplicate\n\nPlanner →",
+            )
+        )
+        git(self.repo, "add", str(ticket.relative_to(self.repo)))
+        git(self.repo, "commit", "-qm", "append two verdicts")
         with self.assertRaisesRegex(HandoffError, "protected ticket evidence changed"):
             preview_handoff(
                 self.repo,
