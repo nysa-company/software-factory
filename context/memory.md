@@ -16,6 +16,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - An exactly migrated successor claim may chain a current transition receipt after its authenticated predecessor; predecessor evidence remains durable and unedited.
 - Nysa Agents baseline v3 as a toolkit; `bash ci/test-all.sh` is the unconditional full command.
 - Contract 2 live products resolve sealed exact-SHA releases from owner-only `active.json` records under `~/.factory/kits` via `~/.factory/bin/factory-launch`; the native controller is the only scheduler.
+- Catchable dispatcher heartbeat shutdown is deferred across the atomic lease-renewal replacement, so TERM, INT, or HUP cannot strand a `.lease-*` entry; foreign or malformed residue remains fail-closed.
 - The local release canary is one code-driven, product-agnostic command that creates contained local origins, runs setup/resume, and times one authenticated Planning transition plus sealed mock planner; its repository-test evidence is never promotable.
 - Model routing is portfolio policy; routes pin at the ticket boundary and change only via the Contract 1.4 journal flow. One profile resolution shares model-independent native-adapter readiness across its routes and runs independent probes in bounded parallel; Cursor readiness stays model-specific. Sealed Cursor inventory verifies the exact configured selection and displayed provider label in a disposable owner-only home, then accepts only its bounded certified structure.
 - Provider-free ticket readiness rejects tracked static SHA-256 path/digest tables over any Builder or Test-author-owned path unless the exact protected test is both a declared conflict and a Fixture-Seam; unrelated payload hashes/source reads do not collide, while semantic and dynamic source guards remain fail-closed Planner/Spec-linter work.
@@ -7414,7 +7415,19 @@ ticket fields, self or malformed dependencies, unsafe seams, and unavailable
 declared paths before authority or lane state exists. Prose-only metadata stays
 unschematized. Dispatch ordering and operator semantics are unchanged.
 
-## 2026-08-21 — Decision 539: Direct protected source assertions block before planning
+## 2026-08-21 — Decision 539: Lease renewal finishes its atomic write before shutdown
+
+Category: Reliability
+
+Linux group 4 exposed a heartbeat shutdown race: process-group TERM could kill
+the renewal Python child after it created `.lease-*` but before its `finally`
+cleanup, so later claims correctly refused unsafe lease state. Renewal now
+defers HUP, INT, and TERM only across the atomic replace and exits with the
+original signal status afterward. A deterministic fault-injection regression
+proves the lease stays valid and no temporary survives; malformed or foreign
+lease entries remain fail-closed.
+
+## 2026-08-21 — Decision 540: Direct protected source assertions block before planning
 
 Category: Reliability
 
@@ -7427,7 +7440,7 @@ historical T-642 shape, typed variables, template literals, exact ownership,
 and unasserted-read negative control are covered. Dynamic and other semantic
 guards remain role work.
 
-## 2026-08-21 — Decision 540: Qualification Doctor rechecks selected tickets
+## 2026-08-21 — Decision 541: Qualification Doctor rechecks selected tickets
 
 Category: Reliability
 
@@ -7437,7 +7450,7 @@ returns only typed ticket IDs and statuses, blocks reconciliation on refusal,
 and suppresses later provider readiness probes for that invalid cohort. This
 is defense in depth after preparation, not a second admission parser.
 
-## 2026-08-21 — Decision 541: Qualification manifests reject duplicate raw fields
+## 2026-08-21 — Decision 542: Qualification manifests reject duplicate raw fields
 
 Category: Integrity
 

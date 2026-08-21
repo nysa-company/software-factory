@@ -164,7 +164,7 @@ PY
   renew)
     [[ "$LEASE_ID" =~ ^[0-9a-f]{64}$ ]] || { echo "renew requires a canonical --lease" >&2; exit 2; }
     python3 - "$LEASE_FILE" "$TICKET" "$LEASE_ID" <<'PY'
-import json, os, pathlib, stat, sys, tempfile, time
+import json, os, pathlib, signal, stat, sys, tempfile, time
 
 path, ticket, lease_id = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3]
 value = path.lstat()
@@ -174,6 +174,12 @@ record = json.loads(path.read_text())
 if record.get("schema_version") != 1 or record.get("ticket") != ticket or record.get("lease_id") != lease_id:
     raise SystemExit("dispatcher lease does not match")
 record["expires_epoch"] = int(time.time()) + 900
+interrupted = 0
+def defer_interrupt(signum, _frame):
+    global interrupted
+    interrupted = 128 + signum
+for signum in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
+    signal.signal(signum, defer_interrupt)
 fd, temporary = tempfile.mkstemp(prefix=".lease-", dir=str(path.parent))
 try:
     os.fchmod(fd, 0o600)
@@ -185,6 +191,8 @@ try:
     os.replace(temporary, path)
 finally:
     pathlib.Path(temporary).unlink(missing_ok=True)
+if interrupted:
+    raise SystemExit(interrupted)
 print(json.dumps(record, sort_keys=True))
 PY
     [[ ! -e "$FACTORY_DIR/KILL" ]] || { echo "KILL file appeared during renewal; lease refused" >&2; exit 4; }
