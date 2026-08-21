@@ -160,7 +160,10 @@ def protected_source_hash_collisions(
     mutable = set(mutable_paths)
     collisions = set()
     sha256 = re.compile(r"\bcreateHash\(\s*(['\"`])sha256\1\s*\)", re.IGNORECASE)
-    literal = re.compile(r"(['\"`])(\.[^'\"`\r\n]+)\1")
+    path_digest = re.compile(
+        r"\[\s*(['\"`])(\.[^'\"`\r\n]+)\1\s*,\s*"
+        r"(['\"`])[0-9a-f]{64}\3\s*,?\s*\]", re.IGNORECASE,
+    )
     for raw in tracked.stdout.split(b"\0"):
         if not raw:
             continue
@@ -177,7 +180,9 @@ def protected_source_hash_collisions(
         if "readFileSync" not in text or not sha256.search(text):
             continue
         parent = str(PurePosixPath(relative).parent)
-        for match in literal.finditer(text):
+        # ponytail: recognize exact static path/digest tables; semantic source
+        # assertions stay with Planner and Spec-linter.
+        for match in path_digest.finditer(text):
             candidate = posixpath.normpath(posixpath.join(parent, match.group(2)))
             if candidate in mutable:
                 collisions.add((relative, candidate))

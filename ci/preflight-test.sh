@@ -1032,7 +1032,8 @@ cp "$READINESS/app/tests/source-boundary.test.js" "$TMP/source-boundary.test.js"
 cat > "$READINESS/app/tests/source-boundary.test.js" <<'EOF'
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-createHash(`SHA256`).update(readFileSync(new URL(`../source.js`, import.meta.url)));
+const frozen = [[`../source.js`, `AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA`]];
+createHash(`SHA256`).update(readFileSync(new URL(frozen[0][0], import.meta.url)));
 EOF
 if ! python3 "$KIT_DIR/scripts/ticket-readiness.py" \
      --ticket T-110 --workdir "$READINESS" > "$TMP/source-hash-template.out" &&
@@ -1054,6 +1055,20 @@ else
   FAILURES=$((FAILURES + 1))
 fi
 rm "$READINESS/app/tests/source-boundary.test.js"
+cp "$TMP/source-boundary.test.js" "$READINESS/app/tests/source-boundary.test.js"
+cat > "$READINESS/app/tests/source-boundary.test.js" <<'EOF'
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+createHash('sha256').update('unrelated payload');
+readFileSync(new URL('../source.js', import.meta.url));
+EOF
+if python3 "$KIT_DIR/scripts/ticket-readiness.py" \
+     --ticket T-110 --workdir "$READINESS" > "$TMP/source-hash-unrelated.out"; then
+  echo "PASS: unrelated source reads and payload hashes do not collide"
+else
+  echo "FAIL: readiness conflated unrelated source reads and payload hashes"
+  FAILURES=$((FAILURES + 1))
+fi
 cp "$TMP/source-boundary.test.js" "$READINESS/app/tests/source-boundary.test.js"
 sed -e 's#Fixture-Seams: app/tests/fixture.js#Fixture-Seams: app/tests/fixture.js,app/tests/source-boundary.test.js#' \
     -e 's#Protected-Test-Conflicts: none#Protected-Test-Conflicts: app/tests/source-boundary.test.js => source.predecessor-hash#' \

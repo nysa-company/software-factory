@@ -2241,8 +2241,10 @@ class QualificationEnvironmentTest(unittest.TestCase):
         (self.product / "tests/source-boundary.test.js").write_text(
             "import { createHash } from 'node:crypto';\n"
             "import { readFileSync } from 'node:fs';\n"
+            "const frozen = [['../app/server.js', "
+            "'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa']];\n"
             "const digest = createHash('sha256').update(readFileSync(\n"
-            "  new URL('../app/server.js', import.meta.url),\n"
+            "  new URL(frozen[0][0], import.meta.url),\n"
             ")).digest('hex');\n"
         )
         run(self.product, "git", "add", "app", "tests")
