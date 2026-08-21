@@ -2369,6 +2369,18 @@ class QualificationEnvironmentTest(unittest.TestCase):
         ):
             ENVIRONMENT.validate_selected_contracts(self.product)
 
+        (self.product / "tests/source-boundary.test.js").write_text(
+            "import { readFileSync } from 'node:fs';\n"
+            "const source = readFileSync('app/server.js', 'utf8');\n"
+            "expect(source).toContain('export const value');\n"
+        )
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError,
+            r"READINESS BLOCKED: protected source assertion collision: "
+            r"tests/source-boundary.test.js => app/server.js",
+        ):
+            ENVIRONMENT.validate_selected_contracts(self.product)
+
     def test_qualification_manifest_validation_is_strict(self) -> None:
         path = self.product / "factory/QUALIFICATION.json"
         original = json.loads(path.read_text())

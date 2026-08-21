@@ -817,7 +817,7 @@ fi
 
 # Contract 1.8 readiness is deterministic and runs before provider probing.
 READINESS="$TMP/readiness"
-mkdir -p "$READINESS/app/tests" "$READINESS/scripts"
+mkdir -p "$READINESS/app/src" "$READINESS/app/tests" "$READINESS/scripts"
 write_envelope "$READINESS"
 write_ready_ticket "$READINESS" "T-110"
 printf '%s\n' 'TEST_PATHS="app/tests/"' > "$READINESS/factory/PROJECT.env"
@@ -829,6 +829,18 @@ printf '%s\n' \
   >> "$READINESS/factory/tickets/T-110.md"
 printf '%s\n' 'export const fixture = true;' > "$READINESS/app/tests/fixture.js"
 printf '%s\n' 'export const source = true;' > "$READINESS/app/source.js"
+printf '%s\n' '<button data-testid="reload-app">Reload</button>' \
+  > "$READINESS/app/src/main.tsx"
+cat > "$READINESS/app/tests/main-boundary.test.tsx" <<'EOF'
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+
+test('T-642 historical protected source assertion', () => {
+  const webRoot = process.cwd();
+  const source = readFileSync(resolve(webRoot, 'src/main.tsx'), 'utf8');
+  expect(source).toContain('<button data-testid="reload-app"');
+});
+EOF
 cat > "$READINESS/app/tests/source-boundary.test.js" <<'EOF'
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -1014,6 +1026,70 @@ else
   echo "FAIL: Planner conflict declaration grammar is not deterministic"
   FAILURES=$((FAILURES + 1))
 fi
+cp "$READINESS/factory/tickets/T-110.md" "$TMP/source-assertion-ticket.md"
+sed 's#Builder ownership: README.md only#Builder ownership: app/src/main.tsx only#' \
+  "$TMP/source-assertion-ticket.md" > "$READINESS/factory/tickets/T-110.md"
+if python3 "$KIT_DIR/scripts/ticket-readiness.py" \
+     --ticket T-110 --workdir "$READINESS" > "$TMP/source-assertion-blocked.out"; then
+  echo "FAIL: readiness accepted the historical T-642 protected source assertion"
+  FAILURES=$((FAILURES + 1))
+elif grep -qF \
+     'protected source assertion collision: app/tests/main-boundary.test.tsx => app/src/main.tsx' \
+     "$TMP/source-assertion-blocked.out"; then
+  echo "PASS: readiness rejects the historical T-642 protected source assertion"
+else
+  echo "FAIL: protected source assertion returned the wrong readiness refusal"
+  FAILURES=$((FAILURES + 1))
+fi
+cp "$READINESS/app/tests/main-boundary.test.tsx" "$TMP/main-boundary.test.tsx"
+cat > "$READINESS/app/tests/main-boundary.test.tsx" <<'EOF'
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+test('unasserted source setup', () => {
+  const source = readFileSync(resolve(process.cwd(), 'src/main.tsx'), 'utf8');
+  expect('an unrelated value').toContain('value');
+});
+test('same variable name in another scope', () => {
+  const source = 'unrelated';
+  expect(source).toContain('related');
+});
+EOF
+if python3 "$KIT_DIR/scripts/ticket-readiness.py" \
+     --ticket T-110 --workdir "$READINESS" > "$TMP/source-assertion-unrelated.out"; then
+  echo "PASS: an unasserted source read does not invent a conflict"
+else
+  echo "FAIL: readiness conflated an unasserted source read with a protected assertion"
+  FAILURES=$((FAILURES + 1))
+fi
+cat > "$READINESS/app/tests/main-boundary.test.tsx" <<'EOF'
+import assert from 'node:assert';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+const source: string = readFileSync(resolve(process.cwd(), `src/main.tsx`), 'utf8');
+assert.match(source, /reload-app/);
+EOF
+if ! python3 "$KIT_DIR/scripts/ticket-readiness.py" \
+     --ticket T-110 --workdir "$READINESS" > "$TMP/source-assertion-node.out" &&
+   grep -qF 'protected source assertion collision' \
+     "$TMP/source-assertion-node.out"; then
+  echo "PASS: typed variables, template literals, and Node assertions stay protected"
+else
+  echo "FAIL: an alternate static source assertion bypassed readiness"
+  FAILURES=$((FAILURES + 1))
+fi
+cp "$TMP/main-boundary.test.tsx" "$READINESS/app/tests/main-boundary.test.tsx"
+sed -e 's#Fixture-Seams: app/tests/fixture.js#Fixture-Seams: app/tests/fixture.js, app/tests/main-boundary.test.tsx#' \
+    -e 's#Protected-Test-Conflicts: none#Protected-Test-Conflicts: app/tests/main-boundary.test.tsx => root-crash-fallback.raw-button-deferral#' \
+  "$READINESS/factory/tickets/T-110.md" > "$READINESS/factory/tickets/T-110.tmp"
+mv "$READINESS/factory/tickets/T-110.tmp" "$READINESS/factory/tickets/T-110.md"
+if python3 "$KIT_DIR/scripts/ticket-readiness.py" \
+     --ticket T-110 --workdir "$READINESS" > "$TMP/source-assertion-owned.out"; then
+  echo "PASS: an exact owned protected source assertion proceeds"
+else
+  echo "FAIL: readiness rejected an exact owned protected source assertion"
+  FAILURES=$((FAILURES + 1))
+fi
+cp "$TMP/source-assertion-ticket.md" "$READINESS/factory/tickets/T-110.md"
 cp "$READINESS/factory/tickets/T-110.md" "$TMP/source-hash-ticket.md"
 sed 's#Builder ownership: README.md only#Builder ownership: app/source.js only#' \
   "$TMP/source-hash-ticket.md" > "$READINESS/factory/tickets/T-110.md"

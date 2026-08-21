@@ -2309,9 +2309,10 @@ Provider-free ticket readiness also binds that ownership split to the
 repository `PROJECT.env` `TEST_PATHS`: Builder paths must stay outside the
 protected test partition and every Fixture-Seams path must be inside it.
 It deterministically rejects tracked protected tests whose static SHA-256
-path/digest tables name a Builder or Test-author path unless that test is both
-an exact declared conflict and a Fixture-Seam; semantic and dynamic guards
-remain the Planner and Spec-linter's fail-closed responsibility.
+path/digest tables or direct asserted source reads name a Builder or Test-author
+path unless that test is both an exact declared conflict and a Fixture-Seam;
+other semantic and dynamic guards remain the Planner and Spec-linter's
+fail-closed responsibility.
 An escalated blocker may carry one direct, ticket-only operator-context commit
 before its byte-exact resume commit. The context commit appends or exactly
 replaces one bounded single-line `OPERATOR ANSWER` paired with the current

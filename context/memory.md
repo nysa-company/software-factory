@@ -7413,3 +7413,16 @@ validator now rejects missing, empty, duplicate, or invalid authoritative
 ticket fields, self or malformed dependencies, unsafe seams, and unavailable
 declared paths before authority or lane state exists. Prose-only metadata stays
 unschematized. Dispatch ordering and operator semantics are unchanged.
+
+## 2026-08-21 — Decision 539: Direct protected source assertions block before planning
+
+Category: Reliability
+
+Q71 T-642 reached Planner even though a tracked protected test read its exact
+Builder-owned source and asserted that the requested shared Button import must
+remain absent. Ticket readiness now recognizes bounded static `readFileSync`
+assignments whose values are asserted by Jest/Vitest or Node assert and requires
+that protected test to be an exact declared conflict and Fixture-Seam. The
+historical T-642 shape, typed variables, template literals, exact ownership,
+and unasserted-read negative control are covered. Dynamic and other semantic
+guards remain role work.

@@ -179,15 +179,16 @@ def protected_test_conflicts(
     return declared
 
 
-def protected_source_hash_collisions(
-    workdir: Path, mutable_paths: list[str]
-) -> list[tuple[str, str]]:
+def protected_source_collisions(
+    workdir: Path, mutable_paths: list[str], test_paths: list[str]
+) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
     tracked = subprocess.run(
         ["git", "-C", str(workdir), "ls-files", "-z"],
         capture_output=True, check=True,
     )
     mutable = set(mutable_paths)
-    collisions = set()
+    hash_collisions = set()
+    assertion_collisions = set()
     sha256 = re.compile(r"\bcreateHash\(\s*(['\"`])sha256\1\s*\)", re.IGNORECASE)
     path_digest = re.compile(
         r"\[\s*(['\"`])(\.[^'\"`\r\n]+)\1\s*,\s*"
@@ -206,6 +207,47 @@ def protected_source_hash_collisions(
         if info.st_size > 1_048_576:
             raise ReadinessError(f"protected test is oversized: {relative}")
         text = path.read_text(encoding="utf-8")
+        test_parent = str(PurePosixPath(relative).parent)
+        workspace_roots = {
+            str(PurePosixPath(prefix).parent)
+            for prefix in test_paths
+            if relative == prefix or relative.startswith(prefix + "/")
+        }
+        reads = re.finditer(
+            r"\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)"
+            r"(?:\s*:[^=;\r\n]+)?\s*=\s*readFileSync\s*\("
+            r"(.{0,1000}?)\)\s*;",
+            text, re.DOTALL,
+        )
+        for read in reads:
+            variable, arguments = read.groups()
+            assertion_scope = text[read.end():read.end() + 5000]
+            test_end = assertion_scope.find("\n});")
+            if test_end >= 0:
+                assertion_scope = assertion_scope[:test_end]
+            asserted = re.search(
+                rf"\bexpect\(\s*{re.escape(variable)}\b", assertion_scope,
+            ) or re.search(
+                rf"\bassert(?:\.[A-Za-z_$][A-Za-z0-9_$]*)?\(\s*"
+                rf"{re.escape(variable)}\b", assertion_scope,
+            )
+            if not asserted:
+                continue
+            literals = {
+                posixpath.normpath(value)
+                for _, value in re.findall(
+                    r"(['\"`])([^'\"`\r\n]+)\1", arguments,
+                )
+            }
+            for mutable_path in mutable:
+                candidates = {
+                    posixpath.normpath(mutable_path),
+                    posixpath.relpath(mutable_path, test_parent),
+                    *(posixpath.relpath(mutable_path, root)
+                      for root in workspace_roots),
+                }
+                if literals & candidates:
+                    assertion_collisions.add((relative, mutable_path))
         if "readFileSync" not in text or not sha256.search(text):
             continue
         parent = str(PurePosixPath(relative).parent)
@@ -214,8 +256,8 @@ def protected_source_hash_collisions(
         for match in path_digest.finditer(text):
             candidate = posixpath.normpath(posixpath.join(parent, match.group(2)))
             if candidate in mutable:
-                collisions.add((relative, candidate))
-    return sorted(collisions)
+                hash_collisions.add((relative, candidate))
+    return sorted(hash_collisions), sorted(assertion_collisions)
 
 
 def validate(ticket: str, workdir: Path) -> None:
@@ -366,12 +408,19 @@ def validate(ticket: str, workdir: Path) -> None:
             raise ReadinessError(f"Fixture-Seams path is outside TEST_PATHS: {value}")
     paths(text, "Authentication-Seams", workdir)
     declared_conflicts = protected_test_conflicts(text, workdir, fixture_seams)
-    for protected_test, mutable_path in protected_source_hash_collisions(
-        workdir, builder + fixture_seams,
-    ):
+    hash_collisions, assertion_collisions = protected_source_collisions(
+        workdir, builder + fixture_seams, normalized,
+    )
+    for protected_test, mutable_path in hash_collisions:
         if protected_test not in declared_conflicts:
             raise ReadinessError(
                 "protected source hash collision: "
+                f"{protected_test} => {mutable_path}"
+            )
+    for protected_test, mutable_path in assertion_collisions:
+        if protected_test not in declared_conflicts:
+            raise ReadinessError(
+                "protected source assertion collision: "
                 f"{protected_test} => {mutable_path}"
             )
 
