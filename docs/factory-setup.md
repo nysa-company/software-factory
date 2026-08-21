@@ -217,6 +217,10 @@ provider state, ticket branches, or paid roles are created.
   owner-local operator map with `--operator-map-seed`; the preparer binds a
   lane-local copy and runtime ledger, initializes only the selected cohort,
   and proves the product is still clean before it publishes the environment.
+  Fresh preparation also rejects Builder ownership shared by selected tickets
+  or any other protected Ready ticket, so a known backlog collision cannot
+  consume a role. Authenticated successor/takeover cohorts preserve their
+  already-authorized source ownership instead of reclassifying it.
   Preparation is serialized per project. A retry reruns live readiness and
   resumes only a byte-exact pristine write prefix or a completed lost-response
   replay; it never deletes a torn, mismatched, unexpected, or active lane.

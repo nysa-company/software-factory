@@ -1147,6 +1147,7 @@ def validate_selected_contracts(
         nonvisual_paths = preview_module.project_nonvisual_paths(product / "factory")
     except (OSError, UnicodeError, preview_module.Refusal) as error:
         raise EnvironmentError(str(error)) from error
+    selected_ownership: dict[str, list[str]] = {}
     for ticket in selected:
         path = product / "factory/tickets" / f"{ticket}.md"
         try:
@@ -1168,6 +1169,8 @@ def validate_selected_contracts(
             semantic_paths = readiness_module.builder_paths(text)
         except readiness_module.ReadinessError as error:
             raise EnvironmentError(f"{path}: {error}") from error
+        for semantic_path in semantic_paths:
+            selected_ownership.setdefault(semantic_path, []).append(ticket)
         if preview_provider == "none" and (
             not nonvisual_paths
             or any(
@@ -1223,6 +1226,32 @@ def validate_selected_contracts(
                     f"{ticket}: qualification dependency lacks protected "
                     f"evidence: {dependency}"
                 ) from error
+    if manifest.get("mode") != "successor":
+        for path, owners in selected_ownership.items():
+            if len(owners) > 1:
+                raise EnvironmentError(
+                    f"qualification Builder ownership conflict {path}: "
+                    f"{','.join(sorted(owners))}"
+                )
+        tickets_dir = product / "factory/tickets"
+        for path in sorted(tickets_dir.glob("T-*.md")):
+            other = path.stem
+            if other in cohort or not re.fullmatch(r"T-[0-9]+", other):
+                continue
+            try:
+                text = path.read_text(encoding="utf-8")
+                if readiness_module.field(text, "State").casefold() != "ready":
+                    continue
+                other_paths = readiness_module.builder_paths(text)
+            except (OSError, UnicodeError, readiness_module.ReadinessError):
+                continue
+            for semantic_path in sorted(
+                set(other_paths) & selected_ownership.keys()
+            ):
+                raise EnvironmentError(
+                    f"qualification Builder ownership conflict {semantic_path}: "
+                    f"{','.join(sorted(selected_ownership[semantic_path] + [other]))}"
+                )
     for ticket in selected:
         path = f"factory/tickets/{ticket}.md"
         try:

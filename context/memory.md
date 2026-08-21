@@ -7308,3 +7308,28 @@ old byte prefix plus inserted report plus the unchanged final
 `Planner → Spec-linter → Test-author → Builder → Reviewer → Narrator.` line.
 EOF append remains valid; any changed footer, earlier byte, protected field,
 prior verdict, or duplicate verdict still fails closed.
+
+## 2026-08-21 — Decision 531: Failed Spec-lint output is preserved before exact cleanup
+
+Category: Reliability
+
+Q61 proved that a submitted Cursor Spec-linter can commit a useful partial
+report before failing. Automatic fallback now validates and preserves that
+provider-authored commit in the failed-attempt handoff, then creates one
+authenticated cleanup commit restoring only the pre-attempt ticket blob before
+rerunning Spec-linter on the direct fallback. Exact response-loss recovery is
+idempotent; earlier rewrites, duplicate verdicts, footer deletion, arbitrary
+drift, or cleanup of another path still fail closed.
+
+## 2026-08-21 — Decision 532: Fresh qualification rejects known Ready ownership conflicts
+
+Category: Reliability
+
+Q62 T-612 reached Planner despite protected Ready T-605 already owning the same
+Builder path with an incompatible frozen contract. Fresh qualification now
+compares selected Builder ownership both within the cohort and against every
+parseable protected Ready ticket before lane authority exists. Backlog and Done
+tickets do not reserve work; authenticated successor/takeover cohorts preserve
+their already-authorized source ownership. Semantic contradictions such as
+Q62 T-611's protected-test behavior remain Planner work and continue to stop at
+the contract boundary.
