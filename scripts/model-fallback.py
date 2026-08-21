@@ -634,6 +634,47 @@ def recover_applied(args, approval):
             handoff_commits.append(commit)
     if len(handoff_commits) != 1:
         raise FallbackError("existing fallback journal is not committed by its handoff")
+    handoff_commit = handoff_commits[0]
+    if _failed["role"] == "spec-linter":
+        ticket_relative = f"factory/tickets/{args.ticket}.md"
+        baseline = git(
+            repo, "show", f'{_failed["role_head_before"]}:{ticket_relative}',
+        )
+        handoff_ticket = git(repo, "show", f"{handoff_commit}:{ticket_relative}")
+        if handoff_ticket != baseline:
+            descendants = git(
+                repo, "rev-list", "--reverse", "--ancestry-path",
+                f"{handoff_commit}..{head}",
+            ).decode().splitlines()
+            if descendants:
+                cleanup = descendants[0]
+                message = git(repo, "show", "-s", "--format=%B", cleanup).decode()
+                message_lines = message.rstrip("\n").splitlines()
+                subject = f"{args.ticket}: retire failed spec-lint evidence before retry"
+                expected = [
+                    subject,
+                    "",
+                    f"Failed-Manifest-Digest: {digest(failed_raw)}",
+                ]
+                parents = git(
+                    repo, "show", "-s", "--format=%P", cleanup,
+                ).decode().split()
+                changed = git(
+                    repo, "diff", "--name-only", handoff_commit, cleanup,
+                ).decode().splitlines()
+                if (
+                    message_lines != expected
+                    or parents != [handoff_commit]
+                    or changed != [ticket_relative]
+                    or git(repo, "show", f"{cleanup}:{ticket_relative}") != baseline
+                ):
+                    raise FallbackError("failed spec-lint retirement is invalid")
+                ticket_path = repo / ticket_relative
+                if head == cleanup:
+                    if ticket_path.is_symlink() or not ticket_path.is_file():
+                        raise FallbackError("failed spec-lint retirement worktree is unsafe")
+                    if ticket_path.read_bytes() == handoff_ticket:
+                        atomic_replace(ticket_path, baseline)
     historical = approval.get("historical_handoff")
     if historical is not None:
         try:
@@ -736,23 +777,63 @@ def apply_result(args, approval, result):
     )
     journal_raw = (canonical(journal) + "\n").encode()
     revision_hash = journal["revisions"][-1]["revision_hash"]
+    commit_timestamp = str(int(dt.datetime.now().timestamp())) + " +0000"
     commit = build_handoff_commit(
         result["handoff"],
         result["policy"],
         revision_hash=revision_hash,
-        commit_timestamp=str(int(dt.datetime.now().timestamp())) + " +0000",
+        commit_timestamp=commit_timestamp,
         journal_content=journal_raw,
         subject=f"{args.ticket}: preserve failed attempt and revise model route",
         git_auth=args.git_auth,
     )
     repo = Path(args.workdir)
+    head = commit.commit
+    ticket_relative = f"factory/tickets/{args.ticket}.md"
+    if result["failed"]["role"] == "spec-linter":
+        baseline = git(
+            repo, "show",
+            f'{result["failed"]["role_head_before"]}:{ticket_relative}',
+        )
+        current = git(repo, "show", f"{head}:{ticket_relative}")
+        if current != baseline:
+            with tempfile.TemporaryDirectory(prefix="nysa-fallback-retire-") as temporary:
+                environment = {
+                    "GIT_AUTHOR_NAME": "Nysa Failed Attempt Handoff",
+                    "GIT_AUTHOR_EMAIL": "handoff@nysa.invalid",
+                    "GIT_AUTHOR_DATE": commit_timestamp,
+                    "GIT_COMMITTER_NAME": "Nysa Failed Attempt Handoff",
+                    "GIT_COMMITTER_EMAIL": "handoff@nysa.invalid",
+                    "GIT_COMMITTER_DATE": commit_timestamp,
+                    "GIT_INDEX_FILE": str(Path(temporary) / "index"),
+                }
+                git(repo, "read-tree", head, extra_env=environment)
+                oid = git(
+                    repo, "hash-object", "-w", "--stdin",
+                    input_bytes=baseline, extra_env=environment,
+                ).decode().strip()
+                git(
+                    repo, "update-index", "--cacheinfo", "100644", oid,
+                    ticket_relative, extra_env=environment,
+                )
+                tree = git(repo, "write-tree", extra_env=environment).decode().strip()
+                message = (
+                    f"{args.ticket}: retire failed spec-lint evidence before retry\n\n"
+                    f"Failed-Manifest-Digest: {result['failed_manifest_digest']}\n"
+                ).encode()
+                head = git(
+                    repo, "commit-tree", tree, "-p", head,
+                    input_bytes=message, extra_env=environment,
+                ).decode().strip()
     ref = "refs/heads/" + result["handoff"].branch
-    git(repo, "update-ref", ref, commit.commit, commit.parent)
-    git(repo, "read-tree", commit.commit)
+    git(repo, "update-ref", ref, head, commit.parent)
+    git(repo, "read-tree", head)
+    if head != commit.commit:
+        atomic_replace(repo / ticket_relative, baseline)
     atomic_replace(result["journal_path"], journal_raw)
     return {
         "approval_hash": result["approval_hash"],
-        "commit_sha": commit.commit,
+        "commit_sha": head,
         "failed_run_id": args.failed_run,
         "revision_hash": revision_hash,
         "schema": "ticket-model-fallback-result/v1",

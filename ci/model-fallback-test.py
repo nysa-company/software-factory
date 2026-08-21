@@ -521,6 +521,41 @@ class FallbackTest(unittest.TestCase):
             "SPEC-LINT: FAIL — stalled after verdict",
             git(self.repo, "show", "HEAD^:factory/tickets/T-1.md"),
         )
+        self.assertNotIn(
+            "SPEC-LINT: FAIL — stalled after verdict",
+            git(self.repo, "show", "HEAD:factory/tickets/T-1.md"),
+        )
+        self.assertEqual(
+            git(self.repo, "diff", "--name-only", "HEAD^", "HEAD"),
+            "factory/tickets/T-1.md",
+        )
+        self.assertEqual(
+            git(self.repo, "show", "HEAD:factory/route-plans/T-1.json"),
+            git(self.repo, "show", "HEAD^:factory/route-plans/T-1.json"),
+        )
+        ticket.write_text("forged recovery drift\n")
+        refused = self.command(
+            "qualification-apply", environment=environment, check=False,
+        )
+        self.assertIn("worktree drifted", refused.stderr)
+        ticket.write_text(
+            git(self.repo, "show", "HEAD^:factory/tickets/T-1.md") + "\n"
+        )
+        recovered = self.command("qualification-apply", environment=environment)
+        self.assertTrue(recovered["recovered"])
+        self.assertEqual(recovered["commit_sha"], applied["commit_sha"])
+        self.assertEqual(
+            ticket.read_text(),
+            git(self.repo, "show", "HEAD:factory/tickets/T-1.md") + "\n",
+        )
+        ticket.write_text(ticket.read_text() + "SPEC-LINT: PASS\n")
+        git(self.repo, "add", "factory/tickets/T-1.md")
+        git(self.repo, "commit", "-m", "T-1: successful fallback spec-lint")
+        successful_head = git(self.repo, "rev-parse", "HEAD")
+        continued = self.command("qualification-apply", environment=environment)
+        self.assertTrue(continued["recovered"])
+        self.assertEqual(continued["commit_sha"], successful_head)
+        self.assertIn("SPEC-LINT: PASS", ticket.read_text())
 
     def test_qualification_fallback_is_scoped_to_failure_generation(self):
         first = self.command("qualification-apply")

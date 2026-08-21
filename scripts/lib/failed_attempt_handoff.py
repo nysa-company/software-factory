@@ -665,20 +665,35 @@ def _ticket_evidence(content):
     )
 
 
-def _ticket_evidence_is_legal(before, after, role):
+def _failed_ticket_change_is_legal(before, after, role):
+    if before == after:
+        return True
+    before_evidence = _ticket_evidence(before)
+    after_evidence = _ticket_evidence(after)
     if role != "spec-linter":
-        return before == after
+        return before_evidence == after_evidence
     spec_lint = re.compile(
         r"^\s*SPEC-LINT:\s*(?:PASS|FAIL(?:\s+—\s+.*)?)\s*$", re.I
     )
-    prior = tuple(line for line in before if spec_lint.fullmatch(line))
-    current = tuple(line for line in after if spec_lint.fullmatch(line))
-    return (
-        tuple(line for line in before if not spec_lint.fullmatch(line))
-        == tuple(line for line in after if not spec_lint.fullmatch(line))
-        and len(current) == len(prior) + 1
-        and current[:-1] == prior
+    prior = tuple(line for line in before_evidence if spec_lint.fullmatch(line))
+    current = tuple(line for line in after_evidence if spec_lint.fullmatch(line))
+    evidence_is_legal = (
+        tuple(line for line in before_evidence if not spec_lint.fullmatch(line))
+        == tuple(line for line in after_evidence if not spec_lint.fullmatch(line))
+        and current[:len(prior)] == prior
+        and len(current) <= len(prior) + 1
     )
+    footer = (
+        "Planner → Spec-linter → Test-author → Builder → Reviewer → Narrator.\n"
+    ).encode()
+    prefix = before[:-len(footer)] if before.endswith(footer) else b""
+    append_is_legal = after.startswith(before) or bool(
+        prefix
+        and after.startswith(prefix)
+        and after.endswith(footer)
+        and len(after) > len(before)
+    )
+    return evidence_is_legal and append_is_legal
 
 
 def _snapshot_digest(entries):
@@ -778,9 +793,9 @@ def validate_handoff_commit(
         if re.fullmatch(r"factory/tickets/T-[0-9]+\.md", path):
             if previous is None or current is None:
                 raise HandoffError("ticket file creation or deletion is forbidden")
-            before = _ticket_evidence(_git(repo, ["cat-file", "blob", previous[1]]))
-            after = _ticket_evidence(_git(repo, ["cat-file", "blob", current[1]]))
-            if not _ticket_evidence_is_legal(before, after, role):
+            before = _git(repo, ["cat-file", "blob", previous[1]])
+            after = _git(repo, ["cat-file", "blob", current[1]])
+            if not _failed_ticket_change_is_legal(before, after, role):
                 raise HandoffError("protected ticket evidence changed")
         entries.append(entry)
     if _snapshot_digest(tuple(entries)) != expected_snapshot_digest:
@@ -907,13 +922,10 @@ def _validate_committed_changes(
                 raise HandoffError("ticket file creation or deletion is forbidden")
             prior_content = _git(repo, ["cat-file", "blob", previous[1]])
             current_content = _git(repo, ["cat-file", "blob", current[1]])
-            before = _ticket_evidence(prior_content)
-            after = _ticket_evidence(current_content)
-            if (
-                before != after
-                and not (
-                    allow_spec_lint_append
-                    and _ticket_evidence_is_legal(before, after, role)
+            if prior_content != current_content and not (
+                allow_spec_lint_append
+                and _failed_ticket_change_is_legal(
+                    prior_content, current_content, role,
                 )
             ):
                 raise HandoffError("protected ticket evidence changed")
@@ -1102,7 +1114,9 @@ def preview_handoff(
                 if current is None or previous is None:
                     raise HandoffError("ticket file creation or deletion is forbidden")
                 prior_content = _git(root, ["show", f"HEAD:{path}"])
-                if _ticket_evidence(prior_content) != _ticket_evidence(current[0]):
+                if not _failed_ticket_change_is_legal(
+                    prior_content, current[0], role,
+                ):
                     raise HandoffError("protected ticket evidence changed")
             entries.append(entry)
     finally:
