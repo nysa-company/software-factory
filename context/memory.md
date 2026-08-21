@@ -7384,3 +7384,18 @@ the PR run and ten local repetitions, so the concurrency assertion now allows a
 bounded 20-second process-start window. Provider, cancellation, drain, charge,
 and production timeout behavior is unchanged; failure to reach the broker still
 fails closed.
+
+## 2026-08-21 — Decision 537: Preserved review consumes refreshed narration once
+
+Category: Reliability
+
+Q68 T-628 preserved its authenticated Reviewer across a control-only protected
+base refresh, but the sequencer treated the intentionally invalid old Narrator
+as a permanent request for another run. Four successful refreshed Narrators
+therefore accumulated before the protected revalidation budget stopped the
+ticket. The sequencer now selects only exact successful Narrator evidence after
+the receipt's authenticated baseline, requires every selected pre-run head to
+belong to the refreshed branch, and gives that count to the existing bundle
+reducer. Missing evidence still requests Narrator, off-lineage evidence refuses,
+and one or more already-completed refreshed Narrators converge idempotently to
+operator approval without another provider call.

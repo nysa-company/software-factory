@@ -4062,6 +4062,10 @@ fi
 # must not advance the replacement branch.
 ORPHAN_REFRESH_ROOT="$TMP/orphan-control-refresh"
 write_envelope "$ORPHAN_REFRESH_ROOT"
+printf '{}\n' > "$ORPHAN_REFRESH_ROOT/factory/QUALIFICATION.json"
+git -C "$ORPHAN_REFRESH_ROOT" add factory/QUALIFICATION.json
+git -C "$ORPHAN_REFRESH_ROOT" -c user.name=test -c user.email=test@example.com \
+  commit -qm "seed protected control metadata"
 cat > "$ORPHAN_REFRESH_ROOT/factory/tickets/T-512.md" <<TICKET
 # T-512
 State: Review
@@ -4070,7 +4074,6 @@ reviewer round 1: APPROVE
 - [ ] Evidence bundle posted
 - [ ] Operator approved
 TICKET
-printf '{}\n' > "$ORPHAN_REFRESH_ROOT/factory/QUALIFICATION.json"
 {
   ledger_header
   ledger_row T-512 planner
@@ -4096,7 +4099,8 @@ write_run_manifest "$ORPHAN_REFRESH_ROOT" T-512 reviewer orphan-reviewer \
   "$ORPHAN_REVIEW_HEAD"
 write_run_manifest "$ORPHAN_REFRESH_ROOT" T-512 narrator orphan-narrator \
   "$ORPHAN_NARRATOR_HEAD"
-git -C "$ORPHAN_REFRESH_ROOT" checkout -qb orphan-control-base
+git -C "$ORPHAN_REFRESH_ROOT" checkout -qb orphan-control-base \
+  "$ORPHAN_PARENT"
 printf '{"generation":2}\n' > "$ORPHAN_REFRESH_ROOT/factory/QUALIFICATION.json"
 mkdir -p "$ORPHAN_REFRESH_ROOT/factory/migrations/inflight-release"
 printf '{}\n' > \
@@ -4138,6 +4142,143 @@ if TEST_CONTRACT_VERSION=2.0.0 \
    expect_stage "RUN reviewer" "$ORPHAN_REFRESH_ROOT" T-512; then
   pass "control-only refresh invalidates orphaned role evidence"
 fi
+
+# If only the old Narrator is orphaned, the preserved Reviewer needs exactly
+# one Narrator on the refreshed lineage. Reconciliation must then be read-only.
+sed "s/^role_head_before=.*/role_head_before=$ORPHAN_PARENT/" \
+  "$ORPHAN_REFRESH_ROOT/factory/runs/orphan-reviewer.meta" > \
+  "$TMP/orphan-preserved-reviewer.meta"
+mv "$TMP/orphan-preserved-reviewer.meta" \
+  "$ORPHAN_REFRESH_ROOT/factory/runs/orphan-reviewer.meta"
+PRESERVED_NARRATOR_OK=1
+TEST_CONTRACT_VERSION=2.0.0 expect_stage \
+  "RUN narrator" "$ORPHAN_REFRESH_ROOT" T-512 || PRESERVED_NARRATOR_OK=0
+ledger_row_run T-512 narrator forged-preserved-narrator >> \
+  "$ORPHAN_REFRESH_ROOT/factory/ledger.csv"
+write_run_manifest "$ORPHAN_REFRESH_ROOT" T-512 narrator \
+  forged-preserved-narrator "$ORPHAN_NARRATOR_HEAD"
+TEST_CONTRACT_VERSION=2.0.0 expect_stage \
+  "REFUSE post-refresh run manifest" "$ORPHAN_REFRESH_ROOT" T-512 || \
+  PRESERVED_NARRATOR_OK=0
+sed '$d' "$ORPHAN_REFRESH_ROOT/factory/ledger.csv" > \
+  "$TMP/orphan-preserved-ledger.csv"
+mv "$TMP/orphan-preserved-ledger.csv" \
+  "$ORPHAN_REFRESH_ROOT/factory/ledger.csv"
+rm "$ORPHAN_REFRESH_ROOT/factory/runs/forged-preserved-narrator.meta" \
+  "$ORPHAN_REFRESH_ROOT/factory/runs/forged-preserved-narrator.out"
+PRESERVED_NARRATOR_HEAD="$(git -C "$ORPHAN_REFRESH_ROOT" rev-parse HEAD)"
+ledger_row_run T-512 narrator preserved-refresh-narrator >> \
+  "$ORPHAN_REFRESH_ROOT/factory/ledger.csv"
+write_run_manifest "$ORPHAN_REFRESH_ROOT" T-512 narrator \
+  preserved-refresh-narrator "$PRESERVED_NARRATOR_HEAD"
+cat > "$ORPHAN_REFRESH_ROOT/factory/tickets/T-512-bundle.md" <<'BUNDLE'
+# What this does
+# Preview
+# Screenshots
+# Acceptance criteria
+# Risk
+# Cost
+# Rollback
+Approve to merge?
+BUNDLE
+git -C "$ORPHAN_REFRESH_ROOT" add factory/tickets/T-512-bundle.md
+git -C "$ORPHAN_REFRESH_ROOT" -c user.name=test -c user.email=test@example.com \
+  commit -qm "fresh preserved-review narration"
+PRESERVED_NARRATOR_DIGEST="$(shasum -a 256 \
+  "$ORPHAN_REFRESH_ROOT/factory/ledger.csv" \
+  "$ORPHAN_REFRESH_ROOT/factory/runs/preserved-refresh-narrator.meta")"
+TEST_CONTRACT_VERSION=2.0.0 expect_stage \
+  "AWAIT-OPERATOR bundle posted" "$ORPHAN_REFRESH_ROOT" T-512 || \
+  PRESERVED_NARRATOR_OK=0
+TEST_CONTRACT_VERSION=2.0.0 expect_stage \
+  "AWAIT-OPERATOR bundle posted" "$ORPHAN_REFRESH_ROOT" T-512 || \
+  PRESERVED_NARRATOR_OK=0
+[[ "$PRESERVED_NARRATOR_DIGEST" == "$(shasum -a 256 \
+  "$ORPHAN_REFRESH_ROOT/factory/ledger.csv" \
+  "$ORPHAN_REFRESH_ROOT/factory/runs/preserved-refresh-narrator.meta")" ]] || \
+  PRESERVED_NARRATOR_OK=0
+for round in 2 3 4; do
+  PRESERVED_NARRATOR_HEAD="$(git -C "$ORPHAN_REFRESH_ROOT" rev-parse HEAD)"
+  ledger_row_run T-512 narrator "preserved-refresh-narrator-$round" >> \
+    "$ORPHAN_REFRESH_ROOT/factory/ledger.csv"
+  write_run_manifest "$ORPHAN_REFRESH_ROOT" T-512 narrator \
+    "preserved-refresh-narrator-$round" "$PRESERVED_NARRATOR_HEAD"
+  printf '\nHistorical refresh round %s.\n' "$round" >> \
+    "$ORPHAN_REFRESH_ROOT/factory/tickets/T-512-bundle.md"
+  git -C "$ORPHAN_REFRESH_ROOT" add factory/tickets/T-512-bundle.md
+  git -C "$ORPHAN_REFRESH_ROOT" -c user.name=test -c user.email=test@example.com \
+    commit -qm "historical repeated refresh narration"
+done
+TEST_CONTRACT_VERSION=2.0.0 expect_stage \
+  "AWAIT-OPERATOR bundle posted" "$ORPHAN_REFRESH_ROOT" T-512 || \
+  PRESERVED_NARRATOR_OK=0
+PRESERVED_ROLE_EVIDENCE="$TMP/preserved-refresh-role-evidence.json"
+python3 - "$PRESERVED_ROLE_EVIDENCE" "$ORPHAN_REFRESH_ROOT/factory/runs" \
+  "$ORPHAN_PARENT" "$ORPHAN_NARRATOR_HEAD" "$KIT_SHA" <<'PY'
+import json
+import pathlib
+import sys
+
+path, runs, old_head, orphan_head, factory = sys.argv[1:]
+records = []
+def add(role, run_id, head):
+    ordinal = len(records) + 1
+    records.append({
+        "contract_version": "2.0.0", "factory_sha": factory,
+        "head_before": head, "manifest_sha256": f"{ordinal:064x}",
+        "output_sha256": f"{ordinal + 20:064x}", "role": role,
+        "run_id": run_id,
+        "transition_receipt_sha256": f"{ordinal + 40:064x}",
+    })
+for role in ("planner", "test-author", "builder", "reviewer"):
+    add(role, f"fixture-{role}", old_head)
+add("narrator", "orphan-narrator", orphan_head)
+for suffix in ("", "-2", "-3", "-4"):
+    values = dict(
+        line.split("=", 1) for line in pathlib.Path(
+            runs, f"preserved-refresh-narrator{suffix}.meta"
+        ).read_text(encoding="utf-8").splitlines()
+    )
+    add("narrator", values["run_id"], values["role_head_before"])
+json.dump({
+    "passport_sha256": "f" * 64, "records": records,
+    "schema": "nysa.software-factory.completed-role-sequence/v1",
+    "ticket": "T-512",
+}, open(path, "w", encoding="utf-8"), sort_keys=True)
+PY
+chmod 600 "$PRESERVED_ROLE_EVIDENCE"
+export FACTORY_AUTHENTICATED_ROLE_EVIDENCE="$PRESERVED_ROLE_EVIDENCE"
+TEST_CONTRACT_VERSION=2.0.0 expect_stage \
+  "AWAIT-OPERATOR bundle posted" "$ORPHAN_REFRESH_ROOT" T-512 || \
+  PRESERVED_NARRATOR_OK=0
+unset FACTORY_AUTHENTICATED_ROLE_EVIDENCE
+PRESERVED_REREVIEW_HEAD="$(git -C "$ORPHAN_REFRESH_ROOT" rev-parse HEAD)"
+ledger_row_run T-512 reviewer preserved-refresh-reviewer-2 >> \
+  "$ORPHAN_REFRESH_ROOT/factory/ledger.csv"
+write_run_manifest "$ORPHAN_REFRESH_ROOT" T-512 reviewer \
+  preserved-refresh-reviewer-2 "$PRESERVED_REREVIEW_HEAD"
+printf 'reviewer round 2: APPROVE\n' >> \
+  "$ORPHAN_REFRESH_ROOT/factory/tickets/T-512.md"
+git -C "$ORPHAN_REFRESH_ROOT" add factory/tickets/T-512.md
+git -C "$ORPHAN_REFRESH_ROOT" -c user.name=test -c user.email=test@example.com \
+  commit -qm "post-refresh reviewer approval"
+TEST_CONTRACT_VERSION=2.0.0 expect_stage \
+  "RUN narrator" "$ORPHAN_REFRESH_ROOT" T-512 || PRESERVED_NARRATOR_OK=0
+PRESERVED_REREVIEW_HEAD="$(git -C "$ORPHAN_REFRESH_ROOT" rev-parse HEAD)"
+ledger_row_run T-512 narrator preserved-refresh-narrator-5 >> \
+  "$ORPHAN_REFRESH_ROOT/factory/ledger.csv"
+write_run_manifest "$ORPHAN_REFRESH_ROOT" T-512 narrator \
+  preserved-refresh-narrator-5 "$PRESERVED_REREVIEW_HEAD"
+printf '\nNarration after refreshed review.\n' >> \
+  "$ORPHAN_REFRESH_ROOT/factory/tickets/T-512-bundle.md"
+git -C "$ORPHAN_REFRESH_ROOT" add factory/tickets/T-512-bundle.md
+git -C "$ORPHAN_REFRESH_ROOT" -c user.name=test -c user.email=test@example.com \
+  commit -qm "narrate refreshed reviewer generation"
+TEST_CONTRACT_VERSION=2.0.0 expect_stage \
+  "AWAIT-OPERATOR bundle posted" "$ORPHAN_REFRESH_ROOT" T-512 || \
+  PRESERVED_NARRATOR_OK=0
+[[ "$PRESERVED_NARRATOR_OK" -eq 1 ]] &&
+  pass "preserved review consumes fresh Narrator evidence idempotently"
 
 COMMITTED_APPROVAL_ROOT="$TMP/committed-approval"
 write_envelope "$COMMITTED_APPROVAL_ROOT"
