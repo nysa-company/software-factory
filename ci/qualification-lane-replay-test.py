@@ -182,6 +182,14 @@ SCENARIOS = (
         ),
     ),
     (
+        "fresh_qualification_ownership_conflicts_fail_before_provider",
+        (
+            "qualification-environment-test.py",
+            "QualificationEnvironmentTest.test_rejects_protected_ready_builder_ownership_conflicts",
+            "QualificationEnvironmentTest.test_takeover_reuses_authenticated_live_state_without_copying_it",
+        ),
+    ),
+    (
         "missing_codex_companion_blocks_before_controller_mutation",
         (
             "provider-cli-pin-test.py",

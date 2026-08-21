@@ -5874,6 +5874,26 @@ process launch, terminalizes the causal ticket with Q53's exact failure class,
 and proves no sibling attempt or process is created. Adjacent tests cover both
 recoverable and terminal branches.
 
+## FI-20260821-228 — Fresh qualification ignored protected Ready ownership
+
+Status: Focused regression implemented; protected CI and qualification pending
+Priority: P0
+Area: qualification intake
+Owner: Factory
+Impact: Q62 T-612 consumed one conservative $8 Planner charge before finding
+that protected Ready ticket T-605 already owned the same Builder path with an
+incompatible frozen contract.
+Root cause: isolated preparation validated each selected ticket and its
+dependencies, but compared no Builder ownership inside the cohort or against
+other protected Ready tickets.
+Smallest repair: fresh qualification preparation rejects either exact conflict
+before creating lane authority. Authenticated successor/takeover cohorts keep
+their source-authorized ownership.
+Validation: the Q62-shaped regression rejects the Ready conflict, accepts the
+same Backlog record, rejects a selected-cohort collision, and preserves the
+existing authenticated takeover recovery; all qualification-environment tests
+pass.
+
 ## Maintenance rule
 
 Record only a systemic failure, backward transition after Spec PASS, sibling

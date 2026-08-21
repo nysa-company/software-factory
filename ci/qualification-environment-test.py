@@ -255,13 +255,18 @@ class QualificationEnvironmentTest(unittest.TestCase):
             encoding="utf-8",
         )
         (self.product / "factory/tickets").mkdir()
+        builder_paths = {
+            "T-101": "app/server.js",
+            "T-102": "app/worker.js",
+            "T-103": "app/job.js",
+        }
         for ticket in ("T-101", "T-102", "T-103"):
             (self.product / f"factory/tickets/{ticket}.md").write_text(
                 f"# {ticket}\n\nState: Ready\nProduct-Decisions: frozen\n"
                 "Initiative: I-001\n"
                 "Depends-On: none\nFixture-Seams: none\n"
                 "Authentication-Seams: none\nProtected-Test-Conflicts: none\n"
-                "Builder ownership: app/server.js only\n",
+                f"Builder ownership: {builder_paths[ticket]} only\n",
                 encoding="utf-8",
             )
         (self.product / "factory/certification-plan.json").write_text(
@@ -2201,6 +2206,31 @@ class QualificationEnvironmentTest(unittest.TestCase):
         ))
         with self.assertRaisesRegex(
             ENVIRONMENT.EnvironmentError, "Builder ownership",
+        ):
+            ENVIRONMENT.validate_selected_contracts(self.product)
+
+    def test_rejects_protected_ready_builder_ownership_conflicts(self) -> None:
+        candidate = self.product / "factory/tickets/T-605.md"
+        candidate.write_text(
+            "# T-605\n\nState: Ready\n"
+            "Builder ownership: app/server.js only\n",
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError,
+            r"qualification Builder ownership conflict app/server.js: T-101,T-605",
+        ):
+            ENVIRONMENT.validate_selected_contracts(self.product)
+
+        candidate.write_text(candidate.read_text().replace("State: Ready", "State: Backlog"))
+        ENVIRONMENT.validate_selected_contracts(self.product)
+
+        candidate.unlink()
+        ticket = self.product / "factory/tickets/T-102.md"
+        ticket.write_text(ticket.read_text().replace("app/worker.js", "app/server.js"))
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError,
+            r"qualification Builder ownership conflict app/server.js: T-101,T-102",
         ):
             ENVIRONMENT.validate_selected_contracts(self.product)
 
