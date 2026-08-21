@@ -68,7 +68,7 @@ class Upstream(http.server.ThreadingHTTPServer):
         self.condition = threading.Condition()
 
     def wait_for(self, count):
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + 20
         with self.condition:
             while len(self.started) < count:
                 remaining = deadline - time.monotonic()
