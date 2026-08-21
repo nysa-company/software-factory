@@ -363,6 +363,51 @@ else
     "status=$HEARTBEAT_IGNORE_RC"
 fi
 
+SIGNAL_SITE="$TMP/heartbeat-signal-site"
+SIGNAL_MARKER="$TMP/heartbeat-signal-temp-created"
+mkdir "$SIGNAL_SITE"
+printf '%s\n' \
+  'import os' \
+  'from pathlib import Path' \
+  'import tempfile' \
+  'import time' \
+  'original = tempfile.mkstemp' \
+  'def delayed(*args, **kwargs):' \
+  '    descriptor, path = original(*args, **kwargs)' \
+  '    if os.environ.get("FACTORY_TEST_DELAY_LEASE_TEMP") == "1" and Path(path).parent.name == ".dispatch-leases":' \
+  '        Path(os.environ["FACTORY_TEST_LEASE_TEMP_MARKER"]).touch()' \
+  '        time.sleep(1)' \
+  '    return descriptor, path' \
+  'tempfile.mkstemp = delayed' > "$SIGNAL_SITE/sitecustomize.py"
+PYTHONPATH="$SIGNAL_SITE" FACTORY_TEST_DELAY_LEASE_TEMP=1 \
+  FACTORY_TEST_LEASE_TEMP_MARKER="$SIGNAL_MARKER" \
+  python3 "$ROOT/scripts/dispatch-lease-heartbeat.py" \
+    --renew-script "$LEASE" --factory-root "$PRODUCT" \
+    --ticket "$FIRST_TICKET" --lease "$FIRST_ID" --interval 1 &
+SIGNAL_HEARTBEAT_PID=$!
+for _try in $(seq 1 500); do
+  [[ -f "$SIGNAL_MARKER" ]] && break
+  sleep 0.02
+done
+kill -TERM -- "-$SIGNAL_HEARTBEAT_PID" 2>/dev/null || true
+SIGNAL_HEARTBEAT_RC=0
+wait "$SIGNAL_HEARTBEAT_PID" || SIGNAL_HEARTBEAT_RC=$?
+SIGNAL_LEASE_VALID=0
+python3 - "$PRODUCT/factory/.dispatch-leases/$FIRST_TICKET.json" "$FIRST_ID" <<'PY' && SIGNAL_LEASE_VALID=1
+import json, pathlib, sys
+value = json.loads(pathlib.Path(sys.argv[1]).read_text())
+raise SystemExit(0 if value.get("lease_id") == sys.argv[2] else 1)
+PY
+if [[ -f "$SIGNAL_MARKER" && "$SIGNAL_HEARTBEAT_RC" -eq 0 &&
+      "$SIGNAL_LEASE_VALID" -eq 1 ]] &&
+   ! compgen -G "$PRODUCT/factory/.dispatch-leases/.lease-*" >/dev/null; then
+  pass "heartbeat TERM cannot strand an atomic renewal temporary"
+else
+  fail "heartbeat TERM cannot strand an atomic renewal temporary" \
+    "status=$SIGNAL_HEARTBEAT_RC valid=$SIGNAL_LEASE_VALID"
+fi
+rm -f "$PRODUCT/factory/.dispatch-leases/".lease-*
+
 mkdir "$PRODUCT/factory/.launch.lock"
 BUSY_RENEW_RC=0
 FACTORY_ROOT="$PRODUCT" "$LEASE" renew --ticket "$FIRST_TICKET" --lease "$FIRST_ID" \
