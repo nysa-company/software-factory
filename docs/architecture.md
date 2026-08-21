@@ -2047,6 +2047,8 @@ while unrelated provider entry cannot starve a heartbeat. Each heartbeat owns
 an isolated process group, uses lock-free signal handling, and publishes its
 PID/start identity beside the wrapper so ordinary completion and the kill
 switch can apply bounded TERM-to-KILL shutdown without PID-reuse risk.
+Catchable shutdown is deferred across the atomic renewal replacement, so TERM,
+INT, or HUP cannot strand a temporary entry that blocks later lease admission.
 Fresh dispatcher claims wait up to 60 seconds for a transient provider
 pre-GO launch-lock holder, then retain the existing typed refusal without
 reclaiming the lock. KILL and MAINTENANCE are rechecked after acquisition.
