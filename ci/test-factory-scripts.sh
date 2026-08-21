@@ -4317,6 +4317,19 @@ install_spec_lint_hook() {
     if [[ "$shape" == "formatted" ]]; then
       printf "sed -i.bak 's/^SPEC-LINT: PASS$/\\*\\*SPEC-LINT: PASS\\*\\*/' %q\n" \
         "$ROLE_EXIT_WORKTREE/factory/tickets/$ticket.md"
+    elif [[ "$shape" == "footer-insert" ]]; then
+      printf 'python3 - %q <<'"'"'PY'"'"'\n' \
+        "$ROLE_EXIT_WORKTREE/factory/tickets/$ticket.md"
+      printf '%s\n' \
+        'import sys' \
+        'from pathlib import Path' \
+        'path = Path(sys.argv[1])' \
+        'footer = "Planner → Spec-linter → Test-author → Builder → Reviewer → Narrator.\n"' \
+        'verdict = "SPEC-LINT: PASS\n"' \
+        'text = path.read_text()' \
+        'assert text.endswith(footer + verdict)' \
+        'path.write_text(text[:-(len(footer) + len(verdict))] + verdict + footer)' \
+        'PY'
     else
       printf "sed -i.bak '1s/^# /# rewritten /' %q\n" \
         "$ROLE_EXIT_WORKTREE/factory/tickets/$ticket.md"
@@ -4963,6 +4976,34 @@ if [[ "$ROLE_SPEC_APPEND_STATUS" -eq 0 &&
 else
   fail "spec-linter may append exactly one canonical verdict" \
     "status=$ROLE_SPEC_APPEND_STATUS"
+fi
+
+setup_role_exit_fixture T-615 spec-linter
+printf '%s\n' \
+  'Planner → Spec-linter → Test-author → Builder → Reviewer → Narrator.' >> \
+  "$ROLE_EXIT_WORKTREE/factory/tickets/T-615.md"
+git -C "$ROLE_EXIT_WORKTREE" add factory/tickets/T-615.md
+git -C "$ROLE_EXIT_WORKTREE" -c user.name=test -c user.email=test@example.com \
+  commit -qm "ticket pipeline footer"
+git -C "$ROLE_EXIT_WORKTREE" push -q origin ticket/T-615
+install_spec_lint_hook T-615 footer-insert
+ROLE_SPEC_FOOTER_STATUS=0
+MOCK_SPEC_LINT_VERDICT=PASS FACTORY_ROOT="$ROLE_EXIT_ROOT" \
+  FACTORY_GLOBAL_ENV="$TMP/no-global.env" FACTORY_TEST_MODE=1 \
+  FACTORY_TEST_ENFORCE_ROLE_EXIT=1 FACTORY_ADAPTER_OVERRIDE=mock \
+  FACTORY_CERTIFIED_PRODUCT_ORIGIN="$ROLE_EXIT_REMOTE" \
+  "$RUN_AGENT" --role spec-linter --ticket T-615 --workdir "$ROLE_EXIT_WORKTREE" -- \
+    "lint before pipeline footer" > "$TMP/role-spec-footer.out" 2>&1 ||
+  ROLE_SPEC_FOOTER_STATUS=$?
+if [[ "$ROLE_SPEC_FOOTER_STATUS" -eq 0 &&
+      "$(git --git-dir="$ROLE_EXIT_REMOTE" rev-parse refs/heads/ticket/T-615)" == \
+        "$(git -C "$ROLE_EXIT_WORKTREE" rev-parse HEAD)" &&
+      "$(tail -n1 "$ROLE_EXIT_WORKTREE/factory/tickets/T-615.md")" == \
+        'Planner → Spec-linter → Test-author → Builder → Reviewer → Narrator.' ]]; then
+  pass "spec-linter may append immediately before the immutable pipeline footer"
+else
+  fail "spec-linter may append immediately before the immutable pipeline footer" \
+    "status=$ROLE_SPEC_FOOTER_STATUS"
 fi
 
 setup_role_exit_fixture T-613 spec-linter

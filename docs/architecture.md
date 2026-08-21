@@ -496,6 +496,11 @@ Its trusted ticket-state reconciliation binds a successful Reviewer's
 read-only head and durable output digest, records the canonical verdict and
 explicit repair owner, and commits a rejection's Review-to-Building transition
 in the same host-owned change.
+Spec-linter evidence preserves every prior ticket byte and adds exactly one
+canonical verdict. A report may sit at EOF or immediately before the exact
+unchanged `Planner → Spec-linter → Test-author → Builder → Reviewer → Narrator.`
+footer. Any earlier-byte, footer, protected-field, prior-verdict, or
+duplicate-verdict change remains a protected mutation.
 Contract `1.8.0` replaces the agentic dispatcher and supervisor with a
 non-overlapping one-shot controller. `launchd` invokes it every 15 seconds and
 watches terminal run evidence for an immediate wakeup. `state-machine` calls
