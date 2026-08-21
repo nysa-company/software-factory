@@ -827,8 +827,18 @@ printf '%s\n' \
   'Protected-Test-Conflicts: none' \
   >> "$READINESS/factory/tickets/T-110.md"
 printf '%s\n' 'export const fixture = true;' > "$READINESS/app/tests/fixture.js"
-printf '%s\n' "const allowed = ['./db.js'];" \
-  > "$READINESS/app/tests/source-boundary.test.js"
+printf '%s\n' 'export const source = true;' > "$READINESS/app/source.js"
+cat > "$READINESS/app/tests/source-boundary.test.js" <<'EOF'
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+
+const allowed = ['./db.js'];
+const sha256Of = (relative) => createHash('sha256').update(readFileSync(
+  new URL(relative, import.meta.url),
+)).digest('hex');
+const frozen = [['../source.js', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa']];
+for (const [relative, expected] of frozen) sha256Of(relative) === expected;
+EOF
 printf '%s\n' 'screen.queryByText("Skip", { exact: false });' \
   > "$READINESS/app/tests/global-shell.test.tsx"
 printf '%s\n' 'export const regression = true;' \
@@ -1003,6 +1013,75 @@ else
   echo "FAIL: Planner conflict declaration grammar is not deterministic"
   FAILURES=$((FAILURES + 1))
 fi
+cp "$READINESS/factory/tickets/T-110.md" "$TMP/source-hash-ticket.md"
+sed 's#Builder ownership: README.md only#Builder ownership: app/source.js only#' \
+  "$TMP/source-hash-ticket.md" > "$READINESS/factory/tickets/T-110.md"
+if python3 "$KIT_DIR/scripts/ticket-readiness.py" \
+     --ticket T-110 --workdir "$READINESS" > "$TMP/source-hash-blocked.out"; then
+  echo "FAIL: readiness accepted an undeclared protected source hash"
+  FAILURES=$((FAILURES + 1))
+elif grep -qF \
+     'protected source hash collision: app/tests/source-boundary.test.js => app/source.js' \
+     "$TMP/source-hash-blocked.out"; then
+  echo "PASS: readiness rejects the historical T-614 protected source hash"
+else
+  echo "FAIL: protected source hash returned the wrong readiness refusal"
+  FAILURES=$((FAILURES + 1))
+fi
+cp "$READINESS/app/tests/source-boundary.test.js" "$TMP/source-boundary.test.js"
+cat > "$READINESS/app/tests/source-boundary.test.js" <<'EOF'
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+const frozen = [[`../source.js`, `AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA`]];
+createHash(`SHA256`).update(readFileSync(new URL(frozen[0][0], import.meta.url)));
+EOF
+if ! python3 "$KIT_DIR/scripts/ticket-readiness.py" \
+     --ticket T-110 --workdir "$READINESS" > "$TMP/source-hash-template.out" &&
+   grep -qF 'protected source hash collision' "$TMP/source-hash-template.out"; then
+  echo "PASS: template and uppercase source hashes remain protected"
+else
+  echo "FAIL: template or uppercase source hash bypassed readiness"
+  FAILURES=$((FAILURES + 1))
+fi
+rm "$READINESS/app/tests/source-boundary.test.js"
+ln -s "$TMP/source-boundary.test.js" "$READINESS/app/tests/source-boundary.test.js"
+if ! python3 "$KIT_DIR/scripts/ticket-readiness.py" \
+     --ticket T-110 --workdir "$READINESS" > "$TMP/source-hash-symlink.out" &&
+   grep -qF 'protected test is unsafe: app/tests/source-boundary.test.js' \
+     "$TMP/source-hash-symlink.out"; then
+  echo "PASS: protected source scan refuses tracked test symlinks"
+else
+  echo "FAIL: protected source scan followed a tracked test symlink"
+  FAILURES=$((FAILURES + 1))
+fi
+rm "$READINESS/app/tests/source-boundary.test.js"
+cp "$TMP/source-boundary.test.js" "$READINESS/app/tests/source-boundary.test.js"
+cat > "$READINESS/app/tests/source-boundary.test.js" <<'EOF'
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+createHash('sha256').update('unrelated payload');
+readFileSync(new URL('../source.js', import.meta.url));
+EOF
+if python3 "$KIT_DIR/scripts/ticket-readiness.py" \
+     --ticket T-110 --workdir "$READINESS" > "$TMP/source-hash-unrelated.out"; then
+  echo "PASS: unrelated source reads and payload hashes do not collide"
+else
+  echo "FAIL: readiness conflated unrelated source reads and payload hashes"
+  FAILURES=$((FAILURES + 1))
+fi
+cp "$TMP/source-boundary.test.js" "$READINESS/app/tests/source-boundary.test.js"
+sed -e 's#Fixture-Seams: app/tests/fixture.js#Fixture-Seams: app/tests/fixture.js,app/tests/source-boundary.test.js#' \
+    -e 's#Protected-Test-Conflicts: none#Protected-Test-Conflicts: app/tests/source-boundary.test.js => source.predecessor-hash#' \
+  "$READINESS/factory/tickets/T-110.md" > "$READINESS/factory/tickets/T-110.tmp"
+mv "$READINESS/factory/tickets/T-110.tmp" "$READINESS/factory/tickets/T-110.md"
+if python3 "$KIT_DIR/scripts/ticket-readiness.py" \
+     --ticket T-110 --workdir "$READINESS" > "$TMP/source-hash-owned.out"; then
+  echo "PASS: an exact owned protected source hash proceeds"
+else
+  echo "FAIL: readiness rejected an exact owned protected source hash"
+  FAILURES=$((FAILURES + 1))
+fi
+cp "$TMP/source-hash-ticket.md" "$READINESS/factory/tickets/T-110.md"
 sed 's#Protected-Test-Conflicts: none#Protected-Test-Conflicts: app/tests/source-boundary.test.js => ./new.js#' \
   "$READINESS/factory/tickets/T-110.md" > "$READINESS/factory/tickets/T-110.tmp"
 mv "$READINESS/factory/tickets/T-110.tmp" "$READINESS/factory/tickets/T-110.md"

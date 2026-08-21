@@ -18,6 +18,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Contract 2 live products resolve sealed exact-SHA releases from owner-only `active.json` records under `~/.factory/kits` via `~/.factory/bin/factory-launch`; the native controller is the only scheduler.
 - The local release canary is one code-driven, product-agnostic command that creates contained local origins, runs setup/resume, and times one authenticated Planning transition plus sealed mock planner; its repository-test evidence is never promotable.
 - Model routing is portfolio policy; routes pin at the ticket boundary and change only via the Contract 1.4 journal flow. One profile resolution shares model-independent native-adapter readiness across its routes and runs independent probes in bounded parallel; Cursor readiness stays model-specific. Sealed Cursor inventory verifies the exact configured selection and displayed provider label in a disposable owner-only home, then accepts only its bounded certified structure.
+- Provider-free ticket readiness rejects tracked static SHA-256 path/digest tables over any Builder or Test-author-owned path unless the exact protected test is both a declared conflict and a Fixture-Seam; unrelated payload hashes/source reads do not collide, while semantic and dynamic source guards remain fail-closed Planner/Spec-linter work.
 - Linear is removed (Decision 398); the six operator authorities are one-use receipts via `factory-kit.sh operator ACTION`. Approval changes only the ignored operator map and owner-only receipt until trusted approval attestation records it in Git. An explicitly invoked isolated `qualification-finish` may approve only exact selected clean parked bundle checkpoints, then drives the existing publication, closeout, and reducer chain until green or a typed external wait; production and takeover retain separate human approval. Qualification may issue one manifest-selected successor resume only after the exact sealed compact-repair check, including the explicit isolated close after an authenticated contract-repair directive; that exact new authority rearms one abandoned targeted recovery attempt, while unchanged evidence cannot loop. Production has no lifecycle bypass.
 - **Contract rules below in Operating contract are authoritative**; this summary is only what the session hook can inject.
 
@@ -7333,3 +7334,16 @@ tickets do not reserve work; authenticated successor/takeover cohorts preserve
 their already-authorized source ownership. Semantic contradictions such as
 Q62 T-611's protected-test behavior remain Planner work and continue to stop at
 the contract boundary.
+
+## 2026-08-21 — Decision 533: Static predecessor hashes block before provider admission
+
+Category: Reliability
+
+Q63 T-614 reached Planner even though a tracked protected test pinned the exact
+SHA-256 bytes of its Builder and Test-author paths. Ticket readiness now scans
+regular tracked tests for static path/digest tables backed by
+`createHash('sha256')` plus `readFileSync` and rejects any owned path unless that
+test is an exact declared conflict and Fixture-Seam. Static-template and case
+variants remain covered, tracked symlinks fail closed, unrelated payload
+hashes/source reads do not collide, and semantic or dynamic guards remain role
+work.
