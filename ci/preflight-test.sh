@@ -126,6 +126,7 @@ write_ready_ticket() {
 State: Ready
 Initiative: I-001
 Priority: normal
+Depends-On: none
 Builder ownership: README.md only
 
 ## Description

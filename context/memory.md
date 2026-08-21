@@ -7399,3 +7399,17 @@ belong to the refreshed branch, and gives that count to the existing bundle
 reducer. Missing evidence still requests Narrator, off-lineage evidence refuses,
 and one or more already-completed refreshed Narrators converge idempotently to
 operator approval without another provider call.
+
+## 2026-08-21 — Decision 538: Qualification rejects invalid ticket authority before sealing
+
+Category: Reliability
+
+Q69 preparation accepted product tickets using `Priority: medium`, then the
+first controller admission shadow rejected the value because the Factory
+contract permits only `none`, `urgent`, `high`, `normal`, or `low`. The same
+audit found that malformed State, Initiative, Depends-On, and Merge-Policy
+authority could also survive readiness and fail later. The shared provider-free
+validator now rejects missing, empty, duplicate, or invalid authoritative
+ticket fields, self or malformed dependencies, unsafe seams, and unavailable
+declared paths before authority or lane state exists. Prose-only metadata stays
+unschematized. Dispatch ordering and operator semantics are unchanged.

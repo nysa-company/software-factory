@@ -185,6 +185,7 @@ SCENARIOS = (
         "fresh_qualification_ownership_conflicts_fail_before_provider",
         (
             "qualification-environment-test.py",
+            "QualificationEnvironmentTest.test_selected_ticket_authoring_fields_fail_before_lane_creation",
             "QualificationEnvironmentTest.test_rejects_protected_ready_builder_ownership_conflicts",
             "QualificationEnvironmentTest.test_rejects_selected_protected_source_hash_before_lane_creation",
             "QualificationEnvironmentTest.test_takeover_reuses_authenticated_live_state_without_copying_it",

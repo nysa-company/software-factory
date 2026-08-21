@@ -4681,6 +4681,9 @@ class FactoryControllerTest(unittest.TestCase):
         ticket = "T-110"
         ticket_path = self.product / f"factory/tickets/{ticket}.md"
         ticket_path.parent.mkdir(parents=True)
+        initiative = self.product / "factory/initiatives/I-001.md"
+        initiative.parent.mkdir()
+        initiative.write_text("# I-001\n", encoding="utf-8")
         (self.product / "factory/PROJECT.env").write_text(
             "TEST_PATHS=apps/existing.test.ts\n", encoding="utf-8",
         )
@@ -4689,6 +4692,7 @@ class FactoryControllerTest(unittest.TestCase):
         existing.write_text("test\n", encoding="utf-8")
         ticket_path.write_text(
             f"# {ticket}\n\nState: Planning\n"
+            "Initiative: I-001\nPriority: normal\nDepends-On: none\n"
             "Product-Decisions: frozen\n"
             "Builder ownership: apps/feature.ts only\n"
             "Fixture-Seams: apps/planned.test.ts\n"

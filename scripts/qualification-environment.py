@@ -1157,7 +1157,8 @@ def validate_selected_contracts(
 
         def values(name: str) -> list[str]:
             return re.findall(
-                rf"^{re.escape(name)}:\s*(.*?)\s*$", text, re.MULTILINE | re.IGNORECASE,
+                rf"^{re.escape(name)}:[ \t]*(.*?)[ \t]*$",
+                text, re.MULTILINE | re.IGNORECASE,
             )
 
         states = values("State")
@@ -1182,22 +1183,10 @@ def validate_selected_contracts(
         decisions = values("Product-Decisions")
         if decisions != ["frozen"]:
             raise EnvironmentError(f"{path}: Product-Decisions must be exactly frozen")
-        dependency_fields = values("Depends-On")
-        dependency_items = (
-            [] if dependency_fields == ["none"] else
-            [item.strip() for item in dependency_fields[0].split(",")]
-            if len(dependency_fields) == 1 else []
-        )
-        if (
-            len(dependency_fields) != 1
-            or dependency_fields != ["none"]
-            and (
-                not dependency_items
-                or len(dependency_items) != len(set(dependency_items))
-                or any(not re.fullmatch(r"T-[0-9]+", item) for item in dependency_items)
-            )
-        ):
-            raise EnvironmentError(f"{path}: Depends-On is invalid")
+        try:
+            dependency_items = readiness_module.dependencies(text, ticket)
+        except readiness_module.ReadinessError as error:
+            raise EnvironmentError(f"{path}: {error}") from error
         readiness = subprocess.run(
             [
                 sys.executable, "-B",
@@ -1211,14 +1200,14 @@ def validate_selected_contracts(
             raise EnvironmentError(
                 f"{path}: {detail[-1] if detail else 'ticket readiness failed'}"
             )
-        dependencies = set(dependency_items)
-        internal = sorted(dependencies & cohort)
+        ticket_dependencies = set(dependency_items)
+        internal = sorted(ticket_dependencies & cohort)
         if internal:
             raise EnvironmentError(
                 f"qualification cohort dependency {ticket} -> {internal[0]}; "
                 "use independent tickets or sequential generations"
             )
-        for dependency in sorted(dependencies - cohort):
+        for dependency in sorted(ticket_dependencies - cohort):
             try:
                 protected_dependency(product, dependency)
             except TerminalError as error:

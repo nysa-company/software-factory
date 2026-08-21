@@ -13,6 +13,7 @@ import importlib.util
 import os
 from pathlib import Path
 import pwd
+import re
 import shutil
 import subprocess
 import sys
@@ -255,6 +256,10 @@ class QualificationEnvironmentTest(unittest.TestCase):
             encoding="utf-8",
         )
         (self.product / "factory/tickets").mkdir()
+        (self.product / "factory/initiatives").mkdir()
+        (self.product / "factory/initiatives/I-001.md").write_text(
+            "# I-001\n\nStatus: planned\n", encoding="utf-8",
+        )
         builder_paths = {
             "T-101": "app/server.js",
             "T-102": "app/worker.js",
@@ -263,7 +268,7 @@ class QualificationEnvironmentTest(unittest.TestCase):
         for ticket in ("T-101", "T-102", "T-103"):
             (self.product / f"factory/tickets/{ticket}.md").write_text(
                 f"# {ticket}\n\nState: Ready\nProduct-Decisions: frozen\n"
-                "Initiative: I-001\n"
+                "Initiative: I-001\nPriority: normal\n"
                 "Depends-On: none\nFixture-Seams: none\n"
                 "Authentication-Seams: none\nProtected-Test-Conflicts: none\n"
                 f"Builder ownership: {builder_paths[ticket]} only\n",
@@ -2176,6 +2181,114 @@ class QualificationEnvironmentTest(unittest.TestCase):
     def test_selected_ticket_authoring_fields_fail_before_lane_creation(self) -> None:
         ticket = self.product / "factory/tickets/T-101.md"
         original = ticket.read_text()
+
+        def set_field(name: str, *field_values: str) -> None:
+            text = re.sub(
+                rf"^{re.escape(name)}:[^\r\n]*\n?", "", original,
+                flags=re.IGNORECASE | re.MULTILINE,
+            ).rstrip()
+            suffix = "".join(f"\n{name}: {value}" for value in field_values)
+            ticket.write_text(text + suffix + "\n", encoding="utf-8")
+
+        def rejects(name: str, *field_values: str) -> None:
+            set_field(name, *field_values)
+            with self.assertRaises(ENVIRONMENT.EnvironmentError) as failure:
+                ENVIRONMENT.validate_selected_contracts(self.product)
+            self.assertIn(name, str(failure.exception))
+
+        required = {
+            "State": "Ready",
+            "Priority": "normal",
+            "Initiative": "I-001",
+            "Depends-On": "none",
+            "Product-Decisions": "frozen",
+            "Builder ownership": "app/server.js only",
+            "Fixture-Seams": "none",
+            "Authentication-Seams": "none",
+            "Protected-Test-Conflicts": "none",
+        }
+        for name, value in required.items():
+            with self.subTest(field=name, case="missing"):
+                rejects(name)
+            with self.subTest(field=name, case="empty"):
+                rejects(name, "")
+            with self.subTest(field=name, case="duplicate"):
+                rejects(name, value, value)
+
+        invalid_values = {
+            "State": ("Queued", "ready — inherited"),
+            "Priority": ("medium", "critical", "none — canceled"),
+            "Initiative": (
+                "none", "i-001", "I-ABC", "I-001 — inherited", "I-999",
+            ),
+            "Depends-On": (
+                "T-101", "T-099, T-099", "T-099,", "none, T-099",
+                "none — rationale", "t-099",
+            ),
+            "Product-Decisions": ("open", "frozen — inherited"),
+            "Builder ownership": (
+                "app/ only", "/app/server.js only", "app/server.js",
+                "app/server.js, app/server.js only",
+            ),
+            "Fixture-Seams": (
+                "missing.test.ts", "/tests/fixture.js", "../fixture.js",
+            ),
+            "Authentication-Seams": (
+                "/app/server.js", "../app/server.js",
+            ),
+            "Protected-Test-Conflicts": ("unknown", "../test.js => guard"),
+        }
+        for name, values in invalid_values.items():
+            for value in values:
+                with self.subTest(field=name, value=value):
+                    rejects(name, value)
+
+        initiatives = self.product / "factory/initiatives"
+        initiatives.joinpath("I-002.md").write_text("# untracked\n", encoding="utf-8")
+        rejects("Initiative", "I-002")
+        initiatives.joinpath("I-003.md").mkdir()
+        rejects("Initiative", "I-003")
+        initiatives.joinpath("I-004.md").symlink_to("I-001.md")
+        rejects("Initiative", "I-004")
+
+        for policy in ("manual", "auto"):
+            set_field("Merge-Policy", policy)
+            ENVIRONMENT.validate_selected_contracts(self.product)
+        for values in (("",), ("automatic",), ("manual", "auto")):
+            with self.subTest(field="Merge-Policy", values=values):
+                rejects("Merge-Policy", *values)
+
+        for values in (
+            ("",), ("Receipt",), ("Linear",), ("Migration",),
+            ("unknown",), ("Receipt", "Receipt"),
+        ):
+            with self.subTest(field="Operator-Approval", values=values):
+                rejects("Operator-Approval", *values)
+        ticket.write_text(
+            original.replace("State: Ready", "State: Approved"), encoding="utf-8",
+        )
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError, "Operator-Approval",
+        ):
+            ENVIRONMENT.validate_selected_contracts(self.product)
+        for approval in ("Linear", "Receipt"):
+            ticket.write_text(
+                original.replace("State: Ready", "State: Approved")
+                + f"Operator-Approval: {approval}\n",
+                encoding="utf-8",
+            )
+            ENVIRONMENT.validate_selected_contracts(self.product)
+        for values in (("",), ("Approved",), ("Planning", "Review")):
+            with self.subTest(field="Resume-State", values=values):
+                rejects("Resume-State", *values)
+        for state in ("Backlog", "Ready", "Planning", "Building", "Review"):
+            set_field("Resume-State", state)
+            ENVIRONMENT.validate_selected_contracts(self.product)
+
+        for priority in ("none", "urgent", "high", "normal", "low"):
+            set_field("Priority", priority)
+            ENVIRONMENT.validate_selected_contracts(self.product)
+
         ticket.write_text(original.replace(
             "Depends-On: none", "Depends-On: none — rationale",
         ))
@@ -2661,7 +2774,7 @@ class QualificationEnvironmentTest(unittest.TestCase):
         for ticket in tickets:
             (self.product / f"factory/tickets/{ticket}.md").write_text(
                 f"# {ticket}\n\nState: Ready\nProduct-Decisions: frozen\n"
-                "Initiative: I-001\nDepends-On: none\nFixture-Seams: none\n"
+                "Initiative: I-001\nPriority: normal\nDepends-On: none\nFixture-Seams: none\n"
                 "Authentication-Seams: none\nProtected-Test-Conflicts: none\n"
                 "Builder ownership: app/server.js only\n",
                 encoding="utf-8",
