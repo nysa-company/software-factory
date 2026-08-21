@@ -12731,7 +12731,7 @@ class Controller:
                 if role in {"reviewer", "narrator"}:
                     pr = self.ticket_pr(claim, receipt)
                     if (
-                        pr.get("status") in {"failed", "prepared", "ready"}
+                        pr.get("status") in {"failed", "prepared", "ready", "wait"}
                         and self.refresh_stale_protected_base(
                             claim, receipt, pr.get("head", ""),
                             "protected_base_refreshed_before_evidence",
