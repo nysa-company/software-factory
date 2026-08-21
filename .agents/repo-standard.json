@@ -25,7 +25,7 @@
     },
     "files": {
       "scripts/repo-check": "f2cfa8999b72b7e0ac278ea854d6ffce369d08ecdec421f2e022cdb87fbdbe01",
-      "scripts/secret-scan": "482f663fdbfc186b0f2019e6bf4428af6fb539182051f2e1445eee9a2cddafdc"
+      "scripts/secret-scan": "5b3976b01da6da1d4f99f36dff1f7321a08c133348b9fc02192b0c72d7414f78"
     }
   },
   "profile": "toolkit",

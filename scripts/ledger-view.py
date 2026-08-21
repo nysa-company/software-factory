@@ -434,6 +434,72 @@ def unsettled_manifest(factory_root):
     return None
 
 
+def orphaned_pre_go(path, values):
+    if (
+        values.get("phase") != "resolved"
+        or values.get("accounting_schema") != ""
+        or values.get("accounting_state") != ""
+        or values.get("go_issued") != "0"
+        or values.get("task_submitted") != "0"
+        or values.get("turns", "") not in {"", "0"}
+        or values.get("effective_cost", "") not in {"", "0"}
+        or any(values.get(key) for key in (
+            "terminal_at", "exit_status", "cost_basis",
+            "pid", "pgid", "process_start", "role_exit", "output_sha256",
+            "progress_events", "progress_journal_sha256", "timeout_kind",
+            "terminal_reason_code", "cancellation_reason",
+            "cancellation_preview_hash",
+        ))
+    ):
+        return False
+    prefixes = (f"{path.stem}.", f".{path.stem}.")
+    return not any(
+        entry.name != path.name and entry.name.startswith(prefixes)
+        for entry in path.parent.iterdir()
+    )
+
+
+def settle_orphaned_pre_go(factory_root):
+    record = ambiguous_run_record(factory_root)
+    if record:
+        fail(f"product has a live or ambiguous run claim: {record.relative_to(factory_root)}")
+    candidates = []
+    for path, values in run_manifests(factory_root / "factory" / "runs"):
+        if values.get("accounting_schema") == "1":
+            terminal = values.get("accounting_state") in TERMINAL_STATES
+        else:
+            terminal = values.get("phase") in {"completed", "abandoned"}
+        if terminal:
+            continue
+        if not orphaned_pre_go(path, values):
+            fail(
+                f"product has a live or ambiguous manifest for "
+                f"{values.get('ticket', 'unknown')}: {path.name}"
+            )
+        replacement = dict(values)
+        replacement.update({
+            "phase": "abandoned",
+            "accounting_schema": "1",
+            "accounting_state": "launch_void",
+            "terminal_at": values.get("updated_at", ""),
+            "turns": "0",
+            "effective_cost": "0",
+            "exit_status": "125",
+            "cost_basis": "launch_void",
+        })
+        manifest_row(path, replacement)
+        candidates.append((path, replacement))
+    for path, values in candidates:
+        atomic_write_in_directory(
+            path.parent, path.name,
+            "".join(f"{key}={value}\n" for key, value in values.items()).encode(),
+        )
+    return [
+        {"run_id": values["run_id"], "ticket": values["ticket"]}
+        for _path, values in candidates
+    ]
+
+
 def unmatched_legacy_terminal_manifest(factory_root, rows):
     accounted = {
         (row["ticket"], row["run_id"])
@@ -506,6 +572,8 @@ def main():
     project.add_argument("--workdir", required=True)
     project.add_argument("--ticket", required=True)
     project.add_argument("--expect-sha256")
+    settle = subparsers.add_parser("settle-orphaned-pre-go")
+    settle.add_argument("--factory-root", required=True)
     args = parser.parse_args()
 
     if args.command in ("refresh", "print"):
@@ -520,11 +588,23 @@ def main():
             print(target)
         return
 
+    if args.command == "settle-orphaned-pre-go":
+        root = Path(args.factory_root).resolve()
+        with projection_locks(root):
+            settled = settle_orphaned_pre_go(root)
+        print(json.dumps({
+            "schema": "nysa.software-factory.ledger-orphan-settlement/v1",
+            "status": "ok",
+            "settled": settled,
+        }, indent=2, sort_keys=True))
+        return
+
     root = Path(args.factory_root).resolve()
     workdir = Path(args.workdir).resolve()
     validate_projection(root, workdir, args.ticket)
     validate_projection_target(workdir)
     with projection_locks(root):
+        settle_orphaned_pre_go(root)
         ensure_projectable(root)
         rows = effective_rows(
             root, durable=workdir / "factory" / "ledger.csv",

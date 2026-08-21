@@ -62,6 +62,46 @@ def manifest(path, *, state="reserved", phase=None, go="0", cost="", status="", 
     path.write_text("".join(f"{key}={value}\n" for key, value in values.items()))
 
 
+def orphaned_pre_go(path, **updates):
+    values = {
+        "run_id": path.stem,
+        "phase": "resolved",
+        "accounting_schema": "",
+        "accounting_state": "",
+        "reserved_usd": "10",
+        "go_issued": "0",
+        "task_submitted": "0",
+        "started_at": "2026-08-19T16:31:58Z",
+        "terminal_at": "",
+        "prompt_version": "6",
+        "turns": "0",
+        "effective_cost": "",
+        "exit_status": "",
+        "cost_basis": "",
+        "ticket": "T-323",
+        "role": "planner",
+        "adapter": "codex",
+        "provider_family": "openai",
+        "model_id": "gpt-test",
+        "selection_reason": "fallback_ready",
+        "adapter_version": "test",
+        "pid": "",
+        "pgid": "",
+        "process_start": "",
+        "role_exit": "",
+        "output_sha256": "",
+        "progress_events": "",
+        "progress_journal_sha256": "",
+        "timeout_kind": "",
+        "terminal_reason_code": "",
+        "cancellation_reason": "",
+        "cancellation_preview_hash": "",
+        "updated_at": "2026-08-19T16:32:19Z",
+    }
+    values.update(updates)
+    path.write_text("".join(f"{key}={value}\n" for key, value in values.items()))
+
+
 class LedgerViewTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -173,6 +213,84 @@ class LedgerViewTest(unittest.TestCase):
         )
         row = self.refresh()[-1]
         self.assertEqual((row["cost_usd"], row["turns"], row["cost_basis"]), ("0", "0", "launch_void"))
+
+    def test_historical_pre_go_orphan_is_settled_exactly_once(self):
+        path = self.root / "factory" / "runs" / "1787157118-91036.meta"
+        orphaned_pre_go(path)
+
+        settled = run("settle-orphaned-pre-go", "--factory-root", self.root)
+        payload = json.loads(settled.stdout)
+        values = LEDGER_VIEW.read_meta(path)
+        self.assertEqual(payload["settled"], [{"run_id": path.stem, "ticket": "T-323"}])
+        self.assertEqual(
+            (
+                values["phase"], values["accounting_schema"],
+                values["accounting_state"], values["go_issued"],
+                values["task_submitted"], values["terminal_at"],
+                values["turns"], values["effective_cost"],
+                values["exit_status"], values["cost_basis"],
+            ),
+            (
+                "abandoned", "1", "launch_void", "0", "0",
+                "2026-08-19T16:32:19Z", "0", "0", "125", "launch_void",
+            ),
+        )
+        terminal = path.read_bytes()
+        repeated = run("settle-orphaned-pre-go", "--factory-root", self.root)
+        self.assertEqual(json.loads(repeated.stdout)["settled"], [])
+        self.assertEqual(path.read_bytes(), terminal)
+        self.assertFalse((self.root / "factory" / ".launch.lock").exists())
+        self.assertFalse((self.root / "factory" / ".ledger.lock").exists())
+
+        for label, updates in (
+            ("go", {"go_issued": "1"}),
+            ("submitted", {"task_submitted": "1"}),
+            ("process", {"pid": "123"}),
+            ("output", {"output_sha256": "a" * 64}),
+            ("turns", {"turns": "1"}),
+            ("cost", {"effective_cost": "0.01"}),
+        ):
+            with self.subTest(label=label):
+                orphaned_pre_go(path, **updates)
+                before = path.read_bytes()
+                refused = run(
+                    "settle-orphaned-pre-go", "--factory-root", self.root,
+                    check=False,
+                )
+                self.assertNotEqual(refused.returncode, 0)
+                self.assertEqual(path.read_bytes(), before)
+
+        orphaned_pre_go(path)
+        sidecar = path.with_suffix(".out")
+        sidecar.write_text("provider output\n")
+        before = path.read_bytes()
+        refused = run(
+            "settle-orphaned-pre-go", "--factory-root", self.root, check=False,
+        )
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertEqual(path.read_bytes(), before)
+        sidecar.unlink()
+
+        safe = path.parent / "safe-orphan.meta"
+        orphaned_pre_go(safe, run_id="safe-orphan", ticket="T-324")
+        orphaned_pre_go(path, go_issued="1")
+        safe_before = safe.read_bytes()
+        refused = run(
+            "settle-orphaned-pre-go", "--factory-root", self.root, check=False,
+        )
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertEqual(safe.read_bytes(), safe_before)
+        safe.unlink()
+
+        orphaned_pre_go(path)
+        before = path.read_bytes()
+        claim = self.root / "factory" / ".active-runs" / "T-323.planner.lock"
+        claim.mkdir(parents=True)
+        refused = run(
+            "settle-orphaned-pre-go", "--factory-root", self.root, check=False,
+        )
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertEqual(path.read_bytes(), before)
 
     def test_post_go_cancellation_keeps_full_reservation(self):
         path = self.root / "factory" / "runs" / "run-cancelled.meta"
@@ -752,6 +870,21 @@ class LedgerViewTest(unittest.TestCase):
         self.assertNotEqual(refused.returncode, 0)
         self.assertIn("T-123: run-1.meta", refused.stderr)
 
+        orphaned_pre_go(path)
+        recovered = run(
+            "project", "--factory-root", self.root, "--workdir", worktree,
+            "--ticket", "T-123",
+        )
+        with (worktree / "factory" / "ledger.csv").open() as handle:
+            recovered_rows = list(csv.DictReader(handle))
+        self.assertEqual(json.loads(recovered.stdout)["row_count"], 2)
+        self.assertEqual(
+            (recovered_rows[-1]["ticket"], recovered_rows[-1]["cost_usd"],
+             recovered_rows[-1]["cost_basis"]),
+            ("T-323", "0", "launch_void"),
+        )
+
+        git(worktree, "checkout", "--", "factory/ledger.csv")
         path.write_text(
             "run_id=run-1\nphase=resolved\naccounting_schema=\nticket=T-123\n"
         )

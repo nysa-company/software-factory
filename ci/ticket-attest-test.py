@@ -44,6 +44,25 @@ def command(*args, cwd=None, env=None, check=True):
     return result
 
 
+def historical_pre_go_orphan(path):
+    values = {
+        "run_id": path.stem, "phase": "resolved", "accounting_schema": "",
+        "accounting_state": "", "reserved_usd": "10", "go_issued": "0",
+        "task_submitted": "0", "started_at": "2026-08-19T16:31:58Z",
+        "terminal_at": "", "prompt_version": "6", "turns": "0",
+        "effective_cost": "", "exit_status": "", "cost_basis": "",
+        "ticket": "T-323", "role": "planner", "adapter": "codex",
+        "provider_family": "openai", "model_id": "gpt-test",
+        "selection_reason": "fallback_ready", "adapter_version": "test",
+        "pid": "", "pgid": "", "process_start": "", "role_exit": "",
+        "output_sha256": "", "progress_events": "",
+        "progress_journal_sha256": "", "timeout_kind": "",
+        "terminal_reason_code": "", "cancellation_reason": "",
+        "cancellation_preview_hash": "", "updated_at": "2026-08-19T16:32:19Z",
+    }
+    path.write_text("".join(f"{key}={value}\n" for key, value in values.items()))
+
+
 class LauncherContractTests(unittest.TestCase):
     def test_launcher_binds_contract_version_to_ticket_attest_helper(self):
         launcher = (
@@ -2897,6 +2916,26 @@ else:
                 self.workdir, "T-700", closeout_head,
             )["basis"],
             "attested-emergency-closeout",
+        )
+
+    def test_emergency_closeout_settles_historical_pre_go_orphan_before_intent(self):
+        self.prepare_emergency()
+        planned = self.emergency("emergency-plan")
+        self.assertEqual(planned.returncode, 0, planned.stderr)
+        orphan = self.product / "factory/runs/1787157118-91036.meta"
+        historical_pre_go_orphan(orphan)
+
+        applied = self.emergency(
+            "emergency-apply", json.loads(planned.stdout)["approval_sha256"],
+        )
+
+        self.assertEqual(applied.returncode, 0, applied.stderr)
+        values = dict(
+            line.split("=", 1) for line in orphan.read_text().splitlines()
+        )
+        self.assertEqual(
+            (values["phase"], values["accounting_state"], values["cost_basis"]),
+            ("abandoned", "launch_void", "launch_void"),
         )
 
     def prepare_stale_emergency(self, *, bundle_v2=False):
