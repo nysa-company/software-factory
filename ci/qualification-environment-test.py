@@ -2234,6 +2234,26 @@ class QualificationEnvironmentTest(unittest.TestCase):
         ):
             ENVIRONMENT.validate_selected_contracts(self.product)
 
+    def test_rejects_selected_protected_source_hash_before_lane_creation(self) -> None:
+        (self.product / "app").mkdir()
+        (self.product / "tests").mkdir()
+        (self.product / "app/server.js").write_text("export const value = 1;\n")
+        (self.product / "tests/source-boundary.test.js").write_text(
+            "import { createHash } from 'node:crypto';\n"
+            "import { readFileSync } from 'node:fs';\n"
+            "const digest = createHash('sha256').update(readFileSync(\n"
+            "  new URL('../app/server.js', import.meta.url),\n"
+            ")).digest('hex');\n"
+        )
+        run(self.product, "git", "add", "app", "tests")
+        run(self.product, "git", "commit", "-qm", "protected source boundary")
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError,
+            r"READINESS BLOCKED: protected source hash collision: "
+            r"tests/source-boundary.test.js => app/server.js",
+        ):
+            ENVIRONMENT.validate_selected_contracts(self.product)
+
     def test_qualification_manifest_validation_is_strict(self) -> None:
         path = self.product / "factory/QUALIFICATION.json"
         original = json.loads(path.read_text())

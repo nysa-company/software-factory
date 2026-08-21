@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import os
 from pathlib import Path, PurePosixPath
+import posixpath
 import re
 import shlex
 import stat
@@ -126,13 +127,14 @@ def paths(text: str, name: str, workdir: Path) -> list[str]:
 
 def protected_test_conflicts(
     text: str, workdir: Path, test_author_paths: list[str]
-) -> None:
+) -> set[str]:
     raw = field(text, "Protected-Test-Conflicts")
     if raw.casefold() == "none":
-        return
+        return set()
     entries = [item.strip() for item in raw.split(",")]
     if not entries or len(entries) != len(set(entries)):
         raise ReadinessError("Protected-Test-Conflicts entries are duplicated")
+    declared = set()
     for entry in entries:
         path, _literal = protected_test_conflict(entry)
         conflict_paths = paths(
@@ -144,6 +146,42 @@ def protected_test_conflicts(
             raise ReadinessError(
                 f"protected-test conflict lacks Test-author ownership: {entry}"
             )
+        declared.add(path)
+    return declared
+
+
+def protected_source_hash_collisions(
+    workdir: Path, mutable_paths: list[str]
+) -> list[tuple[str, str]]:
+    tracked = subprocess.run(
+        ["git", "-C", str(workdir), "ls-files", "-z"],
+        capture_output=True, check=True,
+    )
+    mutable = set(mutable_paths)
+    collisions = set()
+    sha256 = re.compile(r"\bcreateHash\(\s*(['\"`])sha256\1\s*\)", re.IGNORECASE)
+    literal = re.compile(r"(['\"`])(\.[^'\"`\r\n]+)\1")
+    for raw in tracked.stdout.split(b"\0"):
+        if not raw:
+            continue
+        relative = raw.decode("utf-8", errors="strict")
+        if not re.search(r"(?:^|/)[^/]*(?:test|spec)\.[cm]?[jt]sx?$", relative):
+            continue
+        path = workdir / relative
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or path.is_symlink():
+            raise ReadinessError(f"protected test is unsafe: {relative}")
+        if info.st_size > 1_048_576:
+            raise ReadinessError(f"protected test is oversized: {relative}")
+        text = path.read_text(encoding="utf-8")
+        if "readFileSync" not in text or not sha256.search(text):
+            continue
+        parent = str(PurePosixPath(relative).parent)
+        for match in literal.finditer(text):
+            candidate = posixpath.normpath(posixpath.join(parent, match.group(2)))
+            if candidate in mutable:
+                collisions.add((relative, candidate))
+    return sorted(collisions)
 
 
 def validate(ticket: str, workdir: Path) -> None:
@@ -238,7 +276,15 @@ def validate(ticket: str, workdir: Path) -> None:
         if not is_test_path(value):
             raise ReadinessError(f"Fixture-Seams path is outside TEST_PATHS: {value}")
     paths(text, "Authentication-Seams", workdir)
-    protected_test_conflicts(text, workdir, fixture_seams)
+    declared_conflicts = protected_test_conflicts(text, workdir, fixture_seams)
+    for protected_test, mutable_path in protected_source_hash_collisions(
+        workdir, builder + fixture_seams,
+    ):
+        if protected_test not in declared_conflicts:
+            raise ReadinessError(
+                "protected source hash collision: "
+                f"{protected_test} => {mutable_path}"
+            )
 
 
 def main() -> None:
