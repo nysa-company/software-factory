@@ -1016,13 +1016,18 @@ PY
 
 PRODUCT_PREFLIGHT="$(make_product product-preflight)"
 set_pin "$PRODUCT_PREFLIGHT" "$SHA_A"
-mkdir -p "$PRODUCT_PREFLIGHT/app/tests"
+mkdir -p "$PRODUCT_PREFLIGHT/app/tests" "$PRODUCT_PREFLIGHT/factory/initiatives"
+printf '%s\n' '# I-001' 'Status: planned' \
+  > "$PRODUCT_PREFLIGHT/factory/initiatives/I-001.md"
 printf 'fixture\n' > "$PRODUCT_PREFLIGHT/app/tests/one.test.js"
 printf 'fixture\n' > "$PRODUCT_PREFLIGHT/app/tests/two.test.js"
 printf 'fixture\n' > "$PRODUCT_PREFLIGHT/app/tests/three.test.js"
 printf 'State: Backlog\n' > "$PRODUCT_PREFLIGHT/factory/tickets/T-004.md"
 cat > "$PRODUCT_PREFLIGHT/factory/tickets/T-001.md" <<'EOF'
 State: Ready
+Initiative: I-001
+Priority: normal
+Depends-On: none
 Product-Decisions: frozen
 Builder ownership: app/one.js only
 Fixture-Seams: app/tests/one.test.js
@@ -1031,6 +1036,9 @@ Protected-Test-Conflicts: none
 EOF
 cat > "$PRODUCT_PREFLIGHT/factory/tickets/T-002.md" <<'EOF'
 State: Ready
+Initiative: I-001
+Priority: normal
+Depends-On: none
 Product-Decisions: frozen
 Builder ownership: app/two.js only
 Fixture-Seams: app/tests/two.test.js
@@ -1039,6 +1047,9 @@ Protected-Test-Conflicts: none
 EOF
 cat > "$PRODUCT_PREFLIGHT/factory/tickets/T-003.md" <<'EOF'
 State: Backlog
+Initiative: I-001
+Priority: normal
+Depends-On: none
 Product-Decisions: frozen
 Builder ownership: app/three.js only
 Fixture-Seams: app/tests/three.test.js
@@ -1310,6 +1321,9 @@ sed 's|Builder ownership: app/one.js only|Builder ownership: app/two.js only|' \
 mv "$TMP/preflight-restored-ticket" "$PRODUCT_PREFLIGHT/factory/tickets/T-002.md"
 cat > "$PRODUCT_PREFLIGHT/factory/tickets/T-007.md" <<'EOF'
 State: Ready
+Initiative: I-001
+Priority: normal
+Depends-On: none
 Product-Decisions: frozen
 Builder ownership: app/one.js only
 Fixture-Seams: app/tests/one.test.js
@@ -1351,6 +1365,9 @@ done
 for ticket in T-008 T-009; do
   cat > "$PRODUCT_PREFLIGHT/factory/tickets/$ticket.md" <<'EOF'
 State: Ready
+Initiative: I-001
+Priority: normal
+Depends-On: none
 Product-Decisions: frozen
 Builder ownership: app/three.js only
 Fixture-Seams: app/tests/three.test.js

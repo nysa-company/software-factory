@@ -47,6 +47,8 @@ class DispatchPlanTest(unittest.TestCase):
         run("git", "config", "user.email", "test@example.invalid", cwd=self.product)
         factory = self.product / "factory"
         (factory / "tickets").mkdir(parents=True)
+        (factory / "initiatives").mkdir()
+        (factory / "initiatives/I-1.md").write_text("# I-1\n")
         (factory / "PROJECT.env").write_text(
             "TICKET_BRANCH_PREFIX=ticket/\nMAX_CONCURRENT_TICKETS=2\nTEST_PATHS=tests/\n"
         )
@@ -77,6 +79,7 @@ class DispatchPlanTest(unittest.TestCase):
         (self.product / "factory/tickets" / f"{ticket}.md").write_text(
             f"# {ticket}: test\n\nPriority: {priority}\n"
             "Initiative: I-1\n"
+            "Depends-On: none\n"
             f"State: {state}\nBranch: ticket/{ticket}\n"
             "Product-Decisions: frozen\n"
             "Builder ownership: README.md only\n"
@@ -127,7 +130,9 @@ class DispatchPlanTest(unittest.TestCase):
         for ticket, required in (dependencies or {}).items():
             path = self.product / "factory/tickets" / f"{ticket}.md"
             path.write_text(
-                path.read_text() + f"Depends-On: {','.join(required)}\n"
+                path.read_text().replace(
+                    "Depends-On: none", f"Depends-On: {','.join(required)}"
+                )
             )
         manifest = {
             "factory_sha": "a" * 40,
@@ -154,7 +159,9 @@ class DispatchPlanTest(unittest.TestCase):
         for ticket, required in (dependencies or {}).items():
             path = self.product / "factory/tickets" / f"{ticket}.md"
             path.write_text(
-                path.read_text() + f"Depends-On: {','.join(required)}\n"
+                path.read_text().replace(
+                    "Depends-On: none", f"Depends-On: {','.join(required)}"
+                )
             )
         (self.product / "factory/PROJECT.env").write_text(
             f"TICKET_BRANCH_PREFIX=ticket/\nMAX_CONCURRENT_TICKETS={target}\n"
@@ -747,7 +754,9 @@ class DispatchPlanTest(unittest.TestCase):
 
     def test_nonqualification_dispatch_waits_for_protected_dependency(self):
         ticket = self.product / "factory/tickets/T-200.md"
-        ticket.write_text(ticket.read_text() + "Depends-On: T-300\n")
+        ticket.write_text(
+            ticket.read_text().replace("Depends-On: none", "Depends-On: T-300")
+        )
         with mock.patch.object(
             DISPATCH,
             "protected_dependency",
@@ -766,16 +775,23 @@ class DispatchPlanTest(unittest.TestCase):
         for number in range(500, 564):
             self.ticket(f"T-{number}", "normal", "Backlog")
             path = self.product / f"factory/tickets/T-{number}.md"
-            path.write_text(path.read_text() + "Depends-On: T-999\n")
+            path.write_text(
+                path.read_text().replace("Depends-On: none", "Depends-On: T-999")
+            )
         self.write_mapping(states={"T-300": "Ready"})
         effective = self.product / "factory/tickets/T-300.md"
-        effective.write_text(effective.read_text() + "Depends-On: T-997\n")
+        effective.write_text(
+            effective.read_text().replace("Depends-On: none", "Depends-On: T-997")
+        )
         stale = self.product / "factory/tickets/T-400.md"
         stale.write_text(
-            stale.read_text() + f"Kit-SHA: {'b' * 40}\nDepends-On: T-996\n"
+            stale.read_text().replace("Depends-On: none", "Depends-On: T-996")
+            + f"Kit-SHA: {'b' * 40}\n"
         )
         eligible = self.product / "factory/tickets/T-200.md"
-        eligible.write_text(eligible.read_text() + "Depends-On: T-998\n")
+        eligible.write_text(
+            eligible.read_text().replace("Depends-On: none", "Depends-On: T-998")
+        )
 
         def protected_dependency(_product, dependency):
             if dependency == "T-998":
@@ -804,8 +820,9 @@ class DispatchPlanTest(unittest.TestCase):
     def test_malformed_non_goal_dependency_is_named_without_blocking_siblings(self):
         ticket = self.product / "factory/tickets/T-300.md"
         ticket.write_text(
-            ticket.read_text()
-            + "Depends-On: none — prose is not a dependency literal\n"
+            ticket.read_text().replace(
+                "Depends-On: none", "Depends-On: none — prose is not a dependency literal"
+            )
         )
         run("git", "add", str(ticket), cwd=self.product)
         run("git", "commit", "-qm", "add malformed non-goal ticket", cwd=self.product)
@@ -827,7 +844,7 @@ class DispatchPlanTest(unittest.TestCase):
         malformed = self.product / "factory/tickets/T-300.md"
         malformed.write_text(
             malformed.read_text().replace("State: Backlog", "State: Ready")
-            + "Depends-On: not-a-ticket\n"
+            .replace("Depends-On: none", "Depends-On: not-a-ticket")
         )
         run("git", "add", ".", cwd=self.product)
         run("git", "commit", "-qm", "leave one malformed eligible ticket", cwd=self.product)
@@ -878,7 +895,7 @@ class DispatchPlanTest(unittest.TestCase):
             "Depends-On: T-100\nDepends-On: T-200\n",
         ):
             with self.subTest(suffix=suffix):
-                path.write_text(original + suffix)
+                path.write_text(original.replace("Depends-On: none\n", suffix))
                 selected, refusals = DISPATCH.candidates(
                     self.product / "factory",
                     DISPATCH.load_mapping(self.mapping),
@@ -893,7 +910,9 @@ class DispatchPlanTest(unittest.TestCase):
     def test_selected_qualification_dependency_remains_fail_closed(self):
         self.write_qualification()
         path = self.product / "factory/tickets/T-100.md"
-        path.write_text(path.read_text() + "Depends-On: invalid\n")
+        path.write_text(
+            path.read_text().replace("Depends-On: none", "Depends-On: invalid")
+        )
 
         with self.assertRaisesRegex(
             DISPATCH.DispatchError, "ticket dependencies are invalid"
@@ -2368,7 +2387,9 @@ class DispatchPlanTest(unittest.TestCase):
         dependency.assert_called_once_with(self.product, "T-099")
 
         path = self.product / "factory/tickets/T-110.md"
-        path.write_text(path.read_text() + "Depends-On: T-112\n")
+        path.write_text(
+            path.read_text().replace("Depends-On: none", "Depends-On: T-112")
+        )
         with self.assertRaisesRegex(DISPATCH.DispatchError, "cycle"):
             DISPATCH.qualification(self.product, self.product / "factory", 3)
 

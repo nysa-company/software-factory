@@ -17,6 +17,13 @@ class ReadinessError(ValueError):
     pass
 
 
+STATES = frozenset({
+    "backlog", "ready", "planning", "building", "review",
+    "awaiting approval", "approved", "blocked-escalated", "done", "canceled",
+})
+PRIORITIES = frozenset({"none", "urgent", "high", "normal", "low"})
+
+
 def protected_test_conflict(entry: str) -> tuple[str, str]:
     path, separator, literal = entry.partition(" => ")
     candidate = PurePosixPath(path)
@@ -67,11 +74,27 @@ def protected_text_collisions(workdir: Path, literal: str) -> list[str]:
 
 def field(text: str, name: str) -> str:
     values = re.findall(
-        rf"^{re.escape(name)}:\s*(.*?)\s*$", text, re.IGNORECASE | re.MULTILINE
+        rf"^{re.escape(name)}:[ \t]*(.*?)[ \t]*$",
+        text, re.IGNORECASE | re.MULTILINE,
     )
     if len(values) != 1 or not values[0]:
         raise ReadinessError(f"ticket requires exactly one {name} field")
     return values[0]
+
+
+def dependencies(text: str, ticket: str) -> tuple[str, ...]:
+    raw = field(text, "Depends-On")
+    if raw.casefold() == "none":
+        return ()
+    values = tuple(item.strip() for item in raw.split(","))
+    if (
+        not values
+        or any(not re.fullmatch(r"T-[0-9]+", item) for item in values)
+        or len(values) != len(set(values))
+        or ticket in values
+    ):
+        raise ReadinessError("ticket Depends-On is invalid")
+    return values
 
 
 def builder_paths(text: str) -> list[str]:
@@ -111,7 +134,10 @@ def paths(text: str, name: str, workdir: Path) -> list[str]:
         ):
             raise ReadinessError(f"{name} contains an unsafe path")
         candidate = workdir / value
-        info = candidate.lstat()
+        try:
+            info = candidate.lstat()
+        except OSError as error:
+            raise ReadinessError(f"{name} path is unavailable: {value}") from error
         if not stat.S_ISREG(info.st_mode) or candidate.is_symlink():
             raise ReadinessError(f"{name} path is not a regular file: {value}")
         tracked = subprocess.run(
@@ -136,7 +162,10 @@ def protected_test_conflicts(
         raise ReadinessError("Protected-Test-Conflicts entries are duplicated")
     declared = set()
     for entry in entries:
-        path, _literal = protected_test_conflict(entry)
+        try:
+            path, _literal = protected_test_conflict(entry)
+        except ReadinessError as error:
+            raise ReadinessError(f"Protected-Test-Conflicts: {error}") from error
         conflict_paths = paths(
             f"Protected-Test-Conflict-Path: {path}",
             "Protected-Test-Conflict-Path",
@@ -202,7 +231,62 @@ def validate(ticket: str, workdir: Path) -> None:
     ):
         raise ReadinessError("ticket contract is unsafe")
     text = ticket_path.read_text(encoding="utf-8")
-    field(text, "State")
+    state = field(text, "State").casefold()
+    if state not in STATES:
+        raise ReadinessError("ticket State is invalid")
+    if field(text, "Priority").casefold() not in PRIORITIES:
+        raise ReadinessError("ticket Priority is invalid")
+    initiative = field(text, "Initiative")
+    if not re.fullmatch(r"I-[0-9]+", initiative):
+        raise ReadinessError("ticket Initiative is invalid")
+    initiative_path = workdir / "factory" / "initiatives" / f"{initiative}.md"
+    try:
+        initiative_info = initiative_path.lstat()
+    except OSError as error:
+        raise ReadinessError("ticket Initiative record is unavailable") from error
+    if (
+        initiative_path.is_symlink()
+        or not stat.S_ISREG(initiative_info.st_mode)
+        or initiative_info.st_uid != os.geteuid()
+        or subprocess.run(
+            ["git", "-C", str(workdir), "ls-files", "--error-unmatch", "--",
+             str(initiative_path.relative_to(workdir))],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+        ).returncode
+    ):
+        raise ReadinessError("ticket Initiative record is unsafe")
+    dependencies(text, ticket)
+    merge_policies = re.findall(
+        r"^Merge-Policy:[ \t]*(.*?)[ \t]*$", text, re.IGNORECASE | re.MULTILINE,
+    )
+    if len(merge_policies) > 1 or (
+        merge_policies and merge_policies[0].casefold() not in {"manual", "auto"}
+    ):
+        raise ReadinessError("ticket Merge-Policy is invalid")
+    approvals = re.findall(
+        r"^Operator-Approval:[ \t]*(.*?)[ \t]*$",
+        text, re.IGNORECASE | re.MULTILINE,
+    )
+    allowed_approvals = (
+        {"linear", "receipt", "migration"} if state == "done"
+        else {"linear", "receipt"} if state == "approved"
+        else set()
+    )
+    if (
+        len(approvals) > 1
+        or (state in {"approved", "done"} and len(approvals) != 1)
+        or (approvals and approvals[0].casefold() not in allowed_approvals)
+    ):
+        raise ReadinessError("ticket Operator-Approval is invalid")
+    resume_states = re.findall(
+        r"^Resume-State:[ \t]*(.*?)[ \t]*$", text, re.IGNORECASE | re.MULTILINE,
+    )
+    if len(resume_states) > 1 or (
+        resume_states
+        and resume_states[0].casefold()
+        not in {"backlog", "ready", "planning", "building", "review"}
+    ):
+        raise ReadinessError("ticket Resume-State is invalid")
     kit_shas = re.findall(
         r"^Kit-SHA:\s*(.*?)\s*$", text, re.IGNORECASE | re.MULTILINE
     )

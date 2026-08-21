@@ -2180,6 +2180,9 @@ class StateMachineTest(unittest.TestCase):
     def test_operator_resume_accepts_only_one_safe_unmigrated_context_commit(self) -> None:
         self.args.receipt = "b" * 64
         ticket = self.product / "factory/tickets/T-110.md"
+        initiative = self.product / "factory/initiatives/I-100.md"
+        initiative.parent.mkdir()
+        initiative.write_text("# I-100\n", encoding="utf-8")
         fixture = self.product / "apps/api/tests/example.test.ts"
         fixture.parent.mkdir(parents=True)
         fixture.write_text("export const expected = 'expected-literal';\n")
@@ -2187,6 +2190,9 @@ class StateMachineTest(unittest.TestCase):
         sibling_fixture.write_text("export const expected = 'sibling-literal';\n")
         ticket.write_text(
             "# T-110\n\nState: Planning\n"
+            "Priority: normal\n"
+            "Initiative: I-100\n"
+            "Depends-On: none\n"
             "Product-Decisions: frozen\n"
             "Builder ownership: README.md only\n"
             "Fixture-Seams: apps/api/tests/example.test.ts, "
@@ -2200,7 +2206,7 @@ class StateMachineTest(unittest.TestCase):
         rulings = self.product / "factory/rulings.md"
         rulings.write_text("# Rulings\n\nT-100: preserve prior ruling.\n")
         run(
-            "git", "add", str(ticket), str(rulings), str(fixture),
+            "git", "add", str(ticket), str(initiative), str(rulings), str(fixture),
             str(sibling_fixture), str(project), cwd=self.product,
         )
         run("git", "commit", "-qm", "add operator fields", cwd=self.product)
@@ -2659,6 +2665,9 @@ class StateMachineTest(unittest.TestCase):
     def test_operator_resume_accepts_coupled_conflict_fixture_and_answer(self) -> None:
         self.args.receipt = "b" * 64
         ticket = self.product / "factory/tickets/T-110.md"
+        initiative = self.product / "factory/initiatives/I-100.md"
+        initiative.parent.mkdir()
+        initiative.write_text("# I-100\n", encoding="utf-8")
         fixture = self.product / "apps/api/tests/example.test.ts"
         fixture.parent.mkdir(parents=True)
         fixture.write_text("export const expected = 'expected-literal';\n")
@@ -2674,6 +2683,9 @@ class StateMachineTest(unittest.TestCase):
         project.write_text('TEST_PATHS="apps/api/tests/"\n')
         ticket.write_text(
             "# T-110\n\nState: Planning\n"
+            "Priority: normal\n"
+            "Initiative: I-100\n"
+            "Depends-On: none\n"
             "Product-Decisions: frozen\n"
             "Builder ownership: README.md only\n"
             "Fixture-Seams: none\n"
@@ -2682,7 +2694,7 @@ class StateMachineTest(unittest.TestCase):
             encoding="utf-8",
         )
         run(
-            "git", "add", str(ticket), str(fixture), str(application),
+            "git", "add", str(ticket), str(initiative), str(fixture), str(application),
             str(workflow), str(factory_control), str(project), cwd=self.product,
         )
         run("git", "commit", "-qm", "seed protected fixture contract", cwd=self.product)
