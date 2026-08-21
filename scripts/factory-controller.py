@@ -7377,9 +7377,11 @@ class Controller:
                 current = self.operator_transition(claim)
                 if (
                     not valid_transition_evidence(result, claim["ticket"])
-                    or result.get("stage") != "RUN planner"
+                    or result.get("role") is None
                     or current is None
                     or current.get("receipt_sha256") != result.get("receipt")
+                    or current.get("stage") != result.get("stage")
+                    or current.get("role") != result.get("role")
                     or (
                         current.get("receipt_sha256") == predecessor
                         and current.get("parent_digest") != failure_receipt
@@ -7397,11 +7399,12 @@ class Controller:
                     raise ControllerError(
                         "passport preflight successor is invalid"
                     )
-                claim.update(receipt=current["receipt_sha256"], role="planner")
+                role = result["role"]
+                claim.update(receipt=current["receipt_sha256"], role=role)
                 self.save_claim(claim)
                 preflight = self.json_call(
                     "preflight", "--ticket", claim["ticket"],
-                    "--role", "planner", "--lease", claim["lease"],
+                    "--role", role, "--lease", claim["lease"],
                     "--receipt", claim["receipt"], "--workdir",
                     claim["worktree"], "--json", allow=(0, 1),
                 )

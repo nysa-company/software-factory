@@ -7214,3 +7214,16 @@ parent may carry one stale but well-formed pin so this same transaction repairs
 branches created by the old bug. Historical two-path migrations remain readable
 only while validating predecessor evidence; they cannot authorize a new current
 release migration.
+
+## 2026-08-20 — Decision 524: Preflight recovery follows authenticated stage progress
+
+Category: Reliability
+
+Q58's successor Planner was not a completed-role replay: the authenticated
+Spec-linter verdict was `FAIL`, so replanning was required. The audit did find
+an adjacent recovery defect: after validating a corrected stale Planner
+preflight receipt, the controller asked the state machine for the current stage
+but accepted and preflighted only Planner. Recovery now binds the returned role
+and stage to the durable transition receipt and preflights that authenticated
+stage, so a PASS frontier resumes Test-author while a required replan remains
+Planner.
