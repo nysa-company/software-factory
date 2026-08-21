@@ -1512,7 +1512,9 @@ Awaiting Approval → Approved receipt transformation, and bind the same reviewe
 SHA, repository, branch, Kit-SHA, PR, bundle blobs, merge method, and ordered
 timestamps. A later sealed successor may append a validated release-migration
 route commit and replace only the branch `factory/KIT_PIN` and ticket Kit-SHA;
-the approval and bundle
+ticket-PR lineage and bundle attestation admit that pin only when the changed
+route journal authenticates the migration and the exact regular pin blob equals
+the sealed successor SHA. The approval and bundle
 receipts, bundle document, and all other approved ticket text remain
 byte-identical. Phase two may use that immutable approval receipt after the
 operator map projects the transient approval overlay away; partial overlays still refuse.

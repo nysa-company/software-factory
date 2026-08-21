@@ -1104,6 +1104,54 @@ else:
         command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
         self.assertIn("changed after", self.attest("bundle").stderr)
 
+    def test_bundle_accepts_only_exact_post_review_migration_kit_pin(self):
+        candidate = "c" * 40
+        path = self.product / "factory/route-plans/T-700.json"
+        legacy_raw = path.read_bytes()
+        legacy = json.loads(legacy_raw)
+        body = {
+            "historical_selections": legacy["resolution"]["selections"],
+            "kind": "migration",
+            "legacy_plan_b64": base64.b64encode(legacy_raw).decode(),
+            "legacy_plan_sha256": hashlib.sha256(legacy_raw).hexdigest(),
+            "migrated_at": "2026-08-20T11:00:00Z",
+            "new_kit_sha": candidate,
+            "old_kit_sha": KIT_SHA,
+            "pin_commit": self.head(),
+            "policy_hash": legacy["resolution"]["policy_hash"],
+        }
+        revision = {"body": body, "parent_hash": None, "revision": 0}
+        revision["revision_hash"] = TICKET_ATTEST.route_revision_hash(0, None, body)
+        path.write_text(json.dumps({
+            "kit_sha": candidate,
+            "revisions": [revision],
+            "schema": "ticket-model-route-journal/v2",
+            "ticket": "T-700",
+        }, sort_keys=True, separators=(",", ":")) + "\n")
+        pin = self.product / "factory/KIT_PIN"
+        pin.write_text("d" * 40 + "\n")
+        self.commit("migrate with wrong Kit SHA")
+        command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
+        self.env["FACTORY_RELEASE_SHA"] = candidate
+        self.assertIn(
+            "post-review route migration Kit-SHA is invalid",
+            self.attest("bundle").stderr,
+        )
+
+        pin.write_text(candidate + "\n")
+        pin.chmod(0o755)
+        self.commit("make successor pin executable")
+        command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
+        self.assertIn(
+            "post-review route migration Kit-SHA is invalid",
+            self.attest("bundle").stderr,
+        )
+
+        pin.chmod(0o644)
+        self.commit("pin exact successor kit")
+        command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
+        self.bundle()
+
     def test_bundle_refuses_run_provenance_outside_pinned_route(self):
         manifest = self.product / "factory/runs/reviewer-1.meta"
         manifest.write_text(

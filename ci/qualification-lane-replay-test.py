@@ -69,6 +69,10 @@ SCENARIOS = (
             "qualification-reducer-test.py",
             "QualificationReducerTest.test_successor_adopts_source_terminal_once_without_publication_replay",
         ),
+        (
+            "ticket-attest-test.py",
+            "TicketAttestTests.test_bundle_accepts_only_exact_post_review_migration_kit_pin",
+        ),
     ),
     (
         "publication_refresh_and_closeout_survive_restart",

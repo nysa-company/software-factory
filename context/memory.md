@@ -7254,3 +7254,15 @@ pin. Review lineage accepts that pin only beside a valid append-only route
 migration. Preparation and upgrade require the same exact provider CLI pin
 status as Doctor before any lane authority is published. Every other conflict,
 pin mismatch, stale release, duplicate tool entry, or receipt drift still stops.
+
+## 2026-08-20 — Decision 527: Bundle attestation accepts only the exact migrated kit pin
+
+Category: Reliability
+
+Q58 proved that post-review migration policy had drifted across two trusted
+consumers: ticket-PR accepted an authenticated route migration and exact
+`factory/KIT_PIN`, while bundle attestation still classified that pin as product
+code. Bundle attestation now admits the pin only beside the changed authenticated
+route journal, as an ordinary regular blob whose exact contents equal the sealed
+candidate SHA. A missing route migration, wrong pin, wrong file mode, or any
+additional post-review path remains refused.
