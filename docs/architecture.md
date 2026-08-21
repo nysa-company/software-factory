@@ -155,6 +155,11 @@ GitHub runs share the same grouping; an explicit whole-shard command remains
 sequential for diagnosis. Suites within each group keep their existing order,
 and fixtures remain group-isolated.
 
+The read-only operator preflight compares every explicitly selected ticket's
+Builder paths with both selected siblings and every other canonical protected
+Ready ticket. This mirrors fresh qualification admission before lane setup;
+Backlog, terminal, and malformed historical tickets do not reserve ownership.
+
 The credential-free qualification-lane replay selects existing driver,
 controller, state-machine, handoff, fallback, and reducer regressions around
 Factory-SHA and successor authority, atomic KIT_PIN migration through passport

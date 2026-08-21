@@ -253,8 +253,22 @@ def main() -> int:
             "builder_paths": paths, "state_ready": state_ready, "status": status,
             "ticket": ticket,
         })
+    selected_paths = set(ownership)
+    for path in sorted((product / "factory/tickets").glob("T-*.md")):
+        ticket = path.stem
+        if ticket in seen or not TICKET.fullmatch(ticket):
+            continue
+        try:
+            ticket_text = path.read_text(encoding="utf-8")
+            if readiness.field(ticket_text, "State").casefold() != "ready":
+                continue
+            for builder_path in readiness.builder_paths(ticket_text):
+                if builder_path in selected_paths:
+                    ownership[builder_path].append(ticket)
+        except (OSError, UnicodeError, readiness.ReadinessError):
+            continue
     conflicts = [
-        {"path": path, "tickets": tickets}
+        {"path": path, "tickets": sorted(tickets)}
         for path, tickets in sorted(ownership.items()) if len(tickets) > 1
     ]
     for conflict in conflicts:
