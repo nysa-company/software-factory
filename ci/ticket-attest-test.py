@@ -3547,6 +3547,9 @@ else:
         )
 
     def prepare_done_after_protected_successor_pin(self):
+        protected_parent = command(
+            "git", "rev-parse", "main", cwd=self.product,
+        ).stdout.strip()
         ticket = self.product / "factory/tickets/T-700.md"
         ticket.write_text(ticket.read_text().replace(
             "Priority: normal\n", f"Priority: normal\nKit-SHA: {KIT_SHA}\n",
@@ -3555,6 +3558,21 @@ else:
         command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
         self.prepare_done()
         approved = json.loads(self.state.read_text())["pr_head"]
+        squash = command(
+            "git", "commit-tree", f"{approved}^{{tree}}", "-p",
+            protected_parent, "-m", "squash approved implementation",
+            cwd=self.workdir,
+        ).stdout.strip()
+        command(
+            "git", "push", "-q", "--force", "origin",
+            f"{squash}:refs/heads/main", cwd=self.workdir,
+        )
+        command("git", "reset", "--hard", squash, cwd=self.workdir)
+        command(
+            "git", "push", "-q", "--force", "origin",
+            f"{squash}:refs/heads/chore/t700-closeout", cwd=self.workdir,
+        )
+        self.update_state(merge_sha=squash, pr_head=approved)
         target = "f" * 40
         authorization = self.workdir / f"factory/migrations/inflight-release/{target}.json"
         authorization.parent.mkdir(parents=True)

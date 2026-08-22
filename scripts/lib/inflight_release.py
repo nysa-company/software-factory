@@ -321,7 +321,6 @@ def verify_protected_ticket_pin(
         authorization, entries, ticket=ticket, branch=branch,
         head=authorized_head, state=state, source_kit_sha=source,
     )
-    _git(repo, "merge-base", "--is-ancestor", authorized_head, protected)
     ticket_path = f"factory/tickets/{ticket}.md"
     _regular_blob(repo, authorized_head, ticket_path)
     authorized = _git(repo, "show", f"{authorized_head}:{ticket_path}")

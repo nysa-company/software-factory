@@ -7651,3 +7651,14 @@ terminal commit itself changes the pin and the existing route validator binds
 that transition. Ordinary refresh conflicts that do not meet the narrow signed
 Test-author repair contract retain their established generic fail-closed
 refusal after exact branch restoration.
+
+## 2026-08-22 — Decision 559: Protected authorization supports squash topology
+
+Category: Reliability
+
+An in-flight authorization authenticates the exact ticket head directly; that
+head need not be an ancestor of protected main because the product's required
+squash merge deliberately removes that topology. Pin-only terminal validation
+still requires the protected authorization, exact source head and state, exact
+regular ticket and pin blobs, and a byte-exact source-to-target Kit-SHA-only
+transformation. A regression uses a real independent squash commit.
