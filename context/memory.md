@@ -7724,3 +7724,14 @@ The local operator console previews and confirms an exact semantic retry while
 carrying its approval hash only in session memory. The sealed plan/apply grammar,
 apply-time recomputation, stale-plan refusal, and auditable ticket child remain
 unchanged; manual digest transcription is no longer the normal operator path.
+
+## 2026-08-22 — Decision 566: Completed routes account for mixed successor cohorts
+
+Category: Reliability
+
+The sealed successor batch counts a live sibling as already migrated only from
+its exact current-candidate owner-only route-completion marker. This lets the
+existing generic batch writer migrate a route-blocked ticket while another
+ticket awaits merged closeout and a third is terminal. Missing, malformed, or
+symlinked completion evidence stops before preview, apply, or provider work;
+the historical T-198 controller authority remains unchanged.

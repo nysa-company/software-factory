@@ -651,6 +651,107 @@ raise SystemExit(code)
         ])
 
         self.calls.unlink()
+        completed = (
+            self.controller_state
+            / f"passport-route-migration-complete-T-2-{'a' * 40}.json"
+        )
+        completed_value = {
+            "factory_sha": "a" * 40,
+            "schema": "nysa.software-factory.controller-event/v1",
+            "ticket": "T-2",
+        }
+        completed.write_text(json.dumps(completed_value), encoding="utf-8")
+        completed.chmod(0o600)
+        completed_claim = self.controller_state / "claims/T-2.json"
+        claim = json.loads(completed_claim.read_text(encoding="utf-8"))
+        claim.update({"blocked_reason": None, "status": "claimed"})
+        claim.pop("recovery_attempt", None)
+        claim.pop("lease_released", None)
+        completed_claim.write_text(json.dumps(claim), encoding="utf-8")
+        completed_claim.chmod(0o600)
+        mixed_plan = copy.deepcopy(terminal_plan)
+        mixed_plan["items"] = [
+            item for item in mixed_plan["items"] if item["ticket"] == "T-1"
+        ]
+        mixed_plan["max_workers"] = 1
+        mixed_plan["approval_sha256"] = hashlib.sha256(
+            canonical({
+                key: item for key, item in mixed_plan.items()
+                if key != "approval_sha256"
+            }) + b"\n",
+        ).hexdigest()
+        mixed_journal = copy.deepcopy(terminal_journal)
+        mixed_journal["plan"] = mixed_plan
+        mixed_journal["results"] = {"T-1": {}}
+        mixed_journal["record_sha256"] = hashlib.sha256(
+            canonical({
+                key: item for key, item in mixed_journal.items()
+                if key != "record_sha256"
+            }) + b"\n",
+        ).hexdigest()
+        code, value = self.run_scenario({
+            "doctor": self.doctor(),
+            "models:migrate-batch-plan": mixed_plan,
+            "models:migrate-batch": mixed_journal,
+            "reconcile": [
+                self.controller("ok"),
+                self.controller("ok", results=[
+                    {"status": "complete", "ticket": ticket}
+                    for ticket in ("T-1", "T-2", "T-3")
+                ]),
+            ],
+            "qualification": self.report(),
+        })
+        self.assertEqual(code, 0)
+        self.assertEqual(value["status"], "green")
+        self.assertEqual(self.called(), [
+            "doctor", "reconcile", "models:migrate-batch-plan",
+            "models:migrate-batch", "reconcile", "qualification",
+        ])
+
+        self.calls.unlink()
+        completed_value["factory_sha"] = "b" * 40
+        completed.write_text(json.dumps(completed_value), encoding="utf-8")
+        completed.chmod(0o600)
+        code, value = self.run_scenario({
+            "doctor": self.doctor(),
+            "reconcile": [self.controller("ok")],
+        })
+        self.assertEqual(code, 2)
+        self.assertEqual(
+            value["error"],
+            "qualification route migration completion is invalid",
+        )
+        self.assertEqual(self.called(), ["doctor", "reconcile"])
+
+        self.calls.unlink()
+        completed.unlink()
+        completed_target = self.root / "completion-marker.json"
+        completed_value["factory_sha"] = "a" * 40
+        completed_target.write_text(
+            json.dumps(completed_value), encoding="utf-8",
+        )
+        completed_target.chmod(0o600)
+        completed.symlink_to(completed_target)
+        code, value = self.run_scenario({
+            "doctor": self.doctor(),
+            "reconcile": [self.controller("ok")],
+        })
+        self.assertEqual(code, 2)
+        self.assertEqual(value["error"], "qualification claim state is invalid")
+        self.assertEqual(self.called(), ["doctor", "reconcile"])
+
+        self.calls.unlink()
+        completed.unlink()
+        code, value = self.run_scenario({
+            "doctor": self.doctor(),
+            "reconcile": [self.controller("ok")],
+        })
+        self.assertEqual(code, 3)
+        self.assertEqual(value["reason"], "authenticated_wait")
+        self.assertEqual(self.called(), ["doctor", "reconcile"])
+
+        self.calls.unlink()
         marker.unlink()
         code, value = self.run_scenario({
             "doctor": self.doctor(),
