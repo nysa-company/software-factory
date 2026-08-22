@@ -50,6 +50,8 @@ SNAPSHOT_ROUTES = {
     f"/api/snapshots/{name}": name for name in SNAPSHOT.SNAPSHOT_COMMANDS
 }
 ACTION_ROUTES = {
+    "/api/actions/ticket-authorize-round-plan": "ticket-authorize-round-plan",
+    "/api/actions/ticket-authorize-round-apply": "ticket-authorize-round-apply",
     "/api/actions/model-activate": "model-activate",
     "/api/actions/model-disable": "model-disable",
     "/api/actions/model-enable": "model-enable",

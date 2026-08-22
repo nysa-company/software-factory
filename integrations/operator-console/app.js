@@ -40,6 +40,13 @@ function setStatus(message, error = false) {
   statusDot.classList.toggle("error", error);
 }
 
+function visibleResult(result) {
+  const visible = { ...result };
+  delete visible.preview_hash;
+  delete visible.approval_hash;
+  return visible;
+}
+
 function formatSnapshot(view, value) {
   if (view === "workflow" && Array.isArray(value.roles)) {
     const tickets = (value.tickets || []).map((item) =>
@@ -220,8 +227,8 @@ async function previewApply(kind, previewAction, applyAction, payload, output, a
   apply.disabled = true;
   try {
     const result = await mutate(previewAction, payload);
-    state.previews[kind] = { payload, hash: result.preview_hash };
-    target.textContent = JSON.stringify(result, null, 2);
+    state.previews[kind] = { payload, hash: result.preview_hash || result.approval_hash };
+    target.textContent = JSON.stringify(visibleResult(result), null, 2);
     apply.disabled = false;
   } catch (error) {
     target.textContent = error.message;
@@ -235,7 +242,7 @@ async function previewApply(kind, previewAction, applyAction, payload, output, a
         ...applyExtras,
         approve_hash: preview.hash,
       });
-      target.textContent = JSON.stringify(result, null, 2);
+      target.textContent = JSON.stringify(visibleResult(result), null, 2);
       await loadSnapshots();
     } catch (error) {
       target.textContent = error.message;
@@ -251,6 +258,19 @@ document.querySelector("#model-preview").addEventListener("click", () => {
     },
     "#model-result",
     { expected_current_hash: state.snapshots.model.current_policy_hash },
+  );
+});
+
+document.querySelector("#authorization-preview").addEventListener("click", () => {
+  previewApply(
+    "authorization", "ticket-authorize-round-plan", "ticket-authorize-round-apply",
+    {
+      ticket: document.querySelector("#authorization-ticket").value.trim(),
+      role: document.querySelector("#authorization-role").value,
+      round: Number(document.querySelector("#authorization-round").value),
+      operator_id: document.querySelector("#authorization-operator").value.trim(),
+    },
+    "#authorization-result",
   );
 });
 
