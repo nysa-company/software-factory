@@ -503,7 +503,10 @@ is absent or changed.
 Qualification Doctor also reruns the shared strict manifest and ticket-readiness
 validators before provider readiness. Its typed report contains only selected
 ticket IDs and readiness states; an invalid ticket suppresses provider pin and
-fallback probes and blocks reconciliation. Before inspecting controller state,
+fallback probes and blocks reconciliation. A selected Done ticket is ready only
+when the shared protected-terminal reader authenticates its terminal evidence;
+that evidence may retain its historical Kit-SHA while nonterminal tickets must
+match the current KIT_PIN. Before inspecting controller state,
 Doctor also validates the complete protected legacy-closeout, terminal-backfill,
 and merge-reconciliation batches through the same authenticated readers used by
 terminal admission. Partial, extra, or drifted protected artifacts report
