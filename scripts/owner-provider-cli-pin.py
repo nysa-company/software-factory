@@ -61,7 +61,6 @@ COMPANIONS = ("codex-code-mode-host",)
 MANAGED_LINKS = tuple(TOOLS) + COMPANIONS
 PIN_KEYS = tuple(value["pin"] for value in TOOLS.values())
 REQUIRED_RELEASE_FILES = (
-    "scripts/factory-launch",
     "scripts/lib/plain-config.sh",
     "scripts/lib/backend-policy.sh",
     "scripts/adapters/claude-code.sh",
@@ -455,6 +454,7 @@ def release_identity(
         secure_regular(release / relative, "sealed provider CLI contract")
     if candidate:
         for relative in (
+            "scripts/factory-launch",
             "scripts/lib/provider-cli-version.sh",
             "scripts/owner-provider-cli-pin.py",
         ):
