@@ -7639,3 +7639,15 @@ actually presents a source-to-successor Kit-SHA difference. Ordinary ticket,
 operator, and qualification fixtures therefore retain their existing module
 boundary, while pin-only closeout still fails closed through the shared
 validator.
+
+## 2026-08-22 — Decision 558: Terminal validation distinguishes two release paths
+
+Category: Reliability
+
+A terminal ticket whose closeout parent already carries a successor pin must
+bind the exact in-flight authorization when its Done evidence retains the source
+release. The older authenticated route-journal migration remains valid when the
+terminal commit itself changes the pin and the existing route validator binds
+that transition. Ordinary refresh conflicts that do not meet the narrow signed
+Test-author repair contract retain their established generic fail-closed
+refusal after exact branch restoration.

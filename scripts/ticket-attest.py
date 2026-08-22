@@ -2651,24 +2651,30 @@ def refresh(
                 workdir, "merge-base", old_head, base_head,
             ).stdout.strip()
             route_relative = f"factory/route-plans/{args.ticket}.json"
-            return resolve_protected_test_conflict(
-                args, product, workdir, remote, branch, old_head=old_head,
-                protected_head=base_head, prior_base=prior_base, state=state,
-                dependencies=[], terminals=[],
-                receipt_path=attestation_dir / "dependency-refresh.json",
-                generation=dependency_refresh_generation(
-                    attestation_dir / "dependency-refresh.json", args.ticket,
-                ),
-                ticket_blob=git(
-                    workdir, "rev-parse",
-                    f"{old_head}:factory/tickets/{args.ticket}.md",
-                ).stdout.strip(),
-                route_relative=route_relative,
-                route_blob=git(
-                    workdir, "rev-parse", f"{old_head}:{route_relative}",
-                ).stdout.strip(),
-                bundle=bundle_path, approval=approval_path,
-            )
+            try:
+                return resolve_protected_test_conflict(
+                    args, product, workdir, remote, branch, old_head=old_head,
+                    protected_head=base_head, prior_base=prior_base, state=state,
+                    dependencies=[], terminals=[],
+                    receipt_path=attestation_dir / "dependency-refresh.json",
+                    generation=dependency_refresh_generation(
+                        attestation_dir / "dependency-refresh.json", args.ticket,
+                    ),
+                    ticket_blob=git(
+                        workdir, "rev-parse",
+                        f"{old_head}:factory/tickets/{args.ticket}.md",
+                    ).stdout.strip(),
+                    route_relative=route_relative,
+                    route_blob=git(
+                        workdir, "rev-parse", f"{old_head}:{route_relative}",
+                    ).stdout.strip(),
+                    bundle=bundle_path, approval=approval_path,
+                )
+            except Refusal as error:
+                raise Refusal(
+                    "protected main conflicts with the ticket branch; "
+                    "refresh aborted"
+                ) from error
     merge_head = git(workdir, "rev-parse", "HEAD").stdout.strip()
     parents = git(workdir, "rev-list", "--parents", "-n", "1", merge_head).stdout.split()
     if parents != [merge_head, old_head, base_head]:

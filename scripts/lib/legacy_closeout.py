@@ -898,9 +898,18 @@ def _normal_terminal(repo, ticket, ref):
         raise ValidationError("normal closeout parent ticket is unavailable")
     source_kits = re.findall(r"(?mi)^Kit-SHA:\s*(.*?)\s*$", source_ticket)
     terminal_kits = re.findall(r"(?mi)^Kit-SHA:\s*(.*?)\s*$", ticket_text)
-    if len(source_kits) > 1 or terminal_kits != source_kits:
+    if (
+        len(source_kits) > 1
+        or len(terminal_kits) > 1
+        or done["kit_sha"] == bundle["kit_sha"]
+        and terminal_kits != source_kits
+    ):
         raise ValidationError("normal terminal ticket changed its protected kit pin")
-    if source_kits and source_kits[0] != done["kit_sha"]:
+    if (
+        done["kit_sha"] == bundle["kit_sha"]
+        and source_kits
+        and source_kits[0] != done["kit_sha"]
+    ):
         from inflight_release import (
             AuthorizationError as InflightAuthorizationError,
             verify_protected_ticket_pin,
