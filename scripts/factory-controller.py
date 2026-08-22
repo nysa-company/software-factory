@@ -13715,7 +13715,12 @@ class Controller:
                         and item.get("status") == "error"
                     ):
                         self.latch_qualification_cohort_error()
-                    if not worker_failed:
+                    if (
+                        not worker_failed
+                        and claim.get("blocked_reason") not in {
+                            "controller-error", "external-unavailable",
+                        }
+                    ):
                         self.reconciliation_marker(claim["ticket"]).unlink(
                             missing_ok=True
                         )

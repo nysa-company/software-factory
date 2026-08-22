@@ -7559,3 +7559,13 @@ cell roots idempotently before applying the existing fail-closed absolute-path,
 owner, mode, directory, and symlink checks. A deterministic two-worker
 regression covers both roots, replay, claim/worktree residue, and the absence of
 external controller calls.
+
+## 2026-08-22 — Decision 551: Recoverable reconciliation errors retain restart authority
+
+Category: Reliability
+
+A controller worker that persists `controller-error` or `external-unavailable`
+now retains its authenticated reconciliation marker. The next sealed invocation
+can revalidate the exact passport, branch, run snapshot, release, and clean
+remote checkpoint before retrying; ordinary worker completion still consumes
+the marker once.
