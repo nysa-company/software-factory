@@ -7527,3 +7527,13 @@ existing exact-head reset/materialization path. Branch or receipt tamper still
 refuses before provider preparation, reservation, or external work. The
 conditioned 20-replay workflow now watches the dispatcher and receipt validator
 that implement this boundary.
+
+## 2026-08-21 — Decision 548: Managed readiness scans exact PR history
+
+Category: System change
+
+The repository's baseline v3 assets now match the shared local-PR workflow.
+Secret scanning accepts an exact base/head pair, scans only that commit range
+plus the working directory, and derives the same range from GitHub pull-request
+events. This restores HEAD-bound `pr-ready` without weakening the pinned,
+redacted directory scan or creating a repository-specific bypass.
