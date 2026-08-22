@@ -721,6 +721,9 @@ raise SystemExit(1 if failed else 0)
         )
         self.assertEqual(replay["status"], "green", json.dumps(replay, sort_keys=True))
         self.assertEqual(replay["restarts"], 1)
+        self.assertEqual(
+            [phase["name"] for phase in replay["phases"]].count("doctor"), 1,
+        )
         events = [
             json.loads(path.read_text(encoding="utf-8"))
             for path in sorted(events_dir.glob("*.json"))
@@ -768,6 +771,10 @@ raise SystemExit(1 if failed else 0)
         repeated_replay = json.loads(repeated.stdout)
         self.assertEqual(repeated_replay["status"], "green")
         self.assertEqual(repeated_replay["approvals"], [])
+        self.assertEqual(
+            [phase["name"] for phase in repeated_replay["phases"]].count("doctor"),
+            1,
+        )
         self.assertEqual(repeated_replay["report"], replay["report"])
         self.assertEqual(
             json.loads(self.provider_calls.read_text(encoding="utf-8")), calls,
