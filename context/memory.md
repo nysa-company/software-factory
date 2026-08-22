@@ -23,6 +23,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Ticket-bearing mutation CLIs reject noncanonical identifiers before release discovery or state. Ticket lifecycle decisions share one exact, known-State parser; operator actions validate before residue and again under their lock. Qualification Doctor reuses canonical ticket, product/tree, KIT_PIN/plan, protected-batch, receipt, passport, event, and runtime-residue validators read-only and suppresses provider probes on typed drift.
 - Reconciliation markers advance after every trusted progressed stage. A successor qualification may recover one older pre-refresh marker only when sealed retention authenticates its passport digest, one exact receipt-bound successful role is the sole run-snapshot delta, and the existing strict passport migration suffix reaches the clean remote checkpoint.
 - Linear is removed (Decision 398); the six operator authorities are one-use receipts via `factory-kit.sh operator ACTION`. Approval changes only the ignored operator map and owner-only receipt until trusted approval attestation records it in Git. An explicitly invoked isolated `qualification-finish` runs Doctor once at command entry, may approve only exact selected clean parked bundle checkpoints, then drives the existing publication, closeout, and reducer chain until green or a typed external wait; a new invocation and authenticated contract recovery retain their fresh Doctor boundaries. Production and takeover retain separate human approval. Qualification may issue one manifest-selected successor resume only after the exact sealed compact-repair check, including the explicit isolated close after an authenticated contract-repair directive; that exact new authority rearms one abandoned targeted recovery attempt, while unchanged evidence cannot loop. Production has no lifecycle bypass.
+- The installed `factory` command is a preference-only human UI. Each opaque target binds one exact physical launcher plus project slug, including separate same-slug production and qualification targets; workflow labels and ticket fields come only from that launcher, and every Ready, approval, Doctor, or qualification-close action returns to its existing sealed authority.
 - **Contract rules below in Operating contract are authoritative**; this summary is only what the session hook can inject.
 
 ## Operating contract
@@ -7618,7 +7619,18 @@ lifecycle-State parser. Missing, duplicate, conflicting, or unknown State
 values refuse before operator or passport mutation; the operator path repeats
 validation under its action lock to close the race.
 
-## 2026-08-22 — Decision 556: Successor recovery reuses authenticated boundaries
+## 2026-08-22 — Decision 556: Human choices bind exact Factory launchers
+
+Category: System change
+
+The installed `factory` command now selects owner-only opaque targets instead
+of asking humans to repeat internal project or qualification slugs. Production
+activation and sealed qualification preparation register their own exact
+launchers; same-slug lanes stay distinct, stale paths fail closed, snapshots
+provide sanitized ticket titles and committed priority, and mutations still use
+the existing launcher receipts or one `qualification-finish` invocation.
+
+## 2026-08-22 — Decision 557: Successor recovery reuses authenticated boundaries
 
 Category: Reliability
 
@@ -7630,7 +7642,7 @@ unattested Review-stage test-only stale-base conflict reuses the existing v2
 protected-baseline receipt plus signed Test-author repair; any broader drift
 remains fail-closed.
 
-## 2026-08-22 — Decision 557: Pin-only validation stays branch-local
+## 2026-08-22 — Decision 558: Pin-only validation stays branch-local
 
 Category: Reliability
 
@@ -7640,7 +7652,7 @@ operator, and qualification fixtures therefore retain their existing module
 boundary, while pin-only closeout still fails closed through the shared
 validator.
 
-## 2026-08-22 — Decision 558: Terminal validation distinguishes two release paths
+## 2026-08-22 — Decision 559: Terminal validation distinguishes two release paths
 
 Category: Reliability
 
@@ -7652,7 +7664,7 @@ that transition. Ordinary refresh conflicts that do not meet the narrow signed
 Test-author repair contract retain their established generic fail-closed
 refusal after exact branch restoration.
 
-## 2026-08-22 — Decision 559: Protected authorization supports squash topology
+## 2026-08-22 — Decision 560: Protected authorization supports squash topology
 
 Category: Reliability
 

@@ -410,6 +410,12 @@ transaction diagnosis.
 
 ## Trusted approval and close-out PR
 
+For routine work, run `factory use` once, then use bare `factory` to select the
+next approval or Ready action by ticket title. `factory backlog` prints the
+priority-ordered IDs and titles, and `factory doctor` keeps the established
+diagnostic name. The long launcher and `factory-kit.sh` forms below remain the
+recovery and automation interface.
+
 - Notice: under contract 1.3+, after the bundle is attested and Awaiting Approval, make the one business decision by reviewing the exact bundle yourself and running
   `bash scripts/factory-kit.sh operator approve --project <project> --product <absolute-product-path> --ticket T-123`.
   This requires a machine with the controller state dir (`$PROJECTS_DIR/<project>/controller`) — approvals cannot be issued from an arbitrary checkout. The command binds the one-use operator receipt to the attested bundle blob and requests protected GitHub auto-merge. If it refuses stale evidence, a changed head, conflicts, unavailable auto-merge, or failed checks, investigate the named condition; never manually imitate the attestation.

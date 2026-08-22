@@ -46,6 +46,23 @@ Kimi K2.6 remains disabled experimental and is in no profile. See
 [Model routing and fallback](docs/model-routing.md) for the exact route order,
 profile alternatives, family rules, approval flow, and operator commands.
 
+## Human CLI
+
+For routine terminal operation, the installed release provides four short
+commands:
+
+```bash
+factory use       # choose an exact production or sealed qualification target
+factory backlog   # prioritized ticket IDs and titles
+factory doctor    # concise Doctor result
+factory           # show and perform the next human action
+```
+
+The choice stores only an owner-only target ID. Each target binds one exact
+launcher path and project slug; the launcher still validates the active release
+and owns every receipt or qualification mutation. `factory next` is the explicit
+form of bare `factory`.
+
 ## Local multi-project console
 
 The loopback-only control console discovers every project from owner-only

@@ -304,12 +304,17 @@ def active_inventory(kits_root: Path) -> list[dict[str, Any]]:
 
 def validate_launcher_plan(value: dict[str, Any]) -> None:
     body = {key: item for key, item in value.items() if key != "approval_sha256"}
+    paired = value.get("schema") == "nysa.software-factory.owner-launcher-pin-plan/v2"
+    expected = {
+        "action", "active_projects", "approval_sha256", "candidate",
+        "previous_sha256", "schema", "target",
+    } | ({"human_cli"} if paired else set())
     if (
-        set(value) != {
-            "action", "active_projects", "approval_sha256", "candidate",
-            "previous_sha256", "schema", "target",
+        set(value) != expected
+        or value.get("schema") not in {
+            "nysa.software-factory.owner-launcher-pin-plan/v1",
+            "nysa.software-factory.owner-launcher-pin-plan/v2",
         }
-        or value.get("schema") != "nysa.software-factory.owner-launcher-pin-plan/v1"
         or value.get("action") != "apply"
         or value.get("approval_sha256") != digest(body)
         or not isinstance(value.get("active_projects"), list)
@@ -322,6 +327,27 @@ def validate_launcher_plan(value: dict[str, Any]) -> None:
         and not DIGEST.fullmatch(str(value.get("previous_sha256", "")))
     ):
         raise ReleaseError("launcher pin plan is invalid")
+    if paired:
+        human = value.get("human_cli")
+        candidate = human.get("candidate") if isinstance(human, dict) else False
+        if (
+            not isinstance(human, dict)
+            or set(human) != {"candidate", "previous_sha256", "target"}
+            or not Path(str(human.get("target", ""))).is_absolute()
+            or Path(str(human.get("target", "")))
+            != Path(str(value["target"])).with_name("factory")
+            or human.get("previous_sha256") is not None
+            and not DIGEST.fullmatch(str(human.get("previous_sha256", "")))
+            or candidate is not None and (
+                not isinstance(candidate, dict)
+                or set(candidate) != {"path", "sha256"}
+                or not Path(str(candidate.get("path", ""))).is_absolute()
+                or Path(str(candidate.get("path", "")))
+                != Path(str(value["candidate"]["path"])).with_name("factory-cli.py")
+                or not DIGEST.fullmatch(str(candidate.get("sha256", "")))
+            )
+        ):
+            raise ReleaseError("launcher pin plan is invalid")
     projects = value["active_projects"]
     if len({item.get("project") for item in projects if isinstance(item, dict)}) != len(projects):
         raise ReleaseError("launcher pin plan is invalid")
@@ -340,6 +366,26 @@ def validate_launcher_plan(value: dict[str, Any]) -> None:
             raise ReleaseError("launcher pin plan is invalid")
 
 
+def validate_launcher_reuse(value: dict[str, Any]) -> None:
+    paired = "human_cli" in value
+    human = value.get("human_cli")
+    if (
+        set(value) != {"action", "path", "sha256"} | ({"human_cli"} if paired else set())
+        or value.get("action") != "reuse"
+        or not Path(str(value.get("path", ""))).is_absolute()
+        or not DIGEST.fullmatch(str(value.get("sha256", "")))
+        or paired and (
+            not isinstance(human, dict) or set(human) != {"path", "sha256"}
+            or not Path(str(human.get("path", ""))).is_absolute()
+            or Path(str(human.get("path", "")))
+            != Path(str(value["path"])).with_name("factory")
+            or human.get("sha256") is not None
+            and not DIGEST.fullmatch(str(human.get("sha256", "")))
+        )
+    ):
+        raise ReleaseError("launcher pin reuse is invalid")
+
+
 def launcher_plan(release: Path, kits_root: Path) -> dict[str, Any]:
     candidate = release / "scripts/factory-launch"
     target = account_home() / ".factory/bin/factory-launch"
@@ -352,15 +398,49 @@ def launcher_plan(release: Path, kits_root: Path) -> dict[str, Any]:
         previous = hashlib.sha256(
             secure_regular_bytes(target, "installed launcher", executable=True)
         ).hexdigest()
-    if previous == candidate_sha:
-        return {"action": "reuse", "path": str(target), "sha256": candidate_sha}
+    human_candidate = release / "scripts/factory-cli.py"
+    human_target = target.parent / "factory"
+    human_present = human_target.exists() or human_target.is_symlink()
+    candidate_present = human_candidate.exists() or human_candidate.is_symlink()
+    human_previous = None
+    if human_present:
+        human_previous = hashlib.sha256(secure_regular_bytes(
+            human_target, "installed human CLI", executable=True,
+        )).hexdigest()
+    human_candidate_value = None
+    if candidate_present:
+        human_candidate_value = {
+            "path": str(human_candidate),
+            "sha256": hashlib.sha256(secure_regular_bytes(
+                human_candidate, "sealed human CLI candidate", executable=True,
+            )).hexdigest(),
+        }
+    paired = human_present or candidate_present
+    desired_human = (
+        human_candidate_value["sha256"] if human_candidate_value is not None else None
+    )
+    human_matches = human_previous == desired_human
+    if previous == candidate_sha and human_matches:
+        reuse = {"action": "reuse", "path": str(target), "sha256": candidate_sha}
+        if paired:
+            reuse["human_cli"] = {"path": str(human_target), "sha256": desired_human}
+        return reuse
     body = {
         "action": "apply", "active_projects": active_inventory(kits_root),
         "candidate": {"path": str(candidate), "sha256": candidate_sha},
         "previous_sha256": previous,
-        "schema": "nysa.software-factory.owner-launcher-pin-plan/v1",
+        "schema": (
+            "nysa.software-factory.owner-launcher-pin-plan/v2" if paired
+            else "nysa.software-factory.owner-launcher-pin-plan/v1"
+        ),
         "target": str(target),
     }
+    if paired:
+        body["human_cli"] = {
+            "candidate": human_candidate_value,
+            "previous_sha256": human_previous,
+            "target": str(human_target),
+        }
     return {**body, "approval_sha256": digest(body)}
 
 
@@ -369,12 +449,32 @@ def _apply_launcher_plan_locked(
     cutover_sha: str | None = None,
 ) -> dict[str, Any]:
     validate_launcher_plan(value)
+    target = Path(value["target"])
+    root = secure_directory(target.parent.parent, create=True)
+    journal_path = root / "launcher-pin-journal.json"
+    recovering = False
+    if journal_path.exists() or journal_path.is_symlink():
+        pending = safe_state(journal_path, "launcher pin journal")
+        unsigned = {key: item for key, item in pending.items() if key != "record_sha256"}
+        if (
+            pending.get("schema")
+            != "nysa.software-factory.owner-launcher-pin-journal/v1"
+            or pending.get("status") not in {"applying", "completed"}
+            or pending.get("record_sha256") != digest(unsigned)
+        ):
+            raise ReleaseError("launcher pin journal is invalid")
+        recovering = pending.get("status") == "applying" and pending.get("plan") == value
     current_plan = launcher_plan(release, kits_root)
-    replay = current_plan.get("action") == "reuse"
-    if replay:
-        if current_plan["sha256"] != value["candidate"]["sha256"]:
+    replay = current_plan.get("action") == "reuse" or recovering
+    if current_plan.get("action") == "reuse":
+        expected_human = value.get("human_cli", {}).get("candidate")
+        if (
+            current_plan["sha256"] != value["candidate"]["sha256"]
+            or value.get("human_cli") and current_plan.get("human_cli", {}).get("sha256")
+            != (expected_human["sha256"] if expected_human else None)
+        ):
             raise ReleaseError("launcher pin target changed")
-    elif current_plan != value:
+    elif current_plan != value and not recovering:
         current = active_inventory(kits_root)
         expected = {
             item["project"]: item["product"] for item in value["active_projects"]
@@ -400,10 +500,7 @@ def _apply_launcher_plan_locked(
                  "--product", str(product)], f"active project drain for {item['project']}",
                 environment=command_environment(kits_root),
             )
-    target = Path(value["target"])
     candidate = Path(value["candidate"]["path"])
-    root = secure_directory(target.parent.parent, create=True)
-    journal_path = root / "launcher-pin-journal.json"
     journal = None
     if journal_path.exists() or journal_path.is_symlink():
         journal = safe_state(journal_path, "launcher pin journal")
@@ -432,10 +529,18 @@ def _apply_launcher_plan_locked(
     current = hashlib.sha256(current_bytes).hexdigest() if current_bytes is not None else None
     if current not in {value["previous_sha256"], value["candidate"]["sha256"]}:
         raise ReleaseError("launcher pin target changed")
+    rollback = secure_directory(root / "launcher-rollbacks", create=True) / (
+        f"{value['approval_sha256']}.factory-launch"
+    )
+    if rollback.exists() or rollback.is_symlink():
+        if (
+            value["previous_sha256"] is None
+            or hashlib.sha256(secure_regular_bytes(
+                rollback, "launcher rollback", executable=True,
+            )).hexdigest() != value["previous_sha256"]
+        ):
+            raise ReleaseError("launcher rollback is invalid")
     if current != value["candidate"]["sha256"]:
-        rollback = secure_directory(root / "launcher-rollbacks", create=True) / (
-            f"{value['approval_sha256']}.factory-launch"
-        )
         if current is not None and not rollback.exists():
             atomic_bytes(rollback, current_bytes, 0o700)
         atomic_bytes(
@@ -446,17 +551,70 @@ def _apply_launcher_plan_locked(
         secure_regular_bytes(target, "installed launcher", executable=True)
     ).hexdigest() != value["candidate"]["sha256"]:
         raise ReleaseError("launcher pin verification failed")
+    human_plan = value.get("human_cli")
+    if human_plan is not None:
+        human_target = Path(human_plan["target"])
+        human_candidate = human_plan["candidate"]
+        human_current_bytes = (
+            secure_regular_bytes(human_target, "installed human CLI", executable=True)
+            if human_target.exists() or human_target.is_symlink() else None
+        )
+        human_current = (
+            hashlib.sha256(human_current_bytes).hexdigest()
+            if human_current_bytes is not None else None
+        )
+        human_desired = human_candidate["sha256"] if human_candidate else None
+        if human_current not in {human_plan["previous_sha256"], human_desired}:
+            raise ReleaseError("human CLI pin target changed")
+        rollback = secure_directory(root / "launcher-rollbacks", create=True) / (
+            f"{value['approval_sha256']}.factory"
+        )
+        if rollback.exists() or rollback.is_symlink():
+            if (
+                human_plan["previous_sha256"] is None
+                or hashlib.sha256(secure_regular_bytes(
+                    rollback, "human CLI rollback", executable=True,
+                )).hexdigest() != human_plan["previous_sha256"]
+            ):
+                raise ReleaseError("human CLI rollback is invalid")
+        if human_current != human_desired:
+            if human_current is not None and not rollback.exists():
+                atomic_bytes(rollback, human_current_bytes, 0o700)
+            if human_candidate is None:
+                human_target.unlink()
+                sync_directory(human_target.parent)
+            else:
+                atomic_bytes(human_target, secure_regular_bytes(
+                    Path(human_candidate["path"]), "sealed human CLI candidate",
+                    executable=True,
+                ), 0o700)
+        if human_desired is None:
+            if human_target.exists() or human_target.is_symlink():
+                raise ReleaseError("human CLI removal failed")
+        elif hashlib.sha256(secure_regular_bytes(
+            human_target, "installed human CLI", executable=True,
+        )).hexdigest() != human_desired:
+            raise ReleaseError("human CLI installation failed")
     completed = {
         "plan": value,
         "schema": "nysa.software-factory.owner-launcher-pin-journal/v1",
         "status": "completed",
     }
     atomic_json(journal_path, {**completed, "record_sha256": digest(completed)})
-    return {
+    result = {
         "action": "reuse", "path": str(target),
         "sha256": value["candidate"]["sha256"],
         "status": "replayed" if replay else "applied",
     }
+    if human_plan is not None:
+        result["human_cli"] = {
+            "path": human_plan["target"],
+            "sha256": (
+                human_plan["candidate"]["sha256"]
+                if human_plan["candidate"] else None
+            ),
+        }
+    return result
 
 
 def apply_launcher_plan(
@@ -1090,10 +1248,6 @@ def validate_plan(value: dict[str, Any]) -> None:
         or (launcher.get("action") == "apply" and (
             not DIGEST.fullmatch(str(launcher.get("approval_sha256", "")))
         ))
-        or (launcher.get("action") == "reuse" and (
-            not Path(str(launcher.get("path", ""))).is_absolute()
-            or not DIGEST.fullmatch(str(launcher.get("sha256", "")))
-        ))
         or
         not isinstance(provider_cli, dict)
         or provider_cli.get("action") not in {"apply", "reuse"}
@@ -1103,6 +1257,8 @@ def validate_plan(value: dict[str, Any]) -> None:
         raise ReleaseError("release plan is invalid")
     if launcher["action"] == "apply":
         validate_launcher_plan(launcher)
+    else:
+        validate_launcher_reuse(launcher)
     for child in (provider_cli, provider_concurrency):
         if child["action"] == "apply" and (
             not isinstance(child.get("plan"), dict)
@@ -2400,6 +2556,24 @@ def validate_host_runtime(
         launcher_path, "installed launcher", executable=True,
     )).hexdigest() != launcher_sha:
         raise ReleaseError("completed host cutover launcher changed")
+    human = launcher_plan_value.get("human_cli")
+    if human is not None:
+        human_path = Path(
+            human["target"] if launcher_plan_value["action"] == "apply"
+            else human["path"]
+        )
+        human_sha = (
+            human["candidate"]["sha256"]
+            if launcher_plan_value["action"] == "apply"
+            and human["candidate"] is not None else human.get("sha256")
+        )
+        if human_sha is None:
+            if human_path.exists() or human_path.is_symlink():
+                raise ReleaseError("completed host cutover human CLI changed")
+        elif hashlib.sha256(secure_regular_bytes(
+            human_path, "installed human CLI", executable=True,
+        )).hexdigest() != human_sha:
+            raise ReleaseError("completed host cutover human CLI changed")
     ensure_contract_floor(kits_root)
     retired = plan["children"]["retired_runtime"]
     if require_retired and not retired_runtime_matches(
@@ -2693,6 +2867,25 @@ def validate_live_basis(
         allowed_launchers.add(launcher["previous_sha256"])
     if observed_launcher not in allowed_launchers:
         raise ReleaseError("installed launcher changed after setup")
+    human = launcher.get("human_cli")
+    if human is not None:
+        installed_human = account_home() / ".factory/bin/factory"
+        if launcher["action"] == "reuse":
+            allowed_humans = {human["sha256"]}
+        else:
+            desired_human = (
+                human["candidate"]["sha256"] if human["candidate"] else None
+            )
+            allowed_humans = {desired_human}
+            if plan["stage"] == "prerequisites":
+                allowed_humans.add(human["previous_sha256"])
+        observed_human = None
+        if installed_human.exists() or installed_human.is_symlink():
+            observed_human = hashlib.sha256(secure_regular_bytes(
+                installed_human, "installed human CLI", executable=True,
+            )).hexdigest()
+        if observed_human not in allowed_humans:
+            raise ReleaseError("installed human CLI changed after setup")
     controller = identity["controller"]
     if controller.get("status") != "not-applicable":
         expected_controller = controller_payload(plan["request"]["project"], product)
@@ -2955,6 +3148,24 @@ def completed_result(plan: dict[str, Any], replayed: bool) -> dict[str, Any]:
     }
 
 
+def register_production_target(release: Path, project: str) -> None:
+    candidate = release / "scripts/factory-cli.py"
+    if not candidate.exists():
+        return
+    command = account_home() / ".factory/bin/factory"
+    target = f"production-{hashlib.sha256(project.encode()).hexdigest()[:16]}"
+    run(
+        [str(command), "register", target,
+         str(account_home() / ".factory/bin/factory-launch"), project],
+        "human CLI production target registration",
+        environment={
+            "FACTORY_INTERNAL_REGISTER": "1",
+            "HOME": str(account_home()),
+            "PATH": "/usr/bin:/bin",
+        },
+    )
+
+
 def apply_activation(
     plan: dict[str, Any], kits_root: Path, approved_by: str, journal: Path,
 ) -> dict[str, Any]:
@@ -2981,6 +3192,7 @@ def apply_activation(
         ):
             raise ReleaseError("completed release evidence no longer matches runtime state")
         doctor(launcher, plan, environment)
+        register_production_target(release, project)
         return completed_result(plan, True)
     if value and value.get("phase") in {"doctor_pass", "dispatch_started"} and (
         active_exact(kits_root, plan) and not (product / "factory/KILL").exists()
@@ -2991,6 +3203,7 @@ def apply_activation(
     ):
         doctor(launcher, plan, environment)
         journal_update(journal, plan, "dispatch_started", "pass")
+        register_production_target(release, project)
         return completed_result(plan, True)
     if not active_exact(kits_root, plan):
         receipt = Path(plan["children"]["receipt"]["path"])
@@ -3073,6 +3286,7 @@ def apply_activation(
             raise ReleaseError("release dispatch barrier changed")
         marker.unlink()
         journal_update(journal, plan, "dispatch_started", "pass")
+        register_production_target(release, project)
         return completed_result(plan, False)
     except Exception:
         if maintenance_removed and not maintenance_finalized:

@@ -13,6 +13,16 @@ The kit is installed as immutable exact-SHA releases and shared by every product
 - **Kit:** scripts, adapters and version pins, role contracts, workflows, runbooks, and CI templates. Fixes land through reviewed PRs, but a merge does not activate them.
 - **Product repository:** `factory/` state (including initiatives and tickets), product documentation, instantiated CI, GitHub rules, and deploy credentials. There is no external board; every initiative is its own `factory/initiatives/I-NNN.md` file.
 - **`factory/KIT_PIN`:** exactly one lowercase, full 40-character kit SHA. Production requires a protected-main, successful-CI installed release; a sealed qualification may instead bind one clean local candidate SHA/tree. External products fail closed when the pin is missing, malformed, or different from the physical release.
+
+The signed release transaction installs `~/.factory/bin/factory` beside the
+stable launcher and registers each production target after activation. Sealed
+qualification preparation registers its exact physical launcher separately;
+production and qualification may share a project slug. The human CLI stores an
+opaque target choice, obtains labels and ticket fields only through that exact
+launcher's validated workflow snapshot, and delegates all mutations back to the
+launcher. Missing or stale launcher paths are never rediscovered from an active
+record.
+
 - **`factory/PROJECT.env`:** product name, exact `GH_REPO`, protected test paths, worktree location, ticket branch prefix, contract-1.3 `DONE_REQUIRED_CHECKS` (a unique comma-separated list of exact post-merge status/check names), required `AUTO_MERGE_METHOD` (`squash`, `merge`, or `rebase`), optional repository-contained `PREVIEW_PREFLIGHT_SCRIPT`, and optional fail-closed `NONVISUAL_PATHS` directory prefixes.
 
 Per-product limits live in each product's `ENVELOPE.env`; the machine limit in `~/.factory/global.env` caps aggregate spend.

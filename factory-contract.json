@@ -368,6 +368,15 @@
         },
         "security": "read-only, fixed selected project, no caller paths"
       },
+      "operator": {
+        "contract_version": "2.0.0",
+        "helper": "scripts/operator-cli.py",
+        "grammars": [
+          "ready --ticket <T-NNN> --json",
+          "approve --ticket <T-NNN> --json"
+        ],
+        "security": "production-only fixed receipt authority; qualification launchers refuse"
+      },
       "envelope": {
         "minimum_contract_version": "1.5.0",
         "helper": "scripts/envelope-control.py",
@@ -823,6 +832,7 @@
   "compatibility_sensitive_surfaces": [
     "factory-contract.json",
     "scripts/factory-launch",
+    "scripts/factory-cli.py",
     "scripts/certification-preflight.py",
     "scripts/certification-runner.py",
     "scripts/release-transaction.py",
