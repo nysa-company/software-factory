@@ -100,6 +100,8 @@ path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="ut
 PY
   cp "$DOCTOR" "$release/scripts/factory-doctor-real.sh"
   cp "$ROOT/scripts/ticket-readiness.py" "$release/scripts/ticket-readiness.py"
+  cp "$ROOT/scripts/lib/ticket_state_transition.py" \
+    "$release/scripts/lib/ticket_state_transition.py"
   cp "$ROOT/scripts/lib/qualification_manifest.py" \
     "$release/scripts/lib/qualification_manifest.py"
   cp "$ROOT/scripts/lib/qualification_artifacts.py" \
