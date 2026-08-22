@@ -2850,7 +2850,7 @@ push_main "$PRODUCT_ONE"
 expect_success "authorized historical-identity v2 in-flight tuple certifies" \
   certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_B"
 RECEIPT_B="$(printf '%s\n' "$LAST_OUTPUT" | awk '/^\// {value=$0} END {print value}')"
-[[ "$(json_value "$RECEIPT_B" expected_previous_generation)" == "1" ]] &&
+[[ "$(json_value "$RECEIPT_B" expected_previous_generation)" == "$(json_value "$ACTIVE_ALPHA" generation)" ]] &&
   pass "receipt binds expected previous generation" ||
   fail "receipt binds expected previous generation"
 
