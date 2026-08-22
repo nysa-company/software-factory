@@ -7568,4 +7568,5 @@ A controller worker that persists `controller-error` or `external-unavailable`
 now retains its authenticated reconciliation marker. The next sealed invocation
 can revalidate the exact passport, branch, run snapshot, release, and clean
 remote checkpoint before retrying; ordinary worker completion still consumes
-the marker once.
+the marker once. Controller implementation and focused-test changes now trigger
+the parallel 20-replay and three-sealed-mock GitHub qualification workflow.

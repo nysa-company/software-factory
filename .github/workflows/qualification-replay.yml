@@ -5,8 +5,10 @@ on:
     paths:
       - ".github/workflows/qualification-replay.yml"
       - "factory-contract.json"
+      - "ci/factory-controller-test.py"
       - "ci/qualification-*"
       - "scripts/dispatch-plan.py"
+      - "scripts/factory-controller.py"
       - "scripts/qualification-*"
       - "scripts/factory-launch"
       - "scripts/factory-doctor.sh"
