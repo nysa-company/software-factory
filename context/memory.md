@@ -39,6 +39,8 @@ everything the Factory actually enforces lives here.
   explicitly aborted before mutation. The no-return floor is monotonic,
   in-progress cutovers globally block dispatch, and crash recovery fixes
   forward from authenticated journals while preserving preexisting maintenance.
+  Retired-profile inventory streams owner-only regular-file digests so a grown
+  database can be authenticated and archived without entering memory wholesale.
 
 - Provider SQLite growth is not capped by JSON input limits. An idle
   pre-provider `missing-terminal` claim may use only issue-bound pause/resume,
@@ -7735,3 +7737,12 @@ existing generic batch writer migrate a route-blocked ticket while another
 ticket awaits merged closeout and a third is terminal. Missing, malformed, or
 symlinked completion evidence stops before preview, apply, or provider work;
 the historical T-198 controller authority remains unchanged.
+
+## 2026-08-22 — Decision 567: Retired database growth does not block cutover
+
+Category: Reliability
+
+The Contract 2 release transaction streams authenticated retired-profile file
+digests instead of applying the 10 MB in-memory control-file limit. File type,
+owner, link count, mode, and before/after identity checks remain fail-closed,
+while grown SQLite state can reach the signed service-stop and archive step.
