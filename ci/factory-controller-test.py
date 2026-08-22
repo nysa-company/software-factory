@@ -15944,6 +15944,7 @@ class FactoryControllerTest(unittest.TestCase):
 
         output = runs / "review.out"
         output.write_bytes(b"APPROVE\n")
+        output.chmod(0o600)
         output_digest = hashlib.sha256(output.read_bytes()).hexdigest()
         manifest = runs / "review.meta"
         manifest.write_text(

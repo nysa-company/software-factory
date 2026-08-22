@@ -5991,11 +5991,10 @@ class Controller:
             manifest = self.product / "factory/runs" / f"{run_id}.meta"
             manifest_digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
             output = manifest.with_suffix(".out")
-            output_info = output.lstat()
-            output_digest = hashlib.sha256(output.read_bytes()).hexdigest()
+            output_digest = role_output_sha256(output)
         except (
             ControllerError, QualificationArtifactError, FileNotFoundError,
-            OSError, UnicodeError,
+            OSError, RoleOutputError, UnicodeError,
         ):
             return False
         entry = (manifest.name, manifest_digest)
@@ -6048,12 +6047,6 @@ class Controller:
             and terminal.get("exit_status") == "0"
             and terminal.get("role_exit") == "ok"
             and terminal.get("output_sha256") == evidence.get("output_sha256")
-            and stat.S_ISREG(output_info.st_mode)
-            and not output.is_symlink()
-            and output_info.st_uid == os.geteuid()
-            and output_info.st_nlink == 1
-            and not stat.S_IMODE(output_info.st_mode) & 0o022
-            and output_info.st_size <= 8 * 1024 * 1024
             and output_digest == evidence.get("output_sha256")
             and current.get("run_snapshot_sha256")
             == hashlib.sha256(canonical(inventory).encode()).hexdigest()
