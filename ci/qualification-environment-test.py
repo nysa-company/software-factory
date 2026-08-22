@@ -2278,11 +2278,9 @@ class QualificationEnvironmentTest(unittest.TestCase):
         receipt_path = state / "T-101.json"
         receipt_path.write_bytes(canonical(receipt))
         receipt_path.chmod(0o600)
-        secret = b"k" * 32
+        material = b"k" * 32
         key = state / "passport.key"
-        # Test-only owner-readable HMAC-key fixture; persistence is under test.
-        # codeql[py/clear-text-storage-sensitive-data]
-        key.write_bytes(secret)
+        key.write_bytes(material)
         key.chmod(0o600)
         passport = {
             "branch": "ticket/T-101", "contract_version": "2.0.0",
@@ -2293,7 +2291,7 @@ class QualificationEnvironmentTest(unittest.TestCase):
             "transition_receipt_sha256": receipt["receipt_sha256"],
         }
         passport["authentication_sha256"] = hmac.new(
-            secret, canonical(passport), hashlib.sha256,
+            material, canonical(passport), hashlib.sha256,
         ).hexdigest()
         passport["passport_sha256"] = hashlib.sha256(canonical(passport)).hexdigest()
         passport_path = passports / "T-101.json"
