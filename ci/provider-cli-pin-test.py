@@ -658,6 +658,7 @@ exit 2
         legacy_contract.parent.mkdir(parents=True)
         legacy_contract.write_text(json.dumps(contract))
         contract_path.unlink()
+        (legacy / "scripts/factory-launch").unlink()
         self.write_manifest(legacy, SHA_LEGACY, TREE_LEGACY)
         self.seal(legacy)
 
