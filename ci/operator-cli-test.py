@@ -306,6 +306,29 @@ class OperatorCliTest(unittest.TestCase):
         self.commit_ticket("building")
         self.cli("ready", "--ticket", "T-1", expect=1)
 
+    def test_invalid_state_refuses_before_operator_residue(self) -> None:
+        def files(root: Path) -> dict[str, bytes]:
+            return {
+                path.relative_to(root).as_posix(): path.read_bytes()
+                for path in root.rglob("*") if path.is_file()
+            }
+
+        for ticket, state in (
+            ("T-1", "Backlog\nState: Ready"),
+            ("T-2", "Unknown"),
+        ):
+            with self.subTest(ticket=ticket):
+                self.write_ticket(ticket, state)
+                self.commit_ticket(f"invalid {ticket} state")
+                before_state = files(self.state)
+                before_factory = files(self.product / "factory")
+
+                self.cli("ready", "--ticket", ticket, expect=1)
+
+                self.assertEqual(files(self.state), before_state)
+                self.assertEqual(files(self.product / "factory"), before_factory)
+                self.assertEqual(receipts.pending(self.state), [])
+
     def test_initialize_batches_exact_tickets_and_preserves_operator_fields(self) -> None:
         self.write_ticket("T-2", "Ready")
         self.commit_ticket("second ticket")

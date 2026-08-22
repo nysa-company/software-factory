@@ -19,6 +19,12 @@ FACTORY_TARGET_STATES = {
     "done": "Done",
 }
 
+LIFECYCLE_STATES = frozenset({
+    "backlog", "ready", "planning", "building", "review",
+    "awaiting approval", "approved", "blocked-escalated", "done",
+    "canceled",
+})
+
 ALLOWED_TRANSITIONS = {
     "materialize": {
         ("backlog", "ready"),
@@ -202,7 +208,8 @@ def field(text: str, name: str) -> str:
     return match.group(1).strip() if match else ""
 
 
-def exact_state(text: str) -> str:
+def parse_state(text: str) -> str:
+    """Return the one canonical lifecycle state declared by ticket text."""
     states = re.findall(
         r"^State:\s*(.*?)\s*$",
         text,
@@ -210,14 +217,19 @@ def exact_state(text: str) -> str:
     )
     if len(states) != 1:
         raise TransitionError("ticket State field is ambiguous")
-    return states[0].lower()
+    state = states[0].lower()
+    if state not in LIFECYCLE_STATES:
+        raise TransitionError("ticket State field is invalid")
+    return state
+
+
+def exact_state(text: str) -> str:
+    return parse_state(text)
 
 
 def validate_materialization(current_text: str, effective_text: str) -> None:
-    current_state = field(current_text, "State").lower()
-    effective_state = field(effective_text, "State").lower()
-    if not current_state or not effective_state:
-        raise TransitionError("ticket has no State field")
+    current_state = parse_state(current_text)
+    effective_state = parse_state(effective_text)
     if (
         current_state != effective_state
         and effective_state in {"awaiting approval", "done"}
@@ -257,14 +269,7 @@ def validate_materialization(current_text: str, effective_text: str) -> None:
 
 
 def apply_factory_transition(text: str, target: str, contract: str) -> str:
-    match = re.search(
-        r"^State:\s*(.+)$",
-        text,
-        re.MULTILINE | re.IGNORECASE,
-    )
-    if not match:
-        raise TransitionError("ticket has no State field")
-    current = match.group(1).strip().lower()
+    current = parse_state(text)
     target_key = target.strip().lower()
     if target_key not in FACTORY_TARGET_STATES:
         raise TransitionError(f"illegal factory transition target: {target_key}")

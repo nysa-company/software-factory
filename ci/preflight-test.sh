@@ -980,8 +980,19 @@ else
   echo "FAIL: duplicate State authority returned the wrong readiness refusal"
   FAILURES=$((FAILURES + 1))
 fi
-sed '$d' "$READINESS/factory/tickets/T-110.md" > "$TMP/readiness-state.md"
-sed '$d' "$TMP/readiness-state.md" > "$READINESS/factory/tickets/T-110.md"
+sed 's/^State: .*/State: Unknown/' "$TMP/readiness-before-kit-pin.md" \
+  > "$READINESS/factory/tickets/T-110.md"
+if python3 "$KIT_DIR/scripts/ticket-readiness.py" \
+     --ticket T-110 --workdir "$READINESS" > "$TMP/readiness-state-invalid.out"; then
+  echo "FAIL: contract 1.8 readiness accepted an unknown State"
+  FAILURES=$((FAILURES + 1))
+elif grep -qF 'ticket State is invalid' "$TMP/readiness-state-invalid.out"; then
+  echo "PASS: contract 1.8 readiness rejects an unknown State"
+else
+  echo "FAIL: unknown State returned the wrong readiness refusal"
+  FAILURES=$((FAILURES + 1))
+fi
+cp "$TMP/readiness-before-kit-pin.md" "$READINESS/factory/tickets/T-110.md"
 cp "$READINESS/factory/tickets/T-110.md" "$TMP/readiness-ticket.md"
 for builder_case in missing malformed broad; do
   cp "$TMP/readiness-ticket.md" "$READINESS/factory/tickets/T-110.md"
