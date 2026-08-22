@@ -7500,3 +7500,13 @@ repetitions concurrently on hosted macOS, each checked out at the exact PR head
 SHA, with one stable aggregate result. The workflow is path-conditioned to the
 qualification and launcher trust boundary and remains manually dispatchable by
 exact SHA after it reaches protected main.
+
+## 2026-08-21 — Decision 546: Doctor preserves the authenticated runtime tuple
+
+Category: Reliability
+
+Qualification Doctor now assigns its empty certification-tuple default
+explicitly. This avoids Bash treating the closing brace in `${name:-{}}` as a
+literal suffix and corrupting every non-empty authenticated tuple before the
+shared certification preflight. A read-only Doctor regression proves an exact
+tuple remains green while tampered tuples still fail closed.
