@@ -16759,6 +16759,15 @@ class FactoryControllerTest(unittest.TestCase):
         }
         controller.capacity = 2
         controller.protected_main_head = lambda: "f" * 40
+        passports = self.state / "passports"
+        passports.mkdir(mode=0o700)
+        CONTROL.write(passports / "T-110.json", {
+            "branch": "ticket/T-110",
+            "factory_sha": self.release.name,
+            "head_sha": "b" * 40,
+            "passport_sha256": "c" * 64,
+            "ticket": "T-110",
+        })
         claims = []
         for number, ticket in enumerate(controller.qualification["tickets"], 1):
             cell = self.root / f"cell-{number}"
@@ -16824,6 +16833,7 @@ class FactoryControllerTest(unittest.TestCase):
 
         self.assertEqual(result["status"], "error")
         self.assertEqual(calls, {"T-110": 1, "T-111": 1, "T-112": 0})
+        self.assertTrue(controller.reconciliation_marker("T-110").exists())
         self.assertEqual(
             next(item for item in result["results"] if item["ticket"] == "T-110"),
             {
