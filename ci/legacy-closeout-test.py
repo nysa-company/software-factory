@@ -2,6 +2,7 @@
 """Focused adversarial coverage for the one-time legacy closeout."""
 
 import json
+import importlib.util
 import os
 import subprocess
 import sys
@@ -16,6 +17,13 @@ sys.path.insert(0, str(ROOT / "scripts" / "lib"))
 
 import legacy_closeout  # noqa: E402
 from legacy_closeout import ValidationError, protected_terminal  # noqa: E402
+
+READINESS_SPEC = importlib.util.spec_from_file_location(
+    "ticket_readiness", ROOT / "scripts/ticket-readiness.py"
+)
+assert READINESS_SPEC and READINESS_SPEC.loader
+READINESS = importlib.util.module_from_spec(READINESS_SPEC)
+READINESS_SPEC.loader.exec_module(READINESS)
 
 OLD_KIT = "1" * 40
 NEW_KIT = "2" * 40
@@ -98,12 +106,21 @@ class LegacyCloseoutTests(unittest.TestCase):
         command("git", "-C", self.repo, "remote", "add", "origin", self.remote)
         (self.repo / "factory/tickets").mkdir(parents=True)
         (self.repo / "factory/PROJECT.env").write_text(
-            "GH_REPO=acme/widget\nTICKET_BRANCH_PREFIX=ticket/\n"
+            "GH_REPO=acme/widget\nTICKET_BRANCH_PREFIX=ticket/\nTEST_PATHS=tests/\n"
         )
         (self.repo / "factory/KIT_PIN").write_text(OLD_KIT + "\n")
         (self.repo / "factory/tickets/T-013.md").write_text(
             "# T-013\n\nState: Review\nKit-SHA: " + OLD_KIT + "\n"
+            "Priority: normal\nInitiative: I-1\nDepends-On: none\n"
+            "Product-Decisions: frozen\nBuilder ownership: README.md only\n"
+            "Fixture-Seams: tests/fixture.txt\nAuthentication-Seams: none\n"
+            "Protected-Test-Conflicts: none\n"
         )
+        (self.repo / "factory/initiatives").mkdir()
+        (self.repo / "factory/initiatives/I-1.md").write_text("# Initiative\n")
+        (self.repo / "tests").mkdir()
+        (self.repo / "tests/fixture.txt").write_text("fixture\n")
+        (self.repo / "README.md").write_text("fixture\n")
         (self.repo / "factory/tickets/T-013-bundle.md").write_text(
             "# T-013 evidence bundle\n\n## What this does\nSafe legacy work.\n"
         )
@@ -261,6 +278,23 @@ class LegacyCloseoutTests(unittest.TestCase):
         command("git", "-C", self.repo, "fetch", "-q", "origin")
         with self.assertRaises(ValidationError):
             protected_terminal(self.repo, "T-013")
+
+    def test_readiness_accepts_only_authenticated_prior_kit_terminal(self):
+        self.assertEqual(self.generate().returncode, 0)
+        self.publish_generated()
+        READINESS.validate("T-013", self.repo)
+
+        receipt = self.repo / "factory/migrations/contract-1.3/T-013.json"
+        value = json.loads(receipt.read_text())
+        value["source_ticket_blob"] = "f" * 40
+        receipt.write_text(json.dumps(value) + "\n")
+        self.commit("tamper historical terminal receipt")
+        command("git", "-C", self.repo, "push", "-q", "origin", "main")
+        command("git", "-C", self.repo, "fetch", "-q", "origin")
+        with self.assertRaisesRegex(
+            READINESS.ReadinessError, "protected terminal evidence is invalid",
+        ):
+            READINESS.validate("T-013", self.repo)
 
     def test_exact_reintroduction_after_protected_revert_is_allowed(self):
         self.assertEqual(self.generate().returncode, 0)
