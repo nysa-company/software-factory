@@ -507,7 +507,8 @@ def main() -> int:
         command: shutil.which(command)
         for command in (
             "awk", "bash", "cat", "chmod", "dirname", "git", "head", "mkdir",
-            "node", "npm", "npx", "ps", "python3", "sed", "tail", "timeout",
+            "mktemp", "mv", "node", "npm", "npx", "ps", "python3", "rm",
+            "sed", "tail", "timeout",
         )
     }
     if any(path is None for path in local_commands.values()):
