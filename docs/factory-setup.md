@@ -241,13 +241,16 @@ provider state, ticket branches, or paid roles are created.
     <project> qualification-finish --json
   ```
 
-  It composes Doctor, the required process-level controller restart, ordinary
-  reconciliation, exact qualification-only approvals, serialized publication,
-  closeout, and final reduction. Approval is issued only for a selected clean,
+  It runs Doctor once at command entry, then composes the required process-level
+  controller restart, ordinary reconciliation, exact qualification-only approvals,
+  serialized publication, closeout, and final reduction. Approval is issued only for a selected clean,
   idle, parked Awaiting Approval claim and is bound to its committed bundle in
-  the lane's sealed operator authority. The command repeats only after a new
+  the lane's sealed operator authority. The command repeats reconciliation
+  without another full Doctor only after a new
   receipt, protected-base refresh, or authenticated completion; otherwise it
-  returns the typed external wait without polling. Use `qualification-run` when
+  returns the typed external wait without polling. A new command invocation
+  runs a fresh Doctor, and authenticated contract recovery retains its explicit
+  Doctor refresh. Use `qualification-run` when
   approval must remain a separate human step. No manual state edit or
   agent-authored evidence is part of either workflow.
   It also provisions the exact historical run artifacts named by those
