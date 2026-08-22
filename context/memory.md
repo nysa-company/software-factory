@@ -6,7 +6,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 
 - Product-agnostic factory kit; product repositories carry only their factory state and CI integration.
 - Durable decisions use repository-local numbering beginning at Decision 1.
-- Stable operating truth lives in `docs/`; prompts, templates, and evidence stay colocated with consumers. Test-author and Builder ticket-log bookkeeping uses separate commits from test and implementation changes. The operator preflight hydrates only evidence-bound immutable objects, batches read-only object checks, compares selected Builder ownership with protected Ready tickets, aggregates activation blockers, and makes network review explicit before certification. Qualification validates selected remote branches and exact prior-cohort control retries before publication, lets an exact prepared Ready receipt supersede an older reset head while retaining that authorization as lineage proof across protected-main churn, shares protected dependency truth, counts only role-control evidence appended after its sealed product SHA, preserves one exact-head retry for a parked preview timeout, reacquires parked semantic or contract-repair authority only at apply, admits exact source-release receipt warnings to controller-owned migration, maintains idle successor leases during long roles, and does not rerun new-admission checks once its exact cohort is fully accounted for.
+- Stable operating truth lives in `docs/`; prompts, templates, and evidence stay colocated with consumers. Test-author and Builder ticket-log bookkeeping uses separate commits from test and implementation changes, and their focused ticket checks run locally; Reviewer consumes protected CI without rerunning verification. The operator preflight hydrates only evidence-bound immutable objects, batches read-only object checks, compares selected Builder ownership with protected Ready tickets, aggregates activation blockers, and makes network review explicit before certification. Qualification validates selected remote branches and exact prior-cohort control retries before publication, lets an exact prepared Ready receipt supersede an older reset head while retaining that authorization as lineage proof across protected-main churn, shares protected dependency truth, counts only role-control evidence appended after its sealed product SHA, preserves one exact-head retry for a parked preview timeout, reacquires parked semantic or contract-repair authority only at apply, admits exact source-release receipt warnings to controller-owned migration, maintains idle successor leases during long roles, and does not rerun new-admission checks once its exact cohort is fully accounted for.
 - Failed-attempt preview, replay, and historical committed-role checks carry only unchanged tracked baseline symlinks whose tree, index, and filesystem targets agree; every added, removed, changed, staged, or untracked symlink remains fail-closed.
 - A submitted Claude individual-spend-limit terminal is release-typed, fully accounted, and qualification-latched before another role launch; dirty role evidence stays blocked and unexported rather than becoming a secondary clean-cell controller error.
 - Any nonrecoverable role terminal in a fixed qualification cohort latches the same atomic launch boundary before the claim blocks or cancels; bounded invalid-output, prior-release launch-void, direct-model identity, and authenticated Cursor fallback recovery remain runnable, while already-admitted siblings only drain and account.
@@ -7629,3 +7629,23 @@ activation and sealed qualification preparation register their own exact
 launchers; same-slug lanes stay distinct, stale paths fail closed, snapshots
 provide sanitized ticket titles and committed priority, and mutations still use
 the existing launcher receipts or one `qualification-finish` invocation.
+
+## 2026-08-22 — Decision 557: Focused tests stay local to their owners
+
+Category: Reliability
+
+Test-author and Builder run only focused ticket checks locally; protected CI
+and final certification own broad verification. Reviewer consumes those CI
+results and inspects test adequacy without rerunning tests, builds, or
+repository checks. Q75 showed the old generic Reviewer CLI instruction could
+trigger repeated focused commands during evidence revalidation even though the
+role contract already said CI knew whether tests passed.
+
+## 2026-08-22 — Decision 558: PR-ready waves defer shared control churn
+
+Category: Reliability
+
+Concurrent PR-ready tickets use a short operational freeze on unrelated shared
+Factory control inputs until the cohort drains. Generated indexes remain
+untracked, while `factory/rulings.md` remains semantic Planner and Spec-linter
+input whose changes require fresh evidence.

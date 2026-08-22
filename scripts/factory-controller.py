@@ -12532,6 +12532,35 @@ class Controller:
         task = f"Execute {role} for {claim['ticket']} from its frozen contract and repository state."
         if failed_checks:
             task += " Required GitHub checks failed: " + ", ".join(failed_checks)
+        if role == "reviewer":
+            if publication is None:
+                raise ControllerError("Reviewer CI evidence is missing")
+            checks = publication.get("checks")
+            head = publication.get("head")
+            pr_number = publication.get("pr_number")
+            pr_url = publication.get("url")
+            status = publication.get("status")
+            if (
+                publication.get("schema") != "nysa.software-factory.ticket-pr/v1"
+                or publication.get("boundary") != "reviewer"
+                or publication.get("branch") != claim["branch"]
+                or publication.get("ticket") != claim["ticket"]
+                or status not in {"prepared", "failed"}
+                or not isinstance(pr_number, int)
+                or pr_number <= 0
+                or not isinstance(pr_url, str)
+                or not re.fullmatch(r"https://github[.]com/[^\s]+/pull/[1-9][0-9]*", pr_url)
+                or not SHA.fullmatch(head or "")
+                or not isinstance(checks, list)
+                or checks != failed_checks
+                or any(not isinstance(check, str) or not check for check in checks)
+                or (status == "prepared" and checks)
+                or (status == "failed" and not checks)
+            ):
+                raise ControllerError("Reviewer CI evidence is invalid")
+            task += f" Trusted CI evidence: PR #{pr_number} is {pr_url} at exact head {head};"
+            if status == "prepared":
+                task += " every configured required GitHub check passed."
         if role == "narrator":
             if publication is None:
                 raise ControllerError("Narrator publication evidence is missing")
@@ -12941,7 +12970,7 @@ class Controller:
                         raise ControllerError("Reviewer PR gate returned an invalid status")
                     if pr.get("status") == "failed":
                         failed_checks = list(pr.get("checks", []))
-                if role == "narrator":
+                if role in {"reviewer", "narrator"}:
                     self.clear_preview_identity_wait(claim)
                     launched = self.run_role(
                         claim, role, receipt, failed_checks, pr

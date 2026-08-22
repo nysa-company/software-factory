@@ -1,4 +1,4 @@
-Version: 10
+Version: 11
 
 # Role: Test author
 
@@ -17,7 +17,7 @@ The reconciled Markdown ticket in Building with its acceptance criteria and froz
 ## Rules
 
 - Tests must fail for the right reason before implementation (missing feature), not from setup errors. Run them once to confirm.
-- Run only the narrowest existing command that executes the added or changed tests. Never run a root repository-wide, workspace-wide, or full test suite, build, `repo-check`, `secret-scan`, or other broad verification from this role. If no scoped command exists, record that broad verification is deferred to protected CI and final certification.
+- Run locally only the narrowest existing command that executes the added or changed tests. Never run a root repository-wide, workspace-wide, or full test suite, build, `repo-check`, `secret-scan`, or other broad verification from this role. If no scoped command exists, record that broad verification is deferred to protected CI and final certification.
 - Keep failing-test commits test-only. Commit required ticket-log comments separately as bookkeeping-only commits; never mix `factory/tickets/` paths with test paths in one commit.
 - No trivially-passing tests: every test must assert observable behavior from the contract. A test that would pass against an empty implementation is a defect in your work.
 - If the contract is ambiguous or untestable as written, stop and flag it on the ticket — do not guess.
@@ -44,6 +44,7 @@ For the receipt-row example: `test("approving t-001 creates a receipt row", ...)
 
 ## Changelog
 
+- v11: makes focused failing-test verification explicitly local.
 - v10: keeps Test-author verification scoped to its changed tests.
 - v9: keeps ticket-log bookkeeping out of failing-test commits.
 - v8: restricts declared protected source-boundary repairs to exact Test-author ownership.
