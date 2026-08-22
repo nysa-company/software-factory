@@ -12,6 +12,7 @@ import io
 import json
 import os
 from pathlib import Path, PurePosixPath
+import pwd
 import re
 import stat
 import subprocess
@@ -3554,6 +3555,27 @@ def validate_publication_prefix(
         raise EnvironmentError("qualification preparation receipt is unexpected")
 
 
+def register_human_target(
+    release: Path, launcher: Path, project: str, root: Path,
+) -> None:
+    cli = release / "scripts/factory-cli.py"
+    if not cli.exists():
+        return
+    target = f"qualification-{hashlib.sha256(str(root).encode()).hexdigest()[:24]}"
+    result = subprocess.run(
+        ["/usr/bin/python3", "-I", "-S", str(cli), "register",
+         target, str(launcher), project],
+        text=True, capture_output=True, check=False, timeout=120,
+        env={
+            "FACTORY_INTERNAL_REGISTER": "1",
+            "HOME": pwd.getpwuid(os.getuid()).pw_dir,
+            "PATH": "/usr/bin:/bin",
+        },
+    )
+    if result.returncode:
+        raise EnvironmentError("qualification human target registration failed")
+
+
 def _prepare(args: argparse.Namespace) -> dict[str, Any]:
     root = Path(os.path.realpath(args.root))
     if not ROOT.fullmatch(str(root)):
@@ -3881,6 +3903,10 @@ def _prepare(args: argparse.Namespace) -> dict[str, Any]:
             write_exact(authority_state, identity)
         write_exact(environment, result)
         write_exact(active, active_value)
+    if qualification_mode == "isolated":
+        register_human_target(
+            release, release / "scripts/factory-launch", args.project, root,
+        )
     return result
 
 
@@ -4038,6 +4064,9 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
         }, runtime_tuple)
         if read(root / "environment.json") != result:
             raise EnvironmentError("existing qualification environment is invalid")
+        register_human_target(
+            release, release / "scripts/factory-launch", args.project, root,
+        )
         return result
     resume_operator_state(authority, identity, manifest["tickets"])
     lock = os.open(
@@ -4159,6 +4188,9 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
         replace(authority / "authority.json", identity)
         replace(root / "environment.json", result)
         replace(active_path, next_active)
+        register_human_target(
+            release, release / "scripts/factory-launch", args.project, root,
+        )
         return result
     finally:
         os.close(lock)

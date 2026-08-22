@@ -28,7 +28,7 @@ die() {
 }
 
 usage() {
-  echo "usage: factory-launch <project> <contract|doctor|reconcile|incident-report|watch|ticket-control|qualification-run|qualification-finish|qualification-resume|qualification-history-repair|qualification|dispatch-plan|state-machine|emergency-admit|passport|publication|publication-repair|ci-rerun|ticket-pr|models|envelope|operator-snapshot|attempt|claim|renew|release|release-expired|preflight|next-stage|ticket-state|ticket-attest|project-ledger|reorder-test-fixes|run> [arguments]" >&2
+  echo "usage: factory-launch <project> <contract|doctor|reconcile|incident-report|watch|ticket-control|qualification-run|qualification-finish|qualification-resume|qualification-history-repair|qualification|dispatch-plan|state-machine|emergency-admit|passport|publication|publication-repair|ci-rerun|ticket-pr|models|envelope|operator|operator-snapshot|attempt|claim|renew|release|release-expired|preflight|next-stage|ticket-state|ticket-attest|project-ledger|reorder-test-fixes|run> [arguments]" >&2
   exit 2
 }
 
@@ -473,6 +473,10 @@ PRODUCT_ROOT="$(cd "$ACTIVE_PRODUCT_PATH" 2>/dev/null && pwd -P)" ||
   die "active product path cannot be resolved"
 RELEASE_PATH="$(cd "$ACTIVE_RELEASE_PATH" 2>/dev/null && pwd -P)" ||
   die "active release path cannot be resolved"
+if [[ "$QUALIFICATION_LAUNCHER" == "1" ]]; then
+  [[ "$SELF_PATH" == "$RELEASE_PATH/scripts/factory-launch" ]] ||
+    die "qualification launcher is not the active sealed release"
+fi
 [[ "$(git -C "$PRODUCT_ROOT" -c core.hooksPath=/dev/null \
   -c core.fsmonitor=false -c credential.helper= -c diff.external= \
   rev-parse --show-toplevel 2>/dev/null)" == "$PRODUCT_ROOT" ]] ||
@@ -2356,9 +2360,28 @@ PY
        "$2" == "--json" ]] || usage
     SNAPSHOT_HELPER="$RELEASE_PATH/scripts/operator-state.py"
     require_managed_file "$SNAPSHOT_HELPER" "active release operator snapshot helper"
+    controller_state_dir
+    HELPER_ENV+=("FACTORY_CONTROLLER_STATE_DIR=$CONTROLLER_STATE_DIR")
     cleanup_runtime
     trap - EXIT HUP INT TERM
     exec "${HELPER_ENV[@]}" "$PYTHON_BIN" -I -S "$SNAPSHOT_HELPER" "$1"
+    ;;
+  operator)
+    [[ "$ACTIVE_CONTRACT" == "2.0.0" ]] ||
+      die "operator control requires contract 2.0.0"
+    [[ "$QUALIFICATION_LAUNCHER" == "0" && -z "$QUALIFICATION_MODE" ]] ||
+      die "ordinary operator control is unavailable in qualification"
+    [[ $# -eq 4 && "$1" =~ ^(ready|approve)$ && "$2" == "--ticket" &&
+       "$3" =~ ^T-[0-9]+$ && "$4" == "--json" ]] || usage
+    controller_state_dir
+    add_certified_origin_env
+    OPERATOR_HELPER="$RELEASE_PATH/scripts/operator-cli.py"
+    require_managed_file "$OPERATOR_HELPER" "active release operator helper"
+    cleanup_runtime
+    trap - EXIT HUP INT TERM
+    exec "${HELPER_ENV[@]}" "$PYTHON_BIN" -I -S "$OPERATOR_HELPER" \
+      --product "$PRODUCT_ROOT" --state-dir "$CONTROLLER_STATE_DIR" \
+      "$1" --ticket "$3"
     ;;
   envelope)
     [[ "$CONTRACT_VERSION" == "1.5.0" || "$CONTRACT_VERSION" == "1.6.0" ||
