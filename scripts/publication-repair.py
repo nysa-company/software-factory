@@ -303,24 +303,39 @@ def create(args: argparse.Namespace, secret: bytes) -> dict[str, Any]:
     ):
         raise RepairError("same-head rerun evidence is unsafe")
     rerun = json.loads(rerun_path.read_text(encoding="utf-8"))
-    checks = json.loads(command(
+    required = json.loads(command(
         "gh", "pr", "checks", str(args.pr), "--repo", repo, "--required",
-        "--json", "name,bucket,link",
+        "--json", "name,bucket,link,workflow",
+    ))
+    checks = json.loads(command(
+        "gh", "pr", "checks", str(args.pr), "--repo", repo,
+        "--json", "name,bucket,link,workflow",
     ))
     rerun_module = module("ci_rerun", args.kit_dir / "scripts/ci-rerun.py")
-    run_id, job_id, check_name = rerun_module.classify(checks, repo)
+    selected = rerun_module.classify(required, checks, repo)
+    run_id, job_id, check_name, workflow, _failed_job_ids = selected
+    run = json.loads(command(
+        "gh", "run", "view", str(run_id), "--repo", repo, "--json",
+        "databaseId,event,headSha,jobs,status,conclusion,workflowName",
+    ))
+    rerun_module.validate_run(run, head, selected)
     if (
         rerun.get("schema") != rerun_module.SCHEMA
         or rerun.get("ticket") != args.ticket
         or rerun.get("head_sha") != head
         or rerun.get("pr_number") != args.pr
         or rerun.get("run_id") != run_id
-        or rerun.get("job_id") != job_id
         or rerun.get("check_name") != check_name
+        or rerun.get("workflow", workflow) != workflow
     ):
         raise RepairError("same-head rerun evidence does not match")
     failures = [
-        item for item in checks if item.get("bucket") in {"fail", "cancel"}
+        item for item in checks
+        if item.get("bucket") in {"fail", "cancel"}
+        and item.get("name") == check_name
+        and item.get("link") == (
+            f"https://github.com/{repo}/actions/runs/{run_id}/job/{job_id}"
+        )
     ]
     if len(failures) != 1:
         raise RepairError("publication repair failure is ambiguous")

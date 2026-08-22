@@ -2094,6 +2094,11 @@ transaction used after approval withdraws the stale bundle and routes only the
 named repair owner back to Building. A later
 Builder or Test-author run forces fresh review. The helper has no approval or
 merge authority.
+For the single allowed same-head application-test retry, an aggregate required
+failure is resolved against the complete check rollup and its exact GitHub
+workflow run. The rerun and any later publication repair require one failed
+application leaf, the same workflow/head/run identity, terminal jobs, and green
+protected classes; ambiguous, external, or additional failures refuse.
 Under Contract 1.8, compatibility `dispatch-plan` performs deterministic
 admission only and cannot spawn a dispatcher. The release-owned controller is
 the sole caller that advances work through state-machine receipts. Concurrent
