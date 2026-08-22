@@ -353,7 +353,17 @@ def validate(ticket: str, workdir: Path) -> None:
         if not re.fullmatch(r"[0-9a-f]{40}", pin):
             raise ReadinessError("ticket Kit-SHA or factory/KIT_PIN is invalid")
         if kit_shas[0] != pin:
-            raise ReadinessError("ticket Kit-SHA does not match factory/KIT_PIN")
+            if state != "done":
+                raise ReadinessError("ticket Kit-SHA does not match factory/KIT_PIN")
+    if state == "done":
+        from legacy_closeout import ValidationError, protected_terminal
+
+        try:
+            protected_terminal(workdir, ticket)
+        except ValidationError as error:
+            raise ReadinessError(
+                "ticket protected terminal evidence is invalid"
+            ) from error
     if field(text, "Product-Decisions").casefold() != "frozen":
         raise ReadinessError("product decisions are not frozen")
     builder = builder_paths(text)

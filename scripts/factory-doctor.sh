@@ -1120,6 +1120,8 @@ ticket_readiness_reason_code() {
     *"ticket State is invalid"*) printf '%s\n' ticket_state_invalid ;;
     *"ticket Depends-On is invalid"*|*"exactly one Depends-On field"*)
       printf '%s\n' ticket_dependencies_invalid ;;
+    *"protected terminal evidence is invalid"*)
+      printf '%s\n' ticket_terminal_invalid ;;
     *"Kit-SHA"*|*"KIT_PIN"*) printf '%s\n' ticket_identity_drift ;;
     *"protected source"*) printf '%s\n' protected_source_conflict ;;
     *) printf '%s\n' ticket_readiness_invalid ;;

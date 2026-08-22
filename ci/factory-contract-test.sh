@@ -769,6 +769,60 @@ assert value["checks"]["fallback_readiness"] == {
 assert not pathlib.Path(sys.argv[3]).exists()
 PY
 
+# A selected Done ticket with a historical pin must authenticate as terminal;
+# ordinary current-pin readiness may not admit an unattested terminal.
+sed -i.bak 's/Builder ownership: app\/main.tsx only/Builder ownership: README.md only/' \
+  "$QUALIFICATION_PRODUCT/factory/tickets/T-2.md"
+rm "$QUALIFICATION_PRODUCT/factory/tickets/T-2.md.bak"
+sed -i.bak 's/State: Ready/State: Done/' \
+  "$QUALIFICATION_PRODUCT/factory/tickets/T-3.md"
+rm "$QUALIFICATION_PRODUCT/factory/tickets/T-3.md.bak"
+printf '%s\n' 'Operator-Approval: Linear' "Kit-SHA: $SHA_A" \
+  >> "$QUALIFICATION_PRODUCT/factory/tickets/T-3.md"
+git -C "$QUALIFICATION_PRODUCT" add -A
+git -C "$QUALIFICATION_PRODUCT" commit -qm "add unattested prior-kit terminal"
+git -C "$QUALIFICATION_PRODUCT" update-ref refs/remotes/origin/main HEAD
+cp "$RELEASE_B/scripts/model-control.sh" "$TMP/model-control-terminal.saved"
+cat > "$RELEASE_B/scripts/model-control.sh" <<EOF
+#!/usr/bin/env bash
+: > "$TMP/unattested-terminal-provider-probed"
+exit 1
+EOF
+chmod 700 "$RELEASE_B/scripts/model-control.sh"
+UNATTESTED_TERMINAL_RC=0
+HOME="$TEST_HOME" PATH="$TEST_BIN:/usr/bin:/bin" \
+  FACTORY_TEST_MODE=1 FACTORY_TRUSTED_TEST_HARNESS=1 \
+  FACTORY_DOCTOR_TIMEOUT_SECONDS=1 \
+  FACTORY_DOCTOR_READINESS_TIMEOUT_SECONDS=5 \
+  FACTORY_KIT_TRUST_SCOPE=qualification-candidate \
+  FACTORY_QUALIFICATION_MANIFEST="$QUALIFICATION_PRODUCT/factory/QUALIFICATION.json" \
+  FACTORY_PROVIDER_POLICY="$TMP/provider/provider-policy.json" \
+  /bin/bash "$RELEASE_B/scripts/factory-doctor-real.sh" --json \
+    --project "$PROJECT" --kit-dir "$RELEASE_B" \
+    --product-root "$QUALIFICATION_PRODUCT" --kit-sha "$SHA_B" \
+    > "$TMP/unattested-terminal-doctor.json" || UNATTESTED_TERMINAL_RC=$?
+mv "$TMP/model-control-terminal.saved" "$RELEASE_B/scripts/model-control.sh"
+python3 - "$TMP/unattested-terminal-doctor.json" \
+  "$UNATTESTED_TERMINAL_RC" "$TMP/unattested-terminal-provider-probed" <<'PY'
+import json, pathlib, sys
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+assert int(sys.argv[2]) == 1
+assert value["checks"]["qualification_ticket_readiness"] == {
+    "reason_code": "ticket_terminal_invalid",
+    "status": "error",
+    "tickets": [
+        {"reason_code": None, "status": "ok", "ticket": "T-1"},
+        {"reason_code": None, "status": "ok", "ticket": "T-2"},
+        {
+            "reason_code": "ticket_terminal_invalid",
+            "status": "error",
+            "ticket": "T-3",
+        },
+    ],
+}
+assert not pathlib.Path(sys.argv[3]).exists()
+PY
+
 # Persisted protected artifact drift is reported before provider readiness.
 mkdir -p "$QUALIFICATION_PRODUCT/factory/migrations/contract-1.3-terminal-backfill"
 printf '%s\n' '{}' > \
