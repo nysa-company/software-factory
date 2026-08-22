@@ -2487,8 +2487,12 @@ class QualificationEnvironmentTest(unittest.TestCase):
         value["event_sha256"] = "0" * 64
         event_path.write_text(json.dumps(value), encoding="utf-8")
         event_path.chmod(0o600)
-        self.assertEqual(doctor(candidate_environment)["authenticated_artifacts"], {
+        checks = doctor(candidate_environment)
+        self.assertEqual(checks["authenticated_artifacts"], {
             "reason_code": "controller_event_invalid", "status": "error",
+        })
+        self.assertEqual(checks["qualification_identity"], {
+            "reason_code": None, "status": "ok",
         })
         event_path.write_bytes(originals["event"])
         event_path.chmod(0o600)

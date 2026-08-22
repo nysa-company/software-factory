@@ -1203,7 +1203,8 @@ if [[ "${FACTORY_KIT_TRUST_SCOPE:-}" == "qualification-candidate" &&
         -z "$PRODUCT_STATUS" ]]; then
     QUALIFICATION_IDENTITY_REASON_CODE="certification_plan_identity_drift"
     CERTIFICATION_PLAN="$PRODUCT_ROOT/factory/certification-plan.json"
-    CERTIFICATION_TUPLE="${FACTORY_CERTIFICATION_TUPLE:-{}}"
+    CERTIFICATION_TUPLE="${FACTORY_CERTIFICATION_TUPLE:-}"
+    [[ -n "$CERTIFICATION_TUPLE" ]] || CERTIFICATION_TUPLE="{}"
     if [[ "$CERTIFICATION_TUPLE" == "{}" &&
           ! -e "$CERTIFICATION_PLAN" && ! -L "$CERTIFICATION_PLAN" ]]; then
       QUALIFICATION_IDENTITY_STATUS="ok"
