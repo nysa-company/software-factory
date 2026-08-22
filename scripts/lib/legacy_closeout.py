@@ -22,12 +22,6 @@ from approval_evidence import (
     validate_bundle_attestation,
     validate_bundle_commit,
 )
-from inflight_release import (
-    AuthorizationError as InflightAuthorizationError,
-    verify_protected_ticket_pin,
-)
-
-
 class ValidationError(ValueError):
     pass
 
@@ -907,6 +901,11 @@ def _normal_terminal(repo, ticket, ref):
     if len(source_kits) > 1 or terminal_kits != source_kits:
         raise ValidationError("normal terminal ticket changed its protected kit pin")
     if source_kits and source_kits[0] != done["kit_sha"]:
+        from inflight_release import (
+            AuthorizationError as InflightAuthorizationError,
+            verify_protected_ticket_pin,
+        )
+
         try:
             verify_protected_ticket_pin(
                 repo, done["closeout_parent"], source_kits[0], ticket, branch,

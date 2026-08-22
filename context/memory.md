@@ -7629,3 +7629,13 @@ legacy, backfill, and reconciliation batch before provider readiness, and an
 unattested Review-stage test-only stale-base conflict reuses the existing v2
 protected-baseline receipt plus signed Test-author repair; any broader drift
 remains fail-closed.
+
+## 2026-08-22 — Decision 557: Pin-only validation stays branch-local
+
+Category: Reliability
+
+The normal terminal reader loads the in-flight pin validator only when a ticket
+actually presents a source-to-successor Kit-SHA difference. Ordinary ticket,
+operator, and qualification fixtures therefore retain their existing module
+boundary, while pin-only closeout still fails closed through the shared
+validator.
