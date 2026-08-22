@@ -241,6 +241,34 @@ def secure_regular_bytes(path: Path, label: str, *, executable: bool = False) ->
         os.close(descriptor)
 
 
+def secure_regular_digest(path: Path, label: str) -> str:
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode) or before.st_uid != os.geteuid()
+            or before.st_nlink != 1 or stat.S_IMODE(before.st_mode) & 0o022
+        ):
+            raise ReleaseError(f"{label} is unsafe")
+        value = hashlib.sha256()
+        remaining = before.st_size
+        while remaining:
+            chunk = os.read(descriptor, min(remaining, 1_048_576))
+            if not chunk:
+                raise ReleaseError(f"{label} changed while reading")
+            value.update(chunk)
+            remaining -= len(chunk)
+        after = os.fstat(descriptor)
+        if (
+            (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+            != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+        ):
+            raise ReleaseError(f"{label} changed while reading")
+        return value.hexdigest()
+    finally:
+        os.close(descriptor)
+
+
 def exact_local_file(path: Path, expected: bytes, label: str) -> str:
     if path.exists() or path.is_symlink():
         if secure_regular_bytes(path, label) != expected:
@@ -1488,11 +1516,10 @@ def retired_tree_digest(root: Path) -> str:
         })
         for name in files:
             path = current / name
-            raw = secure_regular_bytes(path, "retired Factory profile file")
             entries.append({
                 "kind": "file", "mode": stat.S_IMODE(path.stat().st_mode),
                 "path": str(path.relative_to(root)),
-                "sha256": hashlib.sha256(raw).hexdigest(),
+                "sha256": secure_regular_digest(path, "retired Factory profile file"),
             })
         if len(entries) > 10_000:
             raise ReleaseError("retired Factory profile is too large")

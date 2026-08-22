@@ -149,6 +149,21 @@ class ReleaseTransactionTest(unittest.TestCase):
             ],
         }
 
+    def test_retired_runtime_plan_streams_large_profile_files(self) -> None:
+        home = self.root / "home"
+        profile = home / ".hermes/profiles/factory"
+        profile.mkdir(parents=True)
+        database = profile / "state.db"
+        database.write_bytes(b"factory\0")
+        os.truncate(database, 10_000_001)
+        with (
+            mock.patch.object(RELEASE, "account_home", return_value=home),
+            mock.patch.dict(os.environ, {"FACTORY_KIT_TEST_MODE": "1"}),
+        ):
+            plan = RELEASE.retired_runtime_plan()
+        self.assertEqual(plan["action"], "apply")
+        self.assertRegex(plan["profile"]["tree_sha256"], r"^[0-9a-f]{64}$")
+
     def tearDown(self) -> None:
         self.temp.cleanup()
 
