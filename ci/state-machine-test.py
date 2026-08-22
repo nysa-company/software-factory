@@ -3976,6 +3976,7 @@ class StateMachineTest(unittest.TestCase):
         conflict = {
             "conflicts": [{"path": "tests/dependency-conflict.test.ts"}],
             "contract_version": self.args.contract_version,
+            "dependencies": ["T-094"],
             "factory_sha": self.args.factory_sha,
             "protected_head": prior_head,
             "transition_receipt_sha256": "c" * 64,
@@ -4019,6 +4020,30 @@ class StateMachineTest(unittest.TestCase):
         self.assertEqual(record["repair_source"], STATE.DEPENDENCY_CONFLICT_SOURCE)
         self.assertEqual(record["repair_role"], "test-author")
         self.assertEqual(record["head_sha"], receipt_head)
+        self.assertEqual(record["blocked_role"], "dependency-refresh")
+        STATE.repair_path(self.args).unlink()
+        review_conflict = {**conflict, "dependencies": []}
+        with (
+            mock.patch.object(STATE, "migrate_passport"),
+            mock.patch.object(
+                STATE, "authenticated_passport",
+                return_value=(passport, secret),
+            ),
+            mock.patch.object(
+                STATE, "dependency_conflict_receipt",
+                return_value=(review_conflict, conflict_digest, receipt_head),
+            ),
+            mock.patch.object(
+                STATE, "protected_base_sha", return_value=prior_head,
+            ),
+            mock.patch.object(STATE, "validate_dependency_conflict_transition"),
+        ):
+            STATE.ensure_dependency_conflict_repair(self.args)
+        self.assertEqual(
+            STATE.load_repair(self.args, secret)["blocked_role"],
+            "protected-base-refresh",
+        )
+        STATE.write_atomic(STATE.repair_path(self.args), record)
         run(
             "git", "switch", "-q", "-c", "protected-advanced", prior_head,
             cwd=self.product,

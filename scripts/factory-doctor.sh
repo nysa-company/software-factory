@@ -494,6 +494,7 @@ if [[ -n "${FACTORY_CONTROLLER_STATE_DIR:-}" ]]; then
   if ! "$PYTHON_BIN" -I -S - "$FACTORY_CONTROLLER_STATE_DIR" \
       "$TRANSITION_RECEIPT_FILE" \
       "$AUTHENTICATED_ARTIFACT_FILE" "$KIT_DIR/scripts/lib" "$PROJECT" \
+      "$PRODUCT_ROOT" \
       > "$CONTRACT_RESUME_FILE" <<'PY'
 import hashlib
 import json
@@ -508,9 +509,11 @@ transition_file = Path(sys.argv[2])
 artifact_file = Path(sys.argv[3])
 sys.path.insert(0, sys.argv[4])
 project = sys.argv[5]
+product = Path(sys.argv[6])
 from qualification_artifacts import (  # noqa: E402
     authenticated_passport,
 )
+from legacy_closeout import validate_protected_artifact_batches  # noqa: E402
 resolved = {"contract_blocker_recovered", "recorded_contract_repair_prepared"}
 transition_terminal = {"ticket_complete", "ticket_released", "ticket_retired"}
 transition_prior_migrated = {
@@ -538,6 +541,8 @@ def secure(path, *, directory=False):
 
 try:
     secure(root, directory=True)
+    artifact_reason = "protected_artifact_invalid"
+    validate_protected_artifact_batches(product, "HEAD")
     artifact_reason = "transition_receipt_invalid"
     for path in sorted(root.iterdir()):
         match = re.fullmatch(r"(T-[0-9]+)[.]json", path.name)

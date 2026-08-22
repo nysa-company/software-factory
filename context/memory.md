@@ -11,7 +11,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - A submitted Claude individual-spend-limit terminal is release-typed, fully accounted, and qualification-latched before another role launch; dirty role evidence stays blocked and unexported rather than becoming a secondary clean-cell controller error.
 - Any nonrecoverable role terminal in a fixed qualification cohort latches the same atomic launch boundary before the claim blocks or cancels; bounded invalid-output, prior-release launch-void, direct-model identity, and authenticated Cursor fallback recovery remain runnable, while already-admitted siblings only drain and account.
 - Recognized GitHub/Git transport loss is a typed wait, never a cohort defect. Exact remote confirmation and receipt/passport-bound replay resume post-provider role and publication commits without another model call; a disconnect inside a submitted provider attempt remains terminal-accounted and is not transport-replayed.
-- Successor qualification can preserve an exact source-passport checkpoint or descendant only through the protected in-flight release authorization; v2 binds each ticket's authenticated current source after a partial batch, migration never deletes or rewrites ticket work, and prior failed roles reopen only across an exact signed route-only migration suffix.
+- Successor qualification can preserve an exact source-passport checkpoint or descendant only through the protected in-flight release authorization; v2 binds each ticket's authenticated current source after a partial batch, migration never deletes or rewrites ticket work, and prior failed roles reopen only across an exact signed route-only migration suffix. A merged pin-only continuation closes with source-release evidence while retaining the protected successor pin.
 - Isolated successor contract repair may use an older authenticated blocker only through its complete signed release suffix ending at the exact protected per-ticket source. Prior resume pairs remain immutable transition history and are accepted only as an ordered canonical sequence with one signed completed record per pair and one newest in-branch snapshot of the full sequence. Passport snapshots may omit ordinary descendant ticket commits, while Factory/base/route junctions remain exact. During or after prior-kit receipt migration, the driver admits its historical resume mismatch only while the exact blocked claim and transition digest bind that selected ticket and receipt; event observation order is not authority.
 - An exactly migrated successor claim may chain a current transition receipt after its authenticated predecessor; predecessor evidence remains durable and unedited.
 - Nysa Agents baseline v3 as a toolkit; `bash ci/test-all.sh` is the unconditional full command.
@@ -20,7 +20,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - The local release canary is one code-driven, product-agnostic command that creates contained local origins, runs setup/resume, and times one authenticated Planning transition plus sealed mock planner; its repository-test evidence is never promotable.
 - Model routing is portfolio policy; routes pin at the ticket boundary and change only via the Contract 1.4 journal flow. One profile resolution shares model-independent native-adapter readiness across its routes and runs independent probes in bounded parallel; Cursor readiness stays model-specific. Sealed Cursor inventory verifies the exact configured selection and displayed provider label in a disposable owner-only home, then accepts only its bounded certified structure.
 - Provider-free ticket readiness rejects tracked static SHA-256 path/digest tables over any Builder or Test-author-owned path unless the exact protected test is both a declared conflict and a Fixture-Seam; unrelated payload hashes/source reads do not collide, while semantic and dynamic source guards remain fail-closed Planner/Spec-linter work.
-- Ticket-bearing mutation CLIs reject noncanonical identifiers before release discovery or state. Ticket lifecycle decisions share one exact, known-State parser; operator actions validate before residue and again under their lock. Qualification Doctor reuses canonical ticket, product/tree, KIT_PIN/plan, receipt, passport, event, and runtime-residue validators read-only and suppresses provider probes on typed drift.
+- Ticket-bearing mutation CLIs reject noncanonical identifiers before release discovery or state. Ticket lifecycle decisions share one exact, known-State parser; operator actions validate before residue and again under their lock. Qualification Doctor reuses canonical ticket, product/tree, KIT_PIN/plan, protected-batch, receipt, passport, event, and runtime-residue validators read-only and suppresses provider probes on typed drift.
 - Reconciliation markers advance after every trusted progressed stage. A successor qualification may recover one older pre-refresh marker only when sealed retention authenticates its passport digest, one exact receipt-bound successful role is the sole run-snapshot delta, and the existing strict passport migration suffix reaches the clean remote checkpoint.
 - Linear is removed (Decision 398); the six operator authorities are one-use receipts via `factory-kit.sh operator ACTION`. Approval changes only the ignored operator map and owner-only receipt until trusted approval attestation records it in Git. An explicitly invoked isolated `qualification-finish` runs Doctor once at command entry, may approve only exact selected clean parked bundle checkpoints, then drives the existing publication, closeout, and reducer chain until green or a typed external wait; a new invocation and authenticated contract recovery retain their fresh Doctor boundaries. Production and takeover retain separate human approval. Qualification may issue one manifest-selected successor resume only after the exact sealed compact-repair check, including the explicit isolated close after an authenticated contract-repair directive; that exact new authority rearms one abandoned targeted recovery attempt, while unchanged evidence cannot loop. Production has no lifecycle bypass.
 - The installed `factory` command is a preference-only human UI. Each opaque target binds one exact physical launcher plus project slug, including separate same-slug production and qualification targets; workflow labels and ticket fields come only from that launcher, and every Ready, approval, Doctor, or qualification-close action returns to its existing sealed authority.
@@ -7649,3 +7649,48 @@ Concurrent PR-ready tickets use a short operational freeze on unrelated shared
 Factory control inputs until the cohort drains. Generated indexes remain
 untracked, while `factory/rulings.md` remains semantic Planner and Spec-linter
 input whose changes require fresh evidence.
+
+## 2026-08-22 — Decision 559: Successor recovery reuses authenticated boundaries
+
+Category: Reliability
+
+An exact in-flight-release-authorized pin-only successor may finish a merged
+Approved ticket while Done retains the source release evidence identity and the
+terminal ticket retains the successor pin. Doctor validates every protected
+legacy, backfill, and reconciliation batch before provider readiness, and an
+unattested Review-stage test-only stale-base conflict reuses the existing v2
+protected-baseline receipt plus signed Test-author repair; any broader drift
+remains fail-closed.
+
+## 2026-08-22 — Decision 560: Pin-only validation stays branch-local
+
+Category: Reliability
+
+The normal terminal reader loads the in-flight pin validator only when a ticket
+actually presents a source-to-successor Kit-SHA difference. Ordinary ticket,
+operator, and qualification fixtures therefore retain their existing module
+boundary, while pin-only closeout still fails closed through the shared
+validator.
+
+## 2026-08-22 — Decision 561: Terminal validation distinguishes two release paths
+
+Category: Reliability
+
+A terminal ticket whose closeout parent already carries a successor pin must
+bind the exact in-flight authorization when its Done evidence retains the source
+release. The older authenticated route-journal migration remains valid when the
+terminal commit itself changes the pin and the existing route validator binds
+that transition. Ordinary refresh conflicts that do not meet the narrow signed
+Test-author repair contract retain their established generic fail-closed
+refusal after exact branch restoration.
+
+## 2026-08-22 — Decision 562: Protected authorization supports squash topology
+
+Category: Reliability
+
+An in-flight authorization authenticates the exact ticket head directly; that
+head need not be an ancestor of protected main because the product's required
+squash merge deliberately removes that topology. Pin-only terminal validation
+still requires the protected authorization, exact source head and state, exact
+regular ticket and pin blobs, and a byte-exact source-to-target Kit-SHA-only
+transformation. A regression uses a real independent squash commit.

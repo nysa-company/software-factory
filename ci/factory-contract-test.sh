@@ -110,6 +110,10 @@ PY
     "$release/scripts/lib/qualification_manifest.py"
   cp "$ROOT/scripts/lib/qualification_artifacts.py" \
     "$release/scripts/lib/qualification_artifacts.py"
+  for library in approval_evidence inflight_release legacy_closeout \
+      protected_merge_reconciliation terminal_backfill; do
+    cp "$ROOT/scripts/lib/$library.py" "$release/scripts/lib/$library.py"
+  done
   cp "$ROOT/scripts/lib/dispatch-leases.sh" \
     "$release/scripts/lib/dispatch-leases.sh"
   cat > "$release/scripts/factory-doctor.sh" <<'EOF'
@@ -758,6 +762,51 @@ assert value["checks"]["qualification_ticket_readiness"] == {
         },
         {"reason_code": None, "status": "ok", "ticket": "T-3"},
     ],
+}
+assert value["checks"]["fallback_readiness"] == {
+    "report": None, "status": "not_applicable",
+}
+assert not pathlib.Path(sys.argv[3]).exists()
+PY
+
+# Persisted protected artifact drift is reported before provider readiness.
+mkdir -p "$QUALIFICATION_PRODUCT/factory/migrations/contract-1.3-terminal-backfill"
+printf '%s\n' '{}' > \
+  "$QUALIFICATION_PRODUCT/factory/migrations/contract-1.3-terminal-backfill/authorization.json"
+git -C "$QUALIFICATION_PRODUCT" add -A
+git -C "$QUALIFICATION_PRODUCT" commit -qm "tamper protected terminal batch"
+PROTECTED_ARTIFACT_STATE="$TMP/protected-artifact-controller"
+mkdir -m 700 "$PROTECTED_ARTIFACT_STATE"
+cp "$RELEASE_B/scripts/model-control.sh" "$TMP/model-control-protected.saved"
+cat > "$RELEASE_B/scripts/model-control.sh" <<EOF
+#!/usr/bin/env bash
+: > "$TMP/protected-artifact-provider-probed"
+exit 1
+EOF
+chmod 700 "$RELEASE_B/scripts/model-control.sh"
+PROTECTED_ARTIFACT_DOCTOR_RC=0
+HOME="$TEST_HOME" PATH="$TEST_BIN:/usr/bin:/bin" \
+  FACTORY_TEST_MODE=1 FACTORY_TRUSTED_TEST_HARNESS=1 \
+  FACTORY_DOCTOR_TIMEOUT_SECONDS=1 \
+  FACTORY_DOCTOR_READINESS_TIMEOUT_SECONDS=5 \
+  FACTORY_KIT_TRUST_SCOPE=qualification-candidate \
+  FACTORY_CONTROLLER_STATE_DIR="$PROTECTED_ARTIFACT_STATE" \
+  FACTORY_QUALIFICATION_MANIFEST="$QUALIFICATION_PRODUCT/factory/QUALIFICATION.json" \
+  FACTORY_PROVIDER_POLICY="$TMP/provider/provider-policy.json" \
+  /bin/bash "$RELEASE_B/scripts/factory-doctor-real.sh" --json \
+    --project "$PROJECT" --kit-dir "$RELEASE_B" \
+    --product-root "$QUALIFICATION_PRODUCT" --kit-sha "$SHA_B" \
+    > "$TMP/protected-artifact-doctor.json" || PROTECTED_ARTIFACT_DOCTOR_RC=$?
+mv "$TMP/model-control-protected.saved" "$RELEASE_B/scripts/model-control.sh"
+python3 - "$TMP/protected-artifact-doctor.json" \
+  "$PROTECTED_ARTIFACT_DOCTOR_RC" \
+  "$TMP/protected-artifact-provider-probed" <<'PY'
+import json, pathlib, sys
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+assert int(sys.argv[2]) == 1
+assert value["overall_status"] == "error"
+assert value["checks"]["authenticated_artifacts"] == {
+    "reason_code": "protected_artifact_invalid", "status": "error",
 }
 assert value["checks"]["fallback_readiness"] == {
     "report": None, "status": "not_applicable",

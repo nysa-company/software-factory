@@ -22,8 +22,6 @@ from approval_evidence import (
     validate_bundle_attestation,
     validate_bundle_commit,
 )
-
-
 class ValidationError(ValueError):
     pass
 
@@ -895,6 +893,37 @@ def _normal_terminal(repo, ticket, ref):
     ticket_text = text_at(repo, ref, f"factory/tickets/{ticket}.md")
     if ticket_text is None or one_field(ticket_text, "State").lower() != "done":
         raise ValidationError("normal terminal ticket is not Done")
+    source_ticket = text_at(repo, done["closeout_parent"], f"factory/tickets/{ticket}.md")
+    if source_ticket is None:
+        raise ValidationError("normal closeout parent ticket is unavailable")
+    source_kits = re.findall(r"(?mi)^Kit-SHA:\s*(.*?)\s*$", source_ticket)
+    terminal_kits = re.findall(r"(?mi)^Kit-SHA:\s*(.*?)\s*$", ticket_text)
+    if (
+        len(source_kits) > 1
+        or len(terminal_kits) > 1
+        or done["kit_sha"] == bundle["kit_sha"]
+        and terminal_kits != source_kits
+    ):
+        raise ValidationError("normal terminal ticket changed its protected kit pin")
+    if (
+        done["kit_sha"] == bundle["kit_sha"]
+        and source_kits
+        and source_kits[0] != done["kit_sha"]
+    ):
+        from inflight_release import (
+            AuthorizationError as InflightAuthorizationError,
+            verify_protected_ticket_pin,
+        )
+
+        try:
+            verify_protected_ticket_pin(
+                repo, done["closeout_parent"], source_kits[0], ticket, branch,
+                done["approved_pr_head"], "Approved", done["kit_sha"],
+            )
+        except InflightAuthorizationError as error:
+            raise ValidationError(
+                "normal protected successor pin is invalid"
+            ) from error
     expected_approval = "receipt" if approval_is_receipt else "linear"
     if one_field(ticket_text, "Operator-Approval").lower() != expected_approval:
         raise ValidationError("normal terminal ticket lacks operator approval")
@@ -1349,21 +1378,36 @@ def _protected_merge_reconciliation_batch_at(repo, commit):
     return reconciliation_batch(Path(repo), commit)
 
 
+def validate_protected_artifact_batches(repo, ref="refs/remotes/origin/main"):
+    """Validate every authenticated protected-main batch before admission."""
+    repo = Path(repo).resolve(strict=True)
+    commit = run(repo, "rev-parse", "--verify", f"{ref}^{{commit}}").stdout.strip()
+    oid(commit, "protected-main commit")
+    return {
+        "legacy": _legacy_batch_at(str(repo), commit),
+        "reconciliation": _protected_merge_reconciliation_batch_at(
+            str(repo), commit
+        ),
+        "terminal_backfill": _terminal_backfill_batch_at(str(repo), commit),
+    }
+
+
 def protected_terminal(repo, ticket, ref="refs/remotes/origin/main"):
     if not isinstance(ticket, str) or not TICKET_ID.fullmatch(ticket):
         raise ValidationError("invalid ticket identifier")
     repo = Path(repo).resolve(strict=True)
     commit = run(repo, "rev-parse", "--verify", f"{ref}^{{commit}}").stdout.strip()
     oid(commit, "protected-main commit")
-    reconciliation = _protected_merge_reconciliation_batch_at(str(repo), commit)
+    batches = validate_protected_artifact_batches(repo, commit)
+    reconciliation = batches["reconciliation"]
     if ticket in reconciliation:
         normal_root = f"factory/attestations/{ticket}"
         normal_done = json_at(repo, commit, f"{normal_root}/done.json", "Done attestation")
         normal = _normal_terminal(repo, ticket, commit) if normal_done is not None else None
     else:
         normal = _normal_terminal(repo, ticket, commit)
-    legacy = _legacy_batch_at(str(repo), commit)
-    backfill = _terminal_backfill_batch_at(str(repo), commit)
+    legacy = batches["legacy"]
+    backfill = batches["terminal_backfill"]
     evidence_count = sum((
         normal is not None,
         ticket in legacy,
