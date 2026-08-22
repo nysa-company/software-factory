@@ -1597,6 +1597,52 @@ class DispatchPlanTest(unittest.TestCase):
             )
         self.assertNotEqual(advanced, old_head)
 
+    def test_prepared_ready_receipt_authenticates_only_its_exact_branch(self):
+        self.write_contract_18_qualification(contract_version="2.0.0")
+        ticket = self.product / "factory/tickets/T-110.md"
+        ticket.write_text(ticket.read_text().replace("State: Ready", "State: Backlog"))
+        run("git", "add", str(ticket), cwd=self.product)
+        run("git", "commit", "-qm", "protect backlog ticket", cwd=self.product)
+        run("git", "push", "-q", "origin", "main", cwd=self.product)
+        prepared_head = self.stale_operator_ready_branch()
+        (self.product / "README.md").write_text("advance protected main\n")
+        run("git", "add", "README.md", cwd=self.product)
+        run("git", "commit", "-qm", "advance protected main", cwd=self.product)
+        run("git", "push", "-q", "origin", "main", cwd=self.product)
+        state = self.qualification_state()
+
+        inspected = DISPATCH.inspect_selected_preprovider_branches(
+            self.product, self.product / "factory", state, str(self.remote),
+            exact_authorizations=True,
+            prepared_ready_receipts={"T-110": "c" * 64},
+        )
+        self.assertEqual(inspected, {"T-110": prepared_head})
+
+        with self.assertRaisesRegex(
+            DISPATCH.DispatchError, "operator-ready state is invalid",
+        ):
+            DISPATCH.inspect_selected_preprovider_branches(
+                self.product, self.product / "factory", state,
+                str(self.remote), exact_authorizations=True,
+                prepared_ready_receipts={"T-110": "d" * 64},
+            )
+
+        run("git", "switch", "-q", "ticket/T-110", cwd=self.product)
+        run(
+            "git", "commit", "--allow-empty", "-qm", "tamper prepared branch",
+            cwd=self.product,
+        )
+        run("git", "push", "-q", "origin", "ticket/T-110", cwd=self.product)
+        run("git", "switch", "-q", "main", cwd=self.product)
+        with self.assertRaisesRegex(
+            DISPATCH.DispatchError, "commits are not canonical",
+        ):
+            DISPATCH.inspect_selected_preprovider_branches(
+                self.product, self.product / "factory", state,
+                str(self.remote), exact_authorizations=True,
+                prepared_ready_receipts={"T-110": "c" * 64},
+            )
+
     def test_qualification_control_retry_resets_only_authenticated_control_state(self):
         old_head, source_product_sha = self.qualification_control_branch()
         state = self.qualification_state()

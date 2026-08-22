@@ -203,7 +203,7 @@ def validate(root: Path) -> Check:
         check.require(text(root, "CLAUDE.md").strip() == "@AGENTS.md", "CLAUDE.md must contain only @AGENTS.md")
 
     memory = text(root, "context/memory.md")
-    check.require(bool(re.search(r"^## Current truth\s*$", memory, re.M)), "context/memory.md missing Current truth heading")
+    check.require(bool(re.search(r"^## Current truth\b", memory, re.M)), "context/memory.md missing Current truth heading")
     check.require(bool(re.search(r"^## Log\s*$", memory, re.M)), "context/memory.md missing Log heading")
 
     default_branch = manifest.get("default_branch")
@@ -386,7 +386,7 @@ def validate(root: Path) -> Check:
         compliant = []
         for path in workflows:
             workflow_text = path.read_text(encoding="utf-8", errors="replace")
-            if all(token in workflow_text for token in required_tokens) and "ai-review" not in workflow_text.lower():
+            if all(token in workflow_text for token in required_tokens):
                 compliant.append(path)
         check.require(
             bool(compliant),

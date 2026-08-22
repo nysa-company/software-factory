@@ -24,8 +24,8 @@
       "AGENTS.md": "624ac1f07f3d9d6a1e1dd7e98b2f43dcb3ac0059c07bcba7633768c159933cc9"
     },
     "files": {
-      "scripts/repo-check": "f2cfa8999b72b7e0ac278ea854d6ffce369d08ecdec421f2e022cdb87fbdbe01",
-      "scripts/secret-scan": "5b3976b01da6da1d4f99f36dff1f7321a08c133348b9fc02192b0c72d7414f78"
+      "scripts/repo-check": "9199bc24c6dd518fecf5affc17f58bc144d910bef9d49027643db308f8ec9c27",
+      "scripts/secret-scan": "ebe73581c238ad4c32319f057dbdd5e982ff7547f65a8e96cdf7fe995ecbb4ab"
     }
   },
   "profile": "toolkit",

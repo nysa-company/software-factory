@@ -1689,8 +1689,9 @@ def historical_pr_objects(product: Path, origin: str) -> int:
 
 def validate_selected_remote_branches(
     factory: Path, product: Path, manifest: dict[str, Any], origin: str,
-    *, exact_authorizations: bool,
-) -> None:
+    *, exact_authorizations: bool, mapping_path: Path | None = None,
+    controller: Path | None = None,
+) -> dict[str, str]:
     spec = importlib.util.spec_from_file_location(
         "qualification_prepare_dispatch", factory / "scripts/dispatch-plan.py",
     )
@@ -1699,9 +1700,17 @@ def validate_selected_remote_branches(
     dispatch = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(dispatch)
     try:
-        dispatch.inspect_selected_preprovider_branches(
+        prepared = (
+            dispatch.authenticated_prepared_ready_receipts(
+                mapping_path, controller, manifest,
+            )
+            if mapping_path is not None
+            else {}
+        )
+        return dispatch.inspect_selected_preprovider_branches(
             product, product / "factory", manifest, origin,
             exact_authorizations=exact_authorizations,
+            prepared_ready_receipts=prepared,
         )
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         raise EnvironmentError(
@@ -3584,12 +3593,16 @@ def _prepare(args: argparse.Namespace) -> dict[str, Any]:
         if not takeover_requested:
             validate_qualification_budget(factory, product, manifest, global_config)
     historical_objects = historical_pr_objects(product, origin)
-    validate_selected_remote_branches(
-        factory, product, manifest, origin,
-        exact_authorizations=not (
-            root / f"projects/{args.project}/active.json"
-        ).exists(),
+    expected_authority_path = Path.home().resolve(strict=True) / (
+        f".factory/qualification/{args.project}"
     )
+    if not (expected_authority_path / "operator-bootstrap.json").exists():
+        validate_selected_remote_branches(
+            factory, product, manifest, origin,
+            exact_authorizations=not (
+                root / f"projects/{args.project}/active.json"
+            ).exists(),
+        )
     validate_selected_contracts(product, manifest)
     prepare_product_runtime(product)
     if command("git", "-C", str(product), "status", "--porcelain", "--untracked-files=all"):
@@ -3619,9 +3632,7 @@ def _prepare(args: argparse.Namespace) -> dict[str, Any]:
         args.project, contract, sha, tree, product, product_sha, product_tree, origin,
         runtime_tuple, operator_map_path, runtime_ledger_path,
     )
-    expected_authority = None if takeover else Path.home().resolve(strict=True) / (
-        f".factory/qualification/{args.project}"
-    )
+    expected_authority = None if takeover else expected_authority_path
     state = (
         "restore" if restoring
         else preparation_state(root, expected_authority, args.project)
@@ -3683,6 +3694,14 @@ def _prepare(args: argparse.Namespace) -> dict[str, Any]:
         marker = {"mode": "qualification", "schema": SCHEMA}
         if authority is not None:
             validate_authority_prepare_shape(authority, manifest["tickets"])
+            validate_selected_remote_branches(
+                factory, product, manifest, origin,
+                exact_authorizations=not (
+                    root / f"projects/{args.project}/active.json"
+                ).exists(),
+                mapping_path=map_path,
+                controller=authority / "controller",
+            )
         validate_prepare_phase(root, authority, sha, args.project)
         if root.exists() or root.is_symlink():
             validate_prepare_root(root, sha, args.project)
@@ -3723,6 +3742,15 @@ def _prepare(args: argparse.Namespace) -> dict[str, Any]:
                     factory, product, map_path, ledger_path,
                     authority / "controller",
                 )
+            validate_authority_prepare_shape(authority, manifest["tickets"])
+            validate_selected_remote_branches(
+                factory, product, manifest, origin,
+                exact_authorizations=not (
+                    root / f"projects/{args.project}/active.json"
+                ).exists(),
+                mapping_path=map_path,
+                controller=authority / "controller",
+            )
             validate_runtime_ledger(ledger_path)
             if command(
                 "git", "-C", str(product), "status", "--porcelain",

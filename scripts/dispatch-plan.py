@@ -29,6 +29,7 @@ from legacy_closeout import (  # noqa: E402
     protected_dependency,
     protected_terminal,
 )
+import operator_receipt  # noqa: E402
 
 
 SCHEMA = "nysa.software-factory.dispatch-plan/v1"
@@ -477,6 +478,97 @@ def operator_mapping(
     return value
 
 
+def authenticated_prepared_ready_receipts(
+    mapping_path: Path,
+    state_dir: Path | None,
+    qualification_state: dict[str, Any] | None,
+) -> dict[str, str]:
+    """Return locally authenticated Ready receipts left by partial preparation."""
+    if (
+        state_dir is None
+        or qualification_state is None
+        or qualification_state.get("schema") != QUALIFICATION_SCHEMA_V2
+        or not state_dir.exists()
+    ):
+        return {}
+    selected = qualification_state.get("tickets")
+    if not isinstance(selected, list) or any(
+        not isinstance(ticket, str) or not TICKET.fullmatch(ticket)
+        for ticket in selected
+    ):
+        raise DispatchError("qualification tickets are invalid")
+    if (
+        not mapping_path.is_absolute()
+        or state_dir != mapping_path.parent.parent / "controller"
+    ):
+        raise DispatchError("prepared operator receipt state path is invalid")
+    safe_directory(state_dir, "prepared operator receipt state", owner_only=True)
+    mapping = operator_mapping(mapping_path, selected)
+    receipt_root = state_dir / "operator-receipts"
+    if not receipt_root.exists():
+        return {}
+    safe_directory(receipt_root, "prepared operator receipt root", owner_only=True)
+    result: dict[str, str] = {}
+    for ticket in selected:
+        ticket_root = receipt_root / ticket
+        if not ticket_root.exists():
+            continue
+        safe_directory(ticket_root, "prepared operator ticket receipts", owner_only=True)
+        receipts: list[tuple[int, dict[str, Any]]] = []
+        for path in ticket_root.iterdir():
+            match = re.fullmatch(r"ready-([1-9][0-9]*)[.]json", path.name)
+            if path.name.startswith("ready-") and match is None:
+                raise DispatchError("prepared operator Ready receipt name is invalid")
+            if match is None:
+                continue
+            try:
+                receipt = operator_receipt.safe_receipt(path)
+            except (OSError, ValueError, json.JSONDecodeError) as error:
+                raise DispatchError("prepared operator Ready receipt is invalid") from error
+            sequence = int(match.group(1))
+            if (
+                receipt.get("ticket") != ticket
+                or receipt.get("action") != "ready"
+                or receipt.get("payload") != {}
+                or receipt.get("sequence") != sequence
+            ):
+                raise DispatchError("prepared operator Ready receipt is invalid")
+            receipts.append((sequence, receipt))
+        if not receipts:
+            continue
+        receipts.sort(key=lambda item: item[0])
+        if [sequence for sequence, _ in receipts] != list(
+            range(1, len(receipts) + 1)
+        ):
+            raise DispatchError("prepared operator Ready receipt sequence is invalid")
+        receipt = receipts[-1][1]
+        entry = mapping.get("tickets", {}).get(ticket, {})
+        success = mapping.get("_sync", {}).get(
+            "selected_ticket_success_at", {}
+        ).get(ticket)
+        pending = entry.get("operator") if isinstance(entry, dict) else None
+        if receipt.get("consumed") is True:
+            valid = (
+                isinstance(receipt.get("consumed_at_epoch"), int)
+                and isinstance(success, str)
+                and pending is None
+            )
+        else:
+            valid = (
+                "consumed_at_epoch" not in receipt
+                and pending == {
+                    "observed_at": receipt.get("issued_at"),
+                    "receipt_sha256": receipt.get("receipt_sha256"),
+                    "state": "Ready",
+                    "state_base": "backlog",
+                }
+            )
+        if not valid:
+            raise DispatchError("prepared operator Ready receipt is not authoritative")
+        result[ticket] = receipt["receipt_sha256"]
+    return result
+
+
 def lease_records(directory: Path) -> tuple[set[str], set[str]]:
     tickets: set[str] = set()
     leases: set[str] = set()
@@ -730,6 +822,7 @@ def validate_operator_ready_lineage(
     remote_head: str,
     ticket_path: str,
     plan_path: str,
+    expected_receipt_sha256: str = "",
 ) -> None:
     base = git(product, "merge-base", main, remote_head).strip()
     changed = set(git(
@@ -868,6 +961,8 @@ def validate_operator_ready_lineage(
         or receipt.get("payload") != {}
         or receipt.get("sequence") != sequence
         or receipt.get("ticket") != ticket
+        or expected_receipt_sha256
+        and receipt.get("receipt_sha256") != expected_receipt_sha256
         or not isinstance(receipt.get("issued_at"), str)
         or not re.fullmatch(r"[0-9a-f]{64}", receipt.get("receipt_sha256", ""))
     ):
@@ -1049,6 +1144,7 @@ def validate_preprovider_branch(
     main: str,
     reset: ResetAuthorization | str,
     remote_head: str,
+    expected_ready_receipt_sha256: str = "",
 ) -> str:
     authorization = reset_authorization(reset)
     if remote_head != authorization.head:
@@ -1078,7 +1174,7 @@ def validate_preprovider_branch(
     if len(receipt_paths) == 1 and changed == {ticket_path, receipt_paths[0]}:
         validate_operator_ready_lineage(
             product, ticket, branch, main, remote_head, ticket_path,
-            plan_path,
+            plan_path, expected_ready_receipt_sha256,
         )
         return remote_head
     if changed != {ticket_path, plan_path}:
@@ -1182,6 +1278,7 @@ def inspect_selected_preprovider_branches(
     remote: str,
     *,
     exact_authorizations: bool = False,
+    prepared_ready_receipts: dict[str, str] | None = None,
 ) -> dict[str, str]:
     """Validate selected remote branches without changing them."""
     if qualification_state.get("schema") != QUALIFICATION_SCHEMA_V2:
@@ -1194,7 +1291,19 @@ def inspect_selected_preprovider_branches(
     authorizations = preprovider_reset_authorizations(
         factory, qualification_state, prefix,
     )
+    prepared = prepared_ready_receipts or {}
+    if (
+        not isinstance(prepared, dict)
+        or any(
+            ticket not in qualification_state["tickets"]
+            or not isinstance(digest, str)
+            or not operator_receipt.DIGEST.fullmatch(digest)
+            for ticket, digest in prepared.items()
+        )
+    ):
+        raise DispatchError("prepared operator Ready receipts are invalid")
     divergent = {}
+    prepared_divergent = set()
     for ticket in sorted(qualification_state["tickets"]):
         branch = prefix + ticket
         reference = f"refs/heads/{branch}"
@@ -1219,6 +1328,14 @@ def inspect_selected_preprovider_branches(
         if git_succeeds(product, "merge-base", "--is-ancestor", main, remote_head):
             continue
         authorized_head = authorizations.get(ticket, "")
+        if not authorized_head and ticket in prepared:
+            validate_preprovider_branch(
+                product, ticket, branch, main, remote_head, remote_head,
+                prepared[ticket],
+            )
+            divergent[ticket] = remote_head
+            prepared_divergent.add(ticket)
+            continue
         if not authorized_head:
             raise DispatchError(
                 f"{ticket}: divergent remote branch lacks reset authorization"
@@ -1227,9 +1344,47 @@ def inspect_selected_preprovider_branches(
             product, ticket, branch, main, authorized_head, remote_head,
         )
         divergent[ticket] = remote_head
-    if exact_authorizations and set(authorizations) != set(divergent):
+    if exact_authorizations and set(authorizations) != (
+        set(divergent) - prepared_divergent
+    ):
         raise DispatchError("pre-provider reset authorization is not exact")
     return divergent
+
+
+def selected_preprovider_reset_authorizations(
+    product: Path,
+    factory: Path,
+    qualification_state: dict[str, Any] | None,
+    remote: str,
+    mapping_path: Path,
+    state_dir: Path | None,
+) -> dict[str, ResetAuthorization]:
+    prefix = ticket_branch_prefix(factory)
+    prepared = (
+        authenticated_prepared_ready_receipts(
+            mapping_path, state_dir, qualification_state,
+        )
+        if (
+            os.environ.get("FACTORY_KIT_TRUST_SCOPE")
+            == "qualification-candidate"
+            and os.environ.get("FACTORY_QUALIFICATION_MODE") == "isolated"
+        )
+        else {}
+    )
+    inspected = (
+        inspect_selected_preprovider_branches(
+            product, factory, qualification_state, remote,
+            prepared_ready_receipts=prepared,
+        )
+        if qualification_state is not None
+        else {}
+    )
+    resets = preprovider_reset_authorizations(
+        factory, qualification_state, prefix,
+    )
+    for ticket in set(prepared) & set(inspected):
+        resets.setdefault(ticket, ResetAuthorization(inspected[ticket]))
+    return resets
 
 
 def reconcile_preprovider_branch(
@@ -1741,12 +1896,11 @@ def main() -> None:
         qualification_state = qualification(product, factory, maximum)
         validate_qualification_ticket_sources(product, qualification_state)
         prefix = ticket_branch_prefix(factory)
-        if qualification_state is not None:
-            inspect_selected_preprovider_branches(
-                product, factory, qualification_state, remote,
-            )
-        reset_authorizations = preprovider_reset_authorizations(
-            factory, qualification_state, prefix
+        controller_raw = os.environ.get("FACTORY_CONTROLLER_STATE_DIR", "")
+        controller_state = Path(controller_raw) if controller_raw else None
+        reset_authorizations = selected_preprovider_reset_authorizations(
+            product, factory, qualification_state, remote, mapping_path,
+            controller_state,
         )
         reset_authorizations = {
             ticket: head for ticket, head in reset_authorizations.items()
@@ -1767,14 +1921,12 @@ def main() -> None:
             )
             lock(launch_lock)
             held_launch = True
-            inspect_selected_preprovider_branches(
-                product, factory, qualification_state, remote,
-            )
             protected_main = git(
                 product, "rev-parse", "refs/remotes/origin/main",
             ).strip()
-            reset_authorizations = preprovider_reset_authorizations(
-                factory, qualification_state, prefix,
+            reset_authorizations = selected_preprovider_reset_authorizations(
+                product, factory, qualification_state, remote, mapping_path,
+                controller_state,
             )
             reset_authorizations = {
                 ticket: head for ticket, head in reset_authorizations.items()

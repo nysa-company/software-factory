@@ -179,6 +179,7 @@ SCENARIOS = (
         "operator_ready_materialization_failure_replays",
         (
             "qualification-environment-test.py",
+            "QualificationEnvironmentTest.test_prepare_restarts_after_ready_branch_and_protected_main_advance",
             "QualificationEnvironmentTest.test_unconsumed_ready_receipt_reaches_materialization_replay",
             "QualificationEnvironmentTest.test_selected_operator_retries_pending_ready_projection",
         ),
@@ -506,7 +507,8 @@ def main() -> int:
         command: shutil.which(command)
         for command in (
             "awk", "bash", "cat", "chmod", "dirname", "git", "head", "mkdir",
-            "node", "npm", "npx", "ps", "python3", "sed", "tail", "timeout",
+            "mktemp", "mv", "node", "npm", "npx", "ps", "python3", "rm",
+            "sed", "tail", "timeout",
         )
     }
     if any(path is None for path in local_commands.values()):
