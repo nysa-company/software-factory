@@ -431,11 +431,24 @@ def release_identity(
             or stat.S_IMODE(info.st_mode) & 0o222
         ):
             raise PinError("sealed release is not read-only")
-    _, contract = read_json(release / "factory-contract.json", "sealed release contract")
+    contracts = (
+        release / "factory-contract.json",
+        *sorted((release / "integrations").glob("*/contract.json")),
+    )
+    present = [path for path in contracts if path.exists() or path.is_symlink()]
+    if len(present) != 1:
+        raise PinError(
+            "sealed release contract is unavailable" if not present
+            else "sealed release contract is ambiguous"
+        )
+    contract_path = present[0]
+    _, contract = read_json(contract_path, "sealed release contract")
     version = contract.get("contract_version") if isinstance(contract, dict) else None
     if (
         not isinstance(version, str) or not SAFE_VERSION.fullmatch(version)
-        or (candidate and version not in ("1.8.0", "2.0.0"))
+        or (candidate and (
+            contract_path != contracts[0] or version not in ("1.8.0", "2.0.0")
+        ))
     ):
         raise PinError("sealed release contract is incompatible")
     for relative in REQUIRED_RELEASE_FILES:
