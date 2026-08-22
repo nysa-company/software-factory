@@ -40,8 +40,10 @@ factory-launch <project> operator-snapshot envelope --json
 factory-launch <project> operator-snapshot spend --json
 ```
 
-The UI exposes CSRF-protected, preview-hashed controls for project model
-policy, envelope limits, temporary envelope overrides, and targeted attempt
-cancellation. It also retains model activate/disable/enable endpoints. Every
+The UI exposes CSRF-protected, preview-hashed controls for semantic retry
+authorization, project model policy, envelope limits, temporary envelope
+overrides, and targeted attempt cancellation. The operator reviews and confirms
+the exact semantic-round plan while its approval hash stays in browser memory.
+It also retains model activate/disable/enable endpoints. Every
 request maps to an exact launcher grammar; browser-provided paths and arbitrary
 argument vectors are never accepted.

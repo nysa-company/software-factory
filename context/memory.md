@@ -24,6 +24,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Reconciliation markers advance after every trusted progressed stage. A successor qualification may recover one older pre-refresh marker only when sealed retention authenticates its passport digest, one exact receipt-bound successful role is the sole run-snapshot delta, and the existing strict passport migration suffix reaches the clean remote checkpoint.
 - Linear is removed (Decision 398); the six operator authorities are one-use receipts via `factory-kit.sh operator ACTION`. Approval changes only the ignored operator map and owner-only receipt until trusted approval attestation records it in Git. An explicitly invoked isolated `qualification-finish` runs Doctor once at command entry, may approve only exact selected clean parked bundle checkpoints, then drives the existing publication, closeout, and reducer chain until green or a typed external wait; a new invocation and authenticated contract recovery retain their fresh Doctor boundaries. Production and takeover retain separate human approval. Qualification may issue one manifest-selected successor resume only after the exact sealed compact-repair check, including the explicit isolated close after an authenticated contract-repair directive; that exact new authority rearms one abandoned targeted recovery attempt, while unchanged evidence cannot loop. Production has no lifecycle bypass.
 - The installed `factory` command is a preference-only human UI. Each opaque target binds one exact physical launcher plus project slug, including separate same-slug production and qualification targets; workflow labels and ticket fields come only from that launcher, and every Ready, approval, Doctor, or qualification-close action returns to its existing sealed authority.
+- The local operator console keeps semantic-round approval hashes in session memory: the operator previews and confirms one exact ticket, role, round, and identity without transcribing a digest, while the existing launcher apply path still recomputes and validates that digest before mutation.
 - **Contract rules below in Operating contract are authoritative**; this summary is only what the session hook can inject.
 
 ## Operating contract
@@ -7714,3 +7715,12 @@ GitHub HTTPS only when both origins normalize to the same owner and repository.
 The next committed journal binds the new literal origin; different paths,
 noncanonical destinations, embedded credentials, and lookalike hosts fail
 closed.
+
+## 2026-08-22 — Decision 565: Semantic approval hashes are internal UI state
+
+Category: System change
+
+The local operator console previews and confirms an exact semantic retry while
+carrying its approval hash only in session memory. The sealed plan/apply grammar,
+apply-time recomputation, stale-plan refusal, and auditable ticket child remain
+unchanged; manual digest transcription is no longer the normal operator path.

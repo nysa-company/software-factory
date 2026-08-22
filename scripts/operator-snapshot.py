@@ -24,6 +24,7 @@ SAFE_ID_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,127}")
 SCOPE_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,199}")
 HASH_RE = re.compile(r"[0-9a-f]{64}")
 TICKET_RE = re.compile(r"T-[0-9]+")
+OPERATOR_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
 RUN_RE = re.compile(r"[A-Za-z0-9._-]{1,200}")
 SETTING_RE = re.compile(r"[A-Z][A-Z0-9_]{0,99}")
 VALUE_RE = re.compile(r"[0-9]{1,7}(?:\.[0-9]{1,6})?")
@@ -134,6 +135,45 @@ def _policy(value: Any) -> str:
 
 def mutation_command(action: str, payload: dict[str, Any]) -> tuple[str, ...]:
     """Build only launcher forms already allowlisted by the sealed boundary."""
+    if action in {"ticket-authorize-round-plan", "ticket-authorize-round-apply"}:
+        expected = {"ticket", "role", "round", "operator_id"}
+        if action.endswith("apply"):
+            expected.add("approve_hash")
+        if set(payload) != expected:
+            raise SnapshotError("invalid_action", "ticket authorization fields mismatch")
+        ticket = payload["ticket"]
+        role = payload["role"]
+        semantic_round = payload["round"]
+        operator = payload["operator_id"]
+        if not isinstance(ticket, str) or not TICKET_RE.fullmatch(ticket):
+            raise SnapshotError("invalid_action", "invalid authorization ticket")
+        if role not in {"planner", "spec-linter", "test-author", "builder", "narrator"}:
+            raise SnapshotError("invalid_action", "invalid authorization role")
+        if (
+            not isinstance(semantic_round, int)
+            or isinstance(semantic_round, bool)
+            or semantic_round < 3
+        ):
+            raise SnapshotError("invalid_action", "invalid authorization round")
+        if (
+            not isinstance(operator, str)
+            or not OPERATOR_ID_RE.fullmatch(operator)
+            or operator == "auto"
+        ):
+            raise SnapshotError("invalid_action", "invalid authorization operator")
+        command = [
+            "ticket-control", "authorize-round",
+            "apply" if action.endswith("apply") else "plan",
+            "--ticket", ticket, "--role", role, "--round", str(semantic_round),
+            "--operator-id", operator,
+        ]
+        if action.endswith("apply"):
+            command.extend((
+                "--approve-hash",
+                _hash(payload["approve_hash"], "ticket authorization approval hash"),
+            ))
+        command.append("--json")
+        return tuple(command)
     if action == "model-activate":
         if set(payload) != {"profile", "approve_hash", "approved_by"}:
             raise SnapshotError("invalid_action", "model activation fields mismatch")
