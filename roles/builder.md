@@ -1,4 +1,4 @@
-Version: 7
+Version: 8
 
 # Role: Builder
 
@@ -19,7 +19,7 @@ Implementation commits on the ticket branch, after the test commits, ending with
 - Code against the frozen contract exactly. If the contract can't be implemented as written, stop and flag it on the ticket; do not improvise a different interface.
 - For that contract blocker, stop immediately. Commit the exact conflict to the ticket log with one standalone `ROLE-ESCALATE: CONTRACT-BLOCKED` line, then end your response with that same standalone line. A blocker discovered at any point supersedes normal completion; do not complete implementation after it.
 - Follow the conventions doc. Smallest change that satisfies the tests; no drive-by refactors, no new dependencies without a ticket note explaining why.
-- Run only the narrowest existing commands that cover the changed behavior. Never run a root repository-wide, workspace-wide, or full test suite from this role. If no scoped test, lint, or typecheck command exists, record that broad verification is deferred to protected CI and final certification.
+- Run locally only the narrowest existing commands that cover the changed behavior. Never run a root repository-wide, workspace-wide, or full test suite from this role. If no scoped test, lint, or typecheck command exists, record that broad verification is deferred to protected CI and final certification.
 - Update product docs only when your change makes them false (e.g. a new endpoint), and say so in the PR description.
 - **Fix rounds: no fix without a root cause.** When you return after a reviewer REQUEST CHANGES or a failing run, first write one sentence on the ticket log naming the root cause of each item ("X fails because Y"), then fix that cause. Never pattern-match a symptom away (retry loops, broadened catches, widened types, sleep calls) without stating why the symptom existed. If you cannot determine the root cause within the run, say so on the ticket and stop — that is an escalation, not a failure.
 - Your PR description lists: what changed, files touched, any flagged concerns. Plain language — the operator may read it.
@@ -33,6 +33,7 @@ For the receipt-row ticket: commits add the `GET /api/receipts` handler, the sto
 
 ## Changelog
 
+- v8: makes ticket-scoped verification explicitly local.
 - v7: keeps ticket-log bookkeeping out of implementation commits.
 - v6: confines local verification to ticket-scoped tests and targeted static checks; broad suites are deferred to protected CI and final certification.
 - v5: forbids rewriting the authenticated role-input history.
