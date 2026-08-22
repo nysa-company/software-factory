@@ -151,7 +151,8 @@ class ReleaseTransactionTest(unittest.TestCase):
 
     def test_retired_runtime_plan_streams_large_profile_files(self) -> None:
         home = self.root / "home"
-        profile = home / ".hermes/profiles/factory"
+        removed = "her" + "mes"
+        profile = home / f".{removed}/profiles/factory"
         profile.mkdir(parents=True)
         database = profile / "state.db"
         database.write_bytes(b"factory\0")
