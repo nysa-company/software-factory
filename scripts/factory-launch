@@ -32,6 +32,29 @@ usage() {
   exit 2
 }
 
+validate_raw_ticket_arguments() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --ticket|--exclude-ticket|--resume-ticket)
+        [[ $# -ge 2 && "$2" =~ ^T-[0-9]+$ ]] || {
+          printf '%s\n' 'factory-launch: invalid ticket identifier' >&2
+          exit 2
+        }
+        shift 2
+        ;;
+      --)
+        return 0
+        ;;
+      *)
+        shift
+        ;;
+    esac
+  done
+}
+
+# Ticket input is rejected before resolving interpreters or release state.
+validate_raw_ticket_arguments "$@"
+
 BOOTSTRAP_PYTHON="/usr/bin/python3"
 [[ ! -x /Library/Developer/CommandLineTools/usr/bin/python3 ]] ||
   BOOTSTRAP_PYTHON="/Library/Developer/CommandLineTools/usr/bin/python3"
@@ -85,9 +108,10 @@ PY
   HOME="$ACCOUNT_HOME"
   RAW_KITS_ROOT="$ACCOUNT_HOME/.factory/kits"
 else
-  QUALIFICATION_RELEASE="$(cd "$(dirname "$SELF_PATH")/.." 2>/dev/null && pwd -P)"
-  QUALIFICATION_SHA="$(basename "$QUALIFICATION_RELEASE")"
-  QUALIFICATION_ROOT="$(dirname "$(dirname "$QUALIFICATION_RELEASE")")"
+  QUALIFICATION_RELEASE="$(cd "${SELF_PATH%/*}/.." 2>/dev/null && pwd -P)"
+  QUALIFICATION_SHA="${QUALIFICATION_RELEASE##*/}"
+  QUALIFICATION_ROOT="${QUALIFICATION_RELEASE%/*}"
+  QUALIFICATION_ROOT="${QUALIFICATION_ROOT%/*}"
   if [[ "$SELF_PATH" == "$QUALIFICATION_RELEASE/scripts/factory-launch" &&
         "$QUALIFICATION_SHA" =~ ^[0-9a-f]{40}$ &&
         "$QUALIFICATION_ROOT" =~ ^/private/tmp/nysa-sf-qualification\.[A-Za-z0-9._-]+$ ]]; then
@@ -674,7 +698,8 @@ PY
   fi
 fi
 
-if [[ "$QUALIFICATION_LAUNCHER" == "1" && -n "$ACTIVE_PRODUCT_SHA" ]]; then
+if [[ "$QUALIFICATION_LAUNCHER" == "1" && -n "$ACTIVE_PRODUCT_SHA" &&
+      "$COMMAND" != "doctor" ]]; then
   QUALIFICATION_PRODUCT_SHA="$(git -C "$PRODUCT_ROOT" \
     -c core.hooksPath=/dev/null -c core.fsmonitor=false \
     -c credential.helper= -c diff.external= rev-parse HEAD 2>/dev/null)" ||
@@ -779,7 +804,8 @@ if [[ -n "$ACTIVE_RUNTIME_NODE$ACTIVE_RUNTIME_NPM" &&
   PATH="$SAFE_PATH"
   export PATH
 fi
-if [[ "$QUALIFICATION_LAUNCHER" == "1" && "$ACTIVE_RUNTIME_TUPLE" != "{}" ]]; then
+if [[ "$QUALIFICATION_LAUNCHER" == "1" && "$ACTIVE_RUNTIME_TUPLE" != "{}" &&
+      "$COMMAND" != "doctor" ]]; then
   [[ -e "$PROJECT_RUNTIME_JOURNAL" || -L "$PROJECT_RUNTIME_JOURNAL" ]] ||
     die "qualification runtime pin is missing"
   FACTORY_CERTIFICATION_TUPLE="$ACTIVE_RUNTIME_TUPLE" \
@@ -788,7 +814,7 @@ if [[ "$QUALIFICATION_LAUNCHER" == "1" && "$ACTIVE_RUNTIME_TUPLE" != "{}" ]]; th
       --factory-sha "$KIT_SHA" --factory-tree "$KIT_TREE" \
       --product-root "$PRODUCT_ROOT" --contract-version "$ACTIVE_CONTRACT" \
       >/dev/null || die "qualification runtime tuple no longer matches"
-elif [[ "$QUALIFICATION_LAUNCHER" == "1" && \
+elif [[ "$QUALIFICATION_LAUNCHER" == "1" && "$COMMAND" != "doctor" && \
         ( -e "$PRODUCT_ROOT/factory/certification-plan.json" || \
           -L "$PRODUCT_ROOT/factory/certification-plan.json" ) ]]; then
   die "qualification activation lacks its certification runtime tuple"
@@ -890,6 +916,7 @@ if [[ "$QUALIFICATION_LAUNCHER" == "1" ]]; then
     "FACTORY_QUALIFICATION_MODE=$QUALIFICATION_MODE"
     "FACTORY_QUALIFICATION_PRODUCT_SHA=$ACTIVE_PRODUCT_SHA"
     "FACTORY_QUALIFICATION_PRODUCT_TREE=$ACTIVE_PRODUCT_TREE"
+    "FACTORY_CERTIFICATION_TUPLE=$ACTIVE_RUNTIME_TUPLE"
     "FACTORY_QUALIFICATION_FALLBACK_READINESS_SHA256=$ACTIVE_FALLBACK_READINESS_SHA256"
     "FACTORY_LEDGER=$ACTIVE_RUNTIME_LEDGER"
     "FACTORY_DURABLE_LEDGER=$PRODUCT_ROOT/factory/ledger.csv"

@@ -119,6 +119,10 @@ class QualificationEnvironmentTest(unittest.TestCase):
             self.factory / "scripts/ticket-passport.py",
         )
         shutil.copy2(
+            ROOT / "scripts/ticket-readiness.py",
+            self.factory / "scripts/ticket-readiness.py",
+        )
+        shutil.copy2(
             ROOT / "scripts/qualification-reducer.py",
             self.factory / "scripts/qualification-reducer.py",
         )
@@ -138,6 +142,14 @@ class QualificationEnvironmentTest(unittest.TestCase):
         shutil.copy2(
             ROOT / "scripts/lib/operator_receipt.py",
             self.factory / "scripts/lib/operator_receipt.py",
+        )
+        shutil.copy2(
+            ROOT / "scripts/lib/qualification_artifacts.py",
+            self.factory / "scripts/lib/qualification_artifacts.py",
+        )
+        shutil.copy2(
+            ROOT / "scripts/lib/qualification_manifest.py",
+            self.factory / "scripts/lib/qualification_manifest.py",
         )
         shutil.copy2(
             ROOT / "scripts/lib/effective_ticket.py",
@@ -2178,6 +2190,321 @@ class QualificationEnvironmentTest(unittest.TestCase):
             ENVIRONMENT.validate_selected_contracts(self.product)
         dependency.assert_called_once_with(self.product, "T-099")
 
+    def test_state_changing_clis_reject_malformed_tickets_before_state(self) -> None:
+        home = (self.root / "raw-cli-home").resolve()
+        home.mkdir(mode=0o700)
+        kits = home / ".factory/kits"
+        kits.mkdir(parents=True)
+        trace = self.workspace / "raw-cli.trace"
+        binary = home / ".factory/bin"
+        binary.mkdir(parents=True)
+        for name in ("claude", "codex", "cursor", "gh"):
+            path = binary / name
+            path.write_text(
+                "#!/bin/sh\nprintf '%s\\n' \"$0\" >> \"$FACTORY_CLI_TRACE\"\n",
+                encoding="utf-8",
+            )
+            path.chmod(0o700)
+        common = {
+            **os.environ,
+            "FACTORY_CLI_TRACE": str(trace),
+            "FACTORY_KITS_ROOT": str(kits),
+            "HOME": str(home),
+        }
+        launcher_environment = {
+            **common,
+            "FACTORY_LAUNCH_TEST_HOME": str(home),
+            "FACTORY_LAUNCH_TEST_MODE": "1",
+        }
+        kit_environment = {
+            **common,
+            "FACTORY_KIT_CANONICAL_ORIGIN": str(self.factory),
+            "FACTORY_KIT_TEST_MODE": "1",
+            "FACTORY_RELEASE_TEST_HOME": str(home),
+        }
+        malformed = (
+            "../T-1", "T-1 ", " T-1", "T‐1", "T-١", "T-1\n",
+        )
+        for ticket in malformed:
+            launcher = subprocess.run(
+                [
+                    "/bin/bash", str(ROOT / "scripts/factory-launch"),
+                    "qualification-test", "claim", "--ticket", ticket,
+                    "--workdir", str(self.product), "--json",
+                ],
+                text=True, capture_output=True, env=launcher_environment,
+            )
+            self.assertEqual(launcher.returncode, 2, launcher.stdout)
+            self.assertEqual(
+                launcher.stderr, "factory-launch: invalid ticket identifier\n",
+            )
+            kit = subprocess.run(
+                [
+                    "/bin/bash", str(ROOT / "scripts/factory-kit.sh"),
+                    "operator", "ready", "--project", "qualification-test",
+                    "--product", str(self.product), "--ticket", ticket,
+                ],
+                text=True, capture_output=True, env=kit_environment,
+            )
+            self.assertEqual(kit.returncode, 1, kit.stderr)
+            self.assertIn("invalid ticket identifier", kit.stderr)
+            self.assertEqual(list(kits.iterdir()), [])
+            self.assertFalse(trace.exists())
+
+    def test_doctor_classifies_authenticated_artifact_tamper_read_only(self) -> None:
+        state = (self.workspace / "doctor-controller").resolve()
+        events = state / "events"
+        passports = state / "passports"
+        events.mkdir(parents=True, mode=0o700)
+        passports.mkdir(mode=0o700)
+        state.chmod(0o700)
+        canonical = lambda value: (
+            json.dumps(
+                value, ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+            ) + "\n"
+        ).encode()
+        receipt = {
+            "branch": "ticket/T-101", "consumed": False,
+            "contract_version": "2.0.0", "factory_sha": self.sha,
+            "head_sha": "a" * 40, "project": "relay", "role": "planner",
+            "schema": "nysa.software-factory.transition-receipt/v1",
+            "stage": "RUN planner", "ticket": "T-101",
+        }
+        immutable = {
+            name: value for name, value in receipt.items()
+            if name not in {"consumed", "consumed_at_epoch", "receipt_sha256"}
+        }
+        receipt["receipt_sha256"] = hashlib.sha256(canonical(immutable)).hexdigest()
+        receipt_path = state / "T-101.json"
+        receipt_path.write_bytes(canonical(receipt))
+        receipt_path.chmod(0o600)
+        material = b"k" * 32
+        key = state / "passport.key"
+        key.write_bytes(material)
+        key.chmod(0o600)
+        passport = {
+            "branch": "ticket/T-101", "contract_version": "2.0.0",
+            "current_state": "Planning", "factory_sha": self.sha,
+            "project": "relay", "publication_state": "none",
+            "schema": "nysa.software-factory.ticket-passport/v1",
+            "ticket": "T-101",
+            "transition_receipt_sha256": receipt["receipt_sha256"],
+        }
+        passport["authentication_sha256"] = hmac.new(
+            material, canonical(passport), hashlib.sha256,
+        ).hexdigest()
+        passport["passport_sha256"] = hashlib.sha256(canonical(passport)).hexdigest()
+        passport_path = passports / "T-101.json"
+        passport_path.write_bytes(canonical(passport))
+        passport_path.chmod(0o600)
+        event = {
+            "event": "ticket_released", "factory_sha": None,
+            "observed_at_epoch_ns": 1,
+            "schema": "nysa.software-factory.controller-event/v1",
+            "ticket": "T-101",
+        }
+        event["event_sha256"] = hashlib.sha256(json.dumps(
+            event, ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+        ).encode()).hexdigest()
+        event_path = events / "1.json"
+        event_path.write_text(json.dumps(event), encoding="utf-8")
+        event_path.chmod(0o600)
+        originals = {
+            "receipt": receipt_path.read_bytes(),
+            "passport": passport_path.read_bytes(),
+            "event": event_path.read_bytes(),
+        }
+        trace = self.workspace / "doctor-provider.trace"
+        binary = self.workspace / "doctor-bin"
+        binary.mkdir()
+        for name in ("claude", "codex", "agent", "gh"):
+            path = binary / name
+            path.write_text(
+                "#!/bin/sh\nprintf '%s\\n' \"$0\" >> \"$FACTORY_CLI_TRACE\"\n",
+                encoding="utf-8",
+            )
+            path.chmod(0o700)
+        environment = {
+            **os.environ,
+            "FACTORY_ADAPTER_OVERRIDE": "mock",
+            "FACTORY_CLI_TRACE": str(trace),
+            "FACTORY_CONTROLLER_STATE_DIR": str(state),
+            "FACTORY_KIT_TRUST_SCOPE": "repository-test",
+            "FACTORY_TEST_MODE": "1",
+            "FACTORY_TRUSTED_TEST_HARNESS": "1",
+            "PATH": f"{binary}:/usr/bin:/bin",
+        }
+        before = sorted(
+            (path.relative_to(state).as_posix(), path.read_bytes())
+            for path in state.rglob("*") if path.is_file()
+        )
+        product_sha = run(self.product, "git", "rev-parse", "HEAD")
+        product_tree = run(self.product, "git", "rev-parse", "HEAD^{tree}")
+        factory_tree = run(self.factory, "git", "rev-parse", "HEAD^{tree}")
+        certification_runtime = json.loads(
+            (self.product / "factory/certification-plan.json").read_text()
+        )["runtime"]
+        runtime_tuple = json.dumps({
+            "contract_version": "2.0.0",
+            "factory_sha": self.sha,
+            "factory_tree": factory_tree,
+            "node": certification_runtime["node"],
+            "npm": certification_runtime["npm"],
+            "product_sha": product_sha,
+            "product_tree": product_tree,
+        }, sort_keys=True)
+        candidate_environment = {
+            **environment,
+            "FACTORY_CERTIFICATION_TUPLE": runtime_tuple,
+            "FACTORY_KIT_TRUST_SCOPE": "qualification-candidate",
+            "FACTORY_QUALIFICATION_PRODUCT_SHA": product_sha,
+            "FACTORY_QUALIFICATION_PRODUCT_TREE": product_tree,
+            "FACTORY_RELEASE_TREE": factory_tree,
+            "PATH": (
+                f"{binary}:{self.home / '.local/bin'}:/usr/bin:/bin"
+            ),
+        }
+
+        def doctor(env: dict[str, str]) -> dict[str, object]:
+            def snapshot(root: Path) -> list[tuple[str, int, object]]:
+                result = []
+                for path in root.rglob("*"):
+                    value = path.lstat()
+                    content = (
+                        os.readlink(path) if path.is_symlink()
+                        else path.read_bytes() if path.is_file()
+                        else None
+                    )
+                    result.append((path.relative_to(root).as_posix(), value.st_mode, content))
+                return sorted(result)
+
+            persisted = snapshot(state), snapshot(self.product / "factory")
+            result = subprocess.run(
+                [
+                    "/bin/bash", str(ROOT / "scripts/factory-doctor.sh"), "--json",
+                    "--project", "relay", "--kit-dir", str(self.factory),
+                    "--product-root", str(self.product), "--kit-sha", self.sha,
+                ],
+                text=True, capture_output=True, env=env,
+            )
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertEqual(
+                (snapshot(state), snapshot(self.product / "factory")), persisted,
+            )
+            return json.loads(result.stdout)["checks"]
+
+        plan = self.product / "factory/certification-plan.json"
+        plan_raw = plan.read_bytes()
+        pin = self.product / "factory/KIT_PIN"
+        pin_raw = pin.read_bytes()
+        active_runs = self.product / "factory/.active-runs"
+        ticket_paths = [
+            self.product / f"factory/tickets/T-{number}.md"
+            for number in (101, 102, 103)
+        ]
+        ticket_raw = {path: path.read_bytes() for path in ticket_paths}
+        ticket_environment = {
+            **candidate_environment,
+            "FACTORY_QUALIFICATION_MANIFEST": str(
+                self.product / "factory/QUALIFICATION.json"
+            ),
+        }
+
+        value = json.loads(originals["receipt"])
+        value["receipt_sha256"] = "0" * 64
+        receipt_path.write_text(json.dumps(value), encoding="utf-8")
+        receipt_path.chmod(0o600)
+        plan.write_bytes(plan_raw + b" ")
+        pin.write_text("0" * 40 + "\n", encoding="utf-8")
+        active_runs.mkdir(mode=0o700)
+        (active_runs / "malformed").write_text("residue\n", encoding="utf-8")
+        ticket_paths[0].write_bytes(ticket_raw[ticket_paths[0]] + b"State: Building\n")
+        ticket_paths[1].write_bytes(ticket_raw[ticket_paths[1]].replace(
+            b"Depends-On: none", b"Depends-On: ../T-9",
+        ))
+        ticket_paths[2].unlink()
+        ticket_paths[2].symlink_to("T-102.md")
+        checks = doctor(ticket_environment)
+        self.assertEqual(checks["authenticated_artifacts"], {
+            "reason_code": "transition_receipt_invalid", "status": "error",
+        })
+        self.assertEqual(checks["qualification_identity"], {
+            "reason_code": "product_identity_drift", "status": "error",
+        })
+        self.assertEqual(checks["kit_pin"], {
+            "full_sha": "0" * 40,
+            "matches_kit": False,
+            "path": str(pin),
+            "reason_code": "kit_pin_identity_drift",
+            "status": "error",
+            "valid_full_sha": True,
+        })
+        self.assertEqual(
+            checks["runtime"]["reason_code"], "runtime_residue_invalid",
+        )
+        readiness = checks["qualification_ticket_readiness"]
+        self.assertEqual(readiness["status"], "error")
+        self.assertEqual({
+            item["ticket"]: item["reason_code"]
+            for item in readiness["tickets"] if item["status"] == "error"
+        }, {
+            "T-101": "ticket_state_conflict",
+            "T-102": "ticket_dependencies_invalid",
+            "T-103": "ticket_file_unsafe",
+        })
+        receipt_path.write_bytes(originals["receipt"])
+        receipt_path.chmod(0o600)
+        plan.write_bytes(plan_raw)
+        pin.write_bytes(pin_raw)
+        (active_runs / "malformed").unlink()
+        active_runs.rmdir()
+        for path in ticket_paths:
+            path.unlink()
+            path.write_bytes(ticket_raw[path])
+
+        wrong_tuple = json.loads(runtime_tuple)
+        wrong_tuple["node"] = "v99.0.0"
+        drift_environment = {
+            **candidate_environment,
+            "FACTORY_CERTIFICATION_TUPLE": json.dumps(wrong_tuple),
+        }
+        value = json.loads(originals["passport"])
+        value["authentication_sha256"] = "0" * 64
+        passport_path.write_text(json.dumps(value), encoding="utf-8")
+        passport_path.chmod(0o600)
+        checks = doctor(drift_environment)
+        self.assertEqual(checks["authenticated_artifacts"], {
+            "reason_code": "ticket_passport_invalid", "status": "error",
+        })
+        self.assertEqual(checks["qualification_identity"], {
+            "reason_code": "certification_plan_identity_drift",
+            "status": "error",
+        })
+        passport_path.write_bytes(originals["passport"])
+        passport_path.chmod(0o600)
+
+        value = json.loads(originals["event"])
+        value["event_sha256"] = "0" * 64
+        event_path.write_text(json.dumps(value), encoding="utf-8")
+        event_path.chmod(0o600)
+        checks = doctor(candidate_environment)
+        self.assertEqual(checks["authenticated_artifacts"], {
+            "reason_code": "controller_event_invalid", "status": "error",
+        })
+        self.assertEqual(checks["qualification_identity"], {
+            "reason_code": None, "status": "ok",
+        })
+        event_path.write_bytes(originals["event"])
+        event_path.chmod(0o600)
+        self.assertFalse(trace.exists())
+        self.assertEqual(
+            sorted(
+                (path.relative_to(state).as_posix(), path.read_bytes())
+                for path in state.rglob("*") if path.is_file()
+            ),
+            before,
+        )
+
     def test_selected_ticket_authoring_fields_fail_before_lane_creation(self) -> None:
         ticket = self.product / "factory/tickets/T-101.md"
         original = ticket.read_text()
@@ -2305,6 +2632,14 @@ class QualificationEnvironmentTest(unittest.TestCase):
         ):
             ENVIRONMENT.validate_selected_contracts(self.product)
 
+        ticket.write_text(original, encoding="utf-8")
+        ticket.unlink()
+        ticket.symlink_to("T-102.md")
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError, "ticket contract is unsafe",
+        ):
+            ENVIRONMENT.validate_selected_contracts(self.product)
+        ticket.unlink()
         ticket.write_text(original)
         project = self.product / "factory/PROJECT.env"
         project.write_text("PREVIEW_PROVIDER=none\nNONVISUAL_PATHS=docs/\n")
@@ -2365,6 +2700,18 @@ class QualificationEnvironmentTest(unittest.TestCase):
         with self.assertRaisesRegex(
             ENVIRONMENT.EnvironmentError,
             r"READINESS BLOCKED: protected source hash collision: "
+            r"tests/source-boundary.test.js => app/server.js",
+        ):
+            ENVIRONMENT.validate_selected_contracts(self.product)
+
+        (self.product / "tests/source-boundary.test.js").write_text(
+            "import { readFileSync } from 'node:fs';\n"
+            "const source = readFileSync('app/server.js', 'utf8');\n"
+            "expect(source).toContain('export const value');\n"
+        )
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError,
+            r"READINESS BLOCKED: protected source assertion collision: "
             r"tests/source-boundary.test.js => app/server.js",
         ):
             ENVIRONMENT.validate_selected_contracts(self.product)

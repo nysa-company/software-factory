@@ -264,6 +264,17 @@ def git_identity(root: Path) -> tuple[str, str]:
         raise TupleError(
             "runtime_tuple_invalid", "product_sha", "Git identity", "invalid",
         )
+    status = subprocess.run(
+        [
+            "git", "-C", str(root), "status", "--porcelain=v1", "-z",
+            "--untracked-files=all",
+        ],
+        text=True, capture_output=True, check=False,
+    )
+    if status.returncode or status.stderr or status.stdout:
+        raise TupleError(
+            "product_identity_dirty", "product_tree", "clean committed tree", "dirty",
+        )
     return sha, tree
 
 

@@ -97,6 +97,8 @@ and invokes the release's shared strict qualification-manifest parser. Local
 readiness invokes that same parser through the copied lightweight classifier
 from the installed exact-pin release; validator refusal is distinct from the
 ordinary broad-test classification.
+The parser rejects duplicate raw JSON fields before ordinary shape validation,
+so no consumer can inherit Python's last-value-wins ambiguity from protected main.
 Unrelated diffs do not fetch the Factory or parse qualification state; any
 present malformed or cross-pin manifest fails before product merge without
 running a broad application suite.
@@ -484,6 +486,10 @@ The owner provider-pin transaction treats Codex and its adjacent
 contracts, links, receipt entries, and rollback snapshots advance atomically;
 qualification Doctor refuses before controller reconciliation when that bundle
 is absent or changed.
+Qualification Doctor also reruns the shared strict manifest and ticket-readiness
+validators before provider readiness. Its typed report contains only selected
+ticket IDs and readiness states; an invalid ticket suppresses provider pin and
+fallback probes and blocks reconciliation.
 Production and qualification retain separate provider lifecycle and financial
 databases. A task-bearing Cursor role additionally acquires one owner-only
 machine-local account-route lease before durable GO and holds it until its
@@ -2311,9 +2317,10 @@ Provider-free ticket readiness also binds that ownership split to the
 repository `PROJECT.env` `TEST_PATHS`: Builder paths must stay outside the
 protected test partition and every Fixture-Seams path must be inside it.
 It deterministically rejects tracked protected tests whose static SHA-256
-path/digest tables name a Builder or Test-author path unless that test is both
-an exact declared conflict and a Fixture-Seam; semantic and dynamic guards
-remain the Planner and Spec-linter's fail-closed responsibility.
+path/digest tables or direct asserted source reads name a Builder or Test-author
+path unless that test is both an exact declared conflict and a Fixture-Seam;
+other semantic and dynamic guards remain the Planner and Spec-linter's
+fail-closed responsibility.
 An escalated blocker may carry one direct, ticket-only operator-context commit
 before its byte-exact resume commit. The context commit appends or exactly
 replaces one bounded single-line `OPERATOR ANSWER` paired with the current

@@ -194,6 +194,7 @@ class QualificationSharedStateTest(unittest.TestCase):
         return json.dumps({
             "calls": calls,
             "claims": claims,
+            "doctor": replay.get("doctor"),
             "events": events,
             "replay": {
                 "reason": replay.get("reason"),

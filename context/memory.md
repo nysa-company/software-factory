@@ -20,6 +20,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - The local release canary is one code-driven, product-agnostic command that creates contained local origins, runs setup/resume, and times one authenticated Planning transition plus sealed mock planner; its repository-test evidence is never promotable.
 - Model routing is portfolio policy; routes pin at the ticket boundary and change only via the Contract 1.4 journal flow. One profile resolution shares model-independent native-adapter readiness across its routes and runs independent probes in bounded parallel; Cursor readiness stays model-specific. Sealed Cursor inventory verifies the exact configured selection and displayed provider label in a disposable owner-only home, then accepts only its bounded certified structure.
 - Provider-free ticket readiness rejects tracked static SHA-256 path/digest tables over any Builder or Test-author-owned path unless the exact protected test is both a declared conflict and a Fixture-Seam; unrelated payload hashes/source reads do not collide, while semantic and dynamic source guards remain fail-closed Planner/Spec-linter work.
+- Ticket-bearing mutation CLIs reject noncanonical identifiers before release discovery or state; qualification Doctor reuses canonical ticket, product/tree, KIT_PIN/plan, receipt, passport, event, and runtime-residue validators read-only and suppresses provider probes on typed drift.
 - Linear is removed (Decision 398); the six operator authorities are one-use receipts via `factory-kit.sh operator ACTION`. Approval changes only the ignored operator map and owner-only receipt until trusted approval attestation records it in Git. An explicitly invoked isolated `qualification-finish` may approve only exact selected clean parked bundle checkpoints, then drives the existing publication, closeout, and reducer chain until green or a typed external wait; production and takeover retain separate human approval. Qualification may issue one manifest-selected successor resume only after the exact sealed compact-repair check, including the explicit isolated close after an authenticated contract-repair directive; that exact new authority rearms one abandoned targeted recovery attempt, while unchanged evidence cannot loop. Production has no lifecycle bypass.
 - **Contract rules below in Operating contract are authoritative**; this summary is only what the session hook can inject.
 
@@ -178,6 +179,14 @@ everything the Factory actually enforces lives here.
   `invalid_ticket_contract`; siblings continue, and no ticket branch, cell,
   lease, model plan, route, or state transition is created for the refused
   ticket.
+- State-changing launcher and kit routes reject every noncanonical ticket
+  argument before resolving releases or creating state, locks, leases,
+  reservations, attempts, or external CLI calls. Qualification Doctor applies
+  the same persisted-ticket validators plus clean product SHA/tree,
+  certification tuple/plan, KIT_PIN, authenticated transition receipt,
+  passport, controller event, and runtime-residue checks read-only. Typed
+  identity or artifact errors suppress provider readiness; a rejected
+  transient CLI value leaves no persisted diagnostic.
 - An operator-owned null initiative remains an explicit versioned tombstone,
   but a Ready ticket made initiative-less is never silently discarded:
   admission reports its exact ID and `initiative_missing` while healthy
@@ -7426,3 +7435,79 @@ defers HUP, INT, and TERM only across the atomic replace and exits with the
 original signal status afterward. A deterministic fault-injection regression
 proves the lease stays valid and no temporary survives; malformed or foreign
 lease entries remain fail-closed.
+
+## 2026-08-21 — Decision 540: Direct protected source assertions block before planning
+
+Category: Reliability
+
+Q71 T-642 reached Planner even though a tracked protected test read its exact
+Builder-owned source and asserted that the requested shared Button import must
+remain absent. Ticket readiness now recognizes bounded static `readFileSync`
+assignments whose values are asserted by Jest/Vitest or Node assert and requires
+that protected test to be an exact declared conflict and Fixture-Seam. The
+historical T-642 shape, typed variables, template literals, exact ownership,
+and unasserted-read negative control are covered. Dynamic and other semantic
+guards remain role work.
+
+## 2026-08-21 — Decision 541: Qualification Doctor rechecks selected tickets
+
+Category: Reliability
+
+The sealed qualification Doctor now reruns the shared strict manifest and
+ticket-readiness validators before provider pin or fallback readiness. It
+returns only typed ticket IDs and statuses, blocks reconciliation on refusal,
+and suppresses later provider readiness probes for that invalid cohort. This
+is defense in depth after preparation, not a second admission parser.
+
+## 2026-08-21 — Decision 542: Qualification manifests reject duplicate raw fields
+
+Category: Integrity
+
+The protected committed-manifest parser now rejects duplicate JSON fields
+before shape validation. This closes Python's prior last-value-wins ambiguity
+at the protected product boundary; Doctor independently applies the same raw
+field uniqueness rule to the active sealed manifest.
+
+## 2026-08-21 — Decision 543: Mutation boundaries reauthenticate Factory authority
+
+Category: Integrity
+
+Ticket-bearing mutation CLIs now reject malformed identifiers before release
+resolution or any state, lease, reservation, provider, or external-CLI action.
+Qualification Doctor reuses the shared persisted-ticket, certification, and
+authenticated-artifact validators read-only, reports typed ticket, identity,
+receipt, passport, event, and residue failures, and suppresses later provider
+probes. Qualification preparation calls its already-loaded canonical ticket
+validator directly instead of spawning a duplicate interpreter. Plan/apply
+coverage rechecks ticket blobs, product HEAD/tree, KIT_PIN,
+certification plans, receipts, and passports so post-authorization drift remains
+fail-closed and replay-stable.
+
+## 2026-08-21 — Decision 544: Release cutover regression stays Python 3.9 compatible
+
+Category: Reliability
+
+The release transaction concurrency regression no longer uses Python 3.10's
+`zip(strict=...)`, matching the Factory's existing Python 3.9 CI floor without
+changing the fixed three-plan fixture.
+
+## 2026-08-21 — Decision 545: Qualification replay fans out on hosted macOS
+
+Category: Reliability
+
+Qualification-sensitive pull requests now run twenty credential-free replay
+repetitions and three sealed mock qualifications concurrently on hosted macOS,
+each checked out at the exact PR head SHA, with one stable aggregate result.
+The workflow is path-conditioned to the qualification and launcher trust
+boundary and remains manually dispatchable by exact SHA after it reaches
+protected main.
+
+## 2026-08-21 — Decision 546: Doctor preserves the authenticated runtime tuple
+
+Category: Reliability
+
+Qualification Doctor now assigns its empty certification-tuple default
+explicitly. This avoids Bash treating the closing brace in `${name:-{}}` as a
+literal suffix and corrupting every non-empty authenticated tuple before the
+shared certification preflight. A read-only Doctor regression proves an exact
+tuple remains green while tampered tuples still fail closed.

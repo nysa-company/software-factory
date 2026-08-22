@@ -167,6 +167,45 @@ class QualificationManifestTest(unittest.TestCase):
                 self.assertEqual(result.returncode, 1, result.stdout)
                 self.assertIn("QUALIFICATION MANIFEST FAIL:", result.stderr)
 
+    def test_malformed_ticket_variants_refuse_deterministically(self) -> None:
+        root, base = self.repository("malformed-tickets")
+        for label, malformed in (
+            ("path traversal", "../T-101"),
+            ("trailing whitespace", "T-101 "),
+            ("leading whitespace", " T-101"),
+            ("Unicode hyphen", "T‐101"),
+            ("Unicode digits", "T-١٠١"),
+            ("embedded newline", "T-10\n1"),
+        ):
+            with self.subTest(label=label):
+                value = ordinary()
+                value["tickets"][0] = malformed
+                head = self.write_manifest(root, value, label)
+                before = run(
+                    root, "git", "status", "--porcelain=v1", "-z",
+                ).stdout
+                result = self.invoke(root, base, head)
+                replay = self.invoke(root, base, head)
+                self.assertEqual(
+                    (replay.returncode, replay.stdout, replay.stderr),
+                    (result.returncode, result.stdout, result.stderr),
+                )
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn("QUALIFICATION MANIFEST FAIL:", result.stderr)
+                self.assertEqual(
+                    run(root, "git", "status", "--porcelain=v1", "-z").stdout,
+                    before,
+                )
+
+    def test_duplicate_raw_fields_refuse_before_last_value_wins(self) -> None:
+        root, base = self.repository()
+        raw = json.dumps(ordinary(), sort_keys=True)[:-1] + ',"generation":2}\n'
+        (root / "factory/QUALIFICATION.json").write_text(raw, encoding="utf-8")
+        head = commit(root, "duplicate manifest field")
+        result = self.invoke(root, base, head)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("qualification manifest has duplicate fields", result.stderr)
+
     def test_committed_blobs_are_authoritative_and_deletion_is_inert(self) -> None:
         root, base = self.repository()
         head = self.write_manifest(root, ordinary(), "valid")

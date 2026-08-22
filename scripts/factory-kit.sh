@@ -3,6 +3,24 @@
 # Compatible with the Bash 3.2 shipped by macOS.
 set -euo pipefail
 
+validate_raw_ticket_arguments() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --ticket|--ticket-workdir)
+        [[ $# -ge 2 && "$2" =~ ^T-[0-9]+$ ]] || {
+          printf '%s\n' 'ERROR: invalid ticket identifier' >&2
+          exit 1
+        }
+        shift 2
+        ;;
+      *) shift ;;
+    esac
+  done
+}
+
+# Ticket input is rejected before resolving commands or managed state.
+validate_raw_ticket_arguments "$@"
+
 PROGRAM="$(basename "$0")"
 SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RAW_KITS_ROOT="${FACTORY_KITS_ROOT:-$HOME/.factory/kits}"
@@ -227,6 +245,10 @@ validate_slug() {
     die "invalid project slug: $slug"
   [[ "$slug" != *".."* && "$slug" != *"/"* ]] ||
     die "invalid project slug: $slug"
+}
+
+validate_ticket_identifier() {
+  [[ "$1" =~ ^T-[0-9]+$ ]] || die "invalid ticket identifier"
 }
 
 reject_symlink_path_components() {
@@ -4984,6 +5006,12 @@ fi
 if [[ "$SKIP_OPTIONAL_TESTS" -eq 1 && "$COMMAND" != "certify" && "$COMMAND" != "release" ]]; then
   die "--skip-optional-tests is only valid for certify or release setup"
 fi
+for ticket in ${TICKETS[@]+"${TICKETS[@]}"}; do
+  validate_ticket_identifier "$ticket"
+done
+for ((index = 0; index < ${#TICKET_WORKDIRS[@]}; index += 2)); do
+  validate_ticket_identifier "${TICKET_WORKDIRS[$index]}"
+done
 [[ "$COMMAND" == "preflight-report" ]] || validate_managed_roots
 host_cutover_mutation_requested && lock_host_cutover_mutation
 

@@ -1187,19 +1187,12 @@ def validate_selected_contracts(
             dependency_items = readiness_module.dependencies(text, ticket)
         except readiness_module.ReadinessError as error:
             raise EnvironmentError(f"{path}: {error}") from error
-        readiness = subprocess.run(
-            [
-                sys.executable, "-B",
-                str(Path(__file__).with_name("ticket-readiness.py")),
-                "--ticket", ticket, "--workdir", str(product),
-            ],
-            text=True, capture_output=True, check=False, timeout=120,
-        )
-        if readiness.returncode:
-            detail = readiness.stdout.strip().splitlines()
+        try:
+            readiness_module.validate(ticket, product)
+        except (OSError, UnicodeError, readiness_module.ReadinessError) as error:
             raise EnvironmentError(
-                f"{path}: {detail[-1] if detail else 'ticket readiness failed'}"
-            )
+                f"{path}: READINESS BLOCKED: {error}"
+            ) from error
         ticket_dependencies = set(dependency_items)
         internal = sorted(ticket_dependencies & cohort)
         if internal:

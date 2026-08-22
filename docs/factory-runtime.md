@@ -58,6 +58,9 @@ operator commands include:
 ```
 
 Commands reject unknown options and unsafe paths before invoking a helper.
+Ticket-bearing mutation commands reject every noncanonical `T-NNN` value in
+the launcher itself, before release resolution, state directories, locks,
+leases, reservations, provider attempts, or external CLI discovery.
 Structured commands return JSON; long-running role commands preserve their
 native process output and exit status.
 
@@ -175,6 +178,12 @@ contract. Doctor never returns account data, credential values, command output,
 or credential-bearing URLs.
 Doctor's readiness window is 120 seconds, matching qualification preparation;
 individual cheap CLI probes keep their separate shorter bound.
+In qualification, Doctor also reuses the canonical ticket, certification-plan,
+and authenticated-artifact validators read-only. Its JSON reports typed errors
+for unsafe ticket files or fields, product/KIT_PIN/plan identity drift,
+malformed runtime residue, and altered transition receipts, passports, or
+controller events; those errors suppress later provider and external-CLI
+readiness probes.
 
 ## Qualification
 

@@ -64,6 +64,8 @@ SCENARIOS = (
         (
             "qualification-manifest-test.py",
             "QualificationManifestTest.test_exact_ordinary_and_successor_manifests_pass",
+            "QualificationManifestTest.test_duplicate_raw_fields_refuse_before_last_value_wins",
+            "QualificationManifestTest.test_malformed_ticket_variants_refuse_deterministically",
         ),
         (
             "factory-controller-test.py",
@@ -185,10 +187,41 @@ SCENARIOS = (
         "fresh_qualification_ownership_conflicts_fail_before_provider",
         (
             "qualification-environment-test.py",
+            "QualificationEnvironmentTest.test_state_changing_clis_reject_malformed_tickets_before_state",
+            "QualificationEnvironmentTest.test_doctor_classifies_authenticated_artifact_tamper_read_only",
             "QualificationEnvironmentTest.test_selected_ticket_authoring_fields_fail_before_lane_creation",
             "QualificationEnvironmentTest.test_rejects_protected_ready_builder_ownership_conflicts",
             "QualificationEnvironmentTest.test_rejects_selected_protected_source_hash_before_lane_creation",
             "QualificationEnvironmentTest.test_takeover_reuses_authenticated_live_state_without_copying_it",
+        ),
+        (
+            "qualification-run-test.py",
+            "QualificationRunTest.test_doctor_error_returns_exact_report_before_controller_mutation",
+            "QualificationRunTest.test_ticket_readiness_blocks_before_controller_mutation",
+        ),
+    ),
+    (
+        "authorization_and_apply_tamper_fail_before_mutation",
+        (
+            "dispatch-plan-test.py",
+            "DispatchPlanTest.test_claim_rechecks_presealed_ticket_blob_before_worktree",
+        ),
+        (
+            "state-machine-test.py",
+            "StateMachineTest.test_expected_head_refuses_state_machine_snapshot_drift",
+        ),
+        (
+            "release-transaction-test.py",
+            "ReleaseTransactionTest.test_composite_approval_rejects_every_bound_tamper",
+            "ReleaseTransactionTest.test_resume_live_basis_refuses_product_and_runtime_drift",
+        ),
+        (
+            "certification-preflight-test.py",
+            "CertificationPreflightTest.test_valid_plan_mutation_after_tuple_receipt_fails_before_phase",
+        ),
+        (
+            "envelope-control-test.py",
+            "EnvelopeControlTest.test_stale_preview_and_symlink_are_rejected",
         ),
     ),
     (
@@ -262,6 +295,23 @@ SCENARIOS = (
         ),
     ),
     (
+        "provider_reservations_overlap_and_drain_independently",
+        (
+            "provider-production-concurrency-test.py",
+            "ProductionConcurrencyTest.test_configuration_lock_serializes_apply_and_reservation",
+            "ProductionConcurrencyTest.test_three_distinct_cli_routes_overlap_then_drain_independently",
+        ),
+    ),
+    (
+        "cancellation_races_fail_closed_and_replay_once",
+        (
+            "attempt-cancel-test.py",
+            "AttemptCancellationTest.test_term_then_kill_escalation_revalidates_members",
+            "AttemptCancellationTest.test_competing_request_is_not_treated_as_replay",
+            "AttemptCancellationTest.test_stale_process_converges_without_signalling_or_replay",
+        ),
+    ),
+    (
         "provider_spend_limit_is_typed_and_latched",
         (
             "ticket-passport-test.py",
@@ -325,6 +375,17 @@ SCENARIOS = (
             "FactoryControllerTest.test_qualification_restart_surfaces_durable_blocked_claims",
             "FactoryControllerTest.test_publication_events_follow_serialized_lease_order",
             "FactoryControllerTest.test_publication_acquisition_event_recovers_before_claim_save",
+        ),
+    ),
+    (
+        "durable_events_and_scheduler_restarts_are_once_only",
+        (
+            "factory-controller-test.py",
+            "FactoryControllerTest.test_terminal_event_is_idempotent_across_restart",
+            "FactoryControllerTest.test_concurrent_event_publication_is_monotonic_across_restart",
+            "FactoryControllerTest.test_operator_events_backfill_each_durable_crash_boundary_once",
+            "FactoryControllerTest.test_scheduler_tracks_each_concurrent_ticket_once",
+            "FactoryControllerTest.test_restart_does_not_resubmit_externally_active_role",
         ),
     ),
     (

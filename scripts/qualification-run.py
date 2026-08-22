@@ -39,9 +39,10 @@ TICKET = re.compile(r"T-[0-9]+")
 SHA = re.compile(r"[0-9a-f]{40}")
 DIGEST = re.compile(r"[0-9a-f]{64}")
 REQUIRED_CHECKS = {
-    "active_binding", "clis", "contract_resume", "credentials",
+    "active_binding", "authenticated_artifacts", "clis", "contract_resume", "credentials",
     "fallback_readiness", "isolated_provider", "kit", "kit_pin",
-    "provider_cli_pins", "transition_receipts",
+    "provider_cli_pins", "qualification_identity", "qualification_ticket_readiness",
+    "transition_receipts",
 }
 NEUTRAL_CHECKS = {"controller", "model_readiness"}
 REDUCER_REASONS = {
