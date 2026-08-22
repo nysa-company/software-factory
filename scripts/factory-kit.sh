@@ -230,6 +230,8 @@ Usage:
   $PROGRAM release setup --project SLUG --product PRODUCT_REPO --sha FULL_SHA --profile ID --operator-id ID [--repo KIT_REPO] [--runtime-bin NODE_BIN_DIR] [--claude-bin ABS --codex-bin ABS --cursor-bin ABS] [--ticket-workdir T-NNN ABS] [--skip-optional-tests]
   $PROGRAM release resume --project SLUG --sha FULL_SHA --approved-by ID
   $PROGRAM release abort  --project SLUG --sha FULL_SHA --approved-by ID
+  $PROGRAM qualification upgrade --project SLUG --root QUALIFICATION_ROOT --product PRODUCT_REPO --repo KIT_REPO --sha FULL_SHA --runtime-bin NODE_BIN_DIR --operator-id ID
+  $PROGRAM qualification resume --project SLUG --sha FULL_SHA --approve-hash HASH --approved-by ID
 
 FACTORY_KITS_ROOT overrides the default state root (~/.factory/kits).
 EOF
@@ -4929,6 +4931,24 @@ cmd_release_abort() {
     --project "$project" --sha "$sha" --approved-by "$approver"
 }
 
+cmd_qualification_upgrade() {
+  local project="$1" root="$2" product="$3" repo="$4" sha="$5" runtime="$6" operator="$7"
+  python3 -I -S "$repo/scripts/release-transaction.py" --kits-root "$KITS_ROOT" \
+    qualification-upgrade --project "$project" --root "$root" --product "$product" \
+    --repo "$repo" --sha "$sha" --runtime-bin "$runtime" --operator-id "$operator"
+}
+
+cmd_qualification_resume() {
+  local project="$1" sha="$2" approval="$3" approver="$4" values release helper
+  validate_sha "$sha"
+  values="$(verify_release_from_manifest "$sha")"
+  release="$(printf '%s' "$values" | awk -F'\t' '{print $3}')"
+  helper="$release/scripts/release-transaction.py"
+  [[ -f "$helper" && ! -L "$helper" ]] || die "sealed qualification transaction helper is missing"
+  python3 -I -S "$helper" --kits-root "$KITS_ROOT" qualification-resume \
+    --project "$project" --sha "$sha" --approve-hash "$approval" --approved-by "$approver"
+}
+
 require_command git
 require_command python3
 require_command shasum
@@ -4963,6 +4983,7 @@ PREVIEW_HASH=""
 FAILED_RUN=""
 REASON=""
 EXPIRES_MINUTES=""
+QUALIFICATION_ROOT=""
 SKIP_OPTIONAL_TESTS=0
 JSON=0
 POSITIONALS=()
@@ -4975,6 +4996,7 @@ while [[ $# -gt 0 ]]; do
     --origin) [[ $# -ge 2 ]] || die "$1 requires a value"; ORIGIN_OVERRIDE="$2"; shift 2 ;;
     --project|--slug) [[ $# -ge 2 ]] || die "$1 requires a value"; PROJECT="$2"; shift 2 ;;
     --product|--product-repo) [[ $# -ge 2 ]] || die "$1 requires a value"; PRODUCT="$2"; shift 2 ;;
+    --root) [[ $# -ge 2 ]] || die "$1 requires a value"; QUALIFICATION_ROOT="$2"; shift 2 ;;
     --receipt) [[ $# -ge 2 ]] || die "$1 requires a value"; RECEIPT="$2"; shift 2 ;;
     --ticket)
       [[ $# -ge 2 ]] || die "$1 requires a value"
@@ -5011,10 +5033,13 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ "$COMMAND" != "release" && (
-      -n "$PROFILE$APPROVED_BY" || ${#TICKET_WORKDIRS[@]} -ne 0
-    ) ]]; then
+if [[ "$COMMAND" != "release" && -n "$PROFILE" ]] ||
+   [[ "$COMMAND" != "release" && "$COMMAND" != "qualification" && -n "$APPROVED_BY" ]] ||
+   [[ "$COMMAND" != "release" && ${#TICKET_WORKDIRS[@]} -ne 0 ]]; then
   die "release-only option used with $COMMAND"
+fi
+if [[ "$COMMAND" != "qualification" && -n "$QUALIFICATION_ROOT" ]]; then
+  die "--root is only valid for qualification upgrade"
 fi
 if [[ "$SKIP_OPTIONAL_TESTS" -eq 1 && "$COMMAND" != "certify" && "$COMMAND" != "release" ]]; then
   die "--skip-optional-tests is only valid for certify or release setup"
@@ -5174,6 +5199,28 @@ case "$COMMAND" in
       else
         cmd_release_abort "$PROJECT" "$SHA" "$APPROVED_BY"
       fi
+    else
+      { usage >&2; exit 2; }
+    fi
+    ;;
+  qualification)
+    ACTION="${POSITIONALS[0]:-}"
+    if [[ "$ACTION" == "upgrade" ]]; then
+      [[ ${#POSITIONALS[@]} -eq 1 && -n "$PROJECT" && -n "$QUALIFICATION_ROOT" &&
+         -n "$PRODUCT" && -n "$SHA" && -n "$RUNTIME_BIN" && -n "$OPERATOR_ID" &&
+         -z "$APPROVE_HASH$APPROVED_BY$PROFILE$RECEIPT$TICKET$CAPACITY$ORIGIN_OVERRIDE" &&
+         ${#TICKETS[@]} -eq 0 && ${#TICKET_WORKDIRS[@]} -eq 0 && "$JSON" -eq 0 ]] ||
+        { usage >&2; exit 2; }
+      cmd_qualification_upgrade "$PROJECT" "$QUALIFICATION_ROOT" "$PRODUCT" "$REPO" \
+        "$SHA" "$RUNTIME_BIN" "$OPERATOR_ID"
+    elif [[ "$ACTION" == "resume" ]]; then
+      [[ ${#POSITIONALS[@]} -eq 1 && -n "$PROJECT" && -n "$SHA" &&
+         -n "$APPROVE_HASH" && -n "$APPROVED_BY" &&
+         -z "$QUALIFICATION_ROOT$PRODUCT$RUNTIME_BIN$OPERATOR_ID$PROFILE$RECEIPT$TICKET$CAPACITY$ORIGIN_OVERRIDE" &&
+         "$REPO" == "$SCRIPT_ROOT" && ${#TICKETS[@]} -eq 0 &&
+         ${#TICKET_WORKDIRS[@]} -eq 0 && "$JSON" -eq 0 ]] ||
+        { usage >&2; exit 2; }
+      cmd_qualification_resume "$PROJECT" "$SHA" "$APPROVE_HASH" "$APPROVED_BY"
     else
       { usage >&2; exit 2; }
     fi

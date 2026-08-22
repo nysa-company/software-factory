@@ -32,6 +32,12 @@ SPEC = importlib.util.spec_from_file_location(
 assert SPEC and SPEC.loader
 ENVIRONMENT = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(ENVIRONMENT)
+RELEASE_SPEC = importlib.util.spec_from_file_location(
+    "qualification_release_transaction", ROOT / "scripts/release-transaction.py"
+)
+assert RELEASE_SPEC and RELEASE_SPEC.loader
+RELEASE = importlib.util.module_from_spec(RELEASE_SPEC)
+RELEASE_SPEC.loader.exec_module(RELEASE)
 
 
 def run(root: Path, *arguments: str) -> str:
@@ -74,7 +80,13 @@ class QualificationEnvironmentTest(unittest.TestCase):
             '{"contract_version":"1.8.0"}\n', encoding="utf-8",
         )
         launcher = self.factory / "scripts/factory-launch"
-        launcher.write_text("#!/bin/sh\n", encoding="utf-8")
+        launcher.write_text(
+            "#!/bin/sh\n"
+            "if [ \"${2:-}\" = doctor ]; then\n"
+            "  printf '%s\\n' '{\"checks\":{},\"overall_status\":\"ok\",\"schema\":\"nysa.software-factory.doctor/v2\"}'\n"
+            "fi\n",
+            encoding="utf-8",
+        )
         launcher.chmod(0o755)
         factory_kit = self.factory / "scripts/factory-kit.sh"
         factory_kit.write_text(
@@ -121,6 +133,10 @@ class QualificationEnvironmentTest(unittest.TestCase):
         shutil.copy2(
             ROOT / "scripts/ticket-readiness.py",
             self.factory / "scripts/ticket-readiness.py",
+        )
+        shutil.copy2(
+            ROOT / "scripts/ticket-pr.py",
+            self.factory / "scripts/ticket-pr.py",
         )
         shutil.copy2(
             ROOT / "scripts/qualification-reducer.py",
@@ -188,9 +204,27 @@ class QualificationEnvironmentTest(unittest.TestCase):
             self.factory / "scripts/owner-runtime-pin.py",
         )
         shutil.copy2(
+            ROOT / "scripts/qualification-environment.py",
+            self.factory / "scripts/qualification-environment.py",
+        )
+        shutil.copy2(
+            ROOT / "scripts/release-transaction.py",
+            self.factory / "scripts/release-transaction.py",
+        )
+        shutil.copy2(
             ROOT / "scripts/lib/certification_plan.py",
             self.factory / "scripts/lib/certification_plan.py",
         )
+        for name in (
+            "historical_pr_objects.py", "inflight_release.py", "release_lineage.py",
+        ):
+            shutil.copy2(
+                ROOT / "scripts/lib" / name,
+                self.factory / "scripts/lib" / name,
+            )
+        for source in (ROOT / "scripts/lib").iterdir():
+            if source.is_file():
+                shutil.copy2(source, self.factory / "scripts/lib" / source.name)
         shutil.copy2(
             ROOT / "scripts/lib/role_output.py",
             self.factory / "scripts/lib/role_output.py",
@@ -404,6 +438,47 @@ class QualificationEnvironmentTest(unittest.TestCase):
         ).hexdigest()
         path.write_bytes(ENVIRONMENT.canonical(value))
         path.chmod(0o600)
+
+    def test_certification_preflight_uses_exact_requested_runtime(self) -> None:
+        runtime = self.workspace / "exact-runtime"
+        runtime.mkdir()
+        for tool, version in (
+            ("node", "v22.22.0"), ("npm", "10.9.4"), ("npx", "10.9.4"),
+        ):
+            path = runtime / tool
+            path.write_text(
+                f"#!/bin/sh\nprintf '%s\\n' '{version}'\n", encoding="utf-8",
+            )
+            path.chmod(0o700)
+        plan = self.product / "factory/certification-plan.json"
+        value = json.loads(plan.read_text())
+        value["runtime"] = {"node": "v22.22.0", "npm": "10.9.4"}
+        plan.write_text(json.dumps(value) + "\n", encoding="utf-8")
+        run(self.product, "git", "add", "factory/certification-plan.json")
+        run(self.product, "git", "commit", "-qm", "pin exact test runtime")
+        observed = ENVIRONMENT.certification_preflight(
+            self.factory, self.product, self.sha,
+            run(self.factory, "git", "rev-parse", "HEAD^{tree}"), "1.8.0", runtime,
+        )
+        self.assertEqual(observed["node"], "v22.22.0")
+        self.assertEqual(observed["npm"], "10.9.4")
+
+    def test_fallback_readiness_preserves_typed_precheck_reason(self) -> None:
+        helper = self.factory / "scripts/model-control.sh"
+        helper.write_text(
+            "#!/bin/sh\n"
+            "printf '%s\\n' '{\"error\":\"qualification model resolution failed: runtime_tuple_mismatch\",\"status\":\"error\"}'\n"
+            "exit 2\n",
+            encoding="utf-8",
+        )
+        helper.chmod(0o755)
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError, "runtime_tuple_mismatch",
+        ) as caught:
+            ENVIRONMENT.qualification_fallback_readiness(
+                self.factory, self.root, "relay", self.product,
+            )
+        self.assertEqual(caught.exception.reason_code, "runtime_tuple_mismatch")
 
     def tearDown(self) -> None:
         if self.branch_preflight is not None:
@@ -670,7 +745,31 @@ class QualificationEnvironmentTest(unittest.TestCase):
             project="relay",
             root=self.root,
         )
-        value = ENVIRONMENT.prepare(args)
+        order = []
+        prepare_runtime = ENVIRONMENT.prepare_qualification_runtime
+        preflight = ENVIRONMENT.certification_preflight
+
+        def observed_runtime(*values, **options):
+            result = prepare_runtime(*values, **options)
+            order.append("runtime")
+            return result
+
+        def observed_preflight(*values, **options):
+            order.append("preflight")
+            return preflight(*values, **options)
+
+        with (
+            mock.patch.object(
+                ENVIRONMENT, "prepare_qualification_runtime",
+                side_effect=observed_runtime,
+            ),
+            mock.patch.object(
+                ENVIRONMENT, "certification_preflight",
+                side_effect=observed_preflight,
+            ),
+        ):
+            value = ENVIRONMENT.prepare(args)
+        self.assertEqual(order, ["runtime", "preflight"])
         release = Path(value["launcher"]).parent.parent
         authority = Path(value["authority_root"])
         self.assertEqual(value["factory_sha"], self.sha)
@@ -1920,7 +2019,7 @@ class QualificationEnvironmentTest(unittest.TestCase):
             ),
         ):
             ENVIRONMENT.prepare(args)
-        provider = self.home / ".factory/qualification/relay/provider"
+        provider = self.home.resolve() / ".factory/qualification/relay/provider"
         policy = provider / "provider-policy.json"
         policy.unlink()
         with (
@@ -3171,13 +3270,16 @@ class QualificationEnvironmentTest(unittest.TestCase):
         run(self.product, "git", "commit", "-qm", "mismatched runtime")
         with self.assertRaisesRegex(
             ENVIRONMENT.EnvironmentError, "runtime_tuple_mismatch",
-        ):
+        ) as caught:
             ENVIRONMENT.prepare(argparse.Namespace(
                 factory_root=self.factory,
                 product_root=self.product,
                 project="relay",
                 root=self.root,
             ))
+        self.assertIn("expected tuple", str(caught.exception))
+        self.assertIn("actual tuple", str(caught.exception))
+        self.assertEqual(caught.exception.reason_code, "runtime_tuple_mismatch")
 
     def test_hydrates_historical_pr_objects_once_without_moving_refs(self) -> None:
         publisher = self.workspace / "publisher"
@@ -3834,6 +3936,154 @@ class QualificationEnvironmentTest(unittest.TestCase):
         )
         self.assertTrue((self.root / f"releases/{source}").is_dir())
         self.assertTrue((self.root / f"releases/{successor}").is_dir())
+
+    def test_transaction_upgrades_once_to_doctor_ready_with_no_provider_work(self) -> None:
+        run(
+            self.factory, "git", "remote", "add", "origin",
+            "git@github.com:nysa-company/software-factory.git",
+        )
+        (self.factory / "factory-contract.json").write_text(
+            '{"contract_version":"1.9.0"}\n', encoding="utf-8",
+        )
+        run(self.factory, "git", "add", "factory-contract.json")
+        run(self.factory, "git", "commit", "-qm", "source Contract 1.9")
+        source = run(self.factory, "git", "rev-parse", "HEAD")
+        manifest_path = self.product / "factory/QUALIFICATION.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest.update(contract_version="1.9.0", factory_sha=source)
+        manifest_path.write_text(json.dumps(manifest) + "\n")
+        (self.product / "factory/KIT_PIN").write_text(source + "\n")
+        run(self.product, "git", "add", "factory")
+        run(self.product, "git", "commit", "-qm", "prepare source lane")
+        ENVIRONMENT.prepare(argparse.Namespace(
+            factory_root=self.factory, product_root=self.product,
+            project="relay", root=self.root,
+            runtime_bin=self.home / ".local/bin",
+        ))
+        controller = (
+            self.home.resolve() / ".factory/qualification/relay/controller"
+        )
+        passports = controller / "passports"
+        passports.mkdir(mode=0o700, exist_ok=True)
+        key = controller / "passport.key"
+        if not key.exists():
+            key.write_bytes(b"p" * 32)
+            key.chmod(0o600)
+        secret = key.read_bytes()
+        for ticket in manifest["tickets"]:
+            self.write_passport(passports / f"{ticket}.json", secret, ticket, source)
+
+        (self.factory / "factory-contract.json").write_text(
+            '{"contract_version":"2.0.0"}\n', encoding="utf-8",
+        )
+        run(self.factory, "git", "add", "factory-contract.json")
+        run(self.factory, "git", "commit", "-qm", "candidate Contract 2.0")
+        candidate = run(self.factory, "git", "rev-parse", "HEAD")
+        manifest.update(
+            contract_version="2.0.0", factory_sha=candidate,
+            mode="successor", source_factory_sha=source,
+            budget_usd="300.000000", per_ticket_budget_usd="100.000000",
+            per_run_budget_usd="10.000000",
+        )
+        manifest_path.write_text(json.dumps(manifest) + "\n")
+        (self.product / "factory/KIT_PIN").write_text(candidate + "\n")
+        authorization = (
+            self.product / "factory/migrations/inflight-release"
+            / f"{candidate}.json"
+        )
+        authorization.parent.mkdir(parents=True, exist_ok=True)
+        authorization.write_text(json.dumps({
+            "repository": "example/product",
+            "schema": "nysa.software-factory.inflight-release-authorization/v1",
+            "source_kit_sha": source, "target_kit_sha": candidate,
+            "tickets": [{
+                "branch": f"ticket/{ticket}", "head": "1" * 40,
+                "state": "Building", "ticket": ticket,
+            } for ticket in manifest["tickets"]],
+        }, sort_keys=True) + "\n")
+        run(self.product, "git", "add", "factory")
+        run(self.product, "git", "commit", "-qm", "authorize candidate")
+
+        kits = self.home / ".factory/kits"
+        release = kits / f"releases/{candidate}"
+        release.parent.mkdir(parents=True, mode=0o700)
+        shutil.copytree(
+            self.factory, release,
+            ignore=shutil.ignore_patterns(".git"),
+        )
+        provider = self.home.resolve() / ".factory/qualification/relay/provider"
+        provider_before = RELEASE.qualification_provider_snapshot(provider)
+        q71 = self.workspace / "q71-fixture"
+        q71.mkdir()
+        (q71 / "active.json").write_text('{"generation":71}\n')
+        q71_before = hashlib.sha256((q71 / "active.json").read_bytes()).hexdigest()
+        args = argparse.Namespace(
+            kits_root=kits, operator_id="qualification-test",
+            product=self.product, project="relay", repo=self.factory,
+            root=self.root, runtime_bin=self.home / ".local/bin", sha=candidate,
+        )
+        original_run = RELEASE.run
+        original_run_json = RELEASE.run_json
+
+        def installed(arguments, label, **options):
+            if label == "sealed qualification candidate install":
+                return ""
+            return original_run(arguments, label, **options)
+
+        def provider_ready(arguments, label, **options):
+            if label == "qualification provider CLI replay":
+                return {"status": "ready"}
+            return original_run_json(arguments, label, **options)
+
+        with (
+            mock.patch.dict(os.environ, {
+                "FACTORY_KIT_TEST_MODE": "1",
+                "FACTORY_RELEASE_TEST_HOME": str(self.home),
+            }),
+            mock.patch.object(RELEASE, "run", side_effect=installed),
+            mock.patch.object(RELEASE, "run_json", side_effect=provider_ready),
+            mock.patch.object(RELEASE, "qualification_provider_child", return_value={
+                "action": "reuse", "evidence": {"status": "ready"},
+            }),
+        ):
+            receipt = RELEASE.qualification_upgrade(args)
+            replay = RELEASE.qualification_upgrade(args)
+
+        active = ENVIRONMENT.read(self.root / "projects/relay/active.json")
+        self.assertEqual(receipt, replay)
+        self.assertEqual(receipt["status"], "doctor_ready")
+        self.assertLessEqual(receipt["total_duration_ms"], 60_000)
+        self.assertEqual(active["kit_sha"], candidate)
+        self.assertEqual(active["generation"], 2)
+        journal = RELEASE.read_qualification_journal(
+            RELEASE.qualification_state(kits.resolve(), "relay", candidate)
+            / "journal.json",
+            json.loads((
+                RELEASE.qualification_state(kits.resolve(), "relay", candidate)
+                / "latest.json"
+            ).read_text()),
+        )
+        self.assertEqual((journal["status"], journal["phase"]), ("pass", "complete"))
+        self.assertEqual(list((controller / "claims").glob("*.json")), [])
+        for path in (
+            self.product / "factory/runs",
+            self.product / "factory/.active-runs",
+            self.product / "factory/.dispatch-leases",
+        ):
+            self.assertFalse(path.is_dir() and any(path.iterdir()))
+        self.assertEqual(q71_before, hashlib.sha256(
+            (q71 / "active.json").read_bytes(),
+        ).hexdigest())
+        self.assertEqual(
+            provider_before, RELEASE.qualification_provider_snapshot(provider),
+        )
+        metrics = os.environ.get("FACTORY_QUALIFICATION_MIGRATION_METRICS")
+        if metrics:
+            Path(metrics).write_text(json.dumps({
+                "slowest_phase": receipt["slowest_phase"],
+                "timings": receipt["timings"],
+                "total_duration_ms": receipt["total_duration_ms"],
+            }, sort_keys=True) + "\n", encoding="utf-8")
 
     def test_successor_upgrade_requires_exact_source_bound_cohort(self) -> None:
         controller = (self.workspace / "cohort-controller").resolve()

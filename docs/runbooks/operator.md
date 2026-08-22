@@ -641,6 +641,48 @@ recovery and automation interface.
 
 ## Preparing and activating a release
 
+### Migrating a drained qualification lane
+
+Use the sealed transaction for an already prepared, drained isolated successor
+lane. The Factory and product checkouts must be clean protected-main identities,
+the product must contain the exact committed `KIT_PIN`, qualification manifest,
+certification plan, and in-flight release authorization, and the requested Node
+directory must already contain the exact runtime:
+
+```bash
+bash scripts/factory-kit.sh qualification upgrade \
+  --project <project> --root <qualification-root> \
+  --product <absolute-product-path> \
+  --repo <absolute-clean-factory-checkout> --sha <candidate> \
+  --runtime-bin <absolute-node-bin> --operator-id <operator-id>
+```
+
+The warm path prepares or replays the project runtime before certification
+preflight, reuses ready provider CLI evidence, revalidates fallback readiness,
+runs the existing authenticated environment upgrade, and requires the new
+sealed launcher's Doctor to pass. Its completion receipt binds the original
+active generation and receipt, Factory/product trees, authorization, runtime
+and provider children, fallback evidence, operator, and per-phase monotonic
+timings. Total machine time through Doctor-ready must not exceed 60 seconds.
+
+If a runtime or provider CLI child would change host state, the command returns
+one `approval_required` plan without changing the lane. Review that exact plan,
+then resume once:
+
+```bash
+bash scripts/factory-kit.sh qualification resume \
+  --project <project> --sha <candidate> \
+  --approve-hash <approval_sha256> --approved-by <operator-id>
+```
+
+The signed journal resumes child transactions after interruption. A replay
+returns the original completion receipt without advancing the generation or
+rewriting lane state. Any changed plan, checkout, authorization, runtime,
+provider receipt, fallback evidence, active record, or environment refuses.
+The old separate runtime-pin, provider-pin, environment `--upgrade`, and Doctor
+commands are recovery diagnostics only; do not use them as the normal migration
+procedure or hand-edit their authenticated state.
+
 For Contract 2.0, prefer the bounded two-command transaction below. The
 numbered manual procedure remains the recovery/reference path for older
 contracts and unusual host migration work.

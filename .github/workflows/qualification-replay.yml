@@ -14,6 +14,8 @@ on:
       - "scripts/factory-doctor.sh"
       - "scripts/factory-kit.sh"
       - "scripts/owner-provider-cli-pin.py"
+      - "scripts/owner-runtime-pin.py"
+      - "scripts/release-transaction.py"
       - "scripts/certification-preflight.py"
       - "scripts/lib/certification_plan.py"
       - "scripts/lib/operator_receipt.py"
@@ -112,16 +114,84 @@ jobs:
           test -z "$(git status --porcelain=v1)"
           python3 ci/qualification-shared-state-test.py
 
+  migration-sla:
+    name: qualification-migration-sla-${{ matrix.repetition }}
+    runs-on: macos-14
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        repetition: [1, 2, 3, 4, 5]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: ${{ env.CANDIDATE_SHA }}
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: migrate a prepared lane to Doctor-ready
+        env:
+          FACTORY_QUALIFICATION_MIGRATION_METRICS: ${{ runner.temp }}/migration.json
+        run: |
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain=v1)"
+          python3 ci/qualification-environment-test.py \
+            QualificationEnvironmentTest.test_transaction_upgrades_once_to_doctor_ready_with_no_provider_work
+          python3 - "$FACTORY_QUALIFICATION_MIGRATION_METRICS" <<'PY'
+          import json, pathlib, sys
+          value = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          assert value["total_duration_ms"] <= 60_000, value
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qualification-migration-sla-${{ matrix.repetition }}
+          path: ${{ runner.temp }}/migration.json
+
+  migration-sla-report:
+    name: qualification-migration-sla
+    if: always()
+    needs: migration-sla
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: qualification-migration-sla-*
+          path: reports
+      - name: require five bounded runs and report distribution
+        run: |
+          python3 - "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json, pathlib, sys
+          reports = [json.loads(path.read_text()) for path in pathlib.Path("reports").rglob("migration.json")]
+          assert len(reports) == 5, len(reports)
+          totals = sorted(item["total_duration_ms"] for item in reports)
+          assert totals[-1] <= 60_000, totals
+          phases = [phase for item in reports for phase in item["timings"]]
+          slowest = max(phases, key=lambda item: item["duration_ms"])
+          summary = (
+              f"Qualification migration: p50={totals[2]}ms, p95/max={totals[-1]}ms, "
+              f"slowest={slowest['phase']} ({slowest['duration_ms']}ms)."
+          )
+          pathlib.Path(sys.argv[1]).write_text(summary + "\n", encoding="utf-8")
+          print(summary)
+          PY
+
   qualification-replay:
     name: qualification-replay
     if: always()
-    needs: [repetitions, sealed-mocks]
+    needs: [repetitions, sealed-mocks, migration-sla-report]
     runs-on: ubuntu-latest
     steps:
       - name: require 20 replays and 3 sealed mocks
         env:
           REPETITIONS_RESULT: ${{ needs.repetitions.result }}
           SEALED_MOCKS_RESULT: ${{ needs.sealed-mocks.result }}
+          MIGRATION_SLA_RESULT: ${{ needs.migration-sla-report.result }}
         run: |
           test "$REPETITIONS_RESULT" = success
           test "$SEALED_MOCKS_RESULT" = success
+          test "$MIGRATION_SLA_RESULT" = success

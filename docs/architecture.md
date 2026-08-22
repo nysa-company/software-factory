@@ -1144,6 +1144,22 @@ qualification, the same preparer upgrades that root only while reconciliation an
 are drained. It seals the successor, verifies unchanged provider policy,
 atomically advances the activation record, and preserves the controller
 directory, passport key, passports, claims, and cumulative provider ledger.
+The public `qualification upgrade` command wraps that preparer in the existing
+release transaction machinery. It binds the clean protected-main Factory and
+product identities, `KIT_PIN`, certification and qualification documents,
+in-flight authorization, source activation and receipt, durable operator
+authority, runtime/provider child evidence, and fallback-readiness digest in one
+owner-only signed plan. The project runtime is applied or replayed before the
+certification preflight and is first on that preflight's fixed PATH. Changed
+runtime or provider inputs return one exact approval hash before lane mutation;
+`qualification resume` accepts only that current hash and operator. The signed
+journal replays child transactions and the authenticated environment upgrade,
+then runs Doctor through the newly sealed launcher. A self-hashed completion
+receipt records monotonic phase timings and the single resulting generation;
+identical replay returns those bytes without another publication. Preview plus
+approved execution has a cumulative 60-second machine budget, excluding only
+human approval wait and external setup/CI. Provider role submission is never a
+migration phase.
 Before that upgrade publishes any successor state, every selected ticket must
 already have an authenticated passport whose release history is rooted at the
 successor manifest's source Factory. A missing, malformed, foreign, mixed, or

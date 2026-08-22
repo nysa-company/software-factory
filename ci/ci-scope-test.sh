@@ -9,15 +9,18 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 WORKFLOW="$ROOT/.github/workflows/ci.yml"
 QUALIFICATION_WORKFLOW="$ROOT/.github/workflows/qualification-replay.yml"
-[[ "$(grep -Fc 'runs-on: macos-14' "$QUALIFICATION_WORKFLOW")" -eq 2 &&
+[[ "$(grep -Fc 'runs-on: macos-14' "$QUALIFICATION_WORKFLOW")" -eq 3 &&
     "$(grep -Fc 'python3 ci/qualification-lane-replay-test.py' "$QUALIFICATION_WORKFLOW")" -eq 1 &&
     "$(grep -Fc 'python3 ci/qualification-shared-state-test.py' "$QUALIFICATION_WORKFLOW")" -eq 1 &&
+    "$(grep -Fc 'QualificationEnvironmentTest.test_transaction_upgrades_once_to_doctor_ready_with_no_provider_work' "$QUALIFICATION_WORKFLOW")" -eq 1 &&
     "$(grep -Fc 'repetition: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]' "$QUALIFICATION_WORKFLOW")" -eq 1 &&
+    "$(grep -Fc 'repetition: [1, 2, 3, 4, 5]' "$QUALIFICATION_WORKFLOW")" -eq 1 &&
     "$(grep -Fc 'repetition: [1, 2, 3]' "$QUALIFICATION_WORKFLOW")" -eq 1 &&
     "$(grep -Fc 'name: require 20 replays and 3 sealed mocks' "$QUALIFICATION_WORKFLOW")" -eq 1 &&
     "$(grep -Fc 'SEALED_MOCKS_RESULT: ${{ needs.sealed-mocks.result }}' "$QUALIFICATION_WORKFLOW")" -eq 1 &&
+    "$(grep -Fc 'MIGRATION_SLA_RESULT: ${{ needs.migration-sla-report.result }}' "$QUALIFICATION_WORKFLOW")" -eq 1 &&
     "$(grep -Fc 'CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || inputs.candidate_sha }}' "$QUALIFICATION_WORKFLOW")" -eq 1 ]] || {
-  echo "FAIL: qualification replay must run 20 replays and 3 sealed mocks at exact SHA" >&2
+  echo "FAIL: qualification replay must run 20 replays, 3 sealed mocks, and 5 migration SLA checks at exact SHA" >&2
   exit 1
 }
 [[ "$(grep -Fc 'actions/checkout@v5' "$WORKFLOW")" -eq 6 &&

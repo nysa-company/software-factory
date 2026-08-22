@@ -76,12 +76,18 @@ SUPPORTED_UPGRADES = {("1.9.0", "2.0.0")}
 
 
 class EnvironmentError(ValueError):
-    pass
+    def __init__(self, message: str, reason_code: str | None = None):
+        super().__init__(message)
+        self.reason_code = reason_code
 
 
-def command(*arguments: str, cwd: Path | None = None) -> str:
+def command(
+    *arguments: str, cwd: Path | None = None,
+    environment: dict[str, str] | None = None,
+) -> str:
     result = subprocess.run(
         arguments, cwd=cwd, text=True, capture_output=True, check=False, timeout=120,
+        env=environment,
     )
     if result.returncode:
         raise EnvironmentError(
@@ -373,7 +379,13 @@ def validate_qualification_budget(
 
 def qualification_fallback_readiness(
     release: Path, root: Path, project: str, product: Path,
+    model_state_root: Path | None = None,
+    timeout: float = 120,
 ) -> tuple[dict[str, Any], str]:
+    state_root = (
+        safe_directory(model_state_root)
+        if model_state_root is not None else root / "projects"
+    )
     result = subprocess.run(
         [str(release / "scripts/model-control.sh"), "qualification-readiness"],
         env={
@@ -383,11 +395,11 @@ def qualification_fallback_readiness(
             "FACTORY_GLOBAL_ENV": str(root / "global.env"),
             "FACTORY_KIT_TRUST_SCOPE": "qualification-candidate",
             "FACTORY_MODEL_POLICY_FILE": str(product / "factory/model-policy.json"),
-            "FACTORY_MODEL_STATE_ROOT": str(root / "projects"),
+            "FACTORY_MODEL_STATE_ROOT": str(state_root),
             "FACTORY_PROJECT": project,
             "FACTORY_ROOT": str(product),
         },
-        text=True, capture_output=True, check=False, timeout=120,
+        text=True, capture_output=True, check=False, timeout=timeout,
     )
     try:
         report = json.loads(result.stdout)
@@ -402,17 +414,26 @@ def qualification_fallback_readiness(
         or not re.fullmatch(r"[0-9a-f]{64}", digest)
     ):
         checks = report.get("checks", []) if isinstance(report, dict) else []
-        reason = next(
-            (
-                f"{item.get('fallback_route_id') or item.get('cursor_route_id')}:"
-                f"{item.get('reason', 'invalid')}:expected="
-                f"{item.get('expected_version') or 'unknown'}:installed="
-                f"{item.get('installed_version') or 'unknown'}"
-                for item in checks if isinstance(item, dict) and item.get("state") != "READY"
-            ),
-            "invalid",
+        failed = next((
+            item for item in checks
+            if isinstance(item, dict) and item.get("state") != "READY"
+        ), None)
+        reason_code = failed.get("reason") if failed else report.get("reason_code")
+        if not isinstance(reason_code, str) or not re.fullmatch(
+            r"[a-z0-9][a-z0-9._-]{0,127}", reason_code,
+        ):
+            error = report.get("error", "") if isinstance(report, dict) else ""
+            match = re.search(r"(?:^|: )([a-z0-9][a-z0-9._-]{0,127})$", error)
+            reason_code = match.group(1) if match else "invalid"
+        detail = (
+            f"{failed.get('fallback_route_id') or failed.get('cursor_route_id')}:"
+            f"{reason_code}:expected={failed.get('expected_version') or 'unknown'}:"
+            f"installed={failed.get('installed_version') or 'unknown'}"
+            if failed else reason_code
         )
-        raise EnvironmentError(f"qualification fallback readiness refused: {reason}")
+        raise EnvironmentError(
+            f"qualification fallback readiness refused: {detail}", reason_code,
+        )
     return report, digest
 
 
@@ -1721,10 +1742,17 @@ def validate_selected_remote_branches(
 
 def certification_preflight(
     factory: Path, product: Path, sha: str, tree: str, contract: str,
+    runtime_bin: Path | None = None,
 ) -> dict[str, str] | None:
     plan = product / "factory/certification-plan.json"
     if not plan.exists() and not plan.is_symlink():
         return None
+    environment = None
+    if runtime_bin is not None:
+        environment = {
+            **os.environ,
+            "PATH": f"{runtime_bin}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+        }
     result = command(
         "/usr/bin/python3",
         str(factory / "scripts/certification-preflight.py"),
@@ -1733,7 +1761,7 @@ def certification_preflight(
         "--factory-tree", tree,
         "--product-root", str(product),
         "--contract-version", contract,
-        cwd=product,
+        cwd=product, environment=environment,
     )
     try:
         value = json.loads(result)
@@ -1774,6 +1802,8 @@ def prepare_qualification_runtime(
             release, product, root / "kits", project, explicit,
         )
     except (OSError, RuntimeError, ValueError) as error:
+        if str(error).startswith("runtime_tuple_mismatch:"):
+            raise EnvironmentError(str(error), "runtime_tuple_mismatch") from error
         raise EnvironmentError("qualification runtime pin failed") from error
     path = Path(str(result.get("evidence", {}).get("path", "")))
     expected = root / "project-runtimes" / project / "bin"
@@ -3459,7 +3489,9 @@ def validate_prepare_phase(
         if provider or authority_state:
             raise EnvironmentError("qualification preparation state is torn")
         return
-    if authority is not None and any(root.iterdir()) and not (
+    if authority is not None and any(
+        path.name != "project-runtimes" for path in root.iterdir()
+    ) and not (
         (authority / "controller").exists()
         or (authority / "controller").is_symlink()
     ):
@@ -3629,16 +3661,38 @@ def _prepare(args: argparse.Namespace) -> dict[str, Any]:
     prepare_product_runtime(product)
     if command("git", "-C", str(product), "status", "--porcelain", "--untracked-files=all"):
         raise EnvironmentError("qualification product runtime contract is not ignored")
-    product_tree = command("git", "-C", str(product), "rev-parse", "HEAD^{tree}")
-    product_sha = command("git", "-C", str(product), "rev-parse", "HEAD")
-    runtime_tuple = certification_preflight(
-        factory, product, sha, tree, contract,
-    )
     takeover = takeover_source(
         factory, product, args.project, getattr(args, "takeover_project", None)
     )
     if restoring and takeover:
         raise EnvironmentError("takeover qualification cannot restore isolated authority")
+    bootstrap_exists = bool(not takeover and (
+        (expected_authority_path / "operator-bootstrap.json").exists()
+        or (expected_authority_path / "operator-bootstrap.json").is_symlink()
+    ))
+    seed = (
+        operator_seed(args)
+        if not takeover and not restoring and not bootstrap_exists else None
+    )
+    state = (
+        "restore" if restoring
+        else preparation_state(
+            root, None if takeover else expected_authority_path,
+            args.project,
+        )
+    )
+    product_tree = command("git", "-C", str(product), "rev-parse", "HEAD^{tree}")
+    product_sha = command("git", "-C", str(product), "rev-parse", "HEAD")
+    runtime_bin = None
+    if (product / "factory/certification-plan.json").exists():
+        safe_directory(root, create=not root.exists())
+        runtime_bin = prepare_qualification_runtime(
+            factory, product, root, args.project,
+            getattr(args, "runtime_bin", None),
+        )
+    runtime_tuple = certification_preflight(
+        factory, product, sha, tree, contract, runtime_bin,
+    )
     authority: Path | None = None
     controller_state_path = ""
     provider_state_path = ""
@@ -3655,30 +3709,23 @@ def _prepare(args: argparse.Namespace) -> dict[str, Any]:
         runtime_tuple, operator_map_path, runtime_ledger_path,
     )
     expected_authority = None if takeover else expected_authority_path
-    state = (
-        "restore" if restoring
-        else preparation_state(root, expected_authority, args.project)
-    )
     map_path: Path | None = None
     ledger_path: Path | None = None
     if not takeover:
-        bootstrap_exists = (
-            (expected_authority / "operator-bootstrap.json").exists()
-            or (expected_authority / "operator-bootstrap.json").is_symlink()
-        )
         if restoring or bootstrap_exists:
             authority = authority_root(args.project)
             map_path, ledger_path = resume_operator_state(
                 authority, identity, manifest["tickets"],
             )
         else:
-            if (
-                root.exists() and any(root.iterdir())
+            if root.exists() and any(
+                path.name != "project-runtimes" for path in root.iterdir()
             ):
                 raise EnvironmentError("qualification preparation state is torn")
             if state != "fresh" and not expected_authority.exists():
                 raise EnvironmentError("partial qualification authority is missing")
-            seed = operator_seed(args)
+            if seed is None:
+                raise EnvironmentError("qualification operator seed is unavailable")
             authority = partial_authority_root(args.project)
             map_path, ledger_path = prepare_operator_state(
                 authority, identity, manifest["tickets"], seed,
@@ -3749,7 +3796,9 @@ def _prepare(args: argparse.Namespace) -> dict[str, Any]:
         if not takeover:
             mapping = read(map_path)
             advanced = (
-                root.exists() and any(root.iterdir())
+                root.exists() and any(
+                    path.name != "project-runtimes" for path in root.iterdir()
+                )
             ) or any(
                 (authority / name).exists() or (authority / name).is_symlink()
                 for name in ("authority.json", "provider")
@@ -3805,11 +3854,6 @@ def _prepare(args: argparse.Namespace) -> dict[str, Any]:
     else:
         write_exact(root / "marker.json", marker)
         release = ensure_release(factory, sha, tree, releases)
-    if runtime_tuple is not None:
-        prepare_qualification_runtime(
-            release, product, root, args.project,
-            getattr(args, "runtime_bin", None),
-        )
     fallback_readiness, fallback_readiness_sha256 = qualification_fallback_readiness(
         release, root, args.project, product,
     )
@@ -3918,6 +3962,88 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
         os.close(descriptor)
 
 
+def validate_upgrade_source(
+    root: Path, project: str, factory: Path, product: Path, sha: str,
+    contract: str, manifest: dict[str, Any],
+) -> dict[str, Any]:
+    active_path = root / f"projects/{project}/active.json"
+    active = read(active_path)
+    marker = read(root / "marker.json")
+    qualification_mode = active.get("qualification_mode")
+    active_contract = active.get("contract_version")
+    if (
+        marker != {"mode": "qualification", "schema": SCHEMA}
+        or active.get("project") != project
+        or active.get("product_path") != str(product)
+        or active_contract not in SUPPORTED_CONTRACTS
+        or (
+            active_contract != contract
+            and (active_contract, contract) not in SUPPORTED_UPGRADES
+        )
+        or not SHA.fullmatch(active.get("kit_sha", ""))
+        or not isinstance(active.get("generation"), int)
+        or isinstance(active.get("generation"), bool)
+        or active["generation"] < 1
+        or qualification_mode != "isolated"
+    ):
+        raise EnvironmentError("existing qualification activation is invalid")
+    previous_receipt_id = active.get("receipt_id", "")
+    if not re.fullmatch(r"[0-9a-f]{64}", previous_receipt_id):
+        raise EnvironmentError("existing qualification activation is invalid")
+    previous_receipt = read(root / f"receipts/{previous_receipt_id}.json")
+    unsigned_receipt = dict(previous_receipt)
+    if (
+        unsigned_receipt.pop("receipt_id", "") != previous_receipt_id
+        or hashlib.sha256(canonical(unsigned_receipt)).hexdigest()
+        != previous_receipt_id
+        or previous_receipt.get("status") != "pass"
+        or any(
+            previous_receipt.get(key) != active.get(key)
+            for key in (
+                "contract_version", "controller_state_path",
+                "fallback_readiness_sha256", "kit_sha", "kit_tree",
+                "operator_map_path", "product_path", "product_tree", "project",
+                "provider_policy_sha256", "provider_state_path",
+                "qualification_mode", "runtime_ledger_path",
+            )
+        )
+    ):
+        raise EnvironmentError("existing qualification activation is invalid")
+    authority = authority_root(project)
+    controller = safe_directory(Path(active.get("controller_state_path", "")))
+    provider = safe_directory(Path(active.get("provider_state_path", "")))
+    operator_map_path = Path(str(active.get("operator_map_path", "")))
+    runtime_ledger_path = Path(str(active.get("runtime_ledger_path", "")))
+    if (
+        controller != authority / "controller"
+        or provider != authority / "provider"
+        or operator_map_path != authority / "operator/operator-map.json"
+        or runtime_ledger_path != authority / "operator/runtime-ledger.csv"
+    ):
+        raise EnvironmentError("durable qualification authority path changed")
+    validate_successor_upgrade_cohort(
+        factory, product, controller, project, active["kit_sha"],
+        active.get("product_sha", ""), manifest,
+    )
+    validate_operator_map(read(operator_map_path))
+    validate_runtime_ledger(runtime_ledger_path)
+    if any((product / "factory/.active-runs").glob("*")) or any(
+        (product / "factory/runs").glob("*.pid")
+    ):
+        raise EnvironmentError("qualification has an active provider run")
+    validate_provider(
+        Path(active["release_path"]), authority, manifest["capacity"], active_contract,
+    )
+    return {
+        "active": active, "active_contract": active_contract,
+        "active_path": active_path, "authority": authority,
+        "controller": controller, "operator_map_path": operator_map_path,
+        "previous_receipt": previous_receipt, "provider": provider,
+        "qualification_mode": qualification_mode,
+        "runtime_ledger_path": runtime_ledger_path,
+    }
+
+
 def upgrade(args: argparse.Namespace) -> dict[str, Any]:
     root = Path(os.path.realpath(args.root))
     if not ROOT.fullmatch(str(root)):
@@ -3962,113 +4088,19 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
         raise EnvironmentError("qualification product runtime contract is not ignored")
     product_sha = command("git", "-C", str(product), "rev-parse", "HEAD")
     product_tree = command("git", "-C", str(product), "rev-parse", "HEAD^{tree}")
-    runtime_tuple = certification_preflight(
-        factory, product, sha, tree, contract,
-    )
     origin = product_origin(product)
     historical_objects = historical_pr_objects(product, origin)
-    marker = read(root / "marker.json")
-    qualification_mode = active.get("qualification_mode")
-    active_contract = active.get("contract_version")
-    if (
-        marker != {"mode": "qualification", "schema": SCHEMA}
-        or active.get("project") != args.project
-        or active.get("product_path") != str(product)
-        or active_contract not in SUPPORTED_CONTRACTS
-        or (
-            active_contract != contract
-            and (active_contract, contract) not in SUPPORTED_UPGRADES
-        )
-        or not SHA.fullmatch(active.get("kit_sha", ""))
-        or not isinstance(active.get("generation"), int)
-        or isinstance(active.get("generation"), bool)
-        or active["generation"] < 1
-        or qualification_mode not in {"isolated", "takeover"}
-    ):
-        raise EnvironmentError("existing qualification activation is invalid")
-    if qualification_mode == "takeover":
-        raise EnvironmentError("takeover qualification requires one frozen candidate")
-    previous_receipt_id = active.get("receipt_id", "")
-    if not re.fullmatch(r"[0-9a-f]{64}", previous_receipt_id):
-        raise EnvironmentError("existing qualification activation is invalid")
-    previous_receipt = read(root / f"receipts/{previous_receipt_id}.json")
-    unsigned_receipt = dict(previous_receipt)
-    if (
-        unsigned_receipt.pop("receipt_id", "") != previous_receipt_id
-        or hashlib.sha256(canonical(unsigned_receipt)).hexdigest()
-        != previous_receipt_id
-        or previous_receipt.get("status") != "pass"
-        or any(
-            previous_receipt.get(key) != active.get(key)
-            for key in (
-                "contract_version", "controller_state_path",
-                "fallback_readiness_sha256", "kit_sha", "kit_tree",
-                "operator_map_path", "product_path", "product_tree", "project",
-                "provider_policy_sha256", "provider_state_path",
-                "qualification_mode", "runtime_ledger_path",
-            )
-        )
-    ):
-        raise EnvironmentError("existing qualification activation is invalid")
-
-    authority = authority_root(args.project)
-    controller = safe_directory(Path(active.get("controller_state_path", "")))
-    provider = safe_directory(Path(active.get("provider_state_path", "")))
-    operator_map_value = active.get("operator_map_path", "")
-    runtime_ledger_value = active.get("runtime_ledger_path", "")
-    if not isinstance(operator_map_value, str) or not isinstance(
-        runtime_ledger_value, str
-    ):
-        raise EnvironmentError("durable qualification authority path changed")
-    operator_map_path = Path(operator_map_value)
-    runtime_ledger_path = Path(runtime_ledger_value)
-    if (
-        controller != authority / "controller"
-        or provider != authority / "provider"
-        or operator_map_path != authority / "operator/operator-map.json"
-        or runtime_ledger_path != authority / "operator/runtime-ledger.csv"
-    ):
-        raise EnvironmentError("durable qualification authority path changed")
-    validate_successor_upgrade_cohort(
-        factory, product, controller, args.project, active["kit_sha"],
-        active.get("product_sha", ""), manifest,
+    source = validate_upgrade_source(
+        root, args.project, factory, product, sha, contract, manifest,
     )
-    validate_operator_map(read(operator_map_path))
-    identity = authority_identity(
-        args.project, contract, sha, tree, product, product_sha, product_tree, origin,
-        runtime_tuple, str(operator_map_path), str(runtime_ledger_path),
-    )
-    validate_upgrade_authority(
-        read(authority / "authority.json"), active, identity,
-    )
-    if active_contract == contract and active["kit_sha"] == sha:
-        release = root / f"releases/{sha}"
-        if (
-            active.get("release_path") != str(release)
-            or not release.is_dir() or git_tree(release) != tree
-        ):
-            raise EnvironmentError("existing qualification activation is invalid")
-        result = bind_runtime_tuple({
-            "factory_sha": sha,
-            "factory_tree": tree,
-            "historical_pr_objects": historical_objects,
-            "launcher": str(release / "scripts/factory-launch"),
-            "product_sha": product_sha,
-            "product_tree": product_tree,
-            "project": args.project,
-            "provider_policy_sha256": active["provider_policy_sha256"],
-            "qualification_mode": qualification_mode,
-            "root": str(root),
-            "schema": SCHEMA,
-            "status": "upgraded",
-        }, runtime_tuple)
-        if read(root / "environment.json") != result:
-            raise EnvironmentError("existing qualification environment is invalid")
-        register_human_target(
-            release, release / "scripts/factory-launch", args.project, root,
-        )
-        return result
-    resume_operator_state(authority, identity, manifest["tickets"])
+    active = source["active"]
+    active_contract = source["active_contract"]
+    authority = source["authority"]
+    controller = source["controller"]
+    provider = source["provider"]
+    operator_map_path = source["operator_map_path"]
+    runtime_ledger_path = source["runtime_ledger_path"]
+    qualification_mode = source["qualification_mode"]
     lock = os.open(
         controller / "reconcile.lock",
         os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
@@ -4083,15 +4115,9 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
             (product / "factory/runs").glob("*.pid")
         ):
             raise EnvironmentError("qualification has an active provider run")
-        initialize_selected_operator(
-            factory, product, operator_map_path, runtime_ledger_path, controller,
+        validate_provider(
+            Path(active["release_path"]), authority, capacity, active_contract,
         )
-        validate_runtime_ledger(runtime_ledger_path)
-        if command(
-            "git", "-C", str(product), "status", "--porcelain",
-            "--untracked-files=all",
-        ):
-            raise EnvironmentError("qualification operator initialization dirtied product")
 
         releases = safe_directory(root / "releases")
         release = releases / sha
@@ -4102,6 +4128,54 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
             materialize(factory, sha, release)
         if git_tree(release) != tree:
             raise EnvironmentError("sealed qualification tree does not match the candidate")
+        runtime_bin = prepare_qualification_runtime(
+            release, product, root, args.project,
+            getattr(args, "runtime_bin", None),
+        )
+        runtime_tuple = certification_preflight(
+            factory, product, sha, tree, contract, runtime_bin,
+        )
+        identity = authority_identity(
+            args.project, contract, sha, tree, product, product_sha, product_tree,
+            origin, runtime_tuple, str(operator_map_path), str(runtime_ledger_path),
+        )
+        validate_upgrade_authority(
+            read(authority / "authority.json"), active, identity,
+        )
+        if active_contract == contract and active["kit_sha"] == sha:
+            if active.get("release_path") != str(release):
+                raise EnvironmentError("existing qualification activation is invalid")
+            result = bind_runtime_tuple({
+                "factory_sha": sha,
+                "factory_tree": tree,
+                "historical_pr_objects": historical_objects,
+                "launcher": str(release / "scripts/factory-launch"),
+                "product_sha": product_sha,
+                "product_tree": product_tree,
+                "project": args.project,
+                "provider_policy_sha256": active["provider_policy_sha256"],
+                "qualification_mode": qualification_mode,
+                "root": str(root),
+                "schema": SCHEMA,
+                "status": "upgraded",
+            }, runtime_tuple)
+            if read(root / "environment.json") != result:
+                raise EnvironmentError("existing qualification environment is invalid")
+            register_human_target(
+                release, release / "scripts/factory-launch", args.project, root,
+            )
+            return result
+        resume_operator_state(authority, identity, manifest["tickets"])
+        initialize_selected_operator(
+            factory, product, operator_map_path, runtime_ledger_path, controller,
+        )
+        validate_runtime_ledger(runtime_ledger_path)
+        if command(
+            "git", "-C", str(product), "status", "--porcelain",
+            "--untracked-files=all",
+        ):
+            raise EnvironmentError("qualification operator initialization dirtied product")
+
         policy, activation, policy_hash = provider_configuration(
             release, capacity
         )
@@ -4234,9 +4308,11 @@ def main() -> None:
         FileNotFoundError, json.JSONDecodeError, OSError, EnvironmentError,
         subprocess.SubprocessError, tarfile.TarError,
     ) as error:
-        print(json.dumps({
-            "error": str(error), "schema": SCHEMA, "status": "error",
-        }, sort_keys=True))
+        result = {"error": str(error), "schema": SCHEMA, "status": "error"}
+        reason_code = getattr(error, "reason_code", None)
+        if isinstance(reason_code, str):
+            result["reason_code"] = reason_code
+        print(json.dumps(result, sort_keys=True))
         raise SystemExit(1)
 
 

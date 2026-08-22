@@ -154,7 +154,9 @@ provider state, ticket branches, or paid roles are created.
   version range, hand-edit the receipt, or resume dispatch until Doctor reports
   the exact pins ready. Fresh qualification preparation and successor upgrade
   require this same exact candidate pin check before creating or replacing any
-  lane authority; install and approve the candidate pins first.
+  lane authority. The normal `qualification upgrade` transaction reuses a ready
+  receipt or returns its exact provider child approval plan before lane mutation;
+  direct provider pin plan/apply remains a recovery procedure.
 - For a product with certification plan v2, pin its exact Node/npm runtime
   without changing the system-wide Homebrew link:
 
@@ -168,9 +170,10 @@ provider state, ticket branches, or paid roles are created.
   verified `node`, `npm`, and `npx` executables into `~/.factory/bin`. It reads
   the shared strict product plan, refuses version or path drift before replacing
   an existing pin set, and verifies the installed tuple under the exact sealed
-  launcher PATH. Run it before readiness or qualification preparation; those
-  gates, certification, activation, and launch still independently fail closed
-  on tuple drift.
+  launcher PATH. Qualification preparation and the normal successor migration
+  prepare or replay the project-local transaction before preflight; direct
+  `runtime-pin` is recovery-only for those lanes. Readiness, certification,
+  activation, and launch still independently fail closed on tuple drift.
 - The Contract 2 `release setup` path does not use the global links above.
   It reads the same reviewed v2 declaration, accepts exactly one compatible
   physical runtime (or one explicit `--runtime-bin`), and writes an exact

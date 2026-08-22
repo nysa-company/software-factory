@@ -2434,6 +2434,339 @@ class ReleaseTransactionTest(unittest.TestCase):
         self.assertEqual(marker.read_bytes(), prior)
         self.assertFalse(reservation_path.exists())
 
+    def qualification_plan(self, *, approval_required: bool = True) -> dict[str, object]:
+        return RELEASE.seal_plan({
+            "approval_required": approval_required,
+            "children": {
+                "provider_cli": {"action": "reuse", "evidence": {"status": "ready"}},
+                "runtime": (
+                    {"action": "apply", "plan": {"approval_sha256": "2" * 64}}
+                    if approval_required else {
+                        "action": "reuse", "evidence": {"status": "ready"},
+                    }
+                ),
+            },
+            "created_epoch": 1,
+            "expires_epoch": 4_000_000_000,
+            "fallback_readiness": {
+                "evidence": {"readiness_sha256": "1" * 64},
+                "sha256": "1" * 64,
+            },
+            "identity": {
+                "active": {"generation": 1, "kit_sha": "b" * 40},
+                "selected_tickets": ["T-1"],
+            },
+            "preview_elapsed_ms": 1,
+            "preview_timings": [{"duration_ms": 1, "phase": "validation"}],
+            "request": {
+                "operator_id": "tester", "product": str(self.product),
+                "project": "relay", "repo": str(self.root / "factory"),
+                "root": "/private/tmp/nysa-sf-qualification.fixture",
+                "runtime_bin": str(self.root / "runtime"), "sha": self.sha,
+            },
+            "schema": RELEASE.QUALIFICATION_PLAN_SCHEMA,
+            "status": "planned",
+        })
+
+    def test_qualification_plan_hash_binds_every_migration_input(self) -> None:
+        plan = self.qualification_plan()
+        RELEASE.validate_qualification_plan(plan)
+        mutations = (
+            ("identity", "active", {"generation": 2, "kit_sha": "b" * 40}),
+            ("request", "runtime_bin", "/tmp/changed"),
+            ("children", "runtime", {"action": "reuse", "evidence": {}}),
+            ("fallback_readiness", "sha256", "2" * 64),
+        )
+        for parent, key, value in mutations:
+            with self.subTest(field=f"{parent}.{key}"):
+                changed = json.loads(json.dumps(plan))
+                changed[parent][key] = value
+                with self.assertRaisesRegex(
+                    RELEASE.ReleaseError, "qualification migration plan is invalid",
+                ):
+                    RELEASE.validate_qualification_plan(changed)
+
+    def test_qualification_runtime_change_plans_once_then_reuses_receipt(self) -> None:
+        plan = {
+            "action": "install", "approval_sha256": "3" * 64,
+            "product_path": str(self.product),
+            "runtime_bin": str(self.root / "runtime"),
+            "target_bin": str(self.root / "project-runtimes/relay/bin"),
+        }
+        ready = {"path": str(self.root / "project-runtimes/relay/bin"), "status": "ready"}
+        (self.root / "factory").mkdir()
+        (self.root / "runtime").mkdir()
+        (self.root / "project-runtimes/relay").mkdir(parents=True)
+        with mock.patch.object(subprocess, "run", return_value=mock.Mock(
+            returncode=0, stderr="", stdout=json.dumps(plan),
+        )):
+            child = RELEASE.qualification_runtime_child(
+                self.root / "factory", self.product, self.root, self.kits, "relay",
+                self.root / "runtime",
+            )
+        self.assertEqual(child, {"action": "apply", "plan": plan})
+
+        journal = self.root / "project-runtimes/relay/runtime-pin-journal.json"
+        RELEASE.atomic_json(journal, {"plan": plan, "status": "completed"})
+        with mock.patch.object(RELEASE, "run_json", return_value=ready):
+            child = RELEASE.qualification_runtime_child(
+                self.root / "factory", self.product, self.root, self.kits, "relay",
+                self.root / "runtime",
+            )
+        self.assertEqual(
+            child, {"action": "reuse", "evidence": ready, "plan": plan},
+        )
+
+    def test_qualification_runtime_mismatch_preserves_both_tuples(self) -> None:
+        (self.root / "factory").mkdir()
+        (self.root / "runtime").mkdir()
+        (self.root / "project-runtimes/relay").mkdir(parents=True)
+        diagnostic = (
+            'ERROR: runtime mismatch for node: expected tuple {"node":"v22"}; '
+            'actual tuple {"node":"v25"}\n'
+        )
+        with (
+            mock.patch.object(subprocess, "run", return_value=mock.Mock(
+                returncode=1, stderr=diagnostic, stdout="",
+            )),
+            self.assertRaisesRegex(
+                RELEASE.ReleaseError,
+                "runtime_tuple_mismatch.*expected tuple.*actual tuple",
+            ) as caught,
+        ):
+            RELEASE.qualification_runtime_child(
+                self.root / "factory", self.product, self.root, self.kits,
+                "relay", self.root / "runtime",
+            )
+        self.assertEqual(caught.exception.reason_code, "runtime_tuple_mismatch")
+
+    def test_qualification_changed_host_input_stops_before_lane_mutation(self) -> None:
+        repo = self.root / "factory"
+        runtime = self.root / "runtime"
+        repo.mkdir()
+        runtime.mkdir()
+        lane = Path(
+            "/private/tmp/nysa-sf-qualification."
+            + hashlib.sha256(str(self.root).encode()).hexdigest()[:12]
+        )
+        args = argparse.Namespace(
+            kits_root=self.kits, operator_id="tester", product=self.product,
+            project="relay", repo=repo, root=lane, runtime_bin=runtime,
+            sha=self.sha,
+        )
+        identity = {"active": {"generation": 1, "kit_sha": "b" * 40},
+                    "selected_tickets": ["T-1"]}
+        module = mock.Mock()
+        module.qualification_fallback_readiness.return_value = (
+            {"readiness_sha256": "1" * 64}, "1" * 64,
+        )
+        runtime_child = {
+            "action": "apply", "plan": {"approval_sha256": "2" * 64},
+        }
+        with (
+            mock.patch.object(
+                RELEASE, "qualification_basis", return_value=(identity, module),
+            ),
+            mock.patch.object(
+                RELEASE, "qualification_runtime_child", return_value=runtime_child,
+            ),
+            mock.patch.object(RELEASE, "qualification_provider_child", return_value={
+                "action": "reuse", "evidence": {"status": "ready"},
+            }),
+            mock.patch.object(RELEASE, "run"),
+            mock.patch.object(
+                RELEASE, "apply_qualification_plan",
+                side_effect=AssertionError("approval path mutated the lane"),
+            ),
+        ):
+            result = RELEASE._qualification_upgrade_locked(args)
+        self.assertEqual(result["status"], "approval_required")
+        self.assertEqual(result["changes"], ["runtime"])
+        self.assertFalse(lane.exists())
+
+    def test_qualification_apply_refuses_changed_bound_identity(self) -> None:
+        plan = self.qualification_plan()
+        state = RELEASE.qualification_state(self.kits, "relay", self.sha)
+        RELEASE.secure_directory(state, create=True)
+        changed = json.loads(json.dumps(plan["identity"]))
+        changed["active"]["generation"] = 2
+        with (
+            mock.patch.object(
+                RELEASE, "qualification_basis", return_value=(changed, mock.Mock()),
+            ),
+            self.assertRaisesRegex(RELEASE.ReleaseError, "inputs changed"),
+        ):
+            RELEASE.apply_qualification_plan(plan, self.kits, "tester")
+
+    def test_qualification_published_restart_allows_only_the_exact_transition(self) -> None:
+        expected = {
+            "active": {
+                "generation": 1, "kit_sha": "b" * 40,
+                "path": "/tmp/active", "sha256": "1" * 64,
+            },
+            "authority_sha256": "2" * 64,
+            "environment": {"path": "/tmp/environment", "sha256": "3" * 64},
+            "previous_receipt": {"path": "/tmp/receipt-1", "sha256": "7" * 64},
+            "product_sha": "c" * 40,
+        }
+        current = json.loads(json.dumps(expected))
+        current["active"].update(
+            generation=2, kit_sha=self.sha, sha256="4" * 64,
+        )
+        current["authority_sha256"] = "5" * 64
+        current["environment"]["sha256"] = "6" * 64
+        current["previous_receipt"] = {
+            "path": "/tmp/receipt-2", "sha256": "8" * 64,
+        }
+        self.assertTrue(RELEASE.qualification_basis_matches(
+            current, expected, self.sha,
+        ))
+        current["product_sha"] = "d" * 40
+        self.assertFalse(RELEASE.qualification_basis_matches(
+            current, expected, self.sha,
+        ))
+
+    def test_qualification_restart_resumes_the_signed_in_progress_plan(self) -> None:
+        plan = self.qualification_plan(approval_required=False)
+        (self.root / "factory").mkdir()
+        (self.root / "runtime").mkdir()
+        state = RELEASE.qualification_state(self.kits, "relay", self.sha)
+        RELEASE.secure_directory(state, create=True)
+        RELEASE.atomic_json(state / "latest.json", plan)
+        RELEASE.qualification_journal_update(
+            state / "journal.json", plan, "environment_upgraded",
+            plan["preview_timings"],
+        )
+        args = argparse.Namespace(
+            kits_root=self.kits, operator_id="tester", product=self.product,
+            project="relay", repo=self.root / "factory",
+            root=Path(plan["request"]["root"]), runtime_bin=self.root / "runtime",
+            sha=self.sha,
+        )
+        with (
+            mock.patch.object(
+                RELEASE, "qualification_basis",
+                side_effect=AssertionError("restart must not preview a new identity"),
+            ),
+            mock.patch.object(
+                RELEASE, "apply_qualification_plan",
+                return_value={"status": "doctor_ready"},
+            ) as applied,
+        ):
+            result = RELEASE._qualification_upgrade_locked(args)
+        self.assertEqual(result["status"], "doctor_ready")
+        applied.assert_called_once_with(
+            plan, self.kits, None, started=None,
+        )
+
+    def test_qualification_reuse_refuses_provider_evidence_drift(self) -> None:
+        plan = self.qualification_plan(approval_required=False)
+        state = RELEASE.qualification_state(self.kits, "relay", self.sha)
+        RELEASE.secure_directory(state, create=True)
+        with (
+            mock.patch.object(
+                RELEASE, "qualification_basis",
+                return_value=(plan["identity"], mock.Mock()),
+            ),
+            mock.patch.object(RELEASE, "run_json", side_effect=[
+                {"path": "runtime", "status": "ready"},
+                {"receipt_sha256": "3" * 64, "status": "ready"},
+            ]),
+            self.assertRaisesRegex(
+                RELEASE.ReleaseError, "provider CLI evidence changed",
+            ),
+        ):
+            RELEASE.apply_qualification_plan(plan, self.kits, None)
+
+    def test_qualification_timer_keeps_prior_restart_budget(self) -> None:
+        timer = RELEASE.QualificationTimer(
+            [{"duration_ms": RELEASE.QUALIFICATION_BUDGET_MS + 1,
+              "phase": "runtime"}],
+            RELEASE.QUALIFICATION_BUDGET_MS + 1,
+        )
+        with self.assertRaisesRegex(
+            RELEASE.ReleaseError, "exceeded 60 seconds during runtime",
+        ):
+            timer.check()
+
+    def test_qualification_fallback_preserves_the_typed_reason(self) -> None:
+        module = mock.Mock()
+        refusal = ValueError("qualification fallback refused: runtime_tuple_mismatch")
+        refusal.reason_code = "runtime_tuple_mismatch"
+        module.qualification_fallback_readiness.side_effect = refusal
+        with self.assertRaisesRegex(
+            RELEASE.ReleaseError, "runtime_tuple_mismatch",
+        ) as caught:
+            RELEASE.qualification_fallback(
+                module, self.root, self.root, "relay", self.product,
+                self.root, 1,
+            )
+        self.assertEqual(caught.exception.reason_code, "runtime_tuple_mismatch")
+
+    def test_qualification_fault_injection_names_each_material_phase(self) -> None:
+        for phase in ("runtime", "provider_cli", "environment_upgrade", "doctor"):
+            with (
+                self.subTest(phase=phase),
+                mock.patch.dict(os.environ, {
+                    "FACTORY_KIT_TEST_MODE": "1",
+                    "FACTORY_TRUSTED_TEST_HARNESS": "1",
+                    "FACTORY_QUALIFICATION_MIGRATION_FAIL_AFTER": phase,
+                }),
+                self.assertRaisesRegex(
+                    RELEASE.ReleaseError,
+                    f"injected qualification migration failure after {phase}",
+                ),
+            ):
+                RELEASE.qualification_fail_after(phase)
+
+    def test_qualification_resume_requires_the_exact_current_hash(self) -> None:
+        plan = self.qualification_plan()
+        state = RELEASE.qualification_state(self.kits, "relay", self.sha)
+        RELEASE.secure_directory(state, create=True)
+        RELEASE.atomic_json(state / "latest.json", plan)
+        args = argparse.Namespace(
+            approved_by="tester", approve_hash="f" * 64,
+            kits_root=self.kits, project="relay", sha=self.sha,
+        )
+        with self.assertRaisesRegex(RELEASE.ReleaseError, "does not match"):
+            RELEASE._qualification_resume_locked(args)
+        stale = self.qualification_plan()
+        stale["expires_epoch"] = 2
+        stale = RELEASE.seal_plan({
+            key: value for key, value in stale.items() if key != "approval_sha256"
+        })
+        RELEASE.atomic_json(state / "latest.json", stale)
+        args.approve_hash = stale["approval_sha256"]
+        with self.assertRaisesRegex(RELEASE.ReleaseError, "stale"):
+            RELEASE._qualification_resume_locked(args)
+        RELEASE.atomic_json(state / "latest.json", plan)
+        args.approve_hash = plan["approval_sha256"]
+        with mock.patch.object(
+            RELEASE, "apply_qualification_plan", return_value={"status": "doctor_ready"},
+        ) as applied:
+            self.assertEqual(
+                RELEASE._qualification_resume_locked(args)["status"], "doctor_ready",
+            )
+        applied.assert_called_once_with(plan, self.kits, "tester")
+
+    def test_qualification_completion_replay_returns_identical_receipt(self) -> None:
+        plan = self.qualification_plan(approval_required=False)
+        state = RELEASE.qualification_state(self.kits, "relay", self.sha)
+        RELEASE.secure_directory(state, create=True)
+        unsigned = {
+            "active_sha256": "2" * 64, "approval_sha256": plan["approval_sha256"],
+            "doctor_sha256": "3" * 64, "environment_sha256": "4" * 64,
+            "factory_sha": self.sha, "generation": 2, "project": "relay",
+            "schema": RELEASE.QUALIFICATION_RECEIPT_SCHEMA,
+            "slowest_phase": {"duration_ms": 1, "phase": "doctor"},
+            "status": "doctor_ready", "timings": [], "total_duration_ms": 1,
+        }
+        receipt = {**unsigned, "completion_sha256": RELEASE.digest(unsigned)}
+        RELEASE.atomic_json(state / "completion.json", receipt)
+        before = (state / "completion.json").read_bytes()
+        self.assertEqual(RELEASE.apply_qualification_plan(plan, self.kits, None), receipt)
+        self.assertEqual((state / "completion.json").read_bytes(), before)
+
 
 if __name__ == "__main__":
     unittest.main()
