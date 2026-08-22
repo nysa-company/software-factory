@@ -7628,3 +7628,12 @@ results and inspects test adequacy without rerunning tests, builds, or
 repository checks. Q75 showed the old generic Reviewer CLI instruction could
 trigger repeated focused commands during evidence revalidation even though the
 role contract already said CI knew whether tests passed.
+
+## 2026-08-22 — Decision 557: PR-ready waves defer shared control churn
+
+Category: Reliability
+
+Concurrent PR-ready tickets use a short operational freeze on unrelated shared
+Factory control inputs until the cohort drains. Generated indexes remain
+untracked, while `factory/rulings.md` remains semantic Planner and Spec-linter
+input whose changes require fresh evidence.
