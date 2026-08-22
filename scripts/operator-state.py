@@ -14,6 +14,7 @@ import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts/lib"))
 ROLES = (
     ("planner", "Production", "Turns a Ready ticket into a testable frozen contract."),
     ("spec-linter", "Checking", "Checks specification quality and contract coverage."),
@@ -23,6 +24,7 @@ ROLES = (
     ("narrator", "Production", "Builds the operator-facing evidence bundle."),
 )
 TICKET = re.compile(r"^T-[0-9]+$")
+PRIORITIES = {"none", "urgent", "high", "normal", "low"}
 
 
 def load_module(name, path):
@@ -35,10 +37,20 @@ def load_module(name, path):
 ROUTER = load_module("operator_model_router", ROOT / "scripts/model-router.py")
 MANAGER = load_module("operator_model_manager", ROOT / "scripts/model-manager.py")
 ENVELOPE = load_module("operator_envelope", ROOT / "scripts/envelope-control.py")
+EFFECTIVE = load_module("operator_effective_ticket", ROOT / "scripts/lib/effective_ticket.py")
 
 
 class SnapshotError(ValueError):
     pass
+
+
+def unique_json(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise SnapshotError("JSON contains duplicate fields")
+        value[key] = item
+    return value
 
 
 def physical_directory(path):
@@ -78,27 +90,100 @@ def safe_text(path, maximum=1_000_000):
             os.close(descriptor)
 
 
-def ticket_rows(factory):
+def operator_mapping(product):
+    default = product / "factory/operator-map.json"
+    path = Path(os.environ.get("FACTORY_OPERATOR_MAP", str(default)))
+    if not path.is_absolute():
+        raise SnapshotError("operator map path is invalid")
+    if not path.exists() and not path.is_symlink():
+        return {}
+    try:
+        value = json.loads(safe_text(path), object_pairs_hook=unique_json)
+    except json.JSONDecodeError as error:
+        raise SnapshotError("operator map is invalid") from error
+    if not isinstance(value, dict):
+        raise SnapshotError("operator map is invalid")
+    return value
+
+
+def ticket_rows(factory, selected=None, mapping=None, state_dir="", contract=""):
     directory = factory / "tickets"
     if not directory.exists():
         return []
     physical_directory(directory)
     result = []
-    for path in sorted(directory.glob("T-*.md")):
+    paths = (
+        [directory / f"{ticket}.md" for ticket in selected]
+        if selected is not None else sorted(directory.glob("T-*.md"))
+    )
+    for path in paths:
+        if not path.is_file() or path.is_symlink():
+            raise SnapshotError(f"ticket file is missing: {path.stem}")
         ticket = path.stem
         if not TICKET.fullmatch(ticket):
             continue
-        text = safe_text(path)
-        state = next(
-            (
-                line.split(":", 1)[1].strip()
-                for line in text.splitlines()
-                if line.startswith("State:")
-            ),
-            "Unknown",
+        text, _ref = EFFECTIVE.committed_ticket(factory, ticket)
+        if text is None:
+            raise SnapshotError(f"ticket commit is missing: {ticket}")
+        operator = EFFECTIVE.authoritative_operator_fields(
+            mapping or {}, ticket, contract, state_dir,
         )
-        result.append({"ticket": ticket, "state": state})
+        effective = EFFECTIVE.apply_operator_fields(text, operator)
+        fields = {}
+        for name in ("State", "Priority", "Depends-On"):
+            source = effective if name == "State" else text
+            values = re.findall(rf"(?mi)^{name}:\s*(.*?)\s*$", source)
+            if len(values) > 1:
+                raise SnapshotError(f"{ticket} has ambiguous {name}")
+            fields[name] = values[0] if values else ""
+        heading = re.search(
+            rf"(?m)^#\s+{re.escape(ticket)}(?:\s*[—:-]\s*|\s+)?(.*?)\s*$",
+            text,
+        )
+        priority = fields["Priority"].lower() or "none"
+        dependency_text = fields["Depends-On"]
+        dependencies = [] if not dependency_text or dependency_text.lower() == "none" else [
+            item.strip() for item in dependency_text.split(",")
+        ]
+        if (
+            not fields["State"] or priority not in PRIORITIES
+            or not heading or not heading.group(1).strip()
+            or any(not TICKET.fullmatch(item) for item in dependencies)
+            or len(dependencies) != len(set(dependencies))
+        ):
+            raise SnapshotError(f"{ticket} has invalid operator fields")
+        result.append({
+            "depends_on": dependencies,
+            "priority": priority,
+            "state": fields["State"],
+            "ticket": ticket,
+            "title": heading.group(1).strip(),
+        })
     return result
+
+
+def project_label(product):
+    text = safe_text(product / "factory/PROJECT.env")
+    values = re.findall(r"(?m)^PROJECT_NAME=([A-Za-z0-9][A-Za-z0-9._-]{0,127})$", text)
+    if len(values) != 1:
+        raise SnapshotError("PROJECT_NAME is invalid")
+    return values[0].replace("-", " ").title()
+
+
+def qualification_ticket_selection(product):
+    path = product / "factory/QUALIFICATION.json"
+    if os.environ.get("FACTORY_QUALIFICATION_MANIFEST") != str(path):
+        raise SnapshotError("qualification manifest binding is invalid")
+    selected = json.loads(
+        safe_text(path), object_pairs_hook=unique_json,
+    ).get("tickets")
+    if (
+        not isinstance(selected, list) or not selected
+        or len(selected) != len(set(selected))
+        or any(not isinstance(ticket, str) or not TICKET.fullmatch(ticket) for ticket in selected)
+    ):
+        raise SnapshotError("qualification ticket selection is invalid")
+    return selected
 
 
 def selected_profile(product, state_root, project, routes, profile_map):
@@ -153,13 +238,24 @@ def workflow_snapshot(product, state_root, project):
     roles, source, catalog_hash = role_routes(
         product, state_root, project
     )
+    mode = "qualification" if os.environ.get("FACTORY_QUALIFICATION_MODE") else "production"
+    selected = qualification_ticket_selection(product) if mode == "qualification" else None
+    state_dir = os.environ.get("FACTORY_CONTROLLER_STATE_DIR", "")
+    contract = os.environ.get("FACTORY_RELEASE_CONTRACT_VERSION", "")
+    if contract == "2.0.0" and not Path(state_dir).is_absolute():
+        raise SnapshotError("operator receipt state is unavailable")
+    tickets = ticket_rows(
+        product / "factory", selected, operator_mapping(product), state_dir, contract,
+    )
     return {
         "catalog_hash": catalog_hash,
+        "label": project_label(product),
+        "mode": mode,
         "profile": source,
         "project": project,
         "roles": roles,
         "schema": "factory-operator-workflow/v1",
-        "tickets": ticket_rows(product / "factory"),
+        "tickets": tickets,
     }
 
 
