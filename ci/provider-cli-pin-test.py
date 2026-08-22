@@ -654,7 +654,10 @@ exit 2
         contract_path = legacy / "factory-contract.json"
         contract = json.loads(contract_path.read_text())
         contract["contract_version"] = "1.5.0"
-        contract_path.write_text(json.dumps(contract))
+        legacy_contract = legacy / "integrations/legacy/contract.json"
+        legacy_contract.parent.mkdir(parents=True)
+        legacy_contract.write_text(json.dumps(contract))
+        contract_path.unlink()
         self.write_manifest(legacy, SHA_LEGACY, TREE_LEGACY)
         self.seal(legacy)
 
