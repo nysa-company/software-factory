@@ -2280,6 +2280,8 @@ class QualificationEnvironmentTest(unittest.TestCase):
         receipt_path.chmod(0o600)
         secret = b"k" * 32
         key = state / "passport.key"
+        # Test-only owner-readable HMAC-key fixture; persistence is under test.
+        # codeql[py/clear-text-storage-sensitive-data]
         key.write_bytes(secret)
         key.chmod(0o600)
         passport = {
