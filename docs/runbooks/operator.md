@@ -305,14 +305,18 @@ claim remains parked until a successor release contains the repair.
 
 The normal operator entrypoint for an explicitly authorized isolated
 qualification cohort is the sealed candidate's
-`factory-launch <project> qualification-finish --json`. It performs that Doctor
-gate, the mandatory restart, reconciliation, exact bundle-bound qualification
-approvals, serialized publication, closeout, and terminal reduction in code.
+`factory-launch <project> qualification-finish --json`. It performs one Doctor
+gate at command entry, the mandatory restart, reconciliation, exact bundle-bound
+qualification approvals, serialized publication, closeout, and terminal reduction
+in code.
 It approves only selected clean, idle, parked Awaiting Approval claims through
 the sealed lane operator map and stops at the first wait without a new receipt,
 protected-base refresh, or authenticated completion. It never approves a
 production or takeover lane. Use `qualification-run --json` instead when each
 bundle requires a separate human approval command.
+Internal finish iterations do not rerun full Doctor. A new command invocation
+runs a fresh Doctor; the authenticated contract-recovery boundary keeps its
+explicit Doctor refresh.
 An initial `doctor_not_ready` result includes the exact sanitized Doctor report
 so the failed check remains diagnosable without repeating the sealed command.
 For the exact authenticated successor compact-repair warning, it also projects
