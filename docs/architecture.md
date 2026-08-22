@@ -1653,8 +1653,11 @@ passport predecessor, source/candidate passport digests, and protected Done/PR
 identity.
 A sealed successor route-migration batch treats that exact current-candidate
 terminal-adoption marker as an accounted cohort member and migrates only the
-remaining live route-blocked claims. A missing or malformed marker still blocks
-the complete batch before preview or mutation.
+remaining live route-blocked claims. A live sibling whose route already migrated
+is likewise accounted only by its exact current-candidate owner-only completion
+marker, allowing merged closeout and route migration to coexist in one cohort.
+A missing, malformed, or symlinked marker still blocks the complete batch before
+preview or mutation.
 A valid marker and exact event make later reconciliation a no-op. The reducer
 exempts only that adopted ticket from a candidate publication lease pair and
 rejects duplicate adoption, completion, acquisition, or release evidence.

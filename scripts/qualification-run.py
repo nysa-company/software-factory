@@ -34,6 +34,7 @@ MIGRATION_JOURNAL_SCHEMA = "nysa.software-factory.model-migration-batch-journal/
 TERMINAL_ADOPTION_SCHEMA = (
     "nysa.software-factory.qualification-terminal-adoption/v2"
 )
+CONTROLLER_EVENT_SCHEMA = "nysa.software-factory.controller-event/v1"
 PROJECT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 TICKET = re.compile(r"T-[0-9]+")
 SHA = re.compile(r"[0-9a-f]{40}")
@@ -278,6 +279,7 @@ def route_migration_arguments(
             ):
                 raise QualificationRunError("qualification claim state is unsafe")
         pairs: list[str] = []
+        completed_tickets: set[str] = set()
         migration_tickets: set[str] = set()
         terminal_tickets: set[str] = set()
         for ticket in sorted(selected):
@@ -345,6 +347,22 @@ def route_migration_arguments(
             claim = json.loads(raw.decode("utf-8", "strict"))
             if not isinstance(claim, dict) or claim.get("ticket") != ticket:
                 raise QualificationRunError("qualification claim is invalid")
+            completed_path = Path(
+                f"passport-route-migration-complete-{ticket}-{factory_sha}.json"
+            )
+            physical_completed = state / completed_path
+            if physical_completed.is_symlink() or physical_completed.exists():
+                marker = controller_state_json(completed_path)
+                if marker != {
+                    "factory_sha": factory_sha,
+                    "schema": CONTROLLER_EVENT_SCHEMA,
+                    "ticket": ticket,
+                }:
+                    raise QualificationRunError(
+                        "qualification route migration completion is invalid"
+                    )
+                completed_tickets.add(ticket)
+                continue
             route_wait = (
                 claim.get("status") == "blocked"
                 and claim.get("blocked_reason") == "route-migration-required"
@@ -393,7 +411,7 @@ def route_migration_arguments(
                 raise QualificationRunError("qualification worktree is unsafe")
             migration_tickets.add(ticket)
             pairs.extend(("--ticket", ticket, "--workdir", str(worktree)))
-        if migration_tickets | terminal_tickets != selected:
+        if migration_tickets | completed_tickets | terminal_tickets != selected:
             return (), set()
         return tuple(pairs), migration_tickets
     except (
