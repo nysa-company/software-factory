@@ -26,6 +26,12 @@ PROTECTED = re.compile(
     re.I,
 )
 APPLICATION = re.compile(r"test|unit|integration|e2e|application", re.I)
+CHECK_FAILURE = {"fail", "cancel"}
+RUN_FAILURE = {
+    "action_required", "cancelled", "failure", "stale", "startup_failure",
+    "timed_out",
+}
+RUN_TERMINAL = RUN_FAILURE | {"neutral", "skipped", "success"}
 
 
 class RerunError(ValueError):
@@ -44,43 +50,118 @@ def canonical(value: Any) -> str:
     return json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
 
 
-def classify(checks: list[dict[str, Any]], repo: str) -> tuple[int, int, str]:
-    if not isinstance(checks, list) or not checks:
-        raise NotTransient("required checks are unavailable")
-    failed = [
-        item for item in checks
-        if isinstance(item, dict) and item.get("bucket") in {"fail", "cancel"}
-    ]
-    if len(failed) != 1:
-        raise NotTransient("exactly one failed application-test job is required")
-    if any(
-        not isinstance(item, dict)
-        or item.get("bucket") not in {"pass", "fail", "cancel"}
-        for item in checks
-    ):
-        raise NotTransient("required checks are not terminal")
-    protected = [
-        item for item in checks
-        if isinstance(item.get("name"), str) and PROTECTED.search(item["name"])
-    ]
-    if not protected or any(item.get("bucket") != "pass" for item in protected):
-        raise NotTransient("protected CI classes are not proven green")
-    selected = failed[0]
-    name = selected.get("name", "")
-    if (
-        not isinstance(name, str)
-        or PROTECTED.search(name)
-        or not APPLICATION.search(name)
-    ):
-        raise NotTransient("failed check is not an application-test transient")
-    link = selected.get("link", "")
+def job_identity(item: dict[str, Any], repo: str) -> tuple[int, int, str, str]:
+    name = item.get("name", "")
+    workflow = item.get("workflow", "")
+    link = item.get("link", "")
+    if not isinstance(name, str) or not isinstance(workflow, str) or not workflow:
+        raise NotTransient("failed check identity is incomplete")
     match = re.fullmatch(
         rf"https://github[.]com/{re.escape(repo)}/actions/runs/([0-9]+)/job/([0-9]+)",
         link if isinstance(link, str) else "",
     )
     if not match:
         raise NotTransient("failed check lacks exact GitHub job identity")
-    return int(match.group(1)), int(match.group(2)), name
+    return int(match.group(1)), int(match.group(2)), name, workflow
+
+
+def classify(
+    required: list[dict[str, Any]], checks: list[dict[str, Any]], repo: str,
+) -> tuple[int, int, str, str, tuple[int, ...]]:
+    if not isinstance(required, list) or not required:
+        raise NotTransient("required checks are unavailable")
+    if any(
+        not isinstance(item, dict)
+        or item.get("bucket") not in {"pass", *CHECK_FAILURE}
+        for item in required
+    ):
+        raise NotTransient("required checks are not terminal")
+    if not isinstance(checks, list) or not checks:
+        raise NotTransient("complete checks are unavailable")
+    for item in required:
+        if sum(item == observed for observed in checks) != 1:
+            raise NotTransient("required check identity changed")
+    protected = [
+        item for item in checks
+        if isinstance(item, dict) and isinstance(item.get("name"), str)
+        and PROTECTED.search(item["name"])
+    ]
+    if not protected or any(item.get("bucket") != "pass" for item in protected):
+        raise NotTransient("protected CI classes are not proven green")
+    failed = [
+        item for item in checks
+        if isinstance(item, dict) and item.get("bucket") in CHECK_FAILURE
+    ]
+    if len(failed) not in {1, 2}:
+        raise NotTransient("exactly one failed application leaf is required")
+    identities = [job_identity(item, repo) for item in failed]
+    if len({(run, job) for run, job, _name, _workflow in identities}) != len(failed):
+        raise NotTransient("failed check identity is ambiguous")
+    runs = {run for run, _job, _name, _workflow in identities}
+    workflows = {workflow for _run, _job, _name, workflow in identities}
+    if len(runs) != 1 or len(workflows) != 1:
+        raise NotTransient("failed checks do not share one workflow run")
+    leaves = [
+        identity for identity in identities
+        if APPLICATION.search(identity[2]) and not PROTECTED.search(identity[2])
+    ]
+    if len(leaves) != 1:
+        raise NotTransient("failed check is not one application-test leaf")
+    selected = leaves[0]
+    required_failures = [
+        job_identity(item, repo) for item in required
+        if item.get("bucket") in CHECK_FAILURE
+    ]
+    aggregate = [identity for identity in identities if identity != selected]
+    if (
+        not required_failures
+        or any(identity not in identities for identity in required_failures)
+        or aggregate and aggregate[0] not in required_failures
+        or not aggregate and selected not in required_failures
+    ):
+        raise NotTransient("failed required check is not the bound aggregate")
+    run, job, name, workflow = selected
+    return run, job, name, workflow, tuple(sorted(item[1] for item in identities))
+
+
+def validate_run(
+    run: dict[str, Any], head: str,
+    selected: tuple[int, int, str, str, tuple[int, ...]],
+) -> None:
+    run_id, job_id, name, workflow, failed_job_ids = selected
+    if (
+        not isinstance(run, dict)
+        or run.get("databaseId") != run_id
+        or run.get("event") != "pull_request"
+        or run.get("headSha") != head
+        or run.get("status") != "completed"
+        or run.get("conclusion") not in RUN_FAILURE
+        or run.get("workflowName") != workflow
+    ):
+        raise NotTransient("failed workflow run identity changed")
+    jobs = run.get("jobs")
+    if not isinstance(jobs, list) or not jobs or any(
+        not isinstance(item, dict)
+        or not isinstance(item.get("databaseId"), int)
+        or item.get("status") != "completed"
+        or item.get("conclusion") not in RUN_TERMINAL
+        for item in jobs
+    ):
+        raise NotTransient("failed workflow jobs are not terminal")
+    if len({item["databaseId"] for item in jobs}) != len(jobs):
+        raise NotTransient("failed workflow job identity is ambiguous")
+    failed = [item for item in jobs if item.get("conclusion") in RUN_FAILURE]
+    if tuple(sorted(item["databaseId"] for item in failed)) != failed_job_ids:
+        raise NotTransient("failed workflow jobs changed")
+    leaf = [item for item in failed if item.get("databaseId") == job_id]
+    if len(leaf) != 1 or leaf[0].get("name") != name:
+        raise NotTransient("failed application leaf identity changed")
+    protected = [
+        item for item in jobs
+        if isinstance(item.get("name"), str) and PROTECTED.search(item["name"])
+    ]
+    if protected and any(item.get("conclusion") != "success" for item in protected):
+        raise NotTransient("protected workflow jobs are not proven green")
 
 
 def safe_directory(path: Path, create: bool = False) -> Path:
@@ -184,11 +265,21 @@ def main() -> None:
             or pr.get("state") != "OPEN"
         ):
             raise RerunError("PR identity changed before CI rerun")
-        checks = json.loads(gh(
+        required = json.loads(gh(
             "pr", "checks", str(args.pr), "--repo", repo, "--required",
-            "--json", "name,bucket,link",
+            "--json", "name,bucket,link,workflow",
         ))
-        run_id, job_id, name = classify(checks, repo)
+        checks = json.loads(gh(
+            "pr", "checks", str(args.pr), "--repo", repo,
+            "--json", "name,bucket,link,workflow",
+        ))
+        selected = classify(required, checks, repo)
+        run_id, job_id, name, workflow, _failed_job_ids = selected
+        run = json.loads(gh(
+            "run", "view", str(run_id), "--repo", repo, "--json",
+            "databaseId,event,headSha,jobs,status,conclusion,workflowName",
+        ))
+        validate_run(run, head, selected)
         record = reruns / f"{args.ticket}-{head}.json"
         if record.exists() or record.is_symlink():
             print(canonical({
@@ -217,6 +308,7 @@ def main() -> None:
             "run_id": run_id,
             "schema": SCHEMA,
             "ticket": args.ticket,
+            "workflow": workflow,
         })
         print(canonical({
             "head": head, "job_id": job_id, "run_id": run_id,

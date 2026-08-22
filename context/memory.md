@@ -7596,3 +7596,14 @@ existing unique contiguous migration suffix must begin from the resulting
 post-export passport at the same release and head. Extra runs, missing or
 tampered retention, output drift, receipt mismatch, dirty state, or remote
 divergence still fail closed.
+
+## 2026-08-22 — Decision 554: Aggregate CI failures resolve to one exact leaf
+
+Category: Reliability
+
+The same-head CI retry and publication-repair boundary now combine GitHub's
+required checks with the complete check rollup and exact workflow-run jobs. An
+aggregate-only required failure may authorize one application-test leaf retry
+only when the PR head, run, workflow, terminal failure set, and protected green
+classes all agree; multiple leaves, external statuses, identity drift, or
+protected failures still refuse.
