@@ -71,6 +71,11 @@ if isinstance(value, list):
     value = value[index]
 code = value.pop("_returncode", 0) if isinstance(value, dict) else 0
 event = value.pop("_event", None) if isinstance(value, dict) else None
+manifest = value.pop("_manifest", None) if isinstance(value, dict) else None
+if isinstance(manifest, dict):
+    pathlib.Path(os.environ["FACTORY_QUALIFICATION_MANIFEST"]).write_text(
+        json.dumps(manifest)
+    )
 if isinstance(event, dict):
     supplied_digest = event.pop("event_sha256", None)
     event["event_sha256"] = supplied_digest or hashlib.sha256(json.dumps(
@@ -1611,7 +1616,7 @@ raise SystemExit(code)
         ])
 
         code, value = self.run_scenario({
-            "doctor": [self.doctor(), self.doctor()],
+            "doctor": self.doctor(),
             "reconcile": [waiting, complete],
             "qualification": self.report(),
         }, finish=True)
@@ -1620,7 +1625,7 @@ raise SystemExit(code)
         self.assertEqual(value["approvals"], ["T-1"])
         self.assertEqual(value["restarts"], 0)
         self.assertEqual(self.called(), [
-            "doctor", "reconcile", "doctor", "reconcile", "qualification",
+            "doctor", "reconcile", "reconcile", "qualification",
         ])
         mapping = json.loads(self.operator_map.read_text(encoding="utf-8"))
         operator = mapping["tickets"]["T-1"]["operator"]
@@ -1664,7 +1669,7 @@ raise SystemExit(code)
         ])
 
         code, value = self.run_scenario({
-            "doctor": [self.doctor(), self.doctor()],
+            "doctor": self.doctor(),
             "reconcile": [partial, complete],
             "qualification": self.report(),
         }, finish=True)
@@ -1672,7 +1677,7 @@ raise SystemExit(code)
         self.assertEqual((code, value["status"]), (0, "green"))
         self.assertEqual(value["approvals"], [])
         self.assertEqual(self.called(), [
-            "doctor", "reconcile", "doctor", "reconcile", "qualification",
+            "doctor", "reconcile", "reconcile", "qualification",
         ])
 
     def test_finish_continues_on_authenticated_refresh_without_an_approval(self) -> None:
@@ -1693,7 +1698,7 @@ raise SystemExit(code)
         ])
 
         code, value = self.run_scenario({
-            "doctor": [self.doctor(), self.doctor()],
+            "doctor": self.doctor(),
             "reconcile": [waiting, complete],
             "qualification": self.report(),
         }, finish=True)
@@ -1701,7 +1706,7 @@ raise SystemExit(code)
         self.assertEqual((code, value["status"]), (0, "green"))
         self.assertEqual(value["approvals"], [])
         self.assertEqual(self.called(), [
-            "doctor", "reconcile", "doctor", "reconcile", "qualification",
+            "doctor", "reconcile", "reconcile", "qualification",
         ])
 
     def test_finish_rejects_forged_refresh_progress(self) -> None:
@@ -1721,6 +1726,31 @@ raise SystemExit(code)
         }, finish=True)
 
         self.assertEqual((code, value["status"]), (2, "error"))
+        self.assertEqual(self.called(), ["doctor", "reconcile"])
+
+    def test_finish_refuses_qualification_basis_drift(self) -> None:
+        waiting = self.controller("ok", results=[
+            {"status": "waiting", "ticket": ticket}
+            for ticket in ("T-1", "T-2", "T-3")
+        ])
+        waiting["_event"] = {
+            "event": "protected_base_refreshed",
+            "factory_sha": "a" * 40,
+            "schema": "nysa.software-factory.controller-event/v1",
+            "ticket": "T-2",
+        }
+        manifest = json.loads(self.manifest.read_text(encoding="utf-8"))
+        manifest["tickets"] = ["T-1", "T-2", "T-4"]
+        waiting["_manifest"] = manifest
+
+        code, value = self.run_scenario({
+            "doctor": self.doctor(), "reconcile": waiting,
+        }, finish=True)
+
+        self.assertEqual((code, value["status"]), (2, "error"))
+        self.assertEqual(
+            value["error"], "qualification basis changed during finish",
+        )
         self.assertEqual(self.called(), ["doctor", "reconcile"])
 
     def test_finish_stops_without_approval_when_ticket_is_not_ready(self) -> None:
@@ -1852,13 +1882,13 @@ raise SystemExit(code)
             {"status": "waiting", "ticket": "T-1"},
         ])
         code, value = self.run_scenario({
-            "doctor": [self.doctor(), self.doctor()],
+            "doctor": self.doctor(),
             "reconcile": [waiting, waiting],
         }, finish=True)
         self.assertEqual((code, value["status"]), (3, "waiting"))
         self.assertEqual(value["approvals"], ["T-1"])
         self.assertEqual(self.called(), [
-            "doctor", "reconcile", "doctor", "reconcile",
+            "doctor", "reconcile", "reconcile",
         ])
         self.assertEqual(
             len(list(

@@ -185,7 +185,7 @@ def reducer_failure(value: dict[str, Any]) -> dict[str, str]:
 
 
 def qualification_basis() -> tuple[
-    set[str], int, bool, str, str, dict[str, str],
+    set[str], int, bool, str, str, dict[str, str], str,
 ]:
     raw_path = os.environ.get("FACTORY_QUALIFICATION_MANIFEST", "")
     factory_sha = os.environ.get("FACTORY_RELEASE_SHA", "")
@@ -249,6 +249,7 @@ def qualification_basis() -> tuple[
             set(manifest["tickets"]), manifest["capacity"],
             manifest.get("mode") == "successor", factory_sha,
             manifest.get("source_factory_sha", ""), ticket_sources,
+            hashlib.sha256(raw).hexdigest(),
         )
     except (
         AuthorizationError, OSError, UnicodeDecodeError, json.JSONDecodeError,
@@ -1167,17 +1168,27 @@ def doctor_allows_reconcile(
     )
 
 
-def execute(args: argparse.Namespace) -> dict[str, Any]:
+def execute(
+    args: argparse.Namespace,
+    doctor_result: tuple[int, dict[str, Any]] | None = None,
+    expected_manifest_sha256: str = "",
+) -> dict[str, Any]:
     if not PROJECT.fullmatch(args.project):
         raise QualificationRunError("invalid qualification project")
     launcher = launcher_path(args.launcher)
+    basis = qualification_basis()
+    if expected_manifest_sha256 and basis[-1] != expected_manifest_sha256:
+        raise QualificationRunError("qualification basis changed during finish")
     (
         selected, capacity, successor, factory_sha, source_factory_sha,
-        ticket_sources,
-    ) = qualification_basis()
+        ticket_sources, _manifest_sha256,
+    ) = basis
     phases: list[dict[str, Any]] = []
     started = time.monotonic()
-    code, doctor = invoke(launcher, args.project, "doctor", phases)
+    code, doctor = (
+        invoke(launcher, args.project, "doctor", phases)
+        if doctor_result is None else doctor_result
+    )
     if code != 0 or not doctor_allows_reconcile(
         doctor, args.project, selected, capacity, successor, factory_sha,
         source_factory_sha, ticket_sources,
@@ -1267,6 +1278,21 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
                     project_contract_recovery(
                         launcher, args.project, doctor, selected, phases,
                     )
+                    if doctor_result is not None:
+                        code, recovered = invoke(
+                            launcher, args.project, "doctor", phases,
+                        )
+                        if code != 0 or not doctor_allows_reconcile(
+                            recovered, args.project, selected, capacity,
+                            successor, factory_sha, source_factory_sha,
+                            ticket_sources,
+                        ):
+                            raise QualificationRunError(
+                                "qualification Doctor changed after contract recovery"
+                            )
+                        doctor_result[1].clear()
+                        doctor_result[1].update(recovered)
+                        doctor = recovered
                     continue
             if (
                 not migration_applied
@@ -1367,9 +1393,16 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def execute_finish(args: argparse.Namespace) -> dict[str, Any]:
-    selected, *_ = qualification_basis()
+    if not PROJECT.fullmatch(args.project):
+        raise QualificationRunError("invalid qualification project")
+    launcher = launcher_path(args.launcher)
+    basis = qualification_basis()
+    selected, *_ = basis
     started = time.monotonic()
     phases: list[dict[str, Any]] = []
+    # A new process always starts with a fresh Doctor; exact mutation boundaries
+    # keep revalidating authority while this one process makes progress.
+    doctor_result = invoke(launcher, args.project, "doctor", phases)
     approvals: list[str] = []
     seen_receipts: set[str] = set()
     seen_completions: set[str] = set()
@@ -1378,7 +1411,7 @@ def execute_finish(args: argparse.Namespace) -> dict[str, Any]:
     # ponytail: a closed cohort can create at most one approval per protected
     # base generation; widen only if qualification admits unrelated main churn.
     for _ in range(len(selected) ** 2 + len(selected) + 1):
-        result = execute(args)
+        result = execute(args, doctor_result, basis[-1])
         current_events = qualification_event_names()
         refreshed = qualification_refresh_progress(
             current_events - events, selected,
