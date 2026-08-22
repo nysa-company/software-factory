@@ -44,6 +44,7 @@ suite_registry() {
   "$callback" budget-stage "budget-only delivery stop suite" python3 "$ROOT/ci/budget-stage-test.py"
   "$callback" ticket-pr "early ticket PR suite" python3 "$ROOT/ci/ticket-pr-test.py"
   "$callback" operator-console "operator console security suite" python3 "$ROOT/ci/operator-console-test.py"
+  "$callback" factory-human-cli "human operator CLI suite" python3 "$ROOT/ci/factory-human-cli-test.py"
   "$callback" model-router "model router regression suite" python3 "$ROOT/ci/model-router-test.py"
   "$callback" model-manager "model manager regression suite" python3 "$ROOT/ci/model-manager-test.py"
   "$callback" model-control "model control regression suite" python3 "$ROOT/ci/model-control-test.py"
