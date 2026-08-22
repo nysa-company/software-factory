@@ -1412,6 +1412,10 @@ def execute_finish(args: argparse.Namespace) -> dict[str, Any]:
     # base generation; widen only if qualification admits unrelated main churn.
     for _ in range(len(selected) ** 2 + len(selected) + 1):
         result = execute(args, doctor_result, basis[-1])
+        if qualification_basis()[-1] != basis[-1]:
+            raise QualificationRunError(
+                "qualification basis changed during finish"
+            )
         current_events = qualification_event_names()
         refreshed = qualification_refresh_progress(
             current_events - events, selected,
