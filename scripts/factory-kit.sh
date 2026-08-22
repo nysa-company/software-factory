@@ -3360,9 +3360,14 @@ certification_active_binding() {
   [[ -f "$active" ]] || { printf '\n'; return 0; }
   [[ -z "$(latest_open_journal "$journal_dir")" ]] ||
     die "certification_preflight_product_binding: project has an interrupted activation"
-  python3 - "$active" "$journal_dir" "$slug" "$product" "$origin" <<'PY'
-import json, pathlib, sys
-active_path, journal_dir, project, product, origin = sys.argv[1:]
+  python3 - "$active" "$journal_dir" "$slug" "$product" "$origin" \
+    "$SCRIPT_ROOT/scripts/lib" <<'PY'
+import json, os, pathlib, sys
+
+active_path, journal_dir, project, product, origin, library = sys.argv[1:]
+sys.path.insert(0, library)
+from historical_pr_objects import same_repository_transition
+
 active = json.load(open(active_path, encoding="utf-8"))
 generation = active.get("generation")
 if (
@@ -3377,10 +3382,18 @@ matches = list(pathlib.Path(journal_dir).glob(f"{generation:020d}-*.json"))
 if len(matches) != 1:
     raise SystemExit("certification_preflight_product_binding: active generation journal is ambiguous")
 journal = json.loads(matches[0].read_text(encoding="utf-8"))
+previous_origin = journal.get("receipt_snapshot", {}).get("product_origin")
+test_root = (
+    pathlib.Path(os.environ["FACTORY_RELEASE_TEST_HOME"])
+    if os.environ.get("FACTORY_KIT_TEST_MODE") == "1" else None
+)
 if (
     journal.get("phase") != "committed"
     or journal.get("candidate_record") != active
-    or journal.get("receipt_snapshot", {}).get("product_origin") != origin
+    or previous_origin != origin and not (
+        isinstance(previous_origin, str)
+        and same_repository_transition(previous_origin, origin, test_root=test_root)
+    )
 ):
     raise SystemExit("certification_preflight_product_binding: active path or origin does not match this product")
 print(generation)

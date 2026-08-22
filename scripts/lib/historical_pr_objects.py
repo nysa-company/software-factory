@@ -140,6 +140,72 @@ def _transport(origin: str) -> str:
     raise HistoricalObjectError("historical product origin uses an unsafe transport")
 
 
+def same_repository_transition(
+    previous: str, current: str, *, test_root: Path | None = None,
+) -> bool:
+    """Allow only a transport change to canonical GitHub for the same repository."""
+    if test_root is not None:
+        root = test_root.resolve(strict=True)
+
+        def local(value: str) -> Path | None:
+            parsed = urlsplit(value)
+            if parsed.scheme == "file":
+                if parsed.netloc or parsed.query or parsed.fragment:
+                    return None
+                value = parsed.path
+            elif parsed.scheme or not value.startswith("/"):
+                return None
+            try:
+                path = Path(value).resolve(strict=True)
+            except OSError:
+                return None
+            return path if root in path.parents else None
+
+        left, right = local(previous), local(current)
+        return left is not None and left == right
+
+    def repository(value: str, *, canonical: bool = False) -> tuple[str, str] | None:
+        try:
+            if canonical or "://" in value:
+                parsed = urlsplit(value)
+                if (
+                    not parsed.hostname or parsed.password is not None
+                    or parsed.query or parsed.fragment
+                    or canonical and (
+                        parsed.scheme != "https" or parsed.hostname != "github.com"
+                        or parsed.port is not None or parsed.username is not None
+                    )
+                    or not canonical and parsed.scheme not in {"https", "ssh"}
+                    or parsed.scheme == "https" and parsed.username is not None
+                    or parsed.scheme == "https" and parsed.hostname != "github.com"
+                    or parsed.scheme == "ssh" and (
+                        parsed.hostname != "github.com"
+                        or parsed.username not in {None, "git"}
+                    )
+                ):
+                    return None
+                path = parsed.path
+            else:
+                matched = re.fullmatch(
+                    r"(?:git@)?github\.com(?:-[A-Za-z0-9._-]+)?:"
+                    r"(?P<path>[A-Za-z0-9._/~+-]+)",
+                    value,
+                )
+                path = matched.group("path") if matched else ""
+        except ValueError:
+            return None
+        parts = path.strip("/").split("/")
+        if len(parts) != 2:
+            return None
+        parts[-1] = parts[-1][:-4] if parts[-1].endswith(".git") else parts[-1]
+        return tuple(part.casefold() for part in parts) if all(
+            re.fullmatch(r"[A-Za-z0-9_.-]+", part) for part in parts
+        ) else None
+
+    target = repository(current, canonical=True)
+    return target is not None and repository(previous) == target
+
+
 def _git_environment(
     overrides: dict[str, str] | None = None,
     auth: tuple[str, str] | None = None,
