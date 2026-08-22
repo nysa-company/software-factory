@@ -10,6 +10,7 @@ on:
       - "scripts/factory-launch"
       - "scripts/factory-doctor.sh"
       - "scripts/factory-kit.sh"
+      - "scripts/owner-provider-cli-pin.py"
       - "scripts/certification-preflight.py"
       - "scripts/lib/certification_plan.py"
       - "scripts/lib/qualification_*.py"
