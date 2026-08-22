@@ -195,6 +195,14 @@ class QualificationEnvironmentTest(unittest.TestCase):
             ROOT / "scripts/lib/role_output.py",
             self.factory / "scripts/lib/role_output.py",
         )
+        for relative in (
+            "scripts/ticket-state.sh",
+            "scripts/lib/external_transport.py",
+            "scripts/lib/kit-pin.sh",
+            "scripts/lib/product-remote.sh",
+            "scripts/lib/ticket_state_transition.py",
+        ):
+            shutil.copy2(ROOT / relative, self.factory / relative)
         (self.factory / "scripts/model-routing/catalog-v1.json").write_text(
             json.dumps({
                 "routes": [{
@@ -1527,6 +1535,129 @@ class QualificationEnvironmentTest(unittest.TestCase):
                 self.root, Path(value["authority_root"]), "relay",
             ),
             "exact-complete",
+        )
+
+    def test_prepare_restarts_after_ready_branch_and_protected_main_advance(self) -> None:
+        self.use_contract_2()
+        remote = self.use_real_branch_preflight()
+        ticket = self.product / "factory/tickets/T-101.md"
+        ticket.write_text(ticket.read_text().replace("State: Ready", "State: Backlog"))
+        run(self.product, "git", "add", str(ticket))
+        run(self.product, "git", "commit", "-qm", "protect backlog ticket")
+        run(self.product, "git", "push", "-q", "origin", "main")
+        args = argparse.Namespace(
+            factory_root=self.factory, product_root=self.product,
+            project="relay", root=self.root,
+        )
+        with (
+            mock.patch.object(ENVIRONMENT, "qualification_publication_origin"),
+            mock.patch.object(
+                ENVIRONMENT, "qualification_fallback_readiness",
+                side_effect=ENVIRONMENT.EnvironmentError(
+                    "simulated readiness failure",
+                ),
+            ),
+            self.assertRaisesRegex(
+                ENVIRONMENT.EnvironmentError, "simulated readiness failure",
+            ),
+        ):
+            ENVIRONMENT.prepare(args)
+        prepared_head = run(
+            self.product, "git", "ls-remote", "--heads", str(remote),
+            "refs/heads/ticket/T-101",
+        ).split()[0]
+
+        advance = self.workspace / "protected-main-advance"
+        run(self.workspace, "git", "clone", "-q", str(remote), str(advance))
+        run(advance, "git", "config", "user.name", "Test")
+        run(advance, "git", "config", "user.email", "test@example.invalid")
+        (advance / "README.md").write_text("advance protected main\n")
+        run(advance, "git", "add", "README.md")
+        run(advance, "git", "commit", "-qm", "advance protected main")
+        run(advance, "git", "push", "-q", "origin", "main")
+
+        run(advance, "git", "fetch", "-q", "origin", "ticket/T-101")
+        run(
+            advance, "git", "switch", "-qc", "ticket/T-101",
+            "origin/ticket/T-101",
+        )
+        run(
+            advance, "git", "commit", "--allow-empty", "-qm",
+            "tamper prepared branch",
+        )
+        tampered_head = run(advance, "git", "rev-parse", "HEAD")
+        run(advance, "git", "push", "-q", "origin", "ticket/T-101")
+        with (
+            mock.patch.object(ENVIRONMENT, "qualification_publication_origin"),
+            mock.patch.object(ENVIRONMENT, "prepare_provider") as provider,
+            self.assertRaisesRegex(
+                ENVIRONMENT.EnvironmentError, "commits are not canonical",
+            ),
+        ):
+            ENVIRONMENT.prepare(args)
+        provider.assert_not_called()
+        self.assertEqual(
+            run(
+                self.product, "git", "ls-remote", "--heads", str(remote),
+                "refs/heads/ticket/T-101",
+            ).split()[0],
+            tampered_head,
+        )
+        run(
+            advance, "git", "push", "-q", "origin",
+            f"+{prepared_head}:refs/heads/ticket/T-101",
+        )
+
+        local_receipt = self.home / (
+            ".factory/qualification/relay/controller/"
+            "operator-receipts/T-101/ready-1.json"
+        )
+        original_receipt = local_receipt.read_bytes()
+        tampered_receipt = json.loads(original_receipt)
+        tampered_receipt["receipt_sha256"] = "f" * 64
+        local_receipt.write_text(json.dumps(tampered_receipt) + "\n")
+        with (
+            mock.patch.object(ENVIRONMENT, "qualification_publication_origin"),
+            mock.patch.object(ENVIRONMENT, "prepare_provider") as provider,
+            self.assertRaisesRegex(
+                ENVIRONMENT.EnvironmentError, "qualification controller is active",
+            ),
+        ):
+            ENVIRONMENT.prepare(args)
+        provider.assert_not_called()
+        local_receipt.write_bytes(original_receipt)
+
+        with mock.patch.object(ENVIRONMENT, "qualification_publication_origin"):
+            value = ENVIRONMENT.prepare(args)
+        self.assertEqual(value["status"], "prepared")
+        active = ENVIRONMENT.read(self.root / "projects/relay/active.json")
+        worktrees = self.root / "worktrees"
+        worktrees.mkdir(mode=0o700)
+        result = subprocess.run(
+            [
+                sys.executable, str(ROOT / "scripts/dispatch-plan.py"),
+                "--factory-root", str(self.product.resolve()),
+                "--worktree-root", str(worktrees.resolve()), "claim",
+            ],
+            text=True, capture_output=True, check=False, timeout=60,
+            env={
+                **os.environ,
+                "FACTORY_CERTIFIED_PRODUCT_ORIGIN": str(remote),
+                "FACTORY_CONTROLLER_STATE_DIR": active["controller_state_path"],
+                "FACTORY_KIT_TRUST_SCOPE": "qualification-candidate",
+                "FACTORY_QUALIFICATION_MODE": "isolated",
+                "FACTORY_OPERATOR_MAP": active["operator_map_path"],
+                "FACTORY_RELEASE_CONTRACT_VERSION": "2.0.0",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        claim = json.loads(result.stdout)
+        self.assertEqual(claim["ticket"], "T-101")
+        self.assertEqual(claim["preprovider_reset_head"], prepared_head)
+        self.assertIn(
+            "State: Ready",
+            Path(claim["worktree"])
+            .joinpath("factory/tickets/T-101.md").read_text(),
         )
 
     def test_prepare_serializes_same_project_and_replays_exact_result(self) -> None:

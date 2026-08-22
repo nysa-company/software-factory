@@ -179,6 +179,7 @@ SCENARIOS = (
         "operator_ready_materialization_failure_replays",
         (
             "qualification-environment-test.py",
+            "QualificationEnvironmentTest.test_prepare_restarts_after_ready_branch_and_protected_main_advance",
             "QualificationEnvironmentTest.test_unconsumed_ready_receipt_reaches_materialization_replay",
             "QualificationEnvironmentTest.test_selected_operator_retries_pending_ready_projection",
         ),

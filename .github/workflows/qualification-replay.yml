@@ -6,6 +6,7 @@ on:
       - ".github/workflows/qualification-replay.yml"
       - "factory-contract.json"
       - "ci/qualification-*"
+      - "scripts/dispatch-plan.py"
       - "scripts/qualification-*"
       - "scripts/factory-launch"
       - "scripts/factory-doctor.sh"
@@ -13,6 +14,7 @@ on:
       - "scripts/owner-provider-cli-pin.py"
       - "scripts/certification-preflight.py"
       - "scripts/lib/certification_plan.py"
+      - "scripts/lib/operator_receipt.py"
       - "scripts/lib/qualification_*.py"
   workflow_dispatch:
     inputs:
