@@ -7477,7 +7477,9 @@ resolution or any state, lease, reservation, provider, or external-CLI action.
 Qualification Doctor reuses the shared persisted-ticket, certification, and
 authenticated-artifact validators read-only, reports typed ticket, identity,
 receipt, passport, event, and residue failures, and suppresses later provider
-probes. Plan/apply coverage rechecks ticket blobs, product HEAD/tree, KIT_PIN,
+probes. Qualification preparation calls its already-loaded canonical ticket
+validator directly instead of spawning a duplicate interpreter. Plan/apply
+coverage rechecks ticket blobs, product HEAD/tree, KIT_PIN,
 certification plans, receipts, and passports so post-authorization drift remains
 fail-closed and replay-stable.
 
