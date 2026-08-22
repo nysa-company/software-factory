@@ -6,7 +6,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 
 - Product-agnostic factory kit; product repositories carry only their factory state and CI integration.
 - Durable decisions use repository-local numbering beginning at Decision 1.
-- Stable operating truth lives in `docs/`; prompts, templates, and evidence stay colocated with consumers. Test-author and Builder ticket-log bookkeeping uses separate commits from test and implementation changes. The operator preflight hydrates only evidence-bound immutable objects, batches read-only object checks, compares selected Builder ownership with protected Ready tickets, aggregates activation blockers, and makes network review explicit before certification. Qualification validates selected remote branches and exact prior-cohort control retries before publication, authenticates a partially prepared Ready branch by its owner-only receipt across protected-main churn, shares protected dependency truth, counts only role-control evidence appended after its sealed product SHA, preserves one exact-head retry for a parked preview timeout, reacquires parked semantic or contract-repair authority only at apply, admits exact source-release receipt warnings to controller-owned migration, maintains idle successor leases during long roles, and does not rerun new-admission checks once its exact cohort is fully accounted for.
+- Stable operating truth lives in `docs/`; prompts, templates, and evidence stay colocated with consumers. Test-author and Builder ticket-log bookkeeping uses separate commits from test and implementation changes. The operator preflight hydrates only evidence-bound immutable objects, batches read-only object checks, compares selected Builder ownership with protected Ready tickets, aggregates activation blockers, and makes network review explicit before certification. Qualification validates selected remote branches and exact prior-cohort control retries before publication, lets an exact prepared Ready receipt supersede an older reset head while retaining that authorization as lineage proof across protected-main churn, shares protected dependency truth, counts only role-control evidence appended after its sealed product SHA, preserves one exact-head retry for a parked preview timeout, reacquires parked semantic or contract-repair authority only at apply, admits exact source-release receipt warnings to controller-owned migration, maintains idle successor leases during long roles, and does not rerun new-admission checks once its exact cohort is fully accounted for.
 - Failed-attempt preview, replay, and historical committed-role checks carry only unchanged tracked baseline symlinks whose tree, index, and filesystem targets agree; every added, removed, changed, staged, or untracked symlink remains fail-closed.
 - A submitted Claude individual-spend-limit terminal is release-typed, fully accounted, and qualification-latched before another role launch; dirty role evidence stays blocked and unexported rather than becoming a secondary clean-cell controller error.
 - Any nonrecoverable role terminal in a fixed qualification cohort latches the same atomic launch boundary before the claim blocks or cancels; bounded invalid-output, prior-release launch-void, direct-model identity, and authenticated Cursor fallback recovery remain runnable, while already-admitted siblings only drain and account.
@@ -7537,3 +7537,15 @@ Secret scanning accepts an exact base/head pair, scans only that commit range
 plus the working directory, and derives the same range from GitHub pull-request
 events. This restores HEAD-bound `pr-ready` without weakening the pinned,
 redacted directory scan or creating a repository-specific bypass.
+
+## 2026-08-22 — Decision 549: Prepared receipts retain older reset provenance
+
+Category: Reliability
+
+A selected branch may carry both a protected prior-qualification reset
+authorization and a newer authenticated Ready receipt after preparation. The
+newer exact receipt now selects the current branch head, while the older
+authorization remains in-memory provenance for validating the complete
+canonical prefix. Repeated protected-main advances reuse that chain; receipt,
+branch, or historical-prefix tamper still refuses before a claim or provider
+attempt.

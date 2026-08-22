@@ -658,6 +658,9 @@ If protected main advances after that Ready branch is pushed, retry accepts only
 the canonical branch whose audit receipt digest matches the authenticated local
 receipt. Dispatch revalidates the same pair under its admission lock and feeds
 the exact head through the existing pre-provider reset/materialization path.
+When that branch already crossed an older protected qualification-reset
+authorization, the newer exact receipt selects the current head while the older
+authorization remains required provenance for the canonical prefix.
 Qualification role sequencing treats the ticket at the sealed product SHA as
 the immutable prior epoch. One shared read-only projection requires every
 parser-recognized spec, review, void, and semantic-authorization control line
