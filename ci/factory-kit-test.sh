@@ -501,6 +501,7 @@ cp "$ROOT/scripts/lib/certification_plan.py" \
   "$ROOT/scripts/lib/protected_merge_reconciliation.py" \
   "$ROOT/scripts/lib/terminal_backfill.py" \
   "$ROOT/scripts/lib/approval_evidence.py" \
+  "$ROOT/scripts/lib/ticket_state_transition.py" \
   "$KIT_REPO/scripts/lib/"
 cp "$ROOT/scripts/factory-launch" \
   "$KIT_REPO/scripts/factory-launch"
