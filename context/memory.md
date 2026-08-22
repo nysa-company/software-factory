@@ -7704,3 +7704,13 @@ the protected-terminal reader. Authenticated terminal evidence may retain its
 historical Kit-SHA across successor qualification, while missing or tampered
 terminal evidence and every nonterminal current-pin mismatch remain typed
 fail-closed before provider readiness or reconciliation.
+
+## 2026-08-22 — Decision 564: Signed origins can canonicalize in place
+
+Category: Security
+
+An active release may move from a signed legacy GitHub SSH alias to canonical
+GitHub HTTPS only when both origins normalize to the same owner and repository.
+The next committed journal binds the new literal origin; different paths,
+noncanonical destinations, embedded credentials, and lookalike hosts fail
+closed.

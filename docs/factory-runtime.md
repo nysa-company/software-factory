@@ -117,6 +117,12 @@ qualification result, runtime pins, provider CLI pins, concurrency state, and
 any approved ticket migrations. The signed release journal makes retries
 idempotent and refuses changed inputs.
 
+An upgrade may replace a signed legacy GitHub SSH alias with the canonical
+`https://github.com/<owner>/<repository>.git` origin only when both normalize to
+the same repository. The new journal binds that literal canonical origin;
+different repositories, other destination transports, credentials, and lookalike
+hosts fail closed.
+
 Before a host cutover mutates a project, abort the current sealed plan to
 restore its captured maintenance state and release the machine-wide reservation:
 
