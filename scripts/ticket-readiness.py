@@ -11,16 +11,17 @@ import re
 import shlex
 import stat
 import subprocess
+import sys
+
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
+from ticket_state_transition import TransitionError, exact_state  # noqa: E402
 
 
 class ReadinessError(ValueError):
     pass
 
 
-STATES = frozenset({
-    "backlog", "ready", "planning", "building", "review",
-    "awaiting approval", "approved", "blocked-escalated", "done", "canceled",
-})
 PRIORITIES = frozenset({"none", "urgent", "high", "normal", "low"})
 
 
@@ -273,9 +274,13 @@ def validate(ticket: str, workdir: Path) -> None:
     ):
         raise ReadinessError("ticket contract is unsafe")
     text = ticket_path.read_text(encoding="utf-8")
-    state = field(text, "State").casefold()
-    if state not in STATES:
-        raise ReadinessError("ticket State is invalid")
+    try:
+        state = exact_state(text)
+    except TransitionError as error:
+        if str(error).endswith("is invalid"):
+            raise ReadinessError("ticket State is invalid") from error
+        # Doctor maps this established wording to ticket_state_conflict.
+        raise ReadinessError("ticket requires exactly one State field") from error
     if field(text, "Priority").casefold() not in PRIORITIES:
         raise ReadinessError("ticket Priority is invalid")
     initiative = field(text, "Initiative")

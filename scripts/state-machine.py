@@ -28,6 +28,7 @@ from effective_ticket import operator_action, operator_fields  # noqa: E402
 from role_output import RoleOutputError, sha256 as role_output_sha256  # noqa: E402
 from ticket_state_transition import (  # noqa: E402
     TransitionError as TicketTransitionError,
+    exact_state,
     field as ticket_text_field,
     fresh_resume_text,
     planner_spec_linter_authorization,
@@ -458,7 +459,16 @@ def ticket_field(workdir: Path, ticket: str, name: str) -> str:
 
 
 def current_state(workdir: Path, ticket: str) -> str:
-    return ticket_field(workdir, ticket, "State")
+    text = (workdir / "factory" / "tickets" / f"{ticket}.md").read_text(
+        encoding="utf-8"
+    )
+    try:
+        return exact_state(text).title()
+    except TicketTransitionError as error:
+        message = "ticket state is invalid" if str(error).endswith(
+            "is invalid"
+        ) else "ticket state is ambiguous"
+        raise StateError(message) from error
 
 
 def declared_dependencies(args: argparse.Namespace) -> tuple[str, ...]:

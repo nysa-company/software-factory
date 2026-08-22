@@ -43,6 +43,7 @@ from inflight_release import (  # noqa: E402
 from route_evidence import (  # noqa: E402
     RouteEvidenceError, exact_kit_sha_change, journal_extends, validate_route,
 )
+from ticket_state_transition import TransitionError, exact_state  # noqa: E402
 
 
 SCHEMA = "nysa.software-factory.ticket-passport/v1"
@@ -380,10 +381,13 @@ def ticket_state(workdir: Path, ticket: str) -> str:
     text = (workdir / "factory" / "tickets" / f"{ticket}.md").read_text(
         encoding="utf-8"
     )
-    values = re.findall(r"^State:\s*(.*?)\s*$", text, re.I | re.M)
-    if len(values) != 1:
-        raise PassportError("ticket state is ambiguous")
-    return values[0]
+    try:
+        return exact_state(text).title()
+    except TransitionError as error:
+        message = "ticket state is invalid" if str(error).endswith(
+            "is invalid"
+        ) else "ticket state is ambiguous"
+        raise PassportError(message) from error
 
 
 def authorized_inflight_rewrite(

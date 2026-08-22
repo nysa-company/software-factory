@@ -47,17 +47,17 @@ PRODUCT_ROOT="${FACTORY_ROOT:-$WORKDIR}"
 MAP="${FACTORY_OPERATOR_MAP:-$PRODUCT_ROOT/factory/operator-map.json}"
 TICKET_FILE="$WORKDIR/factory/tickets/$TICKET.md"
 [[ -f "$TICKET_FILE" ]] || { echo "ticket file missing from worktree" >&2; exit 1; }
-INITIAL_STATE="$(python3 - "$TICKET_FILE" <<'PY'
-import re
+INITIAL_STATE="$(python3 - "$KIT_DIR/scripts/lib" "$TICKET_FILE" <<'PY'
 import sys
+from pathlib import Path
 
-values = re.findall(
-    r"^State:\s*(.*?)\s*$", open(sys.argv[1], encoding="utf-8").read(),
-    re.IGNORECASE | re.MULTILINE,
-)
-if len(values) != 1:
-    raise SystemExit("ticket State field is ambiguous")
-print(values[0])
+sys.path.insert(0, sys.argv[1])
+from ticket_state_transition import TransitionError, exact_state
+
+try:
+    print(exact_state(Path(sys.argv[2]).read_text(encoding="utf-8")))
+except TransitionError as error:
+    raise SystemExit(str(error)) from error
 PY
 )"
 WORKTREE_STATUS="$(git -C "$WORKDIR" status --porcelain --untracked-files=all \
@@ -180,9 +180,14 @@ ticket_path, qualification_path, ticket, runs_path, role, pinned_kit_sha, contra
 )
 text = ticket_path.read_text()
 sys.path.insert(0, lib)
-from ticket_state_transition import TransitionError, qualification_epoch_text
+from ticket_state_transition import (
+    TransitionError,
+    exact_state,
+    qualification_epoch_text,
+)
 try:
     epoch_text = qualification_epoch_text(workdir, ticket, text)
+    state = exact_state(text)
 except TransitionError as error:
     raise SystemExit(str(error)) from error
 qualification = json.loads(qualification_path.read_text())
@@ -191,17 +196,16 @@ if (
     or ticket not in qualification.get("tickets", [])
 ):
     raise SystemExit("protected qualification manifest does not authorize backlog return")
-states = re.findall(r"^State:\s*(.*?)\s*$", text, re.I | re.M)
 spec_failed = (
-    states == ["Planning"]
+    state == "planning"
     and re.search(
         r"^\s*SPEC-LINT:\s*FAIL(?:\s+—\s+.*)?\s*$", epoch_text, re.I | re.M
     )
 )
 contract_blocked = False
 if role:
-    if role not in {"planner", "test-author", "builder"} or states not in (
-        ["Planning"], ["Building"]
+    if role not in {"planner", "test-author", "builder"} or state not in (
+        "planning", "building"
     ):
         raise SystemExit("qualification contract blocker has invalid role or state")
     candidates = []

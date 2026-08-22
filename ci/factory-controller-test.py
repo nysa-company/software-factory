@@ -4788,8 +4788,12 @@ class FactoryControllerTest(unittest.TestCase):
             ["git", "rev-parse", "HEAD"], cwd=self.product, text=True,
             capture_output=True, check=True,
         ).stdout.strip()
-        (self.release / "scripts").mkdir()
+        (self.release / "scripts/lib").mkdir(parents=True)
         shutil.copy(ROOT / "scripts/ticket-readiness.py", self.release / "scripts")
+        shutil.copy(
+            ROOT / "scripts/lib/ticket_state_transition.py",
+            self.release / "scripts/lib",
+        )
         self.assertTrue(controller.preflight_correction_valid(
             claim, source, target, transition["receipt_sha256"], {event_digest},
         ))

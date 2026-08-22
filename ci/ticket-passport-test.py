@@ -217,6 +217,31 @@ class TicketPassportTest(unittest.TestCase):
             prior,
         )
 
+    def test_migrate_refuses_invalid_state_without_changing_passport(self) -> None:
+        secret = PASSPORT.key(self.state_dir)
+        issued = STATE.issue(self.state_args, "RUN planner")
+        self.state_args.receipt = issued["receipt_sha256"]
+        STATE.verify(self.state_args, consume=True)
+        self.terminal(
+            "planner", "planner", issued["receipt_sha256"], "a" * 40,
+        )
+        self.passport_args.receipt = issued["receipt_sha256"]
+        PASSPORT.export(self.passport_args, secret)
+        passport = self.state_dir / "passports/T-110.json"
+        before = passport.read_bytes()
+        ticket = self.product / "factory/tickets/T-110.md"
+        original = ticket.read_text(encoding="utf-8")
+
+        for state in ("Unknown", "Planning\nState: Building"):
+            with self.subTest(state=state):
+                ticket.write_text(
+                    f"# T-110\n\nState: {state}\n", encoding="utf-8",
+                )
+                with self.assertRaisesRegex(PASSPORT.PassportError, "ticket state"):
+                    PASSPORT.migrate(self.passport_args, secret)
+                self.assertEqual(passport.read_bytes(), before)
+        ticket.write_text(original, encoding="utf-8")
+
     def terminal(
         self,
         run_id: str,

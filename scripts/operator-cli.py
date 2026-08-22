@@ -32,6 +32,7 @@ from effective_ticket import (  # noqa: E402
     committed_ticket, operator_action, ticket_branch_prefix, validate_operator,
 )
 from legacy_closeout import _git_object  # noqa: E402
+from ticket_state_transition import TransitionError, exact_state  # noqa: E402
 
 MAP_TOP_LEVEL = ("_config", "_sync", "initiatives", "tickets")
 PRIORITIES = ("none", "urgent", "high", "normal", "low")
@@ -160,11 +161,11 @@ def committed_state(product: Path, ticket: str) -> str:
     text, _source = committed_ticket(product / "factory", ticket)
     if text is None:
         raise OperatorCliError(f"ticket file is missing: {ticket}")
-    for line in text.splitlines():
-        key, _, rest = line.partition(":")
-        if key.strip().lower() == "state":
-            return rest.strip().lower()
-    raise OperatorCliError(f"ticket has no State field: {ticket}")
+    try:
+        state = exact_state(text)
+    except TransitionError as error:
+        raise OperatorCliError(f"ticket has invalid State fields: {ticket}") from error
+    return state
 
 
 def committed_main_states(product: Path, tickets: list[str]) -> None:
@@ -179,8 +180,9 @@ def committed_main_states(product: Path, tickets: list[str]) -> None:
             text = value[2].decode("utf-8")
         except UnicodeError as error:
             raise OperatorCliError(f"ticket is not UTF-8: {ticket}") from error
-        states = re.findall(r"(?mi)^State:\s*(.*?)\s*$", text)
-        if len(states) != 1:
+        try:
+            exact_state(text)
+        except TransitionError as error:
             raise OperatorCliError(f"ticket has invalid State fields: {ticket}")
 
 
@@ -482,6 +484,9 @@ def _cmd_ticket_action(args: argparse.Namespace) -> dict:
 
 
 def cmd_ticket_action(args: argparse.Namespace) -> dict:
+    # Refuse malformed ticket state before creating the action lock or receipts;
+    # _cmd_ticket_action repeats this under the lock to close the TOCTOU gap.
+    committed_state(Path(args.product).resolve(), args.ticket)
     with action_lock(Path(args.state_dir)):
         return _cmd_ticket_action(args)
 
@@ -532,6 +537,7 @@ def cmd_fallback_approve(args: argparse.Namespace) -> dict:
 def cmd_init(args: argparse.Namespace) -> dict:
     product = Path(args.product).resolve()
     map_path = operator_map_path(product)
+    committed_state(product, args.ticket)
     with map_lock(map_path):
         mapping = load_map(map_path)
         committed_state(product, args.ticket)
@@ -546,6 +552,7 @@ def cmd_initialize(args: argparse.Namespace) -> dict:
     map_path = operator_map_path(product)
     if len(args.ticket) != len(set(args.ticket)):
         raise OperatorCliError("operator initialization tickets are duplicated")
+    committed_main_states(product, args.ticket)
     with map_lock(map_path):
         mapping = load_map(map_path)
         committed_main_states(product, args.ticket)

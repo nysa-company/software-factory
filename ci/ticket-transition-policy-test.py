@@ -22,6 +22,7 @@ from ticket_state_transition import (  # noqa: E402
     field,
     fresh_protocol_text,
     fresh_resume_text,
+    parse_state,
     planner_spec_linter_authorization,
     qualification_epoch_text,
     validate_action_transition,
@@ -201,6 +202,16 @@ class TicketTransitionPolicyTest(unittest.TestCase):
     def test_allowed_edges_are_the_complete_declared_policy(self) -> None:
         self.assertEqual(ALLOWED_TRANSITIONS, EXPECTED)
 
+    def test_state_parser_requires_one_known_lifecycle_state(self) -> None:
+        for text in (
+            "# T-1\n",
+            "State: Ready\nState: Building\n",
+            "State: Unknown\n",
+        ):
+            with self.subTest(text=text), self.assertRaises(TransitionError):
+                parse_state(text)
+        self.assertEqual(parse_state("State: Ready\n"), "ready")
+
     def test_every_action_accepts_only_noops_and_declared_edges(self) -> None:
         for action, allowed in EXPECTED.items():
             for source, target in itertools.product(LIFECYCLE, repeat=2):
@@ -243,6 +254,13 @@ class TicketTransitionPolicyTest(unittest.TestCase):
         self.assertEqual(field(historical, "Resume-State"), "")
 
     def test_factory_transition_rejects_targets_and_ambiguous_resume(self) -> None:
+        for text in (
+            "# T-1\n",
+            "State: Ready\nState: Building\n",
+            "State: Unknown\n",
+        ):
+            with self.subTest(text=text), self.assertRaises(TransitionError):
+                apply_factory_transition(text, "Planning", "2.0.0")
         for contract in RESUME_STATE_CONTRACTS:
             for target in ("Backlog", "Canceled"):
                 with self.subTest(
@@ -269,6 +287,15 @@ class TicketTransitionPolicyTest(unittest.TestCase):
                 )
 
     def test_materialization_covers_every_operator_edge_and_guard(self) -> None:
+        for current, effective in (
+            ("# T-1\n", "State: Ready\n"),
+            ("State: Ready\n", "State: Ready\nState: Building\n"),
+            ("State: Unknown\n", "State: Ready\n"),
+        ):
+            with self.subTest(current=current, effective=effective), self.assertRaises(
+                TransitionError,
+            ):
+                validate_materialization(current, effective)
         for source, target in EXPECTED["materialize"]:
             with self.subTest(source=source, target=target):
                 current = f"State: {CANONICAL[source]}\n"
