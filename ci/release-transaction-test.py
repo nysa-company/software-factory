@@ -2170,7 +2170,7 @@ class ReleaseTransactionTest(unittest.TestCase):
                 target=cutover_lock_worker,
                 args=(str(self.kits), str(marker), plan, mode),
             )
-            for plan, mode in zip(plans, ("setup", "resume", "apply"), strict=True)
+            for plan, mode in zip(plans, ("setup", "resume", "apply"))
         ]
         for process in processes:
             process.start()

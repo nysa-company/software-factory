@@ -142,6 +142,15 @@ def _passport(state: Path, ticket: str) -> tuple[dict[str, Any], bytes]:
     return value, secret
 
 
+def authenticated_passport(
+    state: Path, ticket: str,
+) -> tuple[dict[str, Any], bytes]:
+    """Read one passport through the qualification authentication boundary."""
+    if not TICKET.fullmatch(ticket):
+        raise ArtifactError("ticket identifier is invalid")
+    return _passport(state, ticket)
+
+
 def _manifest(raw: bytes) -> dict[str, str]:
     values: dict[str, str] = {}
     try:
@@ -299,7 +308,7 @@ def ensure_ticket(
     passport_path = state / "passports" / f"{ticket}.json"
     if not passport_path.exists() and not passport_path.is_symlink():
         return {"artifacts": 0, "runs": 0}
-    passport, secret = _passport(state, ticket)
+    passport, secret = authenticated_passport(state, ticket)
     requirements = _requirements(passport, ticket)
     if not requirements:
         return {"artifacts": 0, "runs": 0}

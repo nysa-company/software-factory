@@ -65,6 +65,7 @@ SCENARIOS = (
             "qualification-manifest-test.py",
             "QualificationManifestTest.test_exact_ordinary_and_successor_manifests_pass",
             "QualificationManifestTest.test_duplicate_raw_fields_refuse_before_last_value_wins",
+            "QualificationManifestTest.test_malformed_ticket_variants_refuse_deterministically",
         ),
         (
             "factory-controller-test.py",
@@ -186,6 +187,8 @@ SCENARIOS = (
         "fresh_qualification_ownership_conflicts_fail_before_provider",
         (
             "qualification-environment-test.py",
+            "QualificationEnvironmentTest.test_state_changing_clis_reject_malformed_tickets_before_state",
+            "QualificationEnvironmentTest.test_doctor_classifies_authenticated_artifact_tamper_read_only",
             "QualificationEnvironmentTest.test_selected_ticket_authoring_fields_fail_before_lane_creation",
             "QualificationEnvironmentTest.test_rejects_protected_ready_builder_ownership_conflicts",
             "QualificationEnvironmentTest.test_rejects_selected_protected_source_hash_before_lane_creation",
@@ -195,6 +198,30 @@ SCENARIOS = (
             "qualification-run-test.py",
             "QualificationRunTest.test_doctor_error_returns_exact_report_before_controller_mutation",
             "QualificationRunTest.test_ticket_readiness_blocks_before_controller_mutation",
+        ),
+    ),
+    (
+        "authorization_and_apply_tamper_fail_before_mutation",
+        (
+            "dispatch-plan-test.py",
+            "DispatchPlanTest.test_claim_rechecks_presealed_ticket_blob_before_worktree",
+        ),
+        (
+            "state-machine-test.py",
+            "StateMachineTest.test_expected_head_refuses_state_machine_snapshot_drift",
+        ),
+        (
+            "release-transaction-test.py",
+            "ReleaseTransactionTest.test_composite_approval_rejects_every_bound_tamper",
+            "ReleaseTransactionTest.test_resume_live_basis_refuses_product_and_runtime_drift",
+        ),
+        (
+            "certification-preflight-test.py",
+            "CertificationPreflightTest.test_valid_plan_mutation_after_tuple_receipt_fails_before_phase",
+        ),
+        (
+            "envelope-control-test.py",
+            "EnvelopeControlTest.test_stale_preview_and_symlink_are_rejected",
         ),
     ),
     (

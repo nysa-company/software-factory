@@ -160,6 +160,28 @@ class CertificationPreflightTest(unittest.TestCase):
                 )
                 self.assertFalse(self.marker.exists())
 
+    def test_valid_plan_mutation_after_tuple_receipt_fails_before_phase(self) -> None:
+        value = json.loads(
+            (self.product / "factory/certification-plan.json").read_text()
+        )
+        value["phases"][0]["command"] = [
+            sys.executable, "-c", "raise SystemExit(97)",
+        ]
+        (self.product / "factory/certification-plan.json").write_text(
+            json.dumps(value) + "\n", encoding="utf-8",
+        )
+        first = self.run_preflight(self.expected)
+        replay = self.run_preflight(self.expected)
+        self.assertEqual(first.returncode, 2)
+        self.assertEqual(
+            (replay.returncode, replay.stdout, replay.stderr),
+            (first.returncode, first.stdout, first.stderr),
+        )
+        self.assertEqual(
+            self.failure(first)["reason_code"], "product_identity_dirty",
+        )
+        self.assertFalse(self.marker.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -589,6 +589,24 @@ printf 'unmerged\n' > "$KIT_REPO/unmerged.txt"
 commit_all "$KIT_REPO" "unmerged candidate"
 UNMERGED_SHA="$(git -C "$KIT_REPO" rev-parse HEAD)"
 
+# Every kit mutation route shares the same pre-state ticket boundary.
+malformed_index=0
+for malformed_ticket in \
+  '../T-1' 'T-1 ' ' T-1' 'T‐1' 'T-١' $'T-1\n'; do
+  malformed_index=$((malformed_index + 1))
+  expect_failure "malformed ticket $malformed_index is rejected before state" \
+    operator ready --project alpha --product "$TMP/missing-product" \
+    --ticket "$malformed_ticket"
+  [[ "$LAST_OUTPUT" == *"invalid ticket identifier"* ]] ||
+    fail "malformed ticket reports the shared boundary" "$LAST_OUTPUT"
+  [[ ! -e "$STATE" ]] ||
+    fail "malformed ticket created Factory state"
+done
+expect_failure "malformed release ticket workdir is rejected before state" \
+  release setup --ticket-workdir '../T-1' "$TMP/missing-worktree"
+[[ "$LAST_OUTPUT" == *"invalid ticket identifier"* && ! -e "$STATE" ]] ||
+  fail "release ticket workdir reports the shared boundary" "$LAST_OUTPUT"
+
 # The installer accepts any clean checkout of the canonical repository, not
 # only one whose local branches already contain the fetched origin/main tip.
 REMOTE_ONLY_REPO="$TMP/remote-only-source"

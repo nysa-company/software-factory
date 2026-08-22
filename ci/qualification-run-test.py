@@ -96,9 +96,9 @@ raise SystemExit(code)
     @staticmethod
     def doctor(status: str = "ok") -> dict[str, object]:
         required = {
-            "active_binding", "clis", "contract_resume", "credentials",
+            "active_binding", "authenticated_artifacts", "clis", "contract_resume", "credentials",
             "fallback_readiness", "isolated_provider", "kit", "kit_pin",
-            "provider_cli_pins", "qualification_ticket_readiness",
+            "provider_cli_pins", "qualification_identity", "qualification_ticket_readiness",
             "transition_receipts",
         }
         return {
@@ -112,7 +112,7 @@ raise SystemExit(code)
                     "reason_code": None,
                     "status": "ok",
                     "tickets": [
-                        {"status": "ok", "ticket": ticket}
+                        {"reason_code": None, "status": "ok", "ticket": ticket}
                         for ticket in ("T-1", "T-2", "T-3")
                     ],
                 },
@@ -713,12 +713,16 @@ raise SystemExit(code)
     def test_ticket_readiness_blocks_before_controller_mutation(self) -> None:
         doctor = self.doctor("error")
         doctor["checks"]["qualification_ticket_readiness"] = {
-            "reason_code": "ticket_readiness_invalid",
+            "reason_code": "ticket_state_conflict",
             "status": "error",
             "tickets": [
-                {"status": "ok", "ticket": "T-1"},
-                {"status": "error", "ticket": "T-2"},
-                {"status": "ok", "ticket": "T-3"},
+                {"reason_code": None, "status": "ok", "ticket": "T-1"},
+                {
+                    "reason_code": "ticket_state_conflict",
+                    "status": "error",
+                    "ticket": "T-2",
+                },
+                {"reason_code": None, "status": "ok", "ticket": "T-3"},
             ],
         }
         code, value = self.run_scenario({

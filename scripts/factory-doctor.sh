@@ -91,12 +91,15 @@ ACTIVE_CLAIM_FILE="$TMP/active-run-claims.tsv"
 LEASE_FILE="$TMP/leases.tsv"
 CONTRACT_RESUME_FILE="$TMP/contract-resume.json"
 TRANSITION_RECEIPT_FILE="$TMP/transition-receipts.json"
+AUTHENTICATED_ARTIFACT_FILE="$TMP/authenticated-artifacts.json"
 : > "$CLI_FILE"
 : > "$RUN_FILE"
 : > "$ACTIVE_CLAIM_FILE"
 : > "$LEASE_FILE"
 printf '[]\n' > "$CONTRACT_RESUME_FILE"
 printf '[]\n' > "$TRANSITION_RECEIPT_FILE"
+printf '%s\n' '{"reason_code":null,"status":"not_applicable"}' \
+  > "$AUTHENTICATED_ARTIFACT_FILE"
 
 sanitize() {
   "$PYTHON_BIN" -c '
@@ -483,9 +486,14 @@ fi
 
 CONTRACT_RESUME_STATUS="ok"
 TRANSITION_RECEIPT_STATUS="ok"
+AUTHENTICATED_ARTIFACT_STATUS="not_applicable"
+AUTHENTICATED_ARTIFACT_REASON_CODE=""
 if [[ -n "${FACTORY_CONTROLLER_STATE_DIR:-}" ]]; then
+  AUTHENTICATED_ARTIFACT_STATUS="error"
+  AUTHENTICATED_ARTIFACT_REASON_CODE="controller_state_invalid"
   if ! "$PYTHON_BIN" -I -S - "$FACTORY_CONTROLLER_STATE_DIR" \
       "$TRANSITION_RECEIPT_FILE" \
+      "$AUTHENTICATED_ARTIFACT_FILE" "$KIT_DIR/scripts/lib" "$PROJECT" \
       > "$CONTRACT_RESUME_FILE" <<'PY'
 import hashlib
 import json
@@ -495,8 +503,14 @@ import re
 import stat
 import sys
 
-root = Path(sys.argv[1]).resolve()
+root = Path(sys.argv[1])
 transition_file = Path(sys.argv[2])
+artifact_file = Path(sys.argv[3])
+sys.path.insert(0, sys.argv[4])
+project = sys.argv[5]
+from qualification_artifacts import (  # noqa: E402
+    authenticated_passport,
+)
 resolved = {"contract_blocker_recovered", "recorded_contract_repair_prepared"}
 transition_terminal = {"ticket_complete", "ticket_released", "ticket_retired"}
 transition_prior_migrated = {
@@ -505,6 +519,13 @@ transition_prior_migrated = {
     "upgraded_merged_claim_recovered",
 }
 transition_resolved = transition_terminal | transition_prior_migrated
+artifact_reason = "controller_state_invalid"
+
+def artifact_result(status, reason=None):
+    artifact_file.write_text(json.dumps({
+        "reason_code": reason,
+        "status": status,
+    }, sort_keys=True) + "\n", encoding="utf-8")
 
 def secure(path, *, directory=False):
     info = path.lstat()
@@ -517,22 +538,78 @@ def secure(path, *, directory=False):
 
 try:
     secure(root, directory=True)
+    artifact_reason = "transition_receipt_invalid"
+    for path in sorted(root.iterdir()):
+        match = re.fullmatch(r"(T-[0-9]+)[.]json", path.name)
+        if match is None:
+            continue
+        secure(path)
+        if path.stat().st_size > 1_048_576:
+            raise ValueError
+        value = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(value, dict):
+            raise ValueError
+        immutable = {
+            key: item for key, item in value.items()
+            if key not in {"consumed", "consumed_at_epoch", "receipt_sha256"}
+        }
+        digest = hashlib.sha256((json.dumps(
+            immutable, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+        ) + "\n").encode()).hexdigest()
+        if (
+            value.get("schema")
+            != "nysa.software-factory.transition-receipt/v1"
+            or value.get("ticket") != match.group(1)
+            or value.get("project") != project
+            or value.get("contract_version") not in {"1.8.0", "2.0.0"}
+            or not isinstance(value.get("consumed"), bool)
+            or value.get("receipt_sha256") != digest
+        ):
+            raise ValueError
+    artifact_reason = "ticket_passport_invalid"
+    passport_root = root / "passports"
+    key = root / "passport.key"
+    if passport_root.exists() or passport_root.is_symlink():
+        secure(passport_root, directory=True)
+        entries = sorted(passport_root.iterdir())
+        if key.exists() or key.is_symlink():
+            secure(key)
+            if key.stat().st_size != 32:
+                raise ValueError
+        elif entries:
+            raise ValueError
+        for path in entries:
+            match = re.fullmatch(r"(T-[0-9]+)[.]json", path.name)
+            if match is None:
+                raise ValueError
+            ticket = match.group(1)
+            passport, _secret = authenticated_passport(root, ticket)
+            if (
+                passport.get("ticket") != ticket
+                or passport.get("project") != project
+                or passport.get("contract_version") not in {"1.8.0", "2.0.0"}
+            ):
+                raise ValueError
+    elif key.exists() or key.is_symlink():
+        raise ValueError
     claims = root / "claims"
     if claims.exists() or claims.is_symlink():
         secure(claims, directory=True)
     events = root / "events"
     if not events.exists():
         transition_file.write_text("[]\n", encoding="utf-8")
+        artifact_result("ok")
         print("[]")
         raise SystemExit(0)
     secure(events, directory=True)
+    artifact_reason = "controller_event_invalid"
     latest = {}
     transition_latest = {}
     transition_terminal_epoch = {}
     transition_migration_epoch = {}
     for path in sorted(events.iterdir()):
         if path.suffix != ".json":
-            continue
+            raise ValueError
         secure(path)
         if path.stat().st_size > 1_048_576:
             raise ValueError
@@ -730,6 +807,7 @@ try:
             and not claim.is_symlink()
         )
 
+    artifact_result("ok")
     transition_file.write_text(json.dumps([
         incident
         for observed, incident in sorted(
@@ -754,6 +832,7 @@ except (
     FileNotFoundError, json.JSONDecodeError, OSError, TypeError, UnicodeError,
     ValueError,
 ):
+    artifact_result("error", artifact_reason)
     raise SystemExit(1)
 PY
   then
@@ -761,8 +840,22 @@ PY
     TRANSITION_RECEIPT_STATUS="error"
     printf '[]\n' > "$CONTRACT_RESUME_FILE"
     printf '[]\n' > "$TRANSITION_RECEIPT_FILE"
+    AUTHENTICATED_ARTIFACT_REASON_CODE="$($PYTHON_BIN -I -S - \
+      "$AUTHENTICATED_ARTIFACT_FILE" <<'PY'
+import json, sys
+try:
+    print(json.load(open(sys.argv[1], encoding="utf-8"))["reason_code"])
+except Exception:
+    print("controller_state_invalid")
+PY
+)"
   elif [[ "$(tr -d '[:space:]' < "$CONTRACT_RESUME_FILE")" != "[]" ]]; then
     CONTRACT_RESUME_STATUS="warning"
+    AUTHENTICATED_ARTIFACT_STATUS="ok"
+    AUTHENTICATED_ARTIFACT_REASON_CODE=""
+  else
+    AUTHENTICATED_ARTIFACT_STATUS="ok"
+    AUTHENTICATED_ARTIFACT_REASON_CODE=""
   fi
   if [[ "$TRANSITION_RECEIPT_STATUS" != "error" ]] &&
      [[ "$(tr -d '[:space:]' < "$TRANSITION_RECEIPT_FILE")" != "[]" ]]; then
@@ -1009,40 +1102,24 @@ PY
   esac
 fi
 
-CLI_STATUS="ok"
-for cli_name in claude codex agent gh; do
-  cli_path="$(command -v "$cli_name" 2>/dev/null || true)"
-  cli_version=""
-  cli_item_status="unknown"
-  if [[ -n "$cli_path" ]]; then
-    cli_version="$(probe_version "$cli_path" --version | sanitize | first_line)"
-    case "$cli_version" in
-      "")
-        cli_version="version unavailable"
-        cli_item_status="warning"
-        CLI_STATUS="warning"
-        ;;
-      "probe timed out"|"probe unavailable:"*)
-        cli_item_status="warning"
-        CLI_STATUS="warning"
-        ;;
-      *)
-        cli_item_status="ok"
-        ;;
-    esac
-  else
-    CLI_STATUS="warning"
-  fi
-  printf '%s\t%s\t%s\t%s\n' \
-    "$cli_name" "$cli_item_status" \
-    "$(printf '%s' "$cli_path" | sanitize | tr '\t\r\n' '___')" \
-    "$(printf '%s' "$cli_version" | sanitize | tr '\t\r\n' '___')" >> "$CLI_FILE"
-done
-
 QUALIFICATION_TICKET_READINESS_STATUS="not_applicable"
 QUALIFICATION_TICKET_READINESS_REASON_CODE=""
 QUALIFICATION_TICKET_READINESS_FILE="$TMP/qualification-ticket-readiness.tsv"
 : > "$QUALIFICATION_TICKET_READINESS_FILE"
+ticket_readiness_reason_code() {
+  case "$1" in
+    *"invalid ticket identifier"*) printf '%s\n' malformed_ticket_identifier ;;
+    *"ticket contract is unsafe"*|*"No such file or directory"*)
+      printf '%s\n' ticket_file_unsafe ;;
+    *"exactly one State field"*) printf '%s\n' ticket_state_conflict ;;
+    *"ticket State is invalid"*) printf '%s\n' ticket_state_invalid ;;
+    *"ticket Depends-On is invalid"*|*"exactly one Depends-On field"*)
+      printf '%s\n' ticket_dependencies_invalid ;;
+    *"Kit-SHA"*|*"KIT_PIN"*) printf '%s\n' ticket_identity_drift ;;
+    *"protected source"*) printf '%s\n' protected_source_conflict ;;
+    *) printf '%s\n' ticket_readiness_invalid ;;
+  esac
+}
 if [[ "${FACTORY_KIT_TRUST_SCOPE:-}" == "qualification-candidate" &&
       -n "${FACTORY_QUALIFICATION_MANIFEST:-}" ]]; then
   QUALIFICATION_TICKET_READINESS_STATUS="error"
@@ -1094,21 +1171,105 @@ PY
           "$PYTHON_BIN" -I -S "$KIT_DIR/scripts/ticket-readiness.py" \
           --ticket "$ticket" --workdir "$PRODUCT_ROOT" &&
          [[ "$(cat "$output")" == "READINESS PASS" ]]; then
-        printf '%s\tok\n' "$ticket" >> "$QUALIFICATION_TICKET_READINESS_FILE"
+        printf '%s\tok\t\n' "$ticket" >> "$QUALIFICATION_TICKET_READINESS_FILE"
       else
-        printf '%s\terror\n' "$ticket" >> "$QUALIFICATION_TICKET_READINESS_FILE"
+        reason_code="$(ticket_readiness_reason_code "$(cat "$output" 2>/dev/null)")"
+        printf '%s\terror\t%s\n' "$ticket" "$reason_code" \
+          >> "$QUALIFICATION_TICKET_READINESS_FILE"
         QUALIFICATION_TICKET_READINESS_STATUS="error"
-        QUALIFICATION_TICKET_READINESS_REASON_CODE="ticket_readiness_invalid"
+        [[ -n "$QUALIFICATION_TICKET_READINESS_REASON_CODE" ]] ||
+          QUALIFICATION_TICKET_READINESS_REASON_CODE="$reason_code"
       fi
     done < "$QUALIFICATION_TICKETS_FILE"
   fi
 fi
 
+QUALIFICATION_IDENTITY_STATUS="not_applicable"
+QUALIFICATION_IDENTITY_REASON_CODE=""
+if [[ "${FACTORY_KIT_TRUST_SCOPE:-}" == "qualification-candidate" &&
+      -n "${FACTORY_QUALIFICATION_PRODUCT_SHA:-}${FACTORY_QUALIFICATION_PRODUCT_TREE:-}" ]]; then
+  QUALIFICATION_IDENTITY_STATUS="error"
+  QUALIFICATION_IDENTITY_REASON_CODE="product_identity_drift"
+  EXPECTED_PRODUCT_SHA="${FACTORY_QUALIFICATION_PRODUCT_SHA:-}"
+  EXPECTED_PRODUCT_TREE="${FACTORY_QUALIFICATION_PRODUCT_TREE:-}"
+  ACTUAL_PRODUCT_SHA="$(git -C "$PRODUCT_ROOT" rev-parse HEAD 2>/dev/null || true)"
+  ACTUAL_PRODUCT_TREE="$(git -C "$PRODUCT_ROOT" rev-parse 'HEAD^{tree}' 2>/dev/null || true)"
+  PRODUCT_STATUS="$(git -C "$PRODUCT_ROOT" status --porcelain \
+    --untracked-files=all 2>/dev/null || printf '%s' invalid)"
+  if [[ "$EXPECTED_PRODUCT_SHA" =~ ^[0-9a-f]{40}$ &&
+        "$EXPECTED_PRODUCT_TREE" =~ ^[0-9a-f]{40}$ &&
+        "$ACTUAL_PRODUCT_SHA" == "$EXPECTED_PRODUCT_SHA" &&
+        "$ACTUAL_PRODUCT_TREE" == "$EXPECTED_PRODUCT_TREE" &&
+        -z "$PRODUCT_STATUS" ]]; then
+    QUALIFICATION_IDENTITY_REASON_CODE="certification_plan_identity_drift"
+    CERTIFICATION_PLAN="$PRODUCT_ROOT/factory/certification-plan.json"
+    CERTIFICATION_TUPLE="${FACTORY_CERTIFICATION_TUPLE:-{}}"
+    if [[ "$CERTIFICATION_TUPLE" == "{}" &&
+          ! -e "$CERTIFICATION_PLAN" && ! -L "$CERTIFICATION_PLAN" ]]; then
+      QUALIFICATION_IDENTITY_STATUS="ok"
+      QUALIFICATION_IDENTITY_REASON_CODE=""
+    elif [[ "$CERTIFICATION_TUPLE" != "{}" &&
+            -f "$CERTIFICATION_PLAN" && ! -L "$CERTIFICATION_PLAN" &&
+            -f "$KIT_DIR/scripts/certification-preflight.py" &&
+            ! -L "$KIT_DIR/scripts/certification-preflight.py" ]] &&
+         FACTORY_CERTIFICATION_TUPLE="$CERTIFICATION_TUPLE" \
+           "$PYTHON_BIN" -I "$KIT_DIR/scripts/certification-preflight.py" \
+             --plan "$CERTIFICATION_PLAN" --factory-sha "$KIT_SHA" \
+             --factory-tree "${FACTORY_RELEASE_TREE:-}" \
+             --product-root "$PRODUCT_ROOT" \
+             --contract-version "$CONTRACT_VERSION" >/dev/null 2>&1; then
+      QUALIFICATION_IDENTITY_STATUS="ok"
+      QUALIFICATION_IDENTITY_REASON_CODE=""
+    fi
+  fi
+fi
+
+CLI_STATUS="not_applicable"
+if [[ "$AUTHENTICATED_ARTIFACT_STATUS" != "error" &&
+      "$BINDING_STATUS" != "error" && "$KIT_STATUS" != "error" &&
+      "$PIN_STATUS" != "error" && "$RUNTIME_STATUS" != "error" &&
+      "$QUALIFICATION_TICKET_READINESS_STATUS" != "error" &&
+      "$QUALIFICATION_IDENTITY_STATUS" != "error" ]]; then
+  CLI_STATUS="ok"
+  for cli_name in claude codex agent gh; do
+    cli_path="$(command -v "$cli_name" 2>/dev/null || true)"
+    cli_version=""
+    cli_item_status="unknown"
+    if [[ -n "$cli_path" ]]; then
+      cli_version="$(probe_version "$cli_path" --version | sanitize | first_line)"
+      case "$cli_version" in
+        "")
+          cli_version="version unavailable"
+          cli_item_status="warning"
+          CLI_STATUS="warning"
+          ;;
+        "probe timed out"|"probe unavailable:"*)
+          cli_item_status="warning"
+          CLI_STATUS="warning"
+          ;;
+        *)
+          cli_item_status="ok"
+          ;;
+      esac
+    else
+      CLI_STATUS="warning"
+    fi
+    printf '%s\t%s\t%s\t%s\n' \
+      "$cli_name" "$cli_item_status" \
+      "$(printf '%s' "$cli_path" | sanitize | tr '\t\r\n' '___')" \
+      "$(printf '%s' "$cli_version" | sanitize | tr '\t\r\n' '___')" >> "$CLI_FILE"
+  done
+fi
+
 PROVIDER_CLI_PIN_STATUS="not_applicable"
 PROVIDER_CLI_PIN_JSON="null"
-if [[ "${FACTORY_KIT_TRUST_SCOPE:-}" == "production-certified" ||
+if [[ "$AUTHENTICATED_ARTIFACT_STATUS" != "error" &&
+      "$BINDING_STATUS" != "error" && "$KIT_STATUS" != "error" &&
+      "$PIN_STATUS" != "error" && "$RUNTIME_STATUS" != "error" &&
+      "$QUALIFICATION_IDENTITY_STATUS" != "error" &&
+      ( "${FACTORY_KIT_TRUST_SCOPE:-}" == "production-certified" ||
       ( "${FACTORY_KIT_TRUST_SCOPE:-}" == "qualification-candidate" &&
-        "$QUALIFICATION_TICKET_READINESS_STATUS" != "error" ) ]]; then
+        "$QUALIFICATION_TICKET_READINESS_STATUS" != "error" ) ) ]]; then
   # Legacy releases without the pin helper warn. Modern releases delegate to
   # Factory-kit so the receipt-selected sealed authority can check this release.
   PROVIDER_CLI_PIN_STATUS="warning"
@@ -1142,7 +1303,11 @@ fi
 FALLBACK_READINESS_STATUS="not_applicable"
 FALLBACK_READINESS_JSON="null"
 if [[ "${FACTORY_KIT_TRUST_SCOPE:-}" == "qualification-candidate" &&
-      "$QUALIFICATION_TICKET_READINESS_STATUS" != "error" ]]; then
+      "$QUALIFICATION_TICKET_READINESS_STATUS" != "error" &&
+      "$BINDING_STATUS" != "error" && "$KIT_STATUS" != "error" &&
+      "$PIN_STATUS" != "error" && "$RUNTIME_STATUS" != "error" &&
+      "$AUTHENTICATED_ARTIFACT_STATUS" != "error" &&
+      "$QUALIFICATION_IDENTITY_STATUS" != "error" ]]; then
   FALLBACK_READINESS_STATUS="error"
   FALLBACK_READINESS_FILE="$TMP/fallback-readiness.raw"
   if bounded_command "$READINESS_TIMEOUT_SECONDS" "$FALLBACK_READINESS_FILE" \
@@ -1167,7 +1332,8 @@ fi
 
 MODEL_READINESS_STATUS="not_applicable"
 MODEL_READINESS_JSON="null"
-if [[ "${FACTORY_KIT_TRUST_SCOPE:-}" == "repository-test" ]]; then
+if [[ "${FACTORY_KIT_TRUST_SCOPE:-}" == "repository-test" &&
+      "$AUTHENTICATED_ARTIFACT_STATUS" != "error" ]]; then
   MODEL_READINESS_STATUS="error"
   if [[ "${FACTORY_TEST_MODE:-0}" == "1" &&
         "${FACTORY_TRUSTED_TEST_HARNESS:-0}" == "1" &&
@@ -1176,6 +1342,7 @@ if [[ "${FACTORY_KIT_TRUST_SCOPE:-}" == "repository-test" ]]; then
     MODEL_READINESS_JSON='{"adapter":"mock","schema":"nysa.software-factory.doctor-repository-test-readiness/v1","status":"ready","trust_scope":"repository-test"}'
   fi
 elif [[ "${FACTORY_KIT_TRUST_SCOPE:-}" == "production-certified" &&
+      "$AUTHENTICATED_ARTIFACT_STATUS" != "error" &&
       "${FACTORY_MODEL_STATE_ROOT:-}" == /* &&
       -d "${FACTORY_MODEL_STATE_ROOT:-}" ]]; then
   MODEL_READINESS_STATUS="error"
@@ -1299,7 +1466,13 @@ fi
 GH_AUTH_READY="false"
 CREDENTIAL_STATUS="warning"
 GH_PATH="$(command -v gh 2>/dev/null || true)"
-if [[ -n "$GH_PATH" ]] && "$PYTHON_BIN" - "$PROBE_TIMEOUT_SECONDS" "$GH_PATH" <<'PY'
+if [[ "$BINDING_STATUS" == "error" || "$KIT_STATUS" == "error" ||
+      "$PIN_STATUS" == "error" || "$RUNTIME_STATUS" == "error" ||
+      "$AUTHENTICATED_ARTIFACT_STATUS" == "error" ||
+      "$QUALIFICATION_TICKET_READINESS_STATUS" == "error" ||
+      "$QUALIFICATION_IDENTITY_STATUS" == "error" ]]; then
+  CREDENTIAL_STATUS="not_applicable"
+elif [[ -n "$GH_PATH" ]] && "$PYTHON_BIN" - "$PROBE_TIMEOUT_SECONDS" "$GH_PATH" <<'PY'
 import os
 import subprocess
 import sys
@@ -1336,6 +1509,11 @@ PROVIDER_CONCURRENCY_REQUIRED=false
 PROVIDER_CONCURRENCY_READY=false
 if [[ ( "$CONTRACT_VERSION" == "1.6.0" || "$CONTRACT_VERSION" == "1.7.0" ||
         "$CONTRACT_VERSION" == "1.8.0" || "$CONTRACT_VERSION" == "2.0.0" ) &&
+      "$BINDING_STATUS" != "error" && "$KIT_STATUS" != "error" &&
+      "$PIN_STATUS" != "error" && "$RUNTIME_STATUS" != "error" &&
+      "$AUTHENTICATED_ARTIFACT_STATUS" != "error" &&
+      "$QUALIFICATION_TICKET_READINESS_STATUS" != "error" &&
+      "$QUALIFICATION_IDENTITY_STATUS" != "error" &&
       -n "${FACTORY_PROVIDER_ACTIVATION:-}" &&
       -f "${FACTORY_PROVIDER_ACTIVATION:-}" ]]; then
   PROVIDER_ACTIVATED=true
@@ -1459,6 +1637,11 @@ PY
   fi
 fi
 if [[ ( "$CONTRACT_VERSION" == "1.8.0" || "$CONTRACT_VERSION" == "2.0.0" ) &&
+      "$BINDING_STATUS" != "error" && "$KIT_STATUS" != "error" &&
+      "$PIN_STATUS" != "error" && "$RUNTIME_STATUS" != "error" &&
+      "$AUTHENTICATED_ARTIFACT_STATUS" != "error" &&
+      "$QUALIFICATION_TICKET_READINESS_STATUS" != "error" &&
+      "$QUALIFICATION_IDENTITY_STATUS" != "error" &&
       "${FACTORY_KIT_TRUST_SCOPE:-}" != "repository-test" &&
       "$MAX_CONCURRENT_TICKETS" =~ ^[0-9]+$ &&
       "$MAX_CONCURRENT_TICKETS" -gt 1 ]]; then
@@ -1487,9 +1670,11 @@ for check_status in "$BINDING_STATUS" "$KIT_STATUS" "$PIN_STATUS" "$RUNTIME_STAT
                     "$CLI_STATUS" "$CREDENTIAL_STATUS" \
                     "$PROVIDER_RUNTIME_STATUS" "$CONTRACT_RESUME_STATUS" \
                     "$TRANSITION_RECEIPT_STATUS" "$CONTROLLER_STATUS" \
+                    "$AUTHENTICATED_ARTIFACT_STATUS" \
                     "$FALLBACK_READINESS_STATUS" "$MODEL_READINESS_STATUS" \
                     "$PROVIDER_CLI_PIN_STATUS" \
-                    "$QUALIFICATION_TICKET_READINESS_STATUS"; do
+                    "$QUALIFICATION_TICKET_READINESS_STATUS" \
+                    "$QUALIFICATION_IDENTITY_STATUS"; do
   if [[ "$check_status" == "error" ]]; then
     OVERALL_STATUS="error"
     break
@@ -1520,6 +1705,7 @@ export PROVIDER_ACTIVE_TOKENS PROVIDER_UNKNOWN_WORKERS PROVIDER_LEGACY_INTERVALS
 export PROVIDER_CONCURRENCY_REQUIRED PROVIDER_CONCURRENCY_READY
 export CONTRACT_RESUME_STATUS CONTRACT_RESUME_FILE OVERALL_STATUS RUN_FILE
 export TRANSITION_RECEIPT_STATUS TRANSITION_RECEIPT_FILE
+export AUTHENTICATED_ARTIFACT_STATUS AUTHENTICATED_ARTIFACT_REASON_CODE
 export CONTROLLER_STATUS CONTROLLER_SERVICE_STATE CONTROLLER_LAST_EXIT_STATUS
 export FALLBACK_READINESS_STATUS FALLBACK_READINESS_JSON
 export MODEL_READINESS_STATUS MODEL_READINESS_JSON
@@ -1527,6 +1713,7 @@ export PROVIDER_CLI_PIN_STATUS PROVIDER_CLI_PIN_JSON
 export QUALIFICATION_TICKET_READINESS_STATUS
 export QUALIFICATION_TICKET_READINESS_REASON_CODE
 export QUALIFICATION_TICKET_READINESS_FILE
+export QUALIFICATION_IDENTITY_STATUS QUALIFICATION_IDENTITY_REASON_CODE
 
 if [[ "$JSON_MODE" -eq 1 ]]; then
   "$PYTHON_BIN" <<'PY'
@@ -1577,8 +1764,12 @@ with open(os.environ["LEASE_FILE"], encoding="utf-8") as handle:
 qualification_tickets = []
 with open(os.environ["QUALIFICATION_TICKET_READINESS_FILE"], encoding="utf-8") as handle:
     for line in handle:
-        ticket, status = line.rstrip("\n").split("\t", 1)
-        qualification_tickets.append({"status": status, "ticket": ticket})
+        ticket, status, reason_code = line.rstrip("\n").split("\t", 2)
+        qualification_tickets.append({
+            "reason_code": reason_code or None,
+            "status": status,
+            "ticket": ticket,
+        })
 
 with open(os.environ["CONTRACT_RESUME_FILE"], encoding="utf-8") as handle:
     contract_resume_incidents = json.load(handle)
@@ -1594,6 +1785,10 @@ document = {
     "checks": {
         "active_binding": {
             "status": os.environ["BINDING_STATUS"],
+            "reason_code": (
+                "active_binding_invalid"
+                if os.environ["BINDING_STATUS"] == "error" else None
+            ),
             "kit_dir": optional("OUTPUT_KIT_DIR"),
             "product_root": optional("OUTPUT_PRODUCT_ROOT"),
         },
@@ -1603,6 +1798,10 @@ document = {
         },
         "kit_pin": {
             "status": os.environ["PIN_STATUS"],
+            "reason_code": (
+                "kit_pin_identity_drift"
+                if os.environ["PIN_STATUS"] == "error" else None
+            ),
             "path": optional("OUTPUT_PIN_FILE"),
             "full_sha": optional("PIN_SHA"),
             "valid_full_sha": boolean("PIN_VALID"),
@@ -1610,6 +1809,10 @@ document = {
         },
         "runtime": {
             "status": os.environ["RUNTIME_STATUS"],
+            "reason_code": (
+                "runtime_residue_invalid"
+                if os.environ["RUNTIME_STATUS"] == "error" else None
+            ),
             "factory_dir": optional("OUTPUT_FACTORY_DIR"),
             "maintenance": boolean("MAINTENANCE"),
             "locks": {
@@ -1646,6 +1849,10 @@ document = {
             "reason_code": optional("QUALIFICATION_TICKET_READINESS_REASON_CODE"),
             "tickets": qualification_tickets,
         },
+        "qualification_identity": {
+            "status": os.environ["QUALIFICATION_IDENTITY_STATUS"],
+            "reason_code": optional("QUALIFICATION_IDENTITY_REASON_CODE"),
+        },
         "fallback_readiness": {
             "status": os.environ["FALLBACK_READINESS_STATUS"],
             "report": json.loads(os.environ["FALLBACK_READINESS_JSON"]),
@@ -1665,6 +1872,10 @@ document = {
         "transition_receipts": {
             "status": os.environ["TRANSITION_RECEIPT_STATUS"],
             "incidents": transition_receipt_incidents,
+        },
+        "authenticated_artifacts": {
+            "status": os.environ["AUTHENTICATED_ARTIFACT_STATUS"],
+            "reason_code": optional("AUTHENTICATED_ARTIFACT_REASON_CODE"),
         },
         "controller": {
             "status": os.environ["CONTROLLER_STATUS"],
@@ -1700,10 +1911,12 @@ else
   done < "$CLI_FILE"
   echo "Provider CLI pins [$PROVIDER_CLI_PIN_STATUS]"
   echo "Qualification ticket readiness [$QUALIFICATION_TICKET_READINESS_STATUS]: reason=${QUALIFICATION_TICKET_READINESS_REASON_CODE:-none}"
+  echo "Qualification identity [$QUALIFICATION_IDENTITY_STATUS]: reason=${QUALIFICATION_IDENTITY_REASON_CODE:-none}"
   echo "Credentials [$CREDENTIAL_STATUS]: github_authenticated=$GH_AUTH_READY"
   echo "Isolated provider [$PROVIDER_RUNTIME_STATUS]: activated=$PROVIDER_ACTIVATED concurrency_required=$PROVIDER_CONCURRENCY_REQUIRED concurrency_ready=$PROVIDER_CONCURRENCY_READY mode=${PROVIDER_EXECUTION_MODE:-none} attempts=$PROVIDER_ACTIVE_ATTEMPTS tokens=$PROVIDER_ACTIVE_TOKENS unknown_workers=$PROVIDER_UNKNOWN_WORKERS legacy=$PROVIDER_LEGACY_INTERVALS"
   echo "Contract resume [$CONTRACT_RESUME_STATUS]: incidents=$("$PYTHON_BIN" -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$CONTRACT_RESUME_FILE")"
   echo "Transition receipts [$TRANSITION_RECEIPT_STATUS]: incidents=$("$PYTHON_BIN" -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$TRANSITION_RECEIPT_FILE")"
+  echo "Authenticated artifacts [$AUTHENTICATED_ARTIFACT_STATUS]: reason=${AUTHENTICATED_ARTIFACT_REASON_CODE:-none}"
   echo "Controller [$CONTROLLER_STATUS]: state=$CONTROLLER_SERVICE_STATE last_exit=${CONTROLLER_LAST_EXIT_STATUS:-none}"
   echo "Model readiness [$MODEL_READINESS_STATUS]"
 fi

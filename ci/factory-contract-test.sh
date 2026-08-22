@@ -102,6 +102,8 @@ PY
   cp "$ROOT/scripts/ticket-readiness.py" "$release/scripts/ticket-readiness.py"
   cp "$ROOT/scripts/lib/qualification_manifest.py" \
     "$release/scripts/lib/qualification_manifest.py"
+  cp "$ROOT/scripts/lib/qualification_artifacts.py" \
+    "$release/scripts/lib/qualification_artifacts.py"
   cp "$ROOT/scripts/lib/dispatch-leases.sh" \
     "$release/scripts/lib/dispatch-leases.sh"
   cat > "$release/scripts/factory-doctor.sh" <<'EOF'
@@ -464,13 +466,14 @@ assert value["project"] == "contracttest"
 assert value["overall_status"] == "ok"
 checks = value["checks"]
 assert set(checks) == {
-    "active_binding", "kit", "kit_pin", "runtime", "clis",
+    "active_binding", "authenticated_artifacts", "kit", "kit_pin", "runtime", "clis",
     "provider_cli_pins", "fallback_readiness", "model_readiness",
     "credentials", "contract_resume", "transition_receipts", "controller",
-    "isolated_provider", "qualification_ticket_readiness",
+    "isolated_provider", "qualification_identity", "qualification_ticket_readiness",
 }
 assert checks["active_binding"] == {
     "status": "ok",
+    "reason_code": None,
     "kit_dir": os.path.realpath(release),
     "product_root": os.path.realpath(product),
 }
@@ -491,6 +494,12 @@ assert checks["isolated_provider"]["concurrency_required"] is False
 assert checks["isolated_provider"]["concurrency_ready"] is False
 assert checks["qualification_ticket_readiness"] == {
     "reason_code": None, "status": "not_applicable", "tickets": [],
+}
+assert checks["qualification_identity"] == {
+    "reason_code": None, "status": "not_applicable",
+}
+assert checks["authenticated_artifacts"] == {
+    "reason_code": None, "status": "not_applicable",
 }
 assert "registry" not in checks
 PY
@@ -634,6 +643,9 @@ import json, sys
 checks = json.load(open(sys.argv[1], encoding="utf-8"))["checks"]
 assert checks["contract_resume"] == {"incidents": [], "status": "ok"}
 assert checks["transition_receipts"] == {"incidents": [], "status": "ok"}
+assert checks["authenticated_artifacts"] == {
+    "reason_code": None, "status": "ok",
+}
 PY
 
 # The deterministic qualification driver refuses that real Doctor result
@@ -729,12 +741,16 @@ value = json.load(open(sys.argv[1], encoding="utf-8"))
 assert int(sys.argv[2]) == 1
 assert value["overall_status"] == "error"
 assert value["checks"]["qualification_ticket_readiness"] == {
-    "reason_code": "ticket_readiness_invalid",
+    "reason_code": "protected_source_conflict",
     "status": "error",
     "tickets": [
-        {"status": "ok", "ticket": "T-1"},
-        {"status": "error", "ticket": "T-2"},
-        {"status": "ok", "ticket": "T-3"},
+        {"reason_code": None, "status": "ok", "ticket": "T-1"},
+        {
+            "reason_code": "protected_source_conflict",
+            "status": "error",
+            "ticket": "T-2",
+        },
+        {"reason_code": None, "status": "ok", "ticket": "T-3"},
     ],
 }
 assert value["checks"]["fallback_readiness"] == {
