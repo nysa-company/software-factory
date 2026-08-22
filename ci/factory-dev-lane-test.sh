@@ -1202,7 +1202,8 @@ args = open(sys.argv[1], encoding="utf-8").read().splitlines()
 assert args[args.index("--mode") + 1] == "ask"
 assert "--force" in args
 assert "Reviewer CLI control: remain read-only" in args[-1]
-assert "run the required deterministic checks" in args[-1]
+assert "inspect the supplied change and CI results" in args[-1]
+assert "do not rerun tests, builds, or repository checks" in args[-1]
 assert "read-only terminal access" in args[-1]
 PY
 then

@@ -5512,6 +5512,45 @@ class FactoryControllerTest(unittest.TestCase):
         controller.recover_preflight_blocks([claim])
         self.assertEqual(leases, [])
 
+    def test_reviewer_receives_trusted_ci_context(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "cell-reviewer"
+        cell.mkdir()
+        claim = {
+            "branch": "ticket/T-110", "lease": "a" * 64,
+            "priority": "normal", "publication_lease": "", "receipt": "",
+            "role": "", "schema": CONTROL.CLAIM_SCHEMA, "status": "claimed",
+            "ticket": "T-110", "worktree": str(cell),
+        }
+        captured = []
+
+        class CompletedProcess:
+            def __init__(self, command, **_kwargs):
+                captured.append(command)
+
+            @staticmethod
+            def wait(timeout=None):
+                return 0
+
+        controller.ensure_execution_cell = lambda _claim: None
+        controller.terminal_for_receipt = lambda *_args: {}
+        controller.finish_pending_run = lambda _claim: True
+        publication = {
+            "boundary": "reviewer", "branch": "ticket/T-110", "checks": [],
+            "head": "b" * 40, "pr_number": 7,
+            "schema": "nysa.software-factory.ticket-pr/v1",
+            "status": "prepared", "ticket": "T-110",
+            "url": "https://github.com/example/product/pull/7",
+        }
+        with patch.object(CONTROL.subprocess, "Popen", CompletedProcess):
+            controller.run_role(
+                claim, "reviewer", "c" * 64, [], publication,
+            )
+        task = captured[0][-1]
+        self.assertIn("PR #7", task)
+        self.assertIn("exact head " + "b" * 40, task)
+        self.assertIn("every configured required GitHub check passed", task)
+
     def test_narrator_receives_trusted_publication_context(self) -> None:
         controller = CONTROL.Controller(self.args)
         cell = self.root / "cell-1"

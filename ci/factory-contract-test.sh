@@ -39,10 +39,14 @@ fail() {
 
 grep -Fqx -- '- Keep failing-test commits test-only. Commit required ticket-log comments separately as bookkeeping-only commits; never mix `factory/tickets/` paths with test paths in one commit.' \
   "$ROOT/roles/test-author.md" || fail "Test-author may mix ticket bookkeeping with tests"
-grep -Fqx -- '- Run only the narrowest existing command that executes the added or changed tests. Never run a root repository-wide, workspace-wide, or full test suite, build, `repo-check`, `secret-scan`, or other broad verification from this role. If no scoped command exists, record that broad verification is deferred to protected CI and final certification.' \
+grep -Fqx -- '- Run locally only the narrowest existing command that executes the added or changed tests. Never run a root repository-wide, workspace-wide, or full test suite, build, `repo-check`, `secret-scan`, or other broad verification from this role. If no scoped command exists, record that broad verification is deferred to protected CI and final certification.' \
   "$ROOT/roles/test-author.md" || fail "Test-author may run broad verification"
 grep -Fqx -- '- Keep implementation commits implementation-only. Commit required ticket-log notes separately as bookkeeping-only commits; never mix `factory/tickets/` paths with implementation paths in one commit.' \
   "$ROOT/roles/builder.md" || fail "Builder may mix ticket bookkeeping with implementation"
+grep -Fqx -- '- Run locally only the narrowest existing commands that cover the changed behavior. Never run a root repository-wide, workspace-wide, or full test suite from this role. If no scoped test, lint, or typecheck command exists, record that broad verification is deferred to protected CI and final certification.' \
+  "$ROOT/roles/builder.md" || fail "Builder may run broad verification"
+grep -Fqx -- '- Do not rerun tests, builds, repository checks, or broad verification. Inspect' \
+  "$ROOT/roles/reviewer.md" || fail "Reviewer may rerun verification"
 grep -Fqx -- 'READINESS_TIMEOUT_SECONDS="${FACTORY_DOCTOR_READINESS_TIMEOUT_SECONDS:-120}"' \
   "$DOCTOR" || fail "Doctor readiness timeout differs from qualification preparation"
 PYTHONWARNINGS=error python3 "$ROOT/scripts/secret-scan" --help >/dev/null ||
