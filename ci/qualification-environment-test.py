@@ -1568,7 +1568,10 @@ class QualificationEnvironmentTest(unittest.TestCase):
         ).split()[0]
 
         advance = self.workspace / "protected-main-advance"
-        run(self.workspace, "git", "clone", "-q", str(remote), str(advance))
+        run(
+            self.workspace, "git", "clone", "-q", "--branch", "main",
+            str(remote), str(advance),
+        )
         run(advance, "git", "config", "user.name", "Test")
         run(advance, "git", "config", "user.email", "test@example.invalid")
         (advance / "README.md").write_text("advance protected main\n")
