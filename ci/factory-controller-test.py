@@ -15860,6 +15860,230 @@ class FactoryControllerTest(unittest.TestCase):
             CONTROL.read(controller.reconciliation_marker(ticket)), marker
         )
 
+    def test_reconciliation_marker_accepts_one_authenticated_completed_role(
+        self,
+    ) -> None:
+        controller = self.qualification_controller()
+        ticket = "T-110"
+        source_release = "b" * 40
+        old_head, new_head = "c" * 40, "d" * 40
+        old_passport, exported_passport = "e" * 64, "f" * 64
+        cell = self.root / "cell-reconciliation-completed-role"
+        subprocess.run(["git", "init", "-q", str(cell)], check=True)
+        claim = {
+            "branch": f"ticket/{ticket}", "lease": "1" * 64,
+            "priority": "normal", "publication_lease": "", "receipt": "",
+            "role": "", "schema": CONTROL.CLAIM_SCHEMA, "status": "claimed",
+            "ticket": ticket, "worktree": str(cell),
+        }
+        runs = self.product / "factory/runs"
+        prior = runs / "prior.meta"
+        prior.write_text(
+            f"run_id=prior\nticket={ticket}\nrole=builder\n",
+            encoding="utf-8",
+        )
+        marker = {
+            "branch": claim["branch"],
+            "factory_sha": source_release,
+            "head_sha": old_head,
+            "passport_sha256": old_passport,
+            "run_snapshot_sha256": controller.ticket_run_snapshot(ticket),
+            "schema": "nysa.software-factory.reconciliation-boundary/v1",
+            "ticket": ticket,
+        }
+        marker_path = controller.reconciliation_marker(ticket)
+        CONTROL.write(marker_path, marker)
+
+        key = b"k" * 32
+        key_path = self.state / "passport.key"
+        key_path.write_bytes(key)
+        key_path.chmod(0o600)
+        retained = self.state / "retained-runs"
+        retained.mkdir(mode=0o700)
+        prior_raw = prior.read_bytes()
+        retention = {
+            "files": {
+                "meta": {
+                    "logical_path": "factory/runs/prior.meta",
+                    "sha256": hashlib.sha256(prior_raw).hexdigest(),
+                    "size": len(prior_raw),
+                },
+            },
+            "passport_sha256": old_passport,
+            "role": "builder",
+            "run_id": "prior",
+            "schema": "nysa.software-factory.qualification-artifact-retention/v1",
+            "ticket": ticket,
+        }
+        retention["authentication_sha256"] = hmac.new(
+            key, CONTROL.canonical_document(retention), hashlib.sha256,
+        ).hexdigest()
+        retention_path = retained / "prior.json"
+        CONTROL.write(retention_path, retention)
+
+        receipt = {
+            "branch": claim["branch"],
+            "consumed": True,
+            "contract_version": "2.0.0",
+            "factory_sha": source_release,
+            "head_sha": old_head,
+            "passport_sha256": "2" * 64,
+            "project": "relay",
+            "role": "reviewer",
+            "schema": "nysa.software-factory.transition-receipt/v1",
+            "stage": "RUN reviewer",
+            "ticket": ticket,
+        }
+        receipt["receipt_sha256"] = hashlib.sha256(
+            CONTROL.canonical_document({
+                name: item for name, item in receipt.items()
+                if name not in {"consumed", "receipt_sha256"}
+            })
+        ).hexdigest()
+        CONTROL.write(self.state / f"{ticket}.json", receipt)
+
+        output = runs / "review.out"
+        output.write_bytes(b"APPROVE\n")
+        output.chmod(0o600)
+        output_digest = hashlib.sha256(output.read_bytes()).hexdigest()
+        manifest = runs / "review.meta"
+        manifest.write_text(
+            "run_id=review\nphase=completed\naccounting_state=completed\n"
+            "go_issued=1\ntask_submitted=1\nexit_status=0\nrole_exit=ok\n"
+            f"ticket={ticket}\nrole=reviewer\nkit_sha={source_release}\n"
+            "contract_version=2.0.0\n"
+            f"role_branch_before={claim['branch']}\nrole_head_before={old_head}\n"
+            f"transition_receipt_sha256={receipt['receipt_sha256']}\n"
+            f"output_sha256={output_digest}\n",
+            encoding="utf-8",
+        )
+        manifest_digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
+        role_edge = {
+            "from_factory_sha": source_release,
+            "from_head_sha": old_head,
+            "from_passport_file_sha256": "3" * 64,
+            "from_passport_sha256": exported_passport,
+            "from_protected_base_sha": "4" * 40,
+            "from_route_plan_sha256": "5" * 64,
+            "schema": CONTROL.PASSPORT_MIGRATION_SCHEMA,
+            "to_factory_sha": source_release,
+            "to_head_sha": new_head,
+            "to_protected_base_sha": "6" * 40,
+            "to_route_plan_sha256": "7" * 64,
+        }
+        release_edge = {
+            "from_factory_sha": source_release,
+            "from_head_sha": new_head,
+            "from_passport_file_sha256": "8" * 64,
+            "from_passport_sha256": "9" * 64,
+            "from_protected_base_sha": role_edge["to_protected_base_sha"],
+            "from_route_plan_sha256": role_edge["to_route_plan_sha256"],
+            "schema": CONTROL.PASSPORT_MIGRATION_SCHEMA,
+            "to_factory_sha": self.release.name,
+            "to_head_sha": new_head,
+            "to_protected_base_sha": "a" * 40,
+            "to_route_plan_sha256": "b" * 64,
+        }
+        evidence = {
+            "contract_version": "2.0.0",
+            "factory_sha": source_release,
+            "head_before": old_head,
+            "manifest_sha256": manifest_digest,
+            "output_sha256": output_digest,
+            "role": "reviewer",
+            "run_id": "review",
+            "transition_receipt_sha256": receipt["receipt_sha256"],
+        }
+        charge = {
+            "accounting_state": "completed",
+            "charge_micro_usd": 1,
+            "contract_version": "2.0.0",
+            "factory_sha": source_release,
+            "head_before": old_head,
+            "manifest_sha256": manifest_digest,
+            "role": "reviewer",
+            "run_id": "review",
+            "transition_receipt_sha256": receipt["receipt_sha256"],
+        }
+        body = {
+            "branch": claim["branch"],
+            "charge_records": [charge],
+            "completed_role_evidence": [evidence],
+            "contract_version": "2.0.0",
+            "current_state": "Review",
+            "factory_release_history": [
+                {"contract_version": "2.0.0", "factory_sha": source_release},
+                {"contract_version": "2.0.0", "factory_sha": self.release.name},
+            ],
+            "factory_sha": self.release.name,
+            "head_sha": new_head,
+            "migration_history": [role_edge, release_edge],
+            "parent_digest": release_edge["from_passport_sha256"],
+            "parent_file_sha256": release_edge["from_passport_file_sha256"],
+            "project": "relay",
+            "protected_base_sha": release_edge["to_protected_base_sha"],
+            "publication_state": "validating",
+            "route_plan_sha256": release_edge["to_route_plan_sha256"],
+            "schema": "nysa.software-factory.ticket-passport/v1",
+            "ticket": ticket,
+            "transition_receipt_sha256": receipt["receipt_sha256"],
+        }
+        passport = PASSPORT.authenticate(body, key)
+        passports = self.state / "passports"
+        passports.mkdir(mode=0o700)
+        PASSPORT.write_atomic(passports / f"{ticket}.json", passport)
+        controller.remote_passport_valid = lambda _claim: True
+
+        controller.mark_reconciling(claim)
+
+        advanced = CONTROL.read(marker_path)
+        self.assertEqual(advanced["factory_sha"], self.release.name)
+        self.assertEqual(advanced["head_sha"], new_head)
+        self.assertEqual(advanced["passport_sha256"], passport["passport_sha256"])
+
+        CONTROL.write(marker_path, marker)
+        extra = runs / "extra.meta"
+        extra.write_text(
+            f"run_id=extra\nticket={ticket}\nrole=reviewer\n",
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "reconciliation boundary conflicts",
+        ):
+            controller.mark_reconciling(claim)
+        extra.unlink()
+
+        tampered = CONTROL.read(retention_path)
+        tampered["passport_sha256"] = "0" * 64
+        CONTROL.write(retention_path, tampered)
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "reconciliation boundary conflicts",
+        ):
+            controller.mark_reconciling(claim)
+        CONTROL.write(retention_path, retention)
+
+        tampered_receipt = dict(receipt, role="builder")
+        CONTROL.write(self.state / f"{ticket}.json", tampered_receipt)
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "reconciliation boundary conflicts",
+        ):
+            controller.mark_reconciling(claim)
+        CONTROL.write(self.state / f"{ticket}.json", receipt)
+
+        original_output = output.read_bytes()
+        output.write_bytes(b"tampered\n")
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "reconciliation boundary conflicts",
+        ):
+            controller.mark_reconciling(claim)
+        output.write_bytes(original_output)
+
+        controller.remote_passport_valid = lambda _claim: False
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "reconciliation boundary conflicts",
+        ):
+            controller.mark_reconciling(claim)
+
     def test_reconciliation_boundary_conflict_does_not_block_sibling(
         self,
     ) -> None:

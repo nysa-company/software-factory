@@ -34,6 +34,7 @@ from release_lineage import (  # noqa: E402
 from qualification_artifacts import (  # noqa: E402
     ArtifactError as QualificationArtifactError,
     ensure_ticket as ensure_qualification_artifacts,
+    retained_passport_digest_authenticated,
 )
 from qualification_manifest import (  # noqa: E402
     ManifestError as QualificationManifestError,
@@ -5459,13 +5460,18 @@ class Controller:
                 run_id=terminal.get("run_id"),
             )
 
-    def ticket_run_snapshot(self, ticket: str) -> str:
+    def ticket_run_inventory(self, ticket: str) -> list[tuple[str, str]]:
         selected = []
         for path in sorted((self.product / "factory/runs").glob("*.meta")):
             value = fields(path)
             if value.get("ticket") == ticket:
                 selected.append((path.name, hashlib.sha256(path.read_bytes()).hexdigest()))
-        return hashlib.sha256(canonical(selected).encode()).hexdigest()
+        return selected
+
+    def ticket_run_snapshot(self, ticket: str) -> str:
+        return hashlib.sha256(
+            canonical(self.ticket_run_inventory(ticket)).encode()
+        ).hexdigest()
 
     def reconciliation_marker(self, ticket: str) -> Path:
         return self.state / f"reconciling-{ticket}.json"
@@ -5843,6 +5849,20 @@ class Controller:
             and edge["from_passport_sha256"]
             == marker.get("passport_sha256")
         ] if isinstance(migrations, list) else []
+        completed_role_start = False
+        if not starts and isinstance(migrations, list):
+            advanced = [
+                index for index, edge in enumerate(migrations)
+                if valid_v2_migration(edge)
+                and edge["from_factory_sha"] == marker.get("factory_sha")
+                and edge["from_head_sha"] == marker.get("head_sha")
+                and self.reconciliation_completed_role_successor(
+                    claim, marker, current, passport, edge,
+                )
+            ]
+            if len(advanced) == 1:
+                starts = advanced
+                completed_role_start = True
         suffix = migrations[starts[0]:] if len(starts) == 1 else []
         final = suffix[-1] if suffix else {}
         if (
@@ -5854,8 +5874,11 @@ class Controller:
             != "nysa.software-factory.reconciliation-boundary/v1"
             or marker.get("ticket") != claim["ticket"]
             or marker.get("branch") != claim["branch"]
-            or current.get("run_snapshot_sha256")
-            != marker.get("run_snapshot_sha256")
+            or (
+                not completed_role_start
+                and current.get("run_snapshot_sha256")
+                != marker.get("run_snapshot_sha256")
+            )
             or current.get("factory_sha") != self.release_path.name
             or current.get("head_sha") != passport.get("head_sha")
             or current.get("passport_sha256")
@@ -5900,6 +5923,135 @@ class Controller:
             status.returncode == 0
             and not status.stdout
             and self.remote_passport_valid(claim)
+        )
+
+    def reconciliation_completed_role_successor(
+        self, claim: dict[str, Any], marker: dict[str, Any],
+        current: dict[str, Any], passport: dict[str, Any],
+        edge: dict[str, Any],
+    ) -> bool:
+        """Authenticate one role export between an old marker and its suffix."""
+        if (
+            not self.qualification
+            or marker.get("factory_sha") == self.release_path.name
+            or edge.get("from_passport_sha256")
+            == marker.get("passport_sha256")
+        ):
+            return False
+        try:
+            authenticated = self.authenticated_operator_passport(claim["ticket"])
+            receipt = self.transition_receipt(
+                claim, allow_prior=True, record=False,
+            )
+            inventory = self.ticket_run_inventory(claim["ticket"])
+        except (
+            AttributeError, ControllerError, QualificationArtifactError,
+            FileNotFoundError, json.JSONDecodeError, OSError, UnicodeError,
+        ):
+            return False
+        if authenticated != passport or receipt is None:
+            return False
+        receipt_digest = receipt.get("receipt_sha256", "")
+        completed_records = passport.get("completed_role_evidence")
+        charge_records = passport.get("charge_records")
+        if not isinstance(completed_records, list) or not isinstance(
+            charge_records, list,
+        ):
+            return False
+        completed = [
+            item for item in completed_records
+            if isinstance(item, dict)
+            and item.get("factory_sha") == marker.get("factory_sha")
+            and item.get("head_before") == marker.get("head_sha")
+            and item.get("transition_receipt_sha256") == receipt_digest
+        ]
+        if len(completed) != 1:
+            return False
+        evidence = completed[0]
+        run_id = evidence.get("run_id", "")
+        if not isinstance(run_id, str):
+            return False
+        charges = [
+            item for item in charge_records
+            if isinstance(item, dict)
+            and item.get("run_id") == run_id
+            and item.get("role") == evidence.get("role")
+            and item.get("transition_receipt_sha256") == receipt_digest
+        ]
+        if len(charges) != 1:
+            return False
+        charge = charges[0]
+        try:
+            retained = retained_passport_digest_authenticated(
+                self.state, claim["ticket"], marker.get("passport_sha256", ""),
+            )
+            terminal = self.terminal_for_receipt(
+                claim["ticket"], receipt_digest,
+            )
+            manifest = self.product / "factory/runs" / f"{run_id}.meta"
+            manifest_digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
+            output = manifest.with_suffix(".out")
+            output_digest = role_output_sha256(output)
+        except (
+            ControllerError, QualificationArtifactError, FileNotFoundError,
+            OSError, RoleOutputError, UnicodeError,
+        ):
+            return False
+        entry = (manifest.name, manifest_digest)
+        prior_inventory = list(inventory)
+        if prior_inventory.count(entry) == 1:
+            prior_inventory.remove(entry)
+        else:
+            return False
+        return bool(
+            retained
+            and terminal is not None
+            and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", run_id)
+            and isinstance(receipt_digest, str)
+            and DIGEST.fullmatch(receipt_digest)
+            and isinstance(receipt.get("passport_sha256"), str)
+            and DIGEST.fullmatch(receipt["passport_sha256"])
+            and receipt.get("ticket") == claim["ticket"]
+            and receipt.get("branch") == claim["branch"]
+            and receipt.get("factory_sha") == marker.get("factory_sha")
+            and receipt.get("head_sha") == marker.get("head_sha")
+            and receipt.get("role") == evidence.get("role")
+            and receipt.get("stage") in {
+                f"RUN {evidence.get('role')}", f"FIX {evidence.get('role')}",
+            }
+            and receipt.get("consumed") is True
+            and evidence.get("contract_version")
+            == receipt.get("contract_version")
+            and isinstance(evidence.get("manifest_sha256"), str)
+            and DIGEST.fullmatch(evidence["manifest_sha256"])
+            and isinstance(evidence.get("output_sha256"), str)
+            and DIGEST.fullmatch(evidence["output_sha256"])
+            and charge.get("factory_sha") == evidence.get("factory_sha")
+            and charge.get("head_before") == evidence.get("head_before")
+            and charge.get("contract_version")
+            == evidence.get("contract_version")
+            and charge.get("manifest_sha256")
+            == evidence.get("manifest_sha256") == manifest_digest
+            and terminal.get("run_id") == run_id
+            and terminal.get("ticket") == claim["ticket"]
+            and terminal.get("role") == evidence.get("role")
+            and terminal.get("kit_sha") == marker.get("factory_sha")
+            and terminal.get("contract_version")
+            == evidence.get("contract_version")
+            and terminal.get("role_branch_before") == claim["branch"]
+            and terminal.get("role_head_before") == marker.get("head_sha")
+            and terminal.get("transition_receipt_sha256") == receipt_digest
+            and terminal.get("phase") == "completed"
+            and terminal.get("go_issued") == "1"
+            and terminal.get("task_submitted") == "1"
+            and terminal.get("exit_status") == "0"
+            and terminal.get("role_exit") == "ok"
+            and terminal.get("output_sha256") == evidence.get("output_sha256")
+            and output_digest == evidence.get("output_sha256")
+            and current.get("run_snapshot_sha256")
+            == hashlib.sha256(canonical(inventory).encode()).hexdigest()
+            and marker.get("run_snapshot_sha256")
+            == hashlib.sha256(canonical(prior_inventory).encode()).hexdigest()
         )
 
     def prior_maintenance_receipt_successor(
