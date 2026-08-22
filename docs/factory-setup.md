@@ -226,8 +226,9 @@ provider state, ticket branches, or paid roles are created.
   replay; it never deletes a torn, mismatched, unexpected, or active lane.
   If protected main advances after preparation pushed a selected Ready branch,
   retry and dispatch accept only that canonical branch paired with its exact
-  authenticated local Ready-receipt digest; tamper still refuses before provider
-  preparation or admission.
+  authenticated local Ready-receipt digest. That newer receipt supersedes an
+  older reset head only while retaining the older authorization as lineage
+  proof; tamper still refuses before provider preparation or admission.
   The sealed release is renamed from a same-directory temporary tree, and the
   environment record is durable before the final `active.json` authority. Continue
   to use `--restore` only for its existing signed safe-pause boundary; there is

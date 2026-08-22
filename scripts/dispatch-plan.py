@@ -52,6 +52,7 @@ class ResetAuthorization(NamedTuple):
     source_factory_sha: str = ""
     source_generation: int = 0
     source_product_sha: str = ""
+    prior: ResetAuthorization | None = None
 
 
 def canonical(value: Any) -> str:
@@ -823,6 +824,7 @@ def validate_operator_ready_lineage(
     ticket_path: str,
     plan_path: str,
     expected_receipt_sha256: str = "",
+    prior_authorization: ResetAuthorization | str | None = None,
 ) -> None:
     base = git(product, "merge-base", main, remote_head).strip()
     changed = set(git(
@@ -877,10 +879,18 @@ def validate_operator_ready_lineage(
             != git(product, "rev-parse", f"{base}^{{tree}}").strip()
         ):
             raise DispatchError("pre-provider branch commits are not canonical")
-        validate_operator_ready_lineage(
-            product, ticket, branch, base, parents[0], ticket_path,
-            plan_path,
-        )
+        if (
+            prior_authorization is not None
+            and parents[0] == reset_authorization(prior_authorization).head
+        ):
+            validate_preprovider_branch(
+                product, ticket, branch, base, prior_authorization, parents[0],
+            )
+        else:
+            validate_operator_ready_lineage(
+                product, ticket, branch, base, parents[0], ticket_path,
+                plan_path, prior_authorization=prior_authorization,
+            )
         previous = reset[0]
         commits = commits[index + 2:]
 
@@ -1145,8 +1155,10 @@ def validate_preprovider_branch(
     reset: ResetAuthorization | str,
     remote_head: str,
     expected_ready_receipt_sha256: str = "",
+    prior_authorization: ResetAuthorization | str | None = None,
 ) -> str:
     authorization = reset_authorization(reset)
+    prior_authorization = prior_authorization or authorization.prior
     if remote_head != authorization.head:
         raise DispatchError("ticket remote branch does not match reset authorization")
     if authorization.source_factory_sha:
@@ -1174,7 +1186,7 @@ def validate_preprovider_branch(
     if len(receipt_paths) == 1 and changed == {ticket_path, receipt_paths[0]}:
         validate_operator_ready_lineage(
             product, ticket, branch, main, remote_head, ticket_path,
-            plan_path, expected_ready_receipt_sha256,
+            plan_path, expected_ready_receipt_sha256, prior_authorization,
         )
         return remote_head
     if changed != {ticket_path, plan_path}:
@@ -1328,10 +1340,16 @@ def inspect_selected_preprovider_branches(
         if git_succeeds(product, "merge-base", "--is-ancestor", main, remote_head):
             continue
         authorized_head = authorizations.get(ticket, "")
-        if not authorized_head and ticket in prepared:
+        if authorized_head and remote_head == authorized_head.head:
+            validate_preprovider_branch(
+                product, ticket, branch, main, authorized_head, remote_head,
+            )
+            divergent[ticket] = remote_head
+            continue
+        if ticket in prepared:
             validate_preprovider_branch(
                 product, ticket, branch, main, remote_head, remote_head,
-                prepared[ticket],
+                prepared[ticket], authorized_head or None,
             )
             divergent[ticket] = remote_head
             prepared_divergent.add(ticket)
@@ -1344,9 +1362,9 @@ def inspect_selected_preprovider_branches(
             product, ticket, branch, main, authorized_head, remote_head,
         )
         divergent[ticket] = remote_head
-    if exact_authorizations and set(authorizations) != (
-        set(divergent) - prepared_divergent
-    ):
+    if exact_authorizations and (
+        set(authorizations) - prepared_divergent
+    ) != (set(divergent) - prepared_divergent):
         raise DispatchError("pre-provider reset authorization is not exact")
     return divergent
 
@@ -1383,7 +1401,10 @@ def selected_preprovider_reset_authorizations(
         factory, qualification_state, prefix,
     )
     for ticket in set(prepared) & set(inspected):
-        resets.setdefault(ticket, ResetAuthorization(inspected[ticket]))
+        if ticket not in resets or resets[ticket].head != inspected[ticket]:
+            resets[ticket] = ResetAuthorization(
+                inspected[ticket], prior=resets.get(ticket),
+            )
     return resets
 
 

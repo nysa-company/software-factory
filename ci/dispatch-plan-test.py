@@ -1618,6 +1618,29 @@ class DispatchPlanTest(unittest.TestCase):
         )
         self.assertEqual(inspected, {"T-110": prepared_head})
 
+        self.authorize_preprovider_reset("d" * 40)
+        inspected = DISPATCH.inspect_selected_preprovider_branches(
+            self.product, self.product / "factory", state, str(self.remote),
+            exact_authorizations=True,
+            prepared_ready_receipts={"T-110": "c" * 64},
+        )
+        self.assertEqual(inspected, {"T-110": prepared_head})
+        with (
+            mock.patch.dict(os.environ, {
+                "FACTORY_KIT_TRUST_SCOPE": "qualification-candidate",
+                "FACTORY_QUALIFICATION_MODE": "isolated",
+            }),
+            mock.patch.object(
+                DISPATCH, "authenticated_prepared_ready_receipts",
+                return_value={"T-110": "c" * 64},
+            ),
+        ):
+            selected = DISPATCH.selected_preprovider_reset_authorizations(
+                self.product, self.product / "factory", state,
+                str(self.remote), self.mapping, self.root / "controller",
+            )
+        self.assertEqual(selected["T-110"].head, prepared_head)
+
         with self.assertRaisesRegex(
             DISPATCH.DispatchError, "operator-ready state is invalid",
         ):

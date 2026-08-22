@@ -1194,6 +1194,109 @@ class QualificationEnvironmentTest(unittest.TestCase):
             .joinpath("factory/tickets/T-101.md").read_text(),
         )
 
+    def test_prepared_retry_supersedes_older_qualification_authorization(self) -> None:
+        remote = self.use_real_branch_preflight()
+        authorized = self.qualification_control_selected_branch(remote)
+        args = argparse.Namespace(
+            factory_root=self.factory, product_root=self.product,
+            project="relay", root=self.root,
+        )
+        with mock.patch.object(ENVIRONMENT, "qualification_publication_origin"):
+            ENVIRONMENT.prepare(args)
+        active = ENVIRONMENT.read(self.root / "projects/relay/active.json")
+        worktrees = self.root / "worktrees"
+        worktrees.mkdir(mode=0o700)
+        environment = {
+            **os.environ,
+            "FACTORY_CERTIFIED_PRODUCT_ORIGIN": str(remote),
+            "FACTORY_CONTROLLER_STATE_DIR": active["controller_state_path"],
+            "FACTORY_OPERATOR_MAP": active["operator_map_path"],
+            "FACTORY_RELEASE_CONTRACT_VERSION": "2.0.0",
+            "FACTORY_KIT_TRUST_SCOPE": "qualification-candidate",
+            "FACTORY_QUALIFICATION_MODE": "isolated",
+        }
+        first = subprocess.run(
+            [
+                sys.executable, str(ROOT / "scripts/dispatch-plan.py"),
+                "--factory-root", str(self.product.resolve()),
+                "--worktree-root", str(worktrees.resolve()), "claim",
+            ],
+            text=True, capture_output=True, check=False, timeout=60,
+            env=environment,
+        )
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        first_claim = json.loads(first.stdout)
+        self.assertEqual(first_claim["preprovider_reset_head"], authorized)
+        ready_head = run(
+            self.product, "git", "ls-remote", "--heads", str(remote),
+            "refs/heads/ticket/T-101",
+        ).split()[0]
+        self.assertNotEqual(ready_head, authorized)
+
+        (self.product / "factory/.dispatch-leases/T-101.json").unlink()
+        run(
+            self.product, "git", "worktree", "remove", first_claim["worktree"],
+        )
+        run(self.product, "git", "branch", "-D", "ticket/T-101")
+        advance = self.workspace / "prepared-retry-main"
+        run(
+            self.workspace, "git", "clone", "-q", "--branch", "main",
+            str(remote), str(advance),
+        )
+        run(advance, "git", "config", "user.name", "Test")
+        run(advance, "git", "config", "user.email", "test@example.invalid")
+        (advance / "README.md").write_text("advance protected main\n")
+        run(advance, "git", "add", "README.md")
+        run(advance, "git", "commit", "-qm", "advance protected main")
+        run(advance, "git", "push", "-q", "origin", "main")
+
+        second = subprocess.run(
+            [
+                sys.executable, str(ROOT / "scripts/dispatch-plan.py"),
+                "--factory-root", str(self.product.resolve()),
+                "--worktree-root", str(worktrees.resolve()), "claim",
+            ],
+            text=True, capture_output=True, check=False, timeout=60,
+            env=environment,
+        )
+        self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+        second_claim = json.loads(second.stdout)
+        self.assertEqual(second_claim["preprovider_reset_head"], ready_head)
+        self.assertIn(
+            "State: Ready",
+            Path(second_claim["worktree"])
+            .joinpath("factory/tickets/T-101.md").read_text(),
+        )
+        second_ready_head = run(
+            self.product, "git", "ls-remote", "--heads", str(remote),
+            "refs/heads/ticket/T-101",
+        ).split()[0]
+        self.assertNotEqual(second_ready_head, ready_head)
+
+        (self.product / "factory/.dispatch-leases/T-101.json").unlink()
+        run(
+            self.product, "git", "worktree", "remove", second_claim["worktree"],
+        )
+        run(self.product, "git", "branch", "-D", "ticket/T-101")
+        (advance / "SECOND.md").write_text("advance protected main again\n")
+        run(advance, "git", "add", "SECOND.md")
+        run(advance, "git", "commit", "-qm", "advance protected main again")
+        run(advance, "git", "push", "-q", "origin", "main")
+
+        third = subprocess.run(
+            [
+                sys.executable, str(ROOT / "scripts/dispatch-plan.py"),
+                "--factory-root", str(self.product.resolve()),
+                "--worktree-root", str(worktrees.resolve()), "claim",
+            ],
+            text=True, capture_output=True, check=False, timeout=60,
+            env=environment,
+        )
+        self.assertEqual(third.returncode, 0, third.stdout + third.stderr)
+        self.assertEqual(
+            json.loads(third.stdout)["preprovider_reset_head"], second_ready_head,
+        )
+
     def test_fresh_prepare_and_claim_accept_prior_canonical_ready_reset(self) -> None:
         self.use_contract_2()
         remote = self.use_real_branch_preflight()
