@@ -7570,3 +7570,14 @@ can revalidate the exact passport, branch, run snapshot, release, and clean
 remote checkpoint before retrying; ordinary worker completion still consumes
 the marker once. Controller implementation and focused-test changes now trigger
 the parallel 20-replay and three-sealed-mock GitHub qualification workflow.
+
+## 2026-08-22 — Decision 552: Progress refreshes reconciliation authority atomically
+
+Category: Reliability
+
+Each trusted `progressed` stage now advances the active reconciliation marker
+to the current passport and head before the same worker evaluates another
+stage. A stale `blocked_reason` on a nonblocked claim cannot preserve the older
+marker, while an actually blocked controller or external error still retains
+its exact restart authority. The existing concurrent-progress regression covers
+the refresh and final marker retirement without another provider attempt.

@@ -5783,7 +5783,9 @@ class Controller:
             marker_path.unlink()
             self.event_once("prepublication_attestation_recovered", claim["ticket"])
 
-    def mark_reconciling(self, claim: dict[str, Any]) -> None:
+    def mark_reconciling(
+        self, claim: dict[str, Any], *, after_progress: bool = False,
+    ) -> None:
         passport_path = self.state / "passports" / f"{claim['ticket']}.json"
         if claim.get("receipt") or claim.get("role") or not passport_path.exists():
             return
@@ -5801,19 +5803,30 @@ class Controller:
         if path.exists():
             marker = read(path)
             if marker != value:
-                if not self.reconciliation_boundary_successor(
+                if after_progress:
+                    write(path, value)
+                    self.event(
+                        "reconciliation_boundary_progressed",
+                        claim["ticket"],
+                        from_head_sha=marker.get("head_sha"),
+                        from_passport_sha256=marker.get("passport_sha256"),
+                        head_sha=value["head_sha"],
+                        passport_sha256=value["passport_sha256"],
+                    )
+                elif not self.reconciliation_boundary_successor(
                     claim, marker, value, passport,
                 ):
                     raise ControllerError("ticket reconciliation boundary conflicts")
-                self.event_once(
-                    "reconciliation_boundary_refresh_authorized",
-                    claim["ticket"],
-                    from_head_sha=marker["head_sha"],
-                    from_passport_sha256=marker["passport_sha256"],
-                    head_sha=value["head_sha"],
-                    passport_sha256=value["passport_sha256"],
-                )
-                write(path, value)
+                else:
+                    self.event_once(
+                        "reconciliation_boundary_refresh_authorized",
+                        claim["ticket"],
+                        from_head_sha=marker["head_sha"],
+                        from_passport_sha256=marker["passport_sha256"],
+                        head_sha=value["head_sha"],
+                        passport_sha256=value["passport_sha256"],
+                    )
+                    write(path, value)
         else:
             write(path, value)
 
@@ -13253,6 +13266,7 @@ class Controller:
                     self.park_claim(claim)
                 self.settle_recovery_attempt(claim)
                 return result
+            self.mark_reconciling(claim, after_progress=True)
 
     def reconcile(self) -> dict[str, Any]:
         self.qualification_cohort_error.clear()
@@ -13717,9 +13731,12 @@ class Controller:
                         self.latch_qualification_cohort_error()
                     if (
                         not worker_failed
-                        and claim.get("blocked_reason") not in {
-                            "controller-error", "external-unavailable",
-                        }
+                        and not (
+                            claim.get("status") == "blocked"
+                            and claim.get("blocked_reason") in {
+                                "controller-error", "external-unavailable",
+                            }
+                        )
                     ):
                         self.reconciliation_marker(claim["ticket"]).unlink(
                             missing_ok=True

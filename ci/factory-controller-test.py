@@ -16523,6 +16523,8 @@ class FactoryControllerTest(unittest.TestCase):
     def test_progressed_ticket_advances_while_sibling_is_still_active(self) -> None:
         controller = CONTROL.Controller(self.args)
         controller.protected_main_head = lambda: "f" * 40
+        passports = self.state / "passports"
+        passports.mkdir(mode=0o700)
         claims = []
         for number, ticket in enumerate(("T-110", "T-111"), 1):
             cell = self.root / f"cell-{number}"
@@ -16539,6 +16541,13 @@ class FactoryControllerTest(unittest.TestCase):
                 "ticket": ticket,
                 "worktree": str(cell),
             })
+            CONTROL.write(passports / f"{ticket}.json", {
+                "branch": f"ticket/{ticket}",
+                "factory_sha": self.release.name,
+                "head_sha": "b" * 40,
+                "passport_sha256": "c" * 64,
+                "ticket": ticket,
+            })
         controller.load_claims = lambda: claims
         controller.recover_missing_passport_claims = lambda _claims: None
         controller.recover_upgraded_claims = lambda _claims: None
@@ -16548,13 +16557,25 @@ class FactoryControllerTest(unittest.TestCase):
         controller.event = lambda *_args, **_kwargs: None
         advanced = __import__("threading").Event()
         calls = {"T-110": 0, "T-111": 0}
+        refreshed = []
 
         def reconcile(claim):
             ticket = claim["ticket"]
             calls[ticket] += 1
             if ticket == "T-110" and calls[ticket] == 1:
+                claim["blocked_reason"] = "controller-error"
+                CONTROL.write(passports / f"{ticket}.json", {
+                    "branch": f"ticket/{ticket}",
+                    "factory_sha": self.release.name,
+                    "head_sha": "d" * 40,
+                    "passport_sha256": "e" * 64,
+                    "ticket": ticket,
+                })
                 return {"status": "progressed", "ticket": ticket}
             if ticket == "T-110":
+                refreshed.append(CONTROL.read(
+                    controller.reconciliation_marker(ticket)
+                ))
                 advanced.set()
                 return {"status": "waiting", "ticket": ticket}
             self.assertTrue(advanced.wait(1), "sibling checkpoint did not advance")
@@ -16562,8 +16583,11 @@ class FactoryControllerTest(unittest.TestCase):
 
         controller.reconcile_ticket = reconcile
         result = controller.reconcile()
-        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["status"], "ok", result)
         self.assertEqual(calls, {"T-110": 2, "T-111": 1})
+        self.assertEqual(refreshed[0]["head_sha"], "d" * 40)
+        self.assertEqual(refreshed[0]["passport_sha256"], "e" * 64)
+        self.assertFalse(controller.reconciliation_marker("T-110").exists())
 
     def test_qualification_complete_subset_waits_for_protected_target(self) -> None:
         controller = CONTROL.Controller(self.args)
