@@ -15,7 +15,6 @@ import sys
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
-from legacy_closeout import ValidationError, protected_terminal  # noqa: E402
 from ticket_state_transition import TransitionError, exact_state  # noqa: E402
 
 
@@ -357,6 +356,8 @@ def validate(ticket: str, workdir: Path) -> None:
             if state != "done":
                 raise ReadinessError("ticket Kit-SHA does not match factory/KIT_PIN")
     if state == "done":
+        from legacy_closeout import ValidationError, protected_terminal
+
         try:
             protected_terminal(workdir, ticket)
         except ValidationError as error:
