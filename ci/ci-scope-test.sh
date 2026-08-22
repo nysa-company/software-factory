@@ -8,6 +8,15 @@ unset CI_FORCE_FULL
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 WORKFLOW="$ROOT/.github/workflows/ci.yml"
+QUALIFICATION_WORKFLOW="$ROOT/.github/workflows/qualification-replay.yml"
+[[ "$(grep -Fc 'runs-on: macos-14' "$QUALIFICATION_WORKFLOW")" -eq 1 &&
+    "$(grep -Fc 'python3 ci/qualification-lane-replay-test.py' "$QUALIFICATION_WORKFLOW")" -eq 1 &&
+    "$(grep -Fc 'repetition: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]' "$QUALIFICATION_WORKFLOW")" -eq 1 &&
+    "$(grep -Fc 'name: require 20 successful repetitions' "$QUALIFICATION_WORKFLOW")" -eq 1 &&
+    "$(grep -Fc 'CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || inputs.candidate_sha }}' "$QUALIFICATION_WORKFLOW")" -eq 1 ]] || {
+  echo "FAIL: qualification replay must run 20 exact-SHA repetitions on hosted macOS" >&2
+  exit 1
+}
 [[ "$(grep -Fc 'actions/checkout@v5' "$WORKFLOW")" -eq 6 &&
     "$(grep -Fc 'actions/setup-node@v5' "$WORKFLOW")" -eq 3 &&
     "$(grep -Fc 'actions/setup-python@v6' "$WORKFLOW")" -eq 3 &&

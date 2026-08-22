@@ -7490,3 +7490,13 @@ Category: Reliability
 The release transaction concurrency regression no longer uses Python 3.10's
 `zip(strict=...)`, matching the Factory's existing Python 3.9 CI floor without
 changing the fixed three-plan fixture.
+
+## 2026-08-21 — Decision 545: Qualification replay fans out on hosted macOS
+
+Category: Reliability
+
+Qualification-sensitive pull requests now run twenty credential-free replay
+repetitions concurrently on hosted macOS, each checked out at the exact PR head
+SHA, with one stable aggregate result. The workflow is path-conditioned to the
+qualification and launcher trust boundary and remains manually dispatchable by
+exact SHA after it reaches protected main.
