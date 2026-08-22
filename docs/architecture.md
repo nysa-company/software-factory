@@ -851,6 +851,9 @@ of copying it.
 
 After a successful Reviewer publication commit, passport migration precedes
 cell parking so the expected validating-head change remains a waiting boundary.
+Concurrent qualification workers create the shared parked and execution-cell
+roots idempotently, then apply the same absolute-path, owner, mode, directory,
+and symlink validation used for an existing root.
 After terminal or protected-cancellation retirement removes a durable claim,
 the next reconciliation holds the dispatch admission lock and removes only a
 clean exact `cell-1..cell-6` worktree with no remaining claim, dispatch lease,

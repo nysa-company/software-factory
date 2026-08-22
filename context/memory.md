@@ -7549,3 +7549,13 @@ authorization remains in-memory provenance for validating the complete
 canonical prefix. Repeated protected-main advances reuse that chain; receipt,
 branch, or historical-prefix tamper still refuses before a claim or provider
 attempt.
+
+## 2026-08-22 — Decision 550: Qualification cell roots tolerate concurrent first use
+
+Category: Reliability
+
+Concurrent qualification workers now create the shared parked and execution-
+cell roots idempotently before applying the existing fail-closed absolute-path,
+owner, mode, directory, and symlink checks. A deterministic two-worker
+regression covers both roots, replay, claim/worktree residue, and the absence of
+external controller calls.

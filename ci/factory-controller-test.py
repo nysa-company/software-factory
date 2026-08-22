@@ -17598,37 +17598,87 @@ class FactoryControllerTest(unittest.TestCase):
         run("git", "config", "user.email", "test@example.invalid", cwd=self.product)
         run("git", "add", ".", cwd=self.product)
         run("git", "commit", "-qm", "seed", cwd=self.product)
-        run("git", "branch", "ticket/T-110", cwd=self.product)
         scratch = self.root / "scratch"
         scratch.mkdir(mode=0o700)
-        cell = scratch / "cell-1"
-        run(
-            "git", "worktree", "add", "-q", str(cell), "ticket/T-110",
-            cwd=self.product,
-        )
+        claims = []
+        for number, ticket in enumerate(("T-110", "T-111"), 1):
+            branch = f"ticket/{ticket}"
+            cell = scratch / f"cell-{number}"
+            run("git", "branch", branch, cwd=self.product)
+            run(
+                "git", "worktree", "add", "-q", str(cell), branch,
+                cwd=self.product,
+            )
+            claims.append({
+                "branch": branch,
+                "lease": "",
+                "priority": "normal",
+                "publication_lease": "",
+                "receipt": "",
+                "role": "",
+                "schema": CONTROL.CLAIM_SCHEMA,
+                "status": "claimed",
+                "ticket": ticket,
+                "worktree": str(cell),
+            })
         controller = CONTROL.Controller(self.args)
-        claim = {
-            "branch": "ticket/T-110",
-            "lease": "a" * 64,
-            "priority": "normal",
-            "publication_lease": "",
-            "receipt": "",
-            "role": "",
-            "schema": CONTROL.CLAIM_SCHEMA,
-            "status": "claimed",
-            "ticket": "T-110",
-            "worktree": str(cell),
-        }
         controller.remote_passport_valid = lambda _claim: True
-        controller.json_call = lambda *_args, **_kwargs: {}
-        controller.event = lambda *_args, **_kwargs: None
-
-        self.assertTrue(controller.park_claim(claim))
-        self.assertEqual(
-            claim["worktree"], str(self.state / "parked/T-110")
+        controller.json_call = Mock(
+            side_effect=AssertionError("unexpected external CLI call")
         )
-        controller.ensure_execution_cell(claim)
-        self.assertEqual(claim["worktree"], str(self.state / "cells/cell-1"))
+        controller.event = lambda *_args, **_kwargs: None
+        targets = (self.state / "parked", self.state / "cells")
+        barriers = {target: threading.Barrier(2) for target in targets}
+        mkdir = Path.mkdir
+
+        def concurrent_mkdir(path, *args, **kwargs):
+            if path in barriers:
+                barriers[path].wait(timeout=5)
+            return mkdir(path, *args, **kwargs)
+
+        with patch.object(Path, "mkdir", new=concurrent_mkdir):
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                self.assertEqual(
+                    list(pool.map(controller.park_claim, claims)), [True, True]
+                )
+                list(pool.map(controller.ensure_execution_cell, claims))
+
+        worktrees = run(
+            "git", "worktree", "list", "--porcelain", cwd=self.product,
+        ).stdout
+        self.assertEqual(worktrees.count("worktree "), 3)
+        self.assertEqual(len(list((self.state / "claims").glob("*.json"))), 2)
+        self.assertEqual(
+            {Path(claim["worktree"]).parent for claim in claims},
+            {self.state / "cells"},
+        )
+        self.assertEqual(
+            {Path(claim["worktree"]).name for claim in claims},
+            {"cell-1", "cell-2"},
+        )
+        self.assertEqual(list((self.state / "parked").iterdir()), [])
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            list(pool.map(CONTROL.Controller(self.args).ensure_execution_cell, claims))
+        controller.json_call.assert_not_called()
+
+    def test_first_use_directory_validation_remains_fail_closed(self) -> None:
+        valid = self.root / "valid"
+        self.assertEqual(CONTROL.safe_directory(valid, create=True), valid)
+        self.assertEqual(CONTROL.safe_directory(valid, create=True), valid)
+
+        unsafe = self.root / "unsafe"
+        unsafe.mkdir()
+        unsafe.chmod(0o755)
+        with self.assertRaisesRegex(CONTROL.ControllerError, "directory is unsafe"):
+            CONTROL.safe_directory(unsafe, create=True)
+        unsafe.rmdir()
+        unsafe.symlink_to(self.state, target_is_directory=True)
+        with self.assertRaisesRegex(CONTROL.ControllerError, "directory is unsafe"):
+            CONTROL.safe_directory(unsafe, create=True)
+        unsafe.unlink()
+        unsafe.write_text("occupied\n", encoding="utf-8")
+        with self.assertRaises(FileExistsError):
+            CONTROL.safe_directory(unsafe, create=True)
 
     def test_approval_attestation_precedes_h2_merge_lease_and_keeps_it(self) -> None:
         controller = CONTROL.Controller(self.args)

@@ -3976,9 +3976,7 @@ class Controller:
                 return False
             root = safe_directory(source.parent)
             parked_root = self.state / "parked" if self.qualification else root / "parked"
-            if not parked_root.exists():
-                parked_root.mkdir(mode=0o700)
-            safe_directory(parked_root)
+            safe_directory(parked_root, create=True)
             destination = parked_root / claim["ticket"]
             if destination.exists() or destination.is_symlink():
                 raise ControllerError("parked ticket destination is occupied")
@@ -4022,9 +4020,7 @@ class Controller:
         root = (
             self.state / "cells" if self.qualification else source.parent.parent
         )
-        if self.qualification and not root.exists():
-            root.mkdir(mode=0o700)
-        root = safe_directory(root)
+        root = safe_directory(root, create=bool(self.qualification))
         if (
             source.parent != (
                 self.state / "parked" if self.qualification else root / "parked"
