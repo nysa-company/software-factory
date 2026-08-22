@@ -2448,6 +2448,78 @@ ACTIVE_ALPHA="$STATE/projects/alpha/active.json"
   pass "first active generation is release a" ||
   fail "first active generation is release a"
 
+PRODUCT_ONE_ORIGIN="$(git -C "$PRODUCT_ONE" remote get-url origin)"
+if python3 - "$ROOT/scripts/lib" <<'PY'
+import pathlib, sys
+sys.path.insert(0, sys.argv[1])
+from historical_pr_objects import same_repository_transition
+
+canonical = "https://github.com/nysa-company/relay-factory.git"
+assert same_repository_transition(
+    "git@github.com-relay-factory:nysa-company/relay-factory.git", canonical,
+)
+assert same_repository_transition(
+    "ssh://git@github.com/nysa-company/relay-factory", canonical,
+)
+for unsafe in (
+    "git@github.com-relay-factory:nysa-company/different.git",
+    "git@github.example:nysa-company/relay-factory.git",
+    "/tmp/nysa-company/relay-factory.git",
+):
+    assert not same_repository_transition(unsafe, canonical)
+for unsafe in (
+    "git@github.com:nysa-company/relay-factory.git",
+    "https://github.com.evil/nysa-company/relay-factory.git",
+    "https://user@github.com/nysa-company/relay-factory.git",
+    "https://github.com/nysa-company/relay%2dfactory.git",
+):
+    assert not same_repository_transition(
+        "git@github.com-relay-factory:nysa-company/relay-factory.git", unsafe,
+    )
+PY
+then
+  pass "origin migration accepts only canonical same-repository transport changes"
+else
+  fail "origin migration accepts only canonical same-repository transport changes"
+fi
+git -C "$PRODUCT_ONE" remote set-url origin "file://$PRODUCT_ONE_ORIGIN"
+REBOUND_PRODUCT_ORIGIN="file://$PRODUCT_ONE_ORIGIN"
+expect_success "active preflight accepts an equivalent certified origin" \
+  preflight-report --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A" --json
+expect_success "rebound product recertifies against its signed repository" \
+  certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A"
+REBOUND_RECEIPT="$(printf '%s\n' "$LAST_OUTPUT" | awk '/^\// {value=$0} END {print value}')"
+[[ "$(json_value "$REBOUND_RECEIPT" product_origin)" == "$REBOUND_PRODUCT_ORIGIN" ]] &&
+  pass "rebound receipt binds the new literal origin" ||
+  fail "rebound receipt binds the new literal origin"
+expect_success "rebound product enters maintenance" \
+  pause --project alpha --product "$PRODUCT_ONE"
+expect_success "rebound product activates its measured receipt" \
+  activate --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A" \
+  --receipt "$REBOUND_RECEIPT"
+python3 - "$STATE/projects/alpha" "$REBOUND_PRODUCT_ORIGIN" <<'PY' &&
+import json, pathlib, sys
+state, expected = pathlib.Path(sys.argv[1]), sys.argv[2]
+active = json.loads((state / "active.json").read_text())
+matches = list((state / "activation-journal").glob(
+    f"{active['generation']:020d}-*.json"
+))
+assert len(matches) == 1
+journal = json.loads(matches[0].read_text())
+assert journal["phase"] == "committed"
+assert journal["receipt_snapshot"]["product_origin"] == expected
+PY
+  pass "committed activation adopts the new literal origin" ||
+  fail "committed activation adopts the new literal origin"
+expect_success "subsequent preflight matches the adopted origin exactly" \
+  preflight-report --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A" --json
+DIFFERENT_PRODUCT_ORIGIN="$TMP/different-product.git"
+git init --bare -q "$DIFFERENT_PRODUCT_ORIGIN"
+git -C "$PRODUCT_ONE" remote set-url origin "file://$DIFFERENT_PRODUCT_ORIGIN"
+expect_failure "active preflight rejects a different repository origin" \
+  preflight-report --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A" --json
+git -C "$PRODUCT_ONE" remote set-url origin "$PRODUCT_ONE_ORIGIN"
+
 OPERATOR_PRODUCT="$TMP/operator-product"
 OPERATOR_REMOTE="$TMP/operator-product.git"
 mkdir -p "$OPERATOR_PRODUCT/factory/tickets"
