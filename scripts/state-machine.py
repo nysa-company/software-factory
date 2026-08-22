@@ -1548,7 +1548,6 @@ def dependency_conflict_receipt(
         or not isinstance(generation, int)
         or generation < 1
         or not isinstance(dependencies, list)
-        or not dependencies
         or dependencies != list(declared_dependencies(args))
         or len(dependencies) != len(set(dependencies))
         or not isinstance(test_paths, list)
@@ -1565,7 +1564,8 @@ def dependency_conflict_receipt(
         or value.get("repair_owner") != "test-author"
         or value.get("resolution")
         != "protected-baseline-before-test-author"
-        or value.get("preserved_state") != "Building"
+        or value.get("preserved_state")
+        != ("Building" if dependencies else "Review")
         or value.get("contract_version") != args.contract_version
         or not isinstance(value.get("refreshed_at"), str)
         or not re.fullmatch(
@@ -1742,6 +1742,8 @@ def validate_dependency_conflict_transition(
         "REFUSE dependency refresh required; "
         f"dependencies={','.join(receipt['dependencies'])}; "
         f"protected-main={receipt['protected_head']}"
+        if receipt["dependencies"] else
+        "AWAIT-OPERATOR bundle posted; operator approval + merge is the next step"
     )
     if (
         transition.get("receipt_sha256")
@@ -2114,7 +2116,10 @@ def ensure_dependency_conflict_repair(args: argparse.Namespace) -> None:
         path,
         signed_repair({
             "blocked_receipt": receipt["transition_receipt_sha256"],
-            "blocked_role": "dependency-refresh",
+            "blocked_role": (
+                "dependency-refresh" if receipt["dependencies"]
+                else "protected-base-refresh"
+            ),
             "branch": passport["branch"],
             "dependency_refresh_commit": receipt_commit,
             "dependency_refresh_sha256": receipt_digest,
@@ -3182,7 +3187,10 @@ def contract_repair_stage(args: argparse.Namespace) -> tuple[str | None, bool]:
             set(record) != expected_keys
             or has_directive
             or owner != "test-author"
-            or record.get("blocked_role") != "dependency-refresh"
+            or record.get("blocked_role") != (
+                "dependency-refresh" if conflict["dependencies"]
+                else "protected-base-refresh"
+            )
             or record.get("blocked_receipt")
             != conflict.get("transition_receipt_sha256")
             or record.get("dependency_refresh_sha256") != conflict_digest

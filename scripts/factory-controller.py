@@ -8007,6 +8007,14 @@ class Controller:
             migration_complete = (
                 prior == self.release_path.name and self.marker(completed)
             )
+            merged_closeout_candidate = (
+                passport.get("current_state") == "Approved"
+                and passport.get("publication_state") == "merged"
+                and not claim.get("receipt")
+                and not claim.get("role")
+                and not claim.get("publication_lease")
+                and not self.role_active(claim)
+            )
             if migrated_authorization and self.marker(pending):
                 self.event_once(
                     "semantic_round_authorization_imported_by_release_upgrade",
@@ -8021,6 +8029,7 @@ class Controller:
                     and (
                         claim.get("blocked_reason") != "route-migration-required"
                         or not self.ticket_release_current(claim)
+                        and not merged_closeout_candidate
                     )
                 )
             ):
@@ -8034,12 +8043,7 @@ class Controller:
             )
             if prior == self.release_path.name and not route_passport_pending:
                 if (
-                    passport.get("current_state") == "Approved"
-                    and passport.get("publication_state") == "merged"
-                    and not claim.get("receipt")
-                    and not claim.get("role")
-                    and not claim.get("publication_lease")
-                    and not self.role_active(claim)
+                    merged_closeout_candidate
                     and self.ticket_merged(claim)
                 ):
                     validation = self.json_call(
@@ -12068,12 +12072,21 @@ class Controller:
                 "--lease", claim["lease"], "--receipt", receipt,
                 "--workdir", claim["worktree"], "--action", "refresh", "--json",
             )
-            if value.get("action") != "refresh" or not SHA.fullmatch(
+            if value.get("action") not in {
+                "refresh", "dependency-conflict-refresh",
+            } or not SHA.fullmatch(
                 value.get("head", "")
             ):
                 raise ControllerError("protected-base refresh was not materialized")
             self.migrate_passport(claim, "validating")
-            self.event(event, claim["ticket"], head_sha=value["head"])
+            self.event(
+                event, claim["ticket"], head_sha=value["head"],
+                **(
+                    {"repair_owner": "test-author"}
+                    if value.get("action") == "dependency-conflict-refresh"
+                    else {}
+                ),
+            )
             return True
 
     def publication_ready(
@@ -12996,6 +13009,14 @@ class Controller:
                 return {"status": "blocked", "ticket": claim["ticket"]}
             if stage.startswith("AWAIT-OPERATOR bundle posted"):
                 pr = self.ticket_pr(claim, receipt)
+                if (
+                    pr.get("status") in {"failed", "prepared", "ready", "wait"}
+                    and self.refresh_stale_protected_base(
+                        claim, receipt, pr.get("head", ""),
+                        "protected_base_refreshed_before_bundle",
+                    )
+                ):
+                    return {"status": "progressed", "ticket": claim["ticket"]}
                 if pr.get("status") == "failed" and self.retry_ci(
                     claim, receipt, pr
                 ):

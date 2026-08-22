@@ -57,6 +57,10 @@ from release_lineage import (  # noqa: E402
     successor_release_lineage,
     valid_v2_migration,
 )
+from inflight_release import (  # noqa: E402
+    AuthorizationError as InflightAuthorizationError,
+    verify_protected_ticket_pin,
+)
 from runtime_paths import canonical_factory_file  # noqa: E402
 from ticket_state_transition import (  # noqa: E402
     TransitionError as TicketTransitionError,
@@ -2639,13 +2643,32 @@ def refresh(
         "user.email=factory@local", "merge", "--no-ff", "--no-edit", base_head,
         check=False,
     )
-    if merged.returncode and not resolve_successor_ticket_pin_conflict(
-        workdir, args.ticket, kit_sha,
-    ):
-        git(workdir, "merge", "--abort", check=False)
-        if git(workdir, "rev-parse", "HEAD").stdout.strip() != old_head:
-            raise Refusal("base refresh conflict could not restore the ticket head")
-        raise Refusal("protected main conflicts with the ticket branch; refresh aborted")
+    if merged.returncode:
+        if not resolve_successor_ticket_pin_conflict(
+            workdir, args.ticket, kit_sha,
+        ):
+            prior_base = git(
+                workdir, "merge-base", old_head, base_head,
+            ).stdout.strip()
+            route_relative = f"factory/route-plans/{args.ticket}.json"
+            return resolve_protected_test_conflict(
+                args, product, workdir, remote, branch, old_head=old_head,
+                protected_head=base_head, prior_base=prior_base, state=state,
+                dependencies=[], terminals=[],
+                receipt_path=attestation_dir / "dependency-refresh.json",
+                generation=dependency_refresh_generation(
+                    attestation_dir / "dependency-refresh.json", args.ticket,
+                ),
+                ticket_blob=git(
+                    workdir, "rev-parse",
+                    f"{old_head}:factory/tickets/{args.ticket}.md",
+                ).stdout.strip(),
+                route_relative=route_relative,
+                route_blob=git(
+                    workdir, "rev-parse", f"{old_head}:{route_relative}",
+                ).stdout.strip(),
+                bundle=bundle_path, approval=approval_path,
+            )
     merge_head = git(workdir, "rev-parse", "HEAD").stdout.strip()
     parents = git(workdir, "rev-list", "--parents", "-n", "1", merge_head).stdout.split()
     if parents != [merge_head, old_head, base_head]:
@@ -2872,6 +2895,166 @@ def dependency_refresh_generation(receipt_path, ticket):
     return previous_generation + 1
 
 
+def resolve_protected_test_conflict(
+    args, product, workdir, remote, branch, *, old_head, protected_head,
+    prior_base, state, dependencies, terminals, receipt_path, generation,
+    ticket_blob, route_relative, route_blob, bundle, approval,
+):
+    """Bind a protected-baseline test conflict for one Test-author repair."""
+    try:
+        conflicts = conflict_index(workdir)
+        test_paths = safe_project_test_paths(workdir, protected_head)
+        ordinary_refresh = not dependencies
+        preserved_state = "Review" if ordinary_refresh else "Building"
+        if (
+            state.lower() != preserved_state.lower()
+            or ordinary_refresh
+            and any(os.path.lexists(path) for path in (bundle, approval))
+            or ordinary_refresh
+            and os.environ.get("FACTORY_TRANSITION_STAGE")
+            != (
+                "AWAIT-OPERATOR bundle posted; operator approval + merge "
+                "is the next step"
+            )
+            or not all(
+                path_is_test(item["path"], test_paths) for item in conflicts
+            )
+        ):
+            raise Refusal(
+                "protected dependency conflict is not test-author-owned"
+            )
+        for item in conflicts:
+            git(workdir, "checkout", "--theirs", "--", item["path"])
+            git(workdir, "add", "--", item["path"])
+        if git(workdir, "ls-files", "-u", "-z").stdout:
+            raise Refusal("dependency conflict resolution left an unmerged path")
+        observed = git(
+            workdir, "ls-remote", "--heads", "--", remote,
+            "refs/heads/main",
+        ).stdout.split()
+        if observed != [protected_head, "refs/heads/main"]:
+            git(workdir, "merge", "--abort", check=False)
+            if git(workdir, "rev-parse", "HEAD").stdout.strip() != old_head:
+                raise Refusal(
+                    "dependency conflict could not restore the ticket head"
+                )
+            return {
+                "action": "dependency-wait",
+                "expected_protected_head": protected_head,
+                "observed_protected_head": observed[0] if observed else None,
+            }
+        git(
+            workdir, "-c", "user.name=Software Factory", "-c",
+            "user.email=factory@local", "commit", "--no-edit",
+        )
+        merge_head = git(workdir, "rev-parse", "HEAD").stdout.strip()
+        parents = git(
+            workdir, "rev-list", "--parents", "-n", "1", merge_head
+        ).stdout.split()
+        if parents != [merge_head, old_head, protected_head]:
+            raise Refusal("dependency conflict resolution created an invalid merge")
+        for item in conflicts:
+            resolved_blob = git(
+                workdir, "rev-parse", f"{merge_head}:{item['path']}"
+            ).stdout.strip()
+            if resolved_blob != item["protected_blob"]:
+                raise Refusal(
+                    "dependency conflict did not retain the protected baseline"
+                )
+        if (
+            git(
+                workdir, "rev-parse",
+                f"{merge_head}:factory/tickets/{args.ticket}.md",
+            ).stdout.strip() != ticket_blob
+            or git(
+                workdir, "rev-parse", f"{merge_head}:{route_relative}"
+            ).stdout.strip() != route_blob
+            or ordinary_refresh
+            and any(os.path.lexists(path) for path in (bundle, approval))
+        ):
+            raise Refusal(
+                "dependency conflict resolution changed ticket control evidence"
+            )
+        transition = os.environ.get(
+            "FACTORY_TRANSITION_RECEIPT_SHA256", ""
+        )
+        factory_sha = os.environ.get("FACTORY_RELEASE_SHA", "")
+        contract_version = os.environ.get("FACTORY_CONTRACT_VERSION", "")
+        if (
+            not re.fullmatch(r"[0-9a-f]{64}", transition)
+            or not valid_oid(factory_sha)
+            or contract_version not in ("1.8.0", "2.0.0")
+        ):
+            raise Refusal(
+                "trusted dependency conflict evidence is unavailable"
+            )
+        protected_delta = git(
+            workdir, "diff", "--name-status", "-z",
+            prior_base, protected_head,
+        ).stdout.encode()
+        receipt = {
+            "schema": "nysa.software-factory.dependency-refresh/v2",
+            "ticket": args.ticket,
+            "generation": generation,
+            "dependencies": dependencies,
+            "dependency_terminals": terminals,
+            "old_head": old_head,
+            "old_head_tree": git(
+                workdir, "rev-parse", f"{old_head}^{{tree}}",
+            ).stdout.strip(),
+            "prior_base_head": prior_base,
+            "protected_head": protected_head,
+            "protected_head_tree": git(
+                workdir, "rev-parse", f"{protected_head}^{{tree}}",
+            ).stdout.strip(),
+            "protected_project_blob": git(
+                workdir, "rev-parse",
+                f"{protected_head}:factory/PROJECT.env",
+            ).stdout.strip(),
+            "protected_delta_sha256": hashlib.sha256(
+                protected_delta
+            ).hexdigest(),
+            "test_paths": test_paths,
+            "test_paths_sha256": hashlib.sha256(json.dumps(
+                test_paths, ensure_ascii=True, separators=(",", ":"),
+            ).encode()).hexdigest(),
+            "conflicts": conflicts,
+            "repair_owner": "test-author",
+            "resolution": "protected-baseline-before-test-author",
+            "merge_head": merge_head,
+            "merge_head_tree": git(
+                workdir, "rev-parse", f"{merge_head}^{{tree}}",
+            ).stdout.strip(),
+            "preserved_state": preserved_state,
+            "transition_receipt_sha256": transition,
+            "factory_sha": factory_sha,
+            "contract_version": contract_version,
+            "refreshed_at": now(),
+        }
+        write_json(receipt_path, receipt)
+        result_head = commit_push(
+            product, workdir, remote, branch,
+            f"{args.ticket}: bind protected test conflict", [receipt_path],
+        )
+        return {
+            "action": "dependency-conflict-refresh",
+            "head": result_head,
+            "attestation": receipt,
+        }
+    except Refusal:
+        git(workdir, "merge", "--abort", check=False)
+        if git(workdir, "rev-parse", "HEAD").stdout.strip() != old_head:
+            git(workdir, "reset", "--hard", old_head, check=False)
+        if (
+            git(workdir, "rev-parse", "HEAD").stdout.strip() != old_head
+            or git(workdir, "status", "--porcelain=v1", "-z").stdout
+        ):
+            raise Refusal(
+                "dependency conflict could not restore the ticket head"
+            ) from None
+        raise
+
+
 def dependency_refresh(args, product, workdir, prefix, remote, kit_sha):
     stage = os.environ.get("FACTORY_TRANSITION_STAGE", "")
     match = re.fullmatch(
@@ -3013,153 +3196,14 @@ def dependency_refresh(args, product, workdir, prefix, remote, kit_sha):
         expected_base, check=False,
     )
     if merged.returncode:
-        try:
-            conflicts = conflict_index(workdir)
-            test_paths = safe_project_test_paths(workdir, expected_base)
-            if (
-                state.lower() != "building"
-                or not all(
-                    path_is_test(item["path"], test_paths)
-                    for item in conflicts
-                )
-            ):
-                raise Refusal(
-                    "protected dependency conflict is not test-author-owned"
-                )
-            for item in conflicts:
-                git(workdir, "checkout", "--theirs", "--", item["path"])
-                git(workdir, "add", "--", item["path"])
-            if git(workdir, "ls-files", "-u", "-z").stdout:
-                raise Refusal("dependency conflict resolution left an unmerged path")
-            observed = git(
-                workdir, "ls-remote", "--heads", "--", remote,
-                "refs/heads/main",
-            ).stdout.split()
-            if observed != [expected_base, "refs/heads/main"]:
-                git(workdir, "merge", "--abort", check=False)
-                if git(workdir, "rev-parse", "HEAD").stdout.strip() != old_head:
-                    raise Refusal(
-                        "dependency conflict could not restore the ticket head"
-                    )
-                return {
-                    "action": "dependency-wait",
-                    "expected_protected_head": expected_base,
-                    "observed_protected_head": observed[0] if observed else None,
-                }
-            git(
-                workdir, "-c", "user.name=Software Factory", "-c",
-                "user.email=factory@local", "commit", "--no-edit",
-            )
-            merge_head = git(workdir, "rev-parse", "HEAD").stdout.strip()
-            parents = git(
-                workdir, "rev-list", "--parents", "-n", "1", merge_head
-            ).stdout.split()
-            if parents != [merge_head, old_head, expected_base]:
-                raise Refusal("dependency conflict resolution created an invalid merge")
-            for item in conflicts:
-                resolved_blob = git(
-                    workdir, "rev-parse", f"{merge_head}:{item['path']}"
-                ).stdout.strip()
-                if resolved_blob != item["protected_blob"]:
-                    raise Refusal(
-                        "dependency conflict did not retain the protected baseline"
-                    )
-            if (
-                git(
-                    workdir, "rev-parse",
-                    f"{merge_head}:factory/tickets/{args.ticket}.md",
-                ).stdout.strip() != ticket_blob
-                or git(
-                    workdir, "rev-parse", f"{merge_head}:{route_relative}"
-                ).stdout.strip() != route_blob
-                or any(os.path.lexists(path) for path in (bundle, approval))
-            ):
-                raise Refusal(
-                    "dependency conflict resolution changed ticket control evidence"
-                )
-            transition = os.environ.get(
-                "FACTORY_TRANSITION_RECEIPT_SHA256", ""
-            )
-            factory_sha = os.environ.get("FACTORY_RELEASE_SHA", "")
-            contract_version = os.environ.get(
-                "FACTORY_CONTRACT_VERSION", ""
-            )
-            if (
-                not re.fullmatch(r"[0-9a-f]{64}", transition)
-                or not valid_oid(factory_sha)
-                or contract_version not in ("1.8.0", "2.0.0")
-            ):
-                raise Refusal(
-                    "trusted dependency conflict evidence is unavailable"
-                )
-            project_blob = git(
-                workdir, "rev-parse",
-                f"{expected_base}:factory/PROJECT.env",
-            ).stdout.strip()
-            protected_delta = git(
-                workdir, "diff", "--name-status", "-z",
-                prior_base, expected_base,
-            ).stdout.encode()
-            receipt = {
-                "schema": "nysa.software-factory.dependency-refresh/v2",
-                "ticket": args.ticket,
-                "generation": generation,
-                "dependencies": dependencies,
-                "dependency_terminals": terminals,
-                "old_head": old_head,
-                "old_head_tree": git(
-                    workdir, "rev-parse", f"{old_head}^{{tree}}",
-                ).stdout.strip(),
-                "prior_base_head": prior_base,
-                "protected_head": expected_base,
-                "protected_head_tree": git(
-                    workdir, "rev-parse", f"{expected_base}^{{tree}}",
-                ).stdout.strip(),
-                "protected_project_blob": project_blob,
-                "protected_delta_sha256": hashlib.sha256(
-                    protected_delta
-                ).hexdigest(),
-                "test_paths": test_paths,
-                "test_paths_sha256": hashlib.sha256(json.dumps(
-                    test_paths, ensure_ascii=True, separators=(",", ":"),
-                ).encode()).hexdigest(),
-                "conflicts": conflicts,
-                "repair_owner": "test-author",
-                "resolution": "protected-baseline-before-test-author",
-                "merge_head": merge_head,
-                "merge_head_tree": git(
-                    workdir, "rev-parse", f"{merge_head}^{{tree}}",
-                ).stdout.strip(),
-                "preserved_state": state,
-                "transition_receipt_sha256": transition,
-                "factory_sha": factory_sha,
-                "contract_version": contract_version,
-                "refreshed_at": now(),
-            }
-            write_json(receipt_path, receipt)
-            result_head = commit_push(
-                product, workdir, remote, branch,
-                f"{args.ticket}: bind protected test conflict", [receipt_path],
-            )
-            return {
-                "action": "dependency-conflict-refresh",
-                "head": result_head,
-                "attestation": receipt,
-            }
-        except Refusal:
-            git(workdir, "merge", "--abort", check=False)
-            if git(workdir, "rev-parse", "HEAD").stdout.strip() != old_head:
-                git(workdir, "reset", "--hard", old_head, check=False)
-            if (
-                git(workdir, "rev-parse", "HEAD").stdout.strip() != old_head
-                or git(
-                    workdir, "status", "--porcelain=v1", "-z",
-                ).stdout
-            ):
-                raise Refusal(
-                    "dependency conflict could not restore the ticket head"
-                ) from None
-            raise
+        return resolve_protected_test_conflict(
+            args, product, workdir, remote, branch, old_head=old_head,
+            protected_head=expected_base, prior_base=prior_base, state=state,
+            dependencies=dependencies, terminals=terminals,
+            receipt_path=receipt_path, generation=generation,
+            ticket_blob=ticket_blob, route_relative=route_relative,
+            route_blob=route_blob, bundle=bundle, approval=approval,
+        )
     merge_head = git(workdir, "rev-parse", "HEAD").stdout.strip()
     parents = git(
         workdir, "rev-list", "--parents", "-n", "1", merge_head
@@ -4085,9 +4129,29 @@ def done(
         raise Refusal("closeout ticket has ambiguous Kit-SHA fields")
     bundle_path = workdir / "factory" / "attestations" / args.ticket / "bundle.json"
     bundle_value = json.loads(bundle_path.read_text())
-    evidence_kit_sha = pins[0] if pins else bundle_value.get("kit_sha", "")
-    if not valid_oid(evidence_kit_sha):
+    current_kit_sha = pins[0] if pins else bundle_value.get("kit_sha", "")
+    evidence_kit_sha = bundle_value.get("kit_sha", "")
+    if not valid_oid(current_kit_sha) or not valid_oid(evidence_kit_sha):
         raise Refusal("closeout ticket lacks a canonical Kit-SHA")
+    if current_kit_sha != evidence_kit_sha:
+        try:
+            if current_kit_sha != kit_sha:
+                raise InflightAuthorizationError(
+                    "protected ticket continuation target is not active"
+                )
+            verify_protected_ticket_pin(
+                workdir,
+                (
+                    done_att.get("closeout_parent", "")
+                    if retry and isinstance(done_att, dict) else head
+                ),
+                current_kit_sha, args.ticket, ticket_branch,
+                pr["headRefOid"], "Approved", evidence_kit_sha,
+            )
+        except InflightAuthorizationError as error:
+            raise Refusal(
+                f"protected successor ticket evidence is invalid: {error}"
+            ) from error
     bundle_att, approval_att, approval_head, evidence_blobs = (
         protected_approval_evidence(
             workdir, args.ticket, repo, ticket_branch, evidence_kit_sha, method, pr,

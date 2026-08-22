@@ -493,7 +493,11 @@ is absent or changed.
 Qualification Doctor also reruns the shared strict manifest and ticket-readiness
 validators before provider readiness. Its typed report contains only selected
 ticket IDs and readiness states; an invalid ticket suppresses provider pin and
-fallback probes and blocks reconciliation.
+fallback probes and blocks reconciliation. Before inspecting controller state,
+Doctor also validates the complete protected legacy-closeout, terminal-backfill,
+and merge-reconciliation batches through the same authenticated readers used by
+terminal admission. Partial, extra, or drifted protected artifacts report
+`protected_artifact_invalid` and stop before provider readiness.
 Production and qualification retain separate provider lifecycle and financial
 databases. A task-bearing Cursor role additionally acquires one owner-only
 machine-local account-route lease before durable GO and holds it until its
@@ -1034,7 +1038,11 @@ checkpoint is archived after that unique success. An already-merged
 publication closes before dependency refresh is considered. Application,
 mixed-owner, Factory-control, contract, CI, configuration, add/delete,
 rename, non-regular, unknown, missing-receipt, or tampered conflicts remain
-fail-closed.
+fail-closed. The same receipt and signed Test-author checkpoint handle an exact
+Review-stage stale-base conflict at the deterministic `AWAIT-OPERATOR bundle
+posted` boundary when no bundle or approval attestation exists. Its dependency
+lists are empty, the protected test blob remains the merge baseline, and all
+other conflict classes still fail closed.
 If the dependency becomes terminal after publication evidence exists, the
 same exact dependency receipt routes through the ordinary publication refresh
 instead. It verifies the receipt-bound protected tip and dependency truth,
@@ -1578,6 +1586,13 @@ separate closeout branch with a terminal attestation and Done ticket. It never
 bypasses protection, force-pushes, or lets the dispatcher manufacture approval.
 Missing or pending post-merge contexts keep closeout waiting; a completed
 unsuccessful context remains a fail-closed controller error.
+A merged Approved ticket may also close after protected main applies only the
+exact in-flight-release-authorized successor `KIT_PIN` and ticket `Kit-SHA`
+replacement. Done revalidates that authorization and byte-exact ticket
+continuation, authenticates bundle and approval evidence under their source
+release, and records that source Kit-SHA; the terminal ticket retains the
+protected successor pin. Any additional ticket, authorization, pin, or identity
+change refuses closeout.
 An authenticated merged passport enters closeout before dependency refresh,
 even when a prior wait already released its publication lease.
 An open closeout PR is a controller wait. After it merges, retrying `done`

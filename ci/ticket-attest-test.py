@@ -31,6 +31,18 @@ SPEC = importlib.util.spec_from_file_location("ticket_attest", SCRIPT)
 TICKET_ATTEST = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(TICKET_ATTEST)
 
+CONTROLLER_SPEC = importlib.util.spec_from_file_location(
+    "factory_controller_for_ticket_attest", ROOT / "scripts/factory-controller.py"
+)
+CONTROL = importlib.util.module_from_spec(CONTROLLER_SPEC)
+CONTROLLER_SPEC.loader.exec_module(CONTROL)
+
+STATE_SPEC = importlib.util.spec_from_file_location(
+    "state_machine_for_ticket_attest", ROOT / "scripts/state-machine.py"
+)
+STATE = importlib.util.module_from_spec(STATE_SPEC)
+STATE_SPEC.loader.exec_module(STATE)
+
 sys.path.insert(0, str(ROOT / "scripts" / "lib"))
 import operator_receipt  # noqa: E402
 
@@ -87,6 +99,11 @@ class LauncherContractTests(unittest.TestCase):
         self.assertIn('"$ATTEST_EMERGENCY" -eq 0', ticket_attest)
         self.assertIn('"FACTORY_CONTROLLER_STATE_DIR=$CONTROLLER_STATE_DIR"', ticket_attest)
         self.assertIn('ATTEST_ACTION" == "emergency-apply"', ticket_attest)
+
+    def test_doctor_validates_protected_artifact_batches_before_admission(self):
+        doctor = (ROOT / "scripts/factory-doctor.sh").read_text(encoding="utf-8")
+        self.assertIn("validate_protected_artifact_batches(product, \"HEAD\")", doctor)
+        self.assertIn('artifact_reason = "protected_artifact_invalid"', doctor)
 
 
 class TicketAttestTests(unittest.TestCase):
@@ -2547,6 +2564,75 @@ else:
                 receipt_path, "T-999",
             )
 
+    def test_stale_bundle_stage_routes_test_conflict_to_test_author(self):
+        command("git", "switch", "-q", "main", cwd=self.product)
+        test_path = self.product / "tests/protected-base-conflict.test.ts"
+        test_path.parent.mkdir()
+        test_path.write_text("expect('base')\n", encoding="utf-8")
+        self.commit("add stale-base test baseline")
+        command("git", "push", "-q", "origin", "main", cwd=self.product)
+        command("git", "switch", "-q", "ticket/T-700", cwd=self.product)
+        command("git", "merge", "-q", "--no-edit", "main", cwd=self.product)
+        test_path.write_text("expect('ticket contract')\n", encoding="utf-8")
+        self.commit("author stale-base acceptance test")
+        command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
+        old_head = self.head()
+
+        updater = self.temp / "ordinary-conflicting-test-main"
+        command(
+            "git", "clone", "-q", "--branch", "main", str(self.remote),
+            str(updater),
+        )
+        (updater / "tests/protected-base-conflict.test.ts").write_text(
+            "expect('protected contract')\n", encoding="utf-8",
+        )
+        command("git", "add", ".", cwd=updater)
+        command(
+            "git", "-c", "user.name=test", "-c",
+            "user.email=test@example.com", "commit", "-qm",
+            "advance ordinary protected test", cwd=updater,
+        )
+        protected = self.head_at(updater)
+        command("git", "push", "-q", "origin", "main", cwd=updater)
+        transition = "e" * 64
+        self.env.update({
+            "FACTORY_CONTRACT_VERSION": "1.8.0",
+            "FACTORY_TRANSITION_RECEIPT_SHA256": transition,
+            "FACTORY_TRANSITION_STAGE": (
+                "AWAIT-OPERATOR bundle posted; operator approval + merge is the next step"
+            ),
+        })
+
+        with patch.dict(os.environ, self.env, clear=True):
+            result = TICKET_ATTEST.refresh(
+                argparse.Namespace(ticket="T-700"), self.product,
+                self.product, "acme/widget", "ticket/", str(self.remote),
+                KIT_SHA,
+            )
+
+        self.assertEqual(result["action"], "dependency-conflict-refresh")
+        receipt = result["attestation"]
+        self.assertEqual(receipt["dependencies"], [])
+        self.assertEqual(receipt["dependency_terminals"], [])
+        self.assertEqual(receipt["preserved_state"], "Review")
+        self.assertEqual(receipt["transition_receipt_sha256"], transition)
+        self.assertEqual(receipt["repair_owner"], "test-author")
+        self.assertEqual(
+            test_path.read_text(encoding="utf-8"),
+            "expect('protected contract')\n",
+        )
+        command(
+            "git", "update-ref", "refs/remotes/origin/main", protected,
+            cwd=self.product,
+        )
+        found = STATE.dependency_conflict_receipt(argparse.Namespace(
+            contract_version="1.8.0", factory_root=self.product,
+            ticket="T-700", workdir=self.product,
+        ))
+        self.assertIsNotNone(found)
+        self.assertEqual(found[0]["old_head"], old_head)
+        self.assertEqual(found[0]["protected_head"], protected)
+
     def test_dependency_refresh_restores_branch_for_non_test_conflict(self):
         command("git", "switch", "-q", "main", cwd=self.product)
         app_path = self.product / "src/conflict.ts"
@@ -3460,6 +3546,46 @@ else:
             merged=True, merge_sha=merge_sha, pr_head=merge_sha,
         )
 
+    def prepare_done_after_protected_successor_pin(self):
+        ticket = self.product / "factory/tickets/T-700.md"
+        ticket.write_text(ticket.read_text().replace(
+            "Priority: normal\n", f"Priority: normal\nKit-SHA: {KIT_SHA}\n",
+        ))
+        self.commit("pin approved source ticket")
+        command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
+        self.prepare_done()
+        approved = json.loads(self.state.read_text())["pr_head"]
+        target = "f" * 40
+        authorization = self.workdir / f"factory/migrations/inflight-release/{target}.json"
+        authorization.parent.mkdir(parents=True)
+        authorization.write_text(json.dumps({
+            "repository": "acme/widget",
+            "schema": "nysa.software-factory.inflight-release-authorization/v2",
+            "source_kit_sha": KIT_SHA,
+            "target_kit_sha": target,
+            "tickets": [{
+                "branch": "ticket/T-700", "head": approved,
+                "source_kit_sha": KIT_SHA, "state": "Approved",
+                "ticket": "T-700",
+            }],
+        }, indent=2, sort_keys=True) + "\n")
+        (self.workdir / "factory/KIT_PIN").write_text(target + "\n")
+        migrated = self.workdir / "factory/tickets/T-700.md"
+        migrated.write_text(migrated.read_text().replace(
+            f"Kit-SHA: {KIT_SHA}", f"Kit-SHA: {target}",
+        ))
+        command("git", "add", "factory", cwd=self.workdir)
+        command(
+            "git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+            "commit", "-qm", "authorize protected successor pin", cwd=self.workdir,
+        )
+        command(
+            "git", "push", "-q", "origin", "HEAD:main",
+            "HEAD:chore/t700-closeout", cwd=self.workdir,
+        )
+        self.env["FACTORY_RELEASE_SHA"] = target
+        return target
+
     def test_done_refuses_failed_checks_and_merge_not_on_main(self):
         self.prepare_done(checks={"ci": True, "deploy-production": False})
         self.assertIn("unsuccessful: deploy-production", self.attest("done").stderr)
@@ -3483,6 +3609,14 @@ else:
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("State: Done", (self.workdir / "factory/tickets/T-700.md").read_text())
         self.assertTrue((self.workdir / "factory/attestations/T-700/done.json").is_file())
+        self.assertEqual(
+            TICKET_ATTEST.protected_terminal(
+                self.workdir, "T-700", self.head_at(self.workdir),
+            )["basis"],
+            "attested-done",
+        )
+        retried = self.attest("done")
+        self.assertEqual(retried.returncode, 0, retried.stderr)
         state = json.loads(self.state.read_text())
         self.assertEqual(state["closeout_pr"], "open")
         self.assertIn("--squash", state["closeout_merge_argv"])
@@ -3518,6 +3652,107 @@ else:
             "State: Done",
             (self.workdir / "factory/tickets/T-700.md").read_text(),
         )
+
+    def test_done_accepts_exact_protected_successor_pin_and_rejects_tamper(self):
+        target = self.prepare_done_after_protected_successor_pin()
+
+        result = self.attest("done")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        receipt = json.loads(
+            (self.workdir / "factory/attestations/T-700/done.json").read_text()
+        )
+        self.assertEqual(receipt["kit_sha"], KIT_SHA)
+        self.assertIn(f"Kit-SHA: {target}", self.workdir.joinpath(
+            "factory/tickets/T-700.md"
+        ).read_text())
+        self.assertEqual(
+            TICKET_ATTEST.protected_terminal(
+                self.workdir, "T-700", self.head_at(self.workdir),
+            )["basis"],
+            "attested-done",
+        )
+
+    def test_done_refuses_tampered_protected_successor_ticket(self):
+        self.prepare_done_after_protected_successor_pin()
+        ticket = self.workdir / "factory/tickets/T-700.md"
+        ticket.write_text(ticket.read_text().replace(
+            "Priority: normal", "Priority: high",
+        ))
+        command("git", "add", str(ticket), cwd=self.workdir)
+        command(
+            "git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+            "commit", "-qm", "tamper protected successor ticket", cwd=self.workdir,
+        )
+        command(
+            "git", "push", "-q", "origin", "HEAD:main",
+            "HEAD:chore/t700-closeout", cwd=self.workdir,
+        )
+
+        self.assertIn(
+            "protected successor ticket evidence is invalid",
+            self.attest("done").stderr,
+        )
+
+    def test_completed_route_migration_recovers_stale_merged_closeout(self):
+        root = Path(os.path.realpath(tempfile.mkdtemp(
+            prefix="merged-closeout-recovery."
+        )))
+        self.addCleanup(shutil.rmtree, root)
+        product = root / "product"
+        (product / "factory/runs").mkdir(parents=True)
+        (product / "factory/PROJECT.env").write_text("MAX_CONCURRENT_TICKETS=4\n")
+        (product / "factory/ENVELOPE.env").write_text(
+            "PER_TICKET_BUDGET_USD=25.000000\n"
+        )
+        state = root / "controller"
+        state.mkdir(mode=0o700)
+        launcher = root / "factory-launch"
+        launcher.write_text("#!/bin/sh\n")
+        launcher.chmod(0o700)
+        release = root / ("d" * 40)
+        release.mkdir()
+        controller = CONTROL.Controller(argparse.Namespace(
+            launcher=launcher, product_root=product, project="test-product",
+            release_path=release, state_dir=state,
+        ))
+        (state / "passports").mkdir(mode=0o700)
+        CONTROL.write(state / "passports/T-700.json", {
+            "current_state": "Approved", "factory_sha": release.name,
+            "passport_sha256": "b" * 64, "publication_state": "merged",
+        })
+        for prefix in (
+            "passport-route-migration-pending",
+            "passport-route-migration-complete",
+        ):
+            controller.marker(f"{prefix}-T-700-{release.name}", {
+                "factory_sha": release.name, "schema": CONTROL.EVENT_SCHEMA,
+                "ticket": "T-700",
+            })
+        claim = {
+            "blocked_reason": "route-migration-required",
+            "branch": "ticket/T-700", "lease": "", "parked": False,
+            "publication_lease": "", "receipt": "", "role": "",
+            "schema": CONTROL.CLAIM_SCHEMA, "status": "blocked",
+            "ticket": "T-700", "worktree": str(product),
+        }
+        calls = []
+        controller.ticket_release_current = lambda _claim: False
+        controller.ticket_merged = lambda _claim: True
+        controller.role_active = lambda _claim: False
+        controller.renew = lambda _claim: calls.append("renew")
+        controller.event = lambda name, *_args, **_kwargs: calls.append(name)
+        controller.event_once = controller.event
+        controller.json_call = lambda *args, **_kwargs: (
+            {"passport": "b" * 64, "status": "ok"}
+            if args[:2] == ("passport", "validate") else {}
+        )
+
+        controller.recover_upgraded_claims([claim])
+
+        self.assertEqual(claim["status"], "claimed")
+        self.assertNotIn("blocked_reason", claim)
+        self.assertIn("upgraded_merged_claim_recovered", calls)
 
     def test_done_accepts_an_unchanged_preprojected_ledger(self):
         self.prepare_done()

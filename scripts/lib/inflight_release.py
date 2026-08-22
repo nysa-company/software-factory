@@ -297,6 +297,50 @@ def _verify_replay_route(
         raise AuthorizationError("replayed route migration tail is invalid")
 
 
+def verify_protected_ticket_pin(
+    repo: pathlib.Path,
+    protected: str,
+    target: str,
+    ticket: str,
+    branch: str,
+    authorized_head: str,
+    state: str,
+    source: str,
+) -> None:
+    """Validate the exact protected pin-only continuation of an authorized ticket."""
+    if not all(SHA.fullmatch(value) for value in (protected, target, authorized_head, source)):
+        raise AuthorizationError("protected ticket continuation ref is invalid")
+    relative = f"factory/migrations/inflight-release/{target}.json"
+    _regular_blob(repo, protected, relative)
+    _regular_blob(repo, protected, "factory/KIT_PIN")
+    _regular_blob(repo, protected, f"factory/tickets/{ticket}.md")
+    raw = _git(repo, "show", f"{protected}:{relative}")
+    project = _git(repo, "show", f"{protected}:factory/PROJECT.env")
+    authorization, entries = parse_authorization(raw, project, target)
+    authorize_ticket(
+        authorization, entries, ticket=ticket, branch=branch,
+        head=authorized_head, state=state, source_kit_sha=source,
+    )
+    _git(repo, "merge-base", "--is-ancestor", authorized_head, protected)
+    ticket_path = f"factory/tickets/{ticket}.md"
+    _regular_blob(repo, authorized_head, ticket_path)
+    authorized = _git(repo, "show", f"{authorized_head}:{ticket_path}")
+    authorized_state, authorized_kit = _ticket_fields(authorized)
+    current = _git(repo, "show", f"{protected}:{ticket_path}")
+    current_state, current_kit = _ticket_fields(current)
+    pattern = re.compile(rf"(?mi)^Kit-SHA:[ \t]*{re.escape(source)}[ \t]*$")
+    if (
+        authorized_state != state
+        or authorized_kit != source
+        or current_state != state
+        or current_kit != target
+        or len(pattern.findall(authorized)) != 1
+        or pattern.sub("Kit-SHA: " + target, authorized) != current
+        or _git(repo, "show", f"{protected}:factory/KIT_PIN") != target + "\n"
+    ):
+        raise AuthorizationError("protected ticket continuation changed unauthorized fields")
+
+
 def verify_migration(
     repo: pathlib.Path,
     protected: str,
