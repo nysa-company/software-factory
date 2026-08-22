@@ -190,6 +190,31 @@ class OperatorConsoleTest(unittest.TestCase):
     def test_control_actions_compile_to_fixed_launcher_argv(self):
         policy = {"schema": "factory-model-policy/v1"}
         digest = "a" * 64
+        authorization = {
+            "ticket": "T-123", "role": "spec-linter", "round": 3,
+            "operator_id": "operator-1",
+        }
+        self.assertEqual(
+            CONSOLE.SNAPSHOT.mutation_command(
+                "ticket-authorize-round-plan", authorization,
+            ),
+            (
+                "ticket-control", "authorize-round", "plan", "--ticket", "T-123",
+                "--role", "spec-linter", "--round", "3", "--operator-id",
+                "operator-1", "--json",
+            ),
+        )
+        self.assertEqual(
+            CONSOLE.SNAPSHOT.mutation_command(
+                "ticket-authorize-round-apply",
+                {**authorization, "approve_hash": digest},
+            ),
+            (
+                "ticket-control", "authorize-round", "apply", "--ticket", "T-123",
+                "--role", "spec-linter", "--round", "3", "--operator-id",
+                "operator-1", "--approve-hash", digest, "--json",
+            ),
+        )
         self.assertEqual(
             CONSOLE.SNAPSHOT.mutation_command(
                 "model-policy-apply",
@@ -236,6 +261,16 @@ class OperatorConsoleTest(unittest.TestCase):
                 "envelope-plan",
                 {"changes": {"PER_RUN_BUDGET_USD": "8; touch /tmp/pwn"}},
             )
+        for invalid in (
+            {**authorization, "ticket": "../T-123"},
+            {**authorization, "role": "reviewer"},
+            {**authorization, "round": 2},
+            {**authorization, "operator_id": "auto"},
+        ):
+            with self.assertRaises(CONSOLE.SNAPSHOT.SnapshotError):
+                CONSOLE.SNAPSHOT.mutation_command(
+                    "ticket-authorize-round-plan", invalid,
+                )
 
     def test_bootstrap_is_one_time_and_routes_require_session(self):
         state, server = self.start_server()
@@ -304,6 +339,30 @@ class OperatorConsoleTest(unittest.TestCase):
             [
                 "bravo", "models", "enable", "--scope-type", "route",
                 "--scope-id", "route-one", "--json",
+            ],
+        )
+        authorized, _, authorized_body = self.request(
+            server,
+            "POST",
+            "/api/actions/ticket-authorize-round-plan",
+            {
+                "project": "alpha", "ticket": "T-123", "role": "spec-linter",
+                "round": 3, "operator_id": "operator-1",
+            },
+            {
+                "Cookie": cookie,
+                "Origin": origin,
+                "Host": authority,
+                "X-CSRF-Token": csrf,
+            },
+        )
+        self.assertEqual(authorized, 200, authorized_body)
+        self.assertEqual(
+            self.invocations()[-1],
+            [
+                "alpha", "ticket-control", "authorize-round", "plan", "--ticket",
+                "T-123", "--role", "spec-linter", "--round", "3", "--operator-id",
+                "operator-1", "--json",
             ],
         )
 
