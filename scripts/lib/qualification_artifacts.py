@@ -151,6 +151,68 @@ def authenticated_passport(
     return _passport(state, ticket)
 
 
+def retained_passport_digest_authenticated(
+    state: Path, ticket: str, passport_digest: str,
+) -> bool:
+    """Return whether sealed retention authenticates one prior passport digest."""
+    if not TICKET.fullmatch(ticket) or not DIGEST.fullmatch(passport_digest):
+        raise ArtifactError("retained passport identity is invalid")
+    _passport_value, secret = _passport(state, ticket)
+    retention = _directory(state / "retained-runs")
+    expected = {
+        "files", "passport_sha256", "role", "run_id", "schema", "ticket",
+    }
+    matched = False
+    for path in sorted(retention.glob("*.json")):
+        try:
+            value = json.loads(_read(path, 131_072))
+        except (json.JSONDecodeError, UnicodeDecodeError) as error:
+            raise ArtifactError("retention metadata is invalid") from error
+        if not isinstance(value, dict):
+            raise ArtifactError("retention metadata is invalid")
+        authentication = value.pop("authentication_sha256", "")
+        files = value.get("files")
+        if (
+            set(value) != expected
+            or value.get("schema") != SCHEMA
+            or not isinstance(value.get("ticket"), str)
+            or not TICKET.fullmatch(value["ticket"])
+            or not isinstance(value.get("run_id"), str)
+            or not RUN_ID.fullmatch(value["run_id"])
+            or path.name != f"{value.get('run_id')}.json"
+            or not isinstance(value.get("role"), str)
+            or not ROLE.fullmatch(value["role"])
+            or not isinstance(value.get("passport_sha256"), str)
+            or not DIGEST.fullmatch(value["passport_sha256"])
+            or not isinstance(files, dict)
+            or not files
+            or not set(files).issubset(LIMITS)
+            or any(
+                not isinstance(item, dict)
+                or set(item) != {"logical_path", "sha256", "size"}
+                or item.get("logical_path")
+                != f"factory/runs/{value.get('run_id')}.{kind}"
+                or not isinstance(item.get("sha256"), str)
+                or not DIGEST.fullmatch(item["sha256"])
+                or isinstance(item.get("size"), bool)
+                or not isinstance(item.get("size"), int)
+                or not 0 <= item["size"] <= LIMITS[kind]
+                for kind, item in files.items()
+            )
+            or not isinstance(authentication, str)
+            or not hmac.compare_digest(
+                authentication,
+                hmac.new(secret, canonical(value), hashlib.sha256).hexdigest(),
+            )
+        ):
+            raise ArtifactError("retention metadata is invalid")
+        matched = matched or (
+            value["ticket"] == ticket
+            and value["passport_sha256"] == passport_digest
+        )
+    return matched
+
+
 def _manifest(raw: bytes) -> dict[str, str]:
     values: dict[str, str] = {}
     try:

@@ -730,6 +730,15 @@ exact release, head, and passport digest to the current passport, with aligned
 release history, an unchanged run snapshot, clean cell, and exact current
 remote passport. A durable authorization event precedes the atomic advance, so
 either crash edge replays idempotently.
+One historical successor-qualification boundary may instead precede exactly one
+successful role export. That path requires sealed retention to authenticate the
+marker's prior passport digest, the current authenticated passport to bind one
+matching completed-role and charge record, the consumed receipt and exact
+terminal manifest/output to agree, and removal of only that manifest from the
+current run inventory to reproduce the marker snapshot. The ordinary contiguous
+release/head/base/route suffix must then begin at the post-export passport on
+the same source release and head. Any second run, missing retention, changed
+output, or mismatched receipt remains closed.
 Conflicting evidence is persisted as a ticket-local block before best-effort
 resource cleanup and cannot prevent healthy siblings from reconciling. The
 marker is consumed after ordinary worker completion, making recovery one-use
