@@ -18411,7 +18411,10 @@ class FactoryControllerTest(unittest.TestCase):
         controller.json_call = json_call
         self.assertEqual(
             controller.reconcile_ticket(claim),
-            {"status": "waiting", "ticket": "T-110"},
+            {
+                "status": "waiting", "ticket": "T-110",
+                "wait_reason": "protected-merge",
+            },
         )
         self.assertEqual(calls[0], ("publication", head))
         self.assertEqual(calls[1][0], "ticket-attest")
@@ -18817,7 +18820,10 @@ class FactoryControllerTest(unittest.TestCase):
         )
         self.assertEqual(
             controller.reconcile_ticket(claim),
-            {"status": "waiting", "ticket": "T-110"},
+            {
+                "status": "waiting", "ticket": "T-110",
+                "wait_reason": "closeout",
+            },
         )
         self.assertEqual(calls, ["release", "passport", "closeout"])
 
@@ -18859,7 +18865,10 @@ class FactoryControllerTest(unittest.TestCase):
         )
         self.assertEqual(
             controller.reconcile_ticket(claim),
-            {"status": "waiting", "ticket": "T-110"},
+            {
+                "status": "waiting", "ticket": "T-110",
+                "wait_reason": "closeout",
+            },
         )
         self.assertEqual(calls, ["passport", "closeout"])
 
