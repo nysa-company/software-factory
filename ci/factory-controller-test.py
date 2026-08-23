@@ -8459,6 +8459,7 @@ class FactoryControllerTest(unittest.TestCase):
         model_state.mkdir()
         global_env = self.root / "global.env"
         global_env.write_text("\n".join((
+            "GLOBAL_DAILY_CAP_USD=50.00",
             "CODEX_PINNED=0.144.1",
             "CLAUDE_CODE_PINNED=2.1.207",
             "FACTORY_CURSOR_FALLBACK_ENABLED=1",
