@@ -1250,6 +1250,23 @@ class ReleaseTransactionTest(unittest.TestCase):
                 self.assertEqual(helper.returncode, 2)
                 self.assertEqual(json.loads(helper.stdout)["status"], "error")
 
+        qualification = [
+            "bash", str(ROOT / "scripts/factory-kit.sh"), "qualification", "resume",
+            "--project", "relay", "--sha", self.sha, "--approved-by", "tester",
+        ]
+        accepted = subprocess.run(
+            qualification, text=True, capture_output=True, check=False,
+            env=environment,
+        )
+        self.assertEqual(accepted.returncode, 1)
+        self.assertIn("trusted install manifest", accepted.stderr)
+        legacy = subprocess.run(
+            [*qualification, "--approve-hash", "9" * 64],
+            text=True, capture_output=True, check=False, env=environment,
+        )
+        self.assertEqual(legacy.returncode, 2)
+        self.assertIn("Usage:", legacy.stderr)
+
     def test_protected_check_fixture_matches_slurped_check_run_shape(self) -> None:
         result = subprocess.run(
             [
@@ -2858,28 +2875,27 @@ class ReleaseTransactionTest(unittest.TestCase):
             ):
                 RELEASE.qualification_fail_after(phase)
 
-    def test_qualification_resume_requires_the_exact_current_hash(self) -> None:
+    def test_qualification_resume_uses_the_exact_internal_plan(self) -> None:
         plan = self.qualification_plan()
         state = RELEASE.qualification_state(self.kits, "relay", self.sha)
         RELEASE.secure_directory(state, create=True)
         RELEASE.atomic_json(state / "latest.json", plan)
         args = argparse.Namespace(
-            approved_by="tester", approve_hash="f" * 64,
+            approved_by="other",
             kits_root=self.kits, project="relay", sha=self.sha,
         )
         with self.assertRaisesRegex(RELEASE.ReleaseError, "does not match"):
             RELEASE._qualification_resume_locked(args)
+        args.approved_by = "tester"
         stale = self.qualification_plan()
         stale["expires_epoch"] = 2
         stale = RELEASE.seal_plan({
             key: value for key, value in stale.items() if key != "approval_sha256"
         })
         RELEASE.atomic_json(state / "latest.json", stale)
-        args.approve_hash = stale["approval_sha256"]
         with self.assertRaisesRegex(RELEASE.ReleaseError, "stale"):
             RELEASE._qualification_resume_locked(args)
         RELEASE.atomic_json(state / "latest.json", plan)
-        args.approve_hash = plan["approval_sha256"]
         with mock.patch.object(
             RELEASE, "apply_qualification_plan", return_value={"status": "doctor_ready"},
         ) as applied:

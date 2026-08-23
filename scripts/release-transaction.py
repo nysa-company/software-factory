@@ -4475,15 +4475,17 @@ def qualification_upgrade(args: argparse.Namespace) -> dict[str, Any]:
 def _qualification_resume_locked(args: argparse.Namespace) -> dict[str, Any]:
     if (
         not PROJECT.fullmatch(args.project) or not SHA.fullmatch(args.sha)
-        or not DIGEST.fullmatch(args.approve_hash)
         or not SAFE_ID.fullmatch(args.approved_by) or args.approved_by == "auto"
     ):
         raise ReleaseError("qualification migration approval boundary is invalid")
     state = qualification_state(args.kits_root.resolve(strict=True), args.project, args.sha)
     plan = safe_state(state / "latest.json", "qualification migration plan")
     validate_qualification_plan(plan)
-    if plan["approval_sha256"] != args.approve_hash or not plan["approval_required"]:
-        raise ReleaseError("qualification migration approval hash does not match")
+    if (
+        plan["request"]["operator_id"] != args.approved_by
+        or not plan["approval_required"]
+    ):
+        raise ReleaseError("qualification migration approver does not match")
     if plan["expires_epoch"] <= int(time.time()) and not (state / "journal.json").exists():
         raise ReleaseError("qualification migration approval plan is stale")
     options = (
@@ -4540,7 +4542,6 @@ def main() -> int:
     qualification_resume_parser = commands.add_parser("qualification-resume")
     qualification_resume_parser.add_argument("--project", required=True)
     qualification_resume_parser.add_argument("--sha", required=True)
-    qualification_resume_parser.add_argument("--approve-hash", required=True)
     qualification_resume_parser.add_argument("--approved-by", required=True)
     args = parser.parse_args()
     args.process_started = _PROCESS_STARTED

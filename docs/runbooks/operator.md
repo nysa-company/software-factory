@@ -113,7 +113,9 @@ model candidates, effective envelope values, and daily spend are read through
 fixed Contract 1.5 launcher commands.
 
 Every mutation is two-step. Preview the exact policy, envelope, override, or
-cancellation; inspect its JSON; then apply that preview hash. If an active
+cancellation; inspect its JSON; then select the matching apply action. The
+console keeps the exact preview hash in the authenticated server session and
+never asks the browser or operator to return it. If an active
 attempt needs more budget, preview and apply cancellation first. Pre-GO
 cancellation costs zero; post-GO cancellation retains the conservative
 reservation. Apply the bounded override and restart the same role. Never edit
@@ -185,7 +187,7 @@ an in-flight manifest or backdate an override.
 
 - Notice: after two Spec-linter FAIL verdicts, and before every later Planner–Spec-linter round, `next-stage` returns provider-free `AWAIT-OPERATOR` with the exact next `OPERATOR AUTHORIZATION: spec-linter round <N>` line. Contract repair does the same before its fourth and every later `FIX <role>` attempt. After the one automatic Narrator bundle correction, every later invalid bundle waits for the exact next Narrator round. A duplicate or malformed attempt produces a typed correction action without launching a provider.
 - Notice: a Spec-linter PASS consumes its round grant too; a later repair cycle cannot reuse that grant.
-- Do: if one more cycle is warranted, use the local operator console's Semantic retry authorization control with the exact ticket, role, and round from the watcher. Review the preview, then select **Authorize exact round**; the console keeps the approval hash in memory and passes it to the unchanged sealed apply boundary. The hash-bearing `ticket-control authorize-round plan/apply` grammar remains available for recovery. The controller writes and pushes one ticket-only child; ordinary reconciliation imports it. Each line grants only that next round.
+- Do: if one more cycle is warranted, use the local operator console's Semantic retry authorization control with the exact ticket, role, and round from the watcher. Review the preview, then select **Authorize exact round**; the console keeps the approval hash in its authenticated server session and passes it to the unchanged sealed apply boundary. The hash-bearing `ticket-control authorize-round plan/apply` grammar remains available for recovery tooling. The controller writes and pushes one ticket-only child; ordinary reconciliation imports it. Each line grants only that next round.
 - Don't: add commentary to the authorization line, authorize a different role or round, change another path, or infer authorization. Reviewer remains governed by its budget-only review loop and has no semantic-round authorization gate.
 
 ## One successful Reviewer run is a duplicate
@@ -672,10 +674,12 @@ then resume once:
 ```bash
 bash scripts/factory-kit.sh qualification resume \
   --project <project> --sha <candidate> \
-  --approve-hash <approval_sha256> --approved-by <operator-id>
+  --approved-by <operator-id>
 ```
 
-The signed journal resumes child transactions after interruption. A replay
+The resume command reads the owner-only current plan and its approval hash
+internally; the operator approves the reviewed plan, not a digest. The signed
+journal resumes child transactions after interruption. A replay
 returns the original completion receipt without advancing the generation or
 rewriting lane state. Any changed plan, checkout, authorization, runtime,
 provider receipt, fallback evidence, active record, or environment refuses.
