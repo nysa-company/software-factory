@@ -1726,7 +1726,7 @@ class QualificationEnvironmentTest(unittest.TestCase):
             self.home / ".factory/qualification/relay/controller"
         ).resolve()
 
-        def fail_after_operator_initialization(*_arguments):
+        def fail_after_operator_initialization(*_arguments, **_keywords):
             lock = os.open(
                 controller / ".operator-apply-lock",
                 os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0),
@@ -1898,14 +1898,14 @@ class QualificationEnvironmentTest(unittest.TestCase):
         active = 0
         maximum = 0
 
-        def slow_readiness(*arguments):
+        def slow_readiness(*arguments, **keywords):
             nonlocal active, maximum
             with guard:
                 active += 1
                 maximum = max(maximum, active)
             time.sleep(0.05)
             try:
-                return original(*arguments)
+                return original(*arguments, **keywords)
             finally:
                 with guard:
                     active -= 1

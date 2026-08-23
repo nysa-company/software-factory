@@ -3419,7 +3419,8 @@ def validate_prepare_root(root: Path, sha: str, project: str) -> None:
         project_root = projects / project
         if project_root.exists() or project_root.is_symlink():
             safe_directory(project_root)
-            if any(path.name != "active.json" for path in project_root.iterdir()):
+            allowed_project = {"active.json", f"model-bundle-{sha}.json"}
+            if any(path.name not in allowed_project for path in project_root.iterdir()):
                 raise EnvironmentError("partial qualification activation is invalid")
     runtimes = root / "project-runtimes"
     if runtimes.exists() or runtimes.is_symlink():
