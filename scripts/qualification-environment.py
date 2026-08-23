@@ -76,6 +76,7 @@ CURSOR_DATA_PATH_LIMIT = 75
 CURSOR_ATTEMPT_PLACEHOLDER = "0000000000-0000000-cli"
 SUPPORTED_CONTRACTS = ("1.8.0", "1.9.0", "2.0.0")
 SUPPORTED_UPGRADES = {("1.9.0", "2.0.0")}
+TRANSACTION_ROOT = Path(__file__).resolve().parents[1]
 
 
 class EnvironmentError(ValueError):
@@ -4352,6 +4353,7 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
         raise EnvironmentError("qualification root must be under /private/tmp")
     safe_directory(root)
     factory = args.factory_root.resolve(strict=True)
+    transaction = TRANSACTION_ROOT
     product = args.product_root.resolve(strict=True)
     prepare_product_runtime(product, create=False)
     if command("git", "-C", str(factory), "status", "--porcelain", "--untracked-files=all"):
@@ -4365,12 +4367,12 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
     if (product / "factory/KIT_PIN").read_text(encoding="utf-8") != sha + "\n":
         raise EnvironmentError("qualification product is not pinned to the candidate")
     contract = json.loads(
-        (factory / "factory-contract.json").read_text(encoding="utf-8")
+        (transaction / "factory-contract.json").read_text(encoding="utf-8")
     ).get("contract_version")
     if contract not in SUPPORTED_CONTRACTS:
         raise EnvironmentError("qualification requires a supported Factory Contract")
     manifest = qualification_manifest(product, sha)
-    validate_provider_cli_pins(factory, sha)
+    validate_provider_cli_pins(transaction, sha)
     capacity = manifest["capacity"]
     validate_selected_contracts(product, manifest)
     active_path = root / f"projects/{args.project}/active.json"
@@ -4393,7 +4395,7 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
     origin = product_origin(product)
     historical_objects = historical_pr_objects(product, origin)
     source = validate_upgrade_source(
-        root, args.project, factory, product, sha, contract, manifest,
+        root, args.project, transaction, product, sha, contract, manifest,
     )
     active = source["active"]
     active_contract = source["active_contract"]
@@ -4435,7 +4437,7 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
             getattr(args, "runtime_bin", None),
         )
         runtime_tuple = certification_preflight(
-            factory, product, sha, tree, contract, runtime_bin,
+            transaction, product, sha, tree, contract, runtime_bin,
         )
         identity = authority_identity(
             args.project, contract, sha, tree, product, product_sha, product_tree,
@@ -4469,7 +4471,7 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
             return result
         resume_operator_state(authority, identity, manifest["tickets"])
         initialize_selected_operator(
-            factory, product, operator_map_path, runtime_ledger_path, controller,
+            transaction, product, operator_map_path, runtime_ledger_path, controller,
         )
         validate_runtime_ledger(runtime_ledger_path)
         if command(

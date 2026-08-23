@@ -75,6 +75,10 @@ class QualificationEnvironmentTest(unittest.TestCase):
         )).resolve()
         os.chmod(self.root, 0o700)
         self.factory = self.workspace / "factory"
+        self.transaction_root = mock.patch.object(
+            ENVIRONMENT, "TRANSACTION_ROOT", self.factory,
+        )
+        self.transaction_root.start()
         (self.factory / "scripts").mkdir(parents=True)
         (self.factory / "factory-contract.json").write_text(
             '{"contract_version":"1.8.0"}\n', encoding="utf-8",
@@ -518,6 +522,7 @@ class QualificationEnvironmentTest(unittest.TestCase):
         self.assertEqual(caught.exception.reason_code, "runtime_tuple_mismatch")
 
     def tearDown(self) -> None:
+        self.transaction_root.stop()
         if self.branch_preflight is not None:
             self.branch_preflight.stop()
         if self.root.exists():
@@ -4216,6 +4221,7 @@ class QualificationEnvironmentTest(unittest.TestCase):
                 "FACTORY_KIT_TEST_MODE": "1",
                 "FACTORY_RELEASE_TEST_HOME": str(self.home),
             }),
+            mock.patch.object(RELEASE, "TRANSACTION_ROOT", self.factory),
             mock.patch.object(RELEASE, "run", side_effect=installed),
             mock.patch.object(RELEASE, "run_json", side_effect=provider_ready),
             mock.patch.object(RELEASE, "qualification_provider_child", return_value={

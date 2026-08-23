@@ -2813,7 +2813,10 @@ class ReleaseTransactionTest(unittest.TestCase):
         subprocess.run(["git", "clone", "-q", str(canonical), str(repo)], check=True)
         (repo / "scripts").mkdir()
         (repo / "scripts/release-transaction.py").write_text(
-            "import json,sys\nprint(json.dumps(sys.argv[1:]))\n", encoding="utf-8",
+            "import json,os,sys\nfrom pathlib import Path\n"
+            "if os.environ.get('FACTORY_TEST_HELPER_MARKER'):\n"
+            " Path(os.environ['FACTORY_TEST_HELPER_MARKER']).write_text('executed')\n"
+            "print(json.dumps(sys.argv[1:]))\n", encoding="utf-8",
         )
         (repo / "factory-contract.json").write_text(
             '{"contract_version":"2.0.0"}\n', encoding="utf-8",
@@ -2843,6 +2846,13 @@ class ReleaseTransactionTest(unittest.TestCase):
             "--product", str(product), "--repo", str(repo), "--sha", candidate_sha,
             "--operator-id", "tester", "--ticket", "T-1",
             "--failed-run", "run-1",
+        ]
+        runtime = self.root / "runtime"
+        runtime.mkdir()
+        upgrade_common = [
+            "--project", "relay", "--root", str(qualification),
+            "--product", str(product), "--repo", str(repo), "--sha", candidate_sha,
+            "--operator-id", "tester", "--runtime-bin", str(runtime),
         ]
         planned = subprocess.run(
             ["bash", str(ROOT / "scripts/factory-kit.sh"), "qualification",
@@ -2896,6 +2906,48 @@ class ReleaseTransactionTest(unittest.TestCase):
         self.assertNotEqual(dirty.returncode, 0)
         self.assertIn("candidate must be clean", dirty.stderr)
         self.assertFalse(dirty_marker.exists())
+        subprocess.run([
+            "git", "-C", str(repo), "restore", "scripts/release-transaction.py",
+        ], check=True)
+        for flag, clear_flag in (
+            ("--assume-unchanged", "--no-assume-unchanged"),
+            ("--skip-worktree", "--no-skip-worktree"),
+        ):
+            hidden_marker = self.root / f"hidden-{flag[2:]}-helper-executed"
+            (repo / "scripts/release-transaction.py").write_text(
+                f"from pathlib import Path\nPath({str(hidden_marker)!r}).write_text('executed')\n",
+                encoding="utf-8",
+            )
+            subprocess.run([
+                "git", "-C", str(repo), "update-index", flag,
+                "scripts/release-transaction.py",
+            ], check=True)
+            hidden = subprocess.run(
+                ["bash", str(ROOT / "scripts/factory-kit.sh"), "qualification",
+                 "recover-plan", *common],
+                capture_output=True, text=True, env=environment, check=False,
+            )
+            self.assertEqual(hidden.returncode, 0, hidden.stderr)
+            self.assertIn(
+                "qualification-recover-plan", json.loads(hidden.stdout),
+            )
+            hidden_upgrade = subprocess.run(
+                ["bash", str(ROOT / "scripts/factory-kit.sh"), "qualification",
+                 "upgrade", *upgrade_common],
+                capture_output=True, text=True, env=environment, check=False,
+            )
+            self.assertEqual(hidden_upgrade.returncode, 0, hidden_upgrade.stderr)
+            self.assertIn(
+                "qualification-upgrade", json.loads(hidden_upgrade.stdout),
+            )
+            self.assertFalse(hidden_marker.exists())
+            subprocess.run([
+                "git", "-C", str(repo), "update-index", clear_flag,
+                "scripts/release-transaction.py",
+            ], check=True)
+            subprocess.run([
+                "git", "-C", str(repo), "restore", "scripts/release-transaction.py",
+            ], check=True)
 
         foreign_origin = self.root / "foreign.git"
         foreign = self.root / "foreign-candidate"
@@ -2930,8 +2982,6 @@ class ReleaseTransactionTest(unittest.TestCase):
              "--failed-run", "run-1"],
             capture_output=True, text=True, env=environment, check=False,
         )
-        runtime = self.root / "runtime"
-        runtime.mkdir()
         upgrade = subprocess.run(
             ["bash", str(ROOT / "scripts/factory-kit.sh"), "qualification",
              "upgrade", *foreign_common, "--runtime-bin", str(runtime)],
@@ -2943,84 +2993,129 @@ class ReleaseTransactionTest(unittest.TestCase):
         self.assertIn("wrong kit origin", upgrade.stderr)
         self.assertFalse(marker.exists())
 
-        forged = self.root / "forged-candidate"
-        (forged / "scripts").mkdir(parents=True)
-        forged_marker = self.root / "forged-helper-executed"
-        (forged / "scripts/release-transaction.py").write_text(
-            f"from pathlib import Path\nPath({str(forged_marker)!r}).write_text('executed')\n",
-            encoding="utf-8",
-        )
-        (forged / "factory-contract.json").write_text(
-            '{"contract_version":"2.0.0"}\n', encoding="utf-8",
-        )
-        (forged / ".git").mkdir()
-        (forged / ".git/config").write_text(
-            '[remote "origin"]\n\turl = https://github.com/nysa-company/software-factory.git\n'
-            '[url "file:///tmp/malicious/"]\n\tinsteadOf = https://github.com/\n',
-            encoding="utf-8",
-        )
-        stub_bin = self.root / "forged-bin"
+        subprocess.run([
+            "/usr/bin/git", "-C", str(repo), "update-ref",
+            "refs/remotes/origin/main", candidate_sha,
+        ], check=True)
+        subprocess.run([
+            "/usr/bin/git", "-C", str(repo), "config",
+            "url.file:///tmp/malicious/.insteadOf", str(canonical),
+        ], check=True)
+        stub_bin = self.root / "hostile-bin"
         stub_bin.mkdir()
-        forged_sha = "c" * 40
-        live_sha = "d" * 40
-        git_remote_marker = self.root / "git-remote-used"
-        git_stub = stub_bin / "git"
-        git_stub.write_text(
-            "#!/bin/sh\n"
-            "repo=\n"
-            "while [ \"$1\" = -c ]; do shift 2; done\n"
-            "if [ \"$1\" = -C ]; then repo=$2; shift 2; fi\n"
-            "case \"$1|$2|$3\" in\n"
-            "  rev-parse\\|--show-toplevel\\|) echo \"$repo\" ;;\n"
-            "  remote\\|get-url\\|origin) echo https://github.com/nysa-company/software-factory.git ;;\n"
-            f"  rev-parse\\|--verify\\|HEAD) echo {forged_sha} ;;\n"
-            "  rev-parse\\|--verify\\|HEAD\\^\\{tree\\}) echo " + "e" * 40 + " ;;\n"
-            "  status\\|--porcelain=v1\\|--untracked-files=all) : ;;\n"
-            "  ls-files\\|--error-unmatch\\|--) echo scripts/release-transaction.py ;;\n"
-            f"  ls-remote\\|--exit-code\\|*) touch {str(git_remote_marker)!r}; exit 1 ;;\n"
-            f"  rev-parse\\|--verify\\|refs/remotes/origin/main) echo {forged_sha} ;;\n"
-            "  *) exit 1 ;;\n"
-            "esac\n",
-            encoding="utf-8",
-        )
-        git_stub.chmod(0o700)
-        gh_stub = stub_bin / "gh"
+        path_marker = self.root / "hostile-path-used"
+        for name in ("git", "gh"):
+            path_stub = stub_bin / name
+            path_stub.write_text(
+                f"#!/bin/sh\ntouch {str(path_marker)!r}\nexit 91\n",
+                encoding="utf-8",
+            )
+            path_stub.chmod(0o700)
+        auth_config = self.root / "trusted-gh-config"
+        auth_config.mkdir(mode=0o700)
+        (auth_config / "hosts.yml").write_text("github.com: {}\n", encoding="utf-8")
+        (auth_config / "hosts.yml").chmod(0o600)
+        token_file = auth_config / "test-token"
+        token_file.write_text("config-only-token\n", encoding="utf-8")
+        live_file = self.root / "live-main"
+        live_file.write_text(candidate_sha + "\n", encoding="utf-8")
+        gh_stub = self.root / "trusted-gh"
         gh_stub.write_text(
             "#!/bin/sh\n"
             "[ \"${GH_PROMPT_DISABLED:-}\" = 1 ] || exit 9\n"
-            "[ \"${GH_PAGER:-}\" = cat ] || exit 9\n"
-            "[ -z \"${GH_HOST+x}${GH_REPO+x}${GITHUB_REPOSITORY+x}\" ] || exit 9\n"
+            "[ -z \"${XDG_CONFIG_HOME+x}${GH_HTTP_UNIX_SOCKET+x}"
+            "${HTTP_PROXY+x}${HTTPS_PROXY+x}${ALL_PROXY+x}${NO_PROXY+x}"
+            "${http_proxy+x}${https_proxy+x}${all_proxy+x}${no_proxy+x}"
+            "${SSL_CERT_FILE+x}${SSL_CERT_DIR+x}${CURL_CA_BUNDLE+x}"
+            "${REQUESTS_CA_BUNDLE+x}\" ] || exit 9\n"
+            f"if [ \"$1|$2|$3\" = 'auth|token|--hostname' ] && [ \"$4\" = github.com ]; then\n"
+            f" [ \"$GH_CONFIG_DIR\" = {str(auth_config)!r} ] || exit 9\n"
+            f" cat {str(token_file)!r}; exit 0\n"
+            "fi\n"
+            "[ \"${GH_TOKEN:-}\" = config-only-token ] || exit 9\n"
+            f"[ \"${{GH_CONFIG_DIR:-}}\" != {str(auth_config)!r} ] || exit 9\n"
+            "[ -d \"${GH_CONFIG_DIR:-missing}\" ] || exit 9\n"
             "[ \"$1|$2|$3|$4|$5|$6\" = "
             "'api|--hostname|github.com|repos/nysa-company/software-factory/git/ref/heads/main|--jq|.object.sha' ] || exit 9\n"
-            f"printf '%s\\n' {live_sha}\n",
+            f"cat {str(live_file)!r}\n",
             encoding="utf-8",
         )
         gh_stub.chmod(0o700)
-        production_environment = {
+        hostile_environment = {
             **os.environ,
-            "FACTORY_KITS_ROOT": str(self.root / "production-kits"),
+            "FACTORY_KIT_CANONICAL_ORIGIN": str(canonical),
+            "FACTORY_KIT_TEST_MODE": "1",
+            "FACTORY_TRUSTED_TEST_HARNESS": "1",
+            "FACTORY_KIT_TEST_QUALIFICATION_LIVE_MAIN": "1",
+            "FACTORY_KIT_TEST_QUALIFICATION_GH": str(gh_stub),
+            "FACTORY_KIT_TEST_QUALIFICATION_GH_CONFIG": str(auth_config),
+            "FACTORY_KITS_ROOT": environment["FACTORY_KITS_ROOT"],
+            "FACTORY_RELEASE_TEST_HOME": str(self.root),
             "GH_HOST": "attacker.invalid",
             "GH_REPO": "attacker/repository",
             "GITHUB_REPOSITORY": "attacker/repository",
+            "GH_CONFIG_DIR": "/attacker/gh",
+            "XDG_CONFIG_HOME": "/attacker/xdg",
+            "GH_HTTP_UNIX_SOCKET": "/attacker/socket",
+            "HTTP_PROXY": "http://attacker.invalid",
+            "HTTPS_PROXY": "http://attacker.invalid",
+            "ALL_PROXY": "http://attacker.invalid",
+            "NO_PROXY": "github.com",
+            "http_proxy": "http://attacker.invalid",
+            "https_proxy": "http://attacker.invalid",
+            "all_proxy": "http://attacker.invalid",
+            "no_proxy": "github.com",
+            "SSL_CERT_FILE": "/attacker/ca.pem",
+            "SSL_CERT_DIR": "/attacker/certs",
+            "CURL_CA_BUNDLE": "/attacker/curl-ca.pem",
+            "REQUESTS_CA_BUNDLE": "/attacker/requests-ca.pem",
             "PATH": f"{stub_bin}:/usr/bin:/bin",
         }
-        for variable in (
-            "FACTORY_KIT_CANONICAL_ORIGIN", "FACTORY_KIT_ORIGIN",
-            "FACTORY_KIT_TEST_MODE", "FACTORY_RELEASE_TEST_HOME",
-        ):
-            production_environment.pop(variable, None)
-        forged_result = subprocess.run(
+        hostile_environment.pop("GH_TOKEN", None)
+        hostile_environment.pop("GITHUB_TOKEN", None)
+        authenticated = subprocess.run(
             ["bash", str(ROOT / "scripts/factory-kit.sh"), "qualification",
-             "recover-plan", "--project", "relay", "--root", str(qualification),
-             "--product", str(product), "--repo", str(forged),
-             "--sha", forged_sha, "--operator-id", "tester", "--ticket", "T-1",
-             "--failed-run", "run-1"],
-            capture_output=True, text=True, env=production_environment, check=False,
+             "recover-plan", *common],
+            capture_output=True, text=True, env=hostile_environment, check=False,
         )
-        self.assertNotEqual(forged_result.returncode, 0)
-        self.assertIn("does not match live protected main", forged_result.stderr)
-        self.assertFalse(forged_marker.exists())
-        self.assertFalse(git_remote_marker.exists())
+        self.assertEqual(authenticated.returncode, 0, authenticated.stderr)
+        self.assertFalse(path_marker.exists())
+
+        for token in ("", "bad token"):
+            with self.subTest(token=token):
+                token_file.write_text(token, encoding="utf-8")
+                rejected = subprocess.run(
+                    ["bash", str(ROOT / "scripts/factory-kit.sh"), "qualification",
+                     "recover-plan", *common], capture_output=True, text=True,
+                    env=hostile_environment, check=False,
+                )
+                self.assertNotEqual(rejected.returncode, 0)
+                self.assertIn("authentication for qualification is unavailable", rejected.stderr)
+        token_file.write_text("config-only-token\n", encoding="utf-8")
+        live_file.write_text("d" * 40 + "\n", encoding="utf-8")
+        helper_marker = self.root / "live-mismatch-helper-executed"
+        mismatch_environment = {
+            **hostile_environment, "FACTORY_TEST_HELPER_MARKER": str(helper_marker),
+        }
+        mismatched = subprocess.run(
+            ["bash", str(ROOT / "scripts/factory-kit.sh"), "qualification",
+             "recover-plan", *common], capture_output=True, text=True,
+            env=mismatch_environment, check=False,
+        )
+        self.assertNotEqual(mismatched.returncode, 0)
+        self.assertIn("does not match live protected main", mismatched.stderr)
+        self.assertFalse(helper_marker.exists())
+        self.assertFalse(path_marker.exists())
+
+        injected_root = subprocess.run(
+            [sys.executable, "-I", str(ROOT / "scripts/qualification-environment.py"),
+             "--factory-root", str(repo), "--product-root", str(product),
+             "--project", "relay", "--root", str(qualification), "--upgrade",
+             "--transaction-root", str(repo)],
+            capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(injected_root.returncode, 2)
+        self.assertIn("unrecognized arguments: --transaction-root", injected_root.stderr)
 
     def test_qualification_runtime_change_plans_once_then_reuses_receipt(self) -> None:
         plan = {

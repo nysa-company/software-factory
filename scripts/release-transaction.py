@@ -60,6 +60,7 @@ TICKET_STATES = frozenset({
 _RETIRED_RUNTIME = "her" + "mes"
 _CUTOVER_LOCK_FD: int | None = None
 _PROCESS_STARTED = time.monotonic()
+TRANSACTION_ROOT = Path(__file__).resolve().parents[1]
 
 
 class ReleaseError(ValueError):
@@ -3768,15 +3769,15 @@ def qualification_basis(
         raise ReleaseError("qualification migration inputs are not exact protected main")
     if secure_regular_bytes(product / "factory/KIT_PIN", "product KIT_PIN") != (sha + "\n").encode():
         raise ReleaseError("product pin does not match qualification SHA")
-    module = qualification_module(repo)
+    module = qualification_module(TRANSACTION_ROOT)
     try:
         contract_version = json.loads(
-            (repo / "factory-contract.json").read_text(encoding="utf-8")
+            (TRANSACTION_ROOT / "factory-contract.json").read_text(encoding="utf-8")
         ).get("contract_version")
         manifest = module.qualification_manifest(product, sha)
         module.validate_selected_contracts(product, manifest)
         source = module.validate_upgrade_source(
-            root, project, repo, product, sha, contract_version, manifest,
+            root, project, TRANSACTION_ROOT, product, sha, contract_version, manifest,
         )
     except (OSError, ValueError) as error:
         raise ReleaseError(str(error)) from error
@@ -4295,7 +4296,7 @@ def apply_qualification_plan(
             fallback, fallback_sha = timer.phase(
                 "fallback_readiness",
                 lambda: qualification_fallback(
-                    module, Path(request["repo"]), Path(request["root"]),
+                    module, TRANSACTION_ROOT, Path(request["root"]),
                     request["project"], Path(request["product"]),
                     state / "fallback-scratch", timer.remaining_seconds(),
                 ),
@@ -4426,12 +4427,12 @@ def _qualification_upgrade_locked(args: argparse.Namespace) -> dict[str, Any]:
     )
     runtime = timer.phase(
         "runtime_preview", lambda: qualification_runtime_child(
-            repo, product, root, args.kits_root.resolve(), args.project, runtime_bin,
+            TRANSACTION_ROOT, product, root, args.kits_root.resolve(), args.project, runtime_bin,
             timeout=timer.remaining_seconds(),
         ),
     )
     timer.phase("sealed_install", lambda: run([
-        "bash", str(repo / "scripts/factory-kit.sh"), "install", "--sha", args.sha,
+        "bash", str(TRANSACTION_ROOT / "scripts/factory-kit.sh"), "install", "--sha", args.sha,
         "--repo", str(repo),
     ], "sealed qualification candidate install",
         environment=command_environment(args.kits_root.resolve()),
@@ -4447,7 +4448,7 @@ def _qualification_upgrade_locked(args: argparse.Namespace) -> dict[str, Any]:
     fallback_scratch = secure_directory(state / "fallback-scratch", create=True)
     fallback, fallback_sha = timer.phase(
         "fallback_readiness", lambda: qualification_fallback(
-            module, repo, root, args.project, product, fallback_scratch,
+            module, TRANSACTION_ROOT, root, args.project, product, fallback_scratch,
             timer.remaining_seconds(),
         ),
     )
@@ -4539,10 +4540,10 @@ def qualification_recovery_environment(lane: dict[str, Any]) -> dict[str, str]:
 
 
 def qualification_attempt_cancel(
-    repo: Path, lane: dict[str, Any], arguments: list[str], label: str,
+    transaction_root: Path, lane: dict[str, Any], arguments: list[str], label: str,
 ) -> dict[str, Any]:
     return run_json(
-        [sys.executable, str(repo / "scripts/attempt-cancel.py"), *arguments],
+        [sys.executable, str(transaction_root / "scripts/attempt-cancel.py"), *arguments],
         label, environment=qualification_recovery_environment(lane), timeout=30,
     )
 
@@ -4593,14 +4594,14 @@ def qualification_recovery_identity(
     candidate_sha, candidate_tree, candidate_origin = clean_identity(
         repo, "Factory recovery candidate",
     )
-    if candidate_sha != args.sha or contract(repo) != "2.0.0":
+    if candidate_sha != args.sha or contract(TRANSACTION_ROOT) != "2.0.0":
         raise ReleaseError("Factory recovery candidate identity changed")
     if (
         os.environ.get("FACTORY_KIT_TEST_MODE") != "1"
         and git(repo, "rev-parse", "refs/remotes/origin/main") != candidate_sha
     ):
         raise ReleaseError("Factory recovery candidate is not exact protected main")
-    module = qualification_module(repo)
+    module = qualification_module(TRANSACTION_ROOT)
     try:
         lane = module.qualification_lane(root, args.project)
     except (OSError, ValueError) as error:
@@ -4646,7 +4647,7 @@ def qualification_recovery_identity(
 
 
 def qualification_recovery_attempt(
-    repo: Path, lane: dict[str, Any], ticket: str, run_id: str,
+    _identity_repo: Path, lane: dict[str, Any], ticket: str, run_id: str,
 ) -> dict[str, Any]:
     runs = lane["product"] / "factory/runs"
     request_path = runs / f"{run_id}.cancel-request.json"
@@ -4656,7 +4657,7 @@ def qualification_recovery_attempt(
             raise ReleaseError("qualification cancellation replay is incomplete")
         request = safe_state(request_path, "attempt cancellation request")
         nested = request.get("plan")
-        receipt = qualification_attempt_cancel(repo, lane, [
+        receipt = qualification_attempt_cancel(TRANSACTION_ROOT, lane, [
             "receipt", "--factory-root", str(lane["product"]), "--ticket", ticket,
             "--run-id", run_id,
         ], "qualification cancellation receipt")
@@ -4668,7 +4669,7 @@ def qualification_recovery_attempt(
     elif receipt_path.exists() or receipt_path.is_symlink():
         raise ReleaseError("qualification cancellation replay is incomplete")
     else:
-        nested = qualification_attempt_cancel(repo, lane, [
+        nested = qualification_attempt_cancel(TRANSACTION_ROOT, lane, [
             "preview", "--factory-root", str(lane["product"]), "--ticket", ticket,
             "--run-id", run_id, "--reason", "operator_requested",
         ], "qualification cancellation preview")
@@ -4679,7 +4680,7 @@ def qualification_recovery_attempt(
     if not SAFE_ID.fullmatch(provider_attempt):
         raise ReleaseError("qualification provider attempt identity is invalid")
     status = run_json([
-        sys.executable, str(repo / "scripts/provider-coordinator.py"),
+        sys.executable, str(TRANSACTION_ROOT / "scripts/provider-coordinator.py"),
         "--db", str(lane["provider"] / "accounting/state-v2.sqlite3"),
         "status", "--attempt-id", provider_attempt,
     ], "qualification provider attempt status",
@@ -4852,7 +4853,7 @@ def qualification_recovery_apply(args: argparse.Namespace) -> dict[str, Any]:
         nested_plan_path = state / "nested-plan.json"
         atomic_json(nested_plan_path, plan["attempt"]["nested_plan"])
         try:
-            nested = qualification_attempt_cancel(repo, lane, [
+            nested = qualification_attempt_cancel(TRANSACTION_ROOT, lane, [
                 "apply", "--factory-root", str(lane["product"]),
                 "--plan", str(nested_plan_path), "--preview-hash",
                 plan["attempt"]["nested_plan"]["preview_hash"],
