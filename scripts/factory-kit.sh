@@ -70,6 +70,7 @@ QUALIFICATION_GITHUB_TOKEN=""
 QUALIFICATION_GITHUB_BINARY=""
 QUALIFICATION_GITHUB_CONFIG=""
 QUALIFICATION_TRUSTED_BIN=""
+QUALIFICATION_INSTALL_REPO=""
 TRUSTED_GIT=/usr/bin/git
 
 say() { printf '%s\n' "$*"; }
@@ -1020,17 +1021,17 @@ git_tree_for_directory() {
   local directory="$1" object_dir index tree
   object_dir="$(mktemp -d "${TMPDIR:-/tmp}/factory-kit-objects.XXXXXX")"
   index="$object_dir/index"
-  /usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C GIT_NO_REPLACE_OBJECTS=1 "$TRUSTED_GIT" \
+  /usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C GIT_NO_LAZY_FETCH=1 GIT_NO_REPLACE_OBJECTS=1 "$TRUSTED_GIT" \
     init --bare -q "$object_dir/repo.git"
-  /usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C GIT_NO_REPLACE_OBJECTS=1 "$TRUSTED_GIT" \
+  /usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C GIT_NO_LAZY_FETCH=1 GIT_NO_REPLACE_OBJECTS=1 "$TRUSTED_GIT" \
     --git-dir="$object_dir/repo.git" config core.bare false
-  /usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C GIT_NO_REPLACE_OBJECTS=1 GIT_INDEX_FILE="$index" \
+  /usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C GIT_NO_LAZY_FETCH=1 GIT_NO_REPLACE_OBJECTS=1 GIT_INDEX_FILE="$index" \
     "$TRUSTED_GIT" --git-dir="$object_dir/repo.git" \
     --work-tree="$directory" read-tree --empty
-  /usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C GIT_NO_REPLACE_OBJECTS=1 GIT_INDEX_FILE="$index" \
+  /usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C GIT_NO_LAZY_FETCH=1 GIT_NO_REPLACE_OBJECTS=1 GIT_INDEX_FILE="$index" \
     "$TRUSTED_GIT" --git-dir="$object_dir/repo.git" \
     --work-tree="$directory" add -f -A -- .
-  tree="$(/usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C GIT_NO_REPLACE_OBJECTS=1 GIT_INDEX_FILE="$index" \
+  tree="$(/usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C GIT_NO_LAZY_FETCH=1 GIT_NO_REPLACE_OBJECTS=1 GIT_INDEX_FILE="$index" \
     "$TRUSTED_GIT" --git-dir="$object_dir/repo.git" \
     --work-tree="$directory" write-tree)"
   rm -rf "$object_dir"
@@ -1051,6 +1052,7 @@ source, sha, destination = sys.argv[1:]
 git = "/usr/bin/git"
 environment = {
     "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_NO_LAZY_FETCH": "1",
     "GIT_NO_REPLACE_OBJECTS": "1",
     "LC_ALL": "C", "PATH": "/usr/bin:/bin",
 }
@@ -5111,7 +5113,7 @@ cmd_release_abort() {
 
 qualification_candidate_git() {
   /usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C \
-    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_NO_REPLACE_OBJECTS=1 \
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_NO_LAZY_FETCH=1 GIT_NO_REPLACE_OBJECTS=1 \
     "$TRUSTED_GIT" -c core.fsmonitor=false -c core.hooksPath=/dev/null "$@"
 }
 
@@ -5224,8 +5226,11 @@ validate_qualification_candidate() {
   top="$(qualification_candidate_git -C "$physical" rev-parse --show-toplevel 2>/dev/null || true)"
   [[ "$top" == "$physical" ]] ||
     die "qualification Factory candidate must be an exact Git root"
+  [[ -z "$(qualification_candidate_git -C "$physical" config --local --no-includes \
+    --get-regexp '^(include([.]path|if[.].*[.]path)|extensions[.]partialclone|remote[.].*[.](promisor|partialclonefilter))$' 2>/dev/null || true)" ]] ||
+    die "qualification Factory candidate may not use partial or promisor objects"
   local origin
-  origin="$(qualification_candidate_git -C "$physical" config --get remote.origin.url 2>/dev/null || true)"
+  origin="$(qualification_candidate_git -C "$physical" config --local --no-includes --get remote.origin.url 2>/dev/null || true)"
   [[ -n "$origin" && "$(canonical_origin_identity "$origin")" == "$(expected_origin_identity)" ]] ||
     die "wrong kit origin: expected $(expected_origin_identity); SSH host aliases are not trusted—use a clean checkout with the canonical github.com remote"
   head="$(qualification_candidate_git -C "$physical" rev-parse --verify HEAD 2>/dev/null || true)"
@@ -5308,6 +5313,40 @@ prepare_qualification_transaction_root() {
   QUALIFICATION_TRANSACTION_ROOT="$transaction"
 }
 
+prepare_qualification_install_repo() {
+  local workspace="$1" sha="$2" origin="https://github.com/nysa-company/software-factory.git"
+  local file_protocol=never
+  local -a environment
+  if [[ "${FACTORY_KIT_TEST_MODE:-0}" == "1" ]]; then
+    origin="${FACTORY_KIT_CANONICAL_ORIGIN:-${FACTORY_KIT_ORIGIN:-}}"
+    file_protocol=always
+  fi
+  QUALIFICATION_INSTALL_REPO="$workspace/install-source"
+  environment=(
+    /usr/bin/env -i HOME="$workspace" PATH=/usr/bin:/bin LC_ALL=C
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_NO_LAZY_FETCH=1 GIT_NO_REPLACE_OBJECTS=1
+    GIT_TERMINAL_PROMPT=0
+  )
+  if [[ -n "$QUALIFICATION_TRUSTED_BIN" ]]; then
+    environment+=(
+      "GH_TOKEN=$QUALIFICATION_GITHUB_TOKEN"
+      "GIT_ASKPASS=$QUALIFICATION_TRUSTED_BIN/git-askpass"
+    )
+  fi
+  "${environment[@]}" "$TRUSTED_GIT" -c core.fsmonitor=false \
+    -c core.hooksPath=/dev/null -c credential.helper= -c protocol.allow=never \
+    -c protocol.https.allow=always -c protocol.file.allow="$file_protocol" \
+    clone -q --depth 1 --single-branch --branch main \
+    "$origin" "$QUALIFICATION_INSTALL_REPO" ||
+    die "failed to create private canonical qualification install source"
+  /bin/chmod 700 "$QUALIFICATION_INSTALL_REPO"
+  [[ "$(qualification_candidate_git -C "$QUALIFICATION_INSTALL_REPO" rev-parse --verify HEAD)" == "$sha" &&
+     "$(qualification_candidate_git -C "$QUALIFICATION_INSTALL_REPO" rev-parse --verify 'HEAD^{tree}')" == "$QUALIFICATION_CANDIDATE_TREE" ]] ||
+    die "private qualification install source identity mismatch"
+  [[ "$(qualification_candidate_git -C "$QUALIFICATION_INSTALL_REPO" config --local --no-includes --get remote.origin.url)" == "$origin" ]] ||
+    die "private qualification install source origin mismatch"
+}
+
 run_qualification_transaction() {
   local home path="/usr/bin:/bin" value
   local -a environment
@@ -5320,7 +5359,8 @@ run_qualification_transaction() {
   [[ -z "$QUALIFICATION_TRUSTED_BIN" ]] || path="$QUALIFICATION_TRUSTED_BIN:$path"
   environment=(
     /usr/bin/env -i HOME="$home" PATH="$path" LC_ALL=C
-    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_NO_REPLACE_OBJECTS=1
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+    GIT_NO_LAZY_FETCH=1 GIT_NO_REPLACE_OBJECTS=1
     GH_PROMPT_DISABLED=1 GH_PAGER=cat NO_COLOR=1
   )
   for value in FACTORY_KIT_TEST_MODE FACTORY_TRUSTED_TEST_HARNESS \
@@ -5333,12 +5373,16 @@ run_qualification_transaction() {
   [[ -z "$QUALIFICATION_TRUSTED_BIN" ]] || environment+=(
     "GIT_ASKPASS=$QUALIFICATION_TRUSTED_BIN/git-askpass" GIT_TERMINAL_PROMPT=0
   )
+  [[ -z "$QUALIFICATION_INSTALL_REPO" ]] || environment+=(
+    "FACTORY_QUALIFICATION_INSTALL_REPO=$QUALIFICATION_INSTALL_REPO"
+  )
   "${environment[@]}" /usr/bin/python3 -I -S "$@"
 }
 
 cmd_qualification_upgrade() {
   local project="$1" root="$2" product="$3" repo="$4" sha="$5" runtime="$6" operator="$7"
   prepare_qualification_transaction_root "$repo" "$sha"
+  prepare_qualification_install_repo "${QUALIFICATION_TRANSACTION_ROOT%/*}" "$sha"
   run_qualification_transaction "$QUALIFICATION_TRANSACTION_ROOT/scripts/release-transaction.py" --kits-root "$KITS_ROOT" \
     qualification-upgrade --project "$project" --root "$root" --product "$product" \
     --repo "$repo" --sha "$sha" --runtime-bin "$runtime" --operator-id "$operator"
@@ -5352,6 +5396,7 @@ cmd_qualification_resume() {
   helper="$release/scripts/release-transaction.py"
   [[ -f "$helper" && ! -L "$helper" ]] || die "sealed qualification transaction helper is missing"
   QUALIFICATION_TRANSACTION_ROOT="$release"
+  QUALIFICATION_INSTALL_REPO=""
   run_qualification_transaction "$helper" --kits-root "$KITS_ROOT" qualification-resume \
     --project "$project" --sha "$sha" --approved-by "$approver"
 }
@@ -5366,6 +5411,11 @@ cmd_qualification_recover() {
     --failed-run "$failed_run"
   )
   prepare_qualification_transaction_root "$repo" "$sha"
+  QUALIFICATION_GITHUB_TOKEN=""
+  QUALIFICATION_GITHUB_BINARY=""
+  QUALIFICATION_GITHUB_CONFIG=""
+  QUALIFICATION_TRUSTED_BIN=""
+  QUALIFICATION_INSTALL_REPO=""
   [[ "$action" == "plan" ]] || arguments+=(--approve-hash "$approval")
   run_qualification_transaction "$QUALIFICATION_TRANSACTION_ROOT/scripts/release-transaction.py" "${arguments[@]}"
 }

@@ -14,6 +14,7 @@ import os
 from pathlib import Path, PurePosixPath
 import pwd
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -98,6 +99,30 @@ def command(
             result.stderr.strip() or result.stdout.strip() or "command failed"
         )
     return result.stdout.strip()
+
+
+def identity_git(root: Path, *arguments: str) -> str:
+    environment = {
+        "PATH": "/usr/bin:/bin", "LC_ALL": "C",
+        "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_NO_LAZY_FETCH": "1", "GIT_NO_REPLACE_OBJECTS": "1",
+    }
+    partial = subprocess.run(
+        [
+            "/usr/bin/git", "-c", "core.fsmonitor=false", "-c",
+            "core.hooksPath=/dev/null", "-c", "credential.helper=", "-C",
+            str(root), "config", "--local", "--no-includes", "--get-regexp",
+            r"^(include([.]path|if[.].*[.]path)|extensions[.]partialclone|remote[.].*[.](promisor|partialclonefilter))$",
+        ], text=True, capture_output=True, check=False, timeout=30,
+        env=environment,
+    )
+    if partial.returncode not in (0, 1) or partial.stdout.strip():
+        raise EnvironmentError("Factory candidate may not use partial or promisor objects")
+    return command(
+        "/usr/bin/git", "-c", "core.fsmonitor=false", "-c",
+        "core.hooksPath=/dev/null", "-c", "credential.helper=", "-C",
+        str(root), *arguments, environment=environment,
+    )
 
 
 def validate_provider_cli_pins(factory: Path, sha: str) -> None:
@@ -2009,7 +2034,7 @@ def takeover_source(
         or manifest.get("per_run_budget_usd") != "10.000000"
         or manifest.get("contract_version") not in SUPPORTED_CONTRACTS
         or manifest.get("factory_sha")
-        != command("git", "-C", str(factory), "rev-parse", "HEAD")
+        != identity_git(factory, "rev-parse", "HEAD")
         or not SHA.fullmatch(manifest.get("source_factory_sha", ""))
         or manifest.get("source_factory_sha") == manifest.get("factory_sha")
         or not isinstance(manifest.get("generation"), int)
@@ -3210,13 +3235,10 @@ def handoff_preprovider(args: argparse.Namespace) -> dict[str, Any]:
     sealed_helper = target["release"] / "scripts/qualification-environment.py"
     if (
         target["product"] != product
-        or command(
-            "git", "-C", str(factory), "status", "--porcelain",
-            "--untracked-files=all",
-        )
-        or command("git", "-C", str(factory), "rev-parse", "HEAD")
+        or identity_git(factory, "status", "--porcelain", "--untracked-files=all")
+        or identity_git(factory, "rev-parse", "HEAD")
         != target["active"]["kit_sha"]
-        or command("git", "-C", str(factory), "rev-parse", "HEAD^{tree}")
+        or identity_git(factory, "rev-parse", "HEAD^{tree}")
         != target["active"]["kit_tree"]
         or command(
             "git", "-C", str(source["product"]), "rev-parse",
@@ -3373,21 +3395,32 @@ def git_tree(path: Path) -> str:
     with tempfile.TemporaryDirectory(prefix="qualification-tree.") as raw:
         repository = Path(raw) / "repo.git"
         index = Path(raw) / "index"
-        command("git", "init", "--bare", "-q", str(repository))
-        command("git", "--git-dir", str(repository), "config", "core.bare", "false")
-        environment = {**os.environ, "GIT_INDEX_FILE": str(index)}
+        environment = {
+            "PATH": "/usr/bin:/bin", "LC_ALL": "C",
+            "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_INDEX_FILE": str(index), "GIT_NO_LAZY_FETCH": "1",
+            "GIT_NO_REPLACE_OBJECTS": "1",
+        }
+        command(
+            "/usr/bin/git", "init", "--bare", "-q", str(repository),
+            environment=environment,
+        )
+        command(
+            "/usr/bin/git", "--git-dir", str(repository), "config",
+            "core.bare", "false", environment=environment,
+        )
         for arguments in (
             ("read-tree", "--empty"),
             ("add", "-f", "-A", "--", "."),
         ):
             result = subprocess.run(
-                ["git", "--git-dir", str(repository), "--work-tree", str(path), *arguments],
+                ["/usr/bin/git", "--git-dir", str(repository), "--work-tree", str(path), *arguments],
                 text=True, capture_output=True, check=False, env=environment, timeout=120,
             )
             if result.returncode:
                 raise EnvironmentError(result.stderr.strip() or "tree inspection failed")
         result = subprocess.run(
-            ["git", "--git-dir", str(repository), "--work-tree", str(path), "write-tree"],
+            ["/usr/bin/git", "--git-dir", str(repository), "--work-tree", str(path), "write-tree"],
             text=True, capture_output=True, check=False, env=environment, timeout=120,
         )
         if result.returncode:
@@ -3397,8 +3430,17 @@ def git_tree(path: Path) -> str:
 
 def materialize(factory: Path, sha: str, release: Path) -> None:
     archive = subprocess.run(
-        ["git", "-C", str(factory), "archive", "--format=tar", sha],
+        [
+            "/usr/bin/git", "-c", "core.fsmonitor=false", "-c",
+            "core.hooksPath=/dev/null", "-c", "credential.helper=", "-C",
+            str(factory), "archive", "--format=tar", sha,
+        ],
         capture_output=True, check=False, timeout=120,
+        env={
+            "PATH": "/usr/bin:/bin", "LC_ALL": "C",
+            "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_NO_LAZY_FETCH": "1", "GIT_NO_REPLACE_OBJECTS": "1",
+        },
     )
     if archive.returncode:
         raise EnvironmentError(archive.stderr.decode(errors="replace").strip())
@@ -3424,6 +3466,18 @@ def materialize(factory: Path, sha: str, release: Path) -> None:
             if not path.is_symlink():
                 path.chmod(0o555)
     release.chmod(0o555)
+
+
+def copy_sealed_release(source: Path, release: Path) -> None:
+    sealed_directory(source)
+    for path in source.rglob("*"):
+        if path.is_symlink():
+            target = Path(os.path.realpath(path))
+            if target != source and source not in target.parents:
+                raise EnvironmentError("sealed qualification source is unsafe")
+        elif stat.S_IMODE(path.lstat().st_mode) & 0o222:
+            raise EnvironmentError("sealed qualification source is unsafe")
+    shutil.copytree(source, release, symlinks=True)
 
 
 def ensure_directory(path: Path) -> Path:
@@ -3820,12 +3874,12 @@ def _prepare(args: argparse.Namespace, started_epoch_ns: int) -> dict[str, Any]:
     factory = args.factory_root.resolve(strict=True)
     product = args.product_root.resolve(strict=True)
     prepare_product_runtime(product, create=False)
-    if command("git", "-C", str(factory), "status", "--porcelain", "--untracked-files=all"):
+    if identity_git(factory, "status", "--porcelain", "--untracked-files=all"):
         raise EnvironmentError("Factory candidate must be clean")
     if command("git", "-C", str(product), "status", "--porcelain", "--untracked-files=all"):
         raise EnvironmentError("qualification product must be clean")
-    sha = command("git", "-C", str(factory), "rev-parse", "HEAD")
-    tree = command("git", "-C", str(factory), "rev-parse", "HEAD^{tree}")
+    sha = identity_git(factory, "rev-parse", "HEAD")
+    tree = identity_git(factory, "rev-parse", "HEAD^{tree}")
     if not SHA.fullmatch(sha) or not SHA.fullmatch(tree):
         raise EnvironmentError("Factory candidate identity is invalid")
     if (product / "factory/KIT_PIN").read_text(encoding="utf-8") != sha + "\n":
@@ -4356,12 +4410,12 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
     transaction = TRANSACTION_ROOT
     product = args.product_root.resolve(strict=True)
     prepare_product_runtime(product, create=False)
-    if command("git", "-C", str(factory), "status", "--porcelain", "--untracked-files=all"):
+    if identity_git(factory, "status", "--porcelain", "--untracked-files=all"):
         raise EnvironmentError("Factory candidate must be clean")
     if command("git", "-C", str(product), "status", "--porcelain", "--untracked-files=all"):
         raise EnvironmentError("qualification product must be clean")
-    sha = command("git", "-C", str(factory), "rev-parse", "HEAD")
-    tree = command("git", "-C", str(factory), "rev-parse", "HEAD^{tree}")
+    sha = identity_git(factory, "rev-parse", "HEAD")
+    tree = identity_git(factory, "rev-parse", "HEAD^{tree}")
     if not SHA.fullmatch(sha) or not SHA.fullmatch(tree):
         raise EnvironmentError("Factory candidate identity is invalid")
     if (product / "factory/KIT_PIN").read_text(encoding="utf-8") != sha + "\n":
@@ -4429,7 +4483,7 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
             if git_tree(release) != tree:
                 raise EnvironmentError("existing successor release tree is invalid")
         else:
-            materialize(factory, sha, release)
+            copy_sealed_release(transaction, release)
         if git_tree(release) != tree:
             raise EnvironmentError("sealed qualification tree does not match the candidate")
         runtime_bin = prepare_qualification_runtime(

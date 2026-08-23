@@ -2886,7 +2886,12 @@ class ReleaseTransactionTest(unittest.TestCase):
             "import json,os,subprocess,sys\nfrom pathlib import Path\n"
             "if os.environ.get('FACTORY_TEST_HELPER_MARKER'):\n"
             " Path(os.environ['FACTORY_TEST_HELPER_MARKER']).write_text('executed')\n"
-            "if os.environ.get('FACTORY_TRUSTED_TEST_HARNESS') == '1':\n"
+            "if any(value.startswith('qualification-recover-') for value in sys.argv):\n"
+            " assert all(value not in os.environ for value in "
+            "('GH_TOKEN','GH_CONFIG_DIR','GIT_ASKPASS'))\n"
+            " assert os.environ['PATH'] == '/usr/bin:/bin'\n"
+            "if os.environ.get('FACTORY_TRUSTED_TEST_HARNESS') == '1' and "
+            "'qualification-upgrade' in sys.argv:\n"
             " subprocess.run(['gh','api','--hostname','github.com',"
             "'repos/nysa-company/software-factory/git/ref/heads/main',"
             "'--jq','.object.sha'],check=True,capture_output=True,text=True)\n"
@@ -2908,6 +2913,9 @@ class ReleaseTransactionTest(unittest.TestCase):
             ["git", "-C", str(repo), "rev-parse", "HEAD"],
             capture_output=True, text=True, check=True,
         ).stdout.strip()
+        subprocess.run([
+            "git", "-C", str(repo), "push", "-q", "-u", "origin", "HEAD:main",
+        ], check=True)
         product = self.root / "recovery-product"
         product.mkdir()
         qualification = self.root / "nysa-sf-qualification.fixture"
@@ -2932,6 +2940,19 @@ class ReleaseTransactionTest(unittest.TestCase):
             "--product", str(product), "--repo", str(repo), "--sha", candidate_sha,
             "--operator-id", "tester", "--runtime-bin", str(runtime),
         ]
+        config_marker = self.root / "candidate-config-executed"
+        config_helper = self.root / "candidate-config-helper"
+        config_helper.write_text(
+            f"#!/bin/sh\ntouch {str(config_marker)!r}\nexit 1\n", encoding="utf-8",
+        )
+        config_helper.chmod(0o700)
+        for key, value in (
+            ("core.fsmonitor", str(config_helper)),
+            ("credential.helper", f"!{config_helper}"),
+            ("core.sshCommand", str(config_helper)),
+            ("url.file:///tmp/attacker/.insteadOf", str(canonical)),
+        ):
+            subprocess.run(["git", "-C", str(repo), "config", key, value], check=True)
         planned = subprocess.run(
             ["bash", str(ROOT / "scripts/factory-kit.sh"), "qualification",
              "recover-plan", *common],
@@ -2952,6 +2973,39 @@ class ReleaseTransactionTest(unittest.TestCase):
         apply_arguments = json.loads(applied.stdout)
         self.assertIn("qualification-recover-apply", apply_arguments)
         self.assertEqual(apply_arguments[-2:], ["--approve-hash", approval])
+        configured_upgrade = subprocess.run(
+            ["bash", str(ROOT / "scripts/factory-kit.sh"), "qualification",
+             "upgrade", *upgrade_common], capture_output=True, text=True,
+            env=environment, check=False,
+        )
+        self.assertEqual(configured_upgrade.returncode, 0, configured_upgrade.stderr)
+        self.assertFalse(config_marker.exists())
+        for key in (
+            "core.fsmonitor", "credential.helper", "core.sshCommand",
+            "url.file:///tmp/attacker/.insteadOf",
+        ):
+            subprocess.run([
+                "git", "-C", str(repo), "config", "--unset-all", key,
+            ], check=True)
+        subprocess.run([
+            "git", "-C", str(repo), "config", "core.repositoryFormatVersion", "1",
+        ], check=True)
+        subprocess.run([
+            "git", "-C", str(repo), "config", "Extensions.PartialClone", "origin",
+        ], check=True)
+        partial = subprocess.run(
+            ["bash", str(ROOT / "scripts/factory-kit.sh"), "qualification",
+             "recover-plan", *common], capture_output=True, text=True,
+            env=environment, check=False,
+        )
+        self.assertNotEqual(partial.returncode, 0)
+        self.assertIn("partial or promisor", partial.stderr)
+        subprocess.run([
+            "git", "-C", str(repo), "config", "--unset-all", "extensions.partialClone",
+        ], check=True)
+        subprocess.run([
+            "git", "-C", str(repo), "config", "core.repositoryFormatVersion", "0",
+        ], check=True)
 
         malformed = subprocess.run(
             ["bash", str(ROOT / "scripts/factory-kit.sh"), "qualification",
@@ -3197,6 +3251,12 @@ class ReleaseTransactionTest(unittest.TestCase):
             capture_output=True, text=True, env=hostile_environment, check=False,
         )
         self.assertEqual(authenticated.returncode, 0, authenticated.stderr)
+        authenticated_apply = subprocess.run(
+            ["bash", str(ROOT / "scripts/factory-kit.sh"), "qualification",
+             "recover-apply", *common, "--approve-hash", approval],
+            capture_output=True, text=True, env=hostile_environment, check=False,
+        )
+        self.assertEqual(authenticated_apply.returncode, 0, authenticated_apply.stderr)
         authenticated_upgrade = subprocess.run(
             ["bash", str(ROOT / "scripts/factory-kit.sh"), "qualification",
              "upgrade", *upgrade_common], capture_output=True, text=True,

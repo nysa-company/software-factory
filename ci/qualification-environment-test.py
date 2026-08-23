@@ -79,6 +79,13 @@ class QualificationEnvironmentTest(unittest.TestCase):
             ENVIRONMENT, "TRANSACTION_ROOT", self.factory,
         )
         self.transaction_root.start()
+        self.copy_transaction = mock.patch.object(
+            ENVIRONMENT, "copy_sealed_release",
+            side_effect=lambda _source, release: ENVIRONMENT.materialize(
+                self.factory, run(self.factory, "git", "rev-parse", "HEAD"), release,
+            ),
+        )
+        self.copy_transaction.start()
         (self.factory / "scripts").mkdir(parents=True)
         (self.factory / "factory-contract.json").write_text(
             '{"contract_version":"1.8.0"}\n', encoding="utf-8",
@@ -522,6 +529,7 @@ class QualificationEnvironmentTest(unittest.TestCase):
         self.assertEqual(caught.exception.reason_code, "runtime_tuple_mismatch")
 
     def tearDown(self) -> None:
+        self.copy_transaction.stop()
         self.transaction_root.stop()
         if self.branch_preflight is not None:
             self.branch_preflight.stop()
@@ -546,6 +554,15 @@ class QualificationEnvironmentTest(unittest.TestCase):
             os.environ["FACTORY_QUALIFICATION_OPERATOR_MAP_SEED"] = (
                 self.original_operator_seed
             )
+        for base, directories, files in os.walk(self.workspace, topdown=False):
+            for name in files:
+                path = Path(base) / name
+                if not path.is_symlink():
+                    path.chmod(0o600)
+            for name in directories:
+                path = Path(base) / name
+                if not path.is_symlink():
+                    path.chmod(0o700)
         shutil.rmtree(self.workspace)
 
     def test_planner_prime_requires_exact_restart_evidence(self) -> None:
@@ -4030,6 +4047,15 @@ class QualificationEnvironmentTest(unittest.TestCase):
         })
         self.assertFalse((self.root / f"releases/{successor}").exists())
 
+        config_marker = self.workspace / "qualification-factory-config-executed"
+        config_helper = self.workspace / "qualification-factory-config-helper"
+        config_helper.write_text(
+            f"#!/bin/sh\ntouch {str(config_marker)!r}\nexit 1\n", encoding="utf-8",
+        )
+        config_helper.chmod(0o700)
+        run(self.factory, "git", "config", "core.fsmonitor", str(config_helper))
+        run(self.factory, "git", "config", "credential.helper", f"!{config_helper}")
+
         original_replace = ENVIRONMENT.replace
         crashed = False
 
@@ -4092,6 +4118,7 @@ class QualificationEnvironmentTest(unittest.TestCase):
         active = json.loads(active_path.read_text())
         self.assertEqual(first["status"], "prepared")
         self.assertEqual(second["status"], "upgraded")
+        self.assertFalse(config_marker.exists())
         self.assertEqual(active["kit_sha"], successor)
         self.assertEqual(active["contract_version"], "2.0.0")
         self.assertEqual(active["generation"], 2)
@@ -4192,8 +4219,34 @@ class QualificationEnvironmentTest(unittest.TestCase):
             self.factory, release,
             ignore=shutil.ignore_patterns(".git"),
         )
+        for path in (release, *release.rglob("*")):
+            if not path.is_symlink():
+                path.chmod(path.stat().st_mode & ~0o222)
         provider = self.home.resolve() / ".factory/qualification/relay/provider"
         provider_before = RELEASE.qualification_provider_snapshot(provider)
+        install_repo = self.workspace / "https-install-source"
+        run(self.workspace, "git", "clone", "-q", "--no-local", str(self.factory), str(install_repo))
+        run(
+            install_repo, "git", "remote", "set-url", "origin",
+            "https://github.com/nysa-company/software-factory.git",
+        )
+        factory_config_marker = self.workspace / "transaction-factory-config-executed"
+        factory_config_helper = self.workspace / "transaction-factory-config-helper"
+        factory_config_helper.write_text(
+            f"#!/bin/sh\ntouch {str(factory_config_marker)!r}\nexit 1\n",
+            encoding="utf-8",
+        )
+        factory_config_helper.chmod(0o700)
+        for key, value in (
+            ("core.fsmonitor", str(factory_config_helper)),
+            ("credential.helper", f"!{factory_config_helper}"),
+            ("core.sshCommand", str(factory_config_helper)),
+            (
+                "url.file:///tmp/attacker/.insteadOf",
+                "git@github.com:nysa-company/software-factory.git",
+            ),
+        ):
+            run(self.factory, "git", "config", key, value)
         q71 = self.workspace / "q71-fixture"
         q71.mkdir()
         (q71 / "active.json").write_text('{"generation":71}\n')
@@ -4220,6 +4273,7 @@ class QualificationEnvironmentTest(unittest.TestCase):
             mock.patch.dict(os.environ, {
                 "FACTORY_KIT_TEST_MODE": "1",
                 "FACTORY_RELEASE_TEST_HOME": str(self.home),
+                "FACTORY_QUALIFICATION_INSTALL_REPO": str(install_repo),
             }),
             mock.patch.object(RELEASE, "TRANSACTION_ROOT", self.factory),
             mock.patch.object(RELEASE, "run", side_effect=installed),
@@ -4246,6 +4300,8 @@ class QualificationEnvironmentTest(unittest.TestCase):
             ).read_text()),
         )
         self.assertEqual((journal["status"], journal["phase"]), ("pass", "complete"))
+        self.assertNotIn(str(install_repo), json.dumps(journal, sort_keys=True))
+        self.assertFalse(factory_config_marker.exists())
         self.assertEqual(list((controller / "claims").glob("*.json")), [])
         for path in (
             self.product / "factory/runs",

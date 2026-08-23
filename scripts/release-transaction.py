@@ -848,7 +848,24 @@ def release_preflight(
 
 
 def git(root: Path, *arguments: str) -> str:
-    return run(["git", "-C", str(root), *arguments], "Git identity").strip()
+    environment = {
+        "PATH": "/usr/bin:/bin", "LC_ALL": "C",
+        "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_NO_LAZY_FETCH": "1", "GIT_NO_REPLACE_OBJECTS": "1",
+    }
+    partial = subprocess.run([
+        "/usr/bin/git", "-c", "core.fsmonitor=false", "-c",
+        "core.hooksPath=/dev/null", "-c", "credential.helper=", "-C",
+        str(root), "config", "--local", "--no-includes", "--get-regexp",
+        r"^(include([.]path|if[.].*[.]path)|extensions[.]partialclone|remote[.].*[.](promisor|partialclonefilter))$",
+    ], text=True, capture_output=True, check=False, timeout=30, env=environment)
+    if partial.returncode not in (0, 1) or partial.stdout.strip():
+        raise ReleaseError("Git identity may not use partial or promisor objects")
+    return run([
+        "/usr/bin/git", "-c", "core.fsmonitor=false", "-c",
+        "core.hooksPath=/dev/null", "-c", "credential.helper=", "-C",
+        str(root), *arguments,
+    ], "Git identity", environment=environment).strip()
 
 
 def clean_identity(root: Path, label: str) -> tuple[str, str, str]:
@@ -861,10 +878,25 @@ def clean_identity(root: Path, label: str) -> tuple[str, str, str]:
     tree = git(root, "rev-parse", "HEAD^{tree}")
     if not SHA.fullmatch(sha) or not SHA.fullmatch(tree):
         raise ReleaseError(f"{label} identity is invalid")
-    origin = git(root, "remote", "get-url", "origin")
+    origin = git(root, "config", "--local", "--no-includes", "--get", "remote.origin.url")
     if not origin or re.search(r"[A-Za-z][A-Za-z0-9+.-]*://[^/\s]+@", origin):
         raise ReleaseError(f"{label} origin is unsafe")
     return sha, tree, origin
+
+
+def canonical_factory_origin(origin: str) -> str:
+    value = origin.removesuffix(".git")
+    for prefix in (
+        "https://github.com/", "http://github.com/", "ssh://git@github.com/",
+        "git@github.com:",
+    ):
+        if value.startswith(prefix):
+            return "github.com/" + value[len(prefix):]
+    if value.startswith("file://"):
+        return "file://" + str(Path(value[7:]).resolve(strict=True))
+    if value.startswith("/"):
+        return str(Path(value).resolve(strict=True))
+    return value
 
 
 def capacity(product: Path) -> int:
@@ -4431,9 +4463,22 @@ def _qualification_upgrade_locked(args: argparse.Namespace) -> dict[str, Any]:
             timeout=timer.remaining_seconds(),
         ),
     )
+    install_repo_value = os.environ.get("FACTORY_QUALIFICATION_INSTALL_REPO", "")
+    if not install_repo_value or not Path(install_repo_value).is_absolute():
+        raise ReleaseError("private qualification install source is unavailable")
+    install_repo = Path(install_repo_value).resolve(strict=True)
+    install_sha, install_tree, install_origin = clean_identity(
+        install_repo, "private qualification install source",
+    )
+    if (
+        (install_sha, install_tree) != (args.sha, identity["factory_tree"])
+        or canonical_factory_origin(install_origin)
+        != canonical_factory_origin(identity["factory_origin"])
+    ):
+        raise ReleaseError("private qualification install source identity changed")
     timer.phase("sealed_install", lambda: run([
         "bash", str(TRANSACTION_ROOT / "scripts/factory-kit.sh"), "install", "--sha", args.sha,
-        "--repo", str(repo),
+        "--repo", str(install_repo),
     ], "sealed qualification candidate install",
         environment=command_environment(args.kits_root.resolve()),
         timeout=timer.remaining_seconds()))
