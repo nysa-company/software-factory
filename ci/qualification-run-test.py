@@ -199,6 +199,7 @@ raise SystemExit(code)
         qualification_mode: str = "isolated",
         finish: bool = False,
         operator_map: Path | None = None,
+        release_path: Path | None = None,
     ) -> tuple[int, dict[str, object]]:
         self.scenario.write_text(json.dumps(scenario), encoding="utf-8")
         command = [
@@ -226,11 +227,56 @@ raise SystemExit(code)
                     self, "product_sha", "",
                 ),
                 "FACTORY_RELEASE_SHA": "a" * 40,
+                **(
+                    {"FACTORY_RELEASE_PATH": str(release_path)}
+                    if release_path else {}
+                ),
                 "QUALIFICATION_RUN_CALLS": str(self.calls),
                 "QUALIFICATION_RUN_SCENARIO": str(self.scenario),
             },
         )
         return result.returncode, json.loads(result.stdout)
+
+    def activation_chain(self, predecessor: str) -> Path:
+        root = self.root / "activation"
+        release = root / "releases" / ("a" * 40)
+        for path in (
+            root, root / "releases", release, root / "projects",
+            root / "projects/relay", root / "receipts",
+        ):
+            path.mkdir(mode=0o700, exist_ok=True)
+
+        def receipt(kit_sha: str, previous: str | None) -> str:
+            value = {
+                "contract_version": "2.0.0",
+                "kit_sha": kit_sha,
+                "kit_tree": "1" * 40,
+                "product_path": str(self.manifest.parent.parent),
+                "project": "relay",
+                "provider_policy_sha256": "2" * 64,
+                "qualification_mode": "isolated",
+                "status": "pass",
+            }
+            if previous:
+                value["previous_receipt_id"] = previous
+            receipt_id = hashlib.sha256(canonical(value) + b"\n").hexdigest()
+            value["receipt_id"] = receipt_id
+            path = root / "receipts" / f"{receipt_id}.json"
+            path.write_text(json.dumps(value), encoding="utf-8")
+            path.chmod(0o600)
+            return receipt_id
+
+        prior = receipt(predecessor, None)
+        current = receipt("a" * 40, prior)
+        active = root / "projects/relay/active.json"
+        active.write_text(json.dumps({
+            "kit_sha": "a" * 40,
+            "project": "relay",
+            "receipt_id": current,
+            "release_path": str(release),
+        }), encoding="utf-8")
+        active.chmod(0o600)
+        return release
 
     def approval_fixture(
         self, *, dirty: bool = False, foreign: bool = False,
@@ -934,6 +980,86 @@ raise SystemExit(code)
                 self.assertEqual(code, 3)
                 self.assertEqual(value["reason"], "doctor_not_ready")
                 self.assertEqual(self.called(), ["doctor"])
+
+    def test_chained_successor_admits_only_its_authenticated_predecessor(self) -> None:
+        manifest = json.loads(self.manifest.read_text(encoding="utf-8"))
+        manifest.update({
+            "budget_usd": "300.000000",
+            "mode": "successor",
+            "per_run_budget_usd": "10.000000",
+            "per_ticket_budget_usd": "100.000000",
+            "source_factory_sha": "b" * 40,
+        })
+        self.manifest.write_text(json.dumps(manifest), encoding="utf-8")
+        doctor = self.doctor("warning")
+        doctor["checks"]["runtime"]["status"] = "ok"
+        doctor["checks"]["transition_receipts"] = {
+            "incidents": [{
+                "active_factory_sha": "d" * 40,
+                "observed_at_epoch_ns": 1,
+                "reason_code": "prior_kit_receipt",
+                "receipt_factory_sha": "b" * 40,
+                "ticket": "T-1",
+                "transition_receipt_sha256": "c" * 64,
+            }],
+            "status": "warning",
+        }
+        release = self.activation_chain("d" * 40)
+
+        code, value = self.run_scenario({
+            "doctor": doctor,
+            "reconcile": [self.controller("waiting_for_target")],
+            "qualification": self.report(),
+        }, release_path=release)
+        self.assertEqual((code, value["reason"]), (3, "cohort_not_accounted"))
+        self.assertEqual(self.called(), ["doctor", "reconcile"])
+
+        unrelated = copy.deepcopy(doctor)
+        unrelated["checks"]["transition_receipts"]["incidents"][0][
+            "active_factory_sha"
+        ] = "e" * 40
+        self.calls.unlink()
+        code, value = self.run_scenario({
+            "doctor": unrelated,
+            "reconcile": [self.controller("waiting_for_target")],
+            "qualification": self.report(),
+        }, release_path=release)
+        self.assertEqual((code, value["reason"]), (3, "doctor_not_ready"))
+        self.assertEqual(self.called(), ["doctor"])
+
+        active = release.parent.parent / "projects/relay/active.json"
+        active_value = json.loads(active.read_text(encoding="utf-8"))
+        active_value["release_path"] = "/tmp/foreign"
+        active.write_text(json.dumps(active_value), encoding="utf-8")
+        active.chmod(0o600)
+        self.calls.unlink()
+        code, value = self.run_scenario({
+            "doctor": doctor,
+            "reconcile": [self.controller("waiting_for_target")],
+            "qualification": self.report(),
+        }, release_path=release)
+        self.assertEqual((code, value["reason"]), (3, "doctor_not_ready"))
+        self.assertEqual(self.called(), ["doctor"])
+
+        release = self.activation_chain("d" * 40)
+        active_value = json.loads(active.read_text(encoding="utf-8"))
+        current = release.parent.parent / "receipts" / f"{active_value['receipt_id']}.json"
+        current_value = json.loads(current.read_text(encoding="utf-8"))
+        predecessor = release.parent.parent / "receipts" / (
+            f"{current_value['previous_receipt_id']}.json"
+        )
+        predecessor_value = json.loads(predecessor.read_text(encoding="utf-8"))
+        predecessor_value["kit_sha"] = "e" * 40
+        predecessor.write_text(json.dumps(predecessor_value), encoding="utf-8")
+        predecessor.chmod(0o600)
+        self.calls.unlink()
+        code, value = self.run_scenario({
+            "doctor": doctor,
+            "reconcile": [self.controller("waiting_for_target")],
+            "qualification": self.report(),
+        }, release_path=release)
+        self.assertEqual((code, value["reason"]), (3, "doctor_not_ready"))
+        self.assertEqual(self.called(), ["doctor"])
 
     def test_successor_prior_receipt_allows_its_exact_contract_recovery(self) -> None:
         doctor, worktree, head, receipt = self.contract_recovery_fixture()

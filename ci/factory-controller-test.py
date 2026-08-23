@@ -8196,6 +8196,83 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertNotIn("migrate", calls)
         self.assertEqual(calls.count("route_migration_cleared"), 1)
 
+    def test_completion_without_pending_recovers_only_authenticated_route_state(
+        self,
+    ) -> None:
+        controller = CONTROL.Controller(self.args)
+        cell = self.root / "parked/T-110"
+        route = cell / "factory/route-plans/T-110.json"
+        ticket = cell / "factory/tickets/T-110.md"
+        route.parent.mkdir(parents=True)
+        ticket.parent.mkdir(parents=True)
+        route.write_text(json.dumps({
+            "kit_sha": self.release.name, "ticket": "T-110",
+        }) + "\n", encoding="utf-8")
+        ticket.write_text(
+            f"# T-110\n\nState: Review\nKit-SHA: {self.release.name}\n",
+            encoding="utf-8",
+        )
+        (cell / "factory/KIT_PIN").write_text(
+            self.release.name + "\n", encoding="utf-8",
+        )
+        self.initialize_parked_branch(cell, "ticket/T-110")
+        claim = {
+            "blocked_reason": "route-migration-required",
+            "branch": "ticket/T-110", "lease": "a" * 64,
+            "parked": True, "publication_lease": "", "receipt": "",
+            "role": "", "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "blocked", "ticket": "T-110", "worktree": str(cell),
+        }
+        self.operator_passport("T-110", "Review", "validating")
+        completed = (
+            f"passport-route-migration-complete-T-110-{self.release.name}"
+        )
+        controller.marker(completed, {
+            "factory_sha": self.release.name,
+            "schema": CONTROL.EVENT_SCHEMA,
+            "ticket": "T-110",
+        })
+        calls = []
+        controller.renew = lambda _claim: calls.append("renew")
+        controller.migrate_passport = lambda *_args: self.fail(
+            "completed migration must not replay"
+        )
+        controller.release_bundle_refreshable = lambda *_args: False
+        controller.restore_contract_blocker = lambda _claim: False
+        controller.event = lambda *_args, **_kwargs: None
+        controller.event_once = lambda *_args, **_kwargs: None
+
+        controller.recover_upgraded_claims([claim])
+
+        self.assertEqual(claim["status"], "claimed")
+        self.assertNotIn("blocked_reason", claim)
+        self.assertEqual(calls, ["renew"])
+
+        for label, path, value in (
+            ("wrong-marker", self.state / f"{completed}.json", {
+                "factory_sha": self.release.name,
+                "schema": CONTROL.EVENT_SCHEMA,
+                "ticket": "T-111",
+            }),
+            ("unauthenticated-passport", self.state / "passports/T-110.json", {
+                "factory_sha": self.release.name,
+            }),
+        ):
+            with self.subTest(label=label):
+                claim.update(
+                    blocked_reason="route-migration-required", status="blocked",
+                )
+                CONTROL.write(self.state / f"{completed}.json", {
+                    "factory_sha": self.release.name,
+                    "schema": CONTROL.EVENT_SCHEMA,
+                    "ticket": "T-110",
+                })
+                CONTROL.write(path, value)
+                with self.assertRaisesRegex(
+                    CONTROL.ControllerError, "route migration completion is invalid",
+                ):
+                    controller.recover_upgraded_claims([claim])
+
     def test_release_bundle_refresh_requires_stale_protected_base(self) -> None:
         controller = CONTROL.Controller(self.args)
         cell = self.root / "parked/T-110"
@@ -8382,6 +8459,7 @@ class FactoryControllerTest(unittest.TestCase):
         model_state.mkdir()
         global_env = self.root / "global.env"
         global_env.write_text("\n".join((
+            "GLOBAL_DAILY_CAP_USD=50.00",
             "CODEX_PINNED=0.144.1",
             "CLAUDE_CODE_PINNED=2.1.207",
             "FACTORY_CURSOR_FALLBACK_ENABLED=1",

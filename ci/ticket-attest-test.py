@@ -116,6 +116,7 @@ class TicketAttestTests(unittest.TestCase):
         self.product.mkdir()
         self.bin.mkdir()
         command("git", "init", "--bare", "-q", str(self.remote))
+        command("git", "-C", str(self.remote), "config", "receive.autogc", "false")
         command("git", "init", "-q", "-b", "main", cwd=self.product)
         command("git", "config", "user.name", "test", cwd=self.product)
         command("git", "config", "user.email", "test@example.com", cwd=self.product)
