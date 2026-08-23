@@ -12769,7 +12769,10 @@ class Controller:
                     self.event_once("ticket_complete", claim["ticket"])
                     self.release(claim)
                     return {"status": "complete", "ticket": claim["ticket"]}
-                return {"status": "waiting", "ticket": claim["ticket"]}
+                return {
+                    "status": "waiting", "ticket": claim["ticket"],
+                    "wait_reason": "closeout",
+                }
             if not self.repository_test and not self.route_path(claim).exists():
                 raise ControllerError("ticket route was not batch pinned")
             if not self.refresh_dependency_tracking(claim):
@@ -13067,12 +13070,18 @@ class Controller:
                 if pr.get("status") == "failed" and self.retry_ci(
                     claim, receipt, pr
                 ):
-                    return {"status": "waiting", "ticket": claim["ticket"]}
+                    return {
+                        "status": "waiting", "ticket": claim["ticket"],
+                        "wait_reason": "pr-gate",
+                    }
                 if pr.get("status") == "failed":
                     self.publication_repair(claim, receipt, pr)
                     return {"status": "progressed", "ticket": claim["ticket"]}
                 if pr.get("status") != "ready":
-                    return {"status": "waiting", "ticket": claim["ticket"]}
+                    return {
+                        "status": "waiting", "ticket": claim["ticket"],
+                        "wait_reason": "pr-gate",
+                    }
                 try:
                     attested = self.json_call(
                         "ticket-attest", "--ticket", claim["ticket"],
@@ -13111,9 +13120,15 @@ class Controller:
                 if pr.get("status") == "failed" and self.retry_ci(
                     claim, receipt, pr
                 ):
-                    return {"status": "waiting", "ticket": claim["ticket"]}
+                    return {
+                        "status": "waiting", "ticket": claim["ticket"],
+                        "wait_reason": "pr-gate",
+                    }
                 if pr.get("status") != "ready":
-                    return {"status": "waiting", "ticket": claim["ticket"]}
+                    return {
+                        "status": "waiting", "ticket": claim["ticket"],
+                        "wait_reason": "pr-gate",
+                    }
                 if not self.request_protected_auto_merge(claim, receipt, pr):
                     return {
                         "status": "waiting", "ticket": claim["ticket"],
@@ -13190,20 +13205,49 @@ class Controller:
                     claim, receipt, pr
                 ):
                     self.publication_ready(claim, receipt, pr["head"])
-                    return {"status": "waiting", "ticket": claim["ticket"]}
+                    return {
+                        "status": "waiting", "ticket": claim["ticket"],
+                        "wait_reason": "pr-gate",
+                    }
                 if pr.get("status") == "failed":
                     self.publication_repair(claim, receipt, pr)
                     return {"status": "progressed", "ticket": claim["ticket"]}
                 if pr.get("status") == "wait":
                     self.publication_ready(claim, receipt, pr["head"])
-                    return {"status": "waiting", "ticket": claim["ticket"]}
+                    return {
+                        "status": "waiting", "ticket": claim["ticket"],
+                        "wait_reason": "pr-gate",
+                    }
                 if pr.get("status") == "ready":
-                    self.request_protected_auto_merge(claim, receipt, pr)
-                    return {"status": "waiting", "ticket": claim["ticket"]}
+                    requested = self.request_protected_auto_merge(
+                        claim, receipt, pr,
+                    )
+                    current = self.cell_git(claim, "rev-parse", "HEAD")
+                    if (
+                        current.returncode == 0
+                        and SHA.fullmatch(current.stdout.strip())
+                        and current.stdout.strip() != pr["head"]
+                    ):
+                        return {
+                            "status": "progressed", "ticket": claim["ticket"],
+                        }
+                    return {
+                        "status": "waiting", "ticket": claim["ticket"],
+                        "wait_reason": (
+                            "protected-merge" if requested
+                            else "publication-lease"
+                        ),
+                    }
                 raise ControllerError("publication PR gate returned an invalid status")
             if stage.startswith("AWAIT-MERGE closeout auto-merge pending"):
-                self.closeout(claim)
-                return {"status": "waiting", "ticket": claim["ticket"]}
+                if self.closeout(claim):
+                    return {
+                        "status": "progressed", "ticket": claim["ticket"],
+                    }
+                return {
+                    "status": "waiting", "ticket": claim["ticket"],
+                    "wait_reason": "closeout",
+                }
             if stage.startswith("COMPLETE"):
                 self.event_once("ticket_complete", claim["ticket"])
                 self.release(claim)
@@ -13934,7 +13978,8 @@ class Controller:
                     if (
                         item.get("status") == "waiting"
                         and item.get("wait_reason") in {
-                            "pr-gate", "publication-lease",
+                            "closeout", "pr-gate", "protected-merge",
+                            "publication-lease",
                         }
                         and futures
                     ):

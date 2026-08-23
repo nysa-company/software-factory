@@ -7826,3 +7826,17 @@ terminal failure, missing evidence, and timeout remain fail-closed. Supported
 console actions and qualification resume keep exact plan hashes inside trusted
 owner-controlled state, so operators approve the reviewed action rather than
 copying a digest.
+
+## 2026-08-23 — Decision 576: Qualification reuses sealed readiness and waits through publication
+
+Category: Reliability
+
+Fresh qualification preparation persists one owner-only, content-hashed model
+resolution/readiness bundle bound by the activation receipt. Doctor, cohort
+admission, and batch route pinning reuse it across the mandatory restart, while
+each paid role retains its immediate selected-route check. Batch pinning marks
+the startup bundle consumed, so later Doctor checks probe live readiness. The sealed finisher
+polls only typed authenticated GitHub, protected-merge, publication-lease, and
+closeout waits for at most ten minutes; human and untyped waits return. Provider
+active-run ownership now covers the complete terminal accounting, output, PID,
+and lock cleanup tail before closeout may proceed.

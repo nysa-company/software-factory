@@ -108,12 +108,25 @@ class QualificationEnvironmentTest(unittest.TestCase):
         factory_kit.chmod(0o755)
         model_control = self.factory / "scripts/model-control.sh"
         model_control.parent.mkdir(exist_ok=True)
+        fallback = {
+            "checks": [], "profile_id": "fixture",
+            "readiness_sha256": "a" * 64,
+            "schema": "nysa.software-factory.qualification-fallback-readiness/v1",
+            "status": "ready",
+        }
+        bundle = {
+            "fallback_readiness": fallback,
+            "readiness": {},
+            "resolution": {},
+            "schema": "nysa.software-factory.qualification-model-bundle/v1",
+        }
+        bundle["bundle_sha256"] = hashlib.sha256(
+            ENVIRONMENT.canonical(bundle)
+        ).hexdigest()
         model_control.write_text(
             "#!/bin/sh\n"
-            "printf '%s\\n' '{\"checks\":[],\"profile_id\":\"fixture\","
-            "\"readiness_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\","
-            "\"schema\":\"nysa.software-factory.qualification-fallback-readiness/v1\","
-            "\"status\":\"ready\"}'\n",
+            f"if [ \"${{1:-}}\" = qualification-bundle ]; then printf '%s\\n' '{json.dumps(bundle, sort_keys=True, separators=(',', ':'))}'; "
+            f"else printf '%s\\n' '{json.dumps(fallback, sort_keys=True, separators=(',', ':'))}'; fi\n",
             encoding="utf-8",
         )
         model_control.chmod(0o755)
@@ -788,6 +801,12 @@ class QualificationEnvironmentTest(unittest.TestCase):
         self.assertEqual(receipt["fallback_readiness_sha256"], "a" * 64)
         self.assertEqual(active["fallback_readiness_sha256"], "a" * 64)
         self.assertEqual(
+            receipt["model_bundle_sha256"], active["model_bundle_sha256"],
+        )
+        self.assertTrue(
+            (self.root / f"projects/relay/model-bundle-{self.sha}.json").is_file()
+        )
+        self.assertEqual(
             set(ENVIRONMENT.read(operator_map)["tickets"]),
             {"T-101", "T-102", "T-103"},
         )
@@ -890,6 +909,10 @@ class QualificationEnvironmentTest(unittest.TestCase):
         )
         self.assertIn(
             '"FACTORY_QUALIFICATION_FALLBACK_READINESS_SHA256=$ACTIVE_FALLBACK_READINESS_SHA256"',
+            launcher_text,
+        )
+        self.assertIn(
+            '"FACTORY_QUALIFICATION_MODEL_BUNDLE=$ACTIVE_MODEL_BUNDLE"',
             launcher_text,
         )
         self.assertIn(
@@ -1703,7 +1726,7 @@ class QualificationEnvironmentTest(unittest.TestCase):
             self.home / ".factory/qualification/relay/controller"
         ).resolve()
 
-        def fail_after_operator_initialization(*_arguments):
+        def fail_after_operator_initialization(*_arguments, **_keywords):
             lock = os.open(
                 controller / ".operator-apply-lock",
                 os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0),
@@ -1875,14 +1898,14 @@ class QualificationEnvironmentTest(unittest.TestCase):
         active = 0
         maximum = 0
 
-        def slow_readiness(*arguments):
+        def slow_readiness(*arguments, **keywords):
             nonlocal active, maximum
             with guard:
                 active += 1
                 maximum = max(maximum, active)
             time.sleep(0.05)
             try:
-                return original(*arguments)
+                return original(*arguments, **keywords)
             finally:
                 with guard:
                     active -= 1

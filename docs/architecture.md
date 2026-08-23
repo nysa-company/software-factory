@@ -207,8 +207,14 @@ the same sealed `qualification-finish` command operators use; it has no direct
 operator-receipt helper. That command runs Doctor once at entry, serializes
 against reconciliation,
 projects an approval only from an exact selected clean parked claim and its
-committed bundle, and repeats reconciliation only after a new approval,
-protected-base refresh, or authenticated completion. A new command invocation
+committed bundle. Preparation also persists the complete task-free model
+resolution and readiness as an owner-only, content-hashed bundle bound by the
+activation receipt. Doctor, admission, and batch pinning reuse it across the
+mandatory controller restart; role admission still checks the selected live
+route. Batch pinning records cache consumption, so subsequent Doctor checks
+resolve live readiness. The finisher repeats reconciliation after progress and while every
+pending result is a typed external publication wait, for at most ten minutes.
+A new command invocation
 runs a fresh Doctor, every cached iteration remains bound to the exact manifest
 bytes, and authenticated contract recovery retains its explicit Doctor refresh.
 One ticket takes
@@ -228,6 +234,9 @@ Within one controller invocation, a ticket waiting on the serialized
 publication lease rechecks only while a sibling worker remains live. A
 materialized protected-base refresh counts as progress, so the refreshed ticket
 can continue to its next authenticated wait without another Doctor cycle.
+The provider wrapper retains its active-run claim until terminal accounting,
+provider/global locks, output, PID, and wrapper cleanup are complete, so
+closeout cannot observe a claim-free process tail.
 
 Recovered qualification responses surface durable blocked and budget claims,
 while exact route-migration waits remain empty so the sealed driver can apply

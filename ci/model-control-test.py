@@ -336,6 +336,41 @@ class ModelControlTest(unittest.TestCase):
         self.assertEqual(mismatch["expected_version"], "0.144.1")
         self.assertEqual(mismatch["installed_version"], "test")
 
+    def test_qualification_reuses_only_its_exact_bound_model_bundle(self):
+        bundle = json.loads(self.command("qualification-bundle").stdout)
+        path = self.base / "model-bundle.json"
+        path.write_text(
+            json.dumps(bundle, sort_keys=True, separators=(",", ":")) + "\n"
+        )
+        path.chmod(0o600)
+        self.environment.update({
+            "FACTORY_QUALIFICATION_MODEL_BUNDLE": str(path),
+            "FACTORY_QUALIFICATION_MODEL_BUNDLE_SHA256": bundle["bundle_sha256"],
+        })
+        self.global_env.write_text("GLOBAL_DAILY_CAP_USD=50.00\n")
+
+        cached = json.loads(self.command("qualification-readiness").stdout)
+        self.assertEqual(cached, bundle["fallback_readiness"])
+
+        consumed = (
+            self.controller_state / f"model-bundle-consumed-{bundle['bundle_sha256']}"
+        )
+        consumed.write_text(bundle["bundle_sha256"] + "\n")
+        consumed.chmod(0o600)
+        live = self.command("qualification-readiness", check=False)
+        self.assertEqual(live.returncode, 2)
+        self.assertIn("profile_temporarily_unavailable", live.stdout)
+        consumed.unlink()
+
+        value = dict(bundle)
+        value["resolution"] = {"tampered": True}
+        path.write_text(
+            json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n"
+        )
+        refused = self.command("qualification-readiness", check=False)
+        self.assertEqual(refused.returncode, 2)
+        self.assertIn("qualification model bundle is invalid", refused.stdout)
+
     def test_fallback_refusals_are_typed_without_leaking_detail(self):
         helper = ROOT / "scripts/lib/fallback_refusal.py"
         cases = (
