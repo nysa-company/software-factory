@@ -7746,3 +7746,12 @@ The Contract 2 release transaction streams authenticated retired-profile file
 digests instead of applying the 10 MB in-memory control-file limit. File type,
 owner, link count, mode, and before/after identity checks remain fail-closed,
 while grown SQLite state can reach the signed service-stop and archive step.
+
+## 2026-08-22 — Decision 568: Retired services freeze before profile approval
+
+Category: Reliability
+
+A loaded retired Factory service forces a signed prerequisite stage. Resume
+validates its exact job while allowing only profile-content drift, unloads the
+approved services, and returns a new plan whose full tree digest binds the
+stable profile before archive; all later checks remain exact.

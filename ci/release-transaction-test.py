@@ -165,6 +165,55 @@ class ReleaseTransactionTest(unittest.TestCase):
         self.assertEqual(plan["action"], "apply")
         self.assertRegex(plan["profile"]["tree_sha256"], r"^[0-9a-f]{64}$")
 
+    def test_retired_service_freeze_replans_after_mutable_profile_drift(self) -> None:
+        home = self.root / "home"
+        removed = "her" + "mes"
+        profile = home / f".{removed}/profiles/factory"
+        profile.mkdir(parents=True)
+        database = profile / "state.db"
+        database.write_bytes(b"before")
+        with (
+            mock.patch.object(RELEASE, "account_home", return_value=home),
+            mock.patch.dict(os.environ, {"FACTORY_KIT_TEST_MODE": "1"}),
+        ):
+            retired = RELEASE.retired_runtime_plan()
+            with mock.patch.object(RELEASE, "service_loaded", return_value=True):
+                self.assertFalse(RELEASE.retired_runtime_matches(
+                    retired, "1" * 64, check_profile=False,
+                ))
+            retired["services"][1]["loaded"] = True
+            database.write_bytes(b"after")
+            self.assertFalse(RELEASE.retired_runtime_matches(retired, "1" * 64))
+            self.assertTrue(RELEASE.retired_runtime_matches(
+                retired, "1" * 64, check_profile=False,
+            ))
+            plan = json.loads(json.dumps(self.plan))
+            plan["stage"] = "prerequisites"
+            plan["children"] = {
+                "host_cutover": None,
+                "launcher": plan["children"]["launcher"],
+                "provider_cli": {"action": "reuse"},
+                "provider_concurrency": {"action": "reuse"},
+                "retired_runtime": retired,
+            }
+            order = []
+            with (
+                mock.patch.object(
+                    RELEASE, "unload_service",
+                    side_effect=lambda service: order.append(service["label"]),
+                ),
+                mock.patch.object(
+                    RELEASE, "setup",
+                    side_effect=lambda _args: order.append("setup") or self.plan,
+                ),
+            ):
+                self.assertEqual(
+                    RELEASE.apply_prerequisites(plan, self.kits, "tester"), self.plan,
+                )
+        self.assertEqual(order, [
+            service["label"] for service in retired["services"]
+        ] + ["setup"])
+
     def tearDown(self) -> None:
         self.temp.cleanup()
 
@@ -342,10 +391,18 @@ class ReleaseTransactionTest(unittest.TestCase):
         }
         concurrency = {"action": "apply", "plan": {"approval_sha256": "3" * 64}}
         cli = {"action": "reuse", "evidence": {"status": "pass"}}
+        reuse = {"action": "reuse", "evidence": {"status": "pass"}}
+        unloaded = self.retired_runtime(self.root / "home")
+        loaded = json.loads(json.dumps(unloaded))
+        loaded["services"][0]["loaded"] = True
+        loaded["action"] = "apply"
         order = []
         with (
             mock.patch.dict(os.environ, {"FACTORY_KIT_CERTIFICATION_NETWORK_REVIEWED": "1"}),
             mock.patch.object(RELEASE, "clean_identity", side_effect=[
+                (self.sha, "e" * 40, str(repo)),
+                ("f" * 40, "1" * 40, str(self.product)),
+                ("f" * 40, "1" * 40, str(self.product)),
                 (self.sha, "e" * 40, str(repo)),
                 ("f" * 40, "1" * 40, str(self.product)),
                 ("f" * 40, "1" * 40, str(self.product)),
@@ -366,22 +423,31 @@ class ReleaseTransactionTest(unittest.TestCase):
             mock.patch.object(RELEASE, "launcher_plan", return_value=self.plan["children"]["launcher"]),
             mock.patch.object(
                 RELEASE, "retired_runtime_plan",
-                return_value=self.retired_runtime(self.root / "home"),
+                side_effect=[unloaded, loaded],
             ),
             mock.patch.object(RELEASE, "capacity", return_value=2),
-            mock.patch.object(RELEASE, "child_plan", return_value=(concurrency, cli)),
+            mock.patch.object(
+                RELEASE, "child_plan", side_effect=[(concurrency, cli), (reuse, cli)],
+            ),
         ):
             plan = RELEASE.setup(args)
+            retired_plan = RELEASE.setup(args)
         self.assertEqual(plan["stage"], "prerequisites")
         self.assertEqual(plan["children"]["provider_concurrency"], concurrency)
+        self.assertEqual(retired_plan["stage"], "prerequisites")
+        self.assertEqual(retired_plan["children"]["provider_concurrency"], reuse)
+        self.assertTrue(retired_plan["children"]["retired_runtime"]["services"][0]["loaded"])
+        self.assertIsNone(retired_plan["children"]["host_cutover"])
+        self.assertFalse(RELEASE.reservation_path(self.kits).exists())
         self.assertTrue(plan["request"]["skip_optional_tests"])
         self.assertTrue(RELEASE.plan_request(plan, self.kits).skip_optional_tests)
-        self.assertEqual(order, ["runtime", "preflight"])
+        self.assertEqual(order, ["runtime", "preflight", "runtime", "preflight"])
         self.assertNotIn(
             "FACTORY_KIT_CERTIFICATION_NETWORK_REVIEWED",
             run.call_args_list[0].kwargs["environment"],
         )
         RELEASE.validate_plan(plan)
+        RELEASE.validate_plan(retired_plan)
 
     def test_release_preflight_uses_the_prepared_runtime(self) -> None:
         runtime = self.root / "runtime/bin"
