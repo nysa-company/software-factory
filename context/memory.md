@@ -185,6 +185,11 @@ everything the Factory actually enforces lives here.
   schedulable and are submitted before new production admission. Each refused
   production candidate also appears in the bounded controller result as
   `waiting` for temporary unavailability or `error` for permanent failure.
+- Fresh qualification admission freezes one protected-main fetch and one
+  multi-ref observation into an owner-only ordered cohort-claim transaction.
+  Missing cells and leases replay from that intent; controller claim files and
+  events become durable before acknowledgement removes the intent, and a lost
+  acknowledgement response resumes through one owner-only pending marker.
 - Dispatch runs the existing provider-free ticket readiness contract during
   both shadow and claim candidate selection. A refusal, malformed success,
   helper error, or timeout is isolated as the existing named
@@ -7902,3 +7907,14 @@ Each sealed qualification command compares the certification tuple inside its
 existing runtime-pin proof instead of spawning a second preflight. Candidate
 hashes, symlinks, live Node/npm/npx versions, product SHA/tree/cleanliness, and
 fresh crash/restart validation remain fail-closed.
+
+## 2026-08-23 — Decision 582: Qualification claims one durable cohort
+
+Category: Performance
+
+Fresh sealed qualification uses one protected-main fetch and one multi-ref
+ticket-branch observation to claim the available cohort in deterministic order.
+An owner-only intent precedes every worktree and lease, so interruption and
+lost response replay the same transaction. Controller claim durability gates
+acknowledgement and intent cleanup; production single-ticket admission is
+unchanged.

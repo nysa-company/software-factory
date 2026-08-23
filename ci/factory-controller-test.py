@@ -1650,6 +1650,7 @@ class FactoryControllerTest(unittest.TestCase):
             project="relay",
             release_path=self.release,
             state_dir=self.state,
+            legacy_dispatch_fixture=True,
         )
 
     def tearDown(self) -> None:
@@ -2386,6 +2387,172 @@ class FactoryControllerTest(unittest.TestCase):
         ):
             controller.claim_new([])
 
+    def test_qualification_claims_one_durable_cohort_then_acknowledges(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        tickets = ["T-110", "T-111", "T-112"]
+        controller.qualification = {"generation": 1, "tickets": tickets}
+        controller.capacity = 3
+        transaction = "d" * 64
+        cells = []
+        for number in range(3):
+            cell = self.root / f"cell-{number + 1}"
+            cell.mkdir()
+            cells.append(cell)
+        calls = []
+
+        def dispatch(*args, **_kwargs):
+            calls.append(args)
+            if args[:2] == ("models", "qualification-readiness"):
+                return {
+                    "readiness_sha256": "f" * 64,
+                    "schema": (
+                        "nysa.software-factory.qualification-"
+                        "fallback-readiness/v1"
+                    ),
+                    "status": "ready",
+                }
+            if "--cohort-ack" in args:
+                return {
+                    "action": "ACK", "schema": "nysa.software-factory.dispatch-plan/v1",
+                    "status": "ACKNOWLEDGED", "transaction_sha256": transaction,
+                }
+            return {
+                "action": "START_BATCH",
+                "claims": [{
+                    "action": "START", "branch": f"ticket/{ticket}",
+                    "lease_id": f"{number + 1:064x}", "priority": "normal",
+                    "ticket": ticket, "worktree": str(cells[number]),
+                } for number, ticket in enumerate(tickets)],
+                "schema": "nysa.software-factory.dispatch-plan/v1",
+                "status": "CLAIMED", "transaction_sha256": transaction,
+            }
+
+        controller.json_call = dispatch
+        claims = controller.claim_new([])
+
+        self.assertEqual([item["ticket"] for item in claims], tickets)
+        self.assertEqual(
+            [call[:3] for call in calls],
+            [
+                ("models", "qualification-readiness", "--json"),
+                ("dispatch-plan", "--claim", "--cohort"),
+                ("dispatch-plan", "--claim", "--cohort-ack"),
+            ],
+        )
+        self.assertFalse((self.state / "qualification-claim-ack.json").exists())
+        events = [CONTROL.read(path) for path in (self.state / "events").glob("*.json")]
+        self.assertEqual(
+            {item.get("claim_transaction_sha256") for item in events},
+            {transaction},
+        )
+
+    def test_qualification_cohort_ack_response_loss_replays_cleanup(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        ticket = "T-110"
+        controller.qualification = {"generation": 1, "tickets": [ticket]}
+        controller.capacity = 1
+        cell = self.root / "cell-1"
+        cell.mkdir()
+        transaction = "d" * 64
+
+        def interrupted(*args, **_kwargs):
+            if args[:2] == ("models", "qualification-readiness"):
+                return {
+                    "readiness_sha256": "f" * 64,
+                    "schema": (
+                        "nysa.software-factory.qualification-"
+                        "fallback-readiness/v1"
+                    ),
+                    "status": "ready",
+                }
+            if "--cohort-ack" in args:
+                raise CONTROL.ControllerError("lost acknowledgement response")
+            return {
+                "action": "START_BATCH", "claims": [{
+                    "action": "START", "branch": f"ticket/{ticket}",
+                    "lease_id": "1" * 64, "priority": "normal",
+                    "ticket": ticket, "worktree": str(cell),
+                }],
+                "schema": "nysa.software-factory.dispatch-plan/v1",
+                "status": "CLAIMED", "transaction_sha256": transaction,
+            }
+
+        controller.json_call = interrupted
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "lost acknowledgement response",
+        ):
+            controller.claim_new([])
+        self.assertTrue((self.state / "qualification-claim-ack.json").exists())
+
+        restarted = CONTROL.Controller(self.args)
+        restarted.qualification = {"generation": 1, "tickets": [ticket]}
+        restarted.json_call = lambda *_args, **_kwargs: {
+            "action": "ACK", "schema": "nysa.software-factory.dispatch-plan/v1",
+            "status": "ACKNOWLEDGED", "transaction_sha256": transaction,
+        }
+        claims = restarted.load_claims()
+        self.assertEqual(restarted.claim_new(claims), claims)
+        self.assertFalse((self.state / "qualification-claim-ack.json").exists())
+
+    def test_qualification_cohort_replays_partial_controller_save(self) -> None:
+        tickets = ["T-110", "T-111"]
+        transaction = "d" * 64
+        cells = [self.root / "cell-1", self.root / "cell-2"]
+        for cell in cells:
+            cell.mkdir()
+        batch = {
+            "action": "START_BATCH", "claims": [{
+                "action": "START", "branch": f"ticket/{ticket}",
+                "lease_id": f"{number + 1:064x}", "priority": "normal",
+                "ticket": ticket, "worktree": str(cells[number]),
+            } for number, ticket in enumerate(tickets)],
+            "schema": "nysa.software-factory.dispatch-plan/v1",
+            "status": "CLAIMED", "transaction_sha256": transaction,
+        }
+
+        def response(*args, **_kwargs):
+            if args[:2] == ("models", "qualification-readiness"):
+                return {
+                    "readiness_sha256": "f" * 64,
+                    "schema": (
+                        "nysa.software-factory.qualification-"
+                        "fallback-readiness/v1"
+                    ),
+                    "status": "ready",
+                }
+            if "--cohort-ack" in args:
+                return {
+                    "action": "ACK", "schema": "nysa.software-factory.dispatch-plan/v1",
+                    "status": "ACKNOWLEDGED", "transaction_sha256": transaction,
+                }
+            return batch
+
+        interrupted = CONTROL.Controller(self.args)
+        interrupted.qualification = {"generation": 1, "tickets": tickets}
+        interrupted.capacity = 2
+        interrupted.json_call = response
+        save = interrupted.save_claim
+        saves = 0
+
+        def fail_second(claim):
+            nonlocal saves
+            saves += 1
+            if saves == 2:
+                raise OSError("injected controller save interruption")
+            save(claim)
+
+        interrupted.save_claim = fail_second
+        with self.assertRaisesRegex(OSError, "injected controller save interruption"):
+            interrupted.claim_new([])
+        self.assertTrue((self.state / "qualification-claim-ack.json").exists())
+
+        restarted = CONTROL.Controller(self.args)
+        restarted.qualification = {"generation": 1, "tickets": tickets}
+        restarted.capacity = 2
+        restarted.json_call = response
+        claims = restarted.claim_new(restarted.load_claims())
+        self.assertEqual([item["ticket"] for item in claims], tickets)
+        self.assertFalse((self.state / "qualification-claim-ack.json").exists())
     def test_qualification_preflight_blocks_before_recovery_once(self) -> None:
         controller = self.qualification_controller()
         calls = []

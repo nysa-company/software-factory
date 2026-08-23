@@ -1748,6 +1748,21 @@ PY
           DISPATCH_ARGS+=(--exclude-ticket "$2")
           shift 2
           ;;
+        --cohort)
+          [[ "$ACTION" == "claim" ]] || usage
+          DISPATCH_ARGS+=(--cohort)
+          shift
+          ;;
+        --cohort-limit)
+          [[ "$ACTION" == "claim" && "$2" =~ ^[1-4]$ ]] || usage
+          DISPATCH_ARGS+=(--cohort-limit "$2")
+          shift 2
+          ;;
+        --cohort-ack)
+          [[ "$ACTION" == "claim" && "$2" =~ ^[0-9a-f]{64}$ ]] || usage
+          DISPATCH_ARGS+=(--cohort-ack "$2")
+          shift 2
+          ;;
         *) usage ;;
       esac
     done

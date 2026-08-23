@@ -604,6 +604,7 @@ class Controller:
         ) != ("1", "1", "mock"):
             raise ControllerError("repository-test controller authority is invalid")
         self.repository_test = repository_test
+        self.legacy_dispatch_fixture = getattr(args, "legacy_dispatch_fixture", False)
         self.qualification_manifest_sha256 = (
             hashlib.sha256(canonical(self.qualification).encode()).hexdigest()
             if self.qualification else ""
@@ -2851,6 +2852,35 @@ class Controller:
         claims = list(existing)
         if not 0 <= reserved_capacity <= self.capacity:
             raise ControllerError("reserved controller capacity is invalid")
+        cohort_ack_path = self.state / "qualification-claim-ack.json"
+        pending_ack = None
+        if self.qualification and cohort_ack_path.exists():
+            pending_ack = read(cohort_ack_path)
+            if (
+                set(pending_ack) != {"schema", "transaction_sha256"}
+                or pending_ack.get("schema")
+                != "nysa.software-factory.qualification-claim-ack/v1"
+                or not DIGEST.fullmatch(pending_ack.get("transaction_sha256", ""))
+            ):
+                raise ControllerError("qualification claim acknowledgement is malformed")
+        if (
+            pending_ack is not None
+            and self.qualification_cohort_accounted(claims)
+        ):
+            acknowledged = self.json_call(
+                "dispatch-plan", "--claim", "--cohort-ack",
+                pending_ack["transaction_sha256"], "--json",
+            )
+            if (
+                acknowledged.get("schema")
+                != "nysa.software-factory.dispatch-plan/v1"
+                or acknowledged.get("action") != "ACK"
+                or acknowledged.get("status") != "ACKNOWLEDGED"
+                or acknowledged.get("transaction_sha256")
+                != pending_ack["transaction_sha256"]
+            ):
+                raise ControllerError("qualification claim acknowledgement is malformed")
+            cohort_ack_path.unlink()
         if self.qualification_cohort_accounted(claims):
             return claims
         if not self.qualification:
@@ -2940,6 +2970,139 @@ class Controller:
                 }
             ):
                 raise ControllerError("model admission plan is malformed")
+        if self.qualification:
+            available = self.capacity - capacity_used
+            if available <= 0:
+                return claims
+            arguments = [
+                "dispatch-plan", "--claim", "--cohort", "--cohort-limit",
+                str(available),
+            ]
+            for ticket in excluded:
+                arguments.extend(["--exclude-ticket", ticket])
+            value = self.json_call(*arguments, "--json")
+            if value.get("action") == "WAIT":
+                return claims
+            if self.legacy_dispatch_fixture and value.get("action") == "START":
+                # Older component fixtures model the pre-batch dispatcher one
+                # START at a time. Keep that test-only seam while sealed lanes
+                # require the durable START_BATCH transaction below.
+                while True:
+                    if (
+                        not TICKET.fullmatch(value.get("ticket", ""))
+                        or not DIGEST.fullmatch(value.get("lease_id", ""))
+                    ):
+                        raise ControllerError("dispatch claim is malformed")
+                    claim = {
+                        "branch": value["branch"], "lease": value["lease_id"],
+                        "priority": value.get("priority", "none"),
+                        "publication_lease": "", "receipt": "", "role": "",
+                        "schema": CLAIM_SCHEMA, "status": "claimed",
+                        "ticket": value["ticket"], "worktree": value["worktree"],
+                    }
+                    self.save_claim(claim)
+                    self.event(
+                        "ticket_claimed", claim["ticket"], branch=claim["branch"],
+                        preprovider_reset_head=value.get("preprovider_reset_head"),
+                        worktree=claim["worktree"],
+                    )
+                    claims.append(claim)
+                    excluded.append(claim["ticket"])
+                    if len([
+                        item for item in claims if self.consumes_capacity(item)
+                        and item["ticket"] not in self.invalid_transition_tickets
+                    ]) + reserved_capacity >= self.capacity:
+                        return claims
+                    next_arguments = ["dispatch-plan", "--claim"]
+                    for ticket in sorted(set(excluded)):
+                        next_arguments.extend(["--exclude-ticket", ticket])
+                    value = self.json_call(*next_arguments, "--json")
+                    if value.get("action") == "WAIT":
+                        return claims
+                    if value.get("action") != "START":
+                        raise ControllerError("dispatch claim is malformed")
+            batch = value.get("claims")
+            transaction_sha256 = value.get("transaction_sha256", "")
+            existing_tickets = {item["ticket"] for item in claims}
+            if (
+                value.get("schema") != "nysa.software-factory.dispatch-plan/v1"
+                or value.get("action") != "START_BATCH"
+                or value.get("status") != "CLAIMED"
+                or not DIGEST.fullmatch(transaction_sha256)
+                or not isinstance(batch, list)
+                or not batch
+                or sum(
+                    isinstance(item, dict)
+                    and item.get("ticket") not in existing_tickets
+                    for item in batch
+                ) > available
+                or len({item.get("ticket") for item in batch if isinstance(item, dict)})
+                != len(batch)
+            ):
+                raise ControllerError("qualification cohort claim is malformed")
+            if pending_ack is not None and (
+                pending_ack["transaction_sha256"] != transaction_sha256
+            ):
+                raise ControllerError("qualification cohort replay drifted")
+            write(cohort_ack_path, {
+                "schema": "nysa.software-factory.qualification-claim-ack/v1",
+                "transaction_sha256": transaction_sha256,
+            })
+            for item in batch:
+                if (
+                    not isinstance(item, dict)
+                    or item.get("action") != "START"
+                    or not TICKET.fullmatch(item.get("ticket", ""))
+                    or item["ticket"] not in self.qualification["tickets"]
+                    or not DIGEST.fullmatch(item.get("lease_id", ""))
+                    or not isinstance(item.get("branch"), str)
+                    or not isinstance(item.get("worktree"), str)
+                ):
+                    raise ControllerError("qualification cohort claim is malformed")
+                if item["ticket"] in existing_tickets:
+                    prior = next(
+                        claim for claim in claims if claim["ticket"] == item["ticket"]
+                    )
+                    if (
+                        prior.get("lease") != item["lease_id"]
+                        or prior.get("branch") != item["branch"]
+                        or prior.get("worktree") != item["worktree"]
+                    ):
+                        raise ControllerError("qualification cohort replay drifted")
+                    continue
+                claim = {
+                    "branch": item["branch"],
+                    "lease": item["lease_id"],
+                    "priority": item.get("priority", "none"),
+                    "publication_lease": "",
+                    "receipt": "",
+                    "role": "",
+                    "schema": CLAIM_SCHEMA,
+                    "status": "claimed",
+                    "ticket": item["ticket"],
+                    "worktree": item["worktree"],
+                }
+                self.save_claim(claim)
+                self.event(
+                    "ticket_claimed", claim["ticket"], branch=claim["branch"],
+                    claim_transaction_sha256=transaction_sha256,
+                    preprovider_reset_head=item.get("preprovider_reset_head"),
+                    worktree=claim["worktree"],
+                )
+                claims.append(claim)
+                existing_tickets.add(claim["ticket"])
+            acknowledged = self.json_call(
+                "dispatch-plan", "--claim", "--cohort-ack",
+                transaction_sha256, "--json",
+            )
+            if (
+                acknowledged.get("action") != "ACK"
+                or acknowledged.get("status") != "ACKNOWLEDGED"
+                or acknowledged.get("transaction_sha256") != transaction_sha256
+            ):
+                raise ControllerError("qualification claim acknowledgement is malformed")
+            cohort_ack_path.unlink()
+            return claims
         while len(
             [
                 item for item in claims

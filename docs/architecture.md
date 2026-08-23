@@ -248,6 +248,15 @@ the authorized migration. Publication acquire/release manager transitions,
 lease-digest events, and claim checkpoints share one controller lock; response
 loss reuses the same lease evidence, while a new lease remains distinct.
 
+Fresh sealed qualification admission claims its available cohort through one
+dispatcher transaction. The transaction freezes the already-fetched protected
+main and one multi-ref observation, records the ordered ticket intent before
+creating a cell or lease, and replays missing worktrees or leases idempotently.
+Only after every controller claim is durable does the dispatcher acknowledge
+and remove the intent; an acknowledgement-response loss is retried from a
+small controller marker. Ordinary production admission retains its existing
+single-ticket shadow, model precheck, and claim behavior.
+
 Installation requires remote full-suite evidence for an exact `origin/main`
 SHA with a successful authenticated GitHub Actions push run whose three Linux,
 three macOS, aggregate, and immutability jobs all passed. It then runs a
