@@ -849,6 +849,7 @@ EVIDENCE_A="$STATE/manifests/$SHA_A.suite.json"
 if [[ -f "$MANIFEST_A" && ! -L "$MANIFEST_A" ]] &&
    [[ "$(json_value "$MANIFEST_A" kit_sha)" == "$SHA_A" ]] &&
    [[ "$(json_value "$MANIFEST_A" git_tree)" == "$(git -C "$KIT_REPO" rev-parse "$SHA_A^{tree}")" ]] &&
+   [[ "$(json_value "$MANIFEST_A" launcher_sha256)" == "$(shasum -a 256 "$STATE/releases/$SHA_A/scripts/factory-launch" | awk '{print $1}')" ]] &&
    [[ "$(json_value "$MANIFEST_A" sealed_release_path)" == "$STATE/releases/$SHA_A" ]]; then
   pass "trusted external install manifest binds release"
 else

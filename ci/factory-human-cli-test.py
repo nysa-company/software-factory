@@ -10,6 +10,7 @@ from pathlib import Path
 import stat
 import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -341,6 +342,55 @@ class FactoryHumanCliTest(unittest.TestCase):
         self.assertNotEqual(code, 0)
         self.assertIn("target", error.lower())
         self.assertEqual(self.invocations(), [])
+
+    def test_trusted_production_target_accepts_only_an_exact_sealed_release(self):
+        home = self.root / "home"
+        sha = "a" * 40
+        release = home / ".factory/kits/releases" / sha
+        scripts = release / "scripts"
+        scripts.mkdir(parents=True)
+        launcher_path = scripts / "factory-launch"
+        raw = b"#!/bin/sh\n"
+        launcher_path.write_bytes(raw)
+        launcher_path.chmod(0o500)
+        active = home / ".factory/kits/projects/alpha/active.json"
+        manifest = home / f".factory/kits/manifests/{sha}.json"
+        active.parent.mkdir(parents=True)
+        manifest.parent.mkdir(parents=True)
+        active.write_text(json.dumps({"kit_sha": sha, "project": "alpha"}), encoding="utf-8")
+        manifest.write_text(json.dumps({
+            "git_tree": "b" * 40,
+            "kit_sha": sha,
+            "launcher_sha256": CLI.hashlib.sha256(raw).hexdigest(),
+            "schema_version": 1,
+            "sealed_release_path": str(release),
+        }), encoding="utf-8")
+        active.chmod(0o600)
+        manifest.chmod(0o600)
+        lock = home / ".factory/.launcher-pin.lock"
+        lock.write_text("", encoding="utf-8")
+        lock.chmod(0o600)
+        launcher = CLI._launcher(str(launcher_path))
+        try:
+            with mock.patch.object(CLI, "_account_home", return_value=home):
+                CLI._trusted_launcher(launcher, "alpha")
+            self.assertEqual(launcher.lock_path, lock)
+            with mock.patch.object(CLI, "_account_home", return_value=home):
+                with self.assertRaises(CLI.CliError):
+                    CLI._trusted_launcher(launcher, "beta")
+            manifest.write_text(json.dumps({
+                "git_tree": "b" * 40,
+                "kit_sha": sha,
+                "launcher_sha256": "0" * 64,
+                "schema_version": 1,
+                "sealed_release_path": str(release),
+            }), encoding="utf-8")
+            manifest.chmod(0o600)
+            with mock.patch.object(CLI, "_account_home", return_value=home):
+                with self.assertRaisesRegex(CLI.CliError, "trust evidence"):
+                    CLI._trusted_launcher(launcher, "alpha")
+        finally:
+            launcher.close()
 
 
 if __name__ == "__main__":

@@ -1201,14 +1201,16 @@ write_install_manifest() {
   [[ ! -e "$manifest" && ! -L "$manifest" ]] ||
     die "install manifest already exists: $manifest"
   python3 - "$sha" "$origin" "$tree" "$release" "$(now_iso)" <<'PY' | atomic_json_from_stdin "$manifest"
-import json, sys
+import hashlib, json, pathlib, sys
 sha, origin, tree, release, created = sys.argv[1:]
+launcher = pathlib.Path(release) / "scripts/factory-launch"
 print(json.dumps({
     "schema_version": 1,
     "kit_sha": sha,
     "canonical_origin": origin,
     "git_tree": tree,
     "sealed_release_path": release,
+    "launcher_sha256": hashlib.sha256(launcher.read_bytes()).hexdigest(),
     "created_at": created,
 }))
 PY

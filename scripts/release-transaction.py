@@ -292,14 +292,17 @@ def exact_local_file(path: Path, expected: bytes, label: str) -> str:
     return hashlib.sha256(expected).hexdigest()
 
 
-def controller_payload(project: str, product: Path) -> bytes:
+def controller_payload(
+    project: str, product: Path, launcher: Path | None = None,
+) -> bytes:
     home = account_home()
+    launcher = launcher or home / ".factory/bin/factory-launch"
     label = f"com.factory.controller.{project}"
     value = {
         "Label": label,
         "ProcessType": "Interactive",
         "ProgramArguments": [
-            str(home / ".factory/bin/factory-launch"), project, "reconcile", "--json",
+            str(launcher), project, "reconcile", "--json",
         ],
         "RunAtLoad": True,
         "StandardErrorPath": str(home / f".factory/logs/{project}-controller.error.log"),
@@ -310,12 +313,26 @@ def controller_payload(project: str, product: Path) -> bytes:
     return plistlib.dumps(value, fmt=plistlib.FMT_XML, sort_keys=True)
 
 
-def prepare_controller(project: str, product: Path) -> dict[str, Any]:
+def prepare_controller(
+    project: str, product: Path, launcher: Path | None = None,
+) -> dict[str, Any]:
     if sys.platform != "darwin" or os.environ.get("FACTORY_KIT_TEST_MODE") == "1":
         return {"platform": sys.platform, "status": "not-applicable"}
     root = secure_directory(account_home() / "Library/LaunchAgents", create=True)
     path = root / f"com.factory.controller.{project}.plist"
-    raw = controller_payload(project, product)
+    raw = controller_payload(project, product, launcher)
+    if launcher is not None and launcher != account_home() / ".factory/bin/factory-launch":
+        previous = None
+        if path.exists() or path.is_symlink():
+            previous = hashlib.sha256(
+                secure_regular_bytes(path, "controller job")
+            ).hexdigest()
+        return {
+            "action": "reuse" if previous == hashlib.sha256(raw).hexdigest() else "apply",
+            "label": f"com.factory.controller.{project}", "path": str(path),
+            "platform": "darwin", "previous_sha256": previous,
+            "sha256": hashlib.sha256(raw).hexdigest(),
+        }
     return {
         "label": f"com.factory.controller.{project}", "path": str(path),
         "platform": "darwin", "sha256": exact_local_file(path, raw, "controller job"),
@@ -347,15 +364,17 @@ def active_inventory(kits_root: Path) -> list[dict[str, Any]]:
 def validate_launcher_plan(value: dict[str, Any]) -> None:
     body = {key: item for key, item in value.items() if key != "approval_sha256"}
     paired = value.get("schema") == "nysa.software-factory.owner-launcher-pin-plan/v2"
+    scoped = value.get("schema") == "nysa.software-factory.owner-launcher-pin-plan/v3"
     expected = {
         "action", "active_projects", "approval_sha256", "candidate",
         "previous_sha256", "schema", "target",
-    } | ({"human_cli"} if paired else set())
+    } | ({"human_cli"} if paired or scoped else set())
     if (
         set(value) != expected
         or value.get("schema") not in {
             "nysa.software-factory.owner-launcher-pin-plan/v1",
             "nysa.software-factory.owner-launcher-pin-plan/v2",
+            "nysa.software-factory.owner-launcher-pin-plan/v3",
         }
         or value.get("action") != "apply"
         or value.get("approval_sha256") != digest(body)
@@ -369,7 +388,7 @@ def validate_launcher_plan(value: dict[str, Any]) -> None:
         and not DIGEST.fullmatch(str(value.get("previous_sha256", "")))
     ):
         raise ReleaseError("launcher pin plan is invalid")
-    if paired:
+    if paired or scoped:
         human = value.get("human_cli")
         candidate = human.get("candidate") if isinstance(human, dict) else False
         if (
@@ -377,7 +396,7 @@ def validate_launcher_plan(value: dict[str, Any]) -> None:
             or set(human) != {"candidate", "previous_sha256", "target"}
             or not Path(str(human.get("target", ""))).is_absolute()
             or Path(str(human.get("target", "")))
-            != Path(str(value["target"])).with_name("factory")
+            != account_home() / ".factory/bin/factory"
             or human.get("previous_sha256") is not None
             and not DIGEST.fullmatch(str(human.get("previous_sha256", "")))
             or candidate is not None and (
@@ -388,6 +407,18 @@ def validate_launcher_plan(value: dict[str, Any]) -> None:
                 != Path(str(value["candidate"]["path"])).with_name("factory-cli.py")
                 or not DIGEST.fullmatch(str(candidate.get("sha256", "")))
             )
+        ):
+            raise ReleaseError("launcher pin plan is invalid")
+    if scoped:
+        target = Path(value["target"])
+        releases = account_home() / ".factory/kits/releases"
+        if (
+            target.name != "factory-launch" or target.parent.name != "scripts"
+            or target.parent.parent.parent != releases
+            or not SHA.fullmatch(target.parent.parent.name)
+            or Path(value["candidate"]["path"]) != target
+            or value["previous_sha256"] != value["candidate"]["sha256"]
+            or value["active_projects"] != []
         ):
             raise ReleaseError("launcher pin plan is invalid")
     projects = value["active_projects"]
@@ -420,7 +451,7 @@ def validate_launcher_reuse(value: dict[str, Any]) -> None:
             not isinstance(human, dict) or set(human) != {"path", "sha256"}
             or not Path(str(human.get("path", ""))).is_absolute()
             or Path(str(human.get("path", "")))
-            != Path(str(value["path"])).with_name("factory")
+            != account_home() / ".factory/bin/factory"
             or human.get("sha256") is not None
             and not DIGEST.fullmatch(str(human.get("sha256", "")))
         )
@@ -428,9 +459,45 @@ def validate_launcher_reuse(value: dict[str, Any]) -> None:
         raise ReleaseError("launcher pin reuse is invalid")
 
 
-def launcher_plan(release: Path, kits_root: Path) -> dict[str, Any]:
+def pinned_human_cli() -> str | None:
+    root = account_home() / ".factory"
+    command = root / "bin/factory"
+    journal_path = root / "launcher-pin-journal.json"
+    if not command.exists() or not journal_path.exists():
+        return None
+    try:
+        observed = hashlib.sha256(secure_regular_bytes(
+            command, "installed human CLI", executable=True,
+        )).hexdigest()
+        journal = safe_state(journal_path, "launcher pin journal")
+        unsigned = {key: item for key, item in journal.items() if key != "record_sha256"}
+        plan = journal.get("plan")
+        if (
+            journal.get("schema") != "nysa.software-factory.owner-launcher-pin-journal/v1"
+            or journal.get("status") != "completed"
+            or journal.get("record_sha256") != digest(unsigned)
+            or not isinstance(plan, dict)
+            or plan.get("schema") != "nysa.software-factory.owner-launcher-pin-plan/v3"
+        ):
+            return None
+        validate_launcher_plan(plan)
+        human = plan["human_cli"]
+        candidate = human.get("candidate")
+        if (
+            Path(human["target"]) != command or not isinstance(candidate, dict)
+            or candidate.get("sha256") != observed
+        ):
+            return None
+        return observed
+    except ReleaseError:
+        return None
+
+
+def launcher_plan(
+    release: Path, kits_root: Path, project: str | None = None,
+) -> dict[str, Any]:
     candidate = release / "scripts/factory-launch"
-    target = account_home() / ".factory/bin/factory-launch"
+    target = candidate if project is not None else account_home() / ".factory/bin/factory-launch"
     secure_directory(target.parent, create=True)
     candidate_sha = hashlib.sha256(
         secure_regular_bytes(candidate, "sealed launcher candidate", executable=True)
@@ -441,9 +508,11 @@ def launcher_plan(release: Path, kits_root: Path) -> dict[str, Any]:
             secure_regular_bytes(target, "installed launcher", executable=True)
         ).hexdigest()
     human_candidate = release / "scripts/factory-cli.py"
-    human_target = target.parent / "factory"
+    human_target = account_home() / ".factory/bin/factory"
     human_present = human_target.exists() or human_target.is_symlink()
     candidate_present = human_candidate.exists() or human_candidate.is_symlink()
+    if project is not None and not candidate_present:
+        raise ReleaseError("project-scoped activation requires the human CLI")
     human_previous = None
     if human_present:
         human_previous = hashlib.sha256(secure_regular_bytes(
@@ -458,7 +527,8 @@ def launcher_plan(release: Path, kits_root: Path) -> dict[str, Any]:
             )).hexdigest(),
         }
     paired = human_present or candidate_present
-    desired_human = (
+    pinned_human = pinned_human_cli() if project is not None else None
+    desired_human = pinned_human or (
         human_candidate_value["sha256"] if human_candidate_value is not None else None
     )
     human_matches = human_previous == desired_human
@@ -468,11 +538,13 @@ def launcher_plan(release: Path, kits_root: Path) -> dict[str, Any]:
             reuse["human_cli"] = {"path": str(human_target), "sha256": desired_human}
         return reuse
     body = {
-        "action": "apply", "active_projects": active_inventory(kits_root),
+        "action": "apply",
+        "active_projects": [] if project is not None else active_inventory(kits_root),
         "candidate": {"path": str(candidate), "sha256": candidate_sha},
         "previous_sha256": previous,
         "schema": (
-            "nysa.software-factory.owner-launcher-pin-plan/v2" if paired
+            "nysa.software-factory.owner-launcher-pin-plan/v3" if project is not None
+            else "nysa.software-factory.owner-launcher-pin-plan/v2" if paired
             else "nysa.software-factory.owner-launcher-pin-plan/v1"
         ),
         "target": str(target),
@@ -486,13 +558,27 @@ def launcher_plan(release: Path, kits_root: Path) -> dict[str, Any]:
     return {**body, "approval_sha256": digest(body)}
 
 
+def launcher_path(value: dict[str, Any]) -> Path:
+    return Path(value["target"] if value["action"] == "apply" else value["path"])
+
+
+def project_launcher(value: dict[str, Any]) -> bool:
+    path = launcher_path(value)
+    releases = account_home() / ".factory/kits/releases"
+    return (
+        path.name == "factory-launch" and path.parent.name == "scripts"
+        and path.parent.parent.parent == releases
+        and SHA.fullmatch(path.parent.parent.name) is not None
+    )
+
+
 def _apply_launcher_plan_locked(
     value: dict[str, Any], release: Path, kits_root: Path,
     cutover_sha: str | None = None,
 ) -> dict[str, Any]:
     validate_launcher_plan(value)
     target = Path(value["target"])
-    root = secure_directory(target.parent.parent, create=True)
+    root = secure_directory(account_home() / ".factory", create=True)
     journal_path = root / "launcher-pin-journal.json"
     recovering = False
     if journal_path.exists() or journal_path.is_symlink():
@@ -506,7 +592,9 @@ def _apply_launcher_plan_locked(
         ):
             raise ReleaseError("launcher pin journal is invalid")
         recovering = pending.get("status") == "applying" and pending.get("plan") == value
-    current_plan = launcher_plan(release, kits_root)
+    current_plan = launcher_plan(
+        release, kits_root, "project" if project_launcher(value) else None,
+    )
     replay = current_plan.get("action") == "reuse" or recovering
     if current_plan.get("action") == "reuse":
         expected_human = value.get("human_cli", {}).get("candidate")
@@ -664,7 +752,7 @@ def apply_launcher_plan(
     cutover_sha: str | None = None,
 ) -> dict[str, Any]:
     validate_launcher_plan(value)
-    root = secure_directory(Path(value["target"]).parent.parent, create=True)
+    root = secure_directory(account_home() / ".factory", create=True)
     descriptor = os.open(
         root / ".launcher-pin.lock",
         os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600,
@@ -1074,15 +1162,25 @@ def seal_plan(body: dict[str, Any]) -> dict[str, Any]:
 
 
 def valid_controller(value: Any, project: str) -> bool:
+    planned = isinstance(value, dict) and "action" in value
     return isinstance(value, dict) and (
         value.get("status") == "not-applicable"
         and set(value) == {"platform", "status"}
         or value.get("status") != "not-applicable"
-        and set(value) == {"label", "path", "platform", "sha256"}
+        and set(value) == {"label", "path", "platform", "sha256"} | (
+            {"action", "previous_sha256"} if planned else set()
+        )
         and value.get("platform") == "darwin"
         and value.get("label") == f"com.factory.controller.{project}"
-        and Path(str(value.get("path", ""))).is_absolute()
+        and Path(str(value.get("path", ""))) == account_home() / (
+            f"Library/LaunchAgents/com.factory.controller.{project}.plist"
+        )
         and DIGEST.fullmatch(str(value.get("sha256", ""))) is not None
+        and (not planned or value.get("action") in {"apply", "reuse"})
+        and (not planned or value.get("previous_sha256") is None
+             or DIGEST.fullmatch(str(value.get("previous_sha256"))) is not None)
+        and (not planned or (value["action"] == "reuse")
+             == (value.get("previous_sha256") == value.get("sha256")))
     )
 
 
@@ -1313,6 +1411,19 @@ def validate_plan(value: dict[str, Any]) -> None:
         validate_launcher_plan(launcher)
     else:
         validate_launcher_reuse(launcher)
+    if project_launcher(launcher):
+        expected_launcher = account_home() / ".factory/kits/releases" / (
+            identity["factory_sha"]
+        ) / "scripts/factory-launch"
+        if (
+            launcher_path(launcher) != expected_launcher
+            or launcher.get("active_projects", []) != []
+            or launcher["action"] == "apply" and (
+                Path(launcher["candidate"]["path"]) != expected_launcher
+                or launcher["previous_sha256"] != launcher["candidate"]["sha256"]
+            )
+        ):
+            raise ReleaseError("release plan is invalid")
     for child in (provider_cli, provider_concurrency):
         if child["action"] == "apply" and (
             not isinstance(child.get("plan"), dict)
@@ -2020,13 +2131,16 @@ def _setup_locked(args: argparse.Namespace) -> dict[str, Any]:
         product_sha, product_tree, product_origin,
     ):
         raise ReleaseError("product changed during runtime preparation")
-    controller = prepare_controller(project, product)
     mode = "upgrade" if previous is not None else "new"
     maintenance_prior = (
         args.maintenance_prior if hasattr(args, "maintenance_prior")
         else snapshot_maintenance(kits_root, product, project)
     )
-    launcher = launcher_plan(release, kits_root)
+    launcher = launcher_plan(release, kits_root, project)
+    launcher_path = Path(
+        launcher["target"] if launcher["action"] == "apply" else launcher["path"]
+    )
+    controller = prepare_controller(project, product, launcher_path)
     retired_runtime = retired_runtime_plan()
     cli_paths = {
         key: str(value.resolve(strict=True)) for key, value in {
@@ -2037,13 +2151,17 @@ def _setup_locked(args: argparse.Namespace) -> dict[str, Any]:
     concurrency, cli = child_plan(
         sealed_kit, kits_root, sha, capacity(product), cli_paths, args.operator_id,
     )
+    scoped_launcher = project_launcher(launcher)
     preparation_required = (
         concurrency["action"] == "apply" or cli["action"] == "apply"
-        or any(service["loaded"] for service in retired_runtime["services"])
+        or (scoped_launcher and launcher["action"] == "apply")
+        or (not scoped_launcher and any(
+            service["loaded"] for service in retired_runtime["services"]
+        ))
     )
     host_cutover = None
     reservation = None
-    global_change = (
+    global_change = not scoped_launcher and (
         launcher["action"] == "apply" or retired_runtime["action"] == "apply"
     )
     if global_change and not preparation_required:
@@ -2087,10 +2205,7 @@ def _setup_locked(args: argparse.Namespace) -> dict[str, Any]:
         "runtime": runtime, "tickets": ticket_inventory(product),
     }
     now = int(time.time())
-    if (
-        launcher["action"] == "apply" or concurrency["action"] == "apply"
-        or cli["action"] == "apply" or retired_runtime["action"] == "apply"
-    ):
+    if preparation_required or global_change:
         plan = seal_plan({
             "children": {
                 "host_cutover": host_cutover,
@@ -2876,14 +2991,19 @@ def apply_prerequisites(plan: dict[str, Any], kits_root: Path, approved_by: str)
             environment=environment,
         )
     retired_runtime = plan["children"]["retired_runtime"]
-    if any(service["loaded"] for service in retired_runtime["services"]):
+    launcher = plan["children"]["launcher"]
+    scoped_launcher = project_launcher(launcher)
+    if scoped_launcher and launcher["action"] == "apply":
+        apply_launcher_plan(launcher, release, kits_root, request["sha"])
+    if not scoped_launcher and any(
+        service["loaded"] for service in retired_runtime["services"]
+    ):
         if not retired_runtime_matches(
             retired_runtime, plan["approval_sha256"], check_profile=False,
         ):
             raise ReleaseError("retired runtime services changed after approval")
         for service in retired_runtime["services"]:
             unload_service(service)
-    launcher = plan["children"]["launcher"]
     host_cutover = plan["children"]["host_cutover"]
     if host_cutover is not None and (
         launcher["action"] == "apply" or retired_runtime["action"] == "apply"
@@ -2927,7 +3047,7 @@ def validate_live_basis(
     if contract(release) != identity["contract_version"]:
         raise ReleaseError("installed release changed after setup")
     launcher = plan["children"]["launcher"]
-    installed_launcher = account_home() / ".factory/bin/factory-launch"
+    installed_launcher = launcher_path(launcher)
     expected_launcher = (
         launcher["sha256"] if launcher["action"] == "reuse"
         else launcher["candidate"]["sha256"]
@@ -2945,7 +3065,7 @@ def validate_live_basis(
     if observed_launcher not in allowed_launchers:
         raise ReleaseError("installed launcher changed after setup")
     human = launcher.get("human_cli")
-    if human is not None:
+    if human is not None and not project_launcher(launcher):
         installed_human = account_home() / ".factory/bin/factory"
         if launcher["action"] == "reuse":
             allowed_humans = {human["sha256"]}
@@ -2965,14 +3085,20 @@ def validate_live_basis(
             raise ReleaseError("installed human CLI changed after setup")
     controller = identity["controller"]
     if controller.get("status") != "not-applicable":
-        expected_controller = controller_payload(plan["request"]["project"], product)
-        if (
-            not Path(controller["path"]).exists() or Path(controller["path"]).is_symlink()
-            or
-            hashlib.sha256(expected_controller).hexdigest() != controller["sha256"]
-            or exact_local_file(
-                Path(controller["path"]), expected_controller, "controller job"
-            ) != controller["sha256"]
+        expected_controller = controller_payload(
+            plan["request"]["project"], product, installed_launcher,
+        )
+        path = Path(controller["path"])
+        observed = None
+        if path.exists() or path.is_symlink():
+            observed = hashlib.sha256(
+                secure_regular_bytes(path, "controller job")
+            ).hexdigest()
+        allowed = {controller["sha256"]}
+        if controller.get("action") == "apply":
+            allowed.add(controller.get("previous_sha256"))
+        if hashlib.sha256(expected_controller).hexdigest() != controller["sha256"] or (
+            observed not in allowed
         ):
             raise ReleaseError("controller job changed after setup")
     runtime_journal = project_runtime_root(
@@ -3169,8 +3295,23 @@ def ensure_controller(plan: dict[str, Any]) -> None:
     path = Path(controller["path"])
     expected = controller_payload(
         plan["request"]["project"], Path(plan["identity"]["product_path"]),
+        launcher_path(plan["children"]["launcher"]),
     )
-    if exact_local_file(path, expected, "controller job") != controller["sha256"]:
+    desired = hashlib.sha256(expected).hexdigest()
+    if desired != controller["sha256"]:
+        raise ReleaseError("controller job changed after setup")
+    if "action" in controller:
+        current = None
+        if path.exists() or path.is_symlink():
+            current = hashlib.sha256(
+                secure_regular_bytes(path, "controller job")
+            ).hexdigest()
+        if current not in {controller.get("previous_sha256"), desired}:
+            raise ReleaseError("controller job changed after setup")
+        unload_service(controller)
+        if current != desired:
+            atomic_bytes(path, expected)
+    elif exact_local_file(path, expected, "controller job") != desired:
         raise ReleaseError("controller job changed after setup")
     secure_directory(account_home() / ".factory/logs", create=True)
     launchctl = Path("/bin/launchctl")
@@ -3229,15 +3370,16 @@ def completed_result(plan: dict[str, Any], replayed: bool) -> dict[str, Any]:
     }
 
 
-def register_production_target(release: Path, project: str) -> None:
+def register_production_target(
+    release: Path, project: str, launcher: Path,
+) -> None:
     candidate = release / "scripts/factory-cli.py"
     if not candidate.exists():
         return
-    command = account_home() / ".factory/bin/factory"
     target = f"production-{hashlib.sha256(project.encode()).hexdigest()[:16]}"
     run(
-        [str(command), "register", target,
-         str(account_home() / ".factory/bin/factory-launch"), project],
+        [str(candidate), "register", target,
+         str(launcher), project],
         "human CLI production target registration",
         environment={
             "FACTORY_INTERNAL_REGISTER": "1",
@@ -3255,7 +3397,7 @@ def apply_activation(
     product = Path(request["product"])
     release = kits_root / "releases" / request["sha"]
     kit = release / "scripts/factory-kit.sh"
-    launcher = account_home() / ".factory/bin/factory-launch"
+    launcher = launcher_path(plan["children"]["launcher"])
     runtime = Path(plan["identity"]["runtime"]["evidence"]["path"])
     environment = launcher_environment(kits_root, runtime)
     kit_environment = command_environment(
@@ -3273,7 +3415,7 @@ def apply_activation(
         ):
             raise ReleaseError("completed release evidence no longer matches runtime state")
         doctor(launcher, plan, environment)
-        register_production_target(release, project)
+        register_production_target(release, project, launcher)
         return completed_result(plan, True)
     if value and value.get("phase") in {"doctor_pass", "dispatch_started"} and (
         active_exact(kits_root, plan) and not (product / "factory/KILL").exists()
@@ -3284,7 +3426,7 @@ def apply_activation(
     ):
         doctor(launcher, plan, environment)
         journal_update(journal, plan, "dispatch_started", "pass")
-        register_production_target(release, project)
+        register_production_target(release, project, launcher)
         return completed_result(plan, True)
     if not active_exact(kits_root, plan):
         receipt = Path(plan["children"]["receipt"]["path"])
@@ -3367,7 +3509,7 @@ def apply_activation(
             raise ReleaseError("release dispatch barrier changed")
         marker.unlink()
         journal_update(journal, plan, "dispatch_started", "pass")
-        register_production_target(release, project)
+        register_production_target(release, project, launcher)
         return completed_result(plan, False)
     except Exception:
         if maintenance_removed and not maintenance_finalized:

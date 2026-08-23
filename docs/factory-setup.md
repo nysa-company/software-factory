@@ -330,9 +330,12 @@ provider state, ticket branches, or paid roles are created.
   ```
 
 - Before Contract 2 certification, use the signed `factory-kit release
-  setup/resume` transaction. It inventories and drains every active product,
-  certifies and switches the full host, installs the exact sealed launcher,
-  and commits the Contract 2 floor before reloading native controllers. Setup
+  setup/resume` transaction. Normal product activation binds that product's
+  controller and human CLI target to its exact sealed launcher, without
+  migrating unrelated products, replacing the legacy launcher, or retiring
+  their runtime. A true global
+  launcher replacement still inventories, drains, certifies, and switches the
+  full host before committing the Contract 2 floor. Setup
   authorizes the current owner-only sealed plan; its internal digest binds the
   prior and candidate launcher bytes. Resume does not require a copied hash.
   Never replace the installed launcher independently.
