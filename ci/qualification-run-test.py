@@ -1992,6 +1992,7 @@ raise SystemExit(code)
         ])
 
     def test_finish_typed_wait_uses_one_global_bounded_poll_budget(self) -> None:
+        self.operator_authority()
         waiting = self.controller("ok", results=[
             {
                 "status": "waiting", "ticket": ticket,
