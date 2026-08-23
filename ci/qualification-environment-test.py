@@ -1048,6 +1048,11 @@ class QualificationEnvironmentTest(unittest.TestCase):
 
         project = f"qualification-launcher-{os.getpid()}-{self.root.name[-6:]}"
         account_home = Path(pwd.getpwuid(os.getuid()).pw_dir).resolve()
+        account_factory = account_home / ".factory"
+        created_account_factory = not account_factory.exists()
+        account_factory.mkdir(mode=0o700, exist_ok=True)
+        if created_account_factory:
+            self.addCleanup(shutil.rmtree, account_factory, ignore_errors=True)
         authority = account_home / f".factory/qualification/{project}"
         preparation_lock = authority.parent / f".prepare-{project}.lock"
         self.assertFalse(authority.exists())
