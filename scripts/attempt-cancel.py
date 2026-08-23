@@ -340,26 +340,55 @@ def release_stale_claims(factory_root: Path, manifest: dict[str, str], now: int)
         lease.unlink()
 
 
+def provider_database(factory_root: Path) -> Path:
+    configured = os.environ.get("FACTORY_PROVIDER_DB")
+    database = (
+        Path(configured) if configured
+        else factory_root.parent / "runtime/provider-state.sqlite3"
+    )
+    if not database.is_absolute():
+        raise CancelError("provider accounting database path is not absolute")
+    try:
+        info = database.lstat()
+    except FileNotFoundError as error:
+        raise CancelError("provider accounting database is missing") from error
+    if (
+        database.is_symlink()
+        or not stat.S_ISREG(info.st_mode)
+        or info.st_uid != os.geteuid()
+        or info.st_nlink != 1
+        or info.st_mode & 0o022
+    ):
+        raise CancelError("provider accounting database is unsafe")
+    return database
+
+
 def converge_provider_attempt(factory_root: Path, manifest: dict[str, str], plan: dict) -> None:
-    database = factory_root.parent / "runtime/provider-state.sqlite3"
     attempt_id = manifest.get("provider_attempt_id", "")
-    if not database.is_file() or not attempt_id:
+    if not attempt_id:
         return
+    database = provider_database(factory_root)
     command = [
         sys.executable, str(ROOT / "scripts/provider-coordinator.py"),
         "--db", str(database),
     ]
 
     def invoke(arguments: list[str]) -> dict:
-        result = subprocess.run(
-            [*command, *arguments], check=True, capture_output=True, text=True,
-        )
-        value = json.loads(result.stdout)
-        if value.get("status") == "error":
+        try:
+            result = subprocess.run(
+                [*command, *arguments], check=True, capture_output=True, text=True,
+            )
+            value = json.loads(result.stdout)
+        except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as error:
+            raise CancelError("provider attempt reconciliation failed") from error
+        if not isinstance(value, dict) or value.get("status") == "error":
             raise CancelError("provider attempt reconciliation failed")
         return value
 
-    status = invoke(["status", "--attempt-id", attempt_id])["attempts"][0]
+    attempts = invoke(["status", "--attempt-id", attempt_id]).get("attempts")
+    if not isinstance(attempts, list) or len(attempts) != 1:
+        raise CancelError("provider attempt identity disagrees with the run")
+    status = attempts[0]
     if (
         status.get("attempt_id") != attempt_id
         or status.get("ticket_id") != plan["ticket"]
@@ -369,14 +398,15 @@ def converge_provider_attempt(factory_root: Path, manifest: dict[str, str], plan
     ):
         raise CancelError("provider attempt identity disagrees with the run")
     if status.get("state") != "terminal":
-        status = invoke([
+        result = invoke([
             "terminalize",
             "--operation-id", f"cancel-reconcile-{plan['preview_hash'][:24]}",
             "--attempt-id", attempt_id,
             "--expected-version", str(status["version"]),
             "--result", "cancelled",
             "--charge-micro-usd", str(status["reserve_micro_usd"]),
-        ])["attempt"]
+        ])
+        status = result.get("attempt", result)
     if (
         status.get("state") != "terminal"
         or status.get("terminal_result") != "cancelled"

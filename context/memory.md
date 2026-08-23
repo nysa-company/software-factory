@@ -29,6 +29,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Fresh operator maps use an object-valued `_config` accepted by qualification, and nonvisual publication treats only exact current-ticket Ready audit receipts as metadata; foreign or malformed receipt paths remain semantic and fail closed.
 - Disjoint protected sibling refreshes recognize exact sibling Ready audit receipts and retain existing Reviewer/Narrator evidence. Done reuses exact approved-head checks only across a tree-identical authenticated merge with unchanged protected check policy; every mismatch or unavailable head result falls back to merge-commit evidence.
 - Fresh isolated preparation completes a sealed provider-free prime before returning: the exact cohort is claimed, batch-pinned, and advanced to unconsumed Planner receipts before the existing restart boundary. Replay first authenticates the exact publication and controller prefix, then remains idempotent only while provider accounting is pristine and every receipt remains exact and unconsumed; ordinary finish retains fresh Doctor and live Planner preflight.
+- Targeted cancellation reconciles provider attempts through the launcher's validated `FACTORY_PROVIDER_DB`; only direct development lanes without that binding use their existing lane-local database. Missing, unsafe, or foreign provider state fails before stale manifest or claim cleanup, and post-GO cancellation retains the full reservation exactly once.
 - **Contract rules below in Operating contract are authoritative**; this summary is only what the session hook can inject.
 
 ## Operating contract
@@ -7928,3 +7929,14 @@ fallback, provider, or controller work. Qualification prime accepts only the
 selected cohort's known claim, receipt, restart, lock, log, event, and passport
 namespaces and rejects foreign controller residue before route pinning or any
 provider transition.
+
+## 2026-08-23 — Decision 584: Cancellation binds authoritative provider state
+
+Category: Reliability
+
+Targeted cancellation uses the sealed launcher's exact `FACTORY_PROVIDER_DB`
+when present and retains the legacy lane-local database only for direct
+development lanes. Missing, symlinked, foreign-owned, writable-by-others, or
+wrong provider state fails before stale manifest, lease, or claim cleanup;
+post-GO cancellation terminalizes the exact provider attempt with its full
+reservation, and receipt replay does not charge or transition it twice.
