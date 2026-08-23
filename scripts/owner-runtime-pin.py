@@ -17,6 +17,7 @@ import uuid
 
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.dont_write_bytecode = True
 sys.path.insert(0, str(ROOT / "scripts/lib"))
 
 from certification_plan import safe_plan, validate_plan  # noqa: E402
@@ -101,12 +102,14 @@ def verify_runtime(
     expected: dict[str, str], commands: dict[str, str], path: str, home: Path
 ) -> dict[str, str]:
     observed = {tool: version(commands[tool], path, home) for tool in TOOLS}
-    for tool in TOOLS:
-        if observed[tool] != expected[tool]:
-            raise PinError(
-                f"runtime mismatch for {tool}: expected {expected[tool]}, "
-                f"observed {observed[tool] or 'missing'}"
-            )
+    mismatched = [tool for tool in TOOLS if observed[tool] != expected[tool]]
+    if mismatched:
+        actual = {tool: observed[tool] or "missing" for tool in TOOLS}
+        raise PinError(
+            f"runtime mismatch for {mismatched[0]}: expected tuple "
+            f"{json.dumps(expected, sort_keys=True)}; actual tuple "
+            f"{json.dumps(actual, sort_keys=True)}"
+        )
     return observed
 
 

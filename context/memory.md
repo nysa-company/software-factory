@@ -16,6 +16,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - An exactly migrated successor claim may chain a current transition receipt after its authenticated predecessor; predecessor evidence remains durable and unedited.
 - Nysa Agents baseline v3 as a toolkit; `bash ci/test-all.sh` is the unconditional full command.
 - Contract 2 live products resolve sealed exact-SHA releases from owner-only `active.json` records under `~/.factory/kits` via `~/.factory/bin/factory-launch`; the native controller is the only scheduler.
+- A drained isolated successor lane upgrades through one signed `qualification upgrade` transaction: project runtime before preflight, exact host-child approval when needed, fallback revalidation, authenticated environment publication, and sealed Doctor within a cumulative 60-second machine budget. Identical replay returns one completion receipt and never advances generation twice; the manual child sequence is recovery-only.
 - Catchable dispatcher heartbeat shutdown is deferred across the atomic lease-renewal replacement, so TERM, INT, or HUP cannot strand a `.lease-*` entry; foreign or malformed residue remains fail-closed.
 - The local release canary is one code-driven, product-agnostic command that creates contained local origins, runs setup/resume, and times one authenticated Planning transition plus sealed mock planner; its repository-test evidence is never promotable.
 - Model routing is portfolio policy; routes pin at the ticket boundary and change only via the Contract 1.4 journal flow. One profile resolution shares model-independent native-adapter readiness across its routes and runs independent probes in bounded parallel; Cursor readiness stays model-specific. Sealed Cursor inventory verifies the exact configured selection and displayed provider label in a disposable owner-only home, then accepts only its bounded certified structure.
@@ -7755,3 +7756,14 @@ A loaded retired Factory service forces a signed prerequisite stage. Resume
 validates its exact job while allowing only profile-content drift, unloads the
 approved services, and returns a new plan whose full tree digest binds the
 stable profile before archive; all later checks remain exact.
+
+## 2026-08-22 — Decision 569: Qualification migration is one bounded transaction
+
+Category: System change
+
+The sealed `qualification upgrade` and exact-hash `qualification resume`
+commands compose the existing runtime, provider CLI, fallback, environment, and
+Doctor controls. Their signed plan binds both Git trees, protected authorization,
+source activation, host receipts, and operator; restart accumulates monotonic
+phase timings against 60 seconds, publishes one generation, submits no provider
+role, and returns the original self-hashed completion receipt on replay.
