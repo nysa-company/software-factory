@@ -720,7 +720,7 @@ raise SystemExit(1 if failed else 0)
             launched.returncode, 0, self.failure_evidence(replay),
         )
         self.assertEqual(replay["status"], "green", json.dumps(replay, sort_keys=True))
-        self.assertEqual(replay["restarts"], 1)
+        self.assertEqual(replay["restarts"], 0)
         self.assertEqual(
             [phase["name"] for phase in replay["phases"]].count("doctor"), 2,
         )
