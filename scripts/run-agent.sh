@@ -3416,19 +3416,18 @@ if [[ "${FACTORY_TEST_MODE:-0}" == 1 &&
   sleep "$FACTORY_TEST_BEFORE_EXIT_SLEEP"
 fi
 if [[ "$CLI_CONCURRENT_RUN" -eq 1 ]]; then
-  if ! rmdir "$LAUNCH_LOCK" 2>/dev/null; then
+  if ! release_active_run_claim; then
+    echo "role_exit_control_plane_mutation: CLI run claim could not be terminalized" >&2
+    CONTROL_PLANE_MUTATION=1
+    ROLE_EXIT_STATUS="role_exit_control_plane_mutation"
+    STATUS=11
+  elif ! rmdir "$LAUNCH_LOCK" 2>/dev/null; then
     echo "role_exit_control_plane_mutation: CLI launch lock could not be terminalized" >&2
     CONTROL_PLANE_MUTATION=1
     ROLE_EXIT_STATUS="role_exit_control_plane_mutation"
     STATUS=11
   else
     HELD_LAUNCH_LOCK=0
-    if ! release_active_run_claim; then
-      echo "role_exit_control_plane_mutation: CLI run claim could not be terminalized" >&2
-      CONTROL_PLANE_MUTATION=1
-      ROLE_EXIT_STATUS="role_exit_control_plane_mutation"
-      STATUS=11
-    fi
   fi
 fi
 
