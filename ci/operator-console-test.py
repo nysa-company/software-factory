@@ -47,7 +47,10 @@ class OperatorConsoleTest(unittest.TestCase):
             "with log.open('a', encoding='utf-8') as handle:\n"
             "    handle.write(json.dumps(sys.argv[1:]) + '\\n')\n"
             "project = 'alpha' if sys.argv[1] == 'mismatch' else sys.argv[1]\n"
-            "print(json.dumps({'project': project, 'argv': sys.argv[2:]}))\n",
+            "value = {'project': project, 'argv': sys.argv[2:]}\n"
+            "if any('plan' in item or 'preview' in item for item in sys.argv[2:]):\n"
+            "    value['preview_hash'] = 'a' * 64\n"
+            "print(json.dumps(value))\n",
             encoding="utf-8",
         )
         self.launcher.chmod(0o700)
@@ -365,6 +368,80 @@ class OperatorConsoleTest(unittest.TestCase):
                 "operator-1", "--json",
             ],
         )
+        preview = json.loads(authorized_body)["result"]
+        self.assertNotIn("preview_hash", preview)
+        supplied_hash, _, _ = self.request(
+            server,
+            "POST",
+            "/api/actions/ticket-authorize-round-apply",
+            {
+                "project": "alpha", "ticket": "T-123", "role": "spec-linter",
+                "round": 3, "operator_id": "operator-1", "approve_hash": "b" * 64,
+            },
+            {
+                "Cookie": cookie,
+                "Origin": origin,
+                "Host": authority,
+                "X-CSRF-Token": csrf,
+            },
+        )
+        self.assertEqual(supplied_hash, 400)
+        cross_project, _, _ = self.request(
+            server,
+            "POST",
+            "/api/actions/ticket-authorize-round-apply",
+            {
+                "project": "bravo", "ticket": "T-123", "role": "spec-linter",
+                "round": 3, "operator_id": "operator-1",
+            },
+            {
+                "Cookie": cookie,
+                "Origin": origin,
+                "Host": authority,
+                "X-CSRF-Token": csrf,
+            },
+        )
+        self.assertEqual(cross_project, 400)
+        applied, _, applied_body = self.request(
+            server,
+            "POST",
+            "/api/actions/ticket-authorize-round-apply",
+            {
+                "project": "alpha", "ticket": "T-123", "role": "spec-linter",
+                "round": 3, "operator_id": "operator-1",
+            },
+            {
+                "Cookie": cookie,
+                "Origin": origin,
+                "Host": authority,
+                "X-CSRF-Token": csrf,
+            },
+        )
+        self.assertEqual(applied, 200, applied_body)
+        self.assertEqual(
+            self.invocations()[-1],
+            [
+                "alpha", "ticket-control", "authorize-round", "apply", "--ticket",
+                "T-123", "--role", "spec-linter", "--round", "3", "--operator-id",
+                "operator-1", "--approve-hash", "a" * 64, "--json",
+            ],
+        )
+        replayed, _, _ = self.request(
+            server,
+            "POST",
+            "/api/actions/ticket-authorize-round-apply",
+            {
+                "project": "alpha", "ticket": "T-123", "role": "spec-linter",
+                "round": 3, "operator_id": "operator-1",
+            },
+            {
+                "Cookie": cookie,
+                "Origin": origin,
+                "Host": authority,
+                "X-CSRF-Token": csrf,
+            },
+        )
+        self.assertEqual(replayed, 400)
 
     def test_snapshot_http_requests_remain_project_isolated(self):
         state, server = self.start_server()

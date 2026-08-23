@@ -25,7 +25,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Reconciliation markers advance after every trusted progressed stage. A successor qualification may recover one older pre-refresh marker only when sealed retention authenticates its passport digest, one exact receipt-bound successful role is the sole run-snapshot delta, and the existing strict passport migration suffix reaches the clean remote checkpoint.
 - Linear is removed (Decision 398); the six operator authorities are one-use receipts via `factory-kit.sh operator ACTION`. Approval changes only the ignored operator map and owner-only receipt until trusted approval attestation records it in Git. An explicitly invoked isolated `qualification-finish` runs Doctor once at command entry, may approve only exact selected clean parked bundle checkpoints, then drives the existing publication, closeout, and reducer chain until green or a typed external wait; a new invocation and authenticated contract recovery retain their fresh Doctor boundaries. Production and takeover retain separate human approval. Qualification may issue one manifest-selected successor resume only after the exact sealed compact-repair check, including the explicit isolated close after an authenticated contract-repair directive; that exact new authority rearms one abandoned targeted recovery attempt, while unchanged evidence cannot loop. Production has no lifecycle bypass.
 - The installed `factory` command is a preference-only human UI. Each opaque target binds one exact physical launcher plus project slug, including separate same-slug production and qualification targets; workflow labels and ticket fields come only from that launcher, and every Ready, approval, Doctor, or qualification-close action returns to its existing sealed authority.
-- The local operator console keeps semantic-round approval hashes in session memory: the operator previews and confirms one exact ticket, role, round, and identity without transcribing a digest, while the existing launcher apply path still recomputes and validates that digest before mutation.
+- The local operator console keeps supported approval hashes in its authenticated server session, and qualification resume reads its owner-only plan internally: operators approve an exact action without transcribing a digest, while sealed apply paths still recompute and validate the binding before mutation.
 - **Contract rules below in Operating contract are authoritative**; this summary is only what the session hook can inject.
 
 ## Operating contract
@@ -7814,3 +7814,14 @@ A signed product release installs the human CLI, then binds that product's
 controller and target to its exact immutable release launcher. Unrelated legacy
 products, the global launcher, the Contract floor, and retired runtime remain
 unchanged; a true global launcher replacement retains the all-product cutover.
+
+## 2026-08-22 — Decision 575: Activation waits; approval digests stay internal
+
+Category: System change
+
+Production installation waits within a bounded window while required protected
+GitHub checks are pending and proceeds only after their authenticated success;
+terminal failure, missing evidence, and timeout remain fail-closed. Supported
+console actions and qualification resume keep exact plan hashes inside trusted
+owner-controlled state, so operators approve the reviewed action rather than
+copying a digest.

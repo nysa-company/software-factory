@@ -238,8 +238,10 @@ loss reuses the same lease evidence, while a new lease remains distinct.
 Installation requires remote full-suite evidence for an exact `origin/main`
 SHA with a successful authenticated GitHub Actions push run whose three Linux,
 three macOS, aggregate, and immutability jobs all passed. It then runs a
-sandboxed host smoke check locally. Missing, malformed, or unavailable remote
-evidence fails closed without running the complete suite locally. Expired
+sandboxed host smoke check locally. Pending required checks are awaited for a
+bounded interval and installation continues automatically when they succeed.
+Failed, missing after the wait, malformed, or unavailable remote evidence fails
+closed without running the complete suite locally. Expired
 certification evidence uses the same corroboration and smoke path.
 
 Model policy is kit-owned and certified by the same `KIT_PIN`. The route catalog

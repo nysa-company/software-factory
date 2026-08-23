@@ -45,6 +45,8 @@ CERTIFICATION_TOOL_VERSION=7
 KIT_SUITE_DEFINITION="factory-kit-suite-v2"
 DEFAULT_RECEIPT_TTL="${FACTORY_KIT_RECEIPT_TTL_SECONDS:-86400}"
 DEFAULT_SUITE_EVIDENCE_TTL="${FACTORY_KIT_SUITE_EVIDENCE_TTL_SECONDS:-86400}"
+PROTECTED_CI_WAIT_SECONDS="${FACTORY_KIT_PROTECTED_CI_WAIT_SECONDS:-1800}"
+PROTECTED_CI_POLL_SECONDS="${FACTORY_KIT_PROTECTED_CI_POLL_SECONDS:-15}"
 
 # shellcheck disable=SC1091
 source "$SCRIPT_ROOT/scripts/lib/dispatch-leases.sh"
@@ -231,7 +233,7 @@ Usage:
   $PROGRAM release resume --project SLUG --sha FULL_SHA --approved-by ID
   $PROGRAM release abort  --project SLUG --sha FULL_SHA --approved-by ID
   $PROGRAM qualification upgrade --project SLUG --root QUALIFICATION_ROOT --product PRODUCT_REPO --repo KIT_REPO --sha FULL_SHA --runtime-bin NODE_BIN_DIR --operator-id ID
-  $PROGRAM qualification resume --project SLUG --sha FULL_SHA --approve-hash HASH --approved-by ID
+  $PROGRAM qualification resume --project SLUG --sha FULL_SHA --approved-by ID
 
 FACTORY_KITS_ROOT overrides the default state root (~/.factory/kits).
 EOF
@@ -479,7 +481,12 @@ verify_origin() {
 }
 
 verify_required_github_checks() {
-  local sha="$1" data ruleset_id
+  local sha="$1" data ruleset_id state kind detail deadline
+  [[ "$PROTECTED_CI_WAIT_SECONDS" =~ ^[0-9]+$ ]] ||
+    die "protected CI wait seconds must be a nonnegative integer"
+  [[ "$PROTECTED_CI_POLL_SECONDS" =~ ^[0-9]+$ ]] ||
+    die "protected CI poll seconds must be a nonnegative integer"
+  deadline=$(( $(now_epoch) + PROTECTED_CI_WAIT_SECONDS ))
   require_command gh
   data="$(mktemp -d "${TMPDIR:-/tmp}/factory-kit-github.XXXXXX")"
   remember_temp "$data"
@@ -513,16 +520,17 @@ PY
       > "$data/ruleset-detail-$ruleset_id.json" ||
       die "could not read repository ruleset $ruleset_id"
   done < "$data/ruleset-ids"
-  gh api --paginate --slurp \
-    "repos/nysa-company/software-factory/commits/$sha/check-runs?per_page=100" \
-    > "$data/check-run-pages.json" ||
-    die "could not read GitHub check runs for $sha"
-  gh api --paginate --slurp \
-    "repos/nysa-company/software-factory/commits/$sha/statuses?per_page=100" \
-    > "$data/status-pages.json" ||
-    die "could not read GitHub commit statuses for $sha"
-  python3 - "$data/classic-pages.json" "$data" \
-    "$data/check-run-pages.json" "$data/status-pages.json" <<'PY' ||
+  while :; do
+    gh api --paginate --slurp \
+      "repos/nysa-company/software-factory/commits/$sha/check-runs?per_page=100" \
+      > "$data/check-run-pages.json" ||
+      die "could not read GitHub check runs for $sha"
+    gh api --paginate --slurp \
+      "repos/nysa-company/software-factory/commits/$sha/statuses?per_page=100" \
+      > "$data/status-pages.json" ||
+      die "could not read GitHub commit statuses for $sha"
+    state="$(python3 - "$data/classic-pages.json" "$data" \
+      "$data/check-run-pages.json" "$data/status-pages.json" <<'PY'
 import fnmatch, json, pathlib, sys
 
 def pages(value):
@@ -608,19 +616,37 @@ for page in check_pages:
 # legacy commit statuses are deliberately never considered satisfiers.
 pages(json.load(open(sys.argv[4])))
 
-missing = []
+pending = []
+failed = []
 for context, integration_id in sorted(requirements):
     run = latest_checks.get((context, integration_id))
-    passed = bool(
-        run and run.get("status") == "completed" and
-        run.get("conclusion") == "success"
-    )
-    if not passed:
-        missing.append("%s@%s" % (context, integration_id))
-if missing:
-    raise SystemExit("required GitHub checks are not successful: %s" % ", ".join(missing))
+    label = "%s@%s" % (context, integration_id)
+    if not run or run.get("status") != "completed":
+        pending.append(label)
+    elif run.get("conclusion") != "success":
+        failed.append("%s:%s" % (label, run.get("conclusion") or "unknown"))
+if failed:
+    print("failure\t%s" % ", ".join(failed))
+elif pending:
+    print("pending\t%s" % ", ".join(pending))
+else:
+    print("success")
 PY
-    die "required GitHub checks are not successful for $sha"
+)" || die "required GitHub check evidence is invalid for $sha"
+    kind="${state%%$'\t'*}"
+    detail="${state#*$'\t'}"
+    case "$kind" in
+      success) return ;;
+      failure) die "required GitHub checks failed for $sha: $detail" ;;
+      pending)
+        [[ "$(now_epoch)" -lt "$deadline" ]] ||
+          die "timed out waiting for required GitHub checks for $sha: $detail"
+        say "WAITING FOR PROTECTED CI: $sha: $detail"
+        sleep "$PROTECTED_CI_POLL_SECONDS"
+        ;;
+      *) die "required GitHub check evidence is invalid for $sha" ;;
+    esac
+  done
 }
 
 verified_remote_full_ci() {
@@ -4941,14 +4967,14 @@ cmd_qualification_upgrade() {
 }
 
 cmd_qualification_resume() {
-  local project="$1" sha="$2" approval="$3" approver="$4" values release helper
+  local project="$1" sha="$2" approver="$3" values release helper
   validate_sha "$sha"
   values="$(verify_release_from_manifest "$sha")"
   release="$(printf '%s' "$values" | awk -F'\t' '{print $3}')"
   helper="$release/scripts/release-transaction.py"
   [[ -f "$helper" && ! -L "$helper" ]] || die "sealed qualification transaction helper is missing"
   python3 -I -S "$helper" --kits-root "$KITS_ROOT" qualification-resume \
-    --project "$project" --sha "$sha" --approve-hash "$approval" --approved-by "$approver"
+    --project "$project" --sha "$sha" --approved-by "$approver"
 }
 
 require_command git
@@ -5217,12 +5243,12 @@ case "$COMMAND" in
         "$SHA" "$RUNTIME_BIN" "$OPERATOR_ID"
     elif [[ "$ACTION" == "resume" ]]; then
       [[ ${#POSITIONALS[@]} -eq 1 && -n "$PROJECT" && -n "$SHA" &&
-         -n "$APPROVE_HASH" && -n "$APPROVED_BY" &&
+         -z "$APPROVE_HASH" && -n "$APPROVED_BY" &&
          -z "$QUALIFICATION_ROOT$PRODUCT$RUNTIME_BIN$OPERATOR_ID$PROFILE$RECEIPT$TICKET$CAPACITY$ORIGIN_OVERRIDE" &&
          "$REPO" == "$SCRIPT_ROOT" && ${#TICKETS[@]} -eq 0 &&
          ${#TICKET_WORKDIRS[@]} -eq 0 && "$JSON" -eq 0 ]] ||
         { usage >&2; exit 2; }
-      cmd_qualification_resume "$PROJECT" "$SHA" "$APPROVE_HASH" "$APPROVED_BY"
+      cmd_qualification_resume "$PROJECT" "$SHA" "$APPROVED_BY"
     else
       { usage >&2; exit 2; }
     fi

@@ -409,8 +409,10 @@ provider state, ticket branches, or paid roles are created.
   A fresh install records 24-hour owner-only kit-suite evidence by default.
   Authenticated successful GitHub Actions evidence for the exact protected-main
   SHA and its full Linux, macOS, aggregate, and immutability jobs is mandatory;
-  installation then runs a sandboxed host smoke check. Missing evidence fails
-  closed and never launches the complete suite locally. Expired certification
+  installation waits through pending required checks, continues automatically
+  when they succeed, then runs a sandboxed host smoke check. A terminal failure,
+  timeout, malformed proof, or unavailable evidence fails closed and never
+  launches the complete suite locally. Expired certification
   evidence follows the same remote-proof and local-smoke refresh path.
   Repeated certification of the exact unchanged sealed release may reuse it,
   while product/config/receipt checks still run. After one full measured product

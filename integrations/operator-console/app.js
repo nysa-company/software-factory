@@ -2,7 +2,7 @@
 
 // The CSRF token is intentionally kept only in memory. The session credential
 // remains in the HttpOnly cookie and is never visible to this script.
-const state = { csrf: null, snapshots: {}, previews: {} };
+const state = { csrf: null, snapshots: {} };
 const project = document.querySelector("#project");
 const refresh = document.querySelector("#refresh");
 const status = document.querySelector("#status");
@@ -227,7 +227,6 @@ async function previewApply(kind, previewAction, applyAction, payload, output, a
   apply.disabled = true;
   try {
     const result = await mutate(previewAction, payload);
-    state.previews[kind] = { payload, hash: result.preview_hash || result.approval_hash };
     target.textContent = JSON.stringify(visibleResult(result), null, 2);
     apply.disabled = false;
   } catch (error) {
@@ -236,11 +235,9 @@ async function previewApply(kind, previewAction, applyAction, payload, output, a
   apply.onclick = async () => {
     apply.disabled = true;
     try {
-      const preview = state.previews[kind];
       const result = await mutate(applyAction, {
-        ...preview.payload,
+        ...payload,
         ...applyExtras,
-        approve_hash: preview.hash,
       });
       target.textContent = JSON.stringify(visibleResult(result), null, 2);
       await loadSnapshots();

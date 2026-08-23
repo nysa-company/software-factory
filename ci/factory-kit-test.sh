@@ -448,14 +448,19 @@ case "$endpoint" in
   repos/nysa-company/software-factory/commits/*/check-runs\?*)
     app_conclusion=success
     rule_conclusion=success
+    pending=''
     [[ "${GH_FAIL_APP:-0}" == "1" ]] && app_conclusion=failure
     [[ "${GH_FAIL_RULESET:-0}" == "1" ]] && rule_conclusion=failure
+    if [[ "${GH_PENDING_ONCE:-0}" == "1" && ! -e "${GH_PENDING_MARKER:?}" ]]; then
+      : > "$GH_PENDING_MARKER"
+      pending=',{"id":13,"name":"app-ci","status":"in_progress","conclusion":null,"app":{"id":42}}'
+    fi
     printf '[
 {"check_runs":[
 {"id":10,"name":"app-ci","status":"completed","conclusion":"success","app":{"id":999}},
 {"id":11,"name":"app-ci","status":"completed","conclusion":"%s","app":{"id":42}},
-{"id":12,"name":"ruleset-ci","status":"completed","conclusion":"%s","app":{"id":7}}
-]}]\n' "$app_conclusion" "$rule_conclusion"
+{"id":12,"name":"ruleset-ci","status":"completed","conclusion":"%s","app":{"id":7}}%s
+]}]\n' "$app_conclusion" "$rule_conclusion" "$pending"
     ;;
   repos/nysa-company/software-factory/commits/*/statuses\?*)
     printf '%s\n' '[[{"context":"classic-ci","state":"success"},{"context":"app-ci","state":"success"},{"context":"ruleset-ci","state":"success"}]]'
@@ -890,6 +895,22 @@ export GH_FAIL_APP=1
 expect_failure "app-bound check rejects successful status and wrong app" \
   install --repo "$KIT_REPO" --sha "$SHA_B"
 unset GH_FAIL_APP
+GH_PENDING_MARKER="$TMP/gh-pending-once"
+export GH_PENDING_ONCE=1 GH_PENDING_MARKER
+export FACTORY_KIT_PROTECTED_CI_POLL_SECONDS=0
+export FACTORY_KIT_PROTECTED_CI_WAIT_SECONDS=5
+export FACTORY_KIT_TEST_REMOTE_FULL_CI=0
+expect_failure "pending protected checks are awaited before remote evidence" \
+  install --repo "$KIT_REPO" --sha "$SHA_B"
+if [[ "$LAST_OUTPUT" == *"WAITING FOR PROTECTED CI"* &&
+      "$LAST_OUTPUT" == *"exact successful main GitHub CI evidence is required"* ]]; then
+  pass "pending protected checks continue automatically when successful"
+else
+  fail "pending protected checks continue automatically when successful" "$LAST_OUTPUT"
+fi
+unset GH_PENDING_ONCE GH_PENDING_MARKER
+unset FACTORY_KIT_PROTECTED_CI_POLL_SECONDS FACTORY_KIT_PROTECTED_CI_WAIT_SECONDS
+unset FACTORY_KIT_TEST_REMOTE_FULL_CI
 export GH_UNSAFE_BYPASS=1
 expect_failure "unsafe Ruleset bypass actor blocks install" \
   install --repo "$KIT_REPO" --sha "$SHA_B"

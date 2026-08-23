@@ -64,6 +64,14 @@ ACTION_ROUTES = {
     "/api/actions/attempt-cancel-plan": "attempt-cancel-plan",
     "/api/actions/attempt-cancel": "attempt-cancel",
 }
+PREVIEW_ACTIONS = {
+    "ticket-authorize-round-plan": "ticket-authorize-round-apply",
+    "model-policy-preview": "model-policy-apply",
+    "envelope-plan": "envelope-apply",
+    "envelope-override-plan": "envelope-override-apply",
+    "attempt-cancel-plan": "attempt-cancel",
+}
+APPLY_ACTIONS = set(PREVIEW_ACTIONS.values())
 
 
 class RegistryError(ValueError):
@@ -196,6 +204,7 @@ class ConsoleState:
         self.session: str | None = None
         self.csrf: str | None = None
         self.expires_at = 0.0
+        self.previews: dict[tuple[str, str], str] = {}
         self.lock = threading.Lock()
 
     def establish(self, token: str) -> str | None:
@@ -206,18 +215,28 @@ class ConsoleState:
             self.session = secrets.token_urlsafe(32)
             self.csrf = secrets.token_urlsafe(32)
             self.expires_at = time.monotonic() + SESSION_SECONDS
+            self.previews.clear()
             return self.session
 
     def authenticated(self, token: str | None) -> bool:
         with self.lock:
             if time.monotonic() >= self.expires_at:
                 self.session = self.csrf = None
+                self.previews.clear()
                 return False
             return (
                 token is not None
                 and self.session is not None
                 and secrets.compare_digest(token, self.session)
             )
+
+    def remember_preview(self, project: str, action: str, digest: str) -> None:
+        with self.lock:
+            self.previews[(project, action)] = digest
+
+    def take_preview(self, project: str, action: str) -> str | None:
+        with self.lock:
+            return self.previews.pop((project, action), None)
 
 
 class ConsoleServer(ThreadingHTTPServer):
@@ -479,9 +498,33 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             return
         try:
             project = self.server.state.registry.require(body.pop("project", None))
+            action = ACTION_ROUTES[path]
+            if action in APPLY_ACTIONS:
+                if "approve_hash" in body:
+                    raise SNAPSHOT.SnapshotError(
+                        "invalid_action", "approval hashes are kept in the console session"
+                    )
+                approval = self.server.state.take_preview(project, action)
+                if approval is None:
+                    raise SNAPSHOT.SnapshotError(
+                        "invalid_action", "preview this action before authorizing it"
+                    )
+                body["approve_hash"] = approval
             value = self.server.state.launcher.mutate(
-                project, ACTION_ROUTES[path], body
+                project, action, body
             )
+            apply_action = PREVIEW_ACTIONS.get(action)
+            if apply_action is not None:
+                approval = value.get("preview_hash", value.get("approval_hash"))
+                if not isinstance(approval, str) or not SNAPSHOT.HASH_RE.fullmatch(approval):
+                    raise SNAPSHOT.SnapshotError(
+                        "invalid_output", "configured launcher returned no approval preview"
+                    )
+                self.server.state.remember_preview(project, apply_action, approval)
+                value = {
+                    key: item for key, item in value.items()
+                    if key not in {"preview_hash", "approval_hash"}
+                }
         except RegistryError:
             self._error(
                 HTTPStatus.BAD_REQUEST, "invalid_project", "invalid project selector"
