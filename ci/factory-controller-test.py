@@ -6020,6 +6020,10 @@ class FactoryControllerTest(unittest.TestCase):
                 pass
 
             @staticmethod
+            def poll():
+                return 0
+
+            @staticmethod
             def wait(timeout=None):
                 return 0
 
