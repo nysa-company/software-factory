@@ -126,6 +126,7 @@ class OperatorCliTest(unittest.TestCase):
         self.assertEqual(
             sorted(mapping), ["_config", "_sync", "initiatives", "tickets"],
         )
+        self.assertEqual(mapping["_config"], {})
         entry = mapping["tickets"]["T-1"]
         self.assertTrue(entry["operator_fields_initialized"])
         self.assertNotIn("operator", entry)

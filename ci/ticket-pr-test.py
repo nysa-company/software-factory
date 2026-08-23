@@ -397,6 +397,10 @@ else:
                 "FAKE_PR_FILES": json.dumps(pr_files or [
                     {"filename": "app/tools/offline.js", "status": "added"},
                     {"filename": "app/tests/offline.test.js", "status": "added"},
+                    {
+                        "filename": "factory/receipts/T-100/ready-1.json",
+                        "status": "added",
+                    },
                     {"filename": "factory/route-plans/T-100.json", "status": "added"},
                     {"filename": "factory/tickets/T-100.md", "status": "modified"},
                 ]),
@@ -1155,6 +1159,18 @@ else:
             "nonvisual_paths",
         )
         self.assertNotIn("pr view", self.trace.read_text())
+
+    def test_ready_receipt_metadata_is_exact_ticket_only(self):
+        for path, expected in (
+            ("factory/receipts/T-100/ready-1.json", True),
+            ("factory/receipts/T-101/ready-1.json", False),
+            ("factory/receipts/T-100/ready-0.json", False),
+            ("factory/receipts/T-100/ready-1.json.bak", False),
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(
+                    TICKET_PR.ticket_metadata_path(path, "T-100"), expected,
+                )
 
     def test_product_without_preview_refuses_visual_publication(self):
         project = self.product / "factory/PROJECT.env"
