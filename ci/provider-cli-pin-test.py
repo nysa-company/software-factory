@@ -217,6 +217,161 @@ exit 2
             ["claude", "codex", "agent", "codex-code-mode-host"],
         )
 
+    def test_doctor_reuses_concurrent_exact_pin_probes_and_preserves_legacy(self) -> None:
+        self.assertEqual(self.apply().returncode, 0)
+        trace = self.home / "doctor-probes"
+        markers = trace / "markers"
+        markers.mkdir(parents=True)
+        versions = {
+            "claude": "2.1.226",
+            "codex": "0.147.0",
+            "agent": "2026.08.01",
+            "gh": "2.78.0",
+        }
+        for name, version in versions.items():
+            path = self.vendor / name if name != "gh" else self.factory / "bin/gh"
+            path.write_text(
+                "#!/bin/sh\n"
+                "set -eu\n"
+                f"printf 'probe\\n' >> {shlex.quote(str(trace / (name + '.count')))}\n"
+                "if [ \"${BARRIER_ENABLED:-0}\" = 1 ]; then\n"
+                f"  : > {shlex.quote(str(markers / name))}\n"
+                "  attempts=0\n"
+                f"  while [ \"$(find {shlex.quote(str(markers))} -type f | wc -l)\" -lt 3 ]; do\n"
+                "    attempts=$((attempts + 1))\n"
+                "    [ \"$attempts\" -lt 100 ] || exit 97\n"
+                "    sleep 0.02\n"
+                "  done\n"
+                "fi\n"
+                f"printf '%s\\n' {shlex.quote(version)}\n"
+            )
+            path.chmod(0o755)
+
+        doctor_kit = self.home / "doctor-kit"
+        (doctor_kit / "scripts").mkdir(parents=True)
+        factory_kit = doctor_kit / "scripts/factory-kit.sh"
+        pin_helper = doctor_kit / "scripts/owner-provider-cli-pin.py"
+        pin_helper.write_text("# fixture\n")
+        report = {
+            "schema": "nysa.software-factory.provider-cli-pin-status/v1",
+            "status": "ready",
+            "items": [
+                {
+                    "name": name, "status": "ok", "reason": "exact_pin_ready",
+                    "target": str(self.vendor / name), "version": versions[name],
+                }
+                for name in ("claude", "codex", "agent")
+            ] + [{
+                "name": "codex-code-mode-host", "status": "ok",
+                "reason": "exact_pin_ready",
+                "target": str(self.vendor / "codex-code-mode-host"), "version": None,
+            }],
+        }
+        factory_kit.write_text(
+            "#!/bin/sh\n"
+            "set -eu\n"
+            f"{shlex.quote(str(self.factory / 'bin/claude'))} --version >/dev/null & claude_pid=$!\n"
+            f"{shlex.quote(str(self.factory / 'bin/codex'))} --version >/dev/null & codex_pid=$!\n"
+            f"{shlex.quote(str(self.factory / 'bin/agent'))} --version >/dev/null & agent_pid=$!\n"
+            "wait \"$claude_pid\"\n"
+            "wait \"$codex_pid\"\n"
+            "wait \"$agent_pid\"\n"
+            f"printf '%s\\n' {shlex.quote(json.dumps(report))}\n"
+        )
+        factory_kit.chmod(0o755)
+
+        doctor = (ROOT / "scripts/factory-doctor.sh").read_text()
+        start = doctor.index('PROVIDER_CLI_PIN_STATUS="not_applicable"')
+        end = doctor.index('FALLBACK_READINESS_STATUS="not_applicable"', start)
+        block = doctor[start:end]
+        cli_file = self.home / "doctor-clis.tsv"
+        harness = f"""
+set -eu
+CLI_FILE={shlex.quote(str(cli_file))}
+: > "$CLI_FILE"
+PYTHON_BIN={shlex.quote(str(Path(os.sys.executable)))}
+KIT_DIR={shlex.quote(str(doctor_kit))}
+KIT_SHA={SHA}
+TMP={shlex.quote(str(self.home))}
+FACTORY_RELEASE_TREE={TREE}
+AUTHENTICATED_ARTIFACT_STATUS=ok
+BINDING_STATUS=ok
+KIT_STATUS=ok
+PIN_STATUS=ok
+RUNTIME_STATUS=ok
+QUALIFICATION_TICKET_READINESS_STATUS=ok
+QUALIFICATION_IDENTITY_STATUS=ok
+sanitize() {{ cat; }}
+first_line() {{ awk 'NR == 1 {{ gsub(/\\r/, ""); print; exit }}'; }}
+probe_version() {{ "$@"; }}
+{block}
+"""
+        environment = {
+            **self.env,
+            "PATH": f"{self.factory / 'bin'}:{os.environ['PATH']}",
+            "FACTORY_KIT_TRUST_SCOPE": "production-certified",
+            "BARRIER_ENABLED": "1",
+        }
+        result = subprocess.run(
+            ["/bin/bash", "-c", harness], capture_output=True, text=True,
+            check=False, env=environment, timeout=15,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            [line.split("\t", 1)[0] for line in cli_file.read_text().splitlines()],
+            ["claude", "codex", "agent", "gh"],
+        )
+        self.assertEqual(
+            {name: (trace / f"{name}.count").read_text().count("probe\n")
+             for name in versions},
+            {"claude": 1, "codex": 1, "agent": 1, "gh": 1},
+            f"stdout={result.stdout!r} stderr={result.stderr!r} clis={cli_file.read_text()!r}",
+        )
+
+        for path in trace.glob("*.count"):
+            path.unlink()
+        for path in markers.iterdir():
+            path.unlink()
+        foreign = self.home / "foreign-bin"
+        foreign.mkdir()
+        foreign_claude = foreign / "claude"
+        foreign_claude.write_text(
+            "#!/bin/sh\n"
+            f"printf 'probe\\n' >> {shlex.quote(str(trace / 'foreign.count'))}\n"
+            "printf '%s\\n' foreign-version\n"
+        )
+        foreign_claude.chmod(0o755)
+        foreign_environment = {
+            **environment,
+            "PATH": f"{foreign}:{environment['PATH']}",
+        }
+        foreign_result = subprocess.run(
+            ["/bin/bash", "-c", harness], capture_output=True, text=True,
+            check=False, env=foreign_environment, timeout=15,
+        )
+        self.assertEqual(foreign_result.returncode, 0, foreign_result.stderr)
+        self.assertEqual((trace / "foreign.count").read_text(), "probe\n")
+        self.assertEqual(cli_file.read_text().splitlines()[0].split("\t")[3],
+                         "foreign-version")
+
+        for path in trace.glob("*.count"):
+            path.unlink()
+        for path in markers.iterdir():
+            path.unlink()
+        environment.update(
+            FACTORY_KIT_TRUST_SCOPE="repository-test", BARRIER_ENABLED="0"
+        )
+        legacy = subprocess.run(
+            ["/bin/bash", "-c", harness], capture_output=True, text=True,
+            check=False, env=environment, timeout=15,
+        )
+        self.assertEqual(legacy.returncode, 0, legacy.stderr)
+        self.assertEqual(
+            {name: (trace / f"{name}.count").read_text().count("probe\n")
+             for name in versions},
+            {"claude": 1, "codex": 1, "agent": 1, "gh": 1},
+        )
+
     def test_apply_replays_the_completed_approval(self) -> None:
         plan = self.plan()
         first = self.command("apply", approval=plan["approval_sha256"])
