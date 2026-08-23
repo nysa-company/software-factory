@@ -1013,8 +1013,13 @@ class QualificationEnvironmentTest(unittest.TestCase):
         controller.write_text(
             "#!/usr/bin/env python3\n"
             "import json, pathlib, sys\n"
-            f"pathlib.Path({str(history_marker)!r}).write_text(json.dumps(sys.argv[1:]))\n"
-            "print('{\"schema\":\"nysa.software-factory.controller/v1\",'"
+            "if sys.argv[-2:] == ['--action', 'prime']:\n"
+            " print('{\"active\":3,\"results\":[],\"schema\":'"
+            "'\"nysa.software-factory.controller/v1\",'"
+            "'\"status\":\"restart_required\"}')\n"
+            "else:\n"
+            f" pathlib.Path({str(history_marker)!r}).write_text(json.dumps(sys.argv[1:]))\n"
+            " print('{\"schema\":\"nysa.software-factory.controller/v1\",'"
             "'\"status\":\"repaired\"}')\n",
             encoding="utf-8",
         )
@@ -1037,23 +1042,28 @@ class QualificationEnvironmentTest(unittest.TestCase):
         run(self.product, "git", "commit", "-qm", "pin launcher fixture")
 
         project = f"qualification-launcher-{os.getpid()}-{self.root.name[-6:]}"
-        value = ENVIRONMENT.prepare(argparse.Namespace(
-            factory_root=self.factory, product_root=self.product,
-            project=project, root=self.root,
-        ))
+        account_home = Path(pwd.getpwuid(os.getuid()).pw_dir).resolve()
+        authority = account_home / f".factory/qualification/{project}"
+        preparation_lock = authority.parent / f".prepare-{project}.lock"
+        self.assertFalse(authority.exists())
+        self.assertFalse(preparation_lock.exists())
+        self.addCleanup(shutil.rmtree, authority, ignore_errors=True)
+        self.addCleanup(preparation_lock.unlink, missing_ok=True)
+        with mock.patch.dict(os.environ, {"HOME": str(account_home)}):
+            value = ENVIRONMENT.prepare(argparse.Namespace(
+                factory_root=self.factory, global_env=self.global_env.resolve(),
+                product_root=self.product, project=project, root=self.root,
+                runtime_bin=(self.home / ".local/bin").resolve(),
+            ))
         active_path = self.root / f"projects/{project}/active.json"
         active = ENVIRONMENT.read(active_path)
         receipt_path = self.root / f"receipts/{active['receipt_id']}.json"
         receipt = ENVIRONMENT.read(receipt_path)
-        account_home = Path(pwd.getpwuid(os.getuid()).pw_dir).resolve()
-        authority = account_home / f".factory/qualification/{project}"
-        self.assertFalse(authority.exists())
-        authority.parent.mkdir(parents=True, exist_ok=True)
+        self.assertEqual(Path(value["authority_root"]), authority)
         takeover_kits_root = account_home / ".factory/kits"
         created_takeover_kits_root = not takeover_kits_root.exists()
         if created_takeover_kits_root:
             takeover_kits_root.mkdir(mode=0o700)
-        shutil.copytree(Path(value["authority_root"]), authority)
         isolated_paths = {
             "controller_state_path": str(authority / "controller"),
             "operator_map_path": str(authority / "operator/operator-map.json"),
