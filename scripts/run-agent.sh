@@ -1027,6 +1027,64 @@ role_remote_head() {
   return 1
 }
 
+cli_attempt_binding() {
+  local output
+  output="$(python3 "$KIT_DIR/scripts/provider-coordinator.py" \
+    --db "$FACTORY_PROVIDER_DB" status --attempt-id "$CLI_ATTEMPT_ID" 2>/dev/null)" ||
+    return 1
+  printf '%s' "$output" | python3 -c '
+import json, sys
+
+expected_keys = {
+    "account_route", "admitted_at", "attempt_id", "budget_day",
+    "cancellation_reason", "cancellation_requested_at", "charge_micro_usd",
+    "go_at", "machine_daily_cap_micro_usd", "policy_sha256", "prepared_at",
+    "product_daily_cap_micro_usd", "product_id", "provider_family",
+    "reserve_micro_usd", "state", "submitted_at", "terminal_at",
+    "terminal_result", "ticket_cap_micro_usd", "ticket_id", "updated_at",
+    "version",
+}
+value = json.load(sys.stdin)
+if value.get("schema") != "factory-provider-coordinator/v1":
+    raise SystemExit(1)
+attempts = value.get("attempts")
+if not isinstance(attempts, list) or len(attempts) != 1:
+    raise SystemExit(1)
+attempt = attempts[0]
+if not isinstance(attempt, dict) or set(attempt) != expected_keys:
+    raise SystemExit(1)
+expected = {
+    "attempt_id": sys.argv[1],
+    "provider_family": sys.argv[2],
+    "account_route": sys.argv[3],
+    "reserve_micro_usd": int(sys.argv[4]),
+    "product_id": sys.argv[5],
+    "ticket_id": sys.argv[6],
+    "budget_day": sys.argv[7],
+    "product_daily_cap_micro_usd": int(sys.argv[8]),
+    "ticket_cap_micro_usd": int(sys.argv[9]),
+    "machine_daily_cap_micro_usd": int(sys.argv[10]),
+    "policy_sha256": sys.argv[11],
+    "state": "reserved",
+    "version": 2,
+}
+if any(attempt.get(key) != selected for key, selected in expected.items()):
+    raise SystemExit(1)
+if (not isinstance(attempt["prepared_at"], int) or
+        not isinstance(attempt["admitted_at"], int) or
+        not isinstance(attempt["updated_at"], int) or
+        any(attempt[key] is not None for key in (
+            "cancellation_reason", "cancellation_requested_at", "charge_micro_usd",
+            "go_at", "submitted_at", "terminal_at", "terminal_result",
+        ))):
+    raise SystemExit(1)
+print(json.dumps(attempt, sort_keys=True, separators=(",", ":")))
+' "$CLI_ATTEMPT_ID" "$SELECTED_FAMILY" "$SELECTED_ACCOUNT_ROUTE_ID" \
+    "${PROVIDER_BUDGET_MICRO_VALUES[0]}" "$CLI_PRODUCT_ID" "$TICKET" "$TODAY" \
+    "${PROVIDER_BUDGET_MICRO_VALUES[1]}" "${PROVIDER_BUDGET_MICRO_VALUES[2]}" \
+    "${PROVIDER_BUDGET_MICRO_VALUES[3]}" "$ACTIVATED_POLICY_HASH"
+}
+
 reacquire_parallel_launch_lock() {
   local current_attempt_binding current_envelope_binding post_prepare_activation
   [[ "$PARALLEL_PROVIDER_RUN" -eq 1 ]] || return 0
@@ -1054,8 +1112,7 @@ reacquire_parallel_launch_lock() {
     return 3
   fi
   if [[ "$CLI_CONCURRENT_RUN" -eq 1 ]]; then
-    current_attempt_binding="$(python3 "$KIT_DIR/scripts/provider-coordinator.py" \
-      --db "$FACTORY_PROVIDER_DB" status --attempt-id "$CLI_ATTEMPT_ID" 2>/dev/null)" || {
+    current_attempt_binding="$(cli_attempt_binding)" || {
         echo "provider reservation is unavailable before GO; no task was submitted" >&2
         return 3
       }
@@ -2679,8 +2736,7 @@ PARALLEL_PROVIDER_ATTEMPT_BINDING=""
 if [[ "$PARALLEL_PROVIDER_RUN" -eq 1 ]]; then
   PARALLEL_LAUNCH_ENVELOPE_BINDING="$PER_RUN_BUDGET_USD|$PER_TICKET_BUDGET_USD|$PER_RUN_MAX_TURNS|$PER_RUN_TIMEOUT_MIN|$DAILY_CAP_USD|${GLOBAL_DAILY_CAP_USD:-1000000000}"
   if [[ "$CLI_CONCURRENT_RUN" -eq 1 ]]; then
-    PARALLEL_PROVIDER_ATTEMPT_BINDING="$(python3 "$KIT_DIR/scripts/provider-coordinator.py" \
-      --db "$FACTORY_PROVIDER_DB" status --attempt-id "$CLI_ATTEMPT_ID" 2>/dev/null)" || {
+    PARALLEL_PROVIDER_ATTEMPT_BINDING="$(cli_attempt_binding)" || {
         echo "provider reservation is unavailable before parallel preparation; no task was submitted" >&2
         exit 3
       }
