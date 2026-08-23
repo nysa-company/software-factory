@@ -27,6 +27,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - The installed `factory` command is a preference-only human UI. Each opaque target binds one exact physical launcher plus project slug, including separate same-slug production and qualification targets; workflow labels and ticket fields come only from that launcher, and every Ready, approval, Doctor, or qualification-close action returns to its existing sealed authority.
 - The local operator console keeps supported approval hashes in its authenticated server session, and qualification resume reads its owner-only plan internally: operators approve an exact action without transcribing a digest, while sealed apply paths still recompute and validate the binding before mutation.
 - Fresh operator maps use an object-valued `_config` accepted by qualification, and nonvisual publication treats only exact current-ticket Ready audit receipts as metadata; foreign or malformed receipt paths remain semantic and fail closed.
+- Disjoint protected sibling refreshes recognize exact sibling Ready audit receipts and retain existing Reviewer/Narrator evidence. Done reuses exact approved-head checks only across a tree-identical authenticated merge with unchanged protected check policy; every mismatch or unavailable head result falls back to merge-commit evidence.
 - **Contract rules below in Operating contract are authoritative**; this summary is only what the session hook can inject.
 
 ## Operating contract
@@ -7850,3 +7851,13 @@ ticket-worktree pin concurrently and returns results in requested ticket order.
 Every child retains the existing exact-branch commit, force-with-lease push,
 remote verification, and idempotent replay contract; any failed child fails the
 whole batch without inventing cleanup authority for a successful sibling.
+
+## 2026-08-23 — Decision 578: Disjoint closeout reuses exact evidence
+
+Category: Reliability
+
+The protected-base classifier treats only canonical sibling Ready receipts as
+ticket-scoped metadata, so disjoint sibling publication does not replay paid
+Reviewer or Narrator roles. Done reuses green approved-head checks only when the
+authenticated merge has the same tree and protected check-policy blob; otherwise
+the existing merge-commit checks remain authoritative.

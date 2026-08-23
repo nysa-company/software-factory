@@ -221,8 +221,9 @@ One ticket takes
 the Cursor-to-Codex Builder fallback, and serialized publication forces the
 remaining tickets through real protected-base refresh and reapproval. When the
 imported protected changes are regular, ticket-scoped or non-Factory paths
-disjoint from the reviewed ticket diff, the shared classifier preserves the
-existing Reviewer and Narrator evidence; overlap, unsafe file shape, and
+disjoint from the reviewed ticket diff, including the sibling's exact Ready
+audit receipt, the shared classifier preserves the existing Reviewer and
+Narrator evidence; overlap, unsafe file shape, and
 unknown Factory state still invalidate it. Artifacts for a declared dependency
 remain related and also invalidate the evidence. The gate never uses live
 credentials or provider inference. It proves fresh-cohort
@@ -1626,8 +1627,11 @@ controller reasserts and verifies the exact GitHub request under the active
 publication lease before waiting for merge. `approval` consumes only a newer exact operator-map
 Awaiting Approval → Approved overlay, commits the approval attestation, and
 requests normal protected GitHub auto-merge for that exact PR head. `done`
-requires the exact merged commit on authoritative `origin/main`, all configured
-post-merge contexts successful on that commit, and projects accounting into a
+requires the exact merged commit on authoritative `origin/main` and all
+configured contexts successful. It reuses those checks from the authenticated
+approved PR head only when the PR head and merge trees are identical and their
+protected check-policy blob remains current; missing, failed, or pending head
+evidence falls back to the merge commit. It then projects accounting into a
 separate closeout branch with a terminal attestation and Done ticket. It never
 bypasses protection, force-pushes, or lets the dispatcher manufacture approval.
 Missing or pending post-merge contexts keep closeout waiting; a completed
