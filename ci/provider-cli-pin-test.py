@@ -7,6 +7,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
 import sqlite3
 import subprocess
@@ -182,6 +183,39 @@ exit 2
         )
         for name in ("claude", "codex", "codex-code-mode-host", "agent"):
             self.assertEqual(os.readlink(self.factory / "bin" / name), str(self.vendor / name))
+
+    def test_check_probes_independent_tools_concurrently_in_stable_order(self) -> None:
+        barrier = self.home / "probe-barrier"
+        markers = barrier / "markers"
+        markers.mkdir(parents=True)
+        for name in ("claude", "codex", "codex-code-mode-host", "agent"):
+            path = self.vendor / name
+            source = path.read_text()
+            gate = (
+                f"barrier={shlex.quote(str(barrier))}\n"
+                f"markers={shlex.quote(str(markers))}\n"
+                f"if [ -f \"$barrier/enabled\" ]; then\n"
+                f"  : > \"$markers/{name}\"\n"
+                f"  attempts=0\n"
+                f"  while [ \"$(find \"$markers\" -type f | wc -l)\" -lt 4 ]; do\n"
+                f"    attempts=$((attempts + 1))\n"
+                f"    [ \"$attempts\" -lt 100 ] || exit 97\n"
+                f"    sleep 0.05\n"
+                f"  done\n"
+                f"fi\n"
+            )
+            path.write_text(source.replace("#!/bin/sh\n", "#!/bin/sh\n" + gate, 1))
+            path.chmod(0o755)
+        self.assertEqual(self.apply().returncode, 0)
+        (barrier / "enabled").touch()
+
+        checked = self.command("check")
+
+        self.assertEqual(checked.returncode, 0, checked.stderr)
+        self.assertEqual(
+            [item["name"] for item in json.loads(checked.stdout)["items"]],
+            ["claude", "codex", "agent", "codex-code-mode-host"],
+        )
 
     def test_apply_replays_the_completed_approval(self) -> None:
         plan = self.plan()

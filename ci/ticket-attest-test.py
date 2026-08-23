@@ -610,6 +610,7 @@ Merge-Policy: manual
             "merge_on_second_open": False, "open_list_count": 0,
             "pr_head": None, "checks": {"ci": True, "deploy-production": True},
             "check_runs": {},
+            "check_queries": [], "missing_check_commits": [],
             "closeout_pr": "absent", "closeout_duplicate": False,
             "closeout_wrong": False, "closeout_head": None,
             "closeout_merge_state": "BLOCKED",
@@ -722,15 +723,22 @@ elif a[:2] == ["pr", "view"]:
                           "isDraft": s["draft"],
                           "autoMergeRequest": {"mergeMethod": "SQUASH"} if s["auto_merge"] else None}))
 elif a[:1] == ["api"]:
+    commit = ""
+    if "/commits/" in a[1]:
+        commit = a[1].split("/commits/", 1)[1].split("/", 1)[0]
+        s["check_queries"].append(commit)
+        Path(os.environ["FAKE_GH_STATE"]).write_text(json.dumps(s))
     if a[1] == "repos/acme/factory/issues/269":
         print(json.dumps({"number": 269, "html_url": "https://github.com/acme/factory/issues/269", "state": "open"}))
     elif a[1].endswith("/status"):
+        checks = {} if commit in s["missing_check_commits"] else s["checks"]
         print(json.dumps({"statuses": [{"context": k, "state": "success" if v else "failure"}
-                                      for k, v in s["checks"].items()]}))
+                                      for k, v in checks.items()]}))
     else:
         query = urllib.parse.urlparse(a[1]).query
         name = urllib.parse.parse_qs(query).get("check_name", [""])[0]
-        print(json.dumps({"check_runs": s["check_runs"].get(name, [])}))
+        runs = [] if commit in s["missing_check_commits"] else s["check_runs"].get(name, [])
+        print(json.dumps({"check_runs": runs}))
 else:
     raise SystemExit(2)
 """)
@@ -1957,6 +1965,9 @@ else:
         (updater / "sibling.txt").write_text("unrelated protected change\n")
         (updater / "factory/tickets/T-701.md").write_text("# T-701\n")
         (updater / "factory/route-plans/T-701.json").write_text("{}\n")
+        receipt = updater / "factory/receipts/T-701/ready-1.json"
+        receipt.parent.mkdir(parents=True)
+        receipt.write_text("{}\n")
         ledger = updater / "factory/ledger.csv"
         ledger.write_text(ledger.read_text() + (
             "2026-08-19,00:00:00,T-701,narrator,mock,v1,1,0.000000,0,"
@@ -2858,11 +2869,32 @@ else:
         command("git", "push", "-q", "origin", "main", cwd=updater)
         self.assertIn("existing refresh receipt is malformed", self.attest("refresh").stderr)
 
-    def prepare_done(self, **state):
+    def prepare_done(self, *, merge_kind="direct", missing_pr_checks=False, **state):
         self.bundle()
         self.approval_overlay()
         self.assertEqual(self.attest("approval").returncode, 0)
-        merge_sha = self.head()
+        approved = self.head()
+        merge_sha = approved
+        if merge_kind != "direct":
+            base = command(
+                "git", "rev-parse", "main", cwd=self.product,
+            ).stdout.strip()
+            tree = f"{approved}^{{tree}}"
+            parents = ["-p", base]
+            if merge_kind == "merge":
+                parents.extend(("-p", approved))
+            elif merge_kind == "changed":
+                extra = self.product / "protected-only.txt"
+                extra.write_text("protected merge output\n")
+                command("git", "add", str(extra), cwd=self.product)
+                tree = command("git", "write-tree", cwd=self.product).stdout.strip()
+                command("git", "reset", "--hard", approved, cwd=self.product)
+            elif merge_kind != "squash":
+                self.fail(f"unknown merge kind: {merge_kind}")
+            merge_sha = command(
+                "git", "commit-tree", tree, *parents,
+                "-m", f"{merge_kind} approved implementation", cwd=self.product,
+            ).stdout.strip()
         command("git", "branch", "-f", "main", merge_sha, cwd=self.product)
         command("git", "push", "-q", "origin", f"{merge_sha}:refs/heads/main", cwd=self.product)
         self.workdir = self.temp / "closeout"
@@ -2873,7 +2905,8 @@ else:
         command("git", "push", "-q", "-u", "origin", "chore/t700-closeout", cwd=self.workdir)
         self.env["FAKE_WORKDIR"] = str(self.workdir)
         merged_state = {
-            "merged": True, "merge_sha": merge_sha, "pr_head": merge_sha,
+            "merged": True, "merge_sha": merge_sha, "pr_head": approved,
+            "missing_check_commits": [approved] if missing_pr_checks else [],
         }
         merged_state.update(state)
         self.write_state(**merged_state)
@@ -3621,6 +3654,75 @@ else:
             }]},
         )
         self.assertIn("pending: ci", self.attest("done").stderr)
+
+    def test_done_reuses_tree_identical_squash_pr_checks_on_replay(self):
+        self.prepare_done(merge_kind="squash")
+        state = json.loads(self.state.read_text())
+        approved, merge = state["pr_head"], state["merge_sha"]
+        self.assertNotEqual(approved, merge)
+
+        result = self.attest("done")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        receipt = (
+            self.workdir / "factory/attestations/T-700/done.json"
+        ).read_bytes()
+        replay = self.attest("done")
+        self.assertEqual(replay.returncode, 0, replay.stderr)
+        self.assertEqual(
+            (self.workdir / "factory/attestations/T-700/done.json").read_bytes(),
+            receipt,
+        )
+        queried = json.loads(self.state.read_text())["check_queries"]
+        self.assertEqual(set(queried), {approved})
+
+    def test_done_reuses_tree_identical_merge_commit_pr_checks(self):
+        self.prepare_done(merge_kind="merge")
+        state = json.loads(self.state.read_text())
+        result = self.attest("done")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(set(json.loads(self.state.read_text())["check_queries"]), {
+            state["pr_head"],
+        })
+
+    def test_done_changed_merge_tree_checks_merge_commit(self):
+        self.prepare_done(merge_kind="changed")
+        state = json.loads(self.state.read_text())
+        result = self.attest("done")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(set(json.loads(self.state.read_text())["check_queries"]), {
+            state["merge_sha"],
+        })
+
+    def test_done_protected_check_policy_drift_checks_merge_commit(self):
+        self.prepare_done(merge_kind="squash")
+        project = self.workdir / "factory/PROJECT.env"
+        project.write_text(project.read_text() + "# protected policy revision\n")
+        command("git", "add", str(project), cwd=self.workdir)
+        command("git", "commit", "-qm", "revise protected policy", cwd=self.workdir)
+        protected = self.head_at(self.workdir)
+        command(
+            "git", "push", "-q", "origin", f"{protected}:refs/heads/main",
+            f"{protected}:refs/heads/chore/t700-closeout", cwd=self.workdir,
+        )
+        command(
+            "git", "update-ref", "refs/remotes/origin/main", protected,
+            cwd=self.workdir,
+        )
+        state = json.loads(self.state.read_text())
+        result = self.attest("done")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(set(json.loads(self.state.read_text())["check_queries"]), {
+            state["merge_sha"],
+        })
+
+    def test_done_missing_pr_checks_falls_back_to_merge_commit(self):
+        self.prepare_done(merge_kind="squash", missing_pr_checks=True)
+        state = json.loads(self.state.read_text())
+        result = self.attest("done")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(set(json.loads(self.state.read_text())["check_queries"]), {
+            state["pr_head"], state["merge_sha"],
+        })
 
     def test_done_happy_path_projects_ledger_and_attests(self):
         self.prepare_done()

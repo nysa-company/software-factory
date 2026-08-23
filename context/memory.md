@@ -23,10 +23,12 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Provider-free ticket readiness rejects tracked static SHA-256 path/digest tables over any Builder or Test-author-owned path unless the exact protected test is both a declared conflict and a Fixture-Seam; unrelated payload hashes/source reads do not collide, while semantic and dynamic source guards remain fail-closed Planner/Spec-linter work.
 - Ticket-bearing mutation CLIs reject noncanonical identifiers before release discovery or state. Ticket lifecycle decisions share one exact, known-State parser; operator actions validate before residue and again under their lock. Qualification Doctor reuses canonical ticket, product/tree, KIT_PIN/plan, protected-batch, receipt, passport, event, and runtime-residue validators read-only, accepts a selected Done ticket's historical Kit-SHA only through authenticated protected-terminal evidence, and suppresses provider probes on typed drift.
 - Reconciliation markers advance after every trusted progressed stage. A successor qualification may recover one older pre-refresh marker only when sealed retention authenticates its passport digest, one exact receipt-bound successful role is the sole run-snapshot delta, and the existing strict passport migration suffix reaches the clean remote checkpoint.
-- Linear is removed (Decision 398); the six operator authorities are one-use receipts via `factory-kit.sh operator ACTION`. Approval changes only the ignored operator map and owner-only receipt until trusted approval attestation records it in Git. An explicitly invoked isolated `qualification-finish` runs Doctor once at command entry, may approve only exact selected clean parked bundle checkpoints, then drives the existing publication, closeout, and reducer chain until green or a typed external wait; a new invocation and authenticated contract recovery retain their fresh Doctor boundaries. Production and takeover retain separate human approval. Qualification may issue one manifest-selected successor resume only after the exact sealed compact-repair check, including the explicit isolated close after an authenticated contract-repair directive; that exact new authority rearms one abandoned targeted recovery attempt, while unchanged evidence cannot loop. Production has no lifecycle bypass.
+- Linear is removed (Decision 398); the six operator authorities are one-use receipts via `factory-kit.sh operator ACTION`. Approval changes only the ignored operator map and owner-only receipt until trusted approval attestation records it in Git. An explicitly invoked isolated `qualification-finish` runs Doctor once at command entry, may approve only exact selected clean parked bundle checkpoints, then drives the existing publication, closeout, and reducer chain until green or a typed external wait. A paid role yields only after its durable active-run claim exists, so the ten-minute finisher poll remains bounded while the wrapper retains exact lease, heartbeat, reservation, and terminal-accounting ownership; replay cannot submit the same receipt twice. A new invocation and authenticated contract recovery retain their fresh Doctor boundaries. Production and takeover retain separate human approval. Qualification may issue one manifest-selected successor resume only after the exact sealed compact-repair check, including the explicit isolated close after an authenticated contract-repair directive; that exact new authority rearms one abandoned targeted recovery attempt, while unchanged evidence cannot loop. Production has no lifecycle bypass.
 - The installed `factory` command is a preference-only human UI. Each opaque target binds one exact physical launcher plus project slug, including separate same-slug production and qualification targets; workflow labels and ticket fields come only from that launcher, and every Ready, approval, Doctor, or qualification-close action returns to its existing sealed authority.
 - The local operator console keeps supported approval hashes in its authenticated server session, and qualification resume reads its owner-only plan internally: operators approve an exact action without transcribing a digest, while sealed apply paths still recompute and validate the binding before mutation.
 - Fresh operator maps use an object-valued `_config` accepted by qualification, and nonvisual publication treats only exact current-ticket Ready audit receipts as metadata; foreign or malformed receipt paths remain semantic and fail closed.
+- Disjoint protected sibling refreshes recognize exact sibling Ready audit receipts and retain existing Reviewer/Narrator evidence. Done reuses exact approved-head checks only across a tree-identical authenticated merge with unchanged protected check policy; every mismatch or unavailable head result falls back to merge-commit evidence.
+- Fresh isolated preparation completes a sealed provider-free prime before returning: the exact cohort is claimed, batch-pinned, and advanced to unconsumed Planner receipts before the existing restart boundary. Replay first authenticates the exact publication and controller prefix, then remains idempotent only while provider accounting is pristine and every receipt remains exact and unconsumed; ordinary finish retains fresh Doctor and live Planner preflight.
 - **Contract rules below in Operating contract are authoritative**; this summary is only what the session hook can inject.
 
 ## Operating contract
@@ -183,6 +185,11 @@ everything the Factory actually enforces lives here.
   schedulable and are submitted before new production admission. Each refused
   production candidate also appears in the bounded controller result as
   `waiting` for temporary unavailability or `error` for permanent failure.
+- Fresh qualification admission freezes one protected-main fetch and one
+  multi-ref observation into an owner-only ordered cohort-claim transaction.
+  Missing cells and leases replay from that intent; controller claim files and
+  events become durable before acknowledgement removes the intent, and a lost
+  acknowledgement response resumes through one owner-only pending marker.
 - Dispatch runs the existing provider-free ticket readiness contract during
   both shadow and claim candidate selection. A refusal, malformed success,
   helper error, or timeout is isolated as the existing named
@@ -813,6 +820,16 @@ everything the Factory actually enforces lives here.
   un-restored occurrence also requires protected in-flight rewrite authority.
 
 ## Log
+
+## 2026-08-23 — Fresh qualification primes Planner authority before restart
+
+Category: System change
+
+Fresh isolated preparation now calls one sealed qualification-only controller
+prime. It reuses ordinary admission, batch route pinning, and state-machine
+receipts, then writes the existing restart boundary without preflight or a
+provider attempt. Partial replay completes safely; provider residue, active
+runs, malformed or consumed receipts, and nonqualification use remain closed.
 
 ## 2026-08-18 — Public dual license is AGPLv3 plus paid commercial
 
@@ -7840,3 +7857,74 @@ polls only typed authenticated GitHub, protected-merge, publication-lease, and
 closeout waits for at most ten minutes; human and untyped waits return. Provider
 active-run ownership now covers the complete terminal accounting, output, PID,
 and lock cleanup tail before closeout may proceed.
+
+## 2026-08-23 — Decision 577: Batch pinning overlaps isolated ticket pushes
+
+Category: Performance
+
+After one shared model resolution, `models pin-batch` runs each distinct
+ticket-worktree pin concurrently and returns results in requested ticket order.
+Every child retains the existing exact-branch commit, force-with-lease push,
+remote verification, and idempotent replay contract; any failed child fails the
+whole batch without inventing cleanup authority for a successful sibling.
+
+## 2026-08-23 — Decision 578: Disjoint closeout reuses exact evidence
+
+Category: Reliability
+
+The protected-base classifier treats only canonical sibling Ready receipts as
+ticket-scoped metadata, so disjoint sibling publication does not replay paid
+Reviewer or Narrator roles. Done reuses green approved-head checks only when the
+authenticated merge has the same tree and protected check-policy blob; otherwise
+the existing merge-commit checks remain authoritative.
+
+## 2026-08-23 — Decision 579: Qualification yields at durable role ownership
+
+Category: Reliability
+
+An isolated qualification controller returns a typed live-role wait after the
+existing active-run claim becomes durable instead of supervising that provider
+role to terminal in one reconcile call. The wrapper retains its lease,
+heartbeat, reservation, process, and terminal-accounting ownership; the sealed
+finisher polls that exact receipt inside its existing ten-minute window, and a
+restart observes either the same active claim or its terminal without another
+provider submission. Approval projection remains serialized by the controller
+reconcile lock.
+
+## 2026-08-23 — Decision 580: Exact provider CLI checks overlap
+
+Category: Performance
+
+Provider CLI pin status probes the four isolated managed executables
+concurrently and reports them in canonical order. Each executable, version,
+help contract, receipt, and physical target remains independently fail-closed.
+
+## 2026-08-23 — Decision 581: Sealed launch reuses its exact runtime proof
+
+Category: Performance
+
+Each sealed qualification command compares the certification tuple inside its
+existing runtime-pin proof instead of spawning a second preflight. Candidate
+hashes, symlinks, live Node/npm/npx versions, product SHA/tree/cleanliness, and
+fresh crash/restart validation remain fail-closed.
+
+## 2026-08-23 — Decision 582: Qualification claims one durable cohort
+
+Category: Performance
+
+Fresh sealed qualification uses one protected-main fetch and one multi-ref
+ticket-branch observation to claim the available cohort in deterministic order.
+An owner-only intent precedes every worktree and lease, so interruption and
+lost response replay the same transaction. Controller claim durability gates
+acknowledgement and intent cleanup; production single-ticket admission is
+unchanged.
+
+## 2026-08-23 — Decision 583: Primed qualification replay authenticates its prefix
+
+Category: Reliability
+
+Completed preparation replay validates the exact published environment before
+fallback, provider, or controller work. Qualification prime accepts only the
+selected cohort's known claim, receipt, restart, lock, log, event, and passport
+namespaces and rejects foreign controller residue before route pinning or any
+provider transition.

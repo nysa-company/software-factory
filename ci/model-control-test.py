@@ -117,6 +117,29 @@ class ModelControlTest(unittest.TestCase):
             self.fail("model-control failed: %s %s" % (result.stdout, result.stderr))
         return result
 
+    def sibling_workdir(self):
+        sibling_ticket = self.product / "factory" / "tickets" / "T-902.md"
+        sibling_ticket.write_text("# T-902\n\nState: Ready\n")
+        subprocess.run(
+            ["git", "-C", str(self.product), "add", str(sibling_ticket)], check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.product), "commit", "-qm", "sibling"], check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.product), "push", "-q", "origin", "main"],
+            check=True,
+        )
+        sibling = self.base / "ticket-T-902"
+        subprocess.run(
+            [
+                "git", "-C", str(self.product), "worktree", "add", "-q", "-b",
+                "ticket/T-902", str(sibling),
+            ],
+            check=True,
+        )
+        return sibling
+
     def test_machine_config_requires_global_daily_cap(self):
         self.global_env.write_text("CODEX_PINNED=0.144.1\n")
         result = self.command("plan", check=False)
@@ -213,6 +236,99 @@ class ModelControlTest(unittest.TestCase):
                 text=True,
             ).strip(),
             head,
+        )
+
+    def test_pin_batch_launches_independent_ticket_pins_concurrently(self):
+        sibling_workdir = self.sibling_workdir()
+        binary = self.base / "bin"
+        barrier = self.base / "push-barrier"
+        binary.mkdir()
+        barrier.mkdir()
+        wrapper = binary / "git"
+        wrapper.write_text(
+            "#!/bin/sh\nset -eu\n"
+            "workdir=unknown\nprevious=\n"
+            "for arg in \"$@\"; do\n"
+            "  test \"$previous\" != -C || workdir=$arg\n"
+            "  previous=$arg\n"
+            "done\n"
+            "case \" $* \" in\n"
+            "  *' push '*)\n"
+            "    : > \"$FACTORY_PUSH_BARRIER/$(basename \"$workdir\")\"\n"
+            "    attempts=0\n"
+            "    while test \"$(find \"$FACTORY_PUSH_BARRIER\" -type f | wc -l)\" -lt 2; do\n"
+            "      attempts=$((attempts + 1))\n"
+            "      test \"$attempts\" -lt 100 || exit 97\n"
+            "      sleep 0.05\n"
+            "    done\n"
+            "    ;;\n"
+            "esac\n"
+            "exec \"$FACTORY_REAL_GIT\" \"$@\"\n",
+            encoding="utf-8",
+        )
+        wrapper.chmod(0o700)
+        real_git = shutil.which("git")
+        self.assertIsNotNone(real_git)
+        self.environment.update({
+            "FACTORY_PUSH_BARRIER": str(barrier),
+            "FACTORY_REAL_GIT": real_git,
+            "PATH": str(binary) + os.pathsep + self.environment["PATH"],
+        })
+
+        result = json.loads(self.command(
+            "pin-batch",
+            "--ticket", "T-901", "--workdir", str(self.workdir),
+            "--ticket", "T-902", "--workdir", str(sibling_workdir),
+        ).stdout)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(len(result["pins"]), 2)
+        self.assertEqual(
+            [item["ticket"] for item in result["pins"]], ["T-901", "T-902"],
+        )
+        self.assertEqual(len(list(barrier.iterdir())), 2)
+
+    def test_pin_batch_replays_after_one_ticket_push_fails(self):
+        sibling_workdir = self.sibling_workdir()
+        binary = self.base / "bin"
+        binary.mkdir()
+        wrapper = binary / "git"
+        wrapper.write_text(
+            "#!/bin/sh\nset -eu\n"
+            "workdir=\nprevious=\n"
+            "for arg in \"$@\"; do\n"
+            "  test \"$previous\" != -C || workdir=$arg\n"
+            "  previous=$arg\n"
+            "done\n"
+            "case \" $* \" in\n"
+            "  *' push '*) test \"$(basename \"$workdir\")\" != ticket-T-902 || exit 98 ;;\n"
+            "esac\n"
+            "exec \"$FACTORY_REAL_GIT\" \"$@\"\n",
+            encoding="utf-8",
+        )
+        wrapper.chmod(0o700)
+        original_path = self.environment["PATH"]
+        real_git = shutil.which("git")
+        self.assertIsNotNone(real_git)
+        self.environment.update({
+            "FACTORY_REAL_GIT": real_git,
+            "PATH": str(binary) + os.pathsep + original_path,
+        })
+        arguments = (
+            "pin-batch",
+            "--ticket", "T-901", "--workdir", str(self.workdir),
+            "--ticket", "T-902", "--workdir", str(sibling_workdir),
+        )
+
+        failed = self.command(*arguments, check=False)
+
+        self.assertEqual(failed.returncode, 2)
+        self.assertIn("batch ticket pin failed for T-902", failed.stdout)
+        self.environment["PATH"] = original_path
+        replay = json.loads(self.command(*arguments).stdout)
+        self.assertEqual(replay["status"], "ok")
+        self.assertEqual(
+            [item["ticket"] for item in replay["pins"]], ["T-901", "T-902"],
         )
 
     def test_plan_failure_reports_every_sanitized_route_readiness(self):

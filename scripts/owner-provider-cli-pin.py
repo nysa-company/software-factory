@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, contextmanager
 import datetime
 import fcntl
@@ -1000,8 +1001,7 @@ def check_status(
             global_reason = "requested_release_not_approved"
         elif any(item not in allowed for item in active_identities):
             global_reason = "active_release_not_approved"
-    items = []
-    for name in TOOLS:
+    def check_item(name: str) -> dict[str, Any]:
         expected_pin = values.get(TOOLS[name]["pin"])
         item = {
             "expected_version": expected_pin, "managed_state": "unsafe", "name": name,
@@ -1034,8 +1034,9 @@ def check_status(
             item["reason"] = "contract_probe_failed" if item["managed_state"] == "linked" else "managed_pin_unsafe"
         if global_reason:
             item.update(reason=global_reason, status="error")
-        items.append(item)
-    for name in COMPANIONS:
+        return item
+
+    def check_companion(name: str) -> dict[str, Any]:
         item = {
             "expected_version": None, "managed_state": "unsafe", "name": name,
             "reason": "managed_pin_unsafe", "status": "error", "target": None,
@@ -1069,7 +1070,13 @@ def check_status(
             )
         if global_reason:
             item.update(reason=global_reason, status="error")
-        items.append(item)
+        return item
+
+    with ThreadPoolExecutor(max_workers=len(MANAGED_LINKS)) as executor:
+        items = list(executor.map(
+            lambda name: check_item(name) if name in TOOLS else check_companion(name),
+            MANAGED_LINKS,
+        ))
     ready = evidence is not None and not global_reason and all(item["status"] == "ok" for item in items)
     return {
         "active_releases": active_identities, "global_config_sha256": config.get("sha256"),

@@ -18,6 +18,7 @@ from pathlib import Path
 import plistlib
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -34,6 +35,13 @@ SPEC = importlib.util.spec_from_file_location(
 assert SPEC and SPEC.loader
 CONTROL = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(CONTROL)
+
+QUALIFICATION_SPEC = importlib.util.spec_from_file_location(
+    "qualification_run_for_controller_test", ROOT / "scripts/qualification-run.py"
+)
+assert QUALIFICATION_SPEC and QUALIFICATION_SPEC.loader
+QUALIFICATION = importlib.util.module_from_spec(QUALIFICATION_SPEC)
+QUALIFICATION_SPEC.loader.exec_module(QUALIFICATION)
 
 REPORTER_SPEC = importlib.util.spec_from_file_location(
     "factory_incident_reporter", ROOT / "scripts/factory-incident-reporter.py"
@@ -1643,6 +1651,7 @@ class FactoryControllerTest(unittest.TestCase):
             project="relay",
             release_path=self.release,
             state_dir=self.state,
+            legacy_dispatch_fixture=True,
         )
 
     def tearDown(self) -> None:
@@ -2379,6 +2388,172 @@ class FactoryControllerTest(unittest.TestCase):
         ):
             controller.claim_new([])
 
+    def test_qualification_claims_one_durable_cohort_then_acknowledges(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        tickets = ["T-110", "T-111", "T-112"]
+        controller.qualification = {"generation": 1, "tickets": tickets}
+        controller.capacity = 3
+        transaction = "d" * 64
+        cells = []
+        for number in range(3):
+            cell = self.root / f"cell-{number + 1}"
+            cell.mkdir()
+            cells.append(cell)
+        calls = []
+
+        def dispatch(*args, **_kwargs):
+            calls.append(args)
+            if args[:2] == ("models", "qualification-readiness"):
+                return {
+                    "readiness_sha256": "f" * 64,
+                    "schema": (
+                        "nysa.software-factory.qualification-"
+                        "fallback-readiness/v1"
+                    ),
+                    "status": "ready",
+                }
+            if "--cohort-ack" in args:
+                return {
+                    "action": "ACK", "schema": "nysa.software-factory.dispatch-plan/v1",
+                    "status": "ACKNOWLEDGED", "transaction_sha256": transaction,
+                }
+            return {
+                "action": "START_BATCH",
+                "claims": [{
+                    "action": "START", "branch": f"ticket/{ticket}",
+                    "lease_id": f"{number + 1:064x}", "priority": "normal",
+                    "ticket": ticket, "worktree": str(cells[number]),
+                } for number, ticket in enumerate(tickets)],
+                "schema": "nysa.software-factory.dispatch-plan/v1",
+                "status": "CLAIMED", "transaction_sha256": transaction,
+            }
+
+        controller.json_call = dispatch
+        claims = controller.claim_new([])
+
+        self.assertEqual([item["ticket"] for item in claims], tickets)
+        self.assertEqual(
+            [call[:3] for call in calls],
+            [
+                ("models", "qualification-readiness", "--json"),
+                ("dispatch-plan", "--claim", "--cohort"),
+                ("dispatch-plan", "--claim", "--cohort-ack"),
+            ],
+        )
+        self.assertFalse((self.state / "qualification-claim-ack.json").exists())
+        events = [CONTROL.read(path) for path in (self.state / "events").glob("*.json")]
+        self.assertEqual(
+            {item.get("claim_transaction_sha256") for item in events},
+            {transaction},
+        )
+
+    def test_qualification_cohort_ack_response_loss_replays_cleanup(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        ticket = "T-110"
+        controller.qualification = {"generation": 1, "tickets": [ticket]}
+        controller.capacity = 1
+        cell = self.root / "cell-1"
+        cell.mkdir()
+        transaction = "d" * 64
+
+        def interrupted(*args, **_kwargs):
+            if args[:2] == ("models", "qualification-readiness"):
+                return {
+                    "readiness_sha256": "f" * 64,
+                    "schema": (
+                        "nysa.software-factory.qualification-"
+                        "fallback-readiness/v1"
+                    ),
+                    "status": "ready",
+                }
+            if "--cohort-ack" in args:
+                raise CONTROL.ControllerError("lost acknowledgement response")
+            return {
+                "action": "START_BATCH", "claims": [{
+                    "action": "START", "branch": f"ticket/{ticket}",
+                    "lease_id": "1" * 64, "priority": "normal",
+                    "ticket": ticket, "worktree": str(cell),
+                }],
+                "schema": "nysa.software-factory.dispatch-plan/v1",
+                "status": "CLAIMED", "transaction_sha256": transaction,
+            }
+
+        controller.json_call = interrupted
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "lost acknowledgement response",
+        ):
+            controller.claim_new([])
+        self.assertTrue((self.state / "qualification-claim-ack.json").exists())
+
+        restarted = CONTROL.Controller(self.args)
+        restarted.qualification = {"generation": 1, "tickets": [ticket]}
+        restarted.json_call = lambda *_args, **_kwargs: {
+            "action": "ACK", "schema": "nysa.software-factory.dispatch-plan/v1",
+            "status": "ACKNOWLEDGED", "transaction_sha256": transaction,
+        }
+        claims = restarted.load_claims()
+        self.assertEqual(restarted.claim_new(claims), claims)
+        self.assertFalse((self.state / "qualification-claim-ack.json").exists())
+
+    def test_qualification_cohort_replays_partial_controller_save(self) -> None:
+        tickets = ["T-110", "T-111"]
+        transaction = "d" * 64
+        cells = [self.root / "cell-1", self.root / "cell-2"]
+        for cell in cells:
+            cell.mkdir()
+        batch = {
+            "action": "START_BATCH", "claims": [{
+                "action": "START", "branch": f"ticket/{ticket}",
+                "lease_id": f"{number + 1:064x}", "priority": "normal",
+                "ticket": ticket, "worktree": str(cells[number]),
+            } for number, ticket in enumerate(tickets)],
+            "schema": "nysa.software-factory.dispatch-plan/v1",
+            "status": "CLAIMED", "transaction_sha256": transaction,
+        }
+
+        def response(*args, **_kwargs):
+            if args[:2] == ("models", "qualification-readiness"):
+                return {
+                    "readiness_sha256": "f" * 64,
+                    "schema": (
+                        "nysa.software-factory.qualification-"
+                        "fallback-readiness/v1"
+                    ),
+                    "status": "ready",
+                }
+            if "--cohort-ack" in args:
+                return {
+                    "action": "ACK", "schema": "nysa.software-factory.dispatch-plan/v1",
+                    "status": "ACKNOWLEDGED", "transaction_sha256": transaction,
+                }
+            return batch
+
+        interrupted = CONTROL.Controller(self.args)
+        interrupted.qualification = {"generation": 1, "tickets": tickets}
+        interrupted.capacity = 2
+        interrupted.json_call = response
+        save = interrupted.save_claim
+        saves = 0
+
+        def fail_second(claim):
+            nonlocal saves
+            saves += 1
+            if saves == 2:
+                raise OSError("injected controller save interruption")
+            save(claim)
+
+        interrupted.save_claim = fail_second
+        with self.assertRaisesRegex(OSError, "injected controller save interruption"):
+            interrupted.claim_new([])
+        self.assertTrue((self.state / "qualification-claim-ack.json").exists())
+
+        restarted = CONTROL.Controller(self.args)
+        restarted.qualification = {"generation": 1, "tickets": tickets}
+        restarted.capacity = 2
+        restarted.json_call = response
+        claims = restarted.claim_new(restarted.load_claims())
+        self.assertEqual([item["ticket"] for item in claims], tickets)
+        self.assertFalse((self.state / "qualification-claim-ack.json").exists())
     def test_qualification_preflight_blocks_before_recovery_once(self) -> None:
         controller = self.qualification_controller()
         calls = []
@@ -4023,6 +4198,206 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertTrue(
             (self.state / f"qualification-recovered-{'a' * 40}.json").is_file()
         )
+
+    def test_qualification_prime_prepares_planners_before_restart(self) -> None:
+        controller = self.qualification_controller()
+        controller.qualification_admission_preflight = lambda _claims: None
+        claims = []
+        for number, ticket in enumerate(controller.qualification["tickets"], 1):
+            cell = self.root / f"prime-{number}"
+            cell.mkdir()
+            claim = {
+                "branch": f"ticket/{ticket}", "lease": f"{number:064x}",
+                "priority": "normal", "receipt": "", "role": "",
+                "schema": CONTROL.CLAIM_SCHEMA, "status": "claimed",
+                "ticket": ticket, "worktree": str(cell),
+            }
+            claims.append(claim)
+        controller.claim_new = lambda _existing: claims
+        observed = []
+
+        def prime(items):
+            self.assertFalse(controller.qualification_marker(
+                "qualification-restart-boundary"
+            ))
+            observed.extend(item["ticket"] for item in items)
+
+        controller.prime_qualification = prime
+        result = controller.reconcile(prime=True)
+
+        self.assertEqual(result["status"], "restart_required")
+        self.assertEqual(sorted(observed), sorted(controller.qualification["tickets"]))
+        self.assertTrue(controller.qualification_marker(
+            "qualification-restart-boundary"
+        ))
+
+    def test_planner_prime_replays_only_exact_unconsumed_receipt(self) -> None:
+        controller = self.qualification_controller()
+        ticket = controller.qualification["tickets"][0]
+        cell = self.root / "prime-cell"
+        subprocess.run(
+            ["git", "init", "-q", "-b", f"ticket/{ticket}", str(cell)],
+            check=True,
+        )
+        route = cell / f"factory/route-plans/{ticket}.json"
+        route.parent.mkdir(parents=True)
+        route.write_text("{}\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(cell), "add", "."], check=True)
+        subprocess.run([
+            "git", "-C", str(cell), "-c", "user.name=Factory",
+            "-c", "user.email=factory@example.invalid", "commit", "-qm", "prime",
+        ], check=True)
+        head = subprocess.run(
+            ["git", "-C", str(cell), "rev-parse", "HEAD"],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+        claim = {
+            "branch": f"ticket/{ticket}", "lease": "1" * 64,
+            "priority": "normal", "receipt": "", "role": "",
+            "schema": CONTROL.CLAIM_SCHEMA, "status": "claimed",
+            "ticket": ticket, "worktree": str(cell),
+        }
+        receipt = {
+            "branch": claim["branch"], "consumed": False,
+            "contract_version": "1.8.0", "factory_sha": self.release.name,
+            "head_sha": head,
+            "lease_sha256": hashlib.sha256(claim["lease"].encode()).hexdigest(),
+            "project": "relay", "role": "planner",
+            "schema": "nysa.software-factory.transition-receipt/v1",
+            "stage": "RUN planner", "ticket": ticket,
+        }
+        receipt["receipt_sha256"] = hashlib.sha256(CONTROL.canonical_document({
+            key: item for key, item in receipt.items()
+            if key not in {"consumed", "receipt_sha256"}
+        })).hexdigest()
+        CONTROL.write(self.state / f"{ticket}.json", receipt)
+        controller.json_call = Mock(side_effect=AssertionError("receipt replayed"))
+
+        controller.prime_planner_transition(claim)
+        receipt["consumed"] = True
+        CONTROL.write(self.state / f"{ticket}.json", receipt)
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "Planner receipt is invalid",
+        ):
+            controller.prime_planner_transition(claim)
+        receipt.update(consumed=False, receipt_sha256="0" * 64)
+        CONTROL.write(self.state / f"{ticket}.json", receipt)
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "Planner receipt is invalid",
+        ):
+            controller.prime_planner_transition(claim)
+
+    def test_qualification_prime_refuses_provider_residue(self) -> None:
+        controller = self.qualification_controller()
+        status = {
+            "active_reserve_micro_usd": 1,
+            "attempts": [{"attempt_id": "unexpected"}],
+            "counts": {"reserved": 1},
+            "legacy_intervals": [],
+            "schema": "factory-provider-coordinator/v1",
+        }
+        with (
+            patch.dict(os.environ, {"FACTORY_PROVIDER_DB": str(self.root / "provider.db")}),
+            patch.object(
+                CONTROL.subprocess, "run",
+                return_value=subprocess.CompletedProcess(
+                    [], 0, json.dumps(status), "",
+                ),
+            ),
+            self.assertRaisesRegex(
+                CONTROL.ControllerError, "provider state is not pristine",
+            ),
+        ):
+            controller.qualification_provider_pristine()
+
+    def test_qualification_prime_materializes_safe_passport_namespace(self) -> None:
+        controller = self.qualification_controller()
+        claims = [{
+            "branch": f"ticket/{ticket}", "lease": f"{number:064x}",
+            "priority": "normal", "publication_lease": "",
+            "receipt": "", "role": "", "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "claimed", "ticket": ticket,
+            "worktree": str(self.root / f"prime-passport-{number}"),
+        } for number, ticket in enumerate(controller.qualification["tickets"], 1)]
+        key = self.state / "passport.key"
+        key.write_bytes(b"k" * 32)
+        key.chmod(0o600)
+        for claim in claims:
+            controller.save_claim(claim)
+        (self.state / ".lock").touch(mode=0o600)
+        controller.qualification_provider_pristine = Mock()
+        controller.pin_routes = Mock(return_value=[])
+        controller.prime_planner_transition = Mock()
+        controller.active_run_tickets = Mock(return_value=[])
+
+        controller.prime_qualification(claims)
+        passports = self.state / "passports"
+        self.assertTrue(passports.is_dir())
+        self.assertEqual(stat.S_IMODE(passports.stat().st_mode), 0o700)
+        self.assertTrue(controller.qualification_marker(
+            "qualification-restart-boundary", create=True,
+        ))
+        controller.prime_qualification(claims)
+        self.assertEqual(
+            controller.prime_planner_transition.call_count, 2 * len(claims),
+        )
+
+        bundle = "c" * 64
+        consumed = self.state / f"model-bundle-consumed-{bundle}"
+        consumed.write_text(bundle + "\n", encoding="utf-8")
+        consumed.chmod(0o600)
+        with patch.dict(os.environ, {
+            "FACTORY_QUALIFICATION_MODEL_BUNDLE_SHA256": bundle,
+        }):
+            controller.prime_qualification(claims)
+        consumed.unlink()
+
+        calls = (
+            controller.qualification_provider_pristine.call_count,
+            controller.pin_routes.call_count,
+            controller.prime_planner_transition.call_count,
+        )
+        CONTROL.write(self.state / "unexpected.json", {"status": "running"})
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "qualification prime has execution residue",
+        ):
+            controller.prime_qualification(claims)
+        self.assertEqual(calls, (
+            controller.qualification_provider_pristine.call_count,
+            controller.pin_routes.call_count,
+            controller.prime_planner_transition.call_count,
+        ))
+        (self.state / "unexpected.json").unlink()
+
+        CONTROL.write(
+            self.state / f"qualification-restart-boundary-{'b' * 40}.json",
+            {"status": "unexpected"},
+        )
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "qualification prime has execution residue",
+        ):
+            controller.prime_qualification(claims)
+        (self.state / f"qualification-restart-boundary-{'b' * 40}.json").unlink()
+
+        (self.state / ".passport-key.lock").symlink_to(self.state / "passport.key")
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "qualification prime has execution residue",
+        ):
+            controller.prime_qualification(claims)
+        (self.state / ".passport-key.lock").unlink()
+
+        CONTROL.write(self.state / "claims/T-999.json", claims[0])
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "qualification prime has execution residue",
+        ):
+            controller.prime_qualification(claims)
+        (self.state / "claims/T-999.json").unlink()
+
+        passports.chmod(0o755)
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "controller directory is unsafe",
+        ):
+            controller.prime_qualification(claims)
 
     def test_qualification_restart_preserves_blocked_target_claims(self) -> None:
         tickets = [f"T-{number}" for number in range(110, 113)]
@@ -5733,6 +6108,10 @@ class FactoryControllerTest(unittest.TestCase):
         class MissingTerminalProcess:
             def __init__(self, *_args, **_kwargs):
                 pass
+
+            @staticmethod
+            def poll():
+                return 0
 
             @staticmethod
             def wait(timeout=None):
@@ -17292,6 +17671,102 @@ class FactoryControllerTest(unittest.TestCase):
         popen.assert_not_called()
         self.assertNotIn("attempt_started", events)
         self.assertNotIn("receipt", claim)
+
+    def test_qualification_live_role_yields_only_after_durable_handoff(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        controller.qualification = {"tickets": ["T-110"]}
+        claim = {
+            "lease": "a" * 64,
+            "publication_lease": "",
+            "receipt": "",
+            "role": "",
+            "ticket": "T-110",
+            "worktree": str(self.root / "cell-1"),
+        }
+        active = False
+        observations = []
+
+        class LiveProcess:
+            waits = 0
+
+            @staticmethod
+            def poll():
+                return None
+
+            def wait(self, timeout):
+                nonlocal active
+                self.waits += 1
+                active = True
+                raise subprocess.TimeoutExpired("factory-launch", timeout)
+
+        process = LiveProcess()
+        controller.ensure_execution_cell = lambda _claim: None
+        controller.json_call = lambda *_args, **_kwargs: {
+            "exit_code": 0, "status": "ok",
+        }
+        controller.save_claim = lambda _claim: None
+        controller.event = lambda *_args, **_kwargs: None
+        controller.role_active = lambda _claim: active
+        controller.observe_attempt_safely = lambda item: observations.append(
+            (item["role"], item["receipt"])
+        )
+        controller.terminal_for_receipt = lambda *_args: self.fail(
+            "live wrapper was terminalized during handoff"
+        )
+        with (
+            patch.object(CONTROL, "ensure_qualification_artifacts"),
+            patch.object(CONTROL.subprocess, "Popen", return_value=process),
+        ):
+            self.assertTrue(
+                controller.run_role(claim, "planner", "b" * 64, [])
+            )
+
+        self.assertEqual(process.waits, 1)
+        self.assertEqual(observations, [("planner", "b" * 64)] * 2)
+        self.assertEqual(
+            (claim["status"], claim["role"], claim["receipt"]),
+            ("running", "planner", "b" * 64),
+        )
+
+        controller.ensure_lease = lambda *_args: None
+        controller.finish_pending_run = lambda _claim: False
+        replay = controller.reconcile_ticket(claim)
+        self.assertEqual(replay, {
+            "role": "planner",
+            "status": "waiting",
+            "ticket": "T-110",
+            "transition_receipt_sha256": "b" * 64,
+            "wait_reason": "live-role",
+        })
+        self.assertTrue(QUALIFICATION.qualification_retryable_wait(
+            {"controller": {"results": [replay]}}, {"T-110"},
+        ))
+
+        class ExitedProcess:
+            @staticmethod
+            def poll():
+                return 0
+
+            @staticmethod
+            def wait(timeout):
+                return 0
+
+        active = False
+        terminalized = []
+        controller.terminal_for_receipt = lambda *_args: {"phase": "completed"}
+        controller.finish_pending_run = lambda item: terminalized.append(
+            item["receipt"]
+        ) or True
+        with (
+            patch.object(CONTROL, "ensure_qualification_artifacts"),
+            patch.object(
+                CONTROL.subprocess, "Popen", return_value=ExitedProcess(),
+            ),
+        ):
+            self.assertTrue(
+                controller.run_role(claim, "planner", "c" * 64, [])
+            )
+        self.assertEqual(terminalized, ["c" * 64])
 
     def test_qualification_protected_mutation_latches_before_sibling_launch(
         self,

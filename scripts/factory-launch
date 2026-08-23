@@ -28,7 +28,7 @@ die() {
 }
 
 usage() {
-  echo "usage: factory-launch <project> <contract|doctor|reconcile|incident-report|watch|ticket-control|qualification-run|qualification-finish|qualification-resume|qualification-history-repair|qualification|dispatch-plan|state-machine|emergency-admit|passport|publication|publication-repair|ci-rerun|ticket-pr|models|envelope|operator|operator-snapshot|attempt|claim|renew|release|release-expired|preflight|next-stage|ticket-state|ticket-attest|project-ledger|reorder-test-fixes|run> [arguments]" >&2
+  echo "usage: factory-launch <project> <contract|doctor|reconcile|incident-report|watch|ticket-control|qualification-prime|qualification-run|qualification-finish|qualification-resume|qualification-history-repair|qualification|dispatch-plan|state-machine|emergency-admit|passport|publication|publication-repair|ci-rerun|ticket-pr|models|envelope|operator|operator-snapshot|attempt|claim|renew|release|release-expired|preflight|next-stage|ticket-state|ticket-attest|project-ledger|reorder-test-fixes|run> [arguments]" >&2
   exit 2
 }
 
@@ -865,8 +865,21 @@ if [[ -n "$ACTIVE_RUNTIME_NODE$ACTIVE_RUNTIME_NPM" &&
   require_managed_directory "$PROJECT_RUNTIME_ROOT" "project runtime root"
   require_managed_directory "$PROJECT_RUNTIME_BIN" "project runtime bin"
   require_managed_file "$PROJECT_RUNTIME_JOURNAL" "project runtime journal"
-  "$PYTHON_BIN" -I -S "$RELEASE_PATH/scripts/owner-runtime-pin.py" check \
-    --journal "$PROJECT_RUNTIME_JOURNAL" >/dev/null ||
+  RUNTIME_PIN_ARGS=(check --journal "$PROJECT_RUNTIME_JOURNAL")
+  if [[ "$QUALIFICATION_LAUNCHER" == "1" && "$ACTIVE_RUNTIME_TUPLE" != "{}" &&
+        "$COMMAND" != "doctor" ]]; then
+    RUNTIME_PIN_ARGS+=(
+      --expected-tuple "$ACTIVE_RUNTIME_TUPLE"
+      --contract-version "$ACTIVE_CONTRACT"
+      --factory-sha "$KIT_SHA"
+      --factory-tree "$KIT_TREE"
+      --product-root "$PRODUCT_ROOT"
+      --product-sha "$QUALIFICATION_PRODUCT_SHA"
+      --product-tree "$QUALIFICATION_PRODUCT_TREE"
+    )
+  fi
+  "$PYTHON_BIN" -I -S "$RELEASE_PATH/scripts/owner-runtime-pin.py" \
+    "${RUNTIME_PIN_ARGS[@]}" >/dev/null ||
     die "project runtime pin no longer matches its approved transaction"
   SAFE_PATH="$PROJECT_RUNTIME_BIN:$HOME/.factory/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
   PATH="$SAFE_PATH"
@@ -876,12 +889,6 @@ if [[ "$QUALIFICATION_LAUNCHER" == "1" && "$ACTIVE_RUNTIME_TUPLE" != "{}" &&
       "$COMMAND" != "doctor" ]]; then
   [[ -e "$PROJECT_RUNTIME_JOURNAL" || -L "$PROJECT_RUNTIME_JOURNAL" ]] ||
     die "qualification runtime pin is missing"
-  FACTORY_CERTIFICATION_TUPLE="$ACTIVE_RUNTIME_TUPLE" \
-    "$PYTHON_BIN" -I "$RELEASE_PATH/scripts/certification-preflight.py" \
-      --plan "$PRODUCT_ROOT/factory/certification-plan.json" \
-      --factory-sha "$KIT_SHA" --factory-tree "$KIT_TREE" \
-      --product-root "$PRODUCT_ROOT" --contract-version "$ACTIVE_CONTRACT" \
-      >/dev/null || die "qualification runtime tuple no longer matches"
 elif [[ "$QUALIFICATION_LAUNCHER" == "1" && "$COMMAND" != "doctor" && \
         ( -e "$PRODUCT_ROOT/factory/certification-plan.json" || \
           -L "$PRODUCT_ROOT/factory/certification-plan.json" ) ]]; then
@@ -1480,6 +1487,33 @@ PY
       --release-path "$RELEASE_PATH" \
       --state-dir "$CONTROLLER_STATE_DIR"
     ;;
+  qualification-prime)
+    [[ "$ACTIVE_CONTRACT" == "1.8.0" || "$ACTIVE_CONTRACT" == "2.0.0" ]] ||
+      die "deterministic reconciliation requires contract 1.8.0 or newer"
+    [[ "$QUALIFICATION_LAUNCHER" == "1" && "$QUALIFICATION_MODE" == "isolated" ]] ||
+      die "qualification prime requires a sealed isolated qualification launcher"
+    require_exact "--json" "$@"
+    controller_state_dir
+    CONTROLLER="$RELEASE_PATH/scripts/factory-controller.py"
+    require_managed_file "$CONTROLLER" "active release controller"
+    CONTROLLER_ENV=("${HELPER_ENV[@]}")
+    if [[ "$ISOLATED_TEST_LAUNCHER" == "1" ]]; then
+      CONTROLLER_ENV+=(
+        "FACTORY_LAUNCH_TEST_MODE=1"
+        "FACTORY_LAUNCH_TEST_HOME=$HOME"
+        "FACTORY_KITS_ROOT=$KITS_ROOT"
+      )
+    fi
+    cleanup_runtime
+    trap - EXIT HUP INT TERM
+    exec "${CONTROLLER_ENV[@]}" "$PYTHON_BIN" -I -S "$CONTROLLER" \
+      --launcher "$SELF_PATH" \
+      --project "$PROJECT" \
+      --product-root "$PRODUCT_ROOT" \
+      --release-path "$RELEASE_PATH" \
+      --state-dir "$CONTROLLER_STATE_DIR" \
+      --action prime
+    ;;
   incident-report)
     [[ "$QUALIFICATION_LAUNCHER" -eq 0 ]] ||
       die "automatic incident reporting is production-only"
@@ -1732,6 +1766,21 @@ PY
         --exclude-ticket)
           [[ "$2" =~ ^T-[0-9]+$ ]] || usage
           DISPATCH_ARGS+=(--exclude-ticket "$2")
+          shift 2
+          ;;
+        --cohort)
+          [[ "$ACTION" == "claim" ]] || usage
+          DISPATCH_ARGS+=(--cohort)
+          shift
+          ;;
+        --cohort-limit)
+          [[ "$ACTION" == "claim" && "$2" =~ ^[1-4]$ ]] || usage
+          DISPATCH_ARGS+=(--cohort-limit "$2")
+          shift 2
+          ;;
+        --cohort-ack)
+          [[ "$ACTION" == "claim" && "$2" =~ ^[0-9a-f]{64}$ ]] || usage
+          DISPATCH_ARGS+=(--cohort-ack "$2")
           shift 2
           ;;
         *) usage ;;

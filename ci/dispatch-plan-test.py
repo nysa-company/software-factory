@@ -504,7 +504,8 @@ class DispatchPlanTest(unittest.TestCase):
 
     def command(
         self, action, expected=0, operator_map=None,
-        contract=None, controller_state=None,
+        contract=None, controller_state=None, cohort=False, cohort_ack="",
+        trace=None,
     ):
         environment = {
             **os.environ,
@@ -516,11 +517,17 @@ class DispatchPlanTest(unittest.TestCase):
             environment["FACTORY_RELEASE_CONTRACT_VERSION"] = contract
         if controller_state is not None:
             environment["FACTORY_CONTROLLER_STATE_DIR"] = str(controller_state)
+        if trace is not None:
+            environment["GIT_TRACE"] = str(trace)
+        mode = ["--cohort", "--cohort-limit", "4"] if cohort else (
+            ["--cohort-ack", cohort_ack] if cohort_ack else []
+        )
         result = subprocess.run(
             [
                 sys.executable, str(HELPER),
                 "--factory-root", str(self.product),
                 "--worktree-root", str(self.worktrees),
+                *mode,
                 action,
             ],
             text=True,
@@ -934,6 +941,110 @@ class DispatchPlanTest(unittest.TestCase):
         self.assertEqual(second["ticket"], "T-100")
         self.assertNotEqual(first["lease_id"], second["lease_id"])
 
+    def test_qualification_cohort_claim_is_one_observation_and_exact_replay(self):
+        tickets = self.write_contract_18_qualification(target=3)
+        run("git", "add", ".", cwd=self.product)
+        run("git", "commit", "-qm", "prepare qualification", cwd=self.product)
+        run("git", "push", "-q", "origin", "main", cwd=self.product)
+        trace = self.root / "git.trace"
+
+        first = self.command("claim", cohort=True, trace=trace)
+
+        self.assertEqual(first["action"], "START_BATCH")
+        self.assertEqual([item["ticket"] for item in first["claims"]], tickets)
+        self.assertEqual(
+            [Path(item["worktree"]).name for item in first["claims"]],
+            ["cell-1", "cell-2", "cell-3"],
+        )
+        observations = [
+            line for line in trace.read_text(encoding="utf-8").splitlines()
+            if "ls-remote --heads --" in line
+        ]
+        self.assertEqual(len(observations), 1, observations)
+        main_fetches = [
+            line for line in trace.read_text(encoding="utf-8").splitlines()
+            if "fetch --quiet origin +main:refs/remotes/origin/main" in line
+        ]
+        self.assertEqual(len(main_fetches), 1, main_fetches)
+
+        replay = self.command("claim", cohort=True)
+        self.assertEqual(replay, first)
+        self.assertEqual(
+            len(list((self.product / "factory/.dispatch-leases").glob("*.json"))),
+            3,
+        )
+
+    def test_qualification_cohort_ack_removes_transaction_after_claim_durability(self):
+        tickets = self.write_contract_18_qualification(target=3)
+        run("git", "add", ".", cwd=self.product)
+        run("git", "commit", "-qm", "prepare qualification", cwd=self.product)
+        run("git", "push", "-q", "origin", "main", cwd=self.product)
+        controller = self.root / "controller"
+        claims = controller / "claims"
+        claims.mkdir(parents=True, mode=0o700)
+        batch = self.command("claim", cohort=True, controller_state=controller)
+        for item in batch["claims"]:
+            (claims / f"{item['ticket']}.json").write_text(json.dumps({
+                "branch": item["branch"], "lease": item["lease_id"],
+                "ticket": item["ticket"], "worktree": item["worktree"],
+            }) + "\n", encoding="utf-8")
+
+        acknowledged = self.command(
+            "claim", cohort_ack=batch["transaction_sha256"],
+            controller_state=controller,
+        )
+
+        self.assertEqual(acknowledged["status"], "ACKNOWLEDGED")
+        self.assertFalse(any(self.worktrees.glob(".qualification-claim-*.json")))
+        self.assertEqual(
+            self.command(
+                "claim", cohort_ack=batch["transaction_sha256"],
+                controller_state=controller,
+            ),
+            acknowledged,
+        )
+
+    def test_qualification_cohort_replays_partial_lease_interruption(self):
+        tickets = self.write_contract_18_qualification(target=3)
+        run("git", "add", ".", cwd=self.product)
+        run("git", "commit", "-qm", "prepare qualification", cwd=self.product)
+        run("git", "push", "-q", "origin", "main", cwd=self.product)
+        original = DISPATCH.create_lease
+        calls = 0
+
+        def interrupted(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise OSError("injected lease interruption")
+            return original(*args, **kwargs)
+
+        output = io.StringIO()
+        with (
+            mock.patch.object(DISPATCH, "create_lease", side_effect=interrupted),
+            mock.patch.object(sys, "argv", [
+                str(HELPER), "--factory-root", str(self.product),
+                "--worktree-root", str(self.worktrees), "--cohort",
+                "--cohort-limit", "3", "claim",
+            ]),
+            mock.patch.dict(os.environ, {
+                "FACTORY_CERTIFIED_PRODUCT_ORIGIN": str(self.remote),
+            }),
+            redirect_stdout(output),
+            self.assertRaises(SystemExit) as raised,
+        ):
+            DISPATCH.main()
+
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("injected lease interruption", output.getvalue())
+        self.assertTrue(any(self.worktrees.glob(".qualification-claim-*.json")))
+        replay = self.command("claim", cohort=True)
+        self.assertEqual([item["ticket"] for item in replay["claims"]], tickets)
+        self.assertEqual(
+            len(list((self.product / "factory/.dispatch-leases").glob("*.json"))),
+            3,
+        )
+
     def test_capacity_one_claims_once_then_waits(self):
         descriptor = self.product / "factory/PROJECT.env"
         descriptor.write_text(
@@ -1099,6 +1210,24 @@ class DispatchPlanTest(unittest.TestCase):
         self.assertIn(
             "supersede pre-provider control state",
             run("git", "log", "-1", "--format=%s", cwd=worktree),
+        )
+
+    def test_cohort_claim_refreezes_after_authorized_branch_reset(self):
+        self.write_contract_18_qualification(target=3)
+        run("git", "add", ".", cwd=self.product)
+        run("git", "commit", "-qm", "prepare qualification", cwd=self.product)
+        run("git", "push", "-q", "origin", "main", cwd=self.product)
+        old_head = self.stale_preprovider_branch()
+        self.authorize_preprovider_reset(old_head)
+
+        value = self.command("claim", cohort=True)
+
+        self.assertEqual(value["action"], "START_BATCH")
+        reset = next(item for item in value["claims"] if item["ticket"] == "T-110")
+        self.assertEqual(reset["preprovider_reset_head"], old_head)
+        self.assertIn(
+            "State: Ready",
+            (Path(reset["worktree"]) / "factory/tickets/T-110.md").read_text(),
         )
 
     def test_authorized_operator_ready_branch_rejoins_current_main(self):

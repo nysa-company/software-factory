@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -33,6 +34,7 @@ import operator_receipt  # noqa: E402
 
 
 SCHEMA = "nysa.software-factory.dispatch-plan/v1"
+COHORT_TRANSACTION_SCHEMA = "nysa.software-factory.qualification-claim/v1"
 QUALIFICATION_SCHEMA = "nysa.software-factory.qualification/v1"
 QUALIFICATION_SCHEMA_V2 = "nysa.software-factory.qualification/v2"
 QUALIFICATION_CONTRACTS = frozenset({"1.8.0", "2.0.0"})
@@ -57,6 +59,98 @@ class ResetAuthorization(NamedTuple):
 
 def canonical(value: Any) -> str:
     return json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+
+
+def durable_write(path: Path, value: dict[str, Any]) -> None:
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            descriptor = -1
+            handle.write(canonical(value) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        Path(temporary).unlink(missing_ok=True)
+
+
+def cohort_transaction_path(
+    worktree_root: Path, qualification_state: dict[str, Any],
+) -> Path:
+    return worktree_root / (
+        f".qualification-claim-{qualification_state['factory_sha']}-"
+        f"{qualification_state['generation']}.json"
+    )
+
+
+def cohort_transaction_digest(value: dict[str, Any]) -> str:
+    body = {key: item for key, item in value.items() if key != "transaction_sha256"}
+    return hashlib.sha256(canonical(body).encode()).hexdigest()
+
+
+def read_cohort_transaction(
+    path: Path, qualification_state: dict[str, Any], protected_main: str,
+) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    value = json.loads(safe_file(path, "qualification claim transaction", 100_000))
+    if (
+        not isinstance(value, dict)
+        or set(value) != {
+            "factory_sha", "generation", "operator_map_sha256", "protected_main",
+            "protected_tree", "qualification_sha256", "remote_heads", "schema",
+            "tickets", "transaction_sha256",
+        }
+        or value.get("schema") != COHORT_TRANSACTION_SCHEMA
+        or value.get("factory_sha") != qualification_state["factory_sha"]
+        or value.get("generation") != qualification_state["generation"]
+        or value.get("protected_main") != protected_main
+        or not SHA.fullmatch(value.get("protected_tree", ""))
+        or not re.fullmatch(r"[0-9a-f]{64}", value.get("operator_map_sha256", ""))
+        or not re.fullmatch(r"[0-9a-f]{64}", value.get("qualification_sha256", ""))
+        or not isinstance(value.get("tickets"), list)
+        or not value["tickets"]
+        or any(
+            not isinstance(item, dict)
+            or not TICKET.fullmatch(item.get("ticket", ""))
+            for item in value["tickets"]
+        )
+        or len({item["ticket"] for item in value["tickets"]}) != len(value["tickets"])
+        or not isinstance(value.get("remote_heads"), dict)
+        or any(
+            not isinstance(branch, str)
+            or not isinstance(head, str)
+            or head and not SHA.fullmatch(head)
+            for branch, head in value["remote_heads"].items()
+        )
+        or value.get("transaction_sha256") != cohort_transaction_digest(value)
+    ):
+        raise DispatchError("qualification claim transaction is invalid")
+    return value
+
+
+def remote_branch_heads(
+    product: Path, remote: str, branches: list[str],
+) -> dict[str, str]:
+    refs = {f"refs/heads/{branch}": branch for branch in branches}
+    result = {branch: "" for branch in branches}
+    output = git(product, "ls-remote", "--heads", "--", remote, *refs)
+    for line in output.splitlines():
+        values = line.split()
+        if len(values) != 2 or values[1] not in refs or result[refs[values[1]]]:
+            raise DispatchError("qualification ticket remote branches are ambiguous")
+        if not SHA.fullmatch(values[0]):
+            raise DispatchError("qualification ticket remote branch is invalid")
+        result[refs[values[1]]] = values[0]
+    return result
 
 
 def git(root: Path, *arguments: str, check: bool = True) -> str:
@@ -600,6 +694,29 @@ def lease_records(directory: Path) -> tuple[set[str], set[str]]:
         tickets.add(ticket)
         leases.add(lease)
     return tickets, leases
+
+
+def lease_record(directory: Path, ticket: str) -> dict[str, Any] | None:
+    path = directory / f"{ticket}.json"
+    if not path.exists():
+        return None
+    value = json.loads(safe_file(path, "dispatcher lease"))
+    if (
+        not isinstance(value, dict)
+        or set(value) != {
+            "claimed_epoch", "expires_epoch", "lease_id", "schema_version", "ticket",
+        }
+        or value.get("schema_version") != 1
+        or value.get("ticket") != ticket
+        or not re.fullmatch(r"[0-9a-f]{64}", value.get("lease_id", ""))
+        or isinstance(value.get("claimed_epoch"), bool)
+        or not isinstance(value.get("claimed_epoch"), int)
+        or isinstance(value.get("expires_epoch"), bool)
+        or not isinstance(value.get("expires_epoch"), int)
+        or value["expires_epoch"] <= value["claimed_epoch"]
+    ):
+        raise DispatchError("dispatcher lease state is unsafe")
+    return value
 
 
 def active_tickets(factory: Path) -> set[str]:
@@ -1291,13 +1408,18 @@ def inspect_selected_preprovider_branches(
     *,
     exact_authorizations: bool = False,
     prepared_ready_receipts: dict[str, str] | None = None,
+    protected_main: str = "",
+    observed_heads: dict[str, str] | None = None,
 ) -> dict[str, str]:
     """Validate selected remote branches without changing them."""
     if qualification_state.get("schema") != QUALIFICATION_SCHEMA_V2:
         return {}
     prefix = ticket_branch_prefix(factory)
-    git(product, "fetch", "--quiet", remote, "+main:refs/remotes/origin/main")
-    main = git(product, "rev-parse", "refs/remotes/origin/main").strip()
+    if protected_main:
+        main = protected_main
+    else:
+        git(product, "fetch", "--quiet", remote, "+main:refs/remotes/origin/main")
+        main = git(product, "rev-parse", "refs/remotes/origin/main").strip()
     if not SHA.fullmatch(main):
         raise DispatchError("protected main is unavailable")
     authorizations = preprovider_reset_authorizations(
@@ -1316,10 +1438,27 @@ def inspect_selected_preprovider_branches(
         raise DispatchError("prepared operator Ready receipts are invalid")
     divergent = {}
     prepared_divergent = set()
+    if observed_heads is not None:
+        expected = {prefix + ticket for ticket in qualification_state["tickets"]}
+        if set(observed_heads) != expected:
+            raise DispatchError("qualification remote branch observation is incomplete")
+        refspecs = [
+            f"+refs/heads/{branch}:refs/remotes/origin/{branch}"
+            for branch, head in observed_heads.items() if head
+        ]
+        if refspecs:
+            git(product, "fetch", "--quiet", remote, *refspecs)
+            if any(
+                git(product, "rev-parse", f"refs/remotes/origin/{branch}").strip()
+                != head for branch, head in observed_heads.items() if head
+            ):
+                raise DispatchError("qualification ticket remote branch changed during selection")
     for ticket in sorted(qualification_state["tickets"]):
         branch = prefix + ticket
         reference = f"refs/heads/{branch}"
-        observed = git(
+        observed = (
+            [observed_heads[branch], reference] if observed_heads[branch] else []
+        ) if observed_heads is not None else git(
             product, "ls-remote", "--heads", "--", remote, reference,
         ).split()
         if not observed:
@@ -1333,10 +1472,11 @@ def inspect_selected_preprovider_branches(
         ):
             raise DispatchError("ticket remote branch result is ambiguous")
         remote_head = observed[0]
-        git(
-            product, "fetch", "--quiet", remote,
-            f"+{reference}:refs/remotes/origin/{branch}",
-        )
+        if observed_heads is None:
+            git(
+                product, "fetch", "--quiet", remote,
+                f"+{reference}:refs/remotes/origin/{branch}",
+            )
         if git_succeeds(product, "merge-base", "--is-ancestor", main, remote_head):
             continue
         authorized_head = authorizations.get(ticket, "")
@@ -1376,6 +1516,8 @@ def selected_preprovider_reset_authorizations(
     remote: str,
     mapping_path: Path,
     state_dir: Path | None,
+    protected_main: str = "",
+    observed_heads: dict[str, str] | None = None,
 ) -> dict[str, ResetAuthorization]:
     prefix = ticket_branch_prefix(factory)
     prepared = (
@@ -1393,6 +1535,8 @@ def selected_preprovider_reset_authorizations(
         inspect_selected_preprovider_branches(
             product, factory, qualification_state, remote,
             prepared_ready_receipts=prepared,
+            protected_main=protected_main,
+            observed_heads=observed_heads,
         )
         if qualification_state is not None
         else {}
@@ -1559,6 +1703,8 @@ def prepare_worktree(
     product: Path, worktree_root: Path, ticket: str, prefix: str, remote: str,
     authorized_reset: ResetAuthorization | str | None = None,
     protected_main: str = "",
+    observed_remote_head: str | None = None,
+    remote_prefetched: bool = False,
 ) -> tuple[Path, bool, bool, str]:
     authorization = (
         reset_authorization(authorized_reset) if authorized_reset else None
@@ -1572,7 +1718,11 @@ def prepare_worktree(
     else:
         git(product, "fetch", "--quiet", remote, "+main:refs/remotes/origin/main")
         main = git(product, "rev-parse", "origin/main").strip()
-    remote_branch = git(
+    remote_branch = (
+        [observed_remote_head, f"refs/heads/{branch}"]
+        if observed_remote_head
+        else []
+    ) if observed_remote_head is not None else git(
         product, "ls-remote", "--heads", remote, f"refs/heads/{branch}"
     ).split()
     if remote_branch and (len(remote_branch) != 2 or remote_branch[1] != f"refs/heads/{branch}"):
@@ -1647,10 +1797,13 @@ def prepare_worktree(
         git(product, "worktree", "add", "--quiet", str(destination), branch)
         branch_created = False
     elif remote_branch:
-        git(
-            product, "fetch", "--quiet", remote,
-            f"+refs/heads/{branch}:refs/remotes/origin/{branch}",
-        )
+        if not remote_prefetched:
+            git(
+                product, "fetch", "--quiet", remote,
+                f"+refs/heads/{branch}:refs/remotes/origin/{branch}",
+            )
+        if git(product, "rev-parse", f"refs/remotes/origin/{branch}").strip() != remote_branch[0]:
+            raise DispatchError("ticket remote branch changed during selection")
         git(
             product, "worktree", "add", "--quiet", "-b", branch,
             str(destination), f"origin/{branch}",
@@ -1882,6 +2035,10 @@ def main() -> None:
     parser.add_argument("--worktree-root", required=True, type=Path)
     parser.add_argument("--lease-ttl", type=int, default=900)
     parser.add_argument("--exclude-ticket", action="append", default=[])
+    cohort = parser.add_mutually_exclusive_group()
+    cohort.add_argument("--cohort", action="store_true")
+    cohort.add_argument("--cohort-ack", default="")
+    parser.add_argument("--cohort-limit", type=int, default=0)
     parser.add_argument("action", choices=("shadow", "claim"))
     args = parser.parse_args()
     launch_lock = args.factory_root / "factory" / ".launch.lock"
@@ -1918,27 +2075,45 @@ def main() -> None:
             raise DispatchError("operator map path is invalid")
         maximum = capacity(factory)
         qualification_state = qualification(product, factory, maximum)
+        if (args.cohort or args.cohort_ack) and (
+            args.action != "claim" or qualification_state is None
+        ):
+            raise DispatchError("cohort claim is available only in qualification")
+        if (
+            args.cohort_limit < 0
+            or args.cohort_limit > 4
+            or bool(args.cohort_limit) != bool(args.cohort)
+        ):
+            raise DispatchError("cohort claim limit is invalid")
         validate_qualification_ticket_sources(product, qualification_state)
         prefix = ticket_branch_prefix(factory)
+        cohort_remote_heads = (
+            remote_branch_heads(
+                product, remote,
+                [prefix + ticket for ticket in qualification_state["tickets"]],
+            )
+            if args.cohort and qualification_state is not None else None
+        )
         controller_raw = os.environ.get("FACTORY_CONTROLLER_STATE_DIR", "")
         controller_state = Path(controller_raw) if controller_raw else None
-        reset_authorizations = selected_preprovider_reset_authorizations(
+        reset_authorizations = {} if args.cohort_ack else selected_preprovider_reset_authorizations(
             product, factory, qualification_state, remote, mapping_path,
-            controller_state,
+            controller_state, protected_main if args.cohort else "",
+            cohort_remote_heads,
         )
         reset_authorizations = {
             ticket: head for ticket, head in reset_authorizations.items()
             if readiness_executable(product, ticket)
         }
         if (
-            args.action == "claim"
+            args.action == "claim" and not args.cohort_ack
             and reset_authorizations
             and os.environ.get("FACTORY_KIT_TRUST_SCOPE") == "repository-test"
         ):
             raise DispatchError(
                 "repository-test refuses pre-provider branch recovery"
             )
-        if args.action == "claim" and reset_authorizations:
+        if args.action == "claim" and not args.cohort_ack and reset_authorizations:
             safe_directory(args.worktree_root, "worktree root", owner_only=True)
             admission_descriptor = admission_lock(
                 args.worktree_root / ".dispatch-admission.lock"
@@ -1947,7 +2122,8 @@ def main() -> None:
             held_launch = True
             reset_authorizations = selected_preprovider_reset_authorizations(
                 product, factory, qualification_state, remote, mapping_path,
-                controller_state,
+                controller_state, protected_main if args.cohort else "",
+                cohort_remote_heads,
             )
             reset_authorizations = {
                 ticket: head for ticket, head in reset_authorizations.items()
@@ -1961,12 +2137,93 @@ def main() -> None:
                 product, factory, mapping_path, remote, preprovider_resets,
                 protected_main,
             )
+            if args.cohort:
+                # Supported reset recovery intentionally advances one or more
+                # observed refs. Freeze the post-recovery tuple before claim;
+                # fresh cohorts retain their single observation above.
+                cohort_remote_heads = remote_branch_heads(
+                    product, remote,
+                    [prefix + ticket for ticket in qualification_state["tickets"]],
+                )
             launch_lock.rmdir()
             held_launch = False
         selected_tickets = (
             qualification_state["tickets"] if qualification_state else None
         )
         mapping = operator_mapping(mapping_path, selected_tickets)
+        if args.cohort or args.cohort_ack:
+            safe_directory(args.worktree_root, "worktree root", owner_only=True)
+        if args.cohort_ack:
+            admission_descriptor = admission_lock(
+                args.worktree_root / ".dispatch-admission.lock"
+            )
+        transaction_path = (
+            cohort_transaction_path(args.worktree_root, qualification_state)
+            if qualification_state is not None and (args.cohort or args.cohort_ack)
+            else None
+        )
+        transaction = (
+            read_cohort_transaction(
+                transaction_path, qualification_state, protected_main,
+            )
+            if transaction_path is not None else None
+        )
+        if transaction is not None:
+            qualification_sha256 = hashlib.sha256(
+                safe_file(
+                    factory / "QUALIFICATION.json", "qualification manifest", 100_000,
+                ).encode()
+            ).hexdigest()
+            operator_map_sha256 = hashlib.sha256(
+                safe_file(mapping_path, "operator map").encode()
+            ).hexdigest()
+            if (
+                transaction["qualification_sha256"] != qualification_sha256
+                or transaction["operator_map_sha256"] != operator_map_sha256
+                or transaction["protected_tree"]
+                != git(product, "rev-parse", f"{protected_main}^{{tree}}").strip()
+                or any(
+                    item["ticket"] not in qualification_state["tickets"]
+                    for item in transaction["tickets"]
+                )
+                or set(transaction["remote_heads"])
+                != {prefix + item["ticket"] for item in transaction["tickets"]}
+            ):
+                raise DispatchError("qualification claim transaction drifted")
+        if args.cohort_ack:
+            if not re.fullmatch(r"[0-9a-f]{64}", args.cohort_ack):
+                raise DispatchError("qualification claim acknowledgement is invalid")
+            if transaction is not None:
+                if transaction["transaction_sha256"] != args.cohort_ack:
+                    raise DispatchError("qualification claim acknowledgement drifted")
+                if controller_state is None:
+                    raise DispatchError("qualification controller state is unavailable")
+                claims_root = controller_state / "claims"
+                safe_directory(claims_root, "controller claims", owner_only=True)
+                for item in transaction["tickets"]:
+                    claim = json.loads(safe_file(
+                        claims_root / f"{item['ticket']}.json", "controller claim",
+                    ))
+                    lease = lease_record(factory / ".dispatch-leases", item["ticket"])
+                    if (
+                        lease is None
+                        or claim.get("ticket") != item["ticket"]
+                        or claim.get("lease") != lease["lease_id"]
+                        or claim.get("branch") != prefix + item["ticket"]
+                        or claim.get("worktree") != item.get("worktree")
+                    ):
+                        raise DispatchError("controller claim does not bind cohort transaction")
+                transaction_path.unlink()
+                directory = os.open(args.worktree_root, os.O_RDONLY)
+                try:
+                    os.fsync(directory)
+                finally:
+                    os.close(directory)
+            print(canonical({
+                "action": "ACK", "schema": SCHEMA, "status": "ACKNOWLEDGED",
+                "transaction_sha256": args.cohort_ack,
+            }))
+            return
         if qualification_state is not None:
             maximum = qualification_state["capacity"]
             if qualification_state["done"] == qualification_state["target_done"]:
@@ -1989,7 +2246,7 @@ def main() -> None:
                 )
         leased, lease_ids = lease_records(lease_dir)
         occupied = leased | active_tickets(factory)
-        if len(occupied) >= maximum:
+        if transaction is None and len(occupied) >= maximum:
             print(canonical({
                 "action": "WAIT", "reason_code": "capacity_full",
                 "schema": SCHEMA, "status": "WAIT",
@@ -1999,7 +2256,7 @@ def main() -> None:
             factory,
             mapping, occupied | set(args.exclude_ticket),
             qualification_state,
-        )
+        ) if transaction is None else (transaction["tickets"], [])
         refusal = {"admission_refusal": refusals[0]} if refusals else {}
         if not selected:
             print(canonical({
@@ -2027,6 +2284,81 @@ def main() -> None:
         safe_directory(lease_dir, "dispatcher lease directory")
         current_leased, current_lease_ids = lease_records(lease_dir)
         current_occupied = current_leased | active_tickets(factory)
+        if args.cohort:
+            if transaction is None:
+                selected = selected[:min(
+                    args.cohort_limit, maximum - len(current_occupied),
+                )]
+                if not selected:
+                    raise DispatchError("qualification cohort has no claim capacity")
+                branches = [prefix + item["ticket"] for item in selected]
+                heads = {branch: cohort_remote_heads[branch] for branch in branches}
+                transaction = {
+                    "factory_sha": qualification_state["factory_sha"],
+                    "generation": qualification_state["generation"],
+                    "operator_map_sha256": hashlib.sha256(
+                        safe_file(mapping_path, "operator map").encode()
+                    ).hexdigest(),
+                    "protected_main": protected_main,
+                    "protected_tree": git(
+                        product, "rev-parse", f"{protected_main}^{{tree}}",
+                    ).strip(),
+                    "qualification_sha256": hashlib.sha256(
+                        safe_file(
+                            factory / "QUALIFICATION.json", "qualification manifest", 100_000,
+                        ).encode()
+                    ).hexdigest(),
+                    "remote_heads": heads,
+                    "schema": COHORT_TRANSACTION_SCHEMA,
+                    "tickets": selected,
+                }
+                transaction["transaction_sha256"] = cohort_transaction_digest(transaction)
+                durable_write(transaction_path, transaction)
+            results = []
+            for item in transaction["tickets"]:
+                ticket_name = item["ticket"]
+                selected_ticket = ticket_name
+                if ticket_name in active_tickets(factory) and ticket_name not in current_leased:
+                    raise DispatchError("qualification cohort ticket became active without lease")
+                destination, created, branch_created, reset_head = prepare_worktree(
+                    product, args.worktree_root, ticket_name, prefix, remote,
+                    reset_authorizations.get(ticket_name, ""), protected_main,
+                    transaction["remote_heads"][prefix + ticket_name], True,
+                )
+                item["worktree"] = str(destination)
+                if created:
+                    created_worktree = destination
+                if branch_created:
+                    created_branch = prefix + ticket_name
+                lease = lease_record(lease_dir, ticket_name)
+                if lease is None:
+                    if len(current_leased | active_tickets(factory)) >= maximum:
+                        raise DispatchError("dispatcher capacity changed during cohort claim")
+                    lease = create_lease(
+                        lease_dir, ticket_name, lease_ids | current_lease_ids,
+                        args.lease_ttl,
+                    )
+                    lease_ids.add(lease["lease_id"])
+                    current_lease_ids.add(lease["lease_id"])
+                    current_leased.add(ticket_name)
+                lease_created = True
+                reset_head = reset_head or preprovider_resets.get(ticket_name, ("", ""))[0]
+                results.append({
+                    **item, "action": "START", "branch": prefix + ticket_name,
+                    "expires_epoch": lease["expires_epoch"],
+                    "lease_id": lease["lease_id"],
+                    "preprovider_reset_head": reset_head or None,
+                    "schema": SCHEMA, "status": "CLAIMED", "worktree": str(destination),
+                })
+            # Persist the exact cell identities before publishing the response.
+            transaction["transaction_sha256"] = cohort_transaction_digest(transaction)
+            durable_write(transaction_path, transaction)
+            print(canonical({
+                "action": "START_BATCH", "claims": results, "schema": SCHEMA,
+                "status": "CLAIMED",
+                "transaction_sha256": transaction["transaction_sha256"],
+            }))
+            return
         if (
             len(current_occupied) >= maximum
             or ticket["ticket"] in current_leased

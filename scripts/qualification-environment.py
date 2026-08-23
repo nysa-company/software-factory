@@ -3639,6 +3639,35 @@ def register_human_target(
         raise EnvironmentError("qualification human target registration failed")
 
 
+def prime_qualification(release: Path, project: str) -> None:
+    result = subprocess.run(
+        [
+            str(release / "scripts/factory-launch"), project,
+            "qualification-prime", "--json",
+        ],
+        text=True, capture_output=True, check=False,
+    )
+    try:
+        value = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise EnvironmentError(
+            "qualification Planner prime returned invalid evidence"
+        ) from error
+    if (
+        isinstance(value, dict)
+        and value.get("error") == "qualification prime has execution residue"
+    ):
+        raise EnvironmentError("qualification controller is active")
+    if (
+        result.returncode
+        or not isinstance(value, dict)
+        or value.get("schema") != "nysa.software-factory.controller/v1"
+        or value.get("status") != "restart_required"
+        or value.get("results") != []
+    ):
+        raise EnvironmentError("qualification Planner prime failed")
+
+
 def _prepare(args: argparse.Namespace) -> dict[str, Any]:
     root = Path(os.path.realpath(args.root))
     if not ROOT.fullmatch(str(root)):
@@ -3677,10 +3706,63 @@ def _prepare(args: argparse.Namespace) -> dict[str, Any]:
         global_config = prepare_global_config(args, root)
         if not takeover_requested:
             validate_qualification_budget(factory, product, manifest, global_config)
-    historical_objects = historical_pr_objects(product, origin)
     expected_authority_path = Path.home().resolve(strict=True) / (
         f".factory/qualification/{args.project}"
     )
+    active_path = root / f"projects/{args.project}/active.json"
+    if (
+        not restoring and not takeover_requested
+        and (active_path.exists() or active_path.is_symlink())
+    ):
+        validate_existing_publication_prefix(
+            root, expected_authority_path, args.project,
+        )
+        lane = qualification_lane(root, args.project)
+        if (
+            lane["active"].get("kit_sha") != sha
+            or lane["active"].get("kit_tree") != tree
+            or lane["active"].get("product_sha")
+            != command("git", "-C", str(product), "rev-parse", "HEAD")
+        ):
+            raise EnvironmentError("existing qualification activation changed")
+        environment = read(root / "environment.json")
+        expected_environment = bind_runtime_tuple({
+            "factory_sha": sha,
+            "factory_tree": tree,
+            "authority_root": str(lane["authority"]),
+            "historical_pr_objects": historical_pr_objects(product, origin),
+            "launcher": str(lane["release"] / "scripts/factory-launch"),
+            "product_sha": lane["active"]["product_sha"],
+            "product_tree": lane["active"]["product_tree"],
+            "project": args.project,
+            "provider_policy_sha256": lane["active"]["provider_policy_sha256"],
+            "qualification_mode": "isolated",
+            "root": str(root),
+            "schema": SCHEMA,
+            "status": "prepared",
+        }, lane["active"].get("runtime_tuple"))
+        if environment != expected_environment:
+            raise EnvironmentError("qualification preparation artifact changed")
+        qualification_fallback_readiness(
+            lane["release"], root, args.project, product,
+            bundle_path=(
+                root / f"projects/{args.project}/model-bundle-{sha}.json"
+            ),
+        )
+        try:
+            validate_provider(
+                lane["release"], lane["authority"], capacity, contract,
+                pristine=True,
+            )
+        except EnvironmentError as error:
+            if str(error) != "durable qualification provider policy changed":
+                raise
+            raise EnvironmentError(
+                "qualification preparation artifact changed"
+            ) from error
+        prime_qualification(lane["release"], args.project)
+        return environment
+    historical_objects = historical_pr_objects(product, origin)
     if not (expected_authority_path / "operator-bootstrap.json").exists():
         validate_selected_remote_branches(
             factory, product, manifest, origin,
@@ -3986,6 +4068,7 @@ def _prepare(args: argparse.Namespace) -> dict[str, Any]:
         register_human_target(
             release, release / "scripts/factory-launch", args.project, root,
         )
+        prime_qualification(release, args.project)
     return result
 
 

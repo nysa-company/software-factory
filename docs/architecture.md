@@ -209,10 +209,13 @@ against reconciliation,
 projects an approval only from an exact selected clean parked claim and its
 committed bundle. Preparation also persists the complete task-free model
 resolution and readiness as an owner-only, content-hashed bundle bound by the
-activation receipt. Doctor, admission, and batch pinning reuse it across the
-mandatory controller restart; role admission still checks the selected live
-route. Batch pinning records cache consumption, so subsequent Doctor checks
-resolve live readiness. The finisher repeats reconciliation after progress and while every
+activation receipt. A fresh isolated activation uses the sealed qualification
+prime to admit the exact cohort, batch-pin from that bundle, and issue each
+unconsumed Planner receipt before publishing the existing mandatory restart
+boundary. Prime never runs preflight or a provider attempt, and replay refuses
+provider residue or consumed authority. Doctor and role admission still check
+the selected live route after restart. Batch pinning records cache consumption,
+so subsequent Doctor checks resolve live readiness. The finisher repeats reconciliation after progress and while every
 pending result is a typed external publication wait, for at most ten minutes.
 A new command invocation
 runs a fresh Doctor, every cached iteration remains bound to the exact manifest
@@ -221,8 +224,9 @@ One ticket takes
 the Cursor-to-Codex Builder fallback, and serialized publication forces the
 remaining tickets through real protected-base refresh and reapproval. When the
 imported protected changes are regular, ticket-scoped or non-Factory paths
-disjoint from the reviewed ticket diff, the shared classifier preserves the
-existing Reviewer and Narrator evidence; overlap, unsafe file shape, and
+disjoint from the reviewed ticket diff, including the sibling's exact Ready
+audit receipt, the shared classifier preserves the existing Reviewer and
+Narrator evidence; overlap, unsafe file shape, and
 unknown Factory state still invalidate it. Artifacts for a declared dependency
 remain related and also invalidate the evidence. The gate never uses live
 credentials or provider inference. It proves fresh-cohort
@@ -243,6 +247,15 @@ while exact route-migration waits remain empty so the sealed driver can apply
 the authorized migration. Publication acquire/release manager transitions,
 lease-digest events, and claim checkpoints share one controller lock; response
 loss reuses the same lease evidence, while a new lease remains distinct.
+
+Fresh sealed qualification admission claims its available cohort through one
+dispatcher transaction. The transaction freezes the already-fetched protected
+main and one multi-ref observation, records the ordered ticket intent before
+creating a cell or lease, and replays missing worktrees or leases idempotently.
+Only after every controller claim is durable does the dispatcher acknowledge
+and remove the intent; an acknowledgement-response loss is retried from a
+small controller marker. Ordinary production admission retains its existing
+single-ticket shadow, model precheck, and claim behavior.
 
 Installation requires remote full-suite evidence for an exact `origin/main`
 SHA with a successful authenticated GitHub Actions push run whose three Linux,
@@ -516,7 +529,9 @@ The owner provider-pin transaction treats Codex and its adjacent
 `codex-code-mode-host` as one physical bundle. Both executable hashes, help
 contracts, links, receipt entries, and rollback snapshots advance atomically;
 qualification Doctor refuses before controller reconciliation when that bundle
-is absent or changed.
+is absent or changed. Status checks probe the four isolated managed executables
+concurrently, then report their independently validated results in canonical
+order.
 Qualification Doctor also reruns the shared strict manifest and ticket-readiness
 validators before provider readiness. Its typed report contains only selected
 ticket IDs and readiness states; an invalid ticket suppresses provider pin and
@@ -1626,8 +1641,11 @@ controller reasserts and verifies the exact GitHub request under the active
 publication lease before waiting for merge. `approval` consumes only a newer exact operator-map
 Awaiting Approval → Approved overlay, commits the approval attestation, and
 requests normal protected GitHub auto-merge for that exact PR head. `done`
-requires the exact merged commit on authoritative `origin/main`, all configured
-post-merge contexts successful on that commit, and projects accounting into a
+requires the exact merged commit on authoritative `origin/main` and all
+configured contexts successful. It reuses those checks from the authenticated
+approved PR head only when the PR head and merge trees are identical and their
+protected check-policy blob remains current; missing, failed, or pending head
+evidence falls back to the merge commit. It then projects accounting into a
 separate closeout branch with a terminal attestation and Done ticket. It never
 bypasses protection, force-pushes, or lets the dispatcher manufacture approval.
 Missing or pending post-merge contexts keep closeout waiting; a completed
@@ -2240,9 +2258,12 @@ certification receipt. The shared `certification-preflight.py` validates that
 tuple before readiness tests, qualification materialization, or certification
 suites can spawn expensive work. Qualification activation and its sealed
 launcher retain and revalidate the same tuple, so the controller cannot inherit
-a different shell runtime. Unknown, missing, malformed, or mismatched tuple
-data fails closed with typed non-secret diagnostics. Existing opaque
-certification scripts without a v2 plan remain compatible. The owner bootstrap
+a different shell runtime. The sealed launcher performs that comparison inside
+its existing exact runtime-pin proof, which already validates the current plan,
+candidate hashes, symlinks, and live Node/npm/npx versions; product SHA, tree,
+and cleanliness remain independently live-checked. Unknown, missing, malformed,
+or mismatched tuple data fails closed with typed non-secret diagnostics.
+Existing opaque certification scripts without a v2 plan remain compatible. The owner bootstrap
 may first run `factory-kit runtime-pin` to verify the product plan's exact
 Node/npm/npx executables and atomically place them in `~/.factory/bin`. That
 owner-local directory is already first in the sealed launcher's fixed PATH, so

@@ -20,7 +20,9 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(ROOT / "scripts/lib"))
 
-from certification_plan import safe_plan, validate_plan  # noqa: E402
+from certification_plan import (  # noqa: E402
+    TupleError, compare_tuple, safe_plan, strict_tuple, validate_plan,
+)
 
 
 TOOLS = ("node", "npm", "npx")
@@ -351,7 +353,12 @@ def apply_transaction(plan_path: Path, approval: str) -> dict[str, object]:
         os.close(descriptor)
 
 
-def check_transaction(journal_path: Path) -> dict[str, object]:
+def check_transaction(
+    journal_path: Path,
+    expected_tuple: str = "",
+    identity: dict[str, str] | None = None,
+    product_root: Path | None = None,
+) -> dict[str, object]:
     journal = safe_json(journal_path, "runtime pin journal")
     plan = journal.get("plan")
     if not isinstance(plan, dict):
@@ -362,6 +369,10 @@ def check_transaction(journal_path: Path) -> dict[str, object]:
     validate_transaction_plan(plan)
     product = Path(str(plan["product_path"]))
     target = Path(str(plan["target_bin"]))
+    if product_root is not None and product.resolve(strict=True) != product_root.resolve(
+        strict=True,
+    ):
+        raise PinError("qualification runtime product no longer matches")
     if (
         expected_runtime(product) != plan["expected"]
         or file_hash(product / "factory/certification-plan.json")
@@ -390,6 +401,18 @@ def check_transaction(journal_path: Path) -> dict[str, object]:
         plan["expected"], commands, f"{target}:{SAFE_PATH_SUFFIX}",
         Path(os.environ["HOME"]),
     )
+    if expected_tuple:
+        try:
+            expected = strict_tuple(json.loads(expected_tuple))
+            actual = strict_tuple({
+                **(identity or {}), "node": observed["node"],
+                "npm": observed["npm"],
+            })
+            compare_tuple(expected, actual)
+        except json.JSONDecodeError as error:
+            raise PinError("runtime_tuple_invalid: runtime_tuple") from error
+        except TupleError as error:
+            raise PinError(str(error)) from error
     return {
         **observed, "path": str(target),
         "schema": "nysa.software-factory.owner-runtime-pin-check/v1",
@@ -488,6 +511,13 @@ def main() -> int:
     applied.add_argument("--approve-hash", required=True)
     checked = commands.add_parser("check")
     checked.add_argument("--journal", required=True, type=Path)
+    checked.add_argument("--expected-tuple", default="")
+    checked.add_argument("--product-root", type=Path)
+    for field in (
+        "contract-version", "factory-sha", "factory-tree", "product-sha",
+        "product-tree",
+    ):
+        checked.add_argument(f"--{field}", default="")
     if sys.argv[1:2] not in (["plan"], ["apply"], ["check"]):
         parser.add_argument("--product", required=True, type=Path)
         parser.add_argument("--runtime-bin", required=True, type=Path)
@@ -510,8 +540,21 @@ def main() -> int:
             ))
             return 0
         if args.command == "check":
+            identity = {
+                "contract_version": args.contract_version,
+                "factory_sha": args.factory_sha,
+                "factory_tree": args.factory_tree,
+                "product_sha": args.product_sha,
+                "product_tree": args.product_tree,
+            }
+            if bool(args.expected_tuple) != (
+                all(identity.values()) and args.product_root is not None
+            ):
+                raise PinError("qualification runtime tuple authority is incomplete")
             print(json.dumps(
-                check_transaction(args.journal),
+                check_transaction(
+                    args.journal, args.expected_tuple, identity, args.product_root,
+                ),
                 sort_keys=True, separators=(",", ":"),
             ))
             return 0

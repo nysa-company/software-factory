@@ -604,6 +604,7 @@ class Controller:
         ) != ("1", "1", "mock"):
             raise ControllerError("repository-test controller authority is invalid")
         self.repository_test = repository_test
+        self.legacy_dispatch_fixture = getattr(args, "legacy_dispatch_fixture", False)
         self.qualification_manifest_sha256 = (
             hashlib.sha256(canonical(self.qualification).encode()).hexdigest()
             if self.qualification else ""
@@ -2851,6 +2852,35 @@ class Controller:
         claims = list(existing)
         if not 0 <= reserved_capacity <= self.capacity:
             raise ControllerError("reserved controller capacity is invalid")
+        cohort_ack_path = self.state / "qualification-claim-ack.json"
+        pending_ack = None
+        if self.qualification and cohort_ack_path.exists():
+            pending_ack = read(cohort_ack_path)
+            if (
+                set(pending_ack) != {"schema", "transaction_sha256"}
+                or pending_ack.get("schema")
+                != "nysa.software-factory.qualification-claim-ack/v1"
+                or not DIGEST.fullmatch(pending_ack.get("transaction_sha256", ""))
+            ):
+                raise ControllerError("qualification claim acknowledgement is malformed")
+        if (
+            pending_ack is not None
+            and self.qualification_cohort_accounted(claims)
+        ):
+            acknowledged = self.json_call(
+                "dispatch-plan", "--claim", "--cohort-ack",
+                pending_ack["transaction_sha256"], "--json",
+            )
+            if (
+                acknowledged.get("schema")
+                != "nysa.software-factory.dispatch-plan/v1"
+                or acknowledged.get("action") != "ACK"
+                or acknowledged.get("status") != "ACKNOWLEDGED"
+                or acknowledged.get("transaction_sha256")
+                != pending_ack["transaction_sha256"]
+            ):
+                raise ControllerError("qualification claim acknowledgement is malformed")
+            cohort_ack_path.unlink()
         if self.qualification_cohort_accounted(claims):
             return claims
         if not self.qualification:
@@ -2940,6 +2970,139 @@ class Controller:
                 }
             ):
                 raise ControllerError("model admission plan is malformed")
+        if self.qualification:
+            available = self.capacity - capacity_used
+            if available <= 0:
+                return claims
+            arguments = [
+                "dispatch-plan", "--claim", "--cohort", "--cohort-limit",
+                str(available),
+            ]
+            for ticket in excluded:
+                arguments.extend(["--exclude-ticket", ticket])
+            value = self.json_call(*arguments, "--json")
+            if value.get("action") == "WAIT":
+                return claims
+            if self.legacy_dispatch_fixture and value.get("action") == "START":
+                # Older component fixtures model the pre-batch dispatcher one
+                # START at a time. Keep that test-only seam while sealed lanes
+                # require the durable START_BATCH transaction below.
+                while True:
+                    if (
+                        not TICKET.fullmatch(value.get("ticket", ""))
+                        or not DIGEST.fullmatch(value.get("lease_id", ""))
+                    ):
+                        raise ControllerError("dispatch claim is malformed")
+                    claim = {
+                        "branch": value["branch"], "lease": value["lease_id"],
+                        "priority": value.get("priority", "none"),
+                        "publication_lease": "", "receipt": "", "role": "",
+                        "schema": CLAIM_SCHEMA, "status": "claimed",
+                        "ticket": value["ticket"], "worktree": value["worktree"],
+                    }
+                    self.save_claim(claim)
+                    self.event(
+                        "ticket_claimed", claim["ticket"], branch=claim["branch"],
+                        preprovider_reset_head=value.get("preprovider_reset_head"),
+                        worktree=claim["worktree"],
+                    )
+                    claims.append(claim)
+                    excluded.append(claim["ticket"])
+                    if len([
+                        item for item in claims if self.consumes_capacity(item)
+                        and item["ticket"] not in self.invalid_transition_tickets
+                    ]) + reserved_capacity >= self.capacity:
+                        return claims
+                    next_arguments = ["dispatch-plan", "--claim"]
+                    for ticket in sorted(set(excluded)):
+                        next_arguments.extend(["--exclude-ticket", ticket])
+                    value = self.json_call(*next_arguments, "--json")
+                    if value.get("action") == "WAIT":
+                        return claims
+                    if value.get("action") != "START":
+                        raise ControllerError("dispatch claim is malformed")
+            batch = value.get("claims")
+            transaction_sha256 = value.get("transaction_sha256", "")
+            existing_tickets = {item["ticket"] for item in claims}
+            if (
+                value.get("schema") != "nysa.software-factory.dispatch-plan/v1"
+                or value.get("action") != "START_BATCH"
+                or value.get("status") != "CLAIMED"
+                or not DIGEST.fullmatch(transaction_sha256)
+                or not isinstance(batch, list)
+                or not batch
+                or sum(
+                    isinstance(item, dict)
+                    and item.get("ticket") not in existing_tickets
+                    for item in batch
+                ) > available
+                or len({item.get("ticket") for item in batch if isinstance(item, dict)})
+                != len(batch)
+            ):
+                raise ControllerError("qualification cohort claim is malformed")
+            if pending_ack is not None and (
+                pending_ack["transaction_sha256"] != transaction_sha256
+            ):
+                raise ControllerError("qualification cohort replay drifted")
+            write(cohort_ack_path, {
+                "schema": "nysa.software-factory.qualification-claim-ack/v1",
+                "transaction_sha256": transaction_sha256,
+            })
+            for item in batch:
+                if (
+                    not isinstance(item, dict)
+                    or item.get("action") != "START"
+                    or not TICKET.fullmatch(item.get("ticket", ""))
+                    or item["ticket"] not in self.qualification["tickets"]
+                    or not DIGEST.fullmatch(item.get("lease_id", ""))
+                    or not isinstance(item.get("branch"), str)
+                    or not isinstance(item.get("worktree"), str)
+                ):
+                    raise ControllerError("qualification cohort claim is malformed")
+                if item["ticket"] in existing_tickets:
+                    prior = next(
+                        claim for claim in claims if claim["ticket"] == item["ticket"]
+                    )
+                    if (
+                        prior.get("lease") != item["lease_id"]
+                        or prior.get("branch") != item["branch"]
+                        or prior.get("worktree") != item["worktree"]
+                    ):
+                        raise ControllerError("qualification cohort replay drifted")
+                    continue
+                claim = {
+                    "branch": item["branch"],
+                    "lease": item["lease_id"],
+                    "priority": item.get("priority", "none"),
+                    "publication_lease": "",
+                    "receipt": "",
+                    "role": "",
+                    "schema": CLAIM_SCHEMA,
+                    "status": "claimed",
+                    "ticket": item["ticket"],
+                    "worktree": item["worktree"],
+                }
+                self.save_claim(claim)
+                self.event(
+                    "ticket_claimed", claim["ticket"], branch=claim["branch"],
+                    claim_transaction_sha256=transaction_sha256,
+                    preprovider_reset_head=item.get("preprovider_reset_head"),
+                    worktree=claim["worktree"],
+                )
+                claims.append(claim)
+                existing_tickets.add(claim["ticket"])
+            acknowledged = self.json_call(
+                "dispatch-plan", "--claim", "--cohort-ack",
+                transaction_sha256, "--json",
+            )
+            if (
+                acknowledged.get("action") != "ACK"
+                or acknowledged.get("status") != "ACKNOWLEDGED"
+                or acknowledged.get("transaction_sha256") != transaction_sha256
+            ):
+                raise ControllerError("qualification claim acknowledgement is malformed")
+            cohort_ack_path.unlink()
+            return claims
         while len(
             [
                 item for item in claims
@@ -3631,6 +3794,164 @@ class Controller:
         self.event("model_pin_batch", tickets=[claim["ticket"] for claim in missing])
         return []
 
+    def qualification_provider_pristine(self) -> None:
+        if not self.qualification:
+            raise ControllerError("qualification prime requires qualification mode")
+        database = os.environ.get("FACTORY_PROVIDER_DB", "")
+        if not database or not Path(database).is_absolute():
+            raise ControllerError("qualification provider state is unavailable")
+        result = subprocess.run(
+            [
+                sys.executable, "-I", "-S",
+                str(self.release_path / "scripts/provider-coordinator.py"),
+                "--db", database, "status",
+            ],
+            text=True, capture_output=True, check=False, timeout=120,
+        )
+        try:
+            status = json.loads(result.stdout)
+        except json.JSONDecodeError as error:
+            raise ControllerError(
+                "qualification provider state is malformed"
+            ) from error
+        if (
+            result.returncode
+            or not isinstance(status, dict)
+            or status.get("schema") != "factory-provider-coordinator/v1"
+            or status.get("attempts") != []
+            or status.get("counts") != {}
+            or status.get("legacy_intervals") != []
+            or status.get("active_reserve_micro_usd") != 0
+        ):
+            raise ControllerError("qualification provider state is not pristine")
+
+    def prime_planner_transition(self, claim: dict[str, Any]) -> None:
+        if (
+            claim.get("status") != "claimed"
+            or claim.get("receipt")
+            or claim.get("role")
+            or claim.get("publication_lease")
+            or claim.get("lease_released") is True
+            or self.role_active(claim)
+            or self.route_path(claim).is_symlink()
+            or not self.route_path(claim).is_file()
+        ):
+            raise ControllerError("qualification Planner prime state is invalid")
+        path = self.state / f"{claim['ticket']}.json"
+        transition = self.transition_receipt(claim, record=False)
+        if (path.exists() or path.is_symlink()) and transition is None:
+            raise ControllerError("qualification Planner receipt is invalid")
+        if transition is None:
+            result = self.json_call(
+                "state-machine", "--ticket", claim["ticket"],
+                "--lease", claim["lease"], "--workdir", claim["worktree"],
+                "--json", timeout=None,
+            )
+            if (
+                not valid_transition_evidence(result, claim["ticket"])
+                or result.get("stage") != "RUN planner"
+                or result.get("role") != "planner"
+            ):
+                raise ControllerError(
+                    "qualification Planner transition is invalid"
+                )
+            transition = self.transition_receipt(claim, record=False)
+        head = self.cell_git(claim, "rev-parse", "HEAD").stdout.strip()
+        if (
+            transition is None
+            or transition.get("stage") != "RUN planner"
+            or transition.get("role") != "planner"
+            or transition.get("consumed") is not False
+            or transition.get("head_sha") != head
+            or transition.get("lease_sha256")
+            != hashlib.sha256(claim["lease"].encode()).hexdigest()
+        ):
+            raise ControllerError("qualification Planner receipt is invalid")
+
+    def qualification_prime_state_shape(self) -> None:
+        if not self.qualification:
+            raise ControllerError("qualification prime requires qualification mode")
+        selected = set(self.qualification["tickets"])
+        allowed = {
+            ".lock", ".operator-apply-lock", ".operator-lock", ".passport-key.lock",
+            "claims", "events", "logs",
+            "operator-receipts", "passports", "passport.key", "reconcile.lock",
+            f"qualification-restart-boundary-{self.release_path.name}.json",
+            *(f"{ticket}.json" for ticket in selected),
+        }
+        bundle = os.environ.get("FACTORY_QUALIFICATION_MODEL_BUNDLE_SHA256", "")
+        if DIGEST.fullmatch(bundle):
+            allowed.add(f"model-bundle-consumed-{bundle}")
+        if any(path.name not in allowed for path in self.state.iterdir()):
+            raise ControllerError("qualification prime has execution residue")
+        for name in (
+            ".lock", ".operator-apply-lock", ".operator-lock", ".passport-key.lock",
+            "passport.key", "reconcile.lock",
+        ):
+            path = self.state / name
+            if path.exists() or path.is_symlink():
+                info = path.lstat()
+                if (
+                    path.is_symlink() or not stat.S_ISREG(info.st_mode)
+                    or info.st_uid != os.geteuid() or info.st_nlink != 1
+                    or stat.S_IMODE(info.st_mode) != 0o600
+                ):
+                    raise ControllerError("qualification prime has execution residue")
+        consumed = self.state / f"model-bundle-consumed-{bundle}"
+        if bundle and (consumed.exists() or consumed.is_symlink()):
+            descriptor = os.open(
+                consumed, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+            )
+            try:
+                info = os.fstat(descriptor)
+                raw = os.read(descriptor, 66)
+            finally:
+                os.close(descriptor)
+            if (
+                not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o600
+                or raw != f"{bundle}\n".encode()
+            ):
+                raise ControllerError("qualification prime has execution residue")
+        claims = safe_directory(self.state / "claims")
+        if {path.name for path in claims.iterdir()} != {
+            f"{ticket}.json" for ticket in selected
+        }:
+            raise ControllerError("qualification prime has execution residue")
+        logs = safe_directory(self.state / "logs")
+        if any(logs.iterdir()):
+            raise ControllerError("qualification prime has execution residue")
+        passports = self.state / "passports"
+        if passports.exists() or passports.is_symlink():
+            if any(safe_directory(passports).iterdir()):
+                raise ControllerError("qualification prime has execution residue")
+
+    def prime_qualification(self, claims: list[dict[str, Any]]) -> None:
+        if not self.qualification:
+            raise ControllerError("qualification prime requires qualification mode")
+        selected = sorted(self.qualification["tickets"])
+        if (
+            sorted(claim["ticket"] for claim in claims) != selected
+            or self.active_run_tickets()
+        ):
+            raise ControllerError("qualification prime has execution residue")
+        self.qualification_prime_state_shape()
+        self.qualification_provider_pristine()
+        safe_directory(self.state / "passports", create=True)
+        pin_results = self.pin_routes(claims)
+        if pin_results:
+            raise ControllerError("qualification Planner routes are not ready")
+        for claim in claims:
+            if claim.get("status") == "waiting" and not claim.get("blocked_reason"):
+                claim["status"] = "claimed"
+                self.save_claim(claim)
+        with ThreadPoolExecutor(max_workers=min(4, len(claims))) as executor:
+            list(executor.map(self.prime_planner_transition, claims))
+        self.qualification_provider_pristine()
+        self.qualification_prime_state_shape()
+        if self.active_run_tickets():
+            raise ControllerError("qualification prime has execution residue")
+
     def release(self, claim: dict[str, Any]) -> None:
         self.withdraw_publication(claim)
         self.json_call(
@@ -3689,6 +4010,16 @@ class Controller:
 
     def role_active(self, claim: dict[str, Any]) -> bool:
         return self.active_run(claim["ticket"])
+
+    @staticmethod
+    def live_role_wait(claim: dict[str, Any]) -> dict[str, str]:
+        return {
+            "role": claim["role"],
+            "status": "waiting",
+            "ticket": claim["ticket"],
+            "transition_receipt_sha256": claim["receipt"],
+            "wait_reason": "live-role",
+        }
 
     def release_ticket_lease(self, claim: dict[str, Any]) -> None:
         if claim.get("lease_released") is True:
@@ -12662,6 +12993,14 @@ class Controller:
                 )
                 process = subprocess.Popen(command, stdout=log, stderr=log)
             while True:
+                if (
+                    self.qualification
+                    and not self.repository_test
+                    and process.poll() is None
+                    and self.role_active(claim)
+                ):
+                    self.observe_attempt_safely(claim)
+                    return True
                 try:
                     exit_status = process.wait(
                         timeout=RECONCILE_INTERVAL_SECONDS
@@ -12703,6 +13042,8 @@ class Controller:
                 if claim.get("receipt"):
                     self.ensure_lease(claim, "terminal-accounting")
                     if not self.finish_pending_run(claim):
+                        if self.role_active(claim):
+                            return self.live_role_wait(claim)
                         return {
                             "status": (
                                 claim["status"]
@@ -12719,6 +13060,8 @@ class Controller:
                 return {"status": "maintenance", "ticket": claim["ticket"]}
             self.ensure_lease(claim, "reconciliation")
             if not self.finish_pending_run(claim):
+                if self.qualification and self.role_active(claim):
+                    return self.live_role_wait(claim)
                 return {
                     "status": (
                         claim["status"]
@@ -13501,13 +13844,25 @@ class Controller:
                 return result
             self.mark_reconciling(claim, after_progress=True)
 
-    def reconcile(self) -> dict[str, Any]:
+    def reconcile(self, *, prime: bool = False) -> dict[str, Any]:
         self.qualification_cohort_error.clear()
         self.admission_refusals = {}
         self.model_admission_outcome = None
         self.invalid_transition_tickets.clear()
         self.prior_transition_tickets.clear()
         existing = self.load_claims()
+        if prime and not self.qualification:
+            raise ControllerError("qualification prime requires qualification mode")
+        if prime and self.qualification_marker("qualification-restart-boundary"):
+            if self.qualification_marker("qualification-recovered"):
+                raise ControllerError("qualification prime crossed the restart boundary")
+            self.prime_qualification(existing)
+            return {
+                "active": len(existing),
+                "results": [],
+                "schema": SCHEMA,
+                "status": "restart_required",
+            }
         if self.repository_test and (
             existing
             or self.active_run_tickets()
@@ -13656,6 +14011,8 @@ class Controller:
             })
             target = self.qualification["target_done"]
             if len(accounted) == target:
+                if prime:
+                    self.prime_qualification(claims)
                 self.qualification_marker(
                     "qualification-restart-boundary", create=True,
                 )
@@ -14086,7 +14443,7 @@ def main() -> None:
     parser.add_argument("--worktree-root", type=Path)
     parser.add_argument(
         "--action", choices=(
-            "reconcile", "pause", "resume",
+            "reconcile", "prime", "pause", "resume",
             "preview-timeout-retry",
             "authorize-round-plan", "authorize-round-apply",
             "contract-repair-plan", "contract-repair-apply",
@@ -14110,7 +14467,7 @@ def main() -> None:
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", args.project):
             raise ControllerError("invalid project")
         if (
-            (args.action == "reconcile" and any((
+            (args.action in {"reconcile", "prime"} and any((
                 args.ticket, args.issue, args.factory_sha, args.role,
                 args.semantic_round, args.run_ordinal, args.operator_id,
                 args.approve_hash, args.receipt,
@@ -14226,6 +14583,8 @@ def main() -> None:
                 args.ticket, args.run_ordinal, args.operator_id,
                 args.approve_hash,
             )
+        elif args.action == "prime":
+            result = controller.reconcile(prime=True)
         else:
             if args.ticket:
                 raise ControllerError("reconcile does not accept a ticket")

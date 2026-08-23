@@ -1522,6 +1522,26 @@ def successful_post_merge_checks(repo, merge, required):
     return successful
 
 
+def successful_done_checks(workdir, repo, approved, merge, protected, required):
+    commits = (approved, merge, protected)
+    trees = [git(workdir, "rev-parse", f"{commit}^{{tree}}").stdout.strip()
+             for commit in commits[:2]]
+    projects = [git(
+        workdir, "rev-parse", f"{commit}:factory/PROJECT.env",
+    ).stdout.strip() for commit in commits]
+    if trees[0] == trees[1] and len(set(projects)) == 1:
+        try:
+            return successful_post_merge_checks(repo, approved, required)
+        except Refusal as error:
+            if not str(error).startswith((
+                "required post-merge check is missing: ",
+                "required post-merge check is pending: ",
+                "required post-merge check is unsuccessful: ",
+            )):
+                raise
+    return successful_post_merge_checks(repo, merge, required)
+
+
 def emergency_request(path, *, require_current=True):
     if not path.is_absolute() or path.is_symlink():
         raise Refusal("emergency closeout request is unsafe")
@@ -4163,7 +4183,9 @@ def done(
             workdir, args.ticket, repo, ticket_branch, evidence_kit_sha, method, pr,
         )
     )
-    successful = successful_post_merge_checks(repo, merge, checks)
+    successful = successful_done_checks(
+        workdir, repo, approval_head, merge, main_head, checks,
+    )
     if (
         field(text, "State").lower() != "approved"
         or field(text, "Operator-Approval").lower() not in {"linear", "receipt"}
