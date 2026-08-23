@@ -3868,6 +3868,31 @@ class Controller:
         ):
             raise ControllerError("qualification Planner receipt is invalid")
 
+    def qualification_prime_state_shape(self) -> None:
+        if not self.qualification:
+            raise ControllerError("qualification prime requires qualification mode")
+        selected = set(self.qualification["tickets"])
+        allowed = {
+            ".operator-apply-lock", ".operator-lock", "claims", "events", "logs",
+            "operator-receipts", "passports", "passport.key", "reconcile.lock",
+            f"qualification-restart-boundary-{self.release_path.name}.json",
+            *(f"{ticket}.json" for ticket in selected),
+        }
+        if any(path.name not in allowed for path in self.state.iterdir()):
+            raise ControllerError("qualification prime has execution residue")
+        claims = safe_directory(self.state / "claims")
+        if {path.name for path in claims.iterdir()} != {
+            f"{ticket}.json" for ticket in selected
+        }:
+            raise ControllerError("qualification prime has execution residue")
+        logs = safe_directory(self.state / "logs")
+        if any(logs.iterdir()):
+            raise ControllerError("qualification prime has execution residue")
+        passports = self.state / "passports"
+        if passports.exists() or passports.is_symlink():
+            if any(safe_directory(passports).iterdir()):
+                raise ControllerError("qualification prime has execution residue")
+
     def prime_qualification(self, claims: list[dict[str, Any]]) -> None:
         if not self.qualification:
             raise ControllerError("qualification prime requires qualification mode")
@@ -3877,6 +3902,7 @@ class Controller:
             or self.active_run_tickets()
         ):
             raise ControllerError("qualification prime has execution residue")
+        self.qualification_prime_state_shape()
         self.qualification_provider_pristine()
         safe_directory(self.state / "passports", create=True)
         pin_results = self.pin_routes(claims)
@@ -3889,6 +3915,7 @@ class Controller:
         with ThreadPoolExecutor(max_workers=min(4, len(claims))) as executor:
             list(executor.map(self.prime_planner_transition, claims))
         self.qualification_provider_pristine()
+        self.qualification_prime_state_shape()
         if self.active_run_tickets():
             raise ControllerError("qualification prime has execution residue")
 

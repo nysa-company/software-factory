@@ -4322,6 +4322,8 @@ class FactoryControllerTest(unittest.TestCase):
         key = self.state / "passport.key"
         key.write_bytes(b"k" * 32)
         key.chmod(0o600)
+        for claim in claims:
+            controller.save_claim(claim)
         controller.qualification_provider_pristine = Mock()
         controller.pin_routes = Mock(return_value=[])
         controller.prime_planner_transition = Mock()
@@ -4331,10 +4333,47 @@ class FactoryControllerTest(unittest.TestCase):
         passports = self.state / "passports"
         self.assertTrue(passports.is_dir())
         self.assertEqual(stat.S_IMODE(passports.stat().st_mode), 0o700)
+        self.assertTrue(controller.qualification_marker(
+            "qualification-restart-boundary", create=True,
+        ))
         controller.prime_qualification(claims)
         self.assertEqual(
             controller.prime_planner_transition.call_count, 2 * len(claims),
         )
+
+        calls = (
+            controller.qualification_provider_pristine.call_count,
+            controller.pin_routes.call_count,
+            controller.prime_planner_transition.call_count,
+        )
+        CONTROL.write(self.state / "unexpected.json", {"status": "running"})
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "qualification prime has execution residue",
+        ):
+            controller.prime_qualification(claims)
+        self.assertEqual(calls, (
+            controller.qualification_provider_pristine.call_count,
+            controller.pin_routes.call_count,
+            controller.prime_planner_transition.call_count,
+        ))
+        (self.state / "unexpected.json").unlink()
+
+        CONTROL.write(
+            self.state / f"qualification-restart-boundary-{'b' * 40}.json",
+            {"status": "unexpected"},
+        )
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "qualification prime has execution residue",
+        ):
+            controller.prime_qualification(claims)
+        (self.state / f"qualification-restart-boundary-{'b' * 40}.json").unlink()
+
+        CONTROL.write(self.state / "claims/T-999.json", claims[0])
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "qualification prime has execution residue",
+        ):
+            controller.prime_qualification(claims)
+        (self.state / "claims/T-999.json").unlink()
 
         passports.chmod(0o755)
         with self.assertRaisesRegex(

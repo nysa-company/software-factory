@@ -28,7 +28,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - The local operator console keeps supported approval hashes in its authenticated server session, and qualification resume reads its owner-only plan internally: operators approve an exact action without transcribing a digest, while sealed apply paths still recompute and validate the binding before mutation.
 - Fresh operator maps use an object-valued `_config` accepted by qualification, and nonvisual publication treats only exact current-ticket Ready audit receipts as metadata; foreign or malformed receipt paths remain semantic and fail closed.
 - Disjoint protected sibling refreshes recognize exact sibling Ready audit receipts and retain existing Reviewer/Narrator evidence. Done reuses exact approved-head checks only across a tree-identical authenticated merge with unchanged protected check policy; every mismatch or unavailable head result falls back to merge-commit evidence.
-- Fresh isolated preparation completes a sealed provider-free prime before returning: the exact cohort is claimed, batch-pinned, and advanced to unconsumed Planner receipts before the existing restart boundary. Replay is idempotent only while provider accounting is pristine and every receipt remains exact and unconsumed; ordinary finish retains fresh Doctor and live Planner preflight.
+- Fresh isolated preparation completes a sealed provider-free prime before returning: the exact cohort is claimed, batch-pinned, and advanced to unconsumed Planner receipts before the existing restart boundary. Replay first authenticates the exact publication and controller prefix, then remains idempotent only while provider accounting is pristine and every receipt remains exact and unconsumed; ordinary finish retains fresh Doctor and live Planner preflight.
 - **Contract rules below in Operating contract are authoritative**; this summary is only what the session hook can inject.
 
 ## Operating contract
@@ -7918,3 +7918,13 @@ An owner-only intent precedes every worktree and lease, so interruption and
 lost response replay the same transaction. Controller claim durability gates
 acknowledgement and intent cleanup; production single-ticket admission is
 unchanged.
+
+## 2026-08-23 — Decision 583: Primed qualification replay authenticates its prefix
+
+Category: Reliability
+
+Completed preparation replay validates the exact published environment before
+fallback, provider, or controller work. Qualification prime accepts only the
+selected cohort's known claim, receipt, restart, lock, log, event, and passport
+namespaces and rejects foreign controller residue before route pinning or any
+provider transition.

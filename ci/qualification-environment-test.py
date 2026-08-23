@@ -85,6 +85,11 @@ class QualificationEnvironmentTest(unittest.TestCase):
             "if [ \"${2:-}\" = doctor ]; then\n"
             "  printf '%s\\n' '{\"checks\":{},\"overall_status\":\"ok\",\"schema\":\"nysa.software-factory.doctor/v2\"}'\n"
             "elif [ \"${2:-}\" = qualification-prime ]; then\n"
+            "  controller=\"$HOME/.factory/qualification/${1:-}/controller\"\n"
+            "  if [ -e \"$controller/unexpected.json\" ]; then\n"
+            "    printf '%s\\n' '{\"error\":\"qualification prime has execution residue\",\"schema\":\"nysa.software-factory.controller/v1\",\"status\":\"error\"}'\n"
+            "    exit 1\n"
+            "  fi\n"
             "  printf '%s\\n' '{\"active\":3,\"results\":[],\"schema\":\"nysa.software-factory.controller/v1\",\"status\":\"restart_required\"}'\n"
             "fi\n",
             encoding="utf-8",
