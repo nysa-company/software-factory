@@ -7874,3 +7874,11 @@ finisher polls that exact receipt inside its existing ten-minute window, and a
 restart observes either the same active claim or its terminal without another
 provider submission. Approval projection remains serialized by the controller
 reconcile lock.
+
+## 2026-08-23 — Decision 580: Exact provider CLI checks overlap
+
+Category: Performance
+
+Provider CLI pin status probes the four isolated managed executables
+concurrently and reports them in canonical order. Each executable, version,
+help contract, receipt, and physical target remains independently fail-closed.

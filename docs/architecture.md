@@ -517,7 +517,9 @@ The owner provider-pin transaction treats Codex and its adjacent
 `codex-code-mode-host` as one physical bundle. Both executable hashes, help
 contracts, links, receipt entries, and rollback snapshots advance atomically;
 qualification Doctor refuses before controller reconciliation when that bundle
-is absent or changed.
+is absent or changed. Status checks probe the four isolated managed executables
+concurrently, then report their independently validated results in canonical
+order.
 Qualification Doctor also reruns the shared strict manifest and ticket-readiness
 validators before provider readiness. Its typed report contains only selected
 ticket IDs and readiness states; an invalid ticket suppresses provider pin and
