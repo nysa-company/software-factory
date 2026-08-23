@@ -1463,16 +1463,36 @@ PY
     exec_selected_helper "$DOCTOR" --json --project "$PROJECT" \
       --kit-dir "$RELEASE_PATH" --product-root "$PRODUCT_ROOT" --kit-sha "$KIT_SHA"
     ;;
-  reconcile|qualification-prime)
+  reconcile)
     [[ "$ACTIVE_CONTRACT" == "1.8.0" || "$ACTIVE_CONTRACT" == "2.0.0" ]] ||
       die "deterministic reconciliation requires contract 1.8.0 or newer"
     require_exact "--json" "$@"
-    CONTROLLER_ACTION=()
-    if [[ "$COMMAND" == "qualification-prime" ]]; then
-      [[ "$QUALIFICATION_LAUNCHER" == "1" && "$QUALIFICATION_MODE" == "isolated" ]] ||
-        die "qualification prime requires a sealed isolated qualification launcher"
-      CONTROLLER_ACTION=(--action prime)
+    controller_state_dir
+    CONTROLLER="$RELEASE_PATH/scripts/factory-controller.py"
+    require_managed_file "$CONTROLLER" "active release controller"
+    CONTROLLER_ENV=("${HELPER_ENV[@]}")
+    if [[ "$ISOLATED_TEST_LAUNCHER" == "1" ]]; then
+      CONTROLLER_ENV+=(
+        "FACTORY_LAUNCH_TEST_MODE=1"
+        "FACTORY_LAUNCH_TEST_HOME=$HOME"
+        "FACTORY_KITS_ROOT=$KITS_ROOT"
+      )
     fi
+    cleanup_runtime
+    trap - EXIT HUP INT TERM
+    exec "${CONTROLLER_ENV[@]}" "$PYTHON_BIN" -I -S "$CONTROLLER" \
+      --launcher "$SELF_PATH" \
+      --project "$PROJECT" \
+      --product-root "$PRODUCT_ROOT" \
+      --release-path "$RELEASE_PATH" \
+      --state-dir "$CONTROLLER_STATE_DIR"
+    ;;
+  qualification-prime)
+    [[ "$ACTIVE_CONTRACT" == "1.8.0" || "$ACTIVE_CONTRACT" == "2.0.0" ]] ||
+      die "deterministic reconciliation requires contract 1.8.0 or newer"
+    [[ "$QUALIFICATION_LAUNCHER" == "1" && "$QUALIFICATION_MODE" == "isolated" ]] ||
+      die "qualification prime requires a sealed isolated qualification launcher"
+    require_exact "--json" "$@"
     controller_state_dir
     CONTROLLER="$RELEASE_PATH/scripts/factory-controller.py"
     require_managed_file "$CONTROLLER" "active release controller"
@@ -1492,7 +1512,7 @@ PY
       --product-root "$PRODUCT_ROOT" \
       --release-path "$RELEASE_PATH" \
       --state-dir "$CONTROLLER_STATE_DIR" \
-      "${CONTROLLER_ACTION[@]}"
+      --action prime
     ;;
   incident-report)
     [[ "$QUALIFICATION_LAUNCHER" -eq 0 ]] ||
