@@ -2953,10 +2953,17 @@ class ReleaseTransactionTest(unittest.TestCase):
         (forged / "factory-contract.json").write_text(
             '{"contract_version":"2.0.0"}\n', encoding="utf-8",
         )
+        (forged / ".git").mkdir()
+        (forged / ".git/config").write_text(
+            '[remote "origin"]\n\turl = https://github.com/nysa-company/software-factory.git\n'
+            '[url "file:///tmp/malicious/"]\n\tinsteadOf = https://github.com/\n',
+            encoding="utf-8",
+        )
         stub_bin = self.root / "forged-bin"
         stub_bin.mkdir()
         forged_sha = "c" * 40
         live_sha = "d" * 40
+        git_remote_marker = self.root / "git-remote-used"
         git_stub = stub_bin / "git"
         git_stub.write_text(
             "#!/bin/sh\n"
@@ -2970,16 +2977,31 @@ class ReleaseTransactionTest(unittest.TestCase):
             "  rev-parse\\|--verify\\|HEAD\\^\\{tree\\}) echo " + "e" * 40 + " ;;\n"
             "  status\\|--porcelain=v1\\|--untracked-files=all) : ;;\n"
             "  ls-files\\|--error-unmatch\\|--) echo scripts/release-transaction.py ;;\n"
-            f"  ls-remote\\|--exit-code\\|*) printf '%s\\trefs/heads/main\\n' {live_sha} ;;\n"
+            f"  ls-remote\\|--exit-code\\|*) touch {str(git_remote_marker)!r}; exit 1 ;;\n"
             f"  rev-parse\\|--verify\\|refs/remotes/origin/main) echo {forged_sha} ;;\n"
             "  *) exit 1 ;;\n"
             "esac\n",
             encoding="utf-8",
         )
         git_stub.chmod(0o700)
+        gh_stub = stub_bin / "gh"
+        gh_stub.write_text(
+            "#!/bin/sh\n"
+            "[ \"${GH_PROMPT_DISABLED:-}\" = 1 ] || exit 9\n"
+            "[ \"${GH_PAGER:-}\" = cat ] || exit 9\n"
+            "[ -z \"${GH_HOST+x}${GH_REPO+x}${GITHUB_REPOSITORY+x}\" ] || exit 9\n"
+            "[ \"$1|$2|$3|$4|$5|$6\" = "
+            "'api|--hostname|github.com|repos/nysa-company/software-factory/git/ref/heads/main|--jq|.object.sha' ] || exit 9\n"
+            f"printf '%s\\n' {live_sha}\n",
+            encoding="utf-8",
+        )
+        gh_stub.chmod(0o700)
         production_environment = {
             **os.environ,
             "FACTORY_KITS_ROOT": str(self.root / "production-kits"),
+            "GH_HOST": "attacker.invalid",
+            "GH_REPO": "attacker/repository",
+            "GITHUB_REPOSITORY": "attacker/repository",
             "PATH": f"{stub_bin}:/usr/bin:/bin",
         }
         for variable in (
@@ -2998,6 +3020,7 @@ class ReleaseTransactionTest(unittest.TestCase):
         self.assertNotEqual(forged_result.returncode, 0)
         self.assertIn("does not match live protected main", forged_result.stderr)
         self.assertFalse(forged_marker.exists())
+        self.assertFalse(git_remote_marker.exists())
 
     def test_qualification_runtime_change_plans_once_then_reuses_receipt(self) -> None:
         plan = {

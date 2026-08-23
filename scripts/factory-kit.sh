@@ -5092,7 +5092,7 @@ qualification_candidate_git() {
 }
 
 validate_qualification_candidate() {
-  local repo="$1" sha="$2" physical top head tree dirty helper origin remote_main live_main
+  local repo="$1" sha="$2" physical top head tree dirty helper remote_main live_main
   validate_sha "$sha"
   [[ "$repo" == /* ]] || die "qualification Factory candidate path must be absolute"
   physical="$(absolute_dir "$repo")"
@@ -5103,7 +5103,7 @@ validate_qualification_candidate() {
   top="$(qualification_candidate_git -C "$physical" rev-parse --show-toplevel 2>/dev/null || true)"
   [[ "$top" == "$physical" ]] ||
     die "qualification Factory candidate must be an exact Git root"
-  origin="$(verify_origin "$physical")"
+  verify_origin "$physical" >/dev/null
   head="$(qualification_candidate_git -C "$physical" rev-parse --verify HEAD 2>/dev/null || true)"
   [[ "$head" == "$sha" ]] ||
     die "qualification Factory candidate HEAD does not match requested SHA"
@@ -5120,10 +5120,13 @@ validate_qualification_candidate() {
      "$(qualification_candidate_git -C "$physical" ls-files --error-unmatch -- scripts/release-transaction.py 2>/dev/null)" == "scripts/release-transaction.py" ]] ||
     die "qualification Factory candidate transaction helper is not sealed"
   if [[ "${FACTORY_KIT_TEST_MODE:-0}" != "1" ]]; then
-    live_main="$(GIT_ASKPASS=/usr/bin/false GIT_TERMINAL_PROMPT=0 \
-      qualification_candidate_git -c credential.helper= -c core.askPass= \
-      -C "$physical" ls-remote --exit-code "$origin" refs/heads/main 2>/dev/null || true)"
-    [[ "$live_main" == "$sha"$'\t'"refs/heads/main" ]] ||
+    require_command gh
+    live_main="$(/usr/bin/env -u GH_HOST -u GH_REPO -u GITHUB_REPOSITORY \
+      GH_PROMPT_DISABLED=1 GH_PAGER=cat NO_COLOR=1 CLICOLOR=0 \
+      gh api --hostname github.com \
+      repos/nysa-company/software-factory/git/ref/heads/main \
+      --jq .object.sha 2>/dev/null || true)"
+    [[ "$live_main" == "$sha" ]] ||
       die "qualification Factory candidate does not match live protected main"
     remote_main="$(qualification_candidate_git -C "$physical" rev-parse --verify refs/remotes/origin/main 2>/dev/null || true)"
     [[ "$remote_main" == "$sha" ]] ||
