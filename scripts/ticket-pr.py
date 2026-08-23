@@ -262,11 +262,17 @@ def ticket_metadata_path(path: str, ticket: str) -> bool:
         f"factory/attestations/{ticket}/bundle.json",
         f"factory/attestations/{ticket}/refresh.json",
     }
-    return path in exact or bool(re.fullmatch(
-        rf"factory/tickets/{re.escape(ticket)}-evidence/"
-        r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}[.]png",
-        path,
-    ))
+    return path in exact or bool(
+        re.fullmatch(
+            rf"factory/receipts/{re.escape(ticket)}/ready-[1-9][0-9]*[.]json",
+            path,
+        )
+        or re.fullmatch(
+            rf"factory/tickets/{re.escape(ticket)}-evidence/"
+            r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}[.]png",
+            path,
+        )
+    )
 
 
 def nonvisual_preview_evidence(

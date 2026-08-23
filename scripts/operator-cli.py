@@ -75,7 +75,7 @@ def load_map(path: Path) -> dict:
         raise OperatorCliError("operator map is unsafe")
     if not path.is_file():
         return {
-            "_config": None, "_sync": {}, "initiatives": {}, "tickets": {},
+            "_config": {}, "_sync": {}, "initiatives": {}, "tickets": {},
         }
     value = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(value, dict) or any(
