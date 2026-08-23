@@ -214,6 +214,50 @@ class ReleaseTransactionTest(unittest.TestCase):
             service["label"] for service in retired["services"]
         ] + ["setup"])
 
+    def test_project_launcher_prerequisite_does_not_retire_legacy_runtime(self) -> None:
+        home = self.root / "home"
+        target = home / ".factory/kits/releases" / self.sha / "scripts/factory-launch"
+        plan = json.loads(json.dumps(self.plan))
+        plan["stage"] = "prerequisites"
+        plan["children"] = {
+            "host_cutover": None,
+            "launcher": {
+                "action": "apply", "active_projects": [],
+                "approval_sha256": "4" * 64,
+                "candidate": {"path": str(target), "sha256": "5" * 64},
+                "human_cli": {
+                    "candidate": {"path": str(self.root / "factory-cli.py"), "sha256": "6" * 64},
+                    "previous_sha256": None, "target": str(home / ".factory/bin/factory"),
+                },
+                "previous_sha256": "5" * 64,
+                "schema": "nysa.software-factory.owner-launcher-pin-plan/v3",
+                "target": str(target),
+            },
+            "provider_cli": {"action": "reuse"},
+            "provider_concurrency": {"action": "reuse"},
+            "retired_runtime": self.retired_runtime(home, action="apply"),
+        }
+        plan["children"]["retired_runtime"]["services"][0]["loaded"] = True
+        order = []
+        with (
+            mock.patch.object(RELEASE, "account_home", return_value=home),
+            mock.patch.object(
+                RELEASE, "apply_launcher_plan",
+                side_effect=lambda *_args: order.append("launcher"),
+            ),
+            mock.patch.object(
+                RELEASE, "unload_service",
+                side_effect=lambda *_args: order.append("retired"),
+            ),
+            mock.patch.object(
+                RELEASE, "setup", side_effect=lambda _args: order.append("setup") or self.plan,
+            ),
+        ):
+            self.assertEqual(
+                RELEASE.apply_prerequisites(plan, self.kits, "tester"), self.plan,
+            )
+        self.assertEqual(order, ["launcher", "setup"])
+
     def tearDown(self) -> None:
         self.temp.cleanup()
 
@@ -1809,12 +1853,39 @@ class ReleaseTransactionTest(unittest.TestCase):
                 with self.assertRaisesRegex(RELEASE.ReleaseError, "controller job conflicts"):
                     RELEASE.prepare_controller("relay", self.product)
 
+    def test_controller_job_uses_the_project_bound_launcher(self) -> None:
+        home = self.root / "home"
+        launcher = home / ".factory/kits/releases" / self.sha / "scripts/factory-launch"
+        with mock.patch.object(RELEASE, "account_home", return_value=home):
+            payload = plistlib.loads(
+                RELEASE.controller_payload("relay", self.product, launcher)
+            )
+        self.assertEqual(payload["ProgramArguments"][:2], [str(launcher), "relay"])
+
+    def test_project_controller_replacement_waits_for_approved_activation(self) -> None:
+        home = self.root / "home"
+        jobs = home / "Library/LaunchAgents"
+        jobs.mkdir(parents=True)
+        path = jobs / "com.factory.controller.relay.plist"
+        path.write_bytes(b"old controller\n")
+        path.chmod(0o600)
+        launcher = home / ".factory/kits/releases" / self.sha / "scripts/factory-launch"
+        with (
+            mock.patch.object(RELEASE, "account_home", return_value=home),
+            mock.patch.object(RELEASE.sys, "platform", "darwin"),
+        ):
+            plan = RELEASE.prepare_controller("relay", self.product, launcher)
+        self.assertEqual(plan["action"], "apply")
+        self.assertEqual(path.read_bytes(), b"old controller\n")
+
     def test_controller_enable_loads_the_bound_job_before_dispatch(self) -> None:
         home = self.root / "home"
         (home / "Library/LaunchAgents").mkdir(parents=True)
         controller_path = home / "Library/LaunchAgents/com.factory.controller.relay.plist"
         with mock.patch.object(RELEASE.Path, "home", return_value=home):
-            raw = RELEASE.controller_payload("relay", self.product)
+            raw = RELEASE.controller_payload(
+                "relay", self.product, RELEASE.launcher_path(self.plan["children"]["launcher"]),
+            )
             RELEASE.atomic_bytes(controller_path, raw)
             plan = json.loads(json.dumps(self.plan))
             plan["identity"]["controller"] = {
@@ -1871,6 +1942,64 @@ class ReleaseTransactionTest(unittest.TestCase):
             candidate.chmod(0o555)
             with self.assertRaisesRegex(RELEASE.ReleaseError, "launcher pin"):
                 RELEASE.apply_launcher_plan(plan, release, self.kits)
+
+    def test_project_launcher_plan_ignores_unrelated_legacy_projects(self) -> None:
+        home = self.root / "home"
+        (home / ".factory/bin").mkdir(parents=True)
+        release = home / ".factory/kits/releases" / self.sha
+        scripts = release / "scripts"
+        scripts.mkdir(parents=True)
+        for name in ("factory-launch", "factory-cli.py"):
+            (scripts / name).write_text(f"{name}\n")
+            (scripts / name).chmod(0o555)
+        stable = home / ".factory/bin/factory-launch"
+        stable.parent.mkdir(parents=True, exist_ok=True)
+        stable.write_text("legacy launcher\n")
+        stable.chmod(0o700)
+        legacy = self.kits / "projects/legacy/active.json"
+        legacy.parent.mkdir(parents=True)
+        RELEASE.atomic_json(legacy, {
+            "contract_version": "1.9.0", "kit_sha": "b" * 40,
+            "product_path": str(self.product),
+        })
+        with mock.patch.object(RELEASE, "account_home", return_value=home):
+            plan = RELEASE.launcher_plan(release, self.kits, "relay")
+        self.assertEqual(plan["action"], "apply")
+        self.assertEqual(plan["target"], str(scripts / "factory-launch"))
+        self.assertEqual(plan["active_projects"], [])
+        self.assertEqual(plan["previous_sha256"], plan["candidate"]["sha256"])
+        with mock.patch.object(RELEASE, "account_home", return_value=home):
+            RELEASE.apply_launcher_plan(plan, release, self.kits, self.sha)
+            self.assertEqual(stable.read_text(), "legacy launcher\n")
+            successor = home / ".factory/kits/releases" / ("c" * 40)
+            (successor / "scripts").mkdir(parents=True)
+            (successor / "scripts/factory-launch").write_text("successor launcher\n")
+            (successor / "scripts/factory-cli.py").write_text("successor CLI\n")
+            for path in (successor / "scripts").iterdir():
+                path.chmod(0o555)
+            successor_plan = RELEASE.launcher_plan(successor, self.kits, "other")
+            self.assertEqual(successor_plan["action"], "reuse")
+            self.assertEqual(
+                successor_plan["human_cli"]["sha256"],
+                plan["human_cli"]["candidate"]["sha256"],
+            )
+            tampered = json.loads(json.dumps(plan))
+            tampered["candidate"]["path"] = str(scripts / "other-launcher")
+            body = {key: value for key, value in tampered.items() if key != "approval_sha256"}
+            tampered["approval_sha256"] = RELEASE.digest(body)
+            with self.assertRaisesRegex(RELEASE.ReleaseError, "launcher pin plan"):
+                RELEASE.validate_launcher_plan(tampered)
+
+    def test_production_registration_executes_the_sealed_human_cli(self) -> None:
+        release = self.root / "release"
+        candidate = release / "scripts/factory-cli.py"
+        candidate.parent.mkdir(parents=True)
+        candidate.write_text("#!/usr/bin/python3\n")
+        candidate.chmod(0o555)
+        launcher = release / "scripts/factory-launch"
+        with mock.patch.object(RELEASE, "run") as invoke:
+            RELEASE.register_production_target(release, "relay", launcher)
+        self.assertEqual(invoke.call_args.args[0][0], str(candidate))
 
     def test_launcher_pin_refuses_any_unpaused_active_factory(self) -> None:
         home = self.root / "home"

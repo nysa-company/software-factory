@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -280,7 +281,7 @@ def _target(targets: Path, target_id: str, trusted: bool = False) -> tuple[Exact
     launcher = _launcher(value["launcher"])
     try:
         if trusted:
-            _trusted_launcher(launcher)
+            _trusted_launcher(launcher, value["project"])
     except Exception:
         launcher.close()
         raise
@@ -295,13 +296,53 @@ def _selected(targets: Path, selection: Path, trusted: bool = False) -> tuple[Ex
     return _target(targets, target_id, trusted)
 
 
-def _trusted_launcher(launcher: ExactLauncher) -> None:
-    installed = _account_home() / ".factory/bin/factory-launch"
+def _trusted_launcher(launcher: ExactLauncher, project: str) -> None:
+    factory = _account_home() / ".factory"
+    installed = factory / "bin/factory-launch"
+    releases = factory / "kits/releases"
+    try:
+        production = launcher.path.relative_to(releases).parts
+    except ValueError:
+        production = ()
     qualification = QUALIFICATION_LAUNCHER.fullmatch(str(launcher.path))
     if launcher.path == installed:
         _secure_parent(installed.parent.parent, "Factory state directory")
         _secure_parent(installed.parent, "Factory command directory")
         launcher.lock_path = installed.parent.parent / ".launcher-pin.lock"
+        descriptor = launcher.acquire_lock()
+        try:
+            launcher.check()
+        finally:
+            os.close(descriptor)
+    elif (
+        len(production) == 3 and re.fullmatch(r"[0-9a-f]{40}", production[0])
+        and production[1:] == ("scripts", "factory-launch")
+    ):
+        sha = production[0]
+        release = releases / sha
+        _secure_parent(factory, "Factory state directory")
+        _secure_parent(factory / "kits", "Factory kits directory")
+        _secure_parent(releases, "Factory release directory")
+        _secure_parent(release, "sealed production release")
+        active_path = factory / "kits/projects" / project / "active.json"
+        manifest_path = factory / "kits/manifests" / f"{sha}.json"
+        try:
+            active = json.loads(_regular(active_path, "active release", 64_000), object_pairs_hook=_unique)
+            manifest = json.loads(_regular(manifest_path, "install manifest", 64_000), object_pairs_hook=_unique)
+        except (UnicodeError, json.JSONDecodeError) as error:
+            raise CliError("production target trust evidence is invalid") from error
+        raw = os.pread(launcher.descriptor, launcher.identity[2], 0)
+        if (
+            not isinstance(active, dict) or active.get("project") != project
+            or active.get("kit_sha") != sha
+            or not isinstance(manifest, dict) or manifest.get("schema_version") != 1
+            or manifest.get("kit_sha") != sha
+            or manifest.get("sealed_release_path") != str(release)
+            or not re.fullmatch(r"[0-9a-f]{40}", str(manifest.get("git_tree", "")))
+            or manifest.get("launcher_sha256") != hashlib.sha256(raw).hexdigest()
+        ):
+            raise CliError("production target trust evidence is invalid")
+        launcher.lock_path = factory / ".launcher-pin.lock"
         descriptor = launcher.acquire_lock()
         try:
             launcher.check()
@@ -566,7 +607,7 @@ def register(target_id: str, launcher: str, project: str, targets_dir: Path) -> 
         raise CliError("target identity is invalid")
     candidate = _launcher(launcher)
     try:
-        _trusted_launcher(candidate)
+        _trusted_launcher(candidate, project)
         _atomic(
             targets_dir / f"{target_id}.json",
             (json.dumps({"launcher": str(candidate.path), "project": project}, sort_keys=True, separators=(",", ":")) + "\n").encode(),

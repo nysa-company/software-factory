@@ -13,6 +13,7 @@ READINESS_TIMEOUT_SECONDS="${FACTORY_DOCTOR_READINESS_TIMEOUT_SECONDS:-120}"
 KIT_DIR_OVERRIDE=""
 PRODUCT_ROOT_OVERRIDE=""
 KIT_SHA_OVERRIDE=""
+LAUNCHER_PATH_OVERRIDE="${FACTORY_LAUNCHER_PATH:-$HOME/.factory/bin/factory-launch}"
 
 usage() {
   echo "usage: factory-doctor.sh [--json] [--project <slug>] --kit-dir <path> --product-root <path> --kit-sha <full-sha>" >&2
@@ -886,7 +887,8 @@ if [[ ( "$CONTRACT_VERSION" == "1.8.0" || "$CONTRACT_VERSION" == "2.0.0" ) &&
   CONTROLLER_STATUS="error"
   CONTROLLER_SERVICE_STATE="unavailable"
   CONTROLLER_RESULT="$("$PYTHON_BIN" -I -S - \
-      "$HOME" "$PRODUCT_ROOT" "$PROJECT" "$CONTROLLER_LAUNCHCTL" <<'PY'
+      "$HOME" "$PRODUCT_ROOT" "$PROJECT" "$CONTROLLER_LAUNCHCTL" \
+      "$LAUNCHER_PATH_OVERRIDE" <<'PY'
 import os
 from pathlib import Path
 import plistlib
@@ -899,8 +901,9 @@ home = Path(sys.argv[1]).resolve()
 product = Path(sys.argv[2]).resolve()
 project = sys.argv[3]
 launchctl = Path(sys.argv[4])
+launcher = Path(sys.argv[5])
 label = f"com.factory.controller.{project}"
-expected_program = str(home / ".factory/bin/factory-launch")
+expected_program = str(launcher)
 expected_arguments = [expected_program, project, "reconcile", "--json"]
 expected_job = {
     "Label": label,

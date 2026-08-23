@@ -14,8 +14,13 @@ The kit is installed as immutable exact-SHA releases and shared by every product
 - **Product repository:** `factory/` state (including initiatives and tickets), product documentation, instantiated CI, GitHub rules, and deploy credentials. There is no external board; every initiative is its own `factory/initiatives/I-NNN.md` file.
 - **`factory/KIT_PIN`:** exactly one lowercase, full 40-character kit SHA. Production requires a protected-main, successful-CI installed release; a sealed qualification may instead bind one clean local candidate SHA/tree. External products fail closed when the pin is missing, malformed, or different from the physical release.
 
-The signed release transaction installs `~/.factory/bin/factory` beside the
-stable launcher and registers each production target after activation. Sealed
+The signed release transaction installs the backward-compatible
+`~/.factory/bin/factory` and registers each production target after activation
+against that project's exact sealed `releases/<sha>/scripts/factory-launch`.
+The target is accepted only when the project active record and owner-only
+install manifest bind the same release SHA, path, tree, and launcher digest.
+The legacy stable launcher remains available for already-active products;
+replacing it still requires an explicit full-host cutover. Sealed
 qualification preparation registers its exact physical launcher separately;
 production and qualification may share a project slug. The human CLI stores an
 opaque target choice, obtains labels and ticket fields only through that exact
@@ -352,7 +357,8 @@ Machine-local release state lives under `~/.factory/kits`:
   artifact entries explicitly admitted by certification plans. The product
   sandbox never receives this persistent path or its authentication key.
 
-The stable `~/.factory/bin/factory-launch` is the Factory trust root. It parses
+The stable `~/.factory/bin/factory-launch` and an active project's exact sealed
+`releases/<sha>/scripts/factory-launch` are Factory trust roots. Each parses
 the selected `active.json` once, validates the full SHA, tree, contract,
 registered product, and exact physical release path, then uses only that
 release for the invocation. Contract `2.0.0` exposes machine-readable

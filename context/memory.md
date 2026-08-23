@@ -15,7 +15,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Isolated successor contract repair may use an older authenticated blocker only through its complete signed release suffix ending at the exact protected per-ticket source. Prior resume pairs remain immutable transition history and are accepted only as an ordered canonical sequence with one signed completed record per pair and one newest in-branch snapshot of the full sequence. Passport snapshots may omit ordinary descendant ticket commits, while Factory/base/route junctions remain exact. During or after prior-kit receipt migration, the driver admits its historical resume mismatch only while the exact blocked claim and transition digest bind that selected ticket and receipt; event observation order is not authority.
 - An exactly migrated successor claim may chain a current transition receipt after its authenticated predecessor; predecessor evidence remains durable and unedited.
 - Nysa Agents baseline v3 as a toolkit; `bash ci/test-all.sh` is the unconditional full command.
-- Contract 2 live products resolve sealed exact-SHA releases from owner-only `active.json` records under `~/.factory/kits` via `~/.factory/bin/factory-launch`; the native controller is the only scheduler.
+- Contract 2 live products resolve sealed exact-SHA releases from owner-only `active.json` records under `~/.factory/kits`; newly activated products bind their native controller and human CLI target to that exact release launcher, while replacing the legacy global launcher remains an all-product host cutover.
 - A drained isolated successor lane upgrades through one signed `qualification upgrade` transaction: project runtime before preflight, exact host-child approval when needed, fallback revalidation, authenticated environment publication, and sealed Doctor within a cumulative 60-second machine budget. Identical replay returns one completion receipt and never advances generation twice; the manual child sequence is recovery-only.
 - Catchable dispatcher heartbeat shutdown is deferred across the atomic lease-renewal replacement, so TERM, INT, or HUP cannot strand a `.lease-*` entry; foreign or malformed residue remains fail-closed.
 - The local release canary is one code-driven, product-agnostic command that creates contained local origins, runs setup/resume, and times one authenticated Planning transition plus sealed mock planner; its repository-test evidence is never promotable.
@@ -7785,3 +7785,12 @@ An exact completed provider CLI approval returns its verified ready status on
 retry instead of rebuilding against its own changed receipt. Native service
 retirement also waits briefly for launchd's asynchronous removal before
 failing, so a partially completed signed prerequisite can converge safely.
+
+## 2026-08-22 — Decision 572: Product activation uses its sealed launcher
+
+Category: System change
+
+A signed product release installs the human CLI, then binds that product's
+controller and target to its exact immutable release launcher. Unrelated legacy
+products, the global launcher, the Contract floor, and retired runtime remain
+unchanged; a true global launcher replacement retains the all-product cutover.

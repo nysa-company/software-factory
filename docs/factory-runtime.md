@@ -7,15 +7,15 @@ The Software Factory runs through one stable, Factory-owned command:
 ```
 
 Contract 2.0 has no external supervisor, profile, gateway, dashboard, or
-secondary project registry. Native `launchd` scheduling calls the installed
-launcher, which authenticates one active sealed release and delegates to the
+secondary project registry. Native `launchd` scheduling calls the project's
+exact sealed launcher, which authenticates its active release and delegates to the
 deterministic controller and release-owned helpers.
 
 ## Runtime flow
 
 ```text
 com.factory.controller.<project>
-  -> ~/.factory/bin/factory-launch <project> reconcile --json
+  -> ~/.factory/kits/releases/<full-sha>/scripts/factory-launch <project> reconcile --json
      -> ~/.factory/kits/projects/<project>/active.json
         -> ~/.factory/kits/releases/<full-sha>/scripts/factory-launch
            -> scripts/factory-controller.py
@@ -69,10 +69,12 @@ native process output and exit status.
 All active machine state lives under `~/.factory`:
 
 - `bin/factory-launch` is the stable installed trust root.
+- `kits/releases/<full-sha>/scripts/factory-launch` is the project-bound trust
+  root used by newly activated Contract 2 controllers and human CLI targets.
 - `bin/{claude,codex,agent}` are exact owner-managed provider CLI pins.
 - `kits/releases/<full-sha>/` holds sealed, read-only release trees.
 - `kits/manifests/<full-sha>.json` binds each installed release to its Git
-  identity and canonical origin.
+  identity, canonical origin, physical path, and launcher digest.
 - `kits/projects/<project>/active.json` is the sole product-to-release binding.
 - `kits/projects/<project>/activation-journal/` stores recoverable activation
   transactions.

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stable Factory boundary. Install explicitly at ~/.factory/bin/factory-launch.
+# Stable Factory boundary. Install explicitly under ~/.factory/bin.
 # This file is the trust root: it resolves one active release, validates it,
 # then uses only helpers from that physical release for the entire invocation.
 set -u
@@ -80,10 +80,17 @@ print(path)
 PY
 )" || die "launcher self path cannot be resolved"
 INSTALLED_LAUNCHER_PATH="$ACCOUNT_HOME/.factory/bin/factory-launch"
+PRODUCTION_RELEASE="$(cd "${SELF_PATH%/*}/.." 2>/dev/null && pwd -P)"
+PRODUCTION_SHA="${PRODUCTION_RELEASE##*/}"
+PRODUCTION_LAUNCHER_PATH="$ACCOUNT_HOME/.factory/kits/releases/$PRODUCTION_SHA/scripts/factory-launch"
 ISOLATED_TEST_LAUNCHER=0
 QUALIFICATION_LAUNCHER=0
+PROJECT_LAUNCHER=0
 
-if [[ "$SELF_PATH" == "$INSTALLED_LAUNCHER_PATH" ]]; then
+if [[ "$SELF_PATH" == "$INSTALLED_LAUNCHER_PATH" || (
+      "$PRODUCTION_SHA" =~ ^[0-9a-f]{40}$ &&
+      "$SELF_PATH" == "$PRODUCTION_LAUNCHER_PATH" ) ]]; then
+  [[ "$SELF_PATH" == "$INSTALLED_LAUNCHER_PATH" ]] || PROJECT_LAUNCHER=1
   if "$BOOTSTRAP_PYTHON" -I -S - <<'PY'
 import os, sys
 blocked = {
@@ -473,9 +480,9 @@ PRODUCT_ROOT="$(cd "$ACTIVE_PRODUCT_PATH" 2>/dev/null && pwd -P)" ||
   die "active product path cannot be resolved"
 RELEASE_PATH="$(cd "$ACTIVE_RELEASE_PATH" 2>/dev/null && pwd -P)" ||
   die "active release path cannot be resolved"
-if [[ "$QUALIFICATION_LAUNCHER" == "1" ]]; then
+if [[ "$QUALIFICATION_LAUNCHER" == "1" || "$PROJECT_LAUNCHER" == "1" ]]; then
   [[ "$SELF_PATH" == "$RELEASE_PATH/scripts/factory-launch" ]] ||
-    die "qualification launcher is not the active sealed release"
+    die "launcher is not the active sealed release"
 fi
 [[ "$(git -C "$PRODUCT_ROOT" -c core.hooksPath=/dev/null \
   -c core.fsmonitor=false -c credential.helper= -c diff.external= \
@@ -885,6 +892,7 @@ HELPER_ENV=(
   "FACTORY_RELEASE_TREE=$KIT_TREE"
   "FACTORY_RELEASE_PATH=$RELEASE_PATH"
   "FACTORY_RELEASE_CONTRACT_VERSION=$ACTIVE_CONTRACT"
+  "FACTORY_LAUNCHER_PATH=$SELF_PATH"
   "FACTORY_KIT_TRUST_SCOPE=$KIT_TRUST_SCOPE"
 )
 if [[ "$QUALIFICATION_LAUNCHER" == "1" ]]; then
