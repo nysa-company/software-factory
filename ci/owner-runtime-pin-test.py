@@ -98,7 +98,11 @@ class OwnerRuntimePinTest(unittest.TestCase):
             launcher,
         )
         self.assertIn('PROJECT_RUNTIME_BIN="$PROJECT_RUNTIME_ROOT/bin"', launcher)
-        self.assertIn('owner-runtime-pin.py" check', launcher)
+        self.assertIn('RUNTIME_PIN_ARGS=(check --journal', launcher)
+        self.assertNotIn(
+            '"$RELEASE_PATH/scripts/certification-preflight.py"',
+            launcher,
+        )
         self.assertIn('SAFE_PATH="$PROJECT_RUNTIME_BIN:$HOME/.factory/bin:', launcher)
         safe_path = f"{self.home}/.factory/bin:{self.system}"
         for tool, expected in (
@@ -205,6 +209,75 @@ class OwnerRuntimePinTest(unittest.TestCase):
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("runtime plan approval hash is invalid", result.stderr)
+
+    def test_check_binds_exact_qualification_tuple_and_runtime(self) -> None:
+        target = self.home / ".factory/kits/projects/relay/runtime/bin"
+        target.parent.mkdir(parents=True)
+        planned = self.run_transaction(
+            "plan", "--product", str(self.product), "--runtime-bin",
+            str(self.runtime), "--target-bin", str(target),
+        )
+        plan = json.loads(planned.stdout)
+        plan_file = self.home / "qualification-runtime-plan.json"
+        plan_file.write_text(planned.stdout)
+        plan_file.chmod(0o600)
+        applied = self.run_transaction(
+            "apply", "--plan", str(plan_file), "--approve-hash",
+            plan["approval_sha256"],
+        )
+        self.assertEqual(applied.returncode, 0, applied.stderr)
+        journal = target.parent / "runtime-pin-journal.json"
+        identity = {
+            "contract_version": "2.0.0",
+            "factory_sha": "a" * 40,
+            "factory_tree": "b" * 40,
+            "product_sha": "c" * 40,
+            "product_tree": "d" * 40,
+        }
+        expected = {**identity, "node": "v22.22.0", "npm": "10.9.2"}
+
+        def check(
+            value: object, product: Path = self.product,
+        ) -> subprocess.CompletedProcess[str]:
+            arguments = [
+                "check", "--journal", str(journal),
+                "--product-root", str(product),
+            ]
+            for field, item in identity.items():
+                arguments.extend((f"--{field.replace('_', '-')}", item))
+            arguments.extend(("--expected-tuple", json.dumps(value)))
+            return self.run_transaction(*arguments)
+
+        exact = check(expected)
+        self.assertEqual(exact.returncode, 0, exact.stderr)
+        for field in expected:
+            wrong = dict(expected)
+            wrong[field] = "v99.0.0" if field == "node" else "9" * 40
+            with self.subTest(field=field):
+                self.assertNotEqual(check(wrong).returncode, 0)
+        for malformed in (
+            None,
+            {key: value for key, value in expected.items() if key != "npm"},
+            {**expected, "future": "value"},
+            {**expected, "node": "latest"},
+        ):
+            self.assertNotEqual(check(malformed).returncode, 0)
+        other_product = self.home / "other-product"
+        other_product.mkdir()
+        self.assertNotEqual(check(expected, other_product).returncode, 0)
+
+        plan_path = self.product / "factory/certification-plan.json"
+        plan_raw = plan_path.read_bytes()
+        plan_path.write_bytes(plan_raw + b" ")
+        self.assertNotEqual(check(expected).returncode, 0)
+        plan_path.write_bytes(plan_raw)
+        original = (self.runtime / "node").read_bytes()
+        (self.runtime / "node").write_bytes(original + b"# changed\n")
+        self.assertNotEqual(check(expected).returncode, 0)
+        (self.runtime / "node").write_bytes(original)
+        (target / "node").unlink()
+        (target / "node").symlink_to(self.system / "node")
+        self.assertNotEqual(check(expected).returncode, 0)
 
     def test_project_apply_resumes_interruption_and_serializes_concurrency(self) -> None:
         target = self.home / ".factory/kits/projects/relay/runtime/bin"

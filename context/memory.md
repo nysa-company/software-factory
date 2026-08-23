@@ -7893,3 +7893,12 @@ Category: Performance
 Provider CLI pin status probes the four isolated managed executables
 concurrently and reports them in canonical order. Each executable, version,
 help contract, receipt, and physical target remains independently fail-closed.
+
+## 2026-08-23 — Decision 581: Sealed launch reuses its exact runtime proof
+
+Category: Performance
+
+Each sealed qualification command compares the certification tuple inside its
+existing runtime-pin proof instead of spawning a second preflight. Candidate
+hashes, symlinks, live Node/npm/npx versions, product SHA/tree/cleanliness, and
+fresh crash/restart validation remain fail-closed.
