@@ -75,6 +75,7 @@ class ModelControlTest(unittest.TestCase):
         self.global_env.write_text(
             "\n".join(
                 (
+                    "GLOBAL_DAILY_CAP_USD=50.00",
                     "CODEX_PINNED=0.144.1",
                     "CLAUDE_CODE_PINNED=2.1.207",
                     "FACTORY_CURSOR_FALLBACK_ENABLED=1",
@@ -115,6 +116,12 @@ class ModelControlTest(unittest.TestCase):
         if check and result.returncode:
             self.fail("model-control failed: %s %s" % (result.stdout, result.stderr))
         return result
+
+    def test_machine_config_requires_global_daily_cap(self):
+        self.global_env.write_text("CODEX_PINNED=0.144.1\n")
+        result = self.command("plan", check=False)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("machine model configuration is unsafe or malformed", result.stdout)
 
     def model_policy(self):
         return {

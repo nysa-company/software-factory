@@ -140,6 +140,7 @@ factory_clear_plain_config_keys() {
 factory_load_plain_config() {
   local path="$1" kind="$2" allowed="$3" required="$4" export_values="${5:-0}"
   local raw line key value seen=" " required_key
+  [[ "$kind" != "global" ]] || required="GLOBAL_DAILY_CAP_USD $required"
   factory_clear_plain_config_keys "$allowed"
   while IFS= read -r raw || [[ -n "$raw" ]]; do
     [[ "$raw" != *$'\r'* && "$raw" != *$'\n'* && "$raw" != *$'\t'* ]] || {
