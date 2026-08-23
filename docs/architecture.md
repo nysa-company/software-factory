@@ -214,7 +214,12 @@ prime to admit the exact cohort, batch-pin from that bundle, and issue each
 unconsumed Planner receipt before publishing the existing mandatory restart
 boundary. Prime never runs preflight or a provider attempt, and replay refuses
 provider residue or consumed authority. Doctor and role admission still check
-the selected live route after restart. Batch pinning records cache consumption,
+the selected live route after restart. On that exact fresh restart, the
+controller reuses a still-unconsumed primed Planner receipt only when its
+current release, claim, branch, clean head/tree, ticket blob, lease, route, and
+absent passport all match. Successor and production lanes, or any drift, use
+the ordinary state-machine path. Planner preflight still authenticates and
+consumes the receipt before provider GO. Batch pinning records cache consumption,
 so subsequent Doctor checks resolve live readiness. The finisher repeats reconciliation after progress and while every
 pending result is a typed external publication wait, for at most ten minutes.
 A new command invocation

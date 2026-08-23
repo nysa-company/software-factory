@@ -7951,3 +7951,14 @@ development lanes. Missing, symlinked, foreign-owned, writable-by-others, or
 wrong provider state fails before stale manifest, lease, or claim cleanup;
 post-GO cancellation terminalizes the exact provider attempt with its full
 reservation, and receipt replay does not charge or transition it twice.
+
+## 2026-08-23 — Decision 586: Fresh Planner restart reuses primed authority
+
+Category: Performance
+
+The first fresh qualification reconcile after the mandatory restart reuses an
+unconsumed primed Planner transition only when the exact current-release claim,
+branch, clean head/tree, ticket blob, lease, route, and absent passport still
+match. Production, successor, consumed, or drifted state follows the ordinary
+state-machine path. Planner preflight remains the mandatory receipt-consuming
+gate before provider GO.

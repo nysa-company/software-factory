@@ -975,6 +975,70 @@ class Controller:
             "ticket": claim["ticket"],
         }
 
+    def qualification_primed_planner_transition(
+        self, claim: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Replay only the fresh qualification pre-restart Planner receipt."""
+        passports = self.state / "passports"
+        passport_path = passports / f"{claim['ticket']}.json"
+        if (
+            not self.qualification
+            or "mode" in self.qualification
+            or self.repository_test
+            or claim["ticket"] not in self.qualification["tickets"]
+            or not self.qualification_marker("qualification-restart-boundary")
+            or set(claim) != {
+                "branch", "lease", "priority", "publication_lease", "receipt",
+                "role", "schema", "status", "ticket", "worktree",
+            }
+            or claim.get("schema") != CLAIM_SCHEMA
+            or claim.get("branch") != f"ticket/{claim['ticket']}"
+            or claim.get("status") != "claimed"
+            or claim.get("receipt") != ""
+            or claim.get("role") != ""
+            or claim.get("publication_lease") != ""
+            or not DIGEST.fullmatch(claim.get("lease", ""))
+            or self.role_active(claim)
+        ):
+            return None
+        try:
+            safe_directory(passports)
+        except (ControllerError, OSError):
+            return None
+        if passport_path.exists() or passport_path.is_symlink():
+            return None
+        receipt = self.transition_receipt(claim, record=False)
+        branch = self.cell_git(
+            claim, "symbolic-ref", "--quiet", "--short", "HEAD",
+        )
+        status = self.cell_git(claim, "status", "--porcelain=v1", "-z")
+        if (
+            receipt is None
+            or receipt.get("stage") != "RUN planner"
+            or receipt.get("role") != "planner"
+            or receipt.get("loop") is not None
+            or receipt.get("consumed") is not False
+            or receipt.get("passport_sha256") is not None
+            or branch.returncode
+            or branch.stdout.strip() != claim["branch"]
+            or status.returncode
+            or status.stdout
+            or not self.ticket_release_current(claim)
+            or not self.exact_passportless_planner_receipt(claim, receipt)
+        ):
+            return None
+        return {
+            "action": "RUN",
+            "detail": "planner",
+            "loop": None,
+            "receipt": receipt["receipt_sha256"],
+            "role": "planner",
+            "schema": "nysa.software-factory.state-machine/v1",
+            "stage": "RUN planner",
+            "status": "ok",
+            "ticket": claim["ticket"],
+        }
+
     def recover_operator_action_events(
         self, claims: list[dict[str, Any]],
     ) -> None:
@@ -13142,6 +13206,10 @@ class Controller:
             replay_transition = (
                 self.dependency_publication_replay_transition(claim)
             )
+            if replay_transition is None:
+                replay_transition = self.qualification_primed_planner_transition(
+                    claim,
+                )
             transition = (
                 replay_transition
                 if replay_transition is not None else self.json_call(
