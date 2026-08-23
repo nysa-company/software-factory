@@ -4324,6 +4324,7 @@ class FactoryControllerTest(unittest.TestCase):
         key.chmod(0o600)
         for claim in claims:
             controller.save_claim(claim)
+        (self.state / ".lock").touch(mode=0o600)
         controller.qualification_provider_pristine = Mock()
         controller.pin_routes = Mock(return_value=[])
         controller.prime_planner_transition = Mock()
@@ -4340,6 +4341,16 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(
             controller.prime_planner_transition.call_count, 2 * len(claims),
         )
+
+        bundle = "c" * 64
+        consumed = self.state / f"model-bundle-consumed-{bundle}"
+        consumed.write_text(bundle + "\n", encoding="utf-8")
+        consumed.chmod(0o600)
+        with patch.dict(os.environ, {
+            "FACTORY_QUALIFICATION_MODEL_BUNDLE_SHA256": bundle,
+        }):
+            controller.prime_qualification(claims)
+        consumed.unlink()
 
         calls = (
             controller.qualification_provider_pristine.call_count,

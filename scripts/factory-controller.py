@@ -3873,16 +3873,19 @@ class Controller:
             raise ControllerError("qualification prime requires qualification mode")
         selected = set(self.qualification["tickets"])
         allowed = {
-            ".operator-apply-lock", ".operator-lock", ".passport-key.lock",
+            ".lock", ".operator-apply-lock", ".operator-lock", ".passport-key.lock",
             "claims", "events", "logs",
             "operator-receipts", "passports", "passport.key", "reconcile.lock",
             f"qualification-restart-boundary-{self.release_path.name}.json",
             *(f"{ticket}.json" for ticket in selected),
         }
+        bundle = os.environ.get("FACTORY_QUALIFICATION_MODEL_BUNDLE_SHA256", "")
+        if DIGEST.fullmatch(bundle):
+            allowed.add(f"model-bundle-consumed-{bundle}")
         if any(path.name not in allowed for path in self.state.iterdir()):
             raise ControllerError("qualification prime has execution residue")
         for name in (
-            ".operator-apply-lock", ".operator-lock", ".passport-key.lock",
+            ".lock", ".operator-apply-lock", ".operator-lock", ".passport-key.lock",
             "passport.key", "reconcile.lock",
         ):
             path = self.state / name
@@ -3894,6 +3897,22 @@ class Controller:
                     or stat.S_IMODE(info.st_mode) != 0o600
                 ):
                     raise ControllerError("qualification prime has execution residue")
+        consumed = self.state / f"model-bundle-consumed-{bundle}"
+        if bundle and (consumed.exists() or consumed.is_symlink()):
+            descriptor = os.open(
+                consumed, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+            )
+            try:
+                info = os.fstat(descriptor)
+                raw = os.read(descriptor, 66)
+            finally:
+                os.close(descriptor)
+            if (
+                not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o600
+                or raw != f"{bundle}\n".encode()
+            ):
+                raise ControllerError("qualification prime has execution residue")
         claims = safe_directory(self.state / "claims")
         if {path.name for path in claims.iterdir()} != {
             f"{ticket}.json" for ticket in selected
