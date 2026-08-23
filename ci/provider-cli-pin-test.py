@@ -183,6 +183,13 @@ exit 2
         for name in ("claude", "codex", "codex-code-mode-host", "agent"):
             self.assertEqual(os.readlink(self.factory / "bin" / name), str(self.vendor / name))
 
+    def test_apply_replays_the_completed_approval(self) -> None:
+        plan = self.plan()
+        first = self.command("apply", approval=plan["approval_sha256"])
+        second = self.command("apply", approval=plan["approval_sha256"])
+        self.assertEqual((first.returncode, second.returncode), (0, 0))
+        self.assertEqual(json.loads(second.stdout), json.loads(first.stdout))
+
     def test_check_is_independent_of_a_controlling_terminal(self) -> None:
         codex = self.vendor / "codex"
         codex.write_text(

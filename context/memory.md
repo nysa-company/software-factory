@@ -7776,3 +7776,12 @@ The first Factory-recorded `Kit-SHA` uses the canonical ticket-header insertion
 path so Planner and Spec-linter evidence can remain byte-appended. One valid
 legacy trailing pin remains readable and is never normalized during a live
 role; duplicate, conflicting, or malformed pins retain their existing refusal.
+
+## 2026-08-22 — Decision 571: Completed prerequisites replay to convergence
+
+Category: Reliability
+
+An exact completed provider CLI approval returns its verified ready status on
+retry instead of rebuilding against its own changed receipt. Native service
+retirement also waits briefly for launchd's asynchronous removal before
+failing, so a partially completed signed prerequisite can converge safely.

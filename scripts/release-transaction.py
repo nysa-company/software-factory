@@ -2345,15 +2345,29 @@ def unload_service(value: dict[str, Any] | None) -> None:
     service = f"{domain}/{value['label']}"
     current = subprocess.run(
         prefix + ["print", service], stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL, check=False, timeout=30,
+        stderr=subprocess.DEVNULL, check=False, timeout=5,
     )
     if current.returncode == 0:
-        run(prefix + ["bootout", service], f"service unload for {value['label']}")
-    if subprocess.run(
-        prefix + ["print", service], stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL, check=False, timeout=30,
-    ).returncode == 0:
-        raise ReleaseError(f"service {value['label']} did not unload")
+        run(
+            prefix + ["bootout", service], f"service unload for {value['label']}",
+            timeout=5,
+        )
+    deadline = time.monotonic() + 5
+    while (remaining := deadline - time.monotonic()) > 0:
+        try:
+            current = subprocess.run(
+                prefix + ["print", service], stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL, check=False,
+                timeout=max(0.001, min(1, remaining)),
+            )
+        except subprocess.TimeoutExpired:
+            continue
+        if current.returncode != 0:
+            return
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            time.sleep(min(0.1, remaining))
+    raise ReleaseError(f"service {value['label']} did not unload")
 
 
 def ensure_service(value: dict[str, Any] | None) -> None:

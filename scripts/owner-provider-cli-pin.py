@@ -1098,6 +1098,20 @@ def apply_plan(
     candidates: dict[str, Path], operator: str, approval: str,
     projects: list[dict[str, Any]],
 ) -> dict[str, Any]:
+    prior = home_factory / "provider-cli-pin.json"
+    if prior.exists() or prior.is_symlink():
+        evidence = receipt(prior)
+        if (
+            SHA256.fullmatch(approval)
+            and evidence.get("approval_sha256") == approval
+            and evidence.get("candidate_release") == candidate_release
+            and evidence.get("operator_id") == operator
+        ):
+            status = check_status(
+                home_factory, kits_root, candidate_release, candidate_release,
+            )
+            if status["status"] == "ready":
+                return status
     planned = build_plan(home_factory, kits_root, candidate_release, candidates, operator, projects)
     if not SHA256.fullmatch(approval) or approval != planned["approval_sha256"]:
         raise PinError("provider CLI pin approval hash does not match")
