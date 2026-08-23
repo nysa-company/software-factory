@@ -1578,6 +1578,7 @@ def sync_directory(path: Path) -> None:
 
 def retired_runtime_matches(
     value: dict[str, Any], approval_sha256: str, *, require_absent: bool = False,
+    check_profile: bool = True,
 ) -> bool:
     if not valid_retired_runtime(value) or not DIGEST.fullmatch(approval_sha256):
         return False
@@ -1588,14 +1589,15 @@ def retired_runtime_matches(
     archive = home / ".factory/retired-runtime" / approval_sha256
     profile_archive = archive / "profile"
     expected_profile = value["profile"]["tree_sha256"]
-    if expected_profile is None:
-        if profile.exists() or profile.is_symlink() or profile_archive.exists() or profile_archive.is_symlink():
+    if check_profile:
+        if expected_profile is None:
+            if profile.exists() or profile.is_symlink() or profile_archive.exists() or profile_archive.is_symlink():
+                return False
+        elif profile.exists() or profile.is_symlink():
+            if require_absent or retired_tree_digest(profile) != expected_profile:
+                return False
+        elif not profile_archive.exists() or retired_tree_digest(profile_archive) != expected_profile:
             return False
-    elif profile.exists() or profile.is_symlink():
-        if require_absent or retired_tree_digest(profile) != expected_profile:
-            return False
-    elif not profile_archive.exists() or retired_tree_digest(profile_archive) != expected_profile:
-        return False
     for service in value["services"]:
         label = service["label"]
         source = Path(service["path"])
@@ -1619,7 +1621,7 @@ def retired_runtime_matches(
             secure_regular_bytes(target, "archived Factory service job")
         ).hexdigest() != expected_sha:
             return False
-        if require_absent and service_loaded(label):
+        if (require_absent or not service["loaded"]) and service_loaded(label):
             return False
     return True
 
@@ -2009,15 +2011,16 @@ def _setup_locked(args: argparse.Namespace) -> dict[str, Any]:
     concurrency, cli = child_plan(
         sealed_kit, kits_root, sha, capacity(product), cli_paths, args.operator_id,
     )
-    provider_prerequisite = (
+    preparation_required = (
         concurrency["action"] == "apply" or cli["action"] == "apply"
+        or any(service["loaded"] for service in retired_runtime["services"])
     )
     host_cutover = None
     reservation = None
     global_change = (
         launcher["action"] == "apply" or retired_runtime["action"] == "apply"
     )
-    if global_change and not provider_prerequisite:
+    if global_change and not preparation_required:
         basis = reservation_basis(
             kits_root, launcher, retired_runtime, product, project, sha,
         )
@@ -2027,7 +2030,7 @@ def _setup_locked(args: argparse.Namespace) -> dict[str, Any]:
             runtime, controller, basis["reservation_id"],
             args.skip_optional_tests,
         )
-    elif not provider_prerequisite and mode == "upgrade":
+    elif not preparation_required and mode == "upgrade":
         run(
             ["bash", str(sealed_kit), "pause", "--project", project,
              "--product", str(product)], "release maintenance entry",
@@ -2832,9 +2835,16 @@ def apply_prerequisites(plan: dict[str, Any], kits_root: Path, approved_by: str)
              "--approve-hash", child["approval_sha256"]], "provider CLI apply",
             environment=environment,
         )
+    retired_runtime = plan["children"]["retired_runtime"]
+    if any(service["loaded"] for service in retired_runtime["services"]):
+        if not retired_runtime_matches(
+            retired_runtime, plan["approval_sha256"], check_profile=False,
+        ):
+            raise ReleaseError("retired runtime services changed after approval")
+        for service in retired_runtime["services"]:
+            unload_service(service)
     launcher = plan["children"]["launcher"]
     host_cutover = plan["children"]["host_cutover"]
-    retired_runtime = plan["children"]["retired_runtime"]
     if host_cutover is not None and (
         launcher["action"] == "apply" or retired_runtime["action"] == "apply"
     ):
@@ -2949,10 +2959,14 @@ def validate_live_basis(
             or safe_state(active, "active release") != previous.get("record")
         ):
             raise ReleaseError("active release changed after setup")
-    if plan["stage"] == "prerequisites" and not retired_runtime_matches(
-        plan["children"]["retired_runtime"], plan["approval_sha256"],
-    ):
-        raise ReleaseError("retired runtime changed after release setup")
+    if plan["stage"] == "prerequisites":
+        retired_runtime = plan["children"]["retired_runtime"]
+        if not retired_runtime_matches(
+            retired_runtime, plan["approval_sha256"], check_profile=not any(
+                service["loaded"] for service in retired_runtime["services"]
+            ),
+        ):
+            raise ReleaseError("retired runtime changed after release setup")
     prior = identity["maintenance_prior"]
     if prior is not None and hashlib.sha256(secure_regular_bytes(
         Path(prior["path"]), "pre-cutover maintenance snapshot",

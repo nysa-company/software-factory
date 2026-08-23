@@ -143,7 +143,9 @@ record, commits the Contract 2 floor, installs the sealed launcher, validates
 all native controllers with Doctor, retires the reviewed old Factory jobs and
 profile, then restores or clears only its own maintenance markers. Profile
 inventory streams regular-file digests, so database growth is not constrained
-by the bounded in-memory control-file reader. A failed
+by the bounded in-memory control-file reader. When a retired service is still
+loaded, its exact signed job is stopped as a prerequisite and the transaction
+returns a new plan that binds the now-stable profile before archive. A failed
 first Contract 2.0 cutover stays in maintenance for fix-forward; it never
 restores an unsupported release implicitly. Later Contract 2.x generations may
 use the ordinary authenticated rollback flow.
