@@ -1274,6 +1274,35 @@ assert_invalid_run_envelope 500-digit-timeout \
   'turns and timeout must be positive integers'
 
 cp "$TMP/invalid-config.clean" "$INVALID_CONFIG_ROOT/factory/ENVELOPE.env"
+assert_invalid_run_global_cap() {
+  local name="$1" contents="$2" expected="$3" out status=0 global_env
+  global_env="$TMP/invalid-global-cap-$name.env"
+  printf '%b' "$contents" > "$global_env"
+  rm -rf "$INVALID_CONFIG_ROOT/factory/runs" \
+    "$INVALID_CONFIG_ROOT/factory/runtime-ledger.csv"
+  out="$(FACTORY_ROOT="$INVALID_CONFIG_ROOT" FACTORY_KIT_TRUST_SCOPE= \
+    FACTORY_GLOBAL_ENV="$global_env" FACTORY_ADAPTER_OVERRIDE=mock \
+    "$RUN_AGENT" --role planner --ticket T-191 -- "invalid global cap" 2>&1)" ||
+    status=$?
+  if [[ "$status" -eq 3 && "$out" == *"$expected"* &&
+        ! -d "$INVALID_CONFIG_ROOT/factory/runs" &&
+        ! -f "$INVALID_CONFIG_ROOT/factory/runtime-ledger.csv" ]]; then
+    pass "run-agent rejects $name global cap before task or manifest"
+  else
+    fail "run-agent rejects $name global cap before task or manifest" \
+      "status=$status output=$out"
+  fi
+}
+
+assert_invalid_run_global_cap missing 'CODEX_PINNED=0.144.1\n' \
+  'global config is missing GLOBAL_DAILY_CAP_USD'
+assert_invalid_run_global_cap empty 'GLOBAL_DAILY_CAP_USD=\n' \
+  'global config daily cap must be a positive finite decimal'
+assert_invalid_run_global_cap malformed 'GLOBAL_DAILY_CAP_USD=not-a-number\n' \
+  'global config daily cap must be a positive finite decimal'
+assert_invalid_run_global_cap nonpositive 'GLOBAL_DAILY_CAP_USD=0\n' \
+  'global config daily cap must be a positive finite decimal'
+
 INVALID_GLOBAL="$TMP/invalid-global.env"
 cat > "$INVALID_GLOBAL" <<'ENV'
 GLOBAL_DAILY_CAP_USD=50.00

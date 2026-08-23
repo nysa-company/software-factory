@@ -7786,7 +7786,27 @@ retry instead of rebuilding against its own changed receipt. Native service
 retirement also waits briefly for launchd's asynchronous removal before
 failing, so a partially completed signed prerequisite can converge safely.
 
-## 2026-08-22 — Decision 572: Product activation uses its sealed launcher
+## 2026-08-22 — Decision 572: Chained qualification trusts only its receipt predecessor
+
+Category: Reliability
+
+Doctor admits a selected prior-kit receipt from an intermediate qualification
+release only when the shared owner-only activation receipt chain names that
+release as the current candidate's immediate predecessor. After migration, an
+exact current-candidate completion marker and authenticated passport clear the
+route block even when the pending marker was already consumed; unrelated,
+changed, malformed, or unsafe evidence remains fail-closed.
+
+## 2026-08-22 — Decision 573: Existing global config always declares its cap
+
+Category: Reliability
+
+The shared plain-config loader requires `GLOBAL_DAILY_CAP_USD` whenever a
+global config file exists, so Doctor, preflight, route checks, and role launch
+apply one invariant. An absent global config remains valid single-project
+behavior; empty, malformed, zero, or negative caps fail before provider work.
+
+## 2026-08-22 — Decision 574: Product activation uses its sealed launcher
 
 Category: System change
 

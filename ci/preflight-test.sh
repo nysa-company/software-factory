@@ -270,9 +270,47 @@ CODEX_PINNED=0.144.1
 ENV
 echo "date,time,repo,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status" > "$GLOBAL_LEDGER"
 assert_preflight "all-pass" 0 "PREFLIGHT PASS" "$ALLPASS" "T-001" --global-env "$GLOBAL_ENV"
+assert_preflight "missing global config remains valid" 0 \
+  "no machine-level daily cap configured" "$ALLPASS" "T-001" \
+  --global-env "$TMP/no-global.env"
 assert_preflight "authenticated isolated mock route" 0 \
   "PASS: authenticated isolated mock route contract passed" \
   "$ALLPASS" "T-001" --global-env "$GLOBAL_ENV" --adapter-override mock
+for global_cap_case in missing empty malformed nonpositive; do
+  GLOBAL_CAP_ENV="$TMP/global-cap-$global_cap_case.env"
+  GLOBAL_CAP_TRACE="$TMP/global-cap-$global_cap_case.probes"
+  case "$global_cap_case" in
+    missing)
+      printf 'CODEX_PINNED=0.144.1\n' > "$GLOBAL_CAP_ENV"
+      GLOBAL_CAP_EXPECTED='global config is missing GLOBAL_DAILY_CAP_USD'
+      ;;
+    empty)
+      printf 'GLOBAL_DAILY_CAP_USD=\n' > "$GLOBAL_CAP_ENV"
+      GLOBAL_CAP_EXPECTED='global config daily cap must be a positive finite decimal'
+      ;;
+    malformed)
+      printf 'GLOBAL_DAILY_CAP_USD=not-a-number\n' > "$GLOBAL_CAP_ENV"
+      GLOBAL_CAP_EXPECTED='global config daily cap must be a positive finite decimal'
+      ;;
+    nonpositive)
+      printf 'GLOBAL_DAILY_CAP_USD=0\n' > "$GLOBAL_CAP_ENV"
+      GLOBAL_CAP_EXPECTED='global config daily cap must be a positive finite decimal'
+      ;;
+  esac
+  rm -rf "$ALLPASS/factory/runs"
+  : > "$GLOBAL_CAP_TRACE"
+  GLOBAL_CAP_STATUS=0
+  GLOBAL_CAP_OUT="$(run_preflight "$ALLPASS" T-001 --global-env "$GLOBAL_CAP_ENV" \
+    --probe-trace "$GLOBAL_CAP_TRACE")" || GLOBAL_CAP_STATUS=$?
+  if [[ "$GLOBAL_CAP_STATUS" -eq 1 && "$GLOBAL_CAP_OUT" == *"$GLOBAL_CAP_EXPECTED"* &&
+        ! -s "$GLOBAL_CAP_TRACE" && ! -d "$ALLPASS/factory/runs" ]]; then
+    echo "PASS: preflight rejects $global_cap_case global cap before probes or manifests"
+  else
+    echo "FAIL: preflight rejects $global_cap_case global cap before probes or manifests"
+    echo "$GLOBAL_CAP_OUT"
+    FAILURES=$((FAILURES + 1))
+  fi
+done
 cp "$ALLPASS/factory/ENVELOPE.env" "$TMP/allpass-envelope.clean"
 printf '%s\n' \
   'PLANNER_PER_RUN_BUDGET_USD=2.25' \
