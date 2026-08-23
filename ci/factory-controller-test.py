@@ -18,6 +18,7 @@ from pathlib import Path
 import plistlib
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -4308,6 +4309,38 @@ class FactoryControllerTest(unittest.TestCase):
             ),
         ):
             controller.qualification_provider_pristine()
+
+    def test_qualification_prime_materializes_safe_passport_namespace(self) -> None:
+        controller = self.qualification_controller()
+        claims = [{
+            "branch": f"ticket/{ticket}", "lease": f"{number:064x}",
+            "priority": "normal", "publication_lease": "",
+            "receipt": "", "role": "", "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "claimed", "ticket": ticket,
+            "worktree": str(self.root / f"prime-passport-{number}"),
+        } for number, ticket in enumerate(controller.qualification["tickets"], 1)]
+        key = self.state / "passport.key"
+        key.write_bytes(b"k" * 32)
+        key.chmod(0o600)
+        controller.qualification_provider_pristine = Mock()
+        controller.pin_routes = Mock(return_value=[])
+        controller.prime_planner_transition = Mock()
+        controller.active_run_tickets = Mock(return_value=[])
+
+        controller.prime_qualification(claims)
+        passports = self.state / "passports"
+        self.assertTrue(passports.is_dir())
+        self.assertEqual(stat.S_IMODE(passports.stat().st_mode), 0o700)
+        controller.prime_qualification(claims)
+        self.assertEqual(
+            controller.prime_planner_transition.call_count, 2 * len(claims),
+        )
+
+        passports.chmod(0o755)
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "controller directory is unsafe",
+        ):
+            controller.prime_qualification(claims)
 
     def test_qualification_restart_preserves_blocked_target_claims(self) -> None:
         tickets = [f"T-{number}" for number in range(110, 113)]

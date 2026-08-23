@@ -3878,6 +3878,7 @@ class Controller:
         ):
             raise ControllerError("qualification prime has execution residue")
         self.qualification_provider_pristine()
+        safe_directory(self.state / "passports", create=True)
         pin_results = self.pin_routes(claims)
         if pin_results:
             raise ControllerError("qualification Planner routes are not ready")
