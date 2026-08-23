@@ -754,11 +754,10 @@ def handoff_worktree_root(lane: dict[str, Any], *, create: bool) -> Path:
     return project
 
 
-def lock_dispatch_boundaries(
+def lock_dispatch_admission(
     source: dict[str, Any], target: dict[str, Any],
-) -> tuple[list[int], list[Path]]:
+) -> list[int]:
     descriptors: list[int] = []
-    directories: list[Path] = []
     try:
         admission_paths = sorted({
             handoff_worktree_root(source, create=False) / ".dispatch-admission.lock",
@@ -785,6 +784,20 @@ def lock_dispatch_boundaries(
                 os.close(descriptor)
                 raise EnvironmentError("pre-provider dispatch admission is active") from error
             descriptors.append(descriptor)
+        return descriptors
+    except Exception:
+        for descriptor in descriptors:
+            os.close(descriptor)
+        raise
+
+
+def lock_dispatch_boundaries(
+    source: dict[str, Any], target: dict[str, Any],
+) -> tuple[list[int], list[Path]]:
+    descriptors: list[int] = []
+    directories: list[Path] = []
+    try:
+        descriptors = lock_dispatch_admission(source, target)
         products = sorted({source["product"], target["product"]}, key=str)
         for name in (".launch.lock", ".dispatch-leases.lock"):
             for product in products:

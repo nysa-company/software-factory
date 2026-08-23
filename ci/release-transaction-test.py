@@ -2642,6 +2642,180 @@ class ReleaseTransactionTest(unittest.TestCase):
                 ):
                     RELEASE.validate_qualification_plan(changed)
 
+    def recovery_plan(self) -> dict[str, object]:
+        return RELEASE.seal_plan({
+            "attempt": {
+                "active_claim_sha256": None,
+                "dispatch_lease_sha256": "1" * 64,
+                "nested_plan": {"preview_hash": "2" * 64},
+                "provider_attempt": {"attempt_id": "attempt-1", "version": 4},
+                "provider_attempt_sha256": "3" * 64,
+                "runtime_ledger_row": {"run_id": "run-1", "ticket": "T-1"},
+            },
+            "created_epoch": 1,
+            "expires_epoch": 4_000_000_000,
+            "identity": {
+                "candidate_sha": self.sha, "product_sha": "4" * 40,
+                "source_sha": "5" * 40,
+            },
+            "request": {
+                "failed_run": "run-1", "operator_id": "tester",
+                "product": str(self.product), "project": "relay",
+                "repo": str(self.root / "factory"),
+                "root": str(self.root / "qualification"), "sha": self.sha,
+                "ticket": "T-1",
+            },
+            "schema": RELEASE.QUALIFICATION_RECOVERY_PLAN_SCHEMA,
+            "status": "planned",
+        })
+
+    def test_qualification_recovery_plan_binds_exact_attempt(self) -> None:
+        plan = self.recovery_plan()
+        RELEASE.validate_qualification_recovery_plan(plan)
+        for field in ("nested_plan", "provider_attempt", "runtime_ledger_row"):
+            with self.subTest(field=field):
+                changed = json.loads(json.dumps(plan))
+                changed["attempt"][field] = {"changed": True}
+                with self.assertRaisesRegex(
+                    RELEASE.ReleaseError, "recovery plan is invalid",
+                ):
+                    RELEASE.validate_qualification_recovery_plan(changed)
+
+    def test_qualification_recovery_refuses_attempt_drift_before_cancellation(self) -> None:
+        plan = self.recovery_plan()
+        state = RELEASE.qualification_recovery_state(
+            Path(plan["request"]["root"]), "relay", self.sha, "T-1", "run-1",
+        )
+        RELEASE.atomic_json(state / "latest.json", plan)
+        RELEASE.atomic_json(
+            state / "plans" / f"{plan['approval_sha256']}.json", plan,
+        )
+        lane = {
+            "controller": self.root / "controller", "product": self.product,
+            "root": Path(plan["request"]["root"]),
+        }
+        module = mock.Mock()
+        module.lock_controllers.return_value = []
+        module.lock_dispatch_admission.return_value = []
+        args = argparse.Namespace(
+            approve_hash=plan["approval_sha256"], failed_run="run-1",
+            operator_id="tester", product=self.product, project="relay",
+            repo=self.root / "factory", root=lane["root"], sha=self.sha,
+            ticket="T-1",
+        )
+        with (
+            mock.patch.object(
+                RELEASE, "qualification_recovery_identity",
+                return_value=(plan["identity"], module, lane, args.repo),
+            ),
+            mock.patch.object(
+                RELEASE, "qualification_recovery_attempt",
+                return_value={"changed": True},
+            ),
+            mock.patch.object(RELEASE, "qualification_attempt_cancel") as cancel,
+            self.assertRaisesRegex(RELEASE.ReleaseError, "attempt changed"),
+        ):
+            RELEASE.qualification_recovery_apply(args)
+        cancel.assert_not_called()
+
+    def test_qualification_recovery_replays_nested_receipt_exactly(self) -> None:
+        plan = self.recovery_plan()
+        state = RELEASE.qualification_recovery_state(
+            Path(plan["request"]["root"]), "relay", self.sha, "T-1", "run-1",
+        )
+        RELEASE.atomic_json(state / "latest.json", plan)
+        RELEASE.atomic_json(
+            state / "plans" / f"{plan['approval_sha256']}.json", plan,
+        )
+        runs = self.product / "factory/runs"
+        runs.mkdir()
+        nested_path = runs / "run-1.cancel.json"
+        RELEASE.atomic_json(nested_path, {"preview_hash": "2" * 64})
+        lane = {
+            "controller": self.root / "controller", "product": self.product,
+            "root": Path(plan["request"]["root"]),
+        }
+        module = mock.Mock()
+        module.lock_controllers.return_value = []
+        module.lock_dispatch_admission.return_value = []
+        args = argparse.Namespace(
+            approve_hash=plan["approval_sha256"], failed_run="run-1",
+            operator_id="tester", product=self.product, project="relay",
+            repo=self.root / "factory", root=lane["root"], sha=self.sha,
+            ticket="T-1",
+        )
+        nested = {"accounting_state": "cancelled_conservative",
+                  "preview_hash": "2" * 64}
+        with (
+            mock.patch.object(
+                RELEASE, "qualification_recovery_identity",
+                return_value=(plan["identity"], module, lane, args.repo),
+            ),
+            mock.patch.object(
+                RELEASE, "qualification_attempt_cancel", return_value=nested,
+            ) as cancel,
+        ):
+            first = RELEASE.qualification_recovery_apply(args)
+            second = RELEASE.qualification_recovery_apply(args)
+        self.assertEqual(first, second)
+        self.assertEqual(first["status"], "recovered")
+        self.assertEqual(cancel.call_count, 2)
+        self.assertFalse((state / "nested-plan.json").exists())
+        module.lock_dispatch_boundaries.assert_not_called()
+
+    def test_factory_kit_forwards_only_sealed_qualification_recovery_arguments(self) -> None:
+        self.root.chmod(0o700)
+        repo = self.root / "recovery-candidate"
+        (repo / "scripts").mkdir(parents=True)
+        (repo / "scripts/release-transaction.py").write_text(
+            "import json,sys\nprint(json.dumps(sys.argv[1:]))\n", encoding="utf-8",
+        )
+        product = self.root / "recovery-product"
+        product.mkdir()
+        qualification = self.root / "nysa-sf-qualification.fixture"
+        qualification.mkdir()
+        environment = {
+            **os.environ,
+            "FACTORY_KIT_CANONICAL_ORIGIN": str(self.root / "origin.git"),
+            "FACTORY_KIT_TEST_MODE": "1",
+            "FACTORY_KITS_ROOT": str(self.root / ".factory/kits"),
+            "FACTORY_RELEASE_TEST_HOME": str(self.root),
+        }
+        common = [
+            "--project", "relay", "--root", str(qualification),
+            "--product", str(product), "--repo", str(repo), "--sha", self.sha,
+            "--operator-id", "tester", "--ticket", "T-1",
+            "--failed-run", "run-1",
+        ]
+        planned = subprocess.run(
+            ["bash", str(ROOT / "scripts/factory-kit.sh"), "qualification",
+             "recover-plan", *common],
+            capture_output=True, text=True, env=environment, check=False,
+        )
+        self.assertEqual(planned.returncode, 0, planned.stderr)
+        plan_arguments = json.loads(planned.stdout)
+        self.assertIn("qualification-recover-plan", plan_arguments)
+        self.assertNotIn("--approve-hash", plan_arguments)
+
+        approval = "b" * 64
+        applied = subprocess.run(
+            ["bash", str(ROOT / "scripts/factory-kit.sh"), "qualification",
+             "recover-apply", *common, "--approve-hash", approval],
+            capture_output=True, text=True, env=environment, check=False,
+        )
+        self.assertEqual(applied.returncode, 0, applied.stderr)
+        apply_arguments = json.loads(applied.stdout)
+        self.assertIn("qualification-recover-apply", apply_arguments)
+        self.assertEqual(apply_arguments[-2:], ["--approve-hash", approval])
+
+        malformed = subprocess.run(
+            ["bash", str(ROOT / "scripts/factory-kit.sh"), "qualification",
+             "recover-apply", *common, "--approve-hash", "short"],
+            capture_output=True, text=True, env=environment, check=False,
+        )
+        self.assertEqual(malformed.returncode, 2)
+        self.assertEqual(malformed.stdout, "")
+
     def test_qualification_runtime_change_plans_once_then_reuses_receipt(self) -> None:
         plan = {
             "action": "install", "approval_sha256": "3" * 64,

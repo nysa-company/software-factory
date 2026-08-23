@@ -234,6 +234,8 @@ Usage:
   $PROGRAM release abort  --project SLUG --sha FULL_SHA --approved-by ID
   $PROGRAM qualification upgrade --project SLUG --root QUALIFICATION_ROOT --product PRODUCT_REPO --repo KIT_REPO --sha FULL_SHA --runtime-bin NODE_BIN_DIR --operator-id ID
   $PROGRAM qualification resume --project SLUG --sha FULL_SHA --approved-by ID
+  $PROGRAM qualification recover-plan --project SLUG --root QUALIFICATION_ROOT --product PRODUCT_REPO --repo KIT_REPO --sha FULL_SHA --operator-id ID --ticket T-NNN --failed-run RUN
+  $PROGRAM qualification recover-apply --project SLUG --root QUALIFICATION_ROOT --product PRODUCT_REPO --repo KIT_REPO --sha FULL_SHA --operator-id ID --ticket T-NNN --failed-run RUN --approve-hash HASH
 
 FACTORY_KITS_ROOT overrides the default state root (~/.factory/kits).
 EOF
@@ -5103,6 +5105,19 @@ cmd_qualification_resume() {
     --project "$project" --sha "$sha" --approved-by "$approver"
 }
 
+cmd_qualification_recover() {
+  local action="$1" project="$2" root="$3" product="$4" repo="$5" sha="$6"
+  local operator="$7" ticket="$8" failed_run="$9" approval="${10}"
+  local -a arguments=(
+    --kits-root "$KITS_ROOT" "qualification-recover-$action"
+    --project "$project" --root "$root" --product "$product" --repo "$repo"
+    --sha "$sha" --operator-id "$operator" --ticket "$ticket"
+    --failed-run "$failed_run"
+  )
+  [[ "$action" == "plan" ]] || arguments+=(--approve-hash "$approval")
+  python3 -I -S "$repo/scripts/release-transaction.py" "${arguments[@]}"
+}
+
 require_command git
 require_command python3
 require_command shasum
@@ -5193,7 +5208,7 @@ if [[ "$COMMAND" != "release" && -n "$PROFILE" ]] ||
   die "release-only option used with $COMMAND"
 fi
 if [[ "$COMMAND" != "qualification" && -n "$QUALIFICATION_ROOT" ]]; then
-  die "--root is only valid for qualification upgrade"
+  die "--root is only valid for qualification operations"
 fi
 if [[ "$SKIP_OPTIONAL_TESTS" -eq 1 && "$COMMAND" != "certify" && "$COMMAND" != "release" ]]; then
   die "--skip-optional-tests is only valid for certify or release setup"
@@ -5375,6 +5390,22 @@ case "$COMMAND" in
          ${#TICKET_WORKDIRS[@]} -eq 0 && "$JSON" -eq 0 ]] ||
         { usage >&2; exit 2; }
       cmd_qualification_resume "$PROJECT" "$SHA" "$APPROVED_BY"
+    elif [[ "$ACTION" == "recover-plan" || "$ACTION" == "recover-apply" ]]; then
+      [[ ${#POSITIONALS[@]} -eq 1 && -n "$PROJECT" && -n "$QUALIFICATION_ROOT" &&
+         -n "$PRODUCT" && -n "$SHA" && -n "$OPERATOR_ID" && -n "$TICKET" &&
+         -n "$FAILED_RUN" && -z "$RUNTIME_BIN$APPROVED_BY$PROFILE$RECEIPT$CAPACITY$ORIGIN_OVERRIDE" &&
+         -z "$PREVIEW_HASH$REASON$EXPIRES_MINUTES$CLAUDE_BIN$CODEX_BIN$CURSOR_BIN" &&
+         ${#TICKETS[@]} -eq 1 && ${#TICKET_WORKDIRS[@]} -eq 0 && "$JSON" -eq 0 &&
+         "$SKIP_OPTIONAL_TESTS" -eq 0 ]] || { usage >&2; exit 2; }
+      if [[ "$ACTION" == "recover-plan" ]]; then
+        [[ -z "$APPROVE_HASH" ]] || { usage >&2; exit 2; }
+        cmd_qualification_recover plan "$PROJECT" "$QUALIFICATION_ROOT" "$PRODUCT" \
+          "$REPO" "$SHA" "$OPERATOR_ID" "$TICKET" "$FAILED_RUN" ""
+      else
+        [[ "$APPROVE_HASH" =~ ^[0-9a-f]{64}$ ]] || { usage >&2; exit 2; }
+        cmd_qualification_recover apply "$PROJECT" "$QUALIFICATION_ROOT" "$PRODUCT" \
+          "$REPO" "$SHA" "$OPERATOR_ID" "$TICKET" "$FAILED_RUN" "$APPROVE_HASH"
+      fi
     else
       { usage >&2; exit 2; }
     fi

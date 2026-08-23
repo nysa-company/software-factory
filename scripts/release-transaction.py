@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import fcntl
 import hashlib
 import importlib.util
@@ -36,12 +37,22 @@ QUALIFICATION_PLAN_SCHEMA = "nysa.software-factory.qualification-migration-plan/
 QUALIFICATION_JOURNAL_SCHEMA = "nysa.software-factory.qualification-migration-journal/v1"
 QUALIFICATION_RESULT_SCHEMA = "nysa.software-factory.qualification-migration-result/v1"
 QUALIFICATION_RECEIPT_SCHEMA = "nysa.software-factory.qualification-migration-receipt/v1"
+QUALIFICATION_RECOVERY_PLAN_SCHEMA = (
+    "nysa.software-factory.qualification-attempt-recovery-plan/v1"
+)
+QUALIFICATION_RECOVERY_RECEIPT_SCHEMA = (
+    "nysa.software-factory.qualification-attempt-recovery-receipt/v1"
+)
+QUALIFICATION_RECOVERY_RESULT_SCHEMA = (
+    "nysa.software-factory.qualification-attempt-recovery-result/v1"
+)
 QUALIFICATION_BUDGET_MS = 60_000
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 SAFE_ID = re.compile(r"[a-z0-9][a-z0-9._-]{0,127}\Z")
 PROJECT = re.compile(r"[a-z0-9][a-z0-9-]{0,62}\Z")
 TICKET = re.compile(r"T-[0-9]+\Z")
+RUN_ID = re.compile(r"[A-Za-z0-9._-]{1,200}\Z")
 TICKET_STATES = frozenset({
     "Awaiting Approval", "Approved", "Backlog", "Blocked-Escalated",
     "Building", "Canceled", "Done", "Planning", "Ready", "Review",
@@ -4506,6 +4517,340 @@ def qualification_resume(args: argparse.Namespace) -> dict[str, Any]:
         release_cutover_lock(descriptor)
 
 
+def qualification_recovery_state(
+    root: Path, project: str, sha: str, ticket: str, run_id: str,
+) -> Path:
+    return root / "recoveries" / project / sha / ticket / run_id
+
+
+def qualification_recovery_environment(lane: dict[str, Any]) -> dict[str, str]:
+    environment = {
+        "HOME": str(Path.home().resolve(strict=True)),
+        "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+        "FACTORY_PROVIDER_DB": str(
+            lane["provider"] / "accounting/state-v2.sqlite3"
+        ),
+        "FACTORY_LEDGER": str(lane["active"]["runtime_ledger_path"]),
+        "FACTORY_DURABLE_LEDGER": str(lane["product"] / "factory/ledger.csv"),
+    }
+    if "TMPDIR" in os.environ:
+        environment["TMPDIR"] = os.environ["TMPDIR"]
+    return environment
+
+
+def qualification_attempt_cancel(
+    repo: Path, lane: dict[str, Any], arguments: list[str], label: str,
+) -> dict[str, Any]:
+    return run_json(
+        [sys.executable, str(repo / "scripts/attempt-cancel.py"), *arguments],
+        label, environment=qualification_recovery_environment(lane), timeout=30,
+    )
+
+
+def qualification_recovery_manifest(path: Path) -> dict[str, str]:
+    try:
+        text = secure_regular_bytes(path, "qualification recovery manifest").decode()
+    except UnicodeError as error:
+        raise ReleaseError("qualification recovery manifest is invalid") from error
+    values: dict[str, str] = {}
+    for line in text.splitlines():
+        key, separator, value = line.partition("=")
+        if not separator or not key or key in values:
+            raise ReleaseError("qualification recovery manifest is invalid")
+        values[key] = value
+    return values
+
+
+def qualification_recovery_row(path: Path, run_id: str) -> dict[str, str]:
+    try:
+        text = secure_regular_bytes(path, "qualification runtime ledger").decode()
+        rows = [row for row in csv.DictReader(text.splitlines()) if row.get("run_id") == run_id]
+    except (UnicodeError, csv.Error) as error:
+        raise ReleaseError("qualification runtime ledger is invalid") from error
+    if len(rows) != 1:
+        raise ReleaseError("qualification recovery run is not uniquely recorded")
+    return rows[0]
+
+
+def qualification_recovery_optional_digest(path: Path, label: str) -> str | None:
+    if not path.exists() and not path.is_symlink():
+        return None
+    return hashlib.sha256(secure_regular_bytes(path, label)).hexdigest()
+
+
+def qualification_recovery_identity(
+    args: argparse.Namespace,
+) -> tuple[dict[str, Any], Any, dict[str, Any], Path]:
+    if (
+        not PROJECT.fullmatch(args.project) or not SHA.fullmatch(args.sha)
+        or not TICKET.fullmatch(args.ticket) or not RUN_ID.fullmatch(args.failed_run)
+        or not SAFE_ID.fullmatch(args.operator_id) or args.operator_id == "auto"
+    ):
+        raise ReleaseError("qualification recovery identity is invalid")
+    repo = args.repo.resolve(strict=True)
+    root = Path(os.path.realpath(args.root))
+    product = args.product.resolve(strict=True)
+    candidate_sha, candidate_tree, candidate_origin = clean_identity(
+        repo, "Factory recovery candidate",
+    )
+    if candidate_sha != args.sha or contract(repo) != "2.0.0":
+        raise ReleaseError("Factory recovery candidate identity changed")
+    if (
+        os.environ.get("FACTORY_KIT_TEST_MODE") != "1"
+        and git(repo, "rev-parse", "refs/remotes/origin/main") != candidate_sha
+    ):
+        raise ReleaseError("Factory recovery candidate is not exact protected main")
+    module = qualification_module(repo)
+    try:
+        lane = module.qualification_lane(root, args.project)
+    except (OSError, ValueError) as error:
+        raise ReleaseError(str(error)) from error
+    if lane["product"] != product or args.ticket not in lane["manifest"]["tickets"]:
+        raise ReleaseError("qualification recovery does not belong to the active cohort")
+    source_sha = lane["active"].get("kit_sha", "")
+    source_tree = lane["active"].get("kit_tree", "")
+    ancestry = subprocess.run(
+        ["git", "-C", str(repo), "merge-base", "--is-ancestor", source_sha, candidate_sha],
+        capture_output=True, text=True, check=False,
+    )
+    if (
+        not SHA.fullmatch(source_sha) or not SHA.fullmatch(source_tree)
+        or git(repo, "rev-parse", f"{source_sha}^{{tree}}") != source_tree
+        or ancestry.returncode != 0 or contract(lane["release"]) != "2.0.0"
+    ):
+        raise ReleaseError("Factory recovery candidate is not a valid source successor")
+    active_path = root / f"projects/{args.project}/active.json"
+    receipt_path = root / "receipts" / f"{lane['active']['receipt_id']}.json"
+    authority_path = lane["authority"] / "authority.json"
+    immutable = {
+        "active_sha256": file_digest(active_path),
+        "authority_sha256": file_digest(authority_path),
+        "candidate_origin": candidate_origin,
+        "candidate_sha": candidate_sha,
+        "candidate_tree": candidate_tree,
+        "contract_version": "2.0.0",
+        "durable_ledger_path": str(product / "factory/ledger.csv"),
+        "kit_pin_sha256": file_digest(product / "factory/KIT_PIN"),
+        "manifest_sha256": file_digest(product / "factory/QUALIFICATION.json"),
+        "product_origin": lane["receipt"]["product_origin"],
+        "product_path": str(product),
+        "product_sha": lane["active"]["product_sha"],
+        "product_tree": lane["active"]["product_tree"],
+        "provider_database_path": str(lane["provider"] / "accounting/state-v2.sqlite3"),
+        "receipt_sha256": file_digest(receipt_path),
+        "runtime_ledger_path": lane["active"]["runtime_ledger_path"],
+        "source_sha": source_sha,
+        "source_tree": source_tree,
+    }
+    return immutable, module, lane, repo
+
+
+def qualification_recovery_attempt(
+    repo: Path, lane: dict[str, Any], ticket: str, run_id: str,
+) -> dict[str, Any]:
+    nested = qualification_attempt_cancel(repo, lane, [
+        "preview", "--factory-root", str(lane["product"]), "--ticket", ticket,
+        "--run-id", run_id, "--reason", "operator_requested",
+    ], "qualification cancellation preview")
+    manifest = qualification_recovery_manifest(
+        lane["product"] / "factory/runs" / f"{run_id}.meta",
+    )
+    provider_attempt = manifest.get("provider_attempt_id", "")
+    if not SAFE_ID.fullmatch(provider_attempt):
+        raise ReleaseError("qualification provider attempt identity is invalid")
+    status = run_json([
+        sys.executable, str(repo / "scripts/provider-coordinator.py"),
+        "--db", str(lane["provider"] / "accounting/state-v2.sqlite3"),
+        "status", "--attempt-id", provider_attempt,
+    ], "qualification provider attempt status",
+        environment=qualification_recovery_environment(lane), timeout=30)
+    attempts = status.get("attempts")
+    if (
+        not isinstance(attempts, list) or len(attempts) != 1
+        or not isinstance(attempts[0], dict)
+        or attempts[0].get("attempt_id") != provider_attempt
+    ):
+        raise ReleaseError("qualification provider attempt identity is invalid")
+    runtime = Path(lane["active"]["runtime_ledger_path"])
+    claim = runtime.parent / ".active-runs" / f"{ticket}.{manifest.get('role', '')}.lock/owner"
+    lease = lane["product"] / f"factory/.dispatch-leases/{ticket}.json"
+    return {
+        "active_claim_sha256": qualification_recovery_optional_digest(
+            claim, "qualification active-run owner",
+        ),
+        "dispatch_lease_sha256": qualification_recovery_optional_digest(
+            lease, "qualification dispatch lease",
+        ),
+        "nested_plan": nested,
+        "provider_attempt": attempts[0],
+        "provider_attempt_sha256": digest(attempts[0]),
+        "runtime_ledger_row": qualification_recovery_row(runtime, run_id),
+    }
+
+
+def validate_qualification_recovery_plan(plan: dict[str, Any]) -> None:
+    body = {key: value for key, value in plan.items() if key != "approval_sha256"}
+    request = plan.get("request")
+    if (
+        set(plan) != {
+            "approval_sha256", "attempt", "created_epoch", "expires_epoch",
+            "identity", "request", "schema", "status",
+        }
+        or plan.get("schema") != QUALIFICATION_RECOVERY_PLAN_SCHEMA
+        or plan.get("status") != "planned"
+        or not DIGEST.fullmatch(str(plan.get("approval_sha256", "")))
+        or plan["approval_sha256"] != digest(body)
+        or not isinstance(request, dict)
+        or set(request) != {
+            "operator_id", "product", "project", "repo", "root", "sha",
+            "ticket", "failed_run",
+        }
+        or not isinstance(plan.get("identity"), dict)
+        or not isinstance(plan.get("attempt"), dict)
+        or not isinstance(plan.get("created_epoch"), int)
+        or not isinstance(plan.get("expires_epoch"), int)
+        or plan["expires_epoch"] <= plan["created_epoch"]
+    ):
+        raise ReleaseError("qualification recovery plan is invalid")
+
+
+def qualification_recovery_plan(args: argparse.Namespace) -> dict[str, Any]:
+    identity, _module, lane, repo = qualification_recovery_identity(args)
+    state = qualification_recovery_state(
+        lane["root"], args.project, args.sha, args.ticket, args.failed_run,
+    )
+    latest = state / "latest.json"
+    if latest.exists() or latest.is_symlink():
+        plan = safe_state(latest, "qualification recovery plan")
+        validate_qualification_recovery_plan(plan)
+        if plan["request"] != {
+            "operator_id": args.operator_id, "product": str(lane["product"]),
+            "project": args.project, "repo": str(repo), "root": str(lane["root"]),
+            "sha": args.sha, "ticket": args.ticket, "failed_run": args.failed_run,
+        }:
+            raise ReleaseError("qualification recovery plan belongs to another request")
+        runs = lane["product"] / "factory/runs"
+        begun = any(
+            (runs / f"{args.failed_run}.{suffix}.json").exists()
+            for suffix in ("cancel-request", "cancel")
+        )
+        if plan["expires_epoch"] > int(time.time()) or begun:
+            return {"plan": plan, "schema": QUALIFICATION_RECOVERY_RESULT_SCHEMA,
+                    "status": "approval_required"}
+    now = int(time.time())
+    plan = seal_plan({
+        "attempt": qualification_recovery_attempt(repo, lane, args.ticket, args.failed_run),
+        "created_epoch": now, "expires_epoch": now + 900,
+        "identity": identity,
+        "request": {
+            "operator_id": args.operator_id, "product": str(lane["product"]),
+            "project": args.project, "repo": str(repo), "root": str(lane["root"]),
+            "sha": args.sha, "ticket": args.ticket, "failed_run": args.failed_run,
+        },
+        "schema": QUALIFICATION_RECOVERY_PLAN_SCHEMA, "status": "planned",
+    })
+    validate_qualification_recovery_plan(plan)
+    immutable = state / "plans" / f"{plan['approval_sha256']}.json"
+    if immutable.exists() or immutable.is_symlink():
+        if safe_state(immutable, "qualification recovery plan") != plan:
+            raise ReleaseError("qualification recovery plan conflicts")
+    else:
+        atomic_json(immutable, plan)
+    atomic_json(latest, plan)
+    return {"plan": plan, "schema": QUALIFICATION_RECOVERY_RESULT_SCHEMA,
+            "status": "approval_required"}
+
+
+def qualification_recovery_receipt(
+    state: Path, plan: dict[str, Any], nested: dict[str, Any], nested_path: Path,
+) -> dict[str, Any]:
+    body = {
+        "approval_sha256": plan["approval_sha256"],
+        "candidate_sha": plan["identity"]["candidate_sha"],
+        "nested_receipt_sha256": file_digest(nested_path),
+        "nested_result": nested,
+        "product_sha": plan["identity"]["product_sha"],
+        "run_id": plan["request"]["failed_run"],
+        "schema": QUALIFICATION_RECOVERY_RECEIPT_SCHEMA,
+        "source_sha": plan["identity"]["source_sha"],
+        "ticket": plan["request"]["ticket"],
+    }
+    receipt = {**body, "receipt_sha256": digest(body)}
+    path = state / "receipt.json"
+    if path.exists() or path.is_symlink():
+        if safe_state(path, "qualification recovery receipt") != receipt:
+            raise ReleaseError("qualification recovery receipt changed")
+    else:
+        atomic_json(path, receipt)
+    return receipt
+
+
+def qualification_recovery_apply(args: argparse.Namespace) -> dict[str, Any]:
+    identity, module, lane, repo = qualification_recovery_identity(args)
+    state = qualification_recovery_state(
+        lane["root"], args.project, args.sha, args.ticket, args.failed_run,
+    )
+    if not DIGEST.fullmatch(args.approve_hash):
+        raise ReleaseError("qualification recovery approval does not match")
+    plan = safe_state(
+        state / "plans" / f"{args.approve_hash}.json",
+        "qualification recovery plan",
+    )
+    validate_qualification_recovery_plan(plan)
+    if plan["approval_sha256"] != args.approve_hash:
+        raise ReleaseError("qualification recovery approval does not match")
+    if plan["request"] != {
+        "operator_id": args.operator_id, "product": str(lane["product"]),
+        "project": args.project, "repo": str(repo), "root": str(lane["root"]),
+        "sha": args.sha, "ticket": args.ticket, "failed_run": args.failed_run,
+    } or plan["identity"] != identity:
+        raise ReleaseError("qualification recovery immutable inputs changed")
+    controllers: list[int] = []
+    admission: list[int] = []
+    try:
+        controllers = module.lock_controllers(lane["controller"])
+        admission = module.lock_dispatch_admission(lane, lane)
+        identity, _module, lane, repo = qualification_recovery_identity(args)
+        if plan["identity"] != identity:
+            raise ReleaseError("qualification recovery immutable inputs changed")
+        runs = lane["product"] / "factory/runs"
+        request_path = runs / f"{args.failed_run}.cancel-request.json"
+        nested_receipt_path = runs / f"{args.failed_run}.cancel.json"
+        begun = request_path.exists() and not request_path.is_symlink()
+        completed = nested_receipt_path.exists() and not nested_receipt_path.is_symlink()
+        if not begun and not completed:
+            if plan["expires_epoch"] <= int(time.time()):
+                raise ReleaseError("qualification recovery approval plan is stale")
+            if qualification_recovery_attempt(
+                repo, lane, args.ticket, args.failed_run,
+            ) != plan["attempt"]:
+                raise ReleaseError("qualification recovery attempt changed after approval")
+        elif begun:
+            request = safe_state(request_path, "attempt cancellation request")
+            if request.get("plan") != plan["attempt"].get("nested_plan"):
+                raise ReleaseError("attempt cancellation request belongs to another plan")
+        nested_plan_path = state / "nested-plan.json"
+        atomic_json(nested_plan_path, plan["attempt"]["nested_plan"])
+        try:
+            nested = qualification_attempt_cancel(repo, lane, [
+                "apply", "--factory-root", str(lane["product"]),
+                "--plan", str(nested_plan_path), "--preview-hash",
+                plan["attempt"]["nested_plan"]["preview_hash"],
+            ], "qualification cancellation apply")
+        finally:
+            nested_plan_path.unlink(missing_ok=True)
+        receipt = qualification_recovery_receipt(
+            state, plan, nested, nested_receipt_path,
+        )
+        return {"receipt": receipt, "schema": QUALIFICATION_RECOVERY_RESULT_SCHEMA,
+                "status": "recovered"}
+    finally:
+        for descriptor in admission:
+            os.close(descriptor)
+        for descriptor in controllers:
+            os.close(descriptor)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--kits-root", required=True, type=Path)
@@ -4543,6 +4888,18 @@ def main() -> int:
     qualification_resume_parser.add_argument("--project", required=True)
     qualification_resume_parser.add_argument("--sha", required=True)
     qualification_resume_parser.add_argument("--approved-by", required=True)
+    for name in ("qualification-recover-plan", "qualification-recover-apply"):
+        recovery_parser = commands.add_parser(name)
+        recovery_parser.add_argument("--project", required=True)
+        recovery_parser.add_argument("--root", required=True, type=Path)
+        recovery_parser.add_argument("--product", required=True, type=Path)
+        recovery_parser.add_argument("--repo", required=True, type=Path)
+        recovery_parser.add_argument("--sha", required=True)
+        recovery_parser.add_argument("--operator-id", required=True)
+        recovery_parser.add_argument("--ticket", required=True)
+        recovery_parser.add_argument("--failed-run", required=True)
+        if name.endswith("apply"):
+            recovery_parser.add_argument("--approve-hash", required=True)
     args = parser.parse_args()
     args.process_started = _PROCESS_STARTED
     qualification_command = args.command.startswith("qualification-")
@@ -4577,14 +4934,22 @@ def main() -> int:
             ):
                 raise ReleaseError("qualification migration operator is invalid")
             result = qualification_upgrade(args)
-        else:
+        elif args.command == "qualification-resume":
             result = qualification_resume(args)
+        elif args.command == "qualification-recover-plan":
+            result = qualification_recovery_plan(args)
+        else:
+            result = qualification_recovery_apply(args)
         print(json.dumps(result, sort_keys=True, separators=(",", ":")))
         return 0
     except (FileNotFoundError, OSError, ReleaseError, subprocess.SubprocessError) as error:
         result = {
             "error": str(error),
-            "schema": QUALIFICATION_RESULT_SCHEMA if qualification_command else RESULT_SCHEMA,
+            "schema": (
+                QUALIFICATION_RECOVERY_RESULT_SCHEMA
+                if args.command.startswith("qualification-recover-")
+                else QUALIFICATION_RESULT_SCHEMA if qualification_command else RESULT_SCHEMA
+            ),
             "status": "error",
         }
         if isinstance(getattr(error, "reason_code", None), str):
