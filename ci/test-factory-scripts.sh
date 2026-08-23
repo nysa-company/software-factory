@@ -3160,6 +3160,37 @@ else
   fail "duplicate-run guard refuses overlap" "status $SECOND_STATUS: $SECOND_OUTPUT"
 fi
 
+TAIL_GUARD="$TMP/claim-tail"
+write_envelope "$TAIL_GUARD"
+write_ticket "$TAIL_GUARD" T-401
+FACTORY_ROOT="$TAIL_GUARD" FACTORY_GLOBAL_ENV="$TMP/no-global.env" \
+  FACTORY_TEST_MODE=1 FACTORY_TRUSTED_TEST_HARNESS=1 \
+  FACTORY_TEST_BEFORE_EXIT_SLEEP=3 FACTORY_ADAPTER_OVERRIDE=mock \
+  "$RUN_AGENT" --role planner --ticket T-401 -- "claim tail" \
+  > "$TMP/claim-tail.out" 2>&1 &
+TAIL_PID=$!
+TAIL_META=""
+for _i in $(seq 1 1200); do
+  TAIL_META="$(ls "$TAIL_GUARD/factory/runs/"*.meta 2>/dev/null || true)"
+  [[ -n "$TAIL_META" ]] && grep -q '^phase=completed$' "$TAIL_META" && break
+  sleep 0.01
+done
+[[ -n "$TAIL_META" ]] || fail "run reaches its terminal cleanup tail"
+TAIL_RUN="$(basename "$TAIL_META" .meta)"
+if [[ -n "$(find "$TAIL_GUARD/factory/.active-runs" -name owner -print -quit)" ]] &&
+   kill -0 "$TAIL_PID" 2>/dev/null; then
+  pass "run claim covers the terminal cleanup tail"
+else
+  fail "run claim covers the terminal cleanup tail"
+fi
+wait "$TAIL_PID"
+if [[ -z "$(find "$TAIL_GUARD/factory/.active-runs" -name owner -print -quit)" &&
+      ! -e "$TAIL_GUARD/factory/runs/$TAIL_RUN.pid" ]]; then
+  pass "run claim and PID clear together at wrapper exit"
+else
+  fail "run claim and PID clear together at wrapper exit"
+fi
+
 SEQUENTIAL_STATUS=0
 run_mock "$GUARD" planner T-400 >/dev/null 2>&1 || SEQUENTIAL_STATUS=$?
 if [[ "$SEQUENTIAL_STATUS" -eq 10 &&

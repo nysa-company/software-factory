@@ -381,13 +381,17 @@ def qualification_fallback_readiness(
     release: Path, root: Path, project: str, product: Path,
     model_state_root: Path | None = None,
     timeout: float = 120,
+    bundle_path: Path | None = None,
 ) -> tuple[dict[str, Any], str]:
     state_root = (
         safe_directory(model_state_root)
         if model_state_root is not None else root / "projects"
     )
     result = subprocess.run(
-        [str(release / "scripts/model-control.sh"), "qualification-readiness"],
+        [
+            str(release / "scripts/model-control.sh"),
+            "qualification-bundle" if bundle_path else "qualification-readiness",
+        ],
         env={
             "HOME": str(Path.home().resolve(strict=True)),
             "PATH": f"{Path.home()}/.factory/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
@@ -405,6 +409,23 @@ def qualification_fallback_readiness(
         report = json.loads(result.stdout)
     except json.JSONDecodeError as error:
         raise EnvironmentError("qualification fallback readiness is unavailable") from error
+    if bundle_path is not None and result.returncode == 0 and isinstance(report, dict):
+        body = {
+            key: item for key, item in report.items()
+            if key != "bundle_sha256"
+        }
+        bundle_digest = hashlib.sha256(canonical(body)).hexdigest()
+        if (
+            report.get("schema")
+            != "nysa.software-factory.qualification-model-bundle/v1"
+            or report.get("bundle_sha256") != bundle_digest
+            or not isinstance(report.get("resolution"), dict)
+            or not isinstance(report.get("readiness"), dict)
+            or not isinstance(report.get("fallback_readiness"), dict)
+        ):
+            raise EnvironmentError("qualification model bundle is invalid")
+        write_exact(bundle_path, report)
+        report = report["fallback_readiness"]
     digest = report.get("readiness_sha256", "") if isinstance(report, dict) else ""
     if (
         result.returncode
@@ -525,6 +546,15 @@ def qualification_lane(root_value: Path, project: str) -> dict[str, Any]:
         or any(
             key not in active or key not in receipt or active[key] != receipt[key]
             for key in shared
+        )
+        or (
+            ("model_bundle_sha256" in active)
+            != ("model_bundle_sha256" in receipt)
+        )
+        or (
+            "model_bundle_sha256" in active
+            and active["model_bundle_sha256"]
+            != receipt["model_bundle_sha256"]
         )
         or ("runtime_tuple" in active) != ("runtime_tuple" in receipt)
         or active.get("runtime_tuple") != receipt.get("runtime_tuple")
@@ -3854,9 +3884,11 @@ def _prepare(args: argparse.Namespace) -> dict[str, Any]:
     else:
         write_exact(root / "marker.json", marker)
         release = ensure_release(factory, sha, tree, releases)
+    model_bundle_path = project / f"model-bundle-{sha}.json"
     fallback_readiness, fallback_readiness_sha256 = qualification_fallback_readiness(
-        release, root, args.project, product,
+        release, root, args.project, product, bundle_path=model_bundle_path,
     )
+    model_bundle_sha256 = read(model_bundle_path)["bundle_sha256"]
     provider_policy_sha256 = (
         takeover["provider_policy_sha256"]
         if takeover else (
@@ -3879,6 +3911,7 @@ def _prepare(args: argparse.Namespace) -> dict[str, Any]:
         "provider_policy_sha256": provider_policy_sha256,
         "fallback_readiness": fallback_readiness,
         "fallback_readiness_sha256": fallback_readiness_sha256,
+        "model_bundle_sha256": model_bundle_sha256,
         "qualification_mode": qualification_mode,
         "operator_map_path": operator_map_path,
         "status": "pass",
@@ -3904,6 +3937,7 @@ def _prepare(args: argparse.Namespace) -> dict[str, Any]:
         "project": args.project,
         "provider_policy_sha256": provider_policy_sha256,
         "fallback_readiness_sha256": fallback_readiness_sha256,
+        "model_bundle_sha256": model_bundle_sha256,
         "qualification_mode": qualification_mode,
         "operator_map_path": operator_map_path,
         "receipt_id": receipt_id,
@@ -4001,7 +4035,8 @@ def validate_upgrade_source(
             previous_receipt.get(key) != active.get(key)
             for key in (
                 "contract_version", "controller_state_path",
-                "fallback_readiness_sha256", "kit_sha", "kit_tree",
+                "fallback_readiness_sha256", "model_bundle_sha256",
+                "kit_sha", "kit_tree",
                 "operator_map_path", "product_path", "product_tree", "project",
                 "provider_policy_sha256", "provider_state_path",
                 "qualification_mode", "runtime_ledger_path",
@@ -4185,9 +4220,13 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
         ):
             raise EnvironmentError("successor changes the active provider policy")
         snapshot_global_config(args, root)
-        fallback_readiness, fallback_readiness_sha256 = qualification_fallback_readiness(
-            release, root, args.project, product,
+        model_bundle_path = (
+            root / "projects" / args.project / f"model-bundle-{sha}.json"
         )
+        fallback_readiness, fallback_readiness_sha256 = qualification_fallback_readiness(
+            release, root, args.project, product, bundle_path=model_bundle_path,
+        )
+        model_bundle_sha256 = read(model_bundle_path)["bundle_sha256"]
 
         origins = command(
             "git", "-C", str(product), "remote", "get-url", "--push", "--all", "origin"
@@ -4207,6 +4246,7 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
             "provider_policy_sha256": policy_hash,
             "fallback_readiness": fallback_readiness,
             "fallback_readiness_sha256": fallback_readiness_sha256,
+            "model_bundle_sha256": model_bundle_sha256,
             "controller_state_path": str(controller),
             "provider_state_path": str(provider),
             "operator_map_path": str(operator_map_path),
@@ -4234,6 +4274,7 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
             "project": args.project,
             "provider_policy_sha256": policy_hash,
             "fallback_readiness_sha256": fallback_readiness_sha256,
+            "model_bundle_sha256": model_bundle_sha256,
             "controller_state_path": str(controller),
             "provider_state_path": str(provider),
             "operator_map_path": str(operator_map_path),

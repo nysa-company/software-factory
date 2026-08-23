@@ -47,6 +47,11 @@ REQUIRED_CHECKS = {
     "transition_receipts",
 }
 NEUTRAL_CHECKS = {"controller", "model_readiness"}
+RETRYABLE_FINISH_WAITS = {
+    "closeout", "pr-gate", "protected-merge", "publication-lease",
+}
+FINISH_POLL_SECONDS = 5
+FINISH_WAIT_SECONDS = 600
 REDUCER_REASONS = {
     "controller event evidence is invalid": "event_evidence_invalid",
     "qualification event boundary is malformed": "event_boundary_malformed",
@@ -749,6 +754,89 @@ def qualification_refresh_progress(
     return False
 
 
+def qualification_retryable_wait(
+    value: dict[str, Any], selected: set[str],
+) -> bool:
+    results = value.get("controller", {}).get("results", [])
+    tickets = [
+        item.get("ticket") for item in results if isinstance(item, dict)
+    ]
+    if (
+        not results
+        or len(tickets) != len(results)
+        or len(set(tickets)) != len(tickets)
+        or any(ticket not in selected for ticket in tickets)
+    ):
+        return False
+    pending = [
+        item for item in results
+        if isinstance(item, dict) and item.get("status") != "complete"
+    ]
+    return bool(pending) and all(
+        item.get("status") == "waiting"
+        and item.get("wait_reason") in RETRYABLE_FINISH_WAITS
+        for item in pending
+    )
+
+
+def finish_poll_seconds() -> int:
+    if (
+        os.environ.get("FACTORY_TEST_MODE") == "1"
+        and os.environ.get("FACTORY_TRUSTED_TEST_HARNESS") == "1"
+        and os.environ.get("FACTORY_TEST_FINISH_POLL_SECONDS") == "0"
+    ):
+        return 0
+    return FINISH_POLL_SECONDS
+
+
+def finish_poll_limit() -> int:
+    if (
+        os.environ.get("FACTORY_TEST_MODE") == "1"
+        and os.environ.get("FACTORY_TRUSTED_TEST_HARNESS") == "1"
+    ):
+        return 2
+    return FINISH_WAIT_SECONDS // FINISH_POLL_SECONDS
+
+
+def terminal_doctor(
+    value: dict[str, Any], project: str, selected: set[str], capacity: int,
+    successor: bool, factory_sha: str, source_factory_sha: str,
+    ticket_sources: dict[str, str],
+) -> bool:
+    if (
+        value.get("overall_status") != "ok"
+        or not doctor_allows_reconcile(
+            value, project, selected, capacity, successor, factory_sha,
+            source_factory_sha, ticket_sources,
+        )
+    ):
+        return False
+    runtime = value["checks"]["runtime"]
+    provider = value["checks"]["isolated_provider"]
+    return (
+        runtime.get("status") == "ok"
+        and runtime.get("maintenance") is False
+        and runtime.get("locks") == {
+            "global_ledger": False, "launch": False,
+            "ledger": False, "provider": False,
+        }
+        and runtime.get("provider_lock_state") == "absent"
+        and runtime.get("runs") == []
+        and runtime.get("active_run_tickets") == []
+        and runtime.get("dispatch_leases") == []
+        and all(runtime.get(name) == 0 for name in (
+            "active_run_claims", "active_runs", "dispatch_lease_records",
+            "malformed_active_run_claims", "malformed_dispatch_leases",
+            "malformed_runs", "run_records", "stale_dispatch_leases",
+            "stale_runs",
+        ))
+        and all(provider.get(name) == 0 for name in (
+            "active_attempts", "active_tokens", "legacy_intervals",
+            "unknown_workers",
+        ))
+    )
+
+
 def project_contract_recovery(
     launcher: Path, project: str, doctor: dict[str, Any],
     selected: set[str], phases: list[dict[str, Any]],
@@ -1442,10 +1530,12 @@ def execute_finish(args: argparse.Namespace) -> dict[str, Any]:
     seen_receipts: set[str] = set()
     seen_completions: set[str] = set()
     restarts = 0
+    polls_left = finish_poll_limit()
     events = qualification_event_names()
     # ponytail: a closed cohort can create at most one approval per protected
     # base generation; widen only if qualification admits unrelated main churn.
-    for _ in range(len(selected) ** 2 + len(selected) + 1):
+    progress_left = len(selected) ** 2 + len(selected) + 1
+    while progress_left:
         result = execute(args, doctor_result, basis[-1])
         if qualification_basis()[-1] != basis[-1]:
             raise QualificationRunError(
@@ -1459,6 +1549,26 @@ def execute_finish(args: argparse.Namespace) -> dict[str, Any]:
         restarts += result.get("restarts", 0)
         if result.get("status") != "waiting":
             phases.extend(result.get("phases", []))
+            if result.get("status") == "green":
+                final_code, final_doctor = invoke(
+                    launcher, args.project, "doctor", phases,
+                )
+                if final_code != 0 or not terminal_doctor(
+                    final_doctor, args.project, *basis[:-1],
+                ):
+                    return {
+                        **result,
+                        "approvals": approvals,
+                        "elapsed_seconds": round(
+                            time.monotonic() - started, 3,
+                        ),
+                        "final_doctor": final_doctor,
+                        "phases": phases,
+                        "reason": "final_doctor_not_ready",
+                        "restarts": restarts,
+                        "status": "blocked",
+                    }
+                result["final_doctor"] = final_doctor
             return {
                 **result,
                 "approvals": approvals,
@@ -1492,6 +1602,14 @@ def execute_finish(args: argparse.Namespace) -> dict[str, Any]:
         }
         new_completions = completions - seen_completions
         if not new_receipts and not new_completions and not refreshed:
+            if qualification_retryable_wait(result, selected):
+                if (
+                    polls_left
+                    and time.monotonic() - started < FINISH_WAIT_SECONDS
+                ):
+                    polls_left -= 1
+                    time.sleep(finish_poll_seconds())
+                    continue
             return {
                 **result,
                 "approvals": approvals,
@@ -1499,6 +1617,7 @@ def execute_finish(args: argparse.Namespace) -> dict[str, Any]:
                 "phases": phases,
                 "restarts": restarts,
             }
+        progress_left -= 1
         approvals.extend(ticket for ticket, _receipt in new_receipts)
         seen_receipts.update(receipt for _ticket, receipt in new_receipts)
         seen_completions.update(new_completions)

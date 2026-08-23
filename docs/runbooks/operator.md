@@ -299,8 +299,11 @@ Only `credits_exhausted` and `provider_unavailable` are eligible reasons.
 
 For qualification, run `doctor --json` before starting reconciliation and
 inspect `checks.fallback_readiness`. A version mismatch names the exact native
-fallback route plus expected and installed versions. Admission also requires
-the fresh report digest to match the sealed qualification receipt. Do not replay a completed
+fallback route plus expected and installed versions. Preparation records the
+full task-free model resolution in an owner-only bundle whose digest is bound
+by the activation receipt. Doctor, admission, and batch pinning reuse only that
+exact bundle until batch pinning consumes it; later Doctor runs and every role
+perform live checks. Do not replay a completed
 Cursor role or edit its claim/passport: exact identity-only success is recovered
 without another provider call, while a typed `qualification-fallback-refused`
 claim remains parked until a successor release contains the repair.
@@ -312,8 +315,9 @@ gate at command entry, the mandatory restart, reconciliation, exact bundle-bound
 qualification approvals, serialized publication, closeout, and terminal reduction
 in code.
 It approves only selected clean, idle, parked Awaiting Approval claims through
-the sealed lane operator map and stops at the first wait without a new receipt,
-protected-base refresh, or authenticated completion. It never approves a
+the sealed lane operator map. With no progress, it continues for at most ten
+minutes only when every pending result is a typed GitHub, protected-merge,
+publication-lease, or closeout wait; all other waits return immediately. It never approves a
 production or takeover lane. Use `qualification-run --json` instead when each
 bundle requires a separate human approval command.
 Internal finish iterations do not rerun full Doctor. A new command invocation

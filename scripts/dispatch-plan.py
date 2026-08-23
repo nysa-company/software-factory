@@ -1908,6 +1908,9 @@ def main() -> None:
         if git(product, "status", "--porcelain=v1", "-z"):
             raise DispatchError("registered product checkout is dirty")
         git(product, "fetch", "--quiet", "origin", "+main:refs/remotes/origin/main")
+        protected_main = git(
+            product, "rev-parse", "refs/remotes/origin/main",
+        ).strip()
         mapping_path = Path(os.environ.get(
             "FACTORY_OPERATOR_MAP", factory / "operator-map.json"
         ))
@@ -1942,9 +1945,6 @@ def main() -> None:
             )
             lock(launch_lock)
             held_launch = True
-            protected_main = git(
-                product, "rev-parse", "refs/remotes/origin/main",
-            ).strip()
             reset_authorizations = selected_preprovider_reset_authorizations(
                 product, factory, qualification_state, remote, mapping_path,
                 controller_state,
@@ -2036,6 +2036,9 @@ def main() -> None:
         destination, created, branch_created, reset_head = prepare_worktree(
             product, args.worktree_root, ticket["ticket"],
             prefix, remote, reset_authorizations.get(ticket["ticket"], ""),
+            # Qualification freezes this exact product/main identity. Ordinary
+            # dispatch re-fetches under its claim locks before branch creation.
+            protected_main if qualification_state is not None else "",
         )
         reset_head = reset_head or preprovider_resets.get(
             ticket["ticket"], ("", ""),

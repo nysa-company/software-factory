@@ -567,26 +567,195 @@ recheck_inflight_migration_authority() {
     json_error "ticket worktree changed during migration readiness"
 }
 
+qualification_probe() {
+  load_machine_config
+  factory_load_model_probe_context ||
+    json_error "model state is invalid: ${FACTORY_RESOLVE_ERROR:-unknown}"
+  TEMPORARY_DIR="$(mktemp -d "$FACTORY_MODEL_STATE_ROOT/.qualification-readiness.XXXXXX")" ||
+    json_error "could not allocate qualification readiness"
+  resolution="$TEMPORARY_DIR/resolution.json"
+  readiness="$TEMPORARY_DIR/readiness.json"
+  factory_resolve_model_profile "$FACTORY_MODEL_PROFILE_ID" "$resolution" \
+    "$FACTORY_DISABLED_ROUTE_IDS" "$readiness" ||
+    json_error "qualification model resolution failed: ${FACTORY_RESOLVE_ERROR:-unknown}"
+}
+
+load_qualification_model_bundle() {
+  local bundle="$1" expected="$2" resolution_path="$3" readiness_path="$4" fallback_path="$5"
+  python3 -B - "$bundle" "$expected" "$resolution_path" "$readiness_path" "$fallback_path" <<'PY' ||
+import hashlib
+import json
+import os
+import stat
+import sys
+
+source, expected, resolution_path, readiness_path, fallback_path = sys.argv[1:]
+descriptor = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+try:
+    metadata = os.fstat(descriptor)
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_uid != os.geteuid()
+        or metadata.st_nlink != 1
+        or stat.S_IMODE(metadata.st_mode) != 0o600
+        or metadata.st_size > 2_000_000
+    ):
+        raise ValueError
+    with os.fdopen(descriptor, encoding="utf-8") as handle:
+        descriptor = -1
+        raw = handle.read()
+finally:
+    if descriptor >= 0:
+        os.close(descriptor)
+def unique(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError
+        value[key] = item
+    return value
+
+value = json.loads(raw, object_pairs_hook=unique)
+if raw != json.dumps(
+    value, sort_keys=True, separators=(",", ":"),
+) + "\n":
+    raise ValueError
+body = {key: item for key, item in value.items() if key != "bundle_sha256"}
+digest = hashlib.sha256(
+    (json.dumps(body, sort_keys=True, separators=(",", ":")) + "\n").encode()
+).hexdigest()
+if (
+    value.get("schema") != "nysa.software-factory.qualification-model-bundle/v1"
+    or value.get("bundle_sha256") != expected
+    or digest != expected
+    or not isinstance(value.get("resolution"), dict)
+    or not isinstance(value.get("readiness"), dict)
+    or not isinstance(value.get("fallback_readiness"), dict)
+):
+    raise ValueError
+for path, item in (
+    (resolution_path, value["resolution"]),
+    (readiness_path, value["readiness"]),
+    (fallback_path, value["fallback_readiness"]),
+):
+    if path == "-":
+        continue
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(item, handle, sort_keys=True, separators=(",", ":"))
+        handle.write("\n")
+PY
+    json_error "qualification model bundle is invalid"
+}
+
+qualification_model_bundle_available() {
+  [[ -n "${FACTORY_CONTROLLER_STATE_DIR:-}" &&
+     "$FACTORY_CONTROLLER_STATE_DIR" == /* ]] ||
+    json_error "qualification controller state is unavailable"
+  MODEL_BUNDLE_CONSUMED="$FACTORY_CONTROLLER_STATE_DIR/model-bundle-consumed-$FACTORY_QUALIFICATION_MODEL_BUNDLE_SHA256"
+  if [[ -e "$MODEL_BUNDLE_CONSUMED" || -L "$MODEL_BUNDLE_CONSUMED" ]]; then
+    python3 -B - "$MODEL_BUNDLE_CONSUMED" \
+      "$FACTORY_QUALIFICATION_MODEL_BUNDLE_SHA256" <<'PY' ||
+import os
+import stat
+import sys
+
+path, expected = sys.argv[1:]
+descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+try:
+    metadata = os.fstat(descriptor)
+    raw = os.read(descriptor, 66)
+finally:
+    os.close(descriptor)
+if (
+    not stat.S_ISREG(metadata.st_mode)
+    or metadata.st_uid != os.geteuid()
+    or metadata.st_nlink != 1
+    or stat.S_IMODE(metadata.st_mode) != 0o600
+    or raw != (expected + "\n").encode()
+):
+    raise SystemExit(1)
+PY
+      json_error "qualification model bundle consumption is invalid"
+    return 1
+  fi
+  return 0
+}
+
+consume_qualification_model_bundle() {
+  (umask 077; set -C; printf '%s\n' \
+    "$FACTORY_QUALIFICATION_MODEL_BUNDLE_SHA256" > "$MODEL_BUNDLE_CONSUMED") 2>/dev/null ||
+    ! qualification_model_bundle_available ||
+    json_error "qualification model bundle consumption could not be recorded"
+}
+
 command_name="${1:-}"
 [[ -n "$command_name" ]] || json_error "a model-control command is required"
 shift
 
 case "$command_name" in
-  qualification-readiness)
-    [[ $# -eq 0 ]] || json_error "qualification-readiness takes no arguments"
-    load_machine_config
-    factory_load_model_probe_context ||
-      json_error "model state is invalid: ${FACTORY_RESOLVE_ERROR:-unknown}"
-    TEMPORARY_DIR="$(mktemp -d "$FACTORY_MODEL_STATE_ROOT/.qualification-readiness.XXXXXX")" ||
-      json_error "could not allocate qualification readiness"
-    resolution="$TEMPORARY_DIR/resolution.json"
-    readiness="$TEMPORARY_DIR/readiness.json"
-    factory_resolve_model_profile "$FACTORY_MODEL_PROFILE_ID" "$resolution" \
-      "$FACTORY_DISABLED_ROUTE_IDS" "$readiness" ||
-      json_error "qualification model resolution failed: ${FACTORY_RESOLVE_ERROR:-unknown}"
+  qualification-bundle)
+    [[ $# -eq 0 ]] || json_error "qualification-bundle takes no arguments"
+    qualification_probe
+    fallback="$TEMPORARY_DIR/fallback-readiness.json"
+    fallback_status=0
     python3 -B "$KIT_DIR/scripts/model-fallback-readiness.py" \
       --plan "$resolution" --readiness "$readiness" \
-      --catalog "$FACTORY_MODEL_CATALOG" --profiles "$FACTORY_MODEL_PROFILES"
+      --catalog "$FACTORY_MODEL_CATALOG" --profiles "$FACTORY_MODEL_PROFILES" \
+      > "$fallback" || fallback_status=$?
+    if [[ "$fallback_status" -ne 0 ]]; then
+      cat "$fallback"
+      exit "$fallback_status"
+    fi
+    python3 -B - "$resolution" "$readiness" "$fallback" <<'PY'
+import hashlib
+import json
+import sys
+
+resolution, readiness, fallback = (
+    json.load(open(path, encoding="utf-8")) for path in sys.argv[1:]
+)
+value = {
+    "fallback_readiness": fallback,
+    "readiness": readiness,
+    "resolution": resolution,
+    "schema": "nysa.software-factory.qualification-model-bundle/v1",
+}
+value["bundle_sha256"] = hashlib.sha256(
+    (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
+).hexdigest()
+print(json.dumps(value, sort_keys=True, separators=(",", ":")))
+PY
+    ;;
+  qualification-readiness)
+    [[ $# -eq 0 ]] || json_error "qualification-readiness takes no arguments"
+    if [[ -n "${FACTORY_QUALIFICATION_MODEL_BUNDLE:-}" ||
+          -n "${FACTORY_QUALIFICATION_MODEL_BUNDLE_SHA256:-}" ]]; then
+      [[ -n "${FACTORY_QUALIFICATION_MODEL_BUNDLE:-}" &&
+         -n "${FACTORY_QUALIFICATION_MODEL_BUNDLE_SHA256:-}" ]] ||
+        json_error "qualification model bundle binding is incomplete"
+      if qualification_model_bundle_available; then
+        TEMPORARY_DIR="$(mktemp -d "$FACTORY_MODEL_STATE_ROOT/.qualification-readiness.XXXXXX")" ||
+          json_error "could not allocate qualification readiness"
+        resolution="$TEMPORARY_DIR/resolution.json"
+        readiness="$TEMPORARY_DIR/readiness.json"
+        fallback="$TEMPORARY_DIR/fallback-readiness.json"
+        load_qualification_model_bundle \
+          "$FACTORY_QUALIFICATION_MODEL_BUNDLE" \
+          "$FACTORY_QUALIFICATION_MODEL_BUNDLE_SHA256" \
+          "$resolution" "$readiness" "$fallback"
+        cat "$fallback"
+      else
+        qualification_probe
+        python3 -B "$KIT_DIR/scripts/model-fallback-readiness.py" \
+          --plan "$resolution" --readiness "$readiness" \
+          --catalog "$FACTORY_MODEL_CATALOG" --profiles "$FACTORY_MODEL_PROFILES"
+      fi
+    else
+      qualification_probe
+      python3 -B "$KIT_DIR/scripts/model-fallback-readiness.py" \
+        --plan "$resolution" --readiness "$readiness" \
+        --catalog "$FACTORY_MODEL_CATALOG" --profiles "$FACTORY_MODEL_PROFILES"
+    fi
     ;;
   inventory)
     [[ $# -eq 0 ]] || json_error "inventory accepts no arguments"
@@ -1492,19 +1661,42 @@ PY
     for index in "${!tickets[@]}"; do
       validate_control_workdir "${tickets[$index]}" "${workdirs[$index]}"
     done
-    load_machine_config
-    factory_load_model_probe_context ||
-      json_error "model state is invalid: ${FACTORY_RESOLVE_ERROR:-unknown}"
     resolution="$(mktemp "$FACTORY_MODEL_STATE_ROOT/.model-control-batch.XXXXXX")" ||
       json_error "could not allocate batch pin resolution"
     TEMPORARY_FILE="$resolution"
     readiness="$(mktemp "$FACTORY_MODEL_STATE_ROOT/.model-control-readiness.XXXXXX")" ||
       json_error "could not allocate batch pin readiness"
     TEMPORARY_READINESS_FILE="$readiness"
-    factory_resolve_model_profile "$FACTORY_MODEL_PROFILE_ID" "$resolution" \
-      "$FACTORY_DISABLED_ROUTE_IDS" "$readiness" ||
-      json_resolution_error pin "${FACTORY_RESOLVE_ERROR:-unknown}" \
-        "$FACTORY_MODEL_PROFILE_ID" "$readiness"
+    used_qualification_bundle=0
+    if [[ -n "${FACTORY_QUALIFICATION_MODEL_BUNDLE:-}" ||
+          -n "${FACTORY_QUALIFICATION_MODEL_BUNDLE_SHA256:-}" ]]; then
+      [[ -n "${FACTORY_QUALIFICATION_MODEL_BUNDLE:-}" &&
+         -n "${FACTORY_QUALIFICATION_MODEL_BUNDLE_SHA256:-}" ]] ||
+        json_error "qualification model bundle binding is incomplete"
+      if qualification_model_bundle_available; then
+        load_qualification_model_bundle \
+          "$FACTORY_QUALIFICATION_MODEL_BUNDLE" \
+          "$FACTORY_QUALIFICATION_MODEL_BUNDLE_SHA256" \
+          "$resolution" "$readiness" -
+        used_qualification_bundle=1
+      else
+        load_machine_config
+        factory_load_model_probe_context ||
+          json_error "model state is invalid: ${FACTORY_RESOLVE_ERROR:-unknown}"
+        factory_resolve_model_profile "$FACTORY_MODEL_PROFILE_ID" "$resolution" \
+          "$FACTORY_DISABLED_ROUTE_IDS" "$readiness" ||
+          json_resolution_error pin "${FACTORY_RESOLVE_ERROR:-unknown}" \
+            "$FACTORY_MODEL_PROFILE_ID" "$readiness"
+      fi
+    else
+      load_machine_config
+      factory_load_model_probe_context ||
+        json_error "model state is invalid: ${FACTORY_RESOLVE_ERROR:-unknown}"
+      factory_resolve_model_profile "$FACTORY_MODEL_PROFILE_ID" "$resolution" \
+        "$FACTORY_DISABLED_ROUTE_IDS" "$readiness" ||
+        json_resolution_error pin "${FACTORY_RESOLVE_ERROR:-unknown}" \
+          "$FACTORY_MODEL_PROFILE_ID" "$readiness"
+    fi
     pin_results=()
     for index in "${!tickets[@]}"; do
       pin_result="$(FACTORY_CERTIFIED_PRODUCT_ORIGIN="$FACTORY_TRUSTED_PRODUCT_ORIGIN" \
@@ -1514,6 +1706,8 @@ PY
         json_error "batch ticket pin failed for ${tickets[$index]}"
       pin_results+=("$pin_result")
     done
+    [[ "$used_qualification_bundle" -eq 0 ]] ||
+      consume_qualification_model_bundle
     python3 - "${pin_results[@]}" <<'PY'
 import json
 import sys

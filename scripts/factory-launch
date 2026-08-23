@@ -380,6 +380,7 @@ optional = (
     value.get("controller_state_path", ""),
     value.get("provider_state_path", ""),
     value.get("fallback_readiness_sha256", ""),
+    value.get("model_bundle_sha256", ""),
 )
 if value["contract_version"] == "2.0.0":
     for index, item in enumerate(optional):
@@ -445,6 +446,7 @@ IFS="$(printf '\t')" read -r ACTIVE_PROJECT KIT_SHA KIT_TREE ACTIVE_CONTRACT \
   ACTIVE_RUNTIME_LEDGER \
   ACTIVE_PRODUCT_SHA ACTIVE_CONTROLLER_STATE ACTIVE_PROVIDER_STATE \
   ACTIVE_FALLBACK_READINESS_SHA256 \
+  ACTIVE_MODEL_BUNDLE_SHA256 \
   ACTIVE_RUNTIME_TUPLE ACTIVE_RUNTIME_NODE \
   ACTIVE_RUNTIME_NPM HOST_CUTOVER_IN_PROGRESS <<EOF
 $ACTIVE_DATA
@@ -460,6 +462,7 @@ EOF
 [[ "$ACTIVE_CONTROLLER_STATE" == "-" ]] && ACTIVE_CONTROLLER_STATE=""
 [[ "$ACTIVE_PROVIDER_STATE" == "-" ]] && ACTIVE_PROVIDER_STATE=""
 [[ "$ACTIVE_FALLBACK_READINESS_SHA256" == "-" ]] && ACTIVE_FALLBACK_READINESS_SHA256=""
+[[ "$ACTIVE_MODEL_BUNDLE_SHA256" == "-" ]] && ACTIVE_MODEL_BUNDLE_SHA256=""
 [[ "$ACTIVE_RUNTIME_NODE" == "-" ]] && ACTIVE_RUNTIME_NODE=""
 [[ "$ACTIVE_RUNTIME_NPM" == "-" ]] && ACTIVE_RUNTIME_NPM=""
 
@@ -524,9 +527,14 @@ if [[ "$ISOLATED_TEST_LAUNCHER" == "1" ]]; then
   esac
 fi
 
+ACTIVE_MODEL_BUNDLE=""
 if [[ "$QUALIFICATION_LAUNCHER" == "1" ]]; then
   [[ "$ACTIVE_FALLBACK_READINESS_SHA256" =~ ^[0-9a-f]{64}$ ]] ||
     die "qualification fallback readiness binding is invalid"
+  [[ "$ACTIVE_MODEL_BUNDLE_SHA256" =~ ^[0-9a-f]{64}$ ]] ||
+    die "qualification model bundle binding is invalid"
+  ACTIVE_MODEL_BUNDLE="$QUALIFICATION_ROOT/projects/$PROJECT/model-bundle-$KIT_SHA.json"
+  require_managed_file "$ACTIVE_MODEL_BUNDLE" "qualification model bundle"
   [[ "$QUALIFICATION_MODE" == "isolated" || "$QUALIFICATION_MODE" == "takeover" ]] ||
     die "qualification state mode is invalid"
   ACTIVE_OPERATOR_MAP="$(expand_absolute_path "$ACTIVE_OPERATOR_MAP" 2>/dev/null || true)"
@@ -550,7 +558,7 @@ if [[ "$QUALIFICATION_LAUNCHER" == "1" ]]; then
       die "isolated qualification operator state path is invalid"
   fi
 else
-  [[ -z "$QUALIFICATION_MODE$TAKEOVER_KITS_ROOT$ACTIVE_OPERATOR_MAP$ACTIVE_RUNTIME_LEDGER" ]] ||
+  [[ -z "$QUALIFICATION_MODE$TAKEOVER_KITS_ROOT$ACTIVE_OPERATOR_MAP$ACTIVE_RUNTIME_LEDGER$ACTIVE_MODEL_BUNDLE_SHA256" ]] ||
     die "installed activation contains qualification controls"
 fi
 
@@ -596,14 +604,16 @@ CERTIFIED_PRODUCT_ORIGIN="$("$PYTHON_BIN" -I -S - "$RECEIPT_FILE" \
     "$TAKEOVER_KITS_ROOT" "$ACTIVE_OPERATOR_MAP" "$ACTIVE_RUNTIME_LEDGER" \
     "$ACTIVE_PRODUCT_SHA" \
     "$ACTIVE_FALLBACK_READINESS_SHA256" \
+    "$ACTIVE_MODEL_BUNDLE_SHA256" \
+    "$ACTIVE_MODEL_BUNDLE" \
     "$ACTIVE_RUNTIME_TUPLE" "$ISOLATED_TEST_LAUNCHER" <<'PY'
-import json, os, stat, sys
+import hashlib, json, os, stat, sys
 
 (
     path, receipt_id, project, kit_sha, kit_tree, product_path, product_tree,
     contract, qualification_mode, takeover_kits_root, operator_map_path,
-    runtime_ledger_path, product_sha, fallback_readiness_sha256, runtime_tuple,
-    isolated_test,
+    runtime_ledger_path, product_sha, fallback_readiness_sha256,
+    model_bundle_sha256, model_bundle_path, runtime_tuple, isolated_test,
 ) = sys.argv[1:]
 flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
 descriptor = os.open(path, flags)
@@ -667,6 +677,7 @@ if qualification_mode:
         value.get("qualification_mode") != qualification_mode
         or value.get("operator_map_path") != operator_map_path
         or value.get("fallback_readiness_sha256") != fallback_readiness_sha256
+        or value.get("model_bundle_sha256") != model_bundle_sha256
     ):
         raise SystemExit(1)
     if qualification_mode == "takeover":
@@ -680,6 +691,52 @@ if qualification_mode:
         or value.get("runtime_ledger_path") != runtime_ledger_path
     ):
         raise SystemExit(1)
+    bundle_descriptor = os.open(
+        model_bundle_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+    )
+    try:
+        bundle_metadata = os.fstat(bundle_descriptor)
+        if (
+            not stat.S_ISREG(bundle_metadata.st_mode)
+            or bundle_metadata.st_uid != os.geteuid()
+            or bundle_metadata.st_nlink != 1
+            or stat.S_IMODE(bundle_metadata.st_mode) != 0o600
+            or bundle_metadata.st_size > 2_000_000
+        ):
+            raise ValueError
+        with os.fdopen(bundle_descriptor, encoding="utf-8") as handle:
+            bundle_descriptor = -1
+            bundle_raw = handle.read()
+    finally:
+        if bundle_descriptor >= 0:
+            os.close(bundle_descriptor)
+
+    def unique(pairs):
+        result = {}
+        for key, item in pairs:
+            if key in result:
+                raise ValueError
+            result[key] = item
+        return result
+
+    bundle = json.loads(bundle_raw, object_pairs_hook=unique)
+    canonical_bundle = json.dumps(
+        bundle, sort_keys=True, separators=(",", ":"),
+    ) + "\n"
+    body = {key: item for key, item in bundle.items() if key != "bundle_sha256"}
+    body_digest = hashlib.sha256(
+        (json.dumps(body, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    ).hexdigest()
+    if (
+        bundle_raw != canonical_bundle
+        or bundle.get("schema")
+        != "nysa.software-factory.qualification-model-bundle/v1"
+        or bundle.get("bundle_sha256") != model_bundle_sha256
+        or body_digest != model_bundle_sha256
+    ):
+        raise SystemExit(1)
+elif model_bundle_path or model_bundle_sha256:
+    raise SystemExit(1)
 origin = value.get("product_origin")
 if not isinstance(origin, str) or not origin or any(ch in origin for ch in "\r\n\t"):
     raise SystemExit(1)
@@ -930,6 +987,8 @@ if [[ "$QUALIFICATION_LAUNCHER" == "1" ]]; then
     "FACTORY_QUALIFICATION_PRODUCT_TREE=$ACTIVE_PRODUCT_TREE"
     "FACTORY_CERTIFICATION_TUPLE=$ACTIVE_RUNTIME_TUPLE"
     "FACTORY_QUALIFICATION_FALLBACK_READINESS_SHA256=$ACTIVE_FALLBACK_READINESS_SHA256"
+    "FACTORY_QUALIFICATION_MODEL_BUNDLE=$ACTIVE_MODEL_BUNDLE"
+    "FACTORY_QUALIFICATION_MODEL_BUNDLE_SHA256=$ACTIVE_MODEL_BUNDLE_SHA256"
     "FACTORY_LEDGER=$ACTIVE_RUNTIME_LEDGER"
     "FACTORY_DURABLE_LEDGER=$PRODUCT_ROOT/factory/ledger.csv"
     "FACTORY_REFRESH_RUNTIME_LEDGER=1"

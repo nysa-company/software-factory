@@ -106,7 +106,7 @@ raise SystemExit(code)
             "provider_cli_pins", "qualification_identity", "qualification_ticket_readiness",
             "transition_receipts",
         }
-        return {
+        value = {
             "checks": {
                 **{name: {"status": "ok"} for name in required},
                 **{
@@ -121,7 +121,27 @@ raise SystemExit(code)
                         for ticket in ("T-1", "T-2", "T-3")
                     ],
                 },
-                "runtime": {"status": status},
+                "runtime": {
+                    "active_run_claims": 0,
+                    "active_run_tickets": [],
+                    "active_runs": 0,
+                    "dispatch_lease_records": 0,
+                    "dispatch_leases": [],
+                    "locks": {
+                        "global_ledger": False, "launch": False,
+                        "ledger": False, "provider": False,
+                    },
+                    "maintenance": False,
+                    "malformed_active_run_claims": 0,
+                    "malformed_dispatch_leases": 0,
+                    "malformed_runs": 0,
+                    "provider_lock_state": "absent",
+                    "run_records": 0,
+                    "runs": [],
+                    "stale_dispatch_leases": 0,
+                    "stale_runs": 0,
+                    "status": status,
+                },
             },
             "contract_version": "2.0.0",
             "schema": "nysa.software-factory.doctor/v2",
@@ -129,6 +149,13 @@ raise SystemExit(code)
             "project": "relay",
             "overall_status": status,
         }
+        value["checks"]["isolated_provider"].update({
+            "active_attempts": 0,
+            "active_tokens": 0,
+            "legacy_intervals": 0,
+            "unknown_workers": 0,
+        })
+        return value
 
     @classmethod
     def inflight_doctor(cls, *, active_runs: int = 0) -> dict[str, object]:
@@ -222,6 +249,9 @@ raise SystemExit(code)
                 "FACTORY_OPERATOR_MAP": str(operator_map or self.operator_map),
                 "FACTORY_KIT_TRUST_SCOPE": "qualification-candidate",
                 "FACTORY_QUALIFICATION_MODE": qualification_mode,
+                "FACTORY_TEST_FINISH_POLL_SECONDS": "0",
+                "FACTORY_TEST_MODE": "1",
+                "FACTORY_TRUSTED_TEST_HARNESS": "1",
                 "FACTORY_QUALIFICATION_MANIFEST": str(self.manifest),
                 "FACTORY_QUALIFICATION_PRODUCT_SHA": getattr(
                     self, "product_sha", "",
@@ -1852,7 +1882,7 @@ raise SystemExit(code)
         self.assertEqual(value["approvals"], ["T-1"])
         self.assertEqual(value["restarts"], 0)
         self.assertEqual(self.called(), [
-            "doctor", "reconcile", "reconcile", "qualification",
+            "doctor", "reconcile", "reconcile", "qualification", "doctor",
         ])
         mapping = json.loads(self.operator_map.read_text(encoding="utf-8"))
         operator = mapping["tickets"]["T-1"]["operator"]
@@ -1904,7 +1934,32 @@ raise SystemExit(code)
         self.assertEqual((code, value["status"]), (0, "green"))
         self.assertEqual(value["approvals"], [])
         self.assertEqual(self.called(), [
-            "doctor", "reconcile", "reconcile", "qualification",
+            "doctor", "reconcile", "reconcile", "qualification", "doctor",
+        ])
+
+    def test_finish_polls_only_typed_authenticated_github_waits(self) -> None:
+        self.operator_authority()
+        waiting = self.controller("ok", results=[
+            {
+                "status": "waiting", "ticket": ticket,
+                "wait_reason": "pr-gate",
+            }
+            for ticket in ("T-1", "T-2", "T-3")
+        ])
+        complete = self.controller("ok", results=[
+            {"status": "complete", "ticket": ticket}
+            for ticket in ("T-1", "T-2", "T-3")
+        ])
+
+        code, value = self.run_scenario({
+            "doctor": self.doctor(),
+            "reconcile": [waiting, complete],
+            "qualification": self.report(),
+        }, finish=True)
+
+        self.assertEqual((code, value["status"]), (0, "green"))
+        self.assertEqual(self.called(), [
+            "doctor", "reconcile", "reconcile", "qualification", "doctor",
         ])
 
     def test_finish_continues_on_authenticated_refresh_without_an_approval(self) -> None:
@@ -1933,7 +1988,44 @@ raise SystemExit(code)
         self.assertEqual((code, value["status"]), (0, "green"))
         self.assertEqual(value["approvals"], [])
         self.assertEqual(self.called(), [
-            "doctor", "reconcile", "reconcile", "qualification",
+            "doctor", "reconcile", "reconcile", "qualification", "doctor",
+        ])
+
+    def test_finish_typed_wait_uses_one_global_bounded_poll_budget(self) -> None:
+        waiting = self.controller("ok", results=[
+            {
+                "status": "waiting", "ticket": ticket,
+                "wait_reason": "closeout",
+            }
+            for ticket in ("T-1", "T-2", "T-3")
+        ])
+
+        code, value = self.run_scenario({
+            "doctor": self.doctor(),
+            "reconcile": waiting,
+        }, finish=True)
+
+        self.assertEqual((code, value["status"]), (3, "waiting"))
+        self.assertEqual(self.called(), [
+            "doctor", "reconcile", "reconcile", "reconcile",
+        ])
+
+    def test_finish_requires_a_fresh_final_doctor_for_green(self) -> None:
+        complete = self.controller("ok", results=[
+            {"status": "complete", "ticket": ticket}
+            for ticket in ("T-1", "T-2", "T-3")
+        ])
+
+        code, value = self.run_scenario({
+            "doctor": [self.doctor(), self.doctor("error")],
+            "reconcile": complete,
+            "qualification": self.report(),
+        }, finish=True)
+
+        self.assertEqual((code, value["status"]), (3, "blocked"))
+        self.assertEqual(value["reason"], "final_doctor_not_ready")
+        self.assertEqual(self.called(), [
+            "doctor", "reconcile", "qualification", "doctor",
         ])
 
     def test_finish_rejects_forged_refresh_progress(self) -> None:
