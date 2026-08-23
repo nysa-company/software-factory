@@ -1267,6 +1267,76 @@ class ReleaseTransactionTest(unittest.TestCase):
         self.assertEqual(legacy.returncode, 2)
         self.assertIn("Usage:", legacy.stderr)
 
+    def test_qualification_resume_executes_sealed_helper_in_allowlisted_environment(self) -> None:
+        home = self.root / "resume-home"
+        kits = home / ".factory/kits"
+        manifests = kits / "manifests"
+        releases = kits / "releases"
+        for directory in (home, home / ".factory", kits, manifests, releases):
+            directory.mkdir(mode=0o700, exist_ok=True)
+        origin = self.root / "resume-origin"
+        origin.mkdir()
+        source = self.root / "resume-source"
+        (source / "scripts").mkdir(parents=True)
+        (source / "factory-contract.json").write_text(
+            '{"contract_version":"2.0.0"}\n', encoding="utf-8",
+        )
+        (source / "scripts/release-transaction.py").write_text(
+            "import json,os,sys\n"
+            "print(json.dumps({'arguments':sys.argv[1:],'environment':dict(os.environ)}))\n",
+            encoding="utf-8",
+        )
+        subprocess.run(["git", "init", "-q", "-b", "main", str(source)], check=True)
+        subprocess.run(["git", "-C", str(source), "add", "."], check=True)
+        subprocess.run([
+            "git", "-C", str(source), "-c", "user.name=Factory Test", "-c",
+            "user.email=factory@example.invalid", "commit", "-qm", "sealed",
+        ], check=True)
+        sha = subprocess.run(
+            ["git", "-C", str(source), "rev-parse", "HEAD"], capture_output=True,
+            text=True, check=True,
+        ).stdout.strip()
+        tree = subprocess.run(
+            ["git", "-C", str(source), "rev-parse", "HEAD^{tree}"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        release = releases / sha
+        shutil.copytree(source, release, ignore=shutil.ignore_patterns(".git"))
+        for path in (release, *release.rglob("*")):
+            path.chmod(path.stat().st_mode & ~0o222)
+        manifest = manifests / f"{sha}.json"
+        manifest.write_text(json.dumps({
+            "canonical_origin": str(origin), "created_at": "2026-08-23T00:00:00Z",
+            "git_tree": tree, "kit_sha": sha, "schema_version": 1,
+            "sealed_release_path": str(release),
+        }) + "\n", encoding="utf-8")
+        manifest.chmod(0o600)
+        environment = {
+            **os.environ, "BASH_ENV": "/attacker/bash-env", "ENV": "/attacker/env",
+            "FACTORY_KIT_CANONICAL_ORIGIN": str(origin),
+            "FACTORY_KIT_TEST_MODE": "1", "FACTORY_RELEASE_TEST_HOME": str(home),
+            "FACTORY_KITS_ROOT": str(kits), "GH_CONFIG_DIR": "/attacker/gh",
+            "GH_HOST": "attacker.invalid", "GIT_DIR": "/attacker/git",
+            "GIT_REPLACE_REF_BASE": "refs/attacker/", "HTTPS_PROXY": "attacker.invalid",
+            "PS4": "attacker", "XDG_CONFIG_HOME": "/attacker/xdg",
+        }
+        resumed = subprocess.run(
+            ["bash", str(ROOT / "scripts/factory-kit.sh"), "qualification", "resume",
+             "--project", "relay", "--sha", sha, "--approved-by", "tester"],
+            capture_output=True, text=True, env=environment, check=False,
+        )
+        self.assertEqual(resumed.returncode, 0, resumed.stderr)
+        evidence = json.loads(resumed.stdout)
+        self.assertIn("qualification-resume", evidence["arguments"])
+        self.assertEqual(evidence["environment"]["PATH"], "/usr/bin:/bin")
+        self.assertEqual(evidence["environment"]["GIT_NO_REPLACE_OBJECTS"], "1")
+        self.assertEqual(evidence["environment"]["GIT_CONFIG_GLOBAL"], "/dev/null")
+        for variable in (
+            "BASH_ENV", "ENV", "GH_CONFIG_DIR", "GH_HOST", "GIT_DIR",
+            "GIT_REPLACE_REF_BASE", "HTTPS_PROXY", "PS4", "XDG_CONFIG_HOME",
+        ):
+            self.assertNotIn(variable, evidence["environment"])
+
     def test_protected_check_fixture_matches_slurped_check_run_shape(self) -> None:
         result = subprocess.run(
             [
@@ -2813,9 +2883,17 @@ class ReleaseTransactionTest(unittest.TestCase):
         subprocess.run(["git", "clone", "-q", str(canonical), str(repo)], check=True)
         (repo / "scripts").mkdir()
         (repo / "scripts/release-transaction.py").write_text(
-            "import json,os,sys\nfrom pathlib import Path\n"
+            "import json,os,subprocess,sys\nfrom pathlib import Path\n"
             "if os.environ.get('FACTORY_TEST_HELPER_MARKER'):\n"
             " Path(os.environ['FACTORY_TEST_HELPER_MARKER']).write_text('executed')\n"
+            "if os.environ.get('FACTORY_TRUSTED_TEST_HARNESS') == '1':\n"
+            " subprocess.run(['gh','api','--hostname','github.com',"
+            "'repos/nysa-company/software-factory/git/ref/heads/main',"
+            "'--jq','.object.sha'],check=True,capture_output=True,text=True)\n"
+            " assert subprocess.run([os.environ['GIT_ASKPASS'],'Username for github.com'],"
+            "check=True,capture_output=True,text=True).stdout.strip() == 'x-access-token'\n"
+            " assert subprocess.run([os.environ['GIT_ASKPASS'],'Password for github.com'],"
+            "check=True,capture_output=True,text=True).stdout.strip() == os.environ['GH_TOKEN']\n"
             "print(json.dumps(sys.argv[1:]))\n", encoding="utf-8",
         )
         (repo / "factory-contract.json").write_text(
@@ -2949,6 +3027,46 @@ class ReleaseTransactionTest(unittest.TestCase):
                 "git", "-C", str(repo), "restore", "scripts/release-transaction.py",
             ], check=True)
 
+        replacement_marker = self.root / "replacement-helper-executed"
+        (repo / "scripts/release-transaction.py").write_text(
+            f"from pathlib import Path\nPath({str(replacement_marker)!r}).write_text('executed')\n",
+            encoding="utf-8",
+        )
+        subprocess.run([
+            "git", "-C", str(repo), "add", "scripts/release-transaction.py",
+        ], check=True)
+        subprocess.run([
+            "git", "-C", str(repo), "-c", "user.name=Factory Test", "-c",
+            "user.email=factory@example.invalid", "commit", "-qm", "replacement",
+        ], check=True)
+        replacement_sha = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True,
+            text=True, check=True,
+        ).stdout.strip()
+        subprocess.run([
+            "git", "-C", str(repo), "reset", "--hard", "-q", candidate_sha,
+        ], check=True)
+        subprocess.run([
+            "git", "-C", str(repo), "replace", candidate_sha, replacement_sha,
+        ], check=True)
+        for action, arguments in (
+            ("recover-plan", common), ("upgrade", upgrade_common),
+        ):
+            replaced = subprocess.run(
+                ["bash", str(ROOT / "scripts/factory-kit.sh"), "qualification",
+                 action, *arguments], capture_output=True, text=True,
+                env=environment, check=False,
+            )
+            self.assertEqual(replaced.returncode, 0, replaced.stderr)
+            self.assertIn(
+                "qualification-recover-plan" if action == "recover-plan"
+                else "qualification-upgrade", json.loads(replaced.stdout),
+            )
+        self.assertFalse(replacement_marker.exists())
+        subprocess.run([
+            "git", "-C", str(repo), "replace", "-d", candidate_sha,
+        ], check=True)
+
         foreign_origin = self.root / "foreign.git"
         foreign = self.root / "foreign-candidate"
         subprocess.run(["git", "init", "--bare", "-q", str(foreign_origin)], check=True)
@@ -3079,6 +3197,13 @@ class ReleaseTransactionTest(unittest.TestCase):
             capture_output=True, text=True, env=hostile_environment, check=False,
         )
         self.assertEqual(authenticated.returncode, 0, authenticated.stderr)
+        authenticated_upgrade = subprocess.run(
+            ["bash", str(ROOT / "scripts/factory-kit.sh"), "qualification",
+             "upgrade", *upgrade_common], capture_output=True, text=True,
+            env=hostile_environment, check=False,
+        )
+        self.assertEqual(authenticated_upgrade.returncode, 0, authenticated_upgrade.stderr)
+        self.assertIn("qualification-upgrade", json.loads(authenticated_upgrade.stdout))
         self.assertFalse(path_marker.exists())
 
         for token in ("", "bad token"):

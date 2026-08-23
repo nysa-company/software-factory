@@ -67,6 +67,9 @@ PROVIDER_CONCURRENCY_EVIDENCE=""
 QUALIFICATION_TRANSACTION_ROOT=""
 QUALIFICATION_CANDIDATE_TREE=""
 QUALIFICATION_GITHUB_TOKEN=""
+QUALIFICATION_GITHUB_BINARY=""
+QUALIFICATION_GITHUB_CONFIG=""
+QUALIFICATION_TRUSTED_BIN=""
 TRUSTED_GIT=/usr/bin/git
 
 say() { printf '%s\n' "$*"; }
@@ -1017,17 +1020,17 @@ git_tree_for_directory() {
   local directory="$1" object_dir index tree
   object_dir="$(mktemp -d "${TMPDIR:-/tmp}/factory-kit-objects.XXXXXX")"
   index="$object_dir/index"
-  /usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C "$TRUSTED_GIT" \
+  /usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C GIT_NO_REPLACE_OBJECTS=1 "$TRUSTED_GIT" \
     init --bare -q "$object_dir/repo.git"
-  /usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C "$TRUSTED_GIT" \
+  /usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C GIT_NO_REPLACE_OBJECTS=1 "$TRUSTED_GIT" \
     --git-dir="$object_dir/repo.git" config core.bare false
-  /usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C GIT_INDEX_FILE="$index" \
+  /usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C GIT_NO_REPLACE_OBJECTS=1 GIT_INDEX_FILE="$index" \
     "$TRUSTED_GIT" --git-dir="$object_dir/repo.git" \
     --work-tree="$directory" read-tree --empty
-  /usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C GIT_INDEX_FILE="$index" \
+  /usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C GIT_NO_REPLACE_OBJECTS=1 GIT_INDEX_FILE="$index" \
     "$TRUSTED_GIT" --git-dir="$object_dir/repo.git" \
     --work-tree="$directory" add -f -A -- .
-  tree="$(/usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C GIT_INDEX_FILE="$index" \
+  tree="$(/usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C GIT_NO_REPLACE_OBJECTS=1 GIT_INDEX_FILE="$index" \
     "$TRUSTED_GIT" --git-dir="$object_dir/repo.git" \
     --work-tree="$directory" write-tree)"
   rm -rf "$object_dir"
@@ -1048,6 +1051,7 @@ source, sha, destination = sys.argv[1:]
 git = "/usr/bin/git"
 environment = {
     "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_NO_REPLACE_OBJECTS": "1",
     "LC_ALL": "C", "PATH": "/usr/bin:/bin",
 }
 root = pathlib.Path(destination).resolve()
@@ -5107,7 +5111,7 @@ cmd_release_abort() {
 
 qualification_candidate_git() {
   /usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C \
-    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_NO_REPLACE_OBJECTS=1 \
     "$TRUSTED_GIT" -c core.fsmonitor=false -c core.hooksPath=/dev/null "$@"
 }
 
@@ -5242,6 +5246,7 @@ validate_qualification_candidate() {
       auth_config="$(qualification_gh_config)"
     fi
     qualification_github_token "$gh" "$auth_config"
+    QUALIFICATION_GITHUB_BINARY="$gh"
     live_main="$(/usr/bin/env -i HOME="$(dirname "$gh_config")" \
       PATH=/usr/bin:/bin GH_CONFIG_DIR="$gh_config" \
       GH_TOKEN="$QUALIFICATION_GITHUB_TOKEN" GH_PROMPT_DISABLED=1 GH_PAGER=cat \
@@ -5285,19 +5290,50 @@ prepare_qualification_transaction_root() {
   chmod a-w "$transaction"
   verify_read_only "$transaction" ||
     die "qualification transaction root is not read-only"
+  [[ "$(git_tree_for_directory "$transaction")" == "$QUALIFICATION_CANDIDATE_TREE" ]] ||
+    die "sealed qualification transaction tree changed"
+  if [[ -n "$QUALIFICATION_GITHUB_BINARY" ]]; then
+    QUALIFICATION_TRUSTED_BIN="$workspace/trusted-bin"
+    QUALIFICATION_GITHUB_CONFIG="$gh_config"
+    /bin/mkdir -m 700 "$QUALIFICATION_TRUSTED_BIN"
+    /bin/ln -s "$QUALIFICATION_GITHUB_BINARY" "$QUALIFICATION_TRUSTED_BIN/gh"
+    builtin printf '%s\n' '#!/bin/sh' \
+      'case "$1" in' \
+      '  *Username*) printf "%s\n" x-access-token ;;' \
+      '  *Password*) printf "%s\n" "$GH_TOKEN" ;;' \
+      '  *) exit 1 ;;' \
+      'esac' > "$QUALIFICATION_TRUSTED_BIN/git-askpass"
+    /bin/chmod 700 "$QUALIFICATION_TRUSTED_BIN/git-askpass"
+  fi
   QUALIFICATION_TRANSACTION_ROOT="$transaction"
 }
 
 run_qualification_transaction() {
-  /usr/bin/env -u BASH_ENV -u ENV -u PYTHONHOME -u PYTHONPATH \
-    -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_COMMON_DIR \
-    -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES \
-    -u GIT_CONFIG -u GIT_CONFIG_GLOBAL -u GIT_CONFIG_SYSTEM \
-    -u GIT_CONFIG_NOSYSTEM -u GIT_CONFIG_COUNT -u GIT_CEILING_DIRECTORIES \
-    -u GIT_DISCOVERY_ACROSS_FILESYSTEM -u GIT_SSH -u GIT_SSH_COMMAND \
-    -u GIT_PROXY_COMMAND -u GIT_ASKPASS -u SSH_ASKPASS \
-    PATH=/usr/bin:/bin LC_ALL=C \
-    /usr/bin/python3 -I -S "$@"
+  local home path="/usr/bin:/bin" value
+  local -a environment
+  if [[ "${FACTORY_KIT_TEST_MODE:-0}" == "1" ]]; then
+    home="$FACTORY_RELEASE_TEST_HOME"
+  else
+    home="$(/usr/bin/env -i PATH=/usr/bin:/bin /usr/bin/python3 -I -S \
+      -c 'import os,pwd; print(pwd.getpwuid(os.geteuid()).pw_dir)')"
+  fi
+  [[ -z "$QUALIFICATION_TRUSTED_BIN" ]] || path="$QUALIFICATION_TRUSTED_BIN:$path"
+  environment=(
+    /usr/bin/env -i HOME="$home" PATH="$path" LC_ALL=C
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_NO_REPLACE_OBJECTS=1
+    GH_PROMPT_DISABLED=1 GH_PAGER=cat NO_COLOR=1
+  )
+  for value in FACTORY_KIT_TEST_MODE FACTORY_TRUSTED_TEST_HARNESS \
+    FACTORY_RELEASE_TEST_HOME FACTORY_KIT_CANONICAL_ORIGIN \
+    FACTORY_KIT_TEST_REMOTE_FULL_CI FACTORY_KIT_TEST_INSTALLED_LAUNCHER; do
+    [[ -z "${!value:-}" ]] || environment+=("$value=${!value}")
+  done
+  [[ -z "$QUALIFICATION_GITHUB_TOKEN" ]] || environment+=("GH_TOKEN=$QUALIFICATION_GITHUB_TOKEN")
+  [[ -z "$QUALIFICATION_GITHUB_CONFIG" ]] || environment+=("GH_CONFIG_DIR=$QUALIFICATION_GITHUB_CONFIG")
+  [[ -z "$QUALIFICATION_TRUSTED_BIN" ]] || environment+=(
+    "GIT_ASKPASS=$QUALIFICATION_TRUSTED_BIN/git-askpass" GIT_TERMINAL_PROMPT=0
+  )
+  "${environment[@]}" /usr/bin/python3 -I -S "$@"
 }
 
 cmd_qualification_upgrade() {
@@ -5315,7 +5351,8 @@ cmd_qualification_resume() {
   release="$(printf '%s' "$values" | awk -F'\t' '{print $3}')"
   helper="$release/scripts/release-transaction.py"
   [[ -f "$helper" && ! -L "$helper" ]] || die "sealed qualification transaction helper is missing"
-  python3 -I -S "$helper" --kits-root "$KITS_ROOT" qualification-resume \
+  QUALIFICATION_TRANSACTION_ROOT="$release"
+  run_qualification_transaction "$helper" --kits-root "$KITS_ROOT" qualification-resume \
     --project "$project" --sha "$sha" --approved-by "$approver"
 }
 
