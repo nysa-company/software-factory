@@ -2068,7 +2068,9 @@ the operator map still shows the prior resumed coarse state. Legacy unbound over
 cleared once and must be re-observed.
 
 Before the first role, `models pin` resolves one exact six-role plan and records
-it with `Kit-SHA:` in one committed and pushed ticket-branch transaction. Every
+it with a canonical header `Kit-SHA:` in one committed and pushed ticket-branch
+transaction. Existing tickets with one valid legacy trailing pin remain
+read-only. Every
 later preflight, sequencer call, and run refuses a different physical kit SHA;
 roles read only their active journal resolution. A run re-probes only that exact
 route and never silently retries a task-bearing process. Contract 1.4 may
