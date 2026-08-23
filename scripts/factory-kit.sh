@@ -5087,8 +5087,53 @@ cmd_release_abort() {
     --project "$project" --sha "$sha" --approved-by "$approver"
 }
 
+qualification_candidate_git() {
+  git -c core.fsmonitor=false -c core.hooksPath=/dev/null "$@"
+}
+
+validate_qualification_candidate() {
+  local repo="$1" sha="$2" physical top head tree dirty helper origin remote_main live_main
+  validate_sha "$sha"
+  [[ "$repo" == /* ]] || die "qualification Factory candidate path must be absolute"
+  physical="$(absolute_dir "$repo")"
+  [[ "$repo" == "$physical" ]] ||
+    die "qualification Factory candidate must be an exact physical path"
+  reject_symlink_path_components "$physical" ||
+    die "qualification Factory candidate path contains a symlink"
+  top="$(qualification_candidate_git -C "$physical" rev-parse --show-toplevel 2>/dev/null || true)"
+  [[ "$top" == "$physical" ]] ||
+    die "qualification Factory candidate must be an exact Git root"
+  origin="$(verify_origin "$physical")"
+  head="$(qualification_candidate_git -C "$physical" rev-parse --verify HEAD 2>/dev/null || true)"
+  [[ "$head" == "$sha" ]] ||
+    die "qualification Factory candidate HEAD does not match requested SHA"
+  tree="$(qualification_candidate_git -C "$physical" rev-parse --verify 'HEAD^{tree}' 2>/dev/null || true)"
+  [[ "$tree" =~ ^[0-9a-f]{40}$ ]] ||
+    die "qualification Factory candidate tree is invalid"
+  dirty="$(qualification_candidate_git -C "$physical" status --porcelain=v1 --untracked-files=all 2>/dev/null)" ||
+    die "qualification Factory candidate status is unavailable"
+  [[ -z "$dirty" ]] || die "qualification Factory candidate must be clean"
+  [[ "$(contract_version "$physical")" == "2.0.0" ]] ||
+    die "qualification Factory candidate must use Contract 2.0.0"
+  helper="$physical/scripts/release-transaction.py"
+  [[ -f "$helper" && ! -L "$helper" &&
+     "$(qualification_candidate_git -C "$physical" ls-files --error-unmatch -- scripts/release-transaction.py 2>/dev/null)" == "scripts/release-transaction.py" ]] ||
+    die "qualification Factory candidate transaction helper is not sealed"
+  if [[ "${FACTORY_KIT_TEST_MODE:-0}" != "1" ]]; then
+    live_main="$(GIT_ASKPASS=/usr/bin/false GIT_TERMINAL_PROMPT=0 \
+      qualification_candidate_git -c credential.helper= -c core.askPass= \
+      -C "$physical" ls-remote --exit-code "$origin" refs/heads/main 2>/dev/null || true)"
+    [[ "$live_main" == "$sha"$'\t'"refs/heads/main" ]] ||
+      die "qualification Factory candidate does not match live protected main"
+    remote_main="$(qualification_candidate_git -C "$physical" rev-parse --verify refs/remotes/origin/main 2>/dev/null || true)"
+    [[ "$remote_main" == "$sha" ]] ||
+      die "qualification Factory candidate is not exact protected origin/main"
+  fi
+}
+
 cmd_qualification_upgrade() {
   local project="$1" root="$2" product="$3" repo="$4" sha="$5" runtime="$6" operator="$7"
+  validate_qualification_candidate "$repo" "$sha"
   python3 -I -S "$repo/scripts/release-transaction.py" --kits-root "$KITS_ROOT" \
     qualification-upgrade --project "$project" --root "$root" --product "$product" \
     --repo "$repo" --sha "$sha" --runtime-bin "$runtime" --operator-id "$operator"
@@ -5114,6 +5159,7 @@ cmd_qualification_recover() {
     --sha "$sha" --operator-id "$operator" --ticket "$ticket"
     --failed-run "$failed_run"
   )
+  validate_qualification_candidate "$repo" "$sha"
   [[ "$action" == "plan" ]] || arguments+=(--approve-hash "$approval")
   python3 -I -S "$repo/scripts/release-transaction.py" "${arguments[@]}"
 }
@@ -5394,7 +5440,7 @@ case "$COMMAND" in
       [[ ${#POSITIONALS[@]} -eq 1 && -n "$PROJECT" && -n "$QUALIFICATION_ROOT" &&
          -n "$PRODUCT" && -n "$SHA" && -n "$OPERATOR_ID" && -n "$TICKET" &&
          -n "$FAILED_RUN" && -z "$RUNTIME_BIN$APPROVED_BY$PROFILE$RECEIPT$CAPACITY$ORIGIN_OVERRIDE" &&
-         -z "$PREVIEW_HASH$REASON$EXPIRES_MINUTES$CLAUDE_BIN$CODEX_BIN$CURSOR_BIN" &&
+         -z "$PREVIEW_HASH$REASON$EXPIRES_MINUTES$CLAUDE_BIN$CODEX_BIN$CURSOR_BIN$STAGE$PRIORITY_NAME" &&
          ${#TICKETS[@]} -eq 1 && ${#TICKET_WORKDIRS[@]} -eq 0 && "$JSON" -eq 0 &&
          "$SKIP_OPTIONAL_TESTS" -eq 0 ]] || { usage >&2; exit 2; }
       if [[ "$ACTION" == "recover-plan" ]]; then
