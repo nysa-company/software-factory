@@ -359,7 +359,7 @@ class ModelControlTest(unittest.TestCase):
         consumed.chmod(0o600)
         live = self.command("qualification-readiness", check=False)
         self.assertEqual(live.returncode, 2)
-        self.assertIn("machine model configuration", live.stdout)
+        self.assertIn("profile_temporarily_unavailable", live.stdout)
         consumed.unlink()
 
         value = dict(bundle)

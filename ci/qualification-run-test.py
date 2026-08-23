@@ -2005,7 +2005,7 @@ raise SystemExit(code)
             "reconcile": waiting,
         }, finish=True)
 
-        self.assertEqual((code, value["status"]), (3, "waiting"))
+        self.assertEqual((code, value["status"]), (3, "waiting"), value)
         self.assertEqual(self.called(), [
             "doctor", "reconcile", "reconcile", "reconcile",
         ])
