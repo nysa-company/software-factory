@@ -1027,6 +1027,102 @@ role_remote_head() {
   return 1
 }
 
+cli_attempt_binding() {
+  local output
+  output="$(python3 "$KIT_DIR/scripts/provider-coordinator.py" \
+    --db "$FACTORY_PROVIDER_DB" status --attempt-id "$CLI_ATTEMPT_ID" 2>/dev/null)" ||
+    return 1
+  printf '%s' "$output" | python3 -c '
+import json, sys
+
+expected_keys = {
+    "account_route", "admitted_at", "attempt_id", "budget_day",
+    "cancellation_reason", "cancellation_requested_at", "charge_micro_usd",
+    "go_at", "machine_daily_cap_micro_usd", "policy_sha256", "prepared_at",
+    "product_daily_cap_micro_usd", "product_id", "provider_family",
+    "reserve_micro_usd", "state", "submitted_at", "terminal_at",
+    "terminal_result", "ticket_cap_micro_usd", "ticket_id", "updated_at",
+    "version",
+}
+value = json.load(sys.stdin)
+if value.get("schema") != "factory-provider-coordinator/v1":
+    raise SystemExit(1)
+attempts = value.get("attempts")
+if not isinstance(attempts, list) or len(attempts) != 1:
+    raise SystemExit(1)
+attempt = attempts[0]
+if not isinstance(attempt, dict) or set(attempt) != expected_keys:
+    raise SystemExit(1)
+expected = {
+    "attempt_id": sys.argv[1],
+    "provider_family": sys.argv[2],
+    "account_route": sys.argv[3],
+    "reserve_micro_usd": int(sys.argv[4]),
+    "product_id": sys.argv[5],
+    "ticket_id": sys.argv[6],
+    "budget_day": sys.argv[7],
+    "product_daily_cap_micro_usd": int(sys.argv[8]),
+    "ticket_cap_micro_usd": int(sys.argv[9]),
+    "machine_daily_cap_micro_usd": int(sys.argv[10]),
+    "policy_sha256": sys.argv[11],
+    "state": "reserved",
+    "version": 2,
+}
+if any(attempt.get(key) != selected for key, selected in expected.items()):
+    raise SystemExit(1)
+if (not isinstance(attempt["prepared_at"], int) or
+        not isinstance(attempt["admitted_at"], int) or
+        not isinstance(attempt["updated_at"], int) or
+        any(attempt[key] is not None for key in (
+            "cancellation_reason", "cancellation_requested_at", "charge_micro_usd",
+            "go_at", "submitted_at", "terminal_at", "terminal_result",
+        ))):
+    raise SystemExit(1)
+print(json.dumps(attempt, sort_keys=True, separators=(",", ":")))
+' "$CLI_ATTEMPT_ID" "$SELECTED_FAMILY" "$SELECTED_ACCOUNT_ROUTE_ID" \
+    "${PROVIDER_BUDGET_MICRO_VALUES[0]}" "$CLI_PRODUCT_ID" "$TICKET" "$TODAY" \
+    "${PROVIDER_BUDGET_MICRO_VALUES[1]}" "${PROVIDER_BUDGET_MICRO_VALUES[2]}" \
+    "${PROVIDER_BUDGET_MICRO_VALUES[3]}" "$ACTIVATED_POLICY_HASH"
+}
+
+reacquire_parallel_launch_lock() {
+  local current_attempt_binding current_envelope_binding post_prepare_activation
+  [[ "$PARALLEL_PROVIDER_RUN" -eq 1 ]] || return 0
+  for _parallel_launch_lock_try in $(seq 1 "$LOCK_ATTEMPTS"); do
+    mkdir "$LAUNCH_LOCK" 2>/dev/null && { HELD_LAUNCH_LOCK=1; break; }
+    sleep 0.1
+  done
+  if [[ "$HELD_LAUNCH_LOCK" -ne 1 ]]; then
+    echo "launch lock stuck before GO; no task was submitted" >&2
+    return 8
+  fi
+  if ! load_effective_envelope; then
+    echo "effective envelope or override records changed during parallel launch preparation; no task was submitted" >&2
+    return 3
+  fi
+  current_envelope_binding="$PER_RUN_BUDGET_USD|$PER_TICKET_BUDGET_USD|$PER_RUN_MAX_TURNS|$PER_RUN_TIMEOUT_MIN|$DAILY_CAP_USD|${GLOBAL_DAILY_CAP_USD:-1000000000}"
+  if [[ "$current_envelope_binding" != "$PARALLEL_LAUNCH_ENVELOPE_BINDING" ]]; then
+    echo "effective envelope changed during parallel launch preparation; no task was submitted" >&2
+    return 3
+  fi
+  if ! post_prepare_activation="$(python3 "$KIT_DIR/scripts/provider-activation.py" \
+      "${ACTIVATION_ARGS[@]}" --route-id "$SELECTED_ROUTE_ID" 2>/dev/null)" ||
+     [[ "$post_prepare_activation" != "$ACTIVATION_OUTPUT" ]]; then
+    echo "provider activation changed during parallel launch preparation; no task was submitted" >&2
+    return 3
+  fi
+  if [[ "$CLI_CONCURRENT_RUN" -eq 1 ]]; then
+    current_attempt_binding="$(cli_attempt_binding)" || {
+        echo "provider reservation is unavailable before GO; no task was submitted" >&2
+        return 3
+      }
+    if [[ "$current_attempt_binding" != "$PARALLEL_PROVIDER_ATTEMPT_BINDING" ]]; then
+      echo "provider reservation changed during parallel launch preparation; no task was submitted" >&2
+      return 3
+    fi
+  fi
+}
+
 quarantine_rewritten_role_history() {
   local diagnostic_ref="refs/factory/failed-role/$TICKET/$RUN_ID"
   local existing="" current_branch current_head remote_head
@@ -2631,6 +2727,27 @@ if [[ "$PARALLEL_PROVIDER_RUN" -eq 0 ]]; then
 fi
 start_lease_heartbeat
 
+# Parallel provider reservations and run claims are already independently
+# authenticated. Let separate tickets perform isolated CLI/runtime preparation
+# concurrently, then reacquire this product-wide lock and revalidate every
+# mutable launch binding immediately before GO. Legacy routes remain serialized.
+PARALLEL_LAUNCH_ENVELOPE_BINDING=""
+PARALLEL_PROVIDER_ATTEMPT_BINDING=""
+if [[ "$PARALLEL_PROVIDER_RUN" -eq 1 ]]; then
+  PARALLEL_LAUNCH_ENVELOPE_BINDING="$PER_RUN_BUDGET_USD|$PER_TICKET_BUDGET_USD|$PER_RUN_MAX_TURNS|$PER_RUN_TIMEOUT_MIN|$DAILY_CAP_USD|${GLOBAL_DAILY_CAP_USD:-1000000000}"
+  if [[ "$CLI_CONCURRENT_RUN" -eq 1 ]]; then
+    PARALLEL_PROVIDER_ATTEMPT_BINDING="$(cli_attempt_binding)" || {
+        echo "provider reservation is unavailable before parallel preparation; no task was submitted" >&2
+        exit 3
+      }
+  fi
+  if ! rmdir "$LAUNCH_LOCK"; then
+    echo "could not release launch lock for parallel preparation; no task was submitted" >&2
+    exit 8
+  fi
+  HELD_LAUNCH_LOCK=0
+fi
+
 # --- run one task-bearing process in an isolated process group ---
 if [[ "$ROLE_EXIT_ENFORCED" -eq 1 ]]; then
   ROLE_PROTECTED_BEFORE="$(ticket_evidence_snapshot "$TICKET_FILE")" || {
@@ -2846,7 +2963,13 @@ else
           "${FACTORY_TEST_BEFORE_GO_SLEEP:-0}" != "0" ]]; then
       sleep "$FACTORY_TEST_BEFORE_GO_SLEEP"
     fi
-    if [[ -e "$CANCEL_REQUEST_FILE" || -L "$CANCEL_REQUEST_FILE" ]]; then
+    reacquire_parallel_launch_lock
+    PARALLEL_REACQUIRE_STATUS=$?
+    if [[ "$PARALLEL_REACQUIRE_STATUS" -ne 0 ]]; then
+      terminate_run_group
+      wait "$RUN_PID" 2>/dev/null
+      STATUS="$PARALLEL_REACQUIRE_STATUS"
+    elif [[ -e "$CANCEL_REQUEST_FILE" || -L "$CANCEL_REQUEST_FILE" ]]; then
       if load_cancellation_request; then
         echo "targeted cancellation requested before GO; no task was submitted" >&2
         terminate_run_group

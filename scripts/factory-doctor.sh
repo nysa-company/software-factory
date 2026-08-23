@@ -1235,45 +1235,10 @@ if [[ "${FACTORY_KIT_TRUST_SCOPE:-}" == "qualification-candidate" &&
   fi
 fi
 
-CLI_STATUS="not_applicable"
-if [[ "$AUTHENTICATED_ARTIFACT_STATUS" != "error" &&
-      "$BINDING_STATUS" != "error" && "$KIT_STATUS" != "error" &&
-      "$PIN_STATUS" != "error" && "$RUNTIME_STATUS" != "error" &&
-      "$QUALIFICATION_TICKET_READINESS_STATUS" != "error" &&
-      "$QUALIFICATION_IDENTITY_STATUS" != "error" ]]; then
-  CLI_STATUS="ok"
-  for cli_name in claude codex agent gh; do
-    cli_path="$(command -v "$cli_name" 2>/dev/null || true)"
-    cli_version=""
-    cli_item_status="unknown"
-    if [[ -n "$cli_path" ]]; then
-      cli_version="$(probe_version "$cli_path" --version | sanitize | first_line)"
-      case "$cli_version" in
-        "")
-          cli_version="version unavailable"
-          cli_item_status="warning"
-          CLI_STATUS="warning"
-          ;;
-        "probe timed out"|"probe unavailable:"*)
-          cli_item_status="warning"
-          CLI_STATUS="warning"
-          ;;
-        *)
-          cli_item_status="ok"
-          ;;
-      esac
-    else
-      CLI_STATUS="warning"
-    fi
-    printf '%s\t%s\t%s\t%s\n' \
-      "$cli_name" "$cli_item_status" \
-      "$(printf '%s' "$cli_path" | sanitize | tr '\t\r\n' '___')" \
-      "$(printf '%s' "$cli_version" | sanitize | tr '\t\r\n' '___')" >> "$CLI_FILE"
-  done
-fi
-
 PROVIDER_CLI_PIN_STATUS="not_applicable"
 PROVIDER_CLI_PIN_JSON="null"
+PROVIDER_CLI_REUSE_FILE="$TMP/provider-cli-reuse.tsv"
+: > "$PROVIDER_CLI_REUSE_FILE"
 if [[ "$AUTHENTICATED_ARTIFACT_STATUS" != "error" &&
       "$BINDING_STATUS" != "error" && "$KIT_STATUS" != "error" &&
       "$PIN_STATUS" != "error" && "$RUNTIME_STATUS" != "error" &&
@@ -1304,11 +1269,71 @@ assert all(item.get("status") in {"ok", "warning", "error"} for item in items)
 print(json.dumps(value, sort_keys=True, separators=(",", ":")))
 print("warning" if items and all(item["status"] == "warning" for item in items) else
       ("ok" if value["status"] == "ready" else "error"))
+for name in ("claude", "codex", "agent"):
+    item = next(item for item in items if item["name"] == name)
+    version, target = item.get("version"), item.get("target")
+    if (item["status"] == "ok" and item.get("reason") == "exact_pin_ready"
+            and isinstance(version, str) and version
+            and "\t" not in version and "\n" not in version
+            and isinstance(target, str) and target.startswith("/")
+            and "\t" not in target and "\n" not in target):
+        print(f"{name}\t{version}\t{target}")
 ' 2>/dev/null)"; then
       PROVIDER_CLI_PIN_JSON="$(printf '%s\n' "$PROVIDER_CLI_PIN_FIELDS" | sed -n '1p')"
       PROVIDER_CLI_PIN_STATUS="$(printf '%s\n' "$PROVIDER_CLI_PIN_FIELDS" | sed -n '2p')"
+      printf '%s\n' "$PROVIDER_CLI_PIN_FIELDS" | sed -n '3,$p' \
+        > "$PROVIDER_CLI_REUSE_FILE"
     fi
   fi
+fi
+
+CLI_STATUS="not_applicable"
+if [[ "$AUTHENTICATED_ARTIFACT_STATUS" != "error" &&
+      "$BINDING_STATUS" != "error" && "$KIT_STATUS" != "error" &&
+      "$PIN_STATUS" != "error" && "$RUNTIME_STATUS" != "error" &&
+      "$QUALIFICATION_TICKET_READINESS_STATUS" != "error" &&
+      "$QUALIFICATION_IDENTITY_STATUS" != "error" ]]; then
+  CLI_STATUS="ok"
+  for cli_name in claude codex agent gh; do
+    cli_path="$(command -v "$cli_name" 2>/dev/null || true)"
+    cli_version=""
+    cli_item_status="unknown"
+    cli_pin_version=""
+    cli_pin_target=""
+    if [[ "$cli_name" != "gh" ]]; then
+      cli_pin_record="$(awk -F '\t' -v name="$cli_name" \
+        '$1 == name { print $2 "\t" $3; exit }' "$PROVIDER_CLI_REUSE_FILE")"
+      IFS=$'\t' read -r cli_pin_version cli_pin_target <<< "$cli_pin_record"
+    fi
+    if [[ -n "$cli_path" ]]; then
+      if [[ -n "$cli_pin_version" && -n "$cli_pin_target" &&
+            "$cli_path" -ef "$cli_pin_target" ]]; then
+        cli_version="$cli_pin_version"
+      else
+        cli_version="$(probe_version "$cli_path" --version | sanitize | first_line)"
+      fi
+      case "$cli_version" in
+        "")
+          cli_version="version unavailable"
+          cli_item_status="warning"
+          CLI_STATUS="warning"
+          ;;
+        "probe timed out"|"probe unavailable:"*)
+          cli_item_status="warning"
+          CLI_STATUS="warning"
+          ;;
+        *)
+          cli_item_status="ok"
+          ;;
+      esac
+    else
+      CLI_STATUS="warning"
+    fi
+    printf '%s\t%s\t%s\t%s\n' \
+      "$cli_name" "$cli_item_status" \
+      "$(printf '%s' "$cli_path" | sanitize | tr '\t\r\n' '___')" \
+      "$(printf '%s' "$cli_version" | sanitize | tr '\t\r\n' '___')" >> "$CLI_FILE"
+  done
 fi
 
 FALLBACK_READINESS_STATUS="not_applicable"

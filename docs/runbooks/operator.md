@@ -118,8 +118,10 @@ console keeps the exact preview hash in the authenticated server session and
 never asks the browser or operator to return it. If an active
 attempt needs more budget, preview and apply cancellation first. Pre-GO
 cancellation costs zero; post-GO cancellation retains the conservative
-reservation. Apply the bounded override and restart the same role. Never edit
-an in-flight manifest or backdate an override.
+reservation. Sealed cancellation reconciles the attempt only in the launcher's
+validated authoritative provider database; a missing, unsafe, or foreign database
+fails closed before manifest or claim cleanup. Apply the bounded override and
+restart the same role. Never edit an in-flight manifest or backdate an override.
 
 ## Failed deploy / broken staging
 

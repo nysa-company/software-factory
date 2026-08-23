@@ -1145,37 +1145,156 @@ env FACTORY_CERTIFIED_PRODUCT_ORIGIN="$SEALED_ORIGIN" \
     --kit-dir "$SEALED_RELEASE" --state-dir "$SEALED_STATE" \
     --ticket T-190 --contract-version 2.0.0 --factory-sha "$KIT_SHA" \
     --project sealed --receipt "$CURSOR_RECEIPT" --role spec-linter >/dev/null
-CURSOR_RUN_STATUS=0
-CURSOR_RUN_OUTPUT="$TMP/sealed-cursor-run.out"
-env \
-  HOME="$CURSOR_HOME" PATH="$STUB_BIN:$PATH" \
-  FACTORY_ROOT="$SEALED_PRODUCT" \
+run_sealed_cursor() {
+  local output="$1" before_go_sleep="$2" task="$3"
+  env \
+    HOME="$CURSOR_HOME" PATH="$STUB_BIN:$PATH" \
+    FACTORY_ROOT="$SEALED_PRODUCT" \
+    FACTORY_CERTIFIED_PRODUCT_ORIGIN="$SEALED_ORIGIN" \
+    FACTORY_PROJECT=sealed FACTORY_MODEL_STATE_ROOT="$CURSOR_MODEL_STATE" \
+    FACTORY_TRANSITION_RECEIPT_SHA256="$CURSOR_RECEIPT" \
+    FACTORY_TRANSITION_STATE_DIR="$SEALED_STATE" \
+    FACTORY_GLOBAL_ENV="$CURSOR_GLOBAL" \
+    FACTORY_PROVIDER_ACTIVATION="$CURSOR_PROVIDER_ROOT/isolated-v1.enabled" \
+    FACTORY_PROVIDER_DB="$CURSOR_PROVIDER_ROOT/accounting/state-v2.sqlite3" \
+    FACTORY_PROVIDER_POLICY="$CURSOR_PROVIDER_ROOT/provider-policy.json" \
+    FACTORY_PROVIDER_CONFIGURATION_LOCK="$CURSOR_PROVIDER_ROOT/provider-configuration.lock" \
+    FACTORY_CLI_RUNTIME_ROOT="$CURSOR_PROVIDER_ROOT/cli-runtimes" \
+    FACTORY_CURSOR_ACCOUNT_DB="$CURSOR_ACCOUNT_ROOT/admission.sqlite3" \
+    FACTORY_CURSOR_SESSION_HOME="$CURSOR_HOME" \
+    FACTORY_KIT_TRUST_SCOPE=qualification-candidate \
+    FACTORY_RELEASE_SHA="$KIT_SHA" FACTORY_RELEASE_TREE="$SEALED_TREE" \
+    FACTORY_RELEASE_PATH="$SEALED_RELEASE" \
+    FACTORY_RELEASE_CONTRACT_VERSION=2.0.0 \
+    FACTORY_CURSOR_FALLBACK_ENABLED=1 CURSOR_AGENT_VERSION=2026.07.test \
+    CURSOR_AGENT_BIN="$CURSOR_AGENT_WRAPPER" \
+    FACTORY_PROBE_CURSOR_ANTHROPIC=READY:test \
+    FACTORY_TEST_BEFORE_GO_SLEEP="$before_go_sleep" \
+    "$SEALED_RELEASE/scripts/run-agent.sh" \
+      --role spec-linter --ticket T-190 -- "$task" >"$output" 2>&1
+}
+
+# The preparing run deliberately sleeps after its process-group READY handshake.
+# The test acquires the product launch lock during that interval, terminalizes
+# the selected reservation, and expects the runner to reject stale state after
+# reacquiring the lock but before GO.
+CURSOR_RACE_OUTPUT="$TMP/sealed-cursor-race.out"
+CURSOR_RACE_STATUS_FILE="$TMP/sealed-cursor-race.status"
+(
+  run_sealed_cursor "$CURSOR_RACE_OUTPUT" 5 \
+    "sealed parallel launch binding race"
+  printf '%s\n' "$?" > "$CURSOR_RACE_STATUS_FILE"
+) &
+CURSOR_RACE_PID=$!
+for _cursor_race_ready in $(seq 1 500); do
+  compgen -G "$SEALED_PRODUCT/factory/runs/.*.ready" >/dev/null && break
+  kill -0 "$CURSOR_RACE_PID" 2>/dev/null || break
+  sleep 0.01
+done
+CURSOR_RACE_LOCK_ACQUIRED=0
+if mkdir "$SEALED_PRODUCT/factory/.launch.lock" 2>/dev/null; then
+  CURSOR_RACE_LOCK_ACQUIRED=1
+  CURSOR_RACE_META="$(grep -l '^role=spec-linter$' \
+    "$SEALED_PRODUCT"/factory/runs/*.meta | tail -n 1)"
+  CURSOR_RACE_ATTEMPT="$(sed -n 's/^provider_attempt_id=//p' \
+    "$CURSOR_RACE_META")"
+  python3 "$SEALED_RELEASE/scripts/provider-coordinator.py" \
+    --db "$CURSOR_PROVIDER_ROOT/accounting/state-v2.sqlite3" terminalize \
+    --operation-id "$CURSOR_RACE_ATTEMPT-selected-race" \
+    --attempt-id "$CURSOR_RACE_ATTEMPT" --expected-version 2 \
+    --result failed_pre_go --charge-micro-usd 0 >/dev/null
+  rmdir "$SEALED_PRODUCT/factory/.launch.lock"
+fi
+wait "$CURSOR_RACE_PID"
+CURSOR_RACE_STATUS="$(cat "$CURSOR_RACE_STATUS_FILE")"
+CURSOR_RACE_META="$(grep -l '^role=spec-linter$' \
+  "$SEALED_PRODUCT"/factory/runs/*.meta | tail -n 1)"
+CURSOR_RACE_ACCOUNT_STATUS="$(python3 "$SEALED_RELEASE/scripts/provider-coordinator.py" \
+  --db "$CURSOR_PROVIDER_ROOT/accounting/state-v2.sqlite3" \
+  --account-db "$CURSOR_ACCOUNT_ROOT/admission.sqlite3" account-status)"
+if [[ "$CURSOR_RACE_LOCK_ACQUIRED" -eq 1 && "$CURSOR_RACE_STATUS" -eq 3 ]] &&
+   grep -Eq 'provider reservation (changed|is unavailable).*before GO' \
+     "$CURSOR_RACE_OUTPUT" &&
+   grep -q '^go_issued=0$' "$CURSOR_RACE_META" &&
+   grep -q '^task_submitted=0$' "$CURSOR_RACE_META" &&
+   python3 - "$CURSOR_RACE_ACCOUNT_STATUS" <<'PY'
+import json, sys
+assert json.loads(sys.argv[1])["leases"] == []
+PY
+then
+  pass "parallel launch rejects selected-reservation mutation before GO"
+else
+  fail "parallel launch did not reject selected-reservation mutation before GO" \
+    "lock=$CURSOR_RACE_LOCK_ACQUIRED run=$CURSOR_RACE_STATUS output=$(tail -n 5 "$CURSOR_RACE_OUTPUT" | tr '\n' ' ')"
+fi
+
+# Obtain the supported retry receipt after the intentionally failed pre-GO
+# attempt; authenticated transition receipts are never reused across attempts.
+CURSOR_RETRY_TRANSITION="$(env \
   FACTORY_CERTIFIED_PRODUCT_ORIGIN="$SEALED_ORIGIN" \
-  FACTORY_PROJECT=sealed FACTORY_MODEL_STATE_ROOT="$CURSOR_MODEL_STATE" \
-  FACTORY_TRANSITION_RECEIPT_SHA256="$CURSOR_RECEIPT" \
-  FACTORY_TRANSITION_STATE_DIR="$SEALED_STATE" \
-  FACTORY_GLOBAL_ENV="$CURSOR_GLOBAL" \
-  FACTORY_PROVIDER_ACTIVATION="$CURSOR_PROVIDER_ROOT/isolated-v1.enabled" \
-  FACTORY_PROVIDER_DB="$CURSOR_PROVIDER_ROOT/accounting/state-v2.sqlite3" \
-  FACTORY_PROVIDER_POLICY="$CURSOR_PROVIDER_ROOT/provider-policy.json" \
-  FACTORY_PROVIDER_CONFIGURATION_LOCK="$CURSOR_PROVIDER_ROOT/provider-configuration.lock" \
-  FACTORY_CLI_RUNTIME_ROOT="$CURSOR_PROVIDER_ROOT/cli-runtimes" \
-  FACTORY_CURSOR_ACCOUNT_DB="$CURSOR_ACCOUNT_ROOT/admission.sqlite3" \
-  FACTORY_CURSOR_SESSION_HOME="$CURSOR_HOME" \
-  FACTORY_KIT_TRUST_SCOPE=qualification-candidate \
   FACTORY_RELEASE_SHA="$KIT_SHA" FACTORY_RELEASE_TREE="$SEALED_TREE" \
   FACTORY_RELEASE_PATH="$SEALED_RELEASE" \
   FACTORY_RELEASE_CONTRACT_VERSION=2.0.0 \
-  FACTORY_CURSOR_FALLBACK_ENABLED=1 CURSOR_AGENT_VERSION=2026.07.test \
-  CURSOR_AGENT_BIN="$CURSOR_AGENT_WRAPPER" \
-  FACTORY_PROBE_CURSOR_ANTHROPIC=READY:test \
-  "$SEALED_RELEASE/scripts/run-agent.sh" \
-    --role spec-linter --ticket T-190 -- "sealed Cursor account run" \
-    >"$CURSOR_RUN_OUTPUT" 2>&1 || CURSOR_RUN_STATUS=$?
+  python3 "$SEALED_RELEASE/scripts/state-machine.py" next \
+    --factory-root "$SEALED_PRODUCT" --workdir "$SEALED_PRODUCT" \
+    --kit-dir "$SEALED_RELEASE" --state-dir "$SEALED_STATE" \
+    --ticket T-190 --contract-version 2.0.0 --factory-sha "$KIT_SHA" \
+    --project sealed)"
+CURSOR_RECEIPT="$(python3 -c \
+  'import json,sys; value=json.load(sys.stdin); assert value["role"] == "spec-linter"; print(value["receipt"])' \
+  <<<"$CURSOR_RETRY_TRANSITION")"
+env FACTORY_CERTIFIED_PRODUCT_ORIGIN="$SEALED_ORIGIN" \
+  python3 "$SEALED_RELEASE/scripts/state-machine.py" consume \
+    --factory-root "$SEALED_PRODUCT" --workdir "$SEALED_PRODUCT" \
+    --kit-dir "$SEALED_RELEASE" --state-dir "$SEALED_STATE" \
+    --ticket T-190 --contract-version 2.0.0 --factory-sha "$KIT_SHA" \
+    --project sealed --receipt "$CURSOR_RECEIPT" --role spec-linter >/dev/null
+
+CURSOR_RUN_STATUS=0
+CURSOR_RUN_OUTPUT="$TMP/sealed-cursor-run.out"
+CURSOR_RUN_STATUS_FILE="$TMP/sealed-cursor-run.status"
+(
+  run_sealed_cursor "$CURSOR_RUN_OUTPUT" 5 "sealed Cursor account run"
+  printf '%s\n' "$?" > "$CURSOR_RUN_STATUS_FILE"
+) &
+CURSOR_RUN_PID=$!
+for _cursor_run_ready in $(seq 1 500); do
+  compgen -G "$SEALED_PRODUCT/factory/runs/.*.ready" >/dev/null && break
+  kill -0 "$CURSOR_RUN_PID" 2>/dev/null || break
+  sleep 0.01
+done
+CURSOR_SIBLING_RESERVED=0
+if mkdir "$SEALED_PRODUCT/factory/.launch.lock" 2>/dev/null; then
+  if python3 "$SEALED_RELEASE/scripts/provider-coordinator.py" \
+      --db "$CURSOR_PROVIDER_ROOT/accounting/state-v2.sqlite3" reserve \
+      --operation-id sibling-reserve --attempt-id sibling-attempt \
+      --provider-family anthropic --account-route cursor \
+      --reserve-micro-usd 1000000 --product-id sibling-product \
+      --ticket-id sibling-ticket --budget-day "$(date -u +%F)" \
+      --product-daily-cap-micro-usd 50000000 \
+      --ticket-cap-micro-usd 20000000 \
+      --machine-daily-cap-micro-usd 50000000 \
+      --policy "$CURSOR_PROVIDER_ROOT/provider-policy.json" \
+      --configuration-lock "$CURSOR_PROVIDER_ROOT/provider-configuration.lock" \
+      --expected-policy-sha256 "$(python3 -c \
+        'import hashlib,json,sys; value=json.load(open(sys.argv[1])); raw=json.dumps(value,sort_keys=True,separators=(",",":")); print(hashlib.sha256(raw.encode()).hexdigest())' \
+        "$CURSOR_PROVIDER_ROOT/provider-policy.json")" >/dev/null; then
+    CURSOR_SIBLING_RESERVED=1
+  fi
+  rmdir "$SEALED_PRODUCT/factory/.launch.lock"
+fi
+wait "$CURSOR_RUN_PID"
+CURSOR_RUN_STATUS="$(cat "$CURSOR_RUN_STATUS_FILE")"
+if [[ "$CURSOR_SIBLING_RESERVED" -eq 1 ]]; then
+  python3 "$SEALED_RELEASE/scripts/provider-coordinator.py" \
+    --db "$CURSOR_PROVIDER_ROOT/accounting/state-v2.sqlite3" terminalize \
+    --operation-id sibling-terminal --attempt-id sibling-attempt \
+    --expected-version 2 --result failed_pre_go --charge-micro-usd 0 >/dev/null
+fi
 CURSOR_ACCOUNT_STATUS="$(python3 "$SEALED_RELEASE/scripts/provider-coordinator.py" \
   --db "$CURSOR_PROVIDER_ROOT/accounting/state-v2.sqlite3" \
   --account-db "$CURSOR_ACCOUNT_ROOT/admission.sqlite3" account-status)"
-if [[ "$CURSOR_RUN_STATUS" -eq 0 ]] &&
+if [[ "$CURSOR_SIBLING_RESERVED" -eq 1 && "$CURSOR_RUN_STATUS" -eq 0 ]] &&
    python3 - "$CURSOR_ACCOUNT_STATUS" <<'PY'
 import json, sys
 value = json.loads(sys.argv[1])
@@ -1184,10 +1303,10 @@ assert len(value["starts"]) == 1
 assert value["starts"][0]["account_route"] == "cursor"
 PY
 then
-  pass "sealed Cursor run binds and releases shared account admission"
+  pass "sibling reservation does not change the selected launch binding"
 else
-  fail "sealed Cursor run binds and releases shared account admission" \
-    "run=$CURSOR_RUN_STATUS status=$CURSOR_ACCOUNT_STATUS output=$(tail -n 5 "$CURSOR_RUN_OUTPUT" | tr '\n' ' ')"
+  fail "sibling reservation changed the selected launch binding" \
+    "sibling=$CURSOR_SIBLING_RESERVED run=$CURSOR_RUN_STATUS status=$CURSOR_ACCOUNT_STATUS output=$(tail -n 5 "$CURSOR_RUN_OUTPUT" | tr '\n' ' ')"
 fi
 
 FORGED_STAGE_STATUS=0

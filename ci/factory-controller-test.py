@@ -2234,6 +2234,26 @@ class FactoryControllerTest(unittest.TestCase):
             claims.append(claim)
         return CONTROL.Controller(self.args), claims
 
+    def initialize_primed_planner_replay(
+        self,
+    ) -> tuple[CONTROL.Controller, dict, dict]:
+        qualification = self.qualification_controller().qualification
+        assert qualification is not None
+        controller, claims = self.initialize_passportless_planner_claims(
+            qualification["tickets"],
+        )
+        (self.state / "passports").mkdir(mode=0o700)
+        claim = claims[0]
+        claim.pop("blocked_reason")
+        claim["status"] = "claimed"
+        controller.save_claim(claim)
+        controller.qualification_marker(
+            "qualification-restart-boundary", create=True,
+        )
+        return controller, claim, CONTROL.read(
+            self.state / f"{claim['ticket']}.json"
+        )
+
     def install_passportless_fallback(
         self, claim: dict, snapshot_path: str | None = None,
     ) -> dict:
@@ -4286,6 +4306,103 @@ class FactoryControllerTest(unittest.TestCase):
             CONTROL.ControllerError, "Planner receipt is invalid",
         ):
             controller.prime_planner_transition(claim)
+
+    def test_primed_planner_restart_skips_next_but_keeps_preflight(self) -> None:
+        controller, claim, receipt = self.initialize_primed_planner_replay()
+        calls = []
+
+        def json_call(*arguments, **_kwargs):
+            calls.append(arguments)
+            if arguments[0] == "renew":
+                return {}
+            if arguments[0] == "preflight":
+                self.assertEqual(
+                    arguments[arguments.index("--receipt") + 1],
+                    receipt["receipt_sha256"],
+                )
+                return {
+                    "exit_code": 1,
+                    "output": "PREFLIGHT FAIL: expected test refusal\n",
+                    "status": "error",
+                }
+            if arguments[0] == "release":
+                return {}
+            if arguments[:2] == ("publication", "withdraw"):
+                return {"status": "absent"}
+            raise AssertionError(arguments)
+
+        controller.json_call = json_call
+        with patch.object(CONTROL, "ensure_qualification_artifacts"):
+            result = controller.reconcile_ticket(claim)
+
+        self.assertEqual(result["status"], "blocked")
+        self.assertNotIn("state-machine", [call[0] for call in calls])
+        self.assertEqual([call[0] for call in calls].count("preflight"), 1)
+
+    def test_primed_planner_drift_falls_back_to_state_machine(self) -> None:
+        controller, claim, original = self.initialize_primed_planner_replay()
+        qualification = controller.qualification
+        assert qualification is not None
+        receipt_path = self.state / f"{claim['ticket']}.json"
+        passport_path = self.state / f"passports/{claim['ticket']}.json"
+
+        def signed(**changes):
+            value = {**original, **changes}
+            immutable = {
+                key: item for key, item in value.items()
+                if key not in {"consumed", "consumed_at_epoch", "receipt_sha256"}
+            }
+            value["receipt_sha256"] = hashlib.sha256(
+                CONTROL.canonical_document(immutable)
+            ).hexdigest()
+            return value
+
+        cases = {
+            "claim": ({"unexpected": True}, original, qualification, False),
+            "consumed": ({}, {**original, "consumed": True}, qualification, False),
+            "wrong-stage": ({}, signed(stage="RUN builder"), qualification, False),
+            "wrong-role": ({}, signed(role="builder"), qualification, False),
+            "release": ({}, signed(factory_sha="b" * 40), qualification, False),
+            "head": ({}, signed(head_sha="b" * 40), qualification, False),
+            "tree": ({}, signed(head_tree="b" * 40), qualification, False),
+            "ticket": ({}, signed(ticket_blob="b" * 40), qualification, False),
+            "lease": ({}, signed(lease_sha256="b" * 64), qualification, False),
+            "route": ({}, signed(route_plan_sha256="b" * 64), qualification, False),
+            "passport": ({}, original, qualification, True),
+            "successor": ({}, original, {**qualification, "mode": "successor"}, False),
+            "production": ({}, original, None, False),
+        }
+        for name, (claim_changes, receipt, mode, passport) in cases.items():
+            with self.subTest(name=name):
+                current_claim = {**claim, **claim_changes}
+                CONTROL.write(receipt_path, receipt)
+                controller.qualification = mode
+                if passport:
+                    passport_path.parent.mkdir(mode=0o700, exist_ok=True)
+                    CONTROL.write(passport_path, {})
+                state_machine_calls = []
+
+                def json_call(*arguments, **_kwargs):
+                    if arguments[0] == "renew":
+                        return {}
+                    if arguments[0] == "state-machine":
+                        state_machine_calls.append(arguments)
+                        return state_transition(
+                            "RUN planner", "f" * 64, claim["ticket"],
+                        )
+                    if arguments[:2] == ("publication", "withdraw"):
+                        return {"status": "absent"}
+                    raise AssertionError(arguments)
+
+                controller.json_call = json_call
+                controller.run_role = Mock(return_value=True)
+                result = controller.reconcile_ticket(current_claim)
+
+                self.assertEqual(result["status"], "progressed")
+                self.assertEqual(len(state_machine_calls), 1)
+                passport_path.unlink(missing_ok=True)
+
+        controller.qualification = qualification
 
     def test_qualification_prime_refuses_provider_residue(self) -> None:
         controller = self.qualification_controller()
@@ -22420,6 +22537,68 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(events, [(('closeout_deferred_pending_closeout', 'T-175'), {
             "pending_ticket": "T-174",
         })])
+
+    def test_qualification_closeout_waits_for_all_implementation_merges(
+        self,
+    ) -> None:
+        controller = CONTROL.Controller(self.args)
+        controller.qualification = {
+            "tickets": ["T-110", "T-111", "T-112"],
+        }
+        controller.product_ticket_done = lambda ticket: ticket == "T-112"
+        self.operator_passport("T-110", "Approved", "merged")
+        events = []
+        controller.event_once = lambda *args, **kwargs: events.append((args, kwargs))
+        controller.json_call = lambda *_args, **_kwargs: (
+            (_ for _ in ()).throw(AssertionError("closeout started early"))
+        )
+        claim = {
+            "lease": "a" * 64,
+            "ticket": "T-110",
+            "worktree": str(self.root / "cells/cell-1"),
+        }
+
+        self.assertFalse(controller.closeout(claim))
+        restarted = CONTROL.Controller(self.args)
+        restarted.qualification = controller.qualification
+        restarted.product_ticket_done = controller.product_ticket_done
+        restarted.event_once = controller.event_once
+        restarted.json_call = controller.json_call
+        self.assertFalse(restarted.closeout(claim))
+        self.operator_passport("T-111", "Review", "validating")
+        self.assertFalse(controller.closeout(claim))
+        self.operator_passport("T-111", "Blocked-Escalated", "merged")
+        self.assertFalse(controller.closeout(claim))
+        self.operator_passport(
+            "T-111", "Approved", "merged", factory_sha="9" * 40,
+        )
+        self.assertFalse(controller.closeout(claim))
+        self.operator_passport(
+            "T-111", "Approved", "merged", branch="ticket/T-999",
+        )
+        self.assertFalse(controller.closeout(claim))
+        self.assertEqual(events, [
+            (("closeout_deferred_pending_implementation", "T-110"), {
+                "pending_ticket": "T-111",
+            }),
+        ] * 6)
+
+        self.operator_passport("T-111", "Approved", "merged")
+        closeout = self.root / "cells/closeout-T-110"
+        done = closeout / "factory/attestations/T-110/done.json"
+        done.parent.mkdir(parents=True)
+        done.write_text("{}\n", encoding="utf-8")
+        controller.terminal_request = lambda *_args, **_kwargs: None
+        calls = []
+        controller.json_call = lambda *args, **_kwargs: (
+            calls.append(args) or {"closeout_pr_state": "OPEN"}
+        )
+        with patch.object(
+            CONTROL.subprocess, "run",
+            return_value=subprocess.CompletedProcess([], 0, "", ""),
+        ):
+            self.assertFalse(controller.closeout(claim))
+        self.assertEqual(calls[0][0], "ticket-attest")
 
     def test_closeout_records_exact_terminal_evidence_once(self) -> None:
         controller = CONTROL.Controller(self.args)

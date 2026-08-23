@@ -214,7 +214,12 @@ prime to admit the exact cohort, batch-pin from that bundle, and issue each
 unconsumed Planner receipt before publishing the existing mandatory restart
 boundary. Prime never runs preflight or a provider attempt, and replay refuses
 provider residue or consumed authority. Doctor and role admission still check
-the selected live route after restart. Batch pinning records cache consumption,
+the selected live route after restart. On that exact fresh restart, the
+controller reuses a still-unconsumed primed Planner receipt only when its
+current release, claim, branch, clean head/tree, ticket blob, lease, route, and
+absent passport all match. Successor and production lanes, or any drift, use
+the ordinary state-machine path. Planner preflight still authenticates and
+consumes the receipt before provider GO. Batch pinning records cache consumption,
 so subsequent Doctor checks resolve live readiness. The finisher repeats reconciliation after progress and while every
 pending result is a typed external publication wait, for at most ten minutes.
 A new command invocation
@@ -1659,6 +1664,14 @@ protected successor pin. Any additional ticket, authorization, pin, or identity
 change refuses closeout.
 An authenticated merged passport enters closeout before dependency refresh,
 even when a prior wait already released its publication lease.
+In sealed qualification, the serialized closeout entry remains closed until
+every selected manifest ticket has either authenticated protected-main Done or
+a current-release, canonical-branch Approved passport with
+`publication_state=merged`.
+Missing, non-merged, or foreign passports wait at that barrier; ordinary
+production closeout is unchanged. This lets concurrent implementation PRs
+settle before the existing one-at-a-time closeouts begin, so sibling closeout
+commits cannot invalidate implementation evidence still awaiting publication.
 An open closeout PR is a controller wait. After it merges, retrying `done`
 revalidates the exact protected-main Done receipt, ledger, original merge and
 checks, and closeout merge. The controller records one idempotent

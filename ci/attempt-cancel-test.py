@@ -18,6 +18,7 @@ from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
+COORDINATOR = ROOT / "scripts/provider-coordinator.py"
 
 
 def module(name, path):
@@ -39,7 +40,7 @@ LEDGER_HEADER = (
 class AttemptCancellationTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.root = Path(self.temp.name) / "product"
+        self.root = Path(self.temp.name).resolve() / "product"
         self.runs = self.root / "factory/runs"
         self.runs.mkdir(parents=True)
         (self.root / "factory/ledger.csv").write_text(LEDGER_HEADER)
@@ -86,7 +87,9 @@ class AttemptCancellationTest(unittest.TestCase):
             time.sleep(0.01)
         self.fail("test process did not appear")
 
-    def manifest(self, process, started, *, ticket="T-1", go="0"):
+    def manifest(
+        self, process, started, *, ticket="T-1", go="0", provider_attempt_id="",
+    ):
         run_id = "run-1"
         values = {
             "run_id": run_id,
@@ -106,6 +109,7 @@ class AttemptCancellationTest(unittest.TestCase):
             "role": "builder",
             "adapter": "mock",
             "provider_family": "openai",
+            "provider_attempt_id": provider_attempt_id,
             "model_id": "test",
             "selection_reason": "primary_ready",
             "adapter_version": "test",
@@ -122,6 +126,53 @@ class AttemptCancellationTest(unittest.TestCase):
             f"run_id={run_id}\nprocess_start={started}\n"
         )
         return values
+
+    def provider_command(self, database, *arguments):
+        result = subprocess.run(
+            [sys.executable, str(COORDINATOR), "--db", str(database), *arguments],
+            text=True, capture_output=True, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return json.loads(result.stdout)
+
+    def submitted_provider_attempt(self, database, attempt_id="provider-run-1"):
+        policy = database.with_name("policy.json")
+        policy.parent.mkdir(parents=True, exist_ok=True)
+        policy.parent.chmod(0o700)
+        policy.write_text(json.dumps({
+            "schema": "factory-provider-concurrency-policy/v1",
+            "coupled_max_concurrent": 1,
+            "global": {"max_concurrent": 1, "max_starts": 2, "window_seconds": 60},
+            "provider_families": {
+                "openai": {"max_concurrent": 1, "max_starts": 2, "window_seconds": 60},
+            },
+            "account_routes": {
+                "cursor": {"max_concurrent": 1, "max_starts": 2, "window_seconds": 60},
+            },
+        }))
+        reserve = self.provider_command(
+            database, "reserve", "--operation-id", f"reserve-{attempt_id}",
+            "--attempt-id", attempt_id, "--provider-family", "openai",
+            "--account-route", "cursor", "--reserve-micro-usd", "2000000",
+            "--product-id", "qualification:factory", "--ticket-id", "T-1",
+            "--budget-day", "2026-08-23",
+            "--product-daily-cap-micro-usd", "100000000",
+            "--ticket-cap-micro-usd", "25000000",
+            "--machine-daily-cap-micro-usd", "1000000000",
+            "--policy", str(policy), "--now", "100",
+        )["attempt"]
+        go_result = self.provider_command(
+            database, "mark-go", "--operation-id", f"go-{attempt_id}",
+            "--attempt-id", attempt_id, "--expected-version", str(reserve["version"]),
+            "--now", "101",
+        )
+        go = go_result.get("attempt", go_result)
+        self.provider_command(
+            database, "mark-submitted", "--operation-id", f"submit-{attempt_id}",
+            "--attempt-id", attempt_id, "--expected-version", str(go["version"]),
+            "--now", "102",
+        )
+        return attempt_id
 
     def write_meta(self, values):
         (self.runs / "run-1.meta").write_text(
@@ -307,6 +358,81 @@ class AttemptCancellationTest(unittest.TestCase):
         (self.runs / "run-1.cancel-request.json").write_bytes(CANCEL.canonical(other))
         with self.assertRaisesRegex(CANCEL.CancelError, "another cancellation request"):
             CANCEL.apply_plan(self.root, plan, 0.1)
+
+    def test_stale_provider_attempt_uses_authoritative_database_and_replays(self):
+        database = self.root.parent / "qualification/provider/accounting/state-v2.sqlite3"
+        attempt_id = self.submitted_provider_attempt(database)
+        process, started = self.spawn()
+        self.manifest(
+            process, started, go="1", provider_attempt_id=attempt_id,
+        )
+        process.terminate()
+        process.wait(timeout=5)
+        plan = CANCEL.calculate(
+            self.root, "T-1", "run-1", "operator_requested", "f" * 32,
+        )
+        with mock.patch.dict(
+            os.environ, {"FACTORY_PROVIDER_DB": str(database)}, clear=False,
+        ):
+            receipt = CANCEL.apply_plan(self.root, plan, 1)
+            self.assertEqual(CANCEL.apply_plan(self.root, plan, 1), receipt)
+        attempt = self.provider_command(
+            database, "status", "--attempt-id", attempt_id,
+        )["attempts"][0]
+        self.assertEqual(
+            (
+                receipt["accounting_state"], receipt["charged_usd"],
+                attempt["state"], attempt["terminal_result"],
+                attempt["charge_micro_usd"], attempt["version"],
+            ),
+            (
+                "cancelled_conservative", "2.00", "terminal", "cancelled",
+                2_000_000, 5,
+            ),
+        )
+
+    def test_provider_database_selection_is_fail_closed(self):
+        legacy = self.root.parent / "runtime/provider-state.sqlite3"
+        attempt_id = self.submitted_provider_attempt(legacy)
+        process, started = self.spawn()
+        manifest = self.manifest(
+            process, started, go="1", provider_attempt_id=attempt_id,
+        )
+        plan = CANCEL.calculate(
+            self.root, "T-1", "run-1", "operator_requested", "0" * 32,
+        )
+        with mock.patch.dict(os.environ, {"FACTORY_PROVIDER_DB": ""}, clear=False):
+            self.assertEqual(CANCEL.provider_database(self.root), legacy)
+
+        missing = self.root.parent / "missing.sqlite3"
+        with mock.patch.dict(
+            os.environ, {"FACTORY_PROVIDER_DB": str(missing)}, clear=False,
+        ), self.assertRaisesRegex(CANCEL.CancelError, "missing"):
+            CANCEL.converge_provider_attempt(self.root, manifest, plan)
+
+        linked = self.root.parent / "linked.sqlite3"
+        linked.symlink_to(legacy)
+        with mock.patch.dict(
+            os.environ, {"FACTORY_PROVIDER_DB": str(linked)}, clear=False,
+        ), self.assertRaisesRegex(CANCEL.CancelError, "unsafe"):
+            CANCEL.converge_provider_attempt(self.root, manifest, plan)
+
+        foreign = self.root.parent / "foreign.sqlite3"
+        self.provider_command(foreign, "status")
+        with mock.patch.dict(
+            os.environ, {"FACTORY_PROVIDER_DB": str(foreign)}, clear=False,
+        ), self.assertRaisesRegex(CANCEL.CancelError, "reconciliation failed"):
+            CANCEL.converge_provider_attempt(self.root, manifest, plan)
+
+        with mock.patch.dict(os.environ, {"FACTORY_PROVIDER_DB": ""}, clear=False):
+            CANCEL.converge_provider_attempt(self.root, manifest, plan)
+        terminal = self.provider_command(
+            legacy, "status", "--attempt-id", attempt_id,
+        )["attempts"][0]
+        self.assertEqual(
+            (terminal["state"], terminal["terminal_result"], terminal["charge_micro_usd"]),
+            ("terminal", "cancelled", 2_000_000),
+        )
 
     def test_stale_process_converges_without_signalling_or_replay(self):
         process, started = self.spawn()
