@@ -3873,13 +3873,27 @@ class Controller:
             raise ControllerError("qualification prime requires qualification mode")
         selected = set(self.qualification["tickets"])
         allowed = {
-            ".operator-apply-lock", ".operator-lock", "claims", "events", "logs",
+            ".operator-apply-lock", ".operator-lock", ".passport-key.lock",
+            "claims", "events", "logs",
             "operator-receipts", "passports", "passport.key", "reconcile.lock",
             f"qualification-restart-boundary-{self.release_path.name}.json",
             *(f"{ticket}.json" for ticket in selected),
         }
         if any(path.name not in allowed for path in self.state.iterdir()):
             raise ControllerError("qualification prime has execution residue")
+        for name in (
+            ".operator-apply-lock", ".operator-lock", ".passport-key.lock",
+            "passport.key", "reconcile.lock",
+        ):
+            path = self.state / name
+            if path.exists() or path.is_symlink():
+                info = path.lstat()
+                if (
+                    path.is_symlink() or not stat.S_ISREG(info.st_mode)
+                    or info.st_uid != os.geteuid() or info.st_nlink != 1
+                    or stat.S_IMODE(info.st_mode) != 0o600
+                ):
+                    raise ControllerError("qualification prime has execution residue")
         claims = safe_directory(self.state / "claims")
         if {path.name for path in claims.iterdir()} != {
             f"{ticket}.json" for ticket in selected

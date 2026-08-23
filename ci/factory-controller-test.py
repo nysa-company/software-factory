@@ -4368,6 +4368,13 @@ class FactoryControllerTest(unittest.TestCase):
             controller.prime_qualification(claims)
         (self.state / f"qualification-restart-boundary-{'b' * 40}.json").unlink()
 
+        (self.state / ".passport-key.lock").symlink_to(self.state / "passport.key")
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "qualification prime has execution residue",
+        ):
+            controller.prime_qualification(claims)
+        (self.state / ".passport-key.lock").unlink()
+
         CONTROL.write(self.state / "claims/T-999.json", claims[0])
         with self.assertRaisesRegex(
             CONTROL.ControllerError, "qualification prime has execution residue",
