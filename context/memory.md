@@ -7930,6 +7930,17 @@ selected cohort's known claim, receipt, restart, lock, log, event, and passport
 namespaces and rejects foreign controller residue before route pinning or any
 provider transition.
 
+## 2026-08-23 — Decision 585: Qualification closeout follows cohort publication
+
+Category: Reliability
+
+Sealed qualification does not enter any ticket closeout until every selected
+ticket is either protected Done or has an authenticated current-release,
+canonical-branch Approved passport whose implementation publication is merged.
+Missing, blocked, unmerged, and foreign passports wait deterministically in
+manifest order.
+Existing serialized closeout and ordinary production behavior remain unchanged.
+
 ## 2026-08-23 — Decision 584: Cancellation binds authoritative provider state
 
 Category: Reliability

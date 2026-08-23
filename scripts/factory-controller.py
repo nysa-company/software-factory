@@ -12710,6 +12710,23 @@ class Controller:
 
     def closeout_serialized(self, claim: dict[str, Any]) -> bool:
         ticket = claim["ticket"]
+        if self.qualification:
+            for pending_ticket in self.qualification["tickets"]:
+                if self.product_ticket_done(pending_ticket):
+                    continue
+                passport = self.authenticated_operator_passport(pending_ticket)
+                if (
+                    passport is None
+                    or passport.get("factory_sha") != self.release_path.name
+                    or passport.get("branch") != f"ticket/{pending_ticket}"
+                    or passport.get("current_state") != "Approved"
+                    or passport.get("publication_state") != "merged"
+                ):
+                    self.event_once(
+                        "closeout_deferred_pending_implementation", ticket,
+                        pending_ticket=pending_ticket,
+                    )
+                    return False
         root = Path(claim["worktree"]).parent
         for sibling in sorted(root.glob("closeout-T-*")):
             sibling_ticket = sibling.name.removeprefix("closeout-")

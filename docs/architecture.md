@@ -1659,6 +1659,14 @@ protected successor pin. Any additional ticket, authorization, pin, or identity
 change refuses closeout.
 An authenticated merged passport enters closeout before dependency refresh,
 even when a prior wait already released its publication lease.
+In sealed qualification, the serialized closeout entry remains closed until
+every selected manifest ticket has either authenticated protected-main Done or
+a current-release, canonical-branch Approved passport with
+`publication_state=merged`.
+Missing, non-merged, or foreign passports wait at that barrier; ordinary
+production closeout is unchanged. This lets concurrent implementation PRs
+settle before the existing one-at-a-time closeouts begin, so sibling closeout
+commits cannot invalidate implementation evidence still awaiting publication.
 An open closeout PR is a controller wait. After it merges, retrying `done`
 revalidates the exact protected-main Done receipt, ledger, original merge and
 checks, and closeout merge. The controller records one idempotent

@@ -22421,6 +22421,68 @@ class FactoryControllerTest(unittest.TestCase):
             "pending_ticket": "T-174",
         })])
 
+    def test_qualification_closeout_waits_for_all_implementation_merges(
+        self,
+    ) -> None:
+        controller = CONTROL.Controller(self.args)
+        controller.qualification = {
+            "tickets": ["T-110", "T-111", "T-112"],
+        }
+        controller.product_ticket_done = lambda ticket: ticket == "T-112"
+        self.operator_passport("T-110", "Approved", "merged")
+        events = []
+        controller.event_once = lambda *args, **kwargs: events.append((args, kwargs))
+        controller.json_call = lambda *_args, **_kwargs: (
+            (_ for _ in ()).throw(AssertionError("closeout started early"))
+        )
+        claim = {
+            "lease": "a" * 64,
+            "ticket": "T-110",
+            "worktree": str(self.root / "cells/cell-1"),
+        }
+
+        self.assertFalse(controller.closeout(claim))
+        restarted = CONTROL.Controller(self.args)
+        restarted.qualification = controller.qualification
+        restarted.product_ticket_done = controller.product_ticket_done
+        restarted.event_once = controller.event_once
+        restarted.json_call = controller.json_call
+        self.assertFalse(restarted.closeout(claim))
+        self.operator_passport("T-111", "Review", "validating")
+        self.assertFalse(controller.closeout(claim))
+        self.operator_passport("T-111", "Blocked-Escalated", "merged")
+        self.assertFalse(controller.closeout(claim))
+        self.operator_passport(
+            "T-111", "Approved", "merged", factory_sha="9" * 40,
+        )
+        self.assertFalse(controller.closeout(claim))
+        self.operator_passport(
+            "T-111", "Approved", "merged", branch="ticket/T-999",
+        )
+        self.assertFalse(controller.closeout(claim))
+        self.assertEqual(events, [
+            (("closeout_deferred_pending_implementation", "T-110"), {
+                "pending_ticket": "T-111",
+            }),
+        ] * 6)
+
+        self.operator_passport("T-111", "Approved", "merged")
+        closeout = self.root / "cells/closeout-T-110"
+        done = closeout / "factory/attestations/T-110/done.json"
+        done.parent.mkdir(parents=True)
+        done.write_text("{}\n", encoding="utf-8")
+        controller.terminal_request = lambda *_args, **_kwargs: None
+        calls = []
+        controller.json_call = lambda *args, **_kwargs: (
+            calls.append(args) or {"closeout_pr_state": "OPEN"}
+        )
+        with patch.object(
+            CONTROL.subprocess, "run",
+            return_value=subprocess.CompletedProcess([], 0, "", ""),
+        ):
+            self.assertFalse(controller.closeout(claim))
+        self.assertEqual(calls[0][0], "ticket-attest")
+
     def test_closeout_records_exact_terminal_evidence_once(self) -> None:
         controller = CONTROL.Controller(self.args)
         cell = self.root / "cells/cell-1"
