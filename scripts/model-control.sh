@@ -34,9 +34,14 @@ TEMPORARY_DIR=""
 FALLBACK_LAUNCH_LOCK=""
 CONTROL_GITHUB_HELPER=""
 CONTROL_GITHUB_CONFIG_DIR=""
+PIN_BATCH_PIDS=()
 
 cleanup() {
   local rc=$?
+  if [[ "${#PIN_BATCH_PIDS[@]}" -gt 0 ]]; then
+    kill "${PIN_BATCH_PIDS[@]}" 2>/dev/null || true
+    wait "${PIN_BATCH_PIDS[@]}" 2>/dev/null || true
+  fi
   [[ -z "$TEMPORARY_FILE" ]] || rm -f "$TEMPORARY_FILE"
   [[ -z "$TEMPORARY_READINESS_FILE" ]] || rm -f "$TEMPORARY_READINESS_FILE"
   [[ -z "$TEMPORARY_DIR" ]] || rm -rf "$TEMPORARY_DIR"
@@ -1697,14 +1702,28 @@ PY
         json_resolution_error pin "${FACTORY_RESOLVE_ERROR:-unknown}" \
           "$FACTORY_MODEL_PROFILE_ID" "$readiness"
     fi
-    pin_results=()
+    pin_batch_dir="$(mktemp -d "$FACTORY_MODEL_STATE_ROOT/.model-control-pins.XXXXXX")" ||
+      json_error "could not allocate batch pin results"
+    TEMPORARY_DIR="$pin_batch_dir"
+    pin_pids=()
     for index in "${!tickets[@]}"; do
-      pin_result="$(FACTORY_CERTIFIED_PRODUCT_ORIGIN="$FACTORY_TRUSTED_PRODUCT_ORIGIN" \
+      FACTORY_CERTIFIED_PRODUCT_ORIGIN="$FACTORY_TRUSTED_PRODUCT_ORIGIN" \
         FACTORY_INTERNAL_BATCH_RESOLUTION="$resolution" \
         /bin/bash "$KIT_DIR/scripts/model-control.sh" pin \
-        --ticket "${tickets[$index]}" --workdir "${workdirs[$index]}")" ||
-        json_error "batch ticket pin failed for ${tickets[$index]}"
-      pin_results+=("$pin_result")
+        --ticket "${tickets[$index]}" --workdir "${workdirs[$index]}" \
+        >"$pin_batch_dir/$index.out" 2>"$pin_batch_dir/$index.err" &
+      pin_pids+=("$!")
+    done
+    PIN_BATCH_PIDS=("${pin_pids[@]}")
+    pin_failed=""
+    for index in "${!tickets[@]}"; do
+      wait "${pin_pids[$index]}" || pin_failed="${pin_failed:-${tickets[$index]}}"
+    done
+    PIN_BATCH_PIDS=()
+    [[ -z "$pin_failed" ]] || json_error "batch ticket pin failed for $pin_failed"
+    pin_results=()
+    for index in "${!tickets[@]}"; do
+      pin_results+=("$(cat "$pin_batch_dir/$index.out")")
     done
     [[ "$used_qualification_bundle" -eq 0 ]] ||
       consume_qualification_model_bundle

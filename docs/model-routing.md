@@ -86,6 +86,11 @@ condition as a no-claim wait and returns the bounded ticket outcome; a permanent
 failure returns the same evidence with error status. Existing pinned work is
 submitted before either new-admission outcome.
 
+After that one batch resolution, initial pins for distinct ticket worktrees run
+concurrently. Each ticket retains its own exact branch, commit, remote lease,
+push verification, and ordered result slot; a failed sibling makes the batch
+fail and ordinary replay revalidates already-pushed pins idempotently.
+
 ## Product-owned policy backend
 
 A product may own `factory/model-policy.json` with schema

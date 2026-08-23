@@ -7840,3 +7840,13 @@ polls only typed authenticated GitHub, protected-merge, publication-lease, and
 closeout waits for at most ten minutes; human and untyped waits return. Provider
 active-run ownership now covers the complete terminal accounting, output, PID,
 and lock cleanup tail before closeout may proceed.
+
+## 2026-08-23 — Decision 577: Batch pinning overlaps isolated ticket pushes
+
+Category: Performance
+
+After one shared model resolution, `models pin-batch` runs each distinct
+ticket-worktree pin concurrently and returns results in requested ticket order.
+Every child retains the existing exact-branch commit, force-with-lease push,
+remote verification, and idempotent replay contract; any failed child fails the
+whole batch without inventing cleanup authority for a successful sibling.
