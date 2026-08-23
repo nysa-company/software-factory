@@ -84,6 +84,8 @@ class QualificationEnvironmentTest(unittest.TestCase):
             "#!/bin/sh\n"
             "if [ \"${2:-}\" = doctor ]; then\n"
             "  printf '%s\\n' '{\"checks\":{},\"overall_status\":\"ok\",\"schema\":\"nysa.software-factory.doctor/v2\"}'\n"
+            "elif [ \"${2:-}\" = qualification-prime ]; then\n"
+            "  printf '%s\\n' '{\"active\":3,\"results\":[],\"schema\":\"nysa.software-factory.controller/v1\",\"status\":\"restart_required\"}'\n"
             "fi\n",
             encoding="utf-8",
         )
@@ -518,6 +520,33 @@ class QualificationEnvironmentTest(unittest.TestCase):
                 self.original_operator_seed
             )
         shutil.rmtree(self.workspace)
+
+    def test_planner_prime_requires_exact_restart_evidence(self) -> None:
+        release = self.workspace / "prime-release"
+        scripts = release / "scripts"
+        scripts.mkdir(parents=True)
+        launcher = scripts / "factory-launch"
+        launcher.write_text(
+            "#!/bin/sh\n"
+            "printf '%s\\n' '{\"active\":3,\"results\":[],"
+            "\"schema\":\"nysa.software-factory.controller/v1\","
+            "\"status\":\"restart_required\"}'\n",
+            encoding="utf-8",
+        )
+        launcher.chmod(0o700)
+        ENVIRONMENT.prime_qualification(release, "relay")
+
+        launcher.write_text(
+            "#!/bin/sh\n"
+            "printf '%s\\n' '{\"active\":3,\"results\":[{}],"
+            "\"schema\":\"nysa.software-factory.controller/v1\","
+            "\"status\":\"restart_required\"}'\n",
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError, "Planner prime failed",
+        ):
+            ENVIRONMENT.prime_qualification(release, "relay")
 
     def test_provider_cli_pin_gate_rejects_ambiguous_or_stale_evidence(self) -> None:
         sha = "a" * 40

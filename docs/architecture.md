@@ -209,10 +209,13 @@ against reconciliation,
 projects an approval only from an exact selected clean parked claim and its
 committed bundle. Preparation also persists the complete task-free model
 resolution and readiness as an owner-only, content-hashed bundle bound by the
-activation receipt. Doctor, admission, and batch pinning reuse it across the
-mandatory controller restart; role admission still checks the selected live
-route. Batch pinning records cache consumption, so subsequent Doctor checks
-resolve live readiness. The finisher repeats reconciliation after progress and while every
+activation receipt. A fresh isolated activation uses the sealed qualification
+prime to admit the exact cohort, batch-pin from that bundle, and issue each
+unconsumed Planner receipt before publishing the existing mandatory restart
+boundary. Prime never runs preflight or a provider attempt, and replay refuses
+provider residue or consumed authority. Doctor and role admission still check
+the selected live route after restart. Batch pinning records cache consumption,
+so subsequent Doctor checks resolve live readiness. The finisher repeats reconciliation after progress and while every
 pending result is a typed external publication wait, for at most ten minutes.
 A new command invocation
 runs a fresh Doctor, every cached iteration remains bound to the exact manifest

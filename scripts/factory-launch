@@ -28,7 +28,7 @@ die() {
 }
 
 usage() {
-  echo "usage: factory-launch <project> <contract|doctor|reconcile|incident-report|watch|ticket-control|qualification-run|qualification-finish|qualification-resume|qualification-history-repair|qualification|dispatch-plan|state-machine|emergency-admit|passport|publication|publication-repair|ci-rerun|ticket-pr|models|envelope|operator|operator-snapshot|attempt|claim|renew|release|release-expired|preflight|next-stage|ticket-state|ticket-attest|project-ledger|reorder-test-fixes|run> [arguments]" >&2
+  echo "usage: factory-launch <project> <contract|doctor|reconcile|incident-report|watch|ticket-control|qualification-prime|qualification-run|qualification-finish|qualification-resume|qualification-history-repair|qualification|dispatch-plan|state-machine|emergency-admit|passport|publication|publication-repair|ci-rerun|ticket-pr|models|envelope|operator|operator-snapshot|attempt|claim|renew|release|release-expired|preflight|next-stage|ticket-state|ticket-attest|project-ledger|reorder-test-fixes|run> [arguments]" >&2
   exit 2
 }
 
@@ -1456,10 +1456,16 @@ PY
     exec_selected_helper "$DOCTOR" --json --project "$PROJECT" \
       --kit-dir "$RELEASE_PATH" --product-root "$PRODUCT_ROOT" --kit-sha "$KIT_SHA"
     ;;
-  reconcile)
+  reconcile|qualification-prime)
     [[ "$ACTIVE_CONTRACT" == "1.8.0" || "$ACTIVE_CONTRACT" == "2.0.0" ]] ||
       die "deterministic reconciliation requires contract 1.8.0 or newer"
     require_exact "--json" "$@"
+    CONTROLLER_ACTION=()
+    if [[ "$COMMAND" == "qualification-prime" ]]; then
+      [[ "$QUALIFICATION_LAUNCHER" == "1" && "$QUALIFICATION_MODE" == "isolated" ]] ||
+        die "qualification prime requires a sealed isolated qualification launcher"
+      CONTROLLER_ACTION=(--action prime)
+    fi
     controller_state_dir
     CONTROLLER="$RELEASE_PATH/scripts/factory-controller.py"
     require_managed_file "$CONTROLLER" "active release controller"
@@ -1478,7 +1484,8 @@ PY
       --project "$PROJECT" \
       --product-root "$PRODUCT_ROOT" \
       --release-path "$RELEASE_PATH" \
-      --state-dir "$CONTROLLER_STATE_DIR"
+      --state-dir "$CONTROLLER_STATE_DIR" \
+      "${CONTROLLER_ACTION[@]}"
     ;;
   incident-report)
     [[ "$QUALIFICATION_LAUNCHER" -eq 0 ]] ||

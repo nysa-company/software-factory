@@ -3631,6 +3631,103 @@ class Controller:
         self.event("model_pin_batch", tickets=[claim["ticket"] for claim in missing])
         return []
 
+    def qualification_provider_pristine(self) -> None:
+        if not self.qualification:
+            raise ControllerError("qualification prime requires qualification mode")
+        database = os.environ.get("FACTORY_PROVIDER_DB", "")
+        if not database or not Path(database).is_absolute():
+            raise ControllerError("qualification provider state is unavailable")
+        result = subprocess.run(
+            [
+                sys.executable, "-I", "-S",
+                str(self.release_path / "scripts/provider-coordinator.py"),
+                "--db", database, "status",
+            ],
+            text=True, capture_output=True, check=False, timeout=120,
+        )
+        try:
+            status = json.loads(result.stdout)
+        except json.JSONDecodeError as error:
+            raise ControllerError(
+                "qualification provider state is malformed"
+            ) from error
+        if (
+            result.returncode
+            or not isinstance(status, dict)
+            or status.get("schema") != "factory-provider-coordinator/v1"
+            or status.get("attempts") != []
+            or status.get("counts") != {}
+            or status.get("legacy_intervals") != []
+            or status.get("active_reserve_micro_usd") != 0
+        ):
+            raise ControllerError("qualification provider state is not pristine")
+
+    def prime_planner_transition(self, claim: dict[str, Any]) -> None:
+        if (
+            claim.get("status") != "claimed"
+            or claim.get("receipt")
+            or claim.get("role")
+            or claim.get("publication_lease")
+            or claim.get("lease_released") is True
+            or self.role_active(claim)
+            or self.route_path(claim).is_symlink()
+            or not self.route_path(claim).is_file()
+        ):
+            raise ControllerError("qualification Planner prime state is invalid")
+        path = self.state / f"{claim['ticket']}.json"
+        transition = self.transition_receipt(claim, record=False)
+        if (path.exists() or path.is_symlink()) and transition is None:
+            raise ControllerError("qualification Planner receipt is invalid")
+        if transition is None:
+            result = self.json_call(
+                "state-machine", "--ticket", claim["ticket"],
+                "--lease", claim["lease"], "--workdir", claim["worktree"],
+                "--json", timeout=None,
+            )
+            if (
+                not valid_transition_evidence(result, claim["ticket"])
+                or result.get("stage") != "RUN planner"
+                or result.get("role") != "planner"
+            ):
+                raise ControllerError(
+                    "qualification Planner transition is invalid"
+                )
+            transition = self.transition_receipt(claim, record=False)
+        head = self.cell_git(claim, "rev-parse", "HEAD").stdout.strip()
+        if (
+            transition is None
+            or transition.get("stage") != "RUN planner"
+            or transition.get("role") != "planner"
+            or transition.get("consumed") is not False
+            or transition.get("head_sha") != head
+            or transition.get("lease_sha256")
+            != hashlib.sha256(claim["lease"].encode()).hexdigest()
+        ):
+            raise ControllerError("qualification Planner receipt is invalid")
+
+    def prime_qualification(self, claims: list[dict[str, Any]]) -> None:
+        if not self.qualification:
+            raise ControllerError("qualification prime requires qualification mode")
+        selected = sorted(self.qualification["tickets"])
+        if (
+            sorted(claim["ticket"] for claim in claims) != selected
+            or self.active_run_tickets()
+        ):
+            raise ControllerError("qualification prime has execution residue")
+        self.qualification_provider_pristine()
+        pin_results = self.pin_routes(claims)
+        if pin_results:
+            raise ControllerError("qualification Planner routes are not ready")
+        for claim in claims:
+            if claim.get("status") == "waiting" and not claim.get("blocked_reason"):
+                claim["status"] = "claimed"
+                self.save_claim(claim)
+        with ThreadPoolExecutor(max_workers=min(4, len(claims))) as executor:
+            list(executor.map(self.prime_planner_transition, claims))
+        self.qualification_provider_pristine()
+        if self.active_run_tickets():
+            raise ControllerError("qualification prime has execution residue")
+
     def release(self, claim: dict[str, Any]) -> None:
         self.withdraw_publication(claim)
         self.json_call(
@@ -13523,13 +13620,25 @@ class Controller:
                 return result
             self.mark_reconciling(claim, after_progress=True)
 
-    def reconcile(self) -> dict[str, Any]:
+    def reconcile(self, *, prime: bool = False) -> dict[str, Any]:
         self.qualification_cohort_error.clear()
         self.admission_refusals = {}
         self.model_admission_outcome = None
         self.invalid_transition_tickets.clear()
         self.prior_transition_tickets.clear()
         existing = self.load_claims()
+        if prime and not self.qualification:
+            raise ControllerError("qualification prime requires qualification mode")
+        if prime and self.qualification_marker("qualification-restart-boundary"):
+            if self.qualification_marker("qualification-recovered"):
+                raise ControllerError("qualification prime crossed the restart boundary")
+            self.prime_qualification(existing)
+            return {
+                "active": len(existing),
+                "results": [],
+                "schema": SCHEMA,
+                "status": "restart_required",
+            }
         if self.repository_test and (
             existing
             or self.active_run_tickets()
@@ -13678,6 +13787,8 @@ class Controller:
             })
             target = self.qualification["target_done"]
             if len(accounted) == target:
+                if prime:
+                    self.prime_qualification(claims)
                 self.qualification_marker(
                     "qualification-restart-boundary", create=True,
                 )
@@ -14108,7 +14219,7 @@ def main() -> None:
     parser.add_argument("--worktree-root", type=Path)
     parser.add_argument(
         "--action", choices=(
-            "reconcile", "pause", "resume",
+            "reconcile", "prime", "pause", "resume",
             "preview-timeout-retry",
             "authorize-round-plan", "authorize-round-apply",
             "contract-repair-plan", "contract-repair-apply",
@@ -14132,7 +14243,7 @@ def main() -> None:
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", args.project):
             raise ControllerError("invalid project")
         if (
-            (args.action == "reconcile" and any((
+            (args.action in {"reconcile", "prime"} and any((
                 args.ticket, args.issue, args.factory_sha, args.role,
                 args.semantic_round, args.run_ordinal, args.operator_id,
                 args.approve_hash, args.receipt,
@@ -14248,6 +14359,8 @@ def main() -> None:
                 args.ticket, args.run_ordinal, args.operator_id,
                 args.approve_hash,
             )
+        elif args.action == "prime":
+            result = controller.reconcile(prime=True)
         else:
             if args.ticket:
                 raise ControllerError("reconcile does not accept a ticket")

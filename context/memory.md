@@ -28,6 +28,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - The local operator console keeps supported approval hashes in its authenticated server session, and qualification resume reads its owner-only plan internally: operators approve an exact action without transcribing a digest, while sealed apply paths still recompute and validate the binding before mutation.
 - Fresh operator maps use an object-valued `_config` accepted by qualification, and nonvisual publication treats only exact current-ticket Ready audit receipts as metadata; foreign or malformed receipt paths remain semantic and fail closed.
 - Disjoint protected sibling refreshes recognize exact sibling Ready audit receipts and retain existing Reviewer/Narrator evidence. Done reuses exact approved-head checks only across a tree-identical authenticated merge with unchanged protected check policy; every mismatch or unavailable head result falls back to merge-commit evidence.
+- Fresh isolated preparation completes a sealed provider-free prime before returning: the exact cohort is claimed, batch-pinned, and advanced to unconsumed Planner receipts before the existing restart boundary. Replay is idempotent only while provider accounting is pristine and every receipt remains exact and unconsumed; ordinary finish retains fresh Doctor and live Planner preflight.
 - **Contract rules below in Operating contract are authoritative**; this summary is only what the session hook can inject.
 
 ## Operating contract
@@ -814,6 +815,16 @@ everything the Factory actually enforces lives here.
   un-restored occurrence also requires protected in-flight rewrite authority.
 
 ## Log
+
+## 2026-08-23 — Fresh qualification primes Planner authority before restart
+
+Category: System change
+
+Fresh isolated preparation now calls one sealed qualification-only controller
+prime. It reuses ordinary admission, batch route pinning, and state-machine
+receipts, then writes the existing restart boundary without preflight or a
+provider attempt. Partial replay completes safely; provider residue, active
+runs, malformed or consumed receipts, and nonqualification use remain closed.
 
 ## 2026-08-18 — Public dual license is AGPLv3 plus paid commercial
 

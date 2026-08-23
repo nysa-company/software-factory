@@ -4031,6 +4031,117 @@ class FactoryControllerTest(unittest.TestCase):
             (self.state / f"qualification-recovered-{'a' * 40}.json").is_file()
         )
 
+    def test_qualification_prime_prepares_planners_before_restart(self) -> None:
+        controller = self.qualification_controller()
+        controller.qualification_admission_preflight = lambda _claims: None
+        claims = []
+        for number, ticket in enumerate(controller.qualification["tickets"], 1):
+            cell = self.root / f"prime-{number}"
+            cell.mkdir()
+            claim = {
+                "branch": f"ticket/{ticket}", "lease": f"{number:064x}",
+                "priority": "normal", "receipt": "", "role": "",
+                "schema": CONTROL.CLAIM_SCHEMA, "status": "claimed",
+                "ticket": ticket, "worktree": str(cell),
+            }
+            claims.append(claim)
+        controller.claim_new = lambda _existing: claims
+        observed = []
+
+        def prime(items):
+            self.assertFalse(controller.qualification_marker(
+                "qualification-restart-boundary"
+            ))
+            observed.extend(item["ticket"] for item in items)
+
+        controller.prime_qualification = prime
+        result = controller.reconcile(prime=True)
+
+        self.assertEqual(result["status"], "restart_required")
+        self.assertEqual(sorted(observed), sorted(controller.qualification["tickets"]))
+        self.assertTrue(controller.qualification_marker(
+            "qualification-restart-boundary"
+        ))
+
+    def test_planner_prime_replays_only_exact_unconsumed_receipt(self) -> None:
+        controller = self.qualification_controller()
+        ticket = controller.qualification["tickets"][0]
+        cell = self.root / "prime-cell"
+        subprocess.run(
+            ["git", "init", "-q", "-b", f"ticket/{ticket}", str(cell)],
+            check=True,
+        )
+        route = cell / f"factory/route-plans/{ticket}.json"
+        route.parent.mkdir(parents=True)
+        route.write_text("{}\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(cell), "add", "."], check=True)
+        subprocess.run([
+            "git", "-C", str(cell), "-c", "user.name=Factory",
+            "-c", "user.email=factory@example.invalid", "commit", "-qm", "prime",
+        ], check=True)
+        head = subprocess.run(
+            ["git", "-C", str(cell), "rev-parse", "HEAD"],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+        claim = {
+            "branch": f"ticket/{ticket}", "lease": "1" * 64,
+            "priority": "normal", "receipt": "", "role": "",
+            "schema": CONTROL.CLAIM_SCHEMA, "status": "claimed",
+            "ticket": ticket, "worktree": str(cell),
+        }
+        receipt = {
+            "branch": claim["branch"], "consumed": False,
+            "contract_version": "1.8.0", "factory_sha": self.release.name,
+            "head_sha": head,
+            "lease_sha256": hashlib.sha256(claim["lease"].encode()).hexdigest(),
+            "project": "relay", "role": "planner",
+            "schema": "nysa.software-factory.transition-receipt/v1",
+            "stage": "RUN planner", "ticket": ticket,
+        }
+        receipt["receipt_sha256"] = hashlib.sha256(CONTROL.canonical_document({
+            key: item for key, item in receipt.items()
+            if key not in {"consumed", "receipt_sha256"}
+        })).hexdigest()
+        CONTROL.write(self.state / f"{ticket}.json", receipt)
+        controller.json_call = Mock(side_effect=AssertionError("receipt replayed"))
+
+        controller.prime_planner_transition(claim)
+        receipt["consumed"] = True
+        CONTROL.write(self.state / f"{ticket}.json", receipt)
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "Planner receipt is invalid",
+        ):
+            controller.prime_planner_transition(claim)
+        receipt.update(consumed=False, receipt_sha256="0" * 64)
+        CONTROL.write(self.state / f"{ticket}.json", receipt)
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "Planner receipt is invalid",
+        ):
+            controller.prime_planner_transition(claim)
+
+    def test_qualification_prime_refuses_provider_residue(self) -> None:
+        controller = self.qualification_controller()
+        status = {
+            "active_reserve_micro_usd": 1,
+            "attempts": [{"attempt_id": "unexpected"}],
+            "counts": {"reserved": 1},
+            "legacy_intervals": [],
+            "schema": "factory-provider-coordinator/v1",
+        }
+        with (
+            patch.dict(os.environ, {"FACTORY_PROVIDER_DB": str(self.root / "provider.db")}),
+            patch.object(
+                CONTROL.subprocess, "run",
+                return_value=subprocess.CompletedProcess(
+                    [], 0, json.dumps(status), "",
+                ),
+            ),
+            self.assertRaisesRegex(
+                CONTROL.ControllerError, "provider state is not pristine",
+            ),
+        ):
+            controller.qualification_provider_pristine()
+
     def test_qualification_restart_preserves_blocked_target_claims(self) -> None:
         tickets = [f"T-{number}" for number in range(110, 113)]
         (self.product / "factory/PROJECT.env").write_text(

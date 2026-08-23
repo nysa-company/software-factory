@@ -303,7 +303,11 @@ fallback route plus expected and installed versions. Preparation records the
 full task-free model resolution in an owner-only bundle whose digest is bound
 by the activation receipt. Doctor, admission, and batch pinning reuse only that
 exact bundle until batch pinning consumes it; later Doctor runs and every role
-perform live checks. Do not replay a completed
+perform live checks. Fresh isolated preparation also completes the sealed
+provider-free Planner prime before it returns: exact claims, route pins, and
+unconsumed Planner receipts exist behind the mandatory restart boundary, with
+no provider attempt or reservation. Replaying preparation validates that same
+boundary and refuses consumed authority or execution residue. Do not replay a completed
 Cursor role or edit its claim/passport: exact identity-only success is recovered
 without another provider call, while a typed `qualification-fallback-refused`
 claim remains parked until a successor release contains the repair.
