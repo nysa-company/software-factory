@@ -22,6 +22,7 @@ from inflight_release import (  # noqa: E402
     AuthorizationError, parse_authorization, ticket_source_kit,
 )
 from legacy_closeout import ValidationError, run as run_git  # noqa: E402
+from qualification_release import ReceiptError, receipt_chain  # noqa: E402
 import operator_receipt  # noqa: E402
 
 
@@ -260,6 +261,19 @@ def qualification_basis() -> tuple[
     finally:
         if descriptor >= 0:
             os.close(descriptor)
+
+
+def immediate_release_predecessor(project: str, factory_sha: str) -> str:
+    """Return the one receipt-authenticated predecessor of this activation."""
+    try:
+        release = Path(os.environ.get("FACTORY_RELEASE_PATH", ""))
+        manifest = Path(os.environ.get("FACTORY_QUALIFICATION_MANIFEST", ""))
+        if not release.is_absolute() or release.name != factory_sha or not manifest.is_absolute():
+            return ""
+        chain = receipt_chain(release, project, manifest.parent.parent)
+        return chain[1][0] if len(chain) > 1 else ""
+    except ReceiptError:
+        return ""
 
 
 def route_migration_arguments(
@@ -1017,6 +1031,9 @@ def doctor_allows_reconcile(
                 and len(incident_factories) == 1
                 and factory_sha not in incident_factories
             )
+            or incident_factories == {
+                immediate_release_predecessor(project, factory_sha)
+            }
         )
     )
     if not transition_ok and not transition_recovery:

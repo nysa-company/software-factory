@@ -41,6 +41,7 @@ from qualification_manifest import (  # noqa: E402
     committed_blob as committed_qualification_blob,
     validate as validate_qualification_manifest,
 )
+from qualification_release import ReceiptError, receipt_chain  # noqa: E402
 from inflight_release import (  # noqa: E402
     AuthorizationError as InflightAuthorizationError,
     parse_authorization as parse_inflight_authorization,
@@ -1587,50 +1588,13 @@ class Controller:
         }
 
     def qualification_release_receipts(self) -> dict[str, str]:
-        root = safe_directory(self.release_path.parent.parent)
-        if self.release_path.parent.name != "releases":
-            raise ControllerError("qualification release path is invalid")
-        projects = safe_directory(root / "projects")
-        active = read(safe_directory(projects / self.project) / "active.json")
-        receipts = safe_directory(root / "receipts")
-        receipt_id = active.get("receipt_id")
-        if (
-            active.get("project") != self.project
-            or active.get("kit_sha") != self.release_path.name
-            or active.get("release_path") != str(self.release_path)
-            or not DIGEST.fullmatch(receipt_id or "")
-        ):
-            raise ControllerError("qualification release receipt is invalid")
+        try:
+            chain = receipt_chain(self.release_path, self.project, self.product)
+        except ReceiptError as error:
+            raise ControllerError("qualification release receipt is invalid") from error
         result: dict[str, str] = {}
-        seen: set[str] = set()
-        while receipt_id:
-            if receipt_id in seen or len(seen) >= 128:
-                raise ControllerError("qualification release receipt is invalid")
-            seen.add(receipt_id)
-            receipt = read(receipts / f"{receipt_id}.json")
-            unsigned = dict(receipt)
-            embedded = unsigned.pop("receipt_id", "")
-            previous = receipt.get("previous_receipt_id")
-            kit_sha = receipt.get("kit_sha")
-            if (
-                embedded != receipt_id
-                or receipt_id
-                != hashlib.sha256((canonical(unsigned) + "\n").encode()).hexdigest()
-                or receipt.get("project") != self.project
-                or receipt.get("contract_version") not in CONTROLLER_CONTRACTS
-                or receipt.get("qualification_mode") != "isolated"
-                or receipt.get("product_path") != str(self.product)
-                or receipt.get("status") != "pass"
-                or not SHA.fullmatch(kit_sha or "")
-                or not SHA.fullmatch(receipt.get("kit_tree") or "")
-                or not DIGEST.fullmatch(receipt.get("provider_policy_sha256") or "")
-                or (previous is not None and not DIGEST.fullmatch(previous or ""))
-            ):
-                raise ControllerError("qualification release receipt is invalid")
+        for kit_sha, receipt_id in chain:
             result.setdefault(kit_sha, receipt_id)
-            receipt_id = previous
-        if self.release_path.name not in result:
-            raise ControllerError("qualification release receipt is invalid")
         return result
 
     def qualification_emergency_terminal(self, ticket: str) -> dict[str, Any]:
@@ -8007,6 +7971,29 @@ class Controller:
             migration_complete = (
                 prior == self.release_path.name and self.marker(completed)
             )
+            completion_recovery = (
+                migration_complete
+                and not self.marker(pending)
+                and claim.get("blocked_reason") == "route-migration-required"
+            )
+            if completion_recovery:
+                try:
+                    completed_marker = read(self.state / f"{completed}.json")
+                    authenticated = self.authenticated_operator_passport(
+                        claim["ticket"]
+                    )
+                except (ControllerError, OSError, json.JSONDecodeError):
+                    raise ControllerError("route migration completion is invalid") from None
+                if (
+                    completed_marker != {
+                        "factory_sha": self.release_path.name,
+                        "schema": EVENT_SCHEMA,
+                        "ticket": claim["ticket"],
+                    }
+                    or authenticated != passport
+                    or authenticated.get("factory_sha") != self.release_path.name
+                ):
+                    raise ControllerError("route migration completion is invalid")
             merged_closeout_candidate = (
                 passport.get("current_state") == "Approved"
                 and passport.get("publication_state") == "merged"
@@ -8024,7 +8011,7 @@ class Controller:
             if (
                 prior == self.release_path.name
                 and (
-                    not self.marker(pending)
+                    not self.marker(pending) and not completion_recovery
                     or migration_complete
                     and (
                         claim.get("blocked_reason") != "route-migration-required"
