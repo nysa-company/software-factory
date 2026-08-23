@@ -316,8 +316,11 @@ qualification approvals, serialized publication, closeout, and terminal reductio
 in code.
 It approves only selected clean, idle, parked Awaiting Approval claims through
 the sealed lane operator map. With no progress, it continues for at most ten
-minutes only when every pending result is a typed GitHub, protected-merge,
-publication-lease, or closeout wait; all other waits return immediately. It never approves a
+minutes only when every pending result is a typed live-role, GitHub,
+protected-merge, publication-lease, or closeout wait. A live role yields only
+after its existing active-run claim is durable; the wrapper keeps its lease,
+heartbeat, reservation, and terminal-accounting ownership while the finisher
+polls. All other waits return immediately. It never approves a
 production or takeover lane. Use `qualification-run --json` instead when each
 bundle requires a separate human approval command.
 Internal finish iterations do not rerun full Doctor. A new command invocation

@@ -3690,6 +3690,16 @@ class Controller:
     def role_active(self, claim: dict[str, Any]) -> bool:
         return self.active_run(claim["ticket"])
 
+    @staticmethod
+    def live_role_wait(claim: dict[str, Any]) -> dict[str, str]:
+        return {
+            "role": claim["role"],
+            "status": "waiting",
+            "ticket": claim["ticket"],
+            "transition_receipt_sha256": claim["receipt"],
+            "wait_reason": "live-role",
+        }
+
     def release_ticket_lease(self, claim: dict[str, Any]) -> None:
         if claim.get("lease_released") is True:
             return
@@ -12662,6 +12672,14 @@ class Controller:
                 )
                 process = subprocess.Popen(command, stdout=log, stderr=log)
             while True:
+                if (
+                    self.qualification
+                    and not self.repository_test
+                    and process.poll() is None
+                    and self.role_active(claim)
+                ):
+                    self.observe_attempt_safely(claim)
+                    return True
                 try:
                     exit_status = process.wait(
                         timeout=RECONCILE_INTERVAL_SECONDS
@@ -12703,6 +12721,8 @@ class Controller:
                 if claim.get("receipt"):
                     self.ensure_lease(claim, "terminal-accounting")
                     if not self.finish_pending_run(claim):
+                        if self.role_active(claim):
+                            return self.live_role_wait(claim)
                         return {
                             "status": (
                                 claim["status"]
@@ -12719,6 +12739,8 @@ class Controller:
                 return {"status": "maintenance", "ticket": claim["ticket"]}
             self.ensure_lease(claim, "reconciliation")
             if not self.finish_pending_run(claim):
+                if self.qualification and self.role_active(claim):
+                    return self.live_role_wait(claim)
                 return {
                     "status": (
                         claim["status"]

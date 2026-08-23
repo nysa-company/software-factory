@@ -48,7 +48,8 @@ REQUIRED_CHECKS = {
 }
 NEUTRAL_CHECKS = {"controller", "model_readiness"}
 RETRYABLE_FINISH_WAITS = {
-    "closeout", "pr-gate", "protected-merge", "publication-lease",
+    "closeout", "live-role", "pr-gate", "protected-merge",
+    "publication-lease",
 }
 FINISH_POLL_SECONDS = 5
 FINISH_WAIT_SECONDS = 600

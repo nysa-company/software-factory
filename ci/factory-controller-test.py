@@ -35,6 +35,13 @@ assert SPEC and SPEC.loader
 CONTROL = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(CONTROL)
 
+QUALIFICATION_SPEC = importlib.util.spec_from_file_location(
+    "qualification_run_for_controller_test", ROOT / "scripts/qualification-run.py"
+)
+assert QUALIFICATION_SPEC and QUALIFICATION_SPEC.loader
+QUALIFICATION = importlib.util.module_from_spec(QUALIFICATION_SPEC)
+QUALIFICATION_SPEC.loader.exec_module(QUALIFICATION)
+
 REPORTER_SPEC = importlib.util.spec_from_file_location(
     "factory_incident_reporter", ROOT / "scripts/factory-incident-reporter.py"
 )
@@ -17292,6 +17299,102 @@ class FactoryControllerTest(unittest.TestCase):
         popen.assert_not_called()
         self.assertNotIn("attempt_started", events)
         self.assertNotIn("receipt", claim)
+
+    def test_qualification_live_role_yields_only_after_durable_handoff(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        controller.qualification = {"tickets": ["T-110"]}
+        claim = {
+            "lease": "a" * 64,
+            "publication_lease": "",
+            "receipt": "",
+            "role": "",
+            "ticket": "T-110",
+            "worktree": str(self.root / "cell-1"),
+        }
+        active = False
+        observations = []
+
+        class LiveProcess:
+            waits = 0
+
+            @staticmethod
+            def poll():
+                return None
+
+            def wait(self, timeout):
+                nonlocal active
+                self.waits += 1
+                active = True
+                raise subprocess.TimeoutExpired("factory-launch", timeout)
+
+        process = LiveProcess()
+        controller.ensure_execution_cell = lambda _claim: None
+        controller.json_call = lambda *_args, **_kwargs: {
+            "exit_code": 0, "status": "ok",
+        }
+        controller.save_claim = lambda _claim: None
+        controller.event = lambda *_args, **_kwargs: None
+        controller.role_active = lambda _claim: active
+        controller.observe_attempt_safely = lambda item: observations.append(
+            (item["role"], item["receipt"])
+        )
+        controller.terminal_for_receipt = lambda *_args: self.fail(
+            "live wrapper was terminalized during handoff"
+        )
+        with (
+            patch.object(CONTROL, "ensure_qualification_artifacts"),
+            patch.object(CONTROL.subprocess, "Popen", return_value=process),
+        ):
+            self.assertTrue(
+                controller.run_role(claim, "planner", "b" * 64, [])
+            )
+
+        self.assertEqual(process.waits, 1)
+        self.assertEqual(observations, [("planner", "b" * 64)] * 2)
+        self.assertEqual(
+            (claim["status"], claim["role"], claim["receipt"]),
+            ("running", "planner", "b" * 64),
+        )
+
+        controller.ensure_lease = lambda *_args: None
+        controller.finish_pending_run = lambda _claim: False
+        replay = controller.reconcile_ticket(claim)
+        self.assertEqual(replay, {
+            "role": "planner",
+            "status": "waiting",
+            "ticket": "T-110",
+            "transition_receipt_sha256": "b" * 64,
+            "wait_reason": "live-role",
+        })
+        self.assertTrue(QUALIFICATION.qualification_retryable_wait(
+            {"controller": {"results": [replay]}}, {"T-110"},
+        ))
+
+        class ExitedProcess:
+            @staticmethod
+            def poll():
+                return 0
+
+            @staticmethod
+            def wait(timeout):
+                return 0
+
+        active = False
+        terminalized = []
+        controller.terminal_for_receipt = lambda *_args: {"phase": "completed"}
+        controller.finish_pending_run = lambda item: terminalized.append(
+            item["receipt"]
+        ) or True
+        with (
+            patch.object(CONTROL, "ensure_qualification_artifacts"),
+            patch.object(
+                CONTROL.subprocess, "Popen", return_value=ExitedProcess(),
+            ),
+        ):
+            self.assertTrue(
+                controller.run_role(claim, "planner", "c" * 64, [])
+            )
+        self.assertEqual(terminalized, ["c" * 64])
 
     def test_qualification_protected_mutation_latches_before_sibling_launch(
         self,
