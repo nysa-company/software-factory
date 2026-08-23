@@ -766,8 +766,10 @@ class ModelControlTest(unittest.TestCase):
         self.assertTrue(value["commit_created"])
         self.assertRegex(value["commit_sha"], r"^[0-9a-f]{40}$")
         self.assertRegex(value["pin_hash"], r"^[0-9a-f]{64}$")
-        self.assertEqual(ticket.read_text().count("Kit-SHA:"), 1)
-        self.assertIn("Kit-SHA: %s" % self.kit_sha, ticket.read_text())
+        self.assertEqual(
+            ticket.read_text(),
+            f"# T-901\n\nKit-SHA: {self.kit_sha}\nState: Ready\n",
+        )
         self.assertEqual(json.loads(route_plan.read_text())["ticket"], "T-901")
         changed = subprocess.check_output(
             [
@@ -808,6 +810,29 @@ class ModelControlTest(unittest.TestCase):
         self.assertFalse(again["commit_created"])
         self.assertEqual(again["commit_sha"], value["commit_sha"])
         self.assertEqual(again["pin_hash"], value["pin_hash"])
+
+    def test_pin_preserves_one_legacy_trailing_affinity(self):
+        ticket = self.workdir / "factory" / "tickets" / "T-901.md"
+        legacy = ticket.read_text() + f"\nKit-SHA: {self.kit_sha}\n"
+        ticket.write_text(legacy)
+        subprocess.run(
+            ["git", "-C", str(self.workdir), "add", str(ticket)], check=True,
+        )
+        subprocess.run(
+            [
+                "git", "-C", str(self.workdir), "commit", "-qm",
+                "legacy trailing affinity fixture",
+            ],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.workdir), "push", "-q", "origin", "ticket/T-901"],
+            check=True,
+        )
+
+        self.command("pin", "--ticket", "T-901", "--workdir", str(self.workdir))
+
+        self.assertEqual(ticket.read_text(), legacy)
 
     def test_pin_rejects_dirty_wrong_branch_and_wrong_remote(self):
         ticket = self.workdir / "factory" / "tickets" / "T-901.md"

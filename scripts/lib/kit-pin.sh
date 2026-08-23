@@ -337,11 +337,24 @@ factory_validate_ticket_kit_sha() {
 }
 
 factory_record_ticket_kit_sha() {
-  local ticket_file="$1" expected_sha="$2"
+  local ticket_file="$1" expected_sha="$2" lib_dir
   factory_validate_ticket_kit_sha "$ticket_file" "$expected_sha" || return 1
   [[ -z "$FACTORY_TICKET_KIT_SHA" ]] || return 0
 
-  printf '\nKit-SHA: %s\n' "$expected_sha" >> "$ticket_file" || {
+  lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)" || {
+    FACTORY_TICKET_KIT_ERROR="could not locate canonical ticket parser"
+    return 1
+  }
+  python3 -B - "$lib_dir" "$ticket_file" "$expected_sha" <<'PY' || {
+import sys
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[1])
+from effective_ticket import replace_field
+
+path = Path(sys.argv[2])
+path.write_text(replace_field(path.read_text(), "Kit-SHA", sys.argv[3]))
+PY
     FACTORY_TICKET_KIT_ERROR="could not record ticket Kit-SHA lease"
     return 1
   }
