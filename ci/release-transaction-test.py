@@ -2216,26 +2216,36 @@ class ReleaseTransactionTest(unittest.TestCase):
         value = {"label": "com.factory.retired", "path": "/tmp/unused"}
         statuses = [
             subprocess.CompletedProcess([], 0),
+            subprocess.CompletedProcess([], 0),
+            subprocess.CompletedProcess([], 0),
             subprocess.CompletedProcess([], 1),
         ]
         with (
             mock.patch.object(RELEASE.sys, "platform", "darwin"),
             mock.patch.object(RELEASE, "service_prefix", return_value=(["launchctl"], "gui/1")),
             mock.patch.object(RELEASE.subprocess, "run", side_effect=statuses),
+            mock.patch.object(RELEASE.time, "sleep") as converging,
             mock.patch.object(RELEASE, "run") as bootout,
         ):
             RELEASE.unload_service(value)
         bootout.assert_called_once()
+        self.assertEqual(bootout.call_args.kwargs["timeout"], 5)
+        self.assertEqual(converging.call_count, 2)
         with (
             mock.patch.object(RELEASE.sys, "platform", "darwin"),
             mock.patch.object(RELEASE, "service_prefix", return_value=(["launchctl"], "gui/1")),
-            mock.patch.object(RELEASE.subprocess, "run", side_effect=[
-                subprocess.CompletedProcess([], 0), subprocess.CompletedProcess([], 0),
-            ]),
+            mock.patch.object(
+                RELEASE.subprocess, "run", return_value=subprocess.CompletedProcess([], 0),
+            ) as status,
+            mock.patch.object(RELEASE.time, "monotonic", side_effect=[0, 0, 5, 5]),
+            mock.patch.object(RELEASE.time, "sleep") as pause,
             mock.patch.object(RELEASE, "run"),
             self.assertRaisesRegex(RELEASE.ReleaseError, "did not unload"),
         ):
             RELEASE.unload_service(value)
+        self.assertEqual(status.call_count, 2)
+        self.assertLessEqual(status.call_args.kwargs["timeout"], 5)
+        pause.assert_not_called()
 
     def test_machine_cutover_lock_serializes_project_transactions(self) -> None:
         marker = self.root / "lock-order"
