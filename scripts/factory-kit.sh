@@ -371,7 +371,8 @@ file_hash() {
 verify_installed_launcher_binding() {
   local release="$1" expected installed
   expected="$release/scripts/factory-launch"
-  if [[ "${FACTORY_KIT_TEST_MODE:-0}" == "1" ]]; then
+  if [[ "${FACTORY_KIT_TEST_MODE:-0}" == "1" &&
+        "${FACTORY_KIT_TEST_REMOTE_FULL_CI_API:-0}" != "1" ]]; then
     installed="${FACTORY_KIT_TEST_INSTALLED_LAUNCHER:-$expected}"
   else
     [[ ${FACTORY_KIT_TEST_INSTALLED_LAUNCHER+x} != x ]] ||
@@ -650,8 +651,11 @@ PY
 }
 
 verified_remote_full_ci() {
-  local sha="$1" tree="$2" data
-  if [[ "${FACTORY_KIT_TEST_MODE:-0}" == "1" ]]; then
+  local sha="$1" tree="$2" data run_id run_attempt evidence_sha event head_ref pr_number
+  local run_status
+  if [[ "${FACTORY_KIT_TEST_MODE:-0}" == "1" &&
+        "${FACTORY_KIT_TEST_REMOTE_FULL_CI_API:-0}" != "1" ]]; then
+    verify_required_github_checks "$sha" >&2 || return 1
     [[ "${FACTORY_KIT_TEST_REMOTE_FULL_CI:-0}" == "1" ]] || return 1
     printf '%s\n' "$(printf '%s' "test-remote-full-ci|$sha|$tree" | shasum -a 256 | awk '{print $1}')"
     return 0
@@ -662,30 +666,136 @@ verified_remote_full_ci() {
   gh api --paginate --slurp \
     "repos/nysa-company/software-factory/actions/workflows/ci.yml/runs?head_sha=$sha&event=push&status=completed&branch=main&per_page=100" \
     > "$data/runs.json" || return 1
-  python3 - "$data/runs.json" "$sha" <<'PY' > "$data/run-id" || return 1
+  if python3 - "$data/runs.json" "$sha" <<'PY' > "$data/run-id"
 import json, sys
-pages = json.load(open(sys.argv[1]))
+try:
+    pages = json.load(open(sys.argv[1]))
+except (OSError, json.JSONDecodeError):
+    raise SystemExit(3)
+if not isinstance(pages, list) or any(
+    not isinstance(page, dict)
+    or not isinstance(page.get("workflow_runs"), list)
+    or any(not isinstance(run, dict) for run in page["workflow_runs"])
+    for page in pages
+):
+    raise SystemExit(3)
 runs = []
 for page in pages:
     runs.extend(page.get("workflow_runs", []))
-valid = [run for run in runs if (
+exact = [run for run in runs if (
     run.get("head_sha") == sys.argv[2] and run.get("event") == "push" and
     run.get("head_branch") == "main" and run.get("status") == "completed" and
-    run.get("conclusion") == "success" and
     run.get("path") == ".github/workflows/ci.yml"
+)]
+if any(
+    not isinstance(run.get(name), int)
+    or isinstance(run.get(name), bool)
+    or run[name] <= 0
+    for run in exact for name in ("id", "run_attempt")
+):
+    raise SystemExit(3)
+valid = [run for run in exact if run.get("conclusion") == "success"]
+if not valid:
+    raise SystemExit(2 if exact else 1)
+run = max(valid, key=lambda value: value["id"])
+print("%s\t%s" % (run["id"], run["run_attempt"]))
+PY
+  then
+    evidence_sha="$sha"
+    event="push"
+    head_ref="refs/heads/main"
+    pr_number=""
+  else
+    run_status="$?"
+    if [[ "$run_status" -ne 1 ]]; then
+      say "REMOTE CI REFUSED: protected-main run is not successful" >&2
+      return 1
+    fi
+    gh api --paginate --slurp \
+      "repos/nysa-company/software-factory/commits/$sha/pulls?per_page=100" \
+      > "$data/pulls.json" || return 1
+    if ! python3 - "$data/pulls.json" "$sha" <<'PY' > "$data/pr-id"
+import json, re, sys
+pages = json.load(open(sys.argv[1]))
+if pages and isinstance(pages[0], dict):
+    pages = [pages]
+pulls = [item for page in pages for item in page if (
+    item.get("state") == "closed" and item.get("merged_at")
+    and item.get("merge_commit_sha") == sys.argv[2]
+    and isinstance(item.get("number"), int) and not isinstance(item["number"], bool)
+    and item["number"] > 0
+    and (item.get("base") or {}).get("ref") == "main"
+    and ((item.get("base") or {}).get("repo") or {}).get("full_name")
+        == "nysa-company/software-factory"
+    and ((item.get("head") or {}).get("repo") or {}).get("full_name")
+        == "nysa-company/software-factory"
+    and re.fullmatch(r"[0-9a-f]{40}", (item.get("head") or {}).get("sha", ""))
+    and (item.get("head") or {}).get("ref")
+)]
+if len(pulls) != 1:
+    raise SystemExit(1)
+value = pulls[0]
+print("%s\t%s\t%s" % (
+    value["number"], value["head"]["sha"], value["head"]["ref"]
+))
+PY
+    then
+      say "REMOTE CI REFUSED: unique merged same-repository PR evidence is missing" >&2
+      return 1
+    fi
+    pr_number="$(cut -f1 "$data/pr-id")"
+    evidence_sha="$(cut -f2 "$data/pr-id")"
+    local head_branch
+    head_branch="$(cut -f3- "$data/pr-id")"
+    gh api "repos/nysa-company/software-factory/git/commits/$evidence_sha" \
+      > "$data/pr-head.json" || return 1
+    if ! python3 - "$data/pr-head.json" "$tree" <<'PY'
+import json, sys
+raise SystemExit(0 if json.load(open(sys.argv[1])).get("tree", {}).get("sha") == sys.argv[2] else 1)
+PY
+    then
+      say "REMOTE CI REFUSED: PR head tree does not match protected commit tree" >&2
+      return 1
+    fi
+    gh api --paginate --slurp \
+      "repos/nysa-company/software-factory/actions/workflows/ci.yml/runs?head_sha=$evidence_sha&event=pull_request&status=completed&per_page=100" \
+      > "$data/runs.json" || return 1
+    if ! python3 - "$data/runs.json" "$evidence_sha" "$pr_number" "$head_branch" \
+      "$tree" \
+      <<'PY' > "$data/run-id"
+import json, sys
+pages = json.load(open(sys.argv[1]))
+runs = [run for page in pages for run in page.get("workflow_runs", [])]
+valid = [run for run in runs if (
+    run.get("head_sha") == sys.argv[2] and run.get("event") == "pull_request"
+    and run.get("head_branch") == sys.argv[4]
+    and (run.get("head_repository") or {}).get("full_name")
+        == "nysa-company/software-factory"
+    and (run.get("head_commit") or {}).get("id") == sys.argv[2]
+    and (run.get("head_commit") or {}).get("tree_id") == sys.argv[5]
+    and run.get("status") == "completed" and run.get("conclusion") == "success"
+    and run.get("path") == ".github/workflows/ci.yml"
 )]
 if not valid:
     raise SystemExit(1)
 run = max(valid, key=lambda value: int(value.get("id", 0)))
 print("%s\t%s" % (run["id"], run.get("run_attempt", 1)))
 PY
-  local run_id run_attempt
+    then
+      say "REMOTE CI REFUSED: exact successful PR workflow evidence is missing" >&2
+      return 1
+    fi
+    event="pull_request"
+    head_ref="refs/heads/$head_branch"
+  fi
   run_id="$(awk -F'\t' '{print $1}' "$data/run-id")"
   run_attempt="$(awk -F'\t' '{print $2}' "$data/run-id")"
+  verify_required_github_checks "$evidence_sha" >&2 || return 1
   gh api --paginate --slurp \
     "repos/nysa-company/software-factory/actions/runs/$run_id/attempts/$run_attempt/jobs?per_page=100" \
     > "$data/jobs.json" || return 1
-  python3 - "$data/jobs.json" "$sha" "$tree" "$run_id" "$run_attempt" <<'PY'
+  if ! python3 - "$data/jobs.json" "$sha" "$tree" "$run_id" "$run_attempt" \
+    "$evidence_sha" "$event" "$head_ref" "$pr_number" <<'PY'
 import hashlib, json, sys
 pages = json.load(open(sys.argv[1]))
 jobs = []
@@ -700,26 +810,43 @@ sharded = (
     "linux-factory", "linux-contract", "linux-release",
     "macos-bash-3-factory", "macos-bash-3-contract", "macos-bash-3-release",
 )
+grouped = tuple(
+    ["scope", "policy"]
+    + ["linux-group-%s" % number for number in range(1, 5)]
+    + ["macos-bash-3-group-%s" % number for number in range(1, 5)]
+    + ["macos-sealed-qualification"]
+)
 legacy = ("linux", "macos-bash-3")
 # A partial shard topology must never fall back to the legacy two-job proof.
-platform = sharded if any(name in latest for name in sharded) else legacy
+platform = (
+    grouped if sys.argv[7] == "pull_request"
+    else sharded if any(name in latest for name in sharded)
+    else legacy
+)
 required = platform + ("ci", "test-immutability")
 if any(latest.get(name, {}).get("conclusion") != "success" for name in required):
     raise SystemExit(1)
 value = {
     "repository": "nysa-company/software-factory",
     "workflow": ".github/workflows/ci.yml",
-    "event": "push",
-    "ref": "refs/heads/main",
+    "event": sys.argv[7],
+    "head_ref": sys.argv[8],
     "sha": sys.argv[2],
     "tree": sys.argv[3],
+    "check_sha": sys.argv[6],
     "run_id": int(sys.argv[4]),
     "run_attempt": int(sys.argv[5]),
     "successful_jobs": list(required),
 }
+if sys.argv[9]:
+    value["pull_request"] = int(sys.argv[9])
 payload = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
 print(hashlib.sha256(payload).hexdigest())
 PY
+  then
+    say "REMOTE CI REFUSED: workflow job topology is incomplete" >&2
+    return 1
+  fi
 }
 
 process_start_identity() {
@@ -3743,7 +3870,8 @@ remove_active_if_no_previous() {
 cmd_install() {
   local sha="$1" source="$2" origin_override="$3"
   local source_top canonical_sha kit_tree release temp checkout origin origin_identity lock manifest
-  local workspace
+  local workspace remote_evidence_id verification_source="github-actions-full"
+  local check_mode="platform-smoke"
   case "${FACTORY_KIT_TEST_FAIL_PUBLISH_PHASE:-}" in
     ""|contents_sealed|release_verified) ;;
     *) die "unknown publish fault-injection phase" ;;
@@ -3761,9 +3889,11 @@ cmd_install() {
     die "SHA is not the requested canonical commit"
   git -C "$source_top" merge-base --is-ancestor "$sha" refs/remotes/origin/main ||
     die "SHA is not an ancestor of origin/main"
-  verify_required_github_checks "$sha"
   kit_tree="$(git -C "$source_top" rev-parse "$sha^{tree}")"
   origin_identity="$(canonical_origin_identity "$origin")"
+  remote_evidence_id="$(verified_remote_full_ci "$sha" "$kit_tree")" ||
+    die "exact successful GitHub CI evidence is required for install: $sha"
+  say "REMOTE CI VERIFIED: $sha; running local platform smoke only"
 
   safe_create_directory "$KITS_ROOT"
   validate_managed_layout
@@ -3802,10 +3932,6 @@ cmd_install() {
   git -C "$checkout" checkout -q --detach "$sha"
   prepare_pinned_scanner "$source_top" "$checkout" "$workspace/tmp" ||
     die "could not stage the pinned scanner for isolated checks"
-  local remote_evidence_id verification_source="github-actions-full" check_mode="platform-smoke"
-  remote_evidence_id="$(verified_remote_full_ci "$sha" "$kit_tree" 2>/dev/null)" ||
-    die "exact successful main GitHub CI evidence is required for install: $sha"
-  say "REMOTE CI VERIFIED: $sha; running local platform smoke only"
   run_kit_checks_isolated "$checkout" "$workspace/home" "$workspace/tmp" \
     "$workspace" "install" "$check_mode" "$source_top" ||
     die "kit checks failed in disposable checkout"
@@ -3951,8 +4077,8 @@ cmd_certify() {
     suite_reused=false
     refresh_source="github-actions-full"
     refresh_mode="platform-smoke"
-    refresh_remote_id="$(verified_remote_full_ci "$sha" "$kit_tree" 2>/dev/null)" ||
-      die "exact successful main GitHub CI evidence is required to refresh certification: $sha"
+    refresh_remote_id="$(verified_remote_full_ci "$sha" "$kit_tree")" ||
+      die "exact successful GitHub CI evidence is required to refresh certification: $sha"
     say "REMOTE CI VERIFIED: $sha; refreshing evidence with local platform smoke only"
     prepare_pinned_scanner "$release" "$writable" "$workspace/tmp" ||
       die "could not stage the pinned scanner for isolated certification"

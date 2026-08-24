@@ -247,10 +247,12 @@ ACCOUNTING_SCHEMA=""
 ACCOUNTING_STATE=""
 GO_ISSUED=0
 TASK_SUBMITTED=0
+SUBMITTED_AT_EPOCH_NS=""
 ADAPTER_BOUNDARY_STOPPED=0
 ADAPTER_BOUNDARY_STOP_PATH=""
 RUN_STARTED_AT=""
 TERMINAL_AT=""
+TERMINAL_AT_EPOCH_NS=""
 RESERVED_USD=""
 EFFECTIVE_COST=""
 EXIT_STATUS=""
@@ -266,6 +268,13 @@ LEASE_HEARTBEAT_START=""
 LEASE_HEARTBEAT_FAILED=0
 CLI_ATTEMPT_ID=""
 CLI_ATTEMPT_ACTIVE=0
+CLI_CONCURRENT_RUN=0
+CLI_TERMINAL_CHARGE_MICRO=""
+CLI_TERMINAL_RESULT=""
+CLI_ATTEMPT_TERMINAL_CHARGE_MICRO=""
+CLI_ATTEMPT_TERMINAL_RESULT=""
+FINAL_ACCOUNTING_STATE=""
+FINAL_PHASE=""
 CURSOR_ACCOUNT_LEASE_ID=""
 CURSOR_ACCOUNT_LEASE_ACTIVE=0
 CURSOR_ACCOUNT_OWNER_PID=""
@@ -390,6 +399,23 @@ sequencer_allows_role() {
 
 meta_value() {
   printf '%s' "${1:-}" | tr '\n,' '__'
+}
+
+micro_usd() {
+  python3 - "$@" <<'PY'
+from decimal import Decimal, InvalidOperation, ROUND_CEILING
+import sys
+try:
+    for value in sys.argv[1:]:
+        amount = (Decimal(value) * Decimal(1_000_000)).to_integral_value(
+            rounding=ROUND_CEILING
+        )
+        if amount < 0 or amount > 10**15:
+            raise ValueError
+        print(int(amount))
+except (InvalidOperation, ValueError):
+    raise SystemExit(1)
+PY
 }
 
 registered_tracked_content() {
@@ -696,8 +722,10 @@ write_manifest() {
     echo "envelope_override_ids=$(meta_value "${FACTORY_ENVELOPE_OVERRIDE_IDS:-}")"
     echo "go_issued=$(meta_value "$GO_ISSUED")"
     echo "task_submitted=$(meta_value "$TASK_SUBMITTED")"
+    echo "submitted_at_epoch_ns=$(meta_value "$SUBMITTED_AT_EPOCH_NS")"
     echo "started_at=$(meta_value "$RUN_STARTED_AT")"
     echo "terminal_at=$(meta_value "$TERMINAL_AT")"
+    echo "terminal_at_epoch_ns=$(meta_value "$TERMINAL_AT_EPOCH_NS")"
     echo "prompt_version=$(meta_value "$PROMPT_VERSION")"
     echo "turns=$(meta_value "$TURNS")"
     echo "effective_cost=$(meta_value "$EFFECTIVE_COST")"
@@ -717,6 +745,11 @@ write_manifest() {
     echo "account_route_id=$(meta_value "${SELECTED_ACCOUNT_ROUTE_ID:-}")"
     echo "provider_execution_mode=$(meta_value "${PROVIDER_EXECUTION_MODE:-legacy-serialized}")"
     echo "provider_attempt_id=$(meta_value "${CLI_ATTEMPT_ID:-}")"
+    echo "provider_product_id=$(meta_value "${CLI_PRODUCT_ID:-}")"
+    echo "terminal_intent_accounting_state=$(meta_value "${FINAL_ACCOUNTING_STATE:-}")"
+    echo "terminal_intent_phase=$(meta_value "${FINAL_PHASE:-}")"
+    echo "terminal_intent_result=$(meta_value "${CLI_TERMINAL_RESULT:-}")"
+    echo "terminal_intent_charge_micro_usd=$(meta_value "${CLI_TERMINAL_CHARGE_MICRO:-}")"
     echo "activation_policy_sha256=$(meta_value "${ACTIVATED_POLICY_HASH:-}")"
     echo "transport=$(meta_value "${SELECTED_TRANSPORT:-}")"
     echo "policy_hash=$(meta_value "${SELECTED_POLICY_HASH:-}")"
@@ -762,7 +795,90 @@ finalize_accounting() {
   EXIT_STATUS="$4"
   COST_BASIS="$5"
   TERMINAL_AT="$(date -u +%FT%TZ)"
+  TERMINAL_AT_EPOCH_NS="$(python3 -c 'import time; print(time.time_ns())')"
   write_manifest "${6:-$ACCOUNTING_STATE}"
+}
+
+accounting_intent_is_durable() {
+  [[ "$MANIFEST_PHASE" == "terminalizing" &&
+     -n "$CLI_TERMINAL_CHARGE_MICRO" &&
+     -n "$CLI_TERMINAL_RESULT" &&
+     -n "$FINAL_ACCOUNTING_STATE" &&
+     -n "$FINAL_PHASE" ]]
+}
+
+seal_cleanup_accounting_intent() {
+  local status="$1" result="failed"
+  accounting_intent_is_durable && return 0
+  [[ "$status" -ne 0 ]] || status=125
+  TURNS="${TURNS:-0}"
+  [[ "$status" -ne 130 && "$status" -ne 143 ]] || result="cancelled"
+  if [[ "$GO_ISSUED" -eq 1 ]]; then
+    COST="$RESERVED_USD"
+    COST_BASIS="conservative_reservation"
+    FINAL_ACCOUNTING_STATE="abandoned_conservative"
+    FINAL_PHASE="abandoned"
+    if [[ "$result" == "cancelled" ]]; then
+      FINAL_ACCOUNTING_STATE="cancelled_conservative"
+      FINAL_PHASE="cancelled_conservative"
+    fi
+    CLI_TERMINAL_CHARGE_MICRO="${PROVIDER_BUDGET_MICRO_VALUES[0]}"
+  else
+    COST="0"
+    TURNS=0
+    COST_BASIS="launch_void"
+    FINAL_ACCOUNTING_STATE="launch_void"
+    FINAL_PHASE="$([[ "$result" == "cancelled" ]] && printf launch_void || printf abandoned)"
+    CLI_TERMINAL_CHARGE_MICRO=0
+    [[ "$result" == "cancelled" ]] || result="failed_pre_go"
+  fi
+  CLI_TERMINAL_RESULT="$result"
+  EFFECTIVE_COST="$COST"
+  EXIT_STATUS="$status"
+  TERMINAL_AT="$(date -u +%FT%TZ)"
+  TERMINAL_AT_EPOCH_NS="$(python3 -c 'import time; print(time.time_ns())')"
+  write_manifest "terminalizing"
+}
+
+finalize_cleanup_accounting() {
+  local status="$1"
+  [[ "$status" -ne 0 ]] || status=125
+  if accounting_intent_is_durable; then
+    finalize_accounting "$FINAL_ACCOUNTING_STATE" "$COST" "${TURNS:-0}" \
+      "$EXIT_STATUS" "$COST_BASIS" "$FINAL_PHASE"
+  elif [[ "$GO_ISSUED" -eq 1 ]]; then
+    finalize_accounting "abandoned_conservative" "$RESERVED_USD" \
+      "${TURNS:-0}" "$status" "conservative_reservation" "abandoned"
+  else
+    finalize_accounting "launch_void" "0" "0" "$status" "launch_void" \
+      "abandoned"
+  fi
+}
+
+accounting_cleanup_required() {
+  [[ -n "$MANIFEST" ]] || return 1
+  if accounting_intent_is_durable; then
+    [[ "$MANIFEST_PHASE" != "$FINAL_PHASE" ]]
+  else
+    [[ "$ACCOUNTING_STATE" == "reserved" ||
+       ( -z "$ACCOUNTING_STATE" && "$MANIFEST_PHASE" != "abandoned" ) ]]
+  fi
+}
+
+capture_submission_record() {
+  local submitted
+  if [[ "$CLI_CONCURRENT_RUN" -eq 1 ]]; then
+    [[ -n "$CLI_ATTEMPT_ID" ]] || return 0
+    load_cli_attempt
+    return
+  fi
+  [[ -n "$RUN_SUBMITTED_FILE" ]] || return 0
+  [[ ! -e "$RUN_SUBMITTED_FILE" && ! -L "$RUN_SUBMITTED_FILE" ]] && return 0
+  [[ -f "$RUN_SUBMITTED_FILE" && ! -L "$RUN_SUBMITTED_FILE" ]] || return 1
+  submitted="$(sed -n 's/^submitted_at_epoch_ns=//p' "$RUN_SUBMITTED_FILE")"
+  [[ "$submitted" =~ ^[1-9][0-9]{0,19}$ ]] || return 1
+  TASK_SUBMITTED=1
+  SUBMITTED_AT_EPOCH_NS="$submitted"
 }
 
 refresh_runtime_ledger() {
@@ -1344,9 +1460,9 @@ finally:
 PY
 }
 
-reconcile_cli_attempt() {
-  [[ "$CLI_ATTEMPT_ACTIVE" -eq 1 && -n "$CLI_ATTEMPT_ID" ]] || return 0
-  local output parsed state version result charge
+load_cli_attempt() {
+  [[ -n "$CLI_ATTEMPT_ID" ]] || return 1
+  local output parsed remainder submitted
   output="$(python3 "$KIT_DIR/scripts/provider-coordinator.py" \
     --db "$FACTORY_PROVIDER_DB" status --attempt-id "$CLI_ATTEMPT_ID" 2>/dev/null)" || return 1
   parsed="$(printf '%s' "$output" | python3 -c '
@@ -1356,14 +1472,43 @@ if len(attempts) != 1:
     raise SystemExit(1)
 print(attempts[0]["state"])
 print(attempts[0]["version"])
+print(attempts[0]["submitted_at"] if attempts[0]["submitted_at"] is not None else "none")
+print(attempts[0]["terminal_result"] if attempts[0]["terminal_result"] is not None else "none")
+print(attempts[0]["charge_micro_usd"] if attempts[0]["charge_micro_usd"] is not None else "none")
 ')" || return 1
-  state="${parsed%%$'\n'*}"
-  version="${parsed#*$'\n'}"
-  if [[ "$state" == "terminal" ]]; then
+  CLI_ATTEMPT_STATE="${parsed%%$'\n'*}"
+  remainder="${parsed#*$'\n'}"
+  CLI_ATTEMPT_VERSION="${remainder%%$'\n'*}"
+  remainder="${remainder#*$'\n'}"
+  submitted="${remainder%%$'\n'*}"
+  remainder="${remainder#*$'\n'}"
+  CLI_ATTEMPT_TERMINAL_RESULT="${remainder%%$'\n'*}"
+  CLI_ATTEMPT_TERMINAL_CHARGE_MICRO="${remainder#*$'\n'}"
+  if [[ "$submitted" =~ ^[1-9][0-9]{0,10}$ ]]; then
+    TASK_SUBMITTED=1
+    SUBMITTED_AT_EPOCH_NS="$(( (submitted + 1) * 1000000000 - 1 ))"
+  elif [[ "$submitted" == none ]]; then
+    TASK_SUBMITTED=0
+    SUBMITTED_AT_EPOCH_NS=""
+  else
+    return 1
+  fi
+}
+
+reconcile_cli_attempt() {
+  [[ "$CLI_ATTEMPT_ACTIVE" -eq 1 && -n "$CLI_ATTEMPT_ID" ]] || return 0
+  local result charge
+  load_cli_attempt || return 1
+  if [[ "$CLI_ATTEMPT_STATE" == "terminal" ]]; then
+    if accounting_intent_is_durable &&
+       [[ "$CLI_ATTEMPT_TERMINAL_RESULT" != "$CLI_TERMINAL_RESULT" ||
+          "$CLI_ATTEMPT_TERMINAL_CHARGE_MICRO" != "$CLI_TERMINAL_CHARGE_MICRO" ]]; then
+      return 1
+    fi
     CLI_ATTEMPT_ACTIVE=0
     return 0
   fi
-  case "$state" in
+  case "$CLI_ATTEMPT_STATE" in
     prepared|reserved)
       [[ "${1:-failed}" != cancelled ]] || result=cancelled
       result="${result:-failed_pre_go}"; charge=0
@@ -1373,14 +1518,20 @@ print(attempts[0]["version"])
         succeeded|cancelled|failed) result="${1:-failed}" ;;
         *) result="failed" ;;
       esac
-      charge="${PROVIDER_BUDGET_MICRO_VALUES[0]}"
+      if [[ -n "${2:-}" ]]; then
+        charge="$2"
+      elif accounting_intent_is_durable; then
+        charge="$CLI_TERMINAL_CHARGE_MICRO"
+      else
+        charge="${PROVIDER_BUDGET_MICRO_VALUES[0]}"
+      fi
       ;;
     *) return 1 ;;
   esac
   python3 "$KIT_DIR/scripts/provider-coordinator.py" \
     --db "$FACTORY_PROVIDER_DB" terminalize \
-    --operation-id "$CLI_ATTEMPT_ID-host-terminal-$version" \
-    --attempt-id "$CLI_ATTEMPT_ID" --expected-version "$version" \
+    --operation-id "$CLI_ATTEMPT_ID-host-terminal-$CLI_ATTEMPT_VERSION" \
+    --attempt-id "$CLI_ATTEMPT_ID" --expected-version "$CLI_ATTEMPT_VERSION" \
     --result "$result" --charge-micro-usd "$charge" >/dev/null || return 1
   CLI_ATTEMPT_ACTIVE=0
 }
@@ -1674,14 +1825,31 @@ release_active_run_claim() {
 }
 
 cleanup() {
-  local status=$? accounting_finalized=0
+  local status=$? accounting_finalized=0 submission_state_verified=0
   stop_lease_heartbeat || true
   terminate_run_group || true
+  if capture_submission_record; then
+    submission_state_verified=1
+  else
+    echo "WARNING: provider submission state could not be verified" >&2
+  fi
   if [[ "$RUN_GROUP_TERMINATED" -eq 1 ]]; then
     release_cursor_account_lease ||
       echo "WARNING: Cursor account admission lease retained for operator reconciliation" >&2
-    reconcile_cli_attempt "$([[ "$status" -eq 130 || "$status" -eq 143 ]] && printf cancelled || printf failed)" ||
-      echo "WARNING: CLI provider reservation retained for operator reconciliation" >&2
+    if [[ "$CLI_ATTEMPT_ACTIVE" -eq 1 &&
+          "$submission_state_verified" -eq 1 ]]; then
+      if [[ "$CLI_ATTEMPT_STATE" == "terminal" &&
+              "$CLI_ATTEMPT_TERMINAL_RESULT" == "capacity_denied" &&
+              "$CLI_ATTEMPT_TERMINAL_CHARGE_MICRO" == "0" &&
+              "$GO_ISSUED" -eq 0 && "$TASK_SUBMITTED" -eq 0 ]]; then
+        reconcile_cli_attempt capacity_denied 0 ||
+          echo "WARNING: CLI provider denial retained for operator reconciliation" >&2
+      elif ! seal_cleanup_accounting_intent "$status"; then
+        echo "WARNING: CLI provider terminal intent could not be persisted" >&2
+      elif ! reconcile_cli_attempt "$CLI_TERMINAL_RESULT"; then
+        echo "WARNING: CLI provider reservation retained for operator reconciliation" >&2
+      fi
+    fi
   elif [[ "$CLI_ATTEMPT_ACTIVE" -eq 1 ]]; then
     echo "WARNING: CLI provider reservation retained because its process group survived" >&2
   fi
@@ -1693,13 +1861,6 @@ cleanup() {
       "$ROLE_GUARD_ROOT"/corepack
     rmdir "$ROLE_GUARD_ROOT" 2>/dev/null || true
   fi
-  if [[ -n "$RUN_PID_FILE" ]]; then
-    if [[ "$RUN_GROUP_TERMINATED" -eq 1 ]]; then
-      rm -f "$RUN_PID_FILE"
-    else
-      echo "WARNING: retaining $RUN_PID_FILE because the process group survived cleanup" >&2
-    fi
-  fi
   if [[ -n "$RUN_WRAPPER_FILE" && -z "$LEASE_HEARTBEAT_PID" ]]; then
     rm -f "$RUN_WRAPPER_FILE"
     RUN_WRAPPER_FILE=""
@@ -1710,20 +1871,11 @@ cleanup() {
   [[ -z "$RUN_SUBMITTED_FILE" ]] || rm -f "$RUN_SUBMITTED_FILE"
   [[ -z "$RUN_OUTPUT_TEMP" ]] || rm -f "$RUN_OUTPUT_TEMP"
   exec 8<&- 9>&- 2>/dev/null || true
-  if [[ "$CLI_ATTEMPT_ACTIVE" -eq 1 && "$RUN_GROUP_TERMINATED" -ne 1 ]]; then
-    echo "WARNING: run accounting retained because its CLI process group survived" >&2
-  elif [[ -n "$MANIFEST" && "$ACCOUNTING_STATE" == "reserved" ]]; then
-    [[ "$status" -ne 0 ]] || status=125
-    if [[ "$GO_ISSUED" -eq 1 ]]; then
-      finalize_accounting "abandoned_conservative" "$RESERVED_USD" "${TURNS:-0}" "$status" "conservative_reservation" "abandoned"
-    else
-      finalize_accounting "launch_void" "0" "0" "$status" "launch_void" "abandoned"
-    fi
-    accounting_finalized=1
-  elif [[ -n "$MANIFEST" && -z "$ACCOUNTING_STATE" && "$MANIFEST_PHASE" != "abandoned" ]]; then
-    [[ "$status" -ne 0 ]] || status=125
-    ACCOUNTING_SCHEMA=1
-    finalize_accounting "launch_void" "0" "0" "$status" "launch_void" "abandoned"
+  if [[ "$CLI_ATTEMPT_ACTIVE" -eq 1 ]]; then
+    echo "WARNING: run accounting retained for operator reconciliation" >&2
+  elif accounting_cleanup_required; then
+    [[ -n "$ACCOUNTING_SCHEMA" ]] || ACCOUNTING_SCHEMA=1
+    finalize_cleanup_accounting "$status"
     accounting_finalized=1
   fi
   if [[ "$accounting_finalized" -eq 1 ]]; then
@@ -1743,6 +1895,17 @@ cleanup() {
       echo "WARNING: cleanup could not lock runtime accounting; terminal manifest remains authoritative" >&2
     fi
     finalize_global_ledger || true
+  fi
+  if [[ -n "$RUN_PID_FILE" ]]; then
+    if [[ "$RUN_GROUP_TERMINATED" -eq 1 && "$CLI_ATTEMPT_ACTIVE" -eq 0 &&
+          "$MANIFEST_PHASE" != "terminalizing" ]]; then
+      rm -f "$RUN_PID_FILE"
+      RUN_PID_FILE=""
+    elif [[ "$CLI_ATTEMPT_ACTIVE" -eq 1 ]]; then
+      echo "WARNING: retaining $RUN_PID_FILE for provider reconciliation" >&2
+    else
+      echo "WARNING: retaining $RUN_PID_FILE until terminal accounting is durable" >&2
+    fi
   fi
   if [[ "$HELD_GLOBAL_LOCK" -eq 1 ]]; then
     if [[ -z "$GLOBAL_LEDGER_SNAPSHOT" ]]; then
@@ -1998,7 +2161,6 @@ ADAPTER="$SELECTED"
 ADAPTER_SH="$KIT_DIR/scripts/adapters/$ADAPTER.sh"
 [[ -x "$ADAPTER_SH" ]] || { echo "no adapter: $ADAPTER_SH" >&2; exit 6; }
 ISOLATED_RUN=0
-CLI_CONCURRENT_RUN=0
 PARALLEL_PROVIDER_RUN=0
 ISOLATED_PROTOCOL=""
 ISOLATED_BROKER_PATH=""
@@ -2233,22 +2395,8 @@ RESERVED_USD="$PER_RUN_BUDGET_USD"
 if [[ "$PARALLEL_PROVIDER_RUN" -eq 1 ]]; then
   while IFS= read -r micro_value; do
     PROVIDER_BUDGET_MICRO_VALUES+=("$micro_value")
-  done < <(python3 - "$RESERVED_USD" "$DAILY_CAP_USD" \
-    "$PER_TICKET_BUDGET_USD" "${GLOBAL_DAILY_CAP_USD:-1000000000}" <<'PY'
-from decimal import Decimal, InvalidOperation, ROUND_CEILING
-import sys
-try:
-    for value in sys.argv[1:]:
-        amount = (Decimal(value) * Decimal(1_000_000)).to_integral_value(
-            rounding=ROUND_CEILING
-        )
-        if amount < 0 or amount > 10**15:
-            raise ValueError
-        print(int(amount))
-except (InvalidOperation, ValueError):
-    raise SystemExit(1)
-PY
-  )
+  done < <(micro_usd "$RESERVED_USD" "$DAILY_CAP_USD" \
+    "$PER_TICKET_BUDGET_USD" "${GLOBAL_DAILY_CAP_USD:-1000000000}")
   if [[ "${#PROVIDER_BUDGET_MICRO_VALUES[@]}" -ne 4 ]]; then
     echo "provider budget conversion failed; no task was submitted" >&2
     exit 3
@@ -2376,6 +2524,7 @@ raise SystemExit(0 if json.load(sys.stdin).get("admitted") is True else 1)
         echo "CLI provider denial could not be terminalized" >&2
         exit 8
       }
+    CLI_ATTEMPT_ACTIVE=0
     echo "CLI provider capacity or budget refused; no task was submitted" >&2
     exit 8
   fi
@@ -3081,8 +3230,10 @@ else
         HELD_LAUNCH_LOCK=0
         wait "$RUN_PID"
         STATUS=$?
-        if [[ -f "$RUN_SUBMITTED_FILE" && ! -L "$RUN_SUBMITTED_FILE" ]]; then
-          TASK_SUBMITTED=1
+        if ! capture_submission_record; then
+          echo "adapter submission record is invalid" >&2
+          STATUS=125
+          SUBMITTED_AT_EPOCH_NS=""
         fi
         if [[ "$STATUS" -eq 123 && "$TASK_SUBMITTED" -eq 0 ]]; then
           if ! stop_before_adapter_gate; then
@@ -3129,8 +3280,6 @@ fi
 set -e
 terminate_run_group || true
 if [[ "$RUN_GROUP_TERMINATED" -eq 1 ]]; then
-  rm -f "$RUN_PID_FILE"
-  RUN_PID_FILE=""
   if ! release_cursor_account_lease; then
     echo "role_exit_control_plane_mutation: Cursor account admission lease could not be released" >&2
     CONTROL_PLANE_MUTATION=1
@@ -3466,6 +3615,9 @@ else
   FINAL_ACCOUNTING_STATE="completed"
 fi
 
+FINAL_PHASE="completed"
+[[ "$CANCELLATION_ACCEPTED" -eq 0 ]] || FINAL_PHASE="$FINAL_ACCOUNTING_STATE"
+
 if [[ "$CLI_CONCURRENT_RUN" -eq 1 ]]; then
   if [[ "$RUN_GROUP_TERMINATED" -ne 1 ]]; then
     echo "role_exit_control_plane_mutation: CLI process group survived; reservation retained" >&2
@@ -3483,14 +3635,32 @@ if [[ "$CLI_CONCURRENT_RUN" -eq 1 ]]; then
     emit_role_output
     exit "$STATUS"
   fi
+  CLI_TERMINAL_CHARGE_MICRO="$(micro_usd "$COST")"
   CLI_TERMINAL_RESULT="failed"
   [[ "$STATUS" -ne 0 ]] || CLI_TERMINAL_RESULT="succeeded"
   [[ "$CANCELLATION_ACCEPTED" -eq 0 ]] || CLI_TERMINAL_RESULT="cancelled"
-  if ! reconcile_cli_attempt "$CLI_TERMINAL_RESULT"; then
+  [[ "$GO_ISSUED" -eq 1 || "$CLI_TERMINAL_RESULT" == "cancelled" ]] || \
+    CLI_TERMINAL_RESULT="failed_pre_go"
+  EFFECTIVE_COST="$COST"
+  EXIT_STATUS="$STATUS"
+  TERMINAL_AT="$(date -u +%FT%TZ)"
+  TERMINAL_AT_EPOCH_NS="$(python3 -c 'import time; print(time.time_ns())')"
+  if ! write_manifest "terminalizing"; then
+    echo "role_exit_control_plane_mutation: provider terminal intent could not be persisted" >&2
+    CONTROL_PLANE_MUTATION=1
+    ROLE_EXIT_STATUS="role_exit_control_plane_mutation"
+    STATUS=11
+    emit_role_output
+    exit "$STATUS"
+  fi
+  if ! reconcile_cli_attempt "$CLI_TERMINAL_RESULT" \
+      "$CLI_TERMINAL_CHARGE_MICRO"; then
     echo "role_exit_control_plane_mutation: CLI provider attempt could not be terminalized" >&2
     CONTROL_PLANE_MUTATION=1
     ROLE_EXIT_STATUS="role_exit_control_plane_mutation"
     STATUS=11
+    emit_role_output
+    exit "$STATUS"
   fi
 fi
 
@@ -3500,8 +3670,6 @@ if [[ "$PARALLEL_PROVIDER_RUN" -eq 0 ]] && ! provider_lock_is_owned; then
   ROLE_EXIT_STATUS="role_exit_control_plane_mutation"
   STATUS=11
 fi
-FINAL_PHASE="completed"
-[[ "$CANCELLATION_ACCEPTED" -eq 0 ]] || FINAL_PHASE="$FINAL_ACCOUNTING_STATE"
 finalize_accounting "$FINAL_ACCOUNTING_STATE" "$COST" "${TURNS:-0}" "$STATUS" "$COST_BASIS" "$FINAL_PHASE"
 
 # Refresh the materialized view under the same lock used by budget checks.
@@ -3519,6 +3687,11 @@ else
 fi
 
 finalize_global_ledger
+if [[ "$RUN_GROUP_TERMINATED" -eq 1 && "$CLI_ATTEMPT_ACTIVE" -eq 0 &&
+      -n "$RUN_PID_FILE" && "$MANIFEST_PHASE" != "terminalizing" ]]; then
+  rm -f "$RUN_PID_FILE"
+  RUN_PID_FILE=""
+fi
 if [[ "$CANCELLATION_ACCEPTED" -eq 1 ]]; then
   if ! python3 "$KIT_DIR/scripts/attempt-cancel.py" receipt \
       --factory-root "$REPO_ROOT" --ticket "$TICKET" --run-id "$RUN_ID" >/dev/null; then

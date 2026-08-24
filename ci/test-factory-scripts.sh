@@ -1357,6 +1357,7 @@ assert_invalid_run_envelope() {
     "$RUN_AGENT" --role planner --ticket T-191 -- "invalid config" 2>&1)" ||
     status=$?
   if [[ "$status" -eq 3 && "$out" == *"$expected"* &&
+        "$out" != *"unbound variable"* &&
         ! -d "$INVALID_CONFIG_ROOT/factory/runs" &&
         ! -f "$INVALID_CONFIG_ROOT/factory/runtime-ledger.csv" ]]; then
     pass "run-agent rejects $name config before task or manifest"

@@ -1751,7 +1751,9 @@ PY
     exec "${HELPER_ENV[@]}" "$PYTHON_BIN" -I -S "$QUALIFICATION_REDUCER" \
       --product-root "$PRODUCT_ROOT" \
       --state-dir "$CONTROLLER_STATE_DIR" \
-      --kit-dir "$RELEASE_PATH"
+      --kit-dir "$RELEASE_PATH" \
+      --qualification-root "$QUALIFICATION_ROOT" \
+      --project "$PROJECT"
     ;;
   dispatch-plan)
     [[ "$ACTIVE_CONTRACT" == "1.6.0" || "$ACTIVE_CONTRACT" == "1.7.0" || "$ACTIVE_CONTRACT" == "1.8.0" ||

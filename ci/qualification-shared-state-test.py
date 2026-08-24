@@ -198,7 +198,9 @@ class QualificationSharedStateTest(unittest.TestCase):
             "events": events,
             "replay": {
                 "reason": replay.get("reason"),
+                "reducer_reason_code": replay.get("reducer_reason_code"),
                 "status": replay.get("status"),
+                "ticket": replay.get("ticket"),
             },
         }, sort_keys=True)
 

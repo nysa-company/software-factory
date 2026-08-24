@@ -71,6 +71,30 @@ REDUCER_REASONS = {
     "target PRs did not validate concurrently": "target_pr_concurrency",
     "authenticated ticket caps are invalid": "ticket_caps_invalid",
     "immutable qualification report changed": "report_changed",
+    "immutable qualification report is invalid": "report_invalid",
+    "immutable qualification report is unsafe": "report_unsafe",
+    "qualification activation receipt is invalid": "activation_receipt_invalid",
+    "qualification activation timing proof is missing": "activation_timing_missing",
+    "qualification activation timing proof is invalid": "activation_timing_invalid",
+    "qualification final Narrator proof is ambiguous": "narrator_proof_ambiguous",
+    "qualification latency requires a fresh cohort": "cohort_not_fresh",
+    "qualification latency target exceeded": "latency_target_exceeded",
+    "qualification provider authority is invalid": "provider_authority_invalid",
+    "qualification role timing proof is missing": "role_timing_missing",
+    "qualification role timing proof is invalid": "role_timing_invalid",
+    "qualification run manifest is invalid": "run_manifest_invalid",
+    "qualification run charge is invalid": "run_charge_invalid",
+    "qualification timing proof is out of order": "timing_out_of_order",
+    "provider Planner submission proof is missing": "planner_submission_missing",
+    "provider accounting evidence is ambiguous": "provider_accounting_ambiguous",
+    "provider accounting manifest is invalid": "provider_manifest_invalid",
+    "provider accounting manifest is missing": "provider_manifest_missing",
+    "provider accounting attempt was duplicated": "provider_attempt_duplicated",
+    "provider accounting state is not terminal": "provider_state_not_terminal",
+    "provider accounting attempts do not reconcile": "provider_attempts_mismatch",
+    "provider accounting charge does not match": "provider_charge_mismatch",
+    "provider accounting attempt does not match": "provider_attempt_mismatch",
+    "provider accounting proof is missing": "provider_accounting_missing",
 }
 REDUCER_TICKET_REASONS = {
     "passport is not terminal": "passport_not_terminal",
@@ -81,6 +105,7 @@ REDUCER_TICKET_REASONS = {
     "protected checks are not green": "protected_checks_not_green",
     "protected terminal reconciliation is invalid": "terminal_reconciliation_invalid",
     "protected terminal reconciliation changed": "terminal_reconciliation_changed",
+    "protected Narrator evidence is invalid": "narrator_evidence_invalid",
 }
 
 

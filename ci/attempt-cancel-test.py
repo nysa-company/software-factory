@@ -98,6 +98,8 @@ class AttemptCancellationTest(unittest.TestCase):
             "accounting_state": "reserved",
             "reserved_usd": "2.00",
             "go_issued": go,
+            "task_submitted": go,
+            "submitted_at_epoch_ns": "102500000000" if go == "1" else "",
             "started_at": "2026-07-18T12:00:00Z",
             "terminal_at": "",
             "prompt_version": "1",
@@ -110,6 +112,9 @@ class AttemptCancellationTest(unittest.TestCase):
             "adapter": "mock",
             "provider_family": "openai",
             "provider_attempt_id": provider_attempt_id,
+            "provider_product_id": "qualification:factory",
+            "account_route_id": "cursor",
+            "activation_policy_sha256": getattr(self, "provider_policy_sha", ""),
             "model_id": "test",
             "selection_reason": "primary_ready",
             "adapter_version": "test",
@@ -135,7 +140,9 @@ class AttemptCancellationTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return json.loads(result.stdout)
 
-    def submitted_provider_attempt(self, database, attempt_id="provider-run-1"):
+    def submitted_provider_attempt(
+        self, database, attempt_id="provider-run-1", *, submit=True,
+    ):
         policy = database.with_name("policy.json")
         policy.parent.mkdir(parents=True, exist_ok=True)
         policy.parent.chmod(0o700)
@@ -161,12 +168,16 @@ class AttemptCancellationTest(unittest.TestCase):
             "--machine-daily-cap-micro-usd", "1000000000",
             "--policy", str(policy), "--now", "100",
         )["attempt"]
+        self.provider_policy_sha = reserve.get("policy_sha256") or ""
+        if not submit:
+            return attempt_id
         go_result = self.provider_command(
             database, "mark-go", "--operation-id", f"go-{attempt_id}",
             "--attempt-id", attempt_id, "--expected-version", str(reserve["version"]),
             "--now", "101",
         )
         go = go_result.get("attempt", go_result)
+        self.provider_policy_sha = go["policy_sha256"]
         self.provider_command(
             database, "mark-submitted", "--operation-id", f"submit-{attempt_id}",
             "--attempt-id", attempt_id, "--expected-version", str(go["version"]),
@@ -391,6 +402,167 @@ class AttemptCancellationTest(unittest.TestCase):
             ),
         )
 
+    def test_stale_terminal_provider_attempt_recovers_durable_actual_charge(self):
+        self.assertEqual(CANCEL.micro_usd("0.00000001"), 1)
+        database = self.root.parent / "qualification/provider/accounting/state-v2.sqlite3"
+        attempt_id = self.submitted_provider_attempt(database)
+        process, started = self.spawn()
+        values = self.manifest(
+            process, started, go="1", provider_attempt_id=attempt_id,
+        )
+        values.update({
+            "phase": "terminalizing",
+            "turns": "2",
+            "effective_cost": "1.250000",
+            "exit_status": "0",
+            "cost_basis": "estimated_tokens",
+            "terminal_at": "2026-07-18T12:01:00Z",
+            "terminal_at_epoch_ns": "1784376060000000000",
+            "terminal_intent_accounting_state": "completed",
+            "terminal_intent_phase": "completed",
+            "terminal_intent_result": "succeeded",
+            "terminal_intent_charge_micro_usd": "1250000",
+        })
+        self.write_meta(values)
+        before = self.provider_command(
+            database, "status", "--attempt-id", attempt_id,
+        )["attempts"][0]
+        result = self.provider_command(
+            database, "terminalize", "--operation-id", "actual-terminal",
+            "--attempt-id", attempt_id,
+            "--expected-version", str(before["version"]),
+            "--result", "succeeded", "--charge-micro-usd", "1250000",
+            "--now", "103",
+        )
+        terminal = result.get("attempt", result)
+        process.kill()
+        process.wait(timeout=5)
+        plan = CANCEL.calculate(
+            self.root, "T-1", "run-1", "operator_requested", "1" * 32,
+        )
+        with mock.patch.dict(
+            os.environ, {"FACTORY_PROVIDER_DB": str(database)}, clear=False,
+        ):
+            receipt = CANCEL.apply_plan(self.root, plan, 1)
+            replay = CANCEL.apply_plan(self.root, plan, 1)
+        manifest = IDENTITY.parse_fields(
+            (self.runs / "run-1.meta").read_bytes(), "run manifest",
+        )
+        row = CANCEL.ledger_row(
+            self.root / "factory/runtime-ledger.csv", "run-1",
+        )
+        after = self.provider_command(
+            database, "status", "--attempt-id", attempt_id,
+        )["attempts"][0]
+        self.assertEqual(replay, receipt)
+        self.assertEqual(
+            (
+                receipt["accounting_state"], receipt["charged_usd"],
+                manifest["phase"], manifest["accounting_state"],
+                manifest["effective_cost"], row["cost_usd"],
+                after["terminal_result"], after["charge_micro_usd"],
+                after["version"],
+            ),
+            (
+                "completed", "1.250000", "completed", "completed",
+                "1.250000", "1.250000", "succeeded", 1_250_000,
+                terminal["version"],
+            ),
+        )
+
+    def test_stale_pre_go_intent_terminalizes_once_at_zero_cost(self):
+        database = self.root.parent / "qualification/provider/accounting/state-v2.sqlite3"
+        attempt_id = self.submitted_provider_attempt(database, submit=False)
+        process, started = self.spawn()
+        values = self.manifest(
+            process, started, go="0", provider_attempt_id=attempt_id,
+        )
+        values.update({
+            "phase": "terminalizing",
+            "turns": "0",
+            "effective_cost": "0",
+            "exit_status": "3",
+            "cost_basis": "launch_void",
+            "terminal_at": "2026-07-18T12:01:00Z",
+            "terminal_at_epoch_ns": "1784376060000000000",
+            "terminal_intent_accounting_state": "launch_void",
+            "terminal_intent_phase": "completed",
+            "terminal_intent_result": "failed_pre_go",
+            "terminal_intent_charge_micro_usd": "0",
+        })
+        self.write_meta(values)
+        process.kill()
+        process.wait(timeout=5)
+        plan = CANCEL.calculate(
+            self.root, "T-1", "run-1", "operator_requested", "2" * 32,
+        )
+        with mock.patch.dict(
+            os.environ, {"FACTORY_PROVIDER_DB": str(database)}, clear=False,
+        ):
+            receipt = CANCEL.apply_plan(self.root, plan, 1)
+            replay = CANCEL.apply_plan(self.root, plan, 1)
+        manifest = IDENTITY.parse_fields(
+            (self.runs / "run-1.meta").read_bytes(), "run manifest",
+        )
+        attempt = self.provider_command(
+            database, "status", "--attempt-id", attempt_id,
+        )["attempts"][0]
+        self.assertEqual(replay, receipt)
+        self.assertEqual(
+            (
+                receipt["accounting_state"], receipt["charged_usd"],
+                manifest["phase"], manifest["accounting_state"],
+                attempt["terminal_result"], attempt["charge_micro_usd"],
+            ),
+            ("launch_void", "0", "completed", "launch_void", "failed_pre_go", 0),
+        )
+
+    def test_stale_submitted_intent_terminalizes_once_at_actual_cost(self):
+        database = self.root.parent / "qualification/provider/accounting/state-v2.sqlite3"
+        attempt_id = self.submitted_provider_attempt(database)
+        process, started = self.spawn()
+        values = self.manifest(
+            process, started, go="1", provider_attempt_id=attempt_id,
+        )
+        values.update({
+            "phase": "terminalizing",
+            "turns": "2",
+            "effective_cost": "1.250000",
+            "exit_status": "0",
+            "cost_basis": "estimated_tokens",
+            "terminal_at": "2026-07-18T12:01:00Z",
+            "terminal_at_epoch_ns": "1784376060000000000",
+            "terminal_intent_accounting_state": "completed",
+            "terminal_intent_phase": "completed",
+            "terminal_intent_result": "succeeded",
+            "terminal_intent_charge_micro_usd": "1250000",
+        })
+        self.write_meta(values)
+        before = self.provider_command(
+            database, "status", "--attempt-id", attempt_id,
+        )["attempts"][0]
+        process.kill()
+        process.wait(timeout=5)
+        plan = CANCEL.calculate(
+            self.root, "T-1", "run-1", "operator_requested", "3" * 32,
+        )
+        with mock.patch.dict(
+            os.environ, {"FACTORY_PROVIDER_DB": str(database)}, clear=False,
+        ):
+            receipt = CANCEL.apply_plan(self.root, plan, 1)
+            self.assertEqual(CANCEL.apply_plan(self.root, plan, 1), receipt)
+        after = self.provider_command(
+            database, "status", "--attempt-id", attempt_id,
+        )["attempts"][0]
+        self.assertEqual(
+            (
+                receipt["accounting_state"], receipt["charged_usd"],
+                after["terminal_result"], after["charge_micro_usd"],
+                after["version"],
+            ),
+            ("completed", "1.250000", "succeeded", 1_250_000, before["version"] + 1),
+        )
+
     def test_provider_database_selection_is_fail_closed(self):
         legacy = self.root.parent / "runtime/provider-state.sqlite3"
         attempt_id = self.submitted_provider_attempt(legacy)
@@ -423,6 +595,17 @@ class AttemptCancellationTest(unittest.TestCase):
             os.environ, {"FACTORY_PROVIDER_DB": str(foreign)}, clear=False,
         ), self.assertRaisesRegex(CANCEL.CancelError, "reconciliation failed"):
             CANCEL.converge_provider_attempt(self.root, manifest, plan)
+
+        for field in (
+            "provider_product_id", "provider_family", "account_route_id",
+            "activation_policy_sha256", "go_issued", "task_submitted",
+        ):
+            changed = dict(manifest)
+            changed[field] = "0" if field in {"go_issued", "task_submitted"} else "wrong"
+            with self.subTest(provider_identity=field), mock.patch.dict(
+                os.environ, {"FACTORY_PROVIDER_DB": str(legacy)}, clear=False,
+            ), self.assertRaisesRegex(CANCEL.CancelError, "identity disagrees"):
+                CANCEL.converge_provider_attempt(self.root, changed, plan)
 
         with mock.patch.dict(os.environ, {"FACTORY_PROVIDER_DB": ""}, clear=False):
             CANCEL.converge_provider_attempt(self.root, manifest, plan)

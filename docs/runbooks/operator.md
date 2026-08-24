@@ -320,6 +320,11 @@ qualification cohort is the sealed candidate's
 gate at command entry, the mandatory restart, reconciliation, exact bundle-bound
 qualification approvals, serialized publication, closeout, and terminal reduction
 in code.
+Fresh reduction proves exact-once provider history and the four upper-bound
+latency targets, then atomically retains one report. A faster-than-range result
+passes; the named ranges are service ceilings, not artificial minimum waits.
+Replay revalidates required checks on each stored exact PR head and does not
+wait for redundant main CI or recompute evidence from unrelated main movement.
 It approves only selected clean, idle, parked Awaiting Approval claims through
 the sealed lane operator map. With no progress, it continues for at most ten
 minutes only when every pending result is a typed live-role, GitHub,

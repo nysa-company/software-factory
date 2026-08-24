@@ -6,7 +6,7 @@ from __future__ import annotations
 import argparse
 import csv
 import datetime as dt
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation, ROUND_CEILING
 import hashlib
 import importlib.util
 import json
@@ -32,7 +32,10 @@ REASONS = frozenset(("budget_exhausted", "operator_requested"))
 PLAN_SCHEMA = "nysa.software-factory.attempt-cancel-plan/v1"
 REQUEST_SCHEMA = "nysa.software-factory.attempt-cancel-request/v1"
 RECEIPT_SCHEMA = "nysa.software-factory.attempt-cancellation/v1"
-TERMINAL_STATES = frozenset(("launch_void", "cancelled_conservative"))
+TERMINAL_STATES = frozenset((
+    "completed", "abandoned_conservative", "launch_void",
+    "cancelled_conservative",
+))
 
 
 class CancelError(ValueError):
@@ -49,6 +52,18 @@ def digest(raw: bytes) -> str:
 
 def timestamp() -> str:
     return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def micro_usd(value: str) -> int:
+    try:
+        amount = (Decimal(value) * 1_000_000).to_integral_value(
+            rounding=ROUND_CEILING,
+        )
+        if amount < 0 or amount > 10**15:
+            raise ValueError
+        return int(amount)
+    except (InvalidOperation, OverflowError, TypeError, ValueError) as error:
+        raise CancelError("provider accounting amount is malformed") from error
 
 
 def secure_json(path: Path) -> tuple[dict, bytes]:
@@ -263,9 +278,18 @@ def receipt_is_replay(path: Path, plan: dict) -> dict | None:
 def terminal_matches_plan(manifest: dict[str, str], plan: dict) -> bool:
     state = "launch_void" if plan["go_issued"] == "0" else "cancelled_conservative"
     return (
-        manifest.get("phase") == state
-        and manifest.get("accounting_state") == state
-        and manifest.get("ticket") == plan["ticket"]
+        (
+            manifest.get("phase") == state
+            and manifest.get("accounting_state") == state
+        )
+        or (
+            manifest.get("accounting_state")
+            == manifest.get("terminal_intent_accounting_state")
+            and manifest.get("phase") == manifest.get("terminal_intent_phase")
+            and manifest.get("accounting_state") in TERMINAL_STATES
+        )
+    ) and (
+        manifest.get("ticket") == plan["ticket"]
         and manifest.get("run_id") == plan["run_id"]
         and manifest.get("cancellation_reason") == plan["reason"]
         and manifest.get("cancellation_preview_hash") == plan["preview_hash"]
@@ -363,7 +387,91 @@ def provider_database(factory_root: Path) -> Path:
     return database
 
 
-def converge_provider_attempt(factory_root: Path, manifest: dict[str, str], plan: dict) -> None:
+def terminal_intent(
+    manifest: dict[str, str], status: dict | None = None,
+) -> dict[str, str] | None:
+    if manifest.get("phase") != "terminalizing":
+        return None
+    state = manifest.get("terminal_intent_accounting_state", "")
+    phase = manifest.get("terminal_intent_phase", "")
+    result = manifest.get("terminal_intent_result", "")
+    charge = manifest.get("terminal_intent_charge_micro_usd", "")
+    try:
+        charge_micro = int(charge) if re.fullmatch(r"0|[1-9][0-9]{0,15}", charge) else -1
+        reserve_micro = micro_usd(manifest["reserved_usd"])
+        effective_micro = micro_usd(manifest["effective_cost"])
+    except (CancelError, KeyError) as error:
+        raise CancelError("provider terminal intent is malformed") from error
+    exit_status = manifest.get("exit_status", "")
+    if (
+        state not in TERMINAL_STATES
+        or phase not in {
+            "completed", "abandoned", "launch_void", "cancelled_conservative",
+        }
+        or result not in {"succeeded", "failed", "failed_pre_go", "cancelled"}
+        or charge_micro < 0
+        or charge_micro != effective_micro
+        or charge_micro > reserve_micro
+        or not re.fullmatch(r"[0-9]{1,7}", manifest.get("turns", ""))
+        or not re.fullmatch(r"[0-9]{1,7}(?:\.[0-9]{1,18})?", manifest.get("effective_cost", ""))
+        or not re.fullmatch(r"[0-9]{1,3}", exit_status)
+        or int(exit_status) > 255
+        or not manifest.get("cost_basis")
+        or (state == "completed" and phase != "completed")
+        or (state == "abandoned_conservative" and phase not in {"completed", "abandoned"})
+        or (state == "cancelled_conservative" and phase != "cancelled_conservative")
+        or (state == "launch_void" and phase not in {"completed", "abandoned", "launch_void"})
+        or (
+            result == "succeeded"
+            and (state not in {"completed", "abandoned_conservative"} or exit_status != "0")
+        )
+        or (
+            result == "failed"
+            and (state not in {"completed", "abandoned_conservative"} or exit_status == "0")
+        )
+        or (
+            result == "cancelled"
+            and state not in {"cancelled_conservative", "launch_void"}
+        )
+        or (
+            result == "failed_pre_go"
+            and (state != "launch_void" or exit_status == "0")
+        )
+        or (state == "launch_void") != (manifest.get("go_issued") == "0")
+        or (state == "launch_void" and manifest.get("task_submitted") != "0")
+        or (
+            state == "launch_void"
+            and (
+                charge_micro != 0
+                or manifest.get("effective_cost") != "0"
+                or manifest.get("cost_basis") != "launch_void"
+            )
+        )
+        or (
+            state in {"abandoned_conservative", "cancelled_conservative"}
+            and (
+                charge_micro != reserve_micro
+                or manifest.get("cost_basis") != "conservative_reservation"
+            )
+        )
+    ):
+        raise CancelError("provider terminal intent does not match the attempt")
+    if status is not None and (
+        status.get("terminal_result") != result
+        or status.get("charge_micro_usd") != charge_micro
+        or not isinstance(status.get("terminal_at"), int)
+        or isinstance(status.get("terminal_at"), bool)
+    ):
+        raise CancelError("provider terminal intent does not match the attempt")
+    return {
+        "charge_micro_usd": str(charge_micro), "phase": phase,
+        "result": result, "state": state,
+    }
+
+
+def converge_provider_attempt(
+    factory_root: Path, manifest: dict[str, str], plan: dict,
+) -> dict[str, str] | None:
     attempt_id = manifest.get("provider_attempt_id", "")
     if not attempt_id:
         return
@@ -389,30 +497,95 @@ def converge_provider_attempt(factory_root: Path, manifest: dict[str, str], plan
     if not isinstance(attempts, list) or len(attempts) != 1:
         raise CancelError("provider attempt identity disagrees with the run")
     status = attempts[0]
+    go_at = status.get("go_at")
+    submitted_at = status.get("submitted_at")
+    submitted_ns = manifest.get("submitted_at_epoch_ns", "")
+    submitted_value = (
+        int(submitted_ns)
+        if re.fullmatch(r"[1-9][0-9]{0,19}", submitted_ns)
+        else None
+    )
     if (
         status.get("attempt_id") != attempt_id
         or status.get("ticket_id") != plan["ticket"]
-        or status.get("reserve_micro_usd") != int(
-            Decimal(manifest["reserved_usd"]) * 1_000_000
+        or status.get("product_id") != manifest.get("provider_product_id")
+        or status.get("provider_family") != manifest.get("provider_family")
+        or status.get("account_route") != manifest.get("account_route_id")
+        or (
+            status.get("admitted_at") is not None
+            and status.get("policy_sha256")
+            != manifest.get("activation_policy_sha256")
         )
+        or (
+            status.get("admitted_at") is None
+            and status.get("policy_sha256") is not None
+        )
+        or any(isinstance(value, bool) for value in (go_at, submitted_at))
+        or manifest.get("task_submitted") not in {"0", "1"}
+        or (manifest.get("go_issued") == "1") != isinstance(go_at, int)
+        or (manifest.get("task_submitted") == "1") != isinstance(submitted_at, int)
+        or (isinstance(submitted_at, int) and not isinstance(go_at, int))
+        or (submitted_value is None) != (submitted_at is None)
+        or (
+            isinstance(submitted_at, int)
+            and not submitted_at * 1_000_000_000
+            <= submitted_value
+            <= (submitted_at + 1) * 1_000_000_000 - 1
+        )
+        or status.get("reserve_micro_usd") != micro_usd(manifest["reserved_usd"])
     ):
         raise CancelError("provider attempt identity disagrees with the run")
-    if status.get("state") != "terminal":
+    intent = terminal_intent(manifest)
+    if status.get("state") == "terminal":
+        if intent is not None:
+            terminal_intent(manifest, status)
+            intent["terminal_at"] = dt.datetime.fromtimestamp(
+                status["terminal_at"], dt.timezone.utc,
+            ).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+            intent["terminal_at_epoch_ns"] = str(status["terminal_at"] * 1_000_000_000)
+            return intent
+    else:
+        if intent is not None and (
+            (
+                manifest.get("go_issued") == "1"
+                and status.get("state") not in {"GO", "submitted"}
+            )
+            or (
+                manifest.get("go_issued") == "0"
+                and status.get("state") not in {"prepared", "reserved"}
+            )
+        ):
+            raise CancelError("provider terminal intent disagrees with GO state")
+        result_name = intent["result"] if intent is not None else "cancelled"
+        charge = (
+            intent["charge_micro_usd"] if intent is not None
+            else "0" if plan["go_issued"] == "0"
+            else str(status["reserve_micro_usd"])
+        )
         result = invoke([
             "terminalize",
             "--operation-id", f"cancel-reconcile-{plan['preview_hash'][:24]}",
             "--attempt-id", attempt_id,
             "--expected-version", str(status["version"]),
-            "--result", "cancelled",
-            "--charge-micro-usd", str(status["reserve_micro_usd"]),
+            "--result", result_name,
+            "--charge-micro-usd", charge,
         ])
         status = result.get("attempt", result)
+        if intent is not None:
+            terminal_intent(manifest, status)
+            intent["terminal_at"] = dt.datetime.fromtimestamp(
+                status["terminal_at"], dt.timezone.utc,
+            ).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+            intent["terminal_at_epoch_ns"] = str(status["terminal_at"] * 1_000_000_000)
+            return intent
+    expected_charge = 0 if plan["go_issued"] == "0" else status.get("reserve_micro_usd")
     if (
         status.get("state") != "terminal"
         or status.get("terminal_result") != "cancelled"
-        or status.get("charge_micro_usd") != status.get("reserve_micro_usd")
+        or status.get("charge_micro_usd") != expected_charge
     ):
         raise CancelError("provider cancellation did not converge")
+    return None
 
 
 def converge_stale_attempt(factory_root: Path, plan: dict) -> dict:
@@ -424,17 +597,33 @@ def converge_stale_attempt(factory_root: Path, plan: dict) -> dict:
             raise CancelError("attempt changed after cancellation preview")
         if IDENTITY.group_alive(plan["pgid"]):
             raise CancelError("stale attempt process group became active")
-        converge_provider_attempt(factory_root, manifest, plan)
-        state = "launch_void" if plan["go_issued"] == "0" else "cancelled_conservative"
+        intent = converge_provider_attempt(factory_root, manifest, plan)
+        state = (
+            intent["state"] if intent is not None
+            else "launch_void" if plan["go_issued"] == "0"
+            else "cancelled_conservative"
+        )
+        phase = intent["phase"] if intent is not None else state
         manifest.update({
-            "phase": state,
+            "phase": phase,
             "accounting_state": state,
-            "terminal_at": timestamp(),
+            "terminal_at": intent["terminal_at"] if intent is not None else timestamp(),
+            "terminal_at_epoch_ns": (
+                intent["terminal_at_epoch_ns"] if intent is not None
+                else manifest.get("terminal_at_epoch_ns", "")
+            ),
             "turns": manifest.get("turns") or "0",
-            "effective_cost": "0" if state == "launch_void" else manifest["reserved_usd"],
-            "exit_status": "130",
-            "cost_basis": "launch_void" if state == "launch_void" else "conservative_reservation",
-            "role_exit": "cancelled",
+            "effective_cost": (
+                manifest["effective_cost"] if intent is not None
+                else "0" if state == "launch_void" else manifest["reserved_usd"]
+            ),
+            "exit_status": manifest["exit_status"] if intent is not None else "130",
+            "cost_basis": (
+                manifest["cost_basis"] if intent is not None
+                else "launch_void" if state == "launch_void"
+                else "conservative_reservation"
+            ),
+            "role_exit": manifest.get("role_exit", "") if intent is not None else "cancelled",
             "cancellation_reason": plan["reason"],
             "cancellation_preview_hash": plan["preview_hash"],
             "updated_at": timestamp(),
@@ -532,17 +721,17 @@ def emit_receipt(factory_root: Path, ticket: str, run_id: str) -> dict:
     state = manifest.get("accounting_state")
     if (
         state not in TERMINAL_STATES
-        or manifest.get("phase") != state
-        or manifest.get("ticket") != ticket
-        or manifest.get("run_id") != run_id
-        or manifest.get("cancellation_reason") != plan["reason"]
-        or manifest.get("cancellation_preview_hash") != plan["preview_hash"]
+        or not terminal_matches_plan(manifest, plan)
     ):
         raise CancelError("attempt cancellation is not terminal")
     if (state == "launch_void") != (manifest.get("go_issued") == "0"):
         raise CancelError("cancellation accounting does not match GO state")
     row = ledger_row(attempt["ledger"], run_id)
-    expected_cost = "0" if state == "launch_void" else manifest.get("reserved_usd")
+    expected_cost = (
+        "0" if state == "launch_void"
+        else manifest.get("reserved_usd") if state == "cancelled_conservative"
+        else manifest.get("effective_cost")
+    )
     if (
         row.get("ticket") != ticket
         or row.get("cost_usd") != expected_cost

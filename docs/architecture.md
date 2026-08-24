@@ -903,6 +903,27 @@ or complete lost-response state resumes. A changed artifact, missing
 predecessor, materialization remnant, active controller/provider, or unexpected
 entry refuses without deletion. This does not widen the signed safe-pause
 `--restore` boundary and adds no cleanup authority.
+Preparation durably records its start before reusable work. After the fresh
+Planner prime it atomically publishes one self-hashed `activation_complete`
+controller event bound to the exact activation receipt, Factory/product SHA and
+tree, qualification manifest, and unique restart boundary; exact replay repairs
+or preserves these boundaries and removes the temporary start record. For a
+fresh three-ticket cohort, the immutable reducer report authenticates that
+receipt, reads each Planner launch from the isolated coordinator's durable
+submission second using the conservative end-of-second boundary and binds it
+to the passport-backed run manifest and terminal event,
+selects the protected bundle's exact final
+Narrator run, and requires one `ticket_complete` event per ticket. It derives
+the four qualification latency SLOs from those ordered boundaries and fails
+closed on missing, duplicate, reordered, or over-target evidence.
+The same reduction requires a bijection between authenticated candidate run
+manifests and every isolated provider attempt. Reservation, terminal charge,
+ticket, route, family, policy, product, GO/submission timestamps, terminal
+event, and outcome must agree; pre-admission launch voids remain zero-charge.
+The report is linked create-if-absent, repairs only its unique same-inode crash
+temporary, and replays byte-for-byte while revalidating required checks on the
+stored exact PR heads. A later protected-main commit neither changes nor
+invalidates that retained evidence.
 The pre-publication controller prefix may retain only the exact owner-only
 locks and Ready receipts created while materializing the selected Backlog
 cohort. A consumed receipt is the ordinary completed prefix. One unconsumed
@@ -1028,7 +1049,7 @@ longer directly after its merge—route through the same receipt-bound
 protected-base refresh. `Building` is admitted only when the trusted launcher
 supplies one of those exact stages; the refresh performs the ordinary sealed
 reset and never treats stale evidence as valid. The qualification reducer
-reconciles passports, manifests, controller events, protected checks, PR heads,
+reconciles passports, manifests, controller events, exact PR-head checks,
 merge commits, and protected main. A qualification may close either an
 explicitly ordered three-ticket cohort at capacity three or four independent
 tickets at capacity four. Tracked dependencies must form an acyclic graph and
@@ -2247,7 +2268,11 @@ ineligible changes fall back to full product certification. All other product,
 config, receipt, and activation validation remains unchanged. Fresh certification
 refreshes evidence only after the isolated suite, tracked-tree check, and sealed
 release verification pass. Install first proves the SHA is on `origin/main`
-and binds exact successful protected main CI. The installed launcher labels
+and binds exact successful full GitHub CI. It prefers the exact main push run,
+but when squash merge produced no useful main run it accepts the unique merged
+PR only when its exact head has the same Git tree as the requested main commit,
+all current full-suite jobs passed, and the app-bound required checks remain
+green on that head. The installed launcher labels
 helper runs `production-certified`; the qualification launcher labels its
 separately SHA/tree-sealed candidate `qualification-candidate`; and the
 contained repository-test launcher labels its forced mock runs

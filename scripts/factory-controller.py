@@ -4586,7 +4586,10 @@ class Controller:
         duplicate_count = terminal.get("duplicate_launch_void_count", "1")
         if not duplicate_count.isdigit() or not 1 <= int(duplicate_count) <= 10_000:
             raise ControllerError("terminal duplicate count is invalid")
-        marker = "attempt-terminal-" + hashlib.sha256(run_id.encode()).hexdigest()
+        submitted_at = terminal.get("submitted_at_epoch_ns", "")
+        submitted_at_valid = re.fullmatch(r"[1-9][0-9]{0,19}", submitted_at)
+        terminal_at = terminal.get("terminal_at_epoch_ns", "")
+        terminal_at_valid = re.fullmatch(r"[1-9][0-9]{0,19}", terminal_at)
         details = {
             "accounting_state": terminal.get("accounting_state"),
             "duplicate_launch_void_count": int(duplicate_count),
@@ -4599,12 +4602,13 @@ class Controller:
             "role_exit": terminal.get("role_exit"),
             "route_id": terminal.get("route_id"),
             "run_id": run_id,
+            "submitted_at_epoch_ns": int(submitted_at) if submitted_at_valid else None,
             "task_submitted": terminal.get("task_submitted"),
+            "terminal_at_epoch_ns": int(terminal_at) if terminal_at_valid else None,
             "terminal_reason_code": terminal.get("terminal_reason_code", ""),
             "transition_receipt_sha256": claim.get("receipt"),
         }
-        if self.marker(marker, {"schema": EVENT_SCHEMA, **details}):
-            self.event("attempt_terminal", claim["ticket"], **details)
+        self.event_once("attempt_terminal", claim["ticket"], **details)
 
     def terminal_already_exported(
         self, claim: dict[str, Any], terminal: dict[str, str]
