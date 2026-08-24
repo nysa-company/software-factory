@@ -6,13 +6,16 @@ from __future__ import annotations
 import copy
 import fcntl
 import hashlib
+import importlib.util
 import json
 from pathlib import Path
 import stat
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,6 +24,12 @@ import operator_receipt  # noqa: E402
 
 RUNNER = ROOT / "scripts/qualification-run.py"
 SCHEMA = "nysa.software-factory.qualification-run/v1"
+RUNNER_SPEC = importlib.util.spec_from_file_location(
+    "qualification_run", RUNNER,
+)
+assert RUNNER_SPEC is not None and RUNNER_SPEC.loader is not None
+RUNNER_MODULE = importlib.util.module_from_spec(RUNNER_SPEC)
+RUNNER_SPEC.loader.exec_module(RUNNER_MODULE)
 
 
 def canonical(value: object) -> bytes:
@@ -2030,7 +2039,7 @@ raise SystemExit(code)
             "doctor", "reconcile", "reconcile", "qualification", "doctor",
         ])
 
-    def test_finish_typed_wait_uses_one_global_bounded_poll_budget(self) -> None:
+    def test_finish_unchanged_wait_uses_one_bounded_poll_budget(self) -> None:
         self.operator_authority()
         waiting = self.controller("ok", results=[
             {
@@ -2049,6 +2058,365 @@ raise SystemExit(code)
         self.assertEqual(self.called(), [
             "doctor", "reconcile", "reconcile", "reconcile",
         ])
+
+    def test_finish_live_role_preserves_external_poll_budget(self) -> None:
+        self.operator_authority()
+        live = self.controller("ok", results=[
+            {
+                "role": "narrator", "status": "waiting", "ticket": ticket,
+                "transition_receipt_sha256": "a" * 64,
+                "wait_reason": "live-role",
+            }
+            for ticket in ("T-1", "T-2", "T-3")
+        ])
+        external = self.controller("ok", results=[
+            {
+                "status": "waiting", "ticket": ticket,
+                "wait_reason": "closeout",
+            }
+            for ticket in ("T-1", "T-2", "T-3")
+        ])
+        complete = self.controller("ok", results=[
+            {"status": "complete", "ticket": ticket}
+            for ticket in ("T-1", "T-2", "T-3")
+        ])
+
+        code, value = self.run_scenario({
+            "doctor": self.doctor(),
+            "reconcile": [
+                external, external, live, live, external, external, complete,
+            ],
+            "qualification": self.report(),
+        }, finish=True)
+
+        self.assertEqual((code, value["status"]), (0, "green"), value)
+        self.assertEqual(self.called(), [
+            "doctor", *(["reconcile"] * 7), "qualification", "doctor",
+        ])
+
+    def test_finish_unchanged_live_role_wait_is_bounded(self) -> None:
+        self.operator_authority()
+        live = self.controller("ok", results=[
+            {
+                "role": "narrator", "status": "waiting", "ticket": ticket,
+                "transition_receipt_sha256": "a" * 64,
+                "wait_reason": "live-role",
+            }
+            for ticket in ("T-1", "T-2", "T-3")
+        ])
+
+        code, value = self.run_scenario({
+            "doctor": self.doctor(), "reconcile": live,
+        }, finish=True)
+
+        self.assertEqual((code, value["status"]), (3, "waiting"), value)
+        self.assertEqual(self.called(), [
+            "doctor", "reconcile", "reconcile", "reconcile",
+        ])
+
+    def test_finish_new_live_receipt_replenishes_live_poll_budget(self) -> None:
+        self.operator_authority()
+
+        def live(receipt: str) -> dict[str, object]:
+            return self.controller("ok", results=[
+                {
+                    "role": "narrator", "status": "waiting",
+                    "ticket": ticket,
+                    "transition_receipt_sha256": receipt,
+                    "wait_reason": "live-role",
+                }
+                for ticket in ("T-1", "T-2", "T-3")
+            ])
+
+        complete = self.controller("ok", results=[
+            {"status": "complete", "ticket": ticket}
+            for ticket in ("T-1", "T-2", "T-3")
+        ])
+        code, value = self.run_scenario({
+            "doctor": self.doctor(),
+            "reconcile": [
+                live("a" * 64), live("a" * 64),
+                live("b" * 64), live("b" * 64), complete,
+            ],
+            "qualification": self.report(),
+        }, finish=True)
+
+        self.assertEqual((code, value["status"]), (0, "green"), value)
+        self.assertEqual(self.called(), [
+            "doctor", *(["reconcile"] * 5), "qualification", "doctor",
+        ])
+
+    def test_finish_sibling_receipt_does_not_replenish_stale_live_role(self) -> None:
+        self.operator_authority()
+
+        def live(second: str) -> dict[str, object]:
+            return self.controller("ok", results=[
+                {
+                    "role": "narrator", "status": "waiting", "ticket": ticket,
+                    "transition_receipt_sha256": receipt,
+                    "wait_reason": "live-role",
+                }
+                for ticket, receipt in (
+                    ("T-1", "a" * 64), ("T-2", second), ("T-3", "c" * 64),
+                )
+            ])
+
+        first = live("b" * 64)
+        code, value = self.run_scenario({
+            "doctor": self.doctor(),
+            "reconcile": [first, first, live("d" * 64)],
+        }, finish=True)
+
+        self.assertEqual((code, value["status"]), (3, "waiting"), value)
+        self.assertEqual(self.called(), [
+            "doctor", "reconcile", "reconcile", "reconcile",
+        ])
+
+    def test_finish_malformed_live_role_wait_is_not_retried(self) -> None:
+        self.operator_authority()
+        malformed = self.controller("ok", results=[
+            {
+                "role": "narrator", "status": "waiting", "ticket": ticket,
+                "transition_receipt_sha256": "invalid",
+                "wait_reason": "live-role",
+            }
+            for ticket in ("T-1", "T-2", "T-3")
+        ])
+
+        code, value = self.run_scenario({
+            "doctor": self.doctor(), "reconcile": malformed,
+        }, finish=True)
+
+        self.assertEqual((code, value["status"]), (3, "waiting"), value)
+        self.assertEqual(self.called(), ["doctor", "reconcile"])
+
+    def test_finish_live_role_does_not_hide_external_wait(self) -> None:
+        self.operator_authority()
+        mixed = self.controller("ok", results=[
+            {
+                "role": "narrator", "status": "waiting", "ticket": "T-1",
+                "transition_receipt_sha256": "a" * 64,
+                "wait_reason": "live-role",
+            },
+            {"status": "waiting", "ticket": "T-2", "wait_reason": "closeout"},
+            {"status": "waiting", "ticket": "T-3", "wait_reason": "closeout"},
+        ])
+
+        code, value = self.run_scenario({
+            "doctor": self.doctor(), "reconcile": mixed,
+        }, finish=True)
+
+        self.assertEqual((code, value["status"]), (3, "waiting"), value)
+        self.assertEqual(self.called(), [
+            "doctor", "reconcile", "reconcile", "reconcile",
+        ])
+
+    def test_finish_authenticated_progress_replenishes_poll_budget(self) -> None:
+        self.operator_authority()
+        waiting = self.controller("ok", results=[
+            {
+                "status": "waiting", "ticket": ticket,
+                "wait_reason": "closeout",
+            }
+            for ticket in ("T-1", "T-2", "T-3")
+        ])
+        refreshed = copy.deepcopy(waiting)
+        refreshed["_event"] = {
+            "event": "protected_base_refreshed",
+            "factory_sha": "a" * 40,
+            "schema": "nysa.software-factory.controller-event/v1",
+            "ticket": "T-2",
+        }
+        complete = self.controller("ok", results=[
+            {"status": "complete", "ticket": ticket}
+            for ticket in ("T-1", "T-2", "T-3")
+        ])
+
+        code, value = self.run_scenario({
+            "doctor": self.doctor(),
+            "reconcile": [waiting, waiting, refreshed, waiting, waiting, complete],
+            "qualification": self.report(),
+        }, finish=True)
+
+        self.assertEqual((code, value["status"]), (0, "green"), value)
+        self.assertEqual(self.called(), [
+            "doctor", *(["reconcile"] * 6), "qualification", "doctor",
+        ])
+
+    def test_finish_unrelated_event_does_not_replenish_poll_budget(self) -> None:
+        self.operator_authority()
+        waiting = self.controller("ok", results=[
+            {
+                "status": "waiting", "ticket": ticket,
+                "wait_reason": "closeout",
+            }
+            for ticket in ("T-1", "T-2", "T-3")
+        ])
+        noisy = copy.deepcopy(waiting)
+        noisy["_event"] = {
+            "event": "controller_started",
+            "factory_sha": "a" * 40,
+            "schema": "nysa.software-factory.controller-event/v1",
+        }
+
+        code, value = self.run_scenario({
+            "doctor": self.doctor(), "reconcile": [noisy, waiting, waiting],
+        }, finish=True)
+
+        self.assertEqual((code, value["status"]), (3, "waiting"), value)
+        self.assertEqual(self.called(), [
+            "doctor", "reconcile", "reconcile", "reconcile",
+        ])
+
+    def test_finish_pre_wait_runtime_does_not_consume_poll_budget(self) -> None:
+        basis = ({"T-1"}, 1, False, "a" * 40, "", {}, "b" * 64)
+        waiting = {
+            "controller": self.controller("ok", results=[{
+                "status": "waiting", "ticket": "T-1",
+                "wait_reason": "closeout",
+            }]),
+            "phases": [], "restarts": 0,
+            "status": "waiting", "reason": "authenticated_wait",
+        }
+        green = {"phases": [], "restarts": 0, "status": "green"}
+        args = SimpleNamespace(
+            launcher=self.launcher, project="relay",
+            resume_receipt="", resume_ticket="",
+        )
+
+        with (
+            patch.object(RUNNER_MODULE, "execute", side_effect=[waiting, green])
+            as execute,
+            patch.object(RUNNER_MODULE, "finish_poll_limit", return_value=1),
+            patch.object(RUNNER_MODULE, "invoke", return_value=(0, self.doctor())),
+            patch.object(RUNNER_MODULE, "launcher_path", return_value=self.launcher),
+            patch.object(RUNNER_MODULE, "project_qualification_approvals", return_value=[]),
+            patch.object(RUNNER_MODULE, "qualification_basis", return_value=basis),
+            patch.object(RUNNER_MODULE, "qualification_event_names", return_value=set()),
+            patch.object(RUNNER_MODULE, "terminal_doctor", return_value=True),
+            patch.object(
+                RUNNER_MODULE.time, "monotonic", side_effect=[0, 601, 601],
+            ),
+            patch.object(RUNNER_MODULE.time, "sleep"),
+        ):
+            value = RUNNER_MODULE.execute_finish(args)
+
+        self.assertEqual(value["status"], "green")
+        self.assertEqual(execute.call_count, 2)
+
+    def test_finish_unchanged_wait_wall_time_is_bounded(self) -> None:
+        basis = ({"T-1"}, 1, False, "a" * 40, "", {}, "b" * 64)
+        args = SimpleNamespace(
+            launcher=self.launcher, project="relay",
+            resume_receipt="", resume_ticket="",
+        )
+        for reason in ("closeout", "live-role"):
+            with self.subTest(reason=reason):
+                item = {
+                    "status": "waiting", "ticket": "T-1",
+                    "wait_reason": reason,
+                }
+                if reason == "live-role":
+                    item.update(
+                        role="narrator",
+                        transition_receipt_sha256="a" * 64,
+                    )
+                waiting = {
+                    "controller": self.controller("ok", results=[item]),
+                    "phases": [], "restarts": 0,
+                    "status": "waiting", "reason": "authenticated_wait",
+                }
+                with (
+                    patch.object(
+                        RUNNER_MODULE, "execute",
+                        side_effect=[waiting, waiting],
+                    ) as execute,
+                    patch.object(
+                        RUNNER_MODULE, "finish_poll_limit", return_value=10,
+                    ),
+                    patch.object(
+                        RUNNER_MODULE, "invoke",
+                        return_value=(0, self.doctor()),
+                    ),
+                    patch.object(
+                        RUNNER_MODULE, "launcher_path",
+                        return_value=self.launcher,
+                    ),
+                    patch.object(
+                        RUNNER_MODULE, "project_qualification_approvals",
+                        return_value=[],
+                    ),
+                    patch.object(
+                        RUNNER_MODULE, "qualification_basis",
+                        return_value=basis,
+                    ),
+                    patch.object(
+                        RUNNER_MODULE, "qualification_event_names",
+                        return_value=set(),
+                    ),
+                    patch.object(
+                        RUNNER_MODULE.time, "monotonic",
+                        side_effect=[0, 0, 601, 601],
+                    ),
+                    patch.object(RUNNER_MODULE.time, "sleep"),
+                ):
+                    value = RUNNER_MODULE.execute_finish(args)
+
+                self.assertEqual(value["status"], "waiting")
+                self.assertEqual(execute.call_count, 2)
+
+    def test_finish_new_live_receipts_and_closeout_get_fresh_wall_time(self) -> None:
+        basis = ({"T-1"}, 1, False, "a" * 40, "", {}, "b" * 64)
+        args = SimpleNamespace(
+            launcher=self.launcher, project="relay",
+            resume_receipt="", resume_ticket="",
+        )
+
+        def waiting(role: str, receipt: str) -> dict[str, object]:
+            return {
+                "controller": self.controller("ok", results=[{
+                    "role": role, "status": "waiting", "ticket": "T-1",
+                    "transition_receipt_sha256": receipt,
+                    "wait_reason": "live-role",
+                }]),
+                "phases": [], "restarts": 0,
+                "status": "waiting", "reason": "authenticated_wait",
+            }
+
+        closeout = {
+            "controller": self.controller("ok", results=[{
+                "status": "waiting", "ticket": "T-1",
+                "wait_reason": "closeout",
+            }]),
+            "phases": [], "restarts": 0,
+            "status": "waiting", "reason": "authenticated_wait",
+        }
+        green = {"phases": [], "restarts": 0, "status": "green"}
+        with (
+            patch.object(
+                RUNNER_MODULE, "execute",
+                side_effect=[
+                    waiting("planner", "c" * 64),
+                    waiting("narrator", "d" * 64), closeout, green,
+                ],
+            ) as execute,
+            patch.object(RUNNER_MODULE, "finish_poll_limit", return_value=10),
+            patch.object(RUNNER_MODULE, "invoke", return_value=(0, self.doctor())),
+            patch.object(RUNNER_MODULE, "launcher_path", return_value=self.launcher),
+            patch.object(RUNNER_MODULE, "project_qualification_approvals", return_value=[]),
+            patch.object(RUNNER_MODULE, "qualification_basis", return_value=basis),
+            patch.object(RUNNER_MODULE, "qualification_event_names", return_value=set()),
+            patch.object(RUNNER_MODULE, "terminal_doctor", return_value=True),
+            patch.object(
+                RUNNER_MODULE.time, "monotonic",
+                side_effect=[0, 0, 400, 800, 801],
+            ),
+            patch.object(RUNNER_MODULE.time, "sleep"),
+        ):
+            value = RUNNER_MODULE.execute_finish(args)
+
+        self.assertEqual(value["status"], "green")
+        self.assertEqual(execute.call_count, 4)
 
     def test_finish_requires_a_fresh_final_doctor_for_green(self) -> None:
         complete = self.controller("ok", results=[

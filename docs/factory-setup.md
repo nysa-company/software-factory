@@ -253,9 +253,14 @@ provider state, ticket branches, or paid roles are created.
   and batch route pinning reuse that SHA-bound evidence; every role still
   performs its live selected-route check. Successful batch pinning consumes
   the startup cache, so later Doctor runs probe readiness again. The command repeats reconciliation
-  without another full Doctor after progress, and polls for at most ten minutes
-  while at least one pending ticket names an authenticated GitHub,
-  protected-merge, publication-lease, or closeout wait. Explicitly blocked,
+  without another full Doctor after progress. One unchanged exact durable
+  live-role receipt is observed for at most ten wall-clock minutes or 120 polls.
+  A pure live-role wait does not consume the external poll budget; a mixed live
+  and external wait charges both. A new authenticated role receipt starts a new
+  live bound. Each authenticated progress epoch polls for at most ten wall-clock
+  minutes or 120 polls while at least one pending ticket names an authenticated
+  GitHub, protected-merge,
+  publication-lease, or closeout wait. Explicitly blocked,
   budget, cancelled, or maintenance siblings are preserved while independent
   typed waits drain and approvals progress; those states alone, plus human,
   dependency, and untyped waits, return immediately. A new command invocation

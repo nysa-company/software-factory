@@ -12053,12 +12053,13 @@ class Controller:
         )
         self.event("cell_removed", claim["ticket"], worktree=str(worktree))
 
-    def finish_pending_run(self, claim: dict[str, Any]) -> bool:
+    def finish_pending_run(self, claim: dict[str, Any]) -> bool | None:
+        """Return None for a live receipt, False for a terminal stop, else True."""
         if not claim.get("receipt"):
             return True
         if self.role_active(claim):
             self.observe_attempt_safely(claim)
-            return False
+            return None
         terminal = self.terminal_for_receipt(claim["ticket"], claim["receipt"])
         if terminal is None:
             claim.update(receipt="", role="", status="claimed")
@@ -13126,8 +13127,9 @@ class Controller:
             if self.qualification and self.qualification_cohort_error.is_set():
                 if claim.get("receipt"):
                     self.ensure_lease(claim, "terminal-accounting")
-                    if not self.finish_pending_run(claim):
-                        if self.role_active(claim):
+                    finished = self.finish_pending_run(claim)
+                    if not finished:
+                        if finished is None:
                             return self.live_role_wait(claim)
                         return {
                             "status": (
@@ -13144,8 +13146,9 @@ class Controller:
             if (self.product / "factory/MAINTENANCE").exists():
                 return {"status": "maintenance", "ticket": claim["ticket"]}
             self.ensure_lease(claim, "reconciliation")
-            if not self.finish_pending_run(claim):
-                if self.qualification and self.role_active(claim):
+            finished = self.finish_pending_run(claim)
+            if not finished:
+                if self.qualification and finished is None:
                     return self.live_role_wait(claim)
                 return {
                     "status": (
@@ -13926,6 +13929,7 @@ class Controller:
                     result.get("status") in {
                         "blocked", "budget", "error", "maintenance", "waiting",
                     }
+                    and result.get("wait_reason") != "live-role"
                     and not self.role_active(claim)
                 ):
                     self.park_claim(claim)
