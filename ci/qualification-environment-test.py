@@ -4262,7 +4262,10 @@ class QualificationEnvironmentTest(unittest.TestCase):
         askpass.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
         askpass.chmod(0o700)
         auth_file = capability / "auth"
-        auth_file.write_text("fixture", encoding="utf-8")
+        auth_file.write_text(
+            hashlib.sha256(b"qualification install fixture").hexdigest(),
+            encoding="utf-8",
+        )
         auth_file.chmod(0o600)
         gh_info = gh.stat()
         descriptor = capability / "descriptor.json"
