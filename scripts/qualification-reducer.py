@@ -600,10 +600,33 @@ def provider_accounting_evidence(
     for attempt_id, ticket, charge, value, digest in records:
         attempt = by_id[attempt_id]
         reserve = manifest_micro_usd(value.get("reserved_usd", ""))
-        launch_void = value.get("accounting_state") == "launch_void"
-        expected_charge = 0 if launch_void else manifest_micro_usd(
-            value.get("effective_cost") or value.get("reserved_usd", "")
-        )
+        state = value.get("accounting_state")
+        launch_void = state == "launch_void"
+        if launch_void:
+            if (
+                value.get("go_issued") != "0"
+                or value.get("task_submitted") != "0"
+                or manifest_micro_usd(value.get("effective_cost", "")) != 0
+                or value.get("cost_basis") != "launch_void"
+            ):
+                raise QualificationError("provider accounting manifest is invalid")
+            expected_charge = 0
+        elif state in {"abandoned_conservative", "cancelled_conservative"}:
+            if (
+                value.get("go_issued") != "1"
+                or manifest_micro_usd(value.get("effective_cost", "")) != reserve
+                or value.get("cost_basis") != "conservative_reservation"
+            ):
+                raise QualificationError("provider accounting manifest is invalid")
+            expected_charge = reserve
+        else:
+            expected_charge = manifest_micro_usd(value.get("effective_cost", ""))
+            if (
+                value.get("go_issued") != "1"
+                or expected_charge > reserve
+                or not value.get("cost_basis")
+            ):
+                raise QualificationError("provider accounting manifest is invalid")
         if charge is not None and charge.get("charge_micro_usd") != expected_charge:
             raise QualificationError("provider accounting charge does not match")
         terminal_events = [
@@ -677,14 +700,17 @@ def provider_accounting_evidence(
             or terminal_value > observed_at
             or any(event.get(name) != selected for name, selected in expected_event.items())
             or (
-                launch_void
+                state == "launch_void"
                 and attempt.get("terminal_result")
                 not in {"capacity_denied", "failed_pre_go", "cancelled"}
             )
             or (
-                not launch_void and attempt.get("terminal_result") not in {
-                    "succeeded", "failed", "cancelled"
-                }
+                state in {"completed", "abandoned_conservative"}
+                and attempt.get("terminal_result") not in {"succeeded", "failed"}
+            )
+            or (
+                state == "cancelled_conservative"
+                and attempt.get("terminal_result") != "cancelled"
             )
         ):
             raise QualificationError("provider accounting attempt does not match")

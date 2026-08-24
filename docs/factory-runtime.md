@@ -260,7 +260,12 @@ receipt/passport-bound child and resumes the deterministic tail without rerunnin
 a completed role. Never hand-edit a claim, passport, receipt, or remote-tracking
 ref. A disconnect during a provider attempt is different: the terminal and its
 accounting remain authoritative and only the existing authenticated fallback
-path may continue it.
+path may continue it. For an admitted attempt with a durable recovery record,
+the launcher records its exact terminal result, charge, accounting state, and
+final phase before the coordinator transition. It retains that recovery record
+until the intent is terminal, so a restart or lost response can adopt an exact
+matching transition without charging or mutating it twice. Identity, policy,
+result, or charge drift fails closed.
 After an explicit contract-repair apply, the separate lifecycle boundary is
 closed with the same sealed isolated release:
 

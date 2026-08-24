@@ -196,9 +196,212 @@ RUN_SUBMITTED_FILE=
 load_cli_attempt() {{ return 99; }}
 capture_submission_record
 """
-        subprocess.run(
-            ["/bin/bash", "-c", script], capture_output=True, check=True,
+        result = subprocess.run(
+            ["/bin/bash", "-c", script], capture_output=True, check=False,
             text=True, timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_terminalization_uses_actual_charge_below_reservation(self) -> None:
+        script = f"""
+set -euo pipefail
+eval "$(sed -n '/^micro_usd()/,/^}}/p;
+  /^finalize_accounting()/,/^}}/p;
+  /^accounting_intent_is_durable()/,/^}}/p;
+  /^seal_cleanup_accounting_intent()/,/^}}/p;
+  /^finalize_cleanup_accounting()/,/^}}/p;
+  /^accounting_cleanup_required()/,/^}}/p;
+  /^reconcile_cli_attempt()/,/^}}/p' '{RUN_AGENT}')"
+actual="$(micro_usd 1.250000)"
+[[ "$actual" == 1250000 && "$(micro_usd 0.00000001)" == 1 ]]
+CLI_ATTEMPT_ACTIVE=1
+TASK_SUBMITTED=0
+CLI_ATTEMPT_ID=actual-charge
+CLI_ATTEMPT_STATE=submitted
+CLI_ATTEMPT_VERSION=4
+FACTORY_PROVIDER_DB='{self.state}/accounting/state-v2.sqlite3'
+KIT_DIR='{ROOT}'
+PROVIDER_BUDGET_MICRO_VALUES=(2000000)
+load_cli_attempt() {{
+  CLI_ATTEMPT_STATE="${{TEST_CLI_STATE:-submitted}}"
+  CLI_ATTEMPT_VERSION=4
+  CLI_ATTEMPT_TERMINAL_RESULT="${{TEST_TERMINAL_RESULT:-none}}"
+  CLI_ATTEMPT_TERMINAL_CHARGE_MICRO="${{TEST_TERMINAL_CHARGE:-none}}"
+}}
+python3() {{ arguments="$*"; }}
+reconcile_cli_attempt succeeded "$actual"
+[[ "$arguments" == *'--charge-micro-usd 1250000'* ]]
+CLI_ATTEMPT_ACTIVE=1
+CLI_TERMINAL_CHARGE_MICRO="$actual"
+CLI_TERMINAL_RESULT=succeeded
+FINAL_ACCOUNTING_STATE=completed
+FINAL_PHASE=completed
+MANIFEST_PHASE=terminalizing
+reconcile_cli_attempt failed
+[[ "$arguments" == *'--charge-micro-usd 1250000'* ]]
+CLI_ATTEMPT_ACTIVE=1
+TEST_CLI_STATE=terminal
+TEST_TERMINAL_RESULT=succeeded
+TEST_TERMINAL_CHARGE=1250000
+reconcile_cli_attempt succeeded "$actual"
+[[ "$CLI_ATTEMPT_ACTIVE" == 0 ]]
+CLI_ATTEMPT_ACTIVE=1
+TEST_TERMINAL_RESULT=failed
+if reconcile_cli_attempt succeeded "$actual"; then exit 1; fi
+[[ "$CLI_ATTEMPT_ACTIVE" == 1 ]]
+TEST_CLI_STATE=submitted
+unset TEST_TERMINAL_RESULT TEST_TERMINAL_CHARGE
+CLI_ATTEMPT_ACTIVE=1
+MANIFEST_PHASE=spawned
+reconcile_cli_attempt failed
+[[ "$arguments" == *'--charge-micro-usd 2000000'* ]]
+unset -f python3
+CLI_TERMINAL_CHARGE_MICRO="$actual"
+FINAL_ACCOUNTING_STATE=completed
+FINAL_PHASE=completed
+COST=1.250000
+TURNS=2
+COST_BASIS=estimated_tokens
+GO_ISSUED=1
+RESERVED_USD=2.000000
+MANIFEST=/tmp/fixture.meta
+MANIFEST_PHASE=terminalizing
+ACCOUNTING_STATE=reserved
+write_manifest() {{ return 1; }}
+if finalize_accounting completed 1.250000 2 0 estimated_tokens completed; then
+  exit 1
+fi
+[[ "$ACCOUNTING_STATE" == completed && "$MANIFEST_PHASE" == terminalizing ]]
+accounting_cleanup_required
+write_manifest() {{ MANIFEST_PHASE="$1"; }}
+finalize_cleanup_accounting 143
+[[ "$ACCOUNTING_STATE" == completed && "$EFFECTIVE_COST" == 1.250000 &&
+   "$EXIT_STATUS" == 0 && "$MANIFEST_PHASE" == completed ]]
+if accounting_cleanup_required; then exit 1; fi
+CLI_TERMINAL_CHARGE_MICRO=
+CLI_TERMINAL_RESULT=
+ACCOUNTING_STATE=reserved
+MANIFEST_PHASE=spawned
+finalize_cleanup_accounting 0
+[[ "$ACCOUNTING_STATE" == abandoned_conservative &&
+   "$EFFECTIVE_COST" == 2.000000 && "$EXIT_STATUS" == 125 &&
+   "$MANIFEST_PHASE" == abandoned ]]
+CLI_TERMINAL_CHARGE_MICRO=
+CLI_TERMINAL_RESULT=
+FINAL_ACCOUNTING_STATE=
+FINAL_PHASE=
+MANIFEST_PHASE=spawned
+ACCOUNTING_STATE=reserved
+GO_ISSUED=1
+TURNS=3
+PROVIDER_BUDGET_MICRO_VALUES=(2000000)
+write_manifest() {{ MANIFEST_PHASE="$1"; }}
+seal_cleanup_accounting_intent 143
+accounting_intent_is_durable
+[[ "$FINAL_ACCOUNTING_STATE" == cancelled_conservative &&
+   "$FINAL_PHASE" == cancelled_conservative && "$COST" == 2.000000 &&
+   "$EXIT_STATUS" == 143 && "$CLI_TERMINAL_RESULT" == cancelled ]]
+CLI_TERMINAL_CHARGE_MICRO=
+CLI_TERMINAL_RESULT=
+FINAL_ACCOUNTING_STATE=
+FINAL_PHASE=
+MANIFEST_PHASE=prepared
+ACCOUNTING_STATE=reserved
+GO_ISSUED=0
+seal_cleanup_accounting_intent 3
+accounting_intent_is_durable
+[[ "$FINAL_ACCOUNTING_STATE" == launch_void && "$FINAL_PHASE" == abandoned &&
+   "$COST" == 0 && "$EXIT_STATUS" == 3 &&
+   "$CLI_TERMINAL_RESULT" == failed_pre_go ]]
+eval "$(sed -n '/^cleanup()/,/^}}/p' '{RUN_AGENT}' | sed '/exec 8<&-/d')"
+set +e
+PID_FIXTURE='{self.root}/retained.pid'
+RUN_PID_FILE="$PID_FIXTURE"
+: >"$RUN_PID_FILE"
+RUN_GROUP_TERMINATED=1
+CLI_ATTEMPT_ACTIVE=1
+ROLE_GUARD_ROOT=
+RUN_WRAPPER_FILE=
+LEASE_HEARTBEAT_PID=
+RUN_READY_FILE=
+RUN_GO_FILE=
+RUN_GATE_FILE=
+RUN_SUBMITTED_FILE=
+RUN_OUTPUT_TEMP=
+HELD_LEDGER_LOCK=0
+HELD_GLOBAL_LOCK=0
+GLOBAL_LEDGER_SNAPSHOT=
+LOCK_DIR='{self.root}/ledger.lock'
+LEGACY_INTERVAL_ACTIVE=0
+HELD_PROVIDER_LOCK=0
+RETAIN_PROVIDER_LOCK=0
+HELD_LAUNCH_LOCK=0
+LAUNCH_LOCK='{self.root}/launch.lock'
+OWNS_ACTIVE_RUN=0
+stop_lease_heartbeat() {{ :; }}
+terminate_run_group() {{ RUN_GROUP_TERMINATED=1; }}
+release_cursor_account_lease() {{ :; }}
+cleanup_cli_runtime() {{ :; }}
+capture_submission_record() {{ TASK_SUBMITTED=1; }}
+reconcile_cli_attempt() {{ return 1; }}
+seal_cleanup_accounting_intent() {{
+  [[ "$TASK_SUBMITTED" == 1 ]] || return 1
+  MANIFEST_PHASE=terminalizing
+  ACCOUNTING_STATE=reserved
+  CLI_TERMINAL_RESULT=failed
+}}
+cleanup || true
+[[ -f "$PID_FIXTURE" && "$MANIFEST_PHASE" == terminalizing &&
+   "$ACCOUNTING_STATE" == reserved && "$CLI_ATTEMPT_ACTIVE" == 1 ]] || {{ echo first-ordering; exit 1; }}
+: >"$RUN_PID_FILE"
+CLI_ATTEMPT_ACTIVE=1
+MANIFEST_PHASE=spawned
+ACCOUNTING_STATE=reserved
+ACCOUNTING_SCHEMA=1
+HELD_LEDGER_LOCK=1
+reconcile_cli_attempt() {{ CLI_ATTEMPT_ACTIVE=0; }}
+accounting_cleanup_required() {{ return 0; }}
+finalize_cleanup_accounting() {{
+  MANIFEST_PHASE=abandoned
+  ACCOUNTING_STATE=abandoned_conservative
+}}
+refresh_runtime_ledger() {{ :; }}
+finalize_global_ledger() {{ :; }}
+cleanup || true
+[[ ! -e "$PID_FIXTURE" && "$MANIFEST_PHASE" == abandoned &&
+   "$ACCOUNTING_STATE" == abandoned_conservative && "$CLI_ATTEMPT_ACTIVE" == 0 ]] || {{ echo second-ordering; exit 1; }}
+RUN_PID_FILE="$PID_FIXTURE"
+: >"$RUN_PID_FILE"
+CLI_ATTEMPT_ACTIVE=1
+GO_ISSUED=0
+TASK_SUBMITTED=0
+MANIFEST_PHASE=resolved
+ACCOUNTING_STATE=
+capture_submission_record() {{
+  CLI_ATTEMPT_STATE=terminal
+  CLI_ATTEMPT_TERMINAL_RESULT=capacity_denied
+  CLI_ATTEMPT_TERMINAL_CHARGE_MICRO=0
+}}
+reconcile_cli_attempt() {{
+  [[ "$1" == capacity_denied && "$2" == 0 ]] || return 1
+  CLI_ATTEMPT_ACTIVE=0
+}}
+finalize_cleanup_accounting() {{
+  MANIFEST_PHASE=abandoned
+  ACCOUNTING_STATE=launch_void
+}}
+cleanup || true
+[[ ! -e "$PID_FIXTURE" && "$MANIFEST_PHASE" == abandoned &&
+   "$ACCOUNTING_STATE" == launch_void && "$CLI_ATTEMPT_ACTIVE" == 0 ]] || {{ echo denial-ordering; exit 1; }}
+"""
+        result = subprocess.run(
+            ["/bin/bash", "-c", script], capture_output=True, check=False,
+            text=True, timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(
+            "CLI_ATTEMPT_ACTIVE=0\n    echo \"CLI provider capacity or budget refused",
+            RUN_AGENT.read_text(),
         )
 
     def prepare_runtime(self, adapter: str, attempt: str) -> Path:

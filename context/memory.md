@@ -29,7 +29,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Fresh operator maps use an object-valued `_config` accepted by qualification, and nonvisual publication treats only exact current-ticket Ready audit receipts as metadata; foreign or malformed receipt paths remain semantic and fail closed.
 - Disjoint protected sibling refreshes recognize exact sibling Ready audit receipts and retain existing Reviewer/Narrator evidence. Done reuses exact approved-head checks only across a tree-identical authenticated merge with unchanged protected check policy; every mismatch or unavailable head result falls back to merge-commit evidence.
 - Fresh isolated preparation completes a sealed provider-free prime before returning: the exact cohort is claimed, batch-pinned, and advanced to unconsumed Planner receipts before the existing restart boundary. Replay first authenticates the exact publication and controller prefix, then remains idempotent only while provider accounting is pristine and every receipt remains exact and unconsumed; ordinary finish retains fresh Doctor and live Planner preflight. Fresh three-ticket reduction also requires replay-stable activation, Planner-submission, final-Narrator, and Done boundaries and reports their four latency SLOs.
-- Targeted cancellation reconciles provider attempts through the launcher's validated `FACTORY_PROVIDER_DB`; only direct development lanes without that binding use their existing lane-local database. Missing, unsafe, or foreign provider state fails before stale manifest or claim cleanup, and post-GO cancellation retains the full reservation exactly once.
+- Targeted cancellation reconciles provider attempts through the launcher's validated `FACTORY_PROVIDER_DB`; only direct development lanes without that binding use their existing lane-local database. Missing, unsafe, or foreign provider state fails before stale manifest or claim cleanup. An admitted attempt with a durable recovery record writes terminal intent before coordinator mutation; restart adopts only an exact matching result and charge, while post-GO conservative cancellation retains the full reservation exactly once.
 - **Contract rules below in Operating contract are authoritative**; this summary is only what the session hook can inject.
 
 ## Operating contract
@@ -7998,3 +7998,15 @@ head tree equals the requested commit tree, whose current or legacy complete
 job topology passed, and whose app-bound required checks remain green. The
 evidence digest binds main SHA/tree, PR/head, workflow run, attempt, and jobs;
 no redundant main workflow wait is introduced.
+
+## 2026-08-23 — Decision 591: Provider terminal accounting is write-ahead
+
+Category: Reliability
+
+For an admitted attempt with a durable recovery record, the launcher persists
+the exact terminal result, charge, accounting state, and final phase before
+mutating the provider coordinator. It retains that record until the manifest
+reaches the terminal phase. Supported cancellation or restart may adopt an
+already-committed transition only when provider identity, policy, submission,
+result, and charge match exactly; drift fails closed and replay never charges
+or terminalizes twice.
