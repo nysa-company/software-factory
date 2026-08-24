@@ -1397,6 +1397,7 @@ def execute(
     args: argparse.Namespace,
     doctor_result: tuple[int, dict[str, Any]] | None = None,
     expected_manifest_sha256: str = "",
+    reconcile_wait_seconds: int = 0,
 ) -> dict[str, Any]:
     if not PROJECT.fullmatch(args.project):
         raise QualificationRunError("invalid qualification project")
@@ -1457,7 +1458,14 @@ def execute(
         for item in doctor["checks"]["contract_resume"].get("incidents", [])
     )
     while True:
-        code, controller = invoke(launcher, args.project, "reconcile", phases)
+        reconcile_arguments = (
+            ("--wait-seconds", str(reconcile_wait_seconds))
+            if reconcile_wait_seconds else ()
+        )
+        code, controller = invoke(
+            launcher, args.project, "reconcile", phases,
+            *reconcile_arguments,
+        )
         if code == 75 and controller == {
             "reason_code": "external_unavailable", "status": "wait",
         }:
@@ -1638,12 +1646,16 @@ def execute_finish(args: argparse.Namespace) -> dict[str, Any]:
     live_started: dict[tuple[str, str, str], float] = {}
     live_signature: tuple[tuple[str, str, str], ...] = ()
     external_started: float | None = None
+    reconcile_wait_seconds = 0
     events = qualification_event_names()
     # ponytail: a closed cohort can create at most one approval per protected
     # base generation; widen only if qualification admits unrelated main churn.
     progress_left = len(selected) ** 2 + len(selected) + 1
     while progress_left:
-        result = execute(args, doctor_result, basis[-1])
+        result = execute(
+            args, doctor_result, basis[-1], reconcile_wait_seconds,
+        )
+        reconcile_wait_seconds = 0
         if qualification_basis()[-1] != basis[-1]:
             raise QualificationRunError(
                 "qualification basis changed during finish"
@@ -1755,7 +1767,17 @@ def execute_finish(args: argparse.Namespace) -> dict[str, Any]:
                         live_polls_left[identity] -= 1
                     if external:
                         polls_left -= 1
-                    time.sleep(finish_poll_seconds())
+                    sleep_seconds = finish_poll_seconds()
+                    time.sleep(sleep_seconds)
+                    if external:
+                        reconcile_wait_seconds = max(0, min(
+                            FINISH_WAIT_SECONDS,
+                            int(
+                                FINISH_WAIT_SECONDS
+                                - (now - external_started)
+                                - sleep_seconds
+                            ),
+                        ))
                     continue
             return {
                 **result,
