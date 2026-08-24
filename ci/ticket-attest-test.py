@@ -613,8 +613,11 @@ Merge-Policy: manual
             "check_queries": [], "missing_check_commits": [],
             "closeout_pr": "absent", "closeout_duplicate": False,
             "closeout_wrong": False, "closeout_head": None,
+            "closeout_merge_evidence": True,
             "closeout_merge_state": "BLOCKED",
             "create_fail": False, "closeout_merge_fail": False,
+            "closeout_merge_side_effect": "",
+            "closeout_auto_merge_confirm": True,
             "closeout_auto_merge": True,
             "historical_head_ref": None,
             "network_fail": False,
@@ -652,8 +655,8 @@ if a[:2] == ["pr", "list"]:
                     "url": "https://example.invalid/pr/14",
                     "state": ("MERGED" if s["closeout_pr"] == "merged" else
                               "CLOSED" if s["closeout_pr"] == "closed" else "OPEN"),
-                    "mergedAt": "2026-07-17T19:00:00Z" if s["closeout_pr"] == "merged" else None,
-                    "mergeCommit": {"oid": "e" * 40} if s["closeout_pr"] == "merged" else None,
+                    "mergedAt": "2026-07-17T19:00:00Z" if s["closeout_pr"] == "merged" and s["closeout_merge_evidence"] else None,
+                    "mergeCommit": {"oid": "e" * 40} if s["closeout_pr"] == "merged" and s["closeout_merge_evidence"] else None,
                     "mergeStateStatus": s["closeout_merge_state"]}
             print(json.dumps([item, dict(item, number=15)] if s["closeout_duplicate"] else [item]))
     else:
@@ -684,8 +687,24 @@ elif a[:2] == ["pr", "merge"]:
         print("draft pull request", file=sys.stderr); raise SystemExit(1)
     if (closeout and s["closeout_merge_fail"]) or (not closeout and s["merge_fail"]):
         print("auto-merge unavailable", file=sys.stderr); raise SystemExit(1)
+    if closeout and s["closeout_merge_side_effect"]:
+        if s["closeout_merge_side_effect"] == "merged":
+            s["closeout_pr"] = "merged"
+            subprocess.run(
+                ["git", "-C", os.environ["FAKE_WORKDIR"], "push", "-q",
+                 "origin", "HEAD:main"], check=True,
+            )
+        elif s["closeout_merge_side_effect"] == "closed":
+            s["closeout_pr"] = "closed"
+            s["closeout_auto_merge"] = True
+        else:
+            s["closeout_auto_merge"] = True
+        Path(os.environ["FAKE_GH_STATE"]).write_text(json.dumps(s))
+        print("auto-merge response lost", file=sys.stderr); raise SystemExit(1)
     if closeout and "--disable-auto" in a:
         s["closeout_auto_merge"] = False
+    elif closeout:
+        s["closeout_auto_merge"] = s["closeout_auto_merge_confirm"]
     elif not closeout and "--disable-auto" in a:
         s["auto_merge"] = False
     elif not closeout:
@@ -708,7 +727,8 @@ elif a[:2] == ["pr", "view"]:
                           "baseRefName": "main", "headRefOid": s.get("closeout_head") or head,
                           "state": ("MERGED" if s["closeout_pr"] == "merged" else
                                     "CLOSED" if s["closeout_pr"] == "closed" else "OPEN"),
-                          "mergedAt": "2026-07-17T19:00:00Z" if s["closeout_pr"] == "merged" else None,
+                          "mergedAt": "2026-07-17T19:00:00Z" if s["closeout_pr"] == "merged" and s["closeout_merge_evidence"] else None,
+                          "mergeCommit": {"oid": "e" * 40} if s["closeout_pr"] == "merged" and s["closeout_merge_evidence"] else None,
                           "mergeStateStatus": s["closeout_merge_state"],
                           "autoMergeRequest": {"mergeMethod": "SQUASH"} if s["closeout_auto_merge"] else None}))
     else:
@@ -3950,7 +3970,9 @@ else:
         self.assertEqual(self.head_at(self.workdir), closeout_head)
 
     def test_done_retries_auto_merge_failure_on_existing_pr(self):
-        self.prepare_done(closeout_merge_fail=True)
+        self.prepare_done(
+            closeout_auto_merge=False, closeout_merge_fail=True,
+        )
         failed = self.attest("done")
         self.assertIn("auto-merge", failed.stderr)
         closeout_head = self.head_at(self.workdir)
@@ -3960,11 +3982,54 @@ else:
         self.assertEqual(self.head_at(self.workdir), closeout_head)
         self.assertEqual(json.loads(self.state.read_text())["create_count"], 1)
 
+    def test_done_accepts_merged_closeout_after_auto_merge_response_loss(self):
+        self.prepare_done(closeout_merge_side_effect="merged")
+
+        result = self.attest("done")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["closeout_pr_state"], "MERGED")
+
+    def test_done_accepts_enabled_auto_merge_after_response_loss(self):
+        self.prepare_done(
+            closeout_auto_merge=False,
+            closeout_merge_side_effect="enabled",
+        )
+
+        result = self.attest("done")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["closeout_pr_state"], "OPEN")
+
+    def test_done_refuses_merged_closeout_without_merge_evidence(self):
+        self.prepare_done(
+            closeout_merge_evidence=False,
+            closeout_merge_side_effect="merged",
+        )
+
+        self.assertIn("auto-merge", self.attest("done").stderr)
+
+    def test_done_refuses_initial_merged_closeout_without_merge_evidence(self):
+        self.prepare_done(
+            closeout_merge_evidence=False,
+            closeout_pr="merged",
+        )
+
+        self.assertIn("merge evidence", self.attest("done").stderr)
+
+    def test_done_refuses_closed_closeout_with_stale_auto_merge(self):
+        self.prepare_done(closeout_merge_side_effect="closed")
+
+        self.assertIn("auto-merge", self.attest("done").stderr)
+
     def test_done_retries_unconfirmed_closeout_auto_merge(self):
-        self.prepare_done(closeout_auto_merge=False)
+        self.prepare_done(
+            closeout_auto_merge=False,
+            closeout_auto_merge_confirm=False,
+        )
         self.assertIn("did not confirm", self.attest("done").stderr)
         closeout_head = self.head_at(self.workdir)
-        self.update_state(closeout_auto_merge=True)
+        self.update_state(closeout_auto_merge_confirm=True)
         retried = self.attest("done")
         self.assertEqual(retried.returncode, 0, retried.stderr)
         self.assertEqual(self.head_at(self.workdir), closeout_head)

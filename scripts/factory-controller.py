@@ -12917,6 +12917,7 @@ class Controller:
     def run_role(
         self, claim: dict[str, Any], role: str, receipt: str,
         failed_checks: list[str], publication: dict[str, Any] | None = None,
+        *, primed_planner: bool = False,
     ) -> bool:
         if self.qualification and self.qualification_cohort_error.is_set():
             return False
@@ -12928,7 +12929,7 @@ class Controller:
                 )
             except QualificationArtifactError as error:
                 raise ControllerError(str(error)) from error
-        if role == "planner":
+        if role == "planner" and not primed_planner:
             preflight = self.json_call(
                 "preflight", "--ticket", claim["ticket"], "--role", role,
                 "--lease", claim["lease"], "--receipt", receipt,
@@ -13218,10 +13219,12 @@ class Controller:
             replay_transition = (
                 self.dependency_publication_replay_transition(claim)
             )
+            primed_planner_transition = None
             if replay_transition is None:
-                replay_transition = self.qualification_primed_planner_transition(
+                primed_planner_transition = self.qualification_primed_planner_transition(
                     claim,
                 )
+                replay_transition = primed_planner_transition
             transition = (
                 replay_transition
                 if replay_transition is not None else self.json_call(
@@ -13420,7 +13423,8 @@ class Controller:
                     )
                 else:
                     launched = self.run_role(
-                        claim, role, receipt, failed_checks
+                        claim, role, receipt, failed_checks,
+                        primed_planner=primed_planner_transition is not None,
                     )
                 if (
                     not launched
@@ -14006,6 +14010,15 @@ class Controller:
             if claim["ticket"] in marker_cleanup_pending or claim in retained
         ]
         self.quarantine_invalid_transition_claims(existing)
+        if self.qualification and any(
+            claim.get("status") == "blocked"
+            and claim.get("blocked_reason") in {
+                "controller-error", "external-unavailable",
+            }
+            and not self.role_active(claim)
+            for claim in existing
+        ):
+            self.protected_main_head()
         completed = [
             claim for claim in existing
             if claim["ticket"] not in marker_cleanup_pending

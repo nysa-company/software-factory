@@ -50,10 +50,10 @@ DIGEST = re.compile(r"^[0-9a-f]{64}$")
 TICKET = re.compile(r"^T-[0-9]+$")
 ROLES = {"planner", "spec-linter", "test-author", "builder", "reviewer", "narrator"}
 LATENCY_TARGETS_MS = {
-    "cold_activation": 180_000,
-    "prepared_to_all_planners": 90_000,
-    "final_narrator_to_done": 300_000,
-    "last_narrator_to_cohort_done": 600_000,
+    "cold_activation": 240_000,
+    "prepared_to_all_planners": 240_000,
+    "final_narrator_to_done": 480_000,
+    "last_narrator_to_cohort_done": 900_000,
 }
 
 

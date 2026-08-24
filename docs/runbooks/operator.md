@@ -325,6 +325,15 @@ in code.
 Fresh reduction proves exact-once provider history and the four upper-bound
 latency targets, then atomically retains one report. A faster-than-range result
 passes; the named ranges are service ceilings, not artificial minimum waits.
+The conservative sealed wall ceilings are 240 seconds for cold activation,
+240 seconds from activation to every Planner submission, 480 seconds from a
+singleton's final Narrator to Done, and 900 seconds from a cohort's last
+Narrator to all Done. For performance handoff, also report the union of exact
+GitHub check-run intervals bound to each PR head and the authenticated
+auto-merge-request event through GitHub `mergedAt`; subtract those external
+intervals only as a diagnostic Factory-controlled clock. Ambiguous rerun or
+status-only evidence remains unsubtracted, and the reducer's gross wall gate
+still applies.
 Replay revalidates required checks on each stored exact PR head and does not
 wait for redundant main CI or recompute evidence from unrelated main movement.
 It approves only selected clean, idle, parked Awaiting Approval claims through

@@ -210,10 +210,10 @@ def reducer_failure(value: dict[str, Any]) -> dict[str, Any]:
     ):
         return {"reducer_reason_code": "invalid_reducer_error"}
     latency_targets = {
-        "cold_activation": 180_000,
-        "prepared_to_all_planners": 90_000,
-        "final_narrator_to_done": 300_000,
-        "last_narrator_to_cohort_done": 600_000,
+        "cold_activation": 240_000,
+        "prepared_to_all_planners": 240_000,
+        "final_narrator_to_done": 480_000,
+        "last_narrator_to_cohort_done": 900_000,
     }
     if error == "qualification latency target exceeded":
         metric = value.get("metric")

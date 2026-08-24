@@ -218,8 +218,11 @@ the selected live route after restart. On that exact fresh restart, the
 controller reuses a still-unconsumed primed Planner receipt only when its
 current release, claim, branch, clean head/tree, ticket blob, lease, route, and
 absent passport all match. Successor and production lanes, or any drift, use
-the ordinary state-machine path. Planner preflight still authenticates and
-consumes the receipt before provider GO. Batch pinning records cache consumption,
+the ordinary state-machine path. Only that exact fresh primed path skips the
+duplicate controller Planner preflight; the sealed launcher still verifies
+and consumes the receipt, then rechecks lease, route, envelope, provider,
+sequencer, branch, and control state before provider GO. Every other Planner
+path retains the ordinary preflight. Batch pinning records cache consumption,
 so subsequent Doctor checks resolve live readiness. The finisher repeats
 reconciliation after progress and while a provider role retains its durable
 active-run ownership, or while every pending result is a typed external
@@ -784,9 +787,10 @@ reason-code fingerprint. Unknown, product, operator, budget, and external
 failures remain local evidence for ordinary triage. GitHub failure leaves the
 event pending for the next reporter run and cannot change a claim, lease,
 passport, ticket state, or controller result.
-Planner preflight validates the complete pinned route contract without
-repeating machine probes; the role runner re-verifies only its selected route
-immediately before provider admission.
+Ordinary and retry Planner preflight validates the complete pinned route
+contract without repeating machine probes; the exact fresh primed path relies
+on its already-authenticated receipt and the role runner re-verifies its
+selected route immediately before provider admission.
 Automatic qualification fallback serializes and reroutes only the failed
 role. Future pinned roles keep their selections and are re-probed only when
 they reach provider admission; later task-bearing roles retain four-way
@@ -937,11 +941,11 @@ to the passport-backed run manifest and terminal event,
 selects the protected bundle's exact final
 Narrator run, and requires one `ticket_complete` event per ticket. It reports
 all four latency observations from those ordered boundaries. The three-ticket
-profile fails closed when cold activation, durable all-Planner submission, or
-last-Narrator-to-cohort-Done exceeds its ceiling; it does not apply the
+profile fails closed when cold activation or durable all-Planner submission
+exceeds 240 seconds, or last-Narrator-to-cohort-Done exceeds 900 seconds; it does not apply the
 single-ticket ceiling to cohort members whose Done transition is deliberately
 sibling-coupled. The ordinary one-ticket profile enforces all four ceilings,
-including final-Narrator-to-Done. Every refusal names the exact metric, observed
+including the 480-second final-Narrator-to-Done ceiling. Every refusal names the exact metric, observed
 milliseconds, and target. Missing, duplicate, or reordered evidence remains
 fail-closed.
 The same reduction requires a bijection between authenticated candidate run
@@ -1733,6 +1737,13 @@ checks, and closeout merge. The controller records one idempotent
 it emits completion and releases the ticket — Done has no external witness;
 this is Git- and receipt-only. An unconfirmed Done leaves the claim retryable;
 stale prepublication dependency logic is never reopened.
+If the auto-merge command loses its response, `done` accepts only a fresh exact
+PR read proving the same head is either open with the requested auto-merge
+method or merged with a timestamp and merge commit. Closed, incomplete, or
+identity-drifted evidence still refuses. Qualification refreshes protected main
+before terminal cleanup when an idle claim is blocked by a controller or
+external response error, so a valid Done terminal releases without depending
+on the already-deleted implementation branch.
 For qualification, validated protected-main Done is authoritative even when
 the sealed registered checkout remains intentionally detached with a
 nonterminal ticket. That target is excluded from admission and cannot be

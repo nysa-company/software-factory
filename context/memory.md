@@ -29,7 +29,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - The local operator console keeps supported approval hashes in its authenticated server session, and qualification resume reads its owner-only plan internally: operators approve an exact action without transcribing a digest, while sealed apply paths still recompute and validate the binding before mutation.
 - Fresh operator maps use an object-valued `_config` accepted by qualification, and nonvisual publication treats only exact current-ticket Ready audit receipts as metadata; foreign or malformed receipt paths remain semantic and fail closed.
 - Disjoint protected sibling refreshes recognize exact sibling Ready audit receipts and retain existing Reviewer/Narrator evidence. Done reuses exact approved-head checks only across a tree-identical authenticated merge with unchanged protected check policy; every mismatch or unavailable head result falls back to merge-commit evidence.
-- Fresh isolated preparation completes a sealed provider-free prime before returning: the exact cohort is claimed, batch-pinned, and advanced to unconsumed Planner receipts before the existing restart boundary. Replay first authenticates the exact publication and controller prefix, then remains idempotent only while provider accounting is pristine and every receipt remains exact and unconsumed; ordinary finish retains fresh Doctor and live Planner preflight. Fresh three-ticket reduction requires replay-stable activation, Planner-submission, final-Narrator, and Done boundaries, reports all four latency observations, and enforces its cold-activation, all-Planner, and cohort ceilings; per-ticket Narrator timing is report-only because cohort closeout is sibling-coupled. The ordinary one-ticket, capacity-three, retained-budget profile enforces all four ceilings, including final Narrator-to-Done.
+- Fresh isolated preparation completes a sealed provider-free prime before returning: the exact cohort is claimed, batch-pinned, and advanced to unconsumed Planner receipts before the existing restart boundary. Replay first authenticates the exact publication and controller prefix, then remains idempotent only while provider accounting is pristine and every receipt remains exact and unconsumed; fresh Doctor checks selected-ticket readiness concurrently in deterministic order, and an exact unchanged primed Planner receipt skips only the duplicate controller preflight while launcher admission still consumes and revalidates it. Fresh three-ticket reduction requires replay-stable activation, Planner-submission, final-Narrator, and Done boundaries, reports all four latency observations, and enforces 240-second activation and Planner plus 900-second cohort wall ceilings; per-ticket Narrator timing is report-only because cohort closeout is sibling-coupled. The ordinary one-ticket profile also enforces the 480-second final Narrator-to-Done wall ceiling.
 - Targeted cancellation reconciles provider attempts through the launcher's validated `FACTORY_PROVIDER_DB`; only direct development lanes without that binding use their existing lane-local database. Missing, unsafe, or foreign provider state fails before stale manifest or claim cleanup. An admitted attempt with a durable recovery record writes terminal intent before coordinator mutation; restart adopts only an exact matching result and charge, while post-GO conservative cancellation retains the full reservation exactly once.
 - **Contract rules below in Operating contract are authoritative**; this summary is only what the session hook can inject.
 
@@ -7948,6 +7948,8 @@ replay does not charge or transition it twice.
 
 Category: Performance
 
+Superseded in part by Decision 597 for the exact unchanged fresh primed path.
+
 The first fresh qualification reconcile after the mandatory restart reuses an
 unconsumed primed Planner transition only when the exact current-release claim,
 branch, clean head/tree, ticket blob, lease, route, and absent passport still
@@ -8090,3 +8092,30 @@ maximum-30-second lock slices, then parks and releases on slice or epoch expiry.
 Live-role, untyped, unavailable, blocked,
 budget, maintenance, and error results still return immediately; production
 and takeover cannot request retained reconciliation.
+
+## 2026-08-24 — Decision 597: Qualification uses reliable gross ceilings
+
+Category: Performance
+
+The sealed reducer keeps conservative gross wall gates: 240 seconds for cold
+activation and all-Planner submission, 480 seconds for singleton
+Narrator-to-Done, and 900 seconds for cohort closeout. Fresh Doctor overlaps
+independent selected-ticket readiness, and an exact unchanged primed Planner
+receipt skips only the duplicate controller preflight; launcher admission
+still validates and consumes that receipt. Handoffs may report a separate
+CI-excluded diagnostic from exact PR-head check runs and authenticated
+auto-merge request through GitHub merge time, but ambiguity remains
+unsubtracted and cannot relax the sealed wall gate.
+
+## 2026-08-24 — Decision 598: Closeout response loss converges on exact GitHub truth
+
+Category: Reliability
+
+A nonzero protected auto-merge command is not terminal evidence. Closeout
+re-reads the exact PR and accepts only the same open head with the requested
+method or the same merged head with a timestamp and merge commit; every other
+state remains a refusal. When a qualification claim is idle and blocked by a
+controller or external response error, the controller refreshes protected main
+before terminal cleanup. Authenticated Done then releases the claim without
+requiring the legitimately deleted implementation branch, while nonterminal or
+invalid protected evidence stays blocked.

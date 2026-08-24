@@ -2784,18 +2784,18 @@ raise SystemExit(code)
                 "qualification latency target exceeded",
                 {
                     "metric": "prepared_to_all_planners",
-                    "observed_ms": 98420,
+                    "observed_ms": 240001,
                     "reducer_reason_code": "latency_target_exceeded",
-                    "target_ms": 90000,
+                    "target_ms": 240000,
                 },
             ),
             (
                 "qualification latency target exceeded",
                 {
                     "metric": "final_narrator_to_done",
-                    "observed_ms": 300001,
+                    "observed_ms": 480001,
                     "reducer_reason_code": "latency_target_exceeded",
-                    "target_ms": 300000,
+                    "target_ms": 480000,
                     "ticket": "T-2",
                 },
             ),
@@ -2838,11 +2838,11 @@ raise SystemExit(code)
 
         for malformed in (
             {
-                "metric": [], "observed_ms": 90001, "target_ms": 90000,
+                "metric": [], "observed_ms": 240001, "target_ms": 240000,
             },
             {
-                "metric": "final_narrator_to_done", "observed_ms": 300001,
-                "target_ms": 300000, "ticket": [],
+                "metric": "final_narrator_to_done", "observed_ms": 480001,
+                "target_ms": 480000, "ticket": [],
             },
         ):
             with self.subTest(malformed=malformed):

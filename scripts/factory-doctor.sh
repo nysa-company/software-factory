@@ -82,10 +82,26 @@ if [[ -z "$PYTHON_BIN" ]]; then
 fi
 
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/factory-doctor.XXXXXX")" || exit 1
+READINESS_PIDS=()
 cleanup() {
+  local pid
+  if [[ -n "${READINESS_PIDS[*]-}" ]]; then
+    for pid in "${READINESS_PIDS[@]}"; do
+      kill -TERM "$pid" 2>/dev/null || true
+    done
+    for pid in "${READINESS_PIDS[@]}"; do
+      wait "$pid" 2>/dev/null || true
+    done
+  fi
   rm -rf "$TMP"
 }
-trap cleanup EXIT HUP INT TERM
+interrupted() {
+  trap - EXIT HUP INT TERM
+  cleanup
+  exit 3
+}
+trap cleanup EXIT
+trap interrupted HUP INT TERM
 CLI_FILE="$TMP/clis.tsv"
 RUN_FILE="$TMP/runs.tsv"
 ACTIVE_CLAIM_FILE="$TMP/active-run-claims.tsv"
@@ -1177,15 +1193,78 @@ PY
     QUALIFICATION_TICKET_READINESS_REASON_CODE=""
     while IFS= read -r ticket; do
       output="$TMP/qualification-ticket-$ticket.out"
-      if bounded_command "$READINESS_TIMEOUT_SECONDS" "$output" \
+      result="$TMP/qualification-ticket-$ticket.status"
+      "$PYTHON_BIN" - "$READINESS_TIMEOUT_SECONDS" "$output" "$result" \
           "$PYTHON_BIN" -I -S "$KIT_DIR/scripts/ticket-readiness.py" \
-          --ticket "$ticket" --workdir "$PRODUCT_ROOT" &&
-         [[ "$(cat "$output")" == "READINESS PASS" ]]; then
-        printf '%s\tok\t\n' "$ticket" >> "$QUALIFICATION_TICKET_READINESS_FILE"
-      else
+          --ticket "$ticket" --workdir "$PRODUCT_ROOT" <<'PY' &
+import os
+from pathlib import Path
+import resource
+import signal
+import subprocess
+import sys
+
+timeout = int(sys.argv[1])
+output = sys.argv[2]
+result = Path(sys.argv[3])
+command = sys.argv[4:]
+process = None
+
+
+def stop(_signal, _frame):
+    if process is not None and process.poll() is None:
+        os.killpg(process.pid, signal.SIGKILL)
+        process.wait()
+    raise SystemExit(3)
+
+
+def limit_output():
+    resource.setrlimit(resource.RLIMIT_FSIZE, (1024 * 1024, 1024 * 1024))
+
+
+for selected in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
+    signal.signal(selected, stop)
+try:
+    with open(output, "xb") as stream:
+        process = subprocess.Popen(
+            command, stdin=subprocess.DEVNULL, stdout=stream,
+            stderr=subprocess.DEVNULL, start_new_session=True,
+            preexec_fn=limit_output,
+        )
+        try:
+            status = process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait()
+            status = 3
+    if os.path.getsize(output) > 1024 * 1024:
+        status = 3
+except OSError:
+    status = 3
+result.write_text(f"{status}\n", encoding="utf-8")
+PY
+      READINESS_PIDS+=("$!")
+    done < "$QUALIFICATION_TICKETS_FILE"
+    for pid in "${READINESS_PIDS[@]}"; do
+      wait "$pid" || true
+    done
+    READINESS_PIDS=()
+    while IFS= read -r ticket; do
+      output="$TMP/qualification-ticket-$ticket.out"
+      result="$(cat "$TMP/qualification-ticket-$ticket.status" 2>/dev/null || true)"
+      if [[ "$result" == "0" && "$(cat "$output" 2>/dev/null)" == "READINESS PASS" ]]; then
+        status="ok"
+        reason_code=""
+      elif [[ "$result" =~ ^[0-9]+$ ]]; then
+        status="error"
         reason_code="$(ticket_readiness_reason_code "$(cat "$output" 2>/dev/null)")"
-        printf '%s\terror\t%s\n' "$ticket" "$reason_code" \
-          >> "$QUALIFICATION_TICKET_READINESS_FILE"
+      else
+        status="error"
+        reason_code="ticket_readiness_invalid"
+      fi
+      printf '%s\t%s\t%s\n' "$ticket" "$status" "$reason_code" \
+        >> "$QUALIFICATION_TICKET_READINESS_FILE"
+      if [[ "$status" == "error" ]]; then
         QUALIFICATION_TICKET_READINESS_STATUS="error"
         [[ -n "$QUALIFICATION_TICKET_READINESS_REASON_CODE" ]] ||
           QUALIFICATION_TICKET_READINESS_REASON_CODE="$reason_code"
