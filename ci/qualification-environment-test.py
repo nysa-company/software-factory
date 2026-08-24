@@ -4224,10 +4224,10 @@ class QualificationEnvironmentTest(unittest.TestCase):
                 path.chmod(path.stat().st_mode & ~0o222)
         provider = self.home.resolve() / ".factory/qualification/relay/provider"
         provider_before = RELEASE.qualification_provider_snapshot(provider)
-        capability = self.workspace / "install-capability"
-        capability.mkdir(mode=0o700)
-        capability = capability.resolve(strict=True)
-        install_repo = capability / "https-install-source"
+        install_fixture = self.workspace / "install-fixture"
+        install_fixture.mkdir(mode=0o700)
+        install_fixture = install_fixture.resolve(strict=True)
+        install_repo = install_fixture / "https-install-source"
         run(self.workspace, "git", "clone", "-q", "--no-local", str(self.factory), str(install_repo))
         install_repo = install_repo.resolve(strict=True)
         install_repo.chmod(0o700)
@@ -4252,8 +4252,8 @@ class QualificationEnvironmentTest(unittest.TestCase):
             ),
         ):
             run(self.factory, "git", "config", key, value)
-        trusted_bin = capability / "bin"
-        config = capability / "config"
+        trusted_bin = install_fixture / "bin"
+        config = install_fixture / "config"
         trusted_bin.mkdir(mode=0o700)
         config.mkdir(mode=0o700)
         gh = Path(shutil.which("gh")).resolve(strict=True)
@@ -4261,13 +4261,13 @@ class QualificationEnvironmentTest(unittest.TestCase):
         askpass = trusted_bin / "git-askpass"
         askpass.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
         askpass.chmod(0o700)
-        auth_file = capability / "auth"
+        auth_file = install_fixture / "auth"
         RELEASE.atomic_bytes(
             auth_file,
             hashlib.sha256(b"qualification install fixture").hexdigest().encode(),
         )
         gh_info = gh.stat()
-        descriptor = capability / "descriptor.json"
+        descriptor = install_fixture / "descriptor.json"
         RELEASE.atomic_json(descriptor, {
             "config": str(config), "gh": str(gh),
             "gh_identity": {
