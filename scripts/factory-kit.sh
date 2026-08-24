@@ -650,7 +650,7 @@ PY
 }
 
 verified_remote_full_ci() {
-  local sha="$1" tree="$2" data run_id run_attempt evidence_sha event ref pr_number
+  local sha="$1" tree="$2" data run_id run_attempt evidence_sha event head_ref pr_number
   if [[ "${FACTORY_KIT_TEST_MODE:-0}" == "1" ]]; then
     verify_required_github_checks "$sha" >&2 || return 1
     [[ "${FACTORY_KIT_TEST_REMOTE_FULL_CI:-0}" == "1" ]] || return 1
@@ -669,23 +669,24 @@ pages = json.load(open(sys.argv[1]))
 runs = []
 for page in pages:
     runs.extend(page.get("workflow_runs", []))
-valid = [run for run in runs if (
+exact = [run for run in runs if (
     run.get("head_sha") == sys.argv[2] and run.get("event") == "push" and
     run.get("head_branch") == "main" and run.get("status") == "completed" and
-    run.get("conclusion") == "success" and
     run.get("path") == ".github/workflows/ci.yml"
 )]
+valid = [run for run in exact if run.get("conclusion") == "success"]
 if not valid:
-    raise SystemExit(1)
+    raise SystemExit(2 if exact else 1)
 run = max(valid, key=lambda value: int(value.get("id", 0)))
 print("%s\t%s" % (run["id"], run.get("run_attempt", 1)))
 PY
   then
     evidence_sha="$sha"
     event="push"
-    ref="refs/heads/main"
+    head_ref="refs/heads/main"
     pr_number=""
   else
+    [[ "$?" -eq 1 ]] || return 1
     gh api --paginate --slurp \
       "repos/nysa-company/software-factory/commits/$sha/pulls?per_page=100" \
       > "$data/pulls.json" || return 1
@@ -695,8 +696,15 @@ pages = json.load(open(sys.argv[1]))
 if pages and isinstance(pages[0], dict):
     pages = [pages]
 pulls = [item for page in pages for item in page if (
-    item.get("merged_at") and item.get("merge_commit_sha") == sys.argv[2]
+    item.get("state") == "closed" and item.get("merged_at")
+    and item.get("merge_commit_sha") == sys.argv[2]
+    and isinstance(item.get("number"), int) and not isinstance(item["number"], bool)
+    and item["number"] > 0
     and (item.get("base") or {}).get("ref") == "main"
+    and ((item.get("base") or {}).get("repo") or {}).get("full_name")
+        == "nysa-company/software-factory"
+    and ((item.get("head") or {}).get("repo") or {}).get("full_name")
+        == "nysa-company/software-factory"
     and re.fullmatch(r"[0-9a-f]{40}", (item.get("head") or {}).get("sha", ""))
     and (item.get("head") or {}).get("ref")
 )]
@@ -721,6 +729,7 @@ PY
       "repos/nysa-company/software-factory/actions/workflows/ci.yml/runs?head_sha=$evidence_sha&event=pull_request&status=completed&per_page=100" \
       > "$data/runs.json" || return 1
     python3 - "$data/runs.json" "$evidence_sha" "$pr_number" "$head_branch" \
+      "$tree" \
       <<'PY' > "$data/run-id" || return 1
 import json, sys
 pages = json.load(open(sys.argv[1]))
@@ -728,6 +737,10 @@ runs = [run for page in pages for run in page.get("workflow_runs", [])]
 valid = [run for run in runs if (
     run.get("head_sha") == sys.argv[2] and run.get("event") == "pull_request"
     and run.get("head_branch") == sys.argv[4]
+    and (run.get("head_repository") or {}).get("full_name")
+        == "nysa-company/software-factory"
+    and (run.get("head_commit") or {}).get("id") == sys.argv[2]
+    and (run.get("head_commit") or {}).get("tree_id") == sys.argv[5]
     and run.get("status") == "completed" and run.get("conclusion") == "success"
     and run.get("path") == ".github/workflows/ci.yml"
 )]
@@ -737,7 +750,7 @@ run = max(valid, key=lambda value: int(value.get("id", 0)))
 print("%s\t%s" % (run["id"], run.get("run_attempt", 1)))
 PY
     event="pull_request"
-    ref="refs/pull/$pr_number/head"
+    head_ref="refs/heads/$head_branch"
   fi
   run_id="$(awk -F'\t' '{print $1}' "$data/run-id")"
   run_attempt="$(awk -F'\t' '{print $2}' "$data/run-id")"
@@ -746,7 +759,7 @@ PY
     "repos/nysa-company/software-factory/actions/runs/$run_id/attempts/$run_attempt/jobs?per_page=100" \
     > "$data/jobs.json" || return 1
   python3 - "$data/jobs.json" "$sha" "$tree" "$run_id" "$run_attempt" \
-    "$evidence_sha" "$event" "$ref" "$pr_number" <<'PY'
+    "$evidence_sha" "$event" "$head_ref" "$pr_number" <<'PY'
 import hashlib, json, sys
 pages = json.load(open(sys.argv[1]))
 jobs = []
@@ -770,7 +783,7 @@ grouped = tuple(
 legacy = ("linux", "macos-bash-3")
 # A partial shard topology must never fall back to the legacy two-job proof.
 platform = (
-    grouped if any(name in latest for name in grouped)
+    grouped if sys.argv[7] == "pull_request"
     else sharded if any(name in latest for name in sharded)
     else legacy
 )
@@ -781,7 +794,7 @@ value = {
     "repository": "nysa-company/software-factory",
     "workflow": ".github/workflows/ci.yml",
     "event": sys.argv[7],
-    "ref": sys.argv[8],
+    "head_ref": sys.argv[8],
     "sha": sys.argv[2],
     "tree": sys.argv[3],
     "check_sha": sys.argv[6],
@@ -3817,7 +3830,8 @@ remove_active_if_no_previous() {
 cmd_install() {
   local sha="$1" source="$2" origin_override="$3"
   local source_top canonical_sha kit_tree release temp checkout origin origin_identity lock manifest
-  local workspace
+  local workspace remote_evidence_id verification_source="github-actions-full"
+  local check_mode="platform-smoke"
   case "${FACTORY_KIT_TEST_FAIL_PUBLISH_PHASE:-}" in
     ""|contents_sealed|release_verified) ;;
     *) die "unknown publish fault-injection phase" ;;
@@ -3837,6 +3851,9 @@ cmd_install() {
     die "SHA is not an ancestor of origin/main"
   kit_tree="$(git -C "$source_top" rev-parse "$sha^{tree}")"
   origin_identity="$(canonical_origin_identity "$origin")"
+  remote_evidence_id="$(verified_remote_full_ci "$sha" "$kit_tree" 2>/dev/null)" ||
+    die "exact successful GitHub CI evidence is required for install: $sha"
+  say "REMOTE CI VERIFIED: $sha; running local platform smoke only"
 
   safe_create_directory "$KITS_ROOT"
   validate_managed_layout
@@ -3875,10 +3892,6 @@ cmd_install() {
   git -C "$checkout" checkout -q --detach "$sha"
   prepare_pinned_scanner "$source_top" "$checkout" "$workspace/tmp" ||
     die "could not stage the pinned scanner for isolated checks"
-  local remote_evidence_id verification_source="github-actions-full" check_mode="platform-smoke"
-  remote_evidence_id="$(verified_remote_full_ci "$sha" "$kit_tree" 2>/dev/null)" ||
-    die "exact successful GitHub CI evidence is required for install: $sha"
-  say "REMOTE CI VERIFIED: $sha; running local platform smoke only"
   run_kit_checks_isolated "$checkout" "$workspace/home" "$workspace/tmp" \
     "$workspace" "install" "$check_mode" "$source_top" ||
     die "kit checks failed in disposable checkout"
