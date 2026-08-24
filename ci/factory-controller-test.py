@@ -18092,6 +18092,65 @@ class FactoryControllerTest(unittest.TestCase):
             blocked[1]["terminal_reason_code"], "provider_spend_limit"
         )
 
+    def scheduler_fixture(self, *tickets: str):
+        if getattr(self.args, "wait_seconds", 0):
+            (self.product / "factory/PROJECT.env").write_text(
+                "MAX_CONCURRENT_TICKETS=3\n", encoding="utf-8",
+            )
+            selected = list(tickets)
+            while len(selected) not in {1, 3, 4}:
+                selected.append(f"T-{190 + len(selected)}")
+            (self.product / "factory/QUALIFICATION.json").write_text(json.dumps({
+                "budget_usd": "100.000000",
+                "capacity": 3,
+                "contract_version": "1.8.0",
+                "factory_sha": "a" * 40,
+                "generation": 71,
+                "per_run_budget_usd": "2.000000",
+                "per_ticket_budget_usd": "25.000000",
+                "schema": CONTROL.QUALIFICATION_SCHEMA,
+                "target_done": len(selected),
+                "tickets": selected,
+            }), encoding="utf-8")
+        controller = CONTROL.Controller(self.args)
+        if getattr(self.args, "wait_seconds", 0):
+            self.assertIsNotNone(controller.qualification)
+            controller.qualification_marker(
+                "qualification-restart-boundary", create=True,
+            )
+            controller.qualification_marker(
+                "qualification-recovered", create=True,
+            )
+        controller.protected_main_head = lambda: "f" * 40
+        claims = []
+        for number, ticket in enumerate(tickets, 1):
+            cell = self.root / f"wait-cell-{number}"
+            route = cell / f"factory/route-plans/{ticket}.json"
+            route.parent.mkdir(parents=True)
+            route.write_text("{}\n", encoding="utf-8")
+            claims.append({
+                "branch": f"ticket/{ticket}",
+                "lease": f"{number:064x}",
+                "priority": "normal",
+                "publication_lease": "",
+                "receipt": "",
+                "role": "",
+                "schema": CONTROL.CLAIM_SCHEMA,
+                "status": "claimed",
+                "ticket": ticket,
+                "worktree": str(cell),
+            })
+        controller.load_claims = lambda: claims
+        controller.recover_missing_passport_claims = lambda _claims: None
+        controller.recover_upgraded_claims = lambda _claims: None
+        controller.recover_terminal_exports = lambda _claims: None
+        controller.recover_repaired_failures = lambda _claims: None
+        controller.claim_new = lambda current, *_args: current
+        controller.pin_routes = lambda _claims: []
+        controller.event = lambda *_args, **_kwargs: None
+        controller.qualification_admission_preflight = lambda _claims: None
+        return controller, claims
+
     def test_scheduler_tracks_each_concurrent_ticket_once(self) -> None:
         import threading
 
@@ -18206,6 +18265,172 @@ class FactoryControllerTest(unittest.TestCase):
             result = controller.reconcile()
         self.assertEqual(result["status"], "ok")
         self.assertEqual(calls, {"T-110": 2, "T-111": 2, "T-112": 1})
+
+    def test_qualification_wait_rechecks_lone_external_waiter(self) -> None:
+        self.args.wait_seconds = 30
+        controller, claims = self.scheduler_fixture("T-110")
+        calls = 0
+        workers = 0
+        parked = []
+        inactive = []
+        controller.park_claim = lambda claim: parked.append(
+            (calls, claim["ticket"])
+        )
+        controller.release_inactive_ticket_leases = lambda claims: inactive.append(
+            (calls, [claim["ticket"] for claim in claims])
+        )
+
+        def reconcile(claim):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                claim["status"] = "waiting"
+                return {
+                    "status": "waiting", "ticket": claim["ticket"],
+                    "wait_reason": "closeout",
+                }
+            if calls == 2:
+                return {"status": "progressed", "ticket": claim["ticket"]}
+            claims.clear()
+            return {"status": "complete", "ticket": claim["ticket"]}
+
+        reconcile_until_wait = controller.reconcile_ticket_until_wait
+
+        def counted_worker(*args, **kwargs):
+            nonlocal workers
+            workers += 1
+            return reconcile_until_wait(*args, **kwargs)
+
+        controller.reconcile_ticket = reconcile
+        controller.reconcile_ticket_until_wait = counted_worker
+        with patch.object(CONTROL, "RECONCILE_INTERVAL_SECONDS", 0.01):
+            result = controller.reconcile()
+
+        self.assertEqual(calls, 3)
+        self.assertEqual(workers, 2)
+        self.assertEqual(parked, [])
+        self.assertFalse(any(
+            "T-110" in tickets for count, tickets in inactive if count
+        ))
+        self.assertEqual(result["results"], [{
+            "status": "complete", "ticket": "T-110",
+        }])
+
+    def test_qualification_wait_only_rechecks_external_waits(self) -> None:
+        self.args.wait_seconds = 30
+        controller, _claims = self.scheduler_fixture("T-110", "T-111")
+        calls = {"T-110": 0, "T-111": 0}
+        parked = []
+        controller.park_claim = lambda claim: parked.append(
+            (claim["ticket"], calls[claim["ticket"]])
+        )
+
+        def reconcile(claim):
+            ticket = claim["ticket"]
+            calls[ticket] += 1
+            if ticket == "T-110" and calls[ticket] == 1:
+                return {
+                    "status": "waiting", "ticket": ticket,
+                    "wait_reason": "publication-lease",
+                }
+            return {"status": "waiting", "ticket": ticket}
+
+        controller.reconcile_ticket = reconcile
+        with patch.object(CONTROL, "RECONCILE_INTERVAL_SECONDS", 0.01):
+            result = controller.reconcile()
+
+        self.assertEqual(calls, {"T-110": 2, "T-111": 1})
+        self.assertCountEqual(parked, [("T-110", 2), ("T-111", 1)])
+        self.assertEqual(
+            {item["ticket"]: item["status"] for item in result["results"]},
+            {"T-110": "waiting", "T-111": "waiting"},
+        )
+
+    def test_qualification_wait_expiry_parks_unchanged_waiter(self) -> None:
+        self.args.wait_seconds = 100
+        controller, _claims = self.scheduler_fixture("T-110")
+        calls = 0
+        parked = []
+        clock = 0
+
+        def monotonic():
+            nonlocal clock
+            clock += 1
+            return clock
+
+        def reconcile(claim):
+            nonlocal calls
+            calls += 1
+            return {
+                "status": "waiting", "ticket": claim["ticket"],
+                "wait_reason": "protected-merge",
+            }
+
+        controller.reconcile_ticket = reconcile
+        controller.park_claim = lambda claim: parked.append(claim["ticket"])
+        with (
+            patch.object(CONTROL.time, "monotonic", side_effect=monotonic),
+            patch.object(CONTROL.time, "sleep"),
+        ):
+            result = controller.reconcile()
+
+        self.assertGreater(calls, 1)
+        self.assertEqual(parked, ["T-110"])
+        self.assertEqual(result["results"], [{
+            "status": "waiting", "ticket": "T-110",
+            "wait_reason": "protected-merge",
+        }])
+
+    def test_late_external_wait_is_parked_without_retry(self) -> None:
+        import time
+
+        self.args.wait_seconds = 30
+        controller, _claims = self.scheduler_fixture("T-110")
+        calls = 0
+        parked = []
+
+        def reconcile(claim):
+            nonlocal calls
+            calls += 1
+            time.sleep(0.02)
+            return {
+                "status": "waiting", "ticket": claim["ticket"],
+                "wait_reason": "closeout",
+            }
+
+        controller.reconcile_ticket = reconcile
+        controller.park_claim = lambda claim: parked.append(claim["ticket"])
+        with patch.object(CONTROL, "RECONCILE_LOCK_WAIT_SECONDS", 0.01):
+            result = controller.reconcile()
+
+        self.assertEqual(calls, 1)
+        self.assertEqual(parked, ["T-110"])
+        self.assertEqual(result["results"][0]["wait_reason"], "closeout")
+
+    def test_nonqualification_reconcile_wait_is_rejected(self) -> None:
+        result = subprocess.run([
+            sys.executable, str(ROOT / "scripts/factory-controller.py"),
+            "--launcher", str(self.launcher),
+            "--project", "relay",
+            "--product-root", str(self.product),
+            "--release-path", str(self.release),
+            "--state-dir", str(self.state),
+            "--wait-seconds", "1",
+        ], capture_output=True, check=False, text=True)
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(json.loads(result.stdout)["error"], (
+            "reconcile wait requires sealed qualification mode"
+        ))
+
+    def test_controller_wait_policy_matches_sealed_finisher(self) -> None:
+        self.assertEqual(
+            CONTROL.RETRYABLE_RECONCILE_WAITS,
+            QUALIFICATION.RETRYABLE_FINISH_WAITS - {"live-role"},
+        )
+        self.assertNotIn(
+            "external-unavailable", CONTROL.RETRYABLE_RECONCILE_WAITS,
+        )
 
     def test_scheduler_wakes_new_ticket_while_provider_future_is_live(self) -> None:
         import threading

@@ -1466,7 +1466,17 @@ PY
   reconcile)
     [[ "$ACTIVE_CONTRACT" == "1.8.0" || "$ACTIVE_CONTRACT" == "2.0.0" ]] ||
       die "deterministic reconciliation requires contract 1.8.0 or newer"
-    require_exact "--json" "$@"
+    RECONCILE_WAIT_SECONDS=0
+    if [[ $# -eq 1 && "$1" == "--json" ]]; then
+      :
+    elif [[ $# -eq 3 && "$1" == "--wait-seconds" && "$3" == "--json" &&
+            "$2" =~ ^[1-9][0-9]{0,2}$ && "$2" -le 600 &&
+            "$QUALIFICATION_LAUNCHER" == "1" &&
+            "$QUALIFICATION_MODE" == "isolated" ]]; then
+      RECONCILE_WAIT_SECONDS="$2"
+    else
+      usage
+    fi
     controller_state_dir
     CONTROLLER="$RELEASE_PATH/scripts/factory-controller.py"
     require_managed_file "$CONTROLLER" "active release controller"
@@ -1485,7 +1495,8 @@ PY
       --project "$PROJECT" \
       --product-root "$PRODUCT_ROOT" \
       --release-path "$RELEASE_PATH" \
-      --state-dir "$CONTROLLER_STATE_DIR"
+      --state-dir "$CONTROLLER_STATE_DIR" \
+      --wait-seconds "$RECONCILE_WAIT_SECONDS"
     ;;
   qualification-prime)
     [[ "$ACTIVE_CONTRACT" == "1.8.0" || "$ACTIVE_CONTRACT" == "2.0.0" ]] ||

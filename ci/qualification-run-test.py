@@ -2310,12 +2310,13 @@ raise SystemExit(code)
             launcher=self.launcher, project="relay",
             resume_receipt="", resume_ticket="",
         )
-        for reason in ("closeout", "live-role"):
+        for reason in ("closeout", "live-role", "untyped"):
             with self.subTest(reason=reason):
                 item = {
                     "status": "waiting", "ticket": "T-1",
-                    "wait_reason": reason,
                 }
+                if reason != "untyped":
+                    item["wait_reason"] = reason
                 if reason == "live-role":
                     item.update(
                         role="narrator",
@@ -2363,7 +2364,55 @@ raise SystemExit(code)
                     value = RUNNER_MODULE.execute_finish(args)
 
                 self.assertEqual(value["status"], "waiting")
-                self.assertEqual(execute.call_count, 2)
+                expected_waits = {
+                    "closeout": [0, 595],
+                    "live-role": [0, 0],
+                    "untyped": [0],
+                }[reason]
+                self.assertEqual(
+                    [call.args[3] for call in execute.call_args_list],
+                    expected_waits,
+                )
+
+    def test_finish_warm_wait_consumes_one_external_epoch(self) -> None:
+        basis = ({"T-1"}, 1, False, "a" * 40, "", {}, "b" * 64)
+        waiting = {
+            "controller": self.controller("ok", results=[{
+                "status": "waiting", "ticket": "T-1",
+                "wait_reason": "closeout",
+            }]),
+            "phases": [], "restarts": 0,
+            "status": "waiting", "reason": "authenticated_wait",
+        }
+        args = SimpleNamespace(
+            launcher=self.launcher, project="relay",
+            resume_receipt="", resume_ticket="",
+        )
+        with (
+            patch.object(
+                RUNNER_MODULE, "execute",
+                side_effect=[waiting, waiting, waiting],
+            ) as execute,
+            patch.object(RUNNER_MODULE, "finish_poll_limit", return_value=2),
+            patch.object(RUNNER_MODULE, "finish_poll_seconds", return_value=5),
+            patch.object(RUNNER_MODULE, "invoke", return_value=(0, self.doctor())),
+            patch.object(RUNNER_MODULE, "launcher_path", return_value=self.launcher),
+            patch.object(RUNNER_MODULE, "project_qualification_approvals", return_value=[]),
+            patch.object(RUNNER_MODULE, "qualification_basis", return_value=basis),
+            patch.object(RUNNER_MODULE, "qualification_event_names", return_value=set()),
+            patch.object(
+                RUNNER_MODULE.time, "monotonic",
+                side_effect=[0, 0, 10, 20, 20],
+            ),
+            patch.object(RUNNER_MODULE.time, "sleep"),
+        ):
+            value = RUNNER_MODULE.execute_finish(args)
+
+        self.assertEqual(value["status"], "waiting")
+        self.assertEqual(
+            [call.args[3] for call in execute.call_args_list],
+            [0, 595, 585],
+        )
 
     def test_finish_new_live_receipts_and_closeout_get_fresh_wall_time(self) -> None:
         basis = ({"T-1"}, 1, False, "a" * 40, "", {}, "b" * 64)
@@ -2417,6 +2466,10 @@ raise SystemExit(code)
 
         self.assertEqual(value["status"], "green")
         self.assertEqual(execute.call_count, 4)
+        self.assertEqual(
+            [call.args[3] for call in execute.call_args_list],
+            [0, 0, 0, 595],
+        )
 
     def test_finish_requires_a_fresh_final_doctor_for_green(self) -> None:
         complete = self.controller("ok", results=[

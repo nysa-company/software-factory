@@ -123,6 +123,10 @@ INFLIGHT_STATES = frozenset({
     "Approved", "Blocked-Escalated",
 })
 RECONCILE_INTERVAL_SECONDS = 15
+RECONCILE_LOCK_WAIT_SECONDS = 30
+RETRYABLE_RECONCILE_WAITS = frozenset({
+    "closeout", "pr-gate", "protected-merge", "publication-lease",
+})
 PREVIEW_IDENTITY_WAIT_SECONDS = 900
 RECOVERY_ATTEMPT_LIMIT = 3
 COMPLETION_CORRECTION_SCHEMA = (
@@ -559,6 +563,7 @@ class Controller:
         self.product = args.product_root.resolve(strict=True)
         self.release_path = args.release_path.resolve(strict=True)
         self.state = safe_directory(args.state_dir)
+        self.wait_seconds = getattr(args, "wait_seconds", 0)
         worktree_root = getattr(args, "worktree_root", None)
         if (
             worktree_root is None
@@ -13905,7 +13910,9 @@ class Controller:
             )
             return {"status": "error", "ticket": claim["ticket"], "error": str(error)}
 
-    def reconcile_ticket_until_wait(self, claim: dict[str, Any]) -> dict[str, str]:
+    def reconcile_ticket_until_wait(
+        self, claim: dict[str, Any], *, defer_external_park: bool = False,
+    ) -> dict[str, str]:
         while True:
             if (
                 self.qualification
@@ -13930,6 +13937,11 @@ class Controller:
                         "blocked", "budget", "error", "maintenance", "waiting",
                     }
                     and result.get("wait_reason") != "live-role"
+                    and not (
+                        defer_external_park
+                        and result.get("status") == "waiting"
+                        and result.get("wait_reason") in RETRYABLE_RECONCILE_WAITS
+                    )
                     and not self.role_active(claim)
                 ):
                     self.park_claim(claim)
@@ -14137,6 +14149,8 @@ class Controller:
             self.qualification_marker("qualification-recovered", create=True)
             self.event("controller_recovered", tickets=accounted)
 
+        wait_seconds = min(self.wait_seconds, RECONCILE_LOCK_WAIT_SECONDS)
+        wait_deadline = time.monotonic() + wait_seconds if wait_seconds else 0
         results: dict[str, dict[str, str]] = {}
         settled: set[str] = set()
         retry_after: dict[str, float] = {}
@@ -14146,7 +14160,9 @@ class Controller:
 
         def reconcile_worker(claim: dict[str, Any]) -> dict[str, str]:
             try:
-                return self.reconcile_ticket_until_wait(claim)
+                return self.reconcile_ticket_until_wait(
+                    claim, defer_external_park=bool(wait_seconds),
+                )
             except Exception:
                 self.latch_qualification_cohort_error()
                 raise
@@ -14259,7 +14275,11 @@ class Controller:
                     and time.monotonic() >= retry_after.get(claim["ticket"], 0)
                     and not self.role_active(claim)
                 ]
-                self.release_inactive_ticket_leases(idle)
+                inactive = [
+                    claim for claim in idle
+                    if claim["ticket"] not in retry_after
+                ]
+                self.release_inactive_ticket_leases(inactive)
                 self.maintain_successor_leases(idle)
                 if protected_main is None:
                     protected_main = self.cancellation_authority(idle)
@@ -14376,6 +14396,26 @@ class Controller:
                     claims,
                 )
                 if not futures:
+                    pending = [
+                        claim for claim in claims
+                        if claim["ticket"] in retry_after
+                        and claim["ticket"] not in settled
+                    ]
+                    now = time.monotonic()
+                    if (
+                        pending
+                        and now < wait_deadline
+                        and not self.qualification_cohort_error.is_set()
+                    ):
+                        time.sleep(max(0, min(
+                            min(retry_after[claim["ticket"]] for claim in pending),
+                            wait_deadline,
+                        ) - now))
+                        continue
+                    for claim in pending:
+                        if not self.role_active(claim):
+                            self.park_claim(claim)
+                        settled.add(claim["ticket"])
                     break
                 done, _ = wait(
                     tuple(futures),
@@ -14425,17 +14465,21 @@ class Controller:
                             missing_ok=True
                         )
                     results[claim["ticket"]] = item
-                    if (
+                    retryable_wait = (
                         item.get("status") == "waiting"
-                        and item.get("wait_reason") in {
-                            "closeout", "pr-gate", "protected-merge",
-                            "publication-lease",
-                        }
-                        and futures
+                        and item.get("wait_reason") in RETRYABLE_RECONCILE_WAITS
+                    )
+                    if retryable_wait and (
+                        wait_seconds and time.monotonic() < wait_deadline
+                        or not wait_seconds and futures
                     ):
                         retry_after[claim["ticket"]] = (
                             time.monotonic() + RECONCILE_INTERVAL_SECONDS
                         )
+                    elif retryable_wait and wait_seconds:
+                        if not self.role_active(claim):
+                            self.park_claim(claim)
+                        settled.add(claim["ticket"])
                     elif item.get("status") in {
                         "active", "blocked", "budget", "error", "maintenance",
                         "planner-complete", "planning", "waiting",
@@ -14554,13 +14598,17 @@ def main() -> None:
     parser.add_argument("--operator-id", default="")
     parser.add_argument("--approve-hash", default="")
     parser.add_argument("--receipt", default="")
+    parser.add_argument("--wait-seconds", default=0, type=int)
     args = parser.parse_args()
     lock_descriptor = -1
     try:
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", args.project):
             raise ControllerError("invalid project")
         if (
-            (args.action in {"reconcile", "prime"} and any((
+            args.wait_seconds < 0
+            or args.wait_seconds > 600
+            or (args.wait_seconds and args.action != "reconcile")
+            or (args.action in {"reconcile", "prime"} and any((
                 args.ticket, args.issue, args.factory_sha, args.role,
                 args.semantic_round, args.run_ordinal, args.operator_id,
                 args.approve_hash, args.receipt,
@@ -14638,6 +14686,10 @@ def main() -> None:
             print(canonical({"schema": SCHEMA, "status": "busy"}))
             return
         controller = Controller(args)
+        if args.wait_seconds and not controller.qualification:
+            raise ControllerError(
+                "reconcile wait requires sealed qualification mode"
+            )
         if args.action == "pause":
             result = controller.pause_ticket(args.ticket, args.issue)
         elif args.action == "resume":

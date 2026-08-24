@@ -232,7 +232,12 @@ progress epoch grants at most ten wall-clock minutes or 120 polls for unchanged
 external waits. Neither deadline starts during Doctor, provider execution
 before durable handoff, nor reconciliation before the first matching wait; a
 mixed live-role and external wait charges both clocks. The
-finite progress bound caps the number of external epochs.
+finite progress bound caps the number of external epochs. After the first
+authenticated external wait, the sealed isolated finisher lends the decreasing
+epoch remainder to reconciliation in independent 30-second lock-bounded slices.
+A retained external waiter keeps its lease between polls inside a slice; slice
+expiry parks and releases it before any later slice. Live-role and untyped
+waits never enter this path.
 A new command invocation
 runs a fresh Doctor, every cached iteration remains bound to the exact manifest
 bytes, and authenticated contract recovery retains its explicit Doctor refresh.
