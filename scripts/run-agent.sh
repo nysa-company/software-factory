@@ -2112,10 +2112,6 @@ elif [[ -f "$ROUTE_PLAN" ]]; then
     echo "invalid pinned route for role '$ROLE': ${FACTORY_RESOLVE_ERROR:-unknown}; no task was submitted" >&2
     exit 6
   fi
-  if ! factory_verify_selected_pinned_route_ready; then
-    echo "pinned route unavailable or drifted for role '$ROLE': ${FACTORY_RESOLVE_ERROR:-unknown}; no task was submitted" >&2
-    exit 6
-  fi
   SELECTED="$FACTORY_SELECTED_ADAPTER"
   SELECTED_FAMILY="$FACTORY_SELECTED_FAMILY"
   SELECTED_MODEL="$FACTORY_SELECTED_MODEL"
@@ -2131,6 +2127,15 @@ elif [[ -f "$ROUTE_PLAN" ]]; then
   SELECTED_ROUTE_REVISION="$FACTORY_SELECTED_ROUTE_REVISION"
   SELECTED_ROUTE_REVISION_HASH="$FACTORY_SELECTED_ROUTE_REVISION_HASH"
   SELECTION_REASON="$FACTORY_SELECTION_REASON"
+  if ! factory_verify_selected_pinned_route_ready; then
+    PRIMARY_PROBE_SUMMARY="pinned:${PROBE_STATE}:${PROBE_REASON}"
+    MANIFEST="$RUNS_DIR/$RUN_ID.meta"
+    RUN_STARTED_AT="$(date -u +%FT%TZ)"
+    RESERVED_USD=0
+    TERMINAL_REASON_CODE="pinned_route_readiness"
+    echo "pinned route unavailable or drifted for role '$ROLE': ${FACTORY_RESOLVE_ERROR:-unknown}; no task was submitted" >&2
+    exit 6
+  fi
   PRIMARY_PROBE_SUMMARY="pinned:${PROBE_STATE}:${PROBE_REASON}"
 elif ! factory_load_model_probe_context; then
   echo "model routing state is invalid: ${FACTORY_RESOLVE_ERROR:-unknown}; no task was submitted" >&2
