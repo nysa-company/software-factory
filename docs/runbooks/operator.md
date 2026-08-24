@@ -687,9 +687,13 @@ provider database, runtime and durable ledgers, exact attempt, claim, lease,
 and nested cancellation preview. Apply revalidates under controller and
 dispatch-admission locks, then uses the sealed successor helper with a scrubbed
 environment. Replay returns the retained receipts without charging twice. This
-does not upgrade, reset, or retire the lane; repeat for each named attempt and
-then use the old lane's sealed finisher and Doctor. Never copy the successor
-helper into the old release or edit coordinator, ledger, claim, or lease state.
+includes a durable request whose receipt was interrupted and crash recovery for
+the exact cleanup locks. Historical provider identity compatibility is accepted
+only when the sealed source Factory, manifest kit, lane product, and authoritative
+provider row agree. This does not upgrade, reset, or retire the lane; repeat for
+each named attempt and then use the old lane's sealed finisher and Doctor. Never
+copy the successor helper into the old release or edit coordinator, ledger,
+claim, lease, or lock state.
 
 ### Migrating a drained qualification lane
 

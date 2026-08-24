@@ -8025,4 +8025,10 @@ nested cancellation preview. Candidate materialization, Git transport, and
 execution are isolated and fail closed before untrusted checkout code runs.
 Apply serializes cleanup under the controller and dispatch-admission locks;
 receipt replay completes provider, ledger, claim, and lease convergence exactly
-once. Recovery does not change the active release or qualification generation.
+once. Cleanup directory locks carry process identity and recover dead owners or
+aged ownerless crash prefixes without displacing a live owner. Historical
+provider fields may be derived only when the sealed source SHA, manifest kit,
+lane product identity, and authoritative provider row agree exactly; current
+attempts retain strict field binding. A canonical request-only prefix resumes,
+while a receipt without its request fails closed. Recovery does not change the
+active release or qualification generation.

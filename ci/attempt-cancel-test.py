@@ -142,6 +142,7 @@ class AttemptCancellationTest(unittest.TestCase):
 
     def submitted_provider_attempt(
         self, database, attempt_id="provider-run-1", *, submit=True,
+        product_id="qualification:factory",
     ):
         policy = database.with_name("policy.json")
         policy.parent.mkdir(parents=True, exist_ok=True)
@@ -161,7 +162,7 @@ class AttemptCancellationTest(unittest.TestCase):
             database, "reserve", "--operation-id", f"reserve-{attempt_id}",
             "--attempt-id", attempt_id, "--provider-family", "openai",
             "--account-route", "cursor", "--reserve-micro-usd", "2000000",
-            "--product-id", "qualification:factory", "--ticket-id", "T-1",
+            "--product-id", product_id, "--ticket-id", "T-1",
             "--budget-day", "2026-08-23",
             "--product-daily-cap-micro-usd", "100000000",
             "--ticket-cap-micro-usd", "25000000",
@@ -423,13 +424,24 @@ class AttemptCancellationTest(unittest.TestCase):
             ),
         )
 
-    def test_existing_receipt_replay_repairs_missing_provider_terminal(self):
+    def test_cross_release_receipt_replay_repairs_legacy_provider_terminal(self):
         database = self.root.parent / "qualification/provider/accounting/state-v2.sqlite3"
-        attempt_id = self.submitted_provider_attempt(database)
+        source_sha = "d" * 40
+        product_id = f"qualification-fixture:{source_sha}"
+        attempt_id = self.submitted_provider_attempt(
+            database, product_id=product_id,
+        )
         process, started = self.spawn()
         values = self.manifest(
             process, started, go="1", provider_attempt_id=attempt_id,
         )
+        del values["provider_product_id"]
+        del values["submitted_at_epoch_ns"]
+        values.update({
+            "contract_version": "2.0.0", "kit_sha": source_sha,
+            "task_submitted": "0", "ticket_kit_sha": source_sha,
+        })
+        self.write_meta(values)
         plan = CANCEL.calculate(
             self.root, "T-1", "run-1", "operator_requested", "9" * 32,
         )
@@ -467,6 +479,14 @@ class AttemptCancellationTest(unittest.TestCase):
         (self.runs / "run-1.cancel.json").write_bytes(CANCEL.canonical(receipt))
         with mock.patch.dict(
             os.environ, {"FACTORY_PROVIDER_DB": str(database)}, clear=False,
+        ), self.assertRaisesRegex(CANCEL.CancelError, "identity disagrees"):
+            CANCEL.apply_plan(self.root, plan, 1)
+        with mock.patch.dict(
+            os.environ, {
+                "FACTORY_PROVIDER_DB": str(database),
+                "FACTORY_CROSS_RELEASE_PRODUCT_ID": product_id,
+                "FACTORY_CROSS_RELEASE_SOURCE_SHA": source_sha,
+            }, clear=False,
         ):
             self.assertEqual(CANCEL.apply_plan(self.root, plan, 1), receipt)
             terminal = self.provider_command(
@@ -846,6 +866,37 @@ class AttemptCancellationTest(unittest.TestCase):
                         self.root, self.root / "factory/.active-runs",
                         {"ticket": "T-1", "role": "builder"}, int(time.time()),
                     )
+
+    def test_stale_cleanup_recovers_hard_killed_lock_prefixes(self):
+        manifest = {"ticket": "T-1", "role": "builder"}
+        for name, owner in (
+            (".launch.lock", True), (".dispatch-leases.lock", True),
+            (".launch.lock", False), (".dispatch-leases.lock", False),
+        ):
+            with self.subTest(lock=name, owner=owner):
+                path = self.root / "factory" / name
+                if owner:
+                    code = (
+                        "import importlib.util,os,pathlib,sys;"
+                        f"s=importlib.util.spec_from_file_location('crash_cancel',{str(ROOT / 'scripts/attempt-cancel.py')!r});"
+                        "m=importlib.util.module_from_spec(s);sys.modules[s.name]=m;"
+                        "s.loader.exec_module(m);m.acquire_cleanup_lock(pathlib.Path(sys.argv[1]),'fixture');"
+                        "os._exit(0)"
+                    )
+                    result = subprocess.run([sys.executable, "-c", code, str(path)])
+                    self.assertEqual(result.returncode, 0)
+                else:
+                    path.mkdir(mode=0o700)
+                    os.utime(path, (0, 0))
+                CANCEL.release_stale_claims(
+                    self.root, self.root / "factory/.active-runs",
+                    manifest, int(time.time()),
+                )
+                self.assertFalse(path.exists())
+                self.assertFalse((self.root / "factory/.launch.lock").exists())
+                self.assertFalse(
+                    (self.root / "factory/.dispatch-leases.lock").exists()
+                )
 
     def test_provider_database_selection_is_fail_closed(self):
         legacy = self.root.parent / "runtime/provider-state.sqlite3"

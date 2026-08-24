@@ -4854,6 +4854,10 @@ def qualification_recovery_state(
 
 
 def qualification_recovery_environment(lane: dict[str, Any]) -> dict[str, str]:
+    source_sha = lane["active"].get("kit_sha", "")
+    project = lane["active"].get("project", "")
+    if not SHA.fullmatch(source_sha) or not PROJECT.fullmatch(project):
+        raise ReleaseError("qualification recovery source identity is invalid")
     environment = {
         "HOME": str(Path.home().resolve(strict=True)),
         "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
@@ -4862,6 +4866,8 @@ def qualification_recovery_environment(lane: dict[str, Any]) -> dict[str, str]:
         ),
         "FACTORY_LEDGER": str(lane["active"]["runtime_ledger_path"]),
         "FACTORY_DURABLE_LEDGER": str(lane["product"] / "factory/ledger.csv"),
+        "FACTORY_CROSS_RELEASE_SOURCE_SHA": source_sha,
+        "FACTORY_CROSS_RELEASE_PRODUCT_ID": f"{project}:{source_sha}",
     }
     if "TMPDIR" in os.environ:
         environment["TMPDIR"] = os.environ["TMPDIR"]
@@ -4985,19 +4991,24 @@ def qualification_recovery_attempt(
     request_path = runs / f"{run_id}.cancel-request.json"
     receipt_path = runs / f"{run_id}.cancel.json"
     if request_path.exists() or request_path.is_symlink():
-        if not receipt_path.exists() or receipt_path.is_symlink():
-            raise ReleaseError("qualification cancellation replay is incomplete")
         request = safe_state(request_path, "attempt cancellation request")
         nested = request.get("plan")
-        receipt = qualification_attempt_cancel(TRANSACTION_ROOT, lane, [
-            "receipt", "--factory-root", str(lane["product"]), "--ticket", ticket,
+        validated = qualification_attempt_cancel(TRANSACTION_ROOT, lane, [
+            "request", "--factory-root", str(lane["product"]), "--ticket", ticket,
             "--run-id", run_id,
-        ], "qualification cancellation receipt")
+        ], "qualification cancellation request")
         if (
             not isinstance(nested, dict)
-            or receipt.get("preview_hash") != nested.get("preview_hash")
+            or validated.get("preview_hash") != nested.get("preview_hash")
         ):
             raise ReleaseError("qualification cancellation replay is invalid")
+        if receipt_path.exists() or receipt_path.is_symlink():
+            receipt = qualification_attempt_cancel(TRANSACTION_ROOT, lane, [
+                "receipt", "--factory-root", str(lane["product"]), "--ticket", ticket,
+                "--run-id", run_id,
+            ], "qualification cancellation receipt")
+            if receipt.get("preview_hash") != nested.get("preview_hash"):
+                raise ReleaseError("qualification cancellation replay is invalid")
     elif receipt_path.exists() or receipt_path.is_symlink():
         raise ReleaseError("qualification cancellation replay is incomplete")
     else:

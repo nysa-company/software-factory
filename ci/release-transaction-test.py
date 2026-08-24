@@ -2763,7 +2763,10 @@ class ReleaseTransactionTest(unittest.TestCase):
             runs / "run-1.cancel.json", {"preview_hash": "2" * 64},
         )
         lane = {
-            "active": {"runtime_ledger_path": str(self.root / "runtime-ledger.csv")},
+            "active": {
+                "kit_sha": "5" * 40, "project": "relay",
+                "runtime_ledger_path": str(self.root / "runtime-ledger.csv"),
+            },
             "product": self.product, "provider": self.root / "provider",
         }
         provider_attempt = {"attempt_id": "attempt-1", "version": 4}
@@ -2791,7 +2794,57 @@ class ReleaseTransactionTest(unittest.TestCase):
             )
         self.assertEqual(attempt["nested_plan"], nested_plan)
         self.assertEqual(attempt["provider_attempt"], provider_attempt)
-        self.assertEqual(cancel.call_args.args[2][0], "receipt")
+        self.assertEqual(
+            [call.args[2][0] for call in cancel.call_args_list],
+            ["request", "receipt"],
+        )
+
+    def test_qualification_recovery_accepts_request_only_crash_prefix(self) -> None:
+        runs = self.product / "factory/runs"
+        runs.mkdir(parents=True)
+        nested_plan = {"preview_hash": "2" * 64}
+        RELEASE.atomic_json(runs / "run-1.cancel-request.json", {
+            "plan": nested_plan, "requested_at": "2026-08-23T12:00:00Z",
+            "schema": "nysa.software-factory.attempt-cancel-request/v1",
+        })
+        lane = {
+            "active": {
+                "kit_sha": "5" * 40, "project": "relay",
+                "runtime_ledger_path": str(self.root / "runtime-ledger.csv"),
+            },
+            "product": self.product, "provider": self.root / "provider",
+        }
+        provider_attempt = {"attempt_id": "attempt-1", "version": 4}
+        with (
+            mock.patch.object(
+                RELEASE, "qualification_attempt_cancel",
+                return_value={"preview_hash": "2" * 64},
+            ) as cancel,
+            mock.patch.object(
+                RELEASE, "qualification_recovery_manifest",
+                return_value={"provider_attempt_id": "attempt-1", "role": "builder"},
+            ),
+            mock.patch.object(
+                RELEASE, "run_json", return_value={"attempts": [provider_attempt]},
+            ) as provider,
+            mock.patch.object(
+                RELEASE, "qualification_recovery_row", return_value={"run_id": "run-1"},
+            ),
+            mock.patch.object(
+                RELEASE, "qualification_recovery_optional_digest", return_value=None,
+            ),
+        ):
+            attempt = RELEASE.qualification_recovery_attempt(
+                self.root / "factory", lane, "T-1", "run-1",
+            )
+        self.assertEqual(attempt["nested_plan"], nested_plan)
+        self.assertEqual(attempt["provider_attempt"], provider_attempt)
+        self.assertEqual(cancel.call_count, 1)
+        self.assertEqual(cancel.call_args.args[2][0], "request")
+        self.assertEqual(
+            provider.call_args.kwargs["environment"]["FACTORY_CROSS_RELEASE_PRODUCT_ID"],
+            f"relay:{'5' * 40}",
+        )
 
     def test_qualification_recovery_refuses_attempt_drift_before_cancellation(self) -> None:
         plan = self.recovery_plan()
