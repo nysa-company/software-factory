@@ -4116,11 +4116,16 @@ def _prepare(args: argparse.Namespace, started_epoch_ns: int) -> dict[str, Any]:
                 authority, identity, manifest["tickets"],
             )
         else:
-            if root.exists() and any(
-                path.name != "project-runtimes" for path in root.iterdir()
+            runtime_only = False
+            if root.exists():
+                validate_prepare_root(root, sha, args.project)
+                runtime_only = {
+                    path.name for path in root.iterdir()
+                } == {"project-runtimes"}
+            if (
+                state != "fresh" and not expected_authority.exists()
+                and (runtime_bin is None or not runtime_only)
             ):
-                raise EnvironmentError("qualification preparation state is torn")
-            if state != "fresh" and not expected_authority.exists():
                 raise EnvironmentError("partial qualification authority is missing")
             if seed is None:
                 raise EnvironmentError("qualification operator seed is unavailable")
