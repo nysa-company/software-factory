@@ -334,7 +334,7 @@ class FallbackTest(unittest.TestCase):
             "approval_hash": preview["approval_hash"],
             "receipt_sha256": "c" * 64,
             "failed_run_id": "run-failed-1",
-            "nonce": preview["nonce"],
+            "nonce": "f" * 32,
             "operator_id": "operator-user-1",
             "reason": "credits_exhausted",
             "schema": "model-fallback-receipt-approval/v1",
@@ -375,6 +375,44 @@ class FallbackTest(unittest.TestCase):
                 git(self.repo, "show", "HEAD:factory/route-plans/T-1.json")
             )["revisions"]),
             2,
+        )
+
+    def test_explicit_fallback_migrates_initial_v1_plan(self):
+        path = self.repo / "factory/route-plans/T-1.json"
+        journal = json.loads(path.read_text())
+        path.write_bytes(base64.b64decode(
+            journal["revisions"][0]["body"]["legacy_plan_b64"]
+        ))
+        git(self.repo, "add", str(path.relative_to(self.repo)))
+        git(self.repo, "commit", "-m", "restore initial route plan")
+        git(self.repo, "push", "origin", "ticket/T-1")
+        head = git(self.repo, "rev-parse", "HEAD")
+        git(self.repo, "update-ref", "refs/remotes/origin/main", head)
+        manifest = self.product / "factory/runs/run-failed-1.meta"
+        manifest.write_text(
+            manifest.read_text()
+            .replace(f"role_head_before={self.head}", f"role_head_before={head}")
+            .replace(f"role_remote_before={self.head}", f"role_remote_before={head}")
+        )
+
+        preview = self.command("preview")
+        approval = Path(self.temp.name) / "legacy-approval.json"
+        approval.write_text(json.dumps({
+            "approval_hash": preview["approval_hash"],
+            "receipt_sha256": "e" * 64,
+            "failed_run_id": "run-failed-1",
+            "nonce": "f" * 32,
+            "operator_id": "operator-user-1",
+            "reason": "credits_exhausted",
+            "schema": "model-fallback-receipt-approval/v1",
+        }))
+        self.command("apply", "--approval", str(approval))
+        migrated = json.loads(
+            git(self.repo, "show", "HEAD:factory/route-plans/T-1.json")
+        )
+        self.assertEqual(
+            [item["body"]["kind"] for item in migrated["revisions"]],
+            ["migration", "fallback"],
         )
 
     def test_qualification_apply_uses_direct_cli_once(self):
@@ -982,9 +1020,63 @@ class FallbackTest(unittest.TestCase):
             (self.product / "factory/runs/run-failed-1.meta").read_text()
             .replace("run_id=run-failed-1", "run_id=run-failed-2")
         )
+        result = self.command(
+            "qualification-apply", check=False, failed_run="run-failed-2",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "qualification fallback is allowed only after the first role attempt",
+            result.stderr,
+        )
+
+    def test_qualification_apply_allows_reentered_role_first_attempt(self):
+        failed = self.product / "factory/runs/run-failed-1.meta"
+        failed.write_text(
+            failed.read_text()
+            + "transition_receipt_sha256=" + "a" * 64 + "\n"
+        )
+        values = dict(
+            line.split("=", 1) for line in failed.read_text().splitlines()
+        )
+        values.update({
+            "exit_status": "0",
+            "role_exit": "ok",
+            "role_head_before": "b" * 40,
+            "role_remote_before": "b" * 40,
+            "run_id": "run-000-prior-success",
+            "started_at": "2026-01-01T00:00:00+00:00",
+            "terminal_at": "2026-01-01T00:01:00+00:00",
+            "transition_receipt_sha256": "b" * 64,
+        })
+        prior = self.product / "factory/runs/run-000-prior-success.meta"
+        prior.write_text("".join(
+            f"{key}={value}\n" for key, value in sorted(values.items())
+        ))
+
+        applied = self.command("qualification-apply")
+        self.assertRegex(applied["commit_sha"], r"^[0-9a-f]{40}$")
+
+    def test_qualification_apply_rejects_malformed_transition_receipt(self):
+        failed = self.product / "factory/runs/run-failed-1.meta"
+        failed.write_text(
+            failed.read_text() + "transition_receipt_sha256=malformed\n"
+        )
+
         result = self.command("qualification-apply", check=False)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("failed run is not the latest unique ticket attempt", result.stderr)
+        self.assertIn("transition receipt is invalid", result.stderr)
+
+    def test_qualification_apply_rejects_malformed_sibling_transition_receipt(self):
+        sibling = self.product / "factory/runs/run-000-sibling.meta"
+        sibling.write_text(
+            (self.product / "factory/runs/run-failed-1.meta").read_text()
+            .replace("run_id=run-failed-1", "run_id=run-000-sibling")
+            + "transition_receipt_sha256=malformed\n"
+        )
+
+        result = self.command("qualification-apply", check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("transition receipt is invalid", result.stderr)
 
     def test_handoff_preserves_role_commits_and_remaining_dirty_work(self):
         git(self.repo, "add", "src/app.txt")

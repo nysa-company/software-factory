@@ -22,7 +22,7 @@ SCHEMA = "nysa.software-factory.ci-rerun/v1"
 TICKET = re.compile(r"^T-[0-9]+$")
 SHA = re.compile(r"^[0-9a-f]{40}$")
 PROTECTED = re.compile(
-    r"policy|secur|secret|config|control|immutable|runtime|factory|contract|license",
+    r"policy|secur|secret|config|control|immutab|runtime|factory|contract|license",
     re.I,
 )
 APPLICATION = re.compile(r"test|unit|integration|e2e|application", re.I)
@@ -32,6 +32,20 @@ RUN_FAILURE = {
     "timed_out",
 }
 RUN_TERMINAL = RUN_FAILURE | {"neutral", "skipped", "success"}
+AGGREGATE_CONTROL = re.compile(
+    r"^(?:Set up job|Run actions/(?:checkout|setup-node)@v[45]|"
+    r"inspect qualification control|classify change|pin and product contract|"
+    r"Post Run actions/(?:checkout|setup-node)@v[45]|Complete job)$",
+    re.I,
+)
+AGGREGATE_APPLICATION = re.compile(
+    r"^(?:npm ci|install(?: dependencies| packages)?|"
+    r"(?:(?:run|targeted|product|web|api|app|application|unit|integration|"
+    r"e2e|browser|server|client|frontend|backend)[ -])?"
+    r"(?:tests?|lint|type[ -]?check|build|compile|playwright(?: snapshots?)?|"
+    r"snapshots?))$",
+    re.I,
+)
 
 
 class RerunError(ValueError):
@@ -105,13 +119,21 @@ def classify(
         identity for identity in identities
         if APPLICATION.search(identity[2]) and not PROTECTED.search(identity[2])
     ]
-    if len(leaves) != 1:
-        raise NotTransient("failed check is not one application-test leaf")
-    selected = leaves[0]
     required_failures = [
         job_identity(item, repo) for item in required
         if item.get("bucket") in CHECK_FAILURE
     ]
+    if len(leaves) == 1:
+        selected = leaves[0]
+    elif (
+        not leaves
+        and len(identities) == 1
+        and identities[0] in required_failures
+        and identities[0][2:] == ("ci", "ci")
+    ):
+        selected = identities[0]
+    else:
+        raise NotTransient("failed check is not one application-test leaf")
     aggregate = [identity for identity in identities if identity != selected]
     if (
         not required_failures
@@ -156,6 +178,89 @@ def validate_run(
     leaf = [item for item in failed if item.get("databaseId") == job_id]
     if len(leaf) != 1 or leaf[0].get("name") != name:
         raise NotTransient("failed application leaf identity changed")
+    if not APPLICATION.search(name):
+        steps = leaf[0].get("steps")
+        if not isinstance(steps, list) or not steps or any(
+            not isinstance(item, dict)
+            or not isinstance(item.get("number"), int)
+            or not isinstance(item.get("name"), str)
+            or item.get("status") != "completed"
+            or item.get("conclusion") not in RUN_TERMINAL
+            for item in steps
+        ):
+            raise NotTransient("aggregate workflow steps are not terminal")
+        numbers = [item["number"] for item in steps]
+        if len(set(numbers)) != len(steps) or numbers != sorted(numbers):
+            raise NotTransient("aggregate workflow step identity is ambiguous")
+        failures = [
+            index for index, item in enumerate(steps)
+            if item["conclusion"] in RUN_FAILURE
+        ]
+        names = [item["name"] for item in steps]
+        safe_application = [
+            bool(AGGREGATE_APPLICATION.fullmatch(item)) for item in names
+        ]
+        if len(failures) != 1 or not safe_application[failures[0]] or any(
+            not AGGREGATE_CONTROL.fullmatch(item) and not safe
+            for item, safe in zip(names, safe_application)
+        ) or names[0] != "Set up job" or names[-1] != "Complete job" or (
+            steps[0]["conclusion"] != "success"
+            or steps[-1]["conclusion"] != "success"
+        ):
+            raise NotTransient("aggregate workflow is not the safe Factory CI template")
+        failed_index = failures[0]
+        v5 = [
+            index for index, item in enumerate(names)
+            if item == "Run actions/checkout@v5"
+        ]
+        if v5:
+            if (
+                len(v5) != 2
+                or names.count("Set up job") != 1
+                or names.count("inspect qualification control") != 1
+                or names.count("classify change") != 1
+                or names.count("Run actions/setup-node@v5") != 1
+                or any("@v4" in item for item in names)
+            ):
+                raise NotTransient("aggregate workflow is not the safe Factory CI template")
+            required_order = [
+                names.index("Set up job"), v5[0],
+                names.index("inspect qualification control"), v5[-1],
+                names.index("classify change"),
+                names.index("Run actions/setup-node@v5"), failed_index,
+            ]
+            if required_order != sorted(required_order) or any(
+                steps[index]["conclusion"] != "success"
+                for index in (
+                    v5[0], names.index("inspect qualification control"),
+                    names.index("classify change"),
+                    names.index("Run actions/setup-node@v5"),
+                )
+            ) or steps[v5[-1]]["conclusion"] not in {"success", "skipped"}:
+                raise NotTransient("aggregate workflow is not the safe Factory CI template")
+        else:
+            required = (
+                "Set up job", "Run actions/checkout@v4",
+                "Run actions/setup-node@v4", "pin and product contract",
+                "Complete job",
+            )
+            if any(names.count(item) != 1 for item in required) or any(
+                "@v5" in item for item in names
+            ):
+                raise NotTransient("aggregate workflow is not the safe Factory CI template")
+            required_order = [
+                names.index("Set up job"), names.index("Run actions/checkout@v4"),
+                names.index("Run actions/setup-node@v4"), failed_index,
+                names.index("pin and product contract"),
+                names.index("Complete job"),
+            ]
+            if required_order != sorted(required_order) or any(
+                steps[index]["conclusion"] != "success"
+                for index in required_order[1:3]
+            ) or steps[required_order[4]]["conclusion"] not in {
+                "success", "skipped",
+            }:
+                raise NotTransient("aggregate workflow is not the safe Factory CI template")
     protected = [
         item for item in jobs
         if isinstance(item.get("name"), str) and PROTECTED.search(item["name"])

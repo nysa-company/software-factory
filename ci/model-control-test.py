@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import datetime as dt
 import hashlib
 import json
 import os
@@ -513,6 +514,92 @@ class ModelControlTest(unittest.TestCase):
                 )
                 self.assertEqual(result.stdout.strip(), expected)
                 self.assertNotIn("DO-NOT-LEAK", result.stdout + result.stderr)
+
+    def test_supported_fallback_migrates_v1_approval_and_replays(self):
+        self.command("pin", "--ticket", "T-901", "--workdir", str(self.workdir))
+        plan_path = self.workdir / "factory/route-plans/T-901.json"
+        plan = json.loads(plan_path.read_text())
+        self.assertEqual(plan["schema"], "ticket-model-route-plan/v1")
+        resolution = plan["resolution"]
+        failed = resolution["selections"]["builder"]
+        runs = self.product / "factory/runs"
+        runs.mkdir(parents=True)
+        head = subprocess.check_output(
+            ["git", "-C", str(self.workdir), "rev-parse", "HEAD"], text=True,
+        ).strip()
+        now = dt.datetime.now(dt.timezone.utc).replace(
+            microsecond=0,
+        ).isoformat()
+        manifest = {
+            "accounting_schema": "1", "accounting_state": "completed",
+            "adapter": failed["adapter"], "adapter_version": "test-v1",
+            "cost_basis": "test_fixture", "effective_cost": "1.00",
+            "exit_status": "75", "go_issued": "1", "kit_sha": self.kit_sha,
+            "model_id": failed["selection_id"],
+            "phase": "completed", "policy_hash": resolution["policy_hash"],
+            "prompt_version": "1", "provider_family": failed["provider_family"],
+            "reserved_usd": "2.00", "role": "builder",
+            "role_branch_before": "ticket/T-901",
+            "role_exit": "provider_failed",
+            "role_head_before": head, "role_remote_before": head,
+            "route_id": failed["route_id"], "run_id": "failed-run-1",
+            "selection_reason": "test_fixture", "started_at": now,
+            "task_submitted": "1", "terminal_at": now, "ticket": "T-901",
+            "turns": "1",
+        }
+        (runs / "failed-run-1.meta").write_text("".join(
+            f"{key}={value}\n" for key, value in sorted(manifest.items())
+        ))
+        (self.product / "factory/ledger.csv").write_text(
+            "date,time,ticket,role,adapter,prompt_version,turns,cost_usd,"
+            "exit_status,run_id,provider_family,model_id,selection_reason,"
+            "cost_basis,adapter_version\n"
+        )
+        self.environment.update({
+            "FACTORY_OPERATOR_MAP": str(
+                self.product / "factory/operator-map.json"
+            ),
+            "FACTORY_RELEASE_CONTRACT_VERSION": "2.0.0",
+        })
+        arguments = (
+            "--ticket", "T-901", "--failed-run", "failed-run-1",
+            "--workdir", str(self.workdir),
+            "--reason", "provider_unavailable",
+        )
+        preview = json.loads(self.command("fallback-plan", *arguments).stdout)
+        approved = subprocess.run(
+            [
+                sys.executable, "-I", str(ROOT / "scripts/operator-cli.py"),
+                "--product", str(self.product),
+                "--state-dir", str(self.controller_state),
+                "fallback-approve", "--ticket", "T-901",
+                "--preview-hash", preview["approval_hash"],
+                "--failed-run", "failed-run-1",
+                "--reason", "provider_unavailable",
+            ],
+            text=True, capture_output=True,
+        )
+        self.assertEqual(approved.returncode, 0, approved.stderr)
+        mapping = json.loads(
+            (self.product / "factory/operator-map.json").read_text()
+        )
+        approval = mapping["tickets"]["T-901"]["model_fallback_approval"]
+        self.assertNotEqual(approval["nonce"], preview["nonce"])
+
+        applied = json.loads(self.command("fallback", *arguments).stdout)
+        journal = json.loads(plan_path.read_text())
+        self.assertEqual(
+            [revision["body"]["kind"] for revision in journal["revisions"]],
+            ["migration", "fallback"],
+        )
+        replay = json.loads(self.command("fallback", *arguments).stdout)
+        self.assertTrue(replay["recovered"])
+        self.assertEqual(replay["commit_sha"], applied["commit_sha"])
+        receipts = list(
+            (self.controller_state / "operator-receipts/T-901").glob("*.json")
+        )
+        self.assertEqual(len(receipts), 1)
+        self.assertTrue(json.loads(receipts[0].read_text())["consumed"])
 
     def test_sealed_fallback_auto_preserves_bounded_inner_refusal(self):
         self.command("pin", "--ticket", "T-901", "--workdir", str(self.workdir))

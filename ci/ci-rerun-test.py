@@ -69,6 +69,129 @@ def aggregate_observation():
     return required, checks, run
 
 
+def template_observation():
+    required = [
+        check("ci", "fail", 40),
+        check("test-immutability", "pass", 10),
+    ]
+    run = {
+        "conclusion": "failure", "databaseId": 12, "event": "pull_request",
+        "headSha": HEAD, "status": "completed", "workflowName": "ci",
+        "jobs": [
+            {
+                "conclusion": "success", "databaseId": 10,
+                "name": "test-immutability", "status": "completed",
+            },
+            {
+                "conclusion": "failure", "databaseId": 40, "name": "ci",
+                "status": "completed",
+                "steps": [
+                    {
+                        "conclusion": "success", "name": "Set up job",
+                        "number": 1, "status": "completed",
+                    },
+                    {
+                        "conclusion": "success", "name": "Run actions/checkout@v4",
+                        "number": 2, "status": "completed",
+                    },
+                    {
+                        "conclusion": "success", "name": "Run actions/setup-node@v4",
+                        "number": 3, "status": "completed",
+                    },
+                    {
+                        "conclusion": "failure", "name": "product tests",
+                        "number": 4, "status": "completed",
+                    },
+                    {
+                        "conclusion": "skipped", "name": "pin and product contract",
+                        "number": 5, "status": "completed",
+                    },
+                    {
+                        "conclusion": "skipped",
+                        "name": "Post Run actions/setup-node@v4",
+                        "number": 9, "status": "completed",
+                    },
+                    {
+                        "conclusion": "success",
+                        "name": "Post Run actions/checkout@v4",
+                        "number": 10, "status": "completed",
+                    },
+                    {
+                        "conclusion": "success", "name": "Complete job",
+                        "number": 11, "status": "completed",
+                    },
+                ],
+            },
+        ],
+    }
+    return required, run
+
+
+def current_template_observation():
+    required, run = template_observation()
+    run["jobs"][1]["steps"] = [
+        {
+            "conclusion": "success", "name": "Set up job",
+            "number": 1, "status": "completed",
+        },
+        {
+            "conclusion": "success", "name": "Run actions/checkout@v5",
+            "number": 2, "status": "completed",
+        },
+        {
+            "conclusion": "success", "name": "inspect qualification control",
+            "number": 3, "status": "completed",
+        },
+        {
+            "conclusion": "skipped", "name": "Run actions/checkout@v5",
+            "number": 4, "status": "completed",
+        },
+        {
+            "conclusion": "success", "name": "classify change",
+            "number": 5, "status": "completed",
+        },
+        {
+            "conclusion": "success", "name": "Run actions/setup-node@v5",
+            "number": 6, "status": "completed",
+        },
+        {
+            "conclusion": "success", "name": "npm ci",
+            "number": 7, "status": "completed",
+        },
+        {
+            "conclusion": "success", "name": "lint",
+            "number": 8, "status": "completed",
+        },
+        {
+            "conclusion": "success", "name": "typecheck",
+            "number": 9, "status": "completed",
+        },
+        {
+            "conclusion": "failure", "name": "tests",
+            "number": 10, "status": "completed",
+        },
+        {
+            "conclusion": "skipped", "name": "build",
+            "number": 11, "status": "completed",
+        },
+        {
+            "conclusion": "skipped",
+            "name": "Post Run actions/setup-node@v5",
+            "number": 15, "status": "completed",
+        },
+        {
+            "conclusion": "success",
+            "name": "Post Run actions/checkout@v5",
+            "number": 16, "status": "completed",
+        },
+        {
+            "conclusion": "success", "name": "Complete job",
+            "number": 17, "status": "completed",
+        },
+    ]
+    return required, run
+
+
 class CiRerunTest(unittest.TestCase):
     def test_github_timeout_is_typed(self) -> None:
         with patch.object(
@@ -91,6 +214,53 @@ class CiRerunTest(unittest.TestCase):
         selected = RERUN.classify(required, checks, REPO)
         self.assertEqual(selected, (12, 34, "web-tests", "ci", (34, 40)))
         RERUN.validate_run(run, HEAD, selected)
+
+    def test_factory_template_aggregate_application_step_is_retryable(self) -> None:
+        template = (ROOT / "ci/github-actions-ci.template.yml").read_text()
+        for marker in (
+            "actions/checkout@v5", "inspect qualification control",
+            "classify change", "actions/setup-node@v5", "name: tests",
+        ):
+            self.assertIn(marker, template)
+        for fixture in (template_observation, current_template_observation):
+            with self.subTest(fixture=fixture.__name__):
+                required, run = fixture()
+                selected = RERUN.classify(required, required, REPO)
+                self.assertEqual(selected, (12, 40, "ci", "ci", (40,)))
+                RERUN.validate_run(run, HEAD, selected)
+
+    def test_factory_template_aggregate_fails_closed(self) -> None:
+        required, run = template_observation()
+        selected = RERUN.classify(required, required, REPO)
+        cases = {}
+
+        control = copy.deepcopy(run)
+        control["jobs"][1]["steps"][3]["name"] = "pin and product contract"
+        cases["failed control"] = control
+
+        multiple = copy.deepcopy(run)
+        multiple["jobs"][1]["steps"][6]["conclusion"] = "failure"
+        multiple["jobs"][1]["steps"][6]["name"] = "integration tests"
+        cases["multiple application failures"] = multiple
+
+        skipped_before = copy.deepcopy(run)
+        skipped_before["jobs"][1]["steps"][0]["conclusion"] = "skipped"
+        cases["skipped control before failure"] = skipped_before
+
+        duplicate = copy.deepcopy(run)
+        duplicate["jobs"][1]["steps"][2]["number"] = 2
+        cases["duplicate step identity"] = duplicate
+
+        extra = copy.deepcopy(run)
+        extra["jobs"][1]["steps"].insert(5, {
+            "conclusion": "success", "name": "tests and notify Slack",
+            "number": 6, "status": "completed",
+        })
+        cases["unlisted side-effect step"] = extra
+
+        for label, changed in cases.items():
+            with self.subTest(label=label), self.assertRaises(RERUN.NotTransient):
+                RERUN.validate_run(changed, HEAD, selected)
 
     def test_aggregate_resolution_fails_closed(self) -> None:
         required, checks, run = aggregate_observation()
@@ -119,6 +289,13 @@ class CiRerunTest(unittest.TestCase):
         for label, (required_case, checks_case) in cases.items():
             with self.subTest(label), self.assertRaises(RERUN.NotTransient):
                 RERUN.classify(required_case, checks_case, REPO)
+
+        deploy = [
+            check("deploy", "fail", 40, workflow="deploy"),
+            check("test-immutability", "pass", 10, workflow="deploy"),
+        ]
+        with self.assertRaises(RERUN.NotTransient):
+            RERUN.classify(deploy, deploy, REPO)
 
         selected = RERUN.classify(required, checks, REPO)
         for field, value in (
