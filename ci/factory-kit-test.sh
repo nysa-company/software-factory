@@ -424,7 +424,12 @@ case "$endpoint" in
   repos/nysa-company/software-factory/actions/workflows/ci.yml/runs\?*)
     [[ "${FACTORY_KIT_TEST_REMOTE_FULL_CI_API:-0}" == "1" ]] || exit 2
     if [[ "$endpoint" == *"event=push"* ]]; then
-      if [[ "${GH_REMOTE_CI_MAIN_FAILURE:-0}" == "1" ]]; then
+      if [[ "${GH_REMOTE_CI_MAIN_BAD_ID:-0}" == "1" ]]; then
+        printf '[{"workflow_runs":[{"id":900,"run_attempt":1,"head_sha":"%s","event":"push","head_branch":"main","status":"completed","conclusion":"failure","path":".github/workflows/ci.yml"},{"id":"bad","run_attempt":1,"head_sha":"%s","event":"push","head_branch":"main","status":"completed","conclusion":"success","path":".github/workflows/ci.yml"}]}]\n' \
+          "${GH_REMOTE_CI_MAIN_SHA:?}" "${GH_REMOTE_CI_MAIN_SHA:?}"
+      elif [[ "${GH_REMOTE_CI_MAIN_MALFORMED:-0}" == "1" ]]; then
+        printf '%s\n' '[{"workflow_runs":{}}]'
+      elif [[ "${GH_REMOTE_CI_MAIN_FAILURE:-0}" == "1" ]]; then
         printf '[{"workflow_runs":[{"id":900,"run_attempt":1,"head_sha":"%s","event":"push","head_branch":"main","status":"completed","conclusion":"failure","path":".github/workflows/ci.yml"}]}]\n' \
           "${GH_REMOTE_CI_MAIN_SHA:?}"
       else
@@ -1038,21 +1043,56 @@ export GH_REMOTE_CI_HEAD="eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
 export GH_REMOTE_CI_TREE="0000000000000000000000000000000000000000"
 expect_failure "tree-mismatched PR CI cannot substitute for main CI" \
   install --repo "$KIT_REPO" --sha "$SHA_B"
+if [[ "$LAST_OUTPUT" == *"PR head tree does not match protected commit tree"* ]] &&
+   grep -q "git/commits/$GH_REMOTE_CI_HEAD" "$GH_TRACE"; then
+  pass "tree-mismatched PR CI reaches the exact tree refusal"
+else
+  fail "tree-mismatched PR CI reaches the exact tree refusal" "$LAST_OUTPUT"
+fi
 GH_REMOTE_CI_TREE="$(git -C "$KIT_REPO" rev-parse "$SHA_B^{tree}")"
 export GH_REMOTE_CI_TREE GH_REMOTE_CI_MISSING_GROUP=1
 expect_failure "partial PR CI cannot substitute for full CI" \
   install --repo "$KIT_REPO" --sha "$SHA_B"
+if [[ "$LAST_OUTPUT" == *"workflow job topology is incomplete"* ]] &&
+   grep -q 'actions/runs/901/attempts/1/jobs' "$GH_TRACE"; then
+  pass "partial PR CI reaches the exact topology refusal"
+else
+  fail "partial PR CI reaches the exact topology refusal" "$LAST_OUTPUT"
+fi
 unset GH_REMOTE_CI_MISSING_GROUP
 : > "$GH_TRACE"
 export GH_REMOTE_CI_MAIN_FAILURE=1
 expect_failure "failed main CI cannot fall back to older PR evidence" \
   install --repo "$KIT_REPO" --sha "$SHA_B"
-if ! grep -q '/pulls' "$GH_TRACE"; then
+if [[ "$LAST_OUTPUT" == *"protected-main run is not successful"* ]] &&
+   ! grep -q '/pulls' "$GH_TRACE"; then
   pass "failed main CI remains authoritative"
 else
   fail "failed main CI remains authoritative" "$LAST_OUTPUT"
 fi
 unset GH_REMOTE_CI_MAIN_FAILURE
+: > "$GH_TRACE"
+export GH_REMOTE_CI_MAIN_MALFORMED=1
+expect_failure "malformed main CI cannot enter PR fallback" \
+  install --repo "$KIT_REPO" --sha "$SHA_B"
+if [[ "$LAST_OUTPUT" == *"protected-main run is not successful"* ]] &&
+   ! grep -q '/pulls' "$GH_TRACE"; then
+  pass "malformed main CI fails closed before PR fallback"
+else
+  fail "malformed main CI fails closed before PR fallback" "$LAST_OUTPUT"
+fi
+unset GH_REMOTE_CI_MAIN_MALFORMED
+: > "$GH_TRACE"
+export GH_REMOTE_CI_MAIN_BAD_ID=1
+expect_failure "malformed exact main run cannot enter PR fallback" \
+  install --repo "$KIT_REPO" --sha "$SHA_B"
+if [[ "$LAST_OUTPUT" == *"protected-main run is not successful"* ]] &&
+   ! grep -q '/pulls' "$GH_TRACE"; then
+  pass "malformed exact main run fails closed before PR fallback"
+else
+  fail "malformed exact main run fails closed before PR fallback" "$LAST_OUTPUT"
+fi
+unset GH_REMOTE_CI_MAIN_BAD_ID
 : > "$GH_TRACE"
 expect_success "tree-identical PR full CI publishes the second release" \
   install --repo "$KIT_REPO" --sha "$SHA_B"
@@ -1062,7 +1102,8 @@ if grep -q "commits/$GH_REMOTE_CI_HEAD/check-runs" "$GH_TRACE" &&
 else
   fail "tree-identical PR evidence verifies only its exact head checks" "$LAST_OUTPUT"
 fi
-unset FACTORY_KIT_TEST_REMOTE_FULL_CI_API GH_REMOTE_CI_MAIN_SHA
+unset FACTORY_KIT_TEST_REMOTE_FULL_CI_API FACTORY_KIT_TEST_REMOTE_FULL_CI
+unset GH_REMOTE_CI_MAIN_SHA
 unset GH_REMOTE_CI_HEAD GH_REMOTE_CI_TREE
 unset FACTORY_KIT_TEST_PUBLISH_TRACE
 if [[ "$(json_value "$STATE/manifests/$SHA_B.suite.json" verification_source)" == "github-actions-full" ]] &&

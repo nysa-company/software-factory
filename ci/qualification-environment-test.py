@@ -103,8 +103,10 @@ class QualificationEnvironmentTest(unittest.TestCase):
             "authority=json.load(open(Path(os.environ['HOME'])/'.factory/qualification'/sys.argv[1]/'authority.json'))\n"
             "manifest=json.load(open(Path(authority['product_path'])/'factory/QUALIFICATION.json'))\n"
             "events=Path(authority['controller_state_path'])/'events'; events.mkdir(mode=0o700,exist_ok=True)\n"
-            "if not any(events.glob('*.json')):\n"
-            " value={'event':'restart_boundary','factory_sha':authority['factory_sha'],'observed_at_epoch_ns':time.time_ns(),'qualification_generation':1,'qualification_manifest_sha256':hashlib.sha256(json.dumps(manifest,sort_keys=True,separators=(',',':')).encode()).hexdigest(),'schema':'nysa.software-factory.controller-event/v1','ticket':None,'tickets':sorted(manifest['tickets'])}\n"
+            "digest=hashlib.sha256(json.dumps(manifest,sort_keys=True,separators=(',',':')).encode()).hexdigest()\n"
+            "existing=[json.load(open(path)) for path in events.glob('*.json')]\n"
+            "if not any(value.get('event')=='restart_boundary' and value.get('factory_sha')==authority['factory_sha'] and value.get('qualification_generation')==manifest['generation'] and value.get('qualification_manifest_sha256')==digest for value in existing):\n"
+            " value={'event':'restart_boundary','factory_sha':authority['factory_sha'],'observed_at_epoch_ns':time.time_ns(),'qualification_generation':manifest['generation'],'qualification_manifest_sha256':digest,'schema':'nysa.software-factory.controller-event/v1','ticket':None,'tickets':sorted(manifest['tickets'])}\n"
             " value['event_sha256']=hashlib.sha256(json.dumps(value,sort_keys=True,separators=(',',':')).encode()).hexdigest()\n"
             " target=events/f\"{value['observed_at_epoch_ns']}-{secrets.token_hex(8)}.json\"\n"
             " target.write_text(json.dumps(value,sort_keys=True,separators=(',',':'))+'\\n'); target.chmod(0o600)\n",

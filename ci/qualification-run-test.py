@@ -2309,6 +2309,18 @@ raise SystemExit(code)
                 {"reducer_reason_code": "role_evidence_replayed", "ticket": "T-2"},
             ),
             (
+                "qualification activation receipt is invalid",
+                {"reducer_reason_code": "activation_receipt_invalid"},
+            ),
+            (
+                "provider accounting attempts do not reconcile",
+                {"reducer_reason_code": "provider_attempts_mismatch"},
+            ),
+            (
+                "immutable qualification report is unsafe",
+                {"reducer_reason_code": "report_unsafe"},
+            ),
+            (
                 "provider-private-detail-123",
                 {"reducer_reason_code": "unclassified"},
             ),

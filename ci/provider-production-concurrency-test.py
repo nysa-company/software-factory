@@ -186,6 +186,21 @@ class ProductionConcurrencyTest(unittest.TestCase):
         self.assertEqual(admitted["lease"]["trust_scope"], "development-local")
         self.assertTrue(self.cursor_account("release", lease)["released"])
 
+    def test_submission_capture_before_attempt_creation_is_a_noop(self) -> None:
+        script = f"""
+set -euo pipefail
+eval "$(sed -n '/^capture_submission_record()/,/^}}/p' '{RUN_AGENT}')"
+CLI_CONCURRENT_RUN=1
+CLI_ATTEMPT_ID=
+RUN_SUBMITTED_FILE=
+load_cli_attempt() {{ return 99; }}
+capture_submission_record
+"""
+        subprocess.run(
+            ["/bin/bash", "-c", script], capture_output=True, check=True,
+            text=True, timeout=30,
+        )
+
     def prepare_runtime(self, adapter: str, attempt: str) -> Path:
         script = f"""
 set -euo pipefail

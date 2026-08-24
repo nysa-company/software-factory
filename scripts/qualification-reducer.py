@@ -149,7 +149,7 @@ def write_immutable(path: Path, raw: bytes) -> None:
             if regular(path, 0o600) != raw:
                 raise QualificationError("immutable qualification report changed")
         else:
-            Path(temporary).unlink()
+            Path(temporary).unlink(missing_ok=True)
             temporary = None
         directory = os.open(path.parent, os.O_RDONLY)
         try:
@@ -404,7 +404,7 @@ def qualification_latency(
         or activated < boundary["observed_at_epoch_ns"]
         or receipt_id != activation.get("activation_receipt_id")
         or receipt_id
-        != hashlib.sha256((canonical(receipt) + "\n").encode()).hexdigest()
+        != hashlib.sha256(canonical(receipt).encode()).hexdigest()
         or receipt.get("activation_started_epoch_ns") != started
         or receipt.get("status") != "pass"
         or receipt.get("kit_sha") != activation.get("factory_sha")
@@ -557,14 +557,21 @@ def provider_accounting_evidence(
         ticket = value["ticket"]
         charge = charges.get(digest, (None, None))[1]
         attempt_id = value.get("provider_attempt_id", "")
+        accounting_state = value.get("accounting_state")
         if (
             not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:@-]{0,199}", attempt_id)
+            or accounting_state not in {
+                "completed", "abandoned_conservative",
+                "cancelled_conservative", "launch_void",
+            }
             or (
-                charge is None and value.get("accounting_state") != "launch_void"
+                charge is None and accounting_state != "launch_void"
             )
             or (
                 charge is not None and (
-                    value.get("run_id") != charge.get("run_id")
+                    charge.get("accounting_state") != accounting_state
+                    or accounting_state == "launch_void"
+                    or value.get("run_id") != charge.get("run_id")
                     or value.get("role") != charge.get("role")
                     or value.get("transition_receipt_sha256")
                     != charge.get("transition_receipt_sha256")

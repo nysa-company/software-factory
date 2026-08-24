@@ -774,6 +774,7 @@ finalize_accounting() {
 capture_submission_record() {
   local submitted
   if [[ "$CLI_CONCURRENT_RUN" -eq 1 ]]; then
+    [[ -n "$CLI_ATTEMPT_ID" ]] || return 0
     load_cli_attempt
     return
   fi

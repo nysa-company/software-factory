@@ -38,7 +38,9 @@ class QualificationReducerTest(unittest.TestCase):
             attempt_id = f"attempt-{number}"
             fields = {
                 "account_route_id": "cursor-openai",
-                "accounting_state": "launch_void" if launch_void else "completed",
+                "accounting_state": (
+                    "launch_void" if launch_void else "abandoned_conservative"
+                ),
                 "activation_policy_sha256": policy,
                 "go_issued": "0" if launch_void else "1",
                 "effective_cost": "0" if launch_void else "1.250000",
@@ -59,6 +61,7 @@ class QualificationReducerTest(unittest.TestCase):
             digest = hashlib.sha256(raw).hexdigest()
             if not launch_void:
                 charges.append({
+                    "accounting_state": fields["accounting_state"],
                     "charge_micro_usd": 1_250_000,
                     "factory_sha": factory_sha, "manifest_sha256": digest,
                     "role": "planner", "run_id": run_id,
@@ -162,6 +165,33 @@ class QualificationReducerTest(unittest.TestCase):
                 REDUCER.provider_accounting_evidence(
                     product, manifest, passports, changed_events, status, "relay-proof",
                 )
+            changed_passports = copy.deepcopy(passports)
+            changed_passports["T-1"]["charge_records"][0][
+                "accounting_state"
+            ] = "completed"
+            with self.assertRaisesRegex(REDUCER.QualificationError, "manifest is invalid"):
+                REDUCER.provider_accounting_evidence(
+                    product, manifest, changed_passports, events, status, "relay-proof",
+                )
+            changed_passports = copy.deepcopy(passports)
+            changed_events = copy.deepcopy(events)
+            run = product / "factory/runs/run-1.meta"
+            original_run = run.read_text()
+            run.write_text(original_run.replace(
+                "accounting_state=abandoned_conservative",
+                "accounting_state=bogus_terminal",
+            ))
+            changed_passports["T-1"]["charge_records"][0].update({
+                "accounting_state": "bogus_terminal",
+                "manifest_sha256": hashlib.sha256(run.read_bytes()).hexdigest(),
+            })
+            changed_events[0]["accounting_state"] = "bogus_terminal"
+            with self.assertRaisesRegex(REDUCER.QualificationError, "manifest is invalid"):
+                REDUCER.provider_accounting_evidence(
+                    product, manifest, changed_passports, changed_events, status,
+                    "relay-proof",
+                )
+            run.write_text(original_run)
             for field in (
                 "accounting_state", "go_issued", "role", "task_submitted",
                 "terminal_at_epoch_ns", "transition_receipt_sha256",
@@ -367,7 +397,7 @@ class QualificationReducerTest(unittest.TestCase):
             "status": "pass",
         }
         receipt["receipt_id"] = hashlib.sha256(
-            (REDUCER.canonical(receipt) + "\n").encode()
+            REDUCER.canonical(receipt).encode()
         ).hexdigest()
         activation = {
             "activation_receipt_id": receipt["receipt_id"],
@@ -605,7 +635,7 @@ class QualificationReducerTest(unittest.TestCase):
         changed_receipt["activation_started_epoch_ns"] += 1
         changed_receipt.pop("receipt_id")
         changed_receipt["receipt_id"] = hashlib.sha256(
-            (REDUCER.canonical(changed_receipt) + "\n").encode()
+            REDUCER.canonical(changed_receipt).encode()
         ).hexdigest()
         with self.assertRaisesRegex(REDUCER.QualificationError, "activation timing"):
             REDUCER.verify(*evidence, changed_receipt, narrators, accounting, planners)

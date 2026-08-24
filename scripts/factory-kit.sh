@@ -652,6 +652,7 @@ PY
 
 verified_remote_full_ci() {
   local sha="$1" tree="$2" data run_id run_attempt evidence_sha event head_ref pr_number
+  local run_status
   if [[ "${FACTORY_KIT_TEST_MODE:-0}" == "1" &&
         "${FACTORY_KIT_TEST_REMOTE_FULL_CI_API:-0}" != "1" ]]; then
     verify_required_github_checks "$sha" >&2 || return 1
@@ -667,7 +668,17 @@ verified_remote_full_ci() {
     > "$data/runs.json" || return 1
   if python3 - "$data/runs.json" "$sha" <<'PY' > "$data/run-id"
 import json, sys
-pages = json.load(open(sys.argv[1]))
+try:
+    pages = json.load(open(sys.argv[1]))
+except (OSError, json.JSONDecodeError):
+    raise SystemExit(3)
+if not isinstance(pages, list) or any(
+    not isinstance(page, dict)
+    or not isinstance(page.get("workflow_runs"), list)
+    or any(not isinstance(run, dict) for run in page["workflow_runs"])
+    for page in pages
+):
+    raise SystemExit(3)
 runs = []
 for page in pages:
     runs.extend(page.get("workflow_runs", []))
@@ -676,11 +687,18 @@ exact = [run for run in runs if (
     run.get("head_branch") == "main" and run.get("status") == "completed" and
     run.get("path") == ".github/workflows/ci.yml"
 )]
+if any(
+    not isinstance(run.get(name), int)
+    or isinstance(run.get(name), bool)
+    or run[name] <= 0
+    for run in exact for name in ("id", "run_attempt")
+):
+    raise SystemExit(3)
 valid = [run for run in exact if run.get("conclusion") == "success"]
 if not valid:
     raise SystemExit(2 if exact else 1)
-run = max(valid, key=lambda value: int(value.get("id", 0)))
-print("%s\t%s" % (run["id"], run.get("run_attempt", 1)))
+run = max(valid, key=lambda value: value["id"])
+print("%s\t%s" % (run["id"], run["run_attempt"]))
 PY
   then
     evidence_sha="$sha"
@@ -688,11 +706,15 @@ PY
     head_ref="refs/heads/main"
     pr_number=""
   else
-    [[ "$?" -eq 1 ]] || return 1
+    run_status="$?"
+    if [[ "$run_status" -ne 1 ]]; then
+      say "REMOTE CI REFUSED: protected-main run is not successful" >&2
+      return 1
+    fi
     gh api --paginate --slurp \
       "repos/nysa-company/software-factory/commits/$sha/pulls?per_page=100" \
       > "$data/pulls.json" || return 1
-    python3 - "$data/pulls.json" "$sha" <<'PY' > "$data/pr-id" || return 1
+    if ! python3 - "$data/pulls.json" "$sha" <<'PY' > "$data/pr-id"
 import json, re, sys
 pages = json.load(open(sys.argv[1]))
 if pages and isinstance(pages[0], dict):
@@ -717,22 +739,30 @@ print("%s\t%s\t%s" % (
     value["number"], value["head"]["sha"], value["head"]["ref"]
 ))
 PY
+    then
+      say "REMOTE CI REFUSED: unique merged same-repository PR evidence is missing" >&2
+      return 1
+    fi
     pr_number="$(cut -f1 "$data/pr-id")"
     evidence_sha="$(cut -f2 "$data/pr-id")"
     local head_branch
     head_branch="$(cut -f3- "$data/pr-id")"
     gh api "repos/nysa-company/software-factory/git/commits/$evidence_sha" \
       > "$data/pr-head.json" || return 1
-    python3 - "$data/pr-head.json" "$tree" <<'PY' || return 1
+    if ! python3 - "$data/pr-head.json" "$tree" <<'PY'
 import json, sys
 raise SystemExit(0 if json.load(open(sys.argv[1])).get("tree", {}).get("sha") == sys.argv[2] else 1)
 PY
+    then
+      say "REMOTE CI REFUSED: PR head tree does not match protected commit tree" >&2
+      return 1
+    fi
     gh api --paginate --slurp \
       "repos/nysa-company/software-factory/actions/workflows/ci.yml/runs?head_sha=$evidence_sha&event=pull_request&status=completed&per_page=100" \
       > "$data/runs.json" || return 1
-    python3 - "$data/runs.json" "$evidence_sha" "$pr_number" "$head_branch" \
+    if ! python3 - "$data/runs.json" "$evidence_sha" "$pr_number" "$head_branch" \
       "$tree" \
-      <<'PY' > "$data/run-id" || return 1
+      <<'PY' > "$data/run-id"
 import json, sys
 pages = json.load(open(sys.argv[1]))
 runs = [run for page in pages for run in page.get("workflow_runs", [])]
@@ -751,6 +781,10 @@ if not valid:
 run = max(valid, key=lambda value: int(value.get("id", 0)))
 print("%s\t%s" % (run["id"], run.get("run_attempt", 1)))
 PY
+    then
+      say "REMOTE CI REFUSED: exact successful PR workflow evidence is missing" >&2
+      return 1
+    fi
     event="pull_request"
     head_ref="refs/heads/$head_branch"
   fi
@@ -760,7 +794,7 @@ PY
   gh api --paginate --slurp \
     "repos/nysa-company/software-factory/actions/runs/$run_id/attempts/$run_attempt/jobs?per_page=100" \
     > "$data/jobs.json" || return 1
-  python3 - "$data/jobs.json" "$sha" "$tree" "$run_id" "$run_attempt" \
+  if ! python3 - "$data/jobs.json" "$sha" "$tree" "$run_id" "$run_attempt" \
     "$evidence_sha" "$event" "$head_ref" "$pr_number" <<'PY'
 import hashlib, json, sys
 pages = json.load(open(sys.argv[1]))
@@ -809,6 +843,10 @@ if sys.argv[9]:
 payload = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
 print(hashlib.sha256(payload).hexdigest())
 PY
+  then
+    say "REMOTE CI REFUSED: workflow job topology is incomplete" >&2
+    return 1
+  fi
 }
 
 process_start_identity() {
