@@ -4224,8 +4224,13 @@ class QualificationEnvironmentTest(unittest.TestCase):
                 path.chmod(path.stat().st_mode & ~0o222)
         provider = self.home.resolve() / ".factory/qualification/relay/provider"
         provider_before = RELEASE.qualification_provider_snapshot(provider)
-        install_repo = self.workspace / "https-install-source"
+        capability = self.workspace / "install-capability"
+        capability.mkdir(mode=0o700)
+        capability = capability.resolve(strict=True)
+        install_repo = capability / "https-install-source"
         run(self.workspace, "git", "clone", "-q", "--no-local", str(self.factory), str(install_repo))
+        install_repo = install_repo.resolve(strict=True)
+        install_repo.chmod(0o700)
         run(
             install_repo, "git", "remote", "set-url", "origin",
             "https://github.com/nysa-company/software-factory.git",
@@ -4247,6 +4252,37 @@ class QualificationEnvironmentTest(unittest.TestCase):
             ),
         ):
             run(self.factory, "git", "config", key, value)
+        trusted_bin = capability / "bin"
+        config = capability / "config"
+        trusted_bin.mkdir(mode=0o700)
+        config.mkdir(mode=0o700)
+        gh = Path(shutil.which("gh")).resolve(strict=True)
+        trusted_bin.joinpath("gh").symlink_to(gh)
+        askpass = trusted_bin / "git-askpass"
+        askpass.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        askpass.chmod(0o700)
+        token = capability / "token"
+        token.write_text("fixture-token", encoding="utf-8")
+        token.chmod(0o600)
+        gh_info = gh.stat()
+        descriptor = capability / "descriptor.json"
+        descriptor.write_text(json.dumps({
+            "config": str(config), "gh": str(gh),
+            "gh_identity": {
+                "dev": gh_info.st_dev, "ino": gh_info.st_ino,
+                "mode": gh_info.st_mode, "mtime_ns": gh_info.st_mtime_ns,
+                "size": gh_info.st_size,
+            },
+            "git_askpass": str(askpass), "install_repo": str(install_repo),
+            "schema": "nysa.software-factory.qualification-install/v1",
+            "sha": candidate, "token": str(token),
+            "tree": subprocess.run(
+                ["git", "-C", str(install_repo), "rev-parse", "HEAD^{tree}"],
+                capture_output=True, text=True, check=True,
+            ).stdout.strip(),
+            "trusted_bin": str(trusted_bin),
+        }, sort_keys=True) + "\n", encoding="utf-8")
+        descriptor.chmod(0o600)
         q71 = self.workspace / "q71-fixture"
         q71.mkdir()
         (q71 / "active.json").write_text('{"generation":71}\n')
@@ -4258,22 +4294,30 @@ class QualificationEnvironmentTest(unittest.TestCase):
         )
         original_run = RELEASE.run
         original_run_json = RELEASE.run_json
+        credential_names = {"GH_TOKEN", "GH_CONFIG_DIR", "GIT_ASKPASS"}
 
         def installed(arguments, label, **options):
             if label == "sealed qualification candidate install":
+                self.assertEqual(
+                    options["environment"]["PATH"], f"{trusted_bin}:/usr/bin:/bin",
+                )
+                self.assertTrue(credential_names <= set(options["environment"]))
                 return ""
+            self.assertTrue(credential_names.isdisjoint(options.get("environment") or {}))
             return original_run(arguments, label, **options)
 
         def provider_ready(arguments, label, **options):
             if label == "qualification provider CLI replay":
+                self.assertTrue(credential_names.isdisjoint(options.get("environment") or {}))
                 return {"status": "ready"}
+            self.assertTrue(credential_names.isdisjoint(options.get("environment") or {}))
             return original_run_json(arguments, label, **options)
 
         with (
             mock.patch.dict(os.environ, {
                 "FACTORY_KIT_TEST_MODE": "1",
                 "FACTORY_RELEASE_TEST_HOME": str(self.home),
-                "FACTORY_QUALIFICATION_INSTALL_REPO": str(install_repo),
+                "FACTORY_QUALIFICATION_INSTALL_AUTH_DESCRIPTOR": str(descriptor),
             }),
             mock.patch.object(RELEASE, "TRANSACTION_ROOT", self.factory),
             mock.patch.object(RELEASE, "run", side_effect=installed),
@@ -4302,6 +4346,8 @@ class QualificationEnvironmentTest(unittest.TestCase):
         self.assertEqual((journal["status"], journal["phase"]), ("pass", "complete"))
         self.assertNotIn(str(install_repo), json.dumps(journal, sort_keys=True))
         self.assertFalse(factory_config_marker.exists())
+        self.assertFalse(descriptor.exists())
+        self.assertFalse(token.exists())
         self.assertEqual(list((controller / "claims").glob("*.json")), [])
         for path in (
             self.product / "factory/runs",

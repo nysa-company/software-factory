@@ -2888,17 +2888,15 @@ class ReleaseTransactionTest(unittest.TestCase):
             " Path(os.environ['FACTORY_TEST_HELPER_MARKER']).write_text('executed')\n"
             "if any(value.startswith('qualification-recover-') for value in sys.argv):\n"
             " assert all(value not in os.environ for value in "
-            "('GH_TOKEN','GH_CONFIG_DIR','GIT_ASKPASS'))\n"
+            "('GH_TOKEN','GH_CONFIG_DIR','GIT_ASKPASS',"
+            "'FACTORY_QUALIFICATION_INSTALL_AUTH_DESCRIPTOR'))\n"
             " assert os.environ['PATH'] == '/usr/bin:/bin'\n"
             "if os.environ.get('FACTORY_TRUSTED_TEST_HARNESS') == '1' and "
             "'qualification-upgrade' in sys.argv:\n"
-            " subprocess.run(['gh','api','--hostname','github.com',"
-            "'repos/nysa-company/software-factory/git/ref/heads/main',"
-            "'--jq','.object.sha'],check=True,capture_output=True,text=True)\n"
-            " assert subprocess.run([os.environ['GIT_ASKPASS'],'Username for github.com'],"
-            "check=True,capture_output=True,text=True).stdout.strip() == 'x-access-token'\n"
-            " assert subprocess.run([os.environ['GIT_ASKPASS'],'Password for github.com'],"
-            "check=True,capture_output=True,text=True).stdout.strip() == os.environ['GH_TOKEN']\n"
+            " assert all(value not in os.environ for value in "
+            "('GH_TOKEN','GH_CONFIG_DIR','GIT_ASKPASS'))\n"
+            " assert os.environ['PATH'] == '/usr/bin:/bin'\n"
+            " assert Path(os.environ['FACTORY_QUALIFICATION_INSTALL_AUTH_DESCRIPTOR']).is_file()\n"
             "print(json.dumps(sys.argv[1:]))\n", encoding="utf-8",
         )
         (repo / "factory-contract.json").write_text(
@@ -2946,10 +2944,14 @@ class ReleaseTransactionTest(unittest.TestCase):
             f"#!/bin/sh\ntouch {str(config_marker)!r}\nexit 1\n", encoding="utf-8",
         )
         config_helper.chmod(0o700)
+        attributes = self.root / "candidate-global-attributes"
+        attributes.write_text("* filter=attacker\n", encoding="utf-8")
         for key, value in (
             ("core.fsmonitor", str(config_helper)),
+            ("core.attributesFile", str(attributes)),
             ("credential.helper", f"!{config_helper}"),
             ("core.sshCommand", str(config_helper)),
+            ("filter.attacker.clean", str(config_helper)),
             ("url.file:///tmp/attacker/.insteadOf", str(canonical)),
         ):
             subprocess.run(["git", "-C", str(repo), "config", key, value], check=True)
@@ -2982,6 +2984,7 @@ class ReleaseTransactionTest(unittest.TestCase):
         self.assertFalse(config_marker.exists())
         for key in (
             "core.fsmonitor", "credential.helper", "core.sshCommand",
+            "core.attributesFile", "filter.attacker.clean",
             "url.file:///tmp/attacker/.insteadOf",
         ):
             subprocess.run([
@@ -3005,6 +3008,28 @@ class ReleaseTransactionTest(unittest.TestCase):
         ], check=True)
         subprocess.run([
             "git", "-C", str(repo), "config", "core.repositoryFormatVersion", "0",
+        ], check=True)
+        subprocess.run([
+            "git", "-C", str(repo), "config", "extensions.worktreeConfig", "true",
+        ], check=True)
+        subprocess.run([
+            "git", "-C", str(repo), "config", "--worktree",
+            "ReMoTe.origin.ProMiSoR", "true",
+        ], check=True)
+        worktree_partial = subprocess.run(
+            ["bash", str(ROOT / "scripts/factory-kit.sh"), "qualification",
+             "recover-plan", *common], capture_output=True, text=True,
+            env=environment, check=False,
+        )
+        self.assertNotEqual(worktree_partial.returncode, 0)
+        self.assertIn("partial or promisor", worktree_partial.stderr)
+        subprocess.run([
+            "git", "-C", str(repo), "config", "--worktree", "--unset-all",
+            "remote.origin.promisor",
+        ], check=True)
+        subprocess.run([
+            "git", "-C", str(repo), "config", "--unset-all",
+            "extensions.worktreeConfig",
         ], check=True)
 
         malformed = subprocess.run(
@@ -3059,19 +3084,15 @@ class ReleaseTransactionTest(unittest.TestCase):
                  "recover-plan", *common],
                 capture_output=True, text=True, env=environment, check=False,
             )
-            self.assertEqual(hidden.returncode, 0, hidden.stderr)
-            self.assertIn(
-                "qualification-recover-plan", json.loads(hidden.stdout),
-            )
+            self.assertNotEqual(hidden.returncode, 0)
+            self.assertIn("candidate must be clean", hidden.stderr)
             hidden_upgrade = subprocess.run(
                 ["bash", str(ROOT / "scripts/factory-kit.sh"), "qualification",
                  "upgrade", *upgrade_common],
                 capture_output=True, text=True, env=environment, check=False,
             )
-            self.assertEqual(hidden_upgrade.returncode, 0, hidden_upgrade.stderr)
-            self.assertIn(
-                "qualification-upgrade", json.loads(hidden_upgrade.stdout),
-            )
+            self.assertNotEqual(hidden_upgrade.returncode, 0)
+            self.assertIn("candidate must be clean", hidden_upgrade.stderr)
             self.assertFalse(hidden_marker.exists())
             subprocess.run([
                 "git", "-C", str(repo), "update-index", clear_flag,
@@ -3370,8 +3391,11 @@ class ReleaseTransactionTest(unittest.TestCase):
             project="relay", repo=repo, root=lane, runtime_bin=runtime,
             sha=self.sha,
         )
-        identity = {"active": {"generation": 1, "kit_sha": "b" * 40},
-                    "selected_tickets": ["T-1"]}
+        identity = {
+            "active": {"generation": 1, "kit_sha": "b" * 40},
+            "factory_origin": "https://github.com/nysa-company/software-factory.git",
+            "factory_tree": "c" * 40, "selected_tickets": ["T-1"],
+        }
         module = mock.Mock()
         module.qualification_fallback_readiness.return_value = (
             {"readiness_sha256": "1" * 64}, "1" * 64,
@@ -3385,6 +3409,20 @@ class ReleaseTransactionTest(unittest.TestCase):
             ),
             mock.patch.object(
                 RELEASE, "qualification_runtime_child", return_value=runtime_child,
+            ),
+            mock.patch.object(
+                RELEASE, "qualification_install_descriptor", return_value=({
+                    "install_repo": str(repo), "descriptor_path": str(repo / "descriptor"),
+                }, b"descriptor"),
+            ),
+            mock.patch.object(
+                RELEASE, "clean_identity", return_value=(
+                    self.sha, "c" * 40,
+                    "https://github.com/nysa-company/software-factory.git",
+                ),
+            ),
+            mock.patch.object(
+                RELEASE, "consume_qualification_install_token", return_value={},
             ),
             mock.patch.object(RELEASE, "qualification_provider_child", return_value={
                 "action": "reuse", "evidence": {"status": "ready"},

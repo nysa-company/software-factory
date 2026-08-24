@@ -859,7 +859,28 @@ def git(root: Path, *arguments: str) -> str:
         str(root), "config", "--local", "--no-includes", "--get-regexp",
         r"^(include([.]path|if[.].*[.]path)|extensions[.]partialclone|remote[.].*[.](promisor|partialclonefilter))$",
     ], text=True, capture_output=True, check=False, timeout=30, env=environment)
-    if partial.returncode not in (0, 1) or partial.stdout.strip():
+    enabled = subprocess.run([
+        "/usr/bin/git", "-c", "core.fsmonitor=false", "-c",
+        "core.hooksPath=/dev/null", "-c", "credential.helper=", "-C",
+        str(root), "config", "--local", "--no-includes", "--bool", "--get",
+        "extensions.worktreeConfig",
+    ], text=True, capture_output=True, check=False, timeout=30, env=environment)
+    worktree: subprocess.CompletedProcess[str] | None = None
+    if enabled.returncode == 0 and enabled.stdout.strip() == "true":
+        worktree = subprocess.run([
+            "/usr/bin/git", "-c", "core.fsmonitor=false", "-c",
+            "core.hooksPath=/dev/null", "-c", "credential.helper=", "-C",
+            str(root), "config", "--worktree", "--no-includes", "--get-regexp",
+            r"^(include([.]path|if[.].*[.]path)|extensions[.]partialclone|remote[.].*[.](promisor|partialclonefilter))$",
+        ], text=True, capture_output=True, check=False, timeout=30, env=environment)
+    if (
+        partial.returncode not in (0, 1) or partial.stdout.strip()
+        or enabled.returncode not in (0, 1)
+        or enabled.returncode == 0 and enabled.stdout.strip() not in {"true", "false"}
+        or worktree is not None and (
+            worktree.returncode not in (0, 1) or worktree.stdout.strip()
+        )
+    ):
         raise ReleaseError("Git identity may not use partial or promisor objects")
     return run([
         "/usr/bin/git", "-c", "core.fsmonitor=false", "-c",
@@ -882,6 +903,109 @@ def clean_identity(root: Path, label: str) -> tuple[str, str, str]:
     if not origin or re.search(r"[A-Za-z][A-Za-z0-9+.-]*://[^/\s]+@", origin):
         raise ReleaseError(f"{label} origin is unsafe")
     return sha, tree, origin
+
+
+def directory_git_tree(root: Path) -> str:
+    with tempfile.TemporaryDirectory(prefix="qualification-tree.") as raw:
+        repository = Path(raw) / "repo.git"
+        index = Path(raw) / "index"
+        environment = {
+            "PATH": "/usr/bin:/bin", "LC_ALL": "C",
+            "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_INDEX_FILE": str(index), "GIT_NO_LAZY_FETCH": "1",
+            "GIT_NO_REPLACE_OBJECTS": "1",
+        }
+        for arguments in (
+            ("init", "--bare", "-q", str(repository)),
+            ("--git-dir", str(repository), "config", "core.bare", "false"),
+            ("--git-dir", str(repository), "--work-tree", str(root), "read-tree", "--empty"),
+            ("--git-dir", str(repository), "--work-tree", str(root), "add", "-f", "-A", "--", "."),
+        ):
+            run(["/usr/bin/git", *arguments], "sealed Factory tree", environment=environment)
+        return run([
+            "/usr/bin/git", "--git-dir", str(repository), "--work-tree", str(root),
+            "write-tree",
+        ], "sealed Factory tree", environment=environment).strip()
+
+
+def factory_object_git(root: Path, *arguments: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+    environment = {
+        "PATH": "/usr/bin:/bin", "LC_ALL": "C",
+        "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_NO_LAZY_FETCH": "1", "GIT_NO_REPLACE_OBJECTS": "1",
+    }
+    common = git(root, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    objects = (Path(common).resolve(strict=True) / "objects").resolve(strict=True)
+    if "\n" in str(objects):
+        raise ReleaseError("Factory candidate object database is invalid")
+    if not objects.is_dir():
+        raise ReleaseError("Factory candidate object database is invalid")
+    with tempfile.TemporaryDirectory(prefix="qualification-objects.") as raw:
+        repository = Path(raw) / "repo.git"
+        run(["/usr/bin/git", "init", "--bare", "-q", str(repository)],
+            "Factory object verifier", environment=environment)
+        environment["GIT_OBJECT_DIRECTORY"] = str(objects)
+        result = subprocess.run(
+            ["/usr/bin/git", "--git-dir", str(repository), *arguments],
+            text=True, capture_output=True, check=False, timeout=30,
+            env=environment,
+        )
+        if check and result.returncode:
+            raise ReleaseError(result.stderr.strip() or "Factory object verification failed")
+        return result
+
+
+def factory_worktree_tree(root: Path, expected_tree: str) -> str:
+    common = git(root, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    objects = (Path(common).resolve(strict=True) / "objects").resolve(strict=True)
+    if any(character in str(objects) for character in "\r\n") or not objects.is_dir():
+        raise ReleaseError("Factory candidate object database is invalid")
+    with tempfile.TemporaryDirectory(prefix="qualification-index.") as raw:
+        repository = Path(raw) / "repo.git"
+        environment = {
+            "PATH": "/usr/bin:/bin", "LC_ALL": "C",
+            "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_INDEX_FILE": str(Path(raw) / "index"),
+            "GIT_OBJECT_DIRECTORY": str(repository / "objects"),
+            "GIT_NO_LAZY_FETCH": "1", "GIT_NO_REPLACE_OBJECTS": "1",
+        }
+        run(["/usr/bin/git", "init", "--bare", "-q", str(repository)],
+            "Factory worktree verifier", environment={
+                key: value for key, value in environment.items()
+                if not key.startswith("GIT_OBJECT") and not key.startswith("GIT_ALTERNATE")
+            })
+        (repository / "objects/info/alternates").write_text(
+            str(objects) + "\n", encoding="utf-8",
+        )
+        for arguments in (
+            ("read-tree", expected_tree),
+            ("add", "-A", "--", "."),
+        ):
+            run([
+                "/usr/bin/git", "--git-dir", str(repository),
+                "--work-tree", str(root), *arguments,
+            ], "Factory worktree verifier", environment=environment)
+        return run([
+            "/usr/bin/git", "--git-dir", str(repository),
+            "--work-tree", str(root), "write-tree",
+        ], "Factory worktree verifier", environment=environment).strip()
+
+
+def factory_ref_identity(root: Path, label: str) -> tuple[str, str, str]:
+    physical = root.resolve(strict=True)
+    if physical != root or git(root, "rev-parse", "--show-toplevel") != str(root):
+        raise ReleaseError(f"{label} must be an exact physical Git root")
+    sha = git(root, "rev-parse", "HEAD")
+    origin = git(root, "config", "--local", "--no-includes", "--get", "remote.origin.url")
+    committed_tree = factory_object_git(root, "rev-parse", f"{sha}^{{tree}}").stdout.strip()
+    transaction_tree = directory_git_tree(TRANSACTION_ROOT)
+    worktree_tree = factory_worktree_tree(root, committed_tree)
+    if (
+        not SHA.fullmatch(sha) or not SHA.fullmatch(committed_tree) or not origin
+        or worktree_tree != committed_tree or transaction_tree != committed_tree
+    ):
+        raise ReleaseError(f"{label} identity is invalid")
+    return sha, committed_tree, origin
 
 
 def canonical_factory_origin(origin: str) -> str:
@@ -1044,12 +1168,158 @@ def command_environment(
     environment.pop("FACTORY_HOST_CUTOVER_RESERVATION", None)
     environment.pop("FACTORY_MAINTENANCE_OWNER", None)
     environment.pop("FACTORY_HOST_CUTOVER_LOCK_FD", None)
+    for name in (
+        "FACTORY_QUALIFICATION_INSTALL_AUTH_DESCRIPTOR",
+        "FACTORY_QUALIFICATION_INSTALL_REPO",
+    ):
+        environment.pop(name, None)
     environment["FACTORY_KITS_ROOT"] = str(kits_root)
     if cutover_lock and _CUTOVER_LOCK_FD is not None:
         environment["FACTORY_HOST_CUTOVER_LOCK_FD"] = str(_CUTOVER_LOCK_FD)
     if runtime is not None:
         environment["PATH"] = f"{runtime}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
     return environment
+
+
+def qualification_command_environment(
+    kits_root: Path, runtime: Path | None = None, *, cutover_lock: bool = False,
+) -> dict[str, str]:
+    environment = command_environment(kits_root, runtime, cutover_lock=cutover_lock)
+    for name in ("GH_TOKEN", "GITHUB_TOKEN", "GH_CONFIG_DIR", "GIT_ASKPASS"):
+        environment.pop(name, None)
+    return environment
+
+
+def qualification_install_descriptor(
+    raw_descriptor: str, sha: str, tree: str,
+) -> tuple[dict[str, Any], bytes]:
+    if not raw_descriptor:
+        raise ReleaseError("qualification install capability is unavailable")
+    descriptor = Path(raw_descriptor)
+    if not descriptor.is_absolute():
+        raise ReleaseError("qualification install capability is invalid")
+    try:
+        raw = secure_regular_bytes(descriptor, "qualification install capability")
+        value = json.loads(raw)
+    except (UnicodeError, json.JSONDecodeError) as error:
+        raise ReleaseError("qualification install capability is invalid") from error
+    basic = {"install_repo", "schema", "sha", "tree"}
+    authenticated = basic | {
+        "config", "gh", "gh_identity", "git_askpass", "token", "trusted_bin",
+    }
+    if not isinstance(value, dict) or set(value) not in (basic, authenticated) or (
+        value["schema"] != "nysa.software-factory.qualification-install/v1"
+        or value["sha"] != sha or value["tree"] != tree
+    ):
+        raise ReleaseError("qualification install capability is invalid")
+    workspace = secure_directory(descriptor.parent.resolve(strict=True))
+    workspace_info = workspace.lstat()
+    descriptor_info = descriptor.lstat()
+    install_repo = Path(str(value["install_repo"]))
+    if (
+        descriptor.parent != workspace or stat.S_IMODE(workspace_info.st_mode) != 0o700
+        or descriptor_info.st_nlink != 1
+        or stat.S_IMODE(descriptor_info.st_mode) != 0o600
+        or not install_repo.is_absolute()
+    ):
+        raise ReleaseError("qualification install capability is invalid")
+    raw_install_repo = install_repo
+    install_repo = install_repo.resolve(strict=True)
+    if (
+        raw_install_repo != install_repo or install_repo.parent != workspace
+        or stat.S_IMODE(install_repo.lstat().st_mode) != 0o700
+    ):
+        raise ReleaseError("qualification install capability is invalid")
+    value["descriptor_path"] = str(descriptor)
+    value["install_repo"] = str(install_repo)
+    if set(value) == basic | {"descriptor_path"}:
+        if os.environ.get("FACTORY_KIT_TEST_MODE") != "1":
+            raise ReleaseError("qualification install authentication is unavailable")
+        return value, raw
+    paths = {
+        name: Path(str(value[name]))
+        for name in (
+            "config", "gh", "git_askpass", "token", "trusted_bin",
+        )
+    }
+    if any(not path.is_absolute() for path in paths.values()):
+        raise ReleaseError("qualification install capability is invalid")
+    trusted_bin = secure_directory(paths["trusted_bin"].resolve(strict=True))
+    config = secure_directory(paths["config"].resolve(strict=True))
+    token_path = paths["token"].resolve(strict=True)
+    askpass = paths["git_askpass"].resolve(strict=True)
+    gh = paths["gh"].resolve(strict=True)
+    if (
+        paths["trusted_bin"] != trusted_bin or paths["config"] != config
+        or paths["token"] != token_path or paths["git_askpass"] != askpass
+        or paths["gh"] != gh
+        or trusted_bin.parent != workspace or config.parent != workspace
+        or token_path.parent != workspace or askpass.parent != trusted_bin
+        or (trusted_bin / "gh").resolve(strict=True) != gh
+        or stat.S_IMODE(trusted_bin.lstat().st_mode) != 0o700
+        or stat.S_IMODE(config.lstat().st_mode) != 0o700
+    ):
+        raise ReleaseError("qualification install capability is invalid")
+    secure_regular_bytes(askpass, "qualification install askpass", executable=True)
+    if stat.S_IMODE(askpass.lstat().st_mode) != 0o700:
+        raise ReleaseError("qualification install capability is invalid")
+    gh_info = gh.lstat()
+    gh_identity = value["gh_identity"]
+    if (
+        not isinstance(gh_identity, dict)
+        or set(gh_identity) != {"dev", "ino", "mode", "mtime_ns", "size"}
+        or any(not isinstance(item, int) for item in gh_identity.values())
+        or not stat.S_ISREG(gh_info.st_mode)
+        or gh_info.st_uid not in (0, os.geteuid())
+        or gh_info.st_mode & 0o022 or not os.access(gh, os.X_OK)
+        or gh_identity != {
+            "dev": gh_info.st_dev, "ino": gh_info.st_ino, "mode": gh_info.st_mode,
+            "mtime_ns": gh_info.st_mtime_ns, "size": gh_info.st_size,
+        }
+    ):
+        raise ReleaseError("qualification install GitHub CLI is unsafe")
+    token_info = token_path.lstat()
+    if (
+        not stat.S_ISREG(token_info.st_mode) or token_info.st_uid != os.geteuid()
+        or token_info.st_nlink != 1 or stat.S_IMODE(token_info.st_mode) != 0o600
+        or token_info.st_size > 4096
+    ):
+        raise ReleaseError("qualification install capability is invalid")
+    value.update({
+        "config": str(config), "gh": str(gh), "git_askpass": str(askpass),
+        "token": str(token_path), "trusted_bin": str(trusted_bin),
+    })
+    return value, raw
+
+
+def consume_qualification_install_token(
+    value: dict[str, Any], expected_descriptor: bytes,
+) -> dict[str, str]:
+    descriptor = Path(value["descriptor_path"])
+    if secure_regular_bytes(
+        descriptor, "qualification install capability",
+    ) != expected_descriptor:
+        raise ReleaseError("qualification install capability changed")
+    token_value = value.get("token")
+    if token_value is None:
+        descriptor.unlink()
+        sync_directory(descriptor.parent)
+        return {}
+    token_path = Path(token_value)
+    try:
+        token = secure_regular_bytes(token_path, "qualification install token").decode()
+    except UnicodeError as error:
+        raise ReleaseError("qualification install capability is invalid") from error
+    if not token or any(character.isspace() for character in token):
+        raise ReleaseError("qualification install capability is invalid")
+    descriptor.unlink()
+    token_path.unlink()
+    sync_directory(descriptor.parent)
+    return {
+        "GH_CONFIG_DIR": value["config"], "GH_TOKEN": token,
+        "GIT_ASKPASS": value["git_askpass"], "GIT_TERMINAL_PROMPT": "0",
+        "PATH": f"{value['trusted_bin']}:/usr/bin:/bin",
+    }
 
 
 def launcher_environment(kits_root: Path, runtime: Path) -> dict[str, str]:
@@ -3787,7 +4057,9 @@ def qualification_basis(
         raise ReleaseError("qualification root must be under /private/tmp")
     repo = repo.resolve(strict=True)
     product = product.resolve(strict=True)
-    factory_sha, factory_tree, factory_origin = clean_identity(repo, "Factory candidate")
+    factory_sha, factory_tree, factory_origin = factory_ref_identity(
+        repo, "Factory candidate",
+    )
     product_sha, product_tree, product_origin = clean_identity(product, "product")
     if factory_sha != sha:
         raise ReleaseError("Factory candidate does not match qualification SHA")
@@ -3877,7 +4149,7 @@ def qualification_runtime_child(
             sys.executable, "-I", "-S",
             str(repo / "scripts/owner-runtime-pin.py"), "check",
             "--journal", str(journal),
-        ], "qualification runtime replay", environment=command_environment(kits_root),
+        ], "qualification runtime replay", environment=qualification_command_environment(kits_root),
             timeout=timeout)
         previous = current.get("plan")
         if (
@@ -3892,7 +4164,7 @@ def qualification_runtime_child(
         "plan", "--product", str(product), "--runtime-bin", str(runtime_bin),
         "--target-bin", str(runtime_root / "bin"),
     ], text=True, capture_output=True, check=False,
-        env=command_environment(kits_root), timeout=timeout)
+        env=qualification_command_environment(kits_root), timeout=timeout)
     if result.returncode:
         detail = result.stderr.strip().removeprefix("ERROR: ").strip()
         if detail.startswith("runtime mismatch for "):
@@ -3939,7 +4211,7 @@ def qualification_provider_child(
     checked = subprocess.run(
         ["bash", str(kit), "provider-cli-pin", "check", "--sha", sha],
         text=True, capture_output=True, check=False,
-        env=command_environment(kits_root), timeout=timeout,
+        env=qualification_command_environment(kits_root), timeout=timeout,
     )
     if checked.returncode == 0:
         try:
@@ -4272,7 +4544,7 @@ def apply_qualification_plan(
                 str(sealed_release / "scripts/owner-runtime-pin.py"),
                 "apply", "--plan", str(runtime_plan), "--approve-hash",
                 runtime["plan"]["approval_sha256"],
-            ], "qualification runtime apply", environment=command_environment(kits_root),
+            ], "qualification runtime apply", environment=qualification_command_environment(kits_root),
                 timeout=timer.remaining_seconds()))
         else:
             timer.phase("runtime", lambda: run_json([
@@ -4282,7 +4554,7 @@ def apply_qualification_plan(
                     Path(request["root"]) / "project-runtimes"
                     / request["project"] / "runtime-pin-journal.json"
                 ),
-            ], "qualification runtime replay", environment=command_environment(
+            ], "qualification runtime replay", environment=qualification_command_environment(
                 kits_root,
             ), timeout=timer.remaining_seconds()))
         qualification_journal_update(journal_path, plan, "runtime_ready", timer.timings)
@@ -4304,13 +4576,13 @@ def apply_qualification_plan(
                     "--cursor-bin", candidates["agent"],
                     "--operator-id", request["operator_id"],
                     "--approve-hash", provider["plan"]["approval_sha256"],
-                ], "qualification provider CLI apply", environment=command_environment(
+                ], "qualification provider CLI apply", environment=qualification_command_environment(
                     kits_root, cutover_lock=True,
                 ), timeout=timer.remaining_seconds())
             evidence = run_json([
                 "bash", str(sealed_release / "scripts/factory-kit.sh"),
                 "provider-cli-pin", "check", "--sha", request["sha"],
-            ], "qualification provider CLI replay", environment=command_environment(
+            ], "qualification provider CLI replay", environment=qualification_command_environment(
                 kits_root, cutover_lock=True,
             ), timeout=timer.remaining_seconds())
             if provider["action"] == "reuse" and evidence != provider["evidence"]:
@@ -4347,7 +4619,7 @@ def apply_qualification_plan(
             result = subprocess.run(
                 arguments, text=True, capture_output=True, check=False,
                 timeout=timer.remaining_seconds(),
-                env=command_environment(kits_root, Path(request["root"]) / "project-runtimes" / request["project"] / "bin"),
+                env=qualification_command_environment(kits_root, Path(request["root"]) / "project-runtimes" / request["project"] / "bin"),
             )
             try:
                 value = json.loads(result.stdout)
@@ -4423,6 +4695,10 @@ def apply_qualification_plan(
 
 def _qualification_upgrade_locked(args: argparse.Namespace) -> dict[str, Any]:
     timer = QualificationTimer(started=getattr(args, "process_started", None))
+    raw_install_descriptor = os.environ.pop(
+        "FACTORY_QUALIFICATION_INSTALL_AUTH_DESCRIPTOR", "",
+    )
+    os.environ.pop("FACTORY_QUALIFICATION_INSTALL_REPO", None)
     root = Path(os.path.realpath(args.root))
     product = args.product.resolve(strict=True)
     repo = args.repo.resolve(strict=True)
@@ -4463,10 +4739,10 @@ def _qualification_upgrade_locked(args: argparse.Namespace) -> dict[str, Any]:
             timeout=timer.remaining_seconds(),
         ),
     )
-    install_repo_value = os.environ.get("FACTORY_QUALIFICATION_INSTALL_REPO", "")
-    if not install_repo_value or not Path(install_repo_value).is_absolute():
-        raise ReleaseError("private qualification install source is unavailable")
-    install_repo = Path(install_repo_value).resolve(strict=True)
+    capability, descriptor_bytes = qualification_install_descriptor(
+        raw_install_descriptor, args.sha, identity["factory_tree"],
+    )
+    install_repo = Path(capability["install_repo"])
     install_sha, install_tree, install_origin = clean_identity(
         install_repo, "private qualification install source",
     )
@@ -4476,12 +4752,20 @@ def _qualification_upgrade_locked(args: argparse.Namespace) -> dict[str, Any]:
         != canonical_factory_origin(identity["factory_origin"])
     ):
         raise ReleaseError("private qualification install source identity changed")
-    timer.phase("sealed_install", lambda: run([
-        "bash", str(TRANSACTION_ROOT / "scripts/factory-kit.sh"), "install", "--sha", args.sha,
-        "--repo", str(install_repo),
-    ], "sealed qualification candidate install",
-        environment=command_environment(args.kits_root.resolve()),
-        timeout=timer.remaining_seconds()))
+    install_environment = qualification_command_environment(args.kits_root.resolve())
+    install_auth = consume_qualification_install_token(capability, descriptor_bytes)
+    install_environment.update(install_auth)
+    try:
+        timer.phase("sealed_install", lambda: run([
+            "bash", str(TRANSACTION_ROOT / "scripts/factory-kit.sh"), "install", "--sha", args.sha,
+            "--repo", str(install_repo),
+        ], "sealed qualification candidate install",
+            environment=install_environment,
+            timeout=timer.remaining_seconds()))
+    finally:
+        install_environment.clear()
+        if install_auth is not None:
+            install_auth.clear()
     kit = args.kits_root.resolve() / "releases" / args.sha / "scripts/factory-kit.sh"
     provider = timer.phase(
         "provider_cli_preview", lambda: qualification_provider_child(
@@ -4636,7 +4920,7 @@ def qualification_recovery_identity(
     repo = args.repo.resolve(strict=True)
     root = Path(os.path.realpath(args.root))
     product = args.product.resolve(strict=True)
-    candidate_sha, candidate_tree, candidate_origin = clean_identity(
+    candidate_sha, candidate_tree, candidate_origin = factory_ref_identity(
         repo, "Factory recovery candidate",
     )
     if candidate_sha != args.sha or contract(TRANSACTION_ROOT) != "2.0.0":
@@ -4655,13 +4939,16 @@ def qualification_recovery_identity(
         raise ReleaseError("qualification recovery does not belong to the active cohort")
     source_sha = lane["active"].get("kit_sha", "")
     source_tree = lane["active"].get("kit_tree", "")
-    ancestry = subprocess.run(
-        ["git", "-C", str(repo), "merge-base", "--is-ancestor", source_sha, candidate_sha],
-        capture_output=True, text=True, check=False,
+    source_object = factory_object_git(
+        repo, "rev-parse", f"{source_sha}^{{tree}}", check=False,
+    )
+    ancestry = factory_object_git(
+        repo, "merge-base", "--is-ancestor", source_sha, candidate_sha,
+        check=False,
     )
     if (
         not SHA.fullmatch(source_sha) or not SHA.fullmatch(source_tree)
-        or git(repo, "rev-parse", f"{source_sha}^{{tree}}") != source_tree
+        or source_object.returncode != 0 or source_object.stdout.strip() != source_tree
         or ancestry.returncode != 0 or contract(lane["release"]) != "2.0.0"
     ):
         raise ReleaseError("Factory recovery candidate is not a valid source successor")

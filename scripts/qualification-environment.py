@@ -116,13 +116,118 @@ def identity_git(root: Path, *arguments: str) -> str:
         ], text=True, capture_output=True, check=False, timeout=30,
         env=environment,
     )
-    if partial.returncode not in (0, 1) or partial.stdout.strip():
+    enabled = subprocess.run(
+        [
+            "/usr/bin/git", "-c", "core.fsmonitor=false", "-c",
+            "core.hooksPath=/dev/null", "-c", "credential.helper=", "-C",
+            str(root), "config", "--local", "--no-includes", "--bool", "--get",
+            "extensions.worktreeConfig",
+        ], text=True, capture_output=True, check=False, timeout=30,
+        env=environment,
+    )
+    worktree: subprocess.CompletedProcess[str] | None = None
+    if enabled.returncode == 0 and enabled.stdout.strip() == "true":
+        worktree = subprocess.run(
+            [
+                "/usr/bin/git", "-c", "core.fsmonitor=false", "-c",
+                "core.hooksPath=/dev/null", "-c", "credential.helper=", "-C",
+                str(root), "config", "--worktree", "--no-includes", "--get-regexp",
+                r"^(include([.]path|if[.].*[.]path)|extensions[.]partialclone|remote[.].*[.](promisor|partialclonefilter))$",
+            ], text=True, capture_output=True, check=False, timeout=30,
+            env=environment,
+        )
+    if (
+        partial.returncode not in (0, 1) or partial.stdout.strip()
+        or enabled.returncode not in (0, 1)
+        or enabled.returncode == 0 and enabled.stdout.strip() not in {"true", "false"}
+        or worktree is not None and (
+            worktree.returncode not in (0, 1) or worktree.stdout.strip()
+        )
+    ):
         raise EnvironmentError("Factory candidate may not use partial or promisor objects")
     return command(
         "/usr/bin/git", "-c", "core.fsmonitor=false", "-c",
         "core.hooksPath=/dev/null", "-c", "credential.helper=", "-C",
         str(root), *arguments, environment=environment,
     )
+
+
+def factory_object_command(root: Path, *arguments: str, binary: bool = False) -> str | bytes:
+    environment = {
+        "PATH": "/usr/bin:/bin", "LC_ALL": "C",
+        "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_NO_LAZY_FETCH": "1", "GIT_NO_REPLACE_OBJECTS": "1",
+    }
+    common = identity_git(
+        root, "rev-parse", "--path-format=absolute", "--git-common-dir",
+    )
+    objects = (Path(common).resolve(strict=True) / "objects").resolve(strict=True)
+    if not objects.is_dir():
+        raise EnvironmentError("Factory candidate object database is invalid")
+    with tempfile.TemporaryDirectory(prefix="qualification-objects.") as raw:
+        repository = Path(raw) / "repo.git"
+        command(
+            "/usr/bin/git", "init", "--bare", "-q", str(repository),
+            environment=environment,
+        )
+        environment["GIT_OBJECT_DIRECTORY"] = str(objects)
+        result = subprocess.run(
+            ["/usr/bin/git", "--git-dir", str(repository), *arguments],
+            capture_output=True, check=False, timeout=120, env=environment,
+            text=not binary,
+        )
+        if result.returncode:
+            message = result.stderr.decode(errors="replace") if binary else result.stderr
+            raise EnvironmentError(message.strip() or "Factory object verification failed")
+        return result.stdout if binary else result.stdout.strip()
+
+
+def factory_worktree_tree(root: Path, expected_tree: str) -> str:
+    common = identity_git(
+        root, "rev-parse", "--path-format=absolute", "--git-common-dir",
+    )
+    objects = (Path(common).resolve(strict=True) / "objects").resolve(strict=True)
+    if any(character in str(objects) for character in "\r\n") or not objects.is_dir():
+        raise EnvironmentError("Factory candidate object database is invalid")
+    with tempfile.TemporaryDirectory(prefix="qualification-index.") as raw:
+        repository = Path(raw) / "repo.git"
+        environment = {
+            "PATH": "/usr/bin:/bin", "LC_ALL": "C",
+            "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_INDEX_FILE": str(Path(raw) / "index"),
+            "GIT_OBJECT_DIRECTORY": str(repository / "objects"),
+            "GIT_NO_LAZY_FETCH": "1", "GIT_NO_REPLACE_OBJECTS": "1",
+        }
+        command(
+            "/usr/bin/git", "init", "--bare", "-q", str(repository),
+            environment={
+                key: value for key, value in environment.items()
+                if not key.startswith("GIT_OBJECT") and not key.startswith("GIT_ALTERNATE")
+            },
+        )
+        (repository / "objects/info/alternates").write_text(
+            str(objects) + "\n", encoding="utf-8",
+        )
+        for arguments in (("read-tree", expected_tree), ("add", "-A", "--", ".")):
+            command(
+                "/usr/bin/git", "--git-dir", str(repository),
+                "--work-tree", str(root), *arguments, environment=environment,
+            )
+        return command(
+            "/usr/bin/git", "--git-dir", str(repository),
+            "--work-tree", str(root), "write-tree", environment=environment,
+        )
+
+
+def factory_identity(root: Path) -> tuple[str, str]:
+    sha = identity_git(root, "rev-parse", "HEAD")
+    tree = factory_object_command(root, "rev-parse", f"{sha}^{{tree}}")
+    if (
+        not isinstance(tree, str) or not SHA.fullmatch(sha)
+        or not SHA.fullmatch(tree) or factory_worktree_tree(root, tree) != tree
+    ):
+        raise EnvironmentError("Factory candidate must be clean")
+    return sha, tree
 
 
 def validate_provider_cli_pins(factory: Path, sha: str) -> None:
@@ -2033,8 +2138,7 @@ def takeover_source(
         or manifest.get("per_ticket_budget_usd") != "100.000000"
         or manifest.get("per_run_budget_usd") != "10.000000"
         or manifest.get("contract_version") not in SUPPORTED_CONTRACTS
-        or manifest.get("factory_sha")
-        != identity_git(factory, "rev-parse", "HEAD")
+        or manifest.get("factory_sha") != factory_identity(factory)[0]
         or not SHA.fullmatch(manifest.get("source_factory_sha", ""))
         or manifest.get("source_factory_sha") == manifest.get("factory_sha")
         or not isinstance(manifest.get("generation"), int)
@@ -3235,11 +3339,8 @@ def handoff_preprovider(args: argparse.Namespace) -> dict[str, Any]:
     sealed_helper = target["release"] / "scripts/qualification-environment.py"
     if (
         target["product"] != product
-        or identity_git(factory, "status", "--porcelain", "--untracked-files=all")
-        or identity_git(factory, "rev-parse", "HEAD")
-        != target["active"]["kit_sha"]
-        or identity_git(factory, "rev-parse", "HEAD^{tree}")
-        != target["active"]["kit_tree"]
+        or factory_identity(factory)
+        != (target["active"]["kit_sha"], target["active"]["kit_tree"])
         or command(
             "git", "-C", str(source["product"]), "rev-parse",
             "--path-format=absolute", "--git-common-dir",
@@ -3429,23 +3530,11 @@ def git_tree(path: Path) -> str:
 
 
 def materialize(factory: Path, sha: str, release: Path) -> None:
-    archive = subprocess.run(
-        [
-            "/usr/bin/git", "-c", "core.fsmonitor=false", "-c",
-            "core.hooksPath=/dev/null", "-c", "credential.helper=", "-C",
-            str(factory), "archive", "--format=tar", sha,
-        ],
-        capture_output=True, check=False, timeout=120,
-        env={
-            "PATH": "/usr/bin:/bin", "LC_ALL": "C",
-            "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1",
-            "GIT_NO_LAZY_FETCH": "1", "GIT_NO_REPLACE_OBJECTS": "1",
-        },
-    )
-    if archive.returncode:
-        raise EnvironmentError(archive.stderr.decode(errors="replace").strip())
+    archive = factory_object_command(factory, "archive", "--format=tar", sha, binary=True)
+    if not isinstance(archive, bytes):
+        raise EnvironmentError("Factory candidate archive is invalid")
     release.mkdir(mode=0o700)
-    with tarfile.open(fileobj=io.BytesIO(archive.stdout), mode="r:") as bundle:
+    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as bundle:
         members = bundle.getmembers()
         for member in members:
             name = PurePosixPath(member.name)
@@ -3874,12 +3963,9 @@ def _prepare(args: argparse.Namespace, started_epoch_ns: int) -> dict[str, Any]:
     factory = args.factory_root.resolve(strict=True)
     product = args.product_root.resolve(strict=True)
     prepare_product_runtime(product, create=False)
-    if identity_git(factory, "status", "--porcelain", "--untracked-files=all"):
-        raise EnvironmentError("Factory candidate must be clean")
+    sha, tree = factory_identity(factory)
     if command("git", "-C", str(product), "status", "--porcelain", "--untracked-files=all"):
         raise EnvironmentError("qualification product must be clean")
-    sha = identity_git(factory, "rev-parse", "HEAD")
-    tree = identity_git(factory, "rev-parse", "HEAD^{tree}")
     if not SHA.fullmatch(sha) or not SHA.fullmatch(tree):
         raise EnvironmentError("Factory candidate identity is invalid")
     if (product / "factory/KIT_PIN").read_text(encoding="utf-8") != sha + "\n":
@@ -4410,12 +4496,13 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
     transaction = TRANSACTION_ROOT
     product = args.product_root.resolve(strict=True)
     prepare_product_runtime(product, create=False)
-    if identity_git(factory, "status", "--porcelain", "--untracked-files=all"):
-        raise EnvironmentError("Factory candidate must be clean")
     if command("git", "-C", str(product), "status", "--porcelain", "--untracked-files=all"):
         raise EnvironmentError("qualification product must be clean")
-    sha = identity_git(factory, "rev-parse", "HEAD")
-    tree = identity_git(factory, "rev-parse", "HEAD^{tree}")
+    try:
+        sha = (product / "factory/KIT_PIN").read_text(encoding="utf-8").strip()
+    except OSError as error:
+        raise EnvironmentError("qualification product pin is unavailable") from error
+    tree = git_tree(transaction)
     if not SHA.fullmatch(sha) or not SHA.fullmatch(tree):
         raise EnvironmentError("Factory candidate identity is invalid")
     if (product / "factory/KIT_PIN").read_text(encoding="utf-8") != sha + "\n":
