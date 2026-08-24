@@ -2268,7 +2268,11 @@ ineligible changes fall back to full product certification. All other product,
 config, receipt, and activation validation remains unchanged. Fresh certification
 refreshes evidence only after the isolated suite, tracked-tree check, and sealed
 release verification pass. Install first proves the SHA is on `origin/main`
-and binds exact successful protected main CI. The installed launcher labels
+and binds exact successful full GitHub CI. It prefers the exact main push run,
+but when squash merge produced no useful main run it accepts the unique merged
+PR only when its exact head has the same Git tree as the requested main commit,
+all current full-suite jobs passed, and the app-bound required checks remain
+green on that head. The installed launcher labels
 helper runs `production-certified`; the qualification launcher labels its
 separately SHA/tree-sealed candidate `qualification-candidate`; and the
 contained repository-test launcher labels its forced mock runs

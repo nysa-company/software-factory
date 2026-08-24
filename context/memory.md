@@ -7986,3 +7986,15 @@ bytes bind the qualification manifest and exact PR heads; replay revalidates
 their required checks but does not recompute against unrelated protected-main
 movement. Qualification ranges are upper service ceilings, so faster results
 pass without deliberate waiting.
+
+## 2026-08-23 — Decision 590: Install reuses tree-identical PR full CI
+
+Category: Performance
+
+An install still requires the requested commit to be protected-main ancestry
+and its exact tree to have completed the full hosted suite. When an exact main
+push run is absent, the verifier accepts only one merged main PR whose exact
+head tree equals the requested commit tree, whose current or legacy complete
+job topology passed, and whose app-bound required checks remain green. The
+evidence digest binds main SHA/tree, PR/head, workflow run, attempt, and jobs;
+no redundant main workflow wait is introduced.

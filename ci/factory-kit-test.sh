@@ -903,7 +903,7 @@ export FACTORY_KIT_TEST_REMOTE_FULL_CI=0
 expect_failure "pending protected checks are awaited before remote evidence" \
   install --repo "$KIT_REPO" --sha "$SHA_B"
 if [[ "$LAST_OUTPUT" == *"WAITING FOR PROTECTED CI"* &&
-      "$LAST_OUTPUT" == *"exact successful main GitHub CI evidence is required"* ]]; then
+      "$LAST_OUTPUT" == *"exact successful GitHub CI evidence is required"* ]]; then
   pass "pending protected checks continue automatically when successful"
 else
   fail "pending protected checks continue automatically when successful" "$LAST_OUTPUT"
@@ -989,7 +989,7 @@ export FACTORY_KIT_TEST_PUBLISH_TRACE="$PUBLISH_TRACE"
 export FACTORY_KIT_TEST_REMOTE_FULL_CI=0
 expect_failure "install refuses missing remote CI evidence without running local full" \
   install --repo "$KIT_REPO" --sha "$SHA_B"
-if [[ "$LAST_OUTPUT" == *"exact successful main GitHub CI evidence is required"* &&
+if [[ "$LAST_OUTPUT" == *"exact successful GitHub CI evidence is required"* &&
       "$LAST_OUTPUT" != *"fixture suite failed"* ]]; then
   pass "missing install evidence fails before local suite execution"
 else
@@ -1769,7 +1769,7 @@ chmod 600 "$EVIDENCE_A"
 export FACTORY_KIT_TEST_REMOTE_FULL_CI=0
 expect_failure "malformed suite evidence and unavailable GitHub proof fail closed" \
   certify --project alpha --product "$PRODUCT_ONE" --sha "$SHA_A"
-if [[ "$LAST_OUTPUT" == *"exact successful main GitHub CI evidence is required"* &&
+if [[ "$LAST_OUTPUT" == *"exact successful GitHub CI evidence is required"* &&
       "$LAST_OUTPUT" != *"fixture suite failed"* &&
       ! -s "$CERTIFICATION_TRACE" ]]; then
   pass "missing certification evidence fails before local suite execution"
