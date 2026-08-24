@@ -13421,10 +13421,14 @@ class Controller:
                     launched = self.run_role(
                         claim, role, receipt, failed_checks, pr
                     )
+                elif primed_planner_transition is None:
+                    launched = self.run_role(
+                        claim, role, receipt, failed_checks,
+                    )
                 else:
                     launched = self.run_role(
                         claim, role, receipt, failed_checks,
-                        primed_planner=primed_planner_transition is not None,
+                        primed_planner=True,
                     )
                 if (
                     not launched
