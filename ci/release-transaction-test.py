@@ -2681,6 +2681,48 @@ class ReleaseTransactionTest(unittest.TestCase):
                 ):
                     RELEASE.validate_qualification_recovery_plan(changed)
 
+    def test_qualification_recovery_reuses_validated_existing_cancellation(self) -> None:
+        runs = self.product / "factory/runs"
+        runs.mkdir(parents=True)
+        nested_plan = {"preview_hash": "2" * 64}
+        RELEASE.atomic_json(runs / "run-1.cancel-request.json", {
+            "plan": nested_plan, "requested_at": "2026-08-23T12:00:00Z",
+            "schema": "nysa.software-factory.attempt-cancel-request/v1",
+        })
+        RELEASE.atomic_json(
+            runs / "run-1.cancel.json", {"preview_hash": "2" * 64},
+        )
+        lane = {
+            "active": {"runtime_ledger_path": str(self.root / "runtime-ledger.csv")},
+            "product": self.product, "provider": self.root / "provider",
+        }
+        provider_attempt = {"attempt_id": "attempt-1", "version": 4}
+        with (
+            mock.patch.object(
+                RELEASE, "qualification_attempt_cancel",
+                return_value={"preview_hash": "2" * 64},
+            ) as cancel,
+            mock.patch.object(
+                RELEASE, "qualification_recovery_manifest",
+                return_value={"provider_attempt_id": "attempt-1", "role": "builder"},
+            ),
+            mock.patch.object(
+                RELEASE, "run_json", return_value={"attempts": [provider_attempt]},
+            ),
+            mock.patch.object(
+                RELEASE, "qualification_recovery_row", return_value={"run_id": "run-1"},
+            ),
+            mock.patch.object(
+                RELEASE, "qualification_recovery_optional_digest", return_value=None,
+            ),
+        ):
+            attempt = RELEASE.qualification_recovery_attempt(
+                self.root / "factory", lane, "T-1", "run-1",
+            )
+        self.assertEqual(attempt["nested_plan"], nested_plan)
+        self.assertEqual(attempt["provider_attempt"], provider_attempt)
+        self.assertEqual(cancel.call_args.args[2][0], "receipt")
+
     def test_qualification_recovery_refuses_attempt_drift_before_cancellation(self) -> None:
         plan = self.recovery_plan()
         state = RELEASE.qualification_recovery_state(

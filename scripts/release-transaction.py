@@ -4648,12 +4648,32 @@ def qualification_recovery_identity(
 def qualification_recovery_attempt(
     repo: Path, lane: dict[str, Any], ticket: str, run_id: str,
 ) -> dict[str, Any]:
-    nested = qualification_attempt_cancel(repo, lane, [
-        "preview", "--factory-root", str(lane["product"]), "--ticket", ticket,
-        "--run-id", run_id, "--reason", "operator_requested",
-    ], "qualification cancellation preview")
+    runs = lane["product"] / "factory/runs"
+    request_path = runs / f"{run_id}.cancel-request.json"
+    receipt_path = runs / f"{run_id}.cancel.json"
+    if request_path.exists() or request_path.is_symlink():
+        if not receipt_path.exists() or receipt_path.is_symlink():
+            raise ReleaseError("qualification cancellation replay is incomplete")
+        request = safe_state(request_path, "attempt cancellation request")
+        nested = request.get("plan")
+        receipt = qualification_attempt_cancel(repo, lane, [
+            "receipt", "--factory-root", str(lane["product"]), "--ticket", ticket,
+            "--run-id", run_id,
+        ], "qualification cancellation receipt")
+        if (
+            not isinstance(nested, dict)
+            or receipt.get("preview_hash") != nested.get("preview_hash")
+        ):
+            raise ReleaseError("qualification cancellation replay is invalid")
+    elif receipt_path.exists() or receipt_path.is_symlink():
+        raise ReleaseError("qualification cancellation replay is incomplete")
+    else:
+        nested = qualification_attempt_cancel(repo, lane, [
+            "preview", "--factory-root", str(lane["product"]), "--ticket", ticket,
+            "--run-id", run_id, "--reason", "operator_requested",
+        ], "qualification cancellation preview")
     manifest = qualification_recovery_manifest(
-        lane["product"] / "factory/runs" / f"{run_id}.meta",
+        runs / f"{run_id}.meta",
     )
     provider_attempt = manifest.get("provider_attempt_id", "")
     if not SAFE_ID.fullmatch(provider_attempt):
