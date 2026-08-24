@@ -2365,6 +2365,59 @@ raise SystemExit(code)
                 self.assertEqual(value["status"], "waiting")
                 self.assertEqual(execute.call_count, 2)
 
+    def test_finish_new_live_receipts_and_closeout_get_fresh_wall_time(self) -> None:
+        basis = ({"T-1"}, 1, False, "a" * 40, "", {}, "b" * 64)
+        args = SimpleNamespace(
+            launcher=self.launcher, project="relay",
+            resume_receipt="", resume_ticket="",
+        )
+
+        def waiting(role: str, receipt: str) -> dict[str, object]:
+            return {
+                "controller": self.controller("ok", results=[{
+                    "role": role, "status": "waiting", "ticket": "T-1",
+                    "transition_receipt_sha256": receipt,
+                    "wait_reason": "live-role",
+                }]),
+                "phases": [], "restarts": 0,
+                "status": "waiting", "reason": "authenticated_wait",
+            }
+
+        closeout = {
+            "controller": self.controller("ok", results=[{
+                "status": "waiting", "ticket": "T-1",
+                "wait_reason": "closeout",
+            }]),
+            "phases": [], "restarts": 0,
+            "status": "waiting", "reason": "authenticated_wait",
+        }
+        green = {"phases": [], "restarts": 0, "status": "green"}
+        with (
+            patch.object(
+                RUNNER_MODULE, "execute",
+                side_effect=[
+                    waiting("planner", "c" * 64),
+                    waiting("narrator", "d" * 64), closeout, green,
+                ],
+            ) as execute,
+            patch.object(RUNNER_MODULE, "finish_poll_limit", return_value=10),
+            patch.object(RUNNER_MODULE, "invoke", return_value=(0, self.doctor())),
+            patch.object(RUNNER_MODULE, "launcher_path", return_value=self.launcher),
+            patch.object(RUNNER_MODULE, "project_qualification_approvals", return_value=[]),
+            patch.object(RUNNER_MODULE, "qualification_basis", return_value=basis),
+            patch.object(RUNNER_MODULE, "qualification_event_names", return_value=set()),
+            patch.object(RUNNER_MODULE, "terminal_doctor", return_value=True),
+            patch.object(
+                RUNNER_MODULE.time, "monotonic",
+                side_effect=[0, 0, 400, 800, 801],
+            ),
+            patch.object(RUNNER_MODULE.time, "sleep"),
+        ):
+            value = RUNNER_MODULE.execute_finish(args)
+
+        self.assertEqual(value["status"], "green")
+        self.assertEqual(execute.call_count, 4)
+
     def test_finish_requires_a_fresh_final_doctor_for_green(self) -> None:
         complete = self.controller("ok", results=[
             {"status": "complete", "ticket": ticket}

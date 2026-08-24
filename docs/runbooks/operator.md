@@ -331,8 +331,9 @@ It approves only selected clean, idle, parked Awaiting Approval claims through
 the sealed lane operator map. With no progress, it observes one unchanged exact
 live-role receipt for at most ten wall-clock minutes or 120 polls. A pure
 live-role wait does not consume the separate external-wait budget; a mixed live
-and external wait charges both. A new authenticated live receipt resets that
-live bound and the following external epoch. Each authenticated
+and external wait charges both. A new authenticated live receipt starts its own
+live bound without replenishing a still-live sibling receipt, and a
+live-signature change starts the following external epoch. Each authenticated
 progress epoch waits at most ten wall-clock minutes or 120 polls while at least
 one pending result is a typed GitHub,
 protected-merge, publication-lease, or closeout wait. Explicitly blocked,

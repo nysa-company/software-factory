@@ -225,8 +225,9 @@ reconciliation after progress and while a provider role retains its durable
 active-run ownership, or while every pending result is a typed external
 publication wait. Pure provider-role execution retains the wrapper's existing bound;
 the finisher also returns after at most ten wall-clock minutes or 120 polls of
-one unchanged exact live-role receipt. A new authenticated live receipt resets
-that live bound and the following external-wait epoch. Each other authenticated
+one unchanged exact live-role receipt. A new authenticated live receipt starts
+its own live bound without replenishing a still-live sibling receipt, and a
+live-signature change starts the following external-wait epoch. Each other authenticated
 progress epoch grants at most ten wall-clock minutes or 120 polls for unchanged
 external waits. Neither deadline starts during Doctor, provider execution
 before durable handoff, nor reconciliation before the first matching wait; a

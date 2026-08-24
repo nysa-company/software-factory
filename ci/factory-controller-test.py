@@ -17878,8 +17878,12 @@ class FactoryControllerTest(unittest.TestCase):
         )
 
         controller.ensure_lease = lambda *_args: None
-        controller.finish_pending_run = lambda _claim: False
-        replay = controller.reconcile_ticket(claim)
+        active_reads = iter((True, False))
+        controller.role_active = lambda _claim: next(active_reads)
+        parked = []
+        controller.park_claim = lambda item: parked.append(item["ticket"])
+        controller.settle_recovery_attempt = lambda _claim: False
+        replay = controller.reconcile_ticket_until_wait(claim)
         self.assertEqual(replay, {
             "role": "planner",
             "status": "waiting",
@@ -17890,6 +17894,18 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertTrue(QUALIFICATION.qualification_retryable_wait(
             {"controller": {"results": [replay]}}, {"T-110"},
         ))
+        self.assertEqual(parked, [])
+        self.assertEqual(
+            (claim["status"], claim["role"], claim["receipt"]),
+            ("running", "planner", "b" * 64),
+        )
+
+        controller.qualification_cohort_error.set()
+        active_reads = iter((True, False))
+        replay = controller.reconcile_ticket(claim)
+        self.assertEqual(replay["wait_reason"], "live-role")
+        self.assertFalse(next(active_reads))
+        controller.qualification_cohort_error.clear()
 
         class ExitedProcess:
             @staticmethod

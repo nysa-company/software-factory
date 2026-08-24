@@ -8069,7 +8069,8 @@ The sealed qualification finisher excludes Doctor and work before the first
 matching external wait from that wait epoch. Later reconciliation consumes its
 wall deadline; a mixed live and external wait charges both clocks. One unchanged
 exact live-role receipt remains capped at ten wall-clock minutes or 120 polls; a new
-authenticated role receipt resets that live cap and the next external epoch. Provider wrappers
+authenticated role receipt starts its own live cap without replenishing a still-live sibling
+receipt, and a live-signature change starts the next external epoch. Provider wrappers
 retain their existing timeout and exact terminal-accounting ownership. During
 each other authenticated progress epoch, unchanged typed GitHub,
 protected-merge, publication-lease, and closeout waits share one maximum of ten
