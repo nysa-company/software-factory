@@ -7963,3 +7963,26 @@ comes from the exact durable process submission, and final Narrator time is
 bound to the protected bundle's run. The atomically published immutable report
 derives cold activation, Planner submission, final Narrator-to-Done, and cohort
 closeout latency and refuses incomplete, reordered, or over-target evidence.
+
+## 2026-08-23 — Decision 588: Provider accounting is a sealed bijection
+
+Category: Reliability
+
+Fresh three-ticket reduction binds every candidate provider attempt to one
+owner-safe run manifest, authenticated passport charge when charge-bearing,
+and exact terminal controller event. Coordinator reservation, charge, route,
+family, policy, product, ticket, lifecycle timestamps, and outcome must agree.
+Planner SLO timing uses the conservative end of the coordinator's durable
+submission second, so retries and wrapper interruption cannot report an
+optimistic launch time.
+
+## 2026-08-23 — Decision 589: Qualification evidence replays without main drift
+
+Category: Reliability
+
+The immutable report uses atomic create-if-absent publication and repairs only
+one exact owner-only same-inode temporary link left by a hard crash. Retained
+bytes bind the qualification manifest and exact PR heads; replay revalidates
+their required checks but does not recompute against unrelated protected-main
+movement. Qualification ranges are upper service ceilings, so faster results
+pass without deliberate waiting.

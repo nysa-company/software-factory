@@ -4588,6 +4588,8 @@ class Controller:
             raise ControllerError("terminal duplicate count is invalid")
         submitted_at = terminal.get("submitted_at_epoch_ns", "")
         submitted_at_valid = re.fullmatch(r"[1-9][0-9]{0,19}", submitted_at)
+        terminal_at = terminal.get("terminal_at_epoch_ns", "")
+        terminal_at_valid = re.fullmatch(r"[1-9][0-9]{0,19}", terminal_at)
         details = {
             "accounting_state": terminal.get("accounting_state"),
             "duplicate_launch_void_count": int(duplicate_count),
@@ -4602,6 +4604,7 @@ class Controller:
             "run_id": run_id,
             "submitted_at_epoch_ns": int(submitted_at) if submitted_at_valid else None,
             "task_submitted": terminal.get("task_submitted"),
+            "terminal_at_epoch_ns": int(terminal_at) if terminal_at_valid else None,
             "terminal_reason_code": terminal.get("terminal_reason_code", ""),
             "transition_receipt_sha256": claim.get("receipt"),
         }

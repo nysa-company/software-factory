@@ -112,6 +112,26 @@ class ReadinessGateTests(unittest.TestCase):
             )
             self.assertEqual(completed.read_text(encoding="utf-8"), "done\n")
 
+    def test_spawn_failure_does_not_publish_submission(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            submitted = root / "submitted"
+            arguments = [
+                "run-in-process-group.py", str(root / "ready"),
+                str(root / "gate"), str(submitted), str(root / "kill"),
+                str(root / "maintenance"), str(root / "cancel"), "missing",
+            ]
+            with (
+                mock.patch.object(MODULE.sys, "argv", arguments),
+                mock.patch.object(MODULE.os, "setsid"),
+                mock.patch.object(MODULE, "wait_for_gate"),
+                mock.patch.object(
+                    MODULE.subprocess, "Popen", side_effect=OSError("missing")
+                ),
+            ):
+                self.assertEqual(MODULE.main(), 126)
+            self.assertFalse(submitted.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

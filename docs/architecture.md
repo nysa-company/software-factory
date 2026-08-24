@@ -909,11 +909,21 @@ controller event bound to the exact activation receipt, Factory/product SHA and
 tree, qualification manifest, and unique restart boundary; exact replay repairs
 or preserves these boundaries and removes the temporary start record. For a
 fresh three-ticket cohort, the immutable reducer report authenticates that
-receipt, reads each Planner's exact provider-launch timestamp from its
-passport-bound terminal event, selects the protected bundle's exact final
+receipt, reads each Planner launch from the isolated coordinator's durable
+submission second using the conservative end-of-second boundary and binds it
+to the passport-backed run manifest and terminal event,
+selects the protected bundle's exact final
 Narrator run, and requires one `ticket_complete` event per ticket. It derives
 the four qualification latency SLOs from those ordered boundaries and fails
 closed on missing, duplicate, reordered, or over-target evidence.
+The same reduction requires a bijection between authenticated candidate run
+manifests and every isolated provider attempt. Reservation, terminal charge,
+ticket, route, family, policy, product, GO/submission timestamps, terminal
+event, and outcome must agree; pre-admission launch voids remain zero-charge.
+The report is linked create-if-absent, repairs only its unique same-inode crash
+temporary, and replays byte-for-byte while revalidating required checks on the
+stored exact PR heads. A later protected-main commit neither changes nor
+invalidates that retained evidence.
 The pre-publication controller prefix may retain only the exact owner-only
 locks and Ready receipts created while materializing the selected Backlog
 cohort. A consumed receipt is the ordinary completed prefix. One unconsumed
@@ -1039,7 +1049,7 @@ longer directly after its merge—route through the same receipt-bound
 protected-base refresh. `Building` is admitted only when the trusted launcher
 supplies one of those exact stages; the refresh performs the ordinary sealed
 reset and never treats stale evidence as valid. The qualification reducer
-reconciles passports, manifests, controller events, protected checks, PR heads,
+reconciles passports, manifests, controller events, exact PR-head checks,
 merge commits, and protected main. A qualification may close either an
 explicitly ordered three-ticket cohort at capacity three or four independent
 tickets at capacity four. Tracked dependencies must form an acyclic graph and

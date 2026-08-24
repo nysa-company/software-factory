@@ -252,6 +252,7 @@ ADAPTER_BOUNDARY_STOPPED=0
 ADAPTER_BOUNDARY_STOP_PATH=""
 RUN_STARTED_AT=""
 TERMINAL_AT=""
+TERMINAL_AT_EPOCH_NS=""
 RESERVED_USD=""
 EFFECTIVE_COST=""
 EXIT_STATUS=""
@@ -700,6 +701,7 @@ write_manifest() {
     echo "submitted_at_epoch_ns=$(meta_value "$SUBMITTED_AT_EPOCH_NS")"
     echo "started_at=$(meta_value "$RUN_STARTED_AT")"
     echo "terminal_at=$(meta_value "$TERMINAL_AT")"
+    echo "terminal_at_epoch_ns=$(meta_value "$TERMINAL_AT_EPOCH_NS")"
     echo "prompt_version=$(meta_value "$PROMPT_VERSION")"
     echo "turns=$(meta_value "$TURNS")"
     echo "effective_cost=$(meta_value "$EFFECTIVE_COST")"
@@ -764,7 +766,23 @@ finalize_accounting() {
   EXIT_STATUS="$4"
   COST_BASIS="$5"
   TERMINAL_AT="$(date -u +%FT%TZ)"
+  TERMINAL_AT_EPOCH_NS="$(python3 -c 'import time; print(time.time_ns())')"
   write_manifest "${6:-$ACCOUNTING_STATE}"
+}
+
+capture_submission_record() {
+  local submitted
+  if [[ "$CLI_CONCURRENT_RUN" -eq 1 ]]; then
+    load_cli_attempt
+    return
+  fi
+  [[ -n "$RUN_SUBMITTED_FILE" ]] || return 0
+  [[ ! -e "$RUN_SUBMITTED_FILE" && ! -L "$RUN_SUBMITTED_FILE" ]] && return 0
+  [[ -f "$RUN_SUBMITTED_FILE" && ! -L "$RUN_SUBMITTED_FILE" ]] || return 1
+  submitted="$(sed -n 's/^submitted_at_epoch_ns=//p' "$RUN_SUBMITTED_FILE")"
+  [[ "$submitted" =~ ^[1-9][0-9]{0,19}$ ]] || return 1
+  TASK_SUBMITTED=1
+  SUBMITTED_AT_EPOCH_NS="$submitted"
 }
 
 refresh_runtime_ledger() {
@@ -1346,9 +1364,9 @@ finally:
 PY
 }
 
-reconcile_cli_attempt() {
-  [[ "$CLI_ATTEMPT_ACTIVE" -eq 1 && -n "$CLI_ATTEMPT_ID" ]] || return 0
-  local output parsed state version result charge
+load_cli_attempt() {
+  [[ -n "$CLI_ATTEMPT_ID" ]] || return 1
+  local output parsed remainder submitted
   output="$(python3 "$KIT_DIR/scripts/provider-coordinator.py" \
     --db "$FACTORY_PROVIDER_DB" status --attempt-id "$CLI_ATTEMPT_ID" 2>/dev/null)" || return 1
   parsed="$(printf '%s' "$output" | python3 -c '
@@ -1358,14 +1376,32 @@ if len(attempts) != 1:
     raise SystemExit(1)
 print(attempts[0]["state"])
 print(attempts[0]["version"])
+print(attempts[0]["submitted_at"] if attempts[0]["submitted_at"] is not None else "none")
 ')" || return 1
-  state="${parsed%%$'\n'*}"
-  version="${parsed#*$'\n'}"
-  if [[ "$state" == "terminal" ]]; then
+  CLI_ATTEMPT_STATE="${parsed%%$'\n'*}"
+  remainder="${parsed#*$'\n'}"
+  CLI_ATTEMPT_VERSION="${remainder%%$'\n'*}"
+  submitted="${remainder#*$'\n'}"
+  if [[ "$submitted" =~ ^[1-9][0-9]{0,10}$ ]]; then
+    TASK_SUBMITTED=1
+    SUBMITTED_AT_EPOCH_NS="$(( (submitted + 1) * 1000000000 - 1 ))"
+  elif [[ "$submitted" == none ]]; then
+    TASK_SUBMITTED=0
+    SUBMITTED_AT_EPOCH_NS=""
+  else
+    return 1
+  fi
+}
+
+reconcile_cli_attempt() {
+  [[ "$CLI_ATTEMPT_ACTIVE" -eq 1 && -n "$CLI_ATTEMPT_ID" ]] || return 0
+  local result charge
+  load_cli_attempt || return 1
+  if [[ "$CLI_ATTEMPT_STATE" == "terminal" ]]; then
     CLI_ATTEMPT_ACTIVE=0
     return 0
   fi
-  case "$state" in
+  case "$CLI_ATTEMPT_STATE" in
     prepared|reserved)
       [[ "${1:-failed}" != cancelled ]] || result=cancelled
       result="${result:-failed_pre_go}"; charge=0
@@ -1381,8 +1417,8 @@ print(attempts[0]["version"])
   esac
   python3 "$KIT_DIR/scripts/provider-coordinator.py" \
     --db "$FACTORY_PROVIDER_DB" terminalize \
-    --operation-id "$CLI_ATTEMPT_ID-host-terminal-$version" \
-    --attempt-id "$CLI_ATTEMPT_ID" --expected-version "$version" \
+    --operation-id "$CLI_ATTEMPT_ID-host-terminal-$CLI_ATTEMPT_VERSION" \
+    --attempt-id "$CLI_ATTEMPT_ID" --expected-version "$CLI_ATTEMPT_VERSION" \
     --result "$result" --charge-micro-usd "$charge" >/dev/null || return 1
   CLI_ATTEMPT_ACTIVE=0
 }
@@ -1709,6 +1745,8 @@ cleanup() {
   [[ -z "$RUN_READY_FILE" ]] || rm -f "$RUN_READY_FILE"
   [[ -z "$RUN_GO_FILE" ]] || rm -f "$RUN_GO_FILE"
   [[ -z "$RUN_GATE_FILE" ]] || rm -f "$RUN_GATE_FILE"
+  capture_submission_record ||
+    echo "WARNING: adapter submission record is invalid" >&2
   [[ -z "$RUN_SUBMITTED_FILE" ]] || rm -f "$RUN_SUBMITTED_FILE"
   [[ -z "$RUN_OUTPUT_TEMP" ]] || rm -f "$RUN_OUTPUT_TEMP"
   exec 8<&- 9>&- 2>/dev/null || true
@@ -3083,15 +3121,10 @@ else
         HELD_LAUNCH_LOCK=0
         wait "$RUN_PID"
         STATUS=$?
-        if [[ -f "$RUN_SUBMITTED_FILE" && ! -L "$RUN_SUBMITTED_FILE" ]]; then
-          TASK_SUBMITTED=1
-          SUBMITTED_AT_EPOCH_NS="$(sed -n \
-            's/^submitted_at_epoch_ns=//p' "$RUN_SUBMITTED_FILE")"
-          if [[ ! "$SUBMITTED_AT_EPOCH_NS" =~ ^[1-9][0-9]{0,19}$ ]]; then
-            echo "adapter submission record is invalid" >&2
-            STATUS=125
-            SUBMITTED_AT_EPOCH_NS=""
-          fi
+        if ! capture_submission_record; then
+          echo "adapter submission record is invalid" >&2
+          STATUS=125
+          SUBMITTED_AT_EPOCH_NS=""
         fi
         if [[ "$STATUS" -eq 123 && "$TASK_SUBMITTED" -eq 0 ]]; then
           if ! stop_before_adapter_gate; then

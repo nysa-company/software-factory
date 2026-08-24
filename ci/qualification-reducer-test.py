@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 import subprocess
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -24,23 +25,226 @@ SPEC.loader.exec_module(REDUCER)
 
 
 class QualificationReducerTest(unittest.TestCase):
+    def provider_accounting_fixture(self, root):
+        factory_sha = "a" * 40
+        ticket = "T-1"
+        receipt = "b" * 64
+        policy = "c" * 64
+        runs = root / "factory/runs"
+        runs.mkdir(parents=True)
+        charges, events, attempts = [], [], []
+        for number, launch_void in ((1, False), (2, True)):
+            run_id = f"run-{number}"
+            attempt_id = f"attempt-{number}"
+            fields = {
+                "account_route_id": "cursor-openai",
+                "accounting_state": "launch_void" if launch_void else "completed",
+                "activation_policy_sha256": policy,
+                "go_issued": "0" if launch_void else "1",
+                "effective_cost": "0" if launch_void else "1.250000",
+                "kit_sha": factory_sha,
+                "provider_attempt_id": attempt_id,
+                "provider_family": "openai",
+                "reserved_usd": "2.000000",
+                "role": "planner",
+                "run_id": run_id,
+                "task_submitted": "0" if launch_void else "1",
+                "submitted_at_epoch_ns": "" if launch_void else "2500000000",
+                "terminal_at_epoch_ns": "2500000000" if launch_void else "3500000000",
+                "ticket": ticket,
+                "transition_receipt_sha256": receipt,
+            }
+            raw = "".join(f"{name}={value}\n" for name, value in fields.items()).encode()
+            (runs / f"{run_id}.meta").write_bytes(raw)
+            digest = hashlib.sha256(raw).hexdigest()
+            if not launch_void:
+                charges.append({
+                    "charge_micro_usd": 1_250_000,
+                    "factory_sha": factory_sha, "manifest_sha256": digest,
+                    "role": "planner", "run_id": run_id,
+                    "transition_receipt_sha256": receipt,
+                })
+            attempts.append({
+                "admitted_at": 1,
+                "account_route": "cursor-openai", "attempt_id": attempt_id,
+                "charge_micro_usd": 0 if launch_void else 1_250_000,
+                "go_at": None if launch_void else 1,
+                "policy_sha256": policy,
+                "product_id": f"relay-proof:{factory_sha}",
+                "provider_family": "openai", "reserve_micro_usd": 2_000_000,
+                "state": "terminal", "submitted_at": None if launch_void else 2,
+                "terminal_at": 2 if launch_void else 3,
+                "terminal_result": "failed_pre_go" if launch_void else "succeeded",
+                "ticket_id": ticket,
+            })
+            events.append({
+                "accounting_state": fields["accounting_state"],
+                "event": "attempt_terminal", "go_issued": fields["go_issued"],
+                "observed_at_epoch_ns": 3_000_000_000 if launch_void else 4_000_000_000,
+                "provider_attempt_id": attempt_id, "role": "planner",
+                "run_id": run_id,
+                "submitted_at_epoch_ns": None if launch_void else 2_500_000_000,
+                "task_submitted": fields["task_submitted"], "ticket": ticket,
+                "terminal_at_epoch_ns": 2_500_000_000 if launch_void else 3_500_000_000,
+                "transition_receipt_sha256": receipt,
+            })
+        manifest = {"factory_sha": factory_sha, "tickets": [ticket]}
+        passports = {ticket: {"charge_records": charges}}
+        status = {
+            "active_reserve_micro_usd": 0, "attempts": attempts,
+            "legacy_intervals": [], "schema": "factory-provider-coordinator/v1",
+        }
+        return manifest, passports, events, status
+
+    def test_provider_accounting_is_bijective_and_deterministic(self):
+        with tempfile.TemporaryDirectory() as directory:
+            product = Path(directory)
+            manifest, passports, events, status = self.provider_accounting_fixture(product)
+            first, first_planners = REDUCER.provider_accounting_evidence(
+                product, manifest, passports, events, status, "relay-proof",
+            )
+            status["attempts"].reverse()
+            second, second_planners = REDUCER.provider_accounting_evidence(
+                product, manifest, passports, events, status, "relay-proof",
+            )
+            self.assertEqual(first, second)
+            self.assertEqual(first_planners, second_planners)
+            self.assertEqual(first_planners, {"T-1": 2_999_999_999})
+            self.assertEqual(first["attempt_count"], 2)
+            self.assertEqual(first["launch_void_count"], 1)
+            self.assertEqual(first["reservation_micro_usd"], 4_000_000)
+            self.assertEqual(first["terminal_charge_micro_usd"], 1_250_000)
+            denied = copy.deepcopy(status)
+            next(
+                item for item in denied["attempts"]
+                if item["attempt_id"] == "attempt-2"
+            ).update({
+                "admitted_at": None, "policy_sha256": None,
+                "terminal_result": "capacity_denied",
+            })
+            REDUCER.provider_accounting_evidence(
+                product, manifest, passports, events, denied, "relay-proof",
+            )
+
+    def test_provider_accounting_refuses_missing_extra_and_mismatch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            product = Path(directory)
+            manifest, passports, events, status = self.provider_accounting_fixture(product)
+            missing = copy.deepcopy(status)
+            missing["attempts"].pop()
+            with self.assertRaisesRegex(REDUCER.QualificationError, "do not reconcile"):
+                REDUCER.provider_accounting_evidence(
+                    product, manifest, passports, events, missing, "relay-proof",
+                )
+            extra = copy.deepcopy(status)
+            extra["attempts"].append({**extra["attempts"][0], "attempt_id": "extra"})
+            with self.assertRaisesRegex(REDUCER.QualificationError, "do not reconcile"):
+                REDUCER.provider_accounting_evidence(
+                    product, manifest, passports, events, extra, "relay-proof",
+                )
+            for field, value in (
+                ("ticket_id", "T-2"), ("provider_family", "anthropic"),
+                ("account_route", "other"), ("policy_sha256", "d" * 64),
+                ("product_id", "other"), ("reserve_micro_usd", 1),
+                ("charge_micro_usd", 1),
+            ):
+                changed = copy.deepcopy(status)
+                changed["attempts"][0][field] = value
+                with self.subTest(field=field), self.assertRaisesRegex(
+                    REDUCER.QualificationError, "does not match",
+                ):
+                    REDUCER.provider_accounting_evidence(
+                        product, manifest, passports, events, changed, "relay-proof",
+                    )
+            changed_events = copy.deepcopy(events)
+            changed_events[0]["provider_attempt_id"] = "wrong"
+            with self.assertRaisesRegex(REDUCER.QualificationError, "does not match"):
+                REDUCER.provider_accounting_evidence(
+                    product, manifest, passports, changed_events, status, "relay-proof",
+                )
+            for field in (
+                "accounting_state", "go_issued", "role", "task_submitted",
+                "terminal_at_epoch_ns", "transition_receipt_sha256",
+            ):
+                changed_events = copy.deepcopy(events)
+                changed_events[0][field] = "wrong"
+                with self.subTest(event_field=field), self.assertRaisesRegex(
+                    REDUCER.QualificationError, "does not match",
+                ):
+                    REDUCER.provider_accounting_evidence(
+                        product, manifest, passports, changed_events, status,
+                        "relay-proof",
+                    )
+            for field in ("go_at", "submitted_at"):
+                changed = copy.deepcopy(status)
+                changed["attempts"][0][field] = None
+                with self.subTest(timestamp=field), self.assertRaisesRegex(
+                    REDUCER.QualificationError, "does not match",
+                ):
+                    REDUCER.provider_accounting_evidence(
+                        product, manifest, passports, events, changed, "relay-proof",
+                    )
+
     def test_immutable_report_recovers_exact_response_loss(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "report.json"
             raw = b'{"status":"green"}\n'
-            original = REDUCER.os.replace
+            original = REDUCER.os.link
 
             def lost(source, target):
                 original(source, target)
                 raise OSError("simulated response loss")
 
             with (
-                patch.object(REDUCER.os, "replace", side_effect=lost),
+                patch.object(REDUCER.os, "link", side_effect=lost),
                 self.assertRaisesRegex(OSError, "response loss"),
             ):
                 REDUCER.write_immutable(path, raw)
             REDUCER.write_immutable(path, raw)
             self.assertEqual(path.read_bytes(), raw)
+
+    def test_immutable_report_repairs_hard_crash_link_residue(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "report.json"
+            temporary = path.with_name(f".{path.name}.crashed")
+            raw = b'{"status":"green"}\n'
+            temporary.write_bytes(raw)
+            temporary.chmod(0o600)
+            REDUCER.os.link(temporary, path)
+            self.assertEqual(path.stat().st_nlink, 2)
+            REDUCER.write_immutable(path, raw)
+            self.assertFalse(temporary.exists())
+            self.assertEqual(path.stat().st_nlink, 1)
+
+    def test_immutable_report_refuses_concurrent_different_writer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "report.json"
+            barrier = threading.Barrier(2)
+            original = REDUCER.os.link
+            errors = []
+
+            def linked(source, target):
+                barrier.wait(timeout=5)
+                return original(source, target)
+
+            def writer(raw):
+                try:
+                    REDUCER.write_immutable(path, raw)
+                except Exception as error:  # assertions below classify it
+                    errors.append(error)
+
+            with patch.object(REDUCER.os, "link", side_effect=linked):
+                threads = [
+                    threading.Thread(target=writer, args=(raw,))
+                    for raw in (b'{"value":1}\n', b'{"value":2}\n')
+                ]
+                for thread in threads:
+                    thread.start()
+                for thread in threads:
+                    thread.join(timeout=5)
+            self.assertEqual(len(errors), 1)
+            self.assertIsInstance(errors[0], REDUCER.QualificationError)
+            self.assertIn(path.read_bytes(), (b'{"value":1}\n', b'{"value":2}\n'))
 
     def test_remote_timeout_is_typed_but_local_timeout_is_not(self):
         timeout = subprocess.TimeoutExpired(["gh", "pr", "view"], 120)
@@ -232,6 +436,7 @@ class QualificationReducerTest(unittest.TestCase):
                     "exit_status": "0", "factory_sha": manifest["factory_sha"],
                     "observed_at_epoch_ns": narrator_at, "role": "narrator",
                     "role_exit": "ok", "run_id": completed["run_id"],
+                    "terminal_at_epoch_ns": narrator_at,
                     "ticket": ticket,
                     "transition_receipt_sha256": completed["transition_receipt_sha256"],
                 },
@@ -269,7 +474,21 @@ class QualificationReducerTest(unittest.TestCase):
                 item for item in events
                 if item["event"] == "ticket_complete" and item["ticket"] == ticket
             )["observed_at_epoch_ns"] = narrator_at + 240_000_000_000
-        return receipt, narrator_run_ids
+        accounting = {
+            "attempt_count": sum(
+                len(passports[ticket]["charge_records"])
+                for ticket in manifest["tickets"]
+            ),
+            "evidence_sha256": "9" * 64,
+            "launch_void_count": 0,
+            "reservation_micro_usd": 100_000_000,
+            "terminal_charge_micro_usd": 100_000_000,
+        }
+        planner_starts = {
+            ticket: base + (80 + index) * 1_000_000_000
+            for index, ticket in enumerate(manifest["tickets"])
+        }
+        return receipt, narrator_run_ids, accounting, planner_starts
 
     def test_exact_green_evidence_passes_and_replayed_role_refuses(self):
         evidence = self.evidence()
@@ -302,17 +521,29 @@ class QualificationReducerTest(unittest.TestCase):
             if event.get("event") in {"restart_boundary", "controller_recovered"}:
                 event["tickets"] = manifest["tickets"]
         caps.update({ticket: 100_000_000 for ticket in caps})
-        receipt, narrators = self.add_latency_evidence(evidence)
-        report = REDUCER.verify(*evidence, receipt, narrators)
+        receipt, narrators, accounting, planners = self.add_latency_evidence(evidence)
+        report = REDUCER.verify(*evidence, receipt, narrators, accounting, planners)
         self.assertEqual(report["status"], "green")
         self.assertEqual(report["latency"]["cold_activation_ms"], 61_000)
         self.assertEqual(
             report["latency"]["final_narrator_to_done_ms"],
             {ticket: 240_000 for ticket in manifest["tickets"]},
         )
+        delayed_observation = copy.deepcopy(evidence)
+        for event in delayed_observation[2]:
+            if event.get("role") == "narrator":
+                event["observed_at_epoch_ns"] += 100_000_000_000
+        self.assertEqual(
+            REDUCER.verify(
+                *delayed_observation, receipt, narrators, accounting, planners
+            )["latency"],
+            report["latency"],
+        )
         self.assertEqual(
             REDUCER.canonical(report),
-            REDUCER.canonical(REDUCER.verify(*evidence, receipt, narrators)),
+            REDUCER.canonical(
+                REDUCER.verify(*evidence, receipt, narrators, accounting, planners)
+            ),
         )
         slow = copy.deepcopy(evidence)
         activation = next(item for item in slow[2] if item["event"] == "activation_complete")
@@ -327,21 +558,26 @@ class QualificationReducerTest(unittest.TestCase):
             event["submitted_at_epoch_ns"] = (
                 activation["observed_at_epoch_ns"] + (index + 1) * 1_000_000_000
             )
+        slow_planners = {
+            ticket: activation["observed_at_epoch_ns"] + (index + 1) * 1_000_000_000
+            for index, ticket in enumerate(manifest["tickets"])
+        }
         with self.assertRaisesRegex(REDUCER.QualificationError, "target exceeded"):
-            REDUCER.verify(*slow, receipt, narrators)
+            REDUCER.verify(*slow, receipt, narrators, accounting, slow_planners)
         out_of_order = copy.deepcopy(evidence)
         ticket = manifest["tickets"][0]
         narrator = next(
             item for item in out_of_order[2]
-            if item.get("event") == "attempt_terminal" and item.get("ticket") == ticket
+            if item.get("event") == "attempt_terminal"
+            and item.get("ticket") == ticket and item.get("role") == "narrator"
         )
         complete = next(
             item for item in out_of_order[2]
             if item.get("event") == "ticket_complete" and item.get("ticket") == ticket
         )
-        complete["observed_at_epoch_ns"] = narrator["observed_at_epoch_ns"] - 1
+        complete["observed_at_epoch_ns"] = narrator["terminal_at_epoch_ns"] - 1
         with self.assertRaisesRegex(REDUCER.QualificationError, "out of order"):
-            REDUCER.verify(*out_of_order, receipt, narrators)
+            REDUCER.verify(*out_of_order, receipt, narrators, accounting, planners)
 
         changed_receipt = dict(receipt)
         changed_receipt["activation_started_epoch_ns"] += 1
@@ -350,11 +586,11 @@ class QualificationReducerTest(unittest.TestCase):
             (REDUCER.canonical(changed_receipt) + "\n").encode()
         ).hexdigest()
         with self.assertRaisesRegex(REDUCER.QualificationError, "activation timing"):
-            REDUCER.verify(*evidence, changed_receipt, narrators)
+            REDUCER.verify(*evidence, changed_receipt, narrators, accounting, planners)
 
         wrong_narrator = {**narrators, ticket: "unprotected-narrator"}
         with self.assertRaisesRegex(REDUCER.QualificationError, "role timing"):
-            REDUCER.verify(*evidence, receipt, wrong_narrator)
+            REDUCER.verify(*evidence, receipt, wrong_narrator, accounting, planners)
 
         duplicate_narrator = copy.deepcopy(evidence)
         selected = next(
@@ -366,16 +602,12 @@ class QualificationReducerTest(unittest.TestCase):
             **selected, "observed_at_epoch_ns": selected["observed_at_epoch_ns"] + 1,
         })
         with self.assertRaisesRegex(REDUCER.QualificationError, "role timing"):
-            REDUCER.verify(*duplicate_narrator, receipt, narrators)
+            REDUCER.verify(*duplicate_narrator, receipt, narrators, accounting, planners)
 
-        missing_submission = copy.deepcopy(evidence)
-        next(
-            item for item in missing_submission[2]
-            if item.get("event") == "attempt_terminal"
-            and item.get("role") == "planner"
-        ).pop("submitted_at_epoch_ns")
-        with self.assertRaisesRegex(REDUCER.QualificationError, "timing proof is invalid"):
-            REDUCER.verify(*missing_submission, receipt, narrators)
+        missing_planner = dict(planners)
+        missing_planner.pop(ticket)
+        with self.assertRaisesRegex(REDUCER.QualificationError, "Planner submission"):
+            REDUCER.verify(*evidence, receipt, narrators, accounting, missing_planner)
 
         invalid = list(self.evidence())
         invalid[0].update({
@@ -1022,9 +1254,11 @@ class QualificationReducerTest(unittest.TestCase):
         for epoch, event in enumerate(events, 1):
             event["observed_at_epoch_ns"] = epoch
 
-        receipt, narrators = self.add_latency_evidence(evidence)
+        receipt, narrators, accounting, planners = self.add_latency_evidence(evidence)
         self.assertEqual(
-            REDUCER.verify(*evidence, receipt, narrators)["status"], "green"
+            REDUCER.verify(
+                *evidence, receipt, narrators, accounting, planners
+            )["status"], "green"
         )
 
         ambiguous = copy.deepcopy(passport)
@@ -1140,9 +1374,11 @@ class QualificationReducerTest(unittest.TestCase):
             prs[ticket]["createdAt"] = f"2026-07-27T{10 + 2 * number}:00:00Z"
             prs[ticket]["mergedAt"] = f"2026-07-27T{11 + 2 * number}:00:00Z"
 
-        receipt, narrators = self.add_latency_evidence(evidence)
+        receipt, narrators, accounting, planners = self.add_latency_evidence(evidence)
         self.assertEqual(
-            REDUCER.verify(*evidence, receipt, narrators)["status"], "green"
+            REDUCER.verify(
+                *evidence, receipt, narrators, accounting, planners
+            )["status"], "green"
         )
 
     def test_manifest_generation_scopes_reused_controller_events(self):
