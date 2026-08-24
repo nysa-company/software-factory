@@ -24,6 +24,24 @@ SPEC.loader.exec_module(REDUCER)
 
 
 class QualificationReducerTest(unittest.TestCase):
+    def test_immutable_report_recovers_exact_response_loss(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "report.json"
+            raw = b'{"status":"green"}\n'
+            original = REDUCER.os.replace
+
+            def lost(source, target):
+                original(source, target)
+                raise OSError("simulated response loss")
+
+            with (
+                patch.object(REDUCER.os, "replace", side_effect=lost),
+                self.assertRaisesRegex(OSError, "response loss"),
+            ):
+                REDUCER.write_immutable(path, raw)
+            REDUCER.write_immutable(path, raw)
+            self.assertEqual(path.read_bytes(), raw)
+
     def test_remote_timeout_is_typed_but_local_timeout_is_not(self):
         timeout = subprocess.TimeoutExpired(["gh", "pr", "view"], 120)
         with patch.object(REDUCER.subprocess, "run", side_effect=timeout):
@@ -68,8 +86,11 @@ class QualificationReducerTest(unittest.TestCase):
                     "charge_micro_usd": 1_000_000,
                     "contract_version": "1.8.0",
                     "factory_sha": candidate,
+                    "head_before": head,
                     "manifest_sha256": digest,
+                    "role": role,
                     "run_id": run_id,
+                    "transition_receipt_sha256": receipt,
                 })
             pr_head = f"{ticket_number:040x}"
             merge = f"{ticket_number + 1000:040x}"
@@ -124,6 +145,132 @@ class QualificationReducerTest(unittest.TestCase):
         caps = {ticket: 25_000_000 for ticket in tickets}
         return manifest, passports, events, terminals, prs, caps
 
+    def add_latency_evidence(self, evidence):
+        manifest, passports, events, _terminals, _prs, _caps = evidence
+        base = 1_000_000_000_000
+        boundary = next(item for item in events if item["event"] == "restart_boundary")
+        boundary.update(
+            event_sha256="b" * 64, observed_at_epoch_ns=base + 60_000_000_000,
+        )
+        for index, event in enumerate(events):
+            if event is not boundary:
+                event["observed_at_epoch_ns"] = base + (70 + index) * 1_000_000_000
+        manifest_sha256 = hashlib.sha256(REDUCER.canonical(manifest).encode()).hexdigest()
+        receipt = {
+            "activation_started_epoch_ns": base,
+            "kit_sha": manifest["factory_sha"], "kit_tree": "b" * 40,
+            "product_sha": "c" * 40, "product_tree": "d" * 40,
+            "status": "pass",
+        }
+        receipt["receipt_id"] = hashlib.sha256(
+            (REDUCER.canonical(receipt) + "\n").encode()
+        ).hexdigest()
+        activation = {
+            "activation_receipt_id": receipt["receipt_id"],
+            "activation_started_epoch_ns": base,
+            "event": "activation_complete",
+            "factory_sha": manifest["factory_sha"],
+            "factory_tree": "b" * 40,
+            "observed_at_epoch_ns": base + 61_000_000_000,
+            "product_sha": "c" * 40,
+            "product_tree": "d" * 40,
+            "qualification_generation": manifest["generation"],
+            "qualification_manifest_sha256": manifest_sha256,
+            "restart_boundary_event_sha256": boundary["event_sha256"],
+            "schema": REDUCER.EVENT_SCHEMA,
+            "ticket": None,
+        }
+        activation["event_sha256"] = hashlib.sha256(
+            REDUCER.canonical(activation).encode()
+        ).hexdigest()
+        events.append(activation)
+        narrator_run_ids = {}
+        for index, ticket in enumerate(manifest["tickets"]):
+            planner = next(
+                item for item in passports[ticket]["completed_role_evidence"]
+                if item["role"] == "planner"
+            )
+            completed = next(
+                item for item in passports[ticket]["completed_role_evidence"]
+                if item["role"] == "narrator"
+            )
+            narrator_run_ids[ticket] = completed["run_id"]
+            narrator_at = base + (300 + index * 10) * 1_000_000_000
+            if index == 0:
+                planner_charge = next(
+                    item for item in passports[ticket]["charge_records"]
+                    if item["role"] == "planner"
+                )
+                failed_run = f"{ticket}-planner-failed"
+                failed_receipt = "e" * 64
+                passports[ticket]["charge_records"].append({
+                    **planner_charge, "manifest_sha256": "d" * 64,
+                    "run_id": failed_run,
+                    "transition_receipt_sha256": failed_receipt,
+                })
+                passports[ticket]["cumulative_charges_micro_usd"] += 1_000_000
+                events.append({
+                    "event": "attempt_terminal", "factory_sha": manifest["factory_sha"],
+                    "observed_at_epoch_ns": base + 71_000_000_000,
+                    "role": "planner", "run_id": failed_run,
+                    "submitted_at_epoch_ns": base + 70_000_000_000,
+                    "task_submitted": "1", "ticket": ticket,
+                    "transition_receipt_sha256": failed_receipt,
+                })
+            events.extend((
+                {
+                    "event": "attempt_terminal", "factory_sha": manifest["factory_sha"],
+                    "observed_at_epoch_ns": base + (80 + index) * 1_000_000_000,
+                    "role": "planner", "run_id": planner["run_id"],
+                    "submitted_at_epoch_ns": base + (80 + index) * 1_000_000_000,
+                    "task_submitted": "1",
+                    "ticket": ticket,
+                    "transition_receipt_sha256": planner["transition_receipt_sha256"],
+                },
+                {
+                    "accounting_state": "completed", "event": "attempt_terminal",
+                    "exit_status": "0", "factory_sha": manifest["factory_sha"],
+                    "observed_at_epoch_ns": narrator_at, "role": "narrator",
+                    "role_exit": "ok", "run_id": completed["run_id"],
+                    "ticket": ticket,
+                    "transition_receipt_sha256": completed["transition_receipt_sha256"],
+                },
+            ))
+            if index == 0:
+                narrator_charge = next(
+                    item for item in passports[ticket]["charge_records"]
+                    if item["role"] == "narrator"
+                )
+                narrator_evidence = next(
+                    item for item in passports[ticket]["completed_role_evidence"]
+                    if item["role"] == "narrator"
+                )
+                unused_run = f"{ticket}-narrator-unused"
+                unused_receipt = "f" * 64
+                passports[ticket]["charge_records"].append({
+                    **narrator_charge, "head_before": "e" * 40,
+                    "manifest_sha256": "c" * 64, "run_id": unused_run,
+                    "transition_receipt_sha256": unused_receipt,
+                })
+                passports[ticket]["completed_role_evidence"].append({
+                    **narrator_evidence, "head_before": "e" * 40,
+                    "manifest_sha256": "c" * 64, "run_id": unused_run,
+                    "transition_receipt_sha256": unused_receipt,
+                })
+                passports[ticket]["cumulative_charges_micro_usd"] += 1_000_000
+                events.append({
+                    "accounting_state": "completed", "event": "attempt_terminal",
+                    "exit_status": "0", "factory_sha": manifest["factory_sha"],
+                    "observed_at_epoch_ns": narrator_at + 100_000_000_000,
+                    "role": "narrator", "role_exit": "ok", "run_id": unused_run,
+                    "ticket": ticket, "transition_receipt_sha256": unused_receipt,
+                })
+            next(
+                item for item in events
+                if item["event"] == "ticket_complete" and item["ticket"] == ticket
+            )["observed_at_epoch_ns"] = narrator_at + 240_000_000_000
+        return receipt, narrator_run_ids
+
     def test_exact_green_evidence_passes_and_replayed_role_refuses(self):
         evidence = self.evidence()
         report = REDUCER.verify(*evidence)
@@ -155,7 +302,80 @@ class QualificationReducerTest(unittest.TestCase):
             if event.get("event") in {"restart_boundary", "controller_recovered"}:
                 event["tickets"] = manifest["tickets"]
         caps.update({ticket: 100_000_000 for ticket in caps})
-        self.assertEqual(REDUCER.verify(*evidence)["status"], "green")
+        receipt, narrators = self.add_latency_evidence(evidence)
+        report = REDUCER.verify(*evidence, receipt, narrators)
+        self.assertEqual(report["status"], "green")
+        self.assertEqual(report["latency"]["cold_activation_ms"], 61_000)
+        self.assertEqual(
+            report["latency"]["final_narrator_to_done_ms"],
+            {ticket: 240_000 for ticket in manifest["tickets"]},
+        )
+        self.assertEqual(
+            REDUCER.canonical(report),
+            REDUCER.canonical(REDUCER.verify(*evidence, receipt, narrators)),
+        )
+        slow = copy.deepcopy(evidence)
+        activation = next(item for item in slow[2] if item["event"] == "activation_complete")
+        activation["observed_at_epoch_ns"] = (
+            activation["activation_started_epoch_ns"] + 181_000_000_000
+        )
+        for index, event in enumerate(
+            item for item in slow[2]
+            if item.get("event") == "attempt_terminal"
+            and item.get("role") == "planner"
+        ):
+            event["submitted_at_epoch_ns"] = (
+                activation["observed_at_epoch_ns"] + (index + 1) * 1_000_000_000
+            )
+        with self.assertRaisesRegex(REDUCER.QualificationError, "target exceeded"):
+            REDUCER.verify(*slow, receipt, narrators)
+        out_of_order = copy.deepcopy(evidence)
+        ticket = manifest["tickets"][0]
+        narrator = next(
+            item for item in out_of_order[2]
+            if item.get("event") == "attempt_terminal" and item.get("ticket") == ticket
+        )
+        complete = next(
+            item for item in out_of_order[2]
+            if item.get("event") == "ticket_complete" and item.get("ticket") == ticket
+        )
+        complete["observed_at_epoch_ns"] = narrator["observed_at_epoch_ns"] - 1
+        with self.assertRaisesRegex(REDUCER.QualificationError, "out of order"):
+            REDUCER.verify(*out_of_order, receipt, narrators)
+
+        changed_receipt = dict(receipt)
+        changed_receipt["activation_started_epoch_ns"] += 1
+        changed_receipt.pop("receipt_id")
+        changed_receipt["receipt_id"] = hashlib.sha256(
+            (REDUCER.canonical(changed_receipt) + "\n").encode()
+        ).hexdigest()
+        with self.assertRaisesRegex(REDUCER.QualificationError, "activation timing"):
+            REDUCER.verify(*evidence, changed_receipt, narrators)
+
+        wrong_narrator = {**narrators, ticket: "unprotected-narrator"}
+        with self.assertRaisesRegex(REDUCER.QualificationError, "role timing"):
+            REDUCER.verify(*evidence, receipt, wrong_narrator)
+
+        duplicate_narrator = copy.deepcopy(evidence)
+        selected = next(
+            item for item in duplicate_narrator[2]
+            if item.get("event") == "attempt_terminal"
+            and item.get("run_id") == narrators[ticket]
+        )
+        duplicate_narrator[2].append({
+            **selected, "observed_at_epoch_ns": selected["observed_at_epoch_ns"] + 1,
+        })
+        with self.assertRaisesRegex(REDUCER.QualificationError, "role timing"):
+            REDUCER.verify(*duplicate_narrator, receipt, narrators)
+
+        missing_submission = copy.deepcopy(evidence)
+        next(
+            item for item in missing_submission[2]
+            if item.get("event") == "attempt_terminal"
+            and item.get("role") == "planner"
+        ).pop("submitted_at_epoch_ns")
+        with self.assertRaisesRegex(REDUCER.QualificationError, "timing proof is invalid"):
+            REDUCER.verify(*missing_submission, receipt, narrators)
 
         invalid = list(self.evidence())
         invalid[0].update({
@@ -802,7 +1022,10 @@ class QualificationReducerTest(unittest.TestCase):
         for epoch, event in enumerate(events, 1):
             event["observed_at_epoch_ns"] = epoch
 
-        self.assertEqual(REDUCER.verify(*evidence)["status"], "green")
+        receipt, narrators = self.add_latency_evidence(evidence)
+        self.assertEqual(
+            REDUCER.verify(*evidence, receipt, narrators)["status"], "green"
+        )
 
         ambiguous = copy.deepcopy(passport)
         cycle_head = "f" * 40
@@ -917,7 +1140,10 @@ class QualificationReducerTest(unittest.TestCase):
             prs[ticket]["createdAt"] = f"2026-07-27T{10 + 2 * number}:00:00Z"
             prs[ticket]["mergedAt"] = f"2026-07-27T{11 + 2 * number}:00:00Z"
 
-        self.assertEqual(REDUCER.verify(*evidence)["status"], "green")
+        receipt, narrators = self.add_latency_evidence(evidence)
+        self.assertEqual(
+            REDUCER.verify(*evidence, receipt, narrators)["status"], "green"
+        )
 
     def test_manifest_generation_scopes_reused_controller_events(self):
         manifest, _passports, current, _terminals, _prs, _caps = self.evidence()

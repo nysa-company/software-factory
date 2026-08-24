@@ -90,11 +90,26 @@ class QualificationEnvironmentTest(unittest.TestCase):
             "    printf '%s\\n' '{\"error\":\"qualification prime has execution residue\",\"schema\":\"nysa.software-factory.controller/v1\",\"status\":\"error\"}'\n"
             "    exit 1\n"
             "  fi\n"
+            "  python3 \"$(dirname \"$0\")/fake-prime-event.py\" \"${1:-}\"\n"
             "  printf '%s\\n' '{\"active\":3,\"results\":[],\"schema\":\"nysa.software-factory.controller/v1\",\"status\":\"restart_required\"}'\n"
             "fi\n",
             encoding="utf-8",
         )
         launcher.chmod(0o755)
+        prime_event = self.factory / "scripts/fake-prime-event.py"
+        prime_event.write_text(
+            "import hashlib,json,os,secrets,sys,time\n"
+            "from pathlib import Path\n"
+            "authority=json.load(open(Path(os.environ['HOME'])/'.factory/qualification'/sys.argv[1]/'authority.json'))\n"
+            "manifest=json.load(open(Path(authority['product_path'])/'factory/QUALIFICATION.json'))\n"
+            "events=Path(authority['controller_state_path'])/'events'; events.mkdir(mode=0o700,exist_ok=True)\n"
+            "if not any(events.glob('*.json')):\n"
+            " value={'event':'restart_boundary','factory_sha':authority['factory_sha'],'observed_at_epoch_ns':time.time_ns(),'qualification_generation':1,'qualification_manifest_sha256':hashlib.sha256(json.dumps(manifest,sort_keys=True,separators=(',',':')).encode()).hexdigest(),'schema':'nysa.software-factory.controller-event/v1','ticket':None,'tickets':sorted(manifest['tickets'])}\n"
+            " value['event_sha256']=hashlib.sha256(json.dumps(value,sort_keys=True,separators=(',',':')).encode()).hexdigest()\n"
+            " target=events/f\"{value['observed_at_epoch_ns']}-{secrets.token_hex(8)}.json\"\n"
+            " target.write_text(json.dumps(value,sort_keys=True,separators=(',',':'))+'\\n'); target.chmod(0o600)\n",
+            encoding="utf-8",
+        )
         factory_kit = self.factory / "scripts/factory-kit.sh"
         factory_kit.write_text(
             "#!/bin/sh\n"
@@ -552,6 +567,56 @@ class QualificationEnvironmentTest(unittest.TestCase):
             ENVIRONMENT.EnvironmentError, "Planner prime failed",
         ):
             ENVIRONMENT.prime_qualification(release, "relay")
+
+    def test_activation_completion_is_exact_and_replay_stable(self) -> None:
+        controller = self.workspace / "timing-controller"
+        controller.mkdir(mode=0o700)
+        controller = controller.resolve(strict=True)
+        events = controller / "events"
+        events.mkdir(mode=0o700)
+        manifest = {
+            "factory_sha": "a" * 40, "generation": 1,
+            "tickets": ["T-1", "T-2", "T-3"],
+        }
+        manifest_sha256 = hashlib.sha256(
+            ENVIRONMENT.canonical(manifest)[:-1]
+        ).hexdigest()
+        boundary = {
+            "event": "restart_boundary", "factory_sha": "a" * 40,
+            "observed_at_epoch_ns": 2_000_000_000,
+            "qualification_generation": 1,
+            "qualification_manifest_sha256": manifest_sha256,
+            "schema": ENVIRONMENT.CONTROLLER_EVENT_SCHEMA, "ticket": None,
+            "tickets": manifest["tickets"],
+        }
+        boundary["event_sha256"] = hashlib.sha256(
+            ENVIRONMENT.canonical(boundary)[:-1]
+        ).hexdigest()
+        ENVIRONMENT.write(events / "2000000000-aaaaaaaaaaaaaaaa.json", boundary)
+        receipt = {
+            "activation_started_epoch_ns": 1_000_000_000,
+            "kit_sha": "a" * 40, "receipt_id": "b" * 64,
+        }
+        with mock.patch.object(ENVIRONMENT.time, "time_ns", return_value=3_000_000_000):
+            ENVIRONMENT.record_activation_completion(
+                controller, manifest, receipt, "c" * 40, "d" * 40, "e" * 40,
+            )
+        completion = next(
+            path for path in events.glob("*.json") if path.name.startswith("3000000000-")
+        )
+        raw = completion.read_bytes()
+        with mock.patch.object(ENVIRONMENT.time, "time_ns", return_value=9_000_000_000):
+            ENVIRONMENT.record_activation_completion(
+                controller, manifest, receipt, "c" * 40, "d" * 40, "e" * 40,
+            )
+        self.assertEqual(completion.read_bytes(), raw)
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError, "timing boundary changed",
+        ):
+            ENVIRONMENT.record_activation_completion(
+                controller, manifest, {**receipt, "receipt_id": "f" * 64},
+                "c" * 40, "d" * 40, "e" * 40,
+            )
 
     def test_provider_cli_pin_gate_rejects_ambiguous_or_stale_evidence(self) -> None:
         sha = "a" * 40
@@ -1017,8 +1082,13 @@ class QualificationEnvironmentTest(unittest.TestCase):
         controller = self.factory / "scripts/factory-controller.py"
         controller.write_text(
             "#!/usr/bin/env python3\n"
-            "import json, pathlib, sys\n"
+            "import hashlib, json, os, pathlib, secrets, sys, time\n"
             "if sys.argv[-2:] == ['--action', 'prime']:\n"
+            " state=pathlib.Path(sys.argv[sys.argv.index('--state-dir')+1]); events=state/'events'; events.mkdir(mode=0o700,exist_ok=True)\n"
+            " manifest=json.load(open(os.environ['FACTORY_QUALIFICATION_MANIFEST']))\n"
+            " value={'event':'restart_boundary','factory_sha':os.environ['FACTORY_RELEASE_SHA'],'observed_at_epoch_ns':time.time_ns(),'qualification_generation':manifest['generation'],'qualification_manifest_sha256':hashlib.sha256(json.dumps(manifest,sort_keys=True,separators=(',',':')).encode()).hexdigest(),'schema':'nysa.software-factory.controller-event/v1','ticket':None,'tickets':sorted(manifest['tickets'])}\n"
+            " value['event_sha256']=hashlib.sha256(json.dumps(value,sort_keys=True,separators=(',',':')).encode()).hexdigest()\n"
+            " target=events/f\"{value['observed_at_epoch_ns']}-{secrets.token_hex(8)}.json\"; target.write_text(json.dumps(value,sort_keys=True,separators=(',',':'))+'\\n'); target.chmod(0o600)\n"
             " print('{\"active\":3,\"results\":[],\"schema\":'"
             "'\"nysa.software-factory.controller/v1\",'"
             "'\"status\":\"restart_required\"}')\n"
@@ -1721,6 +1791,8 @@ class QualificationEnvironmentTest(unittest.TestCase):
             ENVIRONMENT.prepare(args)
         self.assertTrue((self.root / "global.env").is_file())
         self.assertFalse((self.root / "marker.json").exists())
+        start_path = self.home / ".factory/qualification/.activation-start-relay.json"
+        started = ENVIRONMENT.read(start_path)["observed_at_epoch_ns"]
 
         def crash_json(predicate):
             crashed = False
@@ -1757,8 +1829,38 @@ class QualificationEnvironmentTest(unittest.TestCase):
                     "exact-incomplete",
                 )
 
+        original_completion = ENVIRONMENT.record_activation_completion
+
+        def crash_completion(*values, **options):
+            original_completion(*values, **options)
+            raise ENVIRONMENT.EnvironmentError("simulated completion response loss")
+
+        with (
+            mock.patch.object(
+                ENVIRONMENT, "record_activation_completion",
+                side_effect=crash_completion,
+            ),
+            self.assertRaisesRegex(
+                ENVIRONMENT.EnvironmentError, "completion response loss",
+            ),
+        ):
+            ENVIRONMENT.prepare(args)
         value = ENVIRONMENT.prepare(args)
         self.assertEqual(value["status"], "prepared")
+        active = ENVIRONMENT.read(self.root / "projects/relay/active.json")
+        receipt = ENVIRONMENT.read(
+            self.root / "receipts" / f"{active['receipt_id']}.json"
+        )
+        self.assertEqual(receipt["activation_started_epoch_ns"], started)
+        self.assertFalse(start_path.exists())
+        events = list((authority / "controller/events").glob("*.json"))
+        self.assertEqual(
+            sum(
+                ENVIRONMENT.read(path).get("event") == "activation_complete"
+                for path in events
+            ),
+            1,
+        )
         self.assertEqual(
             ENVIRONMENT.preparation_state(
                 self.root, Path(value["authority_root"]), "relay",
@@ -5307,6 +5409,9 @@ class QualificationEnvironmentTest(unittest.TestCase):
         first = ENVIRONMENT.prepare(args)
         authority = Path(first["authority_root"])
         controller = authority / "controller"
+        original_receipt_id = ENVIRONMENT.read(
+            self.root / "projects/relay/active.json"
+        )["receipt_id"]
         parked = controller / "parked/T-101"
         parked.parent.mkdir(mode=0o700)
         run(self.product, "git", "branch", "ticket/T-101")
@@ -5410,6 +5515,11 @@ class QualificationEnvironmentTest(unittest.TestCase):
         self.assertEqual(restored["status"], "restored")
         self.assertEqual(active["controller_state_path"], str(controller))
         self.assertEqual(active["provider_state_path"], str(authority / "provider"))
+        self.assertEqual(active["receipt_id"], original_receipt_id)
+        self.assertEqual(sum(
+            ENVIRONMENT.read(path).get("event") == "activation_complete"
+            for path in (controller / "events").glob("*.json")
+        ), 1)
         self.assertEqual(key.read_bytes(), secret)
         self.assertEqual(run(parked, "git", "rev-parse", "HEAD"), head)
 

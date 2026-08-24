@@ -28,7 +28,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - The local operator console keeps supported approval hashes in its authenticated server session, and qualification resume reads its owner-only plan internally: operators approve an exact action without transcribing a digest, while sealed apply paths still recompute and validate the binding before mutation.
 - Fresh operator maps use an object-valued `_config` accepted by qualification, and nonvisual publication treats only exact current-ticket Ready audit receipts as metadata; foreign or malformed receipt paths remain semantic and fail closed.
 - Disjoint protected sibling refreshes recognize exact sibling Ready audit receipts and retain existing Reviewer/Narrator evidence. Done reuses exact approved-head checks only across a tree-identical authenticated merge with unchanged protected check policy; every mismatch or unavailable head result falls back to merge-commit evidence.
-- Fresh isolated preparation completes a sealed provider-free prime before returning: the exact cohort is claimed, batch-pinned, and advanced to unconsumed Planner receipts before the existing restart boundary. Replay first authenticates the exact publication and controller prefix, then remains idempotent only while provider accounting is pristine and every receipt remains exact and unconsumed; ordinary finish retains fresh Doctor and live Planner preflight.
+- Fresh isolated preparation completes a sealed provider-free prime before returning: the exact cohort is claimed, batch-pinned, and advanced to unconsumed Planner receipts before the existing restart boundary. Replay first authenticates the exact publication and controller prefix, then remains idempotent only while provider accounting is pristine and every receipt remains exact and unconsumed; ordinary finish retains fresh Doctor and live Planner preflight. Fresh three-ticket reduction also requires replay-stable activation, Planner-submission, final-Narrator, and Done boundaries and reports their four latency SLOs.
 - Targeted cancellation reconciles provider attempts through the launcher's validated `FACTORY_PROVIDER_DB`; only direct development lanes without that binding use their existing lane-local database. Missing, unsafe, or foreign provider state fails before stale manifest or claim cleanup, and post-GO cancellation retains the full reservation exactly once.
 - **Contract rules below in Operating contract are authoritative**; this summary is only what the session hook can inject.
 
@@ -7930,17 +7930,6 @@ selected cohort's known claim, receipt, restart, lock, log, event, and passport
 namespaces and rejects foreign controller residue before route pinning or any
 provider transition.
 
-## 2026-08-23 — Decision 585: Qualification closeout follows cohort publication
-
-Category: Reliability
-
-Sealed qualification does not enter any ticket closeout until every selected
-ticket is either protected Done or has an authenticated current-release,
-canonical-branch Approved passport whose implementation publication is merged.
-Missing, blocked, unmerged, and foreign passports wait deterministically in
-manifest order.
-Existing serialized closeout and ordinary production behavior remain unchanged.
-
 ## 2026-08-23 — Decision 584: Cancellation binds authoritative provider state
 
 Category: Reliability
@@ -7962,3 +7951,15 @@ branch, clean head/tree, ticket blob, lease, route, and absent passport still
 match. Production, successor, consumed, or drifted state follows the ordinary
 state-machine path. Planner preflight remains the mandatory receipt-consuming
 gate before provider GO.
+
+## 2026-08-23 — Decision 587: Fresh qualification proves its latency boundaries
+
+Category: Performance
+
+Fresh three-ticket preparation records one replay-stable activation completion
+event bound to its exact receipt, Factory/product identities, manifest, and
+restart boundary. Its start survives pre-receipt crashes, provider-launch time
+comes from the exact durable process submission, and final Narrator time is
+bound to the protected bundle's run. The atomically published immutable report
+derives cold activation, Planner submission, final Narrator-to-Done, and cohort
+closeout latency and refuses incomplete, reordered, or over-target evidence.

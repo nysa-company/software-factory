@@ -73,7 +73,10 @@ class ReadinessGateTests(unittest.TestCase):
 
             MODULE.persist_submission(submitted, 12345)
 
-            self.assertEqual(submitted.read_text(encoding="utf-8"), "pid=12345\n")
+            self.assertRegex(
+                submitted.read_text(encoding="utf-8"),
+                r"^pid=12345\nsubmitted_at_epoch_ns=[1-9][0-9]*\n$",
+            )
             self.assertEqual(submitted.stat().st_mode & 0o777, 0o600)
             self.assertEqual(stale.read_text(encoding="utf-8"), "stale\n")
 
@@ -103,7 +106,10 @@ class ReadinessGateTests(unittest.TestCase):
             self.assertTrue(ready.is_file())
             gate.touch()
             self.assertEqual(process.wait(timeout=10), 0)
-            self.assertRegex(submitted.read_text(encoding="utf-8"), r"^pid=\d+\n$")
+            self.assertRegex(
+                submitted.read_text(encoding="utf-8"),
+                r"^pid=\d+\nsubmitted_at_epoch_ns=[1-9][0-9]*\n$",
+            )
             self.assertEqual(completed.read_text(encoding="utf-8"), "done\n")
 
 

@@ -247,6 +247,7 @@ ACCOUNTING_SCHEMA=""
 ACCOUNTING_STATE=""
 GO_ISSUED=0
 TASK_SUBMITTED=0
+SUBMITTED_AT_EPOCH_NS=""
 ADAPTER_BOUNDARY_STOPPED=0
 ADAPTER_BOUNDARY_STOP_PATH=""
 RUN_STARTED_AT=""
@@ -696,6 +697,7 @@ write_manifest() {
     echo "envelope_override_ids=$(meta_value "${FACTORY_ENVELOPE_OVERRIDE_IDS:-}")"
     echo "go_issued=$(meta_value "$GO_ISSUED")"
     echo "task_submitted=$(meta_value "$TASK_SUBMITTED")"
+    echo "submitted_at_epoch_ns=$(meta_value "$SUBMITTED_AT_EPOCH_NS")"
     echo "started_at=$(meta_value "$RUN_STARTED_AT")"
     echo "terminal_at=$(meta_value "$TERMINAL_AT")"
     echo "prompt_version=$(meta_value "$PROMPT_VERSION")"
@@ -3083,6 +3085,13 @@ else
         STATUS=$?
         if [[ -f "$RUN_SUBMITTED_FILE" && ! -L "$RUN_SUBMITTED_FILE" ]]; then
           TASK_SUBMITTED=1
+          SUBMITTED_AT_EPOCH_NS="$(sed -n \
+            's/^submitted_at_epoch_ns=//p' "$RUN_SUBMITTED_FILE")"
+          if [[ ! "$SUBMITTED_AT_EPOCH_NS" =~ ^[1-9][0-9]{0,19}$ ]]; then
+            echo "adapter submission record is invalid" >&2
+            STATUS=125
+            SUBMITTED_AT_EPOCH_NS=""
+          fi
         fi
         if [[ "$STATUS" -eq 123 && "$TASK_SUBMITTED" -eq 0 ]]; then
           if ! stop_before_adapter_gate; then

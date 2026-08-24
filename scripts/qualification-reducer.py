@@ -15,6 +15,7 @@ import re
 import stat
 import subprocess
 import sys
+import tempfile
 from typing import Any
 
 sys.dont_write_bytecode = True
@@ -48,6 +49,12 @@ SHA = re.compile(r"^[0-9a-f]{40}$")
 DIGEST = re.compile(r"^[0-9a-f]{64}$")
 TICKET = re.compile(r"^T-[0-9]+$")
 ROLES = {"planner", "spec-linter", "test-author", "builder", "reviewer", "narrator"}
+LATENCY_TARGETS_MS = {
+    "cold_activation": 180_000,
+    "prepared_to_all_planners": 90_000,
+    "final_narrator_to_done": 300_000,
+    "last_narrator_to_cohort_done": 600_000,
+}
 
 
 class QualificationError(ValueError):
@@ -81,6 +88,35 @@ def regular(path: Path, mode: int | None = None, limit: int = 5_000_000) -> byte
     finally:
         if descriptor >= 0:
             os.close(descriptor)
+
+
+def write_immutable(path: Path, raw: bytes) -> None:
+    if path.exists() or path.is_symlink():
+        if regular(path, 0o600) != raw:
+            raise QualificationError("immutable qualification report changed")
+        return
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "wb") as stream:
+            descriptor = -1
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if path.exists() or path.is_symlink():
+            if regular(path, 0o600) != raw:
+                raise QualificationError("immutable qualification report changed")
+        else:
+            os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        Path(temporary).unlink(missing_ok=True)
 
 
 def command(*arguments: str, cwd: Path | None = None) -> str:
@@ -227,6 +263,151 @@ def emergency_terminal_reconciliations(
     return result
 
 
+def qualification_latency(
+    manifest: dict[str, Any], passports: dict[str, dict[str, Any]],
+    events: list[dict[str, Any]], boundary: dict[str, Any],
+    completions: list[dict[str, Any]], activation_receipt: dict[str, Any],
+    narrator_run_ids: dict[str, str],
+) -> dict[str, Any]:
+    tickets = manifest["tickets"]
+    activations = [item for item in events if item.get("event") == "activation_complete"]
+    if len(activations) != 1:
+        raise QualificationError("qualification activation timing proof is missing")
+    activation = activations[0]
+    activation_keys = {
+        "activation_receipt_id", "activation_started_epoch_ns", "event",
+        "event_sha256", "factory_sha", "factory_tree", "observed_at_epoch_ns",
+        "product_sha", "product_tree", "qualification_generation",
+        "qualification_manifest_sha256", "restart_boundary_event_sha256",
+        "schema", "ticket",
+    }
+    started = activation.get("activation_started_epoch_ns")
+    activated = activation.get("observed_at_epoch_ns")
+    receipt = dict(activation_receipt)
+    receipt_id = receipt.pop("receipt_id", "")
+    if (
+        set(activation) != activation_keys
+        or activation.get("schema") != EVENT_SCHEMA
+        or activation.get("ticket") is not None
+        or activation.get("factory_sha") != manifest["factory_sha"]
+        or activation.get("qualification_generation") != manifest["generation"]
+        or activation.get("qualification_manifest_sha256")
+        != hashlib.sha256(canonical(manifest).encode()).hexdigest()
+        or activation.get("restart_boundary_event_sha256")
+        != boundary.get("event_sha256")
+        or not DIGEST.fullmatch(activation.get("activation_receipt_id", ""))
+        or not SHA.fullmatch(activation.get("factory_tree", ""))
+        or not SHA.fullmatch(activation.get("product_sha", ""))
+        or not SHA.fullmatch(activation.get("product_tree", ""))
+        or not isinstance(started, int) or isinstance(started, bool)
+        or not isinstance(activated, int) or isinstance(activated, bool)
+        or started < 1 or activated < started
+        or activated < boundary["observed_at_epoch_ns"]
+        or receipt_id != activation.get("activation_receipt_id")
+        or receipt_id
+        != hashlib.sha256((canonical(receipt) + "\n").encode()).hexdigest()
+        or receipt.get("activation_started_epoch_ns") != started
+        or receipt.get("status") != "pass"
+        or receipt.get("kit_sha") != activation.get("factory_sha")
+        or receipt.get("kit_tree") != activation.get("factory_tree")
+        or receipt.get("product_sha") != activation.get("product_sha")
+        or receipt.get("product_tree") != activation.get("product_tree")
+        or set(narrator_run_ids) != set(tickets)
+    ):
+        raise QualificationError("qualification activation timing proof is invalid")
+
+    def milliseconds(end: int, start: int) -> int:
+        if end < start:
+            raise QualificationError("qualification timing proof is out of order")
+        return (end - start + 999_999) // 1_000_000
+
+    planner_starts: dict[str, int] = {}
+    narrator_terminals: dict[str, int] = {}
+    completion_times = {
+        item["ticket"]: item["observed_at_epoch_ns"] for item in completions
+    }
+    for ticket in tickets:
+        charged_planners = {
+            (item.get("run_id"), item.get("transition_receipt_sha256"))
+            for item in passports[ticket]["charge_records"]
+            if item.get("role") == "planner"
+        }
+        planner_events = [
+            item for item in events
+            if item.get("event") == "attempt_terminal"
+            and item.get("ticket") == ticket and item.get("role") == "planner"
+            and item.get("task_submitted") == "1"
+            and (item.get("run_id"), item.get("transition_receipt_sha256"))
+            in charged_planners
+        ]
+        final_narrator = narrator_run_ids[ticket]
+        completed_narrators = {
+            (item.get("run_id"), item.get("transition_receipt_sha256"))
+            for item in passports[ticket]["completed_role_evidence"]
+            if item.get("role") == "narrator" and item.get("run_id") == final_narrator
+        }
+        narrator_events = [
+            item for item in events
+            if item.get("event") == "attempt_terminal"
+            and item.get("ticket") == ticket and item.get("role") == "narrator"
+            and item.get("accounting_state") == "completed"
+            and item.get("exit_status") == "0" and item.get("role_exit") == "ok"
+            and (item.get("run_id"), item.get("transition_receipt_sha256"))
+            in completed_narrators
+        ]
+        if (
+            not planner_events or not narrator_events
+            or len(planner_events) != len({
+                (item.get("run_id"), item.get("transition_receipt_sha256"))
+                for item in planner_events
+            })
+            or len(narrator_events) != len({
+                (item.get("run_id"), item.get("transition_receipt_sha256"))
+                for item in narrator_events
+            })
+        ):
+            raise QualificationError("qualification role timing proof is missing")
+        submitted = [item.get("submitted_at_epoch_ns") for item in planner_events]
+        if any(
+            not isinstance(item, int) or isinstance(item, bool) or item < 1
+            for item in submitted
+        ):
+            raise QualificationError("qualification role timing proof is invalid")
+        planner_starts[ticket] = min(submitted)
+        if len(narrator_events) != 1:
+            raise QualificationError("qualification final Narrator proof is ambiguous")
+        narrator_terminals[ticket] = narrator_events[0]["observed_at_epoch_ns"]
+    prepared_ms = milliseconds(
+        max(planner_starts.values()), activated,
+    )
+    activation_ms = milliseconds(activated, started)
+    ticket_ms = {
+        ticket: milliseconds(completion_times[ticket], narrator_terminals[ticket])
+        for ticket in tickets
+    }
+    cohort_ms = milliseconds(
+        max(completion_times.values()), max(narrator_terminals.values()),
+    )
+    observed = {
+        "cold_activation_ms": activation_ms,
+        "final_narrator_to_done_ms": ticket_ms,
+        "last_narrator_to_cohort_done_ms": cohort_ms,
+        "prepared_to_all_planners_ms": prepared_ms,
+        "target_max_ms": LATENCY_TARGETS_MS,
+    }
+    if (
+        activation_ms > LATENCY_TARGETS_MS["cold_activation"]
+        or prepared_ms > LATENCY_TARGETS_MS["prepared_to_all_planners"]
+        or cohort_ms > LATENCY_TARGETS_MS["last_narrator_to_cohort_done"]
+        or any(
+            value > LATENCY_TARGETS_MS["final_narrator_to_done"]
+            for value in ticket_ms.values()
+        )
+    ):
+        raise QualificationError("qualification latency target exceeded")
+    return observed
+
+
 def verify(
     manifest: dict[str, Any],
     passports: dict[str, dict[str, Any]],
@@ -234,6 +415,8 @@ def verify(
     terminals: dict[str, dict[str, Any]],
     pull_requests: dict[str, dict[str, Any]],
     ticket_caps: dict[str, int],
+    activation_receipt: dict[str, Any] | None = None,
+    narrator_run_ids: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     tickets = manifest.get("tickets")
     factory_sha = manifest.get("factory_sha")
@@ -715,6 +898,14 @@ def verify(
         or {item.get("ticket") for item in completions} != set(tickets)
     ):
         raise QualificationError("restart, relocation, or completion proof is missing")
+    latency = None
+    if not successor and target_done == 3:
+        if reconciled or emergency_reconciled or adopted:
+            raise QualificationError("qualification latency requires a fresh cohort")
+        latency = qualification_latency(
+            manifest, passports, relevant, boundaries[0], completions,
+            activation_receipt or {}, narrator_run_ids or {},
+        )
     holder = None
     acquired: set[str] = set()
     released: set[str] = set()
@@ -747,7 +938,7 @@ def verify(
     merged = [iso(pull_requests[ticket]["mergedAt"]) for ticket in tickets]
     if target_done == 4 and max(created) > min(merged):
         raise QualificationError("target PRs did not validate concurrently")
-    return {
+    report = {
         "factory_sha": factory_sha,
         "schema": SCHEMA,
         "status": "green",
@@ -755,6 +946,9 @@ def verify(
         "total_charge_micro_usd": total,
         "qualification_charge_micro_usd": qualification_total,
     }
+    if latency is not None:
+        report["latency"] = latency
+    return report
 
 
 def effective_ticket_caps(
@@ -852,10 +1046,15 @@ def main() -> None:
     parser.add_argument("--product-root", required=True, type=Path)
     parser.add_argument("--state-dir", required=True, type=Path)
     parser.add_argument("--kit-dir", required=True, type=Path)
+    parser.add_argument("--qualification-root", required=True, type=Path)
+    parser.add_argument("--project", required=True)
     args = parser.parse_args()
     try:
         product = args.product_root.resolve(strict=True)
         state = args.state_dir.resolve(strict=True)
+        qualification_root = args.qualification_root.resolve(strict=True)
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", args.project):
+            raise QualificationError("qualification project is invalid")
         manifest = json.loads(
             regular(product / "factory/QUALIFICATION.json").decode("utf-8")
         )
@@ -889,12 +1088,55 @@ def main() -> None:
             "git", "-C", str(product), "rev-parse", "origin/main"
         ).strip()
         repo = project_value(product, "GH_REPO")
-        terminals, pull_requests = {}, {}
+        terminals, pull_requests, narrator_run_ids = {}, {}, {}
+        activation_receipt = {}
+        fresh_timing = (
+            manifest.get("mode") != "successor"
+            and manifest.get("target_done") == 3
+        )
+        if fresh_timing:
+            active = json.loads(regular(
+                qualification_root / "projects"
+                / args.project / "active.json",
+                mode=0o600,
+            ).decode())
+            receipt_id = active.get("receipt_id", "")
+            if not DIGEST.fullmatch(receipt_id):
+                raise QualificationError("qualification activation receipt is invalid")
+            activation_receipt = json.loads(regular(
+                qualification_root / "receipts" / f"{receipt_id}.json",
+                mode=0o600,
+            ).decode())
+            if (
+                activation_receipt.get("receipt_id") != receipt_id
+                or activation_receipt.get("project") != args.project
+                or activation_receipt.get("kit_sha") != manifest.get("factory_sha")
+                or any(
+                    activation_receipt.get(name) != active.get(name)
+                    for name in (
+                        "kit_sha", "kit_tree", "product_sha", "product_tree",
+                        "project",
+                    )
+                )
+            ):
+                raise QualificationError("qualification activation receipt is invalid")
         for ticket in manifest["tickets"]:
             terminals[ticket] = json.loads(command(
                 "git", "-C", str(product), "show",
                 f"origin/main:factory/attestations/{ticket}/done.json",
             ))
+            if fresh_timing:
+                try:
+                    protected_terminal(product, ticket)
+                    bundle = json.loads(command(
+                        "git", "-C", str(product), "show",
+                        f"origin/main:factory/attestations/{ticket}/bundle.json",
+                    ))
+                except (json.JSONDecodeError, ProtectedTerminalError) as error:
+                    raise QualificationError(
+                        f"{ticket} protected Narrator evidence is invalid"
+                    ) from error
+                narrator_run_ids[ticket] = bundle.get("narrator_run_id", "")
             if ticket in reconciliations:
                 validate_protected_reconciliation(
                     product, ticket, reconciliations[ticket], protected,
@@ -926,26 +1168,13 @@ def main() -> None:
             events,
             terminals, pull_requests,
             effective_ticket_caps(product, args.kit_dir, manifest),
+            activation_receipt, narrator_run_ids,
         )
         report["protected_main_sha"] = protected
         report["report_sha256"] = hashlib.sha256(canonical(report).encode()).hexdigest()
         destination = state / f"qualification-report-{manifest['factory_sha']}.json"
         raw = (canonical(report) + "\n").encode()
-        try:
-            descriptor = os.open(
-                destination,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL
-                | getattr(os, "O_NOFOLLOW", 0),
-                0o600,
-            )
-        except FileExistsError:
-            if regular(destination, 0o600) != raw:
-                raise QualificationError("immutable qualification report changed")
-        else:
-            with os.fdopen(descriptor, "wb") as stream:
-                stream.write(raw)
-                stream.flush()
-                os.fsync(stream.fileno())
+        write_immutable(destination, raw)
         print(canonical(report))
     except ExternalUnavailable:
         print('{"reason_code":"external_unavailable","status":"wait"}')

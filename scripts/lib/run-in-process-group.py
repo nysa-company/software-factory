@@ -72,7 +72,10 @@ def persist_submission(path: Path, child_pid: int) -> None:
         )
         temporary = Path(name)
         os.fchmod(descriptor, 0o600)
-        os.write(descriptor, f"pid={child_pid}\n".encode())
+        os.write(
+            descriptor,
+            f"pid={child_pid}\nsubmitted_at_epoch_ns={time.time_ns()}\n".encode(),
+        )
         os.fsync(descriptor)
         os.close(descriptor)
         descriptor = -1

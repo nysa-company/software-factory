@@ -903,6 +903,17 @@ or complete lost-response state resumes. A changed artifact, missing
 predecessor, materialization remnant, active controller/provider, or unexpected
 entry refuses without deletion. This does not widen the signed safe-pause
 `--restore` boundary and adds no cleanup authority.
+Preparation durably records its start before reusable work. After the fresh
+Planner prime it atomically publishes one self-hashed `activation_complete`
+controller event bound to the exact activation receipt, Factory/product SHA and
+tree, qualification manifest, and unique restart boundary; exact replay repairs
+or preserves these boundaries and removes the temporary start record. For a
+fresh three-ticket cohort, the immutable reducer report authenticates that
+receipt, reads each Planner's exact provider-launch timestamp from its
+passport-bound terminal event, selects the protected bundle's exact final
+Narrator run, and requires one `ticket_complete` event per ticket. It derives
+the four qualification latency SLOs from those ordered boundaries and fails
+closed on missing, duplicate, reordered, or over-target evidence.
 The pre-publication controller prefix may retain only the exact owner-only
 locks and Ready receipts created while materializing the selected Backlog
 cohort. A consumed receipt is the ordinary completed prefix. One unconsumed

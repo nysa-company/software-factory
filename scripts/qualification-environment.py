@@ -19,6 +19,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 from typing import Any
 
 sys.dont_write_bytecode = True
@@ -62,6 +63,8 @@ PREPROVIDER_HANDOFF_SCHEMA = (
 PREPROVIDER_RESET_SCHEMA = "nysa.software-factory.preprovider-branch-resets/v1"
 TRANSITION_RECEIPT_SCHEMA = "nysa.software-factory.transition-receipt/v1"
 ACTIVATION_SCHEMA = "nysa.software-factory.provider-activation/v2"
+CONTROLLER_EVENT_SCHEMA = "nysa.software-factory.controller-event/v1"
+ACTIVATION_START_SCHEMA = "nysa.software-factory.qualification-activation-start/v1"
 POLICY_SCHEMA = "factory-provider-concurrency-policy/v1"
 SHA = re.compile(r"^[0-9a-f]{40}$")
 PROJECT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -914,6 +917,44 @@ def lock_preparation(project: str) -> int:
         raise EnvironmentError("qualification preparation lock is unsafe")
     fcntl.flock(descriptor, fcntl.LOCK_EX)
     return descriptor
+
+
+def activation_start(args: argparse.Namespace, observed_epoch_ns: int) -> tuple[Path, int]:
+    base = Path.home().resolve(strict=True) / ".factory/qualification"
+    path = base / f".activation-start-{args.project}.json"
+    value = {
+        "factory_root": str(args.factory_root.resolve(strict=True)),
+        "observed_at_epoch_ns": observed_epoch_ns,
+        "product_root": str(args.product_root.resolve(strict=True)),
+        "project": args.project,
+        "qualification_root": str(Path(os.path.realpath(args.root))),
+        "schema": ACTIVATION_START_SCHEMA,
+    }
+    if path.exists() or path.is_symlink():
+        stored = read(path)
+        digest = stored.pop("record_sha256", "")
+        expected = {**value, "observed_at_epoch_ns": stored.get("observed_at_epoch_ns")}
+        if (
+            stored != expected
+            or digest != hashlib.sha256(canonical(stored)).hexdigest()
+            or not isinstance(stored["observed_at_epoch_ns"], int)
+            or isinstance(stored["observed_at_epoch_ns"], bool)
+            or stored["observed_at_epoch_ns"] < 1
+        ):
+            raise EnvironmentError("qualification activation start changed")
+        return path, stored["observed_at_epoch_ns"]
+    value["record_sha256"] = hashlib.sha256(canonical(value)).hexdigest()
+    replace(path, value)
+    return path, observed_epoch_ns
+
+
+def remove_activation_start(path: Path) -> None:
+    path.unlink(missing_ok=True)
+    descriptor = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def preparation_state(root: Path, authority: Path | None, project: str) -> str:
@@ -3668,7 +3709,93 @@ def prime_qualification(release: Path, project: str) -> None:
         raise EnvironmentError("qualification Planner prime failed")
 
 
-def _prepare(args: argparse.Namespace) -> dict[str, Any]:
+def activation_events(
+    controller: Path, manifest: dict[str, Any], factory_sha: str,
+) -> tuple[Path, str, int, list[dict[str, Any]]]:
+    events = safe_directory(controller / "events")
+    manifest_sha256 = hashlib.sha256(canonical(manifest)[:-1]).hexdigest()
+    generation = manifest.get("generation")
+    if not isinstance(generation, int) or isinstance(generation, bool) or generation < 1:
+        raise EnvironmentError("qualification activation timing boundary is invalid")
+    selected = []
+    for path in events.glob("*.json"):
+        value = read(path)
+        unsigned = dict(value)
+        digest = unsigned.pop("event_sha256", "")
+        if digest != hashlib.sha256(canonical(unsigned)[:-1]).hexdigest():
+            raise EnvironmentError("qualification controller event is invalid")
+        if (
+            value.get("factory_sha") == factory_sha
+            and value.get("qualification_generation") == generation
+            and value.get("qualification_manifest_sha256") == manifest_sha256
+            and value.get("event") in {"activation_complete", "restart_boundary"}
+        ):
+            selected.append(value)
+    return events, manifest_sha256, generation, selected
+
+
+def record_activation_completion(
+    controller: Path, manifest: dict[str, Any], receipt: dict[str, Any],
+    factory_tree: str, product_sha: str, product_tree: str,
+) -> None:
+    events, manifest_sha256, generation, selected = activation_events(
+        controller, manifest, receipt["kit_sha"],
+    )
+    boundaries = [item for item in selected if item["event"] == "restart_boundary"]
+    completions = [item for item in selected if item["event"] == "activation_complete"]
+    if (
+        len(boundaries) != 1 or len(completions) > 1
+        or boundaries[0].get("tickets") != sorted(manifest["tickets"])
+    ):
+        raise EnvironmentError("qualification activation timing boundary is invalid")
+    boundary = boundaries[0]
+    started = receipt.get("activation_started_epoch_ns")
+    if not isinstance(started, int) or isinstance(started, bool) or started < 1:
+        raise EnvironmentError("qualification activation timing boundary is invalid")
+    if completions:
+        completion = completions[0]
+        expected = {
+            "activation_receipt_id": receipt["receipt_id"],
+            "activation_started_epoch_ns": started,
+            "event": "activation_complete",
+            "event_sha256": completion.get("event_sha256"),
+            "factory_sha": receipt["kit_sha"],
+            "factory_tree": factory_tree,
+            "observed_at_epoch_ns": completion.get("observed_at_epoch_ns"),
+            "product_sha": product_sha,
+            "product_tree": product_tree,
+            "qualification_generation": generation,
+            "qualification_manifest_sha256": manifest_sha256,
+            "restart_boundary_event_sha256": boundary["event_sha256"],
+            "schema": CONTROLLER_EVENT_SCHEMA,
+            "ticket": None,
+        }
+        if completion != expected or completion["observed_at_epoch_ns"] < started:
+            raise EnvironmentError("qualification activation timing boundary changed")
+        return
+    completed = max(time.time_ns(), boundary["observed_at_epoch_ns"] + 1)
+    if completed < started:
+        raise EnvironmentError("qualification activation timing clock moved backwards")
+    value = {
+        "activation_receipt_id": receipt["receipt_id"],
+        "activation_started_epoch_ns": started,
+        "event": "activation_complete",
+        "factory_sha": receipt["kit_sha"],
+        "factory_tree": factory_tree,
+        "observed_at_epoch_ns": completed,
+        "product_sha": product_sha,
+        "product_tree": product_tree,
+        "qualification_generation": generation,
+        "qualification_manifest_sha256": manifest_sha256,
+        "restart_boundary_event_sha256": boundary["event_sha256"],
+        "schema": CONTROLLER_EVENT_SCHEMA,
+        "ticket": None,
+    }
+    value["event_sha256"] = hashlib.sha256(canonical(value)[:-1]).hexdigest()
+    replace(events / f"{completed}-{os.urandom(8).hex()}.json", value)
+
+
+def _prepare(args: argparse.Namespace, started_epoch_ns: int) -> dict[str, Any]:
     root = Path(os.path.realpath(args.root))
     if not ROOT.fullmatch(str(root)):
         raise EnvironmentError("qualification root must be under /private/tmp")
@@ -3761,6 +3888,10 @@ def _prepare(args: argparse.Namespace) -> dict[str, Any]:
                 "qualification preparation artifact changed"
             ) from error
         prime_qualification(lane["release"], args.project)
+        record_activation_completion(
+            lane["controller"], manifest, lane["receipt"], tree,
+            lane["active"]["product_sha"], lane["active"]["product_tree"],
+        )
         return environment
     historical_objects = historical_pr_objects(product, origin)
     if not (expected_authority_path / "operator-bootstrap.json").exists():
@@ -3982,7 +4113,38 @@ def _prepare(args: argparse.Namespace) -> dict[str, Any]:
     )
     qualification_mode = takeover["mode"] if takeover else "isolated"
 
+    if restoring and qualification_mode == "isolated":
+        _events, _digest, _generation, timing = activation_events(
+            Path(controller_state_path), manifest, sha,
+        )
+        completions = [item for item in timing if item["event"] == "activation_complete"]
+        if len(completions) != 1:
+            raise EnvironmentError("qualification activation timing boundary is invalid")
+        started_epoch_ns = completions[0].get("activation_started_epoch_ns")
+
+    prior_receipts = list(receipts.iterdir())
+    if prior_receipts:
+        if (
+            len(prior_receipts) != 1
+            or not re.fullmatch(r"[0-9a-f]{64}[.]json", prior_receipts[0].name)
+        ):
+            raise EnvironmentError("qualification activation receipt is invalid")
+        prior_receipt_id = prior_receipts[0].stem
+        prior_receipt = read(prior_receipts[0])
+        unsigned = dict(prior_receipt)
+        if (
+            unsigned.pop("receipt_id", "") != prior_receipt_id
+            or hashlib.sha256(canonical(unsigned)).hexdigest() != prior_receipt_id
+        ):
+            raise EnvironmentError("qualification activation receipt is invalid")
+        started_epoch_ns = prior_receipt.get("activation_started_epoch_ns")
+    if (
+        not isinstance(started_epoch_ns, int) or isinstance(started_epoch_ns, bool)
+        or started_epoch_ns < 1
+    ):
+        raise EnvironmentError("qualification activation start is invalid")
     receipt_value = bind_runtime_tuple({
+        "activation_started_epoch_ns": started_epoch_ns,
         "contract_version": contract,
         "kit_sha": sha,
         "kit_tree": tree,
@@ -4069,13 +4231,21 @@ def _prepare(args: argparse.Namespace) -> dict[str, Any]:
             release, release / "scripts/factory-launch", args.project, root,
         )
         prime_qualification(release, args.project)
+        record_activation_completion(
+            Path(controller_state_path), manifest, receipt_value, tree,
+            product_sha, product_tree,
+        )
     return result
 
 
 def prepare(args: argparse.Namespace) -> dict[str, Any]:
+    observed_epoch_ns = time.time_ns()
     descriptor = lock_preparation(args.project)
     try:
-        return _prepare(args)
+        start_path, started_epoch_ns = activation_start(args, observed_epoch_ns)
+        result = _prepare(args, started_epoch_ns)
+        remove_activation_start(start_path)
+        return result
     finally:
         os.close(descriptor)
 

@@ -4133,6 +4133,33 @@ class FactoryControllerTest(unittest.TestCase):
             1,
         )
 
+    def test_attempt_terminal_preserves_exact_submission_time_once(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        claim = {"receipt": "b" * 64, "role": "planner", "ticket": "T-110"}
+        terminal = {
+            "accounting_state": "completed", "exit_status": "0",
+            "go_issued": "1", "role_exit": "ok", "run_id": "planner-1",
+            "submitted_at_epoch_ns": "123456789", "task_submitted": "1",
+        }
+        controller.emit_attempt_terminal(claim, terminal)
+        controller.emit_attempt_terminal(claim, terminal)
+        events = [
+            CONTROL.read(path) for path in sorted(self.state.glob("events/*.json"))
+        ]
+        selected = [item for item in events if item["event"] == "attempt_terminal"]
+        self.assertEqual(len(selected), 1)
+        self.assertEqual(selected[0]["submitted_at_epoch_ns"], 123456789)
+        controller.emit_attempt_terminal(
+            claim, {**terminal, "run_id": "planner-2", "submitted_at_epoch_ns": ""},
+        )
+        events = [
+            CONTROL.read(path) for path in sorted(self.state.glob("events/*.json"))
+        ]
+        self.assertIsNone(
+            next(item for item in events if item.get("run_id") == "planner-2")
+            ["submitted_at_epoch_ns"]
+        )
+
     def test_qualification_forces_real_restart_before_four_ticket_run(self) -> None:
         tickets = [f"T-{number}" for number in range(110, 114)]
         (self.product / "factory/QUALIFICATION.json").write_text(
