@@ -154,18 +154,23 @@ def validate(
         or value.get("contract_version") not in ("1.8.0", "1.9.0", "2.0.0")
         or not SHA.fullmatch(factory_sha)
         or value.get("factory_sha") != factory_sha
+        or not isinstance(capacity, int)
+        or isinstance(capacity, bool)
         or capacity not in (3, 4)
         or expected_capacity is not None and capacity != expected_capacity
-        or target not in (3, 4)
+        or not isinstance(target, int)
+        or isinstance(target, bool)
+        or target not in (1, 3, 4)
         or target > capacity
+        or target == 1 and capacity != 3
         or not isinstance(value.get("generation"), int)
         or isinstance(value.get("generation"), bool)
         or value["generation"] < 1
         or not isinstance(tickets, list)
         or len(tickets) != target
-        or len(tickets) != len(set(tickets))
         or any(not isinstance(ticket, str) or not TICKET.fullmatch(ticket)
                for ticket in tickets)
+        or len(tickets) != len(set(tickets))
         or successor and (
             capacity != 3
             or target != 3

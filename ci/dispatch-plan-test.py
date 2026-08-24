@@ -153,6 +153,7 @@ class DispatchPlanTest(unittest.TestCase):
         self, target=4, dependencies=None, successor=False,
         contract_version="1.8.0", high_budget=False,
     ):
+        capacity = 3 if target == 1 else target
         tickets = [f"T-{number}" for number in range(110, 110 + target)]
         for ticket in tickets:
             self.ticket(ticket, "normal", "Ready")
@@ -164,13 +165,13 @@ class DispatchPlanTest(unittest.TestCase):
                 )
             )
         (self.product / "factory/PROJECT.env").write_text(
-            f"TICKET_BRANCH_PREFIX=ticket/\nMAX_CONCURRENT_TICKETS={target}\n"
+            f"TICKET_BRANCH_PREFIX=ticket/\nMAX_CONCURRENT_TICKETS={capacity}\n"
             "TEST_PATHS=tests/\n"
         )
         extended_budget = successor or high_budget
         manifest = {
             "budget_usd": "300.000000" if extended_budget else "100.000000",
-            "capacity": target,
+            "capacity": capacity,
             "contract_version": contract_version,
             "factory_sha": "a" * 40,
             "generation": 1,
@@ -2589,6 +2590,49 @@ class DispatchPlanTest(unittest.TestCase):
             path.read_text().replace("Depends-On: none", "Depends-On: T-112")
         )
         with self.assertRaisesRegex(DISPATCH.DispatchError, "cycle"):
+            DISPATCH.qualification(self.product, self.product / "factory", 3)
+
+    def test_contract_18_qualification_accepts_ordinary_singleton(self):
+        tickets = self.write_contract_18_qualification(1)
+        with mock.patch.object(
+            DISPATCH, "protected_terminal",
+            side_effect=DISPATCH.ValidationError("not done"),
+        ):
+            value = DISPATCH.qualification(
+                self.product, self.product / "factory", 3
+            )
+        self.assertEqual(value["tickets"], tickets)
+        self.assertEqual(value["capacity"], 3)
+
+        path = self.product / "factory/QUALIFICATION.json"
+        manifest = json.loads(path.read_text())
+        manifest["capacity"] = 4
+        path.write_text(
+            json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n"
+        )
+        (self.product / "factory/PROJECT.env").write_text(
+            "TICKET_BRANCH_PREFIX=ticket/\nMAX_CONCURRENT_TICKETS=4\n"
+            "TEST_PATHS=tests/\n"
+        )
+        with self.assertRaisesRegex(DISPATCH.DispatchError, "manifest is invalid"):
+            DISPATCH.qualification(self.product, self.product / "factory", 4)
+
+        invalid_shapes = (
+            {**manifest, "capacity": 3.0},
+            {**manifest, "capacity": 3, "target_done": True},
+            {**manifest, "capacity": 3, "tickets": [{}]},
+        )
+        for invalid in invalid_shapes:
+            path.write_text(
+                json.dumps(invalid, sort_keys=True, separators=(",", ":")) + "\n"
+            )
+            with self.assertRaisesRegex(
+                DISPATCH.DispatchError, "manifest is invalid",
+            ):
+                DISPATCH.qualification(self.product, self.product / "factory", 3)
+
+        self.write_contract_18_qualification(1, high_budget=True)
+        with self.assertRaisesRegex(DISPATCH.DispatchError, "manifest is invalid"):
             DISPATCH.qualification(self.product, self.product / "factory", 3)
 
     def test_contract_18_qualification_accepts_high_budget_fresh_cohort(self):

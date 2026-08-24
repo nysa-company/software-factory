@@ -312,14 +312,19 @@ def qualification(
             or isinstance(value.get("generation"), bool)
             or value["generation"] < 1
             or not isinstance(tickets, list)
-            or target_done not in (3, 4)
+            or not isinstance(target_done, int)
+            or isinstance(target_done, bool)
+            or target_done not in (1, 3, 4)
             or len(tickets) != target_done
-            or len(tickets) != len(set(tickets))
             or any(
                 not isinstance(item, str) or not TICKET.fullmatch(item)
                 for item in tickets
             )
+            or len(tickets) != len(set(tickets))
+            or not isinstance(selected_capacity, int)
+            or isinstance(selected_capacity, bool)
             or selected_capacity not in (3, 4)
+            or target_done == 1 and selected_capacity != 3
             or target_done > selected_capacity
             or (
                 successor

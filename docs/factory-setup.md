@@ -263,6 +263,14 @@ provider state, ticket branches, or paid roles are created.
   Doctor refresh. Use `qualification-run` when
   approval must remain a separate human step. No manual state edit or
   agent-authored evidence is part of either workflow.
+  The fresh three-ticket report enforces the cold-activation,
+  all-Planner-submission, and last-Narrator-to-cohort-Done ceilings. It reports
+  every ticket's Narrator-to-Done observation but does not apply the
+  single-ticket ceiling to members whose closeout is sibling-coupled. Use the
+  ordinary one-ticket, capacity-three, retained-budget profile to enforce all
+  four ceilings, including final-Narrator-to-Done. Successor and extended-budget
+  profiles remain exactly three tickets. A latency refusal names the exact
+  metric, observed milliseconds, and target.
   It also provisions the exact historical run artifacts named by those
   passports from its owner-only retained closure; any absent or altered
   manifest, output, or progress journal stops preparation before a paid role.
