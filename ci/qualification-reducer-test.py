@@ -22,6 +22,12 @@ SPEC = importlib.util.spec_from_file_location(
 assert SPEC and SPEC.loader
 REDUCER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(REDUCER)
+ENVIRONMENT_SPEC = importlib.util.spec_from_file_location(
+    "qualification_environment", ROOT / "scripts/qualification-environment.py"
+)
+assert ENVIRONMENT_SPEC and ENVIRONMENT_SPEC.loader
+ENVIRONMENT = importlib.util.module_from_spec(ENVIRONMENT_SPEC)
+ENVIRONMENT_SPEC.loader.exec_module(ENVIRONMENT)
 
 
 class QualificationReducerTest(unittest.TestCase):
@@ -433,8 +439,12 @@ class QualificationReducerTest(unittest.TestCase):
             "product_sha": "c" * 40, "product_tree": "d" * 40,
             "status": "pass",
         }
+        self.assertEqual(
+            ENVIRONMENT.canonical(receipt),
+            (REDUCER.canonical(receipt) + "\n").encode(),
+        )
         receipt["receipt_id"] = hashlib.sha256(
-            (REDUCER.canonical(receipt) + "\n").encode()
+            ENVIRONMENT.canonical(receipt)
         ).hexdigest()
         activation = {
             "activation_receipt_id": receipt["receipt_id"],
@@ -672,7 +682,7 @@ class QualificationReducerTest(unittest.TestCase):
         changed_receipt["activation_started_epoch_ns"] += 1
         changed_receipt.pop("receipt_id")
         changed_receipt["receipt_id"] = hashlib.sha256(
-            (REDUCER.canonical(changed_receipt) + "\n").encode()
+            ENVIRONMENT.canonical(changed_receipt)
         ).hexdigest()
         with self.assertRaisesRegex(REDUCER.QualificationError, "activation timing"):
             REDUCER.verify(*evidence, changed_receipt, narrators, accounting, planners)
