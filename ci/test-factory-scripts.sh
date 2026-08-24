@@ -1710,6 +1710,8 @@ python3 "$ROOT/scripts/model-manager.py" activate \
   --state-root "$PINNED_STATE" --project pinned-test \
   --profile legacy-balanced-v1 --approve-hash "$LEGACY_HASH" \
   --approved-by test >/dev/null
+PINNED_READY="$TMP/pinned-ready-route"
+cp -R "$PINNED" "$PINNED_READY"
 PINNED_DOWN_GLOBAL="$TMP/pinned-down-global/global.env"
 write_backend_global "$PINNED_DOWN_GLOBAL" \
   "export FACTORY_PROBE_CLAUDE_CODE=UNAVAILABLE:pinned_outage"
@@ -1760,14 +1762,14 @@ write_backend_global "$PINNED_READY_GLOBAL" \
 : > "$PINNED_PROBE_TRACE"
 : > "$PINNED_TASK_TRACE"
 PINNED_STATUS=0
-PATH="$STUB_BIN:$PATH" FACTORY_ROOT="$PINNED" \
+PATH="$STUB_BIN:$PATH" FACTORY_ROOT="$PINNED_READY" \
   FACTORY_GLOBAL_ENV="$PINNED_READY_GLOBAL" \
   FACTORY_MODEL_STATE_ROOT="$PINNED_STATE" FACTORY_PROJECT=pinned-test \
   FACTORY_PROBE_TRACE="$PINNED_PROBE_TRACE" \
   FACTORY_TEST_TRACE="$PINNED_TASK_TRACE" \
   "$RUN_AGENT" --role planner --ticket T-219 -- "pinned ready" >/dev/null 2>&1 ||
   PINNED_STATUS=$?
-PINNED_META="$(ls "$PINNED/factory/runs/"*.meta 2>/dev/null || true)"
+PINNED_META="$(ls "$PINNED_READY/factory/runs/"*.meta 2>/dev/null || true)"
 PINNED_SHA="$(shasum -a 256 "$PINNED_PLAN" | awk '{print $1}')"
 PINNED_POLICY_HASH="$(python3 -c \
   'import json,sys; print(json.load(open(sys.argv[1]))["resolution"]["policy_hash"])' \
@@ -1781,7 +1783,7 @@ if [[ "$PINNED_STATUS" -eq 0 && -n "$PINNED_META" &&
    grep -q '^transport=native-cli$' "$PINNED_META" &&
    grep -q "^policy_hash=$PINNED_POLICY_HASH$" "$PINNED_META" &&
    grep -q "^route_plan_sha256=$PINNED_SHA$" "$PINNED_META" &&
-   [[ "$(head -n1 "$PINNED/factory/runtime-ledger.csv")" == \
+   [[ "$(head -n1 "$PINNED_READY/factory/runtime-ledger.csv")" == \
       "$(ledger_header)" ]]; then
   pass "profile changes do not affect pinned runs and manifests record provenance"
 else
