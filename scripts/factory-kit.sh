@@ -371,7 +371,8 @@ file_hash() {
 verify_installed_launcher_binding() {
   local release="$1" expected installed
   expected="$release/scripts/factory-launch"
-  if [[ "${FACTORY_KIT_TEST_MODE:-0}" == "1" ]]; then
+  if [[ "${FACTORY_KIT_TEST_MODE:-0}" == "1" &&
+        "${FACTORY_KIT_TEST_REMOTE_FULL_CI_API:-0}" != "1" ]]; then
     installed="${FACTORY_KIT_TEST_INSTALLED_LAUNCHER:-$expected}"
   else
     [[ ${FACTORY_KIT_TEST_INSTALLED_LAUNCHER+x} != x ]] ||

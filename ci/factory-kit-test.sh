@@ -421,6 +421,43 @@ for arg in "$@"; do
   case "$arg" in repos/*) endpoint="$arg" ;; esac
 done
 case "$endpoint" in
+  repos/nysa-company/software-factory/actions/workflows/ci.yml/runs\?*)
+    [[ "${FACTORY_KIT_TEST_REMOTE_FULL_CI_API:-0}" == "1" ]] || exit 2
+    if [[ "$endpoint" == *"event=push"* ]]; then
+      if [[ "${GH_REMOTE_CI_MAIN_FAILURE:-0}" == "1" ]]; then
+        printf '[{"workflow_runs":[{"id":900,"run_attempt":1,"head_sha":"%s","event":"push","head_branch":"main","status":"completed","conclusion":"failure","path":".github/workflows/ci.yml"}]}]\n' \
+          "${GH_REMOTE_CI_MAIN_SHA:?}"
+      else
+        printf '%s\n' '[{"workflow_runs":[]}]'
+      fi
+    else
+      printf '[{"workflow_runs":[{"id":901,"run_attempt":1,"head_sha":"%s","event":"pull_request","head_branch":"fixture-pr","head_repository":{"full_name":"nysa-company/software-factory"},"head_commit":{"id":"%s","tree_id":"%s"},"status":"completed","conclusion":"success","path":".github/workflows/ci.yml"}]}]\n' \
+        "${GH_REMOTE_CI_HEAD:?}" "$GH_REMOTE_CI_HEAD" "${GH_REMOTE_CI_TREE:?}"
+    fi
+    ;;
+  repos/nysa-company/software-factory/commits/*/pulls\?*)
+    [[ "${FACTORY_KIT_TEST_REMOTE_FULL_CI_API:-0}" == "1" ]] || exit 2
+    printf '[[{"number":99,"state":"closed","merged_at":"2026-08-23T00:00:00Z","merge_commit_sha":"%s","base":{"ref":"main","repo":{"full_name":"nysa-company/software-factory"}},"head":{"ref":"fixture-pr","sha":"%s","repo":{"full_name":"nysa-company/software-factory"}}}]]\n' \
+      "${GH_REMOTE_CI_MAIN_SHA:?}" "${GH_REMOTE_CI_HEAD:?}"
+    ;;
+  repos/nysa-company/software-factory/git/commits/*)
+    [[ "${FACTORY_KIT_TEST_REMOTE_FULL_CI_API:-0}" == "1" ]] || exit 2
+    printf '{"tree":{"sha":"%s"}}\n' "${GH_REMOTE_CI_TREE:?}"
+    ;;
+  repos/nysa-company/software-factory/actions/runs/901/attempts/1/jobs\?*)
+    [[ "${FACTORY_KIT_TEST_REMOTE_FULL_CI_API:-0}" == "1" ]] || exit 2
+    missing="${GH_REMOTE_CI_MISSING_GROUP:-0}"
+    printf '[{"jobs":['
+    separator=""
+    for name in scope policy linux-group-1 linux-group-2 linux-group-3 linux-group-4 \
+      macos-bash-3-group-1 macos-bash-3-group-2 macos-bash-3-group-3 \
+      macos-bash-3-group-4 macos-sealed-qualification ci test-immutability; do
+      [[ "$missing" == "1" && "$name" == "linux-group-4" ]] && continue
+      printf '%s{"id":1,"name":"%s","conclusion":"success"}' "$separator" "$name"
+      separator=,
+    done
+    printf ']}]\n'
+    ;;
   repos/nysa-company/software-factory/rulesets\?*)
     if [[ "${GH_NO_APPLICABLE_RULESET:-0}" == "1" ]]; then
       printf '%s\n' '[[{"id":102,"enforcement":"active","target":"branch"}]]'
@@ -995,11 +1032,39 @@ if [[ "$LAST_OUTPUT" == *"exact successful GitHub CI evidence is required"* &&
 else
   fail "missing install evidence fails before local suite execution" "$LAST_OUTPUT"
 fi
-export FACTORY_KIT_TEST_REMOTE_FULL_CI=1
-expect_success "second exact release publishes portably" \
+export FACTORY_KIT_TEST_REMOTE_FULL_CI_API=1
+export GH_REMOTE_CI_MAIN_SHA="$SHA_B"
+export GH_REMOTE_CI_HEAD="eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+export GH_REMOTE_CI_TREE="0000000000000000000000000000000000000000"
+expect_failure "tree-mismatched PR CI cannot substitute for main CI" \
   install --repo "$KIT_REPO" --sha "$SHA_B"
+GH_REMOTE_CI_TREE="$(git -C "$KIT_REPO" rev-parse "$SHA_B^{tree}")"
+export GH_REMOTE_CI_TREE GH_REMOTE_CI_MISSING_GROUP=1
+expect_failure "partial PR CI cannot substitute for full CI" \
+  install --repo "$KIT_REPO" --sha "$SHA_B"
+unset GH_REMOTE_CI_MISSING_GROUP
+: > "$GH_TRACE"
+export GH_REMOTE_CI_MAIN_FAILURE=1
+expect_failure "failed main CI cannot fall back to older PR evidence" \
+  install --repo "$KIT_REPO" --sha "$SHA_B"
+if ! grep -q '/pulls' "$GH_TRACE"; then
+  pass "failed main CI remains authoritative"
+else
+  fail "failed main CI remains authoritative" "$LAST_OUTPUT"
+fi
+unset GH_REMOTE_CI_MAIN_FAILURE
+: > "$GH_TRACE"
+expect_success "tree-identical PR full CI publishes the second release" \
+  install --repo "$KIT_REPO" --sha "$SHA_B"
+if grep -q "commits/$GH_REMOTE_CI_HEAD/check-runs" "$GH_TRACE" &&
+   ! grep -q "commits/$SHA_B/check-runs" "$GH_TRACE"; then
+  pass "tree-identical PR evidence verifies only its exact head checks"
+else
+  fail "tree-identical PR evidence verifies only its exact head checks" "$LAST_OUTPUT"
+fi
+unset FACTORY_KIT_TEST_REMOTE_FULL_CI_API GH_REMOTE_CI_MAIN_SHA
+unset GH_REMOTE_CI_HEAD GH_REMOTE_CI_TREE
 unset FACTORY_KIT_TEST_PUBLISH_TRACE
-unset FACTORY_KIT_TEST_REMOTE_FULL_CI
 if [[ "$(json_value "$STATE/manifests/$SHA_B.suite.json" verification_source)" == "github-actions-full" ]] &&
    [[ "$(json_value "$STATE/manifests/$SHA_B.suite.json" remote_evidence_id)" =~ ^[0-9a-f]{64}$ ]]; then
   pass "verified remote full CI replaces only the local full suite"
