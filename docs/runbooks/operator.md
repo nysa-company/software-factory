@@ -661,6 +661,42 @@ recovery and automation interface.
 
 ## Preparing and activating a release
 
+### Recovering one stale qualification attempt across releases
+
+When an older immutable Contract 2 lane cannot reconcile its provider attempt,
+use an exact protected-main successor only through the sealed recovery
+transaction. Keep the old controller stopped and plan one ticket/run at a time:
+
+```bash
+bash scripts/factory-kit.sh qualification recover-plan \
+  --project <project> --root <qualification-root> \
+  --product <absolute-product-path> \
+  --repo <absolute-clean-factory-checkout> --sha <candidate> \
+  --operator-id <operator-id> --ticket T-NNN --failed-run <run-id>
+
+bash scripts/factory-kit.sh qualification recover-apply \
+  --project <project> --root <qualification-root> \
+  --product <absolute-product-path> \
+  --repo <absolute-clean-factory-checkout> --sha <candidate> \
+  --operator-id <operator-id> --ticket T-NNN --failed-run <run-id> \
+  --approve-hash <plan-approval-sha256>
+```
+
+The plan binds both Factory identities, the product identity, lane authority,
+provider database, runtime and durable ledgers, exact attempt, claim, lease,
+and nested cancellation preview. Apply revalidates under controller and
+dispatch-admission locks, then uses the sealed successor helper with a scrubbed
+environment. Replay returns the retained receipts without charging twice. This
+includes a durable request whose receipt was interrupted. The nested helper
+inherits and validates the outer transaction's exact locked controller and
+dispatch-admission descriptors, so a parent exit cannot expose cleanup and
+recovery creates no shared directory-lock residue. Historical provider
+identity compatibility is accepted only when the sealed source Factory,
+manifest kit, lane product, and authoritative provider row agree. This does not
+upgrade, reset, or retire the lane; repeat for each named attempt and then use
+the old lane's sealed finisher and Doctor. Never copy the successor helper into
+the old release or edit coordinator, ledger, claim, lease, or lock state.
+
 ### Migrating a drained qualification lane
 
 Use the sealed transaction for an already prepared, drained isolated successor

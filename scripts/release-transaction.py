@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import fcntl
 import hashlib
 import importlib.util
@@ -36,12 +37,22 @@ QUALIFICATION_PLAN_SCHEMA = "nysa.software-factory.qualification-migration-plan/
 QUALIFICATION_JOURNAL_SCHEMA = "nysa.software-factory.qualification-migration-journal/v1"
 QUALIFICATION_RESULT_SCHEMA = "nysa.software-factory.qualification-migration-result/v1"
 QUALIFICATION_RECEIPT_SCHEMA = "nysa.software-factory.qualification-migration-receipt/v1"
+QUALIFICATION_RECOVERY_PLAN_SCHEMA = (
+    "nysa.software-factory.qualification-attempt-recovery-plan/v1"
+)
+QUALIFICATION_RECOVERY_RECEIPT_SCHEMA = (
+    "nysa.software-factory.qualification-attempt-recovery-receipt/v1"
+)
+QUALIFICATION_RECOVERY_RESULT_SCHEMA = (
+    "nysa.software-factory.qualification-attempt-recovery-result/v1"
+)
 QUALIFICATION_BUDGET_MS = 60_000
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 SAFE_ID = re.compile(r"[a-z0-9][a-z0-9._-]{0,127}\Z")
 PROJECT = re.compile(r"[a-z0-9][a-z0-9-]{0,62}\Z")
 TICKET = re.compile(r"T-[0-9]+\Z")
+RUN_ID = re.compile(r"[A-Za-z0-9._-]{1,200}\Z")
 TICKET_STATES = frozenset({
     "Awaiting Approval", "Approved", "Backlog", "Blocked-Escalated",
     "Building", "Canceled", "Done", "Planning", "Ready", "Review",
@@ -49,6 +60,7 @@ TICKET_STATES = frozenset({
 _RETIRED_RUNTIME = "her" + "mes"
 _CUTOVER_LOCK_FD: int | None = None
 _PROCESS_STARTED = time.monotonic()
+TRANSACTION_ROOT = Path(__file__).resolve().parents[1]
 
 
 class ReleaseError(ValueError):
@@ -774,15 +786,28 @@ def run(
     arguments: list[str], label: str, *, environment: dict[str, str] | None = None,
     timeout: float = 1800,
 ) -> str:
-    pass_fds = (
-        (_CUTOVER_LOCK_FD,)
-        if _CUTOVER_LOCK_FD is not None and environment is not None
+    pass_fds: list[int] = []
+    if (
+        _CUTOVER_LOCK_FD is not None and environment is not None
         and environment.get("FACTORY_HOST_CUTOVER_LOCK_FD") == str(_CUTOVER_LOCK_FD)
-        else ()
-    )
+    ):
+        pass_fds.append(_CUTOVER_LOCK_FD)
+    for name in (
+        "FACTORY_DISPATCH_ADMISSION_LOCK_FD",
+        "FACTORY_QUALIFICATION_CONTROLLER_LOCK_FD",
+    ):
+        if environment is not None and name in environment:
+            try:
+                descriptor = int(environment[name])
+                if descriptor < 0:
+                    raise ValueError
+                os.fstat(descriptor)
+            except (ValueError, OSError) as error:
+                raise ReleaseError("qualification lock capability is invalid") from error
+            pass_fds.append(descriptor)
     result = subprocess.run(
         arguments, text=True, capture_output=True, check=False, timeout=timeout,
-        env=environment, pass_fds=pass_fds,
+        env=environment, pass_fds=tuple(sorted(set(pass_fds))),
     )
     if result.returncode:
         raise ReleaseError(f"{label} failed")
@@ -836,7 +861,45 @@ def release_preflight(
 
 
 def git(root: Path, *arguments: str) -> str:
-    return run(["git", "-C", str(root), *arguments], "Git identity").strip()
+    environment = {
+        "PATH": "/usr/bin:/bin", "LC_ALL": "C",
+        "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_NO_LAZY_FETCH": "1", "GIT_NO_REPLACE_OBJECTS": "1",
+    }
+    partial = subprocess.run([
+        "/usr/bin/git", "-c", "core.fsmonitor=false", "-c",
+        "core.hooksPath=/dev/null", "-c", "credential.helper=", "-C",
+        str(root), "config", "--local", "--no-includes", "--get-regexp",
+        r"^(include([.]path|if[.].*[.]path)|extensions[.]partialclone|remote[.].*[.](promisor|partialclonefilter))$",
+    ], text=True, capture_output=True, check=False, timeout=30, env=environment)
+    enabled = subprocess.run([
+        "/usr/bin/git", "-c", "core.fsmonitor=false", "-c",
+        "core.hooksPath=/dev/null", "-c", "credential.helper=", "-C",
+        str(root), "config", "--local", "--no-includes", "--bool", "--get",
+        "extensions.worktreeConfig",
+    ], text=True, capture_output=True, check=False, timeout=30, env=environment)
+    worktree: subprocess.CompletedProcess[str] | None = None
+    if enabled.returncode == 0 and enabled.stdout.strip() == "true":
+        worktree = subprocess.run([
+            "/usr/bin/git", "-c", "core.fsmonitor=false", "-c",
+            "core.hooksPath=/dev/null", "-c", "credential.helper=", "-C",
+            str(root), "config", "--worktree", "--no-includes", "--get-regexp",
+            r"^(include([.]path|if[.].*[.]path)|extensions[.]partialclone|remote[.].*[.](promisor|partialclonefilter))$",
+        ], text=True, capture_output=True, check=False, timeout=30, env=environment)
+    if (
+        partial.returncode not in (0, 1) or partial.stdout.strip()
+        or enabled.returncode not in (0, 1)
+        or enabled.returncode == 0 and enabled.stdout.strip() not in {"true", "false"}
+        or worktree is not None and (
+            worktree.returncode not in (0, 1) or worktree.stdout.strip()
+        )
+    ):
+        raise ReleaseError("Git identity may not use partial or promisor objects")
+    return run([
+        "/usr/bin/git", "-c", "core.fsmonitor=false", "-c",
+        "core.hooksPath=/dev/null", "-c", "credential.helper=", "-C",
+        str(root), *arguments,
+    ], "Git identity", environment=environment).strip()
 
 
 def clean_identity(root: Path, label: str) -> tuple[str, str, str]:
@@ -849,10 +912,128 @@ def clean_identity(root: Path, label: str) -> tuple[str, str, str]:
     tree = git(root, "rev-parse", "HEAD^{tree}")
     if not SHA.fullmatch(sha) or not SHA.fullmatch(tree):
         raise ReleaseError(f"{label} identity is invalid")
-    origin = git(root, "remote", "get-url", "origin")
+    origin = git(root, "config", "--local", "--no-includes", "--get", "remote.origin.url")
     if not origin or re.search(r"[A-Za-z][A-Za-z0-9+.-]*://[^/\s]+@", origin):
         raise ReleaseError(f"{label} origin is unsafe")
     return sha, tree, origin
+
+
+def directory_git_tree(root: Path) -> str:
+    with tempfile.TemporaryDirectory(prefix="qualification-tree.") as raw:
+        repository = Path(raw) / "repo.git"
+        index = Path(raw) / "index"
+        environment = {
+            "PATH": "/usr/bin:/bin", "LC_ALL": "C",
+            "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_INDEX_FILE": str(index), "GIT_NO_LAZY_FETCH": "1",
+            "GIT_NO_REPLACE_OBJECTS": "1",
+        }
+        for arguments in (
+            ("init", "--bare", "-q", str(repository)),
+            ("--git-dir", str(repository), "config", "core.bare", "false"),
+            ("--git-dir", str(repository), "--work-tree", str(root), "read-tree", "--empty"),
+            ("--git-dir", str(repository), "--work-tree", str(root), "add", "-f", "-A", "--", "."),
+        ):
+            run(["/usr/bin/git", *arguments], "sealed Factory tree", environment=environment)
+        return run([
+            "/usr/bin/git", "--git-dir", str(repository), "--work-tree", str(root),
+            "write-tree",
+        ], "sealed Factory tree", environment=environment).strip()
+
+
+def factory_object_git(root: Path, *arguments: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+    environment = {
+        "PATH": "/usr/bin:/bin", "LC_ALL": "C",
+        "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_NO_LAZY_FETCH": "1", "GIT_NO_REPLACE_OBJECTS": "1",
+    }
+    common = git(root, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    objects = (Path(common).resolve(strict=True) / "objects").resolve(strict=True)
+    if "\n" in str(objects):
+        raise ReleaseError("Factory candidate object database is invalid")
+    if not objects.is_dir():
+        raise ReleaseError("Factory candidate object database is invalid")
+    with tempfile.TemporaryDirectory(prefix="qualification-objects.") as raw:
+        repository = Path(raw) / "repo.git"
+        run(["/usr/bin/git", "init", "--bare", "-q", str(repository)],
+            "Factory object verifier", environment=environment)
+        environment["GIT_OBJECT_DIRECTORY"] = str(objects)
+        result = subprocess.run(
+            ["/usr/bin/git", "--git-dir", str(repository), *arguments],
+            text=True, capture_output=True, check=False, timeout=30,
+            env=environment,
+        )
+        if check and result.returncode:
+            raise ReleaseError(result.stderr.strip() or "Factory object verification failed")
+        return result
+
+
+def factory_worktree_tree(root: Path, expected_tree: str) -> str:
+    common = git(root, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    objects = (Path(common).resolve(strict=True) / "objects").resolve(strict=True)
+    if any(character in str(objects) for character in "\r\n") or not objects.is_dir():
+        raise ReleaseError("Factory candidate object database is invalid")
+    with tempfile.TemporaryDirectory(prefix="qualification-index.") as raw:
+        repository = Path(raw) / "repo.git"
+        environment = {
+            "PATH": "/usr/bin:/bin", "LC_ALL": "C",
+            "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_INDEX_FILE": str(Path(raw) / "index"),
+            "GIT_OBJECT_DIRECTORY": str(repository / "objects"),
+            "GIT_NO_LAZY_FETCH": "1", "GIT_NO_REPLACE_OBJECTS": "1",
+        }
+        run(["/usr/bin/git", "init", "--bare", "-q", str(repository)],
+            "Factory worktree verifier", environment={
+                key: value for key, value in environment.items()
+                if not key.startswith("GIT_OBJECT") and not key.startswith("GIT_ALTERNATE")
+            })
+        (repository / "objects/info/alternates").write_text(
+            str(objects) + "\n", encoding="utf-8",
+        )
+        for arguments in (
+            ("read-tree", expected_tree),
+            ("add", "-A", "--", "."),
+        ):
+            run([
+                "/usr/bin/git", "--git-dir", str(repository),
+                "--work-tree", str(root), *arguments,
+            ], "Factory worktree verifier", environment=environment)
+        return run([
+            "/usr/bin/git", "--git-dir", str(repository),
+            "--work-tree", str(root), "write-tree",
+        ], "Factory worktree verifier", environment=environment).strip()
+
+
+def factory_ref_identity(root: Path, label: str) -> tuple[str, str, str]:
+    physical = root.resolve(strict=True)
+    if physical != root or git(root, "rev-parse", "--show-toplevel") != str(root):
+        raise ReleaseError(f"{label} must be an exact physical Git root")
+    sha = git(root, "rev-parse", "HEAD")
+    origin = git(root, "config", "--local", "--no-includes", "--get", "remote.origin.url")
+    committed_tree = factory_object_git(root, "rev-parse", f"{sha}^{{tree}}").stdout.strip()
+    transaction_tree = directory_git_tree(TRANSACTION_ROOT)
+    worktree_tree = factory_worktree_tree(root, committed_tree)
+    if (
+        not SHA.fullmatch(sha) or not SHA.fullmatch(committed_tree) or not origin
+        or worktree_tree != committed_tree or transaction_tree != committed_tree
+    ):
+        raise ReleaseError(f"{label} identity is invalid")
+    return sha, committed_tree, origin
+
+
+def canonical_factory_origin(origin: str) -> str:
+    value = origin.removesuffix(".git")
+    for prefix in (
+        "https://github.com/", "http://github.com/", "ssh://git@github.com/",
+        "git@github.com:",
+    ):
+        if value.startswith(prefix):
+            return "github.com/" + value[len(prefix):]
+    if value.startswith("file://"):
+        return "file://" + str(Path(value[7:]).resolve(strict=True))
+    if value.startswith("/"):
+        return str(Path(value).resolve(strict=True))
+    return value
 
 
 def capacity(product: Path) -> int:
@@ -1000,12 +1181,158 @@ def command_environment(
     environment.pop("FACTORY_HOST_CUTOVER_RESERVATION", None)
     environment.pop("FACTORY_MAINTENANCE_OWNER", None)
     environment.pop("FACTORY_HOST_CUTOVER_LOCK_FD", None)
+    for name in (
+        "FACTORY_QUALIFICATION_INSTALL_AUTH_DESCRIPTOR",
+        "FACTORY_QUALIFICATION_INSTALL_REPO",
+    ):
+        environment.pop(name, None)
     environment["FACTORY_KITS_ROOT"] = str(kits_root)
     if cutover_lock and _CUTOVER_LOCK_FD is not None:
         environment["FACTORY_HOST_CUTOVER_LOCK_FD"] = str(_CUTOVER_LOCK_FD)
     if runtime is not None:
         environment["PATH"] = f"{runtime}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
     return environment
+
+
+def qualification_command_environment(
+    kits_root: Path, runtime: Path | None = None, *, cutover_lock: bool = False,
+) -> dict[str, str]:
+    environment = command_environment(kits_root, runtime, cutover_lock=cutover_lock)
+    for name in ("GH_TOKEN", "GITHUB_TOKEN", "GH_CONFIG_DIR", "GIT_ASKPASS"):
+        environment.pop(name, None)
+    return environment
+
+
+def qualification_install_descriptor(
+    raw_descriptor: str, sha: str, tree: str,
+) -> tuple[dict[str, Any], bytes]:
+    if not raw_descriptor:
+        raise ReleaseError("qualification install capability is unavailable")
+    descriptor = Path(raw_descriptor)
+    if not descriptor.is_absolute():
+        raise ReleaseError("qualification install capability is invalid")
+    try:
+        raw = secure_regular_bytes(descriptor, "qualification install capability")
+        value = json.loads(raw)
+    except (UnicodeError, json.JSONDecodeError) as error:
+        raise ReleaseError("qualification install capability is invalid") from error
+    basic = {"install_repo", "schema", "sha", "tree"}
+    authenticated = basic | {
+        "config", "gh", "gh_identity", "git_askpass", "token", "trusted_bin",
+    }
+    if not isinstance(value, dict) or set(value) not in (basic, authenticated) or (
+        value["schema"] != "nysa.software-factory.qualification-install/v1"
+        or value["sha"] != sha or value["tree"] != tree
+    ):
+        raise ReleaseError("qualification install capability is invalid")
+    workspace = secure_directory(descriptor.parent.resolve(strict=True))
+    workspace_info = workspace.lstat()
+    descriptor_info = descriptor.lstat()
+    install_repo = Path(str(value["install_repo"]))
+    if (
+        descriptor.parent != workspace or stat.S_IMODE(workspace_info.st_mode) != 0o700
+        or descriptor_info.st_nlink != 1
+        or stat.S_IMODE(descriptor_info.st_mode) != 0o600
+        or not install_repo.is_absolute()
+    ):
+        raise ReleaseError("qualification install capability is invalid")
+    raw_install_repo = install_repo
+    install_repo = install_repo.resolve(strict=True)
+    if (
+        raw_install_repo != install_repo or install_repo.parent != workspace
+        or stat.S_IMODE(install_repo.lstat().st_mode) != 0o700
+    ):
+        raise ReleaseError("qualification install capability is invalid")
+    value["descriptor_path"] = str(descriptor)
+    value["install_repo"] = str(install_repo)
+    if set(value) == basic | {"descriptor_path"}:
+        if os.environ.get("FACTORY_KIT_TEST_MODE") != "1":
+            raise ReleaseError("qualification install authentication is unavailable")
+        return value, raw
+    paths = {
+        name: Path(str(value[name]))
+        for name in (
+            "config", "gh", "git_askpass", "token", "trusted_bin",
+        )
+    }
+    if any(not path.is_absolute() for path in paths.values()):
+        raise ReleaseError("qualification install capability is invalid")
+    trusted_bin = secure_directory(paths["trusted_bin"].resolve(strict=True))
+    config = secure_directory(paths["config"].resolve(strict=True))
+    token_path = paths["token"].resolve(strict=True)
+    askpass = paths["git_askpass"].resolve(strict=True)
+    gh = paths["gh"].resolve(strict=True)
+    if (
+        paths["trusted_bin"] != trusted_bin or paths["config"] != config
+        or paths["token"] != token_path or paths["git_askpass"] != askpass
+        or paths["gh"] != gh
+        or trusted_bin.parent != workspace or config.parent != workspace
+        or token_path.parent != workspace or askpass.parent != trusted_bin
+        or (trusted_bin / "gh").resolve(strict=True) != gh
+        or stat.S_IMODE(trusted_bin.lstat().st_mode) != 0o700
+        or stat.S_IMODE(config.lstat().st_mode) != 0o700
+    ):
+        raise ReleaseError("qualification install capability is invalid")
+    secure_regular_bytes(askpass, "qualification install askpass", executable=True)
+    if stat.S_IMODE(askpass.lstat().st_mode) != 0o700:
+        raise ReleaseError("qualification install capability is invalid")
+    gh_info = gh.lstat()
+    gh_identity = value["gh_identity"]
+    if (
+        not isinstance(gh_identity, dict)
+        or set(gh_identity) != {"dev", "ino", "mode", "mtime_ns", "size"}
+        or any(not isinstance(item, int) for item in gh_identity.values())
+        or not stat.S_ISREG(gh_info.st_mode)
+        or gh_info.st_uid not in (0, os.geteuid())
+        or gh_info.st_mode & 0o022 or not os.access(gh, os.X_OK)
+        or gh_identity != {
+            "dev": gh_info.st_dev, "ino": gh_info.st_ino, "mode": gh_info.st_mode,
+            "mtime_ns": gh_info.st_mtime_ns, "size": gh_info.st_size,
+        }
+    ):
+        raise ReleaseError("qualification install GitHub CLI is unsafe")
+    token_info = token_path.lstat()
+    if (
+        not stat.S_ISREG(token_info.st_mode) or token_info.st_uid != os.geteuid()
+        or token_info.st_nlink != 1 or stat.S_IMODE(token_info.st_mode) != 0o600
+        or token_info.st_size > 4096
+    ):
+        raise ReleaseError("qualification install capability is invalid")
+    value.update({
+        "config": str(config), "gh": str(gh), "git_askpass": str(askpass),
+        "token": str(token_path), "trusted_bin": str(trusted_bin),
+    })
+    return value, raw
+
+
+def consume_qualification_install_token(
+    value: dict[str, Any], expected_descriptor: bytes,
+) -> dict[str, str]:
+    descriptor = Path(value["descriptor_path"])
+    if secure_regular_bytes(
+        descriptor, "qualification install capability",
+    ) != expected_descriptor:
+        raise ReleaseError("qualification install capability changed")
+    token_value = value.get("token")
+    if token_value is None:
+        descriptor.unlink()
+        sync_directory(descriptor.parent)
+        return {}
+    token_path = Path(token_value)
+    try:
+        token = secure_regular_bytes(token_path, "qualification install token").decode()
+    except UnicodeError as error:
+        raise ReleaseError("qualification install capability is invalid") from error
+    if not token or any(character.isspace() for character in token):
+        raise ReleaseError("qualification install capability is invalid")
+    descriptor.unlink()
+    token_path.unlink()
+    sync_directory(descriptor.parent)
+    return {
+        "GH_CONFIG_DIR": value["config"], "GH_TOKEN": token,
+        "GIT_ASKPASS": value["git_askpass"], "GIT_TERMINAL_PROMPT": "0",
+        "PATH": f"{value['trusted_bin']}:/usr/bin:/bin",
+    }
 
 
 def launcher_environment(kits_root: Path, runtime: Path) -> dict[str, str]:
@@ -3743,7 +4070,9 @@ def qualification_basis(
         raise ReleaseError("qualification root must be under /private/tmp")
     repo = repo.resolve(strict=True)
     product = product.resolve(strict=True)
-    factory_sha, factory_tree, factory_origin = clean_identity(repo, "Factory candidate")
+    factory_sha, factory_tree, factory_origin = factory_ref_identity(
+        repo, "Factory candidate",
+    )
     product_sha, product_tree, product_origin = clean_identity(product, "product")
     if factory_sha != sha:
         raise ReleaseError("Factory candidate does not match qualification SHA")
@@ -3757,15 +4086,15 @@ def qualification_basis(
         raise ReleaseError("qualification migration inputs are not exact protected main")
     if secure_regular_bytes(product / "factory/KIT_PIN", "product KIT_PIN") != (sha + "\n").encode():
         raise ReleaseError("product pin does not match qualification SHA")
-    module = qualification_module(repo)
+    module = qualification_module(TRANSACTION_ROOT)
     try:
         contract_version = json.loads(
-            (repo / "factory-contract.json").read_text(encoding="utf-8")
+            (TRANSACTION_ROOT / "factory-contract.json").read_text(encoding="utf-8")
         ).get("contract_version")
         manifest = module.qualification_manifest(product, sha)
         module.validate_selected_contracts(product, manifest)
         source = module.validate_upgrade_source(
-            root, project, repo, product, sha, contract_version, manifest,
+            root, project, TRANSACTION_ROOT, product, sha, contract_version, manifest,
         )
     except (OSError, ValueError) as error:
         raise ReleaseError(str(error)) from error
@@ -3833,7 +4162,7 @@ def qualification_runtime_child(
             sys.executable, "-I", "-S",
             str(repo / "scripts/owner-runtime-pin.py"), "check",
             "--journal", str(journal),
-        ], "qualification runtime replay", environment=command_environment(kits_root),
+        ], "qualification runtime replay", environment=qualification_command_environment(kits_root),
             timeout=timeout)
         previous = current.get("plan")
         if (
@@ -3848,7 +4177,7 @@ def qualification_runtime_child(
         "plan", "--product", str(product), "--runtime-bin", str(runtime_bin),
         "--target-bin", str(runtime_root / "bin"),
     ], text=True, capture_output=True, check=False,
-        env=command_environment(kits_root), timeout=timeout)
+        env=qualification_command_environment(kits_root), timeout=timeout)
     if result.returncode:
         detail = result.stderr.strip().removeprefix("ERROR: ").strip()
         if detail.startswith("runtime mismatch for "):
@@ -3895,7 +4224,7 @@ def qualification_provider_child(
     checked = subprocess.run(
         ["bash", str(kit), "provider-cli-pin", "check", "--sha", sha],
         text=True, capture_output=True, check=False,
-        env=command_environment(kits_root), timeout=timeout,
+        env=qualification_command_environment(kits_root), timeout=timeout,
     )
     if checked.returncode == 0:
         try:
@@ -4228,7 +4557,7 @@ def apply_qualification_plan(
                 str(sealed_release / "scripts/owner-runtime-pin.py"),
                 "apply", "--plan", str(runtime_plan), "--approve-hash",
                 runtime["plan"]["approval_sha256"],
-            ], "qualification runtime apply", environment=command_environment(kits_root),
+            ], "qualification runtime apply", environment=qualification_command_environment(kits_root),
                 timeout=timer.remaining_seconds()))
         else:
             timer.phase("runtime", lambda: run_json([
@@ -4238,7 +4567,7 @@ def apply_qualification_plan(
                     Path(request["root"]) / "project-runtimes"
                     / request["project"] / "runtime-pin-journal.json"
                 ),
-            ], "qualification runtime replay", environment=command_environment(
+            ], "qualification runtime replay", environment=qualification_command_environment(
                 kits_root,
             ), timeout=timer.remaining_seconds()))
         qualification_journal_update(journal_path, plan, "runtime_ready", timer.timings)
@@ -4260,13 +4589,13 @@ def apply_qualification_plan(
                     "--cursor-bin", candidates["agent"],
                     "--operator-id", request["operator_id"],
                     "--approve-hash", provider["plan"]["approval_sha256"],
-                ], "qualification provider CLI apply", environment=command_environment(
+                ], "qualification provider CLI apply", environment=qualification_command_environment(
                     kits_root, cutover_lock=True,
                 ), timeout=timer.remaining_seconds())
             evidence = run_json([
                 "bash", str(sealed_release / "scripts/factory-kit.sh"),
                 "provider-cli-pin", "check", "--sha", request["sha"],
-            ], "qualification provider CLI replay", environment=command_environment(
+            ], "qualification provider CLI replay", environment=qualification_command_environment(
                 kits_root, cutover_lock=True,
             ), timeout=timer.remaining_seconds())
             if provider["action"] == "reuse" and evidence != provider["evidence"]:
@@ -4284,7 +4613,7 @@ def apply_qualification_plan(
             fallback, fallback_sha = timer.phase(
                 "fallback_readiness",
                 lambda: qualification_fallback(
-                    module, Path(request["repo"]), Path(request["root"]),
+                    module, TRANSACTION_ROOT, Path(request["root"]),
                     request["project"], Path(request["product"]),
                     state / "fallback-scratch", timer.remaining_seconds(),
                 ),
@@ -4303,7 +4632,7 @@ def apply_qualification_plan(
             result = subprocess.run(
                 arguments, text=True, capture_output=True, check=False,
                 timeout=timer.remaining_seconds(),
-                env=command_environment(kits_root, Path(request["root"]) / "project-runtimes" / request["project"] / "bin"),
+                env=qualification_command_environment(kits_root, Path(request["root"]) / "project-runtimes" / request["project"] / "bin"),
             )
             try:
                 value = json.loads(result.stdout)
@@ -4379,6 +4708,10 @@ def apply_qualification_plan(
 
 def _qualification_upgrade_locked(args: argparse.Namespace) -> dict[str, Any]:
     timer = QualificationTimer(started=getattr(args, "process_started", None))
+    raw_install_descriptor = os.environ.pop(
+        "FACTORY_QUALIFICATION_INSTALL_AUTH_DESCRIPTOR", "",
+    )
+    os.environ.pop("FACTORY_QUALIFICATION_INSTALL_REPO", None)
     root = Path(os.path.realpath(args.root))
     product = args.product.resolve(strict=True)
     repo = args.repo.resolve(strict=True)
@@ -4415,16 +4748,37 @@ def _qualification_upgrade_locked(args: argparse.Namespace) -> dict[str, Any]:
     )
     runtime = timer.phase(
         "runtime_preview", lambda: qualification_runtime_child(
-            repo, product, root, args.kits_root.resolve(), args.project, runtime_bin,
+            TRANSACTION_ROOT, product, root, args.kits_root.resolve(), args.project, runtime_bin,
             timeout=timer.remaining_seconds(),
         ),
     )
-    timer.phase("sealed_install", lambda: run([
-        "bash", str(repo / "scripts/factory-kit.sh"), "install", "--sha", args.sha,
-        "--repo", str(repo),
-    ], "sealed qualification candidate install",
-        environment=command_environment(args.kits_root.resolve()),
-        timeout=timer.remaining_seconds()))
+    capability, descriptor_bytes = qualification_install_descriptor(
+        raw_install_descriptor, args.sha, identity["factory_tree"],
+    )
+    install_repo = Path(capability["install_repo"])
+    install_sha, install_tree, install_origin = clean_identity(
+        install_repo, "private qualification install source",
+    )
+    if (
+        (install_sha, install_tree) != (args.sha, identity["factory_tree"])
+        or canonical_factory_origin(install_origin)
+        != canonical_factory_origin(identity["factory_origin"])
+    ):
+        raise ReleaseError("private qualification install source identity changed")
+    install_environment = qualification_command_environment(args.kits_root.resolve())
+    install_auth = consume_qualification_install_token(capability, descriptor_bytes)
+    install_environment.update(install_auth)
+    try:
+        timer.phase("sealed_install", lambda: run([
+            "bash", str(TRANSACTION_ROOT / "scripts/factory-kit.sh"), "install", "--sha", args.sha,
+            "--repo", str(install_repo),
+        ], "sealed qualification candidate install",
+            environment=install_environment,
+            timeout=timer.remaining_seconds()))
+    finally:
+        install_environment.clear()
+        if install_auth is not None:
+            install_auth.clear()
     kit = args.kits_root.resolve() / "releases" / args.sha / "scripts/factory-kit.sh"
     provider = timer.phase(
         "provider_cli_preview", lambda: qualification_provider_child(
@@ -4436,7 +4790,7 @@ def _qualification_upgrade_locked(args: argparse.Namespace) -> dict[str, Any]:
     fallback_scratch = secure_directory(state / "fallback-scratch", create=True)
     fallback, fallback_sha = timer.phase(
         "fallback_readiness", lambda: qualification_fallback(
-            module, repo, root, args.project, product, fallback_scratch,
+            module, TRANSACTION_ROOT, root, args.project, product, fallback_scratch,
             timer.remaining_seconds(),
         ),
     )
@@ -4506,6 +4860,400 @@ def qualification_resume(args: argparse.Namespace) -> dict[str, Any]:
         release_cutover_lock(descriptor)
 
 
+def qualification_recovery_state(
+    root: Path, project: str, sha: str, ticket: str, run_id: str,
+) -> Path:
+    return root / "recoveries" / project / sha / ticket / run_id
+
+
+def qualification_recovery_environment(
+    lane: dict[str, Any], admission_descriptor: int | None = None,
+    controller_descriptor: int | None = None,
+) -> dict[str, str]:
+    source_sha = lane["active"].get("kit_sha", "")
+    project = lane["active"].get("project", "")
+    if not SHA.fullmatch(source_sha) or not PROJECT.fullmatch(project):
+        raise ReleaseError("qualification recovery source identity is invalid")
+    environment = {
+        "HOME": str(Path.home().resolve(strict=True)),
+        "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+        "FACTORY_PROVIDER_DB": str(
+            lane["provider"] / "accounting/state-v2.sqlite3"
+        ),
+        "FACTORY_LEDGER": str(lane["active"]["runtime_ledger_path"]),
+        "FACTORY_DURABLE_LEDGER": str(lane["product"] / "factory/ledger.csv"),
+        "FACTORY_CROSS_RELEASE_SOURCE_SHA": source_sha,
+        "FACTORY_CROSS_RELEASE_PRODUCT_ID": f"{project}:{source_sha}",
+        "FACTORY_DISPATCH_ADMISSION_LOCK": str(
+            lane["root"] / "worktrees" / project / ".dispatch-admission.lock"
+        ),
+    }
+    if "TMPDIR" in os.environ:
+        environment["TMPDIR"] = os.environ["TMPDIR"]
+    if (admission_descriptor is None) != (controller_descriptor is None):
+        raise ReleaseError("qualification lock capability is incomplete")
+    if admission_descriptor is not None and controller_descriptor is not None:
+        environment.update({
+            "FACTORY_DISPATCH_ADMISSION_LOCK_FD": str(admission_descriptor),
+            "FACTORY_QUALIFICATION_CONTROLLER_LOCK": str(
+                lane["controller"] / "reconcile.lock"
+            ),
+            "FACTORY_QUALIFICATION_CONTROLLER_LOCK_FD": str(
+                controller_descriptor
+            ),
+        })
+    return environment
+
+
+def qualification_attempt_cancel(
+    transaction_root: Path, lane: dict[str, Any], arguments: list[str], label: str,
+    admission_descriptor: int | None = None,
+    controller_descriptor: int | None = None,
+) -> dict[str, Any]:
+    return run_json(
+        [sys.executable, str(transaction_root / "scripts/attempt-cancel.py"), *arguments],
+        label, environment=qualification_recovery_environment(
+            lane, admission_descriptor, controller_descriptor,
+        ), timeout=30,
+    )
+
+
+def qualification_recovery_manifest(path: Path) -> dict[str, str]:
+    try:
+        text = secure_regular_bytes(path, "qualification recovery manifest").decode()
+    except UnicodeError as error:
+        raise ReleaseError("qualification recovery manifest is invalid") from error
+    values: dict[str, str] = {}
+    for line in text.splitlines():
+        key, separator, value = line.partition("=")
+        if not separator or not key or key in values:
+            raise ReleaseError("qualification recovery manifest is invalid")
+        values[key] = value
+    return values
+
+
+def qualification_recovery_row(path: Path, run_id: str) -> dict[str, str]:
+    try:
+        text = secure_regular_bytes(path, "qualification runtime ledger").decode()
+        rows = [row for row in csv.DictReader(text.splitlines()) if row.get("run_id") == run_id]
+    except (UnicodeError, csv.Error) as error:
+        raise ReleaseError("qualification runtime ledger is invalid") from error
+    if len(rows) != 1:
+        raise ReleaseError("qualification recovery run is not uniquely recorded")
+    return rows[0]
+
+
+def qualification_recovery_optional_digest(path: Path, label: str) -> str | None:
+    if not path.exists() and not path.is_symlink():
+        return None
+    return hashlib.sha256(secure_regular_bytes(path, label)).hexdigest()
+
+
+def qualification_recovery_identity(
+    args: argparse.Namespace,
+) -> tuple[dict[str, Any], Any, dict[str, Any], Path]:
+    if (
+        not PROJECT.fullmatch(args.project) or not SHA.fullmatch(args.sha)
+        or not TICKET.fullmatch(args.ticket) or not RUN_ID.fullmatch(args.failed_run)
+        or not SAFE_ID.fullmatch(args.operator_id) or args.operator_id == "auto"
+    ):
+        raise ReleaseError("qualification recovery identity is invalid")
+    repo = args.repo.resolve(strict=True)
+    root = Path(os.path.realpath(args.root))
+    product = args.product.resolve(strict=True)
+    candidate_sha, candidate_tree, candidate_origin = factory_ref_identity(
+        repo, "Factory recovery candidate",
+    )
+    if candidate_sha != args.sha or contract(TRANSACTION_ROOT) != "2.0.0":
+        raise ReleaseError("Factory recovery candidate identity changed")
+    if (
+        os.environ.get("FACTORY_KIT_TEST_MODE") != "1"
+        and git(repo, "rev-parse", "refs/remotes/origin/main") != candidate_sha
+    ):
+        raise ReleaseError("Factory recovery candidate is not exact protected main")
+    module = qualification_module(TRANSACTION_ROOT)
+    try:
+        lane = module.qualification_lane(root, args.project)
+    except (OSError, ValueError) as error:
+        raise ReleaseError(str(error)) from error
+    if lane["product"] != product or args.ticket not in lane["manifest"]["tickets"]:
+        raise ReleaseError("qualification recovery does not belong to the active cohort")
+    source_sha = lane["active"].get("kit_sha", "")
+    source_tree = lane["active"].get("kit_tree", "")
+    source_object = factory_object_git(
+        repo, "rev-parse", f"{source_sha}^{{tree}}", check=False,
+    )
+    ancestry = factory_object_git(
+        repo, "merge-base", "--is-ancestor", source_sha, candidate_sha,
+        check=False,
+    )
+    if (
+        not SHA.fullmatch(source_sha) or not SHA.fullmatch(source_tree)
+        or source_object.returncode != 0 or source_object.stdout.strip() != source_tree
+        or ancestry.returncode != 0 or contract(lane["release"]) != "2.0.0"
+    ):
+        raise ReleaseError("Factory recovery candidate is not a valid source successor")
+    active_path = root / f"projects/{args.project}/active.json"
+    receipt_path = root / "receipts" / f"{lane['active']['receipt_id']}.json"
+    authority_path = lane["authority"] / "authority.json"
+    immutable = {
+        "active_sha256": file_digest(active_path),
+        "authority_sha256": file_digest(authority_path),
+        "candidate_origin": candidate_origin,
+        "candidate_sha": candidate_sha,
+        "candidate_tree": candidate_tree,
+        "contract_version": "2.0.0",
+        "durable_ledger_path": str(product / "factory/ledger.csv"),
+        "kit_pin_sha256": file_digest(product / "factory/KIT_PIN"),
+        "manifest_sha256": file_digest(product / "factory/QUALIFICATION.json"),
+        "product_origin": lane["receipt"]["product_origin"],
+        "product_path": str(product),
+        "product_sha": lane["active"]["product_sha"],
+        "product_tree": lane["active"]["product_tree"],
+        "provider_database_path": str(lane["provider"] / "accounting/state-v2.sqlite3"),
+        "receipt_sha256": file_digest(receipt_path),
+        "runtime_ledger_path": lane["active"]["runtime_ledger_path"],
+        "source_sha": source_sha,
+        "source_tree": source_tree,
+    }
+    return immutable, module, lane, repo
+
+
+def qualification_recovery_attempt(
+    _identity_repo: Path, lane: dict[str, Any], ticket: str, run_id: str,
+) -> dict[str, Any]:
+    runs = lane["product"] / "factory/runs"
+    request_path = runs / f"{run_id}.cancel-request.json"
+    receipt_path = runs / f"{run_id}.cancel.json"
+    if request_path.exists() or request_path.is_symlink():
+        request = safe_state(request_path, "attempt cancellation request")
+        nested = request.get("plan")
+        validated = qualification_attempt_cancel(TRANSACTION_ROOT, lane, [
+            "request", "--factory-root", str(lane["product"]), "--ticket", ticket,
+            "--run-id", run_id,
+        ], "qualification cancellation request")
+        if (
+            not isinstance(nested, dict)
+            or validated.get("preview_hash") != nested.get("preview_hash")
+        ):
+            raise ReleaseError("qualification cancellation replay is invalid")
+        if receipt_path.exists() or receipt_path.is_symlink():
+            receipt = qualification_attempt_cancel(TRANSACTION_ROOT, lane, [
+                "receipt", "--factory-root", str(lane["product"]), "--ticket", ticket,
+                "--run-id", run_id,
+            ], "qualification cancellation receipt")
+            if receipt.get("preview_hash") != nested.get("preview_hash"):
+                raise ReleaseError("qualification cancellation replay is invalid")
+    elif receipt_path.exists() or receipt_path.is_symlink():
+        raise ReleaseError("qualification cancellation replay is incomplete")
+    else:
+        nested = qualification_attempt_cancel(TRANSACTION_ROOT, lane, [
+            "preview", "--factory-root", str(lane["product"]), "--ticket", ticket,
+            "--run-id", run_id, "--reason", "operator_requested",
+        ], "qualification cancellation preview")
+    manifest = qualification_recovery_manifest(
+        runs / f"{run_id}.meta",
+    )
+    provider_attempt = manifest.get("provider_attempt_id", "")
+    if not SAFE_ID.fullmatch(provider_attempt):
+        raise ReleaseError("qualification provider attempt identity is invalid")
+    status = run_json([
+        sys.executable, str(TRANSACTION_ROOT / "scripts/provider-coordinator.py"),
+        "--db", str(lane["provider"] / "accounting/state-v2.sqlite3"),
+        "status", "--attempt-id", provider_attempt,
+    ], "qualification provider attempt status",
+        environment=qualification_recovery_environment(lane), timeout=30)
+    attempts = status.get("attempts")
+    if (
+        not isinstance(attempts, list) or len(attempts) != 1
+        or not isinstance(attempts[0], dict)
+        or attempts[0].get("attempt_id") != provider_attempt
+    ):
+        raise ReleaseError("qualification provider attempt identity is invalid")
+    runtime = Path(lane["active"]["runtime_ledger_path"])
+    claim = runtime.parent / ".active-runs" / f"{ticket}.{manifest.get('role', '')}.lock/owner"
+    lease = lane["product"] / f"factory/.dispatch-leases/{ticket}.json"
+    return {
+        "active_claim_sha256": qualification_recovery_optional_digest(
+            claim, "qualification active-run owner",
+        ),
+        "dispatch_lease_sha256": qualification_recovery_optional_digest(
+            lease, "qualification dispatch lease",
+        ),
+        "nested_plan": nested,
+        "provider_attempt": attempts[0],
+        "provider_attempt_sha256": digest(attempts[0]),
+        "runtime_ledger_row": qualification_recovery_row(runtime, run_id),
+    }
+
+
+def validate_qualification_recovery_plan(plan: dict[str, Any]) -> None:
+    body = {key: value for key, value in plan.items() if key != "approval_sha256"}
+    request = plan.get("request")
+    if (
+        set(plan) != {
+            "approval_sha256", "attempt", "created_epoch", "expires_epoch",
+            "identity", "request", "schema", "status",
+        }
+        or plan.get("schema") != QUALIFICATION_RECOVERY_PLAN_SCHEMA
+        or plan.get("status") != "planned"
+        or not DIGEST.fullmatch(str(plan.get("approval_sha256", "")))
+        or plan["approval_sha256"] != digest(body)
+        or not isinstance(request, dict)
+        or set(request) != {
+            "operator_id", "product", "project", "repo", "root", "sha",
+            "ticket", "failed_run",
+        }
+        or not isinstance(plan.get("identity"), dict)
+        or not isinstance(plan.get("attempt"), dict)
+        or not isinstance(plan.get("created_epoch"), int)
+        or not isinstance(plan.get("expires_epoch"), int)
+        or plan["expires_epoch"] <= plan["created_epoch"]
+    ):
+        raise ReleaseError("qualification recovery plan is invalid")
+
+
+def qualification_recovery_plan(args: argparse.Namespace) -> dict[str, Any]:
+    identity, _module, lane, repo = qualification_recovery_identity(args)
+    state = qualification_recovery_state(
+        lane["root"], args.project, args.sha, args.ticket, args.failed_run,
+    )
+    latest = state / "latest.json"
+    if latest.exists() or latest.is_symlink():
+        plan = safe_state(latest, "qualification recovery plan")
+        validate_qualification_recovery_plan(plan)
+        if plan["request"] != {
+            "operator_id": args.operator_id, "product": str(lane["product"]),
+            "project": args.project, "repo": str(repo), "root": str(lane["root"]),
+            "sha": args.sha, "ticket": args.ticket, "failed_run": args.failed_run,
+        }:
+            raise ReleaseError("qualification recovery plan belongs to another request")
+        runs = lane["product"] / "factory/runs"
+        begun = any(
+            (runs / f"{args.failed_run}.{suffix}.json").exists()
+            for suffix in ("cancel-request", "cancel")
+        )
+        if plan["expires_epoch"] > int(time.time()) or begun:
+            return {"plan": plan, "schema": QUALIFICATION_RECOVERY_RESULT_SCHEMA,
+                    "status": "approval_required"}
+    now = int(time.time())
+    plan = seal_plan({
+        "attempt": qualification_recovery_attempt(repo, lane, args.ticket, args.failed_run),
+        "created_epoch": now, "expires_epoch": now + 900,
+        "identity": identity,
+        "request": {
+            "operator_id": args.operator_id, "product": str(lane["product"]),
+            "project": args.project, "repo": str(repo), "root": str(lane["root"]),
+            "sha": args.sha, "ticket": args.ticket, "failed_run": args.failed_run,
+        },
+        "schema": QUALIFICATION_RECOVERY_PLAN_SCHEMA, "status": "planned",
+    })
+    validate_qualification_recovery_plan(plan)
+    immutable = state / "plans" / f"{plan['approval_sha256']}.json"
+    if immutable.exists() or immutable.is_symlink():
+        if safe_state(immutable, "qualification recovery plan") != plan:
+            raise ReleaseError("qualification recovery plan conflicts")
+    else:
+        atomic_json(immutable, plan)
+    atomic_json(latest, plan)
+    return {"plan": plan, "schema": QUALIFICATION_RECOVERY_RESULT_SCHEMA,
+            "status": "approval_required"}
+
+
+def qualification_recovery_receipt(
+    state: Path, plan: dict[str, Any], nested: dict[str, Any], nested_path: Path,
+) -> dict[str, Any]:
+    body = {
+        "approval_sha256": plan["approval_sha256"],
+        "candidate_sha": plan["identity"]["candidate_sha"],
+        "nested_receipt_sha256": file_digest(nested_path),
+        "nested_result": nested,
+        "product_sha": plan["identity"]["product_sha"],
+        "run_id": plan["request"]["failed_run"],
+        "schema": QUALIFICATION_RECOVERY_RECEIPT_SCHEMA,
+        "source_sha": plan["identity"]["source_sha"],
+        "ticket": plan["request"]["ticket"],
+    }
+    receipt = {**body, "receipt_sha256": digest(body)}
+    path = state / "receipt.json"
+    if path.exists() or path.is_symlink():
+        if safe_state(path, "qualification recovery receipt") != receipt:
+            raise ReleaseError("qualification recovery receipt changed")
+    else:
+        atomic_json(path, receipt)
+    return receipt
+
+
+def qualification_recovery_apply(args: argparse.Namespace) -> dict[str, Any]:
+    identity, module, lane, repo = qualification_recovery_identity(args)
+    state = qualification_recovery_state(
+        lane["root"], args.project, args.sha, args.ticket, args.failed_run,
+    )
+    if not DIGEST.fullmatch(args.approve_hash):
+        raise ReleaseError("qualification recovery approval does not match")
+    plan = safe_state(
+        state / "plans" / f"{args.approve_hash}.json",
+        "qualification recovery plan",
+    )
+    validate_qualification_recovery_plan(plan)
+    if plan["approval_sha256"] != args.approve_hash:
+        raise ReleaseError("qualification recovery approval does not match")
+    if plan["request"] != {
+        "operator_id": args.operator_id, "product": str(lane["product"]),
+        "project": args.project, "repo": str(repo), "root": str(lane["root"]),
+        "sha": args.sha, "ticket": args.ticket, "failed_run": args.failed_run,
+    } or plan["identity"] != identity:
+        raise ReleaseError("qualification recovery immutable inputs changed")
+    controllers: list[int] = []
+    admission: list[int] = []
+    try:
+        controllers = module.lock_controllers(lane["controller"])
+        admission = module.lock_dispatch_admission(lane, lane)
+        if len(controllers) != 1 or len(admission) != 1:
+            raise ReleaseError("qualification lock capability is unavailable")
+        identity, _module, lane, repo = qualification_recovery_identity(args)
+        if plan["identity"] != identity:
+            raise ReleaseError("qualification recovery immutable inputs changed")
+        runs = lane["product"] / "factory/runs"
+        request_path = runs / f"{args.failed_run}.cancel-request.json"
+        nested_receipt_path = runs / f"{args.failed_run}.cancel.json"
+        begun = request_path.exists() and not request_path.is_symlink()
+        completed = nested_receipt_path.exists() and not nested_receipt_path.is_symlink()
+        if completed and not begun:
+            raise ReleaseError("qualification cancellation replay is incomplete")
+        if not begun and not completed:
+            if plan["expires_epoch"] <= int(time.time()):
+                raise ReleaseError("qualification recovery approval plan is stale")
+            if qualification_recovery_attempt(
+                repo, lane, args.ticket, args.failed_run,
+            ) != plan["attempt"]:
+                raise ReleaseError("qualification recovery attempt changed after approval")
+        elif begun:
+            request = safe_state(request_path, "attempt cancellation request")
+            if request.get("plan") != plan["attempt"].get("nested_plan"):
+                raise ReleaseError("attempt cancellation request belongs to another plan")
+        nested_plan_path = state / "nested-plan.json"
+        atomic_json(nested_plan_path, plan["attempt"]["nested_plan"])
+        try:
+            nested = qualification_attempt_cancel(TRANSACTION_ROOT, lane, [
+                "apply", "--factory-root", str(lane["product"]),
+                "--plan", str(nested_plan_path), "--preview-hash",
+                plan["attempt"]["nested_plan"]["preview_hash"],
+            ], "qualification cancellation apply", admission[0], controllers[0])
+        finally:
+            nested_plan_path.unlink(missing_ok=True)
+        receipt = qualification_recovery_receipt(
+            state, plan, nested, nested_receipt_path,
+        )
+        return {"receipt": receipt, "schema": QUALIFICATION_RECOVERY_RESULT_SCHEMA,
+                "status": "recovered"}
+    finally:
+        for descriptor in admission:
+            os.close(descriptor)
+        for descriptor in controllers:
+            os.close(descriptor)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--kits-root", required=True, type=Path)
@@ -4543,6 +5291,18 @@ def main() -> int:
     qualification_resume_parser.add_argument("--project", required=True)
     qualification_resume_parser.add_argument("--sha", required=True)
     qualification_resume_parser.add_argument("--approved-by", required=True)
+    for name in ("qualification-recover-plan", "qualification-recover-apply"):
+        recovery_parser = commands.add_parser(name)
+        recovery_parser.add_argument("--project", required=True)
+        recovery_parser.add_argument("--root", required=True, type=Path)
+        recovery_parser.add_argument("--product", required=True, type=Path)
+        recovery_parser.add_argument("--repo", required=True, type=Path)
+        recovery_parser.add_argument("--sha", required=True)
+        recovery_parser.add_argument("--operator-id", required=True)
+        recovery_parser.add_argument("--ticket", required=True)
+        recovery_parser.add_argument("--failed-run", required=True)
+        if name.endswith("apply"):
+            recovery_parser.add_argument("--approve-hash", required=True)
     args = parser.parse_args()
     args.process_started = _PROCESS_STARTED
     qualification_command = args.command.startswith("qualification-")
@@ -4577,14 +5337,22 @@ def main() -> int:
             ):
                 raise ReleaseError("qualification migration operator is invalid")
             result = qualification_upgrade(args)
-        else:
+        elif args.command == "qualification-resume":
             result = qualification_resume(args)
+        elif args.command == "qualification-recover-plan":
+            result = qualification_recovery_plan(args)
+        else:
+            result = qualification_recovery_apply(args)
         print(json.dumps(result, sort_keys=True, separators=(",", ":")))
         return 0
     except (FileNotFoundError, OSError, ReleaseError, subprocess.SubprocessError) as error:
         result = {
             "error": str(error),
-            "schema": QUALIFICATION_RESULT_SCHEMA if qualification_command else RESULT_SCHEMA,
+            "schema": (
+                QUALIFICATION_RECOVERY_RESULT_SCHEMA
+                if args.command.startswith("qualification-recover-")
+                else QUALIFICATION_RESULT_SCHEMA if qualification_command else RESULT_SCHEMA
+            ),
             "status": "error",
         }
         if isinstance(getattr(error, "reason_code", None), str):

@@ -64,6 +64,15 @@ PRODUCT_CERTIFICATION_HOST_LOAD_END=""
 CERTIFICATION_CACHE_INPUT=""
 CERTIFICATION_CACHE_OUTPUT=""
 PROVIDER_CONCURRENCY_EVIDENCE=""
+QUALIFICATION_TRANSACTION_ROOT=""
+QUALIFICATION_CANDIDATE_TREE=""
+QUALIFICATION_GITHUB_TOKEN=""
+QUALIFICATION_GITHUB_BINARY=""
+QUALIFICATION_GITHUB_CONFIG=""
+QUALIFICATION_TRUSTED_BIN=""
+QUALIFICATION_INSTALL_REPO=""
+QUALIFICATION_INSTALL_AUTH_DESCRIPTOR=""
+TRUSTED_GIT=/usr/bin/git
 
 say() { printf '%s\n' "$*"; }
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
@@ -234,6 +243,8 @@ Usage:
   $PROGRAM release abort  --project SLUG --sha FULL_SHA --approved-by ID
   $PROGRAM qualification upgrade --project SLUG --root QUALIFICATION_ROOT --product PRODUCT_REPO --repo KIT_REPO --sha FULL_SHA --runtime-bin NODE_BIN_DIR --operator-id ID
   $PROGRAM qualification resume --project SLUG --sha FULL_SHA --approved-by ID
+  $PROGRAM qualification recover-plan --project SLUG --root QUALIFICATION_ROOT --product PRODUCT_REPO --repo KIT_REPO --sha FULL_SHA --operator-id ID --ticket T-NNN --failed-run RUN
+  $PROGRAM qualification recover-apply --project SLUG --root QUALIFICATION_ROOT --product PRODUCT_REPO --repo KIT_REPO --sha FULL_SHA --operator-id ID --ticket T-NNN --failed-run RUN --approve-hash HASH
 
 FACTORY_KITS_ROOT overrides the default state root (~/.factory/kits).
 EOF
@@ -1011,21 +1022,56 @@ git_tree_for_directory() {
   local directory="$1" object_dir index tree
   object_dir="$(mktemp -d "${TMPDIR:-/tmp}/factory-kit-objects.XXXXXX")"
   index="$object_dir/index"
-  git init --bare -q "$object_dir/repo.git"
-  git --git-dir="$object_dir/repo.git" config core.bare false
-  GIT_INDEX_FILE="$index" git --git-dir="$object_dir/repo.git" \
+  /usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C GIT_NO_LAZY_FETCH=1 GIT_NO_REPLACE_OBJECTS=1 "$TRUSTED_GIT" \
+    init --bare -q "$object_dir/repo.git"
+  /usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C GIT_NO_LAZY_FETCH=1 GIT_NO_REPLACE_OBJECTS=1 "$TRUSTED_GIT" \
+    --git-dir="$object_dir/repo.git" config core.bare false
+  /usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C GIT_NO_LAZY_FETCH=1 GIT_NO_REPLACE_OBJECTS=1 GIT_INDEX_FILE="$index" \
+    "$TRUSTED_GIT" --git-dir="$object_dir/repo.git" \
     --work-tree="$directory" read-tree --empty
-  GIT_INDEX_FILE="$index" git --git-dir="$object_dir/repo.git" \
+  /usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C GIT_NO_LAZY_FETCH=1 GIT_NO_REPLACE_OBJECTS=1 GIT_INDEX_FILE="$index" \
+    "$TRUSTED_GIT" --git-dir="$object_dir/repo.git" \
     --work-tree="$directory" add -f -A -- .
-  tree="$(GIT_INDEX_FILE="$index" git --git-dir="$object_dir/repo.git" \
+  tree="$(/usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C GIT_NO_LAZY_FETCH=1 GIT_NO_REPLACE_OBJECTS=1 GIT_INDEX_FILE="$index" \
+    "$TRUSTED_GIT" --git-dir="$object_dir/repo.git" \
     --work-tree="$directory" write-tree)"
   rm -rf "$object_dir"
   printf '%s\n' "$tree"
 }
 
+git_tree_for_worktree() {
+  local source="$1" directory="$2" expected="$3" object_dir index objects tree
+  object_dir="$(mktemp -d "${TMPDIR:-/tmp}/factory-kit-index.XXXXXX")"
+  remember_temp "$object_dir"
+  index="$object_dir/index"
+  objects="$(absolute_dir "$source/.git/objects")"
+  [[ "$objects" != *$'\n'* && "$objects" != *$'\r'* ]] ||
+    die "qualification object database path is invalid"
+  /usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C GIT_CONFIG_GLOBAL=/dev/null \
+    GIT_CONFIG_NOSYSTEM=1 GIT_NO_LAZY_FETCH=1 GIT_NO_REPLACE_OBJECTS=1 \
+    "$TRUSTED_GIT" init --bare -q "$object_dir/repo.git"
+  builtin printf '%s\n' "$objects" > "$object_dir/repo.git/objects/info/alternates"
+  /usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C GIT_CONFIG_GLOBAL=/dev/null \
+    GIT_CONFIG_NOSYSTEM=1 GIT_NO_LAZY_FETCH=1 GIT_NO_REPLACE_OBJECTS=1 \
+    GIT_INDEX_FILE="$index" GIT_OBJECT_DIRECTORY="$object_dir/repo.git/objects" \
+    "$TRUSTED_GIT" \
+    --git-dir="$object_dir/repo.git" --work-tree="$directory" read-tree "$expected"
+  /usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C GIT_CONFIG_GLOBAL=/dev/null \
+    GIT_CONFIG_NOSYSTEM=1 GIT_NO_LAZY_FETCH=1 GIT_NO_REPLACE_OBJECTS=1 \
+    GIT_INDEX_FILE="$index" GIT_OBJECT_DIRECTORY="$object_dir/repo.git/objects" \
+    "$TRUSTED_GIT" \
+    --git-dir="$object_dir/repo.git" --work-tree="$directory" add -A -- .
+  tree="$(/usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C GIT_CONFIG_GLOBAL=/dev/null \
+    GIT_CONFIG_NOSYSTEM=1 GIT_NO_LAZY_FETCH=1 GIT_NO_REPLACE_OBJECTS=1 \
+    GIT_INDEX_FILE="$index" GIT_OBJECT_DIRECTORY="$object_dir/repo.git/objects" \
+    "$TRUSTED_GIT" \
+    --git-dir="$object_dir/repo.git" --work-tree="$directory" write-tree)"
+  printf '%s\n' "$tree"
+}
+
 materialize_git_tree() {
   local source="$1" sha="$2" destination="$3"
-  python3 - "$source" "$sha" "$destination" <<'PY'
+  /usr/bin/python3 -I -S - "$source" "$sha" "$destination" <<'PY'
 import os
 import pathlib
 import re
@@ -1034,11 +1080,20 @@ import subprocess
 import sys
 
 source, sha, destination = sys.argv[1:]
+git = "/usr/bin/git"
+environment = {
+    "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_NO_LAZY_FETCH": "1",
+    "GIT_NO_REPLACE_OBJECTS": "1",
+    "LC_ALL": "C", "PATH": "/usr/bin:/bin",
+}
 root = pathlib.Path(destination).resolve()
 listing = subprocess.run(
-    ["git", "-C", source, "ls-tree", "-rz", "--full-tree", sha],
+    [git, "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
+     "-C", source, "ls-tree", "-rz", "--full-tree", sha],
     check=True,
     stdout=subprocess.PIPE,
+    env=environment,
 ).stdout
 for record in listing.split(b"\0"):
     if not record:
@@ -1058,9 +1113,11 @@ for record in listing.split(b"\0"):
     if target.is_symlink() or target.exists():
         raise SystemExit("duplicate or unsafe path in Git tree")
     content = subprocess.run(
-        ["git", "-C", source, "cat-file", "blob", object_id],
+        [git, "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
+         "-C", source, "cat-file", "blob", object_id],
         check=True,
         stdout=subprocess.PIPE,
+        env=environment,
     ).stdout
     if mode == "120000":
         os.symlink(os.fsdecode(content), target)
@@ -1075,7 +1132,7 @@ PY
 }
 
 verify_symlinks_contained() {
-  python3 - "$1" <<'PY'
+  /usr/bin/python3 -I -S - "$1" <<'PY'
 import os
 import pathlib
 import sys
@@ -1090,7 +1147,7 @@ PY
 }
 
 verify_read_only() {
-  python3 - "$1" <<'PY'
+  /usr/bin/python3 -I -S - "$1" <<'PY'
 import os
 import pathlib
 import stat
@@ -1106,7 +1163,7 @@ PY
 }
 
 seal_release_contents_for_publish() {
-  python3 - "$1" <<'PY'
+  /usr/bin/python3 -I -S - "$1" <<'PY'
 import os, pathlib, stat, sys
 root = pathlib.Path(sys.argv[1])
 paths = list(root.rglob("*"))
@@ -1401,7 +1458,7 @@ verify_release_from_manifest() {
 contract_version() {
   local release="$1" value=""
   if [[ -f "$release/factory-contract.json" ]]; then
-    value="$(python3 - "$release/factory-contract.json" <<'PY'
+    value="$(/usr/bin/python3 -I -S - "$release/factory-contract.json" <<'PY'
 import json, sys
 try:
     value = json.load(open(sys.argv[1]))
@@ -5085,9 +5142,354 @@ cmd_release_abort() {
     --project "$project" --sha "$sha" --approved-by "$approver"
 }
 
+qualification_candidate_git() {
+  /usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C \
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_NO_LAZY_FETCH=1 GIT_NO_REPLACE_OBJECTS=1 \
+    "$TRUSTED_GIT" -c core.fsmonitor=false -c core.hooksPath=/dev/null "$@"
+}
+
+validate_qualification_git() {
+  /usr/bin/python3 -I -S - "$TRUSTED_GIT" <<'PY' ||
+import os, pathlib, stat, sys
+path = pathlib.Path(sys.argv[1])
+info = path.lstat()
+if (
+    path.is_symlink() or not stat.S_ISREG(info.st_mode)
+    or info.st_uid != 0 or info.st_mode & 0o022
+    or not os.access(path, os.X_OK)
+):
+    raise SystemExit(1)
+PY
+    die "trusted Git executable is unsafe"
+}
+
+qualification_gh_binary() {
+  local candidate physical
+  if [[ -n "${FACTORY_KIT_TEST_QUALIFICATION_GH:-}" ]]; then
+    [[ "${FACTORY_KIT_TEST_MODE:-0}" == "1" &&
+       "${FACTORY_TRUSTED_TEST_HARNESS:-0}" == "1" ]] ||
+      die "qualification GitHub binary override requires the trusted test harness"
+    candidate="$FACTORY_KIT_TEST_QUALIFICATION_GH"
+    [[ "$candidate" == /* ]] || die "qualification GitHub binary is unsafe"
+    physical="$(/usr/bin/python3 -I -S -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$candidate")"
+  else
+    for candidate in /opt/homebrew/bin/gh /usr/local/bin/gh /usr/bin/gh; do
+      [[ -e "$candidate" || -L "$candidate" ]] || continue
+      physical="$(/usr/bin/python3 -I -S -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$candidate")"
+      break
+    done
+  fi
+  [[ -n "${physical:-}" ]] || die "trusted GitHub CLI is unavailable"
+  /usr/bin/python3 -I -S - "$physical" <<'PY' ||
+import os, pathlib, stat, sys
+path = pathlib.Path(sys.argv[1])
+info = path.lstat()
+if (
+    path.is_symlink() or not stat.S_ISREG(info.st_mode)
+    or info.st_uid not in (0, os.geteuid()) or info.st_mode & 0o022
+    or not os.access(path, os.X_OK)
+):
+    raise SystemExit(1)
+PY
+    die "trusted GitHub CLI is unsafe"
+  printf '%s\n' "$physical"
+}
+
+qualification_gh_config() {
+  local configured="${FACTORY_KIT_TEST_QUALIFICATION_GH_CONFIG:-}"
+  /usr/bin/python3 -I -S - "$configured" <<'PY' ||
+import os, pathlib, pwd, stat, sys
+configured = sys.argv[1]
+if configured:
+    if not (
+        os.environ.get("FACTORY_KIT_TEST_MODE") == "1"
+        and os.environ.get("FACTORY_TRUSTED_TEST_HARNESS") == "1"
+    ):
+        raise SystemExit(1)
+    root = pathlib.Path(configured)
+else:
+    root = pathlib.Path(pwd.getpwuid(os.geteuid()).pw_dir) / ".config/gh"
+root = pathlib.Path(os.path.abspath(root))
+for directory in (root.parent, root):
+    info = directory.lstat()
+    if (
+        directory.is_symlink() or not stat.S_ISDIR(info.st_mode)
+        or info.st_uid != os.geteuid() or info.st_mode & 0o022
+    ):
+        raise SystemExit(1)
+hosts = root / "hosts.yml"
+info = hosts.lstat()
+if (
+    hosts.is_symlink() or not stat.S_ISREG(info.st_mode)
+    or info.st_uid != os.geteuid() or info.st_nlink != 1
+    or stat.S_IMODE(info.st_mode) != 0o600
+):
+    raise SystemExit(1)
+print(root)
+PY
+    die "standard GitHub authentication config is unsafe"
+}
+
+qualification_github_token() {
+  local gh="$1" config="$2" token="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
+  if [[ -z "$token" ]]; then
+    [[ -n "$config" ]] || die "GitHub authentication for qualification is unavailable"
+    token="$(/usr/bin/env -i HOME="$(dirname "$(dirname "$config")")" \
+      PATH=/usr/bin:/bin GH_CONFIG_DIR="$config" GH_PROMPT_DISABLED=1 \
+      "$gh" auth token --hostname github.com 2>/dev/null || true)"
+  fi
+  [[ -n "$token" && "$token" != *$'\n'* && "$token" != *$'\r'* &&
+     "$token" != *$'\t'* && "$token" != *' '* ]] ||
+    die "GitHub authentication for qualification is unavailable"
+  QUALIFICATION_GITHUB_TOKEN="$token"
+}
+
+validate_qualification_candidate() {
+  local repo="$1" sha="$2" gh_config="$3" physical top head remote_main live_main unsafe
+  local worktree_config worktree_status
+  validate_sha "$sha"
+  validate_qualification_git
+  [[ "$repo" == /* ]] || die "qualification Factory candidate path must be absolute"
+  physical="$(absolute_dir "$repo")"
+  [[ "$repo" == "$physical" ]] ||
+    die "qualification Factory candidate must be an exact physical path"
+  reject_symlink_path_components "$physical" ||
+    die "qualification Factory candidate path contains a symlink"
+  top="$(qualification_candidate_git -C "$physical" rev-parse --show-toplevel 2>/dev/null || true)"
+  [[ "$top" == "$physical" ]] ||
+    die "qualification Factory candidate must be an exact Git root"
+  if unsafe="$(qualification_candidate_git -C "$physical" config --local --no-includes \
+      --get-regexp '^(include([.]path|if[.].*[.]path)|extensions[.]partialclone|remote[.].*[.](promisor|partialclonefilter))$' 2>/dev/null)"; then
+    [[ -z "$unsafe" ]] ||
+      die "qualification Factory candidate may not use partial or promisor objects"
+  else
+    worktree_status=$?
+    [[ "$worktree_status" == "1" ]] ||
+      die "qualification Factory candidate configuration is invalid"
+  fi
+  if worktree_config="$(qualification_candidate_git -C "$physical" config \
+      --local --no-includes --bool --get extensions.worktreeConfig 2>/dev/null)"; then
+    if [[ "$worktree_config" == "true" ]]; then
+      if unsafe="$(qualification_candidate_git -C "$physical" config --worktree \
+          --no-includes --get-regexp '^(include([.]path|if[.].*[.]path)|extensions[.]partialclone|remote[.].*[.](promisor|partialclonefilter))$' 2>/dev/null)"; then
+        [[ -z "$unsafe" ]] ||
+          die "qualification Factory candidate may not use partial or promisor objects"
+      else
+        worktree_status=$?
+        [[ "$worktree_status" == "1" ]] ||
+          die "qualification Factory candidate worktree configuration is invalid"
+      fi
+    fi
+  else
+    worktree_status=$?
+    [[ "$worktree_status" == "1" ]] ||
+      die "qualification Factory candidate worktree configuration is invalid"
+  fi
+  local origin
+  origin="$(qualification_candidate_git -C "$physical" config --local --no-includes --get remote.origin.url 2>/dev/null || true)"
+  [[ -n "$origin" && "$(canonical_origin_identity "$origin")" == "$(expected_origin_identity)" ]] ||
+    die "wrong kit origin: expected $(expected_origin_identity); SSH host aliases are not trusted—use a clean checkout with the canonical github.com remote"
+  head="$(qualification_candidate_git -C "$physical" rev-parse --verify HEAD 2>/dev/null || true)"
+  [[ "$head" == "$sha" ]] ||
+    die "qualification Factory candidate HEAD does not match requested SHA"
+  if [[ "${FACTORY_KIT_TEST_MODE:-0}" != "1" ||
+        "${FACTORY_KIT_TEST_QUALIFICATION_LIVE_MAIN:-0}" == "1" ]]; then
+    local gh auth_config
+    gh="$(qualification_gh_binary)"
+    auth_config=""
+    if [[ -z "${GH_TOKEN:-${GITHUB_TOKEN:-}}" ]]; then
+      auth_config="$(qualification_gh_config)"
+    fi
+    qualification_github_token "$gh" "$auth_config"
+    QUALIFICATION_GITHUB_BINARY="$gh"
+    live_main="$(/usr/bin/env -i HOME="$(dirname "$gh_config")" \
+      PATH=/usr/bin:/bin GH_CONFIG_DIR="$gh_config" \
+      GH_TOKEN="$QUALIFICATION_GITHUB_TOKEN" GH_PROMPT_DISABLED=1 GH_PAGER=cat \
+      NO_COLOR=1 CLICOLOR=0 "$gh" api --hostname github.com \
+      repos/nysa-company/software-factory/git/ref/heads/main \
+      --jq .object.sha 2>/dev/null || true)"
+    [[ "$live_main" == "$sha" ]] ||
+      die "qualification Factory candidate does not match live protected main"
+    remote_main="$(qualification_candidate_git -C "$physical" rev-parse --verify refs/remotes/origin/main 2>/dev/null || true)"
+    [[ "$remote_main" == "$sha" ]] ||
+      die "qualification Factory candidate is not exact protected origin/main"
+  fi
+}
+
+prepare_qualification_transport() {
+  local workspace="$1" gh_config="$2"
+  [[ -n "$QUALIFICATION_GITHUB_BINARY" ]] || return 0
+  QUALIFICATION_TRUSTED_BIN="$workspace/trusted-bin"
+  QUALIFICATION_GITHUB_CONFIG="$gh_config"
+  /bin/mkdir -m 700 "$QUALIFICATION_TRUSTED_BIN"
+  /bin/ln -s "$QUALIFICATION_GITHUB_BINARY" "$QUALIFICATION_TRUSTED_BIN/gh"
+  builtin printf '%s\n' '#!/bin/sh' \
+    'case "$1" in' \
+    '  *Username*) printf "%s\n" x-access-token ;;' \
+    '  *Password*) printf "%s\n" "$GH_TOKEN" ;;' \
+    '  *) exit 1 ;;' \
+    'esac' > "$QUALIFICATION_TRUSTED_BIN/git-askpass"
+  /bin/chmod 700 "$QUALIFICATION_TRUSTED_BIN/git-askpass"
+}
+
+prepare_qualification_transaction_root() {
+  local repo="$1" sha="$2" workspace transaction gh_config materialized_tree
+  workspace="$(mktemp -d "${TMPDIR:-/tmp}/factory-kit-qualification.XXXXXX")"
+  chmod 700 "$workspace"
+  remember_temp "$workspace"
+  transaction="$workspace/transaction"
+  gh_config="$workspace/gh-config"
+  mkdir -m 700 "$transaction" "$gh_config"
+  validate_qualification_candidate "$repo" "$sha" "$gh_config"
+  prepare_qualification_transport "$workspace" "$gh_config"
+  prepare_qualification_install_repo "$workspace" "$repo" "$sha"
+  materialize_git_tree "$QUALIFICATION_INSTALL_REPO" "$sha" "$transaction" ||
+    die "failed to materialize exact qualification candidate tree"
+  verify_symlinks_contained "$transaction" ||
+    die "qualification candidate contains an unsafe symlink"
+  materialized_tree="$(git_tree_for_directory "$transaction")"
+  [[ "$materialized_tree" == "$QUALIFICATION_CANDIDATE_TREE" ]] ||
+    die "materialized qualification candidate does not match requested tree"
+  [[ "$(qualification_candidate_git -C "$repo" rev-parse --verify HEAD 2>/dev/null)" == "$sha" ]] ||
+    die "qualification Factory candidate changed during materialization"
+  [[ "$(contract_version "$transaction")" == "2.0.0" ]] ||
+    die "qualification Factory candidate must use Contract 2.0.0"
+  [[ -f "$transaction/scripts/release-transaction.py" &&
+     ! -L "$transaction/scripts/release-transaction.py" ]] ||
+    die "qualification Factory candidate transaction helper is not sealed"
+  seal_release_contents_for_publish "$transaction"
+  chmod a-w "$transaction"
+  verify_read_only "$transaction" ||
+    die "qualification transaction root is not read-only"
+  [[ "$(git_tree_for_directory "$transaction")" == "$QUALIFICATION_CANDIDATE_TREE" ]] ||
+    die "sealed qualification transaction tree changed"
+  QUALIFICATION_TRANSACTION_ROOT="$transaction"
+}
+
+prepare_qualification_install_repo() {
+  local workspace="$1" original="$2" sha="$3" origin="https://github.com/nysa-company/software-factory.git" dirty
+  local file_protocol=never
+  local -a environment
+  if [[ "${FACTORY_KIT_TEST_MODE:-0}" == "1" ]]; then
+    origin="${FACTORY_KIT_CANONICAL_ORIGIN:-${FACTORY_KIT_ORIGIN:-}}"
+    file_protocol=always
+  fi
+  QUALIFICATION_INSTALL_REPO="$workspace/install-source"
+  environment=(
+    /usr/bin/env -i HOME="$workspace" PATH=/usr/bin:/bin LC_ALL=C
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_NO_LAZY_FETCH=1 GIT_NO_REPLACE_OBJECTS=1
+    GIT_TERMINAL_PROMPT=0
+  )
+  if [[ -n "$QUALIFICATION_TRUSTED_BIN" ]]; then
+    environment+=(
+      "GH_TOKEN=$QUALIFICATION_GITHUB_TOKEN"
+      "GIT_ASKPASS=$QUALIFICATION_TRUSTED_BIN/git-askpass"
+    )
+  fi
+  "${environment[@]}" "$TRUSTED_GIT" -c core.fsmonitor=false \
+    -c core.hooksPath=/dev/null -c credential.helper= -c protocol.allow=never \
+    -c protocol.https.allow=always -c protocol.file.allow="$file_protocol" \
+    clone -q --depth 1 --single-branch --branch main \
+    "$origin" "$QUALIFICATION_INSTALL_REPO" ||
+    die "failed to create private canonical qualification install source"
+  /bin/chmod 700 "$QUALIFICATION_INSTALL_REPO"
+  [[ "$(qualification_candidate_git -C "$QUALIFICATION_INSTALL_REPO" rev-parse --verify HEAD)" == "$sha" &&
+     "$(qualification_candidate_git -C "$QUALIFICATION_INSTALL_REPO" rev-parse --verify 'HEAD^{tree}')" =~ ^[0-9a-f]{40}$ ]] ||
+    die "private qualification install source identity mismatch"
+  QUALIFICATION_CANDIDATE_TREE="$(qualification_candidate_git -C "$QUALIFICATION_INSTALL_REPO" rev-parse --verify 'HEAD^{tree}')"
+  [[ "$(qualification_candidate_git -C "$QUALIFICATION_INSTALL_REPO" config --local --no-includes --get remote.origin.url)" == "$origin" ]] ||
+    die "private qualification install source origin mismatch"
+  dirty="$(git_tree_for_worktree \
+    "$QUALIFICATION_INSTALL_REPO" "$original" "$QUALIFICATION_CANDIDATE_TREE")" ||
+    die "qualification Factory candidate status is unavailable"
+  [[ "$dirty" == "$QUALIFICATION_CANDIDATE_TREE" ]] ||
+    die "qualification Factory candidate must be clean"
+}
+
+prepare_qualification_install_auth() {
+  local workspace="${QUALIFICATION_TRANSACTION_ROOT%/*}" token_file
+  if [[ -z "$QUALIFICATION_GITHUB_TOKEN" ]]; then
+    [[ "${FACTORY_KIT_TEST_MODE:-0}" == "1" ]] || return 0
+    QUALIFICATION_INSTALL_AUTH_DESCRIPTOR="$workspace/install-auth.json"
+    /usr/bin/python3 -I -S - "$QUALIFICATION_INSTALL_AUTH_DESCRIPTOR" \
+      "$QUALIFICATION_INSTALL_REPO" "$QUALIFICATION_CANDIDATE_TREE" "$1" <<'PY'
+import json, os, sys
+path, install_repo, tree, sha = sys.argv[1:]
+descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+    json.dump({
+        "install_repo": install_repo,
+        "schema": "nysa.software-factory.qualification-install/v1",
+        "sha": sha,
+        "tree": tree,
+    }, stream, sort_keys=True, separators=(",", ":"))
+    stream.write("\n")
+PY
+    return 0
+  fi
+  token_file="$workspace/install-token"
+  QUALIFICATION_INSTALL_AUTH_DESCRIPTOR="$workspace/install-auth.json"
+  builtin printf '%s' "$QUALIFICATION_GITHUB_TOKEN" > "$token_file"
+  /bin/chmod 600 "$token_file"
+  /usr/bin/python3 -I -S - "$QUALIFICATION_INSTALL_AUTH_DESCRIPTOR" \
+    "$token_file" "$QUALIFICATION_TRUSTED_BIN" "$QUALIFICATION_GITHUB_CONFIG" \
+    "$QUALIFICATION_INSTALL_REPO" "$QUALIFICATION_CANDIDATE_TREE" "$1" <<'PY'
+import json, os, sys
+path, token, trusted_bin, config, install_repo, tree, sha = sys.argv[1:]
+value = {
+    "config": config,
+    "gh": os.path.realpath(os.path.join(trusted_bin, "gh")),
+    "git_askpass": os.path.join(trusted_bin, "git-askpass"),
+    "install_repo": install_repo,
+    "schema": "nysa.software-factory.qualification-install/v1",
+    "sha": sha,
+    "token": token,
+    "tree": tree,
+    "trusted_bin": trusted_bin,
+}
+info = os.stat(value["gh"])
+value["gh_identity"] = {
+    "dev": info.st_dev, "ino": info.st_ino, "mode": info.st_mode,
+    "mtime_ns": info.st_mtime_ns, "size": info.st_size,
+}
+descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+    json.dump(value, stream, sort_keys=True, separators=(",", ":"))
+    stream.write("\n")
+PY
+}
+
+run_qualification_transaction() {
+  local home value
+  local -a environment
+  if [[ "${FACTORY_KIT_TEST_MODE:-0}" == "1" ]]; then
+    home="$FACTORY_RELEASE_TEST_HOME"
+  else
+    home="$(/usr/bin/env -i PATH=/usr/bin:/bin /usr/bin/python3 -I -S \
+      -c 'import os,pwd; print(pwd.getpwuid(os.geteuid()).pw_dir)')"
+  fi
+  environment=(
+    /usr/bin/env -i HOME="$home" PATH=/usr/bin:/bin LC_ALL=C
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+    GIT_NO_LAZY_FETCH=1 GIT_NO_REPLACE_OBJECTS=1
+    GH_PROMPT_DISABLED=1 GH_PAGER=cat NO_COLOR=1
+  )
+  for value in FACTORY_KIT_TEST_MODE FACTORY_TRUSTED_TEST_HARNESS \
+    FACTORY_RELEASE_TEST_HOME FACTORY_KIT_CANONICAL_ORIGIN \
+    FACTORY_KIT_TEST_REMOTE_FULL_CI FACTORY_KIT_TEST_INSTALLED_LAUNCHER; do
+    [[ -z "${!value:-}" ]] || environment+=("$value=${!value}")
+  done
+  [[ -z "$QUALIFICATION_INSTALL_AUTH_DESCRIPTOR" ]] || environment+=(
+    "FACTORY_QUALIFICATION_INSTALL_AUTH_DESCRIPTOR=$QUALIFICATION_INSTALL_AUTH_DESCRIPTOR"
+  )
+  "${environment[@]}" /usr/bin/python3 -I -S "$@"
+}
+
 cmd_qualification_upgrade() {
   local project="$1" root="$2" product="$3" repo="$4" sha="$5" runtime="$6" operator="$7"
-  python3 -I -S "$repo/scripts/release-transaction.py" --kits-root "$KITS_ROOT" \
+  prepare_qualification_transaction_root "$repo" "$sha"
+  prepare_qualification_install_auth "$sha"
+  run_qualification_transaction "$QUALIFICATION_TRANSACTION_ROOT/scripts/release-transaction.py" --kits-root "$KITS_ROOT" \
     qualification-upgrade --project "$project" --root "$root" --product "$product" \
     --repo "$repo" --sha "$sha" --runtime-bin "$runtime" --operator-id "$operator"
 }
@@ -5099,8 +5501,31 @@ cmd_qualification_resume() {
   release="$(printf '%s' "$values" | awk -F'\t' '{print $3}')"
   helper="$release/scripts/release-transaction.py"
   [[ -f "$helper" && ! -L "$helper" ]] || die "sealed qualification transaction helper is missing"
-  python3 -I -S "$helper" --kits-root "$KITS_ROOT" qualification-resume \
+  QUALIFICATION_TRANSACTION_ROOT="$release"
+  QUALIFICATION_INSTALL_REPO=""
+  QUALIFICATION_INSTALL_AUTH_DESCRIPTOR=""
+  run_qualification_transaction "$helper" --kits-root "$KITS_ROOT" qualification-resume \
     --project "$project" --sha "$sha" --approved-by "$approver"
+}
+
+cmd_qualification_recover() {
+  local action="$1" project="$2" root="$3" product="$4" repo="$5" sha="$6"
+  local operator="$7" ticket="$8" failed_run="$9" approval="${10}"
+  local -a arguments=(
+    --kits-root "$KITS_ROOT" "qualification-recover-$action"
+    --project "$project" --root "$root" --product "$product" --repo "$repo"
+    --sha "$sha" --operator-id "$operator" --ticket "$ticket"
+    --failed-run "$failed_run"
+  )
+  prepare_qualification_transaction_root "$repo" "$sha"
+  QUALIFICATION_GITHUB_TOKEN=""
+  QUALIFICATION_GITHUB_BINARY=""
+  QUALIFICATION_GITHUB_CONFIG=""
+  QUALIFICATION_TRUSTED_BIN=""
+  QUALIFICATION_INSTALL_REPO=""
+  QUALIFICATION_INSTALL_AUTH_DESCRIPTOR=""
+  [[ "$action" == "plan" ]] || arguments+=(--approve-hash "$approval")
+  run_qualification_transaction "$QUALIFICATION_TRANSACTION_ROOT/scripts/release-transaction.py" "${arguments[@]}"
 }
 
 require_command git
@@ -5193,7 +5618,7 @@ if [[ "$COMMAND" != "release" && -n "$PROFILE" ]] ||
   die "release-only option used with $COMMAND"
 fi
 if [[ "$COMMAND" != "qualification" && -n "$QUALIFICATION_ROOT" ]]; then
-  die "--root is only valid for qualification upgrade"
+  die "--root is only valid for qualification operations"
 fi
 if [[ "$SKIP_OPTIONAL_TESTS" -eq 1 && "$COMMAND" != "certify" && "$COMMAND" != "release" ]]; then
   die "--skip-optional-tests is only valid for certify or release setup"
@@ -5375,6 +5800,22 @@ case "$COMMAND" in
          ${#TICKET_WORKDIRS[@]} -eq 0 && "$JSON" -eq 0 ]] ||
         { usage >&2; exit 2; }
       cmd_qualification_resume "$PROJECT" "$SHA" "$APPROVED_BY"
+    elif [[ "$ACTION" == "recover-plan" || "$ACTION" == "recover-apply" ]]; then
+      [[ ${#POSITIONALS[@]} -eq 1 && -n "$PROJECT" && -n "$QUALIFICATION_ROOT" &&
+         -n "$PRODUCT" && -n "$SHA" && -n "$OPERATOR_ID" && -n "$TICKET" &&
+         -n "$FAILED_RUN" && -z "$RUNTIME_BIN$APPROVED_BY$PROFILE$RECEIPT$CAPACITY$ORIGIN_OVERRIDE" &&
+         -z "$PREVIEW_HASH$REASON$EXPIRES_MINUTES$CLAUDE_BIN$CODEX_BIN$CURSOR_BIN$STAGE$PRIORITY_NAME" &&
+         ${#TICKETS[@]} -eq 1 && ${#TICKET_WORKDIRS[@]} -eq 0 && "$JSON" -eq 0 &&
+         "$SKIP_OPTIONAL_TESTS" -eq 0 ]] || { usage >&2; exit 2; }
+      if [[ "$ACTION" == "recover-plan" ]]; then
+        [[ -z "$APPROVE_HASH" ]] || { usage >&2; exit 2; }
+        cmd_qualification_recover plan "$PROJECT" "$QUALIFICATION_ROOT" "$PRODUCT" \
+          "$REPO" "$SHA" "$OPERATOR_ID" "$TICKET" "$FAILED_RUN" ""
+      else
+        [[ "$APPROVE_HASH" =~ ^[0-9a-f]{64}$ ]] || { usage >&2; exit 2; }
+        cmd_qualification_recover apply "$PROJECT" "$QUALIFICATION_ROOT" "$PRODUCT" \
+          "$REPO" "$SHA" "$OPERATOR_ID" "$TICKET" "$FAILED_RUN" "$APPROVE_HASH"
+      fi
     else
       { usage >&2; exit 2; }
     fi

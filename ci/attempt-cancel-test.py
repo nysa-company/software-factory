@@ -2,6 +2,7 @@
 """Regression tests for targeted attempt cancellation and process ownership."""
 
 import csv
+import fcntl
 import importlib.util
 import json
 import os
@@ -142,6 +143,7 @@ class AttemptCancellationTest(unittest.TestCase):
 
     def submitted_provider_attempt(
         self, database, attempt_id="provider-run-1", *, submit=True,
+        product_id="qualification:factory",
     ):
         policy = database.with_name("policy.json")
         policy.parent.mkdir(parents=True, exist_ok=True)
@@ -161,7 +163,7 @@ class AttemptCancellationTest(unittest.TestCase):
             database, "reserve", "--operation-id", f"reserve-{attempt_id}",
             "--attempt-id", attempt_id, "--provider-family", "openai",
             "--account-route", "cursor", "--reserve-micro-usd", "2000000",
-            "--product-id", "qualification:factory", "--ticket-id", "T-1",
+            "--product-id", product_id, "--ticket-id", "T-1",
             "--budget-day", "2026-08-23",
             "--product-daily-cap-micro-usd", "100000000",
             "--ticket-cap-micro-usd", "25000000",
@@ -189,6 +191,27 @@ class AttemptCancellationTest(unittest.TestCase):
         (self.runs / "run-1.meta").write_text(
             "".join(f"{key}={value}\n" for key, value in values.items())
         )
+
+    def stale_claim(self, root, process, started, *, owner=None):
+        claim = root / "T-1.builder.lock"
+        claim.mkdir(parents=True)
+        (claim / "owner").write_text(owner or (
+            f"pid={process.pid}\nprocess_start={started}\ntoken={'a' * 32}\n"
+        ))
+        return claim
+
+    def expired_lease(self):
+        leases = self.root / "factory/.dispatch-leases"
+        leases.mkdir(exist_ok=True)
+        lease = leases / "T-1.json"
+        lease.write_bytes(CANCEL.canonical({
+            "claimed_epoch": 1,
+            "expires_epoch": 2,
+            "lease_id": "b" * 64,
+            "schema_version": 1,
+            "ticket": "T-1",
+        }))
+        return lease
 
     def settle(self, process, values, plan, state):
         deadline = time.monotonic() + 5
@@ -402,6 +425,102 @@ class AttemptCancellationTest(unittest.TestCase):
             ),
         )
 
+    def test_cross_release_receipt_replay_repairs_legacy_provider_terminal(self):
+        database = self.root.parent / "qualification/provider/accounting/state-v2.sqlite3"
+        source_sha = "d" * 40
+        product_id = f"qualification-fixture:{source_sha}"
+        attempt_id = self.submitted_provider_attempt(
+            database, product_id=product_id,
+        )
+        process, started = self.spawn()
+        values = self.manifest(
+            process, started, go="1", provider_attempt_id=attempt_id,
+        )
+        del values["provider_product_id"]
+        del values["submitted_at_epoch_ns"]
+        values.update({
+            "contract_version": "2.0.0", "kit_sha": source_sha,
+            "task_submitted": "0", "ticket_kit_sha": source_sha,
+        })
+        self.write_meta(values)
+        plan = CANCEL.calculate(
+            self.root, "T-1", "run-1", "operator_requested", "9" * 32,
+        )
+        process.kill()
+        process.wait(timeout=5)
+        (self.runs / "run-1.pid").unlink()
+        (self.runs / "run-1.cancel-request.json").write_bytes(CANCEL.canonical({
+            "plan": plan, "requested_at": "2026-07-18T12:01:00Z",
+            "schema": CANCEL.REQUEST_SCHEMA,
+        }))
+        values.update({
+            "phase": "cancelled_conservative",
+            "accounting_state": "cancelled_conservative",
+            "terminal_at": "2026-07-18T12:01:00Z",
+            "turns": "0", "effective_cost": "2.00", "exit_status": "130",
+            "cost_basis": "conservative_reservation", "role_exit": "cancelled",
+            "cancellation_reason": plan["reason"],
+            "cancellation_preview_hash": plan["preview_hash"],
+        })
+        self.write_meta(values)
+        with (self.root / "factory/runtime-ledger.csv").open("a", newline="") as handle:
+            csv.writer(handle, lineterminator="\n").writerow([
+                "2026-07-18", "12:00:00", "T-1", "builder", "mock", "1", "0",
+                "2.00", "130", "run-1", "openai", "test", "primary_ready",
+                "conservative_reservation", "test",
+            ])
+        manifest_raw = (self.runs / "run-1.meta").read_bytes()
+        receipt = {
+            "accounting_state": "cancelled_conservative", "charged_usd": "2.00",
+            "manifest_sha256": CANCEL.digest(manifest_raw),
+            "preview_hash": plan["preview_hash"], "reason": plan["reason"],
+            "run_id": "run-1", "schema": CANCEL.RECEIPT_SCHEMA,
+            "terminal_at": values["terminal_at"], "ticket": "T-1",
+        }
+        (self.runs / "run-1.cancel.json").write_bytes(CANCEL.canonical(receipt))
+        with mock.patch.dict(
+            os.environ, {"FACTORY_PROVIDER_DB": str(database)}, clear=False,
+        ), self.assertRaisesRegex(CANCEL.CancelError, "identity disagrees"):
+            CANCEL.apply_plan(self.root, plan, 1)
+        admission = self.root.parent / ".dispatch-admission.lock"
+        controller = self.root.parent / "reconcile.lock"
+        admission.touch(mode=0o600)
+        controller.touch(mode=0o600)
+        descriptor = os.open(admission, os.O_RDWR)
+        controller_descriptor = os.open(controller, os.O_RDWR)
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        fcntl.flock(controller_descriptor, fcntl.LOCK_EX)
+        try:
+            with mock.patch.dict(
+                os.environ, {
+                    "FACTORY_PROVIDER_DB": str(database),
+                    "FACTORY_CROSS_RELEASE_PRODUCT_ID": product_id,
+                    "FACTORY_CROSS_RELEASE_SOURCE_SHA": source_sha,
+                    "FACTORY_DISPATCH_ADMISSION_LOCK": str(admission),
+                    "FACTORY_DISPATCH_ADMISSION_LOCK_FD": str(descriptor),
+                    "FACTORY_QUALIFICATION_CONTROLLER_LOCK": str(controller),
+                    "FACTORY_QUALIFICATION_CONTROLLER_LOCK_FD": str(
+                        controller_descriptor
+                    ),
+                }, clear=False,
+            ):
+                self.assertEqual(CANCEL.apply_plan(self.root, plan, 1), receipt)
+                terminal = self.provider_command(
+                    database, "status", "--attempt-id", attempt_id,
+                )["attempts"][0]
+                self.assertEqual(CANCEL.apply_plan(self.root, plan, 1), receipt)
+                replay = self.provider_command(
+                    database, "status", "--attempt-id", attempt_id,
+                )["attempts"][0]
+        finally:
+            os.close(descriptor)
+            os.close(controller_descriptor)
+        self.assertEqual(
+            (terminal["state"], terminal["terminal_result"],
+             terminal["charge_micro_usd"], replay["version"]),
+            ("terminal", "cancelled", 2_000_000, terminal["version"]),
+        )
+
     def test_stale_terminal_provider_attempt_recovers_durable_actual_charge(self):
         self.assertEqual(CANCEL.micro_usd("0.00000001"), 1)
         database = self.root.parent / "qualification/provider/accounting/state-v2.sqlite3"
@@ -562,6 +681,315 @@ class AttemptCancellationTest(unittest.TestCase):
             ),
             ("completed", "1.250000", "succeeded", 1_250_000, before["version"] + 1),
         )
+
+    def test_stale_attempt_uses_external_ledger_and_sibling_claim_once(self):
+        authority = self.root.parent / "qualification/operator"
+        authority.mkdir(parents=True)
+        ledger = authority / "runtime-ledger.csv"
+        ledger.write_text(LEDGER_HEADER)
+        durable = authority / "ledger.csv"
+        durable.write_text(LEDGER_HEADER)
+        (self.root / "factory/ledger.csv").unlink()
+        database = self.root.parent / "qualification/provider/accounting/state-v2.sqlite3"
+        attempt_id = self.submitted_provider_attempt(database)
+        process, started = self.spawn()
+        self.manifest(process, started, go="1", provider_attempt_id=attempt_id)
+        process.terminate()
+        process.wait(timeout=5)
+        external_claim = self.stale_claim(
+            authority / ".active-runs", process, started,
+        )
+        decoy_claim = self.stale_claim(
+            self.root / "factory/.active-runs", process, started,
+        )
+        lease = self.expired_lease()
+        environment = {
+            "FACTORY_PROVIDER_DB": str(database),
+            "FACTORY_LEDGER": str(ledger),
+            "FACTORY_DURABLE_LEDGER": str(durable),
+        }
+        with mock.patch.dict(os.environ, environment, clear=False):
+            plan = CANCEL.calculate(
+                self.root, "T-1", "run-1", "operator_requested", "1" * 32,
+            )
+            receipt = CANCEL.apply_plan(self.root, plan, 1)
+            self.assertEqual(CANCEL.apply_plan(self.root, plan, 1), receipt)
+            self.assertEqual(CANCEL.ledger_row(ledger, "run-1")["exit_status"], "130")
+        attempt = self.provider_command(
+            database, "status", "--attempt-id", attempt_id,
+        )["attempts"][0]
+        self.assertEqual(
+            (attempt["state"], attempt["charge_micro_usd"], attempt["version"]),
+            ("terminal", 2_000_000, 5),
+        )
+        self.assertFalse(external_claim.exists())
+        self.assertTrue(decoy_claim.exists())
+        self.assertFalse(lease.exists())
+        with self.assertRaises(CANCEL.CancelError):
+            CANCEL.ledger_row(
+                self.root / "factory/runtime-ledger.csv", "run-1",
+            )
+
+    def test_external_authority_refuses_unsafe_paths_before_provider_mutation(self):
+        authority = self.root.parent / "qualification/operator"
+        authority.mkdir(parents=True)
+        ledger = authority / "runtime-ledger.csv"
+        ledger.write_text(LEDGER_HEADER)
+        database = self.root.parent / "qualification/provider/accounting/state-v2.sqlite3"
+        attempt_id = self.submitted_provider_attempt(database)
+        process, started = self.spawn()
+        manifest = self.manifest(
+            process, started, go="1", provider_attempt_id=attempt_id,
+        )
+        process.terminate()
+        process.wait(timeout=5)
+        claim = self.stale_claim(
+            authority / ".active-runs", process, started, owner="invalid\n",
+        )
+        environment = {
+            "FACTORY_PROVIDER_DB": str(database),
+            "FACTORY_LEDGER": str(ledger),
+            "FACTORY_DURABLE_LEDGER": str(self.root / "factory/ledger.csv"),
+        }
+        with mock.patch.dict(os.environ, environment, clear=False):
+            plan = CANCEL.calculate(
+                self.root, "T-1", "run-1", "operator_requested", "2" * 32,
+            )
+            with self.assertRaisesRegex(CANCEL.IDENTITY.IdentityError, "active-run owner"):
+                CANCEL.apply_plan(self.root, plan, 1)
+        attempt = self.provider_command(
+            database, "status", "--attempt-id", attempt_id,
+        )["attempts"][0]
+        self.assertEqual(
+            (attempt["state"], attempt["charge_micro_usd"]), ("submitted", None),
+        )
+        self.assertEqual(
+            IDENTITY.parse_fields(
+                (self.runs / "run-1.meta").read_bytes(), "run manifest",
+            )["accounting_state"],
+            manifest["accounting_state"],
+        )
+        self.assertTrue(claim.exists())
+
+        (claim / "owner").write_text(
+            f"pid={process.pid}\nprocess_start={started}\ntoken={'a' * 32}\n"
+        )
+        (self.root / "factory/ledger.csv").write_text("malformed\n")
+        with mock.patch.dict(os.environ, environment, clear=False), \
+                self.assertRaisesRegex(CANCEL.CancelError, "ledger projection"):
+            CANCEL.apply_plan(self.root, plan, 1)
+        attempt = self.provider_command(
+            database, "status", "--attempt-id", attempt_id,
+        )["attempts"][0]
+        self.assertEqual(attempt["state"], "submitted")
+
+        linked = authority / "linked.csv"
+        linked.symlink_to(ledger)
+        writable = authority / "writable.csv"
+        writable.write_text(LEDGER_HEADER)
+        writable.chmod(0o666)
+        for configured, message in (
+            ("relative.csv", "not absolute"),
+            (str(authority / "missing.csv"), "missing"),
+            (str(linked), "unsafe"),
+            (str(writable), "unsafe"),
+        ):
+            with self.subTest(configured=configured), mock.patch.dict(
+                os.environ, {"FACTORY_LEDGER": configured}, clear=False,
+            ), self.assertRaisesRegex(CANCEL.CancelError, message):
+                CANCEL.paths(self.root, "run-1")
+        with mock.patch.dict(os.environ, {
+            "FACTORY_LEDGER": str(ledger),
+            "FACTORY_DURABLE_LEDGER": "relative.csv",
+        }, clear=False), self.assertRaisesRegex(CANCEL.CancelError, "not absolute"):
+            CANCEL.paths(self.root, "run-1")
+
+    def test_stale_cleanup_preserves_a_replaced_dispatch_lease(self):
+        lease = self.expired_lease()
+        original = CANCEL.validate_stale_claims
+        successor = {
+            "claimed_epoch": int(time.time()),
+            "expires_epoch": int(time.time()) + 900,
+            "lease_id": "c" * 64,
+            "schema_version": 1,
+            "ticket": "T-1",
+        }
+
+        def replace_after_validation(*args):
+            identity = original(*args)
+            self.assertTrue((self.root / "factory/.launch.lock").is_dir())
+            self.assertTrue(
+                (self.root / "factory/.dispatch-leases.lock").is_dir()
+            )
+            replacement = lease.with_name("replacement.json")
+            replacement.write_bytes(CANCEL.canonical(successor))
+            os.replace(replacement, lease)
+            return identity
+
+        with mock.patch.object(
+            CANCEL, "validate_stale_claims", side_effect=replace_after_validation,
+        ), self.assertRaisesRegex(CANCEL.CancelError, "changed before cleanup"):
+            CANCEL.release_stale_claims(
+                self.root, self.root / "factory/.active-runs",
+                {"ticket": "T-1", "role": "builder"}, int(time.time()),
+            )
+        self.assertEqual(json.loads(lease.read_text()), successor)
+        self.assertFalse((self.root / "factory/.launch.lock").exists())
+        self.assertFalse((self.root / "factory/.dispatch-leases.lock").exists())
+
+    def test_stale_cleanup_refuses_a_lease_appearing_after_validation(self):
+        lease = self.root / "factory/.dispatch-leases/T-1.json"
+        original = CANCEL.validate_stale_claims
+
+        def create_after_validation(*args):
+            identity = original(*args)
+            self.assertIsNone(identity)
+            lease.parent.mkdir(exist_ok=True)
+            lease.write_bytes(CANCEL.canonical({
+                "claimed_epoch": int(time.time()),
+                "expires_epoch": int(time.time()) + 900,
+                "lease_id": "d" * 64,
+                "schema_version": 1,
+                "ticket": "T-1",
+            }))
+            return identity
+
+        with mock.patch.object(
+            CANCEL, "validate_stale_claims", side_effect=create_after_validation,
+        ), self.assertRaisesRegex(CANCEL.CancelError, "appeared before cleanup"):
+            CANCEL.release_stale_claims(
+                self.root, self.root / "factory/.active-runs",
+                {"ticket": "T-1", "role": "builder"}, int(time.time()),
+            )
+        self.assertTrue(lease.exists())
+        self.assertFalse((self.root / "factory/.launch.lock").exists())
+        self.assertFalse((self.root / "factory/.dispatch-leases.lock").exists())
+
+    def test_stale_cleanup_refuses_malformed_or_writable_dispatch_lease(self):
+        lease = self.expired_lease()
+        valid = json.loads(lease.read_text())
+        cases = (
+            ({**valid, "lease_id": "foreign"}, 0o644),
+            ({**valid, "claimed_epoch": True}, 0o644),
+            ({**valid, "expires_epoch": 1}, 0o644),
+            (valid, 0o666),
+        )
+        for value, mode in cases:
+            with self.subTest(value=value, mode=oct(mode)):
+                lease.write_bytes(CANCEL.canonical(value))
+                lease.chmod(mode)
+                with self.assertRaisesRegex(
+                    CANCEL.CancelError, "dispatch lease is not expired",
+                ):
+                    CANCEL.validate_stale_claims(
+                        self.root, self.root / "factory/.active-runs",
+                        {"ticket": "T-1", "role": "builder"}, int(time.time()),
+                    )
+
+    def test_sealed_recovery_uses_held_admission_without_shared_locks(self):
+        source_sha = "d" * 40
+        manifest = {
+            "contract_version": "2.0.0", "kit_sha": source_sha,
+            "role": "builder", "ticket": "T-1",
+        }
+        admission = self.root.parent / ".dispatch-admission.lock"
+        controller = self.root.parent / "reconcile.lock"
+        admission.touch(mode=0o600)
+        controller.touch(mode=0o600)
+        descriptor = os.open(admission, os.O_RDWR)
+        controller_descriptor = os.open(controller, os.O_RDWR)
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        fcntl.flock(controller_descriptor, fcntl.LOCK_EX)
+        try:
+            with mock.patch.dict(os.environ, {
+                "FACTORY_CROSS_RELEASE_SOURCE_SHA": source_sha,
+                "FACTORY_CROSS_RELEASE_PRODUCT_ID": f"relay:{source_sha}",
+                "FACTORY_DISPATCH_ADMISSION_LOCK": str(admission),
+                "FACTORY_DISPATCH_ADMISSION_LOCK_FD": str(descriptor),
+                "FACTORY_QUALIFICATION_CONTROLLER_LOCK": str(controller),
+                "FACTORY_QUALIFICATION_CONTROLLER_LOCK_FD": str(
+                    controller_descriptor
+                ),
+            }, clear=False):
+                CANCEL.release_stale_claims(
+                    self.root, self.root / "factory/.active-runs",
+                    manifest, int(time.time()),
+                )
+        finally:
+            os.close(descriptor)
+            os.close(controller_descriptor)
+        self.assertFalse((self.root / "factory/.launch.lock").exists())
+        self.assertFalse((self.root / "factory/.dispatch-leases.lock").exists())
+
+    def test_sealed_recovery_refuses_an_unheld_admission_lock(self):
+        source_sha = "d" * 40
+        admission = self.root.parent / ".dispatch-admission.lock"
+        controller = self.root.parent / "reconcile.lock"
+        admission.touch(mode=0o600)
+        controller.touch(mode=0o600)
+        descriptor = os.open(admission, os.O_RDWR)
+        controller_descriptor = os.open(controller, os.O_RDWR)
+        fcntl.flock(controller_descriptor, fcntl.LOCK_EX)
+        try:
+            with mock.patch.dict(os.environ, {
+                "FACTORY_CROSS_RELEASE_SOURCE_SHA": source_sha,
+                "FACTORY_CROSS_RELEASE_PRODUCT_ID": f"relay:{source_sha}",
+                "FACTORY_DISPATCH_ADMISSION_LOCK": str(admission),
+                "FACTORY_DISPATCH_ADMISSION_LOCK_FD": str(descriptor),
+                "FACTORY_QUALIFICATION_CONTROLLER_LOCK": str(controller),
+                "FACTORY_QUALIFICATION_CONTROLLER_LOCK_FD": str(
+                    controller_descriptor
+                ),
+            }, clear=False), self.assertRaisesRegex(CANCEL.CancelError, "not held"):
+                CANCEL.release_stale_claims(
+                    self.root, self.root / "factory/.active-runs",
+                    {
+                        "contract_version": "2.0.0", "kit_sha": source_sha,
+                        "role": "builder", "ticket": "T-1",
+                    },
+                    int(time.time()),
+                )
+        finally:
+            os.close(descriptor)
+            os.close(controller_descriptor)
+        self.assertFalse((self.root / "factory/.launch.lock").exists())
+        self.assertFalse((self.root / "factory/.dispatch-leases.lock").exists())
+
+    def test_sealed_recovery_refuses_partial_or_mismatched_capability(self):
+        source_sha = "d" * 40
+        admission = self.root.parent / ".dispatch-admission.lock"
+        other = self.root.parent / ".other-admission.lock"
+        controller = self.root.parent / "reconcile.lock"
+        admission.touch(mode=0o600)
+        other.touch(mode=0o600)
+        controller.touch(mode=0o600)
+        descriptor = os.open(admission, os.O_RDWR)
+        controller_descriptor = os.open(controller, os.O_RDWR)
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        fcntl.flock(controller_descriptor, fcntl.LOCK_EX)
+        manifest = {
+            "contract_version": "2.0.0", "kit_sha": source_sha,
+            "role": "builder", "ticket": "T-1",
+        }
+        try:
+            with mock.patch.dict(os.environ, {
+                "FACTORY_CROSS_RELEASE_SOURCE_SHA": source_sha,
+            }, clear=True), self.assertRaisesRegex(CANCEL.CancelError, "incomplete"):
+                CANCEL.sealed_recovery_locks_held(manifest)
+            with mock.patch.dict(os.environ, {
+                "FACTORY_CROSS_RELEASE_SOURCE_SHA": source_sha,
+                "FACTORY_CROSS_RELEASE_PRODUCT_ID": f"relay:{source_sha}",
+                "FACTORY_DISPATCH_ADMISSION_LOCK": str(other),
+                "FACTORY_DISPATCH_ADMISSION_LOCK_FD": str(descriptor),
+                "FACTORY_QUALIFICATION_CONTROLLER_LOCK": str(controller),
+                "FACTORY_QUALIFICATION_CONTROLLER_LOCK_FD": str(
+                    controller_descriptor
+                ),
+            }, clear=True), self.assertRaisesRegex(CANCEL.CancelError, "unsafe"):
+                CANCEL.sealed_recovery_locks_held(manifest)
+        finally:
+            os.close(descriptor)
+            os.close(controller_descriptor)
 
     def test_provider_database_selection_is_fail_closed(self):
         legacy = self.root.parent / "runtime/provider-state.sqlite3"

@@ -7,6 +7,7 @@ import argparse
 import csv
 import datetime as dt
 from decimal import Decimal, InvalidOperation, ROUND_CEILING
+import fcntl
 import hashlib
 import importlib.util
 import json
@@ -118,14 +119,43 @@ def paths(factory_root: Path, run_id: str) -> dict[str, Path]:
     if not IDENTITY.RUN_ID.fullmatch(run_id):
         raise CancelError("invalid run identity")
     runs = factory_root / "factory/runs"
+    ledger = bound_ledger(
+        "FACTORY_LEDGER", factory_root / "factory/runtime-ledger.csv", "runtime",
+    )
     return {
         "runs": runs,
         "manifest": runs / f"{run_id}.meta",
         "pid": runs / f"{run_id}.pid",
         "request": runs / f"{run_id}.cancel-request.json",
         "receipt": runs / f"{run_id}.cancel.json",
-        "ledger": factory_root / "factory/runtime-ledger.csv",
+        "ledger": ledger,
+        "durable_ledger": bound_ledger(
+            "FACTORY_DURABLE_LEDGER", factory_root / "factory/ledger.csv", "durable",
+        ),
+        "active_runs": ledger.parent / ".active-runs",
     }
+
+
+def bound_ledger(variable: str, fallback: Path, label: str) -> Path:
+    configured = os.environ.get(variable)
+    path = Path(configured) if configured else fallback
+    if not path.is_absolute():
+        raise CancelError(f"{label} ledger path is not absolute")
+    try:
+        info = path.lstat()
+        resolved = path.resolve(strict=True)
+    except FileNotFoundError as error:
+        raise CancelError(f"{label} ledger is missing") from error
+    if (
+        resolved != path
+        or path.is_symlink()
+        or not stat.S_ISREG(info.st_mode)
+        or info.st_uid != os.geteuid()
+        or info.st_nlink != 1
+        or info.st_mode & 0o022
+    ):
+        raise CancelError(f"{label} ledger is unsafe")
+    return path
 
 
 def load_active_or_stale_identity(
@@ -311,24 +341,44 @@ def replace_fields(path: Path, values: dict[str, str]) -> None:
     os.replace(temporary, path)
 
 
-def unlink_regular(path: Path) -> None:
+def validate_regular_or_absent(path: Path) -> bool:
     try:
         before = path.lstat()
     except FileNotFoundError:
-        return
+        return False
     if not stat.S_ISREG(before.st_mode) or path.is_symlink() or before.st_nlink != 1:
         raise CancelError(f"unsafe stale attempt record: {path.name}")
+    return True
+
+
+def unlink_regular(path: Path) -> None:
+    if not validate_regular_or_absent(path):
+        return
     path.unlink()
 
 
-def release_stale_claims(factory_root: Path, manifest: dict[str, str], now: int) -> None:
+def validate_stale_claims(
+    factory_root: Path, active_runs: Path, manifest: dict[str, str], now: int,
+) -> tuple[int, int, int, int, bytes] | None:
     ticket, role = manifest["ticket"], manifest["role"]
-    claim = factory_root / f"factory/.active-runs/{ticket}.{role}.lock"
+    try:
+        active_info = active_runs.lstat()
+    except FileNotFoundError:
+        active_info = None
+    if active_info is not None and (
+        active_runs.is_symlink()
+        or not stat.S_ISDIR(active_info.st_mode)
+        or active_info.st_uid != os.geteuid()
+        or active_info.st_mode & 0o022
+    ):
+        raise CancelError("active-run state is unsafe")
+    claim = active_runs / f"{ticket}.{role}.lock"
     if claim.exists() or claim.is_symlink():
         info = claim.lstat()
         entries = list(claim.iterdir()) if stat.S_ISDIR(info.st_mode) else []
         if (
             not stat.S_ISDIR(info.st_mode) or claim.is_symlink()
+            or info.st_uid != os.geteuid() or info.st_mode & 0o022
             or [entry.name for entry in entries] != ["owner"]
         ):
             raise CancelError("active-run claim is unsafe")
@@ -345,23 +395,170 @@ def release_stale_claims(factory_root: Path, manifest: dict[str, str], now: int)
         process = IDENTITY.process_table().get(int(owner["pid"]))
         if process is not None and process.started == owner["process_start"]:
             raise CancelError("active-run owner is still alive")
-        (claim / "owner").unlink()
-        claim.rmdir()
     lease = factory_root / f"factory/.dispatch-leases/{ticket}.json"
     if lease.exists() or lease.is_symlink():
-        value, _ = secure_json(lease)
+        before = lease.lstat()
+        value, raw = secure_json(lease)
+        after = lease.lstat()
         if (
-            set(value) != {
+            (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+            != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+            or before.st_uid != os.geteuid()
+            or before.st_mode & 0o022
+            or set(value) != {
                 "claimed_epoch", "expires_epoch", "lease_id",
                 "schema_version", "ticket",
             }
             or value.get("schema_version") != 1
             or value.get("ticket") != ticket
+            or not isinstance(value.get("lease_id"), str)
+            or not re.fullmatch(r"[0-9a-f]{64}", value.get("lease_id", ""))
+            or isinstance(value.get("claimed_epoch"), bool)
+            or not isinstance(value.get("claimed_epoch"), int)
+            or isinstance(value.get("expires_epoch"), bool)
             or not isinstance(value.get("expires_epoch"), int)
+            or value["expires_epoch"] <= value["claimed_epoch"]
             or value["expires_epoch"] > now
         ):
             raise CancelError("dispatch lease is not expired for this ticket")
-        lease.unlink()
+        return (
+            before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, raw,
+        )
+    return None
+
+
+def acquire_cleanup_lock(path: Path, label: str) -> None:
+    for _ in range(100):
+        try:
+            path.mkdir(mode=0o700)
+            return
+        except FileExistsError:
+            time.sleep(0.05)
+    raise CancelError(f"{label} lock is busy")
+
+
+def sealed_recovery_lock_held(path_value: str, descriptor_value: str) -> None:
+    path = Path(path_value)
+    if not path.is_absolute():
+        raise CancelError("sealed recovery lock identity is invalid")
+    try:
+        inherited = int(descriptor_value)
+        if inherited < 0:
+            raise ValueError
+        held = os.fstat(inherited)
+        target = path.lstat()
+    except (ValueError, OSError) as error:
+        raise CancelError("sealed recovery lock capability is invalid") from error
+    if (
+        not stat.S_ISREG(held.st_mode)
+        or not stat.S_ISREG(target.st_mode)
+        or path.is_symlink()
+        or (held.st_dev, held.st_ino) != (target.st_dev, target.st_ino)
+        or held.st_uid != os.geteuid()
+        or held.st_nlink != 1
+        or stat.S_IMODE(held.st_mode) != 0o600
+    ):
+        raise CancelError("sealed recovery lock is unsafe")
+    try:
+        probe = os.open(path, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0))
+    except OSError as error:
+        raise CancelError("sealed recovery lock capability is invalid") from error
+    try:
+        current = os.fstat(probe)
+        if (current.st_dev, current.st_ino) != (held.st_dev, held.st_ino):
+            raise CancelError("sealed recovery lock changed")
+        try:
+            fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return
+        fcntl.flock(probe, fcntl.LOCK_UN)
+        raise CancelError("sealed recovery lock is not held")
+    finally:
+        os.close(probe)
+
+
+def sealed_recovery_locks_held(manifest: dict[str, str]) -> bool:
+    names = (
+        "FACTORY_CROSS_RELEASE_SOURCE_SHA",
+        "FACTORY_CROSS_RELEASE_PRODUCT_ID",
+        "FACTORY_DISPATCH_ADMISSION_LOCK",
+        "FACTORY_DISPATCH_ADMISSION_LOCK_FD",
+        "FACTORY_QUALIFICATION_CONTROLLER_LOCK",
+        "FACTORY_QUALIFICATION_CONTROLLER_LOCK_FD",
+    )
+    values = {name: os.environ.get(name, "") for name in names}
+    if not any(values.values()):
+        return False
+    if not all(values.values()):
+        raise CancelError("sealed recovery admission identity is incomplete")
+    source_sha = values["FACTORY_CROSS_RELEASE_SOURCE_SHA"]
+    if (
+        re.fullmatch(r"[0-9a-f]{40}", source_sha) is None
+        or re.fullmatch(
+            r"[A-Za-z0-9._:-]{1,200}",
+            values["FACTORY_CROSS_RELEASE_PRODUCT_ID"],
+        ) is None
+        or manifest.get("kit_sha") != source_sha
+        or manifest.get("contract_version") != "2.0.0"
+    ):
+        raise CancelError("sealed recovery admission identity is invalid")
+    sealed_recovery_lock_held(
+        values["FACTORY_DISPATCH_ADMISSION_LOCK"],
+        values["FACTORY_DISPATCH_ADMISSION_LOCK_FD"],
+    )
+    sealed_recovery_lock_held(
+        values["FACTORY_QUALIFICATION_CONTROLLER_LOCK"],
+        values["FACTORY_QUALIFICATION_CONTROLLER_LOCK_FD"],
+    )
+    return True
+
+
+def exact_lease(path: Path, expected: tuple[int, int, int, int, bytes]) -> None:
+    before = path.lstat()
+    raw = IDENTITY.record_bytes(path)
+    after = path.lstat()
+    current = (
+        before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, raw,
+    )
+    if (
+        current != expected
+        or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+        != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+    ):
+        raise CancelError("dispatch lease changed before cleanup")
+
+
+def release_stale_claims(
+    factory_root: Path, active_runs: Path, manifest: dict[str, str], now: int,
+) -> None:
+    held: list[Path] = []
+    try:
+        if not sealed_recovery_locks_held(manifest):
+            for path, label in (
+                (factory_root / "factory/.launch.lock", "launch"),
+                (factory_root / "factory/.dispatch-leases.lock", "dispatcher lease"),
+            ):
+                acquire_cleanup_lock(path, label)
+                held.append(path)
+        lease_identity = validate_stale_claims(
+            factory_root, active_runs, manifest, now,
+        )
+        ticket, role = manifest["ticket"], manifest["role"]
+        claim = active_runs / f"{ticket}.{role}.lock"
+        lease = factory_root / f"factory/.dispatch-leases/{ticket}.json"
+        if lease_identity is not None:
+            exact_lease(lease, lease_identity)
+        elif lease.exists() or lease.is_symlink():
+            raise CancelError("dispatch lease appeared before cleanup")
+        if claim.exists() or claim.is_symlink():
+            (claim / "owner").unlink()
+            claim.rmdir()
+        if lease_identity is not None:
+            exact_lease(lease, lease_identity)
+            lease.unlink()
+    finally:
+        for path in reversed(held):
+            path.rmdir()
 
 
 def provider_database(factory_root: Path) -> Path:
@@ -390,10 +587,13 @@ def provider_database(factory_root: Path) -> Path:
 def terminal_intent(
     manifest: dict[str, str], status: dict | None = None,
 ) -> dict[str, str] | None:
-    if manifest.get("phase") != "terminalizing":
-        return None
     state = manifest.get("terminal_intent_accounting_state", "")
     phase = manifest.get("terminal_intent_phase", "")
+    if manifest.get("phase") != "terminalizing" and not (
+        manifest.get("phase") == phase
+        and manifest.get("accounting_state") == state
+    ):
+        return None
     result = manifest.get("terminal_intent_result", "")
     charge = manifest.get("terminal_intent_charge_micro_usd", "")
     try:
@@ -505,10 +705,29 @@ def converge_provider_attempt(
         if re.fullmatch(r"[1-9][0-9]{0,19}", submitted_ns)
         else None
     )
+    source_sha = os.environ.get("FACTORY_CROSS_RELEASE_SOURCE_SHA", "")
+    legacy_product_id = os.environ.get("FACTORY_CROSS_RELEASE_PRODUCT_ID", "")
+    legacy_identity = (
+        re.fullmatch(r"[0-9a-f]{40}", source_sha) is not None
+        and re.fullmatch(r"[A-Za-z0-9._:-]{1,200}", legacy_product_id) is not None
+        and manifest.get("kit_sha") == source_sha
+        and manifest.get("ticket_kit_sha") == source_sha
+        and manifest.get("contract_version") == "2.0.0"
+        and "provider_product_id" not in manifest
+        and "submitted_at_epoch_ns" not in manifest
+        and manifest.get("go_issued") == "1"
+        and manifest.get("task_submitted") == "0"
+        and status.get("product_id") == legacy_product_id
+        and isinstance(go_at, int) and not isinstance(go_at, bool)
+        and isinstance(submitted_at, int) and not isinstance(submitted_at, bool)
+    )
     if (
         status.get("attempt_id") != attempt_id
         or status.get("ticket_id") != plan["ticket"]
-        or status.get("product_id") != manifest.get("provider_product_id")
+        or (
+            status.get("product_id") != manifest.get("provider_product_id")
+            and not legacy_identity
+        )
         or status.get("provider_family") != manifest.get("provider_family")
         or status.get("account_route") != manifest.get("account_route_id")
         or (
@@ -523,11 +742,15 @@ def converge_provider_attempt(
         or any(isinstance(value, bool) for value in (go_at, submitted_at))
         or manifest.get("task_submitted") not in {"0", "1"}
         or (manifest.get("go_issued") == "1") != isinstance(go_at, int)
-        or (manifest.get("task_submitted") == "1") != isinstance(submitted_at, int)
+        or (
+            (manifest.get("task_submitted") == "1") != isinstance(submitted_at, int)
+            and not legacy_identity
+        )
         or (isinstance(submitted_at, int) and not isinstance(go_at, int))
-        or (submitted_value is None) != (submitted_at is None)
+        or ((submitted_value is None) != (submitted_at is None) and not legacy_identity)
         or (
             isinstance(submitted_at, int)
+            and not legacy_identity
             and not submitted_at * 1_000_000_000
             <= submitted_value
             <= (submitted_at + 1) * 1_000_000_000 - 1
@@ -588,10 +811,38 @@ def converge_provider_attempt(
     return None
 
 
+def validate_ledger_projection(factory_root: Path, attempt: dict[str, Path]) -> None:
+    try:
+        subprocess.run(
+            [
+                sys.executable, str(ROOT / "scripts/ledger-view.py"), "print",
+                "--factory-root", str(factory_root),
+                "--durable-ledger", str(attempt["durable_ledger"]),
+                "--runtime-ledger", str(attempt["ledger"]),
+                "--runs-dir", str(attempt["runs"]),
+            ],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise CancelError("cancellation ledger projection is invalid") from error
+
+
 def converge_stale_attempt(factory_root: Path, plan: dict) -> dict:
     attempt = paths(factory_root, plan["run_id"])
     manifest_raw = IDENTITY.record_bytes(attempt["manifest"])
     manifest = IDENTITY.parse_fields(manifest_raw, "run manifest")
+    now = int(time.time())
+    for suffix in ("pid", "ready", "go", "gate", "submitted"):
+        name = (
+            f"{plan['run_id']}.{suffix}" if suffix == "pid"
+            else f".{plan['run_id']}.{suffix}"
+        )
+        validate_regular_or_absent(attempt["runs"] / name)
+    validate_stale_claims(factory_root, attempt["active_runs"], manifest, now)
+    validate_ledger_projection(factory_root, attempt)
     if not terminal_matches_plan(manifest, plan):
         if digest(manifest_raw) != plan["manifest_sha256"]:
             raise CancelError("attempt changed after cancellation preview")
@@ -629,18 +880,22 @@ def converge_stale_attempt(factory_root: Path, plan: dict) -> dict:
             "updated_at": timestamp(),
         })
         replace_fields(attempt["manifest"], manifest)
+    else:
+        converge_provider_attempt(factory_root, manifest, plan)
     for suffix in ("pid", "ready", "go", "gate", "submitted"):
         name = (
             f"{plan['run_id']}.{suffix}" if suffix == "pid"
             else f".{plan['run_id']}.{suffix}"
         )
         unlink_regular(attempt["runs"] / name)
-    release_stale_claims(factory_root, manifest, int(time.time()))
+    release_stale_claims(
+        factory_root, attempt["active_runs"], manifest, int(time.time()),
+    )
     subprocess.run(
         [
             sys.executable, str(ROOT / "scripts/ledger-view.py"), "refresh",
             "--factory-root", str(factory_root),
-            "--durable-ledger", str(factory_root / "factory/ledger.csv"),
+            "--durable-ledger", str(attempt["durable_ledger"]),
             "--runtime-ledger", str(attempt["ledger"]),
             "--runs-dir", str(attempt["runs"]),
         ],
@@ -654,7 +909,16 @@ def apply_plan(factory_root: Path, plan: dict, timeout: float) -> dict:
     attempt = paths(factory_root, plan["run_id"])
     replay = receipt_is_replay(attempt["receipt"], plan)
     if replay is not None:
-        return replay
+        manifest_raw = IDENTITY.record_bytes(attempt["manifest"])
+        manifest = IDENTITY.parse_fields(manifest_raw, "run manifest")
+        if (
+            not terminal_matches_plan(manifest, plan)
+            or replay.get("manifest_sha256") != digest(manifest_raw)
+            or replay.get("accounting_state") != manifest.get("accounting_state")
+            or replay.get("charged_usd") != manifest.get("effective_cost")
+        ):
+            raise CancelError("existing cancellation receipt disagrees with the attempt")
+        return converge_stale_attempt(factory_root, plan)
     manifest = IDENTITY.parse_fields(
         IDENTITY.record_bytes(attempt["manifest"]), "run manifest",
     )

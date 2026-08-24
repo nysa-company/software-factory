@@ -7934,12 +7934,14 @@ provider transition.
 
 Category: Reliability
 
-Targeted cancellation uses the sealed launcher's exact `FACTORY_PROVIDER_DB`
-when present and retains the legacy lane-local database only for direct
-development lanes. Missing, symlinked, foreign-owned, writable-by-others, or
-wrong provider state fails before stale manifest, lease, or claim cleanup;
-post-GO cancellation terminalizes the exact provider attempt with its full
-reservation, and receipt replay does not charge or transition it twice.
+Targeted cancellation uses the sealed launcher's exact `FACTORY_PROVIDER_DB`,
+`FACTORY_LEDGER`, and `FACTORY_DURABLE_LEDGER` when present and retains legacy
+product-local bindings only for direct development lanes. Active-run ownership
+is resolved beside the authoritative runtime ledger, exactly as at launch.
+Missing, symlinked, foreign-owned, writable-by-others, or wrong authority fails
+before provider, stale manifest, lease, or claim cleanup; post-GO cancellation
+terminalizes the exact provider attempt with its full reservation, and receipt
+replay does not charge or transition it twice.
 
 ## 2026-08-23 — Decision 586: Fresh Planner restart reuses primed authority
 
@@ -8010,3 +8012,24 @@ reaches the terminal phase. Supported cancellation or restart may adopt an
 already-committed transition only when provider identity, policy, submission,
 result, and charge match exactly; drift fails closed and replay never charges
 or terminalizes twice.
+
+## 2026-08-24 — Decision 592: Cross-release recovery is one sealed transaction
+
+Category: Reliability
+
+An exact protected-main Contract 2 successor may recover one named stale
+qualification ticket/run without upgrading the old lane. The approval binds
+both Factory SHA/trees and origins, product and lane authority, exact provider
+attempt, authoritative runtime and durable ledger paths, claim, lease, and
+nested cancellation preview. Candidate materialization, Git transport, and
+execution are isolated and fail closed before untrusted checkout code runs.
+Apply serializes cleanup under the controller and dispatch-admission locks;
+receipt replay completes provider, ledger, claim, and lease convergence exactly
+once. The nested helper proves that the sealed outer transaction still holds
+the exact dispatch-admission lock and therefore creates no crash-strandable
+shared directory lock during cleanup. Historical provider fields may be derived
+only when the sealed source SHA, manifest kit, lane product identity, and
+authoritative provider row agree exactly; current attempts retain strict field
+binding. A canonical request-only prefix resumes, while a receipt without its
+request fails closed. Recovery does not change the active release or
+qualification generation.

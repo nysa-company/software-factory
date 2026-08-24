@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import importlib.util
 import json
@@ -1267,6 +1268,76 @@ class ReleaseTransactionTest(unittest.TestCase):
         self.assertEqual(legacy.returncode, 2)
         self.assertIn("Usage:", legacy.stderr)
 
+    def test_qualification_resume_executes_sealed_helper_in_allowlisted_environment(self) -> None:
+        home = self.root / "resume-home"
+        kits = home / ".factory/kits"
+        manifests = kits / "manifests"
+        releases = kits / "releases"
+        for directory in (home, home / ".factory", kits, manifests, releases):
+            directory.mkdir(mode=0o700, exist_ok=True)
+        origin = self.root / "resume-origin"
+        origin.mkdir()
+        source = self.root / "resume-source"
+        (source / "scripts").mkdir(parents=True)
+        (source / "factory-contract.json").write_text(
+            '{"contract_version":"2.0.0"}\n', encoding="utf-8",
+        )
+        (source / "scripts/release-transaction.py").write_text(
+            "import json,os,sys\n"
+            "print(json.dumps({'arguments':sys.argv[1:],'environment':dict(os.environ)}))\n",
+            encoding="utf-8",
+        )
+        subprocess.run(["git", "init", "-q", "-b", "main", str(source)], check=True)
+        subprocess.run(["git", "-C", str(source), "add", "."], check=True)
+        subprocess.run([
+            "git", "-C", str(source), "-c", "user.name=Factory Test", "-c",
+            "user.email=factory@example.invalid", "commit", "-qm", "sealed",
+        ], check=True)
+        sha = subprocess.run(
+            ["git", "-C", str(source), "rev-parse", "HEAD"], capture_output=True,
+            text=True, check=True,
+        ).stdout.strip()
+        tree = subprocess.run(
+            ["git", "-C", str(source), "rev-parse", "HEAD^{tree}"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        release = releases / sha
+        shutil.copytree(source, release, ignore=shutil.ignore_patterns(".git"))
+        for path in (release, *release.rglob("*")):
+            path.chmod(path.stat().st_mode & ~0o222)
+        manifest = manifests / f"{sha}.json"
+        manifest.write_text(json.dumps({
+            "canonical_origin": str(origin), "created_at": "2026-08-23T00:00:00Z",
+            "git_tree": tree, "kit_sha": sha, "schema_version": 1,
+            "sealed_release_path": str(release),
+        }) + "\n", encoding="utf-8")
+        manifest.chmod(0o600)
+        environment = {
+            **os.environ, "BASH_ENV": "/attacker/bash-env", "ENV": "/attacker/env",
+            "FACTORY_KIT_CANONICAL_ORIGIN": str(origin),
+            "FACTORY_KIT_TEST_MODE": "1", "FACTORY_RELEASE_TEST_HOME": str(home),
+            "FACTORY_KITS_ROOT": str(kits), "GH_CONFIG_DIR": "/attacker/gh",
+            "GH_HOST": "attacker.invalid", "GIT_DIR": "/attacker/git",
+            "GIT_REPLACE_REF_BASE": "refs/attacker/", "HTTPS_PROXY": "attacker.invalid",
+            "PS4": "attacker", "XDG_CONFIG_HOME": "/attacker/xdg",
+        }
+        resumed = subprocess.run(
+            ["bash", str(ROOT / "scripts/factory-kit.sh"), "qualification", "resume",
+             "--project", "relay", "--sha", sha, "--approved-by", "tester"],
+            capture_output=True, text=True, env=environment, check=False,
+        )
+        self.assertEqual(resumed.returncode, 0, resumed.stderr)
+        evidence = json.loads(resumed.stdout)
+        self.assertIn("qualification-resume", evidence["arguments"])
+        self.assertEqual(evidence["environment"]["PATH"], "/usr/bin:/bin")
+        self.assertEqual(evidence["environment"]["GIT_NO_REPLACE_OBJECTS"], "1")
+        self.assertEqual(evidence["environment"]["GIT_CONFIG_GLOBAL"], "/dev/null")
+        for variable in (
+            "BASH_ENV", "ENV", "GH_CONFIG_DIR", "GH_HOST", "GIT_DIR",
+            "GIT_REPLACE_REF_BASE", "HTTPS_PROXY", "PS4", "XDG_CONFIG_HOME",
+        ):
+            self.assertNotIn(variable, evidence["environment"])
+
     def test_protected_check_fixture_matches_slurped_check_run_shape(self) -> None:
         result = subprocess.run(
             [
@@ -2425,6 +2496,8 @@ class ReleaseTransactionTest(unittest.TestCase):
 
     def test_machine_lock_capability_is_scoped_to_sealed_mutation_children(self) -> None:
         descriptor = RELEASE.acquire_cutover_lock(self.kits)
+        admission = os.open(self.root / "admission.lock", os.O_CREAT | os.O_RDWR, 0o600)
+        controller = os.open(self.root / "controller.lock", os.O_CREAT | os.O_RDWR, 0o600)
         try:
             ordinary = RELEASE.command_environment(self.kits)
             mutation = RELEASE.command_environment(self.kits, cutover_lock=True)
@@ -2442,8 +2515,104 @@ class ReleaseTransactionTest(unittest.TestCase):
                 self.assertEqual(
                     spawned.call_args.kwargs["pass_fds"], (descriptor,),
                 )
+                RELEASE.run(["sealed-recovery"], "recovery", environment={
+                    "FACTORY_DISPATCH_ADMISSION_LOCK_FD": str(admission),
+                    "FACTORY_QUALIFICATION_CONTROLLER_LOCK_FD": str(controller),
+                })
+                self.assertEqual(
+                    spawned.call_args.kwargs["pass_fds"],
+                    tuple(sorted((admission, controller))),
+                )
         finally:
+            os.close(admission)
+            os.close(controller)
             RELEASE.release_cutover_lock(descriptor)
+
+    def test_recovery_child_retains_admission_after_parent_kill(self) -> None:
+        admission = self.root / "admission.lock"
+        controller = self.root / "controller.lock"
+        admission.touch(mode=0o600)
+        controller.touch(mode=0o600)
+        marker = self.root / "child.pid"
+        child = self.root / "child.py"
+        child.write_text(
+            "import importlib.util,os,sys,time\n"
+            "spec=importlib.util.spec_from_file_location('cancel_child',sys.argv[1])\n"
+            "module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)\n"
+            "assert module.sealed_recovery_locks_held({"
+            "'contract_version':'2.0.0','kit_sha':os.environ["
+            "'FACTORY_CROSS_RELEASE_SOURCE_SHA']})\n"
+            "open(sys.argv[2],'w').write(str(os.getpid()))\n"
+            "time.sleep(30)\n",
+            encoding="utf-8",
+        )
+        wrapper = self.root / "wrapper.py"
+        wrapper.write_text(
+            "import fcntl,importlib.util,os,sys\n"
+            "spec=importlib.util.spec_from_file_location('release_parent',sys.argv[1])\n"
+            "module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)\n"
+            "admission=os.open(sys.argv[2],os.O_RDWR);"
+            "controller=os.open(sys.argv[3],os.O_RDWR)\n"
+            "fcntl.flock(admission,fcntl.LOCK_EX);"
+            "fcntl.flock(controller,fcntl.LOCK_EX)\n"
+            "sha='d'*40\n"
+            "env={'HOME':os.environ['HOME'],'PATH':'/usr/bin:/bin',"
+            "'FACTORY_CROSS_RELEASE_SOURCE_SHA':sha,"
+            "'FACTORY_CROSS_RELEASE_PRODUCT_ID':'relay:'+sha,"
+            "'FACTORY_DISPATCH_ADMISSION_LOCK':sys.argv[2],"
+            "'FACTORY_DISPATCH_ADMISSION_LOCK_FD':str(admission),"
+            "'FACTORY_QUALIFICATION_CONTROLLER_LOCK':sys.argv[3],"
+            "'FACTORY_QUALIFICATION_CONTROLLER_LOCK_FD':str(controller)}\n"
+            "module.run([sys.executable,sys.argv[4],sys.argv[5],sys.argv[6]],"
+            "'child',environment=env)\n",
+            encoding="utf-8",
+        )
+        parent = subprocess.Popen([
+            sys.executable, str(wrapper), str(ROOT / "scripts/release-transaction.py"),
+            str(admission), str(controller), str(child),
+            str(ROOT / "scripts/attempt-cancel.py"), str(marker),
+        ])
+        child_pid = None
+        try:
+            for _ in range(100):
+                if marker.exists():
+                    child_pid = int(marker.read_text())
+                    break
+                time.sleep(0.05)
+            self.assertIsNotNone(child_pid)
+            parent.kill()
+            parent.wait(timeout=5)
+            for path in (admission, controller):
+                probe = os.open(path, os.O_RDWR)
+                try:
+                    with self.assertRaises(BlockingIOError):
+                        fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                finally:
+                    os.close(probe)
+            os.kill(child_pid, 9)
+            child_pid = None
+            for path in (admission, controller):
+                released = False
+                for _ in range(100):
+                    probe = os.open(path, os.O_RDWR)
+                    try:
+                        fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        released = True
+                        break
+                    except BlockingIOError:
+                        time.sleep(0.05)
+                    finally:
+                        os.close(probe)
+                self.assertTrue(released)
+        finally:
+            if parent.poll() is None:
+                parent.kill()
+                parent.wait(timeout=5)
+            if child_pid is not None:
+                try:
+                    os.kill(child_pid, 9)
+                except ProcessLookupError:
+                    pass
 
     def test_no_return_cutover_phases_repair_the_floor_before_replay(self) -> None:
         plan = {
@@ -2642,6 +2811,732 @@ class ReleaseTransactionTest(unittest.TestCase):
                 ):
                     RELEASE.validate_qualification_plan(changed)
 
+    def recovery_plan(self) -> dict[str, object]:
+        return RELEASE.seal_plan({
+            "attempt": {
+                "active_claim_sha256": None,
+                "dispatch_lease_sha256": "1" * 64,
+                "nested_plan": {"preview_hash": "2" * 64},
+                "provider_attempt": {"attempt_id": "attempt-1", "version": 4},
+                "provider_attempt_sha256": "3" * 64,
+                "runtime_ledger_row": {"run_id": "run-1", "ticket": "T-1"},
+            },
+            "created_epoch": 1,
+            "expires_epoch": 4_000_000_000,
+            "identity": {
+                "candidate_sha": self.sha, "product_sha": "4" * 40,
+                "source_sha": "5" * 40,
+            },
+            "request": {
+                "failed_run": "run-1", "operator_id": "tester",
+                "product": str(self.product), "project": "relay",
+                "repo": str(self.root / "factory"),
+                "root": str(self.root / "qualification"), "sha": self.sha,
+                "ticket": "T-1",
+            },
+            "schema": RELEASE.QUALIFICATION_RECOVERY_PLAN_SCHEMA,
+            "status": "planned",
+        })
+
+    def test_qualification_recovery_plan_binds_exact_attempt(self) -> None:
+        plan = self.recovery_plan()
+        RELEASE.validate_qualification_recovery_plan(plan)
+        for field in ("nested_plan", "provider_attempt", "runtime_ledger_row"):
+            with self.subTest(field=field):
+                changed = json.loads(json.dumps(plan))
+                changed["attempt"][field] = {"changed": True}
+                with self.assertRaisesRegex(
+                    RELEASE.ReleaseError, "recovery plan is invalid",
+                ):
+                    RELEASE.validate_qualification_recovery_plan(changed)
+
+    def test_qualification_recovery_reuses_validated_existing_cancellation(self) -> None:
+        runs = self.product / "factory/runs"
+        runs.mkdir(parents=True)
+        nested_plan = {"preview_hash": "2" * 64}
+        RELEASE.atomic_json(runs / "run-1.cancel-request.json", {
+            "plan": nested_plan, "requested_at": "2026-08-23T12:00:00Z",
+            "schema": "nysa.software-factory.attempt-cancel-request/v1",
+        })
+        RELEASE.atomic_json(
+            runs / "run-1.cancel.json", {"preview_hash": "2" * 64},
+        )
+        lane = {
+            "active": {
+                "kit_sha": "5" * 40, "project": "relay",
+                "runtime_ledger_path": str(self.root / "runtime-ledger.csv"),
+            },
+            "product": self.product, "provider": self.root / "provider",
+            "root": self.root / "qualification",
+        }
+        provider_attempt = {"attempt_id": "attempt-1", "version": 4}
+        with (
+            mock.patch.object(
+                RELEASE, "qualification_attempt_cancel",
+                return_value={"preview_hash": "2" * 64},
+            ) as cancel,
+            mock.patch.object(
+                RELEASE, "qualification_recovery_manifest",
+                return_value={"provider_attempt_id": "attempt-1", "role": "builder"},
+            ),
+            mock.patch.object(
+                RELEASE, "run_json", return_value={"attempts": [provider_attempt]},
+            ),
+            mock.patch.object(
+                RELEASE, "qualification_recovery_row", return_value={"run_id": "run-1"},
+            ),
+            mock.patch.object(
+                RELEASE, "qualification_recovery_optional_digest", return_value=None,
+            ),
+        ):
+            attempt = RELEASE.qualification_recovery_attempt(
+                self.root / "factory", lane, "T-1", "run-1",
+            )
+        self.assertEqual(attempt["nested_plan"], nested_plan)
+        self.assertEqual(attempt["provider_attempt"], provider_attempt)
+        self.assertEqual(
+            [call.args[2][0] for call in cancel.call_args_list],
+            ["request", "receipt"],
+        )
+
+    def test_qualification_recovery_accepts_request_only_crash_prefix(self) -> None:
+        runs = self.product / "factory/runs"
+        runs.mkdir(parents=True)
+        nested_plan = {"preview_hash": "2" * 64}
+        RELEASE.atomic_json(runs / "run-1.cancel-request.json", {
+            "plan": nested_plan, "requested_at": "2026-08-23T12:00:00Z",
+            "schema": "nysa.software-factory.attempt-cancel-request/v1",
+        })
+        lane = {
+            "active": {
+                "kit_sha": "5" * 40, "project": "relay",
+                "runtime_ledger_path": str(self.root / "runtime-ledger.csv"),
+            },
+            "product": self.product, "provider": self.root / "provider",
+            "root": self.root / "qualification",
+        }
+        provider_attempt = {"attempt_id": "attempt-1", "version": 4}
+        with (
+            mock.patch.object(
+                RELEASE, "qualification_attempt_cancel",
+                return_value={"preview_hash": "2" * 64},
+            ) as cancel,
+            mock.patch.object(
+                RELEASE, "qualification_recovery_manifest",
+                return_value={"provider_attempt_id": "attempt-1", "role": "builder"},
+            ),
+            mock.patch.object(
+                RELEASE, "run_json", return_value={"attempts": [provider_attempt]},
+            ) as provider,
+            mock.patch.object(
+                RELEASE, "qualification_recovery_row", return_value={"run_id": "run-1"},
+            ),
+            mock.patch.object(
+                RELEASE, "qualification_recovery_optional_digest", return_value=None,
+            ),
+        ):
+            attempt = RELEASE.qualification_recovery_attempt(
+                self.root / "factory", lane, "T-1", "run-1",
+            )
+        self.assertEqual(attempt["nested_plan"], nested_plan)
+        self.assertEqual(attempt["provider_attempt"], provider_attempt)
+        self.assertEqual(cancel.call_count, 1)
+        self.assertEqual(cancel.call_args.args[2][0], "request")
+        self.assertEqual(
+            provider.call_args.kwargs["environment"]["FACTORY_CROSS_RELEASE_PRODUCT_ID"],
+            f"relay:{'5' * 40}",
+        )
+        self.assertEqual(
+            provider.call_args.kwargs["environment"]["FACTORY_DISPATCH_ADMISSION_LOCK"],
+            str(lane["root"] / "worktrees/relay/.dispatch-admission.lock"),
+        )
+
+    def test_qualification_recovery_refuses_attempt_drift_before_cancellation(self) -> None:
+        plan = self.recovery_plan()
+        state = RELEASE.qualification_recovery_state(
+            Path(plan["request"]["root"]), "relay", self.sha, "T-1", "run-1",
+        )
+        RELEASE.atomic_json(state / "latest.json", plan)
+        RELEASE.atomic_json(
+            state / "plans" / f"{plan['approval_sha256']}.json", plan,
+        )
+        lane = {
+            "controller": self.root / "controller", "product": self.product,
+            "root": Path(plan["request"]["root"]),
+        }
+        module = mock.Mock()
+        module.lock_controllers.side_effect = lambda *_: [
+            os.open(os.devnull, os.O_RDONLY)
+        ]
+        module.lock_dispatch_admission.side_effect = lambda *_: [
+            os.open(os.devnull, os.O_RDONLY)
+        ]
+        args = argparse.Namespace(
+            approve_hash=plan["approval_sha256"], failed_run="run-1",
+            operator_id="tester", product=self.product, project="relay",
+            repo=self.root / "factory", root=lane["root"], sha=self.sha,
+            ticket="T-1",
+        )
+        with (
+            mock.patch.object(
+                RELEASE, "qualification_recovery_identity",
+                return_value=(plan["identity"], module, lane, args.repo),
+            ),
+            mock.patch.object(
+                RELEASE, "qualification_recovery_attempt",
+                return_value={"changed": True},
+            ),
+            mock.patch.object(RELEASE, "qualification_attempt_cancel") as cancel,
+            self.assertRaisesRegex(RELEASE.ReleaseError, "attempt changed"),
+        ):
+            RELEASE.qualification_recovery_apply(args)
+        cancel.assert_not_called()
+
+    def test_qualification_recovery_refuses_receipt_without_request(self) -> None:
+        plan = self.recovery_plan()
+        state = RELEASE.qualification_recovery_state(
+            Path(plan["request"]["root"]), "relay", self.sha, "T-1", "run-1",
+        )
+        RELEASE.atomic_json(
+            state / "plans" / f"{plan['approval_sha256']}.json", plan,
+        )
+        runs = self.product / "factory/runs"
+        runs.mkdir()
+        RELEASE.atomic_json(runs / "run-1.cancel.json", {"preview_hash": "2" * 64})
+        lane = {
+            "controller": self.root / "controller", "product": self.product,
+            "root": Path(plan["request"]["root"]),
+        }
+        module = mock.Mock()
+        module.lock_controllers.side_effect = lambda *_: [
+            os.open(os.devnull, os.O_RDONLY)
+        ]
+        module.lock_dispatch_admission.side_effect = lambda *_: [
+            os.open(os.devnull, os.O_RDONLY)
+        ]
+        args = argparse.Namespace(
+            approve_hash=plan["approval_sha256"], failed_run="run-1",
+            operator_id="tester", product=self.product, project="relay",
+            repo=self.root / "factory", root=lane["root"], sha=self.sha,
+            ticket="T-1",
+        )
+        with (
+            mock.patch.object(
+                RELEASE, "qualification_recovery_identity",
+                return_value=(plan["identity"], module, lane, args.repo),
+            ),
+            mock.patch.object(RELEASE, "qualification_attempt_cancel") as cancel,
+            self.assertRaisesRegex(RELEASE.ReleaseError, "replay is incomplete"),
+        ):
+            RELEASE.qualification_recovery_apply(args)
+        cancel.assert_not_called()
+
+    def test_qualification_recovery_replays_nested_receipt_exactly(self) -> None:
+        plan = self.recovery_plan()
+        state = RELEASE.qualification_recovery_state(
+            Path(plan["request"]["root"]), "relay", self.sha, "T-1", "run-1",
+        )
+        RELEASE.atomic_json(state / "latest.json", plan)
+        RELEASE.atomic_json(
+            state / "plans" / f"{plan['approval_sha256']}.json", plan,
+        )
+        runs = self.product / "factory/runs"
+        runs.mkdir()
+        RELEASE.atomic_json(runs / "run-1.cancel-request.json", {
+            "plan": plan["attempt"]["nested_plan"],
+            "requested_at": "2026-08-23T12:00:00Z",
+            "schema": "nysa.software-factory.attempt-cancel-request/v1",
+        })
+        nested_path = runs / "run-1.cancel.json"
+        RELEASE.atomic_json(nested_path, {"preview_hash": "2" * 64})
+        lane = {
+            "controller": self.root / "controller", "product": self.product,
+            "root": Path(plan["request"]["root"]),
+        }
+        module = mock.Mock()
+        module.lock_controllers.side_effect = lambda *_: [
+            os.open(os.devnull, os.O_RDONLY)
+        ]
+        module.lock_dispatch_admission.side_effect = lambda *_: [
+            os.open(os.devnull, os.O_RDONLY)
+        ]
+        args = argparse.Namespace(
+            approve_hash=plan["approval_sha256"], failed_run="run-1",
+            operator_id="tester", product=self.product, project="relay",
+            repo=self.root / "factory", root=lane["root"], sha=self.sha,
+            ticket="T-1",
+        )
+        nested = {"accounting_state": "cancelled_conservative",
+                  "preview_hash": "2" * 64}
+        with (
+            mock.patch.object(
+                RELEASE, "qualification_recovery_identity",
+                return_value=(plan["identity"], module, lane, args.repo),
+            ),
+            mock.patch.object(
+                RELEASE, "qualification_attempt_cancel", return_value=nested,
+            ) as cancel,
+        ):
+            first = RELEASE.qualification_recovery_apply(args)
+            second = RELEASE.qualification_recovery_apply(args)
+        self.assertEqual(first, second)
+        self.assertEqual(first["status"], "recovered")
+        self.assertEqual(cancel.call_count, 2)
+        self.assertTrue(all(
+            call.args[4] >= 0 and call.args[5] >= 0
+            for call in cancel.call_args_list
+        ))
+        self.assertFalse((state / "nested-plan.json").exists())
+        module.lock_dispatch_boundaries.assert_not_called()
+
+    def test_factory_kit_forwards_only_sealed_qualification_recovery_arguments(self) -> None:
+        self.root.chmod(0o700)
+        canonical = self.root / "origin.git"
+        subprocess.run(["git", "init", "--bare", "-q", str(canonical)], check=True)
+        repo = self.root / "recovery-candidate"
+        subprocess.run(["git", "clone", "-q", str(canonical), str(repo)], check=True)
+        (repo / "scripts").mkdir()
+        (repo / "scripts/release-transaction.py").write_text(
+            "import json,os,subprocess,sys\nfrom pathlib import Path\n"
+            "if os.environ.get('FACTORY_TEST_HELPER_MARKER'):\n"
+            " Path(os.environ['FACTORY_TEST_HELPER_MARKER']).write_text('executed')\n"
+            "if any(value.startswith('qualification-recover-') for value in sys.argv):\n"
+            " assert all(value not in os.environ for value in "
+            "('GH_TOKEN','GH_CONFIG_DIR','GIT_ASKPASS',"
+            "'FACTORY_QUALIFICATION_INSTALL_AUTH_DESCRIPTOR'))\n"
+            " assert os.environ['PATH'] == '/usr/bin:/bin'\n"
+            "if os.environ.get('FACTORY_TRUSTED_TEST_HARNESS') == '1' and "
+            "'qualification-upgrade' in sys.argv:\n"
+            " assert all(value not in os.environ for value in "
+            "('GH_TOKEN','GH_CONFIG_DIR','GIT_ASKPASS'))\n"
+            " assert os.environ['PATH'] == '/usr/bin:/bin'\n"
+            " assert Path(os.environ['FACTORY_QUALIFICATION_INSTALL_AUTH_DESCRIPTOR']).is_file()\n"
+            "print(json.dumps(sys.argv[1:]))\n", encoding="utf-8",
+        )
+        (repo / "factory-contract.json").write_text(
+            '{"contract_version":"2.0.0"}\n', encoding="utf-8",
+        )
+        subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+        subprocess.run([
+            "git", "-C", str(repo), "-c", "user.name=Factory Test", "-c",
+            "user.email=factory@example.invalid", "commit", "-qm", "candidate",
+        ], check=True)
+        candidate_sha = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        subprocess.run([
+            "git", "-C", str(repo), "push", "-q", "-u", "origin", "HEAD:main",
+        ], check=True)
+        product = self.root / "recovery-product"
+        product.mkdir()
+        qualification = self.root / "nysa-sf-qualification.fixture"
+        qualification.mkdir()
+        environment = {
+            **os.environ,
+            "FACTORY_KIT_CANONICAL_ORIGIN": str(canonical),
+            "FACTORY_KIT_TEST_MODE": "1",
+            "FACTORY_KITS_ROOT": str(self.root / ".factory/kits"),
+            "FACTORY_RELEASE_TEST_HOME": str(self.root),
+        }
+        common = [
+            "--project", "relay", "--root", str(qualification),
+            "--product", str(product), "--repo", str(repo), "--sha", candidate_sha,
+            "--operator-id", "tester", "--ticket", "T-1",
+            "--failed-run", "run-1",
+        ]
+        runtime = self.root / "runtime"
+        runtime.mkdir()
+        upgrade_common = [
+            "--project", "relay", "--root", str(qualification),
+            "--product", str(product), "--repo", str(repo), "--sha", candidate_sha,
+            "--operator-id", "tester", "--runtime-bin", str(runtime),
+        ]
+        config_marker = self.root / "candidate-config-executed"
+        config_helper = self.root / "candidate-config-helper"
+        config_helper.write_text(
+            f"#!/bin/sh\ntouch {str(config_marker)!r}\nexit 1\n", encoding="utf-8",
+        )
+        config_helper.chmod(0o700)
+        attributes = self.root / "candidate-global-attributes"
+        attributes.write_text("* filter=attacker\n", encoding="utf-8")
+        for key, value in (
+            ("core.fsmonitor", str(config_helper)),
+            ("core.attributesFile", str(attributes)),
+            ("credential.helper", f"!{config_helper}"),
+            ("core.sshCommand", str(config_helper)),
+            ("filter.attacker.clean", str(config_helper)),
+            ("url.file:///tmp/attacker/.insteadOf", str(canonical)),
+        ):
+            subprocess.run(["git", "-C", str(repo), "config", key, value], check=True)
+        planned = subprocess.run(
+            ["bash", str(ROOT / "scripts/factory-kit.sh"), "qualification",
+             "recover-plan", *common],
+            capture_output=True, text=True, env=environment, check=False,
+        )
+        self.assertEqual(planned.returncode, 0, planned.stderr)
+        plan_arguments = json.loads(planned.stdout)
+        self.assertIn("qualification-recover-plan", plan_arguments)
+        self.assertNotIn("--approve-hash", plan_arguments)
+
+        approval = "b" * 64
+        applied = subprocess.run(
+            ["bash", str(ROOT / "scripts/factory-kit.sh"), "qualification",
+             "recover-apply", *common, "--approve-hash", approval],
+            capture_output=True, text=True, env=environment, check=False,
+        )
+        self.assertEqual(applied.returncode, 0, applied.stderr)
+        apply_arguments = json.loads(applied.stdout)
+        self.assertIn("qualification-recover-apply", apply_arguments)
+        self.assertEqual(apply_arguments[-2:], ["--approve-hash", approval])
+        configured_upgrade = subprocess.run(
+            ["bash", str(ROOT / "scripts/factory-kit.sh"), "qualification",
+             "upgrade", *upgrade_common], capture_output=True, text=True,
+            env=environment, check=False,
+        )
+        self.assertEqual(configured_upgrade.returncode, 0, configured_upgrade.stderr)
+        self.assertFalse(config_marker.exists())
+        for key in (
+            "core.fsmonitor", "credential.helper", "core.sshCommand",
+            "core.attributesFile", "filter.attacker.clean",
+            "url.file:///tmp/attacker/.insteadOf",
+        ):
+            subprocess.run([
+                "git", "-C", str(repo), "config", "--unset-all", key,
+            ], check=True)
+        subprocess.run([
+            "git", "-C", str(repo), "config", "core.repositoryFormatVersion", "1",
+        ], check=True)
+        subprocess.run([
+            "git", "-C", str(repo), "config", "Extensions.PartialClone", "origin",
+        ], check=True)
+        partial = subprocess.run(
+            ["bash", str(ROOT / "scripts/factory-kit.sh"), "qualification",
+             "recover-plan", *common], capture_output=True, text=True,
+            env=environment, check=False,
+        )
+        self.assertNotEqual(partial.returncode, 0)
+        self.assertIn("partial or promisor", partial.stderr)
+        subprocess.run([
+            "git", "-C", str(repo), "config", "--unset-all", "extensions.partialClone",
+        ], check=True)
+        subprocess.run([
+            "git", "-C", str(repo), "config", "core.repositoryFormatVersion", "0",
+        ], check=True)
+        subprocess.run([
+            "git", "-C", str(repo), "config", "extensions.worktreeConfig", "true",
+        ], check=True)
+        subprocess.run([
+            "git", "-C", str(repo), "config", "--worktree",
+            "ReMoTe.origin.ProMiSoR", "true",
+        ], check=True)
+        worktree_partial = subprocess.run(
+            ["bash", str(ROOT / "scripts/factory-kit.sh"), "qualification",
+             "recover-plan", *common], capture_output=True, text=True,
+            env=environment, check=False,
+        )
+        self.assertNotEqual(worktree_partial.returncode, 0)
+        self.assertIn("partial or promisor", worktree_partial.stderr)
+        subprocess.run([
+            "git", "-C", str(repo), "config", "--worktree", "--unset-all",
+            "remote.origin.promisor",
+        ], check=True)
+        subprocess.run([
+            "git", "-C", str(repo), "config", "--unset-all",
+            "extensions.worktreeConfig",
+        ], check=True)
+
+        malformed = subprocess.run(
+            ["bash", str(ROOT / "scripts/factory-kit.sh"), "qualification",
+             "recover-apply", *common, "--approve-hash", "short"],
+            capture_output=True, text=True, env=environment, check=False,
+        )
+        self.assertEqual(malformed.returncode, 2)
+        self.assertEqual(malformed.stdout, "")
+
+        for option, value in (("--stage", "planning"), ("--priority", "high")):
+            with self.subTest(option=option):
+                smuggled = subprocess.run(
+                    ["bash", str(ROOT / "scripts/factory-kit.sh"), "qualification",
+                     "recover-plan", *common, option, value],
+                    capture_output=True, text=True, env=environment, check=False,
+                )
+                self.assertEqual(smuggled.returncode, 2)
+                self.assertEqual(smuggled.stdout, "")
+
+        dirty_marker = self.root / "dirty-helper-executed"
+        (repo / "scripts/release-transaction.py").write_text(
+            f"from pathlib import Path\nPath({str(dirty_marker)!r}).write_text('executed')\n",
+            encoding="utf-8",
+        )
+        dirty = subprocess.run(
+            ["bash", str(ROOT / "scripts/factory-kit.sh"), "qualification",
+             "recover-plan", *common],
+            capture_output=True, text=True, env=environment, check=False,
+        )
+        self.assertNotEqual(dirty.returncode, 0)
+        self.assertIn("candidate must be clean", dirty.stderr)
+        self.assertFalse(dirty_marker.exists())
+        subprocess.run([
+            "git", "-C", str(repo), "restore", "scripts/release-transaction.py",
+        ], check=True)
+        for flag, clear_flag in (
+            ("--assume-unchanged", "--no-assume-unchanged"),
+            ("--skip-worktree", "--no-skip-worktree"),
+        ):
+            hidden_marker = self.root / f"hidden-{flag[2:]}-helper-executed"
+            (repo / "scripts/release-transaction.py").write_text(
+                f"from pathlib import Path\nPath({str(hidden_marker)!r}).write_text('executed')\n",
+                encoding="utf-8",
+            )
+            subprocess.run([
+                "git", "-C", str(repo), "update-index", flag,
+                "scripts/release-transaction.py",
+            ], check=True)
+            hidden = subprocess.run(
+                ["bash", str(ROOT / "scripts/factory-kit.sh"), "qualification",
+                 "recover-plan", *common],
+                capture_output=True, text=True, env=environment, check=False,
+            )
+            self.assertNotEqual(hidden.returncode, 0)
+            self.assertIn("candidate must be clean", hidden.stderr)
+            hidden_upgrade = subprocess.run(
+                ["bash", str(ROOT / "scripts/factory-kit.sh"), "qualification",
+                 "upgrade", *upgrade_common],
+                capture_output=True, text=True, env=environment, check=False,
+            )
+            self.assertNotEqual(hidden_upgrade.returncode, 0)
+            self.assertIn("candidate must be clean", hidden_upgrade.stderr)
+            self.assertFalse(hidden_marker.exists())
+            subprocess.run([
+                "git", "-C", str(repo), "update-index", clear_flag,
+                "scripts/release-transaction.py",
+            ], check=True)
+            subprocess.run([
+                "git", "-C", str(repo), "restore", "scripts/release-transaction.py",
+            ], check=True)
+
+        replacement_marker = self.root / "replacement-helper-executed"
+        (repo / "scripts/release-transaction.py").write_text(
+            f"from pathlib import Path\nPath({str(replacement_marker)!r}).write_text('executed')\n",
+            encoding="utf-8",
+        )
+        subprocess.run([
+            "git", "-C", str(repo), "add", "scripts/release-transaction.py",
+        ], check=True)
+        subprocess.run([
+            "git", "-C", str(repo), "-c", "user.name=Factory Test", "-c",
+            "user.email=factory@example.invalid", "commit", "-qm", "replacement",
+        ], check=True)
+        replacement_sha = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True,
+            text=True, check=True,
+        ).stdout.strip()
+        subprocess.run([
+            "git", "-C", str(repo), "reset", "--hard", "-q", candidate_sha,
+        ], check=True)
+        subprocess.run([
+            "git", "-C", str(repo), "replace", candidate_sha, replacement_sha,
+        ], check=True)
+        for action, arguments in (
+            ("recover-plan", common), ("upgrade", upgrade_common),
+        ):
+            replaced = subprocess.run(
+                ["bash", str(ROOT / "scripts/factory-kit.sh"), "qualification",
+                 action, *arguments], capture_output=True, text=True,
+                env=environment, check=False,
+            )
+            self.assertEqual(replaced.returncode, 0, replaced.stderr)
+            self.assertIn(
+                "qualification-recover-plan" if action == "recover-plan"
+                else "qualification-upgrade", json.loads(replaced.stdout),
+            )
+        self.assertFalse(replacement_marker.exists())
+        subprocess.run([
+            "git", "-C", str(repo), "replace", "-d", candidate_sha,
+        ], check=True)
+
+        foreign_origin = self.root / "foreign.git"
+        foreign = self.root / "foreign-candidate"
+        subprocess.run(["git", "init", "--bare", "-q", str(foreign_origin)], check=True)
+        subprocess.run(["git", "clone", "-q", str(foreign_origin), str(foreign)], check=True)
+        (foreign / "scripts").mkdir()
+        marker = self.root / "foreign-helper-executed"
+        (foreign / "scripts/release-transaction.py").write_text(
+            f"from pathlib import Path\nPath({str(marker)!r}).write_text('executed')\n",
+            encoding="utf-8",
+        )
+        (foreign / "factory-contract.json").write_text(
+            '{"contract_version":"2.0.0"}\n', encoding="utf-8",
+        )
+        subprocess.run(["git", "-C", str(foreign), "add", "."], check=True)
+        subprocess.run([
+            "git", "-C", str(foreign), "-c", "user.name=Factory Test", "-c",
+            "user.email=factory@example.invalid", "commit", "-qm", "foreign",
+        ], check=True)
+        foreign_sha = subprocess.run(
+            ["git", "-C", str(foreign), "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        foreign_common = [
+            "--project", "relay", "--root", str(qualification),
+            "--product", str(product), "--repo", str(foreign),
+            "--sha", foreign_sha, "--operator-id", "tester",
+        ]
+        recovery = subprocess.run(
+            ["bash", str(ROOT / "scripts/factory-kit.sh"), "qualification",
+             "recover-plan", *foreign_common, "--ticket", "T-1",
+             "--failed-run", "run-1"],
+            capture_output=True, text=True, env=environment, check=False,
+        )
+        upgrade = subprocess.run(
+            ["bash", str(ROOT / "scripts/factory-kit.sh"), "qualification",
+             "upgrade", *foreign_common, "--runtime-bin", str(runtime)],
+            capture_output=True, text=True, env=environment, check=False,
+        )
+        self.assertNotEqual(recovery.returncode, 0)
+        self.assertNotEqual(upgrade.returncode, 0)
+        self.assertIn("wrong kit origin", recovery.stderr)
+        self.assertIn("wrong kit origin", upgrade.stderr)
+        self.assertFalse(marker.exists())
+
+        subprocess.run([
+            "/usr/bin/git", "-C", str(repo), "update-ref",
+            "refs/remotes/origin/main", candidate_sha,
+        ], check=True)
+        subprocess.run([
+            "/usr/bin/git", "-C", str(repo), "config",
+            "url.file:///tmp/malicious/.insteadOf", str(canonical),
+        ], check=True)
+        stub_bin = self.root / "hostile-bin"
+        stub_bin.mkdir()
+        path_marker = self.root / "hostile-path-used"
+        for name in ("git", "gh"):
+            path_stub = stub_bin / name
+            path_stub.write_text(
+                f"#!/bin/sh\ntouch {str(path_marker)!r}\nexit 91\n",
+                encoding="utf-8",
+            )
+            path_stub.chmod(0o700)
+        auth_config = self.root / "trusted-gh-config"
+        auth_config.mkdir(mode=0o700)
+        (auth_config / "hosts.yml").write_text("github.com: {}\n", encoding="utf-8")
+        (auth_config / "hosts.yml").chmod(0o600)
+        token_file = auth_config / "test-token"
+        token_file.write_text("config-only-token\n", encoding="utf-8")
+        live_file = self.root / "live-main"
+        live_file.write_text(candidate_sha + "\n", encoding="utf-8")
+        gh_stub = self.root / "trusted-gh"
+        gh_stub.write_text(
+            "#!/bin/sh\n"
+            "[ \"${GH_PROMPT_DISABLED:-}\" = 1 ] || exit 9\n"
+            "[ -z \"${XDG_CONFIG_HOME+x}${GH_HTTP_UNIX_SOCKET+x}"
+            "${HTTP_PROXY+x}${HTTPS_PROXY+x}${ALL_PROXY+x}${NO_PROXY+x}"
+            "${http_proxy+x}${https_proxy+x}${all_proxy+x}${no_proxy+x}"
+            "${SSL_CERT_FILE+x}${SSL_CERT_DIR+x}${CURL_CA_BUNDLE+x}"
+            "${REQUESTS_CA_BUNDLE+x}\" ] || exit 9\n"
+            f"if [ \"$1|$2|$3\" = 'auth|token|--hostname' ] && [ \"$4\" = github.com ]; then\n"
+            f" [ \"$GH_CONFIG_DIR\" = {str(auth_config)!r} ] || exit 9\n"
+            f" cat {str(token_file)!r}; exit 0\n"
+            "fi\n"
+            "[ \"${GH_TOKEN:-}\" = config-only-token ] || exit 9\n"
+            f"[ \"${{GH_CONFIG_DIR:-}}\" != {str(auth_config)!r} ] || exit 9\n"
+            "[ -d \"${GH_CONFIG_DIR:-missing}\" ] || exit 9\n"
+            "[ \"$1|$2|$3|$4|$5|$6\" = "
+            "'api|--hostname|github.com|repos/nysa-company/software-factory/git/ref/heads/main|--jq|.object.sha' ] || exit 9\n"
+            f"cat {str(live_file)!r}\n",
+            encoding="utf-8",
+        )
+        gh_stub.chmod(0o700)
+        hostile_environment = {
+            **os.environ,
+            "FACTORY_KIT_CANONICAL_ORIGIN": str(canonical),
+            "FACTORY_KIT_TEST_MODE": "1",
+            "FACTORY_TRUSTED_TEST_HARNESS": "1",
+            "FACTORY_KIT_TEST_QUALIFICATION_LIVE_MAIN": "1",
+            "FACTORY_KIT_TEST_QUALIFICATION_GH": str(gh_stub),
+            "FACTORY_KIT_TEST_QUALIFICATION_GH_CONFIG": str(auth_config),
+            "FACTORY_KITS_ROOT": environment["FACTORY_KITS_ROOT"],
+            "FACTORY_RELEASE_TEST_HOME": str(self.root),
+            "GH_HOST": "attacker.invalid",
+            "GH_REPO": "attacker/repository",
+            "GITHUB_REPOSITORY": "attacker/repository",
+            "GH_CONFIG_DIR": "/attacker/gh",
+            "XDG_CONFIG_HOME": "/attacker/xdg",
+            "GH_HTTP_UNIX_SOCKET": "/attacker/socket",
+            "HTTP_PROXY": "http://attacker.invalid",
+            "HTTPS_PROXY": "http://attacker.invalid",
+            "ALL_PROXY": "http://attacker.invalid",
+            "NO_PROXY": "github.com",
+            "http_proxy": "http://attacker.invalid",
+            "https_proxy": "http://attacker.invalid",
+            "all_proxy": "http://attacker.invalid",
+            "no_proxy": "github.com",
+            "SSL_CERT_FILE": "/attacker/ca.pem",
+            "SSL_CERT_DIR": "/attacker/certs",
+            "CURL_CA_BUNDLE": "/attacker/curl-ca.pem",
+            "REQUESTS_CA_BUNDLE": "/attacker/requests-ca.pem",
+            "PATH": f"{stub_bin}:/usr/bin:/bin",
+        }
+        hostile_environment.pop("GH_TOKEN", None)
+        hostile_environment.pop("GITHUB_TOKEN", None)
+        authenticated = subprocess.run(
+            ["bash", str(ROOT / "scripts/factory-kit.sh"), "qualification",
+             "recover-plan", *common],
+            capture_output=True, text=True, env=hostile_environment, check=False,
+        )
+        self.assertEqual(authenticated.returncode, 0, authenticated.stderr)
+        authenticated_apply = subprocess.run(
+            ["bash", str(ROOT / "scripts/factory-kit.sh"), "qualification",
+             "recover-apply", *common, "--approve-hash", approval],
+            capture_output=True, text=True, env=hostile_environment, check=False,
+        )
+        self.assertEqual(authenticated_apply.returncode, 0, authenticated_apply.stderr)
+        authenticated_upgrade = subprocess.run(
+            ["bash", str(ROOT / "scripts/factory-kit.sh"), "qualification",
+             "upgrade", *upgrade_common], capture_output=True, text=True,
+            env=hostile_environment, check=False,
+        )
+        self.assertEqual(authenticated_upgrade.returncode, 0, authenticated_upgrade.stderr)
+        self.assertIn("qualification-upgrade", json.loads(authenticated_upgrade.stdout))
+        self.assertFalse(path_marker.exists())
+
+        for token in ("", "bad token"):
+            with self.subTest(token=token):
+                token_file.write_text(token, encoding="utf-8")
+                rejected = subprocess.run(
+                    ["bash", str(ROOT / "scripts/factory-kit.sh"), "qualification",
+                     "recover-plan", *common], capture_output=True, text=True,
+                    env=hostile_environment, check=False,
+                )
+                self.assertNotEqual(rejected.returncode, 0)
+                self.assertIn("authentication for qualification is unavailable", rejected.stderr)
+        token_file.write_text("config-only-token\n", encoding="utf-8")
+        live_file.write_text("d" * 40 + "\n", encoding="utf-8")
+        helper_marker = self.root / "live-mismatch-helper-executed"
+        mismatch_environment = {
+            **hostile_environment, "FACTORY_TEST_HELPER_MARKER": str(helper_marker),
+        }
+        mismatched = subprocess.run(
+            ["bash", str(ROOT / "scripts/factory-kit.sh"), "qualification",
+             "recover-plan", *common], capture_output=True, text=True,
+            env=mismatch_environment, check=False,
+        )
+        self.assertNotEqual(mismatched.returncode, 0)
+        self.assertIn("does not match live protected main", mismatched.stderr)
+        self.assertFalse(helper_marker.exists())
+        self.assertFalse(path_marker.exists())
+
+        injected_root = subprocess.run(
+            [sys.executable, "-I", str(ROOT / "scripts/qualification-environment.py"),
+             "--factory-root", str(repo), "--product-root", str(product),
+             "--project", "relay", "--root", str(qualification), "--upgrade",
+             "--transaction-root", str(repo)],
+            capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(injected_root.returncode, 2)
+        self.assertIn("unrecognized arguments: --transaction-root", injected_root.stderr)
+
     def test_qualification_runtime_change_plans_once_then_reuses_receipt(self) -> None:
         plan = {
             "action": "install", "approval_sha256": "3" * 64,
@@ -2710,8 +3605,11 @@ class ReleaseTransactionTest(unittest.TestCase):
             project="relay", repo=repo, root=lane, runtime_bin=runtime,
             sha=self.sha,
         )
-        identity = {"active": {"generation": 1, "kit_sha": "b" * 40},
-                    "selected_tickets": ["T-1"]}
+        identity = {
+            "active": {"generation": 1, "kit_sha": "b" * 40},
+            "factory_origin": "https://github.com/nysa-company/software-factory.git",
+            "factory_tree": "c" * 40, "selected_tickets": ["T-1"],
+        }
         module = mock.Mock()
         module.qualification_fallback_readiness.return_value = (
             {"readiness_sha256": "1" * 64}, "1" * 64,
@@ -2725,6 +3623,20 @@ class ReleaseTransactionTest(unittest.TestCase):
             ),
             mock.patch.object(
                 RELEASE, "qualification_runtime_child", return_value=runtime_child,
+            ),
+            mock.patch.object(
+                RELEASE, "qualification_install_descriptor", return_value=({
+                    "install_repo": str(repo), "descriptor_path": str(repo / "descriptor"),
+                }, b"descriptor"),
+            ),
+            mock.patch.object(
+                RELEASE, "clean_identity", return_value=(
+                    self.sha, "c" * 40,
+                    "https://github.com/nysa-company/software-factory.git",
+                ),
+            ),
+            mock.patch.object(
+                RELEASE, "consume_qualification_install_token", return_value={},
             ),
             mock.patch.object(RELEASE, "qualification_provider_child", return_value={
                 "action": "reuse", "evidence": {"status": "ready"},
