@@ -22,7 +22,7 @@ SCHEMA = "nysa.software-factory.ci-rerun/v1"
 TICKET = re.compile(r"^T-[0-9]+$")
 SHA = re.compile(r"^[0-9a-f]{40}$")
 PROTECTED = re.compile(
-    r"policy|secur|secret|config|control|immutable|runtime|factory|contract|license",
+    r"policy|secur|secret|config|control|immutab|runtime|factory|contract|license",
     re.I,
 )
 APPLICATION = re.compile(r"test|unit|integration|e2e|application", re.I)

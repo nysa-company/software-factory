@@ -561,6 +561,8 @@ def recover_applied(args, approval):
         journal = json.loads(committed)
     except (FallbackError, KeyError, IndexError, json.JSONDecodeError):
         return None
+    if journal.get("schema") == "ticket-model-route-plan/v1":
+        return None
     catalog, routes, _profiles, profile_map = load_policy_files(
         args.catalog, args.profiles
     )
