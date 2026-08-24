@@ -110,6 +110,12 @@ class QualificationManifestTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, "QUALIFICATION MANIFEST VALIDATED\n")
 
+        singleton = ordinary()
+        singleton.update({"target_done": 1, "tickets": ["T-101"]})
+        singleton_head = self.write_manifest(root, singleton, "ordinary singleton")
+        result = self.invoke(root, ordinary_head, singleton_head)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
         high_budget = ordinary()
         high_budget.update({
             "budget_usd": "300.000000",
@@ -117,7 +123,7 @@ class QualificationManifestTest(unittest.TestCase):
             "per_ticket_budget_usd": "100.000000",
         })
         high_budget_head = self.write_manifest(root, high_budget, "high-budget ordinary")
-        result = self.invoke(root, ordinary_head, high_budget_head)
+        result = self.invoke(root, singleton_head, high_budget_head)
         self.assertEqual(result.returncode, 0, result.stderr)
 
         successor_head = self.write_manifest(root, successor(), "successor")
@@ -146,7 +152,22 @@ class QualificationManifestTest(unittest.TestCase):
         value = ordinary(); value["tickets"][1] = "T-101"; cases["duplicate ticket"] = value
         value = ordinary(); value["factory_sha"] = SOURCE_SHA; cases["wrong Factory SHA"] = value
         value = ordinary(); value["capacity"] = 2; cases["invalid capacity"] = value
+        value = ordinary(); value["capacity"] = 3.0; cases["float capacity"] = value
         value = ordinary(); value["target_done"] = 4; cases["invalid target"] = value
+        value = ordinary(); value.update({
+            "target_done": True, "tickets": ["T-101"],
+        }); cases["boolean target"] = value
+        value = ordinary(); value["tickets"][0] = {}; cases["object ticket"] = value
+        value = ordinary(); value.update({
+            "capacity": 4, "target_done": 1, "tickets": ["T-101"],
+        }); cases["singleton capacity four"] = value
+        value = ordinary(); value.update({
+            "budget_usd": "300.000000",
+            "per_run_budget_usd": "10.000000",
+            "per_ticket_budget_usd": "100.000000",
+            "target_done": 1,
+            "tickets": ["T-101"],
+        }); cases["extended singleton"] = value
         value = ordinary(); value.update({
             "budget_usd": "300.000000",
             "capacity": 4,
@@ -156,6 +177,9 @@ class QualificationManifestTest(unittest.TestCase):
             "tickets": ["T-101", "T-102", "T-103", "T-104"],
         }); cases["extended capacity four"] = value
         value = successor(); value["capacity"] = 4; cases["invalid successor capacity"] = value
+        value = successor(); value.update({
+            "target_done": 1, "tickets": ["T-101"],
+        }); cases["invalid successor singleton"] = value
         value = successor(); value["source_factory_sha"] = "invalid"; cases["invalid source SHA"] = value
         value = successor(); value["source_factory_sha"] = KIT_SHA; cases["same source SHA"] = value
 

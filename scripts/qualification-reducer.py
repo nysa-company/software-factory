@@ -61,8 +61,33 @@ class QualificationError(ValueError):
     pass
 
 
+class LatencyTargetExceeded(QualificationError):
+    def __init__(
+        self, metric: str, observed_ms: int, target_ms: int,
+        ticket: str | None = None,
+    ) -> None:
+        super().__init__("qualification latency target exceeded")
+        self.metric = metric
+        self.observed_ms = observed_ms
+        self.target_ms = target_ms
+        self.ticket = ticket
+
+
 class ExternalUnavailable(QualificationError):
     pass
+
+
+def error_result(error: Exception) -> dict[str, Any]:
+    result = {"error": str(error), "schema": SCHEMA, "status": "error"}
+    if isinstance(error, LatencyTargetExceeded):
+        result.update({
+            "metric": error.metric,
+            "observed_ms": error.observed_ms,
+            "target_ms": error.target_ms,
+        })
+        if error.ticket is not None:
+            result["ticket"] = error.ticket
+    return result
 
 
 def canonical(value: Any) -> str:
@@ -478,23 +503,39 @@ def qualification_latency(
     cohort_ms = milliseconds(
         max(completion_times.values()), max(narrator_terminals.values()),
     )
+    measurements = [
+        (
+            "cold_activation", activation_ms,
+            LATENCY_TARGETS_MS["cold_activation"], None,
+        ),
+        (
+            "prepared_to_all_planners", prepared_ms,
+            LATENCY_TARGETS_MS["prepared_to_all_planners"], None,
+        ),
+        (
+            "last_narrator_to_cohort_done", cohort_ms,
+            LATENCY_TARGETS_MS["last_narrator_to_cohort_done"], None,
+        ),
+    ]
+    if len(ticket_ms) == 1:
+        ticket, elapsed = next(iter(ticket_ms.items()))
+        measurements.append((
+            "final_narrator_to_done", elapsed,
+            LATENCY_TARGETS_MS["final_narrator_to_done"], ticket,
+        ))
     observed = {
         "cold_activation_ms": activation_ms,
         "final_narrator_to_done_ms": ticket_ms,
         "last_narrator_to_cohort_done_ms": cohort_ms,
         "prepared_to_all_planners_ms": prepared_ms,
-        "target_max_ms": LATENCY_TARGETS_MS,
+        "target_max_ms": {
+            metric: target for metric, _elapsed, target, _ticket in measurements
+        },
     }
-    if (
-        activation_ms > LATENCY_TARGETS_MS["cold_activation"]
-        or prepared_ms > LATENCY_TARGETS_MS["prepared_to_all_planners"]
-        or cohort_ms > LATENCY_TARGETS_MS["last_narrator_to_cohort_done"]
-        or any(
-            value > LATENCY_TARGETS_MS["final_narrator_to_done"]
-            for value in ticket_ms.values()
-        )
-    ):
-        raise QualificationError("qualification latency target exceeded")
+    for metric, elapsed, target, ticket in measurements:
+        if elapsed <= target:
+            continue
+        raise LatencyTargetExceeded(metric, elapsed, target, ticket)
     return observed
 
 
@@ -782,9 +823,14 @@ def verify(
         set(manifest) != manifest_keys
         or manifest.get("schema") != MANIFEST_SCHEMA
         or manifest.get("contract_version") not in ("1.8.0", "2.0.0")
+        or not isinstance(manifest.get("capacity"), int)
+        or isinstance(manifest.get("capacity"), bool)
         or manifest.get("capacity") not in (3, 4)
-        or target_done not in (3, 4)
+        or not isinstance(target_done, int)
+        or isinstance(target_done, bool)
+        or target_done not in (1, 3, 4)
         or target_done > manifest.get("capacity")
+        or target_done == 1 and manifest.get("capacity") != 3
         or (
             successor
             and (
@@ -815,8 +861,11 @@ def verify(
         or manifest["generation"] < 1
         or not isinstance(tickets, list)
         or len(tickets) != target_done
+        or any(
+            not isinstance(ticket, str) or not TICKET.fullmatch(ticket)
+            for ticket in tickets
+        )
         or len(set(tickets)) != target_done
-        or any(not TICKET.fullmatch(ticket) for ticket in tickets)
         or bool(set(passports) & reconciled)
         or bool(reconciled & emergency_reconciled)
         or set(passports) | reconciled != set(tickets)
@@ -1213,7 +1262,8 @@ def verify(
     if (
         not isinstance(boundary_tickets, list)
         or len(boundary_tickets) not in (
-            {target_done} if successor else {target_done, 4}
+            {target_done, 4}
+            if not successor and target_done == 3 else {target_done}
         )
         or len(set(boundary_tickets)) != len(boundary_tickets)
         or not set(tickets).issubset(boundary_tickets)
@@ -1236,7 +1286,7 @@ def verify(
     ):
         raise QualificationError("restart, relocation, or completion proof is missing")
     latency = None
-    if not successor and target_done == 3:
+    if not successor and target_done in (1, 3):
         if reconciled or emergency_reconciled or adopted:
             raise QualificationError("qualification latency requires a fresh cohort")
         latency = qualification_latency(
@@ -1467,7 +1517,7 @@ def main() -> None:
         provider_planner_starts = None
         fresh_timing = (
             manifest.get("mode") != "successor"
-            and manifest.get("target_done") == 3
+            and manifest.get("target_done") in (1, 3)
         )
         if fresh_timing:
             active = json.loads(regular(
@@ -1566,7 +1616,7 @@ def main() -> None:
         FileNotFoundError, json.JSONDecodeError, OSError, QualificationError,
         subprocess.SubprocessError,
     ) as error:
-        print(canonical({"error": str(error), "schema": SCHEMA, "status": "error"}))
+        print(canonical(error_result(error)))
         raise SystemExit(1)
 
 

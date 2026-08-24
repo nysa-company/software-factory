@@ -235,7 +235,13 @@ Narrator evidence; overlap, unsafe file shape, and
 unknown Factory state still invalidate it. Artifacts for a declared dependency
 remain related and also invalidate the evidence. The gate never uses live
 credentials or provider inference. It proves fresh-cohort
-restart, fallback, publication, closeout, and reduction composition; successor
+restart, fallback, publication, closeout, and reduction composition. Its
+three-ticket latency contract enforces cold activation, durable submission of
+all Planners, and last-Narrator-to-cohort-Done. Every per-ticket
+Narrator-to-Done value remains a reported observation because the authenticated
+cohort barrier prevents those tickets from being judged as independent
+workloads. The ordinary one-ticket profile separately enforces the
+final-Narrator-to-Done ceiling. Successor
 migration and terminal adoption remain covered by the fast component replay,
 and a frozen live cohort remains the release proof.
 
@@ -913,9 +919,15 @@ receipt, reads each Planner launch from the isolated coordinator's durable
 submission second using the conservative end-of-second boundary and binds it
 to the passport-backed run manifest and terminal event,
 selects the protected bundle's exact final
-Narrator run, and requires one `ticket_complete` event per ticket. It derives
-the four qualification latency SLOs from those ordered boundaries and fails
-closed on missing, duplicate, reordered, or over-target evidence.
+Narrator run, and requires one `ticket_complete` event per ticket. It reports
+all four latency observations from those ordered boundaries. The three-ticket
+profile fails closed when cold activation, durable all-Planner submission, or
+last-Narrator-to-cohort-Done exceeds its ceiling; it does not apply the
+single-ticket ceiling to cohort members whose Done transition is deliberately
+sibling-coupled. The ordinary one-ticket profile enforces all four ceilings,
+including final-Narrator-to-Done. Every refusal names the exact metric, observed
+milliseconds, and target. Missing, duplicate, or reordered evidence remains
+fail-closed.
 The same reduction requires a bijection between authenticated candidate run
 manifests and every isolated provider attempt. Reservation, terminal charge,
 ticket, route, family, policy, product, GO/submission timestamps, terminal
@@ -1050,9 +1062,11 @@ protected-base refresh. `Building` is admitted only when the trusted launcher
 supplies one of those exact stages; the refresh performs the ordinary sealed
 reset and never treats stale evidence as valid. The qualification reducer
 reconciles passports, manifests, controller events, exact PR-head checks,
-merge commits, and protected main. A qualification may close either an
-explicitly ordered three-ticket cohort at capacity three or four independent
-tickets at capacity four. Tracked dependencies must form an acyclic graph and
+merge commits, and protected main. An ordinary qualification may close one
+independent ticket at capacity three, an explicitly ordered three-ticket cohort
+at capacity three, or four independent tickets at capacity four. A successor
+remains exactly three tickets at capacity three. Tracked dependencies must form
+an acyclic graph and
 every dependency outside the cohort must already have protected terminal
 evidence. The three-ticket form proves the exact selected restart, lifecycle,
 and serialized publication but makes no PR-concurrency claim; whenever any
@@ -1070,7 +1084,8 @@ selected tickets. Historical role, charge, publication, and merge evidence
 keeps its original Factory SHA inside each passport's authenticated release
 history. A fresh cohort selects one exact reviewed envelope: the retained $2
 run, $25 ticket, and $100 cohort profile or the extended $10 run, $100 ticket,
-and $300 cohort profile. Mixed values remain invalid. A production successor
+and $300 cohort profile. The one-ticket profile uses only the retained envelope;
+mixed values remain invalid. A production successor
 binds the installed source Factory SHA,
 reuses canonical controller passports and provider accounting in place, and
 limits only new candidate spend to $10 per run, $100 per ticket, and $300 for

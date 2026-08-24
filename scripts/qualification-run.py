@@ -195,7 +195,7 @@ def report_result(value: dict[str, Any]) -> None:
         raise QualificationRunError("qualification reducer returned invalid evidence")
 
 
-def reducer_failure(value: dict[str, Any]) -> dict[str, str]:
+def reducer_failure(value: dict[str, Any]) -> dict[str, Any]:
     error = value.get("error")
     if (
         value.get("schema") != REPORT_SCHEMA
@@ -204,6 +204,46 @@ def reducer_failure(value: dict[str, Any]) -> dict[str, str]:
         or not error
         or len(error) > 512
     ):
+        return {"reducer_reason_code": "invalid_reducer_error"}
+    latency_targets = {
+        "cold_activation": 180_000,
+        "prepared_to_all_planners": 90_000,
+        "final_narrator_to_done": 300_000,
+        "last_narrator_to_cohort_done": 600_000,
+    }
+    if error == "qualification latency target exceeded":
+        metric = value.get("metric")
+        observed = value.get("observed_ms")
+        target = value.get("target_ms")
+        ticket = value.get("ticket")
+        expected_keys = {
+            "error", "metric", "observed_ms", "schema", "status", "target_ms",
+        } | ({"ticket"} if ticket is not None else set())
+    else:
+        expected_keys = set()
+    if (
+        error == "qualification latency target exceeded"
+        and set(value) == expected_keys
+        and isinstance(metric, str) and metric in latency_targets
+        and isinstance(observed, int) and not isinstance(observed, bool)
+        and isinstance(target, int) and not isinstance(target, bool)
+        and target == latency_targets[metric] and observed > target
+        and (ticket is not None) == (metric == "final_narrator_to_done")
+        and (
+            ticket is None
+            or isinstance(ticket, str) and TICKET.fullmatch(ticket)
+        )
+    ):
+        result = {
+            "metric": metric,
+            "observed_ms": observed,
+            "reducer_reason_code": "latency_target_exceeded",
+            "target_ms": target,
+        }
+        if ticket is not None:
+            result["ticket"] = ticket
+        return result
+    if error == "qualification latency target exceeded":
         return {"reducer_reason_code": "invalid_reducer_error"}
     reason = REDUCER_REASONS.get(error)
     if reason:

@@ -2360,6 +2360,29 @@ raise SystemExit(code)
                 {"reducer_reason_code": "report_unsafe"},
             ),
             (
+                "qualification latency target exceeded",
+                {
+                    "metric": "prepared_to_all_planners",
+                    "observed_ms": 98420,
+                    "reducer_reason_code": "latency_target_exceeded",
+                    "target_ms": 90000,
+                },
+            ),
+            (
+                "qualification latency target exceeded",
+                {
+                    "metric": "final_narrator_to_done",
+                    "observed_ms": 300001,
+                    "reducer_reason_code": "latency_target_exceeded",
+                    "target_ms": 300000,
+                    "ticket": "T-2",
+                },
+            ),
+            (
+                "qualification latency target exceeded",
+                {"reducer_reason_code": "invalid_reducer_error"},
+            ),
+            (
                 "provider-private-detail-123",
                 {"reducer_reason_code": "unclassified"},
             ),
@@ -2372,6 +2395,11 @@ raise SystemExit(code)
                     "schema": "nysa.software-factory.qualification-report/v1",
                     "status": "error",
                 }
+                reducer.update({
+                    key: expected[key]
+                    for key in ("metric", "observed_ms", "target_ms", "ticket")
+                    if key in expected
+                })
                 code, value = self.run_scenario({
                     "doctor": self.doctor(),
                     "reconcile": complete,
@@ -2385,6 +2413,34 @@ raise SystemExit(code)
                 self.assertNotIn(error, json.dumps(value, sort_keys=True))
                 self.assertEqual(
                     self.called(), ["doctor", "reconcile", "qualification"],
+                )
+
+        for malformed in (
+            {
+                "metric": [], "observed_ms": 90001, "target_ms": 90000,
+            },
+            {
+                "metric": "final_narrator_to_done", "observed_ms": 300001,
+                "target_ms": 300000, "ticket": [],
+            },
+        ):
+            with self.subTest(malformed=malformed):
+                self.calls.unlink(missing_ok=True)
+                reducer = {
+                    "_returncode": 1,
+                    "error": "qualification latency target exceeded",
+                    "schema": "nysa.software-factory.qualification-report/v1",
+                    "status": "error",
+                    **malformed,
+                }
+                code, value = self.run_scenario({
+                    "doctor": self.doctor(),
+                    "reconcile": complete,
+                    "qualification": reducer,
+                })
+                self.assertEqual((code, value["status"]), (2, "error"))
+                self.assertEqual(
+                    value["reducer_reason_code"], "invalid_reducer_error",
                 )
 
 

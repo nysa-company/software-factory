@@ -29,7 +29,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - The local operator console keeps supported approval hashes in its authenticated server session, and qualification resume reads its owner-only plan internally: operators approve an exact action without transcribing a digest, while sealed apply paths still recompute and validate the binding before mutation.
 - Fresh operator maps use an object-valued `_config` accepted by qualification, and nonvisual publication treats only exact current-ticket Ready audit receipts as metadata; foreign or malformed receipt paths remain semantic and fail closed.
 - Disjoint protected sibling refreshes recognize exact sibling Ready audit receipts and retain existing Reviewer/Narrator evidence. Done reuses exact approved-head checks only across a tree-identical authenticated merge with unchanged protected check policy; every mismatch or unavailable head result falls back to merge-commit evidence.
-- Fresh isolated preparation completes a sealed provider-free prime before returning: the exact cohort is claimed, batch-pinned, and advanced to unconsumed Planner receipts before the existing restart boundary. Replay first authenticates the exact publication and controller prefix, then remains idempotent only while provider accounting is pristine and every receipt remains exact and unconsumed; ordinary finish retains fresh Doctor and live Planner preflight. Fresh three-ticket reduction also requires replay-stable activation, Planner-submission, final-Narrator, and Done boundaries and reports their four latency SLOs.
+- Fresh isolated preparation completes a sealed provider-free prime before returning: the exact cohort is claimed, batch-pinned, and advanced to unconsumed Planner receipts before the existing restart boundary. Replay first authenticates the exact publication and controller prefix, then remains idempotent only while provider accounting is pristine and every receipt remains exact and unconsumed; ordinary finish retains fresh Doctor and live Planner preflight. Fresh three-ticket reduction requires replay-stable activation, Planner-submission, final-Narrator, and Done boundaries, reports all four latency observations, and enforces its cold-activation, all-Planner, and cohort ceilings; per-ticket Narrator timing is report-only because cohort closeout is sibling-coupled. The ordinary one-ticket, capacity-three, retained-budget profile enforces all four ceilings, including final Narrator-to-Done.
 - Targeted cancellation reconciles provider attempts through the launcher's validated `FACTORY_PROVIDER_DB`; only direct development lanes without that binding use their existing lane-local database. Missing, unsafe, or foreign provider state fails before stale manifest or claim cleanup. An admitted attempt with a durable recovery record writes terminal intent before coordinator mutation; restart adopts only an exact matching result and charge, while post-GO conservative cancellation retains the full reservation exactly once.
 - **Contract rules below in Operating contract are authoritative**; this summary is only what the session hook can inject.
 
@@ -8047,3 +8047,16 @@ drain an authenticated wait and approve its ticket while explicitly blocked,
 budget, cancelled, or maintenance siblings remain parked. Aggregate same-head
 retry accepts only the shipped `ci` job under the safe current or legacy
 Factory template grammar.
+
+## 2026-08-24 — Decision 594: Cohort latency uses cohort clocks
+
+Category: Reliability
+
+The fresh three-ticket reducer reports every ticket's Narrator-to-Done interval
+but does not apply the 300-second single-ticket ceiling because Done waits for
+sibling implementation and serialized closeout. It enforces cold activation,
+durable all-Planner submission, and last-Narrator-to-cohort-Done. An ordinary
+one-ticket manifest at capacity three using the retained $100/$25/$2 envelope
+enforces all four ceilings; successor and extended-budget manifests remain
+three-ticket-only. Every latency refusal names the breached metric, observed
+milliseconds, target, and ticket when applicable.

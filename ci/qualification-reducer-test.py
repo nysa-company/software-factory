@@ -644,6 +644,49 @@ class QualificationReducerTest(unittest.TestCase):
                 REDUCER.verify(*evidence, receipt, narrators, accounting, planners)
             ),
         )
+        cohort_coupled = copy.deepcopy(evidence)
+        first = manifest["tickets"][0]
+        next(
+            event for event in cohort_coupled[2]
+            if event.get("event") == "ticket_complete"
+            and event.get("ticket") == first
+        )["observed_at_epoch_ns"] += 380_000_000_000
+        coupled_report = REDUCER.verify(
+            *cohort_coupled, receipt, narrators, accounting, planners,
+        )
+        self.assertEqual(
+            coupled_report["latency"]["final_narrator_to_done_ms"][first],
+            620_000,
+        )
+        self.assertEqual(
+            coupled_report["latency"]["last_narrator_to_cohort_done_ms"],
+            600_000,
+        )
+        self.assertNotIn(
+            "final_narrator_to_done",
+            coupled_report["latency"]["target_max_ms"],
+        )
+        over_cohort = copy.deepcopy(cohort_coupled)
+        next(
+            event for event in over_cohort[2]
+            if event.get("event") == "ticket_complete"
+            and event.get("ticket") == first
+        )["observed_at_epoch_ns"] += 1
+        with self.assertRaises(REDUCER.LatencyTargetExceeded) as raised:
+            REDUCER.verify(
+                *over_cohort, receipt, narrators, accounting, planners,
+            )
+        self.assertEqual(raised.exception.metric, "last_narrator_to_cohort_done")
+        self.assertEqual(raised.exception.observed_ms, 600_001)
+        self.assertEqual(raised.exception.target_ms, 600_000)
+        self.assertEqual(REDUCER.error_result(raised.exception), {
+            "error": "qualification latency target exceeded",
+            "metric": "last_narrator_to_cohort_done",
+            "observed_ms": 600_001,
+            "schema": REDUCER.SCHEMA,
+            "status": "error",
+            "target_ms": 600_000,
+        })
         slow = copy.deepcopy(evidence)
         activation = next(item for item in slow[2] if item["event"] == "activation_complete")
         activation["observed_at_epoch_ns"] = (
@@ -661,8 +704,11 @@ class QualificationReducerTest(unittest.TestCase):
             ticket: activation["observed_at_epoch_ns"] + (index + 1) * 1_000_000_000
             for index, ticket in enumerate(manifest["tickets"])
         }
-        with self.assertRaisesRegex(REDUCER.QualificationError, "target exceeded"):
+        with self.assertRaises(REDUCER.LatencyTargetExceeded) as raised:
             REDUCER.verify(*slow, receipt, narrators, accounting, slow_planners)
+        self.assertEqual(raised.exception.metric, "cold_activation")
+        self.assertEqual(raised.exception.observed_ms, 181_000)
+        self.assertEqual(raised.exception.target_ms, 180_000)
         out_of_order = copy.deepcopy(evidence)
         ticket = manifest["tickets"][0]
         narrator = next(
@@ -726,6 +772,105 @@ class QualificationReducerTest(unittest.TestCase):
             REDUCER.QualificationError, "qualification inputs are incomplete",
         ):
             REDUCER.verify(*invalid)
+
+    def test_singleton_fresh_evidence_enforces_narrator_ceiling(self):
+        evidence = list(self.evidence())
+        manifest, passports, events, terminals, prs, caps = evidence
+        ticket = manifest["tickets"][0]
+        manifest.update({
+            "capacity": 3,
+            "target_done": 1,
+            "tickets": [ticket],
+        })
+        for values in (passports, terminals, prs, caps):
+            for extra in set(values) - {ticket}:
+                del values[extra]
+        events[:] = [
+            event for event in events
+            if event.get("ticket") in (None, ticket)
+        ]
+        for event in events:
+            if event.get("event") in {"restart_boundary", "controller_recovered"}:
+                event["tickets"] = [ticket]
+        receipt, narrators, accounting, planners = self.add_latency_evidence(evidence)
+        report = REDUCER.verify(
+            *evidence, receipt, narrators, accounting, planners,
+        )
+        self.assertEqual(report["status"], "green")
+        self.assertEqual(
+            report["latency"]["final_narrator_to_done_ms"],
+            {ticket: 240_000},
+        )
+        self.assertEqual(
+            report["latency"]["target_max_ms"], REDUCER.LATENCY_TARGETS_MS,
+        )
+        invalid_capacity = copy.deepcopy(evidence)
+        invalid_capacity[0]["capacity"] = 4
+        with self.assertRaisesRegex(
+            REDUCER.QualificationError, "qualification inputs are incomplete",
+        ):
+            REDUCER.verify(
+                *invalid_capacity, receipt, narrators, accounting, planners,
+            )
+        for field, value in (
+            ("capacity", 3.0),
+            ("target_done", True),
+            ("tickets", [{}]),
+        ):
+            malformed = copy.deepcopy(evidence)
+            malformed[0][field] = value
+            with self.subTest(field=field), self.assertRaisesRegex(
+                REDUCER.QualificationError, "qualification inputs are incomplete",
+            ):
+                REDUCER.verify(
+                    *malformed, receipt, narrators, accounting, planners,
+                )
+        invalid_budget = copy.deepcopy(evidence)
+        invalid_budget[0].update({
+            "budget_usd": "300.000000",
+            "per_run_budget_usd": "10.000000",
+            "per_ticket_budget_usd": "100.000000",
+        })
+        with self.assertRaisesRegex(
+            REDUCER.QualificationError, "qualification inputs are incomplete",
+        ):
+            REDUCER.verify(
+                *invalid_budget, receipt, narrators, accounting, planners,
+            )
+        invalid_successor = copy.deepcopy(invalid_budget)
+        invalid_successor[0].update({
+            "mode": "successor", "source_factory_sha": "b" * 40,
+        })
+        with self.assertRaisesRegex(
+            REDUCER.QualificationError, "qualification inputs are incomplete",
+        ):
+            REDUCER.verify(
+                *invalid_successor, receipt, narrators, accounting, planners,
+            )
+        legacy_boundary = copy.deepcopy(evidence)
+        for event in legacy_boundary[2]:
+            if event.get("event") in {"restart_boundary", "controller_recovered"}:
+                event["tickets"] = [ticket, "T-201", "T-202", "T-203"]
+        with self.assertRaisesRegex(
+            REDUCER.QualificationError,
+            "restart, relocation, or completion proof is missing",
+        ):
+            REDUCER.verify(
+                *legacy_boundary, receipt, narrators, accounting, planners,
+            )
+        over = copy.deepcopy(evidence)
+        next(
+            event for event in over[2]
+            if event.get("event") == "ticket_complete"
+        )["observed_at_epoch_ns"] += 60_000_000_001
+        with self.assertRaises(REDUCER.LatencyTargetExceeded) as raised:
+            REDUCER.verify(
+                *over, receipt, narrators, accounting, planners,
+            )
+        self.assertEqual(raised.exception.metric, "final_narrator_to_done")
+        self.assertEqual(raised.exception.observed_ms, 300_001)
+        self.assertEqual(raised.exception.target_ms, 300_000)
+        self.assertEqual(raised.exception.ticket, ticket)
 
     def test_high_budget_fresh_ticket_caps_ignore_runtime_overrides(self):
         manifest = self.evidence()[0]
