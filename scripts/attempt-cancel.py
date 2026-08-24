@@ -7,6 +7,7 @@ import argparse
 import csv
 import datetime as dt
 from decimal import Decimal, InvalidOperation, ROUND_CEILING
+import fcntl
 import hashlib
 import importlib.util
 import json
@@ -426,122 +427,49 @@ def validate_stale_claims(
     return None
 
 
-def cleanup_lock_snapshot(path: Path) -> tuple[tuple[int, int, int, int], bytes | None]:
-    info = path.lstat()
-    if (
-        path.is_symlink()
-        or not stat.S_ISDIR(info.st_mode)
-        or info.st_uid != os.geteuid()
-        or info.st_mode & 0o022
-    ):
-        raise CancelError("cleanup lock is unsafe")
-    entries = sorted(entry.name for entry in path.iterdir())
-    if entries not in ([], ["owner"]):
-        raise CancelError("cleanup lock is unsafe")
-    raw = None
-    if entries:
-        owner = path / "owner"
-        owner_info = owner.lstat()
-        if (
-            owner.is_symlink()
-            or not stat.S_ISREG(owner_info.st_mode)
-            or owner_info.st_uid != os.geteuid()
-            or owner_info.st_nlink != 1
-            or stat.S_IMODE(owner_info.st_mode) != 0o600
-        ):
-            raise CancelError("cleanup lock owner is unsafe")
-        raw = IDENTITY.record_bytes(owner)
-    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns), raw
-
-
-def recover_stale_cleanup_lock(path: Path) -> bool:
-    snapshot = cleanup_lock_snapshot(path)
-    raw = snapshot[1]
-    owner: dict[str, str] = {}
-    if raw is not None:
-        try:
-            owner = IDENTITY.parse_fields(raw, "cleanup lock owner")
-        except IDENTITY.IdentityError:
-            owner = {}
-    valid = (
-        set(owner) == {"created_epoch", "nonce", "pid", "process_start"}
-        and owner.get("pid", "").isdigit()
-        and re.fullmatch(r"[0-9a-f]{32}", owner.get("nonce", "")) is not None
-        and bool(owner.get("process_start"))
-        and owner.get("created_epoch", "").isdigit()
-    )
-    if valid:
-        process = IDENTITY.process_table().get(int(owner["pid"]))
-        if process is not None and process.started == owner["process_start"]:
-            return False
-    elif time.time() - path.lstat().st_mtime < 2:
-        return False
-    if cleanup_lock_snapshot(path) != snapshot:
-        return False
-    quarantine = path.with_name(f"{path.name}.stale.{secrets.token_hex(16)}")
-    os.rename(path, quarantine)
-    if cleanup_lock_snapshot(quarantine) != snapshot:
-        raise CancelError("cleanup lock changed during recovery")
-    if raw is not None:
-        (quarantine / "owner").unlink()
-    quarantine.rmdir()
-    return True
-
-
-def acquire_cleanup_lock(path: Path, label: str) -> tuple[str, str, bytes]:
-    process = IDENTITY.process_table().get(os.getpid())
-    if process is None:
-        raise CancelError("cleanup lock process identity is unavailable")
-    nonce = secrets.token_hex(16)
-    raw = (
-        f"pid={os.getpid()}\nprocess_start={process.started}\nnonce={nonce}\n"
-        f"created_epoch={int(time.time())}\n"
-    ).encode()
+def acquire_cleanup_lock(path: Path, label: str) -> None:
     for _ in range(100):
         try:
             path.mkdir(mode=0o700)
-            descriptor = os.open(
-                path / "owner",
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
-                0o600,
-            )
-            with os.fdopen(descriptor, "wb") as handle:
-                handle.write(raw)
-                handle.flush()
-                os.fsync(handle.fileno())
-            directory = os.open(
-                path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
-            )
-            try:
-                os.fsync(directory)
-            finally:
-                os.close(directory)
-            return nonce, process.started, raw
+            return
         except FileExistsError:
-            if recover_stale_cleanup_lock(path):
-                continue
             time.sleep(0.05)
     raise CancelError(f"{label} lock is busy")
 
 
-def release_cleanup_lock(path: Path, token: tuple[str, str, bytes]) -> None:
-    nonce, started, raw = token
-    snapshot = cleanup_lock_snapshot(path)
-    if snapshot[1] != raw:
-        raise CancelError("cleanup lock ownership changed before release")
-    owner = IDENTITY.parse_fields(raw, "cleanup lock owner")
+def sealed_recovery_admission_held(manifest: dict[str, str]) -> bool:
+    configured = os.environ.get("FACTORY_DISPATCH_ADMISSION_LOCK", "")
+    if not configured:
+        return False
+    path = Path(configured)
+    source_sha = os.environ.get("FACTORY_CROSS_RELEASE_SOURCE_SHA", "")
     if (
-        owner.get("pid") != str(os.getpid())
-        or owner.get("process_start") != started
-        or owner.get("nonce") != nonce
+        not path.is_absolute()
+        or re.fullmatch(r"[0-9a-f]{40}", source_sha) is None
+        or manifest.get("kit_sha") != source_sha
+        or manifest.get("contract_version") != "2.0.0"
     ):
-        raise CancelError("cleanup lock ownership changed before release")
-    quarantine = path.with_name(f"{path.name}.release.{nonce}")
-    os.rename(path, quarantine)
-    if cleanup_lock_snapshot(quarantine) != snapshot:
-        raise CancelError("cleanup lock changed during release")
-    (quarantine / "owner").unlink()
-    quarantine.rmdir()
+        raise CancelError("sealed recovery admission identity is invalid")
+    descriptor = os.open(
+        path, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0),
+    )
+    try:
+        info = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or info.st_nlink != 1
+            or stat.S_IMODE(info.st_mode) != 0o600
+        ):
+            raise CancelError("sealed recovery admission lock is unsafe")
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        raise CancelError("sealed recovery admission lock is not held")
+    finally:
+        os.close(descriptor)
 
 
 def exact_lease(path: Path, expected: tuple[int, int, int, int, bytes]) -> None:
@@ -562,13 +490,15 @@ def exact_lease(path: Path, expected: tuple[int, int, int, int, bytes]) -> None:
 def release_stale_claims(
     factory_root: Path, active_runs: Path, manifest: dict[str, str], now: int,
 ) -> None:
-    held: list[tuple[Path, tuple[str, str, bytes]]] = []
+    held: list[Path] = []
     try:
-        for path, label in (
-            (factory_root / "factory/.launch.lock", "launch"),
-            (factory_root / "factory/.dispatch-leases.lock", "dispatcher lease"),
-        ):
-            held.append((path, acquire_cleanup_lock(path, label)))
+        if not sealed_recovery_admission_held(manifest):
+            for path, label in (
+                (factory_root / "factory/.launch.lock", "launch"),
+                (factory_root / "factory/.dispatch-leases.lock", "dispatcher lease"),
+            ):
+                acquire_cleanup_lock(path, label)
+                held.append(path)
         lease_identity = validate_stale_claims(
             factory_root, active_runs, manifest, now,
         )
@@ -586,8 +516,8 @@ def release_stale_claims(
             exact_lease(lease, lease_identity)
             lease.unlink()
     finally:
-        for path, token in reversed(held):
-            release_cleanup_lock(path, token)
+        for path in reversed(held):
+            path.rmdir()
 
 
 def provider_database(factory_root: Path) -> Path:

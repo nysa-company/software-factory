@@ -867,36 +867,56 @@ class AttemptCancellationTest(unittest.TestCase):
                         {"ticket": "T-1", "role": "builder"}, int(time.time()),
                     )
 
-    def test_stale_cleanup_recovers_hard_killed_lock_prefixes(self):
-        manifest = {"ticket": "T-1", "role": "builder"}
-        for name, owner in (
-            (".launch.lock", True), (".dispatch-leases.lock", True),
-            (".launch.lock", False), (".dispatch-leases.lock", False),
-        ):
-            with self.subTest(lock=name, owner=owner):
-                path = self.root / "factory" / name
-                if owner:
-                    code = (
-                        "import importlib.util,os,pathlib,sys;"
-                        f"s=importlib.util.spec_from_file_location('crash_cancel',{str(ROOT / 'scripts/attempt-cancel.py')!r});"
-                        "m=importlib.util.module_from_spec(s);sys.modules[s.name]=m;"
-                        "s.loader.exec_module(m);m.acquire_cleanup_lock(pathlib.Path(sys.argv[1]),'fixture');"
-                        "os._exit(0)"
-                    )
-                    result = subprocess.run([sys.executable, "-c", code, str(path)])
-                    self.assertEqual(result.returncode, 0)
-                else:
-                    path.mkdir(mode=0o700)
-                    os.utime(path, (0, 0))
+    def test_sealed_recovery_uses_held_admission_without_shared_locks(self):
+        source_sha = "d" * 40
+        manifest = {
+            "contract_version": "2.0.0", "kit_sha": source_sha,
+            "role": "builder", "ticket": "T-1",
+        }
+        admission = self.root.parent / ".dispatch-admission.lock"
+        admission.touch(mode=0o600)
+        holder = subprocess.Popen(
+            [sys.executable, "-c", (
+                "import fcntl,sys,time;f=open(sys.argv[1],'r+');"
+                "fcntl.flock(f,fcntl.LOCK_EX);print('ready',flush=True);time.sleep(30)"
+            ), str(admission)],
+            stdout=subprocess.PIPE, text=True,
+        )
+        try:
+            self.assertEqual(holder.stdout.readline(), "ready\n")
+            with mock.patch.dict(os.environ, {
+                "FACTORY_CROSS_RELEASE_SOURCE_SHA": source_sha,
+                "FACTORY_DISPATCH_ADMISSION_LOCK": str(admission),
+            }, clear=False):
                 CANCEL.release_stale_claims(
                     self.root, self.root / "factory/.active-runs",
                     manifest, int(time.time()),
                 )
-                self.assertFalse(path.exists())
-                self.assertFalse((self.root / "factory/.launch.lock").exists())
-                self.assertFalse(
-                    (self.root / "factory/.dispatch-leases.lock").exists()
-                )
+        finally:
+            holder.terminate()
+            holder.wait(timeout=5)
+            holder.stdout.close()
+        self.assertFalse((self.root / "factory/.launch.lock").exists())
+        self.assertFalse((self.root / "factory/.dispatch-leases.lock").exists())
+
+    def test_sealed_recovery_refuses_an_unheld_admission_lock(self):
+        source_sha = "d" * 40
+        admission = self.root.parent / ".dispatch-admission.lock"
+        admission.touch(mode=0o600)
+        with mock.patch.dict(os.environ, {
+            "FACTORY_CROSS_RELEASE_SOURCE_SHA": source_sha,
+            "FACTORY_DISPATCH_ADMISSION_LOCK": str(admission),
+        }, clear=False), self.assertRaisesRegex(CANCEL.CancelError, "not held"):
+            CANCEL.release_stale_claims(
+                self.root, self.root / "factory/.active-runs",
+                {
+                    "contract_version": "2.0.0", "kit_sha": source_sha,
+                    "role": "builder", "ticket": "T-1",
+                },
+                int(time.time()),
+            )
+        self.assertFalse((self.root / "factory/.launch.lock").exists())
+        self.assertFalse((self.root / "factory/.dispatch-leases.lock").exists())
 
     def test_provider_database_selection_is_fail_closed(self):
         legacy = self.root.parent / "runtime/provider-state.sqlite3"

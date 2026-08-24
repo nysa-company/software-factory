@@ -4868,6 +4868,9 @@ def qualification_recovery_environment(lane: dict[str, Any]) -> dict[str, str]:
         "FACTORY_DURABLE_LEDGER": str(lane["product"] / "factory/ledger.csv"),
         "FACTORY_CROSS_RELEASE_SOURCE_SHA": source_sha,
         "FACTORY_CROSS_RELEASE_PRODUCT_ID": f"{project}:{source_sha}",
+        "FACTORY_DISPATCH_ADMISSION_LOCK": str(
+            lane["root"] / "worktrees" / project / ".dispatch-admission.lock"
+        ),
     }
     if "TMPDIR" in os.environ:
         environment["TMPDIR"] = os.environ["TMPDIR"]
@@ -5182,6 +5185,8 @@ def qualification_recovery_apply(args: argparse.Namespace) -> dict[str, Any]:
         nested_receipt_path = runs / f"{args.failed_run}.cancel.json"
         begun = request_path.exists() and not request_path.is_symlink()
         completed = nested_receipt_path.exists() and not nested_receipt_path.is_symlink()
+        if completed and not begun:
+            raise ReleaseError("qualification cancellation replay is incomplete")
         if not begun and not completed:
             if plan["expires_epoch"] <= int(time.time()):
                 raise ReleaseError("qualification recovery approval plan is stale")

@@ -2768,6 +2768,7 @@ class ReleaseTransactionTest(unittest.TestCase):
                 "runtime_ledger_path": str(self.root / "runtime-ledger.csv"),
             },
             "product": self.product, "provider": self.root / "provider",
+            "root": self.root / "qualification",
         }
         provider_attempt = {"attempt_id": "attempt-1", "version": 4}
         with (
@@ -2813,6 +2814,7 @@ class ReleaseTransactionTest(unittest.TestCase):
                 "runtime_ledger_path": str(self.root / "runtime-ledger.csv"),
             },
             "product": self.product, "provider": self.root / "provider",
+            "root": self.root / "qualification",
         }
         provider_attempt = {"attempt_id": "attempt-1", "version": 4}
         with (
@@ -2844,6 +2846,10 @@ class ReleaseTransactionTest(unittest.TestCase):
         self.assertEqual(
             provider.call_args.kwargs["environment"]["FACTORY_CROSS_RELEASE_PRODUCT_ID"],
             f"relay:{'5' * 40}",
+        )
+        self.assertEqual(
+            provider.call_args.kwargs["environment"]["FACTORY_DISPATCH_ADMISSION_LOCK"],
+            str(lane["root"] / "worktrees/relay/.dispatch-admission.lock"),
         )
 
     def test_qualification_recovery_refuses_attempt_drift_before_cancellation(self) -> None:
@@ -2883,6 +2889,41 @@ class ReleaseTransactionTest(unittest.TestCase):
             RELEASE.qualification_recovery_apply(args)
         cancel.assert_not_called()
 
+    def test_qualification_recovery_refuses_receipt_without_request(self) -> None:
+        plan = self.recovery_plan()
+        state = RELEASE.qualification_recovery_state(
+            Path(plan["request"]["root"]), "relay", self.sha, "T-1", "run-1",
+        )
+        RELEASE.atomic_json(
+            state / "plans" / f"{plan['approval_sha256']}.json", plan,
+        )
+        runs = self.product / "factory/runs"
+        runs.mkdir()
+        RELEASE.atomic_json(runs / "run-1.cancel.json", {"preview_hash": "2" * 64})
+        lane = {
+            "controller": self.root / "controller", "product": self.product,
+            "root": Path(plan["request"]["root"]),
+        }
+        module = mock.Mock()
+        module.lock_controllers.return_value = []
+        module.lock_dispatch_admission.return_value = []
+        args = argparse.Namespace(
+            approve_hash=plan["approval_sha256"], failed_run="run-1",
+            operator_id="tester", product=self.product, project="relay",
+            repo=self.root / "factory", root=lane["root"], sha=self.sha,
+            ticket="T-1",
+        )
+        with (
+            mock.patch.object(
+                RELEASE, "qualification_recovery_identity",
+                return_value=(plan["identity"], module, lane, args.repo),
+            ),
+            mock.patch.object(RELEASE, "qualification_attempt_cancel") as cancel,
+            self.assertRaisesRegex(RELEASE.ReleaseError, "replay is incomplete"),
+        ):
+            RELEASE.qualification_recovery_apply(args)
+        cancel.assert_not_called()
+
     def test_qualification_recovery_replays_nested_receipt_exactly(self) -> None:
         plan = self.recovery_plan()
         state = RELEASE.qualification_recovery_state(
@@ -2894,6 +2935,11 @@ class ReleaseTransactionTest(unittest.TestCase):
         )
         runs = self.product / "factory/runs"
         runs.mkdir()
+        RELEASE.atomic_json(runs / "run-1.cancel-request.json", {
+            "plan": plan["attempt"]["nested_plan"],
+            "requested_at": "2026-08-23T12:00:00Z",
+            "schema": "nysa.software-factory.attempt-cancel-request/v1",
+        })
         nested_path = runs / "run-1.cancel.json"
         RELEASE.atomic_json(nested_path, {"preview_hash": "2" * 64})
         lane = {
