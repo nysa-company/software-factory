@@ -4262,14 +4262,13 @@ class QualificationEnvironmentTest(unittest.TestCase):
         askpass.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
         askpass.chmod(0o700)
         auth_file = capability / "auth"
-        auth_file.write_text(
-            hashlib.sha256(b"qualification install fixture").hexdigest(),
-            encoding="utf-8",
+        RELEASE.atomic_bytes(
+            auth_file,
+            hashlib.sha256(b"qualification install fixture").hexdigest().encode(),
         )
-        auth_file.chmod(0o600)
         gh_info = gh.stat()
         descriptor = capability / "descriptor.json"
-        descriptor.write_text(json.dumps({
+        RELEASE.atomic_json(descriptor, {
             "config": str(config), "gh": str(gh),
             "gh_identity": {
                 "dev": gh_info.st_dev, "ino": gh_info.st_ino,
@@ -4284,8 +4283,7 @@ class QualificationEnvironmentTest(unittest.TestCase):
                 capture_output=True, text=True, check=True,
             ).stdout.strip(),
             "trusted_bin": str(trusted_bin),
-        }, sort_keys=True) + "\n", encoding="utf-8")
-        descriptor.chmod(0o600)
+        })
         q71 = self.workspace / "q71-fixture"
         q71.mkdir()
         (q71 / "active.json").write_text('{"generation":71}\n')
