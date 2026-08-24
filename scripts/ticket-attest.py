@@ -1182,6 +1182,17 @@ def ensure_closeout_pr(repo, ticket, branch, head, method):
             raise Refusal("GitHub returned invalid closeout PR evidence")
         return [pr for pr in value if pr.get("state") in {"OPEN", "MERGED"}]
 
+    def merged_evidence(value):
+        commit = value.get("mergeCommit")
+        return (
+            value.get("state") == "MERGED"
+            and isinstance(value.get("mergedAt"), str)
+            and bool(value["mergedAt"])
+            and isinstance(commit, dict)
+            and re.fullmatch(r"[0-9a-f]{40}", commit.get("oid", ""))
+            is not None
+        )
+
     prs = candidates()
     if not prs:
         gh(
@@ -1206,33 +1217,43 @@ def ensure_closeout_pr(repo, ticket, branch, head, method):
     ):
         raise Refusal("closeout PR repository, branch, base, or head is invalid")
     if pr.get("state") == "MERGED":
-        if not pr.get("mergedAt"):
+        if not merged_evidence(pr):
             raise Refusal("merged closeout PR lacks merge evidence")
         return pr
     if pr.get("state") != "OPEN":
         raise Refusal("closeout PR is neither open nor merged")
-    gh(
-        "pr", "merge", str(pr["number"]), "--repo", repo, "--auto",
-        f"--{method}",
-    )
+    merge_error = None
+    try:
+        gh(
+            "pr", "merge", str(pr["number"]), "--repo", repo, "--auto",
+            f"--{method}",
+        )
+    except ExternalUnavailable:
+        raise
+    except Refusal as error:
+        merge_error = error
     view = json.loads(gh(
         "pr", "view", str(pr["number"]), "--repo", repo,
         "--json", (
             "number,headRefName,baseRefName,headRefOid,autoMergeRequest,state,"
-            "mergedAt,mergeStateStatus"
+            "mergedAt,mergeCommit,mergeStateStatus"
         ),
     ).stdout)
     request = view.get("autoMergeRequest") or {}
-    if (
+    wrong_identity = (
         view.get("number") != pr["number"]
         or view.get("headRefName") != branch
         or view.get("baseRefName") != "main"
         or view.get("headRefOid") != head
-        or (
-            view.get("state") != "MERGED"
-            and request.get("mergeMethod") != method.upper()
-        )
-    ):
+    )
+    merged = merged_evidence(view)
+    enabled = (
+        view.get("state") == "OPEN"
+        and request.get("mergeMethod") == method.upper()
+    )
+    if wrong_identity or not (merged or enabled):
+        if merge_error is not None:
+            raise merge_error
         raise Refusal("GitHub did not confirm auto-merge for the exact closeout head")
     return view
 

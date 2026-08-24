@@ -724,6 +724,32 @@ git -C "$QUALIFICATION_PRODUCT" config user.email "doctor@example.invalid"
 git -C "$QUALIFICATION_PRODUCT" add -A
 git -C "$QUALIFICATION_PRODUCT" commit -qm "seed qualification Doctor"
 cp "$RELEASE_B/scripts/model-control.sh" "$TMP/model-control-ticket.saved"
+mv "$RELEASE_B/scripts/ticket-readiness.py" \
+  "$RELEASE_B/scripts/ticket-readiness-real.py"
+cat > "$RELEASE_B/scripts/ticket-readiness.py" <<PY
+import os
+from pathlib import Path
+import signal
+import sys
+import time
+
+started = Path("$TMP/qualification-readiness-started")
+started.mkdir(exist_ok=True)
+ticket = sys.argv[sys.argv.index("--ticket") + 1]
+(started / ticket).touch()
+deadline = time.monotonic() + 3
+while len(list(started.iterdir())) < 3 and time.monotonic() < deadline:
+    time.sleep(0.01)
+if len(list(started.iterdir())) != 3:
+    raise SystemExit("selected ticket readiness did not overlap")
+if ticket == "T-3":
+    os.kill(os.getppid(), signal.SIGKILL)
+    os._exit(3)
+os.execv(sys.executable, [
+    sys.executable, "-I", "-S",
+    str(Path(__file__).with_name("ticket-readiness-real.py")), *sys.argv[1:],
+])
+PY
 cat > "$RELEASE_B/scripts/model-control.sh" <<EOF
 #!/usr/bin/env bash
 : > "$TMP/qualification-ticket-provider-probed"
@@ -743,6 +769,8 @@ HOME="$TEST_HOME" PATH="$TEST_BIN:/usr/bin:/bin" \
     --product-root "$QUALIFICATION_PRODUCT" --kit-sha "$SHA_B" \
     > "$TMP/qualification-ticket-doctor.json" || QUALIFICATION_TICKET_DOCTOR_RC=$?
 mv "$TMP/model-control-ticket.saved" "$RELEASE_B/scripts/model-control.sh"
+mv "$RELEASE_B/scripts/ticket-readiness-real.py" \
+  "$RELEASE_B/scripts/ticket-readiness.py"
 python3 - "$TMP/qualification-ticket-doctor.json" \
   "$QUALIFICATION_TICKET_DOCTOR_RC" \
   "$TMP/qualification-ticket-provider-probed" <<'PY'
@@ -760,7 +788,11 @@ assert value["checks"]["qualification_ticket_readiness"] == {
             "status": "error",
             "ticket": "T-2",
         },
-        {"reason_code": None, "status": "ok", "ticket": "T-3"},
+        {
+            "reason_code": "ticket_readiness_invalid",
+            "status": "error",
+            "ticket": "T-3",
+        },
     ],
 }
 assert value["checks"]["fallback_readiness"] == {

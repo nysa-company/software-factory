@@ -4336,7 +4336,7 @@ class FactoryControllerTest(unittest.TestCase):
         ):
             controller.prime_planner_transition(claim)
 
-    def test_primed_planner_restart_skips_next_but_keeps_preflight(self) -> None:
+    def test_primed_planner_restart_skips_duplicate_preflight(self) -> None:
         controller, claim, receipt = self.initialize_primed_planner_replay()
         calls = []
 
@@ -4344,29 +4344,21 @@ class FactoryControllerTest(unittest.TestCase):
             calls.append(arguments)
             if arguments[0] == "renew":
                 return {}
-            if arguments[0] == "preflight":
-                self.assertEqual(
-                    arguments[arguments.index("--receipt") + 1],
-                    receipt["receipt_sha256"],
-                )
-                return {
-                    "exit_code": 1,
-                    "output": "PREFLIGHT FAIL: expected test refusal\n",
-                    "status": "error",
-                }
-            if arguments[0] == "release":
-                return {}
             if arguments[:2] == ("publication", "withdraw"):
                 return {"status": "absent"}
             raise AssertionError(arguments)
 
         controller.json_call = json_call
-        with patch.object(CONTROL, "ensure_qualification_artifacts"):
-            result = controller.reconcile_ticket(claim)
+        controller.run_role = Mock(return_value=True)
+        result = controller.reconcile_ticket(claim)
 
-        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["status"], "progressed")
         self.assertNotIn("state-machine", [call[0] for call in calls])
-        self.assertEqual([call[0] for call in calls].count("preflight"), 1)
+        self.assertNotIn("preflight", [call[0] for call in calls])
+        controller.run_role.assert_called_once_with(
+            claim, "planner", receipt["receipt_sha256"], [],
+            primed_planner=True,
+        )
 
     def test_primed_planner_drift_falls_back_to_state_machine(self) -> None:
         controller, claim, original = self.initialize_primed_planner_replay()
@@ -17617,6 +17609,7 @@ class FactoryControllerTest(unittest.TestCase):
         controller.maintain_successor_leases = lambda _claims: None
         controller.pin_routes = lambda _claims: []
         controller.product_ticket_done = lambda _ticket: False
+        controller.protected_main_head = lambda: "f" * 40
         controller.event = lambda *_args, **_kwargs: None
         controller.role_active = lambda _claim: False
 
@@ -17645,6 +17638,66 @@ class FactoryControllerTest(unittest.TestCase):
         ])
         self.assertIn("T-112", controller.invalid_transition_tickets)
         self.assertIn("T-113", controller.prior_transition_tickets)
+
+    def test_qualification_refreshes_terminal_after_controller_error(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        controller.qualification = {"target_done": 1, "tickets": ["T-110"]}
+        claim = {
+            "blocked_reason": "controller-error",
+            "branch": "ticket/T-110",
+            "lease": "",
+            "priority": "normal",
+            "publication_lease": "",
+            "receipt": "",
+            "role": "",
+            "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "blocked",
+            "ticket": "T-110",
+            "worktree": str(self.root / "parked/T-110"),
+        }
+        claims = [claim]
+        controller.load_claims = lambda: list(claims)
+        controller.qualification_admission_preflight = lambda _claims: None
+        controller.qualification_marker = lambda *_args, **_kwargs: True
+        controller.retire_canceled_claims = lambda current, *_args: current
+        controller.quarantine_invalid_transition_claims = lambda _claims: None
+        controller.reclaim_orphaned_execution_cells = lambda _claims: None
+        controller.operator_transition = lambda _claim: None
+        controller.release_inactive_ticket_leases = lambda _claims: None
+        controller.recover_changed_state_machine_refusals = lambda *_args: None
+        controller.recover_operator_action_events = lambda _claims: None
+        controller.record_qualification_done_targets = lambda: None
+        controller.recover_missing_passport_claims = lambda _claims: None
+        controller.recover_terminal_requests = lambda _claims: None
+        controller.readmit_prior_provider_failures = lambda _claims: None
+        controller.recover_each = lambda *_args, **_kwargs: None
+        controller.recover_prior_maintenance_receipts = lambda _claims: None
+        controller.claim_new = lambda current, *_args: current
+        controller.clear_admission_failure = lambda: None
+        controller.maintain_successor_leases = lambda _claims: None
+        controller.pin_routes = lambda _claims: []
+        controller.role_active = lambda _claim: False
+        controller.event = lambda *_args, **_kwargs: None
+        refreshed = []
+        released = []
+        controller.protected_main_head = (
+            lambda: refreshed.append(True) or "f" * 40
+        )
+        controller.product_ticket_done = lambda _ticket: bool(refreshed)
+        controller.ensure_lease = lambda _claim, reason: self.assertEqual(
+            reason, "terminal-cleanup"
+        )
+        controller.release = lambda item: (
+            released.append(item["ticket"]), claims.remove(item)
+        )
+
+        result = controller.reconcile()
+
+        self.assertEqual(released, ["T-110"])
+        self.assertEqual(result["results"], [
+            {"status": "complete", "ticket": "T-110"},
+        ])
+        self.assertGreaterEqual(len(refreshed), 1)
 
     def test_qualification_controller_error_stops_sibling_next_role_launches(
         self,

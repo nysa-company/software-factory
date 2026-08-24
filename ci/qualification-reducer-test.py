@@ -671,26 +671,26 @@ class QualificationReducerTest(unittest.TestCase):
             event for event in over_cohort[2]
             if event.get("event") == "ticket_complete"
             and event.get("ticket") == first
-        )["observed_at_epoch_ns"] += 1
+        )["observed_at_epoch_ns"] += 300_000_000_001
         with self.assertRaises(REDUCER.LatencyTargetExceeded) as raised:
             REDUCER.verify(
                 *over_cohort, receipt, narrators, accounting, planners,
             )
         self.assertEqual(raised.exception.metric, "last_narrator_to_cohort_done")
-        self.assertEqual(raised.exception.observed_ms, 600_001)
-        self.assertEqual(raised.exception.target_ms, 600_000)
+        self.assertEqual(raised.exception.observed_ms, 900_001)
+        self.assertEqual(raised.exception.target_ms, 900_000)
         self.assertEqual(REDUCER.error_result(raised.exception), {
             "error": "qualification latency target exceeded",
             "metric": "last_narrator_to_cohort_done",
-            "observed_ms": 600_001,
+            "observed_ms": 900_001,
             "schema": REDUCER.SCHEMA,
             "status": "error",
-            "target_ms": 600_000,
+            "target_ms": 900_000,
         })
         slow = copy.deepcopy(evidence)
         activation = next(item for item in slow[2] if item["event"] == "activation_complete")
         activation["observed_at_epoch_ns"] = (
-            activation["activation_started_epoch_ns"] + 181_000_000_000
+            activation["activation_started_epoch_ns"] + 241_000_000_000
         )
         for index, event in enumerate(
             item for item in slow[2]
@@ -707,8 +707,8 @@ class QualificationReducerTest(unittest.TestCase):
         with self.assertRaises(REDUCER.LatencyTargetExceeded) as raised:
             REDUCER.verify(*slow, receipt, narrators, accounting, slow_planners)
         self.assertEqual(raised.exception.metric, "cold_activation")
-        self.assertEqual(raised.exception.observed_ms, 181_000)
-        self.assertEqual(raised.exception.target_ms, 180_000)
+        self.assertEqual(raised.exception.observed_ms, 241_000)
+        self.assertEqual(raised.exception.target_ms, 240_000)
         out_of_order = copy.deepcopy(evidence)
         ticket = manifest["tickets"][0]
         narrator = next(
@@ -862,14 +862,14 @@ class QualificationReducerTest(unittest.TestCase):
         next(
             event for event in over[2]
             if event.get("event") == "ticket_complete"
-        )["observed_at_epoch_ns"] += 60_000_000_001
+        )["observed_at_epoch_ns"] += 240_000_000_001
         with self.assertRaises(REDUCER.LatencyTargetExceeded) as raised:
             REDUCER.verify(
                 *over, receipt, narrators, accounting, planners,
             )
         self.assertEqual(raised.exception.metric, "final_narrator_to_done")
-        self.assertEqual(raised.exception.observed_ms, 300_001)
-        self.assertEqual(raised.exception.target_ms, 300_000)
+        self.assertEqual(raised.exception.observed_ms, 480_001)
+        self.assertEqual(raised.exception.target_ms, 480_000)
         self.assertEqual(raised.exception.ticket, ticket)
 
     def test_high_budget_fresh_ticket_caps_ignore_runtime_overrides(self):
