@@ -10,6 +10,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Failed-attempt preview, replay, and historical committed-role checks carry only unchanged tracked baseline symlinks whose tree, index, and filesystem targets agree; every added, removed, changed, staged, or untracked symlink remains fail-closed.
 - A submitted Claude individual-spend-limit terminal is release-typed, fully accounted, and qualification-latched before another role launch; dirty role evidence stays blocked and unexported rather than becoming a secondary clean-cell controller error.
 - Any nonrecoverable role terminal in a fixed qualification cohort latches the same atomic launch boundary before the claim blocks or cancels; bounded invalid-output, prior-release launch-void, direct-model identity, and authenticated Cursor fallback recovery remain runnable, while already-admitted siblings only drain and account.
+- Qualification fallback and finish are ticket-independent within the sealed cohort: fallback attempts are scoped to one authenticated transition receipt, explicit v1 fallback migrates atomically under the same approval, and blocked siblings do not starve an independent typed wait or approval. Aggregate same-head retry accepts only the safe current or legacy Factory `ci` template grammar.
 - Recognized GitHub/Git transport loss is a typed wait, never a cohort defect. Exact remote confirmation and receipt/passport-bound replay resume post-provider role and publication commits without another model call; a disconnect inside a submitted provider attempt remains terminal-accounted and is not transport-replayed.
 - Successor qualification can preserve an exact source-passport checkpoint or descendant only through the protected in-flight release authorization; v2 binds each ticket's authenticated current source after a partial batch, migration never deletes or rewrites ticket work, and prior failed roles reopen only across an exact signed route-only migration suffix. A merged pin-only continuation closes with source-release evidence while retaining the protected successor pin.
 - Isolated successor contract repair may use an older authenticated blocker only through its complete signed release suffix ending at the exact protected per-ticket source. Prior resume pairs remain immutable transition history and are accepted only as an ordered canonical sequence with one signed completed record per pair and one newest in-branch snapshot of the full sequence. Passport snapshots may omit ordinary descendant ticket commits, while Factory/base/route junctions remain exact. During or after prior-kit receipt migration, the driver admits its historical resume mismatch only while the exact blocked claim and transition digest bind that selected ticket and receipt; event observation order is not authority.
@@ -8033,3 +8034,16 @@ authoritative provider row agree exactly; current attempts retain strict field
 binding. A canonical request-only prefix resumes, while a receipt without its
 request fails closed. Recovery does not change the active release or
 qualification generation.
+
+## 2026-08-24 — Decision 593: Qualification recovery stays exact and independent
+
+Category: Reliability
+
+Fallback attempt limits bind one authenticated transition receipt rather than
+the role name for the ticket lifetime. Explicit fallback atomically migrates an
+initial v1 plan; its semantic approval excludes the random approval nonce while
+one-use receipt consumption provides replay protection. The finisher may
+drain an authenticated wait and approve its ticket while explicitly blocked,
+budget, cancelled, or maintenance siblings remain parked. Aggregate same-head
+retry accepts only the shipped `ci` job under the safe current or legacy
+Factory template grammar.

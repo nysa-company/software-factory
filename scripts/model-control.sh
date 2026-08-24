@@ -1422,7 +1422,7 @@ PY
     profile_id="$(python3 - "$CONTROL_PLAN_FILE" "$command_name" <<'PY'
 import base64, json, sys
 value = json.load(open(sys.argv[1]))
-if value.get("schema") == "ticket-model-route-plan/v1" and sys.argv[2] == "fallback-auto":
+if value.get("schema") == "ticket-model-route-plan/v1":
     resolution = value["resolution"]
 elif value.get("schema") == "ticket-model-route-journal/v2":
     for revision in reversed(value["revisions"]):

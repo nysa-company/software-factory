@@ -798,9 +798,17 @@ def qualification_retryable_wait(
         item for item in results
         if isinstance(item, dict) and item.get("status") != "complete"
     ]
-    return bool(pending) and all(
-        item.get("status") == "waiting"
-        and item.get("wait_reason") in RETRYABLE_FINISH_WAITS
+    waiting = [
+        item for item in pending if item.get("status") == "waiting"
+    ]
+    return bool(waiting) and all(
+        item.get("status") in {
+            "blocked", "budget", "cancelled", "maintenance",
+        }
+        or (
+            item.get("status") == "waiting"
+            and item.get("wait_reason") in RETRYABLE_FINISH_WAITS
+        )
         for item in pending
     )
 
@@ -1573,9 +1581,10 @@ def execute_finish(args: argparse.Namespace) -> dict[str, Any]:
         )
         events = current_events
         restarts += result.get("restarts", 0)
-        if result.get("status") != "waiting":
+        status = result.get("status")
+        if status not in {"waiting", "blocked"}:
             phases.extend(result.get("phases", []))
-            if result.get("status") == "green":
+            if status == "green":
                 final_code, final_doctor = invoke(
                     launcher, args.project, "doctor", phases,
                 )
@@ -1602,7 +1611,7 @@ def execute_finish(args: argparse.Namespace) -> dict[str, Any]:
                 "phases": phases,
                 "restarts": restarts,
             }
-        if result.get("reason") != "authenticated_wait":
+        if status == "waiting" and result.get("reason") != "authenticated_wait":
             phases.extend(result.get("phases", []))
             return {
                 **result,
@@ -1611,8 +1620,19 @@ def execute_finish(args: argparse.Namespace) -> dict[str, Any]:
                 "phases": phases,
                 "restarts": restarts,
             }
-        projected = project_qualification_approvals(
-            selected, result.get("phases", []),
+        controller_results = result.get("controller", {}).get("results", [])
+        approval_candidates = {
+            item.get("ticket")
+            for item in controller_results
+            if isinstance(item, dict)
+            and item.get("status") == "waiting"
+            and item.get("ticket") in selected
+        }
+        projected = (
+            project_qualification_approvals(
+                approval_candidates, result.get("phases", []),
+            )
+            if approval_candidates else []
         )
         phases.extend(result.get("phases", []))
         new_receipts = [
@@ -1621,7 +1641,7 @@ def execute_finish(args: argparse.Namespace) -> dict[str, Any]:
         ]
         completions = {
             item.get("ticket")
-            for item in result.get("controller", {}).get("results", [])
+            for item in controller_results
             if isinstance(item, dict)
             and item.get("status") == "complete"
             and item.get("ticket") in selected

@@ -1913,6 +1913,45 @@ raise SystemExit(code)
             b"",
         )
 
+    def test_finish_approves_waiting_ticket_with_blocked_sibling(self) -> None:
+        self.approval_fixture(ticket="T-1")
+        approval_wait = self.controller("ok", results=[
+            {"status": "waiting", "ticket": "T-1"},
+            {"status": "blocked", "ticket": "T-2"},
+        ])
+        protected_wait = self.controller("ok", results=[
+            {
+                "status": "waiting", "ticket": "T-1",
+                "wait_reason": "protected-merge",
+            },
+            {"status": "blocked", "ticket": "T-2"},
+        ])
+        partial = self.controller("ok", results=[
+            {"status": "complete", "ticket": "T-1"},
+            {"status": "blocked", "ticket": "T-2"},
+        ])
+
+        code, value = self.run_scenario({
+            "doctor": self.doctor(),
+            "reconcile": [approval_wait, protected_wait, partial, partial],
+        }, finish=True)
+
+        self.assertEqual((code, value["status"]), (3, "blocked"))
+        self.assertEqual(value["approvals"], ["T-1"])
+        self.assertEqual(self.called(), [
+            "doctor", "reconcile", "reconcile", "reconcile", "reconcile",
+        ])
+        self.assertEqual(
+            len(list(
+                (self.controller_state / "operator-receipts/T-1")
+                .glob("approve-*.json")
+            )),
+            1,
+        )
+        self.assertFalse(
+            (self.controller_state / "operator-receipts/T-2").exists()
+        )
+
     def test_finish_continues_on_completion_without_an_approval(self) -> None:
         self.operator_authority()
         partial = self.controller("ok", results=[

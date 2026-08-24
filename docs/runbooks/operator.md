@@ -276,11 +276,13 @@ ticket branch, and is idempotent for the same committed plan. Roles never
 re-resolve. Each run re-probes only its exact pinned route, and any failure
 after task submission ends the run without retry.
 
-Contract 1.4 tickets migrate the v1 plan once with `migrate-plan`, followed by
-`models migrate` using the exact preview and readiness hashes plus operator ID.
-The ordinary preview is compact; add `--include-journal` before `--json` only
-when the complete authenticated candidate is needed for diagnostics. For a later
-eligible failure:
+The normal explicit fallback transaction accepts an initial Contract 1.4 v1
+plan and migrates it atomically before appending the approved fallback; do not
+run a separate same-release route migration first. `migrate-plan` followed by
+`models migrate` remains the release-change path using the exact preview and
+readiness hashes plus operator ID. The ordinary preview is compact; add
+`--include-journal` before `--json` only when the complete authenticated
+candidate is needed for diagnostics. For an eligible failure:
 
 1. Run `fallback-plan` and note its exact `preview_hash`.
 2. Run
@@ -327,8 +329,11 @@ Replay revalidates required checks on each stored exact PR head and does not
 wait for redundant main CI or recompute evidence from unrelated main movement.
 It approves only selected clean, idle, parked Awaiting Approval claims through
 the sealed lane operator map. With no progress, it continues for at most ten
-minutes only when every pending result is a typed live-role, GitHub,
-protected-merge, publication-lease, or closeout wait. A live role yields only
+minutes while at least one pending result is a typed live-role, GitHub,
+protected-merge, publication-lease, or closeout wait. Explicitly blocked,
+budget, cancelled, or maintenance siblings remain parked without starving an
+independent approval or typed wait; those states alone return. A live role
+yields only
 after its existing active-run claim is durable; the wrapper keeps its lease,
 heartbeat, reservation, and terminal-accounting ownership while the finisher
 polls. All other waits return immediately. It never approves a

@@ -345,8 +345,7 @@ def historical_qualification_handoff(args, failed, journal, authority, head):
 
 
 def calculate(
-    args, nonce, migrate_legacy=False, failed_role_only=False,
-    qualification=None,
+    args, nonce, failed_role_only=False, qualification=None,
 ):
     repo = Path(args.workdir).resolve()
     factory_root = Path(args.factory_root).resolve()
@@ -356,10 +355,7 @@ def calculate(
     catalog, routes, _profiles, profile_map = load_policy_files(
         args.catalog, args.profiles
     )
-    if (
-        migrate_legacy
-        and journal.get("schema") == "ticket-model-route-plan/v1"
-    ):
+    if journal.get("schema") == "ticket-model-route-plan/v1":
         pin_commit = git(
             repo, "log", "-1", "--format=%H", "--",
             f"factory/route-plans/{args.ticket}.json",
@@ -457,7 +453,6 @@ def calculate(
         "journal_revision_hash": journal["revisions"][-1]["revision_hash"],
         "kit_sha": journal["kit_sha"],
         "ledger_digest": digest(ledger_raw),
-        "nonce": nonce,
         "project": args.project,
         "reason": args.reason,
         "remote_head": remote_head,
@@ -871,7 +866,6 @@ def qualification_apply(args):
                 return recovered
     result = calculate(
         args, secrets.token_hex(16),
-        migrate_legacy=True,
         failed_role_only=True,
         qualification=authority,
     )
@@ -885,17 +879,23 @@ def qualification_apply(args):
     )
     if result["resolution"]["selections"][failed["role"]]["adapter"] != expected_adapter:
         raise FallbackError("qualification fallback did not resolve the approved direct CLI")
+    transition_receipt = failed.get("transition_receipt_sha256", "")
     attempts = 0
     for path in (Path(args.factory_root) / "factory/runs").glob("*.meta"):
         if path.is_file() and not path.is_symlink():
             value = read_meta(path)
-            attempts += (
+            if not (
                 value.get("ticket") == args.ticket
                 and value.get("role") == failed["role"]
                 and value.get("kit_sha") == failed["kit_sha"]
                 and value.get("go_issued") == "1"
                 and value.get("task_submitted") == "1"
-            )
+            ):
+                continue
+            receipt = value.get("transition_receipt_sha256", "")
+            if receipt and not re.fullmatch(r"[0-9a-f]{64}", receipt):
+                raise FallbackError("qualification fallback transition receipt is invalid")
+            attempts += receipt == transition_receipt
     if attempts != 1:
         raise FallbackError("qualification fallback is allowed only after the first role attempt")
     if authority is not None:

@@ -1491,7 +1491,9 @@ migration edges and do not invalidate the authenticated grant.
 The first task-submitted terminal failed Cursor attempt for a protected
 qualification keeps its claim and authenticated evidence while the controller
 appends the existing same-family direct-CLI fallback and resumes the same
-deterministic stage. The
+deterministic stage. The attempt boundary is the exact transition receipt and
+role round, so a later authenticated re-entry of the same role retains one
+fresh fallback opportunity without reusing an earlier round. The
 fallback atomically converts an initial v1 route plan into a same-release v2
 journal before appending its revision, preserving the original plan bytes and
 provenance. Because that trusted fallback snapshots permitted partial role
@@ -1507,10 +1509,10 @@ durable fallback evidence remain credential-free.
 An unsubmitted durable-GO terminal is not a model fallback. The controller
 exports its conservative charge into the ordinary passport, blocks it under
 the same release, and leaves only the authenticated successor recovery path.
-It is idempotent across controller restart. A second task-submitted
-attempt for that ticket, role, and frozen candidate is refused as no progress
-instead of replayed; preserved attempts from predecessor candidates do not
-consume the successor's one fallback boundary.
+It is idempotent across controller restart. A second task-submitted attempt for
+the same transition receipt, role, and frozen candidate is refused as no
+progress instead of replayed; distinct authenticated role rounds and preserved
+attempts from predecessor candidates do not consume that boundary.
 When that failure predates the executing sealed successor, its failed manifest
 and route journal remain bound to the exact older Kit-SHA while the local
 successor qualification manifest must bind the executing release SHA. The
@@ -2143,10 +2145,13 @@ read-only. Every
 later preflight, sequencer call, and run refuses a different physical kit SHA;
 roles read only their active journal resolution. A run re-probes only that exact
 route and never silently retries a task-bearing process. Contract 1.4 may
-migrate the v1 plan and append a fallback revision only after an eligible
-terminal GO attempt, one-use operator approval, validated partial-work snapshot,
-and full family-history resolution. Activation does not migrate pins or
-journals automatically. Contract 1.8 resolves machine readiness once before
+migrate the v1 plan and append a fallback revision in one approval-bound
+transaction after an eligible terminal GO attempt, one-use operator approval,
+validated partial-work snapshot, and full family-history resolution. The
+semantic approval hash binds all mutable evidence but excludes the random
+approval nonce; consuming the exact one-use receipt provides replay protection.
+Activation does not migrate pins or journals automatically.
+Contract 1.8 resolves machine readiness once before
 concurrent ticket execution, then pins one to four clean ticket branches from
 that in-process batch resolution. This prevents both duplicate probes and
 concurrent release-integrity fan-out from starving bounded CLI startup; role
@@ -2225,9 +2230,12 @@ Builder or Test-author run forces fresh review. The helper has no approval or
 merge authority.
 For the single allowed same-head application-test retry, an aggregate required
 failure is resolved against the complete check rollup and its exact GitHub
-workflow run. The rerun and any later publication repair require one failed
-application leaf, the same workflow/head/run identity, terminal jobs, and green
-protected classes; ambiguous, external, or additional failures refuse.
+workflow run. The shipped aggregate `ci` job is accepted only under the safe
+current or legacy Factory template grammar with one failed application-test
+step; an unknown or side-effecting step refuses. The rerun and any later
+publication repair require
+the same workflow/head/run identity, terminal jobs, and green protected
+classes; ambiguous, external, or additional failures refuse.
 Under Contract 1.8, compatibility `dispatch-plan` performs deterministic
 admission only and cannot spawn a dispatcher. The release-owned controller is
 the sole caller that advances work through state-machine receipts. Concurrent

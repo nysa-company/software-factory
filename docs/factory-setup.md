@@ -254,9 +254,11 @@ provider state, ticket branches, or paid roles are created.
   performs its live selected-route check. Successful batch pinning consumes
   the startup cache, so later Doctor runs probe readiness again. The command repeats reconciliation
   without another full Doctor after progress, and polls for at most ten minutes
-  only while every pending ticket names an authenticated GitHub,
-  protected-merge, publication-lease, or closeout wait. Human, dependency,
-  budget, and untyped waits return immediately. A new command invocation
+  while at least one pending ticket names an authenticated GitHub,
+  protected-merge, publication-lease, or closeout wait. Explicitly blocked,
+  budget, cancelled, or maintenance siblings are preserved while independent
+  typed waits drain and approvals progress; those states alone, plus human,
+  dependency, and untyped waits, return immediately. A new command invocation
   runs a fresh Doctor, and authenticated contract recovery retains its explicit
   Doctor refresh. Use `qualification-run` when
   approval must remain a separate human step. No manual state edit or
