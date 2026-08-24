@@ -443,7 +443,9 @@ def qualification_latency(
             item for item in events
             if item.get("event") == "attempt_terminal"
             and item.get("ticket") == ticket and item.get("role") == "narrator"
-            and item.get("accounting_state") == "completed"
+            and item.get("accounting_state") in {
+                "completed", "abandoned_conservative",
+            }
             and item.get("exit_status") == "0" and item.get("role_exit") == "ok"
             and (item.get("run_id"), item.get("transition_receipt_sha256"))
             in completed_narrators

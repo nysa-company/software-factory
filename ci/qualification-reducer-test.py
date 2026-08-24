@@ -529,6 +529,28 @@ class QualificationReducerTest(unittest.TestCase):
             report["latency"]["final_narrator_to_done_ms"],
             {ticket: 240_000 for ticket in manifest["tickets"]},
         )
+        conservative = copy.deepcopy(evidence)
+        for event in conservative[2]:
+            if (
+                event.get("event") == "attempt_terminal"
+                and event.get("role") == "narrator"
+                and event.get("run_id") in narrators.values()
+            ):
+                event["accounting_state"] = "abandoned_conservative"
+        self.assertEqual(
+            REDUCER.verify(
+                *conservative, receipt, narrators, accounting, planners
+            )["status"],
+            "green",
+        )
+        void = copy.deepcopy(conservative)
+        next(
+            event for event in void[2]
+            if event.get("role") == "narrator"
+            and event.get("run_id") == narrators[manifest["tickets"][0]]
+        )["accounting_state"] = "launch_void"
+        with self.assertRaisesRegex(REDUCER.QualificationError, "role timing"):
+            REDUCER.verify(*void, receipt, narrators, accounting, planners)
         delayed_observation = copy.deepcopy(evidence)
         for event in delayed_observation[2]:
             if event.get("role") == "narrator":

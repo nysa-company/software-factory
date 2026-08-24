@@ -652,7 +652,8 @@ PY
 
 verified_remote_full_ci() {
   local sha="$1" tree="$2" data run_id run_attempt evidence_sha event head_ref pr_number
-  if [[ "${FACTORY_KIT_TEST_MODE:-0}" == "1" ]]; then
+  if [[ "${FACTORY_KIT_TEST_MODE:-0}" == "1" &&
+        "${FACTORY_KIT_TEST_REMOTE_FULL_CI_API:-0}" != "1" ]]; then
     verify_required_github_checks "$sha" >&2 || return 1
     [[ "${FACTORY_KIT_TEST_REMOTE_FULL_CI:-0}" == "1" ]] || return 1
     printf '%s\n' "$(printf '%s' "test-remote-full-ci|$sha|$tree" | shasum -a 256 | awk '{print $1}')"
@@ -3852,7 +3853,7 @@ cmd_install() {
     die "SHA is not an ancestor of origin/main"
   kit_tree="$(git -C "$source_top" rev-parse "$sha^{tree}")"
   origin_identity="$(canonical_origin_identity "$origin")"
-  remote_evidence_id="$(verified_remote_full_ci "$sha" "$kit_tree" 2>/dev/null)" ||
+  remote_evidence_id="$(verified_remote_full_ci "$sha" "$kit_tree")" ||
     die "exact successful GitHub CI evidence is required for install: $sha"
   say "REMOTE CI VERIFIED: $sha; running local platform smoke only"
 
@@ -4038,7 +4039,7 @@ cmd_certify() {
     suite_reused=false
     refresh_source="github-actions-full"
     refresh_mode="platform-smoke"
-    refresh_remote_id="$(verified_remote_full_ci "$sha" "$kit_tree" 2>/dev/null)" ||
+    refresh_remote_id="$(verified_remote_full_ci "$sha" "$kit_tree")" ||
       die "exact successful GitHub CI evidence is required to refresh certification: $sha"
     say "REMOTE CI VERIFIED: $sha; refreshing evidence with local platform smoke only"
     prepare_pinned_scanner "$release" "$writable" "$workspace/tmp" ||
