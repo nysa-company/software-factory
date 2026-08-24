@@ -438,38 +438,63 @@ def acquire_cleanup_lock(path: Path, label: str) -> None:
 
 
 def sealed_recovery_admission_held(manifest: dict[str, str]) -> bool:
-    configured = os.environ.get("FACTORY_DISPATCH_ADMISSION_LOCK", "")
-    if not configured:
+    names = (
+        "FACTORY_CROSS_RELEASE_SOURCE_SHA",
+        "FACTORY_CROSS_RELEASE_PRODUCT_ID",
+        "FACTORY_DISPATCH_ADMISSION_LOCK",
+        "FACTORY_DISPATCH_ADMISSION_LOCK_FD",
+    )
+    values = {name: os.environ.get(name, "") for name in names}
+    if not any(values.values()):
         return False
-    path = Path(configured)
-    source_sha = os.environ.get("FACTORY_CROSS_RELEASE_SOURCE_SHA", "")
+    if not all(values.values()):
+        raise CancelError("sealed recovery admission identity is incomplete")
+    path = Path(values["FACTORY_DISPATCH_ADMISSION_LOCK"])
+    source_sha = values["FACTORY_CROSS_RELEASE_SOURCE_SHA"]
     if (
         not path.is_absolute()
         or re.fullmatch(r"[0-9a-f]{40}", source_sha) is None
+        or re.fullmatch(
+            r"[A-Za-z0-9._:-]{1,200}",
+            values["FACTORY_CROSS_RELEASE_PRODUCT_ID"],
+        ) is None
         or manifest.get("kit_sha") != source_sha
         or manifest.get("contract_version") != "2.0.0"
     ):
         raise CancelError("sealed recovery admission identity is invalid")
-    descriptor = os.open(
+    try:
+        inherited = int(values["FACTORY_DISPATCH_ADMISSION_LOCK_FD"])
+        if inherited < 0:
+            raise ValueError
+        held = os.fstat(inherited)
+        target = path.lstat()
+    except (ValueError, OSError) as error:
+        raise CancelError("sealed recovery admission capability is invalid") from error
+    if (
+        not stat.S_ISREG(held.st_mode)
+        or not stat.S_ISREG(target.st_mode)
+        or path.is_symlink()
+        or (held.st_dev, held.st_ino) != (target.st_dev, target.st_ino)
+        or held.st_uid != os.geteuid()
+        or held.st_nlink != 1
+        or stat.S_IMODE(held.st_mode) != 0o600
+    ):
+        raise CancelError("sealed recovery admission lock is unsafe")
+    probe = os.open(
         path, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0),
     )
     try:
-        info = os.fstat(descriptor)
-        if (
-            not stat.S_ISREG(info.st_mode)
-            or info.st_uid != os.geteuid()
-            or info.st_nlink != 1
-            or stat.S_IMODE(info.st_mode) != 0o600
-        ):
-            raise CancelError("sealed recovery admission lock is unsafe")
+        current = os.fstat(probe)
+        if (current.st_dev, current.st_ino) != (held.st_dev, held.st_ino):
+            raise CancelError("sealed recovery admission lock changed")
         try:
-            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return True
-        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        fcntl.flock(probe, fcntl.LOCK_UN)
         raise CancelError("sealed recovery admission lock is not held")
     finally:
-        os.close(descriptor)
+        os.close(probe)
 
 
 def exact_lease(path: Path, expected: tuple[int, int, int, int, bytes]) -> None:

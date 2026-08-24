@@ -786,15 +786,24 @@ def run(
     arguments: list[str], label: str, *, environment: dict[str, str] | None = None,
     timeout: float = 1800,
 ) -> str:
-    pass_fds = (
-        (_CUTOVER_LOCK_FD,)
-        if _CUTOVER_LOCK_FD is not None and environment is not None
+    pass_fds: list[int] = []
+    if (
+        _CUTOVER_LOCK_FD is not None and environment is not None
         and environment.get("FACTORY_HOST_CUTOVER_LOCK_FD") == str(_CUTOVER_LOCK_FD)
-        else ()
-    )
+    ):
+        pass_fds.append(_CUTOVER_LOCK_FD)
+    if environment is not None and "FACTORY_DISPATCH_ADMISSION_LOCK_FD" in environment:
+        try:
+            descriptor = int(environment["FACTORY_DISPATCH_ADMISSION_LOCK_FD"])
+            if descriptor < 0:
+                raise ValueError
+            os.fstat(descriptor)
+        except (ValueError, OSError) as error:
+            raise ReleaseError("qualification admission capability is invalid") from error
+        pass_fds.append(descriptor)
     result = subprocess.run(
         arguments, text=True, capture_output=True, check=False, timeout=timeout,
-        env=environment, pass_fds=pass_fds,
+        env=environment, pass_fds=tuple(sorted(set(pass_fds))),
     )
     if result.returncode:
         raise ReleaseError(f"{label} failed")
@@ -4853,7 +4862,9 @@ def qualification_recovery_state(
     return root / "recoveries" / project / sha / ticket / run_id
 
 
-def qualification_recovery_environment(lane: dict[str, Any]) -> dict[str, str]:
+def qualification_recovery_environment(
+    lane: dict[str, Any], admission_descriptor: int | None = None,
+) -> dict[str, str]:
     source_sha = lane["active"].get("kit_sha", "")
     project = lane["active"].get("project", "")
     if not SHA.fullmatch(source_sha) or not PROJECT.fullmatch(project):
@@ -4874,15 +4885,22 @@ def qualification_recovery_environment(lane: dict[str, Any]) -> dict[str, str]:
     }
     if "TMPDIR" in os.environ:
         environment["TMPDIR"] = os.environ["TMPDIR"]
+    if admission_descriptor is not None:
+        environment["FACTORY_DISPATCH_ADMISSION_LOCK_FD"] = str(
+            admission_descriptor
+        )
     return environment
 
 
 def qualification_attempt_cancel(
     transaction_root: Path, lane: dict[str, Any], arguments: list[str], label: str,
+    admission_descriptor: int | None = None,
 ) -> dict[str, Any]:
     return run_json(
         [sys.executable, str(transaction_root / "scripts/attempt-cancel.py"), *arguments],
-        label, environment=qualification_recovery_environment(lane), timeout=30,
+        label, environment=qualification_recovery_environment(
+            lane, admission_descriptor,
+        ), timeout=30,
     )
 
 
@@ -5177,6 +5195,8 @@ def qualification_recovery_apply(args: argparse.Namespace) -> dict[str, Any]:
     try:
         controllers = module.lock_controllers(lane["controller"])
         admission = module.lock_dispatch_admission(lane, lane)
+        if len(admission) != 1:
+            raise ReleaseError("qualification admission capability is unavailable")
         identity, _module, lane, repo = qualification_recovery_identity(args)
         if plan["identity"] != identity:
             raise ReleaseError("qualification recovery immutable inputs changed")
@@ -5205,7 +5225,7 @@ def qualification_recovery_apply(args: argparse.Namespace) -> dict[str, Any]:
                 "apply", "--factory-root", str(lane["product"]),
                 "--plan", str(nested_plan_path), "--preview-hash",
                 plan["attempt"]["nested_plan"]["preview_hash"],
-            ], "qualification cancellation apply")
+            ], "qualification cancellation apply", admission[0])
         finally:
             nested_plan_path.unlink(missing_ok=True)
         receipt = qualification_recovery_receipt(

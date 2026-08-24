@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import importlib.util
 import json
@@ -2495,6 +2496,7 @@ class ReleaseTransactionTest(unittest.TestCase):
 
     def test_machine_lock_capability_is_scoped_to_sealed_mutation_children(self) -> None:
         descriptor = RELEASE.acquire_cutover_lock(self.kits)
+        admission = os.open(self.root / "admission.lock", os.O_CREAT | os.O_RDWR, 0o600)
         try:
             ordinary = RELEASE.command_environment(self.kits)
             mutation = RELEASE.command_environment(self.kits, cutover_lock=True)
@@ -2512,8 +2514,92 @@ class ReleaseTransactionTest(unittest.TestCase):
                 self.assertEqual(
                     spawned.call_args.kwargs["pass_fds"], (descriptor,),
                 )
+                RELEASE.run(["sealed-recovery"], "recovery", environment={
+                    "FACTORY_DISPATCH_ADMISSION_LOCK_FD": str(admission),
+                })
+                self.assertEqual(
+                    spawned.call_args.kwargs["pass_fds"], (admission,),
+                )
         finally:
+            os.close(admission)
             RELEASE.release_cutover_lock(descriptor)
+
+    def test_recovery_child_retains_admission_after_parent_kill(self) -> None:
+        admission = self.root / "admission.lock"
+        admission.touch(mode=0o600)
+        marker = self.root / "child.pid"
+        child = self.root / "child.py"
+        child.write_text(
+            "import importlib.util,os,sys,time\n"
+            "spec=importlib.util.spec_from_file_location('cancel_child',sys.argv[1])\n"
+            "module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)\n"
+            "assert module.sealed_recovery_admission_held({"
+            "'contract_version':'2.0.0','kit_sha':os.environ["
+            "'FACTORY_CROSS_RELEASE_SOURCE_SHA']})\n"
+            "open(sys.argv[2],'w').write(str(os.getpid()))\n"
+            "time.sleep(30)\n",
+            encoding="utf-8",
+        )
+        wrapper = self.root / "wrapper.py"
+        wrapper.write_text(
+            "import fcntl,importlib.util,os,sys\n"
+            "spec=importlib.util.spec_from_file_location('release_parent',sys.argv[1])\n"
+            "module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)\n"
+            "fd=os.open(sys.argv[2],os.O_RDWR);fcntl.flock(fd,fcntl.LOCK_EX)\n"
+            "sha='d'*40\n"
+            "env={'HOME':os.environ['HOME'],'PATH':'/usr/bin:/bin',"
+            "'FACTORY_CROSS_RELEASE_SOURCE_SHA':sha,"
+            "'FACTORY_CROSS_RELEASE_PRODUCT_ID':'relay:'+sha,"
+            "'FACTORY_DISPATCH_ADMISSION_LOCK':sys.argv[2],"
+            "'FACTORY_DISPATCH_ADMISSION_LOCK_FD':str(fd)}\n"
+            "module.run([sys.executable,sys.argv[3],sys.argv[4],sys.argv[5]],"
+            "'child',environment=env)\n",
+            encoding="utf-8",
+        )
+        parent = subprocess.Popen([
+            sys.executable, str(wrapper), str(ROOT / "scripts/release-transaction.py"),
+            str(admission), str(child), str(ROOT / "scripts/attempt-cancel.py"),
+            str(marker),
+        ])
+        child_pid = None
+        try:
+            for _ in range(100):
+                if marker.exists():
+                    child_pid = int(marker.read_text())
+                    break
+                time.sleep(0.05)
+            self.assertIsNotNone(child_pid)
+            parent.kill()
+            parent.wait(timeout=5)
+            probe = os.open(admission, os.O_RDWR)
+            try:
+                with self.assertRaises(BlockingIOError):
+                    fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            finally:
+                os.close(probe)
+            os.kill(child_pid, 9)
+            child_pid = None
+            released = False
+            for _ in range(100):
+                probe = os.open(admission, os.O_RDWR)
+                try:
+                    fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    released = True
+                    break
+                except BlockingIOError:
+                    time.sleep(0.05)
+                finally:
+                    os.close(probe)
+            self.assertTrue(released)
+        finally:
+            if parent.poll() is None:
+                parent.kill()
+                parent.wait(timeout=5)
+            if child_pid is not None:
+                try:
+                    os.kill(child_pid, 9)
+                except ProcessLookupError:
+                    pass
 
     def test_no_return_cutover_phases_repair_the_floor_before_replay(self) -> None:
         plan = {
@@ -2867,7 +2953,9 @@ class ReleaseTransactionTest(unittest.TestCase):
         }
         module = mock.Mock()
         module.lock_controllers.return_value = []
-        module.lock_dispatch_admission.return_value = []
+        module.lock_dispatch_admission.side_effect = lambda *_: [
+            os.open(os.devnull, os.O_RDONLY)
+        ]
         args = argparse.Namespace(
             approve_hash=plan["approval_sha256"], failed_run="run-1",
             operator_id="tester", product=self.product, project="relay",
@@ -2906,7 +2994,9 @@ class ReleaseTransactionTest(unittest.TestCase):
         }
         module = mock.Mock()
         module.lock_controllers.return_value = []
-        module.lock_dispatch_admission.return_value = []
+        module.lock_dispatch_admission.side_effect = lambda *_: [
+            os.open(os.devnull, os.O_RDONLY)
+        ]
         args = argparse.Namespace(
             approve_hash=plan["approval_sha256"], failed_run="run-1",
             operator_id="tester", product=self.product, project="relay",
@@ -2948,7 +3038,9 @@ class ReleaseTransactionTest(unittest.TestCase):
         }
         module = mock.Mock()
         module.lock_controllers.return_value = []
-        module.lock_dispatch_admission.return_value = []
+        module.lock_dispatch_admission.side_effect = lambda *_: [
+            os.open(os.devnull, os.O_RDONLY)
+        ]
         args = argparse.Namespace(
             approve_hash=plan["approval_sha256"], failed_run="run-1",
             operator_id="tester", product=self.product, project="relay",
@@ -2971,6 +3063,7 @@ class ReleaseTransactionTest(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(first["status"], "recovered")
         self.assertEqual(cancel.call_count, 2)
+        self.assertTrue(all(call.args[4] >= 0 for call in cancel.call_args_list))
         self.assertFalse((state / "nested-plan.json").exists())
         module.lock_dispatch_boundaries.assert_not_called()
 
