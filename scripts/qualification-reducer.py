@@ -404,7 +404,7 @@ def qualification_latency(
         or activated < boundary["observed_at_epoch_ns"]
         or receipt_id != activation.get("activation_receipt_id")
         or receipt_id
-        != hashlib.sha256(canonical(receipt).encode()).hexdigest()
+        != hashlib.sha256((canonical(receipt) + "\n").encode()).hexdigest()
         or receipt.get("activation_started_epoch_ns") != started
         or receipt.get("status") != "pass"
         or receipt.get("kit_sha") != activation.get("factory_sha")

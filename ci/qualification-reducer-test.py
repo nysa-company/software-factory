@@ -434,7 +434,7 @@ class QualificationReducerTest(unittest.TestCase):
             "status": "pass",
         }
         receipt["receipt_id"] = hashlib.sha256(
-            REDUCER.canonical(receipt).encode()
+            (REDUCER.canonical(receipt) + "\n").encode()
         ).hexdigest()
         activation = {
             "activation_receipt_id": receipt["receipt_id"],
@@ -672,10 +672,18 @@ class QualificationReducerTest(unittest.TestCase):
         changed_receipt["activation_started_epoch_ns"] += 1
         changed_receipt.pop("receipt_id")
         changed_receipt["receipt_id"] = hashlib.sha256(
-            REDUCER.canonical(changed_receipt).encode()
+            (REDUCER.canonical(changed_receipt) + "\n").encode()
         ).hexdigest()
         with self.assertRaisesRegex(REDUCER.QualificationError, "activation timing"):
             REDUCER.verify(*evidence, changed_receipt, narrators, accounting, planners)
+
+        wrong_encoding = dict(receipt)
+        wrong_encoding.pop("receipt_id")
+        wrong_encoding["receipt_id"] = hashlib.sha256(
+            REDUCER.canonical(wrong_encoding).encode()
+        ).hexdigest()
+        with self.assertRaisesRegex(REDUCER.QualificationError, "activation timing"):
+            REDUCER.verify(*evidence, wrong_encoding, narrators, accounting, planners)
 
         wrong_narrator = {**narrators, ticket: "unprotected-narrator"}
         with self.assertRaisesRegex(REDUCER.QualificationError, "role timing"):
