@@ -1892,6 +1892,113 @@ class QualificationEnvironmentTest(unittest.TestCase):
             "exact-complete",
         )
 
+    def test_prepare_recovers_validated_runtime_only_prefix(self) -> None:
+        args = argparse.Namespace(
+            factory_root=self.factory, product_root=self.product,
+            project="relay", root=self.root,
+        )
+        original = ENVIRONMENT.prepare_qualification_runtime
+        interrupted = False
+
+        def interrupt_after_runtime(*arguments, **options):
+            nonlocal interrupted
+            runtime = original(*arguments, **options)
+            if not interrupted:
+                interrupted = True
+                raise ENVIRONMENT.EnvironmentError("simulated runtime response loss")
+            return runtime
+
+        authority = self.home / ".factory/qualification/relay"
+        with mock.patch.object(
+            ENVIRONMENT, "prepare_qualification_runtime",
+            side_effect=interrupt_after_runtime,
+        ):
+            with self.assertRaisesRegex(
+                ENVIRONMENT.EnvironmentError, "runtime response loss",
+            ):
+                ENVIRONMENT.prepare(args)
+            self.assertEqual(
+                {path.name for path in self.root.iterdir()},
+                {"project-runtimes"},
+            )
+            self.assertFalse(authority.exists())
+
+            unexpected = self.root / "unexpected"
+            unexpected.mkdir(mode=0o700)
+            with self.assertRaisesRegex(
+                ENVIRONMENT.EnvironmentError,
+                "partial qualification environment is invalid",
+            ):
+                ENVIRONMENT.prepare(args)
+            self.assertFalse(authority.exists())
+            unexpected.rmdir()
+
+            foreign = self.root / "project-runtimes/foreign"
+            foreign.mkdir(mode=0o700)
+            with self.assertRaisesRegex(
+                ENVIRONMENT.EnvironmentError,
+                "partial qualification runtime is invalid",
+            ):
+                ENVIRONMENT.prepare(args)
+            self.assertFalse(authority.exists())
+            foreign.rmdir()
+
+            releases = self.root / "releases"
+            releases.mkdir(mode=0o700)
+            with self.assertRaisesRegex(
+                ENVIRONMENT.EnvironmentError,
+                "partial qualification authority is missing",
+            ):
+                ENVIRONMENT.prepare(args)
+            self.assertFalse(authority.exists())
+            releases.rmdir()
+
+            value = ENVIRONMENT.prepare(args)
+
+        self.assertEqual(value["status"], "prepared")
+        self.assertTrue(authority.is_dir())
+        self.assertFalse(
+            (self.home / ".factory/qualification/.activation-start-relay.json").exists()
+        )
+
+    def test_prepare_refuses_runtime_prefix_without_certification_plan(self) -> None:
+        plan = self.product / "factory/certification-plan.json"
+        plan.unlink()
+        run(self.product, "git", "add", str(plan))
+        run(self.product, "git", "commit", "-qm", "remove runtime plan")
+        runtimes = self.root / "project-runtimes"
+        runtimes.mkdir(mode=0o700)
+        runtime = runtimes / "relay"
+        runtime.mkdir(mode=0o700)
+        (runtime / "unexpected").mkdir(mode=0o700)
+
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError, "partial qualification authority is missing",
+        ):
+            ENVIRONMENT.prepare(argparse.Namespace(
+                factory_root=self.factory, product_root=self.product,
+                project="relay", root=self.root,
+            ))
+
+        self.assertFalse(
+            (self.home / ".factory/qualification/relay").exists()
+        )
+
+    def test_prepare_runtime_free_product_with_absent_root(self) -> None:
+        plan = self.product / "factory/certification-plan.json"
+        plan.unlink()
+        run(self.product, "git", "add", str(plan))
+        run(self.product, "git", "commit", "-qm", "remove runtime plan")
+        self.root.rmdir()
+
+        value = ENVIRONMENT.prepare(argparse.Namespace(
+            factory_root=self.factory, product_root=self.product,
+            project="relay", root=self.root,
+        ))
+
+        self.assertEqual(value["status"], "prepared")
+        self.assertTrue(self.root.is_dir())
+
     def test_prepare_replays_consumed_ready_receipts_after_later_failure(self) -> None:
         args = argparse.Namespace(
             factory_root=self.factory, product_root=self.product,
