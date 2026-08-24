@@ -13910,9 +13910,7 @@ class Controller:
             )
             return {"status": "error", "ticket": claim["ticket"], "error": str(error)}
 
-    def reconcile_ticket_until_wait(
-        self, claim: dict[str, Any], *, defer_external_park: bool = False,
-    ) -> dict[str, str]:
+    def reconcile_ticket_until_wait(self, claim: dict[str, Any]) -> dict[str, str]:
         while True:
             if (
                 self.qualification
@@ -13938,7 +13936,7 @@ class Controller:
                     }
                     and result.get("wait_reason") != "live-role"
                     and not (
-                        defer_external_park
+                        self.wait_seconds
                         and result.get("status") == "waiting"
                         and result.get("wait_reason") in RETRYABLE_RECONCILE_WAITS
                     )
@@ -14160,9 +14158,7 @@ class Controller:
 
         def reconcile_worker(claim: dict[str, Any]) -> dict[str, str]:
             try:
-                return self.reconcile_ticket_until_wait(
-                    claim, defer_external_park=bool(wait_seconds),
-                )
+                return self.reconcile_ticket_until_wait(claim)
             except Exception:
                 self.latch_qualification_cohort_error()
                 raise
