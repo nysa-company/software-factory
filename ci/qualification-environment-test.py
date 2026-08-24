@@ -4261,9 +4261,9 @@ class QualificationEnvironmentTest(unittest.TestCase):
         askpass = trusted_bin / "git-askpass"
         askpass.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
         askpass.chmod(0o700)
-        token = capability / "token"
-        token.write_text("fixture-token", encoding="utf-8")
-        token.chmod(0o600)
+        auth_file = capability / "auth"
+        auth_file.write_text("fixture", encoding="utf-8")
+        auth_file.chmod(0o600)
         gh_info = gh.stat()
         descriptor = capability / "descriptor.json"
         descriptor.write_text(json.dumps({
@@ -4275,7 +4275,7 @@ class QualificationEnvironmentTest(unittest.TestCase):
             },
             "git_askpass": str(askpass), "install_repo": str(install_repo),
             "schema": "nysa.software-factory.qualification-install/v1",
-            "sha": candidate, "token": str(token),
+            "sha": candidate, "token": str(auth_file),
             "tree": subprocess.run(
                 ["git", "-C", str(install_repo), "rev-parse", "HEAD^{tree}"],
                 capture_output=True, text=True, check=True,
@@ -4347,7 +4347,7 @@ class QualificationEnvironmentTest(unittest.TestCase):
         self.assertNotIn(str(install_repo), json.dumps(journal, sort_keys=True))
         self.assertFalse(factory_config_marker.exists())
         self.assertFalse(descriptor.exists())
-        self.assertFalse(token.exists())
+        self.assertFalse(auth_file.exists())
         self.assertEqual(list((controller / "claims").glob("*.json")), [])
         for path in (
             self.product / "factory/runs",
