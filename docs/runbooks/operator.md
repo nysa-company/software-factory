@@ -328,15 +328,21 @@ passes; the named ranges are service ceilings, not artificial minimum waits.
 Replay revalidates required checks on each stored exact PR head and does not
 wait for redundant main CI or recompute evidence from unrelated main movement.
 It approves only selected clean, idle, parked Awaiting Approval claims through
-the sealed lane operator map. With no progress, it continues for at most ten
-minutes while at least one pending result is a typed live-role, GitHub,
+the sealed lane operator map. With no progress, it observes one unchanged exact
+live-role receipt for at most ten wall-clock minutes or 120 polls. A pure
+live-role wait does not consume the separate external-wait budget; a mixed live
+and external wait charges both. A new authenticated live receipt resets that
+live bound and the following external epoch. Each authenticated
+progress epoch waits at most ten wall-clock minutes or 120 polls while at least
+one pending result is a typed GitHub,
 protected-merge, publication-lease, or closeout wait. Explicitly blocked,
 budget, cancelled, or maintenance siblings remain parked without starving an
 independent approval or typed wait; those states alone return. A live role
 yields only
 after its existing active-run claim is durable; the wrapper keeps its lease,
 heartbeat, reservation, and terminal-accounting ownership while the finisher
-polls. All other waits return immediately. It never approves a
+polls. An unchanged live receipt returns as a typed wait when its bound expires;
+all other waits return immediately. It never approves a
 production or takeover lane. Use `qualification-run --json` instead when each
 bundle requires a separate human approval command.
 Internal finish iterations do not rerun full Doctor. A new command invocation

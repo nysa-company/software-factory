@@ -40,6 +40,10 @@ PROJECT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 TICKET = re.compile(r"T-[0-9]+")
 SHA = re.compile(r"[0-9a-f]{40}")
 DIGEST = re.compile(r"[0-9a-f]{64}")
+ROLES = {
+    "builder", "narrator", "planner", "reviewer", "spec-linter",
+    "test-author",
+}
 REQUIRED_CHECKS = {
     "active_binding", "authenticated_artifacts", "clis", "contract_resume", "credentials",
     "fallback_readiness", "isolated_provider", "kit", "kit_pin",
@@ -848,9 +852,33 @@ def qualification_retryable_wait(
         or (
             item.get("status") == "waiting"
             and item.get("wait_reason") in RETRYABLE_FINISH_WAITS
+            and (
+                item.get("wait_reason") != "live-role"
+                or isinstance(item.get("role"), str)
+                and item["role"] in ROLES
+                and isinstance(item.get("transition_receipt_sha256"), str)
+                and DIGEST.fullmatch(
+                    item["transition_receipt_sha256"]
+                ) is not None
+            )
         )
         for item in pending
     )
+
+
+def qualification_live_role_signature(
+    value: dict[str, Any],
+) -> tuple[tuple[str, str, str], ...]:
+    return tuple(sorted(
+        (
+            item["ticket"], item["role"],
+            item["transition_receipt_sha256"],
+        )
+        for item in value.get("controller", {}).get("results", [])
+        if isinstance(item, dict)
+        and item.get("status") == "waiting"
+        and item.get("wait_reason") == "live-role"
+    ))
 
 
 def finish_poll_seconds() -> int:
@@ -1604,7 +1632,12 @@ def execute_finish(args: argparse.Namespace) -> dict[str, Any]:
     seen_receipts: set[str] = set()
     seen_completions: set[str] = set()
     restarts = 0
-    polls_left = finish_poll_limit()
+    poll_limit = finish_poll_limit()
+    polls_left = poll_limit
+    live_polls_left: dict[tuple[str, str, str], int] = {}
+    live_started: dict[tuple[str, str, str], float] = {}
+    live_signature: tuple[tuple[str, str, str], ...] = ()
+    external_started: float | None = None
     events = qualification_event_names()
     # ponytail: a closed cohort can create at most one approval per protected
     # base generation; widen only if qualification admits unrelated main churn.
@@ -1689,11 +1722,39 @@ def execute_finish(args: argparse.Namespace) -> dict[str, Any]:
         new_completions = completions - seen_completions
         if not new_receipts and not new_completions and not refreshed:
             if qualification_retryable_wait(result, selected):
+                now = time.monotonic()
+                current_live = qualification_live_role_signature(result)
+                if current_live != live_signature:
+                    live_signature = current_live
+                    polls_left = poll_limit
+                    external_started = None
+                for identity in current_live:
+                    live_polls_left.setdefault(identity, poll_limit)
+                    live_started.setdefault(identity, now)
+                external = any(
+                    isinstance(item, dict)
+                    and item.get("status") == "waiting"
+                    and item.get("wait_reason") != "live-role"
+                    for item in controller_results
+                )
+                if external and external_started is None:
+                    external_started = now
                 if (
-                    polls_left
-                    and time.monotonic() - started < FINISH_WAIT_SECONDS
+                    all(
+                        live_polls_left[identity]
+                        and now - live_started[identity] < FINISH_WAIT_SECONDS
+                        for identity in current_live
+                    )
+                    and (
+                        not external
+                        or polls_left
+                        and now - external_started < FINISH_WAIT_SECONDS
+                    )
                 ):
-                    polls_left -= 1
+                    for identity in current_live:
+                        live_polls_left[identity] -= 1
+                    if external:
+                        polls_left -= 1
                     time.sleep(finish_poll_seconds())
                     continue
             return {
@@ -1704,6 +1765,8 @@ def execute_finish(args: argparse.Namespace) -> dict[str, Any]:
                 "restarts": restarts,
             }
         progress_left -= 1
+        polls_left = poll_limit
+        external_started = None
         approvals.extend(ticket for ticket, _receipt in new_receipts)
         seen_receipts.update(receipt for _ticket, receipt in new_receipts)
         seen_completions.update(new_completions)

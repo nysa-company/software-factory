@@ -220,8 +220,18 @@ current release, claim, branch, clean head/tree, ticket blob, lease, route, and
 absent passport all match. Successor and production lanes, or any drift, use
 the ordinary state-machine path. Planner preflight still authenticates and
 consumes the receipt before provider GO. Batch pinning records cache consumption,
-so subsequent Doctor checks resolve live readiness. The finisher repeats reconciliation after progress and while every
-pending result is a typed external publication wait, for at most ten minutes.
+so subsequent Doctor checks resolve live readiness. The finisher repeats
+reconciliation after progress and while a provider role retains its durable
+active-run ownership, or while every pending result is a typed external
+publication wait. Pure provider-role execution retains the wrapper's existing bound;
+the finisher also returns after at most ten wall-clock minutes or 120 polls of
+one unchanged exact live-role receipt. A new authenticated live receipt resets
+that live bound and the following external-wait epoch. Each other authenticated
+progress epoch grants at most ten wall-clock minutes or 120 polls for unchanged
+external waits. Neither deadline starts during Doctor, provider execution
+before durable handoff, nor reconciliation before the first matching wait; a
+mixed live-role and external wait charges both clocks. The
+finite progress bound caps the number of external epochs.
 A new command invocation
 runs a fresh Doctor, every cached iteration remains bound to the exact manifest
 bytes, and authenticated contract recovery retains its explicit Doctor refresh.
