@@ -688,9 +688,9 @@ and nested cancellation preview. Apply revalidates under controller and
 dispatch-admission locks, then uses the sealed successor helper with a scrubbed
 environment. Replay returns the retained receipts without charging twice. This
 includes a durable request whose receipt was interrupted. The nested helper
-inherits and validates the outer transaction's exact locked dispatch-admission
-descriptor, so a parent exit cannot expose cleanup and recovery creates no
-shared directory-lock residue. Historical provider
+inherits and validates the outer transaction's exact locked controller and
+dispatch-admission descriptors, so a parent exit cannot expose cleanup and
+recovery creates no shared directory-lock residue. Historical provider
 identity compatibility is accepted only when the sealed source Factory,
 manifest kit, lane product, and authoritative provider row agree. This does not
 upgrade, reset, or retire the lane; repeat for each named attempt and then use

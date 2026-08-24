@@ -437,39 +437,18 @@ def acquire_cleanup_lock(path: Path, label: str) -> None:
     raise CancelError(f"{label} lock is busy")
 
 
-def sealed_recovery_admission_held(manifest: dict[str, str]) -> bool:
-    names = (
-        "FACTORY_CROSS_RELEASE_SOURCE_SHA",
-        "FACTORY_CROSS_RELEASE_PRODUCT_ID",
-        "FACTORY_DISPATCH_ADMISSION_LOCK",
-        "FACTORY_DISPATCH_ADMISSION_LOCK_FD",
-    )
-    values = {name: os.environ.get(name, "") for name in names}
-    if not any(values.values()):
-        return False
-    if not all(values.values()):
-        raise CancelError("sealed recovery admission identity is incomplete")
-    path = Path(values["FACTORY_DISPATCH_ADMISSION_LOCK"])
-    source_sha = values["FACTORY_CROSS_RELEASE_SOURCE_SHA"]
-    if (
-        not path.is_absolute()
-        or re.fullmatch(r"[0-9a-f]{40}", source_sha) is None
-        or re.fullmatch(
-            r"[A-Za-z0-9._:-]{1,200}",
-            values["FACTORY_CROSS_RELEASE_PRODUCT_ID"],
-        ) is None
-        or manifest.get("kit_sha") != source_sha
-        or manifest.get("contract_version") != "2.0.0"
-    ):
-        raise CancelError("sealed recovery admission identity is invalid")
+def sealed_recovery_lock_held(path_value: str, descriptor_value: str) -> None:
+    path = Path(path_value)
+    if not path.is_absolute():
+        raise CancelError("sealed recovery lock identity is invalid")
     try:
-        inherited = int(values["FACTORY_DISPATCH_ADMISSION_LOCK_FD"])
+        inherited = int(descriptor_value)
         if inherited < 0:
             raise ValueError
         held = os.fstat(inherited)
         target = path.lstat()
     except (ValueError, OSError) as error:
-        raise CancelError("sealed recovery admission capability is invalid") from error
+        raise CancelError("sealed recovery lock capability is invalid") from error
     if (
         not stat.S_ISREG(held.st_mode)
         or not stat.S_ISREG(target.st_mode)
@@ -479,22 +458,59 @@ def sealed_recovery_admission_held(manifest: dict[str, str]) -> bool:
         or held.st_nlink != 1
         or stat.S_IMODE(held.st_mode) != 0o600
     ):
-        raise CancelError("sealed recovery admission lock is unsafe")
-    probe = os.open(
-        path, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0),
-    )
+        raise CancelError("sealed recovery lock is unsafe")
+    try:
+        probe = os.open(path, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0))
+    except OSError as error:
+        raise CancelError("sealed recovery lock capability is invalid") from error
     try:
         current = os.fstat(probe)
         if (current.st_dev, current.st_ino) != (held.st_dev, held.st_ino):
-            raise CancelError("sealed recovery admission lock changed")
+            raise CancelError("sealed recovery lock changed")
         try:
             fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            return True
+            return
         fcntl.flock(probe, fcntl.LOCK_UN)
-        raise CancelError("sealed recovery admission lock is not held")
+        raise CancelError("sealed recovery lock is not held")
     finally:
         os.close(probe)
+
+
+def sealed_recovery_locks_held(manifest: dict[str, str]) -> bool:
+    names = (
+        "FACTORY_CROSS_RELEASE_SOURCE_SHA",
+        "FACTORY_CROSS_RELEASE_PRODUCT_ID",
+        "FACTORY_DISPATCH_ADMISSION_LOCK",
+        "FACTORY_DISPATCH_ADMISSION_LOCK_FD",
+        "FACTORY_QUALIFICATION_CONTROLLER_LOCK",
+        "FACTORY_QUALIFICATION_CONTROLLER_LOCK_FD",
+    )
+    values = {name: os.environ.get(name, "") for name in names}
+    if not any(values.values()):
+        return False
+    if not all(values.values()):
+        raise CancelError("sealed recovery admission identity is incomplete")
+    source_sha = values["FACTORY_CROSS_RELEASE_SOURCE_SHA"]
+    if (
+        re.fullmatch(r"[0-9a-f]{40}", source_sha) is None
+        or re.fullmatch(
+            r"[A-Za-z0-9._:-]{1,200}",
+            values["FACTORY_CROSS_RELEASE_PRODUCT_ID"],
+        ) is None
+        or manifest.get("kit_sha") != source_sha
+        or manifest.get("contract_version") != "2.0.0"
+    ):
+        raise CancelError("sealed recovery admission identity is invalid")
+    sealed_recovery_lock_held(
+        values["FACTORY_DISPATCH_ADMISSION_LOCK"],
+        values["FACTORY_DISPATCH_ADMISSION_LOCK_FD"],
+    )
+    sealed_recovery_lock_held(
+        values["FACTORY_QUALIFICATION_CONTROLLER_LOCK"],
+        values["FACTORY_QUALIFICATION_CONTROLLER_LOCK_FD"],
+    )
+    return True
 
 
 def exact_lease(path: Path, expected: tuple[int, int, int, int, bytes]) -> None:
@@ -517,7 +533,7 @@ def release_stale_claims(
 ) -> None:
     held: list[Path] = []
     try:
-        if not sealed_recovery_admission_held(manifest):
+        if not sealed_recovery_locks_held(manifest):
             for path, label in (
                 (factory_root / "factory/.launch.lock", "launch"),
                 (factory_root / "factory/.dispatch-leases.lock", "dispatcher lease"),

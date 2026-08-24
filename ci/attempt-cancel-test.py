@@ -483,9 +483,13 @@ class AttemptCancellationTest(unittest.TestCase):
         ), self.assertRaisesRegex(CANCEL.CancelError, "identity disagrees"):
             CANCEL.apply_plan(self.root, plan, 1)
         admission = self.root.parent / ".dispatch-admission.lock"
+        controller = self.root.parent / "reconcile.lock"
         admission.touch(mode=0o600)
+        controller.touch(mode=0o600)
         descriptor = os.open(admission, os.O_RDWR)
+        controller_descriptor = os.open(controller, os.O_RDWR)
         fcntl.flock(descriptor, fcntl.LOCK_EX)
+        fcntl.flock(controller_descriptor, fcntl.LOCK_EX)
         try:
             with mock.patch.dict(
                 os.environ, {
@@ -494,6 +498,10 @@ class AttemptCancellationTest(unittest.TestCase):
                     "FACTORY_CROSS_RELEASE_SOURCE_SHA": source_sha,
                     "FACTORY_DISPATCH_ADMISSION_LOCK": str(admission),
                     "FACTORY_DISPATCH_ADMISSION_LOCK_FD": str(descriptor),
+                    "FACTORY_QUALIFICATION_CONTROLLER_LOCK": str(controller),
+                    "FACTORY_QUALIFICATION_CONTROLLER_LOCK_FD": str(
+                        controller_descriptor
+                    ),
                 }, clear=False,
             ):
                 self.assertEqual(CANCEL.apply_plan(self.root, plan, 1), receipt)
@@ -506,6 +514,7 @@ class AttemptCancellationTest(unittest.TestCase):
                 )["attempts"][0]
         finally:
             os.close(descriptor)
+            os.close(controller_descriptor)
         self.assertEqual(
             (terminal["state"], terminal["terminal_result"],
              terminal["charge_micro_usd"], replay["version"]),
@@ -884,15 +893,23 @@ class AttemptCancellationTest(unittest.TestCase):
             "role": "builder", "ticket": "T-1",
         }
         admission = self.root.parent / ".dispatch-admission.lock"
+        controller = self.root.parent / "reconcile.lock"
         admission.touch(mode=0o600)
+        controller.touch(mode=0o600)
         descriptor = os.open(admission, os.O_RDWR)
+        controller_descriptor = os.open(controller, os.O_RDWR)
         fcntl.flock(descriptor, fcntl.LOCK_EX)
+        fcntl.flock(controller_descriptor, fcntl.LOCK_EX)
         try:
             with mock.patch.dict(os.environ, {
                 "FACTORY_CROSS_RELEASE_SOURCE_SHA": source_sha,
                 "FACTORY_CROSS_RELEASE_PRODUCT_ID": f"relay:{source_sha}",
                 "FACTORY_DISPATCH_ADMISSION_LOCK": str(admission),
                 "FACTORY_DISPATCH_ADMISSION_LOCK_FD": str(descriptor),
+                "FACTORY_QUALIFICATION_CONTROLLER_LOCK": str(controller),
+                "FACTORY_QUALIFICATION_CONTROLLER_LOCK_FD": str(
+                    controller_descriptor
+                ),
             }, clear=False):
                 CANCEL.release_stale_claims(
                     self.root, self.root / "factory/.active-runs",
@@ -900,20 +917,29 @@ class AttemptCancellationTest(unittest.TestCase):
                 )
         finally:
             os.close(descriptor)
+            os.close(controller_descriptor)
         self.assertFalse((self.root / "factory/.launch.lock").exists())
         self.assertFalse((self.root / "factory/.dispatch-leases.lock").exists())
 
     def test_sealed_recovery_refuses_an_unheld_admission_lock(self):
         source_sha = "d" * 40
         admission = self.root.parent / ".dispatch-admission.lock"
+        controller = self.root.parent / "reconcile.lock"
         admission.touch(mode=0o600)
+        controller.touch(mode=0o600)
         descriptor = os.open(admission, os.O_RDWR)
+        controller_descriptor = os.open(controller, os.O_RDWR)
+        fcntl.flock(controller_descriptor, fcntl.LOCK_EX)
         try:
             with mock.patch.dict(os.environ, {
                 "FACTORY_CROSS_RELEASE_SOURCE_SHA": source_sha,
                 "FACTORY_CROSS_RELEASE_PRODUCT_ID": f"relay:{source_sha}",
                 "FACTORY_DISPATCH_ADMISSION_LOCK": str(admission),
                 "FACTORY_DISPATCH_ADMISSION_LOCK_FD": str(descriptor),
+                "FACTORY_QUALIFICATION_CONTROLLER_LOCK": str(controller),
+                "FACTORY_QUALIFICATION_CONTROLLER_LOCK_FD": str(
+                    controller_descriptor
+                ),
             }, clear=False), self.assertRaisesRegex(CANCEL.CancelError, "not held"):
                 CANCEL.release_stale_claims(
                     self.root, self.root / "factory/.active-runs",
@@ -925,6 +951,7 @@ class AttemptCancellationTest(unittest.TestCase):
                 )
         finally:
             os.close(descriptor)
+            os.close(controller_descriptor)
         self.assertFalse((self.root / "factory/.launch.lock").exists())
         self.assertFalse((self.root / "factory/.dispatch-leases.lock").exists())
 
@@ -932,10 +959,14 @@ class AttemptCancellationTest(unittest.TestCase):
         source_sha = "d" * 40
         admission = self.root.parent / ".dispatch-admission.lock"
         other = self.root.parent / ".other-admission.lock"
+        controller = self.root.parent / "reconcile.lock"
         admission.touch(mode=0o600)
         other.touch(mode=0o600)
+        controller.touch(mode=0o600)
         descriptor = os.open(admission, os.O_RDWR)
+        controller_descriptor = os.open(controller, os.O_RDWR)
         fcntl.flock(descriptor, fcntl.LOCK_EX)
+        fcntl.flock(controller_descriptor, fcntl.LOCK_EX)
         manifest = {
             "contract_version": "2.0.0", "kit_sha": source_sha,
             "role": "builder", "ticket": "T-1",
@@ -944,16 +975,21 @@ class AttemptCancellationTest(unittest.TestCase):
             with mock.patch.dict(os.environ, {
                 "FACTORY_CROSS_RELEASE_SOURCE_SHA": source_sha,
             }, clear=True), self.assertRaisesRegex(CANCEL.CancelError, "incomplete"):
-                CANCEL.sealed_recovery_admission_held(manifest)
+                CANCEL.sealed_recovery_locks_held(manifest)
             with mock.patch.dict(os.environ, {
                 "FACTORY_CROSS_RELEASE_SOURCE_SHA": source_sha,
                 "FACTORY_CROSS_RELEASE_PRODUCT_ID": f"relay:{source_sha}",
                 "FACTORY_DISPATCH_ADMISSION_LOCK": str(other),
                 "FACTORY_DISPATCH_ADMISSION_LOCK_FD": str(descriptor),
+                "FACTORY_QUALIFICATION_CONTROLLER_LOCK": str(controller),
+                "FACTORY_QUALIFICATION_CONTROLLER_LOCK_FD": str(
+                    controller_descriptor
+                ),
             }, clear=True), self.assertRaisesRegex(CANCEL.CancelError, "unsafe"):
-                CANCEL.sealed_recovery_admission_held(manifest)
+                CANCEL.sealed_recovery_locks_held(manifest)
         finally:
             os.close(descriptor)
+            os.close(controller_descriptor)
 
     def test_provider_database_selection_is_fail_closed(self):
         legacy = self.root.parent / "runtime/provider-state.sqlite3"
