@@ -3729,6 +3729,107 @@ class ReleaseTransactionTest(unittest.TestCase):
             current, expected, self.sha,
         ))
 
+    def test_qualification_basis_hashes_the_selected_target_transaction(self) -> None:
+        repo = self.root / "factory"
+        repo.mkdir()
+        repair = self.root / "sealed-repair"
+        repair.mkdir()
+        target = self.root / "sealed-target"
+        target.mkdir()
+        with mock.patch.object(RELEASE, "TRANSACTION_ROOT", repair):
+            for selected, expected in ((None, repair), (target, target)):
+                with (
+                    self.subTest(selected=selected),
+                    mock.patch.object(
+                        RELEASE, "factory_ref_identity",
+                        return_value=(
+                            self.sha, "b" * 40, "https://example.invalid/factory",
+                        ),
+                    ) as identity,
+                    mock.patch.object(
+                        RELEASE, "clean_identity",
+                        side_effect=RELEASE.ReleaseError("stop"),
+                    ),
+                    self.assertRaisesRegex(RELEASE.ReleaseError, "stop"),
+                ):
+                    RELEASE.qualification_basis(
+                        "relay", Path("/private/tmp/nysa-sf-qualification.fixture"),
+                        self.product, repo, self.sha, selected,
+                    )
+                identity.assert_called_once_with(repo, "Factory candidate", expected)
+
+    def test_factory_identity_hashes_the_selected_transaction_directory(self) -> None:
+        repo = self.root / "factory"
+        repo.mkdir()
+        target = self.root / "sealed-target"
+        target.mkdir()
+        tree = "b" * 40
+        with (
+            mock.patch.object(RELEASE, "git", side_effect=[
+                str(repo), self.sha, "https://example.invalid/factory",
+            ]),
+            mock.patch.object(
+                RELEASE, "factory_object_git", return_value=mock.Mock(stdout=tree),
+            ),
+            mock.patch.object(
+                RELEASE, "directory_git_tree", return_value=tree,
+            ) as directory_tree,
+            mock.patch.object(RELEASE, "factory_worktree_tree", return_value=tree),
+        ):
+            self.assertEqual(
+                RELEASE.factory_ref_identity(repo, "Factory candidate", target),
+                (self.sha, tree, "https://example.invalid/factory"),
+            )
+        directory_tree.assert_called_once_with(target)
+
+    def test_qualification_repair_accepts_only_a_protected_main_ancestor(self) -> None:
+        repo = self.root / "factory"
+        repo.mkdir()
+        target = self.root / "sealed-target"
+        target.mkdir()
+        product_sha = "c" * 40
+
+        def git(root: Path, *arguments: str) -> str:
+            if arguments == ("rev-parse", "refs/remotes/origin/main"):
+                return protected if root == repo else protected_product
+            if arguments == ("merge-base", self.sha, protected):
+                return merge_base
+            raise AssertionError((root, arguments))
+
+        for transaction, protected, protected_product, merge_base, error in (
+            (RELEASE.TRANSACTION_ROOT, self.sha, product_sha, self.sha, "stop"),
+            (RELEASE.TRANSACTION_ROOT, "d" * 40, product_sha, self.sha,
+             "exact protected main"),
+            (target, "d" * 40, product_sha, self.sha, "stop"),
+            (target, "d" * 40, product_sha, "e" * 40, "exact protected main"),
+            (target, "d" * 40, "e" * 40, self.sha, "exact protected main"),
+        ):
+            with (
+                self.subTest(
+                    transaction=transaction, protected=protected,
+                    protected_product=protected_product, merge_base=merge_base,
+                ),
+                mock.patch.dict(os.environ, {"FACTORY_KIT_TEST_MODE": "0"}),
+                mock.patch.object(
+                    RELEASE, "factory_ref_identity",
+                    return_value=(self.sha, "b" * 40, "https://example.invalid/factory"),
+                ),
+                mock.patch.object(
+                    RELEASE, "clean_identity",
+                    return_value=(product_sha, "f" * 40, "https://example.invalid/product"),
+                ),
+                mock.patch.object(RELEASE, "git", side_effect=git),
+                mock.patch.object(
+                    RELEASE, "secure_regular_bytes",
+                    side_effect=RELEASE.ReleaseError("stop"),
+                ),
+                self.assertRaisesRegex(RELEASE.ReleaseError, error),
+            ):
+                RELEASE.qualification_basis(
+                    "relay", Path("/private/tmp/nysa-sf-qualification.fixture"),
+                    self.product, repo, self.sha, transaction,
+                )
+
     def test_qualification_restart_resumes_the_signed_in_progress_plan(self) -> None:
         plan = self.qualification_plan(approval_required=False)
         (self.root / "factory").mkdir()
@@ -3874,6 +3975,76 @@ class ReleaseTransactionTest(unittest.TestCase):
                 plan, self.kits, None, repair_sha="e" * 40,
             )
         self.assertFalse((state / ".migration.lock").exists())
+
+    def test_qualification_repair_supersedes_only_before_environment_mutation(self) -> None:
+        plan = self.qualification_plan(approval_required=False)
+        state = RELEASE.qualification_state(self.kits, "relay", self.sha)
+        RELEASE.secure_directory(state, create=True)
+        journal_path = state / "journal.json"
+        for phase in ("validated", "runtime_ready", "provider_cli_ready"):
+            RELEASE.qualification_journal_update(
+                journal_path, plan, phase, plan["preview_timings"],
+            )
+        journal = RELEASE.safe_state(journal_path, "qualification migration journal")
+        journal["repair_sha"] = "d" * 40
+        RELEASE.atomic_json(journal_path, RELEASE.signed_journal(journal))
+        module = mock.Mock()
+        with (
+            mock.patch.object(
+                RELEASE, "qualification_basis",
+                return_value=(plan["identity"], module),
+            ),
+            mock.patch.object(
+                RELEASE, "qualification_fallback",
+                side_effect=RELEASE.ReleaseError("stop"),
+            ),
+            self.assertRaisesRegex(RELEASE.ReleaseError, "stop"),
+        ):
+            RELEASE.apply_qualification_plan(
+                plan, self.kits, None, repair_sha="e" * 40,
+            )
+        self.assertEqual(
+            RELEASE.read_qualification_journal(journal_path, plan)["repair_sha"],
+            "e" * 40,
+        )
+
+        transitioned = json.loads(json.dumps(plan["identity"]))
+        transitioned["active"].update(
+            generation=2, kit_sha=self.sha, sha256="7" * 64,
+        )
+        transitioned["authority_sha256"] = "8" * 64
+        transitioned["environment"]["sha256"] = "9" * 64
+        transitioned["previous_receipt"]["sha256"] = "a" * 64
+        with (
+            mock.patch.object(
+                RELEASE, "qualification_basis", return_value=(transitioned, module),
+            ),
+            self.assertRaisesRegex(RELEASE.ReleaseError, "repair helper changed"),
+        ):
+            RELEASE.apply_qualification_plan(
+                plan, self.kits, None, repair_sha="f" * 40,
+            )
+        self.assertEqual(
+            RELEASE.read_qualification_journal(journal_path, plan)["repair_sha"],
+            "e" * 40,
+        )
+        RELEASE.qualification_journal_update(
+            journal_path, plan, "environment_upgraded", plan["preview_timings"],
+        )
+        with (
+            mock.patch.object(
+                RELEASE, "qualification_basis",
+                return_value=(plan["identity"], module),
+            ),
+            self.assertRaisesRegex(RELEASE.ReleaseError, "repair helper changed"),
+        ):
+            RELEASE.apply_qualification_plan(
+                plan, self.kits, None, repair_sha="f" * 40,
+            )
+        self.assertEqual(
+            RELEASE.read_qualification_journal(journal_path, plan)["repair_sha"],
+            "e" * 40,
+        )
 
     def test_qualification_restart_refuses_journal_ahead_of_live_activation(self) -> None:
         plan = self.qualification_plan(approval_required=False)

@@ -1008,14 +1008,16 @@ def factory_worktree_tree(root: Path, expected_tree: str) -> str:
         ], "Factory worktree verifier", environment=environment).strip()
 
 
-def factory_ref_identity(root: Path, label: str) -> tuple[str, str, str]:
+def factory_ref_identity(
+    root: Path, label: str, transaction: Path,
+) -> tuple[str, str, str]:
     physical = root.resolve(strict=True)
     if physical != root or git(root, "rev-parse", "--show-toplevel") != str(root):
         raise ReleaseError(f"{label} must be an exact physical Git root")
     sha = git(root, "rev-parse", "HEAD")
     origin = git(root, "config", "--local", "--no-includes", "--get", "remote.origin.url")
     committed_tree = factory_object_git(root, "rev-parse", f"{sha}^{{tree}}").stdout.strip()
-    transaction_tree = directory_git_tree(TRANSACTION_ROOT)
+    transaction_tree = directory_git_tree(transaction)
     worktree_tree = factory_worktree_tree(root, committed_tree)
     if (
         not SHA.fullmatch(sha) or not SHA.fullmatch(committed_tree) or not origin
@@ -4081,23 +4083,25 @@ def qualification_basis(
         raise ReleaseError("qualification root must be under /private/tmp")
     repo = repo.resolve(strict=True)
     product = product.resolve(strict=True)
+    transaction = transaction or TRANSACTION_ROOT
     factory_sha, factory_tree, factory_origin = factory_ref_identity(
-        repo, "Factory candidate",
+        repo, "Factory candidate", transaction,
     )
     product_sha, product_tree, product_origin = clean_identity(product, "product")
     if factory_sha != sha:
         raise ReleaseError("Factory candidate does not match qualification SHA")
-    if (
-        os.environ.get("FACTORY_KIT_TEST_MODE") != "1"
-        and (
-            git(repo, "rev-parse", "refs/remotes/origin/main") != factory_sha
-            or git(product, "rev-parse", "refs/remotes/origin/main") != product_sha
-        )
-    ):
-        raise ReleaseError("qualification migration inputs are not exact protected main")
+    if os.environ.get("FACTORY_KIT_TEST_MODE") != "1":
+        protected_factory = git(repo, "rev-parse", "refs/remotes/origin/main")
+        if (
+            git(product, "rev-parse", "refs/remotes/origin/main") != product_sha
+            or protected_factory != factory_sha and (
+                transaction == TRANSACTION_ROOT
+                or git(repo, "merge-base", factory_sha, protected_factory) != factory_sha
+            )
+        ):
+            raise ReleaseError("qualification migration inputs are not exact protected main")
     if secure_regular_bytes(product / "factory/KIT_PIN", "product KIT_PIN") != (sha + "\n").encode():
         raise ReleaseError("product pin does not match qualification SHA")
-    transaction = transaction or TRANSACTION_ROOT
     module = qualification_module(transaction)
     try:
         contract_version = json.loads(
@@ -4556,6 +4560,7 @@ def apply_qualification_plan(
         prior_ms = plan["preview_elapsed_ms"]
         cursor = -1
         restarting = False
+        repair_supersession = False
         if journal_path.exists() or journal_path.is_symlink():
             restarting = True
             prior = read_qualification_journal(journal_path, plan)
@@ -4571,9 +4576,8 @@ def apply_qualification_plan(
                 for item in prior["events"]
             )
             recorded_repair = prior.get("repair_sha")
-            if recorded_repair not in {None, repair_sha}:
-                raise ReleaseError("qualification migration repair helper changed")
-            if repair_sha is not None and recorded_repair is None:
+            repair_supersession = recorded_repair not in {None, repair_sha}
+            if not repair_supersession and repair_sha is not None and recorded_repair is None:
                 prior["repair_sha"] = repair_sha
                 atomic_json(journal_path, signed_journal(prior))
             prior_ms = 0
@@ -4601,6 +4605,14 @@ def apply_qualification_plan(
             raise ReleaseError(
                 f"qualification migration inputs changed after preview: {changed}"
             )
+        if repair_supersession:
+            if (
+                repair_sha is None or current != plan["identity"]
+                or cursor > QUALIFICATION_PHASES.index("provider_cli_ready")
+            ):
+                raise ReleaseError("qualification migration repair helper changed")
+            prior["repair_sha"] = repair_sha
+            atomic_json(journal_path, signed_journal(prior))
         if cursor < QUALIFICATION_PHASES.index("validated"):
             qualification_journal_update(journal_path, plan, "validated", timer.timings)
             cursor = QUALIFICATION_PHASES.index("validated")
@@ -5087,7 +5099,7 @@ def qualification_recovery_identity(
     root = Path(os.path.realpath(args.root))
     product = args.product.resolve(strict=True)
     candidate_sha, candidate_tree, candidate_origin = factory_ref_identity(
-        repo, "Factory recovery candidate",
+        repo, "Factory recovery candidate", TRANSACTION_ROOT,
     )
     if candidate_sha != args.sha or contract(TRANSACTION_ROOT) != "2.0.0":
         raise ReleaseError("Factory recovery candidate identity changed")
