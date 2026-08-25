@@ -345,6 +345,44 @@ class FactoryHumanCliTest(unittest.TestCase):
         self.assertEqual(self.selection.read_text(encoding="utf-8"), "qualification\n")
         self.assertEqual(stat.S_IMODE(self.selection.stat().st_mode), 0o600)
 
+    def test_use_ignores_malformed_targets_without_rewriting_them(self):
+        invalid = {
+            "BAD!.json": b'{"launcher":"sentinel-name"}\n',
+            "malformed.json": b"not-json\n",
+            "unsafe.json": b'{"launcher":"sentinel-mode","project":"alpha"}\n',
+        }
+        for name, raw in invalid.items():
+            path = self.targets / name
+            path.write_bytes(raw)
+            path.chmod(0o644 if name == "unsafe.json" else 0o600)
+        before = {
+            name: (path.read_bytes(), stat.S_IMODE(path.stat().st_mode))
+            for name in invalid for path in (self.targets / name,)
+        }
+
+        code, output, error = self.invoke(["use"], "1\n")
+        self.assertEqual((code, error), (0, ""))
+        self.assertIn("Ignored 3 unavailable or invalid target records", output)
+        self.assertIn("Nysa · Production", output)
+        self.assertIn("Nysa · Qualification", output)
+        self.assertNotIn("sentinel", output)
+        self.assertEqual(self.selection.read_text(encoding="utf-8"), "production\n")
+        self.assertEqual(
+            before,
+            {
+                name: (path.read_bytes(), stat.S_IMODE(path.stat().st_mode))
+                for name in invalid for path in (self.targets / name,)
+            },
+        )
+
+        for lane in self.launchers:
+            (self.targets / f"{lane}.json").unlink()
+        code, output, error = self.invoke(["use"])
+        self.assertEqual((code, output), (2, ""))
+        self.assertIn("no valid targets", error)
+        self.assertIn("Factory setup or qualification preparation", error)
+        self.assertNotIn("sentinel", error)
+
     def test_backlog_is_read_only_ranked_and_uses_the_selected_launcher(self):
         self.select("production")
         code, output, error = self.invoke(["backlog"])
@@ -396,6 +434,17 @@ class FactoryHumanCliTest(unittest.TestCase):
         self.assertIn("Impact: do not continue Factory mutations", error)
         self.assertIn(str(self.launchers["production"]), error)
         self.assertIn("alpha doctor --json", error)
+
+        with mock.patch.object(
+            CLI, "_invoke", side_effect=CLI.LauncherRefused("launcher_refused"),
+        ):
+            code, output, error = self.invoke(["doctor"])
+        self.assertEqual((code, output), (2, ""))
+        self.assertIn("Doctor could not produce a report", error)
+        self.assertIn("Impact: do not continue Factory mutations", error)
+        self.assertIn(str(self.launchers["production"]), error)
+        self.assertIn("alpha doctor --json", error)
+        self.assertNotIn("launcher_refused", error)
 
     def test_doctor_refuses_contradictions_and_redacts_malformed_values(self):
         self.select("production")

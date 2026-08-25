@@ -832,24 +832,30 @@ def _confirm(stdin, stdout) -> None:
 def _use(targets: Path, selection: Path, stdin, stdout, trusted: bool) -> None:
     _directory(targets, "target directory")
     choices = []
+    ignored = 0
     for path in sorted(targets.glob("*.json")):
         if not TARGET.fullmatch(path.stem):
-            raise CliError("target registry is unsafe")
+            ignored += 1
+            continue
         launcher = None
         try:
             launcher, project = _target(targets, path.stem, trusted)
             workflow = _workflow(launcher, project)
-        except CliError as error:
-            if "unavailable" in str(error) or isinstance(error, LauncherRefused):
-                continue
-            raise
+        except CliError:
+            ignored += 1
+            continue
         finally:
             if launcher is not None:
                 launcher.close()
         suffix = "Production" if workflow["mode"] == "production" else f"Qualification · {len(workflow['tickets'])} tickets"
         choices.append((path.stem, f"{workflow['label']} · {suffix}"))
     if not choices:
-        raise CliError("no available targets")
+        raise CliError(
+            "no valid targets; rerun the same supported Factory setup or "
+            "qualification preparation command"
+        )
+    if ignored:
+        stdout.write(f"Ignored {ignored} unavailable or invalid target records.\n\n")
     stdout.write("Choose a project:\n\n")
     for number, (_, label) in enumerate(choices, 1):
         stdout.write(f"{number}  {label}\n")
@@ -876,7 +882,16 @@ def _doctor(launcher: ExactLauncher, project: str, stdout) -> None:
     def diagnostic(value: object) -> str:
         return value if isinstance(value, str) and REASON.fullmatch(value) else "invalid"
 
-    value, code = _invoke(launcher, project, ["doctor", "--json"])
+    try:
+        value, code = _invoke(launcher, project, ["doctor", "--json"])
+    except LauncherRefused as error:
+        evidence = " ".join((
+            shlex.quote(str(launcher.path)), shlex.quote(project), "doctor --json",
+        ))
+        raise CliError(
+            "Doctor could not produce a report. Impact: do not continue "
+            f"Factory mutations. Evidence: {evidence}"
+        ) from error
     checks = value.get("checks")
     if (
         value.get("schema") != "nysa.software-factory.doctor/v2"
