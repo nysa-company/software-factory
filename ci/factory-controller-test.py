@@ -6653,7 +6653,7 @@ class FactoryControllerTest(unittest.TestCase):
             )],
         )
 
-    def test_qualification_cursor_failure_routes_to_direct_cli(self) -> None:
+    def test_qualification_provider_failure_routes_to_fallback(self) -> None:
         (self.product / "factory/QUALIFICATION.json").write_text(
             json.dumps({
                 "budget_usd": "100.000000",
@@ -6689,6 +6689,7 @@ class FactoryControllerTest(unittest.TestCase):
             "accounting_state=abandoned_conservative\n"
             "exit_status=9\n"
             "role_exit=provider_failed\n"
+            "terminal_reason_code=provider_spend_limit\n"
             f"transition_receipt_sha256={'b' * 64}\n",
             encoding="utf-8",
         )
@@ -6715,7 +6716,7 @@ class FactoryControllerTest(unittest.TestCase):
             (
                 "models", "fallback-auto", "--ticket", "T-112",
                 "--failed-run", "failed", "--workdir", claim["worktree"],
-                "--reason", "provider_unavailable", "--json",
+                "--reason", "credits_exhausted", "--json",
             ),
             calls,
         )
@@ -6732,6 +6733,28 @@ class FactoryControllerTest(unittest.TestCase):
                 isinstance(call, tuple) and call and call[0] == "release"
                 for call in calls
             )
+        )
+        self.assertFalse(controller.qualification_cohort_error.is_set())
+
+        calls.clear()
+        failed = self.product / "factory/runs/failed.meta"
+        failed.write_text(
+            failed.read_text().replace(
+                "route_id=cursor-gpt", "route_id=codex-gpt-5.6-sol",
+            ),
+            encoding="utf-8",
+        )
+        claim.update(
+            lease="a" * 64, receipt="b" * 64, role="planner", status="running",
+        )
+        self.assertTrue(controller.finish_pending_run(claim))
+        self.assertIn(
+            (
+                "models", "fallback-auto", "--ticket", "T-112",
+                "--failed-run", "failed", "--workdir", claim["worktree"],
+                "--reason", "credits_exhausted", "--json",
+            ),
+            calls,
         )
         self.assertFalse(controller.qualification_cohort_error.is_set())
 
@@ -11612,7 +11635,7 @@ class FactoryControllerTest(unittest.TestCase):
             CONTROL.read(passport_path)["factory_sha"], self.release.name
         )
 
-    def test_successor_upgrade_reopens_qualification_cursor_failure(self) -> None:
+    def test_successor_upgrade_reopens_qualification_native_failure(self) -> None:
         controller = CONTROL.Controller(self.args)
         controller.qualification = {
             "mode": "successor", "tickets": ["T-110"],
@@ -11640,7 +11663,7 @@ class FactoryControllerTest(unittest.TestCase):
             "phase=completed\n"
             "ticket=T-110\n"
             "role=builder\n"
-            "route_id=cursor-gpt\n"
+            "route_id=codex-gpt-5.6-terra\n"
             "accounting_state=abandoned_conservative\n"
             "exit_status=124\n"
             "role_exit=provider_failed\n"
@@ -15831,7 +15854,7 @@ class FactoryControllerTest(unittest.TestCase):
             "accounting_state": "abandoned_conservative",
             "exit_status": "9", "kit_sha": source, "role": "reviewer",
             "role_exit": "provider_failed", "role_head_before": input_head,
-            "route_id": "cursor-opus-v1", "run_id": "failed-reviewer",
+            "route_id": "claude-sonnet", "run_id": "failed-reviewer",
             "task_submitted": "1",
             "transition_receipt_sha256": receipt_digest,
         }
@@ -18085,7 +18108,7 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(calls, ["terminal-accounting", "finish"])
         self.assertEqual(parked, ["T-110"])
 
-    def test_qualification_spend_limit_latches_and_preserves_dirty_failure(
+    def test_qualification_spend_limit_falls_back_without_latching(
         self,
     ) -> None:
         controller = CONTROL.Controller(self.args)
@@ -18116,33 +18139,32 @@ class FactoryControllerTest(unittest.TestCase):
         controller.role_active = lambda _claim: False
         controller.terminal_for_receipt = lambda *_args: terminal
         controller.emit_attempt_terminal = lambda *_args: calls.append("terminal")
-        controller.cell_git = lambda *_args: subprocess.CompletedProcess(
-            [], 0, " M apps/web/tests/example.test.tsx\0", ""
+        controller.fallback_lock = threading.Lock()
+        controller.json_call = lambda *args, **_kwargs: (
+            calls.append(args) or {"failed_run_id": "spend-limit"}
         )
-        controller.passport = lambda *_args: (
-            (_ for _ in ()).throw(AssertionError("dirty failure checkpointed"))
-        )
-        controller.archive_emergency_admission = lambda *_args: None
+        controller.migrate_passport = lambda *_args: calls.append("passport")
         controller.save_claim = lambda *_args: calls.append("save")
-        controller.release_ticket_lease = lambda *_args: calls.append("release")
-        controller.passport_sha256 = lambda *_args: "c" * 64
         controller.event = (
             lambda name, _ticket, **details: calls.append((name, details))
         )
-        controller.park_claim = lambda *_args: calls.append("park") or False
-        controller.settle_recovery_attempt = lambda *_args: False
 
-        result = controller.reconcile_ticket_until_wait(claim)
+        self.assertTrue(controller.finish_pending_run(claim))
 
-        self.assertEqual(result, {"status": "blocked", "ticket": "T-110"})
-        self.assertTrue(controller.qualification_cohort_error.is_set())
-        self.assertEqual(claim["blocked_reason"], "role-failure")
-        self.assertIn("release", calls)
-        self.assertIn("park", calls)
-        blocked = next(item for item in calls if isinstance(item, tuple))
-        self.assertEqual(blocked[0], "role_blocked")
+        self.assertFalse(controller.qualification_cohort_error.is_set())
+        self.assertEqual(claim["status"], "claimed")
+        self.assertEqual(claim["receipt"], "")
+        self.assertIn("passport", calls)
         self.assertEqual(
-            blocked[1]["terminal_reason_code"], "provider_spend_limit"
+            next(
+                item for item in calls
+                if isinstance(item, tuple) and item[:2] == ("models", "fallback-auto")
+            ),
+            (
+                "models", "fallback-auto", "--ticket", "T-110",
+                "--failed-run", "spend-limit", "--workdir", claim["worktree"],
+                "--reason", "credits_exhausted", "--json",
+            ),
         )
 
     def scheduler_fixture(self, *tickets: str):

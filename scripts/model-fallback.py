@@ -552,6 +552,8 @@ def qualification_authority(journal_kit):
 
 
 def recover_applied(args, approval):
+    if approval.get("failed_run_id") != args.failed_run:
+        return None
     repo = Path(args.workdir)
     relative = f"factory/route-plans/{args.ticket}.json"
     path = repo / relative
@@ -872,15 +874,6 @@ def qualification_apply(args):
         qualification=authority,
     )
     failed = result["failed"]
-    if not failed.get("route_id", "").startswith("cursor-"):
-        raise FallbackError("qualification fallback requires a failed Cursor route")
-    expected_adapter = (
-        "claude-code"
-        if failed["role"] in {"spec-linter", "test-author", "reviewer"}
-        else "codex"
-    )
-    if result["resolution"]["selections"][failed["role"]]["adapter"] != expected_adapter:
-        raise FallbackError("qualification fallback did not resolve the approved direct CLI")
     transition_receipt = failed.get("transition_receipt_sha256", "")
     attempts = 0
     for path in (Path(args.factory_root) / "factory/runs").glob("*.meta"):

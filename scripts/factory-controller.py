@@ -180,6 +180,14 @@ def canonical(value: Any) -> str:
     return json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
 
 
+def submitted_provider_failure(terminal: dict[str, str] | None) -> bool:
+    return bool(
+        terminal is not None
+        and terminal.get("role_exit") == "provider_failed"
+        and terminal.get("task_submitted") == "1"
+    )
+
+
 def canonical_document(value: Any) -> bytes:
     return (canonical(value) + "\n").encode()
 
@@ -6809,9 +6817,7 @@ class Controller:
             or terminal.get("role") != role
             or terminal.get("role_head_before") != receipt.get("head_sha")
             or terminal.get("transition_receipt_sha256") != claim["receipt"]
-            or terminal.get("role_exit") != "provider_failed"
-            or terminal.get("task_submitted") != "1"
-            or not terminal.get("route_id", "").startswith("cursor-")
+            or not submitted_provider_failure(terminal)
             or passport.get("ticket") != claim["ticket"]
             or passport.get("branch") != claim["branch"]
             or passport.get("factory_sha") != self.release_path.name
@@ -8668,7 +8674,6 @@ class Controller:
                         or (
                             self.qualification
                             and terminal.get("role_exit") == "provider_failed"
-                            and terminal.get("route_id", "").startswith("cursor-")
                         )
                     )
                     else "blocked"
@@ -11300,9 +11305,7 @@ class Controller:
         self, claim: dict[str, Any], terminal: dict[str, str], edge: dict[str, Any],
     ) -> bool:
         if (
-            terminal.get("role_exit") != "provider_failed"
-            or terminal.get("task_submitted") != "1"
-            or not terminal.get("route_id", "").startswith("cursor-")
+            not submitted_provider_failure(terminal)
             or terminal.get("role") != claim.get("role")
             or edge.get("from_factory_sha") != terminal.get("kit_sha")
             or edge.get("from_head_sha") != terminal.get("role_head_before")
@@ -11466,9 +11469,7 @@ class Controller:
             if (
                 self.qualification
                 and terminal is not None
-                and terminal.get("task_submitted") == "1"
-                and terminal.get("role_exit") == "provider_failed"
-                and terminal.get("route_id", "").startswith("cursor-")
+                and submitted_provider_failure(terminal)
                 and not model_identity_success
             ):
                 self.ensure_lease(claim, "provider-fallback-recovery")
@@ -12071,17 +12072,6 @@ class Controller:
             self.save_claim(claim)
             return True
         self.emit_attempt_terminal(claim, terminal)
-        qualification_spend_limit = bool(
-            self.qualification
-            and terminal.get("accounting_state") in TERMINAL_ACCOUNTING
-            and terminal.get("go_issued") == "1"
-            and terminal.get("task_submitted") == "1"
-            and terminal.get("exit_status") != "0"
-            and terminal.get("role_exit") == "provider_failed"
-            and terminal.get("terminal_reason_code") == "provider_spend_limit"
-        )
-        if qualification_spend_limit:
-            self.latch_qualification_cohort_error()
         if self.repository_test:
             if (
                 claim.get("role") == "planner"
@@ -12135,9 +12125,7 @@ class Controller:
         )
         qualification_fallback = (
             self.qualification
-            and terminal.get("role_exit") == "provider_failed"
-            and terminal.get("task_submitted") == "1"
-            and terminal.get("route_id", "").startswith("cursor-")
+            and submitted_provider_failure(terminal)
         )
         if qualification_fallback and self.direct_model_identity_candidate(
             claim, terminal, claim["receipt"],
@@ -12181,26 +12169,15 @@ class Controller:
         ):
             self.latch_qualification_cohort_error()
         if not qualification_fallback:
-            dirty_spend_limit = False
-            if qualification_spend_limit:
-                status = self.cell_git(
-                    claim, "status", "--porcelain=v1", "-z",
+            if self.terminal_already_exported(claim, terminal):
+                self.migrate_passport(claim, publication)
+                self.event(
+                    "terminal_export_recovered", claim["ticket"],
+                    run_id=terminal.get("run_id"),
                 )
-                if status.returncode:
-                    raise ControllerError(
-                        "provider spend-limit cell status is unavailable"
-                    )
-                dirty_spend_limit = bool(status.stdout)
-            if not dirty_spend_limit:
-                if self.terminal_already_exported(claim, terminal):
-                    self.migrate_passport(claim, publication)
-                    self.event(
-                        "terminal_export_recovered", claim["ticket"],
-                        run_id=terminal.get("run_id"),
-                    )
-                else:
-                    self.passport(claim, publication)
-                self.archive_emergency_admission(claim, terminal)
+            else:
+                self.passport(claim, publication)
+            self.archive_emergency_admission(claim, terminal)
         if (
             terminal.get("accounting_state") in {"cancelled", "cancelled_conservative"}
             or terminal.get("role_exit") == "cancelled"
@@ -12222,13 +12199,19 @@ class Controller:
             return True
         if terminal_failed:
             if qualification_fallback:
+                fallback_reason = (
+                    "credits_exhausted"
+                    if terminal.get("terminal_reason_code")
+                    == "provider_spend_limit"
+                    else "provider_unavailable"
+                )
                 try:
                     with self.fallback_lock:
                         result = self.json_call(
                             "models", "fallback-auto", "--ticket", claim["ticket"],
                             "--failed-run", terminal["run_id"],
                             "--workdir", claim["worktree"],
-                            "--reason", "provider_unavailable", "--json",
+                            "--reason", fallback_reason, "--json",
                         )
                 except ControllerError as error:
                     match = re.search(
