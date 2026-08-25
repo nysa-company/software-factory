@@ -767,10 +767,14 @@ bash scripts/factory-kit.sh qualification resume \
   --approved-by <operator-id> --repair-sha <merged-successor>
 ```
 
-This keeps the original target plan and release authoritative, binds the repair
-helper once in the signed journal and completion receipt, and refuses a missing,
-changed, unsealed, or same-release helper. Do not use it without an existing
-authenticated in-progress journal.
+This keeps the original target plan and release authoritative and binds the
+repair helper in the signed journal and completion receipt. A different sealed
+repair helper may supersede a failed one only while live identity still exactly
+matches the pre-upgrade plan and the signed cursor has not advanced beyond
+`provider_cli_ready`; after environment mutation or completion, a changed
+helper refuses. Missing, unsealed, and same-release helpers also refuse. Initial
+repair and supersession require an existing authenticated in-progress journal;
+exact completion replay remains supported after journal cleanup.
 The old separate runtime-pin, provider-pin, environment `--upgrade`, and Doctor
 commands are recovery diagnostics only; do not use them as the normal migration
 procedure or hand-edit their authenticated state.
