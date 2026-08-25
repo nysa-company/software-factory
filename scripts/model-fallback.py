@@ -874,8 +874,7 @@ def qualification_apply(args):
         qualification=authority,
     )
     failed = result["failed"]
-    transition_receipt = failed.get("transition_receipt_sha256", "")
-    attempts = 0
+    role_attempts = []
     for path in (Path(args.factory_root) / "factory/runs").glob("*.meta"):
         if path.is_file() and not path.is_symlink():
             value = read_meta(path)
@@ -890,7 +889,32 @@ def qualification_apply(args):
             receipt = value.get("transition_receipt_sha256", "")
             if receipt and not re.fullmatch(r"[0-9a-f]{64}", receipt):
                 raise FallbackError("qualification fallback transition receipt is invalid")
-            attempts += receipt == transition_receipt
+            submitted = value.get("submitted_at_epoch_ns", "")
+            if submitted:
+                if not re.fullmatch(r"[1-9][0-9]{0,29}", submitted):
+                    raise FallbackError("qualification fallback attempt order is invalid")
+                order = int(submitted)
+            else:
+                try:
+                    started = dt.datetime.fromisoformat(
+                        value["started_at"].replace("Z", "+00:00")
+                    )
+                except (KeyError, ValueError) as error:
+                    raise FallbackError(
+                        "qualification fallback attempt order is invalid"
+                    ) from error
+                if started.tzinfo is None:
+                    raise FallbackError("qualification fallback attempt order is invalid")
+                order = int(started.timestamp() * 1_000_000_000)
+            role_attempts.append((order, value["run_id"], value))
+    role_attempts.sort(reverse=True)
+    if not role_attempts or role_attempts[0][1] != args.failed_run:
+        raise FallbackError("failed run is not the latest unique ticket attempt")
+    attempts = 0
+    for _order, _run_id, value in role_attempts:
+        if value.get("exit_status") == "0" and value.get("role_exit") == "ok":
+            break
+        attempts += 1
     if attempts != 1:
         raise FallbackError("qualification fallback is allowed only after the first role attempt")
     if authority is not None:

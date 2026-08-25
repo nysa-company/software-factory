@@ -10,7 +10,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Failed-attempt preview, replay, and historical committed-role checks carry only unchanged tracked baseline symlinks whose tree, index, and filesystem targets agree; every added, removed, changed, staged, or untracked symlink remains fail-closed.
 - A submitted Claude individual or organization-monthly spend-limit terminal is release-typed, fully accounted, and qualification-latched before another role launch; dirty role evidence stays blocked and unexported rather than becoming a secondary clean-cell controller error.
 - Any nonrecoverable role terminal in a fixed qualification cohort latches the same atomic launch boundary before the claim blocks or cancels; bounded invalid-output, prior-release launch-void, direct-model identity, and authenticated Cursor fallback recovery remain runnable, while already-admitted siblings only drain and account.
-- Qualification fallback and finish are ticket-independent within the sealed cohort: fallback attempts are scoped to one authenticated transition receipt, explicit v1 fallback migrates atomically under the same approval, and blocked siblings do not starve an independent typed wait or approval. Aggregate same-head retry accepts only the safe current or legacy Factory `ci` template grammar.
+- Qualification fallback and finish are ticket-independent within the sealed cohort: one candidate-scoped role attempt may fall back, but a replaced transition receipt cannot reopen that role before an intervening same-role success; explicit v1 fallback migrates atomically under the same approval, and blocked siblings do not starve an independent typed wait or approval. Aggregate same-head retry accepts only the safe current or legacy Factory `ci` template grammar.
 - Recognized GitHub/Git transport loss is a typed wait, never a cohort defect. Exact remote confirmation and receipt/passport-bound replay resume post-provider role and publication commits without another model call; a disconnect inside a submitted provider attempt remains terminal-accounted and is not transport-replayed.
 - Successor qualification can preserve an exact source-passport checkpoint or descendant only through the protected in-flight release authorization; v2 binds each ticket's authenticated current source after a partial batch, migration never deletes or rewrites ticket work, and prior failed roles reopen only across an exact signed route-only migration suffix. A merged pin-only continuation closes with source-release evidence while retaining the protected successor pin.
 - Isolated successor contract repair may use an older authenticated blocker only through its complete signed release suffix ending at the exact protected per-ticket source. Prior resume pairs remain immutable transition history and are accepted only as an ordered canonical sequence with one signed completed record per pair and one newest in-branch snapshot of the full sequence. Passport snapshots may omit ordinary descendant ticket commits, while Factory/base/route junctions remain exact. During or after prior-kit receipt migration, the driver admits its historical resume mismatch only while the exact blocked claim and transition digest bind that selected ticket and receipt; event observation order is not authority.
@@ -8037,7 +8037,7 @@ binding. A canonical request-only prefix resumes, while a receipt without its
 request fails closed. Recovery does not change the active release or
 qualification generation.
 
-## 2026-08-24 — Decision 593: Qualification recovery stays exact and independent
+## 2026-08-24 — Decision 593: Qualification recovery stays exact and independent (superseded by Decision 600)
 
 Category: Reliability
 
@@ -8133,3 +8133,13 @@ still refuses a superseded approval for the requested run. A successful
 spend-limit fallback does not poison the cohort and records the bounded reason
 as `credits_exhausted`. Ordinary operator receipts remain outside sealed
 qualification because their audit commit changes the immutable product head.
+
+## 2026-08-25 — Decision 600: Qualification fallback cannot oscillate
+
+Category: Reliability
+
+Automatic fallback is one opportunity per ticket, role, and frozen Factory
+candidate until an intervening successful same-role run starts a later
+authenticated role round. Reconciliation may replace transition receipts, but
+that replacement cannot reset the attempt boundary; exact failed-run replay
+remains idempotent and predecessor-candidate attempts stay outside the count.
