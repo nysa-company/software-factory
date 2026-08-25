@@ -1620,6 +1620,8 @@ PROVIDER_ACTIVE_ATTEMPTS=0
 PROVIDER_ACTIVE_TOKENS=0
 PROVIDER_UNKNOWN_WORKERS=0
 PROVIDER_LEGACY_INTERVALS=0
+PROVIDER_RUNTIME_REASON_CODE=""
+PROVIDER_STALE_GLOBAL_CURSOR_ACCOUNT_LEASES_JSON="[]"
 PROVIDER_CONCURRENCY_REQUIRED=false
 PROVIDER_CONCURRENCY_READY=false
 if [[ ( "$CONTRACT_VERSION" == "1.6.0" || "$CONTRACT_VERSION" == "1.7.0" ||
@@ -1691,17 +1693,22 @@ except Exception:
     PROVIDER_CLI_FIELDS="$("$PYTHON_BIN" -I -S - \
       "$PROVIDER_ACTIVATION_STATUS" "$FACTORY_PROVIDER_POLICY" \
       "$FACTORY_PROVIDER_DB" "$FACTORY_PROVIDER_ATTEMPT_ROOT" \
-      "$FACTORY_PROVIDER_APPLY_LOCK_ROOT" <<'PY' 2>/dev/null || true
+      "$FACTORY_PROVIDER_APPLY_LOCK_ROOT" \
+      "${FACTORY_CURSOR_ACCOUNT_DB:-}" "${FACTORY_KIT_TRUST_SCOPE:-}" \
+      <<'PY' 2>/dev/null || true
 import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import sqlite3
 import stat
+import subprocess
 import sys
 
 activation_status = json.loads(sys.argv[1])
-policy_path, database_path, attempt_root, apply_root = map(Path, sys.argv[2:])
+policy_path, database_path, attempt_root, apply_root = map(Path, sys.argv[2:6])
+account_database_raw, trust_scope = sys.argv[6:]
 
 def secure(path, *, directory=False, owner_only=False):
     info = path.lstat()
@@ -1735,15 +1742,146 @@ try:
         "SELECT count(*) FROM attempts WHERE state IN ('reserved','GO','submitted')"
     ).fetchone()[0]
     legacy = connection.execute("SELECT count(*) FROM legacy_intervals").fetchone()[0]
+    attempts = connection.execute(
+        """SELECT a.attempt_id,b.ticket_id,a.account_route,a.state,
+                  a.policy_sha256
+             FROM attempts a JOIN attempt_budgets b USING(attempt_id)
+            ORDER BY a.attempt_id"""
+    ).fetchall()
 finally:
     connection.close()
+
+stale_leases = []
+if attempts and account_database_raw and trust_scope == "qualification-candidate":
+    account_database = Path(account_database_raw)
+    if account_database.exists() or account_database.is_symlink():
+        secure(account_database, owner_only=True)
+        account_connection = sqlite3.connect(
+            "file:" + str(account_database) + "?mode=ro", uri=True
+        )
+        try:
+            account_connection.execute("PRAGMA query_only=ON")
+            if account_connection.execute("PRAGMA application_id").fetchone()[0] != 0x4E594341:
+                raise SystemExit(1)
+            if account_connection.execute("PRAGMA user_version").fetchone()[0] != 1:
+                raise SystemExit(1)
+            if account_connection.execute(
+                "SELECT value FROM metadata WHERE key='schema'"
+            ).fetchone() != ("factory-cursor-account-admission/v1",):
+                raise SystemExit(1)
+            matches = []
+            for (
+                attempt_id, ticket, account_route, provider_state,
+                attempt_policy,
+            ) in attempts:
+                lease_id = attempt_id + "-account"
+                if (not all(
+                    isinstance(value, str)
+                    and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:@-]{0,199}", value)
+                    for value in (attempt_id, ticket, account_route, lease_id)
+                ) or not re.fullmatch(r"T-[1-9][0-9]*", ticket)):
+                    raise SystemExit(1)
+                row = account_connection.execute(
+                    """SELECT owner_pid,owner_pgid,owner_start,
+                              runtime_pid,runtime_pgid,runtime_start,policy_sha256,
+                              account_route,trust_scope
+                         FROM account_leases
+                        WHERE lease_id=?""",
+                    (lease_id,),
+                ).fetchone()
+                if row is not None:
+                    matches.append((
+                        attempt_id, ticket, lease_id, provider_state,
+                        attempt_policy, row,
+                    ))
+        finally:
+            account_connection.close()
+
+        if matches:
+            try:
+                result = subprocess.run(
+                    ["ps", "-axo", "pid=,pgid=,lstart="],
+                    text=True, capture_output=True, check=False, timeout=5,
+                )
+            except (OSError, subprocess.SubprocessError):
+                raise SystemExit(1)
+            if result.returncode:
+                raise SystemExit(1)
+            snapshot = {}
+            for line in result.stdout.splitlines():
+                fields = line.split(None, 2)
+                if len(fields) == 3 and fields[0].isdigit() and fields[1].isdigit():
+                    snapshot[int(fields[0])] = (
+                        int(fields[1]), " ".join(fields[2].split())
+                    )
+
+            def identity_state(pid, pgid, started):
+                if (not isinstance(pid, int) or not isinstance(pgid, int)
+                        or not isinstance(started, str) or not started
+                        or len(started) > 199 or "\n" in started or "\r" in started):
+                    raise SystemExit(1)
+                observed = snapshot.get(pid)
+                if observed is None or observed != (pgid, started):
+                    return "dead"
+                return "alive"
+
+            for (
+                attempt_id, ticket, lease_id, provider_state, attempt_policy,
+                row,
+            ) in matches:
+                (
+                    owner_pid, owner_pgid, owner_start, runtime_pid,
+                    runtime_pgid, runtime_start, lease_policy, lease_route,
+                    lease_scope,
+                ) = row
+                stale = identity_state(owner_pid, owner_pgid, owner_start) == "dead"
+                if runtime_pid is not None:
+                    stale = stale and (
+                        identity_state(runtime_pid, runtime_pgid, runtime_start) == "dead"
+                        and not any(item[0] == runtime_pgid for item in snapshot.values())
+                    )
+                if stale:
+                    recovery_reason = None
+                    if lease_route != account_route:
+                        recovery_reason = "account_route_mismatch"
+                    elif lease_scope != trust_scope:
+                        recovery_reason = "trust_scope_mismatch"
+                    elif provider_state not in {"reserved", "GO", "submitted", "terminal"}:
+                        recovery_reason = "unsupported_provider_state"
+                    elif provider_state == "terminal":
+                        recovery_reason = "recovery_evidence_required"
+                    elif not all(
+                        isinstance(value, str)
+                        and re.fullmatch(r"[0-9a-f]{64}", value)
+                        for value in (attempt_policy, lease_policy)
+                    ):
+                        recovery_reason = "policy_unavailable"
+                    elif lease_policy != attempt_policy:
+                        recovery_reason = "policy_mismatch"
+                    stale_leases.append({
+                        "attempt_id": attempt_id,
+                        "lease_id": lease_id,
+                        "provider_state": provider_state,
+                        "recovery_command": (
+                            "qualification recover-plan"
+                            if recovery_reason is None else None
+                        ),
+                        "recovery_reason": recovery_reason,
+                        "ticket": ticket,
+                    })
 print(active)
 print(legacy)
+print(json.dumps(stale_leases, sort_keys=True, separators=(",", ":")))
 PY
 )"
     if [[ -n "$PROVIDER_CLI_FIELDS" ]]; then
       PROVIDER_ACTIVE_ATTEMPTS="$(printf '%s\n' "$PROVIDER_CLI_FIELDS" | awk 'NR==1')"
       PROVIDER_LEGACY_INTERVALS="$(printf '%s\n' "$PROVIDER_CLI_FIELDS" | awk 'NR==2')"
+      PROVIDER_STALE_GLOBAL_CURSOR_ACCOUNT_LEASES_JSON="$(printf '%s\n' "$PROVIDER_CLI_FIELDS" | awk 'NR==3')"
+      if [[ "$PROVIDER_STALE_GLOBAL_CURSOR_ACCOUNT_LEASES_JSON" != "[]" ]]; then
+        PROVIDER_RUNTIME_STATUS="error"
+        PROVIDER_RUNTIME_REASON_CODE="stale_global_cursor_account_lease"
+      fi
     else
       PROVIDER_RUNTIME_STATUS="error"
     fi
@@ -1815,8 +1953,9 @@ export MAX_CONCURRENT_TICKETS DISPATCH_LEASES STALE_DISPATCH_LEASES MALFORMED_DI
 export CLI_STATUS CLI_FILE
 export CREDENTIAL_STATUS GH_AUTH_READY
 export PROVIDER_RUNTIME_STATUS PROVIDER_ACTIVATED PROVIDER_ACTIVE_ATTEMPTS
-export PROVIDER_EXECUTION_MODE
+export PROVIDER_EXECUTION_MODE PROVIDER_RUNTIME_REASON_CODE
 export PROVIDER_ACTIVE_TOKENS PROVIDER_UNKNOWN_WORKERS PROVIDER_LEGACY_INTERVALS
+export PROVIDER_STALE_GLOBAL_CURSOR_ACCOUNT_LEASES_JSON
 export PROVIDER_CONCURRENCY_REQUIRED PROVIDER_CONCURRENCY_READY
 export CONTRACT_RESUME_STATUS CONTRACT_RESUME_FILE OVERALL_STATUS RUN_FILE
 export TRANSITION_RECEIPT_STATUS TRANSITION_RECEIPT_FILE
@@ -1999,6 +2138,7 @@ document = {
         },
         "isolated_provider": {
             "status": os.environ["PROVIDER_RUNTIME_STATUS"],
+            "reason_code": optional("PROVIDER_RUNTIME_REASON_CODE"),
             "activated": boolean("PROVIDER_ACTIVATED"),
             "concurrency_required": boolean("PROVIDER_CONCURRENCY_REQUIRED"),
             "concurrency_ready": boolean("PROVIDER_CONCURRENCY_READY"),
@@ -2007,6 +2147,9 @@ document = {
             "active_tokens": number("PROVIDER_ACTIVE_TOKENS"),
             "unknown_workers": number("PROVIDER_UNKNOWN_WORKERS"),
             "legacy_intervals": number("PROVIDER_LEGACY_INTERVALS"),
+            "stale_global_cursor_account_leases": json.loads(
+                os.environ["PROVIDER_STALE_GLOBAL_CURSOR_ACCOUNT_LEASES_JSON"]
+            ),
         },
     },
 }
@@ -2028,7 +2171,7 @@ else
   echo "Qualification ticket readiness [$QUALIFICATION_TICKET_READINESS_STATUS]: reason=${QUALIFICATION_TICKET_READINESS_REASON_CODE:-none}"
   echo "Qualification identity [$QUALIFICATION_IDENTITY_STATUS]: reason=${QUALIFICATION_IDENTITY_REASON_CODE:-none}"
   echo "Credentials [$CREDENTIAL_STATUS]: github_authenticated=$GH_AUTH_READY"
-  echo "Isolated provider [$PROVIDER_RUNTIME_STATUS]: activated=$PROVIDER_ACTIVATED concurrency_required=$PROVIDER_CONCURRENCY_REQUIRED concurrency_ready=$PROVIDER_CONCURRENCY_READY mode=${PROVIDER_EXECUTION_MODE:-none} attempts=$PROVIDER_ACTIVE_ATTEMPTS tokens=$PROVIDER_ACTIVE_TOKENS unknown_workers=$PROVIDER_UNKNOWN_WORKERS legacy=$PROVIDER_LEGACY_INTERVALS"
+  echo "Isolated provider [$PROVIDER_RUNTIME_STATUS]: reason=${PROVIDER_RUNTIME_REASON_CODE:-none} activated=$PROVIDER_ACTIVATED concurrency_required=$PROVIDER_CONCURRENCY_REQUIRED concurrency_ready=$PROVIDER_CONCURRENCY_READY mode=${PROVIDER_EXECUTION_MODE:-none} attempts=$PROVIDER_ACTIVE_ATTEMPTS tokens=$PROVIDER_ACTIVE_TOKENS unknown_workers=$PROVIDER_UNKNOWN_WORKERS legacy=$PROVIDER_LEGACY_INTERVALS stale_global_cursor_account_leases=$PROVIDER_STALE_GLOBAL_CURSOR_ACCOUNT_LEASES_JSON"
   echo "Contract resume [$CONTRACT_RESUME_STATUS]: incidents=$("$PYTHON_BIN" -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$CONTRACT_RESUME_FILE")"
   echo "Transition receipts [$TRANSITION_RECEIPT_STATUS]: incidents=$("$PYTHON_BIN" -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$TRANSITION_RECEIPT_FILE")"
   echo "Authenticated artifacts [$AUTHENTICATED_ARTIFACT_STATUS]: reason=${AUTHENTICATED_ARTIFACT_REASON_CODE:-none}"

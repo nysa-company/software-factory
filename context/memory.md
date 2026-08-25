@@ -31,6 +31,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Disjoint protected sibling refreshes recognize exact sibling Ready audit receipts and retain existing Reviewer/Narrator evidence. Done reuses exact approved-head checks only across a tree-identical authenticated merge with unchanged protected check policy; every mismatch or unavailable head result falls back to merge-commit evidence.
 - Fresh isolated preparation completes a sealed provider-free prime before returning: the exact cohort is claimed, batch-pinned, and advanced to unconsumed Planner receipts before the existing restart boundary. Replay first authenticates the exact publication and controller prefix, then remains idempotent only while provider accounting is pristine and every receipt remains exact and unconsumed; fresh Doctor checks selected-ticket readiness concurrently in deterministic order, and an exact unchanged primed Planner receipt skips only the duplicate controller preflight while launcher admission still consumes and revalidates it. Fresh three-ticket reduction requires replay-stable activation, Planner-submission, final-Narrator, and Done boundaries, reports all four latency observations, and enforces 240-second activation and Planner plus 900-second cohort wall ceilings; per-ticket Narrator timing is report-only because cohort closeout is sibling-coupled. The ordinary one-ticket profile also enforces the 480-second final Narrator-to-Done wall ceiling.
 - Targeted cancellation reconciles provider attempts through the launcher's validated `FACTORY_PROVIDER_DB`; only direct development lanes without that binding use their existing lane-local database. Missing, unsafe, or foreign provider state fails before stale manifest or claim cleanup. An admitted attempt with a durable recovery record writes terminal intent before coordinator mutation; restart adopts only an exact matching result and charge, while post-GO conservative cancellation retains the full reservation exactly once.
+- Qualification successor recovery binds one exact dead matching global Cursor account row or its absence. Manifest-backed recovery completes unchanged nested cancellation before releasing that row and never touches dispatch resources. Provider-only pre-GO recovery releases the row first, then uses a restart-safe cleanup journal to remove only its selected expired dispatch lease and exact safe empty launch-lock inode. Both collapse completed outer state into the durable receipt.
 - **Contract rules below in Operating contract are authoritative**; this summary is only what the session hook can inject.
 
 ## Operating contract
@@ -8157,3 +8158,25 @@ and successor-recovery transactions may CAS-terminalize it once at zero cost.
 Qualification accepts that extra attempt only with its canonical request,
 receipt, initial snapshot, terminal row, source product, and release identity;
 every live, submitted, charged, foreign, partial, or ambiguous sibling refuses.
+
+## 2026-08-25 — Qualification recovery reclaims its exact stale launch boundary
+
+Category: System change
+
+The existing approved successor-recovery transaction binds and CAS-removes only
+its selected expired dispatch lease and unchanged safe empty `.launch.lock`.
+Controller, admission, and transaction-owned dispatch locking fence cleanup;
+interrupted phases converge through authenticated state, while terminal replay
+retains only the outer receipt and leaves sibling leases untouched.
+
+## 2026-08-25 — Decision 602: Successor recovery owns dead Cursor admission
+
+Category: Reliability
+
+The provider coordinator is the sole writer for targeted global Cursor account
+recovery. Read-only preview binds the exact database identity and full matching
+lease row; apply refreshes liveness, CAS-deletes only that row, preserves start
+history and sibling leases, and normalizes first apply and replay identically.
+Direct attempt cancellation still refuses any account lease. Only the existing
+approved successor-recovery transaction may release the bound dead row: before
+provider-only cancellation, or after manifest-backed cancellation converges.

@@ -550,19 +550,23 @@ class AttemptCancellationTest(unittest.TestCase):
             "FACTORY_PROVIDER_PRODUCT_ID": f"relay-proof:{release}",
             "FACTORY_RELEASE_SHA": release,
         }
-        with mock.patch.dict(os.environ, environment, clear=False), \
-                self.assertRaisesRegex(CANCEL.CancelError, "account lease"):
-            CANCEL.calculate(
+        with mock.patch.dict(os.environ, environment, clear=False):
+            plan = CANCEL.calculate(
                 self.root, "T-1", attempt_id, "operator_requested", None,
             )
+            with self.assertRaisesRegex(CANCEL.CancelError, "account lease"):
+                CANCEL.apply_plan(self.root, plan, 1)
+        self.assertEqual(
+            self.provider_command(
+                database, "status", "--attempt-id", attempt_id,
+            )["attempts"][0]["state"],
+            "reserved",
+        )
         released = self.provider_command(
             database, "--account-db", str(account_database), "account-release", *owner,
         )
         self.assertTrue(released["released"])
         with mock.patch.dict(os.environ, environment, clear=False):
-            plan = CANCEL.calculate(
-                self.root, "T-1", attempt_id, "operator_requested", None,
-            )
             CANCEL.apply_plan(self.root, plan, 1)
         self.assertEqual(
             self.provider_command(

@@ -23,6 +23,7 @@ POLICY_SCHEMA = "factory-provider-concurrency-policy/v1"
 OUTPUT_SCHEMA = "factory-provider-coordinator/v1"
 ACCOUNT_SCHEMA = "factory-cursor-account-admission/v1"
 ACCOUNT_OUTPUT_SCHEMA = "factory-cursor-account-admission/v1"
+ACCOUNT_RECOVERY_SCHEMA = "factory-cursor-account-recovery/v1"
 APPLICATION_ID = 0x4E595343
 ACCOUNT_APPLICATION_ID = 0x4E594341
 ACTIVE_STATES = ("reserved", "GO", "submitted")
@@ -41,6 +42,9 @@ ACCOUNT_COMMANDS = frozenset(
         "account-acquire", "account-bind-runtime", "account-validate",
         "account-release", "account-status",
     )
+)
+ACCOUNT_RECOVERY_COMMANDS = frozenset(
+    ("account-recover-preview", "account-recover-apply")
 )
 
 
@@ -480,6 +484,72 @@ def account_database(path):
     finally:
         connection.close()
         secure_regular(path, "account admission database", owner_only=True)
+
+
+def account_database_identity(path, connection=None):
+    if not path.is_absolute():
+        raise CoordinatorError("account admission database path must be absolute")
+    try:
+        info = secure_regular(path, "account admission database", owner_only=True)
+    except CoordinatorError:
+        if path.exists() or path.is_symlink():
+            raise
+        secure_owner_directory(path.parent, "account admission database directory")
+        return {"path": str(path), "state": "absent"}
+    if connection is not None:
+        stored = connection.execute(
+            "SELECT value FROM metadata WHERE key='schema'"
+        ).fetchone()
+        if (
+            connection.execute("PRAGMA application_id").fetchone()[0]
+            != ACCOUNT_APPLICATION_ID
+            or connection.execute("PRAGMA user_version").fetchone()[0] != 1
+            or stored is None
+            or stored[0] != ACCOUNT_SCHEMA
+        ):
+            raise CoordinatorError(
+                "account admission database identity is unsupported"
+            )
+    return {
+        "application_id": ACCOUNT_APPLICATION_ID,
+        "device": info.st_dev,
+        "inode": info.st_ino,
+        "link_count": info.st_nlink,
+        "mode": stat.S_IMODE(info.st_mode),
+        "owner_uid": info.st_uid,
+        "path": str(path),
+        "schema": ACCOUNT_SCHEMA,
+        "state": "present",
+        "user_version": 1,
+    }
+
+
+@contextmanager
+def existing_account_database(path, *, writable):
+    identity = account_database_identity(path)
+    if identity["state"] == "absent":
+        yield None, identity
+        return
+    mode = "rw" if writable else "ro"
+    connection = sqlite3.connect(
+        f"file:{path}?mode={mode}", uri=True, timeout=10, isolation_level=None,
+    )
+    connection.row_factory = sqlite3.Row
+    try:
+        connection.execute("PRAGMA trusted_schema=OFF")
+        if writable:
+            connection.execute("PRAGMA journal_mode=DELETE")
+            connection.execute("PRAGMA synchronous=FULL")
+        else:
+            connection.execute("PRAGMA query_only=ON")
+        current = account_database_identity(path, connection)
+        if current != identity:
+            raise CoordinatorError("account admission database changed while opening")
+        yield connection, identity
+    finally:
+        connection.close()
+        if account_database_identity(path) != identity:
+            raise CoordinatorError("account admission database changed while open")
 
 
 def row_result(row):
@@ -1211,6 +1281,20 @@ def process_group_state(pgid, snapshot):
     return "alive" if any(value[0] == pgid for value in snapshot.values()) else "dead"
 
 
+def account_lease_is_stale(row, snapshot):
+    if owner_state(
+        row["owner_pid"], row["owner_pgid"], row["owner_start"], snapshot
+    ) != "dead":
+        return False
+    return row["runtime_pid"] is None or (
+        owner_state(
+            row["runtime_pid"], row["runtime_pgid"],
+            row["runtime_start"], snapshot,
+        ) == "dead"
+        and process_group_state(row["runtime_pgid"], snapshot) == "dead"
+    )
+
+
 def account_stale_candidates(connection, snapshot=None):
     if connection.in_transaction:
         raise CoordinatorError(
@@ -1224,21 +1308,8 @@ def account_stale_candidates(connection, snapshot=None):
                   runtime_pid,runtime_pgid,runtime_start
            FROM account_leases"""
     ).fetchall():
-        state = owner_state(
-            row["owner_pid"], row["owner_pgid"], row["owner_start"], snapshot
-        )
-        if state != "dead":
+        if not account_lease_is_stale(row, snapshot):
             continue
-        if row["runtime_pid"] is not None:
-            runtime_state = owner_state(
-                row["runtime_pid"], row["runtime_pgid"], row["runtime_start"],
-                snapshot,
-            )
-            if (
-                runtime_state != "dead"
-                or process_group_state(row["runtime_pgid"], snapshot) != "dead"
-            ):
-                continue
         candidates[row["lease_id"]] = (
             row["owner_pid"], row["owner_pgid"], row["owner_start"],
             row["runtime_pid"], row["runtime_pgid"], row["runtime_start"],
@@ -1284,6 +1355,166 @@ def account_lease_result(row):
         "trust_scope": row["trust_scope"],
         "window_seconds": row["window_seconds"],
     }
+
+
+def account_recovery_result(database_sha256, lease_id, lease_sha256):
+    return {
+        "database_sha256": database_sha256,
+        "lease_id": lease_id,
+        "lease_sha256": lease_sha256,
+        "schema": ACCOUNT_RECOVERY_SCHEMA,
+        "status": "absent",
+    }
+
+
+def qualification_recovery_lock_held(path_value, descriptor_value):
+    path = Path(path_value)
+    try:
+        descriptor = int(descriptor_value)
+        held = os.fstat(descriptor)
+        current = os.stat(path, follow_symlinks=False)
+    except (OSError, TypeError, ValueError) as exc:
+        raise CoordinatorError(
+            "qualification recovery lock capability is invalid"
+        ) from exc
+    if (
+        not path.is_absolute() or not stat.S_ISREG(held.st_mode)
+        or held.st_uid != os.geteuid() or held.st_nlink != 1
+        or stat.S_IMODE(held.st_mode) & 0o077
+        or (held.st_dev, held.st_ino) != (current.st_dev, current.st_ino)
+    ):
+        raise CoordinatorError("qualification recovery lock capability is unsafe")
+    probe = os.open(path, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        if (os.fstat(probe).st_dev, os.fstat(probe).st_ino) != (
+            held.st_dev, held.st_ino,
+        ):
+            raise CoordinatorError("qualification recovery lock changed")
+        try:
+            fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return
+        fcntl.flock(probe, fcntl.LOCK_UN)
+        raise CoordinatorError("qualification recovery lock is not held")
+    finally:
+        os.close(probe)
+
+
+def require_qualification_recovery_capability():
+    names = (
+        "FACTORY_CROSS_RELEASE_SOURCE_SHA",
+        "FACTORY_CROSS_RELEASE_PRODUCT_ID",
+        "FACTORY_DISPATCH_ADMISSION_LOCK",
+        "FACTORY_DISPATCH_ADMISSION_LOCK_FD",
+        "FACTORY_QUALIFICATION_CONTROLLER_LOCK",
+        "FACTORY_QUALIFICATION_CONTROLLER_LOCK_FD",
+        "FACTORY_KIT_TRUST_SCOPE",
+    )
+    values = {name: os.environ.get(name, "") for name in names}
+    source = values["FACTORY_CROSS_RELEASE_SOURCE_SHA"]
+    if (
+        not all(values.values())
+        or not re.fullmatch(r"[0-9a-f]{40}", source)
+        or not validate_id(
+            values["FACTORY_CROSS_RELEASE_PRODUCT_ID"], "recovery product_id",
+        ).endswith(f":{source}")
+        or values["FACTORY_KIT_TRUST_SCOPE"] != "qualification-candidate"
+    ):
+        raise CoordinatorError("qualification recovery capability is invalid")
+    qualification_recovery_lock_held(
+        values["FACTORY_DISPATCH_ADMISSION_LOCK"],
+        values["FACTORY_DISPATCH_ADMISSION_LOCK_FD"],
+    )
+    qualification_recovery_lock_held(
+        values["FACTORY_QUALIFICATION_CONTROLLER_LOCK"],
+        values["FACTORY_QUALIFICATION_CONTROLLER_LOCK_FD"],
+    )
+
+
+def account_recover_preview_command(path, args):
+    lease_id = validate_id(args.lease_id, "lease_id")
+    with existing_account_database(path, writable=False) as (connection, database):
+        database_sha256 = digest(database)
+        row = None if connection is None else connection.execute(
+            "SELECT * FROM account_leases WHERE lease_id=?", (lease_id,)
+        ).fetchone()
+        if row is None:
+            lease_sha256 = digest({"lease_id": lease_id, "state": "absent"})
+            return {
+                "database": database,
+                "database_sha256": database_sha256,
+                "lease": None,
+                "lease_sha256": lease_sha256,
+                "schema": ACCOUNT_RECOVERY_SCHEMA,
+                "status": "absent",
+            }
+        snapshot = process_snapshot()
+        if snapshot is None:
+            raise CoordinatorError("account recovery liveness is unavailable")
+        if not account_lease_is_stale(row, snapshot):
+            raise CoordinatorError("account recovery lease is still live")
+        lease = dict(row)
+        return {
+            "database": database,
+            "database_sha256": database_sha256,
+            "lease": lease,
+            "lease_sha256": digest(lease),
+            "schema": ACCOUNT_RECOVERY_SCHEMA,
+            "status": "planned",
+        }
+
+
+def account_recover_apply_command(path, args):
+    require_qualification_recovery_capability()
+    lease_id = validate_id(args.lease_id, "lease_id")
+    expected_database = args.expected_database_sha256
+    expected_lease = args.expected_lease_sha256
+    if not re.fullmatch(r"[0-9a-f]{64}", expected_database):
+        raise CoordinatorError("account recovery database digest is invalid")
+    if not re.fullmatch(r"[0-9a-f]{64}", expected_lease):
+        raise CoordinatorError("account recovery lease digest is invalid")
+    with existing_account_database(path, writable=True) as (connection, database):
+        if digest(database) != expected_database:
+            raise CoordinatorError("account recovery database identity changed")
+        if connection is None:
+            return account_recovery_result(
+                expected_database, lease_id, expected_lease,
+            )
+        row = connection.execute(
+            "SELECT * FROM account_leases WHERE lease_id=?", (lease_id,)
+        ).fetchone()
+        if row is None:
+            return account_recovery_result(
+                expected_database, lease_id, expected_lease,
+            )
+        if row["trust_scope"] != "qualification-candidate":
+            raise CoordinatorError("account recovery lease scope is invalid")
+        if digest(dict(row)) != expected_lease:
+            raise CoordinatorError("account recovery lease identity changed")
+        snapshot = process_snapshot()
+        if snapshot is None:
+            raise CoordinatorError("account recovery liveness is unavailable")
+        if not account_lease_is_stale(row, snapshot):
+            raise CoordinatorError("account recovery lease is still live")
+        expected_identity = tuple(row)
+        if account_database_identity(path, connection) != database:
+            raise CoordinatorError("account recovery database identity changed")
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            current = connection.execute(
+                "SELECT * FROM account_leases WHERE lease_id=?", (lease_id,)
+            ).fetchone()
+            if current is not None and tuple(current) != expected_identity:
+                raise CoordinatorError("account recovery lease changed before release")
+            if current is not None:
+                connection.execute(
+                    "DELETE FROM account_leases WHERE lease_id=?", (lease_id,)
+                )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+    return account_recovery_result(expected_database, lease_id, expected_lease)
 
 
 def account_acquire_command(connection, args):
@@ -1993,20 +2224,37 @@ def parser():
 
     account_status = commands.add_parser("account-status")
     account_status.set_defaults(handler=account_status_command)
+
+    account_recover_preview = commands.add_parser("account-recover-preview")
+    account_recover_preview.add_argument("--lease-id", required=True)
+    account_recover_preview.set_defaults(handler=account_recover_preview_command)
+
+    account_recover_apply = commands.add_parser("account-recover-apply")
+    account_recover_apply.add_argument("--lease-id", required=True)
+    account_recover_apply.add_argument("--expected-database-sha256", required=True)
+    account_recover_apply.add_argument("--expected-lease-sha256", required=True)
+    account_recover_apply.set_defaults(handler=account_recover_apply_command)
     return result
 
 
 def main():
     try:
         args = parser().parse_args()
-        if args.command in ACCOUNT_COMMANDS:
+        if args.command in ACCOUNT_RECOVERY_COMMANDS:
             if args.account_db is None:
                 raise CoordinatorError("account admission database is required")
-            selected_database = account_database(Path(args.account_db))
+            output = args.handler(Path(args.account_db), args)
         else:
-            selected_database = database(Path(args.db))
-        with selected_database as connection:
-            output = args.handler(connection, args)
+            if args.command in ACCOUNT_COMMANDS:
+                if args.account_db is None:
+                    raise CoordinatorError(
+                        "account admission database is required"
+                    )
+                selected_database = account_database(Path(args.account_db))
+            else:
+                selected_database = database(Path(args.db))
+            with selected_database as connection:
+                output = args.handler(connection, args)
         print(canonical(output))
     except (
         CoordinatorError, OSError, sqlite3.Error, UnicodeError,
