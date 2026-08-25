@@ -31,7 +31,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Disjoint protected sibling refreshes recognize exact sibling Ready audit receipts and retain existing Reviewer/Narrator evidence. Done reuses exact approved-head checks only across a tree-identical authenticated merge with unchanged protected check policy; every mismatch or unavailable head result falls back to merge-commit evidence.
 - Fresh isolated preparation completes a sealed provider-free prime before returning: the exact cohort is claimed, batch-pinned, and advanced to unconsumed Planner receipts before the existing restart boundary. Replay first authenticates the exact publication and controller prefix, then remains idempotent only while provider accounting is pristine and every receipt remains exact and unconsumed; fresh Doctor checks selected-ticket readiness concurrently in deterministic order, and an exact unchanged primed Planner receipt skips only the duplicate controller preflight while launcher admission still consumes and revalidates it. Fresh three-ticket reduction requires replay-stable activation, Planner-submission, final-Narrator, and Done boundaries, reports all four latency observations, and enforces 240-second activation and Planner plus 900-second cohort wall ceilings; per-ticket Narrator timing is report-only because cohort closeout is sibling-coupled. The ordinary one-ticket profile also enforces the 480-second final Narrator-to-Done wall ceiling.
 - Targeted cancellation reconciles provider attempts through the launcher's validated `FACTORY_PROVIDER_DB`; only direct development lanes without that binding use their existing lane-local database. Missing, unsafe, or foreign provider state fails before stale manifest or claim cleanup. An admitted attempt with a durable recovery record writes terminal intent before coordinator mutation; restart adopts only an exact matching result and charge, while post-GO conservative cancellation retains the full reservation exactly once.
-- Qualification successor recovery binds one exact dead matching global Cursor account row or its absence. Manifest-backed recovery completes unchanged nested cancellation before releasing that row and never touches dispatch resources. Provider-only pre-GO recovery releases the row first, then uses a restart-safe cleanup journal to remove only its selected expired dispatch lease and exact safe empty launch-lock inode. Both collapse completed outer state into the durable receipt.
+- Qualification successor recovery binds one exact dead matching global Cursor account row or its absence. Manifest-backed recovery completes unchanged nested cancellation before releasing that row and never touches dispatch resources. Provider-only pre-GO recovery may additionally bind its exact dead authority-ledger claim, releases the account row, then quarantines only that claim inside the approved recovery before removing its selected expired dispatch lease and exact safe empty launch-lock inode. Doctor, controller, and qualification drain checks resolve claims beside the authenticated runtime ledger. Completed replay retains only durable receipts.
 - **Contract rules below in Operating contract are authoritative**; this summary is only what the session hook can inject.
 
 ## Operating contract
@@ -8180,3 +8180,16 @@ history and sibling leases, and normalizes first apply and replay identically.
 Direct attempt cancellation still refuses any account lease. Only the existing
 approved successor-recovery transaction may release the bound dead row: before
 provider-only cancellation, or after manifest-backed cancellation converges.
+
+## 2026-08-25 — Decision 603: Qualification claims follow the authenticated ledger
+
+Category: Reliability
+
+Doctor, controller reconciliation, upgrade/drain validation, cancellation, and
+successor recovery resolve `.active-runs` beside the authenticated runtime
+ledger, not a product-local approximation. A provider-only pre-GO recovery may
+bind one exact dead claim whose owner PID matches that attempt, but only the
+approved outer recovery under the controller/admission capability boundary can
+quarantine and remove it.
+The deterministic quarantine survives interruption without exposing the owner
+token; live, changed, malformed, sibling, or standalone cleanup remains closed.

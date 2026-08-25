@@ -958,7 +958,7 @@ def unlock_dispatch_boundaries(
 
 def provider_drained(lane: dict[str, Any]) -> None:
     product = lane["product"]
-    active_runs = product / "factory/.active-runs"
+    active_runs = Path(lane["active"]["runtime_ledger_path"]).parent / ".active-runs"
     runs = product / "factory/runs"
     for path in (active_runs, runs):
         if path.exists() or path.is_symlink():
@@ -4475,7 +4475,7 @@ def validate_upgrade_source(
     )
     validate_operator_map(read(operator_map_path))
     validate_runtime_ledger(runtime_ledger_path)
-    if any((product / "factory/.active-runs").glob("*")) or any(
+    if any((runtime_ledger_path.parent / ".active-runs").glob("*")) or any(
         (product / "factory/runs").glob("*.pid")
     ):
         raise EnvironmentError("qualification has an active provider run")
@@ -4561,7 +4561,7 @@ def upgrade(args: argparse.Namespace) -> dict[str, Any]:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:
             raise EnvironmentError("qualification controller is active") from error
-        if any((product / "factory/.active-runs").glob("*")) or any(
+        if any((runtime_ledger_path.parent / ".active-runs").glob("*")) or any(
             (product / "factory/runs").glob("*.pid")
         ):
             raise EnvironmentError("qualification has an active provider run")

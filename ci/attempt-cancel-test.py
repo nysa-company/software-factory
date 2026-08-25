@@ -14,6 +14,7 @@ import sys
 import tempfile
 import threading
 import time
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
@@ -443,6 +444,9 @@ class AttemptCancellationTest(unittest.TestCase):
             plan = CANCEL.calculate(
                 self.root, "T-1", attempt_id, "operator_requested", "8" * 32,
             )
+            plan.pop("active_claim")
+            plan.pop("preview_hash")
+            plan["preview_hash"] = CANCEL.digest(CANCEL.canonical(plan))
             receipt = CANCEL.apply_plan(self.root, plan, 1)
             self.assertEqual(
                 CANCEL.calculate(
@@ -471,6 +475,144 @@ class AttemptCancellationTest(unittest.TestCase):
                 row.get("run_id") in {attempt_id, base_run}
                 for row in csv.DictReader(handle)
             ))
+
+    def test_provider_only_dead_claim_requires_sealed_recovery_and_replays(self):
+        database = self.root.parent / "qualification/provider/accounting/state-v2.sqlite3"
+        release = "d" * 40
+        process, started = self.spawn()
+        attempt_id = f"1787640905-{process.pid}-cli"
+        self.submitted_provider_attempt(
+            database, attempt_id=attempt_id, submit=False,
+            product_id=f"relay-proof:{release}",
+        )
+        authority_ledger = self.root.parent / "authority/operator/runtime-ledger.csv"
+        authority_ledger.parent.mkdir(parents=True)
+        authority_ledger.write_text(LEDGER_HEADER)
+        claim = self.stale_claim(authority_ledger.parent / ".active-runs", process, started)
+        environment = {
+            "FACTORY_LEDGER": str(authority_ledger),
+            "FACTORY_PROJECT": "relay-proof",
+            "FACTORY_PROVIDER_DB": str(database),
+            "FACTORY_PROVIDER_PRODUCT_ID": f"relay-proof:{release}",
+            "FACTORY_RELEASE_SHA": release,
+        }
+        with mock.patch.dict(os.environ, environment, clear=False), \
+                self.assertRaisesRegex(CANCEL.CancelError, "still alive"):
+            CANCEL.calculate(
+                self.root, "T-1", attempt_id, "operator_requested", None,
+            )
+        process.terminate()
+        process.wait(timeout=5)
+        admission = self.root.parent / ".dispatch-admission.lock"
+        controller = self.root.parent / "reconcile.lock"
+        admission.touch(mode=0o600)
+        controller.touch(mode=0o600)
+        descriptors = (os.open(admission, os.O_RDWR), os.open(controller, os.O_RDWR))
+        for descriptor in descriptors:
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+        sealed = {
+            **environment,
+            "FACTORY_CROSS_RELEASE_SOURCE_SHA": release,
+            "FACTORY_CROSS_RELEASE_PRODUCT_ID": f"relay-proof:{release}",
+            "FACTORY_DISPATCH_ADMISSION_LOCK": str(admission),
+            "FACTORY_DISPATCH_ADMISSION_LOCK_FD": str(descriptors[0]),
+            "FACTORY_QUALIFICATION_CONTROLLER_LOCK": str(controller),
+            "FACTORY_QUALIFICATION_CONTROLLER_LOCK_FD": str(descriptors[1]),
+        }
+        try:
+            with mock.patch.dict(os.environ, environment, clear=False):
+                plan = CANCEL.calculate(
+                    self.root, "T-1", attempt_id, "operator_requested", None,
+                )
+                with self.assertRaisesRegex(CANCEL.CancelError, "qualification recovery"):
+                    CANCEL.apply_plan(self.root, plan, 1)
+                self.assertFalse(
+                    (self.runs / f"{attempt_id}.cancel-request.json").exists()
+                )
+            with mock.patch.dict(os.environ, sealed, clear=False):
+                with self.assertRaisesRegex(CANCEL.CancelError, "qualification recovery"):
+                    CANCEL.apply_plan(self.root, plan, 1)
+                owner = claim / "owner"
+                original_owner = owner.read_bytes()
+                owner.write_text(
+                    f"pid={process.pid}\nprocess_start={started}\ntoken={'c' * 32}\n"
+                )
+                with self.assertRaisesRegex(CANCEL.CancelError, "changed"):
+                    CANCEL.prepare_provider_only_recovery(self.root, plan)
+                owner.write_bytes(original_owner)
+                replacement = claim / "replacement"
+                replacement.write_bytes(original_owner)
+                os.replace(replacement, owner)
+                with self.assertRaisesRegex(CANCEL.CancelError, "changed"):
+                    CANCEL.prepare_provider_only_recovery(self.root, plan)
+                plan = CANCEL.calculate(
+                    self.root, "T-1", attempt_id, "operator_requested", None,
+                )
+                original_rmdir = Path.rmdir
+                interrupted = False
+
+                def fail_after_owner_unlink(path):
+                    nonlocal interrupted
+                    if (
+                        not interrupted
+                        and path.name.startswith(".provider-only-cancel-")
+                    ):
+                        interrupted = True
+                        raise OSError("simulated interruption")
+                    return original_rmdir(path)
+
+                with mock.patch.object(Path, "rmdir", fail_after_owner_unlink), \
+                        self.assertRaisesRegex(OSError, "simulated interruption"):
+                    CANCEL.prepare_provider_only_recovery(self.root, plan)
+                recovery = claim.parent / CANCEL.provider_only_recovery_name(plan)
+                recovery.chmod(0o777)
+                with self.assertRaisesRegex(CANCEL.CancelError, "unsafe"):
+                    CANCEL.prepare_provider_only_recovery(self.root, plan)
+                recovery.chmod(0o700)
+                claim.parent.chmod(0o777)
+                with self.assertRaisesRegex(CANCEL.CancelError, "unsafe"):
+                    CANCEL.prepare_provider_only_recovery(self.root, plan)
+                claim.parent.chmod(0o755)
+                CANCEL.prepare_provider_only_recovery(self.root, plan)
+                receipt = CANCEL.apply_plan(self.root, plan, 1)
+                self.assertEqual(CANCEL.apply_plan(self.root, plan, 1), receipt)
+        finally:
+            for descriptor in descriptors:
+                os.close(descriptor)
+        self.assertFalse(claim.exists())
+        self.assertEqual(
+            self.provider_command(
+                database, "status", "--attempt-id", attempt_id,
+            )["attempts"][0]["terminal_result"],
+            "failed_pre_go",
+        )
+
+    def test_provider_only_claim_identity_fails_closed_on_edge_cases(self):
+        process, started = self.spawn()
+        active = self.root.parent / "authority/.active-runs"
+        claim = self.stale_claim(active, process, started)
+        process.terminate()
+        process.wait(timeout=5)
+        identity = CANCEL.provider_only_claim_identity(active, "T-1")
+        self.assertIsNotNone(identity)
+        with mock.patch.object(
+            CANCEL.IDENTITY, "process_table",
+            return_value={process.pid: SimpleNamespace(started=f"{started}-reused")},
+        ):
+            self.assertEqual(
+                CANCEL.provider_only_claim_identity(active, "T-1"), identity,
+            )
+        sibling = active / "T-2.builder.lock"
+        sibling.mkdir()
+        (sibling / "owner").write_text(
+            f"pid={process.pid}\nprocess_start={started}\ntoken={'b' * 32}\n"
+        )
+        with self.assertRaisesRegex(CANCEL.CancelError, "sibling"):
+            CANCEL.provider_only_claim_identity(active, "T-1")
+        shutil.rmtree(sibling)
+        (claim / "owner").write_text(f"pid={process.pid}\n")
+        with self.assertRaisesRegex(CANCEL.CancelError, "malformed"):
+            CANCEL.provider_only_claim_identity(active, "T-1")
 
     def test_provider_only_attempt_refuses_live_and_stale_wrapper_records(self):
         database = self.root.parent / "qualification/provider/accounting/state-v2.sqlite3"

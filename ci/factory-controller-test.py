@@ -22864,6 +22864,20 @@ class FactoryControllerTest(unittest.TestCase):
             "active_claim": "T-174.reviewer.lock",
         })])
 
+    def test_controller_uses_authority_runtime_ledger_claims(self) -> None:
+        ledger = self.root / "authority/operator/runtime-ledger.csv"
+        ledger.parent.mkdir(parents=True)
+        ledger.write_text("", encoding="utf-8")
+        active = ledger.parent / ".active-runs/T-174.reviewer.lock"
+        active.mkdir(parents=True)
+        decoy = self.product / "factory/.active-runs/T-999.planner.lock"
+        decoy.mkdir(parents=True)
+        with patch.dict(os.environ, {"FACTORY_LEDGER": str(ledger)}):
+            controller = CONTROL.Controller(self.args)
+        self.assertEqual(controller.active_run_tickets(), {"T-174"})
+        self.assertTrue(controller.active_run("T-174"))
+        self.assertFalse(controller.active_run("T-999"))
+
     def test_closeout_defers_behind_unmerged_sibling_closeout(self) -> None:
         controller = CONTROL.Controller(self.args)
         root = self.root / "cells"

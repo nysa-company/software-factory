@@ -1160,18 +1160,22 @@ assert value["reason"] == "doctor_not_ready"
 assert value["status"] == "blocked"
 PY
 
-mkdir -p "$PRODUCT/factory/.active-runs/T-1.planner.lock"
-chmod 700 "$PRODUCT/factory/.active-runs" \
-  "$PRODUCT/factory/.active-runs/T-1.planner.lock"
+QUALIFICATION_LEDGER="$TEST_HOME/.factory/qualification/$PROJECT/operator/runtime-ledger.csv"
+mkdir -p "${QUALIFICATION_LEDGER%/*}/.active-runs/T-1.planner.lock"
+: > "$QUALIFICATION_LEDGER"
+chmod 700 "${QUALIFICATION_LEDGER%/*}" \
+  "${QUALIFICATION_LEDGER%/*}/.active-runs" \
+  "${QUALIFICATION_LEDGER%/*}/.active-runs/T-1.planner.lock"
 printf '%s\n' "pid=$$" 'process_start=fixture' \
   'token=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
-  > "$PRODUCT/factory/.active-runs/T-1.planner.lock/owner"
-chmod 600 "$PRODUCT/factory/.active-runs/T-1.planner.lock/owner"
+  > "${QUALIFICATION_LEDGER%/*}/.active-runs/T-1.planner.lock/owner"
+chmod 600 "${QUALIFICATION_LEDGER%/*}/.active-runs/T-1.planner.lock/owner"
 HOME="$TEST_HOME" PATH="$TEST_BIN:/usr/bin:/bin" \
   FACTORY_TEST_MODE=1 FACTORY_TRUSTED_TEST_HARNESS=1 \
   FACTORY_DOCTOR_TIMEOUT_SECONDS=1 \
   FACTORY_DOCTOR_READINESS_TIMEOUT_SECONDS=5 \
   FACTORY_KIT_TRUST_SCOPE=qualification-candidate \
+  FACTORY_LEDGER="$QUALIFICATION_LEDGER" \
   FACTORY_PROVIDER_POLICY="$TMP/provider/provider-policy.json" \
   /bin/bash "$RELEASE_B/scripts/factory-doctor-real.sh" --json \
     --project "$PROJECT" --kit-dir "$RELEASE_B" \
@@ -1201,7 +1205,7 @@ assert not pathlib.Path(sys.argv[4]).exists()
 assert driver["reason"] == "doctor_not_ready"
 assert driver["status"] == "blocked"
 PY
-rm -rf "$PRODUCT/factory/.active-runs"
+rm -rf "${QUALIFICATION_LEDGER%/*}/.active-runs"
 
 mkdir "$TMP/foreign-active-runs"
 ln -s "$TMP/foreign-active-runs" "$PRODUCT/factory/.active-runs"
