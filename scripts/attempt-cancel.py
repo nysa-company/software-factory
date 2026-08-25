@@ -757,7 +757,7 @@ def validate_provider_only_initial(
 
 
 def provider_only_records_absent(
-    factory_root: Path, ticket: str, run_id: str,
+    factory_root: Path, ticket: str, run_id: str, *, require_account_absent=True,
 ) -> None:
     attempt = paths(factory_root, run_id)
     match = re.fullmatch(r"([0-9]{9,})-([1-9][0-9]*)-cli", run_id)
@@ -775,7 +775,10 @@ def provider_only_records_absent(
     ]
     if any(path.exists() or path.is_symlink() for path in records):
         raise CancelError("provider-only attempt has run evidence")
-    if provider_account_lease(factory_root, f"{run_id}-account") is not None:
+    if (
+        require_account_absent
+        and provider_account_lease(factory_root, f"{run_id}-account") is not None
+    ):
         raise CancelError("provider-only attempt still has an account lease")
     validate_ledger_projection(factory_root, attempt)
     with attempt["ledger"].open(newline="", encoding="utf-8") as handle:
@@ -896,7 +899,9 @@ def calculate_provider_only(
     factory_root: Path, ticket: str, run_id: str, reason: str,
     nonce: str | None,
 ) -> dict:
-    provider_only_records_absent(factory_root, ticket, run_id)
+    provider_only_records_absent(
+        factory_root, ticket, run_id, require_account_absent=False,
+    )
     attempt_paths = paths(factory_root, run_id)
     status = provider_attempt(factory_root, run_id)
     if attempt_paths["request"].exists() or attempt_paths["request"].is_symlink():

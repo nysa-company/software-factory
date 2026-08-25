@@ -688,6 +688,14 @@ When an older immutable Contract 2 lane cannot reconcile its provider attempt,
 use an exact protected-main successor only through the sealed recovery
 transaction. Keep the old controller stopped and plan one ticket/run at a time:
 
+Doctor reports a matching dead global Cursor account lease as
+`checks.isolated_provider.reason_code=stale_global_cursor_account_lease`.
+Each bounded `stale_global_cursor_account_leases` entry names the exact ticket,
+attempt, lease, provider state, and either the supported
+`qualification recover-plan` action or a fail-closed reason that requires a
+separate exact-evidence check or successor repair. Use those identities in the
+transaction below; do not delete the lease or edit either provider database.
+
 ```bash
 bash scripts/factory-kit.sh qualification recover-plan \
   --project <project> --root <qualification-root> \
@@ -705,9 +713,14 @@ bash scripts/factory-kit.sh qualification recover-apply \
 
 The plan binds both Factory identities, the product identity, lane authority,
 provider database, runtime and durable ledgers, exact attempt, claim, lease,
+matching global Cursor account row or its absence, unchanged empty launch lock,
 and nested cancellation preview. Apply revalidates under controller and
-dispatch-admission locks, then uses the sealed successor helper with a scrubbed
-environment. Replay returns the retained receipts without charging twice. This
+dispatch-admission locks. A provider-only pre-GO orphan releases its bound dead
+account row before unchanged nested cancellation, then removes only its selected
+expired dispatch lease and bound empty launch lock. A manifest-backed run first
+converges unchanged nested cancellation and only then releases its dead account
+row; it never touches dispatch or launch resources. Replay returns retained
+receipts without charging twice or leaving cleanup-lock residue. This
 includes a durable request whose receipt was interrupted. The nested helper
 inherits and validates the outer transaction's exact locked controller and
 dispatch-admission descriptors, so a parent exit cannot expose cleanup and

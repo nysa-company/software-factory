@@ -3,19 +3,31 @@
 
 from __future__ import annotations
 
+import fcntl
+import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import threading
 import time
+import types
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
 COORDINATOR = ROOT / "scripts" / "provider-coordinator.py"
+COORDINATOR_SPEC = importlib.util.spec_from_file_location(
+    "provider_coordinator", COORDINATOR,
+)
+assert COORDINATOR_SPEC is not None and COORDINATOR_SPEC.loader is not None
+COORDINATOR_MODULE = importlib.util.module_from_spec(COORDINATOR_SPEC)
+COORDINATOR_SPEC.loader.exec_module(COORDINATOR_MODULE)
 
 
 class ProviderCoordinatorTest(unittest.TestCase):
@@ -30,9 +42,30 @@ class ProviderCoordinatorTest(unittest.TestCase):
         self.owner_start = " ".join(subprocess.check_output(
             ["ps", "-o", "lstart=", "-p", str(self.owner_pid)], text=True
         ).split())
+        source_sha = "5" * 40
+        self.recovery_descriptors = []
+        recovery_environment = {
+            "FACTORY_CROSS_RELEASE_SOURCE_SHA": source_sha,
+            "FACTORY_CROSS_RELEASE_PRODUCT_ID": f"test:{source_sha}",
+            "FACTORY_KIT_TRUST_SCOPE": "qualification-candidate",
+        }
+        for prefix, name in (
+            ("FACTORY_DISPATCH_ADMISSION_LOCK", "admission.lock"),
+            ("FACTORY_QUALIFICATION_CONTROLLER_LOCK", "controller.lock"),
+        ):
+            path = self.root / name
+            path.touch(mode=0o600)
+            descriptor = os.open(path, os.O_RDWR)
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            self.recovery_descriptors.append(descriptor)
+            recovery_environment[prefix] = str(path)
+            recovery_environment[f"{prefix}_FD"] = str(descriptor)
+        self.recovery_environment = recovery_environment
         self.write_policy()
 
     def tearDown(self):
+        for descriptor in self.recovery_descriptors:
+            os.close(descriptor)
         self.temporary.cleanup()
 
     def write_policy(
@@ -74,15 +107,19 @@ class ProviderCoordinatorTest(unittest.TestCase):
         }
         self.policy.write_text(json.dumps(value), encoding="utf-8")
 
-    def command(self, *arguments, check=True, db=None):
+    def command(
+        self, *arguments, check=True, db=None, environment=None, pass_fds=(),
+    ):
         result = subprocess.run(
             [
-                "python3", str(COORDINATOR), "--db", str(db or self.db),
+                sys.executable, str(COORDINATOR), "--db", str(db or self.db),
                 *map(str, arguments),
             ],
             text=True,
             capture_output=True,
             check=False,
+            env=(None if environment is None else {**os.environ, **environment}),
+            pass_fds=pass_fds,
         )
         if check and result.returncode:
             self.fail(f"{arguments}: {result.stdout}\n{result.stderr}")
@@ -91,10 +128,13 @@ class ProviderCoordinatorTest(unittest.TestCase):
     def json_command(self, *arguments, **kwargs):
         return json.loads(self.command(*arguments, **kwargs).stdout)
 
-    def account_command(self, *arguments, check=True, db=None, account_db=None):
+    def account_command(
+        self, *arguments, check=True, db=None, account_db=None, environment=None,
+        pass_fds=(),
+    ):
         return self.json_command(
             "--account-db", account_db or self.account_db, *arguments,
-            check=check, db=db,
+            check=check, db=db, environment=environment, pass_fds=pass_fds,
         )
 
     def account_acquire(
@@ -150,6 +190,23 @@ class ProviderCoordinatorTest(unittest.TestCase):
             "--runtime-start", runtime_start,
             "--expected-policy-sha256", policy_sha256,
             "--policy", self.policy,
+        )
+
+    def account_recover_preview(self, lease, *, check=True, environment=None):
+        return self.account_command(
+            "account-recover-preview", "--lease-id", lease,
+            check=check, environment=environment,
+        )
+
+    def account_recover_apply(
+        self, lease, preview, *, check=True, account_db=None,
+    ):
+        return self.account_command(
+            "account-recover-apply", "--lease-id", lease,
+            "--expected-database-sha256", preview["database_sha256"],
+            "--expected-lease-sha256", preview["lease_sha256"],
+            check=check, environment=self.recovery_environment,
+            pass_fds=self.recovery_descriptors, account_db=account_db,
         )
 
     def reserve(
@@ -741,6 +798,309 @@ class ProviderCoordinatorTest(unittest.TestCase):
         self.assertEqual(mismatch["status"], "error")
         self.assertIn("policies disagree across lanes", mismatch["error"])
         self.assertTrue(self.account_release("account-b")["released"])
+
+    def test_cursor_account_recovery_is_exact_and_replays_without_losing_history(self):
+        owner = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            start_new_session=True,
+        )
+        runtime = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            start_new_session=True,
+        )
+        owner_start = " ".join(subprocess.check_output(
+            ["ps", "-o", "lstart=", "-p", str(owner.pid)], text=True,
+        ).split())
+        runtime_start = " ".join(subprocess.check_output(
+            ["ps", "-o", "lstart=", "-p", str(runtime.pid)], text=True,
+        ).split())
+        try:
+            admission = self.account_acquire(
+                "recover-exact", owner_pid=owner.pid, owner_pgid=owner.pid,
+                owner_start=owner_start,
+            )
+            self.assertTrue(admission["admitted"])
+            self.assertTrue(self.account_bind_runtime(
+                "recover-exact", runtime.pid, runtime_start,
+                owner_pid=owner.pid, owner_pgid=owner.pid,
+                owner_start=owner_start,
+            )["bound"])
+            self.assertTrue(self.account_validate(
+                "recover-exact", runtime.pid, runtime_start,
+                admission["lease"]["policy_sha256"], owner_pid=owner.pid,
+                owner_pgid=owner.pid, owner_start=owner_start,
+            )["valid"])
+            self.assertTrue(self.account_acquire("recover-sibling")["admitted"])
+            owner.terminate()
+            owner.wait(timeout=3)
+            runtime_live = self.account_recover_preview(
+                "recover-exact", check=False,
+            )
+            self.assertEqual(runtime_live["status"], "error")
+            self.assertIn("still live", runtime_live["error"])
+            runtime.terminate()
+            runtime.wait(timeout=3)
+
+            preview = self.account_recover_preview("recover-exact")
+            self.assertEqual(preview["status"], "planned")
+            self.assertEqual(preview["lease"]["lease_id"], "recover-exact")
+            first = self.account_recover_apply("recover-exact", preview)
+            replay = self.account_recover_apply("recover-exact", preview)
+            self.assertEqual(first, replay)
+            self.assertEqual(first["status"], "absent")
+            status = self.account_command("account-status")
+            self.assertEqual(
+                [item["lease_id"] for item in status["leases"]],
+                ["recover-sibling"],
+            )
+            self.assertEqual(
+                [item["lease_id"] for item in status["starts"]],
+                ["recover-exact"],
+            )
+            self.assertTrue(self.account_release("recover-sibling")["released"])
+        finally:
+            for process in (owner, runtime):
+                if process.poll() is None:
+                    process.terminate()
+                    process.wait(timeout=3)
+
+    def test_cursor_account_recovery_covers_waiting_active_and_absent(self):
+        owners = [
+            subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(30)"],
+                start_new_session=True,
+            )
+            for _ in range(2)
+        ]
+        try:
+            for lease, owner in zip(("recover-waiting", "recover-active"), owners):
+                started = " ".join(subprocess.check_output(
+                    ["ps", "-o", "lstart=", "-p", str(owner.pid)], text=True,
+                ).split())
+                self.assertTrue(self.account_acquire(
+                    lease, owner_pid=owner.pid, owner_pgid=owner.pid,
+                    owner_start=started,
+                )["admitted"])
+            with sqlite3.connect(self.account_db) as connection:
+                connection.execute(
+                    "UPDATE account_leases SET state='waiting',admitted_at=NULL "
+                    "WHERE lease_id='recover-waiting'"
+                )
+            for owner in owners:
+                owner.terminate()
+                owner.wait(timeout=3)
+            for lease in ("recover-waiting", "recover-active"):
+                preview = self.account_recover_preview(lease)
+                self.assertEqual(preview["lease"]["state"], lease.removeprefix("recover-"))
+                self.assertEqual(
+                    self.account_recover_apply(lease, preview)["status"], "absent",
+                )
+
+            missing = self.root / "missing-account.sqlite3"
+            absent = self.account_command(
+                "account-recover-preview", "--lease-id", "never-created",
+                account_db=missing,
+            )
+            self.assertEqual(absent["status"], "absent")
+            self.assertFalse(missing.exists())
+            result = self.account_recover_apply(
+                "never-created", absent, account_db=missing,
+            )
+            self.assertEqual(result["status"], "absent")
+            self.assertFalse(missing.exists())
+        finally:
+            for owner in owners:
+                if owner.poll() is None:
+                    owner.terminate()
+                    owner.wait(timeout=3)
+
+    def test_cursor_account_recovery_refuses_live_unknown_and_changed_lease(self):
+        self.assertTrue(self.account_acquire("recover-live")["admitted"])
+        live = self.account_recover_preview("recover-live", check=False)
+        self.assertEqual(live["status"], "error")
+        self.assertIn("still live", live["error"])
+        self.assertTrue(self.account_release("recover-live")["released"])
+
+        owner = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            start_new_session=True,
+        )
+        started = " ".join(subprocess.check_output(
+            ["ps", "-o", "lstart=", "-p", str(owner.pid)], text=True,
+        ).split())
+        try:
+            self.assertTrue(self.account_acquire(
+                "recover-drift", owner_pid=owner.pid, owner_pgid=owner.pid,
+                owner_start=started,
+            )["admitted"])
+            owner.terminate()
+            owner.wait(timeout=3)
+            preview = self.account_recover_preview("recover-drift")
+            unavailable = self.account_recover_preview(
+                "recover-drift", check=False,
+                environment={"PATH": str(self.root / "no-commands")},
+            )
+            self.assertEqual(unavailable["status"], "error")
+            self.assertIn("liveness is unavailable", unavailable["error"])
+            with sqlite3.connect(self.account_db) as connection:
+                connection.execute(
+                    "UPDATE account_leases SET requested_at_ms=requested_at_ms+1 "
+                    "WHERE lease_id='recover-drift'"
+                )
+            changed = self.account_recover_apply(
+                "recover-drift", preview, check=False,
+            )
+            self.assertEqual(changed["status"], "error")
+            self.assertIn("identity changed", changed["error"])
+            current = self.account_recover_preview("recover-drift")
+            self.assertEqual(
+                self.account_recover_apply("recover-drift", current)["status"],
+                "absent",
+            )
+        finally:
+            if owner.poll() is None:
+                owner.terminate()
+                owner.wait(timeout=3)
+
+    def test_cursor_account_recovery_refuses_database_replacement(self):
+        owner = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            start_new_session=True,
+        )
+        started = " ".join(subprocess.check_output(
+            ["ps", "-o", "lstart=", "-p", str(owner.pid)], text=True,
+        ).split())
+        try:
+            self.assertTrue(self.account_acquire(
+                "recover-database", owner_pid=owner.pid, owner_pgid=owner.pid,
+                owner_start=started,
+            )["admitted"])
+            owner.terminate()
+            owner.wait(timeout=3)
+            preview = self.account_recover_preview("recover-database")
+            original = self.root / "original-account.sqlite3"
+            replacement = self.root / "replacement-account.sqlite3"
+            self.account_command("account-status", account_db=replacement)
+            self.account_db.replace(original)
+            replacement.replace(self.account_db)
+            refused = self.account_recover_apply(
+                "recover-database", preview, check=False,
+            )
+            self.assertEqual(refused["status"], "error")
+            self.assertIn("database identity changed", refused["error"])
+            with sqlite3.connect(original) as connection:
+                self.assertEqual(
+                    connection.execute(
+                        "SELECT count(*) FROM account_leases "
+                        "WHERE lease_id='recover-database'"
+                    ).fetchone()[0],
+                    1,
+                )
+        finally:
+            if owner.poll() is None:
+                owner.terminate()
+                owner.wait(timeout=3)
+
+    def test_cursor_account_recovery_refuses_database_swap_during_apply(self):
+        owner = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            start_new_session=True,
+        )
+        started = " ".join(subprocess.check_output(
+            ["ps", "-o", "lstart=", "-p", str(owner.pid)], text=True,
+        ).split())
+        try:
+            self.assertTrue(self.account_acquire(
+                "recover-race", owner_pid=owner.pid, owner_pgid=owner.pid,
+                owner_start=started,
+            )["admitted"])
+            owner.terminate()
+            owner.wait(timeout=3)
+            preview = self.account_recover_preview("recover-race")
+            replacement = self.root / "replacement-race.sqlite3"
+            displaced = self.root / "displaced-race.sqlite3"
+            shutil.copy2(self.account_db, replacement)
+            original_identity = COORDINATOR_MODULE.account_database_identity
+            calls = 0
+
+            def swap_after_final_check(path, connection=None):
+                nonlocal calls
+                calls += 1
+                identity = original_identity(path, connection)
+                if calls == 3:
+                    self.account_db.replace(displaced)
+                    replacement.replace(self.account_db)
+                return identity
+
+            args = types.SimpleNamespace(
+                lease_id="recover-race",
+                expected_database_sha256=preview["database_sha256"],
+                expected_lease_sha256=preview["lease_sha256"],
+            )
+            with (
+                mock.patch.object(
+                    COORDINATOR_MODULE,
+                    "require_qualification_recovery_capability",
+                ),
+                mock.patch.object(
+                    COORDINATOR_MODULE, "account_database_identity",
+                    side_effect=swap_after_final_check,
+                ),
+                self.assertRaisesRegex(
+                    COORDINATOR_MODULE.CoordinatorError,
+                    "database changed while open",
+                ),
+            ):
+                COORDINATOR_MODULE.account_recover_apply_command(
+                    self.account_db, args,
+                )
+            with sqlite3.connect(self.account_db) as connection:
+                self.assertEqual(connection.execute(
+                    "SELECT count(*) FROM account_leases "
+                    "WHERE lease_id='recover-race'"
+                ).fetchone()[0], 1)
+        finally:
+            if owner.poll() is None:
+                owner.terminate()
+                owner.wait(timeout=3)
+
+    def test_cursor_account_recovery_requires_qualification_capability_and_scope(self):
+        owner = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            start_new_session=True,
+        )
+        started = " ".join(subprocess.check_output(
+            ["ps", "-o", "lstart=", "-p", str(owner.pid)], text=True,
+        ).split())
+        try:
+            self.assertTrue(self.account_acquire(
+                "recover-production", scope="production-certified",
+                owner_pid=owner.pid, owner_pgid=owner.pid, owner_start=started,
+            )["admitted"])
+            owner.terminate()
+            owner.wait(timeout=3)
+            preview = self.account_recover_preview("recover-production")
+            unsealed = self.account_command(
+                "account-recover-apply", "--lease-id", "recover-production",
+                "--expected-database-sha256", preview["database_sha256"],
+                "--expected-lease-sha256", preview["lease_sha256"], check=False,
+            )
+            self.assertEqual(unsealed["status"], "error")
+            self.assertIn("capability is invalid", unsealed["error"])
+            wrong_scope = self.account_recover_apply(
+                "recover-production", preview, check=False,
+            )
+            self.assertEqual(wrong_scope["status"], "error")
+            self.assertIn("scope is invalid", wrong_scope["error"])
+            with sqlite3.connect(self.account_db) as connection:
+                self.assertEqual(connection.execute(
+                    "SELECT count(*) FROM account_leases "
+                    "WHERE lease_id='recover-production'"
+                ).fetchone()[0], 1)
+        finally:
+            if owner.poll() is None:
+                owner.terminate()
+                owner.wait(timeout=3)
 
     def test_cursor_account_state_is_owner_only_and_secret_free(self):
         self.assertTrue(self.account_acquire("secret-free")["admitted"])

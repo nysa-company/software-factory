@@ -103,6 +103,7 @@ value = {
 path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 PY
   cp "$DOCTOR" "$release/scripts/factory-doctor-real.sh"
+  cp "$ROOT/scripts/provider-activation.py" "$release/scripts/provider-activation.py"
   cp "$ROOT/scripts/ticket-readiness.py" "$release/scripts/ticket-readiness.py"
   cp "$ROOT/scripts/lib/ticket_state_transition.py" \
     "$release/scripts/lib/ticket_state_transition.py"
@@ -132,6 +133,7 @@ EOF
   chmod 700 "$release/scripts/factory-doctor.sh" \
     "$release/scripts/factory-doctor-real.sh" \
     "$release/scripts/model-control.sh" \
+    "$release/scripts/provider-activation.py" \
     "$release/scripts/provider-concurrency-config.py"
 }
 
@@ -502,6 +504,8 @@ assert checks["model_readiness"] == {
 assert checks["credentials"]["status"] == "ok"
 assert checks["isolated_provider"]["concurrency_required"] is False
 assert checks["isolated_provider"]["concurrency_ready"] is False
+assert checks["isolated_provider"]["reason_code"] is None
+assert checks["isolated_provider"]["stale_global_cursor_account_leases"] == []
 assert checks["qualification_ticket_readiness"] == {
     "reason_code": None, "status": "not_applicable", "tickets": [],
 }
@@ -541,6 +545,231 @@ for forbidden in (
 ):
     assert forbidden not in environment, forbidden
 assert "caller-secret-must-not-pass" not in "\n".join(environment.values())
+PY
+
+# Doctor projects a matching stale global Cursor account lease into one bounded,
+# actionable qualification recovery diagnostic without mutating either database.
+STALE_PROVIDER="$TMP/stale-provider"
+mkdir -p "$STALE_PROVIDER/accounting" "$STALE_PROVIDER/provider-attempts" \
+  "$STALE_PROVIDER/provider-apply-locks" "$STALE_PROVIDER/global-accounting"
+chmod 700 "$STALE_PROVIDER" "$STALE_PROVIDER/accounting" \
+  "$STALE_PROVIDER/provider-attempts" "$STALE_PROVIDER/provider-apply-locks" \
+  "$STALE_PROVIDER/global-accounting"
+python3 - "$STALE_PROVIDER/provider-policy.json" \
+  "$STALE_PROVIDER/provider-activation.json" \
+  "$STALE_PROVIDER/accounting/state-v2.sqlite3" \
+  "$STALE_PROVIDER/global-accounting/cursor-account-admission-v1.sqlite3" <<'PY'
+import hashlib
+import json
+import os
+import pathlib
+import sqlite3
+import subprocess
+import sys
+
+policy_path, activation_path, provider_path, account_path = map(pathlib.Path, sys.argv[1:])
+limits = {"max_concurrent": 3, "max_starts": 20, "window_seconds": 60}
+policy = {
+    "account_routes": {"cursor": limits},
+    "coupled_max_concurrent": 3,
+    "global": limits,
+    "provider_families": {"openai": limits},
+    "schema": "factory-provider-concurrency-policy/v1",
+}
+canonical_policy = json.dumps(policy, sort_keys=True, separators=(",", ":"))
+policy_path.write_text(canonical_policy + "\n", encoding="utf-8")
+activation = {
+    "enabled": True,
+    "mode": "cli-concurrent-v1",
+    "policy_sha256": hashlib.sha256(canonical_policy.encode()).hexdigest(),
+    "routes": {
+        "fixture-cursor": {
+            "account_route": "cursor",
+            "adapter": "cursor-openai",
+            "model": "fixture",
+            "provider_family": "openai",
+        }
+    },
+    "schema": "nysa.software-factory.provider-activation/v2",
+}
+activation_path.write_text(
+    json.dumps(activation, sort_keys=True, separators=(",", ":")) + "\n",
+    encoding="utf-8",
+)
+policy_sha256 = hashlib.sha256(canonical_policy.encode()).hexdigest()
+live = subprocess.check_output(
+    ["ps", "-o", "pgid=,lstart=", "-p", "1"], text=True,
+).split(None, 1)
+live_pgid, live_start = int(live[0]), " ".join(live[1].split())
+attempts = [
+    ("contract-capacity-denied", "T-240", "terminal", None, None, 4, "capacity_denied", None),
+    ("contract-go", "T-233", "GO", 2, None, None, None, policy_sha256),
+    ("contract-live", "T-237", "reserved", None, None, None, None, policy_sha256),
+    ("contract-policy-mismatch", "T-238", "reserved", None, None, None, None, policy_sha256),
+    ("contract-prepared", "T-239", "prepared", None, None, None, None, None),
+    ("contract-reserved", "T-232", "reserved", None, None, None, None, policy_sha256),
+    ("contract-route-mismatch", "T-241", "reserved", None, None, None, None, policy_sha256),
+    ("contract-scope-mismatch", "T-242", "reserved", None, None, None, None, policy_sha256),
+    ("contract-submitted", "T-234", "submitted", 2, 3, None, None, policy_sha256),
+    ("contract-terminal-cancelled", "T-235", "terminal", 2, 3, 4, "cancelled", policy_sha256),
+    ("contract-terminal-succeeded", "T-236", "terminal", 2, 3, 4, "succeeded", policy_sha256),
+]
+with sqlite3.connect(provider_path) as connection:
+    connection.executescript("""
+        CREATE TABLE metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        CREATE TABLE attempts(
+          attempt_id TEXT PRIMARY KEY, account_route TEXT NOT NULL,
+          state TEXT NOT NULL, go_at INTEGER, submitted_at INTEGER,
+          terminal_at INTEGER, terminal_result TEXT, policy_sha256 TEXT
+        );
+        CREATE TABLE attempt_budgets(
+          attempt_id TEXT PRIMARY KEY, ticket_id TEXT NOT NULL
+        );
+        CREATE TABLE legacy_intervals(interval_id TEXT PRIMARY KEY);
+        PRAGMA application_id=1314476867;
+        PRAGMA user_version=2;
+    """)
+    connection.execute(
+        "INSERT INTO metadata(key,value) VALUES('schema','factory-provider-state/v2')"
+    )
+    connection.executemany(
+        """INSERT INTO attempts(
+               attempt_id,account_route,state,go_at,submitted_at,terminal_at,
+               terminal_result,policy_sha256
+             ) VALUES(?,'cursor',?,?,?,?,?,?)""",
+        [(attempt, state, go, submitted, terminal, result, policy)
+         for attempt, _ticket, state, go, submitted, terminal, result, policy
+         in attempts],
+    )
+    connection.executemany(
+        "INSERT INTO attempt_budgets(attempt_id,ticket_id) VALUES(?,?)",
+        [(attempt, ticket) for attempt, ticket, *_rest in attempts],
+    )
+with sqlite3.connect(account_path) as connection:
+    connection.executescript("""
+        CREATE TABLE metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        CREATE TABLE account_leases(
+          lease_id TEXT PRIMARY KEY, account_route TEXT NOT NULL,
+          trust_scope TEXT NOT NULL, owner_pid INTEGER NOT NULL,
+          owner_pgid INTEGER NOT NULL, owner_start TEXT NOT NULL,
+          runtime_pid INTEGER, runtime_pgid INTEGER, runtime_start TEXT,
+          state TEXT NOT NULL, policy_sha256 TEXT NOT NULL
+        );
+        PRAGMA application_id=1314472769;
+        PRAGMA user_version=1;
+    """)
+    connection.execute(
+        "INSERT INTO metadata(key,value) VALUES"
+        "('schema','factory-cursor-account-admission/v1')"
+    )
+    for attempt, _ticket, *_rest, policy in attempts:
+        if attempt in {"contract-capacity-denied", "contract-prepared"}:
+            continue
+        owner = (
+            (1, live_pgid, live_start)
+            if attempt == "contract-live"
+            else (999999, 999999, "deterministically-dead")
+        )
+        lease_policy = "f" * 64 if attempt == "contract-policy-mismatch" else policy
+        lease_route = "other-route" if attempt == "contract-route-mismatch" else "cursor"
+        lease_scope = (
+            "production-certified"
+            if attempt == "contract-scope-mismatch"
+            else "qualification-candidate"
+        )
+        connection.execute(
+            """INSERT INTO account_leases(
+                   lease_id,account_route,trust_scope,owner_pid,owner_pgid,
+                   owner_start,state,policy_sha256
+                 ) VALUES(?,?,?,?,?,?,'active',?)""",
+            (attempt + "-account", lease_route, lease_scope, *owner, lease_policy),
+        )
+for path in (policy_path, activation_path, provider_path, account_path):
+    os.chmod(path, 0o600)
+PY
+cp "$RELEASE_B/scripts/model-control.sh" "$TMP/stale-model-control.saved"
+cat > "$RELEASE_B/scripts/model-control.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' '{"checks":[],"readiness_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","schema":"nysa.software-factory.qualification-fallback-readiness/v1","status":"ready"}'
+EOF
+chmod 700 "$RELEASE_B/scripts/model-control.sh"
+STALE_DOCTOR_RC=0
+HOME="$TEST_HOME" PATH="$TEST_BIN:/usr/bin:/bin" \
+  FACTORY_TEST_MODE=1 FACTORY_TRUSTED_TEST_HARNESS=1 \
+  FACTORY_DOCTOR_TIMEOUT_SECONDS=1 \
+  FACTORY_DOCTOR_READINESS_TIMEOUT_SECONDS=1 \
+  FACTORY_KIT_TRUST_SCOPE=qualification-candidate \
+  FACTORY_PROVIDER_ACTIVATION="$STALE_PROVIDER/provider-activation.json" \
+  FACTORY_PROVIDER_POLICY="$STALE_PROVIDER/provider-policy.json" \
+  FACTORY_PROVIDER_DB="$STALE_PROVIDER/accounting/state-v2.sqlite3" \
+  FACTORY_PROVIDER_ATTEMPT_ROOT="$STALE_PROVIDER/provider-attempts" \
+  FACTORY_PROVIDER_APPLY_LOCK_ROOT="$STALE_PROVIDER/provider-apply-locks" \
+  FACTORY_CURSOR_ACCOUNT_DB="$STALE_PROVIDER/global-accounting/cursor-account-admission-v1.sqlite3" \
+  /bin/bash "$RELEASE_B/scripts/factory-doctor-real.sh" --json \
+    --project "$PROJECT" --kit-dir "$RELEASE_B" \
+    --product-root "$PRODUCT" --kit-sha "$SHA_B" \
+    > "$TMP/stale-provider-doctor.json" \
+    2> "$TMP/stale-provider-doctor.err" || STALE_DOCTOR_RC=$?
+mv "$TMP/stale-model-control.saved" "$RELEASE_B/scripts/model-control.sh"
+python3 - "$TMP/stale-provider-doctor.json" "$TMP/stale-provider-doctor.err" \
+  "$STALE_DOCTOR_RC" <<'PY'
+import json
+import pathlib
+import sys
+
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+assert pathlib.Path(sys.argv[2]).read_bytes() == b""
+assert int(sys.argv[3]) == 1
+check = value["checks"]["isolated_provider"]
+assert check["status"] == "error"
+assert check["reason_code"] == "stale_global_cursor_account_lease"
+assert check["stale_global_cursor_account_leases"] == [
+    {
+        "attempt_id": "contract-go", "lease_id": "contract-go-account",
+        "provider_state": "GO", "recovery_command": "qualification recover-plan",
+        "recovery_reason": None, "ticket": "T-233",
+    },
+    {
+        "attempt_id": "contract-policy-mismatch",
+        "lease_id": "contract-policy-mismatch-account",
+        "provider_state": "reserved", "recovery_command": None,
+        "recovery_reason": "policy_mismatch", "ticket": "T-238",
+    },
+    {
+        "attempt_id": "contract-reserved", "lease_id": "contract-reserved-account",
+        "provider_state": "reserved", "recovery_command": "qualification recover-plan",
+        "recovery_reason": None, "ticket": "T-232",
+    },
+    {
+        "attempt_id": "contract-route-mismatch",
+        "lease_id": "contract-route-mismatch-account",
+        "provider_state": "reserved", "recovery_command": None,
+        "recovery_reason": "account_route_mismatch", "ticket": "T-241",
+    },
+    {
+        "attempt_id": "contract-scope-mismatch",
+        "lease_id": "contract-scope-mismatch-account",
+        "provider_state": "reserved", "recovery_command": None,
+        "recovery_reason": "trust_scope_mismatch", "ticket": "T-242",
+    },
+    {
+        "attempt_id": "contract-submitted", "lease_id": "contract-submitted-account",
+        "provider_state": "submitted", "recovery_command": "qualification recover-plan",
+        "recovery_reason": None, "ticket": "T-234",
+    },
+    {
+        "attempt_id": "contract-terminal-cancelled",
+        "lease_id": "contract-terminal-cancelled-account",
+        "provider_state": "terminal", "recovery_command": None,
+        "recovery_reason": "recovery_evidence_required", "ticket": "T-235",
+    },
+    {
+        "attempt_id": "contract-terminal-succeeded",
+        "lease_id": "contract-terminal-succeeded-account",
+        "provider_state": "terminal", "recovery_command": None,
+        "recovery_reason": "recovery_evidence_required", "ticket": "T-236",
+    },
+]
 PY
 
 # Production readiness probes are bounded even when a sealed helper hangs.

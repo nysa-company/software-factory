@@ -2850,15 +2850,66 @@ class ReleaseTransactionTest(unittest.TestCase):
                 ):
                     RELEASE.validate_qualification_plan(changed)
 
+    def account_recovery_plan(self, attempt_id: str = "attempt-1") -> dict[str, object]:
+        database = {
+            "path": str(Path.home() / ".factory/accounting/cursor-account-admission-v1.sqlite3"),
+            "state": "absent",
+        }
+        return {
+            "database": database,
+            "database_sha256": RELEASE.digest(database),
+            "lease": None,
+            "lease_sha256": RELEASE.digest({
+                "lease_id": f"{attempt_id}-account", "state": "absent",
+            }),
+            "schema": "factory-cursor-account-recovery/v1",
+            "status": "absent",
+        }
+
     def recovery_plan(self) -> dict[str, object]:
+        lease = self.product / "factory/.dispatch-leases/T-1.json"
+        lease.parent.mkdir(exist_ok=True)
+        if not lease.exists():
+            RELEASE.atomic_json(lease, {
+                "claimed_epoch": 1, "expires_epoch": 2,
+                "lease_id": "6" * 64, "schema_version": 1, "ticket": "T-1",
+            })
+        launch_lock = self.product / "factory/.launch.lock"
+        launch_lock.mkdir(mode=0o700, exist_ok=True)
+        dispatch_lease = RELEASE.qualification_recovery_dispatch_lease(
+            lease, "T-1", int(time.time()),
+        )
+        provider_attempt = {
+            "account_route": "cursor-primary", "attempt_id": "attempt-1",
+            "policy_sha256": "8" * 64,
+            "version": 4,
+        }
         return RELEASE.seal_plan({
             "attempt": {
+                "account_recovery": self.account_recovery_plan(),
                 "active_claim_sha256": None,
-                "dispatch_lease_sha256": "1" * 64,
-                "nested_plan": {"preview_hash": "2" * 64},
-                "provider_attempt": {"attempt_id": "attempt-1", "version": 4},
-                "provider_attempt_sha256": "3" * 64,
-                "runtime_ledger_row": {"run_id": "run-1", "ticket": "T-1"},
+                "dispatch_lease": dispatch_lease,
+                "dispatch_lease_sha256": dispatch_lease["sha256"],
+                "lane_quiescence": {
+                    "active_claims": 0, "active_run_controls": 0,
+                    "active_sibling_provider_attempts": 0,
+                    "provider_workers": 0,
+                },
+                "launch_lock": RELEASE.qualification_recovery_empty_directory(
+                    launch_lock, "qualification launch lock",
+                ),
+                "nested_plan": {
+                    "preview_hash": "2" * 64,
+                    "provider_attempt": provider_attempt,
+                    "reason": "operator_requested",
+                    "schema": (
+                        "nysa.software-factory."
+                        "provider-only-attempt-cancel-plan/v1"
+                    ),
+                },
+                "provider_attempt": provider_attempt,
+                "provider_attempt_sha256": RELEASE.digest(provider_attempt),
+                "runtime_ledger_row": None,
             },
             "created_epoch": 1,
             "expires_epoch": 4_000_000_000,
@@ -2877,10 +2928,23 @@ class ReleaseTransactionTest(unittest.TestCase):
             "status": "planned",
         })
 
+    def account_recovery_result(self, plan: dict[str, object]) -> dict[str, object]:
+        account = plan["attempt"]["account_recovery"]
+        return {
+            "database_sha256": account["database_sha256"],
+            "lease_id": f"{plan['attempt']['provider_attempt']['attempt_id']}-account",
+            "lease_sha256": account["lease_sha256"],
+            "schema": "factory-cursor-account-recovery/v1",
+            "status": "absent",
+        }
+
     def test_qualification_recovery_plan_binds_exact_attempt(self) -> None:
         plan = self.recovery_plan()
         RELEASE.validate_qualification_recovery_plan(plan)
-        for field in ("nested_plan", "provider_attempt", "runtime_ledger_row"):
+        for field in (
+            "account_recovery", "nested_plan", "provider_attempt",
+            "runtime_ledger_row",
+        ):
             with self.subTest(field=field):
                 changed = json.loads(json.dumps(plan))
                 changed["attempt"][field] = {"changed": True}
@@ -2888,6 +2952,44 @@ class ReleaseTransactionTest(unittest.TestCase):
                     RELEASE.ReleaseError, "recovery plan is invalid",
                 ):
                     RELEASE.validate_qualification_recovery_plan(changed)
+
+    def test_qualification_recovery_plan_binds_provider_account_policy(self) -> None:
+        plan = self.recovery_plan()
+        changed = json.loads(json.dumps(plan))
+        changed["attempt"]["provider_attempt_sha256"] = "3" * 64
+        changed = RELEASE.seal_plan({
+            key: value for key, value in changed.items() if key != "approval_sha256"
+        })
+        with self.assertRaisesRegex(RELEASE.ReleaseError, "recovery plan is invalid"):
+            RELEASE.validate_qualification_recovery_plan(changed)
+
+        matching = json.loads(json.dumps(plan))
+        account = matching["attempt"]["account_recovery"]
+        account["database"]["state"] = "present"
+        account["database_sha256"] = RELEASE.digest(account["database"])
+        account["lease"] = {
+            "account_route": "cursor-primary",
+            "lease_id": "attempt-1-account",
+            "policy_sha256": "8" * 64,
+            "trust_scope": "qualification-candidate",
+        }
+        account["lease_sha256"] = RELEASE.digest(account["lease"])
+        account["status"] = "planned"
+        matching = RELEASE.seal_plan({
+            key: value for key, value in matching.items() if key != "approval_sha256"
+        })
+        RELEASE.validate_qualification_recovery_plan(matching)
+
+        mismatched = json.loads(json.dumps(matching))
+        mismatched["attempt"]["account_recovery"]["lease"]["policy_sha256"] = "9" * 64
+        mismatched["attempt"]["account_recovery"]["lease_sha256"] = RELEASE.digest(
+            mismatched["attempt"]["account_recovery"]["lease"],
+        )
+        mismatched = RELEASE.seal_plan({
+            key: value for key, value in mismatched.items() if key != "approval_sha256"
+        })
+        with self.assertRaisesRegex(RELEASE.ReleaseError, "recovery plan is invalid"):
+            RELEASE.validate_qualification_recovery_plan(mismatched)
 
     def test_qualification_recovery_uses_source_launcher_account_database(self) -> None:
         lane = {
@@ -2916,6 +3018,55 @@ class ReleaseTransactionTest(unittest.TestCase):
             (ROOT / "scripts/factory-launch").read_text(encoding="utf-8"),
         )
 
+    def test_qualification_recovery_applies_exact_account_child(self) -> None:
+        attempt_id = "1787640905-99999999-cli"
+        lane = {
+            "active": {
+                "kit_sha": "5" * 40, "project": "relay",
+                "runtime_ledger_path": str(self.root / "runtime-ledger.csv"),
+            },
+            "controller": self.root / "controller",
+            "product": self.product, "provider": self.root / "provider",
+            "root": self.root / "qualification",
+        }
+        database = {
+            "path": str(Path.home() / ".factory/accounting/cursor-account-admission-v1.sqlite3"),
+            "state": "present",
+        }
+        lease = {
+            "account_route": "cursor-primary",
+            "lease_id": f"{attempt_id}-account", "state": "active",
+            "trust_scope": "qualification-candidate",
+        }
+        plan = {
+            "database": database, "database_sha256": RELEASE.digest(database),
+            "lease": lease, "lease_sha256": RELEASE.digest(lease),
+            "schema": "factory-cursor-account-recovery/v1", "status": "planned",
+        }
+        result = {
+            "database_sha256": plan["database_sha256"],
+            "lease_id": lease["lease_id"], "lease_sha256": plan["lease_sha256"],
+            "schema": "factory-cursor-account-recovery/v1", "status": "absent",
+        }
+        with mock.patch.object(
+            RELEASE, "run_json", side_effect=[plan, result],
+        ) as command:
+            self.assertEqual(
+                RELEASE.qualification_account_recovery_preview(
+                    lane, attempt_id, "cursor-primary",
+                ),
+                plan,
+            )
+            self.assertEqual(
+                RELEASE.qualification_account_recovery_apply(
+                    lane, attempt_id, plan, 7, 8,
+                ),
+                result,
+            )
+        self.assertIn("account-recover-preview", command.call_args_list[0].args[0])
+        self.assertIn("account-recover-apply", command.call_args_list[1].args[0])
+        self.assertIn(plan["lease_sha256"], command.call_args_list[1].args[0])
+
     def test_qualification_recovery_reuses_validated_existing_cancellation(self) -> None:
         runs = self.product / "factory/runs"
         runs.mkdir(parents=True)
@@ -2935,7 +3086,10 @@ class ReleaseTransactionTest(unittest.TestCase):
             "product": self.product, "provider": self.root / "provider",
             "root": self.root / "qualification",
         }
-        provider_attempt = {"attempt_id": "attempt-1", "version": 4}
+        provider_attempt = {
+            "account_route": "cursor-primary", "attempt_id": "attempt-1",
+            "version": 4,
+        }
         with (
             mock.patch.object(
                 RELEASE, "qualification_attempt_cancel",
@@ -2947,6 +3101,10 @@ class ReleaseTransactionTest(unittest.TestCase):
             ),
             mock.patch.object(
                 RELEASE, "run_json", return_value={"attempts": [provider_attempt]},
+            ),
+            mock.patch.object(
+                RELEASE, "qualification_account_recovery_preview",
+                return_value=self.account_recovery_plan(),
             ),
             mock.patch.object(
                 RELEASE, "qualification_recovery_row", return_value={"run_id": "run-1"},
@@ -2981,7 +3139,10 @@ class ReleaseTransactionTest(unittest.TestCase):
             "product": self.product, "provider": self.root / "provider",
             "root": self.root / "qualification",
         }
-        provider_attempt = {"attempt_id": "attempt-1", "version": 4}
+        provider_attempt = {
+            "account_route": "cursor-primary", "attempt_id": "attempt-1",
+            "version": 4,
+        }
         with (
             mock.patch.object(
                 RELEASE, "qualification_attempt_cancel",
@@ -2994,6 +3155,10 @@ class ReleaseTransactionTest(unittest.TestCase):
             mock.patch.object(
                 RELEASE, "run_json", return_value={"attempts": [provider_attempt]},
             ) as provider,
+            mock.patch.object(
+                RELEASE, "qualification_account_recovery_preview",
+                return_value=self.account_recovery_plan(),
+            ),
             mock.patch.object(
                 RELEASE, "qualification_recovery_row", return_value={"run_id": "run-1"},
             ),
@@ -3022,7 +3187,8 @@ class ReleaseTransactionTest(unittest.TestCase):
         runs.mkdir(parents=True)
         run_id = "1787640905-99999999-cli"
         provider_attempt = {
-            "attempt_id": run_id, "state": "reserved", "version": 2,
+            "account_route": "cursor-primary", "attempt_id": run_id,
+            "state": "reserved", "version": 2,
         }
         nested_plan = {
             "preview_hash": "2" * 64,
@@ -3043,6 +3209,18 @@ class ReleaseTransactionTest(unittest.TestCase):
             ),
             mock.patch.object(
                 RELEASE, "run_json", return_value={"attempts": [provider_attempt]},
+            ),
+            mock.patch.object(
+                RELEASE, "qualification_account_recovery_preview",
+                return_value=self.account_recovery_plan(run_id),
+            ),
+            mock.patch.object(
+                RELEASE, "qualification_recovery_quiescence",
+                return_value={
+                    "active_claims": 0, "active_run_controls": 0,
+                    "active_sibling_provider_attempts": 0,
+                    "provider_workers": 0,
+                },
             ),
             mock.patch.object(
                 RELEASE, "qualification_recovery_manifest",
@@ -3144,7 +3322,7 @@ class ReleaseTransactionTest(unittest.TestCase):
             RELEASE.qualification_recovery_apply(args)
         cancel.assert_not_called()
 
-    def test_qualification_recovery_replays_nested_receipt_exactly(self) -> None:
+    def test_qualification_recovery_retries_nested_failure_and_replays_receipt(self) -> None:
         plan = self.recovery_plan()
         state = RELEASE.qualification_recovery_state(
             Path(plan["request"]["root"]), "relay", self.sha, "T-1", "run-1",
@@ -3181,26 +3359,314 @@ class ReleaseTransactionTest(unittest.TestCase):
         )
         nested = {"accounting_state": "cancelled_conservative",
                   "preview_hash": "2" * 64}
+        account = self.account_recovery_result(plan)
+        order = []
+
+        def recover_account(*_args):
+            order.append("account")
+            return account
+
+        nested_results = iter((RELEASE.ReleaseError("nested failure"), nested))
+
+        def cancel_attempt(*_args):
+            order.append("nested")
+            result = next(nested_results)
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+        sibling = self.product / "factory/.dispatch-leases/T-2.json"
+        RELEASE.atomic_json(sibling, {
+            "claimed_epoch": 1, "expires_epoch": 2,
+            "lease_id": "7" * 64, "schema_version": 1, "ticket": "T-2",
+        })
         with (
             mock.patch.object(
                 RELEASE, "qualification_recovery_identity",
                 return_value=(plan["identity"], module, lane, args.repo),
             ),
             mock.patch.object(
-                RELEASE, "qualification_attempt_cancel", return_value=nested,
+                RELEASE, "qualification_attempt_cancel",
+                side_effect=cancel_attempt,
             ) as cancel,
+            mock.patch.object(
+                RELEASE, "qualification_account_recovery_apply",
+                side_effect=recover_account,
+            ) as account_apply,
+            mock.patch.object(
+                RELEASE, "qualification_recovery_revalidate_provider_only",
+            ),
         ):
+            with self.assertRaisesRegex(RELEASE.ReleaseError, "nested failure"):
+                RELEASE.qualification_recovery_apply(args)
             first = RELEASE.qualification_recovery_apply(args)
+            RELEASE.atomic_json(
+                state / "cleanup.json", first["receipt"]["cleanup_result"],
+            )
             second = RELEASE.qualification_recovery_apply(args)
         self.assertEqual(first, second)
         self.assertEqual(first["status"], "recovered")
         self.assertEqual(cancel.call_count, 2)
+        self.assertEqual(account_apply.call_count, 2)
+        self.assertEqual(order, ["account", "nested", "account", "nested"])
         self.assertTrue(all(
             call.args[4] >= 0 and call.args[5] >= 0
             for call in cancel.call_args_list
         ))
         self.assertFalse((state / "nested-plan.json").exists())
+        self.assertFalse((self.product / "factory/.dispatch-leases/T-1.json").exists())
+        self.assertTrue(sibling.exists())
+        self.assertFalse((self.product / "factory/.launch.lock").exists())
+        self.assertFalse((self.product / "factory/.dispatch-leases.lock").exists())
+        self.assertFalse((state / "cleanup.json").exists())
+        self.assertEqual(
+            first["receipt"]["cleanup_result"]["dispatch_lease_result"], "released",
+        )
         module.lock_dispatch_boundaries.assert_not_called()
+
+    def test_qualification_recovery_normal_account_replay_leaves_dispatch_untouched(
+        self,
+    ) -> None:
+        plan = json.loads(json.dumps(self.recovery_plan()))
+        attempt = plan["attempt"]
+        account = attempt["account_recovery"]
+        account["database"]["state"] = "present"
+        account["database_sha256"] = RELEASE.digest(account["database"])
+        account["lease"] = {
+            "account_route": "cursor-primary", "lease_id": "attempt-1-account",
+            "policy_sha256": "8" * 64,
+            "trust_scope": "qualification-candidate",
+        }
+        account["lease_sha256"] = RELEASE.digest(account["lease"])
+        account["status"] = "planned"
+        attempt.update({
+            "dispatch_lease": None, "dispatch_lease_sha256": None,
+            "lane_quiescence": None, "launch_lock": None,
+            "nested_plan": {"preview_hash": "2" * 64},
+            "runtime_ledger_row": {"run_id": "run-1", "ticket": "T-1"},
+        })
+        plan = RELEASE.seal_plan({
+            key: value for key, value in plan.items() if key != "approval_sha256"
+        })
+        RELEASE.validate_qualification_recovery_plan(plan)
+
+        state = RELEASE.qualification_recovery_state(
+            Path(plan["request"]["root"]), "relay", self.sha, "T-1", "run-1",
+        )
+        RELEASE.atomic_json(
+            state / "plans" / f"{plan['approval_sha256']}.json", plan,
+        )
+        runs = self.product / "factory/runs"
+        runs.mkdir()
+        RELEASE.atomic_json(runs / "run-1.cancel-request.json", {
+            "plan": attempt["nested_plan"],
+            "requested_at": "2026-08-23T12:00:00Z",
+            "schema": "nysa.software-factory.attempt-cancel-request/v1",
+        })
+        nested_path = runs / "run-1.cancel.json"
+        RELEASE.atomic_json(nested_path, {"preview_hash": "2" * 64})
+
+        lease_path = self.product / "factory/.dispatch-leases/T-1.json"
+        launch_path = self.product / "factory/.launch.lock"
+        lease_lock_path = self.product / "factory/.dispatch-leases.lock"
+        lease_lock_path.mkdir(mode=0o700)
+        lease_before = RELEASE.qualification_recovery_dispatch_lease(
+            lease_path, "T-1", int(time.time()),
+        )
+        launch_before = RELEASE.qualification_recovery_empty_directory(
+            launch_path, "qualification launch lock",
+        )
+        lease_lock_before = RELEASE.qualification_recovery_empty_directory(
+            lease_lock_path, "qualification dispatch lease lock",
+        )
+
+        lane = {
+            "controller": self.root / "controller", "product": self.product,
+            "root": Path(plan["request"]["root"]),
+        }
+        module = mock.Mock()
+        module.lock_controllers.side_effect = lambda *_: [
+            os.open(os.devnull, os.O_RDONLY)
+        ]
+        module.lock_dispatch_admission.side_effect = lambda *_: [
+            os.open(os.devnull, os.O_RDONLY)
+        ]
+        args = argparse.Namespace(
+            approve_hash=plan["approval_sha256"], failed_run="run-1",
+            operator_id="tester", product=self.product, project="relay",
+            repo=self.root / "factory", root=lane["root"], sha=self.sha,
+            ticket="T-1",
+        )
+        account_result = self.account_recovery_result(plan)
+        nested_result = {
+            "accounting_state": "cancelled_conservative",
+            "preview_hash": "2" * 64,
+        }
+        nested_results = iter((RELEASE.ReleaseError("nested failure"), nested_result))
+        order = []
+
+        def recover_account(*_args):
+            order.append("account")
+            return account_result
+
+        def cancel_attempt(*_args):
+            order.append("nested")
+            result = next(nested_results)
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+        with (
+            mock.patch.object(
+                RELEASE, "qualification_recovery_identity",
+                return_value=(plan["identity"], module, lane, args.repo),
+            ),
+            mock.patch.object(
+                RELEASE, "qualification_account_recovery_apply",
+                side_effect=recover_account,
+            ) as account_apply,
+            mock.patch.object(
+                RELEASE, "qualification_attempt_cancel", side_effect=cancel_attempt,
+            ) as cancel,
+        ):
+            with self.assertRaisesRegex(RELEASE.ReleaseError, "nested failure"):
+                RELEASE.qualification_recovery_apply(args)
+            first = RELEASE.qualification_recovery_apply(args)
+            RELEASE.atomic_json(
+                state / "cleanup.json", first["receipt"]["cleanup_result"],
+            )
+            replay = RELEASE.qualification_recovery_apply(args)
+
+        self.assertEqual(first, replay)
+        self.assertEqual(order, ["nested", "nested", "account"])
+        self.assertEqual(account_apply.call_count, 1)
+        self.assertEqual(cancel.call_count, 2)
+        self.assertIsNone(first["receipt"]["cleanup_result"]["lease_lock"])
+        self.assertEqual(
+            first["receipt"]["cleanup_result"]["dispatch_lease_result"], "absent",
+        )
+        self.assertEqual(
+            RELEASE.qualification_recovery_dispatch_lease(
+                lease_path, "T-1", int(time.time()),
+            ),
+            lease_before,
+        )
+        self.assertEqual(
+            RELEASE.qualification_recovery_empty_directory(
+                launch_path, "qualification launch lock",
+            ),
+            launch_before,
+        )
+        self.assertEqual(
+            RELEASE.qualification_recovery_empty_directory(
+                lease_lock_path, "qualification dispatch lease lock",
+            ),
+            lease_lock_before,
+        )
+        self.assertFalse((state / "cleanup.json").exists())
+
+    def test_qualification_recovery_cleanup_replays_interrupted_unlinks(self) -> None:
+        plan = self.recovery_plan()
+        state = RELEASE.qualification_recovery_state(
+            Path(plan["request"]["root"]), "relay", self.sha, "T-1", "run-1",
+        )
+        cleanup, lease_lock = RELEASE.qualification_recovery_cleanup_begin(
+            state, plan, self.product,
+        )
+        (self.product / "factory/.dispatch-leases/T-1.json").unlink()
+        (self.product / "factory/.launch.lock").rmdir()
+        replayed = RELEASE.qualification_recovery_cleanup_apply(
+            state, plan, self.product, cleanup,
+        )
+        RELEASE.qualification_recovery_cleanup_unlock(
+            lease_lock, replayed["lease_lock"],
+        )
+        self.assertEqual(replayed["status"], "complete")
+        self.assertEqual(replayed["dispatch_lease_result"], "released")
+        self.assertEqual(replayed["launch_lock_result"], "released")
+
+    def test_qualification_recovery_cleanup_refuses_tampered_complete_journal(
+        self,
+    ) -> None:
+        plan = self.recovery_plan()
+        state = RELEASE.qualification_recovery_state(
+            Path(plan["request"]["root"]), "relay", self.sha, "T-1", "run-1",
+        )
+        cleanup, lease_lock = RELEASE.qualification_recovery_cleanup_begin(
+            state, plan, self.product,
+        )
+        cleanup = RELEASE.qualification_recovery_cleanup_apply(
+            state, plan, self.product, cleanup,
+        )
+        RELEASE.qualification_recovery_cleanup_unlock(
+            lease_lock, cleanup["lease_lock"],
+        )
+
+        mutations = (
+            ("result", {**cleanup, "dispatch_lease_result": "absent"}),
+            ("extra", {**cleanup, "unexpected": True}),
+        )
+        for name, changed in mutations:
+            with self.subTest(name=name):
+                RELEASE.atomic_json(state / "cleanup.json", changed)
+                with self.assertRaisesRegex(
+                    RELEASE.ReleaseError, "recovery cleanup changed",
+                ):
+                    RELEASE.qualification_recovery_cleanup_begin(
+                        state, plan, self.product,
+                    )
+
+    def test_qualification_recovery_cleanup_adopts_only_before_cancellation(self) -> None:
+        first = self.recovery_plan()
+        state = RELEASE.qualification_recovery_state(
+            Path(first["request"]["root"]), "relay", self.sha, "T-1", "run-1",
+        )
+        cleanup, lease_lock = RELEASE.qualification_recovery_cleanup_begin(
+            state, first, self.product,
+        )
+        RELEASE.qualification_recovery_cleanup_unlock(
+            lease_lock, cleanup["lease_lock"],
+        )
+
+        second = json.loads(json.dumps(first))
+        second.pop("approval_sha256")
+        second["request"]["operator_id"] = "second-operator"
+        second = RELEASE.seal_plan(second)
+        adopted, lease_lock = RELEASE.qualification_recovery_cleanup_begin(
+            state, second, self.product,
+        )
+        self.assertEqual(adopted["approval_history"], [first["approval_sha256"]])
+        self.assertEqual(adopted["approval_sha256"], second["approval_sha256"])
+        RELEASE.qualification_recovery_cleanup_unlock(
+            lease_lock, adopted["lease_lock"],
+        )
+
+        runs = self.product / "factory/runs"
+        runs.mkdir(exist_ok=True)
+        RELEASE.atomic_json(runs / "run-1.cancel-request.json", {"begun": True})
+        third = json.loads(json.dumps(second))
+        third.pop("approval_sha256")
+        third["request"]["operator_id"] = "third-operator"
+        third = RELEASE.seal_plan(third)
+        with self.assertRaisesRegex(
+            RELEASE.ReleaseError, "cleanup belongs to another plan",
+        ):
+            RELEASE.qualification_recovery_cleanup_begin(
+                state, third, self.product,
+            )
+        self.assertFalse(
+            (self.product / "factory/.dispatch-leases.lock").exists()
+        )
+
+    def test_qualification_recovery_cleanup_refuses_changed_launch_lock(self) -> None:
+        plan = self.recovery_plan()
+        launch_lock = self.product / "factory/.launch.lock"
+        launch_lock.chmod(0o755)
+        state = RELEASE.qualification_recovery_state(
+            Path(plan["request"]["root"]), "relay", self.sha, "T-1", "run-1",
+        )
+        with self.assertRaisesRegex(RELEASE.ReleaseError, "cleanup resources changed"):
+            RELEASE.qualification_recovery_cleanup_begin(state, plan, self.product)
 
     def test_factory_kit_forwards_only_sealed_qualification_recovery_arguments(self) -> None:
         self.root.chmod(0o700)

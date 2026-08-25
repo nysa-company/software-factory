@@ -38,10 +38,10 @@ QUALIFICATION_JOURNAL_SCHEMA = "nysa.software-factory.qualification-migration-jo
 QUALIFICATION_RESULT_SCHEMA = "nysa.software-factory.qualification-migration-result/v1"
 QUALIFICATION_RECEIPT_SCHEMA = "nysa.software-factory.qualification-migration-receipt/v1"
 QUALIFICATION_RECOVERY_PLAN_SCHEMA = (
-    "nysa.software-factory.qualification-attempt-recovery-plan/v1"
+    "nysa.software-factory.qualification-attempt-recovery-plan/v2"
 )
 QUALIFICATION_RECOVERY_RECEIPT_SCHEMA = (
-    "nysa.software-factory.qualification-attempt-recovery-receipt/v1"
+    "nysa.software-factory.qualification-attempt-recovery-receipt/v2"
 )
 QUALIFICATION_RECOVERY_RESULT_SCHEMA = (
     "nysa.software-factory.qualification-attempt-recovery-result/v1"
@@ -5072,6 +5072,7 @@ def qualification_recovery_environment(
         "FACTORY_DURABLE_LEDGER": str(lane["product"] / "factory/ledger.csv"),
         "FACTORY_CROSS_RELEASE_SOURCE_SHA": source_sha,
         "FACTORY_CROSS_RELEASE_PRODUCT_ID": f"{project}:{source_sha}",
+        "FACTORY_KIT_TRUST_SCOPE": "qualification-candidate",
         "FACTORY_DISPATCH_ADMISSION_LOCK": str(
             lane["root"] / "worktrees" / project / ".dispatch-admission.lock"
         ),
@@ -5106,6 +5107,90 @@ def qualification_attempt_cancel(
     )
 
 
+def qualification_account_recovery_valid(
+    value: Any, attempt_id: str, account_database: str | None = None,
+    account_route: str | None = None,
+) -> bool:
+    lease_id = f"{attempt_id}-account"
+    if not isinstance(value, dict):
+        return False
+    database, lease = value.get("database"), value.get("lease")
+    return not (
+        set(value) != {
+            "database", "database_sha256", "lease", "lease_sha256",
+            "schema", "status",
+        }
+        or value.get("schema") != "factory-cursor-account-recovery/v1"
+        or value.get("status") not in {"absent", "planned"}
+        or not isinstance(database, dict)
+        or not isinstance(database.get("path"), str)
+        or not Path(database["path"]).is_absolute()
+        or account_database is not None and database["path"] != account_database
+        or value.get("database_sha256") != digest(database)
+        or not DIGEST.fullmatch(str(value.get("lease_sha256", "")))
+        or value["status"] == "absent" and (
+            lease is not None
+            or value["lease_sha256"] != digest({
+                "lease_id": lease_id, "state": "absent",
+            })
+        )
+        or value["status"] == "planned" and (
+            not isinstance(lease, dict)
+            or lease.get("lease_id") != lease_id
+            or lease.get("trust_scope") != "qualification-candidate"
+            or account_route is not None and lease.get("account_route") != account_route
+            or digest(lease) != value["lease_sha256"]
+            or database.get("state") != "present"
+        )
+    )
+
+
+def qualification_account_recovery_preview(
+    lane: dict[str, Any], attempt_id: str, account_route: str,
+) -> dict[str, Any]:
+    environment = qualification_recovery_environment(lane)
+    account_database = environment["FACTORY_CURSOR_ACCOUNT_DB"]
+    value = run_json([
+        sys.executable, str(TRANSACTION_ROOT / "scripts/provider-coordinator.py"),
+        "--db", environment["FACTORY_PROVIDER_DB"],
+        "--account-db", account_database,
+        "account-recover-preview", "--lease-id", f"{attempt_id}-account",
+    ], "qualification account recovery preview", environment=environment, timeout=30)
+    if not qualification_account_recovery_valid(
+        value, attempt_id, account_database, account_route,
+    ):
+        raise ReleaseError("qualification account recovery preview is invalid")
+    return value
+
+
+def qualification_account_recovery_apply(
+    lane: dict[str, Any], attempt_id: str, plan: dict[str, Any],
+    admission_descriptor: int, controller_descriptor: int,
+) -> dict[str, Any]:
+    environment = qualification_recovery_environment(
+        lane, admission_descriptor, controller_descriptor,
+    )
+    lease_id = f"{attempt_id}-account"
+    value = run_json([
+        sys.executable, str(TRANSACTION_ROOT / "scripts/provider-coordinator.py"),
+        "--db", environment["FACTORY_PROVIDER_DB"],
+        "--account-db", environment["FACTORY_CURSOR_ACCOUNT_DB"],
+        "account-recover-apply", "--lease-id", lease_id,
+        "--expected-database-sha256", plan["database_sha256"],
+        "--expected-lease-sha256", plan["lease_sha256"],
+    ], "qualification account recovery apply", environment=environment, timeout=30)
+    expected = {
+        "database_sha256": plan["database_sha256"],
+        "lease_id": lease_id,
+        "lease_sha256": plan["lease_sha256"],
+        "schema": "factory-cursor-account-recovery/v1",
+        "status": "absent",
+    }
+    if value != expected:
+        raise ReleaseError("qualification account recovery result is invalid")
+    return value
+
+
 def qualification_recovery_manifest(path: Path) -> dict[str, str]:
     try:
         text = secure_regular_bytes(path, "qualification recovery manifest").decode()
@@ -5135,6 +5220,377 @@ def qualification_recovery_optional_digest(path: Path, label: str) -> str | None
     if not path.exists() and not path.is_symlink():
         return None
     return hashlib.sha256(secure_regular_bytes(path, label)).hexdigest()
+
+
+def qualification_recovery_quiescence(
+    lane: dict[str, Any], selected_attempt: str,
+) -> dict[str, Any]:
+    def require_empty(path: Path, label: str) -> None:
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            return
+        if (
+            path.is_symlink() or not stat.S_ISDIR(info.st_mode)
+            or info.st_uid != os.geteuid() or info.st_mode & 0o022
+        ):
+            raise ReleaseError(f"{label} is unsafe")
+        if any(path.iterdir()):
+            raise ReleaseError(f"{label} is not drained")
+
+    runtime = Path(lane["active"]["runtime_ledger_path"])
+    active_runs = runtime.parent / ".active-runs"
+    require_empty(active_runs, "qualification active-run state")
+    runs = lane["product"] / "factory/runs"
+    if not runs.is_dir() or runs.is_symlink():
+        raise ReleaseError("qualification run state is unsafe")
+    active_patterns = (
+        "*.pid", "*.wrapper", ".*.ready", ".*.go", ".*.gate", ".*.submitted",
+    )
+    if any(candidate for pattern in active_patterns for candidate in runs.glob(pattern)):
+        raise ReleaseError("qualification run state is not drained")
+    require_empty(
+        lane["provider"] / "provider-attempts",
+        "qualification provider worker state",
+    )
+    environment = qualification_recovery_environment(lane)
+    status = run_json([
+        sys.executable, str(TRANSACTION_ROOT / "scripts/provider-coordinator.py"),
+        "--db", environment["FACTORY_PROVIDER_DB"], "status",
+    ], "qualification provider quiescence", environment=environment, timeout=30)
+    attempts = status.get("attempts")
+    if not isinstance(attempts, list) or any(
+        not isinstance(item, dict) for item in attempts
+    ):
+        raise ReleaseError("qualification provider quiescence is invalid")
+    siblings = [
+        item for item in attempts
+        if item.get("attempt_id") != selected_attempt
+        and item.get("state") in {"prepared", "reserved", "GO", "submitted"}
+    ]
+    if siblings:
+        raise ReleaseError("qualification sibling provider work is not drained")
+    return {
+        "active_claims": 0, "active_run_controls": 0,
+        "active_sibling_provider_attempts": 0, "provider_workers": 0,
+    }
+
+
+def qualification_recovery_dispatch_lease(
+    path: Path, ticket: str, now: int,
+) -> dict[str, Any] | None:
+    try:
+        before = path.lstat()
+    except FileNotFoundError:
+        return None
+    raw = secure_regular_bytes(path, "qualification dispatch lease")
+    try:
+        value = json.loads(raw)
+        after = path.lstat()
+    except (json.JSONDecodeError, UnicodeError, FileNotFoundError) as error:
+        raise ReleaseError("qualification dispatch lease is invalid") from error
+    if (
+        not isinstance(value, dict)
+        or canonical(value) != raw
+        or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+        != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+        or set(value) != {
+            "claimed_epoch", "expires_epoch", "lease_id", "schema_version", "ticket",
+        }
+        or value.get("schema_version") != 1
+        or value.get("ticket") != ticket
+        or not DIGEST.fullmatch(str(value.get("lease_id", "")))
+        or isinstance(value.get("claimed_epoch"), bool)
+        or not isinstance(value.get("claimed_epoch"), int)
+        or isinstance(value.get("expires_epoch"), bool)
+        or not isinstance(value.get("expires_epoch"), int)
+        or value["expires_epoch"] <= value["claimed_epoch"]
+        or value["expires_epoch"] > now
+    ):
+        raise ReleaseError("qualification dispatch lease is not exact and expired")
+    return {
+        "claimed_epoch": value["claimed_epoch"],
+        "dev": before.st_dev,
+        "expires_epoch": value["expires_epoch"],
+        "ino": before.st_ino,
+        "lease_id": value["lease_id"],
+        "mode": stat.S_IMODE(before.st_mode),
+        "mtime_ns": before.st_mtime_ns,
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "size": before.st_size,
+        "ticket": ticket,
+        "uid": before.st_uid,
+    }
+
+
+def qualification_recovery_empty_directory(
+    path: Path, label: str,
+) -> dict[str, int] | None:
+    try:
+        before = path.lstat()
+    except FileNotFoundError:
+        return None
+    try:
+        entries = os.listdir(path)
+        after = path.lstat()
+    except OSError as error:
+        raise ReleaseError(f"{label} is unsafe") from error
+    if (
+        path.is_symlink() or not stat.S_ISDIR(before.st_mode)
+        or before.st_uid != os.geteuid() or stat.S_IMODE(before.st_mode) & 0o022
+        or entries
+        or (
+            before.st_dev, before.st_ino, before.st_mode, before.st_nlink,
+            before.st_uid, before.st_mtime_ns,
+        ) != (
+            after.st_dev, after.st_ino, after.st_mode, after.st_nlink,
+            after.st_uid, after.st_mtime_ns,
+        )
+    ):
+        raise ReleaseError(f"{label} is unsafe")
+    return {
+        "dev": before.st_dev,
+        "ino": before.st_ino,
+        "mode": stat.S_IMODE(before.st_mode),
+        "mtime_ns": before.st_mtime_ns,
+        "nlink": before.st_nlink,
+        "uid": before.st_uid,
+    }
+
+
+def qualification_recovery_cleanup_begin(
+    state: Path, plan: dict[str, Any], product: Path,
+) -> tuple[dict[str, Any], Path | None]:
+    path = state / "cleanup.json"
+    lease_lock = product / "factory/.dispatch-leases.lock"
+    provider_only = (
+        plan["attempt"]["nested_plan"].get("schema")
+        == "nysa.software-factory.provider-only-attempt-cancel-plan/v1"
+    )
+    expected = {
+        "approval_sha256": plan["approval_sha256"],
+        "dispatch_lease": plan["attempt"]["dispatch_lease"],
+        "launch_lock": plan["attempt"]["launch_lock"],
+        "schema": "nysa.software-factory.qualification-recovery-cleanup/v1",
+    }
+
+    def validate_resources(status: str) -> None:
+        lease = product / f"factory/.dispatch-leases/{plan['request']['ticket']}.json"
+        launch_lock = product / "factory/.launch.lock"
+        current_lease = qualification_recovery_dispatch_lease(
+            lease, plan["request"]["ticket"], int(time.time()),
+        )
+        current_launch = qualification_recovery_empty_directory(
+            launch_lock, "qualification launch lock",
+        )
+        valid = (
+            status == "begun"
+            and current_lease in (expected["dispatch_lease"], None)
+            and current_launch == expected["launch_lock"]
+        ) or (
+            status == "lease_removed"
+            and current_lease is None
+            and current_launch in (expected["launch_lock"], None)
+        ) or (
+            status == "complete"
+            and current_lease is None
+            and current_launch is None
+        )
+        if not valid:
+            raise ReleaseError("qualification recovery cleanup resources changed")
+
+    if path.exists() or path.is_symlink():
+        cleanup = safe_state(path, "qualification recovery cleanup")
+        history = cleanup.get("approval_history")
+        status = cleanup.get("status")
+        base_keys = {
+            "approval_history", "approval_sha256", "dispatch_lease",
+            "launch_lock", "lease_lock", "schema", "status",
+        }
+        expected_keys = base_keys | (
+            {"dispatch_lease_result", "launch_lock_result"}
+            if status == "complete" else set()
+        )
+        adopted_from: str | None = None
+        if (
+            set(cleanup) != expected_keys
+            or any(
+                cleanup.get(key) != expected[key]
+                for key in ("dispatch_lease", "launch_lock", "schema")
+            )
+            or status not in (
+                {"begun", "lease_removed", "complete"}
+                if provider_only else {"begun", "complete"}
+            )
+            or (
+                not isinstance(cleanup.get("lease_lock"), dict)
+                if provider_only else cleanup.get("lease_lock") is not None
+            )
+            or not isinstance(history, list) or len(history) > 16
+            or any(not DIGEST.fullmatch(str(item)) for item in history)
+            or len(history) != len(set(history))
+            or status == "complete" and (
+                cleanup.get("dispatch_lease_result") != (
+                    "released" if expected["dispatch_lease"] is not None else "absent"
+                )
+                or cleanup.get("launch_lock_result") != (
+                    "released" if expected["launch_lock"] is not None else "absent"
+                )
+            )
+        ):
+            raise ReleaseError("qualification recovery cleanup changed")
+        if cleanup.get("approval_sha256") != expected["approval_sha256"]:
+            runs = product / "factory/runs"
+            if (
+                cleanup["status"] != "begun"
+                or any(
+                    (runs / f"{plan['request']['failed_run']}.{suffix}.json").exists()
+                    or (runs / f"{plan['request']['failed_run']}.{suffix}.json").is_symlink()
+                    for suffix in ("cancel-request", "cancel")
+                )
+                or not DIGEST.fullmatch(str(cleanup.get("approval_sha256", "")))
+                or cleanup["approval_sha256"] in history
+                or len(history) >= 16
+            ):
+                raise ReleaseError("qualification recovery cleanup belongs to another plan")
+            adopted_from = cleanup["approval_sha256"]
+        if not provider_only:
+            if adopted_from is not None:
+                cleanup = {
+                    **cleanup,
+                    "approval_history": [*history, adopted_from],
+                    "approval_sha256": expected["approval_sha256"],
+                }
+                atomic_json(path, cleanup)
+            return cleanup, None
+        current_lock = qualification_recovery_empty_directory(
+            lease_lock, "qualification dispatch lease lock",
+        )
+        if current_lock is None:
+            if cleanup["status"] == "complete":
+                validate_resources("complete")
+                return cleanup, None
+            try:
+                lease_lock.mkdir(mode=0o700)
+            except FileExistsError as error:
+                raise ReleaseError("qualification dispatch lease lock is busy") from error
+            current_lock = qualification_recovery_empty_directory(
+                lease_lock, "qualification dispatch lease lock",
+            )
+            if current_lock is None:
+                raise ReleaseError("qualification dispatch lease lock is unavailable")
+            cleanup = {**cleanup, "lease_lock": current_lock}
+            atomic_json(path, cleanup)
+        elif current_lock != cleanup["lease_lock"]:
+            raise ReleaseError("qualification recovery cleanup lock changed")
+        try:
+            validate_resources(cleanup["status"])
+        except Exception:
+            qualification_recovery_cleanup_unlock(lease_lock, current_lock)
+            raise
+        if adopted_from is not None:
+            cleanup = {
+                **cleanup,
+                "approval_history": [*history, adopted_from],
+                "approval_sha256": expected["approval_sha256"],
+            }
+            atomic_json(path, cleanup)
+        return cleanup, lease_lock
+
+    if not provider_only:
+        cleanup = {
+            **expected, "approval_history": [], "lease_lock": None,
+            "status": "begun",
+        }
+        atomic_json(path, cleanup)
+        return cleanup, None
+
+    try:
+        lease_lock.mkdir(mode=0o700)
+    except FileExistsError as error:
+        raise ReleaseError("qualification dispatch lease lock is busy") from error
+    try:
+        lock_identity = qualification_recovery_empty_directory(
+            lease_lock, "qualification dispatch lease lock",
+        )
+        if lock_identity is None:
+            raise ReleaseError("qualification dispatch lease lock is unavailable")
+        validate_resources("begun")
+        cleanup = {
+            **expected, "approval_history": [], "lease_lock": lock_identity,
+            "status": "begun",
+        }
+        atomic_json(path, cleanup)
+    except Exception:
+        lease_lock.rmdir()
+        raise
+    return cleanup, lease_lock
+
+
+def qualification_recovery_cleanup_apply(
+    state: Path, plan: dict[str, Any], product: Path, cleanup: dict[str, Any],
+) -> dict[str, Any]:
+    path = state / "cleanup.json"
+    provider_only = (
+        plan["attempt"]["nested_plan"].get("schema")
+        == "nysa.software-factory.provider-only-attempt-cancel-plan/v1"
+    )
+    if not provider_only:
+        if cleanup["status"] == "begun":
+            cleanup = {
+                **cleanup, "dispatch_lease_result": "absent",
+                "launch_lock_result": "absent", "status": "complete",
+            }
+            atomic_json(path, cleanup)
+        return cleanup
+    lease = product / f"factory/.dispatch-leases/{plan['request']['ticket']}.json"
+    launch_lock = product / "factory/.launch.lock"
+    if cleanup["status"] == "begun":
+        current = qualification_recovery_dispatch_lease(
+            lease, plan["request"]["ticket"], int(time.time()),
+        )
+        if current is not None and current != cleanup["dispatch_lease"]:
+            raise ReleaseError("qualification dispatch lease changed before cleanup")
+        if current is not None:
+            lease.unlink()
+            sync_directory(lease.parent)
+        cleanup = {**cleanup, "status": "lease_removed"}
+        atomic_json(path, cleanup)
+    if cleanup["status"] == "lease_removed":
+        current = qualification_recovery_empty_directory(
+            launch_lock, "qualification launch lock",
+        )
+        if current is not None and current != cleanup["launch_lock"]:
+            raise ReleaseError("qualification launch lock changed before cleanup")
+        if current is not None:
+            launch_lock.rmdir()
+            sync_directory(launch_lock.parent)
+        cleanup = {
+            **cleanup,
+            "dispatch_lease_result": (
+                "released" if cleanup["dispatch_lease"] is not None else "absent"
+            ),
+            "launch_lock_result": (
+                "released" if cleanup["launch_lock"] is not None else "absent"
+            ),
+            "status": "complete",
+        }
+        atomic_json(path, cleanup)
+    return cleanup
+
+
+def qualification_recovery_cleanup_unlock(
+    path: Path | None, expected: dict[str, Any] | None,
+) -> None:
+    if path is None:
+        return
+    current = qualification_recovery_empty_directory(
+        path, "qualification dispatch lease lock",
+    )
+    if current != expected:
+        raise ReleaseError("qualification recovery cleanup lock changed")
+    path.rmdir()
+    sync_directory(path.parent)
 
 
 def qualification_recovery_identity(
@@ -5266,20 +5722,43 @@ def qualification_recovery_attempt(
         or attempts[0].get("attempt_id") != provider_attempt
     ):
         raise ReleaseError("qualification provider attempt identity is invalid")
+    account_route = attempts[0].get("account_route", "")
+    if not SAFE_ID.fullmatch(str(account_route)):
+        raise ReleaseError("qualification provider account route is invalid")
+    account_recovery = qualification_account_recovery_preview(
+        lane, provider_attempt, account_route,
+    )
     runtime = Path(lane["active"]["runtime_ledger_path"])
     claim = (
         None if provider_only else runtime.parent / ".active-runs"
         / f"{ticket}.{manifest.get('role', '')}.lock/owner"
     )
     lease = lane["product"] / f"factory/.dispatch-leases/{ticket}.json"
+    lane_quiescence = (
+        qualification_recovery_quiescence(lane, provider_attempt)
+        if provider_only else None
+    )
+    dispatch_lease = (
+        qualification_recovery_dispatch_lease(lease, ticket, int(time.time()))
+        if provider_only else None
+    )
     return {
+        "account_recovery": account_recovery,
         "active_claim_sha256": None if claim is None else (
             qualification_recovery_optional_digest(
                 claim, "qualification active-run owner",
             )
         ),
-        "dispatch_lease_sha256": qualification_recovery_optional_digest(
-            lease, "qualification dispatch lease",
+        "dispatch_lease": dispatch_lease,
+        "dispatch_lease_sha256": (
+            None if dispatch_lease is None else dispatch_lease["sha256"]
+        ),
+        "lane_quiescence": lane_quiescence,
+        "launch_lock": (
+            qualification_recovery_empty_directory(
+                lane["product"] / "factory/.launch.lock",
+                "qualification launch lock",
+            ) if provider_only else None
         ),
         "nested_plan": nested,
         "provider_attempt": attempts[0],
@@ -5293,6 +5772,11 @@ def qualification_recovery_attempt(
 def validate_qualification_recovery_plan(plan: dict[str, Any]) -> None:
     body = {key: value for key, value in plan.items() if key != "approval_sha256"}
     request = plan.get("request")
+    attempt = plan.get("attempt")
+    provider_attempt = (
+        attempt.get("provider_attempt") if isinstance(attempt, dict) else None
+    )
+    nested_plan = attempt.get("nested_plan") if isinstance(attempt, dict) else None
     if (
         set(plan) != {
             "approval_sha256", "attempt", "created_epoch", "expires_epoch",
@@ -5308,7 +5792,58 @@ def validate_qualification_recovery_plan(plan: dict[str, Any]) -> None:
             "ticket", "failed_run",
         }
         or not isinstance(plan.get("identity"), dict)
-        or not isinstance(plan.get("attempt"), dict)
+        or not isinstance(attempt, dict)
+        or set(attempt) != {
+            "account_recovery", "active_claim_sha256", "dispatch_lease",
+            "dispatch_lease_sha256", "lane_quiescence", "launch_lock",
+            "nested_plan", "provider_attempt", "provider_attempt_sha256",
+            "runtime_ledger_row",
+        }
+        or not isinstance(attempt.get("account_recovery"), dict)
+        or not isinstance(provider_attempt, dict)
+        or attempt.get("provider_attempt_sha256") != digest(provider_attempt)
+        or not isinstance(nested_plan, dict)
+        or not SAFE_ID.fullmatch(str(provider_attempt.get("account_route", "")))
+        or not qualification_account_recovery_valid(
+            attempt.get("account_recovery"),
+            str(provider_attempt.get("attempt_id", "")),
+            account_route=str(provider_attempt.get("account_route", "")),
+        )
+        or (
+            attempt["account_recovery"].get("status") == "planned"
+            and attempt["account_recovery"]["lease"].get("policy_sha256")
+            != provider_attempt.get("policy_sha256")
+        )
+        or (
+            nested_plan.get("schema")
+            != "nysa.software-factory.provider-only-attempt-cancel-plan/v1"
+            and (
+                attempt.get("lane_quiescence") is not None
+                or attempt.get("dispatch_lease") is not None
+                or attempt.get("launch_lock") is not None
+            )
+        )
+        or (
+            nested_plan.get("schema")
+            == "nysa.software-factory.provider-only-attempt-cancel-plan/v1"
+            and attempt.get("lane_quiescence") != {
+                "active_claims": 0, "active_run_controls": 0,
+                "active_sibling_provider_attempts": 0, "provider_workers": 0,
+            }
+        )
+        or (
+            attempt.get("dispatch_lease") is None
+            and attempt.get("dispatch_lease_sha256") is not None
+        )
+        or (
+            isinstance(attempt.get("dispatch_lease"), dict)
+            and attempt["dispatch_lease"].get("sha256")
+            != attempt.get("dispatch_lease_sha256")
+        )
+        or attempt.get("dispatch_lease") is not None
+        and not isinstance(attempt.get("dispatch_lease"), dict)
+        or attempt.get("launch_lock") is not None
+        and not isinstance(attempt.get("launch_lock"), dict)
         or not isinstance(plan.get("created_epoch"), int)
         or not isinstance(plan.get("expires_epoch"), int)
         or plan["expires_epoch"] <= plan["created_epoch"]
@@ -5365,10 +5900,13 @@ def qualification_recovery_plan(args: argparse.Namespace) -> dict[str, Any]:
 
 def qualification_recovery_receipt(
     state: Path, plan: dict[str, Any], nested: dict[str, Any], nested_path: Path,
+    account: dict[str, Any], cleanup: dict[str, Any],
 ) -> dict[str, Any]:
     body = {
+        "account_recovery_result": account,
         "approval_sha256": plan["approval_sha256"],
         "candidate_sha": plan["identity"]["candidate_sha"],
+        "cleanup_result": cleanup,
         "nested_receipt_sha256": file_digest(nested_path),
         "nested_result": nested,
         "product_sha": plan["identity"]["product_sha"],
@@ -5384,6 +5922,72 @@ def qualification_recovery_receipt(
             raise ReleaseError("qualification recovery receipt changed")
     else:
         atomic_json(path, receipt)
+    return receipt
+
+
+def qualification_recovery_revalidate_provider_only(
+    lane: dict[str, Any], plan: dict[str, Any], admission_descriptor: int,
+    controller_descriptor: int,
+) -> None:
+    nested = plan["attempt"]["nested_plan"]
+    if (
+        nested.get("schema")
+        != "nysa.software-factory.provider-only-attempt-cancel-plan/v1"
+    ):
+        return
+    if qualification_recovery_quiescence(
+        lane, plan["attempt"]["provider_attempt"]["attempt_id"],
+    ) != plan["attempt"]["lane_quiescence"]:
+        raise ReleaseError("qualification lane changed before account recovery")
+    current = qualification_attempt_cancel(TRANSACTION_ROOT, lane, [
+        "preview", "--factory-root", str(lane["product"]),
+        "--ticket", plan["request"]["ticket"],
+        "--run-id", plan["request"]["failed_run"],
+        "--reason", nested["reason"],
+    ], "qualification cancellation revalidation", admission_descriptor,
+        controller_descriptor)
+    if current != nested:
+        raise ReleaseError("qualification cancellation changed before account recovery")
+
+
+def qualification_recovery_existing_receipt(
+    state: Path, plan: dict[str, Any], nested_path: Path,
+) -> dict[str, Any] | None:
+    path = state / "receipt.json"
+    if not path.exists() and not path.is_symlink():
+        return None
+    receipt = safe_state(path, "qualification recovery receipt")
+    body = dict(receipt)
+    supplied = body.pop("receipt_sha256", "")
+    cleanup = receipt.get("cleanup_result")
+    account = receipt.get("account_recovery_result")
+    account_plan = plan["attempt"]["account_recovery"]
+    expected_account = {
+        "database_sha256": account_plan["database_sha256"],
+        "lease_id": f"{plan['attempt']['provider_attempt']['attempt_id']}-account",
+        "lease_sha256": account_plan["lease_sha256"],
+        "schema": "factory-cursor-account-recovery/v1",
+        "status": "absent",
+    }
+    if (
+        receipt.get("schema") != QUALIFICATION_RECOVERY_RECEIPT_SCHEMA
+        or not DIGEST.fullmatch(str(supplied)) or digest(body) != supplied
+        or receipt.get("approval_sha256") != plan["approval_sha256"]
+        or receipt.get("candidate_sha") != plan["identity"]["candidate_sha"]
+        or receipt.get("product_sha") != plan["identity"]["product_sha"]
+        or receipt.get("source_sha") != plan["identity"]["source_sha"]
+        or receipt.get("run_id") != plan["request"]["failed_run"]
+        or receipt.get("ticket") != plan["request"]["ticket"]
+        or account != expected_account
+        or not isinstance(cleanup, dict) or cleanup.get("status") != "complete"
+        or cleanup.get("approval_sha256") != plan["approval_sha256"]
+        or cleanup.get("dispatch_lease") != plan["attempt"]["dispatch_lease"]
+        or cleanup.get("launch_lock") != plan["attempt"]["launch_lock"]
+        or not nested_path.exists() or nested_path.is_symlink()
+        or receipt.get("nested_receipt_sha256")
+        != secure_regular_digest(nested_path, "qualification cancellation receipt")
+    ):
+        raise ReleaseError("qualification recovery receipt changed")
     return receipt
 
 
@@ -5409,6 +6013,8 @@ def qualification_recovery_apply(args: argparse.Namespace) -> dict[str, Any]:
         raise ReleaseError("qualification recovery immutable inputs changed")
     controllers: list[int] = []
     admission: list[int] = []
+    cleanup_lock: Path | None = None
+    cleanup_lock_identity: dict[str, Any] | None = None
     try:
         controllers = module.lock_controllers(lane["controller"])
         admission = module.lock_dispatch_admission(lane, lane)
@@ -5420,11 +6026,39 @@ def qualification_recovery_apply(args: argparse.Namespace) -> dict[str, Any]:
         runs = lane["product"] / "factory/runs"
         request_path = runs / f"{args.failed_run}.cancel-request.json"
         nested_receipt_path = runs / f"{args.failed_run}.cancel.json"
+        existing_receipt = qualification_recovery_existing_receipt(
+            state, plan, nested_receipt_path,
+        )
+        if existing_receipt is not None:
+            cleanup_path = state / "cleanup.json"
+            if cleanup_path.exists() or cleanup_path.is_symlink():
+                cleanup, cleanup_lock = qualification_recovery_cleanup_begin(
+                    state, plan, lane["product"],
+                )
+                if cleanup != existing_receipt["cleanup_result"]:
+                    raise ReleaseError("qualification recovery cleanup changed")
+                cleanup_lock_identity = cleanup["lease_lock"]
+                qualification_recovery_cleanup_unlock(
+                    cleanup_lock, cleanup_lock_identity,
+                )
+                cleanup_lock = None
+                cleanup_lock_identity = None
+                cleanup_path.unlink()
+                sync_directory(cleanup_path.parent)
+            return {
+                "receipt": existing_receipt,
+                "schema": QUALIFICATION_RECOVERY_RESULT_SCHEMA,
+                "status": "recovered",
+            }
         begun = request_path.exists() and not request_path.is_symlink()
         completed = nested_receipt_path.exists() and not nested_receipt_path.is_symlink()
+        cleanup_started = (
+            (state / "cleanup.json").exists()
+            or (state / "cleanup.json").is_symlink()
+        )
         if completed and not begun:
             raise ReleaseError("qualification cancellation replay is incomplete")
-        if not begun and not completed:
+        if not begun and not completed and not cleanup_started:
             if plan["expires_epoch"] <= int(time.time()):
                 raise ReleaseError("qualification recovery approval plan is stale")
             if qualification_recovery_attempt(
@@ -5435,6 +6069,23 @@ def qualification_recovery_apply(args: argparse.Namespace) -> dict[str, Any]:
             request = safe_state(request_path, "attempt cancellation request")
             if request.get("plan") != plan["attempt"].get("nested_plan"):
                 raise ReleaseError("attempt cancellation request belongs to another plan")
+        cleanup, cleanup_lock = qualification_recovery_cleanup_begin(
+            state, plan, lane["product"],
+        )
+        cleanup_lock_identity = cleanup["lease_lock"]
+        qualification_recovery_revalidate_provider_only(
+            lane, plan, admission[0], controllers[0],
+        )
+        provider_only = (
+            plan["attempt"]["nested_plan"].get("schema")
+            == "nysa.software-factory.provider-only-attempt-cancel-plan/v1"
+        )
+        account = None
+        if provider_only:
+            account = qualification_account_recovery_apply(
+                lane, plan["attempt"]["provider_attempt"]["attempt_id"],
+                plan["attempt"]["account_recovery"], admission[0], controllers[0],
+            )
         nested_plan_path = state / "nested-plan.json"
         atomic_json(nested_plan_path, plan["attempt"]["nested_plan"])
         try:
@@ -5445,16 +6096,38 @@ def qualification_recovery_apply(args: argparse.Namespace) -> dict[str, Any]:
             ], "qualification cancellation apply", admission[0], controllers[0])
         finally:
             nested_plan_path.unlink(missing_ok=True)
-        receipt = qualification_recovery_receipt(
-            state, plan, nested, nested_receipt_path,
+        if not provider_only:
+            account = qualification_account_recovery_apply(
+                lane, plan["attempt"]["provider_attempt"]["attempt_id"],
+                plan["attempt"]["account_recovery"], admission[0], controllers[0],
+            )
+        cleanup = qualification_recovery_cleanup_apply(
+            state, plan, lane["product"], cleanup,
         )
+        receipt = qualification_recovery_receipt(
+            state, plan, nested, nested_receipt_path, account, cleanup,
+        )
+        qualification_recovery_cleanup_unlock(
+            cleanup_lock, cleanup_lock_identity,
+        )
+        cleanup_lock = None
+        cleanup_lock_identity = None
+        cleanup_path = state / "cleanup.json"
+        cleanup_path.unlink()
+        sync_directory(cleanup_path.parent)
         return {"receipt": receipt, "schema": QUALIFICATION_RECOVERY_RESULT_SCHEMA,
                 "status": "recovered"}
     finally:
-        for descriptor in admission:
-            os.close(descriptor)
-        for descriptor in controllers:
-            os.close(descriptor)
+        try:
+            if cleanup_lock_identity is not None:
+                qualification_recovery_cleanup_unlock(
+                    cleanup_lock, cleanup_lock_identity,
+                )
+        finally:
+            for descriptor in admission:
+                os.close(descriptor)
+            for descriptor in controllers:
+                os.close(descriptor)
 
 
 def main() -> int:
