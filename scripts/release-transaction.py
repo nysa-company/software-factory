@@ -122,6 +122,12 @@ def digest(value: Any) -> str:
     return hashlib.sha256(canonical(value)).hexdigest()
 
 
+def coordinator_digest(value: Any) -> str:
+    return hashlib.sha256(json.dumps(
+        value, ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+    ).encode()).hexdigest()
+
+
 def file_digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -5165,11 +5171,11 @@ def qualification_account_recovery_valid(
         or not isinstance(database.get("path"), str)
         or not Path(database["path"]).is_absolute()
         or account_database is not None and database["path"] != account_database
-        or value.get("database_sha256") != digest(database)
+        or value.get("database_sha256") != coordinator_digest(database)
         or not DIGEST.fullmatch(str(value.get("lease_sha256", "")))
         or value["status"] == "absent" and (
             lease is not None
-            or value["lease_sha256"] != digest({
+            or value["lease_sha256"] != coordinator_digest({
                 "lease_id": lease_id, "state": "absent",
             })
         )
@@ -5178,7 +5184,7 @@ def qualification_account_recovery_valid(
             or lease.get("lease_id") != lease_id
             or lease.get("trust_scope") != "qualification-candidate"
             or account_route is not None and lease.get("account_route") != account_route
-            or digest(lease) != value["lease_sha256"]
+            or coordinator_digest(lease) != value["lease_sha256"]
             or database.get("state") != "present"
         )
     )

@@ -1252,6 +1252,9 @@ complete snapshot and receipt. The same nested preview runs against the
 immutable source lane and source launcher's exact global Cursor account
 database. GO, submission, charge, live or stale wrapper evidence, foreign
 identity, ambiguous account state, or partial records remain fail-closed.
+Coordinator account-recovery hashes retain the coordinator's compact canonical
+JSON bytes; the outer plan binds those hashes without reinterpreting them as
+newline-terminated release-plan objects.
 Doctor, controller reconciliation, and qualification drain or upgrade checks
 derive `.active-runs` from the same authenticated runtime-ledger parent used by
 the role wrapper; product-local fallback is used only when that is the bound

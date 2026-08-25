@@ -28,6 +28,12 @@ COORDINATOR_SPEC = importlib.util.spec_from_file_location(
 assert COORDINATOR_SPEC is not None and COORDINATOR_SPEC.loader is not None
 COORDINATOR_MODULE = importlib.util.module_from_spec(COORDINATOR_SPEC)
 COORDINATOR_SPEC.loader.exec_module(COORDINATOR_MODULE)
+RELEASE_SPEC = importlib.util.spec_from_file_location(
+    "provider_recovery_release", ROOT / "scripts/release-transaction.py",
+)
+assert RELEASE_SPEC is not None and RELEASE_SPEC.loader is not None
+RELEASE = importlib.util.module_from_spec(RELEASE_SPEC)
+RELEASE_SPEC.loader.exec_module(RELEASE)
 
 
 class ProviderCoordinatorTest(unittest.TestCase):
@@ -816,17 +822,17 @@ class ProviderCoordinatorTest(unittest.TestCase):
         ).split())
         try:
             admission = self.account_acquire(
-                "recover-exact", owner_pid=owner.pid, owner_pgid=owner.pid,
+                "recover-exact-account", owner_pid=owner.pid, owner_pgid=owner.pid,
                 owner_start=owner_start,
             )
             self.assertTrue(admission["admitted"])
             self.assertTrue(self.account_bind_runtime(
-                "recover-exact", runtime.pid, runtime_start,
+                "recover-exact-account", runtime.pid, runtime_start,
                 owner_pid=owner.pid, owner_pgid=owner.pid,
                 owner_start=owner_start,
             )["bound"])
             self.assertTrue(self.account_validate(
-                "recover-exact", runtime.pid, runtime_start,
+                "recover-exact-account", runtime.pid, runtime_start,
                 admission["lease"]["policy_sha256"], owner_pid=owner.pid,
                 owner_pgid=owner.pid, owner_start=owner_start,
             )["valid"])
@@ -834,18 +840,26 @@ class ProviderCoordinatorTest(unittest.TestCase):
             owner.terminate()
             owner.wait(timeout=3)
             runtime_live = self.account_recover_preview(
-                "recover-exact", check=False,
+                "recover-exact-account", check=False,
             )
             self.assertEqual(runtime_live["status"], "error")
             self.assertIn("still live", runtime_live["error"])
             runtime.terminate()
             runtime.wait(timeout=3)
 
-            preview = self.account_recover_preview("recover-exact")
+            preview = self.account_recover_preview("recover-exact-account")
             self.assertEqual(preview["status"], "planned")
-            self.assertEqual(preview["lease"]["lease_id"], "recover-exact")
-            first = self.account_recover_apply("recover-exact", preview)
-            replay = self.account_recover_apply("recover-exact", preview)
+            self.assertEqual(preview["lease"]["lease_id"], "recover-exact-account")
+            self.assertTrue(RELEASE.qualification_account_recovery_valid(
+                preview, "recover-exact", str(self.account_db), "account-a",
+            ))
+            changed = json.loads(json.dumps(preview))
+            changed["lease"]["state"] = "waiting"
+            self.assertFalse(RELEASE.qualification_account_recovery_valid(
+                changed, "recover-exact", str(self.account_db), "account-a",
+            ))
+            first = self.account_recover_apply("recover-exact-account", preview)
+            replay = self.account_recover_apply("recover-exact-account", preview)
             self.assertEqual(first, replay)
             self.assertEqual(first["status"], "absent")
             status = self.account_command("account-status")
@@ -855,7 +869,7 @@ class ProviderCoordinatorTest(unittest.TestCase):
             )
             self.assertEqual(
                 [item["lease_id"] for item in status["starts"]],
-                ["recover-exact"],
+                ["recover-exact-account"],
             )
             self.assertTrue(self.account_release("recover-sibling")["released"])
         finally:
@@ -898,13 +912,16 @@ class ProviderCoordinatorTest(unittest.TestCase):
 
             missing = self.root / "missing-account.sqlite3"
             absent = self.account_command(
-                "account-recover-preview", "--lease-id", "never-created",
+                "account-recover-preview", "--lease-id", "never-created-account",
                 account_db=missing,
             )
             self.assertEqual(absent["status"], "absent")
+            self.assertTrue(RELEASE.qualification_account_recovery_valid(
+                absent, "never-created", str(missing),
+            ))
             self.assertFalse(missing.exists())
             result = self.account_recover_apply(
-                "never-created", absent, account_db=missing,
+                "never-created-account", absent, account_db=missing,
             )
             self.assertEqual(result["status"], "absent")
             self.assertFalse(missing.exists())

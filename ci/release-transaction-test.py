@@ -2869,14 +2869,59 @@ class ReleaseTransactionTest(unittest.TestCase):
         }
         return {
             "database": database,
-            "database_sha256": RELEASE.digest(database),
+            "database_sha256": RELEASE.coordinator_digest(database),
             "lease": None,
-            "lease_sha256": RELEASE.digest({
+            "lease_sha256": RELEASE.coordinator_digest({
                 "lease_id": f"{attempt_id}-account", "state": "absent",
             }),
             "schema": "factory-cursor-account-recovery/v1",
             "status": "absent",
         }
+
+    def test_account_recovery_uses_coordinator_canonical_digest(self) -> None:
+        identity = {"lease_id": "attempt-1-account", "state": "absent"}
+        expected = hashlib.sha256(
+            b'{"lease_id":"attempt-1-account","state":"absent"}'
+        ).hexdigest()
+        self.assertEqual(RELEASE.coordinator_digest(identity), expected)
+        self.assertNotEqual(RELEASE.digest(identity), expected)
+        plan = self.account_recovery_plan()
+        self.assertTrue(RELEASE.qualification_account_recovery_valid(
+            plan, "attempt-1", plan["database"]["path"],
+        ))
+        plan["database"]["state"] = "present"
+        self.assertFalse(RELEASE.qualification_account_recovery_valid(
+            plan, "attempt-1", plan["database"]["path"],
+        ))
+        database = {"path": "/tmp/account.sqlite3", "state": "present"}
+        lease = {
+            "account_route": "cursor", "lease_id": "attempt-1-account",
+            "trust_scope": "qualification-candidate",
+        }
+        self.assertEqual(
+            RELEASE.coordinator_digest(database),
+            hashlib.sha256(b'{"path":"/tmp/account.sqlite3","state":"present"}').hexdigest(),
+        )
+        self.assertEqual(
+            RELEASE.coordinator_digest(lease), hashlib.sha256(
+                b'{"account_route":"cursor","lease_id":"attempt-1-account",'
+                b'"trust_scope":"qualification-candidate"}'
+            ).hexdigest(),
+        )
+        planned = {
+            "database": database,
+            "database_sha256": RELEASE.coordinator_digest(database),
+            "lease": lease, "lease_sha256": RELEASE.coordinator_digest(lease),
+            "schema": "factory-cursor-account-recovery/v1", "status": "planned",
+        }
+        self.assertTrue(RELEASE.qualification_account_recovery_valid(
+            planned, "attempt-1", database["path"], "cursor",
+        ))
+        planned["database_sha256"] = RELEASE.digest(database)
+        planned["lease_sha256"] = RELEASE.digest(lease)
+        self.assertFalse(RELEASE.qualification_account_recovery_valid(
+            planned, "attempt-1", database["path"], "cursor",
+        ))
 
     def recovery_plan(self) -> dict[str, object]:
         lease = self.product / "factory/.dispatch-leases/T-1.json"
@@ -2978,14 +3023,14 @@ class ReleaseTransactionTest(unittest.TestCase):
         matching = json.loads(json.dumps(plan))
         account = matching["attempt"]["account_recovery"]
         account["database"]["state"] = "present"
-        account["database_sha256"] = RELEASE.digest(account["database"])
+        account["database_sha256"] = RELEASE.coordinator_digest(account["database"])
         account["lease"] = {
             "account_route": "cursor-primary",
             "lease_id": "attempt-1-account",
             "policy_sha256": "8" * 64,
             "trust_scope": "qualification-candidate",
         }
-        account["lease_sha256"] = RELEASE.digest(account["lease"])
+        account["lease_sha256"] = RELEASE.coordinator_digest(account["lease"])
         account["status"] = "planned"
         matching = RELEASE.seal_plan({
             key: value for key, value in matching.items() if key != "approval_sha256"
@@ -2994,7 +3039,7 @@ class ReleaseTransactionTest(unittest.TestCase):
 
         mismatched = json.loads(json.dumps(matching))
         mismatched["attempt"]["account_recovery"]["lease"]["policy_sha256"] = "9" * 64
-        mismatched["attempt"]["account_recovery"]["lease_sha256"] = RELEASE.digest(
+        mismatched["attempt"]["account_recovery"]["lease_sha256"] = RELEASE.coordinator_digest(
             mismatched["attempt"]["account_recovery"]["lease"],
         )
         mismatched = RELEASE.seal_plan({
@@ -3051,8 +3096,9 @@ class ReleaseTransactionTest(unittest.TestCase):
             "trust_scope": "qualification-candidate",
         }
         plan = {
-            "database": database, "database_sha256": RELEASE.digest(database),
-            "lease": lease, "lease_sha256": RELEASE.digest(lease),
+            "database": database,
+            "database_sha256": RELEASE.coordinator_digest(database),
+            "lease": lease, "lease_sha256": RELEASE.coordinator_digest(lease),
             "schema": "factory-cursor-account-recovery/v1", "status": "planned",
         }
         result = {
@@ -3595,13 +3641,13 @@ class ReleaseTransactionTest(unittest.TestCase):
         attempt = plan["attempt"]
         account = attempt["account_recovery"]
         account["database"]["state"] = "present"
-        account["database_sha256"] = RELEASE.digest(account["database"])
+        account["database_sha256"] = RELEASE.coordinator_digest(account["database"])
         account["lease"] = {
             "account_route": "cursor-primary", "lease_id": "attempt-1-account",
             "policy_sha256": "8" * 64,
             "trust_scope": "qualification-candidate",
         }
-        account["lease_sha256"] = RELEASE.digest(account["lease"])
+        account["lease_sha256"] = RELEASE.coordinator_digest(account["lease"])
         account["status"] = "planned"
         attempt.update({
             "dispatch_lease": None, "dispatch_lease_sha256": None,

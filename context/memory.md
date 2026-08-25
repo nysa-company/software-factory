@@ -8193,3 +8193,13 @@ approved outer recovery under the controller/admission capability boundary can
 quarantine and remove it.
 The deterministic quarantine survives interruption without exposing the owner
 token; live, changed, malformed, sibling, or standalone cleanup remains closed.
+
+## 2026-08-25 — Decision 604: Provider recovery keeps coordinator hashes
+
+Category: Reliability
+
+Account-recovery database and lease hashes use the provider coordinator's
+compact canonical JSON bytes. The release transaction validates those exact
+producer hashes, then binds them unchanged inside its newline-terminated outer
+plan; neither side rehashes the other's authenticated objects with a different
+wire format.
