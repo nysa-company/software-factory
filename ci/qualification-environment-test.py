@@ -2014,6 +2014,51 @@ class QualificationEnvironmentTest(unittest.TestCase):
             (self.home / ".factory/qualification/.activation-start-relay.json").exists()
         )
 
+    def test_prepare_discards_start_after_pristine_validation_failure(self) -> None:
+        args = argparse.Namespace(
+            factory_root=self.factory, product_root=self.product,
+            project="relay", root=self.workspace / "invalid-root",
+        )
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError, "root must be under /private/tmp",
+        ):
+            ENVIRONMENT.prepare(args)
+        start = self.home / ".factory/qualification/.activation-start-relay.json"
+        self.assertFalse(start.exists())
+
+        invalid_factory = self.workspace / "invalid-factory"
+        invalid_factory.mkdir()
+        args.factory_root = invalid_factory
+        args.root = self.root
+
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError, "partial or promisor objects",
+        ):
+            ENVIRONMENT.prepare(args)
+
+        self.assertFalse(start.exists())
+        args.factory_root = self.factory
+        with (
+            mock.patch.object(ENVIRONMENT, "_prepare", side_effect=KeyboardInterrupt),
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            ENVIRONMENT.prepare(args)
+        self.assertFalse(start.exists())
+
+        args.factory_root = invalid_factory
+        ENVIRONMENT.activation_start(args, 1)
+        residue = self.root / "residue"
+        residue.write_text("present\n", encoding="utf-8")
+        args.factory_root = self.factory
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError, "activation start changed",
+        ):
+            ENVIRONMENT.prepare(args)
+        residue.unlink()
+
+        self.assertEqual(ENVIRONMENT.prepare(args)["status"], "prepared")
+        self.assertFalse(start.exists())
+
     def test_prepare_refuses_runtime_prefix_without_certification_plan(self) -> None:
         plan = self.product / "factory/certification-plan.json"
         plan.unlink()

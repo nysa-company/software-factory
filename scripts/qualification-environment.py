@@ -1079,13 +1079,30 @@ def activation_start(args: argparse.Namespace, observed_epoch_ns: int) -> tuple[
         digest = stored.pop("record_sha256", "")
         expected = {**value, "observed_at_epoch_ns": stored.get("observed_at_epoch_ns")}
         if (
-            stored != expected
+            set(stored) != set(value)
+            or stored.get("schema") != ACTIVATION_START_SCHEMA
+            or stored.get("project") != args.project
+            or any(
+                not isinstance(stored.get(key), str) or not stored[key]
+                for key in ("factory_root", "product_root", "qualification_root")
+            )
             or digest != hashlib.sha256(canonical(stored)).hexdigest()
             or not isinstance(stored["observed_at_epoch_ns"], int)
             or isinstance(stored["observed_at_epoch_ns"], bool)
             or stored["observed_at_epoch_ns"] < 1
         ):
             raise EnvironmentError("qualification activation start changed")
+        if stored != expected:
+            if not (
+                preparation_root_is_pristine(
+                    args.project, stored["qualification_root"],
+                )
+                and preparation_is_pristine(args)
+            ):
+                raise EnvironmentError("qualification activation start changed")
+            value["record_sha256"] = hashlib.sha256(canonical(value)).hexdigest()
+            replace(path, value)
+            return path, observed_epoch_ns
         return path, stored["observed_at_epoch_ns"]
     value["record_sha256"] = hashlib.sha256(canonical(value)).hexdigest()
     replace(path, value)
@@ -1118,6 +1135,35 @@ def preparation_state(root: Path, authority: Path | None, project: str) -> str:
     if authority_exists or root_populated:
         return "exact-incomplete"
     return "fresh"
+
+
+def preparation_root_is_pristine(project: str, raw_root: str) -> bool:
+    authority = Path.home().resolve(strict=True) / (
+        f".factory/qualification/{project}"
+    )
+    if authority.exists() or authority.is_symlink():
+        return False
+    root = Path(os.path.realpath(raw_root))
+    if not ROOT.fullmatch(str(root)):
+        return True
+    try:
+        info = root.lstat()
+        if (
+            root.is_symlink() or not stat.S_ISDIR(info.st_mode)
+            or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) & 0o022
+        ):
+            return False
+        return not any(root.iterdir())
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+
+
+def preparation_is_pristine(args: argparse.Namespace) -> bool:
+    return preparation_root_is_pristine(
+        args.project, os.path.realpath(args.root),
+    )
 
 
 def partial_authority_root(project: str) -> Path:
@@ -4410,7 +4456,12 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
     descriptor = lock_preparation(args.project)
     try:
         start_path, started_epoch_ns = activation_start(args, observed_epoch_ns)
-        result = _prepare(args, started_epoch_ns)
+        try:
+            result = _prepare(args, started_epoch_ns)
+        except BaseException:
+            if preparation_is_pristine(args):
+                remove_activation_start(start_path)
+            raise
         remove_activation_start(start_path)
         return result
     finally:
