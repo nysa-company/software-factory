@@ -164,7 +164,7 @@ case "${1:-}" in
   -p)
     [[ -z "${FACTORY_TEST_TRACE:-}" ]] || echo "claude-task" >> "$FACTORY_TEST_TRACE"
     if [[ "${STUB_CLAUDE_SPEND_LIMIT:-0}" == "1" ]]; then
-      echo '{"type":"result","subtype":"success","is_error":true,"stop_reason":"stop_sequence","terminal_reason":"api_error","api_error_status":429,"result":"You have reached your individual spend limit because account credit is exhausted","num_turns":4,"total_cost_usd":0.389103}'
+      echo '{"type":"result","subtype":"success","is_error":true,"stop_reason":"stop_sequence","terminal_reason":"api_error","api_error_status":429,"result":"You'\''ve hit your org'\''s monthly spend limit · run /usage-credits to ask your admin for a higher limit","num_turns":4,"total_cost_usd":0.389103}'
       exit 1
     fi
     echo '{"type":"result","num_turns":2,"total_cost_usd":0.10}'
@@ -1828,9 +1828,9 @@ if [[ "$SPEND_LIMIT_STATUS" -eq 1 && -n "$SPEND_LIMIT_META" ]] &&
    grep -q '^terminal_reason_code=provider_spend_limit$' "$SPEND_LIMIT_META" &&
    grep -q '^accounting_state=completed$' "$SPEND_LIMIT_META" &&
    grep -q '^effective_cost=0.389103$' "$SPEND_LIMIT_META"; then
-  pass "Claude individual spend limit is typed without losing accounting"
+  pass "Claude monthly spend limit is typed without losing accounting"
 else
-  fail "Claude individual spend limit is typed without losing accounting" \
+  fail "Claude monthly spend limit is typed without losing accounting" \
     "status=$SPEND_LIMIT_STATUS error=$(sed -n '1p' "$SPEND_LIMIT_ERR") reason=$(sed -n 's/^terminal_reason_code=//p' "$SPEND_LIMIT_META") accounting=$(sed -n 's/^accounting_state=//p' "$SPEND_LIMIT_META") cost=$(sed -n 's/^effective_cost=//p' "$SPEND_LIMIT_META")"
 fi
 

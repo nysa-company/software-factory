@@ -174,7 +174,7 @@ def terminal_reason_code(path: Path, adapter: str) -> str:
         or not isinstance(message, str)
         or re.fullmatch(
             r"(?i)(?=[^\r\n]{1,256}\Z)"
-            r"(?=[^\r\n]*\bindividual spend limit\b)"
+            r"(?=[^\r\n]*(?:\bindividual spend limit\b|\borg's monthly spend limit\b))"
             r"you[^\r\n]*",
             message,
         ) is None

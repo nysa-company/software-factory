@@ -1063,7 +1063,7 @@ the claim is blocked or cancelled. A role process that exits without its
 receipt-bound terminal does the same. Already-admitted siblings still drain and
 account once; no later role may start in the fixed cohort.
 The Claude adapter also classifies only its strict submitted 429 result shape
-with the bounded `individual spend limit` reason. Qualification latches that
+with the bounded `individual spend limit` or `org's monthly spend limit` reason. Qualification latches that
 typed, accounted `provider_failed` terminal at the same launch boundary. A
 dirty failure cell remains blocked evidence and is not exported as a clean
 passport checkpoint, so the provider failure cannot be replaced by a
