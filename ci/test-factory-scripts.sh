@@ -1710,11 +1710,14 @@ python3 "$ROOT/scripts/model-manager.py" activate \
   --state-root "$PINNED_STATE" --project pinned-test \
   --profile legacy-balanced-v1 --approve-hash "$LEGACY_HASH" \
   --approved-by test >/dev/null
+PINNED_READY="$TMP/pinned-ready-route"
+cp -R "$PINNED" "$PINNED_READY"
 PINNED_DOWN_GLOBAL="$TMP/pinned-down-global/global.env"
 write_backend_global "$PINNED_DOWN_GLOBAL" \
   "export FACTORY_PROBE_CLAUDE_CODE=UNAVAILABLE:pinned_outage"
 PINNED_PROBE_TRACE="$TMP/pinned-probes.trace"
 PINNED_TASK_TRACE="$TMP/pinned-task.trace"
+PINNED_RECEIPT="$(printf 'f%.0s' {1..64})"
 : > "$PINNED_PROBE_TRACE"
 : > "$PINNED_TASK_TRACE"
 PINNED_DOWN_STATUS=0
@@ -1723,15 +1726,33 @@ PATH="$STUB_BIN:$PATH" FACTORY_ROOT="$PINNED" \
   FACTORY_MODEL_STATE_ROOT="$PINNED_STATE" FACTORY_PROJECT=pinned-test \
   FACTORY_PROBE_TRACE="$PINNED_PROBE_TRACE" \
   FACTORY_TEST_TRACE="$PINNED_TASK_TRACE" \
+  FACTORY_TRANSITION_RECEIPT_SHA256="$PINNED_RECEIPT" \
   "$RUN_AGENT" --role planner --ticket T-219 -- "pinned outage" >/dev/null 2>&1 ||
   PINNED_DOWN_STATUS=$?
+PINNED_DOWN_META=("$PINNED"/factory/runs/*.meta)
 if [[ "$PINNED_DOWN_STATUS" -eq 6 &&
       "$(cat "$PINNED_PROBE_TRACE")" == "claude-code|sonnet" &&
-      ! -s "$PINNED_TASK_TRACE" ]] &&
-   ! compgen -G "$PINNED/factory/runs/*.meta" >/dev/null; then
-  pass "pinned outage stops without alternate probe, reservation, or task"
+      ! -s "$PINNED_TASK_TRACE" &&
+      "${#PINNED_DOWN_META[@]}" -eq 1 ]] &&
+   grep -q '^phase=abandoned$' "${PINNED_DOWN_META[0]}" &&
+   grep -q '^accounting_state=launch_void$' "${PINNED_DOWN_META[0]}" &&
+   grep -q '^reserved_usd=0$' "${PINNED_DOWN_META[0]}" &&
+   grep -q '^go_issued=0$' "${PINNED_DOWN_META[0]}" &&
+   grep -q '^task_submitted=0$' "${PINNED_DOWN_META[0]}" &&
+   grep -q '^effective_cost=0$' "${PINNED_DOWN_META[0]}" &&
+   grep -q '^cost_basis=launch_void$' "${PINNED_DOWN_META[0]}" &&
+   grep -q '^exit_status=6$' "${PINNED_DOWN_META[0]}" &&
+   grep -q '^ticket=T-219$' "${PINNED_DOWN_META[0]}" &&
+   grep -q '^role=planner$' "${PINNED_DOWN_META[0]}" &&
+   grep -q '^adapter=claude-code$' "${PINNED_DOWN_META[0]}" &&
+   grep -q '^route_id=claude-sonnet$' "${PINNED_DOWN_META[0]}" &&
+   grep -q '^selection_reason=pinned_route_plan$' "${PINNED_DOWN_META[0]}" &&
+   grep -q '^terminal_reason_code=pinned_route_readiness$' "${PINNED_DOWN_META[0]}" &&
+   grep -q "^transition_receipt_sha256=$PINNED_RECEIPT$" "${PINNED_DOWN_META[0]}" &&
+   [[ "$(awk -F, '$3=="T-219" && $4=="planner" && $5=="claude-code" && $8=="0" && $9=="6" && $13=="pinned_route_plan" && $14=="launch_void" {n++} END {print n+0}' "$PINNED/factory/runtime-ledger.csv")" -eq 1 ]]; then
+  pass "pinned outage terminalizes once without alternate probe, reservation, or task"
 else
-  fail "pinned outage stops without alternate probe, reservation, or task" \
+  fail "pinned outage terminalizes once without alternate probe, reservation, or task" \
     "status=$PINNED_DOWN_STATUS probes=$(cat "$PINNED_PROBE_TRACE")"
 fi
 
@@ -1741,14 +1762,14 @@ write_backend_global "$PINNED_READY_GLOBAL" \
 : > "$PINNED_PROBE_TRACE"
 : > "$PINNED_TASK_TRACE"
 PINNED_STATUS=0
-PATH="$STUB_BIN:$PATH" FACTORY_ROOT="$PINNED" \
+PATH="$STUB_BIN:$PATH" FACTORY_ROOT="$PINNED_READY" \
   FACTORY_GLOBAL_ENV="$PINNED_READY_GLOBAL" \
   FACTORY_MODEL_STATE_ROOT="$PINNED_STATE" FACTORY_PROJECT=pinned-test \
   FACTORY_PROBE_TRACE="$PINNED_PROBE_TRACE" \
   FACTORY_TEST_TRACE="$PINNED_TASK_TRACE" \
   "$RUN_AGENT" --role planner --ticket T-219 -- "pinned ready" >/dev/null 2>&1 ||
   PINNED_STATUS=$?
-PINNED_META="$(ls "$PINNED/factory/runs/"*.meta 2>/dev/null || true)"
+PINNED_META="$(ls "$PINNED_READY/factory/runs/"*.meta 2>/dev/null || true)"
 PINNED_SHA="$(shasum -a 256 "$PINNED_PLAN" | awk '{print $1}')"
 PINNED_POLICY_HASH="$(python3 -c \
   'import json,sys; print(json.load(open(sys.argv[1]))["resolution"]["policy_hash"])' \
@@ -1762,7 +1783,7 @@ if [[ "$PINNED_STATUS" -eq 0 && -n "$PINNED_META" &&
    grep -q '^transport=native-cli$' "$PINNED_META" &&
    grep -q "^policy_hash=$PINNED_POLICY_HASH$" "$PINNED_META" &&
    grep -q "^route_plan_sha256=$PINNED_SHA$" "$PINNED_META" &&
-   [[ "$(head -n1 "$PINNED/factory/runtime-ledger.csv")" == \
+   [[ "$(head -n1 "$PINNED_READY/factory/runtime-ledger.csv")" == \
       "$(ledger_header)" ]]; then
   pass "profile changes do not affect pinned runs and manifests record provenance"
 else
