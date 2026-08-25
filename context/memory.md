@@ -8,7 +8,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Durable decisions use repository-local numbering beginning at Decision 1.
 - Stable operating truth lives in `docs/`; prompts, templates, and evidence stay colocated with consumers. Test-author and Builder ticket-log bookkeeping uses separate commits from test and implementation changes, and their focused ticket checks run locally; Reviewer consumes protected CI without rerunning verification. The operator preflight hydrates only evidence-bound immutable objects, batches read-only object checks, compares selected Builder ownership with protected Ready tickets, aggregates activation blockers, and makes network review explicit before certification. Qualification validates selected remote branches and exact prior-cohort control retries before publication, lets an exact prepared Ready receipt supersede an older reset head while retaining that authorization as lineage proof across protected-main churn, shares protected dependency truth, counts only role-control evidence appended after its sealed product SHA, preserves one exact-head retry for a parked preview timeout, reacquires parked semantic or contract-repair authority only at apply, admits exact source-release receipt warnings to controller-owned migration, maintains idle successor leases during long roles, and does not rerun new-admission checks once its exact cohort is fully accounted for.
 - Failed-attempt preview, replay, and historical committed-role checks carry only unchanged tracked baseline symlinks whose tree, index, and filesystem targets agree; every added, removed, changed, staged, or untracked symlink remains fail-closed.
-- A submitted Claude individual or organization-monthly spend-limit terminal is release-typed, fully accounted, and qualification-latched before another role launch; dirty role evidence stays blocked and unexported rather than becoming a secondary clean-cell controller error.
+- A submitted Claude individual or organization-monthly spend-limit terminal and a strict Cursor zero-turn usage-exhaustion terminal are release-typed, fully accounted, and qualification-latched before another role launch; Cursor missing-result and timeout terminals retain their bounded reason, and operator watch explains whether to restore capacity or inspect provider availability. Dirty role evidence stays blocked and unexported rather than becoming a secondary clean-cell controller error.
 - Any nonrecoverable role terminal in a fixed qualification cohort latches the same atomic launch boundary before the claim blocks or cancels; bounded invalid-output, prior-release launch-void, direct-model identity, and authenticated Cursor fallback recovery remain runnable, while already-admitted siblings only drain and account.
 - Qualification fallback and finish are ticket-independent within the sealed cohort: one candidate-scoped role attempt may fall back, but a replaced transition receipt cannot reopen that role before an intervening same-role success; explicit v1 fallback migrates atomically under the same approval, and blocked siblings do not starve an independent typed wait or approval. Aggregate same-head retry accepts only the safe current or legacy Factory `ci` template grammar.
 - Recognized GitHub/Git transport loss is a typed wait, never a cohort defect. Exact remote confirmation and receipt/passport-bound replay resume post-provider role and publication commits without another model call; a disconnect inside a submitted provider attempt remains terminal-accounted and is not transport-replayed.
@@ -20,12 +20,12 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - A drained isolated successor lane upgrades through one signed `qualification upgrade` transaction: project runtime before preflight, exact host-child approval when needed, fallback revalidation, authenticated environment publication, and sealed Doctor within a cumulative 60-second machine budget. Identical replay returns one completion receipt and never advances generation twice; the manual child sequence is recovery-only.
 - Catchable dispatcher heartbeat shutdown is deferred across the atomic lease-renewal replacement, so TERM, INT, or HUP cannot strand a `.lease-*` entry; foreign or malformed residue remains fail-closed.
 - The local release canary is one code-driven, product-agnostic command that creates contained local origins, runs setup/resume, and times one authenticated Planning transition plus sealed mock planner; its repository-test evidence is never promotable.
-- Model routing is portfolio policy; routes pin at the ticket boundary and change only via the Contract 1.4 journal flow. Fresh Kit-SHA affinity is a canonical ticket-header field so later role evidence remains append-only; one valid legacy trailing pin stays read-only. One profile resolution shares model-independent native-adapter readiness across its routes and runs independent probes in bounded parallel; Cursor readiness stays model-specific. Sealed Cursor inventory verifies the exact configured selection and displayed provider label in a disposable owner-only home, then accepts only its bounded certified structure.
+- Model routing is portfolio policy; routes pin at the ticket boundary and change only via the Contract 1.4 journal flow. Fresh Kit-SHA affinity is a canonical ticket-header field so later role evidence remains append-only; one valid legacy trailing pin stays read-only. One profile resolution shares model-independent native-adapter readiness across its routes and runs independent probes in bounded parallel; Cursor readiness stays model-specific. Sealed Cursor inventory verifies the exact configured selection and displayed provider label in a disposable owner-only home, then accepts only the exact approved bare-version or legacy-prefixed one-line version shape.
 - Provider-free ticket readiness rejects tracked static SHA-256 path/digest tables over any Builder or Test-author-owned path unless the exact protected test is both a declared conflict and a Fixture-Seam; unrelated payload hashes/source reads do not collide, while semantic and dynamic source guards remain fail-closed Planner/Spec-linter work.
 - Ticket-bearing mutation CLIs reject noncanonical identifiers before release discovery or state. Ticket lifecycle decisions share one exact, known-State parser; operator actions validate before residue and again under their lock. Qualification Doctor reuses canonical ticket, product/tree, KIT_PIN/plan, protected-batch, receipt, passport, event, and runtime-residue validators read-only, accepts a selected Done ticket's historical Kit-SHA only through authenticated protected-terminal evidence, and suppresses provider probes on typed drift.
 - Reconciliation markers advance after every trusted progressed stage. A successor qualification may recover one older pre-refresh marker only when sealed retention authenticates its passport digest, one exact receipt-bound successful role is the sole run-snapshot delta, and the existing strict passport migration suffix reaches the clean remote checkpoint.
 - Linear is removed (Decision 398); the six operator authorities are one-use receipts via `factory-kit.sh operator ACTION`. Approval changes only the ignored operator map and owner-only receipt until trusted approval attestation records it in Git. An explicitly invoked isolated `qualification-finish` runs Doctor once at command entry, may approve only exact selected clean parked bundle checkpoints, then drives the existing publication, closeout, and reducer chain until green or a typed external wait. After its first authenticated external wait, it retains that waiter in independent 30-second reconcile-lock slices charged to one decreasing ten-minute epoch; polls inside a slice retain the lease, while slice expiry parks and releases it before any later slice. Paid live roles and untyped waits never enter this retention path. A paid role yields only after its durable active-run claim exists; pure provider execution remains under the wrapper's bound and does not consume the finisher's external-poll budget, while a mixed live and external wait charges both. The wrapper retains exact lease, heartbeat, reservation, and terminal-accounting ownership, and replay cannot submit the same receipt twice. A new invocation and authenticated contract recovery retain their fresh Doctor boundaries. Production and takeover retain separate human approval. Qualification may issue one manifest-selected successor resume only after the exact sealed compact-repair check, including the explicit isolated close after an authenticated contract-repair directive; that exact new authority rearms one abandoned targeted recovery attempt, while unchanged evidence cannot loop. Production has no lifecycle bypass.
-- The installed `factory` command is a preference-only human UI. Each opaque target binds one exact physical launcher plus project slug, including separate same-slug production and qualification targets; workflow labels and ticket fields come only from that launcher, and every Ready, approval, Doctor, or qualification-close action returns to its existing sealed authority.
+- The installed `factory` command is a preference-only human UI. Each opaque target binds one exact physical launcher plus project slug, including separate same-slug production and qualification targets; qualification trust authenticates its marker, active record, receipt digest, project/release identity, exact-mode nonescaping sealed Git tree, clean product HEAD/tree and origin, and authority/operator/provider/runtime bindings immediately around execution, while stable project-derived registration leaves one complete replacement. Workflow labels and ticket fields come only from that launcher, malformed values refuse without a traceback or object echo, failed Doctor output reconciles child checks and names bounded typed reasons plus the exact sealed evidence command, unknown post-action receipt outcomes say not to repeat and direct the operator to Doctor, and every Ready, approval, Doctor, or qualification-close action returns to its existing sealed authority.
 - The local operator console keeps supported approval hashes in its authenticated server session, and qualification resume reads its owner-only plan internally: operators approve an exact action without transcribing a digest, while sealed apply paths still recompute and validate the binding before mutation.
 - Fresh operator maps use an object-valued `_config` accepted by qualification, and nonvisual publication treats only exact current-ticket Ready audit receipts as metadata; foreign or malformed receipt paths remain semantic and fail closed.
 - Disjoint protected sibling refreshes recognize exact sibling Ready audit receipts and retain existing Reviewer/Narrator evidence. Done reuses exact approved-head checks only across a tree-identical authenticated merge with unchanged protected check policy; every mismatch or unavailable head result falls back to merge-commit evidence.
@@ -8227,3 +8227,50 @@ Service-manager or one-shot controller teardown therefore cannot kill paid
 work. Kill-switch recovery drains the complete wrapper group only when its
 identity proves the controller-owned `PID == PGID` shape; direct callers retain
 PID-only shutdown so unrelated host-group processes remain untouched.
+
+## 2026-08-25 — Cursor inventory accepts the current version shape
+
+Category: System change
+
+The disposable Cursor inventory probe accepts exactly either the current bare
+approved version line or the legacy `Cursor Agent`-prefixed line. Ownership,
+mode, link, size, stable-read, extra-line, and unsafe-byte checks remain
+unchanged.
+
+## 2026-08-25 — Decision 607: Provider capacity failures stay human-readable
+
+Category: Reliability
+
+The shared terminal classifier recognizes Claude's strict submitted 429 shape
+and Cursor's bounded zero-turn missing-result shape without retaining raw logs.
+An exact redacted Cursor action-required usage message becomes
+`provider_spend_limit`; typed timeouts keep their reason and other missing
+results become `provider_unavailable`. Operator watch explains the supported
+next step while accounting, fallback limits, and fail-closed recovery remain
+unchanged.
+
+## 2026-08-25 — Decision 608: Human control fails closed with usable evidence
+
+Category: Reliability
+
+The concise CLI names bounded failed Doctor checks and the exact sealed evidence
+command, and validates workflow and qualification-result types before membership
+checks. Qualification targets authenticate their existing marker, active record,
+receipt digest, exact project/release binding, and complete sealed Git tree.
+The owner-only parent-directory lock serializes directory-FD-anchored replacement
+and binds sibling retirement to validated file identities. A stable
+project-derived target ID removes normal multi-record replacement; one-time
+legacy convergence leaves exactly one target without lock-file residue.
+Once atomic target publication begins, any failure is reported as an unknown
+outcome with exact preparation replay; qualification preserves that bounded
+guidance instead of reducing it to a generic registration failure.
+
+## 2026-08-25 — Decision 609: Qualification fixtures preserve their trust boundary
+
+Category: Reliability
+
+Provider-free sealed Cursor concurrency tests seed explicit readiness instead
+of probing ambient inventory, so they cannot mutate their copied release or
+cascade after a missing route plan. Qualification launcher trust tests continue
+to use the supported `/private/tmp` root and skip only on platforms where that
+root does not exist; unrelated temporary fixtures use the platform temp root.

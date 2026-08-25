@@ -808,7 +808,10 @@ try:
          before.st_mtime_ns)
         != (after.st_dev, after.st_ino, after.st_mode, after.st_size,
             after.st_mtime_ns)
-        or raw != f"Cursor Agent {expected}\n".encode()
+        or raw not in {
+            f"Cursor Agent {expected}\n".encode(),
+            f"{expected}\n".encode(),
+        }
     ):
         raise OSError
 except (OSError, UnicodeError):

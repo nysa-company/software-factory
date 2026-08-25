@@ -375,6 +375,18 @@ def action_event(
         if isinstance(reason, str) and reason in TIMEOUT_REASONS:
             action = "progress_timeout"
             question = "Inspect progress evidence and choose a supported retry or repair."
+        elif reason == "provider_spend_limit":
+            action = "terminal_role_failure"
+            question = (
+                "Provider credits or usage are exhausted. Restore capacity before "
+                "using the supported recovery."
+            )
+        elif reason == "provider_unavailable":
+            action = "terminal_role_failure"
+            question = (
+                "The provider returned no successful result. Check provider status "
+                "or capacity before using the supported recovery."
+            )
         elif source.get("role_exit") == "role_exit_contract_blocked":
             action = "contract_blocker"
             question = "Resolve the role contract blocker before authorizing a resume."

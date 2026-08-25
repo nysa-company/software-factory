@@ -29,7 +29,7 @@ CATALOG = ROOT / "scripts/model-routing/catalog-v1.json"
 class CursorStreamTest(unittest.TestCase):
     def run_verdict(
         self,
-        events: list[dict],
+        events: list[dict | str],
         contract: str = "1.7.0",
         adapter: str = "cursor-anthropic",
     ) -> subprocess.CompletedProcess:
@@ -515,7 +515,10 @@ class CursorStreamTest(unittest.TestCase):
                     str(repeated_error_limit),
                     str(progress),
                 ],
-                input="".join(json.dumps(event) + "\n" for event in events),
+                input="".join(
+                    (event if isinstance(event, str) else json.dumps(event)) + "\n"
+                    for event in events
+                ),
                 text=True,
                 capture_output=True,
                 check=False,
@@ -523,6 +526,34 @@ class CursorStreamTest(unittest.TestCase):
             result.metrics = metrics.read_text()  # type: ignore[attr-defined]
             result.progress = progress.read_text()  # type: ignore[attr-defined]
             return result
+
+    def test_usage_exhaustion_gets_one_typed_parser_diagnostic(self) -> None:
+        exhausted = (
+            "ActionRequiredError: Increase limits for faster responses. "
+            "You're out of usage; increase your limit to continue."
+        )
+        result = self.run_stream(
+            [{"type": "system", "subtype": "init"}, exhausted], 0
+        )
+        self.assertEqual(result.returncode, 10)
+        self.assertIn(exhausted, result.stdout)
+        self.assertEqual(
+            result.stderr, "cursor stream provider usage exhausted\n"
+        )
+
+        for raw in (
+            "ActionRequiredError: ordinary provider failure",
+            exhausted + "\n" + exhausted,
+        ):
+            with self.subTest(raw=raw):
+                generic = self.run_stream(
+                    [{"type": "system", "subtype": "init"}, raw], 0
+                )
+                self.assertEqual(generic.returncode, 10)
+                self.assertEqual(
+                    generic.stderr,
+                    "cursor stream has no terminal success result\n",
+                )
 
     def test_exact_gpt_context_alias_normalizes_only_its_certified_route(self) -> None:
         events = [

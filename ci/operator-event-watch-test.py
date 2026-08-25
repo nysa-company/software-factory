@@ -99,6 +99,11 @@ class OperatorEventWatchTest(unittest.TestCase):
         self.assertEqual(second.returncode, 0, second.stderr)
         recovered = json.loads(second.stdout)
         self.assertEqual(recovered["action"], "terminal_role_failure")
+        self.assertEqual(
+            recovered["question"],
+            "The provider returned no successful result. Check provider status "
+            "or capacity before using the supported recovery.",
+        )
         repeated = self.run_watch(
             "--cursor", recovered["cursor"], "--idle-timeout-seconds", "0.2",
         )
@@ -373,6 +378,21 @@ class OperatorEventWatchTest(unittest.TestCase):
         self.assertEqual(
             [json.loads(line)["action"] for line in result.stdout.splitlines()],
             ["contract_blocker", "progress_timeout", "blocked_escalated"],
+        )
+
+    def test_spend_limit_tells_the_operator_to_restore_capacity(self) -> None:
+        self.write(self.source(
+            "role_blocked", role="spec-linter", role_exit="provider_failed",
+            run_id="run-spend-limit", terminal_reason_code="provider_spend_limit",
+        ))
+        result = self.run_watch("--limit", "1", "--idle-timeout-seconds", "1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        event = json.loads(result.stdout)
+        self.assertEqual(event["reason"], "provider_spend_limit")
+        self.assertEqual(
+            event["question"],
+            "Provider credits or usage are exhausted. Restore capacity before "
+            "using the supported recovery.",
         )
 
     def test_pre_go_and_generic_claim_blocks_are_typed_without_duplicates(

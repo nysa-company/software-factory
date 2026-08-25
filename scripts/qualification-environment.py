@@ -3822,7 +3822,7 @@ def register_human_target(
     cli = release / "scripts/factory-cli.py"
     if not cli.exists():
         return
-    target = f"qualification-{hashlib.sha256(str(root).encode()).hexdigest()[:24]}"
+    target = f"qualification-{hashlib.sha256(project.encode()).hexdigest()[:24]}"
     result = subprocess.run(
         ["/usr/bin/python3", "-I", "-S", str(cli), "register",
          target, str(launcher), project],
@@ -3834,6 +3834,14 @@ def register_human_target(
         },
     )
     if result.returncode:
+        if result.stderr.strip() == (
+            "factory: target registration outcome is unknown; rerun the same "
+            "exact Factory preparation"
+        ):
+            raise EnvironmentError(
+                "qualification human target registration outcome is unknown; "
+                "rerun the same exact Factory preparation"
+            )
         raise EnvironmentError("qualification human target registration failed")
 
 

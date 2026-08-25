@@ -25,8 +25,16 @@ qualification preparation registers its exact physical launcher separately;
 production and qualification may share a project slug. The human CLI stores an
 opaque target choice, obtains labels and ticket fields only through that exact
 launcher's validated workflow snapshot, and delegates all mutations back to the
-launcher. Missing or stale launcher paths are never rediscovered from an active
-record.
+launcher. Qualification target trust revalidates the owner-only marker, active
+record, receipt digest, exact project/release binding, and complete sealed Git
+tree plus its clean exact product HEAD/tree before and after executing that
+launcher; the release is exact-mode read-only and cannot contain escaping
+links, and the activation binds the exact product origin plus authenticated
+authority, operator, provider, and runtime paths. Qualification uses one stable
+project-derived target ID. Registration is
+serialized and directory-FD anchored, so concurrent or legacy replacement
+leaves one complete target without lock residue. Missing, stale, or changed
+launcher paths are never rediscovered from an active record.
 
 - **`factory/PROJECT.env`:** product name, exact `GH_REPO`, protected test paths, worktree location, ticket branch prefix, contract-1.3 `DONE_REQUIRED_CHECKS` (a unique comma-separated list of exact post-merge status/check names), required `AUTO_MERGE_METHOD` (`squash`, `merge`, or `rebase`), optional repository-contained `PREVIEW_PREFLIGHT_SCRIPT`, and optional fail-closed `NONVISUAL_PATHS` directory prefixes.
 
@@ -1076,9 +1084,15 @@ authenticated Cursor fallback latches that same qualification boundary before
 the claim is blocked or cancelled. A role process that exits without its
 receipt-bound terminal does the same. Already-admitted siblings still drain and
 account once; no later role may start in the fixed cohort.
-The Claude adapter also classifies only its strict submitted 429 result shape
-with the bounded `individual spend limit` or `org's monthly spend limit` reason. Qualification latches that
-typed, accounted `provider_failed` terminal at the same launch boundary. A
+The Claude adapter classifies only its strict submitted 429 result shape with
+the bounded `individual spend limit` or `org's monthly spend limit` reason.
+The Cursor adapters classify only their bounded zero-turn, missing-terminal
+shape: the exact redacted action-required usage message becomes
+`provider_spend_limit`, a typed adapter timeout keeps its timeout reason, and
+an otherwise untyped missing result becomes `provider_unavailable`. The
+operator watch explains whether capacity must be restored or provider status
+checked. Qualification latches that typed, accounted `provider_failed`
+terminal at the same launch boundary. A
 dirty failure cell remains blocked evidence and is not exported as a clean
 passport checkpoint, so the provider failure cannot be replaced by a
 secondary clean-cell controller error.

@@ -842,6 +842,11 @@ class ModelControlTest(unittest.TestCase):
         self.assertEqual([line[0] for line in initial_trace], ["--version", "models"])
         self.assertEqual([line[2] for line in initial_trace], ["empty", "copied"])
         self.assertEqual(mode_trace.read_text().splitlines(), ["0o600"])
+        version.write_text("2026.07.23-e383d2b\n")
+        self.assertEqual(
+            json.loads(self.command("inventory").stdout)["models"], value["models"]
+        )
+        version.write_text("Cursor Agent 2026.07.23-e383d2b\n")
         fixture.write_bytes(
             current_fixture.replace(
                 b"Available models", b"\x1b[2mAvailable models\x1b[22m"
