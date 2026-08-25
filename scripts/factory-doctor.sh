@@ -422,7 +422,35 @@ PY
         state="malformed"
         MALFORMED_RUNS=$((MALFORMED_RUNS + 1))
       fi
-      printf '%s\t%s\n' "$run_id" "$state" >> "$RUN_FILE"
+      ticket=""
+      recovery_command=""
+      recovery_reason=""
+      if [[ "$state" == "stale" ]]; then
+        recovery_reason="unsupported_stale_run"
+        ticket="$(awk -F= '/^ticket=T-[1-9][0-9]*$/ {print $2; exit}' \
+          "$FACTORY_DIR/runs/$run_id.meta" 2>/dev/null || true)"
+        if [[ "${FACTORY_KIT_TRUST_SCOPE:-}" == "qualification-candidate" &&
+              "$ticket" =~ ^T-[1-9][0-9]*$ &&
+              -f "$FACTORY_DIR/runs/$run_id.wrapper" &&
+              -f "$FACTORY_DIR/runs/.$run_id.submitted" &&
+              -x "$KIT_DIR/scripts/attempt-cancel.py" ]] &&
+           ORPHAN_PLAN="$($PYTHON_BIN -I -S \
+             "$KIT_DIR/scripts/attempt-cancel.py" preview \
+             --factory-root "$PRODUCT_ROOT" --ticket "$ticket" \
+             --run-id "$run_id" --reason operator_requested 2>/dev/null)" &&
+           [[ "$ORPHAN_PLAN" == *'"schema":"nysa.software-factory.attempt-cancel-plan/v2"'* ]]; then
+          recovery_command="qualification recover-plan"
+          recovery_reason="orphaned_cli_wrapper"
+        elif [[ "${FACTORY_KIT_TRUST_SCOPE:-}" == "qualification-candidate" &&
+                "$ticket" =~ ^T-[1-9][0-9]*$ &&
+                -f "$FACTORY_DIR/runs/$run_id.wrapper" &&
+                -f "$FACTORY_DIR/runs/.$run_id.submitted" ]]; then
+          recovery_reason="orphan_recovery_evidence_invalid"
+        fi
+      fi
+      printf '%s\t%s\t%s\t%s\t%s\n' \
+        "$run_id" "$state" "$ticket" "$recovery_command" \
+        "$recovery_reason" >> "$RUN_FILE"
     done
   fi
   if [[ "$ACTIVE_RUNS_BINDING_ERROR" -eq 1 ]]; then
@@ -1350,6 +1378,18 @@ if [[ "${FACTORY_KIT_TRUST_SCOPE:-}" == "qualification-candidate" &&
     fi
   fi
 fi
+if [[ "${FACTORY_KIT_TRUST_SCOPE:-}" == "qualification-candidate" &&
+      ( "$QUALIFICATION_IDENTITY_STATUS" != "ok" ||
+        "$QUALIFICATION_TICKET_READINESS_STATUS" != "ok" ||
+        "$BINDING_STATUS" != "ok" || "$ACTIVE_RUNS_BINDING_ERROR" -ne 0 ) ]]; then
+  awk -F '\t' 'BEGIN {OFS="\t"}
+    $4 != "" || $5 == "orphan_recovery_evidence_invalid" {
+      $4=""; $5="qualification_identity_invalid"
+    }
+    {print}
+  ' "$RUN_FILE" > "$RUN_FILE.identity"
+  mv "$RUN_FILE.identity" "$RUN_FILE"
+fi
 
 PROVIDER_CLI_PIN_STATUS="not_applicable"
 PROVIDER_CLI_PIN_JSON="null"
@@ -2036,8 +2076,14 @@ with open(os.environ["CLI_FILE"], encoding="utf-8") as handle:
 runs = []
 with open(os.environ["RUN_FILE"], encoding="utf-8") as handle:
     for line in handle:
-        run_id, state = line.rstrip("\n").split("\t", 1)
-        runs.append({"run_id": run_id, "state": state})
+        run_id, state, ticket, command, reason = line.rstrip("\n").split("\t", 4)
+        runs.append({
+            "recovery_command": command or None,
+            "recovery_reason": reason or None,
+            "run_id": run_id,
+            "state": state,
+            "ticket": ticket or None,
+        })
 
 active_run_tickets = []
 with open(os.environ["ACTIVE_CLAIM_FILE"], encoding="utf-8") as handle:
@@ -2200,6 +2246,9 @@ else
   echo "Kit [$KIT_STATUS]: ${KIT_SHA:-unavailable}"
   echo "KIT_PIN [$PIN_STATUS]: ${PIN_SHA:-missing or invalid}"
   echo "Runtime [$RUNTIME_STATUS]: maintenance=$MAINTENANCE active=$ACTIVE_RUNS claims=$ACTIVE_RUN_CLAIMS stale=$STALE_RUNS malformed=$MALFORMED_RUNS concurrency=$MAX_CONCURRENT_TICKETS leases=$DISPATCH_LEASES"
+  while IFS="$(printf '\t')" read -r run_id run_state run_ticket run_command run_reason; do
+    echo "Run $run_id [$run_state]: ticket=${run_ticket:-unknown} recovery=${run_command:-none} reason=${run_reason:-none}"
+  done < "$RUN_FILE"
   echo "Locks: launch=$LAUNCH_LOCK ledger=$LEDGER_LOCK global_ledger=$GLOBAL_LEDGER_LOCK provider=$PROVIDER_LOCK provider_state=$PROVIDER_LOCK_STATE"
   while IFS="$(printf '\t')" read -r cli_name cli_item_status cli_path cli_version; do
     echo "CLI $cli_name [$cli_item_status]: ${cli_version:-unavailable} (${cli_path:-not found})"

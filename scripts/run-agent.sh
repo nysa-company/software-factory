@@ -983,6 +983,7 @@ record_lease_heartbeat() {
   {
     echo "run_id=$RUN_ID"
     echo "wrapper_pid=$$"
+    echo "wrapper_pgid=$(ps -o pgid= -p "$$" | awk '{$1=$1; print; exit}')"
     echo "wrapper_process_start=$(process_start_identity "$$")"
     echo "heartbeat_pid=$LEASE_HEARTBEAT_PID"
     echo "heartbeat_pgid=$LEASE_HEARTBEAT_PGID"

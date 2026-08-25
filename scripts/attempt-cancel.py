@@ -31,6 +31,7 @@ SPEC.loader.exec_module(IDENTITY)
 
 REASONS = frozenset(("budget_exhausted", "operator_requested"))
 PLAN_SCHEMA = "nysa.software-factory.attempt-cancel-plan/v1"
+ORPHAN_PLAN_SCHEMA = "nysa.software-factory.attempt-cancel-plan/v2"
 PROVIDER_ONLY_PLAN_SCHEMA = (
     "nysa.software-factory.provider-only-attempt-cancel-plan/v1"
 )
@@ -218,12 +219,220 @@ def load_active_or_stale_identity(
     )
 
 
+def secure_record(path: Path, label: str, maximum: int = 10_000) -> bytes:
+    before = path.lstat()
+    raw = IDENTITY.record_bytes(path)
+    after = path.lstat()
+    if (
+        path.is_symlink()
+        or not stat.S_ISREG(before.st_mode)
+        or before.st_uid != os.geteuid()
+        or before.st_nlink != 1
+        or before.st_mode & 0o022
+        or before.st_size > maximum
+        or (
+            before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns,
+        ) != (
+            after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns,
+        )
+    ):
+        raise CancelError(f"{label} is unsafe")
+    return raw
+
+
+def validated_dispatch_lease(path: Path, ticket: str) -> tuple[dict, bytes]:
+    raw = secure_record(path, "dispatch lease")
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise CancelError("dispatch lease is malformed") from error
+    if (
+        not isinstance(value, dict)
+        or raw != canonical(value)
+        or set(value) != {
+            "claimed_epoch", "expires_epoch", "lease_id",
+            "schema_version", "ticket",
+        }
+        or value.get("schema_version") != 1
+        or value.get("ticket") != ticket
+        or not re.fullmatch(r"[0-9a-f]{64}", str(value.get("lease_id", "")))
+        or any(
+            isinstance(value.get(name), bool)
+            or not isinstance(value.get(name), int)
+            for name in ("claimed_epoch", "expires_epoch")
+        )
+        or value["expires_epoch"] <= value["claimed_epoch"]
+    ):
+        raise CancelError("dispatch lease is malformed")
+    return value, raw
+
+
+def same_dispatch_lease_identity(current: dict, expected: dict | None) -> bool:
+    return expected is not None and all(
+        current.get(name) == expected.get(name)
+        for name in ("claimed_epoch", "lease_id", "schema_version", "ticket")
+    )
+
+
+def orphan_runtime_evidence(attempt_id: str) -> dict | None:
+    root_value = os.environ.get("FACTORY_CLI_RUNTIME_ROOT", "")
+    if not root_value:
+        return None
+    root = Path(root_value)
+    if not root.is_absolute():
+        raise CancelError("provider CLI runtime root is invalid")
+    candidates = [root / name / attempt_id for name in ("attempts", "c")]
+    present = [path for path in candidates if path.exists() or path.is_symlink()]
+    if len(present) > 1:
+        raise CancelError("orphan provider CLI runtime is ambiguous")
+    if not present:
+        return None
+    path = present[0]
+    info = path.lstat()
+    owner = path / "owner"
+    raw = secure_record(owner, "provider CLI runtime owner")
+    if (
+        path.is_symlink() or not stat.S_ISDIR(info.st_mode)
+        or info.st_uid != os.geteuid() or info.st_mode & 0o022
+        or raw != f"{attempt_id}\n".encode()
+    ):
+        raise CancelError("orphan provider CLI runtime is unsafe")
+    return {
+        "device": info.st_dev,
+        "inode": info.st_ino,
+        "owner_sha256": digest(raw),
+        "path": str(path),
+    }
+
+
+def valid_submitted_attempt(attempt: dict) -> bool:
+    go_at = attempt.get("go_at")
+    submitted_at = attempt.get("submitted_at")
+    return (
+        isinstance(go_at, int) and not isinstance(go_at, bool)
+        and isinstance(submitted_at, int) and not isinstance(submitted_at, bool)
+        and go_at <= submitted_at
+    )
+
+
+def canonical_submission_ns(attempt: dict) -> int:
+    return (attempt["submitted_at"] + 1) * 1_000_000_000 - 1
+
+
+def orphan_evidence(
+    factory_root: Path, active_runs: Path, manifest: dict[str, str], run_id: str,
+) -> tuple[dict, dict, dict | None, dict, dict | None, dict | None] | None:
+    wrapper_path = factory_root / f"factory/runs/{run_id}.wrapper"
+    if not wrapper_path.exists() and not wrapper_path.is_symlink():
+        return None
+    raw = secure_record(wrapper_path, "run wrapper")
+    values = IDENTITY.parse_fields(raw, "run wrapper")
+    wrapper_fields = {
+        "run_id", "wrapper_pid", "wrapper_process_start",
+        "heartbeat_pid", "heartbeat_pgid", "heartbeat_process_start",
+    }
+    if (
+        set(values) not in (wrapper_fields, wrapper_fields | {"wrapper_pgid"})
+        or values.get("run_id") != run_id
+        or any(
+            not values.get(name, "").isdigit()
+            for name in ("wrapper_pid", "heartbeat_pid", "heartbeat_pgid")
+        )
+        or "wrapper_pgid" in values and not values["wrapper_pgid"].isdigit()
+        or int(values["wrapper_pid"]) <= 1
+        or "wrapper_pgid" in values and int(values["wrapper_pgid"]) <= 1
+        or int(values["heartbeat_pid"]) <= 1
+        or values["heartbeat_pid"] != values["heartbeat_pgid"]
+        or not values["wrapper_process_start"]
+        or not values["heartbeat_process_start"]
+    ):
+        raise CancelError("run wrapper is malformed")
+    table = IDENTITY.process_table()
+    wrapper_pid = int(values["wrapper_pid"])
+    wrapper_start = values["wrapper_process_start"]
+    current_wrapper = table.get(wrapper_pid)
+    if current_wrapper is not None and current_wrapper.started == wrapper_start:
+        return None
+    if any(item.pgid == wrapper_pid for item in table.values()):
+        raise CancelError("orphan wrapper process group is still live")
+    heartbeat = IDENTITY.Process(
+        int(values["heartbeat_pid"]), int(values["heartbeat_pgid"]),
+        values["heartbeat_process_start"],
+    )
+    leader = table.get(heartbeat.pid)
+    if leader not in (None, heartbeat) or (
+        leader is None and any(item.pgid == heartbeat.pgid for item in table.values())
+    ):
+        raise CancelError("orphan heartbeat identity is stale or mismatched")
+    attempt_id = manifest.get("provider_attempt_id", "")
+    if (
+        manifest.get("go_issued") != "1"
+        or manifest.get("task_submitted") != "0"
+        or manifest.get("submitted_at_epoch_ns", "")
+        or not IDENTITY.RUN_ID.fullmatch(attempt_id)
+    ):
+        return None
+    attempt = provider_attempt(factory_root, attempt_id)
+    if (
+        set(attempt) != PROVIDER_ATTEMPT_FIELDS
+        or attempt.get("state") != "submitted"
+        or attempt.get("version") != 4
+        or attempt.get("attempt_id") != attempt_id
+        or attempt.get("ticket_id") != manifest.get("ticket")
+        or not valid_submitted_attempt(attempt)
+    ):
+        raise CancelError("orphan provider submission is invalid")
+    submitted_path = factory_root / f"factory/runs/.{run_id}.submitted"
+    submitted_raw = secure_record(submitted_path, "submission sidecar")
+    submitted = IDENTITY.parse_fields(submitted_raw, "submission sidecar")
+    submitted_ns = submitted.get("submitted_at_epoch_ns", "")
+    if (
+        set(submitted) != {"pid", "submitted_at_epoch_ns"}
+        or not submitted.get("pid", "").isdigit()
+        or int(submitted["pid"]) <= 1
+        or not re.fullmatch(r"[1-9][0-9]{0,19}", submitted_ns)
+    ):
+        raise CancelError("orphan submission sidecar is invalid")
+    lease_path = factory_root / f"factory/.dispatch-leases/{manifest['ticket']}.json"
+    lease = None
+    if lease_path.exists() or lease_path.is_symlink():
+        lease, _ = validated_dispatch_lease(lease_path, manifest["ticket"])
+    wrapper_evidence = {
+        "heartbeat_pgid": heartbeat.pgid,
+        "heartbeat_pid": heartbeat.pid,
+        "heartbeat_process_start": heartbeat.started,
+        "record_sha256": digest(raw),
+        "wrapper_pid": wrapper_pid,
+        "wrapper_process_start": wrapper_start,
+    }
+    submission_evidence = {
+        "pid": int(submitted["pid"]),
+        "record_sha256": digest(submitted_raw),
+        "submitted_at_epoch_ns": int(submitted_ns),
+    }
+    lease_identity = None if lease is None else {
+        name: lease[name]
+        for name in ("claimed_epoch", "lease_id", "schema_version", "ticket")
+    }
+    return (
+        wrapper_evidence, attempt, lease_identity, submission_evidence,
+        orphan_runtime_evidence(attempt_id),
+        stale_claim_evidence(active_runs, manifest),
+    )
+
+
 def calculate(
     factory_root: Path, ticket: str, run_id: str, reason: str, nonce: str | None,
 ) -> dict:
     if reason not in REASONS:
         raise CancelError("cancellation reason is not eligible")
     attempt = paths(factory_root, run_id)
+    if attempt["request"].exists() or attempt["request"].is_symlink():
+        request = read_request(factory_root, ticket, run_id)
+        plan = request["plan"]
+        if plan["reason"] != reason or nonce is not None and plan["nonce"] != nonce:
+            raise CancelError("existing cancellation request belongs to another plan")
+        return plan
     if not any(
         path.exists() or path.is_symlink()
         for path in (attempt["manifest"], attempt["pid"])
@@ -258,6 +467,19 @@ def calculate(
         "schema": PLAN_SCHEMA,
         "ticket": ticket,
     }
+    orphan = orphan_evidence(factory_root, attempt["active_runs"], manifest, run_id)
+    if orphan is not None:
+        wrapper, provider, lease, submission, runtime, active_claim = orphan
+        plan.update({
+            "active_claim": active_claim,
+            "dispatch_lease": lease,
+            "provider_attempt": provider,
+            "provider_attempt_sha256": digest(canonical(provider)),
+            "runtime": runtime,
+            "schema": ORPHAN_PLAN_SCHEMA,
+            "submission": submission,
+            "wrapper": wrapper,
+        })
     plan["preview_hash"] = digest(canonical(plan))
     return plan
 
@@ -266,17 +488,30 @@ def validate_plan(value: dict, expected_hash: str) -> None:
     if value.get("schema") == PROVIDER_ONLY_PLAN_SCHEMA:
         validate_provider_only_plan(value, expected_hash)
         return
-    if set(value) != {
+    base_fields = {
         "created_at", "go_issued", "manifest_sha256", "nonce", "pgid", "pid",
         "pid_record_sha256", "preview_hash", "process_start", "reason", "run_id",
         "schema", "ticket",
-    }:
+    }
+    orphan_fields = {
+        "active_claim", "dispatch_lease", "provider_attempt",
+        "provider_attempt_sha256", "runtime", "submission", "wrapper",
+    }
+    if set(value) not in (base_fields, base_fields | orphan_fields):
         raise CancelError("cancel plan has unexpected fields")
+    orphan = value.get("schema") == ORPHAN_PLAN_SCHEMA
+    wrapper = value.get("wrapper")
+    active_claim = value.get("active_claim")
+    attempt = value.get("provider_attempt")
+    lease = value.get("dispatch_lease")
+    runtime = value.get("runtime")
+    submission = value.get("submission")
     supplied = value["preview_hash"]
     unhashed = dict(value)
     del unhashed["preview_hash"]
     if (
-        value["schema"] != PLAN_SCHEMA
+        value["schema"] not in {PLAN_SCHEMA, ORPHAN_PLAN_SCHEMA}
+        or orphan != (set(value) == base_fields | orphan_fields)
         or value["reason"] not in REASONS
         or not IDENTITY.RUN_ID.fullmatch(value.get("run_id", ""))
         or not IDENTITY.TICKET.fullmatch(value.get("ticket", ""))
@@ -292,6 +527,93 @@ def validate_plan(value: dict, expected_hash: str) -> None:
         or not re.fullmatch(r"[0-9a-f]{32}", value.get("nonce", ""))
         or not re.fullmatch(r"[0-9a-f]{64}", value.get("manifest_sha256", ""))
         or not re.fullmatch(r"[0-9a-f]{64}", value.get("pid_record_sha256", ""))
+        or orphan and (
+            not isinstance(wrapper, dict)
+            or set(wrapper) != {
+                "heartbeat_pgid", "heartbeat_pid", "heartbeat_process_start",
+                "record_sha256", "wrapper_pid", "wrapper_process_start",
+            }
+            or any(
+                not isinstance(wrapper.get(name), int)
+                or isinstance(wrapper.get(name), bool)
+                or wrapper[name] <= 1
+                for name in ("heartbeat_pgid", "heartbeat_pid", "wrapper_pid")
+            )
+            or wrapper["heartbeat_pid"] != wrapper["heartbeat_pgid"]
+            or not isinstance(wrapper.get("heartbeat_process_start"), str)
+            or not wrapper["heartbeat_process_start"]
+            or not isinstance(wrapper.get("wrapper_process_start"), str)
+            or not wrapper["wrapper_process_start"]
+            or not re.fullmatch(r"[0-9a-f]{64}", wrapper.get("record_sha256", ""))
+            or not isinstance(attempt, dict)
+            or set(attempt) != PROVIDER_ATTEMPT_FIELDS
+            or attempt.get("state") != "submitted"
+            or attempt.get("version") != 4
+            or attempt.get("attempt_id") != f"{value.get('run_id', '')}-cli"
+            or attempt.get("ticket_id") != value.get("ticket")
+            or not valid_submitted_attempt(attempt)
+            or value.get("provider_attempt_sha256") != digest(canonical(attempt))
+            or not isinstance(submission, dict)
+            or set(submission) != {
+                "pid", "record_sha256", "submitted_at_epoch_ns",
+            }
+            or not isinstance(submission.get("pid"), int)
+            or isinstance(submission.get("pid"), bool)
+            or submission["pid"] <= 1
+            or not isinstance(submission.get("submitted_at_epoch_ns"), int)
+            or isinstance(submission.get("submitted_at_epoch_ns"), bool)
+            or not valid_submitted_attempt(attempt)
+            or not re.fullmatch(
+                r"[0-9a-f]{64}", submission.get("record_sha256", ""),
+            )
+            or active_claim is not None and (
+                not isinstance(active_claim, dict)
+                or set(active_claim) != {
+                    "claim_device", "claim_inode", "owner_sha256",
+                    "root_device", "root_inode",
+                }
+                or any(
+                    not isinstance(active_claim.get(name), int)
+                    or isinstance(active_claim.get(name), bool)
+                    or active_claim[name] < 0
+                    for name in (
+                        "claim_device", "claim_inode", "root_device", "root_inode",
+                    )
+                )
+                or not re.fullmatch(
+                    r"[0-9a-f]{64}", active_claim.get("owner_sha256", ""),
+                )
+            )
+            or runtime is not None and (
+                not isinstance(runtime, dict)
+                or set(runtime) != {"device", "inode", "owner_sha256", "path"}
+                or not isinstance(runtime.get("path"), str)
+                or not Path(runtime["path"]).is_absolute()
+                or any(
+                    not isinstance(runtime.get(name), int)
+                    or isinstance(runtime.get(name), bool)
+                    or runtime[name] < 0
+                    for name in ("device", "inode")
+                )
+                or not re.fullmatch(
+                    r"[0-9a-f]{64}", runtime.get("owner_sha256", ""),
+                )
+            )
+            or lease is not None and (
+                not isinstance(lease, dict)
+                or set(lease) != {
+                    "claimed_epoch", "lease_id", "schema_version", "ticket",
+                }
+                or lease.get("schema_version") != 1
+                or lease.get("ticket") != value.get("ticket")
+                or not re.fullmatch(r"[0-9a-f]{64}", str(lease.get("lease_id", "")))
+                or any(
+                    not isinstance(lease.get(name), int)
+                    or isinstance(lease.get(name), bool)
+                    for name in ("claimed_epoch",)
+                )
+            )
+        )
         or not re.fullmatch(r"[0-9a-f]{64}", supplied or "")
         or supplied != digest(canonical(unhashed))
         or supplied != expected_hash
@@ -382,9 +704,9 @@ def unlink_regular(path: Path) -> None:
     path.unlink()
 
 
-def validate_stale_claims(
-    factory_root: Path, active_runs: Path, manifest: dict[str, str], now: int,
-) -> tuple[int, int, int, int, bytes] | None:
+def stale_claim_evidence(
+    active_runs: Path, manifest: dict[str, str],
+) -> dict | None:
     ticket, role = manifest["ticket"], manifest["role"]
     try:
         active_info = active_runs.lstat()
@@ -398,28 +720,62 @@ def validate_stale_claims(
     ):
         raise CancelError("active-run state is unsafe")
     claim = active_runs / f"{ticket}.{role}.lock"
-    if claim.exists() or claim.is_symlink():
-        info = claim.lstat()
-        entries = list(claim.iterdir()) if stat.S_ISDIR(info.st_mode) else []
-        if (
-            not stat.S_ISDIR(info.st_mode) or claim.is_symlink()
-            or info.st_uid != os.geteuid() or info.st_mode & 0o022
-            or [entry.name for entry in entries] != ["owner"]
-        ):
-            raise CancelError("active-run claim is unsafe")
-        owner = IDENTITY.parse_fields(
-            IDENTITY.record_bytes(claim / "owner"), "active-run owner",
+    if not claim.exists() and not claim.is_symlink():
+        return None
+    info = claim.lstat()
+    entries = (
+        sorted(entry.name for entry in claim.iterdir())
+        if stat.S_ISDIR(info.st_mode) else []
+    )
+    if (
+        active_info is None
+        or not stat.S_ISDIR(info.st_mode) or claim.is_symlink()
+        or info.st_uid != os.geteuid() or info.st_mode & 0o022
+        or entries != ["owner"]
+    ):
+        raise CancelError("active-run claim is unsafe")
+    owner_raw = secure_record(claim / "owner", "active-run owner")
+    active_after = active_runs.lstat()
+    claim_after = claim.lstat()
+    owner = IDENTITY.parse_fields(owner_raw, "active-run owner")
+    if (
+        set(owner) != {"pid", "process_start", "token"}
+        or not owner["pid"].isdigit()
+        or not owner["process_start"]
+        or not re.fullmatch(r"[0-9a-f]{32}", owner["token"])
+        or (
+            active_info.st_dev, active_info.st_ino,
+            active_info.st_mode, active_info.st_uid,
+        ) != (
+            active_after.st_dev, active_after.st_ino,
+            active_after.st_mode, active_after.st_uid,
         )
-        if (
-            set(owner) != {"pid", "process_start", "token"}
-            or not owner["pid"].isdigit()
-            or not owner["process_start"]
-            or not re.fullmatch(r"[0-9a-f]{32}", owner["token"])
-        ):
-            raise CancelError("active-run owner is malformed")
-        process = IDENTITY.process_table().get(int(owner["pid"]))
-        if process is not None and process.started == owner["process_start"]:
-            raise CancelError("active-run owner is still alive")
+        or (info.st_dev, info.st_ino, info.st_mode, info.st_uid) != (
+            claim_after.st_dev, claim_after.st_ino,
+            claim_after.st_mode, claim_after.st_uid,
+        )
+    ):
+        raise CancelError("active-run owner is malformed")
+    process = IDENTITY.process_table().get(int(owner["pid"]))
+    if process is not None and process.started == owner["process_start"]:
+        raise CancelError("active-run owner is still alive")
+    return {
+        "claim_device": info.st_dev,
+        "claim_inode": info.st_ino,
+        "owner_sha256": digest(owner_raw),
+        "root_device": active_info.st_dev,
+        "root_inode": active_info.st_ino,
+    }
+
+
+def validate_stale_claims(
+    factory_root: Path, active_runs: Path, manifest: dict[str, str], now: int,
+    active_lease: dict | None = None,
+    *, validate_claim: bool = True,
+) -> tuple[int, int, int, int, bytes] | None:
+    if validate_claim:
+        stale_claim_evidence(active_runs, manifest)
+    ticket = manifest["ticket"]
     lease = factory_root / f"factory/.dispatch-leases/{ticket}.json"
     if lease.exists() or lease.is_symlink():
         before = lease.lstat()
@@ -443,7 +799,10 @@ def validate_stale_claims(
             or isinstance(value.get("expires_epoch"), bool)
             or not isinstance(value.get("expires_epoch"), int)
             or value["expires_epoch"] <= value["claimed_epoch"]
-            or value["expires_epoch"] > now
+            or value["expires_epoch"] > now and not (
+                same_dispatch_lease_identity(value, active_lease)
+                and value["expires_epoch"] >= active_lease.get("expires_epoch", 0)
+            )
         ):
             raise CancelError("dispatch lease is not expired for this ticket")
         return (
@@ -460,6 +819,121 @@ def acquire_cleanup_lock(path: Path, label: str) -> None:
         except FileExistsError:
             time.sleep(0.05)
     raise CancelError(f"{label} lock is busy")
+
+
+def prevalidate_orphan_apply(
+    factory_root: Path, plan: dict, manifest: dict[str, str],
+) -> None:
+    if plan.get("schema") != ORPHAN_PLAN_SCHEMA:
+        return
+    if not sealed_recovery_locks_held(manifest):
+        raise CancelError(
+            "orphan cancellation requires sealed qualification recovery"
+        )
+    attempt = paths(factory_root, plan["run_id"])
+    wrapper_path = attempt["runs"] / f"{plan['run_id']}.wrapper"
+    request_present = attempt["request"].exists() or attempt["request"].is_symlink()
+    if wrapper_path.exists() or wrapper_path.is_symlink():
+        raw = secure_record(wrapper_path, "run wrapper")
+        if digest(raw) != plan["wrapper"]["record_sha256"]:
+            raise CancelError("run wrapper changed after cancellation preview")
+    elif not request_present:
+        raise CancelError("run wrapper changed after cancellation preview")
+    table = IDENTITY.process_table()
+    wrapper_pid = plan["wrapper"]["wrapper_pid"]
+    if wrapper_pid in table or any(item.pgid == wrapper_pid for item in table.values()):
+        raise CancelError("run wrapper process group is still alive")
+    heartbeat = IDENTITY.Process(
+        plan["wrapper"]["heartbeat_pid"], plan["wrapper"]["heartbeat_pgid"],
+        plan["wrapper"]["heartbeat_process_start"],
+    )
+    leader = table.get(heartbeat.pid)
+    if leader not in (None, heartbeat) or leader is None and any(
+        item.pgid == heartbeat.pgid for item in table.values()
+    ):
+        raise CancelError("orphan heartbeat identity changed before cancellation")
+    lease_path = factory_root / f"factory/.dispatch-leases/{plan['ticket']}.json"
+    if plan["dispatch_lease"] is None:
+        if lease_path.exists() or lease_path.is_symlink():
+            raise CancelError("dispatch lease appeared after cancellation preview")
+    elif lease_path.exists() or lease_path.is_symlink():
+        current, _ = validated_dispatch_lease(lease_path, plan["ticket"])
+        if not same_dispatch_lease_identity(current, plan["dispatch_lease"]):
+            raise CancelError("dispatch lease changed after cancellation preview")
+    elif leader == heartbeat:
+        raise CancelError("dispatch lease disappeared before cancellation")
+    validate_bound_submission(factory_root, plan, manifest)
+    orphan_claim_state(
+        plan, attempt["active_runs"], manifest,
+        require_present=not request_present,
+    )
+    cleanup_orphan_runtime(
+        plan, require_present=not terminal_matches_plan(manifest, plan),
+    )
+
+
+def stop_orphan_heartbeat(
+    factory_root: Path, plan: dict, manifest: dict[str, str],
+) -> None:
+    if plan.get("schema") != ORPHAN_PLAN_SCHEMA:
+        return
+    validate_plan(plan, plan["preview_hash"])
+    runs = factory_root / "factory/runs"
+    wrapper_path = runs / f"{plan['run_id']}.wrapper"
+    lease_path = factory_root / f"factory/.dispatch-leases/{plan['ticket']}.json"
+    expected = plan["wrapper"]
+    wrapper_present = wrapper_path.exists() or wrapper_path.is_symlink()
+    if wrapper_present:
+        raw = secure_record(wrapper_path, "run wrapper")
+        if digest(raw) != expected["record_sha256"]:
+            raise CancelError("run wrapper changed after cancellation preview")
+    table = IDENTITY.process_table()
+    wrapper = table.get(expected["wrapper_pid"])
+    if (
+        wrapper is not None
+        and wrapper.started == expected["wrapper_process_start"]
+    ):
+        raise CancelError("run wrapper is still alive")
+    expected_lease = plan["dispatch_lease"]
+    if lease_path.exists() or lease_path.is_symlink():
+        current, _ = validated_dispatch_lease(lease_path, plan["ticket"])
+        if not same_dispatch_lease_identity(current, expected_lease):
+            raise CancelError("dispatch lease changed after cancellation preview")
+    heartbeat = IDENTITY.Process(
+        expected["heartbeat_pid"], expected["heartbeat_pgid"],
+        expected["heartbeat_process_start"],
+    )
+    leader = table.get(heartbeat.pid)
+    if leader == heartbeat:
+        members = tuple(sorted(
+            (item for item in table.values() if item.pgid == heartbeat.pgid),
+            key=lambda item: item.pid,
+        ))
+        IDENTITY.terminate(
+            IDENTITY.AttemptIdentity(
+                plan["run_id"], plan["ticket"], heartbeat, members,
+            ),
+            2,
+        )
+    elif leader is not None or any(
+        item.pgid == heartbeat.pgid for item in table.values()
+    ):
+        raise CancelError("orphan heartbeat identity changed before cancellation")
+    if lease_path.exists() or lease_path.is_symlink():
+        current, raw = validated_dispatch_lease(lease_path, plan["ticket"])
+        if not same_dispatch_lease_identity(current, expected_lease):
+            raise CancelError("dispatch lease changed after cancellation preview")
+        before = lease_path.lstat()
+        if IDENTITY.record_bytes(lease_path) != raw:
+            raise CancelError("dispatch lease changed before cancellation")
+        after = lease_path.lstat()
+        if (
+            before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns,
+        ) != (
+            after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns,
+        ):
+            raise CancelError("dispatch lease changed before cancellation")
+        lease_path.unlink()
 
 
 def sealed_recovery_lock_held(path_value: str, descriptor_value: str) -> None:
@@ -680,6 +1154,34 @@ def provider_attempt(factory_root: Path, attempt_id: str) -> dict:
     if not isinstance(attempts, list) or len(attempts) != 1:
         raise CancelError("provider attempt lookup failed")
     return attempts[0]
+
+
+def validate_bound_provider_attempt(status: dict, plan: dict) -> dict | None:
+    if plan.get("schema") != ORPHAN_PLAN_SCHEMA:
+        return None
+    bound = plan["provider_attempt"]
+    if digest(canonical(bound)) != plan["provider_attempt_sha256"]:
+        raise CancelError("bound provider attempt changed")
+    if status == bound:
+        return bound
+    terminal_at = status.get("terminal_at")
+    expected = dict(bound)
+    expected.update({
+        "charge_micro_usd": bound["reserve_micro_usd"],
+        "state": "terminal",
+        "terminal_at": terminal_at,
+        "terminal_result": "cancelled",
+        "updated_at": terminal_at,
+        "version": bound["version"] + 1,
+    })
+    if (
+        not isinstance(terminal_at, int)
+        or isinstance(terminal_at, bool)
+        or terminal_at < bound["updated_at"]
+        or status != expected
+    ):
+        raise CancelError("provider attempt changed after cancellation preview")
+    return bound
 
 
 def provider_only_product_id() -> str:
@@ -1071,6 +1573,183 @@ def fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
+def remove_bound_tree(path: Path, device: int, inode: int) -> None:
+    parent = os.open(
+        path.parent,
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0),
+    )
+
+    def clear(directory: int) -> None:
+        for name in os.listdir(directory):
+            before = os.stat(name, dir_fd=directory, follow_symlinks=False)
+            if stat.S_ISDIR(before.st_mode):
+                child = os.open(
+                    name,
+                    os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+                    | getattr(os, "O_NOFOLLOW", 0),
+                    dir_fd=directory,
+                )
+                try:
+                    opened = os.fstat(child)
+                    if (opened.st_dev, opened.st_ino) != (
+                        before.st_dev, before.st_ino,
+                    ):
+                        raise CancelError("bound runtime changed during cleanup")
+                    clear(child)
+                finally:
+                    os.close(child)
+                current = os.stat(
+                    name, dir_fd=directory, follow_symlinks=False,
+                )
+                if (current.st_dev, current.st_ino) != (
+                    before.st_dev, before.st_ino,
+                ):
+                    raise CancelError("bound runtime changed during cleanup")
+                os.rmdir(name, dir_fd=directory)
+            else:
+                os.unlink(name, dir_fd=directory)
+        os.fsync(directory)
+
+    try:
+        root = os.open(
+            path.name,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=parent,
+        )
+        try:
+            opened = os.fstat(root)
+            if (
+                not stat.S_ISDIR(opened.st_mode)
+                or (opened.st_dev, opened.st_ino) != (device, inode)
+            ):
+                raise CancelError("bound runtime changed during cleanup")
+            clear(root)
+        finally:
+            os.close(root)
+        current = os.stat(path.name, dir_fd=parent, follow_symlinks=False)
+        if (current.st_dev, current.st_ino) != (device, inode):
+            raise CancelError("bound runtime changed during cleanup")
+        os.rmdir(path.name, dir_fd=parent)
+        os.fsync(parent)
+    finally:
+        os.close(parent)
+
+
+def orphan_claim_state(
+    plan: dict, active_runs: Path, manifest: dict[str, str],
+    *, require_present: bool = False,
+) -> Path | None:
+    expected = plan["active_claim"]
+    claim = active_runs / f"{manifest['ticket']}.{manifest['role']}.lock"
+    quarantine = claim.with_name(
+        f".{claim.name}.claim-{plan['preview_hash'][:24]}"
+    )
+    present = [
+        path for path in (claim, quarantine)
+        if path.exists() or path.is_symlink()
+    ]
+    if expected is None:
+        if present:
+            raise CancelError("active-run claim appeared after cancellation preview")
+        return None
+    try:
+        root_info = active_runs.lstat()
+    except FileNotFoundError as error:
+        raise CancelError("active-run claim changed after cancellation preview") from error
+    if (
+        active_runs.is_symlink() or not stat.S_ISDIR(root_info.st_mode)
+        or root_info.st_uid != os.geteuid() or root_info.st_mode & 0o022
+        or (root_info.st_dev, root_info.st_ino)
+        != (expected["root_device"], expected["root_inode"])
+        or len(present) > 1
+    ):
+        raise CancelError("active-run claim changed after cancellation preview")
+    if not present:
+        if require_present:
+            raise CancelError("active-run claim changed after cancellation preview")
+        return None
+    selected = present[0]
+    info = selected.lstat()
+    entries = (
+        sorted(entry.name for entry in selected.iterdir())
+        if stat.S_ISDIR(info.st_mode) else []
+    )
+    if (
+        selected.is_symlink() or not stat.S_ISDIR(info.st_mode)
+        or info.st_uid != os.geteuid() or info.st_mode & 0o022
+        or (info.st_dev, info.st_ino)
+        != (expected["claim_device"], expected["claim_inode"])
+        or (
+            entries != ["owner"]
+            and not (selected == quarantine and entries == [])
+        )
+    ):
+        raise CancelError("active-run claim changed after cancellation preview")
+    if entries:
+        owner = secure_record(selected / "owner", "active-run owner")
+        if digest(owner) != expected["owner_sha256"]:
+            raise CancelError("active-run claim changed after cancellation preview")
+    root_after = active_runs.lstat()
+    selected_after = selected.lstat()
+    if (
+        (root_info.st_dev, root_info.st_ino, root_info.st_mode, root_info.st_uid)
+        != (
+            root_after.st_dev, root_after.st_ino,
+            root_after.st_mode, root_after.st_uid,
+        )
+        or (info.st_dev, info.st_ino, info.st_mode, info.st_uid) != (
+            selected_after.st_dev, selected_after.st_ino,
+            selected_after.st_mode, selected_after.st_uid,
+        )
+    ):
+        raise CancelError("active-run claim changed after cancellation preview")
+    return selected
+
+
+def cleanup_orphan_claim(
+    plan: dict, active_runs: Path, manifest: dict[str, str],
+) -> None:
+    if plan.get("schema") != ORPHAN_PLAN_SCHEMA:
+        return
+    selected = orphan_claim_state(plan, active_runs, manifest)
+    if selected is None:
+        return
+    claim = active_runs / f"{manifest['ticket']}.{manifest['role']}.lock"
+    quarantine = claim.with_name(
+        f".{claim.name}.claim-{plan['preview_hash'][:24]}"
+    )
+    if selected == claim:
+        root = os.open(
+            active_runs,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        try:
+            opened = os.fstat(root)
+            expected = plan["active_claim"]
+            if (opened.st_dev, opened.st_ino) != (
+                expected["root_device"], expected["root_inode"],
+            ):
+                raise CancelError("active-run claim changed after cancellation preview")
+            os.rename(
+                claim.name, quarantine.name,
+                src_dir_fd=root, dst_dir_fd=root,
+            )
+            os.fsync(root)
+        finally:
+            os.close(root)
+        selected = orphan_claim_state(plan, active_runs, manifest)
+        if selected != quarantine:
+            raise CancelError("active-run claim changed after cancellation preview")
+    expected = plan["active_claim"]
+    remove_bound_tree(
+        quarantine, expected["claim_device"], expected["claim_inode"],
+    )
+    orphan_claim_state(plan, active_runs, manifest)
+
+
 def validate_provider_only_terminal(value: dict, plan: dict) -> None:
     initial = plan["provider_attempt"]
     expected = dict(initial)
@@ -1397,6 +2076,7 @@ def converge_provider_attempt(
     if not isinstance(attempts, list) or len(attempts) != 1:
         raise CancelError("provider attempt identity disagrees with the run")
     status = attempts[0]
+    bound = validate_bound_provider_attempt(status, plan)
     go_at = status.get("go_at")
     submitted_at = status.get("submitted_at")
     submitted_ns = manifest.get("submitted_at_epoch_ns", "")
@@ -1421,6 +2101,15 @@ def converge_provider_attempt(
         and isinstance(go_at, int) and not isinstance(go_at, bool)
         and isinstance(submitted_at, int) and not isinstance(submitted_at, bool)
     )
+    orphan_submission = (
+        bound is not None and plan.get("schema") == ORPHAN_PLAN_SCHEMA
+        and manifest.get("go_issued") == "1"
+        and manifest.get("task_submitted") == "0"
+        and not manifest.get("submitted_at_epoch_ns")
+        and isinstance(bound.get("submitted_at"), int)
+        and not isinstance(bound.get("submitted_at"), bool)
+        and submitted_at == bound["submitted_at"]
+    )
     if (
         status.get("attempt_id") != attempt_id
         or status.get("ticket_id") != plan["ticket"]
@@ -1444,13 +2133,16 @@ def converge_provider_attempt(
         or (manifest.get("go_issued") == "1") != isinstance(go_at, int)
         or (
             (manifest.get("task_submitted") == "1") != isinstance(submitted_at, int)
-            and not legacy_identity
+            and not legacy_identity and not orphan_submission
         )
         or (isinstance(submitted_at, int) and not isinstance(go_at, int))
-        or ((submitted_value is None) != (submitted_at is None) and not legacy_identity)
+        or (
+            (submitted_value is None) != (submitted_at is None)
+            and not legacy_identity and not orphan_submission
+        )
         or (
             isinstance(submitted_at, int)
-            and not legacy_identity
+            and not legacy_identity and not orphan_submission
             and not submitted_at * 1_000_000_000
             <= submitted_value
             <= (submitted_at + 1) * 1_000_000_000 - 1
@@ -1458,6 +2150,9 @@ def converge_provider_attempt(
         or status.get("reserve_micro_usd") != micro_usd(manifest["reserved_usd"])
     ):
         raise CancelError("provider attempt identity disagrees with the run")
+    if orphan_submission:
+        manifest["task_submitted"] = "1"
+        manifest["submitted_at_epoch_ns"] = str(canonical_submission_ns(status))
     intent = terminal_intent(manifest)
     if status.get("state") == "terminal":
         if intent is not None:
@@ -1530,10 +2225,110 @@ def validate_ledger_projection(factory_root: Path, attempt: dict[str, Path]) -> 
         raise CancelError("cancellation ledger projection is invalid") from error
 
 
+def validate_bound_submission(
+    factory_root: Path, plan: dict, manifest: dict[str, str],
+) -> None:
+    if plan.get("schema") != ORPHAN_PLAN_SCHEMA:
+        return
+    path = factory_root / f"factory/runs/.{plan['run_id']}.submitted"
+    if not path.exists() and not path.is_symlink():
+        if (
+            manifest.get("task_submitted") == "1"
+            and manifest.get("submitted_at_epoch_ns")
+            == str(canonical_submission_ns(plan["provider_attempt"]))
+        ):
+            return
+        raise CancelError("bound submission sidecar is missing")
+    raw = secure_record(path, "submission sidecar")
+    values = IDENTITY.parse_fields(raw, "submission sidecar")
+    if (
+        digest(raw) != plan["submission"]["record_sha256"]
+        or values != {
+            "pid": str(plan["submission"]["pid"]),
+            "submitted_at_epoch_ns": str(
+                plan["submission"]["submitted_at_epoch_ns"]
+            ),
+        }
+    ):
+        raise CancelError("bound submission sidecar changed")
+
+
+def cleanup_orphan_runtime(plan: dict, *, require_present: bool = False) -> None:
+    if plan.get("schema") != ORPHAN_PLAN_SCHEMA:
+        return
+    expected = plan["runtime"]
+    if expected is None:
+        current = orphan_runtime_evidence(
+            plan["provider_attempt"]["attempt_id"]
+        )
+        if current is not None:
+            raise CancelError("bound provider CLI runtime appeared")
+        return
+    path = Path(expected["path"])
+    quarantine = path.with_name(
+        f".{path.name}.cancel-{plan['preview_hash'][:24]}"
+    )
+    present = [
+        candidate for candidate in (path, quarantine)
+        if candidate.exists() or candidate.is_symlink()
+    ]
+    if len(present) > 1:
+        raise CancelError("bound provider CLI runtime cleanup is ambiguous")
+    if not present:
+        if require_present:
+            raise CancelError("bound provider CLI runtime is missing")
+        return
+    selected = present[0]
+    info = selected.lstat()
+    if (
+        selected.is_symlink() or not stat.S_ISDIR(info.st_mode)
+        or info.st_uid != os.geteuid() or info.st_mode & 0o022
+        or (info.st_dev, info.st_ino) != (expected["device"], expected["inode"])
+    ):
+        raise CancelError("bound provider CLI runtime changed")
+    if selected == path and orphan_runtime_evidence(
+        plan["provider_attempt"]["attempt_id"]
+    ) != expected:
+        raise CancelError("bound provider CLI runtime changed")
+    if require_present:
+        if selected != path:
+            raise CancelError("bound provider CLI runtime cleanup was interrupted")
+        return
+    if IDENTITY.group_alive(plan["pgid"]):
+        raise CancelError("provider CLI runtime process group is still live")
+    if selected == path:
+        parent = os.open(
+            path.parent,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        try:
+            os.rename(
+                path.name, quarantine.name,
+                src_dir_fd=parent, dst_dir_fd=parent,
+            )
+            os.fsync(parent)
+        finally:
+            os.close(parent)
+        moved = quarantine.lstat()
+        if (
+            quarantine.is_symlink() or not stat.S_ISDIR(moved.st_mode)
+            or (moved.st_dev, moved.st_ino)
+            != (expected["device"], expected["inode"])
+        ):
+            raise CancelError("bound provider CLI runtime changed")
+    remove_bound_tree(quarantine, expected["device"], expected["inode"])
+
+
 def converge_stale_attempt(factory_root: Path, plan: dict) -> dict:
     attempt = paths(factory_root, plan["run_id"])
     manifest_raw = IDENTITY.record_bytes(attempt["manifest"])
     manifest = IDENTITY.parse_fields(manifest_raw, "run manifest")
+    if (
+        plan.get("schema") == ORPHAN_PLAN_SCHEMA
+        and not sealed_recovery_locks_held(manifest)
+    ):
+        raise CancelError("orphan cancellation requires sealed qualification recovery")
     now = int(time.time())
     for suffix in ("pid", "ready", "go", "gate", "submitted"):
         name = (
@@ -1541,8 +2336,21 @@ def converge_stale_attempt(factory_root: Path, plan: dict) -> dict:
             else f".{plan['run_id']}.{suffix}"
         )
         validate_regular_or_absent(attempt["runs"] / name)
-    validate_stale_claims(factory_root, attempt["active_runs"], manifest, now)
+    if plan.get("schema") == ORPHAN_PLAN_SCHEMA:
+        validate_bound_provider_attempt(
+            provider_attempt(factory_root, manifest.get("provider_attempt_id", "")),
+            plan,
+        )
+        validate_bound_submission(factory_root, plan, manifest)
+        orphan_claim_state(plan, attempt["active_runs"], manifest)
+    validate_stale_claims(
+        factory_root, attempt["active_runs"], manifest, now,
+        plan.get("dispatch_lease")
+        if plan.get("schema") == ORPHAN_PLAN_SCHEMA else None,
+        validate_claim=plan.get("schema") != ORPHAN_PLAN_SCHEMA,
+    )
     validate_ledger_projection(factory_root, attempt)
+    stop_orphan_heartbeat(factory_root, plan, manifest)
     if not terminal_matches_plan(manifest, plan):
         if digest(manifest_raw) != plan["manifest_sha256"]:
             raise CancelError("attempt changed after cancellation preview")
@@ -1582,15 +2390,31 @@ def converge_stale_attempt(factory_root: Path, plan: dict) -> dict:
         replace_fields(attempt["manifest"], manifest)
     else:
         converge_provider_attempt(factory_root, manifest, plan)
+    cleanup_orphan_runtime(plan)
+    cleanup_orphan_claim(plan, attempt["active_runs"], manifest)
     for suffix in ("pid", "ready", "go", "gate", "submitted"):
         name = (
             f"{plan['run_id']}.{suffix}" if suffix == "pid"
             else f".{plan['run_id']}.{suffix}"
         )
         unlink_regular(attempt["runs"] / name)
-    release_stale_claims(
-        factory_root, attempt["active_runs"], manifest, int(time.time()),
-    )
+    wrapper = attempt["runs"] / f"{plan['run_id']}.wrapper"
+    if plan.get("schema") == ORPHAN_PLAN_SCHEMA and (
+        wrapper.exists() or wrapper.is_symlink()
+    ):
+        raw = secure_record(wrapper, "run wrapper")
+        if digest(raw) != plan["wrapper"]["record_sha256"]:
+            raise CancelError("run wrapper changed before cleanup")
+        wrapper.unlink()
+    if plan.get("schema") == ORPHAN_PLAN_SCHEMA:
+        lease = factory_root / f"factory/.dispatch-leases/{plan['ticket']}.json"
+        if lease.exists() or lease.is_symlink():
+            raise CancelError("dispatch lease remained after orphan cleanup")
+        orphan_claim_state(plan, attempt["active_runs"], manifest)
+    else:
+        release_stale_claims(
+            factory_root, attempt["active_runs"], manifest, int(time.time()),
+        )
     subprocess.run(
         [
             sys.executable, str(ROOT / "scripts/ledger-view.py"), "refresh",
@@ -1637,6 +2461,7 @@ def apply_plan(factory_root: Path, plan: dict, timeout: float) -> dict:
         or digest(IDENTITY.record_bytes(attempt["pid"])) != plan["pid_record_sha256"]
     ):
         raise CancelError("attempt changed after cancellation preview")
+    prevalidate_orphan_apply(factory_root, plan, manifest)
     request = {"plan": plan, "requested_at": timestamp(), "schema": REQUEST_SCHEMA}
     request_raw = canonical(request)
     try:
@@ -1651,6 +2476,8 @@ def apply_plan(factory_root: Path, plan: dict, timeout: float) -> dict:
     if not active:
         return converge_stale_attempt(factory_root, plan)
     escalation = IDENTITY.terminate(identity, min(timeout, 2.0))
+    if plan.get("schema") == ORPHAN_PLAN_SCHEMA:
+        return converge_stale_attempt(factory_root, plan)
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         replay = receipt_is_replay(attempt["receipt"], plan)

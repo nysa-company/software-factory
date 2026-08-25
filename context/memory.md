@@ -30,8 +30,8 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Fresh operator maps use an object-valued `_config` accepted by qualification, and nonvisual publication treats only exact current-ticket Ready audit receipts as metadata; foreign or malformed receipt paths remain semantic and fail closed.
 - Disjoint protected sibling refreshes recognize exact sibling Ready audit receipts and retain existing Reviewer/Narrator evidence. Done reuses exact approved-head checks only across a tree-identical authenticated merge with unchanged protected check policy; every mismatch or unavailable head result falls back to merge-commit evidence.
 - Fresh isolated preparation completes a sealed provider-free prime before returning: the exact cohort is claimed, batch-pinned, and advanced to unconsumed Planner receipts before the existing restart boundary. Replay first authenticates the exact publication and controller prefix, then remains idempotent only while provider accounting is pristine and every receipt remains exact and unconsumed; fresh Doctor checks selected-ticket readiness concurrently in deterministic order, and an exact unchanged primed Planner receipt skips only the duplicate controller preflight while launcher admission still consumes and revalidates it. Fresh three-ticket reduction requires replay-stable activation, Planner-submission, final-Narrator, and Done boundaries, reports all four latency observations, and enforces 240-second activation and Planner plus 900-second cohort wall ceilings; per-ticket Narrator timing is report-only because cohort closeout is sibling-coupled. The ordinary one-ticket profile also enforces the 480-second final Narrator-to-Done wall ceiling.
-- Targeted cancellation reconciles provider attempts through the launcher's validated `FACTORY_PROVIDER_DB`; only direct development lanes without that binding use their existing lane-local database. Missing, unsafe, or foreign provider state fails before stale manifest or claim cleanup. An admitted attempt with a durable recovery record writes terminal intent before coordinator mutation; restart adopts only an exact matching result and charge, while post-GO conservative cancellation retains the full reservation exactly once.
-- Qualification successor recovery binds one exact dead matching global Cursor account row or its absence. Manifest-backed recovery completes unchanged nested cancellation before releasing that row and never touches dispatch resources. Provider-only pre-GO recovery may additionally bind its exact dead authority-ledger claim, releases the account row, then quarantines only that claim inside the approved recovery before removing its selected expired dispatch lease and exact safe empty launch-lock inode. Doctor, controller, and qualification drain checks resolve claims beside the authenticated runtime ledger. Completed replay retains only durable receipts.
+- Targeted cancellation reconciles provider attempts through the launcher's validated `FACTORY_PROVIDER_DB`; only direct development lanes without that binding use their existing lane-local database. Missing, unsafe, or foreign provider state fails before stale manifest or claim cleanup. An admitted attempt with a durable recovery record writes terminal intent before coordinator mutation; restart adopts only an exact matching result and charge, while post-GO conservative cancellation retains the full reservation exactly once. Existing provider databases serve status through a validated read-only connection; only supported first use initializes them.
+- Qualification successor recovery binds one exact dead matching global Cursor account row or its absence. Manifest-backed recovery completes unchanged nested cancellation before releasing that row. A dead submitted CLI wrapper additionally binds its heartbeat, immutable lease identity, exact sidecar and provider row, active-run claim, and runtime inode; recovery drains only those processes, charges once, and quarantines only the bound claim and runtime before deletion. Provider-only pre-GO recovery may bind its exact dead authority-ledger claim, release the account row, then quarantine only that claim before removing its selected expired dispatch lease and exact safe empty launch-lock inode. Doctor reports recovery only after exact qualification identity and authority binding pass, while controller and drain checks resolve claims beside the authenticated runtime ledger. Completed replay retains only durable receipts.
 - **Contract rules below in Operating contract are authoritative**; this summary is only what the session hook can inject.
 
 ## Operating contract
@@ -8203,3 +8203,27 @@ compact canonical JSON bytes. The release transaction validates those exact
 producer hashes, then binds them unchanged inside its newline-terminated outer
 plan; neither side rehashes the other's authenticated objects with a different
 wire format.
+
+## 2026-08-25 — Decision 605: Submitted-wrapper recovery is restart safe
+
+Category: Reliability
+
+Successor qualification recovery binds the exact dead controller wrapper,
+surviving heartbeat, immutable dispatch lease, submitted provider attempt and
+sidecar, active-run claim, and provider CLI runtime inode. The durable request
+makes interruption after heartbeat, lease, accounting, manifest, claim, or
+runtime quarantine converge without touching siblings; the coordinator supplies
+canonical submission time because the sidecar and coordinator run concurrently.
+Doctor exposes this action only after qualification identity and binding pass,
+and initialized provider status is read-only so diagnosis cannot mutate
+accounting.
+
+## 2026-08-25 — Decision 606: Controller roles outlive controller teardown
+
+Category: Reliability
+
+The native controller starts each accepted role wrapper as a new session.
+Service-manager or one-shot controller teardown therefore cannot kill paid
+work. Kill-switch recovery drains the complete wrapper group only when its
+identity proves the controller-owned `PID == PGID` shape; direct callers retain
+PID-only shutdown so unrelated host-group processes remain untouched.

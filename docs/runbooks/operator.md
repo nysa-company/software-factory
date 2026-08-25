@@ -696,6 +696,16 @@ attempt, lease, provider state, and either the supported
 separate exact-evidence check or successor repair. Use those identities in the
 transaction below; do not delete the lease or edit either provider database.
 
+For a dead qualification CLI wrapper whose exact submitted provider attempt,
+sidecar, heartbeat, lease, and runtime still agree, Doctor reports the ticket
+and run in `checks.runtime.runs` with
+`recovery_command=qualification recover-plan` and
+`recovery_reason=orphaned_cli_wrapper`, but only when the sealed product,
+qualification manifest, and authority-ledger binding are valid. Other stale
+runs carry a bounded reason and no recovery command. Use the reported ticket and
+run in the same successor transaction; do not invoke standalone cancellation or
+remove runtime files or claims.
+
 ```bash
 bash scripts/factory-kit.sh qualification recover-plan \
   --project <project> --root <qualification-root> \
