@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -160,34 +161,36 @@ def read_meta(path):
     return values
 
 
-def load_evidence(factory_root, ticket, failed_run):
+def eligible_terminal_failure(value, ticket):
+    return (
+        value.get("ticket") == ticket
+        and value.get("go_issued") == "1"
+        and value.get("task_submitted") == "1"
+        and re.fullmatch(r"[1-9][0-9]{0,2}", value.get("exit_status", ""))
+        and (value.get("phase"), value.get("accounting_state")) in {
+            ("completed", "completed"),
+            ("completed", "abandoned_conservative"),
+            ("abandoned", "abandoned_conservative"),
+            ("cancelled_conservative", "cancelled_conservative"),
+        }
+        and value.get("role_exit") in ("provider_failed", "cancelled")
+        and value.get("role") in ROLE_ORDER
+        and value.get("route_id")
+        and value.get("provider_family")
+        and re.fullmatch(r"[0-9a-f]{40}", value.get("role_head_before", ""))
+    )
+
+
+def load_evidence(factory_root, args):
+    ticket = args.ticket
+    failed_run = args.failed_run
     runs = factory_root / "factory/runs"
     failed_path = runs / f"{failed_run}.meta"
     if failed_path.is_symlink() or not failed_path.is_file() or failed_path.stat().st_nlink != 1:
         raise FallbackError("failed run manifest is missing or unsafe")
     failed_raw = failed_path.read_bytes()
     failed = read_meta(failed_path)
-    terminal_accounting = (
-        failed.get("phase"),
-        failed.get("accounting_state"),
-    )
-    if (
-        failed.get("ticket") != ticket
-        or failed.get("go_issued") != "1"
-        or failed.get("task_submitted") != "1"
-        or not re.fullmatch(r"[1-9][0-9]{0,2}", failed.get("exit_status", ""))
-        or terminal_accounting not in {
-            ("completed", "completed"),
-            ("completed", "abandoned_conservative"),
-            ("abandoned", "abandoned_conservative"),
-            ("cancelled_conservative", "cancelled_conservative"),
-        }
-        or failed.get("role_exit") not in ("provider_failed", "cancelled")
-        or failed.get("role") not in ROLE_ORDER
-        or not failed.get("route_id")
-        or not failed.get("provider_family")
-        or not re.fullmatch(r"[0-9a-f]{40}", failed.get("role_head_before", ""))
-    ):
+    if not eligible_terminal_failure(failed, ticket):
         raise FallbackError("run is not an eligible terminal provider failure")
     if (
         failed.get("role_exit") == "cancelled"
@@ -208,7 +211,38 @@ def load_evidence(factory_root, ticket, failed_run):
     ticket_rows = [row for row in rows if row.get("ticket") == ticket and row.get("run_id")]
     matching = [row for row in ticket_rows if row["run_id"] == failed_run]
     if len(matching) != 1 or not ticket_rows or ticket_rows[-1]["run_id"] != failed_run:
-        raise FallbackError("failed run is not the latest unique ticket attempt")
+        latest = ticket_rows[-1]["run_id"] if ticket_rows else ""
+        latest_path = runs / f"{latest}.meta"
+        latest_values = (
+            read_meta(latest_path)
+            if latest_path.is_file() and not latest_path.is_symlink()
+            and latest_path.stat().st_nlink == 1
+            else {}
+        )
+        if (
+            len(matching) == 1
+            and latest != failed_run
+            and sum(row["run_id"] == latest for row in ticket_rows) == 1
+            and eligible_terminal_failure(latest_values, ticket)
+            and latest_values.get("role_exit") == "provider_failed"
+            and not (runs / f"{latest}.pid").exists()
+        ):
+            command = shlex.join([
+                str(ROOT / "scripts/factory-launch"), args.project,
+                "models", "fallback-plan", "--ticket", ticket,
+                "--failed-run", latest, "--workdir", args.workdir,
+                "--reason", args.reason, "--json",
+            ])
+            raise FallbackError(
+                "failed run is not the latest unique ticket attempt; "
+                "impact=fallback_not_applied; "
+                f"latest_run_id={latest}; evidence={latest_path}; "
+                f"recovery_command={command}"
+            )
+        raise FallbackError(
+            "failed run is not the latest unique ticket attempt; "
+            f"impact=fallback_not_applied; evidence={factory_root / 'factory/ledger.csv'}"
+        )
     manifests = []
     for path in sorted(runs.glob("*.meta")):
         if path.is_file() and not path.is_symlink():
@@ -374,9 +408,7 @@ def calculate(
         raw_journal = (canonical(journal) + "\n").encode()
     else:
         MANAGER.validate_journal(journal, catalog, routes, profile_map)
-    failed, failed_raw, ledger_raw, manifests = load_evidence(
-        factory_root, args.ticket, args.failed_run
-    )
+    failed, failed_raw, ledger_raw, manifests = load_evidence(factory_root, args)
     if (
         failed.get("role_exit") == "cancelled"
         and failed.get("cancellation_reason") != args.reason
@@ -604,7 +636,7 @@ def recover_applied(args, approval):
     if any(item["body"].get("kind") != "release-migration" for item in suffix):
         raise FallbackError("existing fallback has a non-migration suffix")
     _failed, failed_raw, _ledger, _manifests = load_evidence(
-        Path(args.factory_root), args.ticket, args.failed_run
+        Path(args.factory_root), args
     )
     if body.get("failed_manifest_digest") != digest(failed_raw):
         if approval.get("schema") == "ticket-model-fallback-qualification/v1":

@@ -841,6 +841,76 @@ class FallbackTest(unittest.TestCase):
         preview = self.command("preview")
         self.assertEqual(preview["failed_run_id"], "run-failed-1")
 
+    def test_superseded_attempt_names_safe_latest_preview(self):
+        current = self.product / "factory/runs/run-failed-1.meta"
+        latest = current.with_name("run-failed-2.meta")
+        latest.write_text(
+            current.read_text().replace(
+                "run_id=run-failed-1", "run_id=run-failed-2"
+            )
+        )
+
+        refused = self.command("preview", check=False)
+
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("impact=fallback_not_applied", refused.stderr)
+        self.assertIn("latest_run_id=run-failed-2", refused.stderr)
+        self.assertIn(f"evidence={latest.resolve()}", refused.stderr)
+        self.assertIn(
+            "models fallback-plan --ticket T-1 --failed-run run-failed-2",
+            refused.stderr,
+        )
+        self.assertIn("--reason credits_exhausted --json", refused.stderr)
+
+    def test_superseded_attempt_does_not_recommend_a_success(self):
+        current = self.product / "factory/runs/run-failed-1.meta"
+        latest = current.with_name("run-success-2.meta")
+        latest.write_text(
+            current.read_text()
+            .replace("run_id=run-failed-1", "run_id=run-success-2")
+            .replace("exit_status=75", "exit_status=0")
+            .replace("role_exit=provider_failed", "role_exit=ok")
+        )
+
+        refused = self.command("preview", check=False)
+
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertNotIn("recovery_command=", refused.stderr)
+
+    def test_superseded_attempt_requires_requested_accounting(self):
+        current = self.product / "factory/runs/run-failed-1.meta"
+        current.write_text(
+            current.read_text().replace("accounting_schema=1\n", "")
+        )
+        latest = current.with_name("run-failed-2.meta")
+        latest.write_text(
+            current.read_text()
+            .replace("run_id=run-failed-1", "run_id=run-failed-2")
+            + "accounting_schema=1\n"
+        )
+
+        refused = self.command("preview", check=False)
+
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertNotIn("recovery_command=", refused.stderr)
+
+    def test_superseded_attempt_does_not_recommend_a_cancellation(self):
+        current = self.product / "factory/runs/run-failed-1.meta"
+        latest = current.with_name("run-z-cancelled-2.meta")
+        latest.write_text(
+            current.read_text()
+            .replace("run_id=run-failed-1", "run_id=run-z-cancelled-2")
+            .replace("accounting_state=completed", "accounting_state=cancelled_conservative")
+            .replace("phase=completed", "phase=cancelled_conservative")
+            .replace("role_exit=provider_failed", "role_exit=cancelled")
+            + "cancellation_reason=budget_exhausted\n"
+        )
+
+        refused = self.command("preview", check=False)
+
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertNotIn("recovery_command=", refused.stderr)
+
     def test_builder_handoff_accepts_only_its_own_ticket_log(self):
         ticket = self.repo / "factory/tickets/T-1.md"
         original = ticket.read_text()
