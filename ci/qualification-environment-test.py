@@ -4275,6 +4275,16 @@ class QualificationEnvironmentTest(unittest.TestCase):
             project="relay", root=self.root,
             runtime_bin=self.home / ".local/bin",
         ))
+        runtime_ledger = (
+            self.home.resolve()
+            / ".factory/qualification/relay/operator/runtime-ledger.csv"
+        )
+        runtime_before = runtime_ledger.read_bytes() + (
+            b"2026-01-01,00:00:00,T-999,planner,cursor-openai,1,1,1.00,0,"
+            b"stale-run,openai,model,route_journal,provider_reported,1\n"
+        )
+        runtime_ledger.write_bytes(runtime_before)
+        runtime_ledger.chmod(0o600)
         controller = (
             self.home.resolve() / ".factory/qualification/relay/controller"
         )
@@ -4443,6 +4453,13 @@ class QualificationEnvironmentTest(unittest.TestCase):
         self.assertLessEqual(receipt["total_duration_ms"], 60_000)
         self.assertEqual(active["kit_sha"], candidate)
         self.assertEqual(active["generation"], 2)
+        canonical_ledger = subprocess.run([
+            sys.executable, "-I", "-S", str(release / "scripts/ledger-view.py"),
+            "print", "--factory-root", str(self.product),
+            "--runtime-ledger", str(runtime_ledger),
+        ], capture_output=True, check=True).stdout
+        self.assertNotEqual(runtime_ledger.read_bytes(), runtime_before)
+        self.assertEqual(runtime_ledger.read_bytes(), canonical_ledger)
         migration = RELEASE.qualification_state(kits.resolve(), "relay", candidate)
         self.assertRegex(receipt["journal_sha256"], r"^[0-9a-f]{64}$")
         self.assertFalse((migration / "journal.json").exists())

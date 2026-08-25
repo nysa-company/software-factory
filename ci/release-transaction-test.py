@@ -2812,6 +2812,10 @@ class ReleaseTransactionTest(unittest.TestCase):
                 },
                 "authority_sha256": "4" * 64,
                 "environment": {"path": "/tmp/environment", "sha256": "5" * 64},
+                "operator_identities": {
+                    "map_sha256": "7" * 64,
+                    "runtime_ledger_sha256": "8" * 64,
+                },
                 "previous_receipt": {"path": "/tmp/receipt", "sha256": "6" * 64},
                 "provider_state": {},
                 "selected_tickets": ["T-1"],
@@ -3709,6 +3713,10 @@ class ReleaseTransactionTest(unittest.TestCase):
             },
             "authority_sha256": "2" * 64,
             "environment": {"path": "/tmp/environment", "sha256": "3" * 64},
+            "operator_identities": {
+                "map_sha256": "9" * 64,
+                "runtime_ledger_sha256": "a" * 64,
+            },
             "previous_receipt": {"path": "/tmp/receipt-1", "sha256": "7" * 64},
             "product_sha": "c" * 40,
         }
@@ -3721,13 +3729,64 @@ class ReleaseTransactionTest(unittest.TestCase):
         current["previous_receipt"] = {
             "path": "/tmp/receipt-2", "sha256": "8" * 64,
         }
+        current["operator_identities"]["runtime_ledger_sha256"] = "b" * 64
         self.assertTrue(RELEASE.qualification_basis_matches(
             current, expected, self.sha,
         ))
+        current["operator_identities"]["map_sha256"] = "c" * 64
+        self.assertFalse(RELEASE.qualification_basis_matches(
+            current, expected, self.sha,
+        ))
+        current["operator_identities"]["map_sha256"] = "9" * 64
+        for key, value in (("generation", 3), ("kit_sha", "d" * 40)):
+            changed = json.loads(json.dumps(current))
+            changed["active"][key] = value
+            self.assertFalse(RELEASE.qualification_basis_matches(
+                changed, expected, self.sha,
+            ))
         current["product_sha"] = "d" * 40
         self.assertFalse(RELEASE.qualification_basis_matches(
             current, expected, self.sha,
         ))
+
+    def test_qualification_runtime_ledger_requires_the_sealed_projection(self) -> None:
+        ledger = self.root / "runtime-ledger.csv"
+        RELEASE.atomic_bytes(ledger, b"canonical\n")
+        completed = mock.Mock(returncode=0, stdout=b"canonical\n")
+        with mock.patch.object(RELEASE.subprocess, "run", return_value=completed) as run:
+            self.assertEqual(
+                RELEASE.qualification_runtime_ledger_digest(
+                    self.root, self.product, ledger,
+                ),
+                hashlib.sha256(b"canonical\n").hexdigest(),
+            )
+        self.assertIn(str(self.root / "scripts/ledger-view.py"), run.call_args.args[0])
+        completed.stdout = b"changed\n"
+        with (
+            mock.patch.object(RELEASE.subprocess, "run", return_value=completed),
+            self.assertRaisesRegex(RELEASE.ReleaseError, "not canonical"),
+        ):
+            RELEASE.qualification_runtime_ledger_digest(
+                self.root, self.product, ledger,
+            )
+        completed.returncode = 1
+        with (
+            mock.patch.object(RELEASE.subprocess, "run", return_value=completed),
+            self.assertRaisesRegex(RELEASE.ReleaseError, "projection failed"),
+        ):
+            RELEASE.qualification_runtime_ledger_digest(
+                self.root, self.product, ledger,
+            )
+        with (
+            mock.patch.object(
+                RELEASE.subprocess, "run",
+                side_effect=subprocess.TimeoutExpired("ledger-view", 60),
+            ),
+            self.assertRaisesRegex(RELEASE.ReleaseError, "projection failed"),
+        ):
+            RELEASE.qualification_runtime_ledger_digest(
+                self.root, self.product, ledger,
+            )
 
     def test_qualification_basis_hashes_the_selected_target_transaction(self) -> None:
         repo = self.root / "factory"
@@ -3976,7 +4035,7 @@ class ReleaseTransactionTest(unittest.TestCase):
             )
         self.assertFalse((state / ".migration.lock").exists())
 
-    def test_qualification_repair_supersedes_only_before_environment_mutation(self) -> None:
+    def test_qualification_repair_supersedes_only_at_authenticated_boundaries(self) -> None:
         plan = self.qualification_plan(approval_required=False)
         state = RELEASE.qualification_state(self.kits, "relay", self.sha)
         RELEASE.secure_directory(state, create=True)
@@ -4015,6 +4074,7 @@ class ReleaseTransactionTest(unittest.TestCase):
         transitioned["authority_sha256"] = "8" * 64
         transitioned["environment"]["sha256"] = "9" * 64
         transitioned["previous_receipt"]["sha256"] = "a" * 64
+        transitioned["operator_identities"]["runtime_ledger_sha256"] = "b" * 64
         with (
             mock.patch.object(
                 RELEASE, "qualification_basis", return_value=(transitioned, module),
@@ -4040,6 +4100,47 @@ class ReleaseTransactionTest(unittest.TestCase):
         ):
             RELEASE.apply_qualification_plan(
                 plan, self.kits, None, repair_sha="f" * 40,
+            )
+        self.assertEqual(
+            RELEASE.read_qualification_journal(journal_path, plan)["repair_sha"],
+            "e" * 40,
+        )
+        with (
+            mock.patch.object(
+                RELEASE, "qualification_basis", return_value=(transitioned, module),
+            ),
+            mock.patch.object(
+                RELEASE, "run_json", side_effect=RELEASE.ReleaseError("stop"),
+            ),
+            mock.patch.object(RELEASE, "secure_regular_bytes", return_value=b""),
+            self.assertRaisesRegex(RELEASE.ReleaseError, "stop"),
+        ):
+            RELEASE.apply_qualification_plan(
+                plan, self.kits, None, repair_sha="f" * 40,
+            )
+        self.assertEqual(
+            RELEASE.read_qualification_journal(journal_path, plan)["repair_sha"],
+            "f" * 40,
+        )
+
+        RELEASE.qualification_journal_update(
+            journal_path, plan, "doctor_ready", plan["preview_timings"],
+        )
+        journal = RELEASE.safe_state(journal_path, "qualification migration journal")
+        journal["repair_sha"] = "d" * 40
+        RELEASE.atomic_json(journal_path, RELEASE.signed_journal(journal))
+        with (
+            mock.patch.object(
+                RELEASE, "qualification_basis", return_value=(transitioned, module),
+            ),
+            mock.patch.object(
+                RELEASE, "run_json", side_effect=RELEASE.ReleaseError("stop"),
+            ),
+            mock.patch.object(RELEASE, "secure_regular_bytes", return_value=b""),
+            self.assertRaisesRegex(RELEASE.ReleaseError, "stop"),
+        ):
+            RELEASE.apply_qualification_plan(
+                plan, self.kits, None, repair_sha="e" * 40,
             )
         self.assertEqual(
             RELEASE.read_qualification_journal(journal_path, plan)["repair_sha"],
