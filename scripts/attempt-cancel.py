@@ -502,7 +502,9 @@ def sealed_recovery_lock_held(path_value: str, descriptor_value: str) -> None:
         os.close(probe)
 
 
-def sealed_recovery_locks_held(manifest: dict[str, str]) -> bool:
+def sealed_recovery_locks_held(
+    manifest: dict[str, str] | None = None, *, product_id: str | None = None,
+) -> bool:
     names = (
         "FACTORY_CROSS_RELEASE_SOURCE_SHA",
         "FACTORY_CROSS_RELEASE_PRODUCT_ID",
@@ -523,8 +525,20 @@ def sealed_recovery_locks_held(manifest: dict[str, str]) -> bool:
             r"[A-Za-z0-9._:-]{1,200}",
             values["FACTORY_CROSS_RELEASE_PRODUCT_ID"],
         ) is None
-        or manifest.get("kit_sha") != source_sha
-        or manifest.get("contract_version") != "2.0.0"
+        or (
+            manifest is not None
+            and (
+                manifest.get("kit_sha") != source_sha
+                or manifest.get("contract_version") != "2.0.0"
+            )
+        )
+        or (
+            manifest is None
+            and (
+                product_id != values["FACTORY_CROSS_RELEASE_PRODUCT_ID"]
+                or not product_id.endswith(f":{source_sha}")
+            )
+        )
     ):
         raise CancelError("sealed recovery admission identity is invalid")
     sealed_recovery_lock_held(
@@ -758,6 +772,8 @@ def validate_provider_only_initial(
 
 def provider_only_records_absent(
     factory_root: Path, ticket: str, run_id: str, *, require_account_absent=True,
+    allowed_claim: dict | None = None, recovery_name: str | None = None,
+    require_claim_present: bool = False,
 ) -> None:
     attempt = paths(factory_root, run_id)
     match = re.fullmatch(r"([0-9]{9,})-([1-9][0-9]*)-cli", run_id)
@@ -787,18 +803,13 @@ def provider_only_records_absent(
             for row in csv.DictReader(handle)
         ):
             raise CancelError("provider-only attempt has runtime ledger evidence")
-    active_runs = attempt["active_runs"]
-    if active_runs.exists() or active_runs.is_symlink():
-        info = active_runs.lstat()
-        if (
-            active_runs.is_symlink()
-            or not stat.S_ISDIR(info.st_mode)
-            or info.st_uid != os.geteuid()
-            or info.st_mode & 0o022
-        ):
-            raise CancelError("active-run state is unsafe")
-        if any(active_runs.glob(f"{ticket}.*.lock")):
-            raise CancelError("provider-only attempt still has an active run claim")
+    claim_state = provider_only_claim_state(
+        attempt["active_runs"], ticket, allowed_claim, recovery_name,
+    )
+    if claim_state != "absent" and allowed_claim is None:
+        raise CancelError("provider-only attempt still has an active run claim")
+    if require_claim_present and claim_state != "claim":
+        raise CancelError("provider-only active run claim changed")
     wrapper_pid = int(match.group(2))
     table = IDENTITY.process_table()
     if wrapper_pid in table or any(
@@ -823,6 +834,243 @@ def provider_only_records_absent(
             raise CancelError("provider-only attempt has worker evidence")
 
 
+def provider_only_claim_identity(
+    active_runs: Path, ticket: str, *, selected_name: str | None = None,
+    logical_name: str | None = None,
+) -> dict | None:
+    try:
+        root = active_runs.lstat()
+    except FileNotFoundError:
+        return None
+    if (
+        active_runs.is_symlink() or not stat.S_ISDIR(root.st_mode)
+        or root.st_uid != os.geteuid() or root.st_mode & 0o022
+    ):
+        raise CancelError("active-run state is unsafe")
+    entries = sorted(active_runs.iterdir(), key=lambda path: path.name)
+    if not entries:
+        return None
+    expected_name = logical_name or selected_name
+    matches = [
+        path for path in entries
+        if selected_name is not None and path.name == selected_name
+        or selected_name is None and re.fullmatch(
+            rf"{re.escape(ticket)}[.][A-Za-z0-9_-]+[.]lock", path.name,
+        )
+    ]
+    if (
+        len(entries) != 1 or len(matches) != 1
+        or expected_name is not None and not re.fullmatch(
+            rf"{re.escape(ticket)}[.][A-Za-z0-9_-]+[.]lock", expected_name,
+        )
+    ):
+        raise CancelError("provider-only attempt has sibling active run claims")
+    claim = matches[0]
+    before = claim.lstat()
+    children = sorted(claim.iterdir(), key=lambda path: path.name)
+    if (
+        claim.is_symlink() or not stat.S_ISDIR(before.st_mode)
+        or before.st_uid != os.geteuid() or before.st_mode & 0o022
+        or [child.name for child in children] != ["owner"]
+    ):
+        raise CancelError("active-run claim is unsafe")
+    owner_path = children[0]
+    owner_before = owner_path.lstat()
+    raw = IDENTITY.record_bytes(owner_path)
+    owner_after = owner_path.lstat()
+    try:
+        owner = IDENTITY.parse_fields(raw, "active-run owner")
+    except (UnicodeError, ValueError) as error:
+        raise CancelError("active-run owner is malformed") from error
+    if (
+        set(owner) != {"pid", "process_start", "token"}
+        or not owner["pid"].isdigit() or int(owner["pid"]) <= 1
+        or not owner["process_start"]
+        or not re.fullmatch(r"[0-9a-f]{32}", owner["token"])
+        or not stat.S_ISREG(owner_before.st_mode) or owner_path.is_symlink()
+        or owner_before.st_uid != os.geteuid() or owner_before.st_nlink != 1
+        or owner_before.st_mode & 0o022 or owner_before.st_size > 10_000
+        or (
+            owner_before.st_dev, owner_before.st_ino, owner_before.st_mode,
+            owner_before.st_nlink, owner_before.st_uid,
+        ) != (
+            owner_after.st_dev, owner_after.st_ino, owner_after.st_mode,
+            owner_after.st_nlink, owner_after.st_uid,
+        )
+    ):
+        raise CancelError("active-run owner is malformed")
+    process = IDENTITY.process_table().get(int(owner["pid"]))
+    if process is not None and process.started == owner["process_start"]:
+        raise CancelError("active-run owner is still alive")
+    return {
+        "claim_dev": before.st_dev,
+        "claim_ino": before.st_ino,
+        "name": expected_name or claim.name,
+        "owner_dev": owner_before.st_dev,
+        "owner_ino": owner_before.st_ino,
+        "owner_sha256": digest(raw),
+        "pid": int(owner["pid"]),
+        "process_start": owner["process_start"],
+        "root_dev": root.st_dev,
+        "root_ino": root.st_ino,
+    }
+
+
+def validate_provider_only_claim(value: dict | None, ticket: str) -> None:
+    if value is None:
+        return
+    integer_fields = {
+        "claim_dev", "claim_ino", "owner_dev", "owner_ino", "pid",
+        "root_dev", "root_ino",
+    }
+    if (
+        not isinstance(value, dict)
+        or set(value) != integer_fields | {
+            "name", "owner_sha256", "process_start",
+        }
+        or any(
+            not isinstance(value.get(field), int)
+            or isinstance(value.get(field), bool) or value[field] < 0
+            for field in integer_fields
+        )
+        or value["pid"] <= 1
+        or not re.fullmatch(
+            rf"{re.escape(ticket)}[.][A-Za-z0-9_-]+[.]lock", value["name"],
+        )
+        or not re.fullmatch(r"[0-9a-f]{64}", value["owner_sha256"])
+        or not isinstance(value["process_start"], str)
+        or not value["process_start"]
+    ):
+        raise CancelError("provider-only active run claim is invalid")
+
+
+def provider_only_claim_state(
+    active_runs: Path, ticket: str, expected: dict | None,
+    recovery_name: str | None,
+) -> str:
+    validate_provider_only_claim(expected, ticket)
+    if expected is None:
+        return "absent" if provider_only_claim_identity(active_runs, ticket) is None else "claim"
+    try:
+        entries = sorted(path.name for path in active_runs.iterdir())
+    except FileNotFoundError:
+        return "absent"
+    allowed = {expected["name"]}
+    if recovery_name is not None:
+        allowed.add(recovery_name)
+    if not entries:
+        return "absent"
+    if len(entries) != 1 or entries[0] not in allowed:
+        raise CancelError("provider-only attempt has sibling active run claims")
+    renamed = entries[0] != expected["name"]
+    if renamed:
+        path = active_runs / entries[0]
+        info = path.lstat()
+        root = active_runs.lstat()
+        if (
+            not active_runs.is_symlink() and not path.is_symlink()
+            and stat.S_ISDIR(root.st_mode) and stat.S_ISDIR(info.st_mode)
+            and root.st_uid == os.geteuid() and info.st_uid == os.geteuid()
+            and not root.st_mode & 0o022 and not info.st_mode & 0o022
+            and not any(path.iterdir())
+            and (info.st_dev, info.st_ino)
+            == (expected["claim_dev"], expected["claim_ino"])
+            and (root.st_dev, root.st_ino)
+            == (expected["root_dev"], expected["root_ino"])
+        ):
+            return "quarantine_empty"
+    current = provider_only_claim_identity(
+        active_runs, ticket, selected_name=entries[0],
+        logical_name=expected["name"],
+    )
+    if current != expected:
+        raise CancelError("provider-only active run claim changed")
+    return "quarantined" if renamed else "claim"
+
+
+def provider_only_recovery_name(plan: dict) -> str:
+    return f".provider-only-cancel-{plan['preview_hash'][:24]}"
+
+
+def release_provider_only_claim(factory_root: Path, plan: dict) -> None:
+    expected = plan["active_claim"]
+    if expected is None:
+        provider_only_records_absent(
+            factory_root, plan["ticket"], plan["run_id"],
+            require_account_absent=False,
+        )
+        return
+    if not sealed_recovery_locks_held(
+        product_id=plan["provider_attempt"]["product_id"],
+    ):
+        raise CancelError("provider-only active run claim requires sealed recovery")
+    active_runs = paths(factory_root, plan["run_id"])["active_runs"]
+    recovery_name = provider_only_recovery_name(plan)
+    state = provider_only_claim_state(
+        active_runs, plan["ticket"], expected, recovery_name,
+    )
+    if state == "absent":
+        return
+    original = active_runs / expected["name"]
+    recovery = active_runs / recovery_name
+    if state == "claim":
+        os.rename(original, recovery)
+        fsync_directory(active_runs)
+    if state != "quarantine_empty":
+        current = provider_only_claim_identity(
+            active_runs, plan["ticket"], selected_name=recovery_name,
+            logical_name=expected["name"],
+        )
+        if current != expected:
+            raise CancelError("provider-only active run claim changed")
+        (recovery / "owner").unlink()
+        fsync_directory(recovery)
+    recovery.rmdir()
+    fsync_directory(active_runs)
+
+
+def prepare_provider_only_recovery(factory_root: Path, plan: dict) -> None:
+    """Begin an approved outer recovery before the public apply can resume."""
+    validate_provider_only_plan(plan, plan["preview_hash"])
+    if plan["active_claim"] is None:
+        return
+    if not sealed_recovery_locks_held(
+        product_id=plan["provider_attempt"]["product_id"],
+    ):
+        raise CancelError("provider-only active run claim requires sealed recovery")
+    attempt = paths(factory_root, plan["run_id"])
+    recovery_name = provider_only_recovery_name(plan)
+    provider_only_records_absent(
+        factory_root, plan["ticket"], plan["run_id"],
+        require_account_absent=False, allowed_claim=plan["active_claim"],
+        recovery_name=recovery_name, require_claim_present=(
+            not attempt["request"].exists() and not attempt["request"].is_symlink()
+        ),
+    )
+    request = {"plan": plan, "requested_at": timestamp(), "schema": REQUEST_SCHEMA}
+    try:
+        durable_create(attempt["request"], canonical(request))
+    except FileExistsError:
+        existing, _ = secure_json(attempt["request"])
+        if existing.get("schema") != REQUEST_SCHEMA or existing.get("plan") != plan:
+            raise CancelError("another cancellation request won the CAS")
+    release_provider_only_claim(factory_root, plan)
+    provider_only_records_absent(
+        factory_root, plan["ticket"], plan["run_id"], require_account_absent=False,
+    )
+
+
+def fsync_directory(path: Path) -> None:
+    descriptor = os.open(
+        path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0),
+    )
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def validate_provider_only_terminal(value: dict, plan: dict) -> None:
     initial = plan["provider_attempt"]
     expected = dict(initial)
@@ -845,10 +1093,11 @@ def validate_provider_only_terminal(value: dict, plan: dict) -> None:
 
 
 def validate_provider_only_plan(value: dict, expected_hash: str) -> None:
-    if set(value) != {
+    fields = {
         "created_at", "nonce", "preview_hash", "provider_attempt",
         "provider_attempt_sha256", "reason", "run_id", "schema", "ticket",
-    }:
+    }
+    if set(value) not in (fields, fields | {"active_claim"}):
         raise CancelError("cancel plan has unexpected fields")
     supplied = value.get("preview_hash", "")
     unhashed = dict(value)
@@ -869,6 +1118,17 @@ def validate_provider_only_plan(value: dict, expected_hash: str) -> None:
     ):
         raise CancelError("cancel preview hash does not match the plan")
     validate_provider_only_initial(attempt, value["ticket"], value["run_id"])
+    active_claim = value.get("active_claim")
+    validate_provider_only_claim(active_claim, value["ticket"])
+    match = re.fullmatch(r"[0-9]{9,}-([1-9][0-9]*)-cli", value["run_id"])
+    if (
+        active_claim is not None
+        and (
+            match is None
+            or active_claim["pid"] != int(match.group(1))
+        )
+    ):
+        raise CancelError("provider-only active run claim has the wrong owner")
 
 
 def provider_only_receipt_replay(path: Path, plan: dict) -> dict | None:
@@ -899,9 +1159,6 @@ def calculate_provider_only(
     factory_root: Path, ticket: str, run_id: str, reason: str,
     nonce: str | None,
 ) -> dict:
-    provider_only_records_absent(
-        factory_root, ticket, run_id, require_account_absent=False,
-    )
     attempt_paths = paths(factory_root, run_id)
     status = provider_attempt(factory_root, run_id)
     if attempt_paths["request"].exists() or attempt_paths["request"].is_symlink():
@@ -915,7 +1172,22 @@ def calculate_provider_only(
         replay = provider_only_receipt_replay(attempt_paths["receipt"], plan)
         if replay is not None and replay["provider_attempt_sha256"] != digest(canonical(status)):
             raise CancelError("existing cancellation receipt disagrees with the attempt")
+        recovery_name = (
+            None if plan.get("active_claim") is None else
+            provider_only_recovery_name(plan)
+        )
+        provider_only_records_absent(
+            factory_root, ticket, run_id, require_account_absent=False,
+            allowed_claim=plan.get("active_claim"), recovery_name=recovery_name,
+        )
         return plan
+    active_claim = provider_only_claim_identity(
+        attempt_paths["active_runs"], ticket,
+    )
+    provider_only_records_absent(
+        factory_root, ticket, run_id, require_account_absent=False,
+        allowed_claim=active_claim,
+    )
     validate_provider_only_initial(status, ticket, run_id)
     raw = canonical(status)
     nonce = nonce or digest(raw + b"\0" + reason.encode())[:32]
@@ -923,6 +1195,7 @@ def calculate_provider_only(
         status["updated_at"], dt.timezone.utc,
     ).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     plan = {
+        "active_claim": active_claim,
         "created_at": created_at,
         "nonce": nonce,
         "provider_attempt": status,
@@ -939,8 +1212,23 @@ def calculate_provider_only(
 def apply_provider_only_plan(factory_root: Path, plan: dict) -> dict:
     validate_provider_only_plan(plan, plan["preview_hash"])
     ticket, run_id = plan["ticket"], plan["run_id"]
-    provider_only_records_absent(factory_root, ticket, run_id)
     attempt_paths = paths(factory_root, run_id)
+    recovery_name = (
+        None if plan.get("active_claim") is None else
+        provider_only_recovery_name(plan)
+    )
+    if plan.get("active_claim") is not None:
+        if not attempt_paths["request"].exists() or attempt_paths["request"].is_symlink():
+            raise CancelError(
+                "provider-only active run claim requires qualification recovery"
+            )
+        if provider_only_claim_state(
+            attempt_paths["active_runs"], ticket, plan["active_claim"], recovery_name,
+        ) != "absent":
+            raise CancelError(
+                "provider-only active run claim requires qualification recovery"
+            )
+    provider_only_records_absent(factory_root, ticket, run_id)
     request = {"plan": plan, "requested_at": timestamp(), "schema": REQUEST_SCHEMA}
     try:
         durable_create(attempt_paths["request"], canonical(request))
@@ -948,7 +1236,6 @@ def apply_provider_only_plan(factory_root: Path, plan: dict) -> dict:
         existing, _ = secure_json(attempt_paths["request"])
         if existing.get("schema") != REQUEST_SCHEMA or existing.get("plan") != plan:
             raise CancelError("another cancellation request won the CAS")
-    provider_only_records_absent(factory_root, ticket, run_id)
     status = provider_attempt(factory_root, run_id)
     if status == plan["provider_attempt"]:
         try:

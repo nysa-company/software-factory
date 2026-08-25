@@ -716,8 +716,10 @@ provider database, runtime and durable ledgers, exact attempt, claim, lease,
 matching global Cursor account row or its absence, unchanged empty launch lock,
 and nested cancellation preview. Apply revalidates under controller and
 dispatch-admission locks. A provider-only pre-GO orphan releases its bound dead
-account row before unchanged nested cancellation, then removes only its selected
-expired dispatch lease and bound empty launch lock. A manifest-backed run first
+account row before unchanged nested cancellation; that nested transaction may
+first quarantine and remove only the exact dead authority-ledger claim bound by
+the plan, then outer cleanup removes only its selected expired dispatch lease
+and bound empty launch lock. A manifest-backed run first
 converges unchanged nested cancellation and only then releases its dead account
 row; it never touches dispatch or launch resources. Replay returns retained
 receipts without charging twice or leaving cleanup-lock residue. This
@@ -730,6 +732,9 @@ manifest kit, lane product, and authoritative provider row agree. This does not
 upgrade, reset, or retire the lane; repeat for each named attempt and then use
 the old lane's sealed finisher and Doctor. Never copy the successor helper into
 the old release or edit coordinator, ledger, claim, lease, or lock state.
+Qualification Doctor and drain checks resolve active claims beside the exact
+authenticated runtime ledger, so an authority-local claim cannot be hidden by
+an empty product-local directory.
 
 ### Migrating a drained qualification lane
 

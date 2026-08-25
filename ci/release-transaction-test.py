@@ -29,9 +29,21 @@ SPEC = importlib.util.spec_from_file_location(
 assert SPEC and SPEC.loader
 RELEASE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(RELEASE)
+ATTEMPT_SPEC = importlib.util.spec_from_file_location(
+    "release_test_attempt_cancel", ROOT / "scripts/attempt-cancel.py"
+)
+assert ATTEMPT_SPEC and ATTEMPT_SPEC.loader
+CANCEL = importlib.util.module_from_spec(ATTEMPT_SPEC)
+ATTEMPT_SPEC.loader.exec_module(CANCEL)
 sys.path.insert(0, str(ROOT / "scripts/lib"))
 import activation_preflight as ACTIVATION  # noqa: E402
 import historical_pr_objects as HISTORY  # noqa: E402
+
+
+LEDGER_HEADER = (
+    "date,time,ticket,role,adapter,prompt_version,turns,cost_usd,exit_status,"
+    "run_id,provider_family,model_id,selection_reason,cost_basis,adapter_version\n"
+)
 
 
 def cutover_lock_worker(
@@ -3423,6 +3435,158 @@ class ReleaseTransactionTest(unittest.TestCase):
             first["receipt"]["cleanup_result"]["dispatch_lease_result"], "released",
         )
         module.lock_dispatch_boundaries.assert_not_called()
+
+    def test_qualification_recover_apply_removes_authority_claim_once(self) -> None:
+        source_sha = "5" * 40
+        run_id = "1787640905-99999999-cli"
+        authority = self.root / "authority/operator"
+        authority.mkdir(parents=True)
+        runtime_ledger = authority / "runtime-ledger.csv"
+        runtime_ledger.write_text(LEDGER_HEADER)
+        durable_ledger = self.product / "factory/ledger.csv"
+        durable_ledger.write_text(LEDGER_HEADER)
+        (self.product / "factory/runs").mkdir()
+        claim = authority / ".active-runs/T-1.builder.lock"
+        claim.mkdir(parents=True)
+        (claim / "owner").write_text(
+            "pid=99999999\nprocess_start=dead-start\n" + f"token={'a' * 32}\n"
+        )
+        active_claim = CANCEL.provider_only_claim_identity(
+            authority / ".active-runs", "T-1",
+        )
+        provider_attempt = {
+            "account_route": "cursor-primary", "admitted_at": 101,
+            "attempt_id": run_id, "budget_day": "2026-08-25",
+            "cancellation_reason": None, "cancellation_requested_at": None,
+            "charge_micro_usd": None, "go_at": None,
+            "machine_daily_cap_micro_usd": 10_000_000,
+            "policy_sha256": "8" * 64, "prepared_at": 100,
+            "product_daily_cap_micro_usd": 10_000_000,
+            "product_id": f"relay:{source_sha}", "provider_family": "openai",
+            "reserve_micro_usd": 2_000_000, "state": "reserved",
+            "submitted_at": None, "terminal_at": None, "terminal_result": None,
+            "ticket_cap_micro_usd": 10_000_000, "ticket_id": "T-1",
+            "updated_at": 101, "version": 2,
+        }
+        nested = {
+            "active_claim": active_claim,
+            "created_at": "2026-08-25T00:00:00Z",
+            "nonce": "9" * 32,
+            "provider_attempt": provider_attempt,
+            "provider_attempt_sha256": CANCEL.digest(CANCEL.canonical(provider_attempt)),
+            "reason": "operator_requested", "run_id": run_id,
+            "schema": "nysa.software-factory.provider-only-attempt-cancel-plan/v1",
+            "ticket": "T-1",
+        }
+        nested["preview_hash"] = CANCEL.digest(CANCEL.canonical(nested))
+        plan = self.recovery_plan()
+        plan["request"]["failed_run"] = run_id
+        plan["attempt"].update({
+            "account_recovery": self.account_recovery_plan(run_id),
+            "nested_plan": nested, "provider_attempt": provider_attempt,
+            "provider_attempt_sha256": RELEASE.digest(provider_attempt),
+        })
+        plan = RELEASE.seal_plan({
+            key: value for key, value in plan.items() if key != "approval_sha256"
+        })
+        RELEASE.validate_qualification_recovery_plan(plan)
+        state = RELEASE.qualification_recovery_state(
+            Path(plan["request"]["root"]), "relay", self.sha, "T-1", run_id,
+        )
+        RELEASE.atomic_json(
+            state / "plans" / f"{plan['approval_sha256']}.json", plan,
+        )
+        lane = {
+            "active": {
+                "kit_sha": source_sha, "project": "relay",
+                "runtime_ledger_path": str(runtime_ledger),
+            },
+            "controller": self.root / "controller", "product": self.product,
+            "provider": self.root / "provider",
+            "root": Path(plan["request"]["root"]),
+        }
+        admission_path = lane["root"] / "worktrees/relay/.dispatch-admission.lock"
+        controller_path = lane["controller"] / "reconcile.lock"
+
+        def held(path):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            descriptor = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            return [descriptor]
+
+        module = mock.Mock()
+        module.lock_dispatch_admission.side_effect = lambda *_: held(admission_path)
+        module.lock_controllers.side_effect = lambda *_: held(controller_path)
+        args = argparse.Namespace(
+            approve_hash=plan["approval_sha256"], failed_run=run_id,
+            operator_id="tester", product=self.product, project="relay",
+            repo=self.root / "factory", root=lane["root"], sha=self.sha,
+            ticket="T-1",
+        )
+        nested_receipt = self.product / f"factory/runs/{run_id}.cancel.json"
+
+        def cancel_attempt(*_args):
+            if _args[2][0] == "preview":
+                return nested
+            self.assertFalse(claim.exists())
+            request = RELEASE.safe_state(
+                self.product / f"factory/runs/{run_id}.cancel-request.json",
+                "attempt cancellation request",
+            )
+            self.assertEqual(request["plan"], nested)
+            RELEASE.atomic_json(nested_receipt, {"preview_hash": nested["preview_hash"]})
+            return {"preview_hash": nested["preview_hash"], "status": "failed_pre_go"}
+
+        with (
+            mock.patch.object(
+                RELEASE, "qualification_recovery_identity",
+                return_value=(plan["identity"], module, lane, args.repo),
+            ),
+            mock.patch.object(
+                RELEASE, "qualification_recovery_attempt",
+                return_value=plan["attempt"],
+            ),
+            mock.patch.object(
+                RELEASE, "qualification_account_recovery_apply",
+                return_value=self.account_recovery_result(plan),
+            ),
+            mock.patch.object(
+                RELEASE, "run_json", return_value={"attempts": [provider_attempt]},
+            ),
+            mock.patch.object(
+                RELEASE, "qualification_attempt_cancel", side_effect=cancel_attempt,
+            ),
+        ):
+            result = RELEASE.qualification_recovery_apply(args)
+            replay = RELEASE.qualification_recovery_apply(args)
+        self.assertEqual(result, replay)
+        self.assertEqual(result["status"], "recovered")
+        self.assertFalse(claim.exists())
+
+    def test_qualification_recovery_environment_context_always_restores(self) -> None:
+        lane = {
+            "active": {
+                "kit_sha": "5" * 40, "project": "relay",
+                "runtime_ledger_path": str(self.root / "runtime-ledger.csv"),
+            },
+            "controller": self.root / "controller", "product": self.product,
+            "provider": self.root / "provider", "root": self.root / "qualification",
+        }
+        before = dict(os.environ)
+        with self.assertRaisesRegex(RuntimeError, "interrupted"):
+            with RELEASE.qualification_recovery_environment_context(lane, 1, 2):
+                raise RuntimeError("interrupted")
+        self.assertEqual(dict(os.environ), before)
+        with (
+            mock.patch.object(
+                RELEASE, "qualification_recovery_environment",
+                side_effect=RELEASE.ReleaseError("invalid lane"),
+            ),
+            self.assertRaisesRegex(RELEASE.ReleaseError, "invalid lane"),
+        ):
+            with RELEASE.qualification_recovery_environment_context(lane, 1, 2):
+                self.fail("unreachable")
+        self.assertEqual(dict(os.environ), before)
 
     def test_qualification_recovery_normal_account_replay_leaves_dispatch_untouched(
         self,

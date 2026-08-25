@@ -487,6 +487,40 @@ class QualificationEnvironmentTest(unittest.TestCase):
         path.write_bytes(ENVIRONMENT.canonical(value))
         path.chmod(0o600)
 
+    def test_provider_drain_uses_authority_runtime_ledger_claims(self) -> None:
+        authority = self.workspace / "authority"
+        operator = authority / "operator"
+        operator.mkdir(parents=True)
+        ledger = operator / "runtime-ledger.csv"
+        ledger.write_text("", encoding="utf-8")
+        runs = self.product / "factory/runs"
+        runs.mkdir(parents=True, exist_ok=True)
+        active = operator / ".active-runs"
+        active.mkdir()
+        claim = active / "T-1.planner.lock"
+        claim.mkdir()
+        lane = {
+            "active": {
+                "contract_version": "2.0.0",
+                "runtime_ledger_path": str(ledger),
+            },
+            "authority": authority,
+            "manifest": {"capacity": 3},
+            "product": self.product,
+            "release": self.factory,
+        }
+        with mock.patch.object(ENVIRONMENT, "validate_provider") as validate:
+            with self.assertRaisesRegex(
+                ENVIRONMENT.EnvironmentError, "active provider run",
+            ):
+                ENVIRONMENT.provider_drained(lane)
+            validate.assert_not_called()
+            claim.rmdir()
+            decoy = self.product / "factory/.active-runs/T-9.planner.lock"
+            decoy.mkdir(parents=True)
+            ENVIRONMENT.provider_drained(lane)
+            validate.assert_called_once()
+
     def test_certification_preflight_uses_exact_requested_runtime(self) -> None:
         runtime = self.workspace / "exact-runtime"
         runtime.mkdir()

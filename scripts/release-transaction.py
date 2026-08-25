@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import csv
 import fcntl
 import hashlib
@@ -5094,6 +5095,24 @@ def qualification_recovery_environment(
     return environment
 
 
+@contextlib.contextmanager
+def qualification_recovery_environment_context(
+    lane: dict[str, Any], admission_descriptor: int,
+    controller_descriptor: int,
+):
+    previous = dict(os.environ)
+    environment = qualification_recovery_environment(
+        lane, admission_descriptor, controller_descriptor,
+    )
+    os.environ.clear()
+    os.environ.update(environment)
+    try:
+        yield
+    finally:
+        os.environ.clear()
+        os.environ.update(previous)
+
+
 def qualification_attempt_cancel(
     transaction_root: Path, lane: dict[str, Any], arguments: list[str], label: str,
     admission_descriptor: int | None = None,
@@ -5105,6 +5124,26 @@ def qualification_attempt_cancel(
             lane, admission_descriptor, controller_descriptor,
         ), timeout=30,
     )
+
+
+def qualification_prepare_provider_only_recovery(
+    lane: dict[str, Any], plan: dict[str, Any], admission_descriptor: int,
+    controller_descriptor: int,
+) -> None:
+    spec = importlib.util.spec_from_file_location(
+        "qualification_attempt_cancel", TRANSACTION_ROOT / "scripts/attempt-cancel.py",
+    )
+    if spec is None or spec.loader is None:
+        raise ReleaseError("qualification cancellation helper is unavailable")
+    helper = importlib.util.module_from_spec(spec)
+    try:
+        with qualification_recovery_environment_context(
+            lane, admission_descriptor, controller_descriptor,
+        ):
+            spec.loader.exec_module(helper)
+            helper.prepare_provider_only_recovery(lane["product"], plan)
+    except (OSError, ValueError) as error:
+        raise ReleaseError(f"qualification claim recovery failed: {error}") from error
 
 
 def qualification_account_recovery_valid(
@@ -5223,7 +5262,8 @@ def qualification_recovery_optional_digest(path: Path, label: str) -> str | None
 
 
 def qualification_recovery_quiescence(
-    lane: dict[str, Any], selected_attempt: str,
+    lane: dict[str, Any], selected_attempt: str, nested: dict[str, Any] | None = None,
+    *, replay: bool = False,
 ) -> dict[str, Any]:
     def require_empty(path: Path, label: str) -> None:
         try:
@@ -5240,7 +5280,41 @@ def qualification_recovery_quiescence(
 
     runtime = Path(lane["active"]["runtime_ledger_path"])
     active_runs = runtime.parent / ".active-runs"
-    require_empty(active_runs, "qualification active-run state")
+    active_claim = (
+        nested.get("active_claim")
+        if isinstance(nested, dict) and nested.get("schema")
+        == "nysa.software-factory.provider-only-attempt-cancel-plan/v1"
+        else None
+    )
+    if active_claim is None:
+        require_empty(active_runs, "qualification active-run state")
+    else:
+        name = active_claim.get("name") if isinstance(active_claim, dict) else ""
+        preview = nested.get("preview_hash", "")
+        if (
+            not re.fullmatch(
+                rf"{re.escape(str(nested.get('ticket', '')))}[.]"
+                r"[A-Za-z0-9_-]+[.]lock", str(name),
+            )
+            or not DIGEST.fullmatch(str(preview))
+        ):
+            raise ReleaseError("qualification active-run recovery is invalid")
+        recovery_name = f".provider-only-cancel-{preview[:24]}"
+        try:
+            info = active_runs.lstat()
+            entries = sorted(path.name for path in active_runs.iterdir())
+        except FileNotFoundError:
+            entries = []
+        else:
+            if (
+                active_runs.is_symlink() or not stat.S_ISDIR(info.st_mode)
+                or info.st_uid != os.geteuid() or info.st_mode & 0o022
+            ):
+                raise ReleaseError("qualification active-run state is unsafe")
+        allowed = {name} if not replay else {name, recovery_name}
+        if len(entries) != 1 or entries[0] not in allowed:
+            if not replay or entries:
+                raise ReleaseError("qualification active-run state is not drained")
     runs = lane["product"] / "factory/runs"
     if not runs.is_dir() or runs.is_symlink():
         raise ReleaseError("qualification run state is unsafe")
@@ -5735,7 +5809,10 @@ def qualification_recovery_attempt(
     )
     lease = lane["product"] / f"factory/.dispatch-leases/{ticket}.json"
     lane_quiescence = (
-        qualification_recovery_quiescence(lane, provider_attempt)
+        qualification_recovery_quiescence(
+            lane, provider_attempt, nested,
+            replay=request_path.exists() or receipt_path.exists(),
+        )
         if provider_only else None
     )
     dispatch_lease = (
@@ -5936,7 +6013,11 @@ def qualification_recovery_revalidate_provider_only(
     ):
         return
     if qualification_recovery_quiescence(
-        lane, plan["attempt"]["provider_attempt"]["attempt_id"],
+        lane, plan["attempt"]["provider_attempt"]["attempt_id"], nested,
+        replay=(
+            lane["product"] / "factory/runs"
+            / f"{plan['request']['failed_run']}.cancel-request.json"
+        ).exists(),
     ) != plan["attempt"]["lane_quiescence"]:
         raise ReleaseError("qualification lane changed before account recovery")
     current = qualification_attempt_cancel(TRANSACTION_ROOT, lane, [
@@ -6086,6 +6167,11 @@ def qualification_recovery_apply(args: argparse.Namespace) -> dict[str, Any]:
                 lane, plan["attempt"]["provider_attempt"]["attempt_id"],
                 plan["attempt"]["account_recovery"], admission[0], controllers[0],
             )
+            if plan["attempt"]["nested_plan"].get("active_claim") is not None:
+                qualification_prepare_provider_only_recovery(
+                    lane, plan["attempt"]["nested_plan"],
+                    admission[0], controllers[0],
+                )
         nested_plan_path = state / "nested-plan.json"
         atomic_json(nested_plan_path, plan["attempt"]["nested_plan"])
         try:

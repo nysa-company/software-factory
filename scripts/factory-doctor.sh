@@ -304,6 +304,8 @@ if [[ -n "$PIN_FILE" && -f "$PIN_FILE" ]]; then
 fi
 
 FACTORY_DIR=""
+ACTIVE_RUNS_DIR=""
+ACTIVE_RUNS_BINDING_ERROR=0
 MAINTENANCE="false"
 LAUNCH_LOCK="false"
 LEDGER_LOCK="false"
@@ -322,6 +324,39 @@ STALE_DISPATCH_LEASES=0
 MALFORMED_DISPATCH_LEASES=0
 if [[ -n "$PRODUCT_ROOT" ]]; then
   FACTORY_DIR="$PRODUCT_ROOT/factory"
+  ACTIVE_RUNS_DIR="$FACTORY_DIR/.active-runs"
+  if [[ -n "${FACTORY_LEDGER:-}" ]]; then
+    ACTIVE_RUNS_DIR="$("$PYTHON_BIN" -I -S - \
+      "$FACTORY_LEDGER" "$PRODUCT_ROOT" "$HOME" "$PROJECT" \
+      "${FACTORY_KIT_TRUST_SCOPE:-}" <<'PY'
+import os, pathlib, stat, sys
+
+raw, product, home, project, trust = sys.argv[1:]
+ledger = pathlib.Path(raw)
+allowed = {pathlib.Path(product) / "factory/runtime-ledger.csv"}
+if trust == "qualification-candidate":
+    allowed.add(
+        pathlib.Path(home) / ".factory/qualification" / project
+        / "operator/runtime-ledger.csv"
+    )
+try:
+    info = ledger.lstat()
+    parent = ledger.parent.lstat()
+    if (
+        not ledger.is_absolute() or ledger not in allowed
+        or ledger.resolve(strict=True) != ledger or ledger.is_symlink()
+        or not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+        or info.st_nlink != 1 or info.st_mode & 0o022
+        or ledger.parent.is_symlink() or not stat.S_ISDIR(parent.st_mode)
+        or parent.st_uid != os.geteuid() or parent.st_mode & 0o022
+    ):
+        raise ValueError
+except (OSError, ValueError):
+    raise SystemExit(1)
+print(ledger.parent / ".active-runs")
+PY
+    )" || ACTIVE_RUNS_BINDING_ERROR=1
+  fi
   [[ -e "$FACTORY_DIR/MAINTENANCE" ]] && MAINTENANCE="true"
   [[ -e "$FACTORY_DIR/.launch.lock" ]] && LAUNCH_LOCK="true"
   [[ -e "$FACTORY_DIR/.ledger.lock" ]] && LEDGER_LOCK="true"
@@ -390,7 +425,9 @@ PY
       printf '%s\t%s\n' "$run_id" "$state" >> "$RUN_FILE"
     done
   fi
-  if ! ACTIVE_CLAIM_DATA="$("$PYTHON_BIN" -I -S - "$FACTORY_DIR/.active-runs" <<'PY'
+  if [[ "$ACTIVE_RUNS_BINDING_ERROR" -eq 1 ]]; then
+    ACTIVE_CLAIM_DATA="$(printf 'state\tmalformed')"
+  elif ! ACTIVE_CLAIM_DATA="$("$PYTHON_BIN" -I -S - "$ACTIVE_RUNS_DIR" <<'PY'
 import os, pathlib, re, stat, sys
 
 root = pathlib.Path(sys.argv[1])

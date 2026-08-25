@@ -609,6 +609,12 @@ class Controller:
         self.event_lock = Lock()
         self.capacity = self.read_capacity()
         self.qualification = self.read_qualification()
+        runtime_ledger = Path(os.environ.get(
+            "FACTORY_LEDGER", self.product / "factory/runtime-ledger.csv",
+        ))
+        if not runtime_ledger.is_absolute():
+            raise ControllerError("runtime ledger path is invalid")
+        self.active_runs = runtime_ledger.parent / ".active-runs"
         repository_test = os.environ.get("FACTORY_KIT_TRUST_SCOPE") == "repository-test"
         if repository_test and (
             os.environ.get("FACTORY_TEST_MODE"),
@@ -2649,7 +2655,7 @@ class Controller:
         return records
 
     def active_run_tickets(self) -> set[str]:
-        directory = self.product / "factory/.active-runs"
+        directory = self.active_runs
         try:
             info = directory.lstat()
         except FileNotFoundError:
@@ -4082,8 +4088,9 @@ class Controller:
         self.event("ticket_blocked", claim["ticket"], reason=reason)
 
     def active_run(self, ticket: str) -> bool:
-        active = self.product / "factory/.active-runs"
-        return active.is_dir() and any(active.glob(f"{ticket}.*"))
+        return self.active_runs.is_dir() and any(
+            self.active_runs.glob(f"{ticket}.*")
+        )
 
     def role_active(self, claim: dict[str, Any]) -> bool:
         return self.active_run(claim["ticket"])
@@ -12801,9 +12808,7 @@ class Controller:
                     pending_ticket=sibling_ticket,
                 )
                 return False
-        active_claims = sorted(
-            (self.product / "factory/.active-runs").glob("*")
-        )
+        active_claims = sorted(self.active_runs.glob("*"))
         if active_claims:
             self.event_once(
                 "closeout_deferred_active_claim", ticket,

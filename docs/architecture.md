@@ -1235,11 +1235,15 @@ to be nested beneath it.
 An interrupted subscription CLI admission may lack a run manifest only before
 provider GO. Targeted cancellation accepts that provider-only boundary solely
 when the exact prepared or reserved coordinator row, product, ticket, policy,
-budgets, dead process identity, absent run/heartbeat/runtime/ledger/claim
-evidence, and Cursor account identity all agree. Standalone apply still
+budgets, dead process identity, absent run/heartbeat/runtime/ledger evidence,
+and Cursor account identity all agree. One exact authority-ledger claim may be
+bound only when its ticket and owner PID match that provider attempt and its
+owner process identity is dead. Standalone apply still
 requires that account lease to be absent. Protected successor recovery may
 instead bind one exact dead matching account row, CAS-release only that row,
-then run the unchanged nested cancellation. The outer approval also binds the
+then run the unchanged nested cancellation under its existing controller and
+dispatch-admission capabilities. That nested replay atomically quarantines and
+removes only the bound dead claim. The outer approval also binds the
 selected expired dispatch lease and unchanged safe empty launch lock; its
 restart record makes each unlink replayable and collapses into the final outer
 receipt. Its approved CAS writes a zero-cost `failed_pre_go` terminal plus
@@ -1248,6 +1252,10 @@ complete snapshot and receipt. The same nested preview runs against the
 immutable source lane and source launcher's exact global Cursor account
 database. GO, submission, charge, live or stale wrapper evidence, foreign
 identity, ambiguous account state, or partial records remain fail-closed.
+Doctor, controller reconciliation, and qualification drain or upgrade checks
+derive `.active-runs` from the same authenticated runtime-ledger parent used by
+the role wrapper; product-local fallback is used only when that is the bound
+ordinary runtime ledger.
 If a proven Factory defect requires a successor during an isolated fresh
 qualification, the same preparer upgrades that root only while reconciliation and provider work
 are drained. It seals the successor, verifies unchanged provider policy,
