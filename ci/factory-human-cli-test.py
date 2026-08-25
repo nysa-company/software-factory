@@ -206,6 +206,8 @@ class FactoryHumanCliTest(unittest.TestCase):
         return [json.loads(line) for line in self.log.read_text().splitlines()]
 
     def qualification_launcher(self, tag, project="alpha"):
+        if not Path("/private/tmp").is_dir():
+            self.skipTest("qualification trust roots require /private/tmp")
         temporary = tempfile.TemporaryDirectory(
             prefix=f"nysa-sf-qualification.{tag}.", dir="/private/tmp",
         )
@@ -591,7 +593,7 @@ class FactoryHumanCliTest(unittest.TestCase):
         self.assertEqual(error, "factory: selected target is unusable; run factory use\n")
 
         with tempfile.TemporaryDirectory(
-            prefix="factory-missing-targets.", dir="/private/tmp",
+            prefix="factory-missing-targets.", dir=tempfile.gettempdir(),
         ) as raw:
             root = Path(raw)
             output, stderr = io.StringIO(), io.StringIO()

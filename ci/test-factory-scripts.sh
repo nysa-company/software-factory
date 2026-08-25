@@ -1110,6 +1110,9 @@ write_backend_global "$CURSOR_GLOBAL" \
 export CURSOR_AGENT_BIN=$CURSOR_AGENT_WRAPPER"
 PATH="$STUB_BIN:$PATH" FACTORY_CURSOR_FALLBACK_ENABLED=1 \
   CURSOR_AGENT_VERSION=2026.07.test \
+  FACTORY_PROBE_CODEX=READY:test FACTORY_PROBE_CLAUDE_CODE=READY:test \
+  FACTORY_PROBE_CURSOR_OPENAI=READY:test \
+  FACTORY_PROBE_CURSOR_ANTHROPIC=READY:test \
   bash -c 'source "$1"; factory_resolve_model_profile cursor-balanced-v2 "$2"' \
     _ "$SEALED_RELEASE/scripts/lib/backend-policy.sh" "$CURSOR_RESOLUTION"
 mkdir -p "$SEALED_PRODUCT/factory/route-plans"

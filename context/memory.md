@@ -8264,3 +8264,13 @@ legacy convergence leaves exactly one target without lock-file residue.
 Once atomic target publication begins, any failure is reported as an unknown
 outcome with exact preparation replay; qualification preserves that bounded
 guidance instead of reducing it to a generic registration failure.
+
+## 2026-08-25 — Decision 609: Qualification fixtures preserve their trust boundary
+
+Category: Reliability
+
+Provider-free sealed Cursor concurrency tests seed explicit readiness instead
+of probing ambient inventory, so they cannot mutate their copied release or
+cascade after a missing route plan. Qualification launcher trust tests continue
+to use the supported `/private/tmp` root and skip only on platforms where that
+root does not exist; unrelated temporary fixtures use the platform temp root.
