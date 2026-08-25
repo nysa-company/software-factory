@@ -1545,9 +1545,11 @@ An unsubmitted durable-GO terminal is not a model fallback. The controller
 exports its conservative charge into the ordinary passport, blocks it under
 the same release, and leaves only the authenticated successor recovery path.
 It is idempotent across controller restart. A second task-submitted attempt for
-the same transition receipt, role, and frozen candidate is refused as no
-progress instead of replayed; distinct authenticated role rounds and preserved
-attempts from predecessor candidates do not consume that boundary.
+the same ticket, role, and frozen candidate before an intervening successful
+same-role run is refused as no progress instead of replayed; a replaced
+transition receipt cannot reset that boundary. Distinct authenticated role
+rounds after a successful role and preserved attempts from predecessor
+candidates do not consume it.
 When that failure predates the executing sealed successor, its failed manifest
 and route journal remain bound to the exact older Kit-SHA while the local
 successor qualification manifest must bind the executing release SHA. The

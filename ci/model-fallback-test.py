@@ -1154,10 +1154,19 @@ class FallbackTest(unittest.TestCase):
         self.assertEqual(git(self.repo, "rev-parse", "HEAD"), applied["commit_sha"])
 
     def test_qualification_apply_refuses_a_second_role_attempt(self):
+        first = self.product / "factory/runs/run-failed-1.meta"
+        first.write_text(
+            first.read_text()
+            + "transition_receipt_sha256=" + "a" * 64 + "\n"
+        )
         second = self.product / "factory/runs/run-failed-2.meta"
         second.write_text(
-            (self.product / "factory/runs/run-failed-1.meta").read_text()
+            first.read_text()
             .replace("run_id=run-failed-1", "run_id=run-failed-2")
+            .replace(
+                "transition_receipt_sha256=" + "a" * 64,
+                "transition_receipt_sha256=" + "b" * 64,
+            )
         )
         result = self.command(
             "qualification-apply", check=False, failed_run="run-failed-2",
@@ -1194,6 +1203,42 @@ class FallbackTest(unittest.TestCase):
 
         applied = self.command("qualification-apply")
         self.assertRegex(applied["commit_sha"], r"^[0-9a-f]{40}$")
+
+    def test_qualification_apply_invalid_output_does_not_reset_attempt_limit(self):
+        failed = self.product / "factory/runs/run-failed-1.meta"
+        failed.write_text(
+            failed.read_text()
+            + "transition_receipt_sha256=" + "a" * 64 + "\n"
+        )
+        invalid = self.product / "factory/runs/run-failed-15.meta"
+        invalid.write_text(
+            failed.read_text()
+            .replace("run_id=run-failed-1", "run_id=run-failed-15")
+            .replace("exit_status=75", "exit_status=0")
+            .replace("role_exit=provider_failed", "role_exit=role_exit_invalid_output")
+            .replace(
+                "transition_receipt_sha256=" + "a" * 64,
+                "transition_receipt_sha256=" + "b" * 64,
+            )
+        )
+        latest = self.product / "factory/runs/run-failed-2.meta"
+        latest.write_text(
+            failed.read_text()
+            .replace("run_id=run-failed-1", "run_id=run-failed-2")
+            .replace(
+                "transition_receipt_sha256=" + "a" * 64,
+                "transition_receipt_sha256=" + "c" * 64,
+            )
+        )
+
+        result = self.command(
+            "qualification-apply", check=False, failed_run="run-failed-2",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "qualification fallback is allowed only after the first role attempt",
+            result.stderr,
+        )
 
     def test_qualification_apply_rejects_malformed_transition_receipt(self):
         failed = self.product / "factory/runs/run-failed-1.meta"
