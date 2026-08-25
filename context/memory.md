@@ -8261,3 +8261,6 @@ The owner-only parent-directory lock serializes directory-FD-anchored replacemen
 and binds sibling retirement to validated file identities. A stable
 project-derived target ID removes normal multi-record replacement; one-time
 legacy convergence leaves exactly one target without lock-file residue.
+Once atomic target publication begins, any failure is reported as an unknown
+outcome with exact preparation replay; qualification preserves that bounded
+guidance instead of reducing it to a generic registration failure.

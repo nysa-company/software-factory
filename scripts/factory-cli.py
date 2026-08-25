@@ -1165,8 +1165,8 @@ def register(target_id: str, launcher: str, project: str, targets_dir: Path) -> 
                 sort_keys=True, separators=(",", ":"),
             ) + "\n"
         ).encode()
-        _atomic_at(directory, candidate_name, raw_candidate)
         published = True
+        _atomic_at(directory, candidate_name, raw_candidate)
         _checked_directory(targets_dir.parent, parent, "Factory preference directory")
         _checked_directory(targets_dir, directory, "Factory target directory")
         candidate.check()

@@ -3834,6 +3834,14 @@ def register_human_target(
         },
     )
     if result.returncode:
+        if result.stderr.strip() == (
+            "factory: target registration outcome is unknown; rerun the same "
+            "exact Factory preparation"
+        ):
+            raise EnvironmentError(
+                "qualification human target registration outcome is unknown; "
+                "rerun the same exact Factory preparation"
+            )
         raise EnvironmentError("qualification human target registration failed")
 
 

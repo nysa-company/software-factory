@@ -1020,6 +1020,31 @@ class FactoryHumanCliTest(unittest.TestCase):
             target.read_text(encoding="utf-8"), '{"foreign":"newer"}\n',
         )
 
+    def test_registration_replays_after_atomic_publish_response_loss(self):
+        launcher = self.qualification_launcher("publish-loss")
+        targets = self.root / "publish-loss-targets"
+        targets.mkdir(mode=0o700)
+        original = CLI._atomic_at
+
+        def fail_after_publish(directory, name, raw):
+            original(directory, name, raw)
+            raise OSError("forced response loss after publication")
+
+        with mock.patch.object(CLI, "_atomic_at", side_effect=fail_after_publish):
+            with self.assertRaisesRegex(CLI.CliError, "outcome is unknown"):
+                CLI.register(
+                    "qualification-current", str(launcher), "alpha", targets,
+                )
+        CLI.register("qualification-current", str(launcher), "alpha", targets)
+        self.assertEqual(
+            json.loads(
+                (targets / "qualification-current.json").read_text(
+                    encoding="utf-8",
+                )
+            ),
+            {"launcher": str(launcher), "project": "alpha"},
+        )
+
     def test_concurrent_qualification_registration_leaves_one_target(self):
         launchers = [
             self.qualification_launcher("race-a"),

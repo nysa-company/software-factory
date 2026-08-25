@@ -562,6 +562,25 @@ class QualificationEnvironmentTest(unittest.TestCase):
             )
         self.assertEqual(caught.exception.reason_code, "runtime_tuple_mismatch")
 
+    def test_human_target_registration_preserves_unknown_outcome_guidance(self) -> None:
+        release = self.workspace / "registration-release"
+        scripts = release / "scripts"
+        scripts.mkdir(parents=True)
+        (scripts / "factory-cli.py").write_text("", encoding="utf-8")
+        result = subprocess.CompletedProcess(
+            [], 2, "",
+            "factory: target registration outcome is unknown; rerun the same "
+            "exact Factory preparation\n",
+        )
+        with mock.patch.object(ENVIRONMENT.subprocess, "run", return_value=result):
+            with self.assertRaisesRegex(
+                ENVIRONMENT.EnvironmentError,
+                "outcome is unknown; rerun the same exact Factory preparation",
+            ):
+                ENVIRONMENT.register_human_target(
+                    release, scripts / "factory-launch", "alpha", self.root,
+                )
+
     def tearDown(self) -> None:
         self.copy_transaction.stop()
         self.transaction_root.stop()
