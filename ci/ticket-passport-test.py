@@ -1035,6 +1035,16 @@ class TicketPassportTest(unittest.TestCase):
             return ROLE_OUTPUT.terminal_reason_code(output, adapter)
 
         self.assertEqual(classify(incident), "provider_spend_limit")
+        self.assertEqual(
+            classify({
+                **incident,
+                "result": (
+                    "You've hit your org's monthly spend limit · run "
+                    "/usage-credits to ask your admin for a higher limit"
+                ),
+            }),
+            "provider_spend_limit",
+        )
         self.assertEqual(classify(incident, adapter="codex"), "")
         for changed in (
             {**incident, "api_error_status": True},
@@ -1042,6 +1052,7 @@ class TicketPassportTest(unittest.TestCase):
             {**incident, "is_error": False},
             {**incident, "terminal_reason": "rate_limit"},
             {**incident, "result": "You've hit an ordinary rate limit"},
+            {**incident, "result": "You've reached a monthly spend limit"},
             {**incident, "result": {"message": incident["result"]}},
         ):
             self.assertEqual(classify(changed), "")
