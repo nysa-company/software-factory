@@ -20,7 +20,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - A drained isolated successor lane upgrades through one signed `qualification upgrade` transaction: project runtime before preflight, exact host-child approval when needed, fallback revalidation, authenticated environment publication, and sealed Doctor within a cumulative 60-second machine budget. Identical replay returns one completion receipt and never advances generation twice; the manual child sequence is recovery-only.
 - Catchable dispatcher heartbeat shutdown is deferred across the atomic lease-renewal replacement, so TERM, INT, or HUP cannot strand a `.lease-*` entry; foreign or malformed residue remains fail-closed.
 - The local release canary is one code-driven, product-agnostic command that creates contained local origins, runs setup/resume, and times one authenticated Planning transition plus sealed mock planner; its repository-test evidence is never promotable.
-- Model routing is portfolio policy; routes pin at the ticket boundary and change only via the Contract 1.4 journal flow. Fresh Kit-SHA affinity is a canonical ticket-header field so later role evidence remains append-only; one valid legacy trailing pin stays read-only. One profile resolution shares model-independent native-adapter readiness across its routes and runs independent probes in bounded parallel; Cursor readiness stays model-specific. Sealed Cursor inventory verifies the exact configured selection and displayed provider label in a disposable owner-only home, then accepts only its bounded certified structure.
+- Model routing is portfolio policy; routes pin at the ticket boundary and change only via the Contract 1.4 journal flow. Fresh Kit-SHA affinity is a canonical ticket-header field so later role evidence remains append-only; one valid legacy trailing pin stays read-only. One profile resolution shares model-independent native-adapter readiness across its routes and runs independent probes in bounded parallel; Cursor readiness stays model-specific. Sealed Cursor inventory verifies the exact configured selection and displayed provider label in a disposable owner-only home, then accepts only the exact approved bare-version or legacy-prefixed one-line version shape.
 - Provider-free ticket readiness rejects tracked static SHA-256 path/digest tables over any Builder or Test-author-owned path unless the exact protected test is both a declared conflict and a Fixture-Seam; unrelated payload hashes/source reads do not collide, while semantic and dynamic source guards remain fail-closed Planner/Spec-linter work.
 - Ticket-bearing mutation CLIs reject noncanonical identifiers before release discovery or state. Ticket lifecycle decisions share one exact, known-State parser; operator actions validate before residue and again under their lock. Qualification Doctor reuses canonical ticket, product/tree, KIT_PIN/plan, protected-batch, receipt, passport, event, and runtime-residue validators read-only, accepts a selected Done ticket's historical Kit-SHA only through authenticated protected-terminal evidence, and suppresses provider probes on typed drift.
 - Reconciliation markers advance after every trusted progressed stage. A successor qualification may recover one older pre-refresh marker only when sealed retention authenticates its passport digest, one exact receipt-bound successful role is the sole run-snapshot delta, and the existing strict passport migration suffix reaches the clean remote checkpoint.
@@ -8227,3 +8227,12 @@ Service-manager or one-shot controller teardown therefore cannot kill paid
 work. Kill-switch recovery drains the complete wrapper group only when its
 identity proves the controller-owned `PID == PGID` shape; direct callers retain
 PID-only shutdown so unrelated host-group processes remain untouched.
+
+## 2026-08-25 — Cursor inventory accepts the current version shape
+
+Category: System change
+
+The disposable Cursor inventory probe accepts exactly either the current bare
+approved version line or the legacy `Cursor Agent`-prefixed line. Ownership,
+mode, link, size, stable-read, extra-line, and unsafe-byte checks remain
+unchanged.
