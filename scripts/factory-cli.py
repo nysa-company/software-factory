@@ -23,7 +23,15 @@ TARGET = re.compile(r"[a-z0-9][a-z0-9._-]{0,127}\Z")
 PROJECT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 TICKET = re.compile(r"T-[0-9]{1,12}\Z")
 ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
-REASON = re.compile(r"[a-z0-9][a-z0-9._-]{0,127}\Z")
+DOCTOR_CHECKS = {
+    "active_binding", "authenticated_artifacts", "clis", "contract_resume",
+    "controller", "credentials", "fallback_readiness", "isolated_provider",
+    "kit", "kit_pin", "model_readiness", "provider_cli_pins",
+    "qualification_identity", "qualification_ticket_readiness", "runtime",
+    "transition_receipts",
+}
+DOCTOR_STATUSES = {"error", "ok", "warning"}
+DOCTOR_CHECK_STATUSES = {*DOCTOR_STATUSES, "not_applicable", "unknown"}
 PRIORITY = {"urgent": 0, "high": 1, "normal": 2, "low": 3, "none": 4}
 STATES = {
     "Approved", "Awaiting Approval", "Backlog", "Blocked-Escalated",
@@ -361,7 +369,7 @@ def _git_tree(path: Path) -> str:
                     ["/usr/bin/git", *arguments], text=True, capture_output=True,
                     check=False, env=environment, timeout=120,
                 )
-            except (OSError, subprocess.TimeoutExpired) as error:
+            except (OSError, UnicodeError, subprocess.TimeoutExpired) as error:
                 raise CliError("qualification target trust evidence is unavailable") from error
             if result.returncode:
                 raise CliError("qualification target trust evidence is invalid")
@@ -416,7 +424,7 @@ def _trusted_qualification_launcher(
             ),
             object_pairs_hook=_unique,
         )
-    except (UnicodeError, json.JSONDecodeError) as error:
+    except (UnicodeError, json.JSONDecodeError, RecursionError) as error:
         raise CliError("qualification target trust evidence is invalid") from error
     unsigned = dict(receipt) if isinstance(receipt, dict) else {}
     observed_receipt = unsigned.pop("receipt_id", "")
@@ -498,7 +506,7 @@ def _trusted_qualification_launcher(
         )
         _regular(operator_map, "qualification operator map", 131_072)
         _regular(runtime_ledger, "qualification runtime ledger", 4_000_000)
-    except (UnicodeError, json.JSONDecodeError) as error:
+    except (UnicodeError, json.JSONDecodeError, RecursionError) as error:
         raise CliError("qualification target trust evidence is invalid") from error
     authority_unsigned = dict(authority_state) if isinstance(authority_state, dict) else {}
     authority_digest = authority_unsigned.pop("authority_sha256", "")
@@ -555,7 +563,7 @@ def _trusted_qualification_launcher(
             text=True, capture_output=True, check=False, timeout=120,
             env=environment,
         )
-    except (OSError, subprocess.TimeoutExpired) as error:
+    except (OSError, UnicodeError, subprocess.TimeoutExpired) as error:
         raise CliError("qualification target trust evidence is unavailable") from error
     lines = identity.stdout.splitlines()
     for path in release.rglob("*"):
@@ -627,7 +635,7 @@ def _target(targets: Path, target_id: str, trusted: bool = False) -> tuple[Exact
         if "unavailable" in str(error):
             raise CliError("selected target is unavailable; run factory use") from error
         raise
-    except (UnicodeError, json.JSONDecodeError) as error:
+    except (UnicodeError, json.JSONDecodeError, RecursionError) as error:
         raise CliError("target is invalid; run factory use") from error
     if (
         not isinstance(value, dict)
@@ -687,7 +695,7 @@ def _trusted_launcher(launcher: ExactLauncher, project: str) -> None:
         try:
             active = json.loads(_regular(active_path, "active release", 64_000), object_pairs_hook=_unique)
             manifest = json.loads(_regular(manifest_path, "install manifest", 64_000), object_pairs_hook=_unique)
-        except (UnicodeError, json.JSONDecodeError) as error:
+        except (UnicodeError, json.JSONDecodeError, RecursionError) as error:
             raise CliError("production target trust evidence is invalid") from error
         raw = os.pread(launcher.descriptor, launcher.identity[2], 0)
         if (
@@ -728,6 +736,8 @@ def _invoke(launcher: ExactLauncher, project: str, arguments: list[str]) -> tupl
                 timeout=720,
                 check=False,
             )
+        except UnicodeError as error:
+            raise CliError("launcher returned invalid text") from error
         except (OSError, subprocess.TimeoutExpired) as error:
             raise CliError("selected target is unavailable; run factory use") from error
         launcher.check()
@@ -740,7 +750,7 @@ def _invoke(launcher: ExactLauncher, project: str, arguments: list[str]) -> tupl
         raise CliError("launcher output is too large")
     try:
         value = json.loads(result.stdout, object_pairs_hook=_unique)
-    except json.JSONDecodeError as error:
+    except (json.JSONDecodeError, RecursionError) as error:
         if result.returncode:
             raise LauncherRefused("launcher_refused") from error
         raise CliError("launcher returned invalid JSON") from error
@@ -752,13 +762,16 @@ def _invoke(launcher: ExactLauncher, project: str, arguments: list[str]) -> tupl
 def _call(launcher: ExactLauncher, project: str, arguments: list[str]) -> dict:
     value, code = _invoke(launcher, project, arguments)
     if code:
-        message = value.get("reason") or value.get("error") or value.get("status") or "launcher refused"
-        raise LauncherRefused(
-            message if isinstance(message, str) and REASON.fullmatch(message)
-            else "launcher_refused",
-            value,
-        )
+        raise LauncherRefused("launcher_refused", value)
     return value
+
+
+def _evidence_command(
+    launcher: ExactLauncher, project: str, arguments: list[str],
+) -> str:
+    return " ".join(
+        shlex.quote(str(value)) for value in (launcher.path, project, *arguments)
+    )
 
 
 def _safe_title(value: object) -> str:
@@ -773,7 +786,21 @@ def _safe_title(value: object) -> str:
 
 
 def _workflow(launcher: ExactLauncher, project: str) -> dict:
-    value = _call(launcher, project, ["operator-snapshot", "workflow", "--json"])
+    arguments = ["operator-snapshot", "workflow", "--json"]
+    evidence = _evidence_command(launcher, project, arguments)
+
+    def invalid(condition: str) -> CliError:
+        return CliError(
+            f"{condition}. Impact: do not continue Factory mutations. "
+            f"Evidence: {evidence}. Recovery: run factory doctor"
+        )
+
+    try:
+        value = _call(launcher, project, arguments)
+    except CliError as error:
+        if "run factory use" in str(error):
+            raise
+        raise invalid("workflow snapshot could not be produced") from error
     tickets = value.get("tickets")
     if (
         value.get("schema") != "factory-operator-workflow/v1"
@@ -785,12 +812,16 @@ def _workflow(launcher: ExactLauncher, project: str) -> dict:
         or not isinstance(tickets, list)
         or len(tickets) > 10_000
     ):
-        raise CliError("workflow snapshot is invalid")
+        raise invalid("workflow snapshot is invalid")
+    try:
+        label = _safe_title(value["label"])
+    except CliError as error:
+        raise invalid("workflow label is invalid") from error
     seen = set()
     normalized = []
     for item in tickets:
         if not isinstance(item, dict) or not TICKET.fullmatch(str(item.get("ticket", ""))):
-            raise CliError("ticket identifier is invalid")
+            raise invalid("workflow ticket identifier is invalid")
         dependencies = item.get("depends_on")
         if (
             item["ticket"] in seen
@@ -802,10 +833,14 @@ def _workflow(launcher: ExactLauncher, project: str) -> dict:
             or any(not isinstance(entry, str) or not TICKET.fullmatch(entry) for entry in dependencies)
             or len(dependencies) != len(set(dependencies))
         ):
-            raise CliError("ticket snapshot is invalid")
+            raise invalid("workflow ticket snapshot is invalid")
         seen.add(item["ticket"])
-        normalized.append({**item, "title": _safe_title(item.get("title"))})
-    return {**value, "label": _safe_title(value["label"]), "tickets": normalized}
+        try:
+            title = _safe_title(item.get("title"))
+        except CliError as error:
+            raise invalid("workflow ticket title is invalid") from error
+        normalized.append({**item, "title": title})
+    return {**value, "label": label, "tickets": normalized}
 
 
 def _rank(ticket: dict, states: dict[str, str] | None = None) -> tuple[int, bool, int]:
@@ -879,68 +914,91 @@ def _backlog(workflow: dict, stdout) -> None:
 
 
 def _doctor(launcher: ExactLauncher, project: str, stdout) -> None:
-    def diagnostic(value: object) -> str:
-        return value if isinstance(value, str) and REASON.fullmatch(value) else "invalid"
+    evidence = _evidence_command(launcher, project, ["doctor", "--json"])
+
+    def unavailable(condition: str) -> CliError:
+        return CliError(
+            f"{condition}. Impact: do not continue Factory mutations. "
+            f"Evidence: {evidence}. Recovery: run the evidence command and do "
+            "not mutate until Doctor returns a valid green report"
+        )
 
     try:
         value, code = _invoke(launcher, project, ["doctor", "--json"])
-    except LauncherRefused as error:
-        evidence = " ".join((
-            shlex.quote(str(launcher.path)), shlex.quote(project), "doctor --json",
-        ))
-        raise CliError(
-            "Doctor could not produce a report. Impact: do not continue "
-            f"Factory mutations. Evidence: {evidence}"
-        ) from error
+    except CliError as error:
+        if "run factory use" in str(error):
+            raise
+        raise unavailable("Doctor could not produce a report") from error
     checks = value.get("checks")
     if (
         value.get("schema") != "nysa.software-factory.doctor/v2"
         or "project" in value and value.get("project") != project
         or not isinstance(checks, dict)
-        or bool(code) and value.get("overall_status") == "ok"
-        or value.get("overall_status") == "ok" and any(
+        or not isinstance(value.get("overall_status"), str)
+        or value.get("overall_status") not in DOCTOR_STATUSES
+        or code != {"error": 1, "ok": 0, "warning": 0}[value["overall_status"]]
+        or any(
             not isinstance(check, dict)
             or not isinstance(check.get("status"), str)
-            or check.get("status") not in {"ok", "not_applicable"}
+            or check.get("status") not in DOCTOR_CHECK_STATUSES
+            for check in checks.values()
+        )
+        or value.get("overall_status") == "ok" and any(
+            check["status"] not in {"ok", "not_applicable"}
             for check in checks.values()
         )
     ):
-        raise CliError("Doctor report is invalid")
+        raise unavailable("Doctor report is invalid")
     if code or value.get("overall_status") != "ok":
-        status = diagnostic(value.get("overall_status", "failed"))
+        supplied_status = value.get("overall_status")
+        status = supplied_status
         failures = []
         for name in sorted(checks):
             check = checks[name]
+            check_name = name if name in DOCTOR_CHECKS else "unknown_check"
             if not isinstance(check, dict):
-                failures.append(f"{diagnostic(name)}=invalid")
+                failures.append(f"{check_name}=invalid")
                 continue
             check_status = check.get("status")
             if isinstance(check_status, str) and check_status in {
                 "ok", "not_applicable",
             }:
                 continue
-            reason = check.get("reason_code") or check_status or "failed"
-            failures.append(f"{diagnostic(name)}={diagnostic(reason)}")
-        detail = value.get("error")
-        if detail:
-            failures.insert(0, diagnostic(detail))
+            failures.append(
+                f"{check_name}="
+                f"{check_status if isinstance(check_status, str) and check_status in DOCTOR_CHECK_STATUSES else 'invalid'}"
+            )
         summary = ", ".join(failures[:3]) or status
         if len(failures) > 3:
             summary += f" (+{len(failures) - 3} more)"
-        evidence = " ".join((
-            shlex.quote(str(launcher.path)), shlex.quote(project), "doctor --json",
-        ))
         raise CliError(
             f"Doctor {status}: {summary}. Impact: do not continue Factory "
             f"mutations. Evidence: {evidence}"
         )
     isolated = checks.get("isolated_provider", {})
     runtime = checks.get("runtime", {})
+    unknown_workers = (
+        isolated.get("unknown_workers") if isinstance(isolated, dict) else None
+    )
+    capacity = (
+        runtime.get("max_concurrent_tickets") if isinstance(runtime, dict) else None
+    )
+    if (
+        unknown_workers is not None and (
+            isinstance(unknown_workers, bool)
+            or not isinstance(unknown_workers, int) or unknown_workers < 0
+        )
+        or capacity is not None and (
+            isinstance(capacity, bool)
+            or not isinstance(capacity, int) or capacity < 0
+        )
+    ):
+        raise unavailable("Doctor report is invalid")
     details = []
-    if isinstance(isolated, dict):
-        details.append(f"{isolated.get('unknown_workers', 0)} unknown workers")
-    if isinstance(runtime, dict) and isinstance(runtime.get("max_concurrent_tickets"), int):
-        details.append(f"capacity {runtime['max_concurrent_tickets']}")
+    if unknown_workers is not None:
+        details.append(f"{unknown_workers} unknown workers")
+    if capacity is not None:
+        details.append(f"capacity {capacity}")
     stdout.write("Doctor passed" + (" · " + " · ".join(details) if details else "") + "\n")
 
 
@@ -966,7 +1024,7 @@ def _next(
             result, code = _invoke(
                 launcher, project, ["qualification-finish", "--json"],
             )
-        except (CliError, OSError, UnicodeError) as error:
+        except (CliError, OSError, UnicodeError, RecursionError) as error:
             raise CliError(
                 "qualification mutation outcome is unknown; do not repeat; "
                 "run factory doctor"
@@ -981,15 +1039,18 @@ def _next(
             != "nysa.software-factory.qualification-run/v1"
             or not isinstance(status, str)
             or status not in {"green", "waiting", "blocked", "error"}
+            or code != {"blocked": 3, "error": 2, "green": 0, "waiting": 3}[status]
         ):
             raise CliError(
                 "qualification result is invalid; mutation outcome is unknown; "
                 "do not repeat; run factory doctor"
             )
         if code or status != "green":
-            supplied = result.get("reason", result.get("error", status))
-            reason = supplied if isinstance(supplied, str) and REASON.fullmatch(supplied) else status
-            raise CliError(f"Qualification is not ready: {reason}")
+            raise CliError(
+                f"Qualification is {status}. Outcome: known non-green; run "
+                "factory doctor; after it passes and the condition is resolved, "
+                "rerun factory"
+            )
         stdout.write("Qualification closed.\n")
         return
     approvals = sorted((item for item in tickets if item["state"] == "Awaiting Approval"), key=_rank)
@@ -1020,7 +1081,7 @@ def _next(
             launcher, project,
             ["operator", action, "--ticket", ticket, "--json"],
         )
-    except (CliError, OSError, UnicodeError) as error:
+    except (CliError, OSError, UnicodeError, RecursionError) as error:
         raise CliError(
             "operator mutation outcome is unknown; do not repeat; "
             "run factory doctor"
@@ -1071,7 +1132,9 @@ def register(target_id: str, launcher: str, project: str, targets_dir: Path) -> 
                         raw,
                         object_pairs_hook=_unique,
                     )
-                except (CliError, UnicodeError, json.JSONDecodeError) as error:
+                except (
+                    CliError, UnicodeError, json.JSONDecodeError, RecursionError,
+                ) as error:
                     if name == candidate_name:
                         continue
                     if name.startswith("qualification-"):
@@ -1134,21 +1197,34 @@ def run(
     selection_file: Path | None = None, stdin=sys.stdin, stdout=sys.stdout,
     stderr=sys.stderr,
 ) -> int:
-    home = _account_home() if targets_dir is None or selection_file is None else None
-    trusted = targets_dir is None
-    targets = targets_dir or home / ".factory/targets"
-    selection = selection_file or home / ".factory/current-target"
     launcher = None
     try:
-        _directory(targets, "target directory")
-        _directory(selection.parent, "Factory preference directory")
         command = arguments[0] if arguments else "next"
         if len(arguments) > 1 or command not in {"backlog", "doctor", "next", "use"}:
             raise CliError("usage: factory [use|backlog|doctor|next]")
+        home = _account_home() if targets_dir is None or selection_file is None else None
+        trusted = targets_dir is None
+        targets = targets_dir or home / ".factory/targets"
+        selection = selection_file or home / ".factory/current-target"
+        try:
+            _directory(targets, "target directory")
+            _directory(selection.parent, "Factory preference directory")
+        except CliError as error:
+            if str(error).endswith("is unavailable"):
+                raise CliError(
+                    f"{error}; rerun the same supported Factory setup or "
+                    "qualification preparation command"
+                ) from error
+            raise
         if command == "use":
             _use(targets, selection, stdin, stdout, trusted)
             return 0
-        launcher, project = _selected(targets, selection, trusted)
+        try:
+            launcher, project = _selected(targets, selection, trusted)
+        except CliError as error:
+            if "run factory use" in str(error):
+                raise
+            raise CliError("selected target is unusable; run factory use") from error
         if command == "doctor":
             _doctor(launcher, project, stdout)
             return 0

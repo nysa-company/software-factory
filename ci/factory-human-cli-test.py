@@ -163,7 +163,13 @@ class FactoryHumanCliTest(unittest.TestCase):
             "    result = {'project': project, 'status': 'pass', 'ticket': command[3]}\n"
             "else:\n"
             "    raise SystemExit('unexpected command: ' + repr(command))\n"
-            "print(json.dumps(result))\n",
+            "print(json.dumps(result))\n"
+            "if command == ['doctor', '--json'] and result.get('overall_status') == 'error':\n"
+            "    raise SystemExit(1)\n"
+            "if command == ['qualification-finish', '--json']:\n"
+            "    status = result.get('status')\n"
+            "    if status == 'error': raise SystemExit(2)\n"
+            "    if isinstance(status, str) and status in {'waiting', 'blocked'}: raise SystemExit(3)\n",
             encoding="utf-8",
         )
         launcher.chmod(0o700)
@@ -349,6 +355,7 @@ class FactoryHumanCliTest(unittest.TestCase):
         invalid = {
             "BAD!.json": b'{"launcher":"sentinel-name"}\n',
             "malformed.json": b"not-json\n",
+            "nested.json": b"[" * 1500 + b"]" * 1500,
             "unsafe.json": b'{"launcher":"sentinel-mode","project":"alpha"}\n',
         }
         for name, raw in invalid.items():
@@ -362,7 +369,7 @@ class FactoryHumanCliTest(unittest.TestCase):
 
         code, output, error = self.invoke(["use"], "1\n")
         self.assertEqual((code, error), (0, ""))
-        self.assertIn("Ignored 3 unavailable or invalid target records", output)
+        self.assertIn("Ignored 4 unavailable or invalid target records", output)
         self.assertIn("Nysa · Production", output)
         self.assertIn("Nysa · Qualification", output)
         self.assertNotIn("sentinel", output)
@@ -430,7 +437,8 @@ class FactoryHumanCliTest(unittest.TestCase):
         self.select("production")
         code, output, error = self.invoke(["doctor"])
         self.assertEqual((code, output), (2, ""))
-        self.assertIn("runtime=stale_runs", error)
+        self.assertIn("runtime=error", error)
+        self.assertNotIn("stale_runs", error)
         self.assertIn("Impact: do not continue Factory mutations", error)
         self.assertIn(str(self.launchers["production"]), error)
         self.assertIn("alpha doctor --json", error)
@@ -468,27 +476,181 @@ class FactoryHumanCliTest(unittest.TestCase):
                 "overall_status": "ok",
                 "schema": "nysa.software-factory.doctor/v2",
             },
+            {
+                "checks": {"runtime": {"status": "ok"}},
+                "overall_status": {},
+                "schema": "nysa.software-factory.doctor/v2",
+            },
         ):
             self.values["production"]["doctor"] = report
             self.write_snapshots()
             code, _, error = self.invoke(["doctor"])
             self.assertEqual(code, 2)
             self.assertIn("Doctor report is invalid", error)
+
+        warning = {
+            "checks": {"clis": {"status": "unknown"}},
+            "overall_status": "warning",
+            "schema": "nysa.software-factory.doctor/v2",
+        }
+        with mock.patch.object(CLI, "_invoke", return_value=(warning, 0)):
+            code, _, error = self.invoke(["doctor"])
+        self.assertEqual(code, 2)
+        self.assertIn("Doctor warning: clis=unknown", error)
+
+        for report, returncode in (
+            ({**warning, "overall_status": "error"}, 0),
+            (warning, 1),
+            ({
+                "checks": {"clis": {"status": "blocked"}},
+                "overall_status": "error",
+                "schema": "nysa.software-factory.doctor/v2",
+            }, 1),
+        ):
+            with mock.patch.object(
+                CLI, "_invoke", return_value=(report, returncode),
+            ):
+                code, _, error = self.invoke(["doctor"])
+            self.assertEqual(code, 2)
+            self.assertIn("Doctor report is invalid", error)
         self.values["production"]["doctor"] = {
             "checks": {
                 "runtime": {
-                    "reason_code": {"api_token": "FAKE_SENTINEL"},
+                    "reason_code": "fake-secret-sentinel",
                     "status": "error",
                 },
             },
             "overall_status": "error",
+            "error": "fake-secret-sentinel",
             "schema": "nysa.software-factory.doctor/v2",
         }
         self.write_snapshots()
         code, _, error = self.invoke(["doctor"])
         self.assertEqual(code, 2)
-        self.assertIn("runtime=invalid", error)
-        self.assertNotIn("FAKE_SENTINEL", error)
+        self.assertIn("runtime=error", error)
+        self.assertNotIn("fake-secret-sentinel", error)
+
+        self.values["production"]["doctor"] = {
+            "checks": {
+                "isolated_provider": {
+                    "status": "ok", "unknown_workers": "fake-secret-sentinel",
+                },
+            },
+            "overall_status": "ok",
+            "schema": "nysa.software-factory.doctor/v2",
+        }
+        self.write_snapshots()
+        code, _, error = self.invoke(["doctor"])
+        self.assertEqual(code, 2)
+        self.assertIn("Doctor report is invalid", error)
+        self.assertNotIn("fake-secret-sentinel", error)
+
+    def test_common_stop_paths_name_safe_recovery_without_raw_values(self):
+        self.select("production")
+        self.values["production"]["workflow"]["mode"] = "broken"
+        self.write_snapshots()
+        code, _, error = self.invoke(["backlog"])
+        self.assertEqual(code, 2)
+        self.assertIn("workflow snapshot is invalid", error)
+        self.assertIn("Impact: do not continue Factory mutations", error)
+        self.assertIn("operator-snapshot workflow --json", error)
+        self.assertIn("run factory doctor", error)
+
+        self.values["production"]["workflow"]["mode"] = "production"
+        self.write_snapshots()
+        with mock.patch.object(
+            CLI, "_call", side_effect=CLI.LauncherRefused(
+                "fake-secret-sentinel", {"reason": "fake-secret-sentinel"},
+            ),
+        ):
+            code, _, error = self.invoke(["backlog"])
+        self.assertEqual(code, 2)
+        self.assertIn("workflow snapshot could not be produced", error)
+        self.assertNotIn("fake-secret-sentinel", error)
+
+        self.select("qualification")
+        self.values["qualification"]["qualification_result"] = {
+            "project": "alpha", "reason": "fake-secret-sentinel",
+            "status": "waiting",
+        }
+        self.write_snapshots()
+        code, _, error = self.invoke([], "1\nyes\n")
+        self.assertEqual(code, 2)
+        self.assertIn("Qualification is waiting", error)
+        self.assertIn("run factory doctor", error)
+        self.assertIn("rerun factory", error)
+        self.assertNotIn("fake-secret-sentinel", error)
+
+        with mock.patch.object(
+            CLI, "_selected", side_effect=CLI.CliError(
+                "production target trust evidence is invalid",
+            ),
+        ):
+            code, _, error = self.invoke(["doctor"])
+        self.assertEqual(code, 2)
+        self.assertEqual(error, "factory: selected target is unusable; run factory use\n")
+
+        with tempfile.TemporaryDirectory(
+            prefix="factory-missing-targets.", dir="/private/tmp",
+        ) as raw:
+            root = Path(raw)
+            output, stderr = io.StringIO(), io.StringIO()
+            code = CLI.run(
+                ["use"], targets_dir=root / "missing",
+                selection_file=root / "current-target", stdout=output,
+                stderr=stderr,
+            )
+            self.assertEqual((code, output.getvalue()), (2, ""))
+            self.assertIn("Factory setup or qualification preparation", stderr.getvalue())
+            stderr = io.StringIO()
+            code = CLI.run(
+                ["bogus"], targets_dir=root / "missing",
+                selection_file=root / "current-target", stdout=io.StringIO(),
+                stderr=stderr,
+            )
+            self.assertEqual(code, 2)
+            self.assertIn("usage: factory", stderr.getvalue())
+
+    def test_invalid_text_depth_and_account_home_are_bounded(self):
+        self.launchers["production"].write_text(
+            "#!/usr/bin/python3\nimport sys\nsys.stdout.buffer.write(b'\\xff')\n",
+            encoding="utf-8",
+        )
+        self.launchers["production"].chmod(0o700)
+        self.select("production")
+        code, _, error = self.invoke(["doctor"])
+        self.assertEqual(code, 2)
+        self.assertIn("Doctor could not produce a report", error)
+        self.assertIn("Impact: do not continue Factory mutations", error)
+        self.assertNotIn("codec", error)
+
+        code, output, error = self.invoke(["use"], "1\n")
+        self.assertEqual((code, error), (0, ""))
+        self.assertIn("Ignored 1 unavailable or invalid target records", output)
+        self.assertIn("Qualification", output)
+
+        nested = self.root / "nested-factory-launch"
+        nested.write_text(
+            "#!/usr/bin/python3\nprint('[' * 1500 + ']' * 1500)\n",
+            encoding="utf-8",
+        )
+        nested.chmod(0o700)
+        launcher = CLI._launcher(str(nested))
+        try:
+            with self.assertRaisesRegex(CLI.CliError, "invalid JSON"):
+                CLI._invoke(launcher, "alpha", ["doctor", "--json"])
+        finally:
+            launcher.close()
+
+        with mock.patch.object(
+            CLI, "_account_home", side_effect=CLI.CliError(
+                "account home is unavailable",
+            ),
+        ):
+            output, stderr = io.StringIO(), io.StringIO()
+            code = CLI.run(["doctor"], stdout=output, stderr=stderr)
+        self.assertEqual((code, output.getvalue()), (2, ""))
+        self.assertEqual(stderr.getvalue(), "factory: account home is unavailable\n")
 
     def test_bare_command_closes_one_qualification_cohort_without_extra_doctor(self):
         self.select("qualification")
@@ -600,12 +762,29 @@ class FactoryHumanCliTest(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("qualification result is invalid", error)
 
+        original_invoke = CLI._invoke
+        for status, returncode in (
+            ("green", 1), ("waiting", 0), ("blocked", 2), ("error", 3),
+        ):
+            def contradictory(launcher, project, arguments):
+                if arguments == ["qualification-finish", "--json"]:
+                    return {"project": project, "status": status}, returncode
+                return original_invoke(launcher, project, arguments)
+
+            with mock.patch.object(CLI, "_invoke", side_effect=contradictory):
+                code, _, error = self.invoke([], "1\nyes\n")
+            self.assertEqual(code, 2)
+            self.assertIn("qualification result is invalid", error)
+            self.assertIn("outcome is unknown", error)
+            self.assertIn("do not repeat", error)
+
     def test_post_confirmation_exceptions_report_unknown_outcome(self):
         original = CLI._invoke
         for failure in (
             CLI.CliError("FAKE_CLI_SENTINEL"),
             OSError("FAKE_OS_SENTINEL"),
             UnicodeError("FAKE_UNICODE_SENTINEL"),
+            RecursionError("FAKE_RECURSION_SENTINEL"),
         ):
             def fail_mutation(launcher, project, arguments):
                 if arguments[0] in {"qualification-finish", "operator"}:
@@ -629,7 +808,7 @@ class FactoryHumanCliTest(unittest.TestCase):
         self.selection.symlink_to(target)
         code, _, error = self.invoke(["backlog"])
         self.assertNotEqual(code, 0)
-        self.assertIn("selection", error.lower())
+        self.assertIn("factory use", error.lower())
         self.assertEqual(self.invocations(), [])
 
         self.selection.unlink()
