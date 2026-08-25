@@ -320,7 +320,7 @@ SCENARIOS = (
         ),
         (
             "factory-controller-test.py",
-            "FactoryControllerTest.test_qualification_spend_limit_latches_and_preserves_dirty_failure",
+            "FactoryControllerTest.test_qualification_spend_limit_falls_back_without_latching",
         ),
     ),
     (

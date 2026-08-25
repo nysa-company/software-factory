@@ -8119,3 +8119,17 @@ controller or external response error, the controller refreshes protected main
 before terminal cleanup. Authenticated Done then releases the claim without
 requiring the legitimately deleted implementation branch, while nonterminal or
 invalid protected evidence stays blocked.
+
+## 2026-08-25 — Decision 599: Qualification fallback follows the sealed route plan
+
+Category: Reliability
+
+The first submitted qualification provider failure may fall back in either
+profile-authorized route direction. The existing sealed manifest, exact failed
+route, readiness, attempt count, role boundary, snapshot, accounting, and push
+checks remain authoritative; Cursor model-identity recovery remains
+Cursor-specific. Recovery ignores approvals bound to other failed runs and
+still refuses a superseded approval for the requested run. A successful
+spend-limit fallback does not poison the cohort and records the bounded reason
+as `credits_exhausted`. Ordinary operator receipts remain outside sealed
+qualification because their audit commit changes the immutable product head.

@@ -156,6 +156,14 @@ This is not guaranteed. The resolver must find one complete valid assignment.
 If the failed route was already the last ready same-family candidate, the
 factory stops and escalates.
 
+Sealed qualification authorizes the same bounded failed-role fallback after
+the first submitted provider failure, in either profile-authorized route
+direction. It does not write an operator receipt into the immutable product
+checkout. Recovery considers only the approval bound to the requested failed
+run; older approvals for other runs are inert, while replay of a superseded
+same-run approval still fails closed. A classified provider spend limit records
+`credits_exhausted` and latches the cohort only if fallback cannot complete.
+
 ## Family-separation rules
 
 Family history is tracked across all attempts, including failed attempts whose
